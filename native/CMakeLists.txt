@@ -1,0 +1,2398 @@
+cmake_minimum_required(VERSION 3.28)
+project(native_android13_security_release)
+
+set(CMAKE_CXX_STANDARD 14)
+
+include_directories(cmds/bugreportz)
+include_directories(cmds/cmd)
+include_directories(cmds/dumpstate)
+include_directories(cmds/dumpsys)
+include_directories(cmds/flatland)
+include_directories(cmds/idlcli)
+include_directories(cmds/installd)
+include_directories(cmds/installd/tests)
+include_directories(cmds/lshal)
+include_directories(cmds/lshal/libprocpartition/include)
+include_directories(cmds/lshal/libprocpartition/include/procpartition)
+include_directories(cmds/servicemanager)
+include_directories(cmds/surfacereplayer/replayer)
+include_directories(headers)
+include_directories(headers/media_plugin)
+include_directories(headers/media_plugin/media)
+include_directories(headers/media_plugin/media/cas)
+include_directories(headers/media_plugin/media/drm)
+include_directories(headers/media_plugin/media/editor)
+include_directories(headers/media_plugin/media/hardware)
+include_directories(headers/media_plugin/media/openmax)
+include_directories(include)
+include_directories(include/android)
+include_directories(include/attestation)
+include_directories(include/audiomanager)
+include_directories(include/binder)
+include_directories(include/diskusage)
+include_directories(include/ftl)
+include_directories(include/ftl/details)
+include_directories(include/input)
+include_directories(include/powermanager)
+include_directories(include/private)
+include_directories(include/ui)
+include_directories(include/vr)
+include_directories(include/vr/vr_manager)
+include_directories(include_sensor)
+include_directories(include_sensor/android)
+include_directories(libs/adbd_auth/include)
+include_directories(libs/android_runtime_lazy/include)
+include_directories(libs/android_runtime_lazy/include/android_runtime)
+include_directories(libs/arect)
+include_directories(libs/arect/include)
+include_directories(libs/arect/include/android)
+include_directories(libs/battery)
+include_directories(libs/binder)
+include_directories(libs/binder/include)
+include_directories(libs/binder/include/binder)
+include_directories(libs/binder/include_activitymanager)
+include_directories(libs/binder/include_activitymanager/binder)
+include_directories(libs/binder/include_batterystats)
+include_directories(libs/binder/include_batterystats/batterystats)
+include_directories(libs/binder/include_processinfo)
+include_directories(libs/binder/include_processinfo/processinfo)
+include_directories(libs/binder/include_rpc_unstable)
+include_directories(libs/binder/include_tls)
+include_directories(libs/binder/include_tls/binder)
+include_directories(libs/binder/ndk)
+include_directories(libs/binder/ndk/include_cpp)
+include_directories(libs/binder/ndk/include_cpp/android)
+include_directories(libs/binder/ndk/include_ndk)
+include_directories(libs/binder/ndk/include_ndk/android)
+include_directories(libs/binder/ndk/include_platform)
+include_directories(libs/binder/ndk/include_platform/android)
+include_directories(libs/binder/ndk/tests/include)
+include_directories(libs/binder/ndk/tests/include/iface)
+include_directories(libs/binder/rust/sys)
+include_directories(libs/binder/rust/tests)
+include_directories(libs/binder/tests)
+include_directories(libs/binder/tests/include_tls_test_utils)
+include_directories(libs/binder/tests/include_tls_test_utils/binder)
+include_directories(libs/binder/tests/parcel_fuzzer)
+include_directories(libs/binder/tests/parcel_fuzzer/include_random_parcel)
+include_directories(libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder)
+include_directories(libs/binder/tests/unit_fuzzers)
+include_directories(libs/binderdebug/include)
+include_directories(libs/binderdebug/include/binderdebug)
+include_directories(libs/binderthreadstate/include)
+include_directories(libs/binderthreadstate/include/binderthreadstate)
+include_directories(libs/bufferqueueconverter/include)
+include_directories(libs/bufferqueueconverter/include/bufferqueueconverter)
+include_directories(libs/cputimeinstate)
+include_directories(libs/dumputils/include)
+include_directories(libs/dumputils/include/dumputils)
+include_directories(libs/fakeservicemanager)
+include_directories(libs/gralloc/types/fuzzer)
+include_directories(libs/gralloc/types/include)
+include_directories(libs/gralloc/types/include/gralloctypes)
+include_directories(libs/graphicsenv/include)
+include_directories(libs/graphicsenv/include/graphicsenv)
+include_directories(libs/gui/include)
+include_directories(libs/gui/include/gui)
+include_directories(libs/gui/include/gui/bufferqueue)
+include_directories(libs/gui/include/gui/bufferqueue/1.0)
+include_directories(libs/gui/include/gui/bufferqueue/2.0)
+include_directories(libs/gui/include/gui/mock)
+include_directories(libs/gui/include/gui/test)
+include_directories(libs/gui/include/gui/view)
+include_directories(libs/gui/include/private)
+include_directories(libs/gui/include/private/gui)
+include_directories(libs/gui/tests)
+include_directories(libs/incidentcompanion/include)
+include_directories(libs/incidentcompanion/include/android)
+include_directories(libs/incidentcompanion/include/android/os)
+include_directories(libs/input/tests)
+include_directories(libs/math/include)
+include_directories(libs/math/include/math)
+include_directories(libs/nativebase)
+include_directories(libs/nativebase/include)
+include_directories(libs/nativebase/include/nativebase)
+include_directories(libs/nativedisplay/include)
+include_directories(libs/nativedisplay/include/apex)
+include_directories(libs/nativedisplay/include/surfacetexture)
+include_directories(libs/nativedisplay/include-private)
+include_directories(libs/nativedisplay/include-private/private)
+include_directories(libs/nativedisplay/include-private/private/android)
+include_directories(libs/nativewindow/include)
+include_directories(libs/nativewindow/include/android)
+include_directories(libs/nativewindow/include/apex)
+include_directories(libs/nativewindow/include/system)
+include_directories(libs/nativewindow/include/vndk)
+include_directories(libs/nativewindow/include-private)
+include_directories(libs/nativewindow/include-private/private)
+include_directories(libs/nativewindow/include-private/private/android)
+include_directories(libs/permission/include)
+include_directories(libs/permission/include/android)
+include_directories(libs/permission/include/android/permission)
+include_directories(libs/permission/include/binder)
+include_directories(libs/renderengine/benchmark)
+include_directories(libs/renderengine/gl)
+include_directories(libs/renderengine/gl/filters)
+include_directories(libs/renderengine/include)
+include_directories(libs/renderengine/include/renderengine)
+include_directories(libs/renderengine/include/renderengine/impl)
+include_directories(libs/renderengine/include/renderengine/mock)
+include_directories(libs/renderengine/include/renderengine/private)
+include_directories(libs/renderengine/skia)
+include_directories(libs/renderengine/skia/debug)
+include_directories(libs/renderengine/skia/filters)
+include_directories(libs/renderengine/threaded)
+include_directories(libs/sensor/include)
+include_directories(libs/sensor/include/sensor)
+include_directories(libs/sensorprivacy/include)
+include_directories(libs/sensorprivacy/include/sensorprivacy)
+include_directories(libs/shaders/include)
+include_directories(libs/shaders/include/shaders)
+include_directories(libs/tonemap/include)
+include_directories(libs/tonemap/include/tonemap)
+include_directories(libs/ui/include)
+include_directories(libs/ui/include/ui)
+include_directories(libs/ui/include/ui/fuzzer)
+include_directories(libs/ui/include_mock)
+include_directories(libs/ui/include_mock/ui)
+include_directories(libs/ui/include_private)
+include_directories(libs/ui/include_private/ui)
+include_directories(libs/ui/include_types)
+include_directories(libs/ui/include_types/ui)
+include_directories(libs/ui/include_vndk)
+include_directories(libs/ui/include_vndk/ui)
+include_directories(libs/ui/tests/mock)
+include_directories(libs/vibrator/include)
+include_directories(libs/vibrator/include/vibrator)
+include_directories(libs/vr/libbroadcastring/include)
+include_directories(libs/vr/libbroadcastring/include/libbroadcastring)
+include_directories(libs/vr/libbufferhub/include)
+include_directories(libs/vr/libbufferhub/include/private)
+include_directories(libs/vr/libbufferhub/include/private/dvr)
+include_directories(libs/vr/libbufferhubqueue/include)
+include_directories(libs/vr/libbufferhubqueue/include/private)
+include_directories(libs/vr/libbufferhubqueue/include/private/dvr)
+include_directories(libs/vr/libdisplay/include)
+include_directories(libs/vr/libdisplay/include/private)
+include_directories(libs/vr/libdisplay/include/private/dvr)
+include_directories(libs/vr/libdvr)
+include_directories(libs/vr/libdvr/include)
+include_directories(libs/vr/libdvr/include/dvr)
+include_directories(libs/vr/libdvr/tests)
+include_directories(libs/vr/libdvrcommon/include)
+include_directories(libs/vr/libdvrcommon/include/private)
+include_directories(libs/vr/libdvrcommon/include/private/dvr)
+include_directories(libs/vr/libdvrcommon/include/private/dvr/test)
+include_directories(libs/vr/libpdx/fuzz)
+include_directories(libs/vr/libpdx/private)
+include_directories(libs/vr/libpdx/private/pdx)
+include_directories(libs/vr/libpdx/private/pdx/rpc)
+include_directories(libs/vr/libpdx_default_transport/private)
+include_directories(libs/vr/libpdx_default_transport/private/pdx)
+include_directories(libs/vr/libpdx_default_transport/private/pdx/default_transport)
+include_directories(libs/vr/libpdx_default_transport/private/servicefs)
+include_directories(libs/vr/libpdx_default_transport/private/servicefs/pdx)
+include_directories(libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport)
+include_directories(libs/vr/libpdx_default_transport/private/uds)
+include_directories(libs/vr/libpdx_default_transport/private/uds/pdx)
+include_directories(libs/vr/libpdx_default_transport/private/uds/pdx/default_transport)
+include_directories(libs/vr/libpdx_uds/private)
+include_directories(libs/vr/libpdx_uds/private/uds)
+include_directories(libs/vr/libperformance/include)
+include_directories(libs/vr/libperformance/include/dvr)
+include_directories(libs/vr/libperformance/include/private)
+include_directories(libs/vr/libperformance/include/private/dvr)
+include_directories(libs/vr/libvr_manager/include)
+include_directories(libs/vr/libvr_manager/include/private)
+include_directories(libs/vr/libvr_manager/include/private/dvr)
+include_directories(libs/vr/libvrsensor/include)
+include_directories(libs/vr/libvrsensor/include/dvr)
+include_directories(libs/vr/libvrsensor/include/private)
+include_directories(libs/vr/libvrsensor/include/private/dvr)
+include_directories(opengl/include)
+include_directories(opengl/include/EGL)
+include_directories(opengl/include/ETC1)
+include_directories(opengl/include/GLES)
+include_directories(opengl/include/GLES2)
+include_directories(opengl/include/GLES3)
+include_directories(opengl/include/KHR)
+include_directories(opengl/libs)
+include_directories(opengl/libs/EGL)
+include_directories(opengl/libs/EGL/include)
+include_directories(opengl/libs/EGL/include/private)
+include_directories(opengl/libs/EGL/include/private/EGL)
+include_directories(opengl/tests/angeles)
+include_directories(opengl/tests/angeles/include)
+include_directories(opengl/tests/angeles/include/GLES)
+include_directories(opengl/tests/hwc)
+include_directories(opengl/tests/lib/include)
+include_directories(PaxHeaders.X)
+include_directories(services/automotive/display/include)
+include_directories(services/batteryservice)
+include_directories(services/batteryservice/include)
+include_directories(services/batteryservice/include/batteryservice)
+include_directories(services/displayservice/include)
+include_directories(services/displayservice/include/displayservice)
+include_directories(services/gpuservice/gpumem/include)
+include_directories(services/gpuservice/gpumem/include/gpumem)
+include_directories(services/gpuservice/gpustats/include)
+include_directories(services/gpuservice/gpustats/include/gpustats)
+include_directories(services/gpuservice/gpuwork/bpfprogs/include)
+include_directories(services/gpuservice/gpuwork/bpfprogs/include/gpuwork)
+include_directories(services/gpuservice/gpuwork/include)
+include_directories(services/gpuservice/gpuwork/include/gpuwork)
+include_directories(services/gpuservice/include)
+include_directories(services/gpuservice/include/gpuservice)
+include_directories(services/gpuservice/tests/unittests)
+include_directories(services/gpuservice/tracing/include)
+include_directories(services/gpuservice/tracing/include/tracing)
+include_directories(services/inputflinger)
+include_directories(services/inputflinger/dispatcher)
+include_directories(services/inputflinger/dispatcher/include)
+include_directories(services/inputflinger/host)
+include_directories(services/inputflinger/include)
+include_directories(services/inputflinger/reader)
+include_directories(services/inputflinger/reader/controller)
+include_directories(services/inputflinger/reader/include)
+include_directories(services/inputflinger/reader/mapper)
+include_directories(services/inputflinger/reader/mapper/accumulator)
+include_directories(services/inputflinger/reporter)
+include_directories(services/inputflinger/tests)
+include_directories(services/memtrackproxy/include)
+include_directories(services/memtrackproxy/include/memtrackproxy)
+include_directories(services/powermanager/include)
+include_directories(services/powermanager/include/android)
+include_directories(services/schedulerservice/include)
+include_directories(services/schedulerservice/include/schedulerservice)
+include_directories(services/sensorservice)
+include_directories(services/sensorservice/hidl)
+include_directories(services/sensorservice/hidl/include)
+include_directories(services/sensorservice/hidl/include/sensorservicehidl)
+include_directories(services/stats/include)
+include_directories(services/stats/include/stats)
+include_directories(services/surfaceflinger)
+include_directories(services/surfaceflinger/CompositionEngine/include)
+include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine)
+include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine/impl)
+include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner)
+include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine/mock)
+include_directories(services/surfaceflinger/CompositionEngine/tests)
+include_directories(services/surfaceflinger/DisplayHardware)
+include_directories(services/surfaceflinger/Effects)
+include_directories(services/surfaceflinger/EventLog)
+include_directories(services/surfaceflinger/FrameTimeline)
+include_directories(services/surfaceflinger/FrameTracer)
+include_directories(services/surfaceflinger/fuzzer)
+include_directories(services/surfaceflinger/layerproto/include)
+include_directories(services/surfaceflinger/layerproto/include/layerproto)
+include_directories(services/surfaceflinger/Scheduler)
+include_directories(services/surfaceflinger/Scheduler/include)
+include_directories(services/surfaceflinger/Scheduler/include/scheduler)
+include_directories(services/surfaceflinger/Scheduler/tests)
+include_directories(services/surfaceflinger/tests)
+include_directories(services/surfaceflinger/tests/fakehwc)
+include_directories(services/surfaceflinger/tests/unittests)
+include_directories(services/surfaceflinger/tests/unittests/fake)
+include_directories(services/surfaceflinger/tests/unittests/mock)
+include_directories(services/surfaceflinger/tests/unittests/mock/DisplayHardware)
+include_directories(services/surfaceflinger/tests/unittests/mock/system/window)
+include_directories(services/surfaceflinger/tests/utils)
+include_directories(services/surfaceflinger/TimeStats)
+include_directories(services/surfaceflinger/TimeStats/timestatsproto/include)
+include_directories(services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto)
+include_directories(services/surfaceflinger/Tracing)
+include_directories(services/surfaceflinger/Tracing/tools)
+include_directories(services/utils/include)
+include_directories(services/utils/include/serviceutils)
+include_directories(services/vibratorservice/include)
+include_directories(services/vibratorservice/include/vibratorservice)
+include_directories(services/vibratorservice/test)
+include_directories(services/vr/bufferhubd/include)
+include_directories(services/vr/bufferhubd/include/private)
+include_directories(services/vr/bufferhubd/include/private/dvr)
+include_directories(services/vr/hardware_composer)
+include_directories(services/vr/hardware_composer/aidl/android/dvr)
+include_directories(services/vr/hardware_composer/impl)
+include_directories(services/vr/performanced)
+include_directories(services/vr/virtual_touchpad)
+include_directories(services/vr/virtual_touchpad/include)
+include_directories(services/vr/virtual_touchpad/include/dvr)
+include_directories(vulkan/include)
+include_directories(vulkan/include/hardware)
+include_directories(vulkan/include/vulkan)
+include_directories(vulkan/libvulkan)
+include_directories(vulkan/nulldrv)
+include_directories(vulkan/vkjson)
+
+add_executable(native_android13_security_release
+        cmds/atrace/atrace.cpp
+        cmds/bugreport/bugreport.cpp
+        cmds/bugreportz/bugreportz.cpp
+        cmds/bugreportz/bugreportz.h
+        cmds/bugreportz/bugreportz_test.cpp
+        cmds/bugreportz/main.cpp
+        cmds/cmd/fuzzer/cmd_fuzzer.cpp
+        cmds/cmd/cmd.cpp
+        cmds/cmd/cmd.h
+        cmds/cmd/main.cpp
+        cmds/dumpstate/tests/dumpstate_smoke_test.cpp
+        cmds/dumpstate/tests/dumpstate_test.cpp
+        cmds/dumpstate/tests/dumpstate_test_fixture.cpp
+        cmds/dumpstate/DumpPool.cpp
+        cmds/dumpstate/DumpPool.h
+        cmds/dumpstate/dumpstate.cpp
+        cmds/dumpstate/dumpstate.h
+        cmds/dumpstate/DumpstateInternal.cpp
+        cmds/dumpstate/DumpstateInternal.h
+        cmds/dumpstate/DumpstateService.cpp
+        cmds/dumpstate/DumpstateService.h
+        cmds/dumpstate/DumpstateUtil.cpp
+        cmds/dumpstate/DumpstateUtil.h
+        cmds/dumpstate/main.cpp
+        cmds/dumpstate/TaskQueue.cpp
+        cmds/dumpstate/TaskQueue.h
+        cmds/dumpsys/tests/dumpsys_test.cpp
+        cmds/dumpsys/dumpsys.cpp
+        cmds/dumpsys/dumpsys.h
+        cmds/dumpsys/main.cpp
+        cmds/flatland/Composers.cpp
+        cmds/flatland/Flatland.h
+        cmds/flatland/GLHelper.cpp
+        cmds/flatland/GLHelper.h
+        cmds/flatland/Main.cpp
+        cmds/flatland/Renderers.cpp
+        cmds/idlcli/vibrator/CommandAlwaysOnDisable.cpp
+        cmds/idlcli/vibrator/CommandAlwaysOnEnable.cpp
+        cmds/idlcli/vibrator/CommandCompose.cpp
+        cmds/idlcli/vibrator/CommandComposePwle.cpp
+        cmds/idlcli/vibrator/CommandGetBandwidthAmplitudeMap.cpp
+        cmds/idlcli/vibrator/CommandGetCapabilities.cpp
+        cmds/idlcli/vibrator/CommandGetCompositionDelayMax.cpp
+        cmds/idlcli/vibrator/CommandGetCompositionSizeMax.cpp
+        cmds/idlcli/vibrator/CommandGetFrequencyMinimum.cpp
+        cmds/idlcli/vibrator/CommandGetFrequencyResolution.cpp
+        cmds/idlcli/vibrator/CommandGetPrimitiveDuration.cpp
+        cmds/idlcli/vibrator/CommandGetPwleCompositionSizeMax.cpp
+        cmds/idlcli/vibrator/CommandGetPwlePrimitiveDurationMax.cpp
+        cmds/idlcli/vibrator/CommandGetQFactor.cpp
+        cmds/idlcli/vibrator/CommandGetResonantFrequency.cpp
+        cmds/idlcli/vibrator/CommandGetSupportedAlwaysOnEffects.cpp
+        cmds/idlcli/vibrator/CommandGetSupportedBraking.cpp
+        cmds/idlcli/vibrator/CommandGetSupportedEffects.cpp
+        cmds/idlcli/vibrator/CommandGetSupportedPrimitives.cpp
+        cmds/idlcli/vibrator/CommandOff.cpp
+        cmds/idlcli/vibrator/CommandOn.cpp
+        cmds/idlcli/vibrator/CommandPerform.cpp
+        cmds/idlcli/vibrator/CommandSetAmplitude.cpp
+        cmds/idlcli/vibrator/CommandSetExternalControl.cpp
+        cmds/idlcli/vibrator/CommandSupportsAmplitudeControl.cpp
+        cmds/idlcli/vibrator/CommandSupportsExternalControl.cpp
+        cmds/idlcli/CommandVibrator.cpp
+        cmds/idlcli/IdlCli.h
+        cmds/idlcli/main.cpp
+        cmds/idlcli/utils.h
+        cmds/idlcli/vibrator.h
+        cmds/installd/tests/binder_test_utils.h
+        cmds/installd/tests/installd_cache_test.cpp
+        cmds/installd/tests/installd_dexopt_test.cpp
+        cmds/installd/tests/installd_file_test.cpp
+        cmds/installd/tests/installd_otapreopt_test.cpp
+        cmds/installd/tests/installd_service_test.cpp
+        cmds/installd/tests/installd_utils_test.cpp
+        cmds/installd/tests/test_utils.h
+        cmds/installd/CacheItem.cpp
+        cmds/installd/CacheItem.h
+        cmds/installd/CacheTracker.cpp
+        cmds/installd/CacheTracker.h
+        cmds/installd/CrateManager.cpp
+        cmds/installd/CrateManager.h
+        cmds/installd/dexopt.cpp
+        cmds/installd/dexopt.h
+        cmds/installd/dexopt_return_codes.h
+        cmds/installd/execv_helper.cpp
+        cmds/installd/execv_helper.h
+        cmds/installd/file_parsing.h
+        cmds/installd/globals.cpp
+        cmds/installd/globals.h
+        cmds/installd/installd.cpp
+        cmds/installd/installd_constants.h
+        cmds/installd/installd_deps.h
+        cmds/installd/InstalldNativeService.cpp
+        cmds/installd/InstalldNativeService.h
+        cmds/installd/MatchExtensionGen.h
+        cmds/installd/otapreopt.cpp
+        cmds/installd/otapreopt_chroot.cpp
+        cmds/installd/otapreopt_parameters.cpp
+        cmds/installd/otapreopt_parameters.h
+        cmds/installd/otapreopt_utils.cpp
+        cmds/installd/otapreopt_utils.h
+        cmds/installd/QuotaUtils.cpp
+        cmds/installd/QuotaUtils.h
+        cmds/installd/restorable_file.cpp
+        cmds/installd/restorable_file.h
+        cmds/installd/run_dex2oat.cpp
+        cmds/installd/run_dex2oat.h
+        cmds/installd/run_dex2oat_test.cpp
+        cmds/installd/system_properties.h
+        cmds/installd/unique_file.cpp
+        cmds/installd/unique_file.h
+        cmds/installd/utils.cpp
+        cmds/installd/utils.h
+        cmds/installd/utils_default.cpp
+        cmds/installd/view_compiler.cpp
+        cmds/installd/view_compiler.h
+        cmds/ip-up-vpn/ip-up-vpn.c
+        cmds/lshal/libprocpartition/include/procpartition/procpartition.h
+        cmds/lshal/libprocpartition/procpartition.cpp
+        cmds/lshal/Command.h
+        cmds/lshal/DebugCommand.cpp
+        cmds/lshal/DebugCommand.h
+        cmds/lshal/HelpCommand.cpp
+        cmds/lshal/HelpCommand.h
+        cmds/lshal/ListCommand.cpp
+        cmds/lshal/ListCommand.h
+        cmds/lshal/Lshal.cpp
+        cmds/lshal/Lshal.h
+        cmds/lshal/main.cpp
+        cmds/lshal/NullableOStream.h
+        cmds/lshal/ParentDebugInfoLevel.h
+        cmds/lshal/PipeRelay.cpp
+        cmds/lshal/PipeRelay.h
+        cmds/lshal/TableEntry.cpp
+        cmds/lshal/TableEntry.h
+        cmds/lshal/test.cpp
+        cmds/lshal/TextTable.cpp
+        cmds/lshal/TextTable.h
+        cmds/lshal/Timeout.h
+        cmds/lshal/utils.cpp
+        cmds/lshal/utils.h
+        cmds/lshal/WaitCommand.cpp
+        cmds/lshal/WaitCommand.h
+        cmds/rawbu/backup.cpp
+        cmds/rss_hwm_reset/rss_hwm_reset.cc
+        cmds/service/service.cpp
+        cmds/servicemanager/Access.cpp
+        cmds/servicemanager/Access.h
+        cmds/servicemanager/main.cpp
+        cmds/servicemanager/ServiceManager.cpp
+        cmds/servicemanager/ServiceManager.h
+        cmds/servicemanager/test_sm.cpp
+        cmds/surfacereplayer/replayer/BufferQueueScheduler.cpp
+        cmds/surfacereplayer/replayer/BufferQueueScheduler.h
+        cmds/surfacereplayer/replayer/Color.h
+        cmds/surfacereplayer/replayer/Event.cpp
+        cmds/surfacereplayer/replayer/Event.h
+        cmds/surfacereplayer/replayer/Main.cpp
+        cmds/surfacereplayer/replayer/Replayer.cpp
+        cmds/surfacereplayer/replayer/Replayer.h
+        headers/media_plugin/media/cas/CasAPI.h
+        headers/media_plugin/media/cas/DescramblerAPI.h
+        headers/media_plugin/media/drm/DrmAPI.h
+        headers/media_plugin/media/editor/II420ColorConverter.h
+        headers/media_plugin/media/hardware/CryptoAPI.h
+        headers/media_plugin/media/hardware/HardwareAPI.h
+        headers/media_plugin/media/hardware/HDCPAPI.h
+        headers/media_plugin/media/hardware/MetadataBufferType.h
+        headers/media_plugin/media/hardware/OMXPluginBase.h
+        headers/media_plugin/media/hardware/VideoAPI.h
+        headers/media_plugin/media/openmax/OMX_AsString.h
+        headers/media_plugin/media/openmax/OMX_Audio.h
+        headers/media_plugin/media/openmax/OMX_AudioExt.h
+        headers/media_plugin/media/openmax/OMX_Component.h
+        headers/media_plugin/media/openmax/OMX_ContentPipe.h
+        headers/media_plugin/media/openmax/OMX_Core.h
+        headers/media_plugin/media/openmax/OMX_Image.h
+        headers/media_plugin/media/openmax/OMX_Index.h
+        headers/media_plugin/media/openmax/OMX_IndexExt.h
+        headers/media_plugin/media/openmax/OMX_IVCommon.h
+        headers/media_plugin/media/openmax/OMX_Other.h
+        headers/media_plugin/media/openmax/OMX_Types.h
+        headers/media_plugin/media/openmax/OMX_Video.h
+        headers/media_plugin/media/openmax/OMX_VideoExt.h
+        include/android/asset_manager.h
+        include/android/asset_manager_jni.h
+        include/android/bitmap.h
+        include/android/choreographer.h
+        include/android/configuration.h
+        include/android/font.h
+        include/android/font_matcher.h
+        include/android/hardware_buffer_jni.h
+        include/android/imagedecoder.h
+        include/android/input.h
+        include/android/keycodes.h
+        include/android/looper.h
+        include/android/multinetwork.h
+        include/android/native_activity.h
+        include/android/native_window_jni.h
+        include/android/obb.h
+        include/android/performance_hint.h
+        include/android/permission_manager.h
+        include/android/sensor.h
+        include/android/sharedmem.h
+        include/android/sharedmem_jni.h
+        include/android/storage_manager.h
+        include/android/surface_control.h
+        include/android/surface_texture.h
+        include/android/surface_texture_jni.h
+        include/android/system_fonts.h
+        include/android/thermal.h
+        include/android/trace.h
+        include/android/window.h
+        include/attestation/HmacKeyManager.h
+        include/audiomanager/AudioManager.h
+        include/audiomanager/IAudioManager.h
+        include/diskusage/dirsize.h
+        include/ftl/details/array_traits.h
+        include/ftl/details/cast.h
+        include/ftl/details/concat.h
+        include/ftl/details/future.h
+        include/ftl/cast.h
+        include/ftl/concat.h
+        include/ftl/enum.h
+        include/ftl/fake_guard.h
+        include/ftl/flags.h
+        include/ftl/future.h
+        include/ftl/initializer_list.h
+        include/ftl/small_map.h
+        include/ftl/small_vector.h
+        include/ftl/static_vector.h
+        include/ftl/string.h
+        include/input/DisplayViewport.h
+        include/input/Input.h
+        include/input/InputDevice.h
+        include/input/InputEventLabels.h
+        include/input/InputTransport.h
+        include/input/Keyboard.h
+        include/input/KeyCharacterMap.h
+        include/input/KeyLayoutMap.h
+        include/input/PrintTools.h
+        include/input/PropertyMap.h
+        include/input/TouchVideoFrame.h
+        include/input/VelocityControl.h
+        include/input/VelocityTracker.h
+        include/input/VirtualKeyMap.h
+        include/powermanager/PowerHalController.h
+        include/powermanager/PowerHalLoader.h
+        include/powermanager/PowerHalWrapper.h
+        include/powermanager/PowerManager.h
+        include/private/performance_hint_private.h
+        include/private/surface_control_private.h
+        include/vr/vr_manager/vr_manager.h
+        libs/adbd_auth/include/adbd_auth.h
+        libs/adbd_auth/adbd_auth.cpp
+        libs/android_runtime_lazy/include/android_runtime/AndroidRuntime.h
+        libs/android_runtime_lazy/include/android_os_Parcel.h
+        libs/android_runtime_lazy/include/android_util_Binder.h
+        libs/android_runtime_lazy/android_runtime_lazy.cpp
+        libs/arect/include/android/rect.h
+        libs/attestation/tests/HmacKeyManager_test.cpp
+        libs/attestation/HmacKeyManager.cpp
+        libs/battery/LongArrayMultiStateCounter.cpp
+        libs/battery/LongArrayMultiStateCounter.h
+        libs/battery/LongArrayMultiStateCounterTest.cpp
+        libs/battery/MultiStateCounter.h
+        libs/battery/MultiStateCounterTest.cpp
+        libs/binder/include/binder/Binder.h
+        libs/binder/include/binder/BinderService.h
+        libs/binder/include/binder/BpBinder.h
+        libs/binder/include/binder/Enums.h
+        libs/binder/include/binder/IBinder.h
+        libs/binder/include/binder/IInterface.h
+        libs/binder/include/binder/IMemory.h
+        libs/binder/include/binder/IPCThreadState.h
+        libs/binder/include/binder/IPermissionController.h
+        libs/binder/include/binder/IResultReceiver.h
+        libs/binder/include/binder/IServiceManager.h
+        libs/binder/include/binder/IShellCallback.h
+        libs/binder/include/binder/LazyServiceRegistrar.h
+        libs/binder/include/binder/MemoryBase.h
+        libs/binder/include/binder/MemoryDealer.h
+        libs/binder/include/binder/MemoryHeapBase.h
+        libs/binder/include/binder/Parcel.h
+        libs/binder/include/binder/Parcelable.h
+        libs/binder/include/binder/ParcelableHolder.h
+        libs/binder/include/binder/ParcelFileDescriptor.h
+        libs/binder/include/binder/PermissionCache.h
+        libs/binder/include/binder/PermissionController.h
+        libs/binder/include/binder/PersistableBundle.h
+        libs/binder/include/binder/ProcessState.h
+        libs/binder/include/binder/RpcCertificateFormat.h
+        libs/binder/include/binder/RpcKeyFormat.h
+        libs/binder/include/binder/RpcServer.h
+        libs/binder/include/binder/RpcSession.h
+        libs/binder/include/binder/RpcTransport.h
+        libs/binder/include/binder/RpcTransportRaw.h
+        libs/binder/include/binder/SafeInterface.h
+        libs/binder/include/binder/Stability.h
+        libs/binder/include/binder/Status.h
+        libs/binder/include/binder/TextOutput.h
+        libs/binder/include_activitymanager/binder/ActivityManager.h
+        libs/binder/include_activitymanager/binder/IActivityManager.h
+        libs/binder/include_activitymanager/binder/IUidObserver.h
+        libs/binder/include_batterystats/batterystats/IBatteryStats.h
+        libs/binder/include_processinfo/processinfo/IProcessInfoService.h
+        libs/binder/include_processinfo/processinfo/ProcessInfoService.h
+        libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp
+        libs/binder/include_tls/binder/RpcAuth.h
+        libs/binder/include_tls/binder/RpcCertificateVerifier.h
+        libs/binder/include_tls/binder/RpcTlsUtils.h
+        libs/binder/include_tls/binder/RpcTransportTls.h
+        libs/binder/ndk/include_cpp/android/binder_auto_utils.h
+        libs/binder/ndk/include_cpp/android/binder_enums.h
+        libs/binder/ndk/include_cpp/android/binder_interface_utils.h
+        libs/binder/ndk/include_cpp/android/binder_internal_logging.h
+        libs/binder/ndk/include_cpp/android/binder_parcel_utils.h
+        libs/binder/ndk/include_cpp/android/binder_parcelable_utils.h
+        libs/binder/ndk/include_cpp/android/binder_to_string.h
+        libs/binder/ndk/include_ndk/android/binder_ibinder.h
+        libs/binder/ndk/include_ndk/android/binder_ibinder_jni.h
+        libs/binder/ndk/include_ndk/android/binder_parcel.h
+        libs/binder/ndk/include_ndk/android/binder_parcel_jni.h
+        libs/binder/ndk/include_ndk/android/binder_status.h
+        libs/binder/ndk/include_platform/android/binder_ibinder_platform.h
+        libs/binder/ndk/include_platform/android/binder_libbinder.h
+        libs/binder/ndk/include_platform/android/binder_manager.h
+        libs/binder/ndk/include_platform/android/binder_parcel_platform.h
+        libs/binder/ndk/include_platform/android/binder_process.h
+        libs/binder/ndk/include_platform/android/binder_shell.h
+        libs/binder/ndk/include_platform/android/binder_stability.h
+        libs/binder/ndk/tests/include/iface/iface.h
+        libs/binder/ndk/tests/binderVendorDoubleLoadTest.cpp
+        libs/binder/ndk/tests/iface.cpp
+        libs/binder/ndk/tests/libbinder_ndk_unit_test.cpp
+        libs/binder/ndk/ibinder.cpp
+        libs/binder/ndk/ibinder_internal.h
+        libs/binder/ndk/ibinder_jni.cpp
+        libs/binder/ndk/parcel.cpp
+        libs/binder/ndk/parcel_internal.h
+        libs/binder/ndk/parcel_jni.cpp
+        libs/binder/ndk/process.cpp
+        libs/binder/ndk/service_manager.cpp
+        libs/binder/ndk/stability.cpp
+        libs/binder/ndk/status.cpp
+        libs/binder/ndk/status_internal.h
+        libs/binder/rust/sys/BinderBindings.hpp
+        libs/binder/rust/tests/binderRustNdkInteropTest.cpp
+        libs/binder/rust/tests/serialization.cpp
+        libs/binder/rust/tests/serialization.hpp
+        libs/binder/tests/include_tls_test_utils/binder/RpcTlsTestUtils.h
+        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/libbinder_driver.h
+        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/libbinder_ndk_driver.h
+        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/random_fd.h
+        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/random_parcel.h
+        libs/binder/tests/parcel_fuzzer/binder.cpp
+        libs/binder/tests/parcel_fuzzer/binder.h
+        libs/binder/tests/parcel_fuzzer/binder_ndk.cpp
+        libs/binder/tests/parcel_fuzzer/binder_ndk.h
+        libs/binder/tests/parcel_fuzzer/hwbinder.cpp
+        libs/binder/tests/parcel_fuzzer/hwbinder.h
+        libs/binder/tests/parcel_fuzzer/libbinder_driver.cpp
+        libs/binder/tests/parcel_fuzzer/libbinder_ndk_driver.cpp
+        libs/binder/tests/parcel_fuzzer/main.cpp
+        libs/binder/tests/parcel_fuzzer/parcel_fuzzer.h
+        libs/binder/tests/parcel_fuzzer/random_fd.cpp
+        libs/binder/tests/parcel_fuzzer/random_parcel.cpp
+        libs/binder/tests/parcel_fuzzer/util.h
+        libs/binder/tests/rpc_fuzzer/main.cpp
+        libs/binder/tests/unit_fuzzers/BinderFuzz.cpp
+        libs/binder/tests/unit_fuzzers/BinderFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/BpBinderFuzz.cpp
+        libs/binder/tests/unit_fuzzers/BpBinderFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/BufferedTextOutputFuzz.cpp
+        libs/binder/tests/unit_fuzzers/commonFuzzHelpers.h
+        libs/binder/tests/unit_fuzzers/IBinderFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/MemoryDealerFuzz.cpp
+        libs/binder/tests/unit_fuzzers/PersistableBundleFuzz.cpp
+        libs/binder/tests/unit_fuzzers/PersistableBundleFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/StabilityFuzz.cpp
+        libs/binder/tests/unit_fuzzers/StabilityFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/StatusFuzz.cpp
+        libs/binder/tests/unit_fuzzers/StatusFuzzFunctions.h
+        libs/binder/tests/unit_fuzzers/TextOutputFuzz.cpp
+        libs/binder/tests/binderAbiHelper.h
+        libs/binder/tests/binderAllocationLimits.cpp
+        libs/binder/tests/binderBinderUnitTest.cpp
+        libs/binder/tests/binderClearBufTest.cpp
+        libs/binder/tests/binderDriverInterfaceTest.cpp
+        libs/binder/tests/binderHostDeviceTest.cpp
+        libs/binder/tests/binderHostDeviceTestService.cpp
+        libs/binder/tests/binderLibTest.cpp
+        libs/binder/tests/binderMemoryHeapBaseUnitTest.cpp
+        libs/binder/tests/binderParcelBenchmark.cpp
+        libs/binder/tests/binderParcelUnitTest.cpp
+        libs/binder/tests/binderRpcBenchmark.cpp
+        libs/binder/tests/binderRpcTest.cpp
+        libs/binder/tests/binderRpcWireProtocolTest.cpp
+        libs/binder/tests/binderSafeInterfaceTest.cpp
+        libs/binder/tests/binderStabilityTest.cpp
+        libs/binder/tests/binderStatusUnitTest.cpp
+        libs/binder/tests/binderTextOutputTest.cpp
+        libs/binder/tests/binderThroughputTest.cpp
+        libs/binder/tests/binderUtilsHostTest.cpp
+        libs/binder/tests/RpcTlsTestUtils.cpp
+        libs/binder/tests/RpcTlsUtilsTest.cpp
+        libs/binder/tests/schd-dbg.cpp
+        libs/binder/ActivityManager.cpp
+        libs/binder/Binder.cpp
+        libs/binder/binder_module.h
+        libs/binder/BpBinder.cpp
+        libs/binder/BufferedTextOutput.cpp
+        libs/binder/BufferedTextOutput.h
+        libs/binder/Debug.cpp
+        libs/binder/Debug.h
+        libs/binder/FdTrigger.cpp
+        libs/binder/FdTrigger.h
+        libs/binder/IActivityManager.cpp
+        libs/binder/IBatteryStats.cpp
+        libs/binder/IInterface.cpp
+        libs/binder/IMemory.cpp
+        libs/binder/IPCThreadState.cpp
+        libs/binder/IPermissionController.cpp
+        libs/binder/IProcessInfoService.cpp
+        libs/binder/IResultReceiver.cpp
+        libs/binder/IServiceManager.cpp
+        libs/binder/IShellCallback.cpp
+        libs/binder/IUidObserver.cpp
+        libs/binder/LazyServiceRegistrar.cpp
+        libs/binder/libbinder_rpc_unstable.cpp
+        libs/binder/MemoryBase.cpp
+        libs/binder/MemoryDealer.cpp
+        libs/binder/MemoryHeapBase.cpp
+        libs/binder/Parcel.cpp
+        libs/binder/ParcelableHolder.cpp
+        libs/binder/ParcelFileDescriptor.cpp
+        libs/binder/ParcelValTypes.h
+        libs/binder/PermissionCache.cpp
+        libs/binder/PermissionController.cpp
+        libs/binder/PersistableBundle.cpp
+        libs/binder/ProcessInfoService.cpp
+        libs/binder/ProcessState.cpp
+        libs/binder/RpcServer.cpp
+        libs/binder/RpcSession.cpp
+        libs/binder/RpcSocketAddress.h
+        libs/binder/RpcState.cpp
+        libs/binder/RpcState.h
+        libs/binder/RpcTlsUtils.cpp
+        libs/binder/RpcTransportRaw.cpp
+        libs/binder/RpcTransportTls.cpp
+        libs/binder/RpcWireFormat.h
+        libs/binder/servicedispatcher.cpp
+        libs/binder/ServiceManagerHost.cpp
+        libs/binder/ServiceManagerHost.h
+        libs/binder/Stability.cpp
+        libs/binder/Static.cpp
+        libs/binder/Static.h
+        libs/binder/Status.cpp
+        libs/binder/TextOutput.cpp
+        libs/binder/Utils.cpp
+        libs/binder/Utils.h
+        libs/binder/UtilsHost.cpp
+        libs/binder/UtilsHost.h
+        libs/binder/vm_sockets.h
+        libs/binderdebug/include/binderdebug/BinderDebug.h
+        libs/binderdebug/tests/binderdebug_test.cpp
+        libs/binderdebug/BinderDebug.cpp
+        libs/binderthreadstate/include/binderthreadstate/CallerUtils.h
+        libs/binderthreadstate/test.cpp
+        libs/bufferqueueconverter/include/bufferqueueconverter/BufferQueueConverter.h
+        libs/bufferqueueconverter/BufferQueueConverter.cpp
+        libs/cputimeinstate/cputimeinstate.cpp
+        libs/cputimeinstate/cputimeinstate.h
+        libs/cputimeinstate/testtimeinstate.cpp
+        libs/diskusage/dirsize.c
+        libs/dumputils/include/dumputils/dump_utils.h
+        libs/dumputils/dump_utils.cpp
+        libs/fakeservicemanager/ServiceManager.cpp
+        libs/fakeservicemanager/ServiceManager.h
+        libs/fakeservicemanager/test_sm.cpp
+        libs/ftl/cast_test.cpp
+        libs/ftl/concat_test.cpp
+        libs/ftl/enum_test.cpp
+        libs/ftl/fake_guard_test.cpp
+        libs/ftl/flags_test.cpp
+        libs/ftl/future_test.cpp
+        libs/ftl/small_map_test.cpp
+        libs/ftl/small_vector_test.cpp
+        libs/ftl/static_vector_test.cpp
+        libs/ftl/string_test.cpp
+        libs/gralloc/types/fuzzer/gralloctypes.cpp
+        libs/gralloc/types/fuzzer/gralloctypes.h
+        libs/gralloc/types/fuzzer/main.cpp
+        libs/gralloc/types/fuzzer/util.cpp
+        libs/gralloc/types/fuzzer/util.h
+        libs/gralloc/types/include/gralloctypes/Gralloc4.h
+        libs/gralloc/types/tests/Gralloc4_test.cpp
+        libs/gralloc/types/Gralloc4.cpp
+        libs/graphicsenv/include/graphicsenv/GpuStatsInfo.h
+        libs/graphicsenv/include/graphicsenv/GraphicsEnv.h
+        libs/graphicsenv/include/graphicsenv/IGpuService.h
+        libs/graphicsenv/GpuStatsInfo.cpp
+        libs/graphicsenv/GraphicsEnv.cpp
+        libs/graphicsenv/IGpuService.cpp
+        libs/gui/bufferqueue/1.0/B2HProducerListener.cpp
+        libs/gui/bufferqueue/1.0/Conversion.cpp
+        libs/gui/bufferqueue/1.0/H2BGraphicBufferProducer.cpp
+        libs/gui/bufferqueue/1.0/H2BProducerListener.cpp
+        libs/gui/bufferqueue/1.0/WProducerListener.cpp
+        libs/gui/bufferqueue/2.0/B2HGraphicBufferProducer.cpp
+        libs/gui/bufferqueue/2.0/B2HProducerListener.cpp
+        libs/gui/bufferqueue/2.0/H2BGraphicBufferProducer.cpp
+        libs/gui/bufferqueue/2.0/H2BProducerListener.cpp
+        libs/gui/bufferqueue/2.0/types.cpp
+        libs/gui/include/gui/bufferqueue/1.0/B2HProducerListener.h
+        libs/gui/include/gui/bufferqueue/1.0/Conversion.h
+        libs/gui/include/gui/bufferqueue/1.0/H2BGraphicBufferProducer.h
+        libs/gui/include/gui/bufferqueue/1.0/H2BProducerListener.h
+        libs/gui/include/gui/bufferqueue/1.0/WGraphicBufferProducer.h
+        libs/gui/include/gui/bufferqueue/1.0/WProducerListener.h
+        libs/gui/include/gui/bufferqueue/2.0/B2HGraphicBufferProducer.h
+        libs/gui/include/gui/bufferqueue/2.0/B2HProducerListener.h
+        libs/gui/include/gui/bufferqueue/2.0/H2BGraphicBufferProducer.h
+        libs/gui/include/gui/bufferqueue/2.0/H2BProducerListener.h
+        libs/gui/include/gui/bufferqueue/2.0/types.h
+        libs/gui/include/gui/mock/GraphicBufferConsumer.h
+        libs/gui/include/gui/mock/GraphicBufferProducer.h
+        libs/gui/include/gui/test/CallbackUtils.h
+        libs/gui/include/gui/view/Surface.h
+        libs/gui/include/gui/BLASTBufferQueue.h
+        libs/gui/include/gui/BufferHubConsumer.h
+        libs/gui/include/gui/BufferHubProducer.h
+        libs/gui/include/gui/BufferItem.h
+        libs/gui/include/gui/BufferItemConsumer.h
+        libs/gui/include/gui/BufferQueue.h
+        libs/gui/include/gui/BufferQueueConsumer.h
+        libs/gui/include/gui/BufferQueueCore.h
+        libs/gui/include/gui/BufferQueueDefs.h
+        libs/gui/include/gui/BufferQueueProducer.h
+        libs/gui/include/gui/BufferSlot.h
+        libs/gui/include/gui/constants.h
+        libs/gui/include/gui/ConsumerBase.h
+        libs/gui/include/gui/CpuConsumer.h
+        libs/gui/include/gui/DebugEGLImageTracker.h
+        libs/gui/include/gui/DisplayCaptureArgs.h
+        libs/gui/include/gui/DisplayEventDispatcher.h
+        libs/gui/include/gui/DisplayEventReceiver.h
+        libs/gui/include/gui/DisplayInfo.h
+        libs/gui/include/gui/FrameTimelineInfo.h
+        libs/gui/include/gui/FrameTimestamps.h
+        libs/gui/include/gui/GLConsumer.h
+        libs/gui/include/gui/HdrMetadata.h
+        libs/gui/include/gui/IConsumerListener.h
+        libs/gui/include/gui/IGraphicBufferConsumer.h
+        libs/gui/include/gui/IGraphicBufferProducer.h
+        libs/gui/include/gui/InputApplication.h
+        libs/gui/include/gui/IProducerListener.h
+        libs/gui/include/gui/ISurfaceComposer.h
+        libs/gui/include/gui/ISurfaceComposerClient.h
+        libs/gui/include/gui/ITransactionCompletedListener.h
+        libs/gui/include/gui/JankInfo.h
+        libs/gui/include/gui/LayerCaptureArgs.h
+        libs/gui/include/gui/LayerDebugInfo.h
+        libs/gui/include/gui/LayerMetadata.h
+        libs/gui/include/gui/LayerState.h
+        libs/gui/include/gui/OccupancyTracker.h
+        libs/gui/include/gui/ScreenCaptureResults.h
+        libs/gui/include/gui/SpHash.h
+        libs/gui/include/gui/StreamSplitter.h
+        libs/gui/include/gui/Surface.h
+        libs/gui/include/gui/SurfaceComposerClient.h
+        libs/gui/include/gui/SurfaceControl.h
+        libs/gui/include/gui/SyncScreenCaptureListener.h
+        libs/gui/include/gui/TraceUtils.h
+        libs/gui/include/gui/TransactionTracing.h
+        libs/gui/include/gui/VsyncEventData.h
+        libs/gui/include/gui/WindowInfo.h
+        libs/gui/include/gui/WindowInfosListener.h
+        libs/gui/include/gui/WindowInfosListenerReporter.h
+        libs/gui/include/private/gui/BitTube.h
+        libs/gui/include/private/gui/BufferQueueThreadState.h
+        libs/gui/include/private/gui/ComposerService.h
+        libs/gui/include/private/gui/ComposerServiceAIDL.h
+        libs/gui/include/private/gui/ParcelUtils.h
+        libs/gui/include/private/gui/SyncFeatures.h
+        libs/gui/mock/GraphicBufferConsumer.cpp
+        libs/gui/mock/GraphicBufferProducer.cpp
+        libs/gui/tests/BLASTBufferQueue_test.cpp
+        libs/gui/tests/BufferItemConsumer_test.cpp
+        libs/gui/tests/BufferQueue_test.cpp
+        libs/gui/tests/CpuConsumer_test.cpp
+        libs/gui/tests/DisconnectWaiter.h
+        libs/gui/tests/DisplayedContentSampling_test.cpp
+        libs/gui/tests/DisplayEventStructLayout_test.cpp
+        libs/gui/tests/DisplayInfo_test.cpp
+        libs/gui/tests/EndToEndNativeInputTest.cpp
+        libs/gui/tests/FillBuffer.cpp
+        libs/gui/tests/FillBuffer.h
+        libs/gui/tests/FrameWaiter.h
+        libs/gui/tests/GLTest.cpp
+        libs/gui/tests/GLTest.h
+        libs/gui/tests/IGraphicBufferProducer_test.cpp
+        libs/gui/tests/Malicious.cpp
+        libs/gui/tests/MockConsumer.h
+        libs/gui/tests/MultiTextureConsumer_test.cpp
+        libs/gui/tests/RegionSampling_test.cpp
+        libs/gui/tests/SamplingDemo.cpp
+        libs/gui/tests/StreamSplitter_test.cpp
+        libs/gui/tests/Surface_test.cpp
+        libs/gui/tests/SurfaceParcelable_test.cpp
+        libs/gui/tests/SurfaceTextureClient_test.cpp
+        libs/gui/tests/SurfaceTextureFBO.h
+        libs/gui/tests/SurfaceTextureFBO_test.cpp
+        libs/gui/tests/SurfaceTextureGL.h
+        libs/gui/tests/SurfaceTextureGL_test.cpp
+        libs/gui/tests/SurfaceTextureGLThreadToGL.h
+        libs/gui/tests/SurfaceTextureGLThreadToGL_test.cpp
+        libs/gui/tests/SurfaceTextureGLToGL.h
+        libs/gui/tests/SurfaceTextureGLToGL_test.cpp
+        libs/gui/tests/SurfaceTextureMultiContextGL.h
+        libs/gui/tests/SurfaceTextureMultiContextGL_test.cpp
+        libs/gui/tests/TextureRenderer.cpp
+        libs/gui/tests/TextureRenderer.h
+        libs/gui/tests/VsyncEventData_test.cpp
+        libs/gui/tests/WindowInfo_test.cpp
+        libs/gui/view/Surface.cpp
+        libs/gui/BatchBufferOps.cpp
+        libs/gui/BitTube.cpp
+        libs/gui/BLASTBufferQueue.cpp
+        libs/gui/BufferHubConsumer.cpp
+        libs/gui/BufferHubProducer.cpp
+        libs/gui/BufferItem.cpp
+        libs/gui/BufferItemConsumer.cpp
+        libs/gui/BufferQueue.cpp
+        libs/gui/BufferQueueConsumer.cpp
+        libs/gui/BufferQueueCore.cpp
+        libs/gui/BufferQueueProducer.cpp
+        libs/gui/BufferQueueThreadState.cpp
+        libs/gui/BufferSlot.cpp
+        libs/gui/ConsumerBase.cpp
+        libs/gui/CpuConsumer.cpp
+        libs/gui/DebugEGLImageTracker.cpp
+        libs/gui/DisplayEventDispatcher.cpp
+        libs/gui/DisplayEventReceiver.cpp
+        libs/gui/DisplayInfo.cpp
+        libs/gui/FrameTimelineInfo.cpp
+        libs/gui/FrameTimestamps.cpp
+        libs/gui/GLConsumer.cpp
+        libs/gui/GLConsumerUtils.cpp
+        libs/gui/HdrMetadata.cpp
+        libs/gui/IConsumerListener.cpp
+        libs/gui/IGraphicBufferConsumer.cpp
+        libs/gui/IGraphicBufferProducer.cpp
+        libs/gui/IGraphicBufferProducerFlattenables.cpp
+        libs/gui/IProducerListener.cpp
+        libs/gui/ISurfaceComposer.cpp
+        libs/gui/ISurfaceComposerClient.cpp
+        libs/gui/ITransactionCompletedListener.cpp
+        libs/gui/LayerDebugInfo.cpp
+        libs/gui/LayerMetadata.cpp
+        libs/gui/LayerState.cpp
+        libs/gui/OccupancyTracker.cpp
+        libs/gui/ScreenCaptureResults.cpp
+        libs/gui/StreamSplitter.cpp
+        libs/gui/Surface.cpp
+        libs/gui/SurfaceComposerClient.cpp
+        libs/gui/SurfaceControl.cpp
+        libs/gui/SyncFeatures.cpp
+        libs/gui/TransactionTracing.cpp
+        libs/gui/VsyncEventData.cpp
+        libs/gui/WindowInfo.cpp
+        libs/gui/WindowInfosListenerReporter.cpp
+        libs/incidentcompanion/include/android/os/IncidentManager.h
+        libs/incidentcompanion/src/IncidentManager.cpp
+        libs/input/tests/IdGenerator_test.cpp
+        libs/input/tests/InputChannel_test.cpp
+        libs/input/tests/InputDevice_test.cpp
+        libs/input/tests/InputEvent_test.cpp
+        libs/input/tests/InputPublisherAndConsumer_test.cpp
+        libs/input/tests/StructLayout_test.cpp
+        libs/input/tests/TestHelpers.h
+        libs/input/tests/TouchVideoFrame_test.cpp
+        libs/input/tests/VelocityTracker_test.cpp
+        libs/input/tests/VerifiedInputEvent_test.cpp
+        libs/input/Input.cpp
+        libs/input/InputDevice.cpp
+        libs/input/InputEventLabels.cpp
+        libs/input/InputTransport.cpp
+        libs/input/Keyboard.cpp
+        libs/input/KeyCharacterMap.cpp
+        libs/input/KeyLayoutMap.cpp
+        libs/input/PrintTools.cpp
+        libs/input/PropertyMap.cpp
+        libs/input/PropertyMap_fuzz.cpp
+        libs/input/TouchVideoFrame.cpp
+        libs/input/VelocityControl.cpp
+        libs/input/VelocityTracker.cpp
+        libs/input/VirtualKeyMap.cpp
+        libs/math/include/math/half.h
+        libs/math/include/math/HashCombine.h
+        libs/math/include/math/mat2.h
+        libs/math/include/math/mat3.h
+        libs/math/include/math/mat4.h
+        libs/math/include/math/quat.h
+        libs/math/include/math/scalar.h
+        libs/math/include/math/TMatHelpers.h
+        libs/math/include/math/TQuatHelpers.h
+        libs/math/include/math/TVecHelpers.h
+        libs/math/include/math/vec2.h
+        libs/math/include/math/vec3.h
+        libs/math/include/math/vec4.h
+        libs/math/tests/half_test.cpp
+        libs/math/tests/hashcombine_test.cpp
+        libs/math/tests/mat_test.cpp
+        libs/math/tests/quat_test.cpp
+        libs/math/tests/vec_test.cpp
+        libs/nativebase/include/nativebase/nativebase.h
+        libs/nativedisplay/include/apex/choreographer.h
+        libs/nativedisplay/include/apex/display.h
+        libs/nativedisplay/include/surfacetexture/EGLConsumer.h
+        libs/nativedisplay/include/surfacetexture/ImageConsumer.h
+        libs/nativedisplay/include/surfacetexture/surface_texture_platform.h
+        libs/nativedisplay/include/surfacetexture/SurfaceTexture.h
+        libs/nativedisplay/include-private/private/android/choreographer.h
+        libs/nativedisplay/surfacetexture/EGLConsumer.cpp
+        libs/nativedisplay/surfacetexture/ImageConsumer.cpp
+        libs/nativedisplay/surfacetexture/surface_texture.cpp
+        libs/nativedisplay/surfacetexture/SurfaceTexture.cpp
+        libs/nativedisplay/AChoreographer.cpp
+        libs/nativedisplay/ADisplay.cpp
+        libs/nativewindow/include/android/data_space.h
+        libs/nativewindow/include/android/hardware_buffer.h
+        libs/nativewindow/include/android/hdr_metadata.h
+        libs/nativewindow/include/android/native_window.h
+        libs/nativewindow/include/apex/window.h
+        libs/nativewindow/include/system/window.h
+        libs/nativewindow/include/vndk/hardware_buffer.h
+        libs/nativewindow/include/vndk/window.h
+        libs/nativewindow/include-private/private/android/AHardwareBufferHelpers.h
+        libs/nativewindow/tests/AHardwareBufferTest.cpp
+        libs/nativewindow/tests/ANativeWindowTest.cpp
+        libs/nativewindow/tests/c_compatibility.c
+        libs/nativewindow/AHardwareBuffer.cpp
+        libs/nativewindow/ANativeWindow.cpp
+        libs/permission/android/permission/PermissionChecker.cpp
+        libs/permission/include/android/permission/PermissionChecker.h
+        libs/permission/include/binder/AppOpsManager.h
+        libs/permission/include/binder/IAppOpsCallback.h
+        libs/permission/include/binder/IAppOpsService.h
+        libs/permission/AppOpsManager.cpp
+        libs/permission/IAppOpsCallback.cpp
+        libs/permission/IAppOpsService.cpp
+        libs/renderengine/benchmark/Codec.cpp
+        libs/renderengine/benchmark/Flags.cpp
+        libs/renderengine/benchmark/main.cpp
+        libs/renderengine/benchmark/RenderEngineBench.cpp
+        libs/renderengine/benchmark/RenderEngineBench.h
+        libs/renderengine/gl/filters/BlurFilter.cpp
+        libs/renderengine/gl/filters/BlurFilter.h
+        libs/renderengine/gl/filters/GenericProgram.cpp
+        libs/renderengine/gl/filters/GenericProgram.h
+        libs/renderengine/gl/GLESRenderEngine.cpp
+        libs/renderengine/gl/GLESRenderEngine.h
+        libs/renderengine/gl/GLExtensions.cpp
+        libs/renderengine/gl/GLExtensions.h
+        libs/renderengine/gl/GLFramebuffer.cpp
+        libs/renderengine/gl/GLFramebuffer.h
+        libs/renderengine/gl/GLImage.cpp
+        libs/renderengine/gl/GLImage.h
+        libs/renderengine/gl/GLShadowTexture.cpp
+        libs/renderengine/gl/GLShadowTexture.h
+        libs/renderengine/gl/GLShadowVertexGenerator.cpp
+        libs/renderengine/gl/GLShadowVertexGenerator.h
+        libs/renderengine/gl/GLSkiaShadowPort.cpp
+        libs/renderengine/gl/GLSkiaShadowPort.h
+        libs/renderengine/gl/GLVertexBuffer.cpp
+        libs/renderengine/gl/GLVertexBuffer.h
+        libs/renderengine/gl/ImageManager.cpp
+        libs/renderengine/gl/ImageManager.h
+        libs/renderengine/gl/Program.cpp
+        libs/renderengine/gl/Program.h
+        libs/renderengine/gl/ProgramCache.cpp
+        libs/renderengine/gl/ProgramCache.h
+        libs/renderengine/include/renderengine/impl/ExternalTexture.h
+        libs/renderengine/include/renderengine/mock/FakeExternalTexture.h
+        libs/renderengine/include/renderengine/mock/Framebuffer.h
+        libs/renderengine/include/renderengine/mock/Image.h
+        libs/renderengine/include/renderengine/mock/RenderEngine.h
+        libs/renderengine/include/renderengine/private/Description.h
+        libs/renderengine/include/renderengine/DisplaySettings.h
+        libs/renderengine/include/renderengine/ExternalTexture.h
+        libs/renderengine/include/renderengine/Framebuffer.h
+        libs/renderengine/include/renderengine/Image.h
+        libs/renderengine/include/renderengine/LayerSettings.h
+        libs/renderengine/include/renderengine/Mesh.h
+        libs/renderengine/include/renderengine/PrintMatrix.h
+        libs/renderengine/include/renderengine/RenderEngine.h
+        libs/renderengine/include/renderengine/Texture.h
+        libs/renderengine/mock/Framebuffer.cpp
+        libs/renderengine/mock/Image.cpp
+        libs/renderengine/mock/RenderEngine.cpp
+        libs/renderengine/skia/debug/CaptureTimer.cpp
+        libs/renderengine/skia/debug/CaptureTimer.h
+        libs/renderengine/skia/debug/CommonPool.cpp
+        libs/renderengine/skia/debug/CommonPool.h
+        libs/renderengine/skia/debug/SkiaCapture.cpp
+        libs/renderengine/skia/debug/SkiaCapture.h
+        libs/renderengine/skia/debug/SkiaMemoryReporter.cpp
+        libs/renderengine/skia/debug/SkiaMemoryReporter.h
+        libs/renderengine/skia/filters/BlurFilter.cpp
+        libs/renderengine/skia/filters/BlurFilter.h
+        libs/renderengine/skia/filters/GaussianBlurFilter.cpp
+        libs/renderengine/skia/filters/GaussianBlurFilter.h
+        libs/renderengine/skia/filters/KawaseBlurFilter.cpp
+        libs/renderengine/skia/filters/KawaseBlurFilter.h
+        libs/renderengine/skia/filters/LinearEffect.cpp
+        libs/renderengine/skia/filters/LinearEffect.h
+        libs/renderengine/skia/filters/StretchShaderFactory.cpp
+        libs/renderengine/skia/filters/StretchShaderFactory.h
+        libs/renderengine/skia/AutoBackendTexture.cpp
+        libs/renderengine/skia/AutoBackendTexture.h
+        libs/renderengine/skia/Cache.cpp
+        libs/renderengine/skia/Cache.h
+        libs/renderengine/skia/ColorSpaces.cpp
+        libs/renderengine/skia/ColorSpaces.h
+        libs/renderengine/skia/SkiaGLRenderEngine.cpp
+        libs/renderengine/skia/SkiaGLRenderEngine.h
+        libs/renderengine/skia/SkiaRenderEngine.cpp
+        libs/renderengine/skia/SkiaRenderEngine.h
+        libs/renderengine/tests/DisplaySettingsTest.cpp
+        libs/renderengine/tests/LayerSettingsTest.cpp
+        libs/renderengine/tests/RenderEngineTest.cpp
+        libs/renderengine/tests/RenderEngineThreadedTest.cpp
+        libs/renderengine/threaded/RenderEngineThreaded.cpp
+        libs/renderengine/threaded/RenderEngineThreaded.h
+        libs/renderengine/Description.cpp
+        libs/renderengine/ExternalTexture.cpp
+        libs/renderengine/Mesh.cpp
+        libs/renderengine/RenderEngine.cpp
+        libs/renderengine/Texture.cpp
+        libs/sensor/include/sensor/BitTube.h
+        libs/sensor/include/sensor/ISensorEventConnection.h
+        libs/sensor/include/sensor/ISensorServer.h
+        libs/sensor/include/sensor/Sensor.h
+        libs/sensor/include/sensor/SensorEventQueue.h
+        libs/sensor/include/sensor/SensorManager.h
+        libs/sensor/tests/Sensor_test.cpp
+        libs/sensor/tests/SensorEventQueue_test.cpp
+        libs/sensor/BitTube.cpp
+        libs/sensor/ISensorEventConnection.cpp
+        libs/sensor/ISensorServer.cpp
+        libs/sensor/Sensor.cpp
+        libs/sensor/SensorEventQueue.cpp
+        libs/sensor/SensorManager.cpp
+        libs/sensorprivacy/include/sensorprivacy/SensorPrivacyManager.h
+        libs/sensorprivacy/SensorPrivacyManager.cpp
+        libs/shaders/include/shaders/shaders.h
+        libs/shaders/tests/shaders_test.cpp
+        libs/shaders/shaders.cpp
+        libs/tonemap/include/tonemap/tonemap.h
+        libs/tonemap/tests/tonemap_test.cpp
+        libs/tonemap/tonemap.cpp
+        libs/ui/include/ui/fuzzer/FuzzableDataspaces.h
+        libs/ui/include/ui/ANativeObjectBase.h
+        libs/ui/include/ui/BlurRegion.h
+        libs/ui/include/ui/BufferHubDefs.h
+        libs/ui/include/ui/BufferQueueDefs.h
+        libs/ui/include/ui/ConfigStoreTypes.h
+        libs/ui/include/ui/DebugUtils.h
+        libs/ui/include/ui/DeviceProductInfo.h
+        libs/ui/include/ui/DisplayedFrameStats.h
+        libs/ui/include/ui/DisplayId.h
+        libs/ui/include/ui/DisplayIdentification.h
+        libs/ui/include/ui/DisplayMode.h
+        libs/ui/include/ui/DisplayState.h
+        libs/ui/include/ui/DisplayStatInfo.h
+        libs/ui/include/ui/DynamicDisplayInfo.h
+        libs/ui/include/ui/FatVector.h
+        libs/ui/include/ui/Fence.h
+        libs/ui/include/ui/FenceTime.h
+        libs/ui/include/ui/FloatRect.h
+        libs/ui/include/ui/FrameStats.h
+        libs/ui/include/ui/Gralloc.h
+        libs/ui/include/ui/Gralloc2.h
+        libs/ui/include/ui/Gralloc3.h
+        libs/ui/include/ui/Gralloc4.h
+        libs/ui/include/ui/GraphicBuffer.h
+        libs/ui/include/ui/GraphicBufferAllocator.h
+        libs/ui/include/ui/GraphicBufferMapper.h
+        libs/ui/include/ui/GraphicTypes.h
+        libs/ui/include/ui/HdrCapabilities.h
+        libs/ui/include/ui/LayerStack.h
+        libs/ui/include/ui/PixelFormat.h
+        libs/ui/include/ui/Point.h
+        libs/ui/include/ui/PublicFormat.h
+        libs/ui/include/ui/Rect.h
+        libs/ui/include/ui/Region.h
+        libs/ui/include/ui/Rotation.h
+        libs/ui/include/ui/Size.h
+        libs/ui/include/ui/StaticDisplayInfo.h
+        libs/ui/include/ui/StretchEffect.h
+        libs/ui/include/ui/Transform.h
+        libs/ui/include_mock/ui/MockFence.h
+        libs/ui/include_private/ui/FlattenableHelpers.h
+        libs/ui/include_private/ui/RegionHelper.h
+        libs/ui/include_types/ui/ColorSpace.h
+        libs/ui/include_types/ui/DataspaceUtils.h
+        libs/ui/include_vndk/ui/ConfigStoreTypes.h
+        libs/ui/tests/mock/MockGrallocAllocator.cpp
+        libs/ui/tests/mock/MockGrallocAllocator.h
+        libs/ui/tests/colorspace_test.cpp
+        libs/ui/tests/DataspaceUtils_test.cpp
+        libs/ui/tests/DisplayId_test.cpp
+        libs/ui/tests/DisplayIdentification_test.cpp
+        libs/ui/tests/FlattenableHelpers_test.cpp
+        libs/ui/tests/GraphicBuffer_test.cpp
+        libs/ui/tests/GraphicBufferAllocator_test.cpp
+        libs/ui/tests/GraphicBufferOverBinder_test.cpp
+        libs/ui/tests/MockFence_test.cpp
+        libs/ui/tests/Rect_test.cpp
+        libs/ui/tests/Region_test.cpp
+        libs/ui/tests/Size_test.cpp
+        libs/ui/tests/Transform_test.cpp
+        libs/ui/tools/lutgen.cpp
+        libs/ui/ColorSpace.cpp
+        libs/ui/DebugUtils.cpp
+        libs/ui/DeviceProductInfo.cpp
+        libs/ui/DisplayIdentification.cpp
+        libs/ui/DisplayMode.cpp
+        libs/ui/DynamicDisplayInfo.cpp
+        libs/ui/Fence.cpp
+        libs/ui/FenceTime.cpp
+        libs/ui/FrameStats.cpp
+        libs/ui/Gralloc.cpp
+        libs/ui/Gralloc2.cpp
+        libs/ui/Gralloc3.cpp
+        libs/ui/Gralloc4.cpp
+        libs/ui/GraphicBuffer.cpp
+        libs/ui/GraphicBufferAllocator.cpp
+        libs/ui/GraphicBufferMapper.cpp
+        libs/ui/HdrCapabilities.cpp
+        libs/ui/PixelFormat.cpp
+        libs/ui/PublicFormat.cpp
+        libs/ui/Rect.cpp
+        libs/ui/Region.cpp
+        libs/ui/StaticAsserts.cpp
+        libs/ui/StaticDisplayInfo.cpp
+        libs/ui/Transform.cpp
+        libs/vibrator/fuzzer/vibrator_fuzzer.cpp
+        libs/vibrator/include/vibrator/ExternalVibration.h
+        libs/vibrator/include/vibrator/ExternalVibrationUtils.h
+        libs/vibrator/ExternalVibration.cpp
+        libs/vibrator/ExternalVibrationUtils.cpp
+        libs/vr/libbroadcastring/include/libbroadcastring/broadcast_ring.h
+        libs/vr/libbroadcastring/broadcast_ring_test.cc
+        libs/vr/libbufferhub/include/private/dvr/buffer_hub_base.h
+        libs/vr/libbufferhub/include/private/dvr/buffer_hub_defs.h
+        libs/vr/libbufferhub/include/private/dvr/bufferhub_rpc.h
+        libs/vr/libbufferhub/include/private/dvr/consumer_buffer.h
+        libs/vr/libbufferhub/include/private/dvr/ion_buffer.h
+        libs/vr/libbufferhub/include/private/dvr/native_handle_wrapper.h
+        libs/vr/libbufferhub/include/private/dvr/producer_buffer.h
+        libs/vr/libbufferhub/buffer_hub-test.cpp
+        libs/vr/libbufferhub/buffer_hub_base.cpp
+        libs/vr/libbufferhub/buffer_hub_rpc.cpp
+        libs/vr/libbufferhub/consumer_buffer.cpp
+        libs/vr/libbufferhub/ion_buffer.cpp
+        libs/vr/libbufferhub/producer_buffer.cpp
+        libs/vr/libbufferhubqueue/benchmarks/buffer_transport_benchmark.cpp
+        libs/vr/libbufferhubqueue/include/private/dvr/buffer_hub_queue_client.h
+        libs/vr/libbufferhubqueue/include/private/dvr/buffer_hub_queue_parcelable.h
+        libs/vr/libbufferhubqueue/include/private/dvr/epoll_file_descriptor.h
+        libs/vr/libbufferhubqueue/tests/buffer_hub_queue-test.cpp
+        libs/vr/libbufferhubqueue/tests/buffer_hub_queue_producer-test.cpp
+        libs/vr/libbufferhubqueue/buffer_hub_queue_client.cpp
+        libs/vr/libbufferhubqueue/buffer_hub_queue_parcelable.cpp
+        libs/vr/libdisplay/include/private/dvr/display_client.h
+        libs/vr/libdisplay/include/private/dvr/display_manager_client.h
+        libs/vr/libdisplay/include/private/dvr/display_protocol.h
+        libs/vr/libdisplay/include/private/dvr/shared_buffer_helpers.h
+        libs/vr/libdisplay/include/private/dvr/vsync_service.h
+        libs/vr/libdisplay/display_client.cpp
+        libs/vr/libdisplay/display_manager_client.cpp
+        libs/vr/libdisplay/display_protocol.cpp
+        libs/vr/libdisplay/shared_buffer_helpers.cpp
+        libs/vr/libdisplay/vsync_service.cpp
+        libs/vr/libdvr/include/dvr/dvr_api.h
+        libs/vr/libdvr/include/dvr/dvr_api_entries.h
+        libs/vr/libdvr/include/dvr/dvr_buffer.h
+        libs/vr/libdvr/include/dvr/dvr_buffer_queue.h
+        libs/vr/libdvr/include/dvr/dvr_config.h
+        libs/vr/libdvr/include/dvr/dvr_configuration_data.h
+        libs/vr/libdvr/include/dvr/dvr_deleter.h
+        libs/vr/libdvr/include/dvr/dvr_display_manager.h
+        libs/vr/libdvr/include/dvr/dvr_display_types.h
+        libs/vr/libdvr/include/dvr/dvr_hardware_composer_client.h
+        libs/vr/libdvr/include/dvr/dvr_hardware_composer_types.h
+        libs/vr/libdvr/include/dvr/dvr_performance.h
+        libs/vr/libdvr/include/dvr/dvr_pose.h
+        libs/vr/libdvr/include/dvr/dvr_shared_buffers.h
+        libs/vr/libdvr/include/dvr/dvr_surface.h
+        libs/vr/libdvr/include/dvr/dvr_tracking.h
+        libs/vr/libdvr/include/dvr/dvr_tracking_types.h
+        libs/vr/libdvr/include/dvr/dvr_vsync.h
+        libs/vr/libdvr/tests/dvr_api_test.h
+        libs/vr/libdvr/tests/dvr_buffer_queue-test.cpp
+        libs/vr/libdvr/tests/dvr_display-test.cpp
+        libs/vr/libdvr/tests/dvr_display_manager-test.cpp
+        libs/vr/libdvr/tests/dvr_named_buffer-test.cpp
+        libs/vr/libdvr/tests/dvr_tracking-test.cpp
+        libs/vr/libdvr/dvr_api.cpp
+        libs/vr/libdvr/dvr_buffer.cpp
+        libs/vr/libdvr/dvr_buffer_queue.cpp
+        libs/vr/libdvr/dvr_buffer_queue_internal.h
+        libs/vr/libdvr/dvr_configuration_data.cpp
+        libs/vr/libdvr/dvr_display_manager.cpp
+        libs/vr/libdvr/dvr_hardware_composer_client.cpp
+        libs/vr/libdvr/dvr_internal.h
+        libs/vr/libdvr/dvr_performance.cpp
+        libs/vr/libdvr/dvr_pose.cpp
+        libs/vr/libdvr/dvr_surface.cpp
+        libs/vr/libdvr/dvr_tracking.cpp
+        libs/vr/libdvrcommon/include/private/dvr/test/test_macros.h
+        libs/vr/libdvrcommon/include/private/dvr/benchmark.h
+        libs/vr/libdvrcommon/include/private/dvr/clock_ns.h
+        libs/vr/libdvrcommon/include/private/dvr/debug.h
+        libs/vr/libdvrcommon/include/private/dvr/eigen.h
+        libs/vr/libdvrcommon/include/private/dvr/field_of_view.h
+        libs/vr/libdvrcommon/include/private/dvr/log_helpers.h
+        libs/vr/libdvrcommon/include/private/dvr/matrix_helpers.h
+        libs/vr/libdvrcommon/include/private/dvr/numeric.h
+        libs/vr/libdvrcommon/include/private/dvr/ortho.h
+        libs/vr/libdvrcommon/include/private/dvr/pose.h
+        libs/vr/libdvrcommon/include/private/dvr/range.h
+        libs/vr/libdvrcommon/include/private/dvr/ring_buffer.h
+        libs/vr/libdvrcommon/include/private/dvr/types.h
+        libs/vr/libdvrcommon/tests/numeric_test.cpp
+        libs/vr/libdvrcommon/tests/pose_test.cpp
+        libs/vr/libpdx/fuzz/helpers.h
+        libs/vr/libpdx/fuzz/message_fuzzer.cpp
+        libs/vr/libpdx/fuzz/serialization_fuzzer.cpp
+        libs/vr/libpdx/fuzz/service_dispatcher_fuzzer.cpp
+        libs/vr/libpdx/private/pdx/rpc/argument_encoder.h
+        libs/vr/libpdx/private/pdx/rpc/array_wrapper.h
+        libs/vr/libpdx/private/pdx/rpc/buffer_wrapper.h
+        libs/vr/libpdx/private/pdx/rpc/copy_cv_reference.h
+        libs/vr/libpdx/private/pdx/rpc/default_initialization_allocator.h
+        libs/vr/libpdx/private/pdx/rpc/encoding.h
+        libs/vr/libpdx/private/pdx/rpc/enumeration.h
+        libs/vr/libpdx/private/pdx/rpc/find_replace.h
+        libs/vr/libpdx/private/pdx/rpc/function_traits.h
+        libs/vr/libpdx/private/pdx/rpc/macros.h
+        libs/vr/libpdx/private/pdx/rpc/message_buffer.h
+        libs/vr/libpdx/private/pdx/rpc/payload.h
+        libs/vr/libpdx/private/pdx/rpc/pointer_wrapper.h
+        libs/vr/libpdx/private/pdx/rpc/remote_method.h
+        libs/vr/libpdx/private/pdx/rpc/remote_method_type.h
+        libs/vr/libpdx/private/pdx/rpc/sequence.h
+        libs/vr/libpdx/private/pdx/rpc/serializable.h
+        libs/vr/libpdx/private/pdx/rpc/serialization.h
+        libs/vr/libpdx/private/pdx/rpc/string_wrapper.h
+        libs/vr/libpdx/private/pdx/rpc/thread_local_buffer.h
+        libs/vr/libpdx/private/pdx/rpc/type_operators.h
+        libs/vr/libpdx/private/pdx/rpc/variant.h
+        libs/vr/libpdx/private/pdx/channel_handle.h
+        libs/vr/libpdx/private/pdx/channel_parcelable.h
+        libs/vr/libpdx/private/pdx/client.h
+        libs/vr/libpdx/private/pdx/client_channel.h
+        libs/vr/libpdx/private/pdx/client_channel_factory.h
+        libs/vr/libpdx/private/pdx/file_handle.h
+        libs/vr/libpdx/private/pdx/message_reader.h
+        libs/vr/libpdx/private/pdx/message_writer.h
+        libs/vr/libpdx/private/pdx/mock_client_channel.h
+        libs/vr/libpdx/private/pdx/mock_client_channel_factory.h
+        libs/vr/libpdx/private/pdx/mock_message_reader.h
+        libs/vr/libpdx/private/pdx/mock_message_writer.h
+        libs/vr/libpdx/private/pdx/mock_service_endpoint.h
+        libs/vr/libpdx/private/pdx/service.h
+        libs/vr/libpdx/private/pdx/service_dispatcher.h
+        libs/vr/libpdx/private/pdx/service_endpoint.h
+        libs/vr/libpdx/private/pdx/status.h
+        libs/vr/libpdx/private/pdx/trace.h
+        libs/vr/libpdx/private/pdx/utility.h
+        libs/vr/libpdx/client.cpp
+        libs/vr/libpdx/client_tests.cpp
+        libs/vr/libpdx/encoder_performance_test.cpp
+        libs/vr/libpdx/mock_tests.cpp
+        libs/vr/libpdx/serialization_tests.cpp
+        libs/vr/libpdx/service.cpp
+        libs/vr/libpdx/service_dispatcher.cpp
+        libs/vr/libpdx/service_tests.cpp
+        libs/vr/libpdx/status.cpp
+        libs/vr/libpdx/status_tests.cpp
+        libs/vr/libpdx/thread_local_buffer_tests.cpp
+        libs/vr/libpdx/variant_tests.cpp
+        libs/vr/libpdx_default_transport/private/pdx/default_transport/service_utility.h
+        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/channel_manager.h
+        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/channel_parcelable.h
+        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/client_channel.h
+        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/client_channel_factory.h
+        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/service_endpoint.h
+        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/channel_manager.h
+        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/channel_parcelable.h
+        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/client_channel.h
+        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/client_channel_factory.h
+        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/service_endpoint.h
+        libs/vr/libpdx_default_transport/pdx_benchmarks.cpp
+        libs/vr/libpdx_default_transport/pdx_tool.cpp
+        libs/vr/libpdx_uds/private/uds/channel_event_set.h
+        libs/vr/libpdx_uds/private/uds/channel_manager.h
+        libs/vr/libpdx_uds/private/uds/channel_parcelable.h
+        libs/vr/libpdx_uds/private/uds/client_channel.h
+        libs/vr/libpdx_uds/private/uds/client_channel_factory.h
+        libs/vr/libpdx_uds/private/uds/ipc_helper.h
+        libs/vr/libpdx_uds/private/uds/service_endpoint.h
+        libs/vr/libpdx_uds/channel_event_set.cpp
+        libs/vr/libpdx_uds/channel_manager.cpp
+        libs/vr/libpdx_uds/channel_parcelable.cpp
+        libs/vr/libpdx_uds/client_channel.cpp
+        libs/vr/libpdx_uds/client_channel_factory.cpp
+        libs/vr/libpdx_uds/client_channel_tests.cpp
+        libs/vr/libpdx_uds/ipc_helper.cpp
+        libs/vr/libpdx_uds/ipc_helper_tests.cpp
+        libs/vr/libpdx_uds/remote_method_tests.cpp
+        libs/vr/libpdx_uds/service_endpoint.cpp
+        libs/vr/libpdx_uds/service_framework_tests.cpp
+        libs/vr/libperformance/include/dvr/performance_client_api.h
+        libs/vr/libperformance/include/private/dvr/performance_client.h
+        libs/vr/libperformance/include/private/dvr/performance_rpc.h
+        libs/vr/libperformance/performance_client.cpp
+        libs/vr/libperformance/performance_rpc.cpp
+        libs/vr/libvr_manager/include/private/dvr/trusted_uids.h
+        libs/vr/libvr_manager/trusted_uids.cpp
+        libs/vr/libvr_manager/vr_manager.cpp
+        libs/vr/libvrsensor/include/dvr/pose_client.h
+        libs/vr/libvrsensor/include/private/dvr/latency_model.h
+        libs/vr/libvrsensor/include/private/dvr/pose-ipc.h
+        libs/vr/libvrsensor/include/private/dvr/pose_client_internal.h
+        libs/vr/libvrsensor/latency_model.cpp
+        libs/vr/libvrsensor/pose_client.cpp
+        opengl/include/EGL/egl.h
+        opengl/include/EGL/eglext.h
+        opengl/include/EGL/eglext_angle.h
+        opengl/include/EGL/eglplatform.h
+        opengl/include/EGL/Platform.h
+        opengl/include/ETC1/etc1.h
+        opengl/include/GLES/egl.h
+        opengl/include/GLES/gl.h
+        opengl/include/GLES/glext.h
+        opengl/include/GLES/glplatform.h
+        opengl/include/GLES2/gl2.h
+        opengl/include/GLES2/gl2ext.h
+        opengl/include/GLES2/gl2platform.h
+        opengl/include/GLES3/gl3.h
+        opengl/include/GLES3/gl31.h
+        opengl/include/GLES3/gl32.h
+        opengl/include/GLES3/gl3ext.h
+        opengl/include/GLES3/gl3platform.h
+        opengl/include/KHR/khrplatform.h
+        opengl/libs/EGL/include/private/EGL/cache.h
+        opengl/libs/EGL/include/private/EGL/display.h
+        opengl/libs/EGL/BlobCache.cpp
+        opengl/libs/EGL/BlobCache.h
+        opengl/libs/EGL/BlobCache_test.cpp
+        opengl/libs/EGL/CallStack.h
+        opengl/libs/EGL/egl.cpp
+        opengl/libs/EGL/egl_angle_platform.cpp
+        opengl/libs/EGL/egl_angle_platform.h
+        opengl/libs/EGL/egl_cache.cpp
+        opengl/libs/EGL/egl_cache.h
+        opengl/libs/EGL/egl_display.cpp
+        opengl/libs/EGL/egl_display.h
+        opengl/libs/EGL/egl_layers.cpp
+        opengl/libs/EGL/egl_layers.h
+        opengl/libs/EGL/egl_object.cpp
+        opengl/libs/EGL/egl_object.h
+        opengl/libs/EGL/egl_platform_entries.cpp
+        opengl/libs/EGL/egl_platform_entries.h
+        opengl/libs/EGL/egl_tls.cpp
+        opengl/libs/EGL/egl_tls.h
+        opengl/libs/EGL/egl_trace.h
+        opengl/libs/EGL/eglApi.cpp
+        opengl/libs/EGL/egldefs.h
+        opengl/libs/EGL/FileBlobCache.cpp
+        opengl/libs/EGL/FileBlobCache.h
+        opengl/libs/EGL/getProcAddress.cpp
+        opengl/libs/EGL/Loader.cpp
+        opengl/libs/EGL/Loader.h
+        opengl/libs/ETC1/etc1.cpp
+        opengl/libs/GLES2/gl2.cpp
+        opengl/libs/GLES_CM/gl.cpp
+        opengl/libs/egl_impl.h
+        opengl/libs/hooks.h
+        opengl/tests/angeles/include/GLES/egl.h
+        opengl/tests/angeles/include/GLES/egltypes.h
+        opengl/tests/angeles/include/GLES/gl.h
+        opengl/tests/angeles/app-linux.cpp
+        opengl/tests/angeles/app.h
+        opengl/tests/angeles/cams.h
+        opengl/tests/angeles/demo.c
+        opengl/tests/angeles/shapes.h
+        opengl/tests/configdump/configdump.cpp
+        opengl/tests/EGLTest/egl_cache_test.cpp
+        opengl/tests/EGLTest/EGL_test.cpp
+        opengl/tests/fillrate/fillrate.cpp
+        opengl/tests/filter/filter.cpp
+        opengl/tests/finish/finish.cpp
+        opengl/tests/gl2_basic/gl2_basic.cpp
+        opengl/tests/gl2_copyTexImage/gl2_copyTexImage.cpp
+        opengl/tests/gl2_jni/jni/gl_code.cpp
+        opengl/tests/gl2_yuvtex/gl2_yuvtex.cpp
+        opengl/tests/gl_basic/gl_basic.cpp
+        opengl/tests/gl_jni/jni/gl_code.cpp
+        opengl/tests/gl_perf/fill_common.cpp
+        opengl/tests/gl_perf/filltest.cpp
+        opengl/tests/gl_perf/fragment_shaders.cpp
+        opengl/tests/gl_perf/gl2_perf.cpp
+        opengl/tests/gl_perfapp/jni/gl_code.cpp
+        opengl/tests/gl_yuvtex/gl_yuvtex.cpp
+        opengl/tests/gldual/jni/gl_code.cpp
+        opengl/tests/gralloc/gralloc.cpp
+        opengl/tests/hwc/hwcColorEquiv.cpp
+        opengl/tests/hwc/hwcCommit.cpp
+        opengl/tests/hwc/hwcRects.cpp
+        opengl/tests/hwc/hwcStress.cpp
+        opengl/tests/hwc/hwcTestLib.cpp
+        opengl/tests/hwc/hwcTestLib.h
+        opengl/tests/lib/include/EGLUtils.h
+        opengl/tests/lib/include/glTestLib.h
+        opengl/tests/lib/include/WindowSurface.h
+        opengl/tests/lib/glTestLib.cpp
+        opengl/tests/lib/WindowSurface.cpp
+        opengl/tests/linetex/linetex.cpp
+        opengl/tests/swapinterval/swapinterval.cpp
+        opengl/tests/textures/textures.cpp
+        opengl/tests/tritex/tritex.cpp
+        opengl/tools/glgen/stubs/egl/EGL14cHeader.cpp
+        opengl/tools/glgen/stubs/egl/EGL15cHeader.cpp
+        opengl/tools/glgen/stubs/egl/eglCreateImage.cpp
+        opengl/tools/glgen/stubs/egl/eglCreatePbufferFromClientBuffer.cpp
+        opengl/tools/glgen/stubs/egl/eglCreatePixmapSurface.cpp
+        opengl/tools/glgen/stubs/egl/eglCreatePlatformWindowSurface.cpp
+        opengl/tools/glgen/stubs/egl/eglCreateSync.cpp
+        opengl/tools/glgen/stubs/egl/eglCreateWindowSurface.cpp
+        opengl/tools/glgen/stubs/egl/EGLExtcHeader.cpp
+        opengl/tools/glgen/stubs/egl/eglGetDisplay.cpp
+        opengl/tools/glgen/stubs/egl/eglGetPlatformDisplay.cpp
+        opengl/tools/glgen/stubs/egl/eglQueryString.cpp
+        opengl/tools/glgen/stubs/gles11/common.cpp
+        opengl/tools/glgen/stubs/gles11/glBindVertexBuffer.cpp
+        opengl/tools/glgen/stubs/gles11/glCreateShaderProgramv.cpp
+        opengl/tools/glgen/stubs/gles11/glDebugMessageCallback.cpp
+        opengl/tools/glgen/stubs/gles11/glDebugMessageCallbackKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glDebugMessageInsertKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glDispatchComputeIndirect.cpp
+        opengl/tools/glgen/stubs/gles11/glDrawArraysIndirect.cpp
+        opengl/tools/glgen/stubs/gles11/glDrawElementsIndirect.cpp
+        opengl/tools/glgen/stubs/gles11/glDrawElementsInstanced.cpp
+        opengl/tools/glgen/stubs/gles11/glDrawElementsInstancedBaseVertex.cpp
+        opengl/tools/glgen/stubs/gles11/GLES10cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES10ExtcHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES11cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES11ExtcHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES20cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES30cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES31cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES31ExtcHeader.cpp
+        opengl/tools/glgen/stubs/gles11/GLES32cHeader.cpp
+        opengl/tools/glgen/stubs/gles11/glGetActiveAttrib.cpp
+        opengl/tools/glgen/stubs/gles11/glGetActiveUniform.cpp
+        opengl/tools/glgen/stubs/gles11/glGetActiveUniformBlockName.cpp
+        opengl/tools/glgen/stubs/gles11/glGetBooleanv.cpp
+        opengl/tools/glgen/stubs/gles11/glGetBufferPointerv.cpp
+        opengl/tools/glgen/stubs/gles11/glGetDebugMessageLog.cpp
+        opengl/tools/glgen/stubs/gles11/glGetDebugMessageLogKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glGetFloatv.cpp
+        opengl/tools/glgen/stubs/gles11/glGetIntegerv.cpp
+        opengl/tools/glgen/stubs/gles11/glGetObjectLabel.cpp
+        opengl/tools/glgen/stubs/gles11/glGetObjectLabelKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glGetObjectPtrLabel.cpp
+        opengl/tools/glgen/stubs/gles11/glGetObjectPtrLabelKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glGetPointerv.cpp
+        opengl/tools/glgen/stubs/gles11/glGetPointervKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glGetProgramInfoLog.cpp
+        opengl/tools/glgen/stubs/gles11/glGetProgramPipelineInfoLog.cpp
+        opengl/tools/glgen/stubs/gles11/glGetProgramResourceName.cpp
+        opengl/tools/glgen/stubs/gles11/glGetShaderInfoLog.cpp
+        opengl/tools/glgen/stubs/gles11/glGetShaderSource.cpp
+        opengl/tools/glgen/stubs/gles11/glGetString.cpp
+        opengl/tools/glgen/stubs/gles11/glGetStringi.cpp
+        opengl/tools/glgen/stubs/gles11/glGetTransformFeedbackVarying.cpp
+        opengl/tools/glgen/stubs/gles11/glGetUniformIndices.cpp
+        opengl/tools/glgen/stubs/gles11/glMapBufferRange.cpp
+        opengl/tools/glgen/stubs/gles11/glObjectPtrLabel.cpp
+        opengl/tools/glgen/stubs/gles11/glObjectPtrLabelKHR.cpp
+        opengl/tools/glgen/stubs/gles11/glShaderSource.cpp
+        opengl/tools/glgen/stubs/gles11/glTransformFeedbackVaryings.cpp
+        opengl/tools/glgen/stubs/jsr239/GLCHeader.cpp
+        opengl/tools/glgen/stubs/jsr239/glGetString.cpp
+        services/audiomanager/IAudioManager.cpp
+        services/automotive/display/include/AutomotiveDisplayProxyService.h
+        services/automotive/display/AutomotiveDisplayProxyService.cpp
+        services/automotive/display/main_automotivedisplayproxy.cpp
+        services/batteryservice/include/batteryservice/BatteryService.h
+        services/batteryservice/include/batteryservice/BatteryServiceConstants.h
+        services/displayservice/include/displayservice/DisplayEventReceiver.h
+        services/displayservice/include/displayservice/DisplayService.h
+        services/displayservice/DisplayEventReceiver.cpp
+        services/displayservice/DisplayService.cpp
+        services/gpuservice/bpfprogs/gpu_mem.c
+        services/gpuservice/gpumem/include/gpumem/GpuMem.h
+        services/gpuservice/gpumem/GpuMem.cpp
+        services/gpuservice/gpustats/include/gpustats/GpuStats.h
+        services/gpuservice/gpustats/GpuStats.cpp
+        services/gpuservice/gpuwork/bpfprogs/include/gpuwork/gpu_work.h
+        services/gpuservice/gpuwork/bpfprogs/gpu_work.c
+        services/gpuservice/gpuwork/include/gpuwork/GpuWork.h
+        services/gpuservice/gpuwork/GpuWork.cpp
+        services/gpuservice/include/gpuservice/GpuService.h
+        services/gpuservice/tests/unittests/GpuMemTest.cpp
+        services/gpuservice/tests/unittests/GpuMemTracerTest.cpp
+        services/gpuservice/tests/unittests/GpuServiceTest.cpp
+        services/gpuservice/tests/unittests/GpuStatsTest.cpp
+        services/gpuservice/tests/unittests/TestableGpuMem.h
+        services/gpuservice/tests/unittests/TestableGpuStats.h
+        services/gpuservice/tracing/include/tracing/GpuMemTracer.h
+        services/gpuservice/tracing/GpuMemTracer.cpp
+        services/gpuservice/GpuService.cpp
+        services/gpuservice/main_gpuservice.cpp
+        services/inputflinger/benchmarks/InputDispatcher_benchmarks.cpp
+        services/inputflinger/dispatcher/include/InputDispatcherConfiguration.h
+        services/inputflinger/dispatcher/include/InputDispatcherFactory.h
+        services/inputflinger/dispatcher/include/InputDispatcherInterface.h
+        services/inputflinger/dispatcher/include/InputDispatcherPolicyInterface.h
+        services/inputflinger/dispatcher/AnrTracker.cpp
+        services/inputflinger/dispatcher/AnrTracker.h
+        services/inputflinger/dispatcher/CancelationOptions.h
+        services/inputflinger/dispatcher/Connection.cpp
+        services/inputflinger/dispatcher/Connection.h
+        services/inputflinger/dispatcher/DebugConfig.h
+        services/inputflinger/dispatcher/DragState.cpp
+        services/inputflinger/dispatcher/DragState.h
+        services/inputflinger/dispatcher/Entry.cpp
+        services/inputflinger/dispatcher/Entry.h
+        services/inputflinger/dispatcher/FocusResolver.cpp
+        services/inputflinger/dispatcher/FocusResolver.h
+        services/inputflinger/dispatcher/InjectionState.cpp
+        services/inputflinger/dispatcher/InjectionState.h
+        services/inputflinger/dispatcher/InputDispatcher.cpp
+        services/inputflinger/dispatcher/InputDispatcher.h
+        services/inputflinger/dispatcher/InputDispatcherFactory.cpp
+        services/inputflinger/dispatcher/InputEventTimeline.cpp
+        services/inputflinger/dispatcher/InputEventTimeline.h
+        services/inputflinger/dispatcher/InputState.cpp
+        services/inputflinger/dispatcher/InputState.h
+        services/inputflinger/dispatcher/InputTarget.cpp
+        services/inputflinger/dispatcher/InputTarget.h
+        services/inputflinger/dispatcher/LatencyAggregator.cpp
+        services/inputflinger/dispatcher/LatencyAggregator.h
+        services/inputflinger/dispatcher/LatencyTracker.cpp
+        services/inputflinger/dispatcher/LatencyTracker.h
+        services/inputflinger/dispatcher/Monitor.cpp
+        services/inputflinger/dispatcher/Monitor.h
+        services/inputflinger/dispatcher/TouchedWindow.h
+        services/inputflinger/dispatcher/TouchState.cpp
+        services/inputflinger/dispatcher/TouchState.h
+        services/inputflinger/host/InputDriver.cpp
+        services/inputflinger/host/InputDriver.h
+        services/inputflinger/host/InputFlinger.cpp
+        services/inputflinger/host/InputFlinger.h
+        services/inputflinger/host/InputHost.cpp
+        services/inputflinger/host/InputHost.h
+        services/inputflinger/host/main.cpp
+        services/inputflinger/include/InputListener.h
+        services/inputflinger/include/InputReaderBase.h
+        services/inputflinger/include/InputReaderFactory.h
+        services/inputflinger/include/InputThread.h
+        services/inputflinger/include/PointerControllerInterface.h
+        services/inputflinger/include/UnwantedInteractionBlockerInterface.h
+        services/inputflinger/include/VibrationElement.h
+        services/inputflinger/reader/controller/PeripheralController.cpp
+        services/inputflinger/reader/controller/PeripheralController.h
+        services/inputflinger/reader/controller/PeripheralControllerInterface.h
+        services/inputflinger/reader/include/EventHub.h
+        services/inputflinger/reader/include/InputDevice.h
+        services/inputflinger/reader/include/InputReader.h
+        services/inputflinger/reader/include/InputReaderContext.h
+        services/inputflinger/reader/include/StylusState.h
+        services/inputflinger/reader/include/TouchVideoDevice.h
+        services/inputflinger/reader/mapper/accumulator/CursorButtonAccumulator.cpp
+        services/inputflinger/reader/mapper/accumulator/CursorButtonAccumulator.h
+        services/inputflinger/reader/mapper/accumulator/CursorScrollAccumulator.cpp
+        services/inputflinger/reader/mapper/accumulator/CursorScrollAccumulator.h
+        services/inputflinger/reader/mapper/accumulator/SingleTouchMotionAccumulator.cpp
+        services/inputflinger/reader/mapper/accumulator/SingleTouchMotionAccumulator.h
+        services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.cpp
+        services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.h
+        services/inputflinger/reader/mapper/CursorInputMapper.cpp
+        services/inputflinger/reader/mapper/CursorInputMapper.h
+        services/inputflinger/reader/mapper/ExternalStylusInputMapper.cpp
+        services/inputflinger/reader/mapper/ExternalStylusInputMapper.h
+        services/inputflinger/reader/mapper/InputMapper.cpp
+        services/inputflinger/reader/mapper/InputMapper.h
+        services/inputflinger/reader/mapper/JoystickInputMapper.cpp
+        services/inputflinger/reader/mapper/JoystickInputMapper.h
+        services/inputflinger/reader/mapper/KeyboardInputMapper.cpp
+        services/inputflinger/reader/mapper/KeyboardInputMapper.h
+        services/inputflinger/reader/mapper/MultiTouchInputMapper.cpp
+        services/inputflinger/reader/mapper/MultiTouchInputMapper.h
+        services/inputflinger/reader/mapper/RotaryEncoderInputMapper.cpp
+        services/inputflinger/reader/mapper/RotaryEncoderInputMapper.h
+        services/inputflinger/reader/mapper/SensorInputMapper.cpp
+        services/inputflinger/reader/mapper/SensorInputMapper.h
+        services/inputflinger/reader/mapper/SingleTouchInputMapper.cpp
+        services/inputflinger/reader/mapper/SingleTouchInputMapper.h
+        services/inputflinger/reader/mapper/SwitchInputMapper.cpp
+        services/inputflinger/reader/mapper/SwitchInputMapper.h
+        services/inputflinger/reader/mapper/TouchCursorInputMapperCommon.h
+        services/inputflinger/reader/mapper/TouchInputMapper.cpp
+        services/inputflinger/reader/mapper/TouchInputMapper.h
+        services/inputflinger/reader/mapper/VibratorInputMapper.cpp
+        services/inputflinger/reader/mapper/VibratorInputMapper.h
+        services/inputflinger/reader/EventHub.cpp
+        services/inputflinger/reader/InputDevice.cpp
+        services/inputflinger/reader/InputReader.cpp
+        services/inputflinger/reader/InputReaderFactory.cpp
+        services/inputflinger/reader/Macros.h
+        services/inputflinger/reader/TouchVideoDevice.cpp
+        services/inputflinger/reporter/InputReporter.cpp
+        services/inputflinger/reporter/InputReporterInterface.h
+        services/inputflinger/tests/fuzzers/LatencyTrackerFuzzer.cpp
+        services/inputflinger/tests/AnrTracker_test.cpp
+        services/inputflinger/tests/BlockingQueue_test.cpp
+        services/inputflinger/tests/EventHub_test.cpp
+        services/inputflinger/tests/FocusResolver_test.cpp
+        services/inputflinger/tests/InputClassifier_test.cpp
+        services/inputflinger/tests/InputClassifierConverter_test.cpp
+        services/inputflinger/tests/InputDispatcher_test.cpp
+        services/inputflinger/tests/InputFlingerService_test.cpp
+        services/inputflinger/tests/InputReader_test.cpp
+        services/inputflinger/tests/LatencyTracker_test.cpp
+        services/inputflinger/tests/PreferStylusOverTouch_test.cpp
+        services/inputflinger/tests/TestInputListener.cpp
+        services/inputflinger/tests/TestInputListener.h
+        services/inputflinger/tests/UinputDevice.cpp
+        services/inputflinger/tests/UinputDevice.h
+        services/inputflinger/tests/UnwantedInteractionBlocker_test.cpp
+        services/inputflinger/BlockingQueue.h
+        services/inputflinger/InputClassifier.cpp
+        services/inputflinger/InputClassifier.h
+        services/inputflinger/InputCommonConverter.cpp
+        services/inputflinger/InputCommonConverter.h
+        services/inputflinger/InputListener.cpp
+        services/inputflinger/InputManager.cpp
+        services/inputflinger/InputManager.h
+        services/inputflinger/InputReaderBase.cpp
+        services/inputflinger/InputThread.cpp
+        services/inputflinger/PreferStylusOverTouchBlocker.cpp
+        services/inputflinger/PreferStylusOverTouchBlocker.h
+        services/inputflinger/UnwantedInteractionBlocker.cpp
+        services/inputflinger/UnwantedInteractionBlocker.h
+        services/inputflinger/VibrationElement.cpp
+        services/memtrackproxy/include/memtrackproxy/MemtrackProxy.h
+        services/memtrackproxy/test/MemtrackProxyTest.cpp
+        services/memtrackproxy/MemtrackProxy.cpp
+        services/powermanager/benchmarks/main.cpp
+        services/powermanager/benchmarks/PowerHalAidlBenchmarks.cpp
+        services/powermanager/benchmarks/PowerHalControllerBenchmarks.cpp
+        services/powermanager/benchmarks/PowerHalHidlBenchmarks.cpp
+        services/powermanager/include/android/BatterySaverPolicyConfig.h
+        services/powermanager/include/android/CoolingDevice.h
+        services/powermanager/include/android/LocationMode.h
+        services/powermanager/include/android/ParcelDuration.h
+        services/powermanager/include/android/PowerSaveState.h
+        services/powermanager/include/android/SoundTriggerMode.h
+        services/powermanager/include/android/Temperature.h
+        services/powermanager/include/android/WorkSource.h
+        services/powermanager/tests/IThermalManagerTest.cpp
+        services/powermanager/tests/PowerHalControllerTest.cpp
+        services/powermanager/tests/PowerHalLoaderTest.cpp
+        services/powermanager/tests/PowerHalWrapperAidlTest.cpp
+        services/powermanager/tests/PowerHalWrapperHidlV1_0Test.cpp
+        services/powermanager/tests/PowerHalWrapperHidlV1_1Test.cpp
+        services/powermanager/BatterySaverPolicyConfig.cpp
+        services/powermanager/CoolingDevice.cpp
+        services/powermanager/ParcelDuration.cpp
+        services/powermanager/PowerHalController.cpp
+        services/powermanager/PowerHalLoader.cpp
+        services/powermanager/PowerHalWrapper.cpp
+        services/powermanager/PowerSaveState.cpp
+        services/powermanager/Temperature.cpp
+        services/powermanager/WorkSource.cpp
+        services/schedulerservice/include/schedulerservice/SchedulingPolicyService.h
+        services/schedulerservice/SchedulingPolicyService.cpp
+        services/sensorservice/hidl/include/sensorservicehidl/SensorManager.h
+        services/sensorservice/hidl/DirectReportChannel.cpp
+        services/sensorservice/hidl/DirectReportChannel.h
+        services/sensorservice/hidl/EventQueue.cpp
+        services/sensorservice/hidl/EventQueue.h
+        services/sensorservice/hidl/SensorManager.cpp
+        services/sensorservice/hidl/utils.cpp
+        services/sensorservice/hidl/utils.h
+        services/sensorservice/tests/sensorservicetest.cpp
+        services/sensorservice/AidlSensorHalWrapper.cpp
+        services/sensorservice/AidlSensorHalWrapper.h
+        services/sensorservice/BatteryService.cpp
+        services/sensorservice/BatteryService.h
+        services/sensorservice/CorrectedGyroSensor.cpp
+        services/sensorservice/CorrectedGyroSensor.h
+        services/sensorservice/Fusion.cpp
+        services/sensorservice/Fusion.h
+        services/sensorservice/GravitySensor.cpp
+        services/sensorservice/GravitySensor.h
+        services/sensorservice/HidlSensorHalWrapper.cpp
+        services/sensorservice/HidlSensorHalWrapper.h
+        services/sensorservice/ISensorHalWrapper.h
+        services/sensorservice/LimitedAxesImuSensor.cpp
+        services/sensorservice/LimitedAxesImuSensor.h
+        services/sensorservice/LinearAccelerationSensor.cpp
+        services/sensorservice/LinearAccelerationSensor.h
+        services/sensorservice/main_sensorservice.cpp
+        services/sensorservice/mat.h
+        services/sensorservice/OrientationSensor.cpp
+        services/sensorservice/OrientationSensor.h
+        services/sensorservice/quat.h
+        services/sensorservice/RecentEventLogger.cpp
+        services/sensorservice/RecentEventLogger.h
+        services/sensorservice/RingBuffer.h
+        services/sensorservice/RotationVectorSensor.cpp
+        services/sensorservice/RotationVectorSensor.h
+        services/sensorservice/SensorDevice.cpp
+        services/sensorservice/SensorDevice.h
+        services/sensorservice/SensorDeviceUtils.cpp
+        services/sensorservice/SensorDeviceUtils.h
+        services/sensorservice/SensorDirectConnection.cpp
+        services/sensorservice/SensorDirectConnection.h
+        services/sensorservice/SensorEventAckReceiver.h
+        services/sensorservice/SensorEventConnection.cpp
+        services/sensorservice/SensorEventConnection.h
+        services/sensorservice/SensorFusion.cpp
+        services/sensorservice/SensorFusion.h
+        services/sensorservice/SensorInterface.cpp
+        services/sensorservice/SensorInterface.h
+        services/sensorservice/SensorList.cpp
+        services/sensorservice/SensorList.h
+        services/sensorservice/SensorRecord.cpp
+        services/sensorservice/SensorRecord.h
+        services/sensorservice/SensorRegistrationInfo.h
+        services/sensorservice/SensorService.cpp
+        services/sensorservice/SensorService.h
+        services/sensorservice/SensorServiceUtils.cpp
+        services/sensorservice/SensorServiceUtils.h
+        services/sensorservice/traits.h
+        services/sensorservice/vec.h
+        services/stats/include/stats/StatsAidl.h
+        services/stats/include/stats/StatsHal.h
+        services/stats/StatsAidl.cpp
+        services/stats/StatsHal.cpp
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/CachedSet.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/Flattener.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/LayerState.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/Planner.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/Predictor.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/TexturePool.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/CompositionEngine.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/DisplayColorProfile.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/DumpHelpers.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/GpuCompositionResult.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/HwcAsyncWorker.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/HwcBufferCache.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputLayer.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/RenderSurface.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/CompositionEngine.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/Display.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/DisplayColorProfile.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/DisplaySurface.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/LayerFE.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/NativeWindow.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/Output.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/OutputLayer.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/mock/RenderSurface.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionEngine.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/CompositionRefreshArgs.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/Display.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorProfile.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayCreationArgs.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/FenceResult.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/OutputColorSetting.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/OutputLayer.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/ProjectionSpace.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurface.h
+        services/surfaceflinger/CompositionEngine/include/compositionengine/RenderSurfaceCreationArgs.h
+        services/surfaceflinger/CompositionEngine/mock/CompositionEngine.cpp
+        services/surfaceflinger/CompositionEngine/mock/Display.cpp
+        services/surfaceflinger/CompositionEngine/mock/DisplayColorProfile.cpp
+        services/surfaceflinger/CompositionEngine/mock/DisplaySurface.cpp
+        services/surfaceflinger/CompositionEngine/mock/LayerFE.cpp
+        services/surfaceflinger/CompositionEngine/mock/NativeWindow.cpp
+        services/surfaceflinger/CompositionEngine/mock/Output.cpp
+        services/surfaceflinger/CompositionEngine/mock/OutputLayer.cpp
+        services/surfaceflinger/CompositionEngine/mock/RenderSurface.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/CachedSet.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/Flattener.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/LayerState.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/Planner.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/Predictor.cpp
+        services/surfaceflinger/CompositionEngine/src/planner/TexturePool.cpp
+        services/surfaceflinger/CompositionEngine/src/ClientCompositionRequestCache.cpp
+        services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp
+        services/surfaceflinger/CompositionEngine/src/Display.cpp
+        services/surfaceflinger/CompositionEngine/src/DisplayColorProfile.cpp
+        services/surfaceflinger/CompositionEngine/src/DisplaySurface.cpp
+        services/surfaceflinger/CompositionEngine/src/DumpHelpers.cpp
+        services/surfaceflinger/CompositionEngine/src/HwcAsyncWorker.cpp
+        services/surfaceflinger/CompositionEngine/src/HwcBufferCache.cpp
+        services/surfaceflinger/CompositionEngine/src/LayerFECompositionState.cpp
+        services/surfaceflinger/CompositionEngine/src/Output.cpp
+        services/surfaceflinger/CompositionEngine/src/OutputCompositionState.cpp
+        services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp
+        services/surfaceflinger/CompositionEngine/src/OutputLayerCompositionState.cpp
+        services/surfaceflinger/CompositionEngine/src/RenderSurface.cpp
+        services/surfaceflinger/CompositionEngine/tests/planner/CachedSetTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/planner/FlattenerTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/planner/LayerStateTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/planner/PredictorTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/planner/TexturePoolTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/CallOrderStateMachineHelper.h
+        services/surfaceflinger/CompositionEngine/tests/CompositionEngineTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/DisplayColorProfileTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/HwcBufferCacheTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/MockHWC2.cpp
+        services/surfaceflinger/CompositionEngine/tests/MockHWC2.h
+        services/surfaceflinger/CompositionEngine/tests/MockHWComposer.cpp
+        services/surfaceflinger/CompositionEngine/tests/MockHWComposer.h
+        services/surfaceflinger/CompositionEngine/tests/MockPowerAdvisor.cpp
+        services/surfaceflinger/CompositionEngine/tests/MockPowerAdvisor.h
+        services/surfaceflinger/CompositionEngine/tests/OutputLayerTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/ProjectionSpaceTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/RegionMatcher.h
+        services/surfaceflinger/CompositionEngine/tests/RenderSurfaceTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/TestUtils.h
+        services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp
+        services/surfaceflinger/DisplayHardware/AidlComposerHal.h
+        services/surfaceflinger/DisplayHardware/ComposerHal.cpp
+        services/surfaceflinger/DisplayHardware/ComposerHal.h
+        services/surfaceflinger/DisplayHardware/DisplayMode.h
+        services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
+        services/surfaceflinger/DisplayHardware/FramebufferSurface.h
+        services/surfaceflinger/DisplayHardware/Hal.h
+        services/surfaceflinger/DisplayHardware/HidlComposerHal.cpp
+        services/surfaceflinger/DisplayHardware/HidlComposerHal.h
+        services/surfaceflinger/DisplayHardware/HWC2.cpp
+        services/surfaceflinger/DisplayHardware/HWC2.h
+        services/surfaceflinger/DisplayHardware/HWComposer.cpp
+        services/surfaceflinger/DisplayHardware/HWComposer.h
+        services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp
+        services/surfaceflinger/DisplayHardware/PowerAdvisor.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
+        services/surfaceflinger/Effects/Daltonizer.cpp
+        services/surfaceflinger/Effects/Daltonizer.h
+        services/surfaceflinger/EventLog/EventLog.cpp
+        services/surfaceflinger/EventLog/EventLog.h
+        services/surfaceflinger/FrameTimeline/FrameTimeline.cpp
+        services/surfaceflinger/FrameTimeline/FrameTimeline.h
+        services/surfaceflinger/FrameTracer/FrameTracer.cpp
+        services/surfaceflinger/FrameTracer/FrameTracer.h
+        services/surfaceflinger/fuzzer/surfaceflinger_displayhardware_fuzzer.cpp
+        services/surfaceflinger/fuzzer/surfaceflinger_displayhardware_fuzzer_utils.h
+        services/surfaceflinger/fuzzer/surfaceflinger_fuzzer.cpp
+        services/surfaceflinger/fuzzer/surfaceflinger_fuzzers_utils.h
+        services/surfaceflinger/fuzzer/surfaceflinger_layer_fuzzer.cpp
+        services/surfaceflinger/fuzzer/surfaceflinger_scheduler_fuzzer.cpp
+        services/surfaceflinger/fuzzer/surfaceflinger_scheduler_fuzzer.h
+        services/surfaceflinger/layerproto/include/layerproto/LayerProtoHeader.h
+        services/surfaceflinger/layerproto/include/layerproto/LayerProtoParser.h
+        services/surfaceflinger/layerproto/include/layerproto/TransactionProto.h
+        services/surfaceflinger/layerproto/LayerProtoParser.cpp
+        services/surfaceflinger/Scheduler/include/scheduler/Features.h
+        services/surfaceflinger/Scheduler/include/scheduler/Fps.h
+        services/surfaceflinger/Scheduler/include/scheduler/Seamlessness.h
+        services/surfaceflinger/Scheduler/include/scheduler/TimeKeeper.h
+        services/surfaceflinger/Scheduler/include/scheduler/Timer.h
+        services/surfaceflinger/Scheduler/src/Timer.cpp
+        services/surfaceflinger/Scheduler/tests/AsyncCallRecorder.h
+        services/surfaceflinger/Scheduler/tests/TimerTest.cpp
+        services/surfaceflinger/Scheduler/DispSyncSource.cpp
+        services/surfaceflinger/Scheduler/DispSyncSource.h
+        services/surfaceflinger/Scheduler/EventThread.cpp
+        services/surfaceflinger/Scheduler/EventThread.h
+        services/surfaceflinger/Scheduler/FrameRateOverrideMappings.cpp
+        services/surfaceflinger/Scheduler/FrameRateOverrideMappings.h
+        services/surfaceflinger/Scheduler/InjectVSyncSource.h
+        services/surfaceflinger/Scheduler/LayerHistory.cpp
+        services/surfaceflinger/Scheduler/LayerHistory.h
+        services/surfaceflinger/Scheduler/LayerInfo.cpp
+        services/surfaceflinger/Scheduler/LayerInfo.h
+        services/surfaceflinger/Scheduler/MessageQueue.cpp
+        services/surfaceflinger/Scheduler/MessageQueue.h
+        services/surfaceflinger/Scheduler/OneShotTimer.cpp
+        services/surfaceflinger/Scheduler/OneShotTimer.h
+        services/surfaceflinger/Scheduler/RefreshRateConfigs.cpp
+        services/surfaceflinger/Scheduler/RefreshRateConfigs.h
+        services/surfaceflinger/Scheduler/RefreshRateStats.h
+        services/surfaceflinger/Scheduler/Scheduler.cpp
+        services/surfaceflinger/Scheduler/Scheduler.h
+        services/surfaceflinger/Scheduler/StrongTyping.h
+        services/surfaceflinger/Scheduler/VsyncConfiguration.cpp
+        services/surfaceflinger/Scheduler/VsyncConfiguration.h
+        services/surfaceflinger/Scheduler/VsyncController.h
+        services/surfaceflinger/Scheduler/VSyncDispatch.h
+        services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp
+        services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.h
+        services/surfaceflinger/Scheduler/VsyncModulator.cpp
+        services/surfaceflinger/Scheduler/VsyncModulator.h
+        services/surfaceflinger/Scheduler/VSyncPredictor.cpp
+        services/surfaceflinger/Scheduler/VSyncPredictor.h
+        services/surfaceflinger/Scheduler/VSyncReactor.cpp
+        services/surfaceflinger/Scheduler/VSyncReactor.h
+        services/surfaceflinger/Scheduler/VsyncSchedule.cpp
+        services/surfaceflinger/Scheduler/VsyncSchedule.h
+        services/surfaceflinger/Scheduler/VSyncTracker.h
+        services/surfaceflinger/tests/fakehwc/FakeComposerClient.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerClient.h
+        services/surfaceflinger/tests/fakehwc/FakeComposerService.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerService.h
+        services/surfaceflinger/tests/fakehwc/FakeComposerUtils.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerUtils.h
+        services/surfaceflinger/tests/fakehwc/MockComposerHal.h
+        services/surfaceflinger/tests/fakehwc/RenderState.h
+        services/surfaceflinger/tests/fakehwc/SFFakeHwc_test.cpp
+        services/surfaceflinger/tests/tracing/TransactionTraceTestSuite.cpp
+        services/surfaceflinger/tests/unittests/fake/FakeClock.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockComposer.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockComposer.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockDisplayMode.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPowerHintSession.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPowerHintSession.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.h
+        services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.cpp
+        services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.h
+        services/surfaceflinger/tests/unittests/mock/MockEventThread.cpp
+        services/surfaceflinger/tests/unittests/mock/MockEventThread.h
+        services/surfaceflinger/tests/unittests/mock/MockFrameTimeline.cpp
+        services/surfaceflinger/tests/unittests/mock/MockFrameTimeline.h
+        services/surfaceflinger/tests/unittests/mock/MockFrameTracer.cpp
+        services/surfaceflinger/tests/unittests/mock/MockFrameTracer.h
+        services/surfaceflinger/tests/unittests/mock/MockLayer.h
+        services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.cpp
+        services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.h
+        services/surfaceflinger/tests/unittests/mock/MockSchedulerCallback.h
+        services/surfaceflinger/tests/unittests/mock/MockSurfaceInterceptor.cpp
+        services/surfaceflinger/tests/unittests/mock/MockSurfaceInterceptor.h
+        services/surfaceflinger/tests/unittests/mock/MockTimeStats.cpp
+        services/surfaceflinger/tests/unittests/mock/MockTimeStats.h
+        services/surfaceflinger/tests/unittests/mock/MockVsyncController.cpp
+        services/surfaceflinger/tests/unittests/mock/MockVsyncController.h
+        services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.cpp
+        services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.h
+        services/surfaceflinger/tests/unittests/AidlPowerHalWrapperTest.cpp
+        services/surfaceflinger/tests/unittests/CachingTest.cpp
+        services/surfaceflinger/tests/unittests/CompositionTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayDevice_GetBestColorModeTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayDevice_InitiateModeChange.cpp
+        services/surfaceflinger/tests/unittests/DisplayDevice_SetDisplayBrightnessTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayDevice_SetProjectionTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayIdentificationTestHelpers.h
+        services/surfaceflinger/tests/unittests/DisplayIdGeneratorTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayTransactionTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayTransactionTestHelpers.h
+        services/surfaceflinger/tests/unittests/DispSyncSourceTest.cpp
+        services/surfaceflinger/tests/unittests/EventThreadTest.cpp
+        services/surfaceflinger/tests/unittests/FakeVsyncConfiguration.h
+        services/surfaceflinger/tests/unittests/FlagManagerTest.cpp
+        services/surfaceflinger/tests/unittests/FpsOps.h
+        services/surfaceflinger/tests/unittests/FpsReporterTest.cpp
+        services/surfaceflinger/tests/unittests/FpsTest.cpp
+        services/surfaceflinger/tests/unittests/FramebufferSurfaceTest.cpp
+        services/surfaceflinger/tests/unittests/FrameRateOverrideMappingsTest.cpp
+        services/surfaceflinger/tests/unittests/FrameTimelineTest.cpp
+        services/surfaceflinger/tests/unittests/FrameTracerTest.cpp
+        services/surfaceflinger/tests/unittests/GameModeTest.cpp
+        services/surfaceflinger/tests/unittests/HWComposerTest.cpp
+        services/surfaceflinger/tests/unittests/LayerHistoryTest.cpp
+        services/surfaceflinger/tests/unittests/LayerInfoTest.cpp
+        services/surfaceflinger/tests/unittests/LayerMetadataTest.cpp
+        services/surfaceflinger/tests/unittests/LayerTest.cpp
+        services/surfaceflinger/tests/unittests/LayerTestUtils.cpp
+        services/surfaceflinger/tests/unittests/LayerTestUtils.h
+        services/surfaceflinger/tests/unittests/libsurfaceflinger_unittest_main.cpp
+        services/surfaceflinger/tests/unittests/libsurfaceflinger_unittest_main.h
+        services/surfaceflinger/tests/unittests/MessageQueueTest.cpp
+        services/surfaceflinger/tests/unittests/OneShotTimerTest.cpp
+        services/surfaceflinger/tests/unittests/RefreshRateConfigsTest.cpp
+        services/surfaceflinger/tests/unittests/RefreshRateSelectionTest.cpp
+        services/surfaceflinger/tests/unittests/RefreshRateStatsTest.cpp
+        services/surfaceflinger/tests/unittests/RegionSamplingTest.cpp
+        services/surfaceflinger/tests/unittests/SchedulerTest.cpp
+        services/surfaceflinger/tests/unittests/SetFrameRateTest.cpp
+        services/surfaceflinger/tests/unittests/StrongTypingTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_CreateDisplayTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_DestroyDisplayTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_DisplayModeSwitching.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_DisplayTransactionCommitTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_GetDisplayNativePrimariesTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_HotplugTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_NotifyPowerBoostTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_OnInitializeDisplaysTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_PowerHintTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_SetDisplayStateTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_SetPowerModeInternalTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_SetupNewDisplayDeviceInternalTest.cpp
+        services/surfaceflinger/tests/unittests/TestableScheduler.h
+        services/surfaceflinger/tests/unittests/TestableSurfaceFlinger.h
+        services/surfaceflinger/tests/unittests/TimeStatsTest.cpp
+        services/surfaceflinger/tests/unittests/TransactionApplicationTest.cpp
+        services/surfaceflinger/tests/unittests/TransactionFrameTracerTest.cpp
+        services/surfaceflinger/tests/unittests/TransactionProtoParserTest.cpp
+        services/surfaceflinger/tests/unittests/TransactionSurfaceFrameTest.cpp
+        services/surfaceflinger/tests/unittests/TransactionTracingTest.cpp
+        services/surfaceflinger/tests/unittests/TunnelModeEnabledReporterTest.cpp
+        services/surfaceflinger/tests/unittests/VsyncConfigurationTest.cpp
+        services/surfaceflinger/tests/unittests/VSyncDispatchRealtimeTest.cpp
+        services/surfaceflinger/tests/unittests/VSyncDispatchTimerQueueTest.cpp
+        services/surfaceflinger/tests/unittests/VsyncModulatorTest.cpp
+        services/surfaceflinger/tests/unittests/VSyncPredictorTest.cpp
+        services/surfaceflinger/tests/unittests/VSyncReactorTest.cpp
+        services/surfaceflinger/tests/utils/ColorUtils.h
+        services/surfaceflinger/tests/utils/ScreenshotUtils.h
+        services/surfaceflinger/tests/utils/TransactionUtils.h
+        services/surfaceflinger/tests/vsync/vsync.cpp
+        services/surfaceflinger/tests/waitforvsync/waitforvsync.cpp
+        services/surfaceflinger/tests/BootDisplayMode_test.cpp
+        services/surfaceflinger/tests/BufferGenerator.cpp
+        services/surfaceflinger/tests/BufferGenerator.h
+        services/surfaceflinger/tests/BufferGeneratorShader.h
+        services/surfaceflinger/tests/CommonTypes_test.cpp
+        services/surfaceflinger/tests/Credentials_test.cpp
+        services/surfaceflinger/tests/DereferenceSurfaceControl_test.cpp
+        services/surfaceflinger/tests/DisplayConfigs_test.cpp
+        services/surfaceflinger/tests/DisplayEventReceiver_test.cpp
+        services/surfaceflinger/tests/EffectLayer_test.cpp
+        services/surfaceflinger/tests/InvalidHandles_test.cpp
+        services/surfaceflinger/tests/IPC_test.cpp
+        services/surfaceflinger/tests/LayerCallback_test.cpp
+        services/surfaceflinger/tests/LayerRenderTypeTransaction_test.cpp
+        services/surfaceflinger/tests/LayerState_test.cpp
+        services/surfaceflinger/tests/LayerTransaction_test.cpp
+        services/surfaceflinger/tests/LayerTransactionTest.h
+        services/surfaceflinger/tests/LayerTypeAndRenderTypeTransaction_test.cpp
+        services/surfaceflinger/tests/LayerTypeTransaction_test.cpp
+        services/surfaceflinger/tests/LayerUpdate_test.cpp
+        services/surfaceflinger/tests/MirrorLayer_test.cpp
+        services/surfaceflinger/tests/MultiDisplayLayerBounds_test.cpp
+        services/surfaceflinger/tests/RefreshRateOverlay_test.cpp
+        services/surfaceflinger/tests/RelativeZ_test.cpp
+        services/surfaceflinger/tests/ReleaseBufferCallback_test.cpp
+        services/surfaceflinger/tests/ScreenCapture_test.cpp
+        services/surfaceflinger/tests/SetFrameRate_test.cpp
+        services/surfaceflinger/tests/SetFrameRateOverride_test.cpp
+        services/surfaceflinger/tests/SetGeometry_test.cpp
+        services/surfaceflinger/tests/Stress_test.cpp
+        services/surfaceflinger/tests/SurfaceInterceptor_test.cpp
+        services/surfaceflinger/tests/TransactionTestHarnesses.h
+        services/surfaceflinger/tests/VirtualDisplay_test.cpp
+        services/surfaceflinger/tests/WindowInfosListener_test.cpp
+        services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto/TimeStatsHelper.h
+        services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto/TimeStatsProtoHeader.h
+        services/surfaceflinger/TimeStats/timestatsproto/TimeStatsHelper.cpp
+        services/surfaceflinger/TimeStats/TimeStats.cpp
+        services/surfaceflinger/TimeStats/TimeStats.h
+        services/surfaceflinger/Tracing/tools/LayerTraceGenerator.cpp
+        services/surfaceflinger/Tracing/tools/LayerTraceGenerator.h
+        services/surfaceflinger/Tracing/tools/main.cpp
+        services/surfaceflinger/Tracing/LayerTracing.cpp
+        services/surfaceflinger/Tracing/LayerTracing.h
+        services/surfaceflinger/Tracing/LocklessStack.h
+        services/surfaceflinger/Tracing/RingBuffer.h
+        services/surfaceflinger/Tracing/TransactionProtoParser.cpp
+        services/surfaceflinger/Tracing/TransactionProtoParser.h
+        services/surfaceflinger/Tracing/TransactionTracing.cpp
+        services/surfaceflinger/Tracing/TransactionTracing.h
+        services/surfaceflinger/BackgroundExecutor.cpp
+        services/surfaceflinger/BackgroundExecutor.h
+        services/surfaceflinger/BufferLayer.cpp
+        services/surfaceflinger/BufferLayer.h
+        services/surfaceflinger/BufferLayerConsumer.cpp
+        services/surfaceflinger/BufferLayerConsumer.h
+        services/surfaceflinger/BufferQueueLayer.cpp
+        services/surfaceflinger/BufferQueueLayer.h
+        services/surfaceflinger/BufferStateLayer.cpp
+        services/surfaceflinger/BufferStateLayer.h
+        services/surfaceflinger/Client.cpp
+        services/surfaceflinger/Client.h
+        services/surfaceflinger/ClientCache.cpp
+        services/surfaceflinger/ClientCache.h
+        services/surfaceflinger/Clock.h
+        services/surfaceflinger/Colorizer.h
+        services/surfaceflinger/ContainerLayer.cpp
+        services/surfaceflinger/ContainerLayer.h
+        services/surfaceflinger/DisplayDevice.cpp
+        services/surfaceflinger/DisplayDevice.h
+        services/surfaceflinger/DisplayIdGenerator.h
+        services/surfaceflinger/DisplayRenderArea.cpp
+        services/surfaceflinger/DisplayRenderArea.h
+        services/surfaceflinger/EffectLayer.cpp
+        services/surfaceflinger/EffectLayer.h
+        services/surfaceflinger/FlagManager.cpp
+        services/surfaceflinger/FlagManager.h
+        services/surfaceflinger/FpsReporter.cpp
+        services/surfaceflinger/FpsReporter.h
+        services/surfaceflinger/FrameTracker.cpp
+        services/surfaceflinger/FrameTracker.h
+        services/surfaceflinger/HdrLayerInfoReporter.cpp
+        services/surfaceflinger/HdrLayerInfoReporter.h
+        services/surfaceflinger/Layer.cpp
+        services/surfaceflinger/Layer.h
+        services/surfaceflinger/LayerProtoHelper.cpp
+        services/surfaceflinger/LayerProtoHelper.h
+        services/surfaceflinger/LayerRejecter.cpp
+        services/surfaceflinger/LayerRejecter.h
+        services/surfaceflinger/LayerRenderArea.cpp
+        services/surfaceflinger/LayerRenderArea.h
+        services/surfaceflinger/LayerVector.cpp
+        services/surfaceflinger/LayerVector.h
+        services/surfaceflinger/main_surfaceflinger.cpp
+        services/surfaceflinger/MonitoredProducer.cpp
+        services/surfaceflinger/MonitoredProducer.h
+        services/surfaceflinger/MutexUtils.h
+        services/surfaceflinger/NativeWindowSurface.cpp
+        services/surfaceflinger/NativeWindowSurface.h
+        services/surfaceflinger/RefreshRateOverlay.cpp
+        services/surfaceflinger/RefreshRateOverlay.h
+        services/surfaceflinger/RegionSamplingThread.cpp
+        services/surfaceflinger/RegionSamplingThread.h
+        services/surfaceflinger/RenderArea.cpp
+        services/surfaceflinger/RenderArea.h
+        services/surfaceflinger/StartPropertySetThread.cpp
+        services/surfaceflinger/StartPropertySetThread.h
+        services/surfaceflinger/SurfaceFlinger.cpp
+        services/surfaceflinger/SurfaceFlinger.h
+        services/surfaceflinger/SurfaceFlingerDefaultFactory.cpp
+        services/surfaceflinger/SurfaceFlingerDefaultFactory.h
+        services/surfaceflinger/SurfaceFlingerFactory.cpp
+        services/surfaceflinger/SurfaceFlingerFactory.h
+        services/surfaceflinger/SurfaceFlingerProperties.cpp
+        services/surfaceflinger/SurfaceFlingerProperties.h
+        services/surfaceflinger/SurfaceInterceptor.cpp
+        services/surfaceflinger/SurfaceInterceptor.h
+        services/surfaceflinger/ThreadContext.h
+        services/surfaceflinger/TracedOrdinal.h
+        services/surfaceflinger/TransactionCallbackInvoker.cpp
+        services/surfaceflinger/TransactionCallbackInvoker.h
+        services/surfaceflinger/TransactionState.h
+        services/surfaceflinger/TunnelModeEnabledReporter.cpp
+        services/surfaceflinger/TunnelModeEnabledReporter.h
+        services/surfaceflinger/WindowInfosListenerInvoker.cpp
+        services/surfaceflinger/WindowInfosListenerInvoker.h
+        services/surfaceflinger/WpHash.h
+        services/utils/include/serviceutils/PriorityDumper.h
+        services/utils/tests/PriorityDumper_test.cpp
+        services/utils/PriorityDumper.cpp
+        services/vibratorservice/benchmarks/VibratorHalControllerBenchmarks.cpp
+        services/vibratorservice/include/vibratorservice/VibratorCallbackScheduler.h
+        services/vibratorservice/include/vibratorservice/VibratorHalController.h
+        services/vibratorservice/include/vibratorservice/VibratorHalWrapper.h
+        services/vibratorservice/include/vibratorservice/VibratorManagerHalController.h
+        services/vibratorservice/include/vibratorservice/VibratorManagerHalWrapper.h
+        services/vibratorservice/test/test_utils.h
+        services/vibratorservice/test/VibratorCallbackSchedulerTest.cpp
+        services/vibratorservice/test/VibratorHalControllerTest.cpp
+        services/vibratorservice/test/VibratorHalWrapperAidlTest.cpp
+        services/vibratorservice/test/VibratorHalWrapperHidlV1_0Test.cpp
+        services/vibratorservice/test/VibratorHalWrapperHidlV1_1Test.cpp
+        services/vibratorservice/test/VibratorHalWrapperHidlV1_2Test.cpp
+        services/vibratorservice/test/VibratorHalWrapperHidlV1_3Test.cpp
+        services/vibratorservice/test/VibratorManagerHalControllerTest.cpp
+        services/vibratorservice/test/VibratorManagerHalWrapperAidlTest.cpp
+        services/vibratorservice/test/VibratorManagerHalWrapperLegacyTest.cpp
+        services/vibratorservice/VibratorCallbackScheduler.cpp
+        services/vibratorservice/VibratorHalController.cpp
+        services/vibratorservice/VibratorHalWrapper.cpp
+        services/vibratorservice/VibratorManagerHalController.cpp
+        services/vibratorservice/VibratorManagerHalWrapper.cpp
+        services/vr/bufferhubd/include/private/dvr/buffer_hub.h
+        services/vr/bufferhubd/include/private/dvr/consumer_channel.h
+        services/vr/bufferhubd/include/private/dvr/consumer_queue_channel.h
+        services/vr/bufferhubd/include/private/dvr/producer_channel.h
+        services/vr/bufferhubd/include/private/dvr/producer_queue_channel.h
+        services/vr/bufferhubd/buffer_hub.cpp
+        services/vr/bufferhubd/bufferhubd.cpp
+        services/vr/bufferhubd/consumer_channel.cpp
+        services/vr/bufferhubd/consumer_queue_channel.cpp
+        services/vr/bufferhubd/producer_channel.cpp
+        services/vr/bufferhubd/producer_queue_channel.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_frame.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_frame.h
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_layer.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_layer.h
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_unique_fd.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_unique_fd.h
+        services/vr/hardware_composer/impl/vr_composer_client.cpp
+        services/vr/hardware_composer/impl/vr_composer_client.h
+        services/vr/hardware_composer/impl/vr_hwc.cpp
+        services/vr/hardware_composer/impl/vr_hwc.h
+        services/vr/hardware_composer/tests/vr_composer_test.cpp
+        services/vr/hardware_composer/vr_composer.cpp
+        services/vr/hardware_composer/vr_composer.h
+        services/vr/performanced/cpu_set.cpp
+        services/vr/performanced/cpu_set.h
+        services/vr/performanced/directory_reader.h
+        services/vr/performanced/main.cpp
+        services/vr/performanced/performance_service.cpp
+        services/vr/performanced/performance_service.h
+        services/vr/performanced/performance_service_tests.cpp
+        services/vr/performanced/stdio_filebuf.h
+        services/vr/performanced/task.cpp
+        services/vr/performanced/task.h
+        services/vr/performanced/unique_file.h
+        services/vr/virtual_touchpad/include/dvr/virtual_touchpad_client.h
+        services/vr/virtual_touchpad/include/VirtualTouchpad.h
+        services/vr/virtual_touchpad/include/VirtualTouchpadClient.h
+        services/vr/virtual_touchpad/tests/VirtualTouchpad_test.cpp
+        services/vr/virtual_touchpad/DvrVirtualTouchpadClient.cpp
+        services/vr/virtual_touchpad/EvdevInjector.cpp
+        services/vr/virtual_touchpad/EvdevInjector.h
+        services/vr/virtual_touchpad/main.cpp
+        services/vr/virtual_touchpad/VirtualTouchpadClient.cpp
+        services/vr/virtual_touchpad/VirtualTouchpadEvdev.cpp
+        services/vr/virtual_touchpad/VirtualTouchpadEvdev.h
+        services/vr/virtual_touchpad/VirtualTouchpadService.cpp
+        services/vr/virtual_touchpad/VirtualTouchpadService.h
+        vulkan/include/hardware/hwvulkan.h
+        vulkan/include/vulkan/vk_android_native_buffer.h
+        vulkan/include/vulkan/vk_layer_interface.h
+        vulkan/libvulkan/api.cpp
+        vulkan/libvulkan/api.h
+        vulkan/libvulkan/api_gen.cpp
+        vulkan/libvulkan/api_gen.h
+        vulkan/libvulkan/debug_report.cpp
+        vulkan/libvulkan/debug_report.h
+        vulkan/libvulkan/driver.cpp
+        vulkan/libvulkan/driver.h
+        vulkan/libvulkan/driver_gen.cpp
+        vulkan/libvulkan/driver_gen.h
+        vulkan/libvulkan/layers_extensions.cpp
+        vulkan/libvulkan/layers_extensions.h
+        vulkan/libvulkan/stubhal.cpp
+        vulkan/libvulkan/stubhal.h
+        vulkan/libvulkan/swapchain.cpp
+        vulkan/libvulkan/swapchain.h
+        vulkan/nulldrv/null_driver.cpp
+        vulkan/nulldrv/null_driver_gen.cpp
+        vulkan/nulldrv/null_driver_gen.h
+        vulkan/vkjson/vkjson.cc
+        vulkan/vkjson/vkjson.h
+        vulkan/vkjson/vkjson_instance.cc)
