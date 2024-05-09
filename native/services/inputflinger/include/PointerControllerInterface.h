@@ -14,27 +14,15 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _INPUTFLINGER_POINTER_CONTROLLER_INTERFACE_H
+#define _INPUTFLINGER_POINTER_CONTROLLER_INTERFACE_H
 
 #include <input/DisplayViewport.h>
 #include <input/Input.h>
 #include <utils/BitSet.h>
+#include <utils/RefBase.h>
 
 namespace android {
-
-struct FloatPoint {
-    float x;
-    float y;
-
-    inline FloatPoint(float x, float y) : x(x), y(y) {}
-
-    inline explicit FloatPoint(vec2 p) : x(p.x), y(p.y) {}
-
-    template <typename T, typename U>
-    operator std::tuple<T, U>() {
-        return {x, y};
-    }
-};
 
 /**
  * Interface for tracking a mouse / touch pad pointer and touch pad spots.
@@ -43,8 +31,7 @@ struct FloatPoint {
  * fingers
  *
  * The pointer controller is responsible for providing synchronization and for tracking
- * display orientation changes if needed. It works in the display panel's coordinate space, which
- * is the same coordinate space used by InputReader.
+ * display orientation changes if needed.
  */
 class PointerControllerInterface {
 protected:
@@ -54,16 +41,23 @@ protected:
 public:
     /* Gets the bounds of the region that the pointer can traverse.
      * Returns true if the bounds are available. */
-    virtual std::optional<FloatRect> getBounds() const = 0;
+    virtual bool getBounds(float* outMinX, float* outMinY,
+            float* outMaxX, float* outMaxY) const = 0;
 
     /* Move the pointer. */
     virtual void move(float deltaX, float deltaY) = 0;
+
+    /* Sets a mask that indicates which buttons are pressed. */
+    virtual void setButtonState(int32_t buttonState) = 0;
+
+    /* Gets a mask that indicates which buttons are pressed. */
+    virtual int32_t getButtonState() const = 0;
 
     /* Sets the absolute location of the pointer. */
     virtual void setPosition(float x, float y) = 0;
 
     /* Gets the absolute location of the pointer. */
-    virtual FloatPoint getPosition() const = 0;
+    virtual void getPosition(float* outX, float* outY) const = 0;
 
     enum class Transition {
         // Fade/unfade immediately.
@@ -86,10 +80,6 @@ public:
         POINTER,
         // Show spots and a spot anchor in place of the mouse pointer.
         SPOT,
-        // Show the stylus hover pointer.
-        STYLUS_HOVER,
-
-        ftl_last = STYLUS_HOVER,
     };
 
     /* Sets the mode of the pointer controller. */
@@ -118,3 +108,5 @@ public:
 };
 
 } // namespace android
+
+#endif // _INPUTFLINGER_POINTER_CONTROLLER_INTERFACE_H

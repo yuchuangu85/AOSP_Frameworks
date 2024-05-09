@@ -22,19 +22,20 @@
 #include <gui/SurfaceComposerClient.h>
 #include <log/log.h>
 #include <renderengine/ExternalTexture.h>
-#include <renderengine/mock/FakeExternalTexture.h>
 #include <renderengine/mock/RenderEngine.h>
 #include <utils/String8.h>
 
 #include "TestableSurfaceFlinger.h"
 #include "mock/DisplayHardware/MockComposer.h"
+#include "mock/MockEventThread.h"
+#include "mock/MockVsyncController.h"
 
 namespace android {
 
 using testing::_;
 using testing::Mock;
 using testing::Return;
-
+using FakeHwcDisplayInjector = TestableSurfaceFlinger::FakeHwcDisplayInjector;
 using PresentState = frametimeline::SurfaceFrame::PresentState;
 
 class TransactionFrameTracerTest : public testing::Test {
@@ -43,9 +44,8 @@ public:
         const ::testing::TestInfo* const test_info =
                 ::testing::UnitTest::GetInstance()->current_test_info();
         ALOGD("**** Setting up for %s.%s\n", test_info->test_case_name(), test_info->name());
-        mFlinger.setupMockScheduler();
+        setupScheduler();
         mFlinger.setupComposer(std::make_unique<Hwc2::mock::Composer>());
-        mFlinger.setupRenderEngine(std::unique_ptr<renderengine::RenderEngine>(mRenderEngine));
     }
 
     ~TransactionFrameTracerTest() {
@@ -54,11 +54,11 @@ public:
         ALOGD("**** Tearing down after %s.%s\n", test_info->test_case_name(), test_info->name());
     }
 
-    sp<Layer> createLayer() {
+    sp<BufferStateLayer> createBufferStateLayer() {
         sp<Client> client;
-        LayerCreationArgs args(mFlinger.flinger(), client, "buffer-state-layer", 0,
+        LayerCreationArgs args(mFlinger.flinger(), client, "buffer-state-layer", 100, 100, 0,
                                LayerMetadata());
-        return sp<Layer>::make(args);
+        return new BufferStateLayer(args);
     }
 
     void commitTransaction(Layer* layer) {
@@ -66,17 +66,47 @@ public:
         layer->commitTransaction(c);
     }
 
+    void setupScheduler() {
+        auto eventThread = std::make_unique<mock::EventThread>();
+        auto sfEventThread = std::make_unique<mock::EventThread>();
+
+        EXPECT_CALL(*eventThread, registerDisplayEventConnection(_));
+        EXPECT_CALL(*eventThread, createEventConnection(_, _))
+                .WillOnce(Return(new EventThreadConnection(eventThread.get(), /*callingUid=*/0,
+                                                           ResyncCallback())));
+
+        EXPECT_CALL(*sfEventThread, registerDisplayEventConnection(_));
+        EXPECT_CALL(*sfEventThread, createEventConnection(_, _))
+                .WillOnce(Return(new EventThreadConnection(sfEventThread.get(), /*callingUid=*/0,
+                                                           ResyncCallback())));
+
+        auto vsyncController = std::make_unique<mock::VsyncController>();
+        auto vsyncTracker = std::make_unique<mock::VSyncTracker>();
+
+        EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+        EXPECT_CALL(*vsyncTracker, currentPeriod())
+                .WillRepeatedly(Return(FakeHwcDisplayInjector::DEFAULT_VSYNC_PERIOD));
+        EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+        mFlinger.setupScheduler(std::move(vsyncController), std::move(vsyncTracker),
+                                std::move(eventThread), std::move(sfEventThread));
+    }
+
     TestableSurfaceFlinger mFlinger;
-    renderengine::mock::RenderEngine* mRenderEngine = new renderengine::mock::RenderEngine();
+    renderengine::mock::RenderEngine mRenderEngine;
 
     FenceToFenceTimeMap fenceFactory;
+    client_cache_t mClientCache;
 
     void BLASTTransactionSendsFrameTracerEvents() {
-        sp<Layer> layer = createLayer();
+        sp<BufferStateLayer> layer = createBufferStateLayer();
 
-        sp<Fence> fence(sp<Fence>::make());
+        sp<Fence> fence(new Fence());
+        const auto buffer = std::make_shared<
+                renderengine::ExternalTexture>(new GraphicBuffer(1, 1, HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                 1, 0),
+                                               mRenderEngine, false);
         int32_t layerId = layer->getSequence();
-        uint64_t bufferId = 42;
+        uint64_t bufferId = buffer->getBuffer()->getId();
         uint64_t frameNumber = 5;
         nsecs_t dequeueTime = 10;
         nsecs_t postTime = 20;
@@ -87,19 +117,12 @@ public:
         EXPECT_CALL(*mFlinger.getFrameTracer(),
                     traceTimestamp(layerId, bufferId, frameNumber, postTime,
                                    FrameTracer::FrameEvent::QUEUE, /*duration*/ 0));
-        BufferData bufferData;
-        bufferData.acquireFence = fence;
-        bufferData.frameNumber = frameNumber;
-        bufferData.flags |= BufferData::BufferDataChange::fenceChanged;
-        bufferData.flags |= BufferData::BufferDataChange::frameNumberChanged;
-        std::shared_ptr<renderengine::ExternalTexture> externalTexture = std::make_shared<
-                renderengine::mock::FakeExternalTexture>(1U /*width*/, 1U /*height*/, bufferId,
-                                                         HAL_PIXEL_FORMAT_RGBA_8888,
-                                                         0ULL /*usage*/);
-        layer->setBuffer(externalTexture, bufferData, postTime, /*desiredPresentTime*/ 30, false,
-                         dequeueTime, FrameTimelineInfo{});
+        layer->setBuffer(buffer, fence, postTime, /*desiredPresentTime*/ 30, false, mClientCache,
+                         frameNumber, dequeueTime, FrameTimelineInfo{},
+                         nullptr /* releaseBufferCallback */);
 
         commitTransaction(layer.get());
+        bool computeVisisbleRegions;
         nsecs_t latchTime = 25;
         EXPECT_CALL(*mFlinger.getFrameTracer(),
                     traceFence(layerId, bufferId, frameNumber, _,
@@ -107,7 +130,7 @@ public:
         EXPECT_CALL(*mFlinger.getFrameTracer(),
                     traceTimestamp(layerId, bufferId, frameNumber, latchTime,
                                    FrameTracer::FrameEvent::LATCH, /*duration*/ 0));
-        layer->updateTexImage(latchTime);
+        layer->updateTexImage(computeVisisbleRegions, latchTime, /*expectedPresentTime*/ 0);
 
         auto glDoneFence = fenceFactory.createFenceTimeForTest(fence);
         auto presentFence = fenceFactory.createFenceTimeForTest(fence);

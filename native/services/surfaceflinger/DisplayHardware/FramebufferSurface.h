@@ -21,12 +21,12 @@
 #include <sys/types.h>
 
 #include <compositionengine/DisplaySurface.h>
-#include <gui/BufferQueue.h>
+#include <compositionengine/impl/HwcBufferCache.h>
 #include <gui/ConsumerBase.h>
 #include <ui/DisplayId.h>
 #include <ui/Size.h>
 
-#include <ui/DisplayIdentification.h>
+#include "DisplayIdentification.h"
 
 // ---------------------------------------------------------------------------
 namespace android {
@@ -69,6 +69,12 @@ private:
 
     virtual void dumpLocked(String8& result, const char* prefix) const;
 
+    // nextBuffer waits for and then latches the next buffer from the
+    // BufferQueue and releases the previously latched buffer to the
+    // BufferQueue.  The new buffer is returned in the 'buffer' argument.
+    status_t nextBuffer(uint32_t& outSlot, sp<GraphicBuffer>& outBuffer,
+            sp<Fence>& outFence, ui::Dataspace& outDataspace);
+
     const PhysicalDisplayId mDisplayId;
 
     // Framebuffer size has a dimension limitation in pixels based on the graphics capabilities of
@@ -85,7 +91,7 @@ private:
     // compositing. Otherwise it will display the dataspace of the buffer
     // use for compositing which can change as wide-color content is
     // on/off.
-    ui::Dataspace mDataspace;
+    ui::Dataspace mDataSpace;
 
     // mCurrentBuffer is the current buffer or nullptr to indicate that there is
     // no current buffer.
@@ -97,9 +103,7 @@ private:
     // Hardware composer, owned by SurfaceFlinger.
     HWComposer& mHwc;
 
-    // Buffers that HWC has seen before, indexed by slot number.
-    // NOTE: The BufferQueue slot number is the same as the HWC slot number.
-    uint64_t mHwcBufferIds[BufferQueue::NUM_BUFFER_SLOTS];
+    compositionengine::impl::HwcBufferCache mHwcBufferCache;
 
     // Previous buffer to release after getting an updated retire fence
     bool mHasPendingRelease;

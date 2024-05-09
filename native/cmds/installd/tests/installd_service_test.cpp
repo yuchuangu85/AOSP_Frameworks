@@ -18,11 +18,10 @@
 #include <string>
 
 #include <fcntl.h>
-#include <pwd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/stat.h>
 #include <sys/xattr.h>
 
 #include <android-base/file.h>
@@ -32,66 +31,19 @@
 #include <android-base/stringprintf.h>
 #include <cutils/properties.h>
 #include <gtest/gtest.h>
-#include <filesystem>
-#include <fstream>
 
-#include <android/content/pm/IPackageManagerNative.h>
-#include <binder/IServiceManager.h>
-#include "InstalldNativeService.h"
-#include "binder/Status.h"
 #include "binder_test_utils.h"
+#include "InstalldNativeService.h"
 #include "dexopt.h"
 #include "globals.h"
 #include "utils.h"
 
 using android::base::StringPrintf;
-using std::filesystem::is_empty;
 
 namespace android {
-std::string get_package_name(uid_t uid) {
-    sp<IServiceManager> sm = defaultServiceManager();
-    sp<content::pm::IPackageManagerNative> package_mgr;
-    if (sm.get() == nullptr) {
-        LOG(INFO) << "Cannot find service manager";
-    } else {
-        sp<IBinder> binder = sm->getService(String16("package_native"));
-        if (binder.get() == nullptr) {
-            LOG(INFO) << "Cannot find package_native";
-        } else {
-            package_mgr = interface_cast<content::pm::IPackageManagerNative>(binder);
-        }
-    }
-    // find package name
-    std::string pkg;
-    if (package_mgr != nullptr) {
-        std::vector<std::string> names;
-        binder::Status status = package_mgr->getNamesForUids({(int)uid}, &names);
-        if (!status.isOk()) {
-            LOG(INFO) << "getNamesForUids failed: %s", status.exceptionMessage().c_str();
-        } else {
-            if (!names[0].empty()) {
-                pkg = names[0].c_str();
-            }
-        }
-    }
-    return pkg;
-}
 namespace installd {
 
-static constexpr const char* kTestUuid = "TEST";
-static const std::string kTestPath = "/data/local/tmp";
-static constexpr const uid_t kNobodyUid = 9999;
-static constexpr const uid_t kSystemUid = 1000;
-static constexpr const int32_t kTestUserId = 0;
-static constexpr const uid_t kTestAppId = 19999;
-static constexpr const int FLAG_STORAGE_SDK = InstalldNativeService::FLAG_STORAGE_SDK;
-static constexpr const int FLAG_CLEAR_CACHE_ONLY = InstalldNativeService::FLAG_CLEAR_CACHE_ONLY;
-static constexpr const int FLAG_CLEAR_CODE_CACHE_ONLY =
-        InstalldNativeService::FLAG_CLEAR_CODE_CACHE_ONLY;
-
-const gid_t kTestAppUid = multiuser_get_uid(kTestUserId, kTestAppId);
-const gid_t kTestCacheGid = multiuser_get_cache_gid(kTestUserId, kTestAppId);
-const uid_t kTestSdkSandboxUid = multiuser_get_sdk_sandbox_uid(kTestUserId, kTestAppId);
+constexpr const char* kTestUuid = "TEST";
 
 #define FLAG_FORCE InstalldNativeService::FLAG_FORCE
 
@@ -113,31 +65,23 @@ bool create_cache_path(char path[PKG_PATH_MAX], const char *src, const char *ins
     return create_cache_path_default(path, src, instruction_set);
 }
 
-bool force_compile_without_image() {
-    return false;
+static std::string get_full_path(const char* path) {
+    return StringPrintf("/data/local/tmp/user/0/%s", path);
 }
 
-static std::string get_full_path(const std::string& path) {
-    return StringPrintf("%s/%s", kTestPath.c_str(), path.c_str());
-}
-
-static void mkdir(const std::string& path, uid_t owner, gid_t group, mode_t mode) {
+static void mkdir(const char* path, uid_t owner, gid_t group, mode_t mode) {
     const std::string fullPath = get_full_path(path);
     EXPECT_EQ(::mkdir(fullPath.c_str(), mode), 0);
     EXPECT_EQ(::chown(fullPath.c_str(), owner, group), 0);
     EXPECT_EQ(::chmod(fullPath.c_str(), mode), 0);
 }
 
-static int create(const std::string& path, uid_t owner, gid_t group, mode_t mode) {
+static void touch(const char* path, uid_t owner, gid_t group, mode_t mode) {
     int fd = ::open(get_full_path(path).c_str(), O_RDWR | O_CREAT, mode);
     EXPECT_NE(fd, -1);
     EXPECT_EQ(::fchown(fd, owner, group), 0);
     EXPECT_EQ(::fchmod(fd, mode), 0);
-    return fd;
-}
-
-static void touch(const std::string& path, uid_t owner, gid_t group, mode_t mode) {
-    EXPECT_EQ(::close(create(path.c_str(), owner, group, mode)), 0);
+    EXPECT_EQ(::close(fd), 0);
 }
 
 static int stat_gid(const char* path) {
@@ -152,35 +96,6 @@ static int stat_mode(const char* path) {
     return buf.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO | S_ISGID);
 }
 
-static bool exists(const std::string& path) {
-    return ::access(get_full_path(path).c_str(), F_OK) == 0;
-}
-
-template <class Pred>
-static bool find_file(const char* path, Pred&& pred) {
-    bool result = false;
-    auto d = opendir(path);
-    if (d == nullptr) {
-        return result;
-    }
-    struct dirent* de;
-    while ((de = readdir(d))) {
-        const char* name = de->d_name;
-        if (pred(name, de->d_type == DT_DIR)) {
-            result = true;
-            break;
-        }
-    }
-    closedir(d);
-    return result;
-}
-
-static bool exists_renamed_deleted_dir(const std::string& rootDirectory) {
-    return find_file((kTestPath + rootDirectory).c_str(), [](const std::string& name, bool is_dir) {
-        return is_dir && is_renamed_deleted_dir(name);
-    });
-}
-
 class ServiceTest : public testing::Test {
 protected:
     InstalldNativeService* service;
@@ -192,206 +107,69 @@ protected:
 
         service = new InstalldNativeService();
         testUuid = kTestUuid;
-        system("rm -rf /data/local/tmp/user");
-        system("rm -rf /data/local/tmp/misc_ce");
-        system("rm -rf /data/local/tmp/misc_de");
         system("mkdir -p /data/local/tmp/user/0");
-        system("mkdir -p /data/local/tmp/misc_ce/0/sdksandbox");
-        system("mkdir -p /data/local/tmp/misc_de/0/sdksandbox");
+
         init_globals_from_data_and_root();
     }
 
     virtual void TearDown() {
         delete service;
         system("rm -rf /data/local/tmp/user");
-        system("rm -rf /data/local/tmp/misc_ce");
-        system("rm -rf /data/local/tmp/misc_de");
     }
 };
 
 TEST_F(ServiceTest, FixupAppData_Upgrade) {
     LOG(INFO) << "FixupAppData_Upgrade";
 
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/normal", 10000, 10000, 0700);
-    mkdir("user/0/com.example/cache", 10000, 10000, 0700);
-    touch("user/0/com.example/cache/file", 10000, 10000, 0700);
+    mkdir("com.example", 10000, 10000, 0700);
+    mkdir("com.example/normal", 10000, 10000, 0700);
+    mkdir("com.example/cache", 10000, 10000, 0700);
+    touch("com.example/cache/file", 10000, 10000, 0700);
 
     service->fixupAppData(testUuid, 0);
 
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/normal"));
-    EXPECT_EQ(20000, stat_gid("user/0/com.example/cache"));
-    EXPECT_EQ(20000, stat_gid("user/0/com.example/cache/file"));
+    EXPECT_EQ(10000, stat_gid("com.example/normal"));
+    EXPECT_EQ(20000, stat_gid("com.example/cache"));
+    EXPECT_EQ(20000, stat_gid("com.example/cache/file"));
 
-    EXPECT_EQ(0700, stat_mode("user/0/com.example/normal"));
-    EXPECT_EQ(02771, stat_mode("user/0/com.example/cache"));
-    EXPECT_EQ(0700, stat_mode("user/0/com.example/cache/file"));
+    EXPECT_EQ(0700, stat_mode("com.example/normal"));
+    EXPECT_EQ(02771, stat_mode("com.example/cache"));
+    EXPECT_EQ(0700, stat_mode("com.example/cache/file"));
 }
 
 TEST_F(ServiceTest, FixupAppData_Moved) {
     LOG(INFO) << "FixupAppData_Moved";
 
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0700);
-    mkdir("user/0/com.example/bar", 10000, 20000, 0700);
-    touch("user/0/com.example/bar/file", 10000, 20000, 0700);
+    mkdir("com.example", 10000, 10000, 0700);
+    mkdir("com.example/foo", 10000, 10000, 0700);
+    touch("com.example/foo/file", 10000, 20000, 0700);
+    mkdir("com.example/bar", 10000, 20000, 0700);
+    touch("com.example/bar/file", 10000, 20000, 0700);
 
     service->fixupAppData(testUuid, 0);
 
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/foo"));
-    EXPECT_EQ(20000, stat_gid("user/0/com.example/foo/file"));
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/bar"));
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/bar/file"));
+    EXPECT_EQ(10000, stat_gid("com.example/foo"));
+    EXPECT_EQ(20000, stat_gid("com.example/foo/file"));
+    EXPECT_EQ(10000, stat_gid("com.example/bar"));
+    EXPECT_EQ(10000, stat_gid("com.example/bar/file"));
 
     service->fixupAppData(testUuid, FLAG_FORCE);
 
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/foo"));
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/foo/file"));
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/bar"));
-    EXPECT_EQ(10000, stat_gid("user/0/com.example/bar/file"));
-}
-
-TEST_F(ServiceTest, DestroyUserData) {
-    LOG(INFO) << "DestroyUserData";
-
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0700);
-    mkdir("user/0/com.example/bar", 10000, 20000, 0700);
-    touch("user/0/com.example/bar/file", 10000, 20000, 0700);
-
-    EXPECT_TRUE(exists("user/0/com.example/foo"));
-    EXPECT_TRUE(exists("user/0/com.example/foo/file"));
-    EXPECT_TRUE(exists("user/0/com.example/bar"));
-    EXPECT_TRUE(exists("user/0/com.example/bar/file"));
-
-    service->destroyUserData(testUuid, 0, FLAG_STORAGE_DE | FLAG_STORAGE_CE);
-
-    EXPECT_FALSE(exists("user/0/com.example/foo"));
-    EXPECT_FALSE(exists("user/0/com.example/foo/file"));
-    EXPECT_FALSE(exists("user/0/com.example/bar"));
-    EXPECT_FALSE(exists("user/0/com.example/bar/file"));
-
-    EXPECT_FALSE(exists_renamed_deleted_dir("/user/0"));
-}
-
-TEST_F(ServiceTest, DestroyAppData) {
-    LOG(INFO) << "DestroyAppData";
-
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0700);
-    mkdir("user/0/com.example/bar", 10000, 20000, 0700);
-    touch("user/0/com.example/bar/file", 10000, 20000, 0700);
-
-    EXPECT_TRUE(exists("user/0/com.example/foo"));
-    EXPECT_TRUE(exists("user/0/com.example/foo/file"));
-    EXPECT_TRUE(exists("user/0/com.example/bar"));
-    EXPECT_TRUE(exists("user/0/com.example/bar/file"));
-
-    service->destroyAppData(testUuid, "com.example", 0, FLAG_STORAGE_DE | FLAG_STORAGE_CE, 0);
-
-    EXPECT_FALSE(exists("user/0/com.example/foo"));
-    EXPECT_FALSE(exists("user/0/com.example/foo/file"));
-    EXPECT_FALSE(exists("user/0/com.example/bar"));
-    EXPECT_FALSE(exists("user/0/com.example/bar/file"));
-
-    EXPECT_FALSE(exists_renamed_deleted_dir("/user/0"));
-}
-
-TEST_F(ServiceTest, CleanupInvalidPackageDirs) {
-    LOG(INFO) << "CleanupInvalidPackageDirs";
-
-    std::string rootDirectoryPrefix[] = {"user/0", "misc_ce/0/sdksandbox", "misc_de/0/sdksandbox"};
-    for (auto& prefix : rootDirectoryPrefix) {
-        mkdir(prefix + "/5b14b6458a44==deleted==", 10000, 10000, 0700);
-        mkdir(prefix + "/5b14b6458a44==deleted==/foo", 10000, 10000, 0700);
-        touch(prefix + "/5b14b6458a44==deleted==/foo/file", 10000, 20000, 0700);
-        mkdir(prefix + "/5b14b6458a44==deleted==/bar", 10000, 20000, 0700);
-        touch(prefix + "/5b14b6458a44==deleted==/bar/file", 10000, 20000, 0700);
-
-        auto fd = create(prefix + "/5b14b6458a44==deleted==/bar/opened_file", 10000, 20000, 0700);
-
-        mkdir(prefix + "/b14b6458a44NOTdeleted", 10000, 10000, 0700);
-        mkdir(prefix + "/b14b6458a44NOTdeleted/foo", 10000, 10000, 0700);
-        touch(prefix + "/b14b6458a44NOTdeleted/foo/file", 10000, 20000, 0700);
-        mkdir(prefix + "/b14b6458a44NOTdeleted/bar", 10000, 20000, 0700);
-        touch(prefix + "/b14b6458a44NOTdeleted/bar/file", 10000, 20000, 0700);
-
-        mkdir(prefix + "/com.example", 10000, 10000, 0700);
-        mkdir(prefix + "/com.example/foo", 10000, 10000, 0700);
-        touch(prefix + "/com.example/foo/file", 10000, 20000, 0700);
-        mkdir(prefix + "/com.example/bar", 10000, 20000, 0700);
-        touch(prefix + "/com.example/bar/file", 10000, 20000, 0700);
-
-        mkdir(prefix + "/==deleted==", 10000, 10000, 0700);
-        mkdir(prefix + "/==deleted==/foo", 10000, 10000, 0700);
-        touch(prefix + "/==deleted==/foo/file", 10000, 20000, 0700);
-        mkdir(prefix + "/==deleted==/bar", 10000, 20000, 0700);
-        touch(prefix + "/==deleted==/bar/file", 10000, 20000, 0700);
-
-        EXPECT_TRUE(exists(prefix + "/5b14b6458a44==deleted==/foo"));
-        EXPECT_TRUE(exists(prefix + "/5b14b6458a44==deleted==/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/5b14b6458a44==deleted==/bar"));
-        EXPECT_TRUE(exists(prefix + "/5b14b6458a44==deleted==/bar/file"));
-        EXPECT_TRUE(exists(prefix + "/5b14b6458a44==deleted==/bar/opened_file"));
-
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/foo"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/bar"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/bar/file"));
-
-        EXPECT_TRUE(exists(prefix + "/com.example/foo"));
-        EXPECT_TRUE(exists(prefix + "/com.example/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/com.example/bar"));
-        EXPECT_TRUE(exists(prefix + "/com.example/bar/file"));
-
-        EXPECT_TRUE(exists(prefix + "/==deleted==/foo"));
-        EXPECT_TRUE(exists(prefix + "/==deleted==/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/==deleted==/bar"));
-        EXPECT_TRUE(exists(prefix + "/==deleted==/bar/file"));
-
-        EXPECT_TRUE(exists_renamed_deleted_dir("/" + prefix));
-
-        service->cleanupInvalidPackageDirs(testUuid, 0, FLAG_STORAGE_CE | FLAG_STORAGE_DE);
-
-        EXPECT_EQ(::close(fd), 0);
-
-        EXPECT_FALSE(exists(prefix + "/5b14b6458a44==deleted==/foo"));
-        EXPECT_FALSE(exists(prefix + "/5b14b6458a44==deleted==/foo/file"));
-        EXPECT_FALSE(exists(prefix + "/5b14b6458a44==deleted==/bar"));
-        EXPECT_FALSE(exists(prefix + "/5b14b6458a44==deleted==/bar/file"));
-        EXPECT_FALSE(exists(prefix + "/5b14b6458a44==deleted==/bar/opened_file"));
-
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/foo"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/bar"));
-        EXPECT_TRUE(exists(prefix + "/b14b6458a44NOTdeleted/bar/file"));
-
-        EXPECT_TRUE(exists(prefix + "/com.example/foo"));
-        EXPECT_TRUE(exists(prefix + "/com.example/foo/file"));
-        EXPECT_TRUE(exists(prefix + "/com.example/bar"));
-        EXPECT_TRUE(exists(prefix + "/com.example/bar/file"));
-
-        EXPECT_FALSE(exists(prefix + "/==deleted==/foo"));
-        EXPECT_FALSE(exists(prefix + "/==deleted==/foo/file"));
-        EXPECT_FALSE(exists(prefix + "/==deleted==/bar"));
-        EXPECT_FALSE(exists(prefix + "/==deleted==/bar/file"));
-
-        EXPECT_FALSE(exists_renamed_deleted_dir(prefix));
-    }
+    EXPECT_EQ(10000, stat_gid("com.example/foo"));
+    EXPECT_EQ(10000, stat_gid("com.example/foo/file"));
+    EXPECT_EQ(10000, stat_gid("com.example/bar"));
+    EXPECT_EQ(10000, stat_gid("com.example/bar/file"));
 }
 
 TEST_F(ServiceTest, HashSecondaryDex) {
     LOG(INFO) << "HashSecondaryDex";
 
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0700);
+    mkdir("com.example", 10000, 10000, 0700);
+    mkdir("com.example/foo", 10000, 10000, 0700);
+    touch("com.example/foo/file", 10000, 20000, 0700);
 
     std::vector<uint8_t> result;
-    std::string dexPath = get_full_path("user/0/com.example/foo/file");
+    std::string dexPath = get_full_path("com.example/foo/file");
     EXPECT_BINDER_SUCCESS(service->hashSecondaryDexFile(
         dexPath, "com.example", 10000, testUuid, FLAG_STORAGE_CE, &result));
 
@@ -411,7 +189,7 @@ TEST_F(ServiceTest, HashSecondaryDex_NoSuch) {
     LOG(INFO) << "HashSecondaryDex_NoSuch";
 
     std::vector<uint8_t> result;
-    std::string dexPath = get_full_path("user/0/com.example/foo/file");
+    std::string dexPath = get_full_path("com.example/foo/file");
     EXPECT_BINDER_SUCCESS(service->hashSecondaryDexFile(
         dexPath, "com.example", 10000, testUuid, FLAG_STORAGE_CE, &result));
 
@@ -421,12 +199,12 @@ TEST_F(ServiceTest, HashSecondaryDex_NoSuch) {
 TEST_F(ServiceTest, HashSecondaryDex_Unreadable) {
     LOG(INFO) << "HashSecondaryDex_Unreadable";
 
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0300);
+    mkdir("com.example", 10000, 10000, 0700);
+    mkdir("com.example/foo", 10000, 10000, 0700);
+    touch("com.example/foo/file", 10000, 20000, 0300);
 
     std::vector<uint8_t> result;
-    std::string dexPath = get_full_path("user/0/com.example/foo/file");
+    std::string dexPath = get_full_path("com.example/foo/file");
     EXPECT_BINDER_SUCCESS(service->hashSecondaryDexFile(
         dexPath, "com.example", 10000, testUuid, FLAG_STORAGE_CE, &result));
 
@@ -436,12 +214,12 @@ TEST_F(ServiceTest, HashSecondaryDex_Unreadable) {
 TEST_F(ServiceTest, HashSecondaryDex_WrongApp) {
     LOG(INFO) << "HashSecondaryDex_WrongApp";
 
-    mkdir("user/0/com.example", 10000, 10000, 0700);
-    mkdir("user/0/com.example/foo", 10000, 10000, 0700);
-    touch("user/0/com.example/foo/file", 10000, 20000, 0700);
+    mkdir("com.example", 10000, 10000, 0700);
+    mkdir("com.example/foo", 10000, 10000, 0700);
+    touch("com.example/foo/file", 10000, 20000, 0700);
 
     std::vector<uint8_t> result;
-    std::string dexPath = get_full_path("user/0/com.example/foo/file");
+    std::string dexPath = get_full_path("com.example/foo/file");
     EXPECT_BINDER_FAIL(service->hashSecondaryDexFile(
         dexPath, "com.wrong", 10000, testUuid, FLAG_STORAGE_CE, &result));
 }
@@ -469,64 +247,7 @@ TEST_F(ServiceTest, CalculateCache) {
     EXPECT_TRUE(create_cache_path(buf, "/path/to/file.apk", "isa"));
     EXPECT_EQ("/data/dalvik-cache/isa/path@to@file.apk@classes.dex", std::string(buf));
 }
-TEST_F(ServiceTest, GetAppSizeManualForMedia) {
-    struct stat s;
 
-    std::string externalPicDir =
-            StringPrintf("%s/Pictures", create_data_media_path(nullptr, 0).c_str());
-    if (stat(externalPicDir.c_str(), &s) == 0) {
-        // fetch the appId from the uid of the external storage owning app
-        int32_t externalStorageAppId = multiuser_get_app_id(s.st_uid);
-        // Fetch Package Name for the external storage owning app uid
-        std::string pkg = get_package_name(s.st_uid);
-
-        std::vector<int64_t> externalStorageSize, externalStorageSizeAfterAddingExternalFile;
-        std::vector<int64_t> ceDataInodes;
-
-        std::vector<std::string> codePaths;
-        std::vector<std::string> packageNames;
-        // set up parameters
-        packageNames.push_back(pkg);
-        ceDataInodes.push_back(0);
-        // initialise the mounts
-        service->invalidateMounts();
-        // call the getAppSize to get the current size of the external storage owning app
-        service->getAppSize(std::nullopt, packageNames, 0, InstalldNativeService::FLAG_USE_QUOTA,
-                            externalStorageAppId, ceDataInodes, codePaths, &externalStorageSize);
-        // add a file with 20MB size to the external storage
-        std::string externalFileLocation =
-                StringPrintf("%s/Pictures/%s", getenv("EXTERNAL_STORAGE"), "External.jpg");
-        std::string externalFileContentCommand =
-                StringPrintf("dd if=/dev/zero of=%s bs=1M count=20", externalFileLocation.c_str());
-        system(externalFileContentCommand.c_str());
-        // call the getAppSize again to get the new size of the external storage owning app
-        service->getAppSize(std::nullopt, packageNames, 0, InstalldNativeService::FLAG_USE_QUOTA,
-                            externalStorageAppId, ceDataInodes, codePaths,
-                            &externalStorageSizeAfterAddingExternalFile);
-        // check that the size before adding the file and after should be the same, as the app size
-        // is not changed.
-        for (size_t i = 0; i < externalStorageSize.size(); i++) {
-            ASSERT_TRUE(externalStorageSize[i] == externalStorageSizeAfterAddingExternalFile[i]);
-        }
-        // remove the external file
-        std::string removeCommand = StringPrintf("rm -f %s", externalFileLocation.c_str());
-        system(removeCommand.c_str());
-    }
-}
-
-TEST_F(ServiceTest, GetAppSizeWrongSizes) {
-    int32_t externalStorageAppId = -1;
-    std::vector<int64_t> externalStorageSize;
-
-    std::vector<std::string> codePaths;
-    std::vector<std::string> packageNames = {"package1", "package2"};
-    std::vector<int64_t> ceDataInodes = {0};
-
-    EXPECT_BINDER_FAIL(service->getAppSize(std::nullopt, packageNames, 0,
-                                           InstalldNativeService::FLAG_USE_QUOTA,
-                                           externalStorageAppId, ceDataInodes, codePaths,
-                                           &externalStorageSize));
-}
 static bool mkdirs(const std::string& path, mode_t mode) {
     struct stat sb;
     if (stat(path.c_str(), &sb) != -1 && S_ISDIR(sb.st_mode)) {
@@ -970,365 +691,6 @@ TEST_F(AppDataSnapshotTest, RestoreAppDataSnapshot_WrongVolumeUuid) {
 
   EXPECT_BINDER_FAIL(service->restoreAppDataSnapshot(std::make_optional<std::string>("BAR"),
           "com.foo", 10000, "", 0, 41, FLAG_STORAGE_DE));
-}
-
-class SdkSandboxDataTest : public testing::Test {
-public:
-    void CheckFileAccess(const std::string& path, uid_t uid, gid_t gid, mode_t mode) {
-        const auto fullPath = "/data/local/tmp/" + path;
-        ASSERT_TRUE(exists(fullPath.c_str())) << "For path: " << fullPath;
-        struct stat st;
-        ASSERT_EQ(0, stat(fullPath.c_str(), &st));
-        ASSERT_EQ(uid, st.st_uid) << "For path: " << fullPath;
-        ASSERT_EQ(gid, st.st_gid) << "For path: " << fullPath;
-        ASSERT_EQ(mode, st.st_mode) << "For path: " << fullPath;
-    }
-
-    bool exists(const char* path) { return ::access(path, F_OK) == 0; }
-
-    // Creates a default CreateAppDataArgs object
-    android::os::CreateAppDataArgs createAppDataArgs(const std::string& packageName) {
-        android::os::CreateAppDataArgs args;
-        args.uuid = kTestUuid;
-        args.packageName = packageName;
-        args.userId = kTestUserId;
-        args.appId = kTestAppId;
-        args.seInfo = "default";
-        args.flags = FLAG_STORAGE_CE | FLAG_STORAGE_DE | FLAG_STORAGE_SDK;
-        return args;
-    }
-
-    android::os::ReconcileSdkDataArgs reconcileSdkDataArgs(
-            const std::string& packageName, const std::vector<std::string>& subDirNames) {
-        android::os::ReconcileSdkDataArgs args;
-        args.uuid = kTestUuid;
-        args.packageName = packageName;
-        for (const auto& subDirName : subDirNames) {
-            args.subDirNames.push_back(subDirName);
-        }
-        args.userId = kTestUserId;
-        args.appId = kTestAppId;
-        args.previousAppId = -1;
-        args.seInfo = "default";
-        args.flags = FLAG_STORAGE_CE | FLAG_STORAGE_DE;
-        return args;
-    }
-
-protected:
-    InstalldNativeService* service;
-
-    virtual void SetUp() {
-        setenv("ANDROID_LOG_TAGS", "*:v", 1);
-        android::base::InitLogging(nullptr);
-
-        service = new InstalldNativeService();
-        clearAppData();
-        ASSERT_TRUE(mkdirs("/data/local/tmp/user/0", 0700));
-        ASSERT_TRUE(mkdirs("/data/local/tmp/user_de/0", 0700));
-        ASSERT_TRUE(mkdirs("/data/local/tmp/misc_ce/0/sdksandbox", 0700));
-        ASSERT_TRUE(mkdirs("/data/local/tmp/misc_de/0/sdksandbox", 0700));
-
-        init_globals_from_data_and_root();
-    }
-
-    virtual void TearDown() {
-        delete service;
-        clearAppData();
-    }
-
-private:
-    void clearAppData() {
-        ASSERT_EQ(0, delete_dir_contents_and_dir("/data/local/tmp/user", true));
-        ASSERT_EQ(0, delete_dir_contents_and_dir("/data/local/tmp/user_de", true));
-        ASSERT_EQ(0, delete_dir_contents_and_dir("/data/local/tmp/misc_ce", true));
-        ASSERT_EQ(0, delete_dir_contents_and_dir("/data/local/tmp/misc_de", true));
-    }
-};
-
-TEST_F(SdkSandboxDataTest, CreateAppData_CreatesSdkPackageData) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-
-    const std::string fooCePath = "misc_ce/0/sdksandbox/com.foo";
-    CheckFileAccess(fooCePath, kSystemUid, kSystemUid, S_IFDIR | 0751);
-
-    const std::string fooDePath = "misc_de/0/sdksandbox/com.foo";
-    CheckFileAccess(fooDePath, kSystemUid, kSystemUid, S_IFDIR | 0751);
-}
-
-TEST_F(SdkSandboxDataTest, CreateAppData_CreatesSdkPackageData_WithoutSdkFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.flags = FLAG_STORAGE_CE | FLAG_STORAGE_DE;
-
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-}
-
-TEST_F(SdkSandboxDataTest, CreateAppData_CreatesSdkPackageData_WithoutSdkFlagDeletesExisting) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-
-    args.flags = FLAG_STORAGE_CE | FLAG_STORAGE_DE;
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-}
-
-TEST_F(SdkSandboxDataTest, CreateAppData_CreatesSdkPackageData_WithoutDeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.flags = FLAG_STORAGE_CE | FLAG_STORAGE_SDK;
-
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-
-    // Only CE paths should exist
-    CheckFileAccess("misc_ce/0/sdksandbox/com.foo", kSystemUid, kSystemUid, S_IFDIR | 0751);
-
-    // DE paths should not exist
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-}
-
-TEST_F(SdkSandboxDataTest, CreateAppData_CreatesSdkPackageData_WithoutCeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.flags = FLAG_STORAGE_DE | FLAG_STORAGE_SDK;
-
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-
-    // CE paths should not exist
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-
-    // Only DE paths should exist
-    CheckFileAccess("misc_de/0/sdksandbox/com.foo", kSystemUid, kSystemUid, S_IFDIR | 0751);
-}
-
-TEST_F(SdkSandboxDataTest, ReconcileSdkData) {
-    android::os::ReconcileSdkDataArgs args =
-            reconcileSdkDataArgs("com.foo", {"bar@random1", "baz@random2"});
-
-    // Create the sdk data.
-    ASSERT_BINDER_SUCCESS(service->reconcileSdkData(args));
-
-    const std::string barCePath = "misc_ce/0/sdksandbox/com.foo/bar@random1";
-    CheckFileAccess(barCePath, kTestSdkSandboxUid, kNobodyUid, S_IFDIR | S_ISGID | 0700);
-    CheckFileAccess(barCePath + "/cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-    CheckFileAccess(barCePath + "/code_cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-
-    const std::string bazCePath = "misc_ce/0/sdksandbox/com.foo/baz@random2";
-    CheckFileAccess(bazCePath, kTestSdkSandboxUid, kNobodyUid, S_IFDIR | S_ISGID | 0700);
-    CheckFileAccess(bazCePath + "/cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-    CheckFileAccess(bazCePath + "/code_cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-
-    const std::string barDePath = "misc_de/0/sdksandbox/com.foo/bar@random1";
-    CheckFileAccess(barDePath, kTestSdkSandboxUid, kNobodyUid, S_IFDIR | S_ISGID | 0700);
-    CheckFileAccess(barDePath + "/cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-    CheckFileAccess(barDePath + "/code_cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-
-    const std::string bazDePath = "misc_de/0/sdksandbox/com.foo/baz@random2";
-    CheckFileAccess(bazDePath, kTestSdkSandboxUid, kNobodyUid, S_IFDIR | S_ISGID | 0700);
-    CheckFileAccess(bazDePath + "/cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-    CheckFileAccess(bazDePath + "/code_cache", kTestSdkSandboxUid, kTestCacheGid,
-                    S_IFDIR | S_ISGID | 0771);
-}
-
-TEST_F(SdkSandboxDataTest, ReconcileSdkData_ExtraCodeDirectoriesAreDeleted) {
-    android::os::ReconcileSdkDataArgs args =
-            reconcileSdkDataArgs("com.foo", {"bar@random1", "baz@random2"});
-
-    // Create the sdksandbox data.
-    ASSERT_BINDER_SUCCESS(service->reconcileSdkData(args));
-
-    // Retry with different package name
-    args.subDirNames[0] = "bar.diff@random1";
-
-    // Create the sdksandbox data again
-    ASSERT_BINDER_SUCCESS(service->reconcileSdkData(args));
-
-    // New directoris should exist
-    CheckFileAccess("misc_ce/0/sdksandbox/com.foo/bar.diff@random1", kTestSdkSandboxUid, kNobodyUid,
-                    S_IFDIR | S_ISGID | 0700);
-    CheckFileAccess("misc_ce/0/sdksandbox/com.foo/baz@random2", kTestSdkSandboxUid, kNobodyUid,
-                    S_IFDIR | S_ISGID | 0700);
-    // Directory for old unreferred sdksandbox package name should be removed
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo/bar@random1"));
-}
-
-class DestroyAppDataTest : public SdkSandboxDataTest {};
-
-TEST_F(DestroyAppDataTest, DestroySdkSandboxDataDirectories_WithCeAndDeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.packageName = "com.foo";
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    // Destroy the app user data.
-    ASSERT_BINDER_SUCCESS(service->destroyAppData(args.uuid, args.packageName, args.userId,
-                                                  args.flags, result.ceDataInode));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-}
-
-TEST_F(DestroyAppDataTest, DestroySdkSandboxDataDirectories_WithoutDeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.packageName = "com.foo";
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    // Destroy the app user data.
-    ASSERT_BINDER_SUCCESS(service->destroyAppData(args.uuid, args.packageName, args.userId,
-                                                  FLAG_STORAGE_CE, result.ceDataInode));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-}
-
-TEST_F(DestroyAppDataTest, DestroySdkSandboxDataDirectories_WithoutCeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.packageName = "com.foo";
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    // Destroy the app user data.
-    ASSERT_BINDER_SUCCESS(service->destroyAppData(args.uuid, args.packageName, args.userId,
-                                                  FLAG_STORAGE_DE, result.ceDataInode));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_ce/0/sdksandbox/com.foo"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox/com.foo"));
-}
-
-class ClearAppDataTest : public SdkSandboxDataTest {
-public:
-    void createTestSdkData(const std::string& packageName, std::vector<std::string> sdkNames) {
-        const auto& cePackagePath = "/data/local/tmp/misc_ce/0/sdksandbox/" + packageName;
-        const auto& dePackagePath = "/data/local/tmp/misc_de/0/sdksandbox/" + packageName;
-        ASSERT_TRUE(mkdirs(cePackagePath, 0700));
-        ASSERT_TRUE(mkdirs(dePackagePath, 0700));
-        const std::vector<std::string> packagePaths = {cePackagePath, dePackagePath};
-        for (const auto& packagePath : packagePaths) {
-            for (auto sdkName : sdkNames) {
-                ASSERT_TRUE(mkdirs(packagePath + "/" + sdkName + "/cache", 0700));
-                ASSERT_TRUE(mkdirs(packagePath + "/" + sdkName + "/code_cache", 0700));
-                std::ofstream{packagePath + "/" + sdkName + "/cache/cachedTestData.txt"};
-                std::ofstream{packagePath + "/" + sdkName + "/code_cache/cachedTestData.txt"};
-            }
-        }
-    }
-};
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithCeAndClearCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data.
-    ASSERT_BINDER_SUCCESS(service->clearAppData(kTestUuid, "com.foo", 0,
-                                                FLAG_STORAGE_CE | FLAG_CLEAR_CACHE_ONLY, -1));
-
-    const std::string packagePath = kTestPath + "/misc_ce/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared/cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1/cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2/cache"));
-}
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithCeAndClearCodeCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data.
-    ASSERT_BINDER_SUCCESS(service->clearAppData(kTestUuid, "com.foo", 0,
-                                                FLAG_STORAGE_CE | FLAG_CLEAR_CODE_CACHE_ONLY, -1));
-
-    const std::string packagePath = kTestPath + "/misc_ce/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared/code_cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1/code_cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2/code_cache"));
-}
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithDeAndClearCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data
-    ASSERT_BINDER_SUCCESS(
-            service->clearAppData(kTestUuid, "com.foo", 0,
-                                  FLAG_STORAGE_DE | (InstalldNativeService::FLAG_CLEAR_CACHE_ONLY),
-                                  -1));
-
-    const std::string packagePath = kTestPath + "/misc_de/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared/cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1/cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2/cache"));
-}
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithDeAndClearCodeCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data.
-    ASSERT_BINDER_SUCCESS(service->clearAppData(kTestUuid, "com.foo", 0,
-                                                FLAG_STORAGE_DE | FLAG_CLEAR_CODE_CACHE_ONLY, -1));
-
-    const std::string packagePath = kTestPath + "/misc_de/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared/code_cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1/code_cache"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2/code_cache"));
-}
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithCeAndWithoutAnyCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data.
-    ASSERT_BINDER_SUCCESS(service->clearAppData(kTestUuid, "com.foo", 0, FLAG_STORAGE_CE, -1));
-
-    const std::string packagePath = kTestPath + "/misc_ce/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2"));
-}
-
-TEST_F(ClearAppDataTest, ClearSdkSandboxDataDirectories_WithDeAndWithoutAnyCacheFlag) {
-    createTestSdkData("com.foo", {"shared", "sdk1", "sdk2"});
-    // Clear the app user data.
-    ASSERT_BINDER_SUCCESS(service->clearAppData(kTestUuid, "com.foo", 0, FLAG_STORAGE_DE, -1));
-
-    const std::string packagePath = kTestPath + "/misc_de/0/sdksandbox/com.foo";
-    ASSERT_TRUE(is_empty(packagePath + "/shared"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk1"));
-    ASSERT_TRUE(is_empty(packagePath + "/sdk2"));
-}
-
-class DestroyUserDataTest : public SdkSandboxDataTest {};
-
-TEST_F(DestroyUserDataTest, DestroySdkData_WithCeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.packageName = "com.foo";
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    // Destroy user data
-    ASSERT_BINDER_SUCCESS(service->destroyUserData(args.uuid, args.userId, FLAG_STORAGE_CE));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_ce/0/sdksandbox"));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_de/0/sdksandbox"));
-}
-
-TEST_F(DestroyUserDataTest, DestroySdkData_WithDeFlag) {
-    android::os::CreateAppDataResult result;
-    android::os::CreateAppDataArgs args = createAppDataArgs("com.foo");
-    args.packageName = "com.foo";
-    // Create the app user data.
-    ASSERT_BINDER_SUCCESS(service->createAppData(args, &result));
-    // Destroy user data
-    ASSERT_BINDER_SUCCESS(service->destroyUserData(args.uuid, args.userId, FLAG_STORAGE_DE));
-    ASSERT_TRUE(exists("/data/local/tmp/misc_ce/0/sdksandbox"));
-    ASSERT_FALSE(exists("/data/local/tmp/misc_de/0/sdksandbox"));
 }
 
 }  // namespace installd

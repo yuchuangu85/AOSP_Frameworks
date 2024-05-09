@@ -17,15 +17,14 @@
 #pragma once
 
 #include <mutex>
-#include <optional>
-#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <vector>
 
-#include <android-base/thread_annotations.h>
-#include <ftl/small_map.h>
 #include <utils/Timers.h>
 
-#include <scheduler/Fps.h>
-#include <scheduler/VsyncConfig.h>
+#include "Fps.h"
+#include "VsyncModulator.h"
 
 namespace android::scheduler {
 
@@ -37,6 +36,8 @@ namespace android::scheduler {
  */
 class VsyncConfiguration {
 public:
+    using VsyncConfigSet = VsyncModulator::VsyncConfigSet;
+
     virtual ~VsyncConfiguration() = default;
     virtual VsyncConfigSet getCurrentConfigs() const = 0;
     virtual VsyncConfigSet getConfigsForRefreshRate(Fps fps) const = 0;
@@ -83,12 +84,13 @@ public:
     void dump(std::string& result) const override;
 
 protected:
-    virtual VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const = 0;
+    virtual VsyncConfiguration::VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const = 0;
 
     VsyncConfigSet getConfigsForRefreshRateLocked(Fps fps) const REQUIRES(mLock);
 
-    mutable ftl::SmallMap<Fps, VsyncConfigSet, 2, FpsApproxEqual> mOffsetsCache GUARDED_BY(mLock);
-    Fps mRefreshRateFps GUARDED_BY(mLock);
+    mutable std::unordered_map<Fps, VsyncConfigSet, std::hash<Fps>, Fps::EqualsInBuckets>
+            mOffsetsCache GUARDED_BY(mLock);
+    std::atomic<Fps> mRefreshRateFps GUARDED_BY(mLock);
     mutable std::mutex mLock;
 };
 
@@ -113,7 +115,7 @@ protected:
                  nsecs_t hwcMinWorkDuration);
 
 private:
-    VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const override;
+    VsyncConfiguration::VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const override;
 
     VsyncConfigSet getDefaultOffsets(nsecs_t vsyncPeriod) const;
     VsyncConfigSet getHighFpsOffsets(nsecs_t vsyncPeriod) const;
@@ -152,7 +154,7 @@ protected:
                  nsecs_t hwcMinWorkDuration);
 
 private:
-    VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const override;
+    VsyncConfiguration::VsyncConfigSet constructOffsets(nsecs_t vsyncDuration) const override;
 
     const nsecs_t mSfDuration;
     const nsecs_t mAppDuration;

@@ -35,10 +35,7 @@ public:
                 return mDelegate->screenshot();
             case RenderPath::VIRTUAL_DISPLAY:
 
-                const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-                const auto displayToken = ids.empty()
-                        ? nullptr
-                        : SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+                const auto displayToken = SurfaceComposerClient::getInternalDisplayToken();
 
                 ui::DisplayState displayState;
                 SurfaceComposerClient::getDisplayState(displayToken, &displayState);
@@ -56,11 +53,11 @@ public:
                 consumer->setConsumerName(String8("Virtual disp consumer"));
                 consumer->setDefaultBufferSize(resolution.getWidth(), resolution.getHeight());
 
-                itemConsumer = sp<BufferItemConsumer>::make(consumer,
-                                                            // Sample usage bits from screenrecord
-                                                            GRALLOC_USAGE_HW_VIDEO_ENCODER |
-                                                                    GRALLOC_USAGE_SW_READ_OFTEN);
-                sp<BufferListener> listener = sp<BufferListener>::make(this);
+                itemConsumer = new BufferItemConsumer(consumer,
+                                                      // Sample usage bits from screenrecord
+                                                      GRALLOC_USAGE_HW_VIDEO_ENCODER |
+                                                              GRALLOC_USAGE_SW_READ_OFTEN);
+                sp<BufferListener> listener = new BufferListener(this);
                 itemConsumer->setFrameAvailableListener(listener);
 
                 vDisplay = SurfaceComposerClient::createDisplay(String8("VirtualDisplay"),
@@ -68,7 +65,7 @@ public:
 
                 SurfaceComposerClient::Transaction t;
                 t.setDisplaySurface(vDisplay, producer);
-                t.setDisplayLayerStack(vDisplay, ui::DEFAULT_LAYER_STACK);
+                t.setDisplayLayerStack(vDisplay, 0);
                 t.setDisplayProjection(vDisplay, displayState.orientation,
                                        Rect(displayState.layerStackSpaceRect), Rect(resolution));
                 t.apply();
@@ -82,8 +79,7 @@ public:
 
                 BufferItem item;
                 itemConsumer->acquireBuffer(&item, 0, true);
-                constexpr bool kContainsHdr = false;
-                auto sc = std::make_unique<ScreenCapture>(item.mGraphicBuffer, kContainsHdr);
+                auto sc = std::make_unique<ScreenCapture>(item.mGraphicBuffer);
                 itemConsumer->releaseBuffer(item);
                 SurfaceComposerClient::destroyDisplay(vDisplay);
                 return sc;

@@ -14,76 +14,36 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_MACROS_H
+#define _UI_INPUTREADER_MACROS_H
 
 #define LOG_TAG "InputReader"
 
 //#define LOG_NDEBUG 0
-#include <log/log.h>
-#include <log/log_event_list.h>
 
-#include <unordered_map>
+// Log debug messages for each raw event received from the EventHub.
+#define DEBUG_RAW_EVENTS 0
 
-namespace android {
+// Log debug messages about touch screen filtering hacks.
+#define DEBUG_HACKS 0
 
-/**
- * Log debug messages for each raw event received from the EventHub.
- * Enable this via "adb shell setprop log.tag.InputReaderRawEvents DEBUG".
- * This requires a restart on non-debuggable (e.g. user) builds, but should take effect immediately
- * on debuggable builds (e.g. userdebug).
- */
-bool debugRawEvents();
+// Log debug messages about virtual key processing.
+#define DEBUG_VIRTUAL_KEYS 0
 
-/**
- * Log debug messages about virtual key processing.
- * Enable this via "adb shell setprop log.tag.InputReaderVirtualKeys DEBUG" (requires restart)
- */
-const bool DEBUG_VIRTUAL_KEYS =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "VirtualKeys", ANDROID_LOG_INFO);
+// Log debug messages about pointers.
+#define DEBUG_POINTERS 0
 
-/**
- * Log debug messages about pointers.
- * Enable this via "adb shell setprop log.tag.InputReaderPointers DEBUG" (requires restart)
- */
-const bool DEBUG_POINTERS =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Pointers", ANDROID_LOG_INFO);
+// Log debug messages about pointer assignment calculations.
+#define DEBUG_POINTER_ASSIGNMENT 0
 
-/**
- * Log debug messages about pointer assignment calculations.
- * Enable this via "adb shell setprop log.tag.InputReaderPointerAssignment DEBUG" (requires restart)
- */
-const bool DEBUG_POINTER_ASSIGNMENT =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "PointerAssignment", ANDROID_LOG_INFO);
+// Log debug messages about gesture detection.
+#define DEBUG_GESTURES 0
 
-/**
- * Log debug messages about gesture detection.
- * Enable this via "adb shell setprop log.tag.InputReaderGestures DEBUG" (requires restart)
- */
-const bool DEBUG_GESTURES =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Gestures", ANDROID_LOG_INFO);
+// Log debug messages about the vibrator.
+#define DEBUG_VIBRATOR 0
 
-/**
- * Log debug messages about the vibrator.
- * Enable this via "adb shell setprop log.tag.InputReaderVibrator DEBUG" (requires restart)
- */
-const bool DEBUG_VIBRATOR =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Vibrator", ANDROID_LOG_INFO);
-
-/**
- * Log debug messages about fusing stylus data.
- * Enable this via "adb shell setprop log.tag.InputReaderStylusFusion DEBUG" (requires restart)
- */
-const bool DEBUG_STYLUS_FUSION =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "StylusFusion", ANDROID_LOG_INFO);
-
-/**
- * Log detailed debug messages about input device lights.
- * Enable this via "adb shell setprop log.tag.InputReaderLightDetails DEBUG" (requires restart)
- */
-const bool DEBUG_LIGHT_DETAILS =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "LightDetails", ANDROID_LOG_INFO);
-
-} // namespace android
+// Log debug messages about fusing stylus data.
+#define DEBUG_STYLUS_FUSION 0
 
 #define INDENT "  "
 #define INDENT2 "    "
@@ -119,14 +79,6 @@ static inline bool sourcesMatchMask(uint32_t sources, uint32_t sourceMask) {
     return (sources & sourceMask & ~AINPUT_SOURCE_CLASS_MASK) != 0;
 }
 
-template <typename K, typename V>
-static inline std::optional<V> getValueByKey(const std::unordered_map<K, V>& map, K key) {
-    auto it = map.find(key);
-    std::optional<V> value = std::nullopt;
-    if (it != map.end()) {
-        value = it->second;
-    }
-    return value;
-}
-
 } // namespace android
+
+#endif // _UI_INPUTREADER_MACROS_H

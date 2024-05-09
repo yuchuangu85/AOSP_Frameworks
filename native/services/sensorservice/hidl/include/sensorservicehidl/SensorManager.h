@@ -58,6 +58,8 @@ private:
     ::android::SensorManager& getInternalManager();
     sp<Looper> getLooper();
 
+    std::mutex mInternalManagerMutex;
+    ::android::SensorManager* mInternalManager = nullptr; // does not own
     sp<Looper> mLooper;
 
     volatile bool mStopThread;

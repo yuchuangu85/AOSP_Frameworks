@@ -14,71 +14,49 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_TOUCHSTATE_H
+#define _UI_INPUT_INPUTDISPATCHER_TOUCHSTATE_H
 
-#include <bitset>
-#include <set>
+#include "Monitor.h"
 #include "TouchedWindow.h"
 
 namespace android {
 
-namespace gui {
-class WindowInfoHandle;
-}
+class InputWindowHandle;
 
 namespace inputdispatcher {
 
 struct TouchState {
-    // id of the device that is currently down, others are rejected
-    int32_t deviceId = -1;
-    // source of the device that is current down, others are rejected
-    uint32_t source = 0;
-
+    bool down;
+    bool split;
+    int32_t deviceId;  // id of the device that is currently down, others are rejected
+    uint32_t source;   // source of the device that is current down, others are rejected
+    int32_t displayId; // id to the display that currently has a touch, others are rejected
     std::vector<TouchedWindow> windows;
 
-    TouchState() = default;
-    ~TouchState() = default;
-    TouchState& operator=(const TouchState&) = default;
+    // This collects the portal windows that the touch has gone through. Each portal window
+    // targets a display (embedded display for most cases). With this info, we can add the
+    // monitoring channels of the displays touched.
+    std::vector<sp<android::InputWindowHandle>> portalWindows;
 
+    std::vector<TouchedMonitor> gestureMonitors;
+
+    TouchState();
+    ~TouchState();
     void reset();
-    void clearWindowsWithoutPointers();
-
-    void removeTouchedPointer(int32_t pointerId);
-    void removeTouchedPointerFromWindow(int32_t pointerId,
-                                        const sp<android::gui::WindowInfoHandle>& windowHandle);
-    void addOrUpdateWindow(const sp<android::gui::WindowInfoHandle>& windowHandle,
-                           ftl::Flags<InputTarget::Flags> targetFlags,
-                           std::bitset<MAX_POINTER_ID + 1> pointerIds,
-                           std::optional<nsecs_t> firstDownTimeInTarget = std::nullopt);
-    void addHoveringPointerToWindow(const sp<android::gui::WindowInfoHandle>& windowHandle,
-                                    int32_t deviceId, int32_t hoveringPointerId);
-    void removeHoveringPointer(int32_t deviceId, int32_t hoveringPointerId);
-    void clearHoveringPointers();
-
-    void removeAllPointersForDevice(int32_t removedDeviceId);
+    void copyFrom(const TouchState& other);
+    void addOrUpdateWindow(const sp<android::InputWindowHandle>& windowHandle, int32_t targetFlags,
+                           BitSet32 pointerIds);
+    void addPortalWindow(const sp<android::InputWindowHandle>& windowHandle);
+    void addGestureMonitors(const std::vector<TouchedMonitor>& monitors);
     void removeWindowByToken(const sp<IBinder>& token);
     void filterNonAsIsTouchWindows();
-
-    // Cancel pointers for current set of windows except the window with particular binder token.
-    void cancelPointersForWindowsExcept(std::bitset<MAX_POINTER_ID + 1> pointerIds,
-                                        const sp<IBinder>& token);
-    // Cancel pointers for current set of non-pilfering windows i.e. windows with isPilferingWindow
-    // set to false.
-    void cancelPointersForNonPilferingWindows();
-
-    sp<android::gui::WindowInfoHandle> getFirstForegroundWindowHandle() const;
+    void filterNonMonitors();
+    sp<InputWindowHandle> getFirstForegroundWindowHandle() const;
     bool isSlippery() const;
-    sp<android::gui::WindowInfoHandle> getWallpaperWindow() const;
-    const TouchedWindow& getTouchedWindow(
-            const sp<android::gui::WindowInfoHandle>& windowHandle) const;
-    // Whether any of the windows are currently being touched
-    bool isDown() const;
-    bool hasHoveringPointers() const;
-
-    std::set<sp<android::gui::WindowInfoHandle>> getWindowsWithHoveringPointer(
-            int32_t deviceId, int32_t pointerId) const;
-    std::string dump() const;
 };
 
 } // namespace inputdispatcher
 } // namespace android
+
+#endif // _UI_INPUT_INPUTDISPATCHER_TOUCHSTATE_H

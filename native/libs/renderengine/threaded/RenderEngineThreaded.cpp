@@ -90,6 +90,7 @@ void RenderEngineThreaded::threadMain(CreateInstanceFactory factory) NO_THREAD_S
     }
 
     mRenderEngine = factory();
+    mIsProtected = mRenderEngine->isProtected();
 
     pthread_setname_np(pthread_self(), mThreadName);
 
@@ -177,10 +178,6 @@ void RenderEngineThreaded::dump(std::string& result) {
 
 void RenderEngineThreaded::genTextures(size_t count, uint32_t* names) {
     ATRACE_CALL();
-    // This is a no-op in SkiaRenderEngine.
-    if (getRenderEngineType() != RenderEngineType::THREADED) {
-        return;
-    }
     std::promise<void> resultPromise;
     std::future<void> resultFuture = resultPromise.get_future();
     {
@@ -197,10 +194,6 @@ void RenderEngineThreaded::genTextures(size_t count, uint32_t* names) {
 
 void RenderEngineThreaded::deleteTextures(size_t count, uint32_t const* names) {
     ATRACE_CALL();
-    // This is a no-op in SkiaRenderEngine.
-    if (getRenderEngineType() != RenderEngineType::THREADED) {
-        return;
-    }
     std::promise<void> resultPromise;
     std::future<void> resultFuture = resultPromise.get_future();
     {
@@ -230,17 +223,16 @@ void RenderEngineThreaded::mapExternalTextureBuffer(const sp<GraphicBuffer>& buf
     mCondition.notify_one();
 }
 
-void RenderEngineThreaded::unmapExternalTextureBuffer(sp<GraphicBuffer>&& buffer) {
+void RenderEngineThreaded::unmapExternalTextureBuffer(const sp<GraphicBuffer>& buffer) {
     ATRACE_CALL();
     // This function is designed so it can run asynchronously, so we do not need to wait
     // for the futures.
     {
         std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push(
-                [=, buffer = std::move(buffer)](renderengine::RenderEngine& instance) mutable {
-                    ATRACE_NAME("REThreaded::unmapExternalTextureBuffer");
-                    instance.unmapExternalTextureBuffer(std::move(buffer));
-                });
+        mFunctionCalls.push([=](renderengine::RenderEngine& instance) {
+            ATRACE_NAME("REThreaded::unmapExternalTextureBuffer");
+            instance.unmapExternalTextureBuffer(buffer);
+        });
     }
     mCondition.notify_one();
 }
@@ -255,9 +247,39 @@ size_t RenderEngineThreaded::getMaxViewportDims() const {
     return mRenderEngine->getMaxViewportDims();
 }
 
+bool RenderEngineThreaded::isProtected() const {
+    waitUntilInitialized();
+    std::lock_guard lock(mThreadMutex);
+    return mIsProtected;
+}
+
 bool RenderEngineThreaded::supportsProtectedContent() const {
     waitUntilInitialized();
     return mRenderEngine->supportsProtectedContent();
+}
+
+void RenderEngineThreaded::useProtectedContext(bool useProtectedContext) {
+    if (isProtected() == useProtectedContext ||
+        (useProtectedContext && !supportsProtectedContent())) {
+        return;
+    }
+
+    {
+        std::lock_guard lock(mThreadMutex);
+        mFunctionCalls.push([useProtectedContext, this](renderengine::RenderEngine& instance) {
+            ATRACE_NAME("REThreaded::useProtectedContext");
+            instance.useProtectedContext(useProtectedContext);
+            if (instance.isProtected() != useProtectedContext) {
+                ALOGE("Failed to switch RenderEngine context.");
+                // reset the cached mIsProtected value to a good state, but this does not
+                // prevent other callers of this method and isProtected from reading the
+                // invalid cached value.
+                mIsProtected = instance.isProtected();
+            }
+        });
+        mIsProtected = useProtectedContext;
+    }
+    mCondition.notify_one();
 }
 
 void RenderEngineThreaded::cleanupPostRender() {
@@ -270,7 +292,7 @@ void RenderEngineThreaded::cleanupPostRender() {
     {
         std::lock_guard lock(mThreadMutex);
         mFunctionCalls.push([=](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::cleanupPostRender");
+            ATRACE_NAME("REThreaded::unmapExternalTextureBuffer");
             instance.cleanupPostRender();
         });
     }
@@ -282,35 +304,27 @@ bool RenderEngineThreaded::canSkipPostRenderCleanup() const {
     return mRenderEngine->canSkipPostRenderCleanup();
 }
 
-void RenderEngineThreaded::drawLayersInternal(
-        const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
-        const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-        const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-        base::unique_fd&& bufferFence) {
-    resultPromise->set_value(Fence::NO_FENCE);
-    return;
-}
-
-ftl::Future<FenceResult> RenderEngineThreaded::drawLayers(
-        const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-        const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-        base::unique_fd&& bufferFence) {
+status_t RenderEngineThreaded::drawLayers(const DisplaySettings& display,
+                                          const std::vector<const LayerSettings*>& layers,
+                                          const std::shared_ptr<ExternalTexture>& buffer,
+                                          const bool useFramebufferCache,
+                                          base::unique_fd&& bufferFence,
+                                          base::unique_fd* drawFence) {
     ATRACE_CALL();
-    const auto resultPromise = std::make_shared<std::promise<FenceResult>>();
-    std::future<FenceResult> resultFuture = resultPromise->get_future();
-    int fd = bufferFence.release();
+    std::promise<status_t> resultPromise;
+    std::future<status_t> resultFuture = resultPromise.get_future();
     {
         std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([resultPromise, display, layers, buffer, useFramebufferCache,
-                             fd](renderengine::RenderEngine& instance) {
+        mFunctionCalls.push([&resultPromise, &display, &layers, &buffer, useFramebufferCache,
+                             &bufferFence, &drawFence](renderengine::RenderEngine& instance) {
             ATRACE_NAME("REThreaded::drawLayers");
-            instance.updateProtectedContext(layers, buffer);
-            instance.drawLayersInternal(std::move(resultPromise), display, layers, buffer,
-                                        useFramebufferCache, base::unique_fd(fd));
+            status_t status = instance.drawLayers(display, layers, buffer, useFramebufferCache,
+                                                  std::move(bufferFence), drawFence);
+            resultPromise.set_value(status);
         });
     }
     mCondition.notify_one();
-    return resultFuture;
+    return resultFuture.get();
 }
 
 void RenderEngineThreaded::cleanFramebufferCache() {
@@ -347,45 +361,19 @@ bool RenderEngineThreaded::supportsBackgroundBlur() {
     return mRenderEngine->supportsBackgroundBlur();
 }
 
-void RenderEngineThreaded::onActiveDisplaySizeChanged(ui::Size size) {
+void RenderEngineThreaded::onPrimaryDisplaySizeChanged(ui::Size size) {
     // This function is designed so it can run asynchronously, so we do not need to wait
     // for the futures.
     {
         std::lock_guard lock(mThreadMutex);
         mFunctionCalls.push([size](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::onActiveDisplaySizeChanged");
-            instance.onActiveDisplaySizeChanged(size);
+            ATRACE_NAME("REThreaded::onPrimaryDisplaySizeChanged");
+            instance.onPrimaryDisplaySizeChanged(size);
         });
     }
     mCondition.notify_one();
 }
 
-std::optional<pid_t> RenderEngineThreaded::getRenderEngineTid() const {
-    std::promise<pid_t> tidPromise;
-    std::future<pid_t> tidFuture = tidPromise.get_future();
-    {
-        std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([&tidPromise](renderengine::RenderEngine& instance) {
-            tidPromise.set_value(gettid());
-        });
-    }
-
-    mCondition.notify_one();
-    return std::make_optional(tidFuture.get());
-}
-
-void RenderEngineThreaded::setEnableTracing(bool tracingEnabled) {
-    // This function is designed so it can run asynchronously, so we do not need to wait
-    // for the futures.
-    {
-        std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([tracingEnabled](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::setEnableTracing");
-            instance.setEnableTracing(tracingEnabled);
-        });
-    }
-    mCondition.notify_one();
-}
 } // namespace threaded
 } // namespace renderengine
 } // namespace android

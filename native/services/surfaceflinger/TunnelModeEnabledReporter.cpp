@@ -59,7 +59,7 @@ void TunnelModeEnabledReporter::binderDied(const wp<IBinder>& who) {
 
 void TunnelModeEnabledReporter::addListener(const sp<gui::ITunnelModeEnabledListener>& listener) {
     sp<IBinder> asBinder = IInterface::asBinder(listener);
-    asBinder->linkToDeath(sp<DeathRecipient>::fromExisting(this));
+    asBinder->linkToDeath(this);
     bool tunnelModeEnabled = false;
     {
         std::scoped_lock lock(mMutex);

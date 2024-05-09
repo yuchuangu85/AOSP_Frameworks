@@ -19,14 +19,11 @@
 
 #include <batterystats/IBatteryStats.h>
 #include <utils/Singleton.h>
-#include <utils/SortedVector.h>
-#include <utils/SystemClock.h>
 
 namespace android {
 // ---------------------------------------------------------------------------
 
 class BatteryService : public Singleton<BatteryService> {
-    static constexpr int64_t WAKEUP_SENSOR_EVENT_DEBOUNCE_MS = 1000;
 
     friend class Singleton<BatteryService>;
     sp<IBatteryStats> mBatteryStatService;
@@ -35,7 +32,7 @@ class BatteryService : public Singleton<BatteryService> {
 
     void enableSensorImpl(uid_t uid, int handle);
     void disableSensorImpl(uid_t uid, int handle);
-    void noteWakeupSensorEventImpl(int64_t elapsedNanos, uid_t uid, int handle);
+    void cleanupImpl(uid_t uid);
 
     struct Info {
         uid_t uid;
@@ -48,7 +45,6 @@ class BatteryService : public Singleton<BatteryService> {
         }
     };
 
-    int64_t mLastWakeupSensorEventReportedMs;
     Mutex mActivationsLock;
     SortedVector<Info> mActivations;
     bool addSensor(uid_t uid, int handle);
@@ -62,14 +58,8 @@ public:
     static void disableSensor(uid_t uid, int handle) {
         BatteryService::getInstance().disableSensorImpl(uid, handle);
     }
-    static void noteWakeupSensorEvent(int64_t elapsed, uid_t uid, int handle) {
-        BatteryService& instance = BatteryService::getInstance();
-        const int64_t nowElapsedMs = elapsedRealtime();
-        if (nowElapsedMs >= (instance.mLastWakeupSensorEventReportedMs
-                              + WAKEUP_SENSOR_EVENT_DEBOUNCE_MS)) {
-            instance.noteWakeupSensorEventImpl(elapsed, uid, handle);
-            instance.mLastWakeupSensorEventReportedMs = nowElapsedMs;
-        }
+    static void cleanup(uid_t uid) {
+        BatteryService::getInstance().cleanupImpl(uid);
     }
 };
 

@@ -235,8 +235,8 @@ enum {
     NATIVE_WINDOW_ENABLE_FRAME_TIMESTAMPS         = 25,
     NATIVE_WINDOW_GET_COMPOSITOR_TIMING           = 26,
     NATIVE_WINDOW_GET_FRAME_TIMESTAMPS            = 27,
-    /* 28, removed: NATIVE_WINDOW_GET_WIDE_COLOR_SUPPORT */
-    /* 29, removed: NATIVE_WINDOW_GET_HDR_SUPPORT */
+    NATIVE_WINDOW_GET_WIDE_COLOR_SUPPORT          = 28,
+    NATIVE_WINDOW_GET_HDR_SUPPORT                 = 29,
     NATIVE_WINDOW_SET_USAGE64                     = ANATIVEWINDOW_PERFORM_SET_USAGE64,
     NATIVE_WINDOW_GET_CONSUMER_USAGE64            = 31,
     NATIVE_WINDOW_SET_BUFFERS_SMPTE2086_METADATA  = 32,
@@ -988,34 +988,15 @@ static inline int native_window_get_frame_timestamps(
             outDequeueReadyTime, outReleaseTime);
 }
 
-/* deprecated. Always returns 0 and outSupport holds true. Don't call. */
-static inline int native_window_get_wide_color_support (
-    struct ANativeWindow* window __UNUSED, bool* outSupport) __deprecated;
-
-/*
-   Deprecated(b/242763577): to be removed, this method should not be used
-   Surface support should not be tied to the display
-   Return true since most displays should have this support
-*/
-static inline int native_window_get_wide_color_support (
-    struct ANativeWindow* window __UNUSED, bool* outSupport) {
-    *outSupport = true;
-    return 0;
+static inline int native_window_get_wide_color_support(
+    struct ANativeWindow* window, bool* outSupport) {
+    return window->perform(window, NATIVE_WINDOW_GET_WIDE_COLOR_SUPPORT,
+            outSupport);
 }
 
-/* deprecated. Always returns 0 and outSupport holds true. Don't call. */
-static inline int native_window_get_hdr_support(struct ANativeWindow* window __UNUSED,
-                                                bool* outSupport) __deprecated;
-
-/*
-   Deprecated(b/242763577): to be removed, this method should not be used
-   Surface support should not be tied to the display
-   Return true since most displays should have this support
-*/
-static inline int native_window_get_hdr_support(struct ANativeWindow* window __UNUSED,
+static inline int native_window_get_hdr_support(struct ANativeWindow* window,
                                                 bool* outSupport) {
-    *outSupport = true;
-    return 0;
+    return window->perform(window, NATIVE_WINDOW_GET_HDR_SUPPORT, outSupport);
 }
 
 static inline int native_window_get_consumer_usage(struct ANativeWindow* window,
@@ -1037,41 +1018,17 @@ static inline int native_window_set_auto_prerotation(struct ANativeWindow* windo
     return window->perform(window, NATIVE_WINDOW_SET_AUTO_PREROTATION, autoPrerotation);
 }
 
-/*
- * Internal extension of ANativeWindow_FrameRateCompatibility.
- */
-enum {
-    /**
-     * This surface belongs to an app on the High Refresh Rate Deny list, and needs the display
-     * to operate at the exact frame rate.
-     *
-     * Keep in sync with Surface.java constant.
-     */
-    ANATIVEWINDOW_FRAME_RATE_EXACT = 100,
-
-    /**
-     * This surface is ignored while choosing the refresh rate.
-     */
-    ANATIVEWINDOW_FRAME_RATE_NO_VOTE,
-
-    /**
-     * This surface will vote for the minimum refresh rate.
-     */
-    ANATIVEWINDOW_FRAME_RATE_MIN
-};
-
 static inline int native_window_set_frame_rate(struct ANativeWindow* window, float frameRate,
                                         int8_t compatibility, int8_t changeFrameRateStrategy) {
     return window->perform(window, NATIVE_WINDOW_SET_FRAME_RATE, (double)frameRate,
                            (int)compatibility, (int)changeFrameRateStrategy);
 }
 
-static inline int native_window_set_frame_timeline_info(
-        struct ANativeWindow* window, uint64_t frameNumber, int64_t frameTimelineVsyncId,
-        int32_t inputEventId, int64_t startTimeNanos, int32_t useForRefreshRateSelection) {
-    return window->perform(window, NATIVE_WINDOW_SET_FRAME_TIMELINE_INFO, frameNumber,
-                           frameTimelineVsyncId, inputEventId, startTimeNanos,
-                           useForRefreshRateSelection);
+static inline int native_window_set_frame_timeline_info(struct ANativeWindow* window,
+                                                         int64_t frameTimelineVsyncId,
+                                                         int32_t inputEventId) {
+    return window->perform(window, NATIVE_WINDOW_SET_FRAME_TIMELINE_INFO,
+                           frameTimelineVsyncId, inputEventId);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -1132,13 +1089,10 @@ static inline int ANativeWindow_getLastQueuedBuffer2(ANativeWindow* window,
 /**
  * Retrieves an identifier for the next frame to be queued by this window.
  *
- * Frame ids start at 1 and are incremented on each new frame until the underlying surface changes,
- * in which case the frame id is reset to 1.
- *
- * \return the next frame id (0 being uninitialized).
+ * \return the next frame id.
  */
-static inline uint64_t ANativeWindow_getNextFrameId(ANativeWindow* window) {
-    uint64_t value;
+static inline int64_t ANativeWindow_getNextFrameId(ANativeWindow* window) {
+    int64_t value;
     window->perform(window, NATIVE_WINDOW_GET_NEXT_FRAME_ID, &value);
     return value;
 }

@@ -20,20 +20,20 @@
 #include <chrono>
 #include <thread>
 
-#include <android/gui/BnRegionSamplingListener.h>
 #include <binder/IPCThreadState.h>
 #include <binder/ProcessState.h>
+#include <gui/IRegionSamplingListener.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/SurfaceComposerClient.h>
 #include <gui/SurfaceControl.h>
-#include <private/gui/ComposerServiceAIDL.h>
+#include <private/gui/ComposerService.h>
 #include <utils/Trace.h>
 
 using namespace std::chrono_literals;
 
 namespace android {
 
-class Button : public gui::BnRegionSamplingListener {
+class Button : public BnRegionSamplingListener {
 public:
     Button(const char* name, const Rect& samplingArea) {
         sp<SurfaceComposerClient> client = new SurfaceComposerClient;
@@ -99,10 +99,9 @@ private:
                 .apply();
     }
 
-    binder::Status onSampleCollected(float medianLuma) override {
+    void onSampleCollected(float medianLuma) override {
         ATRACE_CALL();
         setColor(medianLuma);
-        return binder::Status::ok();
     }
 
     sp<SurfaceComposerClient> mClient;
@@ -121,22 +120,10 @@ int main(int, const char**) {
     const Rect backButtonArea{200, 1606, 248, 1654};
     sp<android::Button> backButton = new android::Button("BackButton", backButtonArea);
 
-    gui::ARect homeButtonAreaA;
-    homeButtonAreaA.left = 490;
-    homeButtonAreaA.top = 1606;
-    homeButtonAreaA.right = 590;
-    homeButtonAreaA.bottom = 1654;
-
-    gui::ARect backButtonAreaA;
-    backButtonAreaA.left = 200;
-    backButtonAreaA.top = 1606;
-    backButtonAreaA.right = 248;
-    backButtonAreaA.bottom = 1654;
-
-    sp<gui::ISurfaceComposer> composer = ComposerServiceAIDL::getComposerService();
-    composer->addRegionSamplingListener(homeButtonAreaA, homeButton->getStopLayerHandle(),
+    sp<ISurfaceComposer> composer = ComposerService::getComposerService();
+    composer->addRegionSamplingListener(homeButtonArea, homeButton->getStopLayerHandle(),
                                         homeButton);
-    composer->addRegionSamplingListener(backButtonAreaA, backButton->getStopLayerHandle(),
+    composer->addRegionSamplingListener(backButtonArea, backButton->getStopLayerHandle(),
                                         backButton);
 
     ProcessState::self()->startThreadPool();

@@ -19,7 +19,6 @@
 #ifndef __ANDROID_VNDK__
 
 #include <binder/IInterface.h>
-#include <binder/Status.h>
 
 namespace android {
 
@@ -44,7 +43,6 @@ public:
     virtual void noteStopCamera(int uid) = 0;
     virtual void noteResetCamera() = 0;
     virtual void noteResetFlashlight() = 0;
-    virtual binder::Status noteWakeupSensorEvent(int64_t elapsedNanos, int uid, int sensor) = 0;
 
     enum {
         NOTE_START_SENSOR_TRANSACTION = IBinder::FIRST_CALL_TRANSACTION,
@@ -60,8 +58,7 @@ public:
         NOTE_START_CAMERA_TRANSACTION,
         NOTE_STOP_CAMERA_TRANSACTION,
         NOTE_RESET_CAMERA_TRANSACTION,
-        NOTE_RESET_FLASHLIGHT_TRANSACTION,
-        NOTE_WAKEUP_SENSOR_EVENT_TRANSACTION
+        NOTE_RESET_FLASHLIGHT_TRANSACTION
     };
 };
 

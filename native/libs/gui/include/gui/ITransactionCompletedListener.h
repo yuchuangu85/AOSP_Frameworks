@@ -30,7 +30,6 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
-#include <variant>
 
 namespace android {
 
@@ -40,15 +39,10 @@ class ListenerCallbacks;
 class CallbackId : public Parcelable {
 public:
     int64_t id;
-    enum class Type : int32_t {
-        ON_COMPLETE = 0,
-        ON_COMMIT = 1,
-        /*reserved for serialization = 2*/
-    } type;
-    bool includeJankData; // Only respected for ON_COMPLETE callbacks.
+    enum class Type : int32_t { ON_COMPLETE, ON_COMMIT } type;
 
     CallbackId() {}
-    CallbackId(int64_t id, Type type) : id(id), type(type), includeJankData(false) {}
+    CallbackId(int64_t id, Type type) : id(id), type(type) {}
     status_t writeToParcel(Parcel* output) const override;
     status_t readFromParcel(const Parcel* input) override;
 
@@ -136,12 +130,12 @@ public:
     status_t readFromParcel(const Parcel* input) override;
 
     SurfaceStats() = default;
-    SurfaceStats(const sp<IBinder>& sc, std::variant<nsecs_t, sp<Fence>> acquireTimeOrFence,
-                 const sp<Fence>& prevReleaseFence, std::optional<uint32_t> hint,
-                 uint32_t currentMaxAcquiredBuffersCount, FrameEventHistoryStats frameEventStats,
-                 std::vector<JankData> jankData, ReleaseCallbackId previousReleaseCallbackId)
+    SurfaceStats(const sp<IBinder>& sc, nsecs_t time, const sp<Fence>& prevReleaseFence,
+                 uint32_t hint, uint32_t currentMaxAcquiredBuffersCount,
+                 FrameEventHistoryStats frameEventStats, std::vector<JankData> jankData,
+                 ReleaseCallbackId previousReleaseCallbackId)
           : surfaceControl(sc),
-            acquireTimeOrFence(std::move(acquireTimeOrFence)),
+            acquireTime(time),
             previousReleaseFence(prevReleaseFence),
             transformHint(hint),
             currentMaxAcquiredBufferCount(currentMaxAcquiredBuffersCount),
@@ -150,9 +144,9 @@ public:
             previousReleaseCallbackId(previousReleaseCallbackId) {}
 
     sp<IBinder> surfaceControl;
-    std::variant<nsecs_t, sp<Fence>> acquireTimeOrFence = -1;
+    nsecs_t acquireTime = -1;
     sp<Fence> previousReleaseFence;
-    std::optional<uint32_t> transformHint = 0;
+    uint32_t transformHint = 0;
     uint32_t currentMaxAcquiredBufferCount = 0;
     FrameEventHistoryStats eventStats;
     std::vector<JankData> jankData;
@@ -198,11 +192,8 @@ public:
     virtual void onTransactionCompleted(ListenerStats stats) = 0;
 
     virtual void onReleaseBuffer(ReleaseCallbackId callbackId, sp<Fence> releaseFence,
+                                 uint32_t transformHint,
                                  uint32_t currentMaxAcquiredBufferCount) = 0;
-
-    virtual void onTransactionQueueStalled(const String8& name) = 0;
-
-    virtual void onTrustedPresentationChanged(int id, bool inTrustedPresentationState) = 0;
 };
 
 class BnTransactionCompletedListener : public SafeBnInterface<ITransactionCompletedListener> {

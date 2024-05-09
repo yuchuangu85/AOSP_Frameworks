@@ -35,11 +35,8 @@ GLHelper::GLHelper() :
 GLHelper::~GLHelper() {
 }
 
-bool GLHelper::setUp(const sp<IBinder>& displayToken, const ShaderDesc* shaderDescs,
-                     size_t numShaders) {
+bool GLHelper::setUp(const ShaderDesc* shaderDescs, size_t numShaders) {
     bool result;
-
-    mDisplayToken = displayToken;
 
     mDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (mDisplay == EGL_NO_DISPLAY) {
@@ -224,8 +221,14 @@ bool GLHelper::createNamedSurfaceTexture(GLuint name, uint32_t w, uint32_t h,
 }
 
 bool GLHelper::computeWindowScale(uint32_t w, uint32_t h, float* scale) {
+    const sp<IBinder> dpy = mSurfaceComposerClient->getInternalDisplayToken();
+    if (dpy == nullptr) {
+        fprintf(stderr, "SurfaceComposer::getInternalDisplayToken failed.\n");
+        return false;
+    }
+
     ui::DisplayMode mode;
-    status_t err = mSurfaceComposerClient->getActiveDisplayMode(mDisplayToken, &mode);
+    status_t err = mSurfaceComposerClient->getActiveDisplayMode(dpy, &mode);
     if (err != NO_ERROR) {
         fprintf(stderr, "SurfaceComposer::getActiveDisplayMode failed: %#x\n", err);
         return false;

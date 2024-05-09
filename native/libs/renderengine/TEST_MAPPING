@@ -3,11 +3,5 @@
     {
       "name": "librenderengine_test"
     }
-  ],
-
-  "imports": [
-    {
-      "path": "frameworks/native/services/surfaceflinger"
-    }
   ]
 }

@@ -20,10 +20,6 @@
 
 #include <gui/SurfaceComposerClient.h>
 #include <private/gui/ComposerService.h>
-#include <chrono>
-
-using ::std::literals::chrono_literals::operator""ms;
-using ::std::literals::chrono_literals::operator""s;
 
 static constexpr int kRefreshRateOverlayCode = 1034;
 static constexpr int kRefreshRateOverlayEnable = 1;
@@ -79,6 +75,14 @@ void toggleOverlay(bool enabled) {
 }
 
 } // namespace
+
+TEST(RefreshRateOverlayTest, enableOverlay) {
+    toggleOverlay(true);
+}
+
+TEST(RefreshRateOverlayTest, disableOverlay) {
+    toggleOverlay(false);
+}
 
 TEST(RefreshRateOverlayTest, enableAndDisableOverlay) {
     toggleOverlay(true);

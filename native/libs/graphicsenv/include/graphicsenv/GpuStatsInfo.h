@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <chrono>
 #include <string>
 #include <vector>
 
@@ -53,14 +52,11 @@ public:
 };
 
 /*
- * class for transporting gpu app stats from GpuService to authorized recipients.
+ * class for transporting gpu app stats from GpuService to authorized recipents.
  * This class is intended to be a data container.
  */
 class GpuStatsAppInfo : public Parcelable {
 public:
-    // This limits the worst case number of extensions to be tracked.
-    static const uint32_t MAX_NUM_EXTENSIONS = 100;
-
     GpuStatsAppInfo() = default;
     GpuStatsAppInfo(const GpuStatsAppInfo&) = default;
     virtual ~GpuStatsAppInfo() = default;
@@ -76,16 +72,6 @@ public:
     bool cpuVulkanInUse = false;
     bool falsePrerotation = false;
     bool gles1InUse = false;
-    bool angleInUse = false;
-    bool createdGlesContext = false;
-    bool createdVulkanDevice = false;
-    bool createdVulkanSwapchain = false;
-    uint32_t vulkanApiVersion = 0;
-    uint64_t vulkanDeviceFeaturesEnabled = 0;
-    std::vector<int32_t> vulkanInstanceExtensions = {};
-    std::vector<int32_t> vulkanDeviceExtensions = {};
-
-    std::chrono::time_point<std::chrono::system_clock> lastAccessTime;
 };
 
 /*
@@ -111,13 +97,6 @@ public:
         CPU_VULKAN_IN_USE = 0,
         FALSE_PREROTATION = 1,
         GLES_1_IN_USE = 2,
-        CREATED_GLES_CONTEXT = 3,
-        CREATED_VULKAN_API_VERSION = 4,
-        CREATED_VULKAN_DEVICE = 5,
-        CREATED_VULKAN_SWAPCHAIN = 6,
-        VULKAN_DEVICE_FEATURES_ENABLED = 7,
-        VULKAN_INSTANCE_EXTENSION = 8,
-        VULKAN_DEVICE_EXTENSION = 9,
     };
 
     GpuStatsInfo() = default;

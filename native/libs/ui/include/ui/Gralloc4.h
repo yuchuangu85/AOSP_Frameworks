@@ -17,7 +17,6 @@
 #ifndef ANDROID_UI_GRALLOC4_H
 #define ANDROID_UI_GRALLOC4_H
 
-#include <aidl/android/hardware/graphics/allocator/IAllocator.h>
 #include <android/hardware/graphics/allocator/4.0/IAllocator.h>
 #include <android/hardware/graphics/common/1.1/types.h>
 #include <android/hardware/graphics/mapper/4.0/IMapper.h>
@@ -42,9 +41,9 @@ public:
     std::string dumpBuffer(buffer_handle_t bufferHandle, bool less = true) const override;
     std::string dumpBuffers(bool less = true) const;
 
-    status_t createDescriptor(void* bufferDescriptorInfo, void* outBufferDescriptor) const;
+    status_t createDescriptor(void* bufferDescriptorInfo, void* outBufferDescriptor) const override;
 
-    status_t importBuffer(const native_handle_t* rawHandle,
+    status_t importBuffer(const hardware::hidl_handle& rawHandle,
                           buffer_handle_t* outBufferHandle) const override;
 
     void freeBuffer(buffer_handle_t bufferHandle) const override;
@@ -102,24 +101,50 @@ public:
     status_t getPlaneLayouts(buffer_handle_t bufferHandle,
                              std::vector<ui::PlaneLayout>* outPlaneLayouts) const override;
     status_t getDataspace(buffer_handle_t bufferHandle, ui::Dataspace* outDataspace) const override;
-    status_t setDataspace(buffer_handle_t bufferHandle, ui::Dataspace dataspace) const override;
     status_t getBlendMode(buffer_handle_t bufferHandle, ui::BlendMode* outBlendMode) const override;
     status_t getSmpte2086(buffer_handle_t bufferHandle,
                           std::optional<ui::Smpte2086>* outSmpte2086) const override;
-    status_t setSmpte2086(buffer_handle_t bufferHandle,
-                          std::optional<ui::Smpte2086> smpte2086) const override;
     status_t getCta861_3(buffer_handle_t bufferHandle,
                          std::optional<ui::Cta861_3>* outCta861_3) const override;
-    status_t setCta861_3(buffer_handle_t bufferHandle,
-                         std::optional<ui::Cta861_3> cta861_3) const override;
     status_t getSmpte2094_40(buffer_handle_t bufferHandle,
                              std::optional<std::vector<uint8_t>>* outSmpte2094_40) const override;
-    status_t setSmpte2094_40(buffer_handle_t bufferHandle,
-                             std::optional<std::vector<uint8_t>> smpte2094_40) const override;
-    status_t getSmpte2094_10(buffer_handle_t bufferHandle,
-                             std::optional<std::vector<uint8_t>>* outSmpte2094_10) const override;
-    status_t setSmpte2094_10(buffer_handle_t bufferHandle,
-                             std::optional<std::vector<uint8_t>> smpte2094_10) const override;
+
+    status_t getDefaultPixelFormatFourCC(uint32_t width, uint32_t height, PixelFormat format,
+                                         uint32_t layerCount, uint64_t usage,
+                                         uint32_t* outPixelFormatFourCC) const override;
+    status_t getDefaultPixelFormatModifier(uint32_t width, uint32_t height, PixelFormat format,
+                                           uint32_t layerCount, uint64_t usage,
+                                           uint64_t* outPixelFormatModifier) const override;
+    status_t getDefaultAllocationSize(uint32_t width, uint32_t height, PixelFormat format,
+                                      uint32_t layerCount, uint64_t usage,
+                                      uint64_t* outAllocationSize) const override;
+    status_t getDefaultProtectedContent(uint32_t width, uint32_t height, PixelFormat format,
+                                        uint32_t layerCount, uint64_t usage,
+                                        uint64_t* outProtectedContent) const override;
+    status_t getDefaultCompression(uint32_t width, uint32_t height, PixelFormat format,
+                                   uint32_t layerCount, uint64_t usage,
+                                   aidl::android::hardware::graphics::common::ExtendableType*
+                                           outCompression) const override;
+    status_t getDefaultCompression(uint32_t width, uint32_t height, PixelFormat format,
+                                   uint32_t layerCount, uint64_t usage,
+                                   ui::Compression* outCompression) const override;
+    status_t getDefaultInterlaced(uint32_t width, uint32_t height, PixelFormat format,
+                                  uint32_t layerCount, uint64_t usage,
+                                  aidl::android::hardware::graphics::common::ExtendableType*
+                                          outInterlaced) const override;
+    status_t getDefaultInterlaced(uint32_t width, uint32_t height, PixelFormat format,
+                                  uint32_t layerCount, uint64_t usage,
+                                  ui::Interlaced* outInterlaced) const override;
+    status_t getDefaultChromaSiting(uint32_t width, uint32_t height, PixelFormat format,
+                                    uint32_t layerCount, uint64_t usage,
+                                    aidl::android::hardware::graphics::common::ExtendableType*
+                                            outChromaSiting) const override;
+    status_t getDefaultChromaSiting(uint32_t width, uint32_t height, PixelFormat format,
+                                    uint32_t layerCount, uint64_t usage,
+                                    ui::ChromaSiting* outChromaSiting) const override;
+    status_t getDefaultPlaneLayouts(uint32_t width, uint32_t height, PixelFormat format,
+                                    uint32_t layerCount, uint64_t usage,
+                                    std::vector<ui::PlaneLayout>* outPlaneLayouts) const override;
 
     std::vector<android::hardware::graphics::mapper::V4_0::IMapper::MetadataTypeDescription>
     listSupportedMetadataTypes() const;
@@ -127,22 +152,18 @@ public:
 private:
     friend class GraphicBufferAllocator;
 
+    // Determines whether the passed info is compatible with the mapper.
+    status_t validateBufferDescriptorInfo(
+            hardware::graphics::mapper::V4_0::IMapper::BufferDescriptorInfo* descriptorInfo) const;
+
     template <class T>
     using DecodeFunction = status_t (*)(const hardware::hidl_vec<uint8_t>& input, T* output);
-    template <class T>
-    using EncodeFunction = status_t (*)(const T& input, hardware::hidl_vec<uint8_t>* output);
 
     template <class T>
     status_t get(
             buffer_handle_t bufferHandle,
             const android::hardware::graphics::mapper::V4_0::IMapper::MetadataType& metadataType,
             DecodeFunction<T> decodeFunction, T* outMetadata) const;
-
-    template <class T>
-    status_t set(
-            buffer_handle_t bufferHandle,
-            const android::hardware::graphics::mapper::V4_0::IMapper::MetadataType& metadataType,
-            const T& metadata, EncodeFunction<T> encodeFunction) const;
 
     template <class T>
     status_t getDefault(
@@ -181,8 +202,6 @@ public:
 private:
     const Gralloc4Mapper& mMapper;
     sp<hardware::graphics::allocator::V4_0::IAllocator> mAllocator;
-    // Optional "4.1" allocator
-    std::shared_ptr<aidl::android::hardware::graphics::allocator::IAllocator> mAidlAllocator;
 };
 
 } // namespace android

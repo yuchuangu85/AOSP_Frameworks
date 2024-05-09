@@ -33,15 +33,12 @@
 #include <binder/IResultReceiver.h>
 #include <binder/IServiceManager.h>
 #include <binder/IShellCallback.h>
-#include <sys/prctl.h>
 
+#include <sys/prctl.h>
 #include <chrono>
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
-#include <optional>
-#include <thread>
-
 #include "android/binder_ibinder.h"
 
 using namespace android;
@@ -51,22 +48,9 @@ constexpr char kBinderNdkUnitTestService[] = "BinderNdkUnitTest";
 constexpr char kLazyBinderNdkUnitTestService[] = "LazyBinderNdkUnitTest";
 constexpr char kForcePersistNdkUnitTestService[] = "ForcePersistNdkUnitTestService";
 constexpr char kActiveServicesNdkUnitTestService[] = "ActiveServicesNdkUnitTestService";
-constexpr char kBinderNdkUnitTestServiceFlagged[] = "BinderNdkUnitTestFlagged";
 
-constexpr unsigned int kShutdownWaitTime = 11;
+constexpr unsigned int kShutdownWaitTime = 10;
 constexpr uint64_t kContextTestValue = 0xb4e42fb4d9a1d715;
-
-class MyTestFoo : public IFoo {
-    binder_status_t doubleNumber(int32_t in, int32_t* out) override {
-        *out = 2 * in;
-        LOG(INFO) << "doubleNumber (" << in << ") => " << *out;
-        return STATUS_OK;
-    }
-    binder_status_t die() override {
-        ADD_FAILURE() << "die called on local instance";
-        return STATUS_OK;
-    }
-};
 
 class MyBinderNdkUnitTest : public aidl::BnBinderNdkUnitTest {
     ndk::ScopedAStatus repeatInt(int32_t in, int32_t* out) {
@@ -159,24 +143,6 @@ int generatedService() {
     return 1;  // should not return
 }
 
-int generatedFlaggedService(const AServiceManager_AddServiceFlag flags, const char* instance) {
-    ABinderProcess_setThreadPoolMaxThreadCount(0);
-
-    auto service = ndk::SharedRefBase::make<MyBinderNdkUnitTest>();
-    auto binder = service->asBinder();
-
-    binder_exception_t exception =
-            AServiceManager_addServiceWithFlags(binder.get(), instance, flags);
-
-    if (exception != EX_NONE) {
-        LOG(FATAL) << "Could not register: " << exception << " " << instance;
-    }
-
-    ABinderProcess_joinThreadPool();
-
-    return 1;  // should not return
-}
-
 // manually-written parceling class considered bad practice
 class MyFoo : public IFoo {
     binder_status_t doubleNumber(int32_t in, int32_t* out) override {
@@ -257,16 +223,6 @@ bool isServiceRunning(const char* serviceName) {
     return true;
 }
 
-TEST(NdkBinder, DetectDoubleOwn) {
-    auto badService = ndk::SharedRefBase::make<MyBinderNdkUnitTest>();
-    EXPECT_DEATH(std::shared_ptr<MyBinderNdkUnitTest>(badService.get()),
-                 "Is this object double-owned?");
-}
-
-TEST(NdkBinder, DetectNoSharedRefBaseCreated) {
-    EXPECT_DEATH(MyBinderNdkUnitTest(), "SharedRefBase: no ref created during lifetime");
-}
-
 TEST(NdkBinder, GetServiceThatDoesntExist) {
     sp<IFoo> foo = IFoo::getService("asdfghkl;");
     EXPECT_EQ(nullptr, foo.get());
@@ -285,52 +241,12 @@ TEST(NdkBinder, CheckServiceThatDoesExist) {
     AIBinder_decStrong(binder);
 }
 
-struct ServiceData {
-    std::string instance;
-    ndk::SpAIBinder binder;
-
-    static void fillOnRegister(const char* instance, AIBinder* binder, void* cookie) {
-        ServiceData* d = reinterpret_cast<ServiceData*>(cookie);
-        d->instance = instance;
-        d->binder = ndk::SpAIBinder(binder);
-    }
-};
-
-TEST(NdkBinder, RegisterForServiceNotificationsNonExisting) {
-    ServiceData data;
-    auto* notif = AServiceManager_registerForServiceNotifications(
-            "DOES_NOT_EXIST", ServiceData::fillOnRegister, (void*)&data);
-    ASSERT_NE(notif, nullptr);
-
-    sleep(1);  // give us a chance to fail
-    AServiceManager_NotificationRegistration_delete(notif);
-
-    // checking after deleting to avoid needing a mutex over the data - otherwise
-    // in an environment w/ multiple threads, you would need to guard access
-    EXPECT_EQ(data.instance, "");
-    EXPECT_EQ(data.binder, nullptr);
-}
-
-TEST(NdkBinder, RegisterForServiceNotificationsExisting) {
-    ServiceData data;
-    auto* notif = AServiceManager_registerForServiceNotifications(
-            kExistingNonNdkService, ServiceData::fillOnRegister, (void*)&data);
-    ASSERT_NE(notif, nullptr);
-
-    sleep(1);  // give us a chance to fail
-    AServiceManager_NotificationRegistration_delete(notif);
-
-    // checking after deleting to avoid needing a mutex over the data - otherwise
-    // in an environment w/ multiple threads, you would need to guard access
-    EXPECT_EQ(data.instance, kExistingNonNdkService);
-    EXPECT_EQ(data.binder, ndk::SpAIBinder(AServiceManager_checkService(kExistingNonNdkService)));
-}
-
 TEST(NdkBinder, UnimplementedDump) {
-    ndk::SpAIBinder binder;
-    sp<IFoo> foo = IFoo::getService(IFoo::kSomeInstanceName, binder.getR());
+    sp<IFoo> foo = IFoo::getService(IFoo::kSomeInstanceName);
     ASSERT_NE(foo, nullptr);
-    EXPECT_EQ(OK, AIBinder_dump(binder.get(), STDOUT_FILENO, nullptr, 0));
+    AIBinder* binder = foo->getBinder();
+    EXPECT_EQ(OK, AIBinder_dump(binder, STDOUT_FILENO, nullptr, 0));
+    AIBinder_decStrong(binder);
 }
 
 TEST(NdkBinder, UnimplementedShell) {
@@ -352,45 +268,6 @@ TEST(NdkBinder, DoubleNumber) {
     int32_t out;
     EXPECT_EQ(STATUS_OK, foo->doubleNumber(1, &out));
     EXPECT_EQ(2, out);
-}
-
-TEST(NdkBinder, ReassociateBpBinderWithSameDescriptor) {
-    ndk::SpAIBinder binder;
-    sp<IFoo> foo = IFoo::getService(IFoo::kSomeInstanceName, binder.getR());
-
-    EXPECT_TRUE(AIBinder_isRemote(binder.get()));
-
-    EXPECT_TRUE(AIBinder_associateClass(binder.get(), IFoo::kClassDupe));
-}
-
-TEST(NdkBinder, CantHaveTwoLocalBinderClassesWithSameDescriptor) {
-    sp<IFoo> foo = sp<MyTestFoo>::make();
-    ndk::SpAIBinder binder(foo->getBinder());
-
-    EXPECT_FALSE(AIBinder_isRemote(binder.get()));
-
-    EXPECT_FALSE(AIBinder_associateClass(binder.get(), IFoo::kClassDupe));
-}
-
-TEST(NdkBinder, GetTestServiceStressTest) {
-    // libbinder has some complicated logic to make sure only one instance of
-    // ABpBinder is associated with each binder.
-
-    constexpr size_t kNumThreads = 10;
-    constexpr size_t kNumCalls = 1000;
-    std::vector<std::thread> threads;
-
-    for (size_t i = 0; i < kNumThreads; i++) {
-        threads.push_back(std::thread([&]() {
-            for (size_t j = 0; j < kNumCalls; j++) {
-                auto binder =
-                        ndk::SpAIBinder(AServiceManager_checkService(IFoo::kSomeInstanceName));
-                EXPECT_EQ(STATUS_OK, AIBinder_ping(binder.get()));
-            }
-        }));
-    }
-
-    for (auto& thread : threads) thread.join();
 }
 
 void defaultInstanceCounter(const char* instance, void* context) {
@@ -426,16 +303,6 @@ TEST(NdkBinder, GetLazyService) {
 TEST(NdkBinder, IsUpdatable) {
     bool isUpdatable = AServiceManager_isUpdatableViaApex("android.hardware.light.ILights/default");
     EXPECT_EQ(isUpdatable, false);
-}
-
-TEST(NdkBinder, GetUpdatableViaApex) {
-    std::optional<std::string> updatableViaApex;
-    AServiceManager_getUpdatableApexName(
-            "android.hardware.light.ILights/default", &updatableViaApex,
-            [](const char* apexName, void* context) {
-                *static_cast<std::optional<std::string>*>(context) = apexName;
-            });
-    EXPECT_EQ(updatableViaApex, std::nullopt) << *updatableViaApex;
 }
 
 // This is too slow
@@ -495,16 +362,9 @@ TEST(NdkBinder, ActiveServicesCallbackTest) {
             << "Service failed to shut down.";
 }
 
-struct DeathRecipientCookie {
-    std::function<void(void)>*onDeath, *onUnlink;
-};
 void LambdaOnDeath(void* cookie) {
-    auto funcs = static_cast<DeathRecipientCookie*>(cookie);
-    (*funcs->onDeath)();
-};
-void LambdaOnUnlink(void* cookie) {
-    auto funcs = static_cast<DeathRecipientCookie*>(cookie);
-    (*funcs->onUnlink)();
+    auto onDeath = static_cast<std::function<void(void)>*>(cookie);
+    (*onDeath)();
 };
 TEST(NdkBinder, DeathRecipient) {
     using namespace std::chrono_literals;
@@ -516,46 +376,26 @@ TEST(NdkBinder, DeathRecipient) {
 
     std::mutex deathMutex;
     std::condition_variable deathCv;
-    bool deathReceived = false;
+    bool deathRecieved = false;
 
     std::function<void(void)> onDeath = [&] {
         std::cerr << "Binder died (as requested)." << std::endl;
-        deathReceived = true;
+        deathRecieved = true;
         deathCv.notify_one();
     };
 
-    std::mutex unlinkMutex;
-    std::condition_variable unlinkCv;
-    bool unlinkReceived = false;
-    bool wasDeathReceivedFirst = false;
-
-    std::function<void(void)> onUnlink = [&] {
-        std::cerr << "Binder unlinked (as requested)." << std::endl;
-        wasDeathReceivedFirst = deathReceived;
-        unlinkReceived = true;
-        unlinkCv.notify_one();
-    };
-
-    DeathRecipientCookie cookie = {&onDeath, &onUnlink};
-
     AIBinder_DeathRecipient* recipient = AIBinder_DeathRecipient_new(LambdaOnDeath);
-    AIBinder_DeathRecipient_setOnUnlinked(recipient, LambdaOnUnlink);
 
-    EXPECT_EQ(STATUS_OK, AIBinder_linkToDeath(binder, recipient, static_cast<void*>(&cookie)));
+    EXPECT_EQ(STATUS_OK, AIBinder_linkToDeath(binder, recipient, static_cast<void*>(&onDeath)));
 
     // the binder driver should return this if the service dies during the transaction
     EXPECT_EQ(STATUS_DEAD_OBJECT, foo->die());
 
     foo = nullptr;
 
-    std::unique_lock<std::mutex> lockDeath(deathMutex);
-    EXPECT_TRUE(deathCv.wait_for(lockDeath, 1s, [&] { return deathReceived; }));
-    EXPECT_TRUE(deathReceived);
-
-    std::unique_lock<std::mutex> lockUnlink(unlinkMutex);
-    EXPECT_TRUE(deathCv.wait_for(lockUnlink, 1s, [&] { return unlinkReceived; }));
-    EXPECT_TRUE(unlinkReceived);
-    EXPECT_TRUE(wasDeathReceivedFirst);
+    std::unique_lock<std::mutex> lock(deathMutex);
+    EXPECT_TRUE(deathCv.wait_for(lock, 1s, [&] { return deathRecieved; }));
+    EXPECT_TRUE(deathRecieved);
 
     AIBinder_DeathRecipient_delete(recipient);
     AIBinder_decStrong(binder);
@@ -593,30 +433,17 @@ TEST(NdkBinder, LinkToDeath) {
     AIBinder_decStrong(binder);
 }
 
-TEST(NdkBinder, SetInheritRt) {
-    // functional test in binderLibTest
-    sp<IFoo> foo = sp<MyTestFoo>::make();
-    AIBinder* binder = foo->getBinder();
-
-    // does not abort
-    AIBinder_setInheritRt(binder, true);
-    AIBinder_setInheritRt(binder, false);
-    AIBinder_setInheritRt(binder, true);
-
-    AIBinder_decStrong(binder);
-}
-
-TEST(NdkBinder, SetInheritRtNonLocal) {
-    AIBinder* binder = AServiceManager_getService(kExistingNonNdkService);
-    ASSERT_NE(binder, nullptr);
-
-    ASSERT_TRUE(AIBinder_isRemote(binder));
-
-    EXPECT_DEATH(AIBinder_setInheritRt(binder, true), "");
-    EXPECT_DEATH(AIBinder_setInheritRt(binder, false), "");
-
-    AIBinder_decStrong(binder);
-}
+class MyTestFoo : public IFoo {
+    binder_status_t doubleNumber(int32_t in, int32_t* out) override {
+        *out = 2 * in;
+        LOG(INFO) << "doubleNumber (" << in << ") => " << *out;
+        return STATUS_OK;
+    }
+    binder_status_t die() override {
+        ADD_FAILURE() << "die called on local instance";
+        return STATUS_OK;
+    }
+};
 
 TEST(NdkBinder, AddNullService) {
     EXPECT_EQ(EX_ILLEGAL_ARGUMENT, AServiceManager_addService(nullptr, "any-service-name"));
@@ -633,8 +460,7 @@ TEST(NdkBinder, GetServiceInProcess) {
     sp<IFoo> foo = new MyTestFoo;
     EXPECT_EQ(EX_NONE, foo->addService(kInstanceName));
 
-    ndk::SpAIBinder binder;
-    sp<IFoo> getFoo = IFoo::getService(kInstanceName, binder.getR());
+    sp<IFoo> getFoo = IFoo::getService(kInstanceName);
     EXPECT_EQ(foo.get(), getFoo.get());
 
     int32_t out;
@@ -751,35 +577,6 @@ TEST(NdkBinder, ConvertToPlatformBinder) {
     }
 }
 
-TEST(NdkBinder, ConvertToPlatformParcel) {
-    ndk::ScopedAParcel parcel = ndk::ScopedAParcel(AParcel_create());
-    EXPECT_EQ(OK, AParcel_writeInt32(parcel.get(), 42));
-
-    android::Parcel* pparcel = AParcel_viewPlatformParcel(parcel.get());
-    pparcel->setDataPosition(0);
-    EXPECT_EQ(42, pparcel->readInt32());
-}
-
-TEST(NdkBinder, GetAndVerifyScopedAIBinder_Weak) {
-    for (const ndk::SpAIBinder& binder :
-         {// remote
-          ndk::SpAIBinder(AServiceManager_getService(kBinderNdkUnitTestService)),
-          // local
-          ndk::SharedRefBase::make<MyBinderNdkUnitTest>()->asBinder()}) {
-        // get a const ScopedAIBinder_Weak and verify promote
-        EXPECT_NE(binder.get(), nullptr);
-        const ndk::ScopedAIBinder_Weak wkAIBinder =
-                ndk::ScopedAIBinder_Weak(AIBinder_Weak_new(binder.get()));
-        EXPECT_EQ(wkAIBinder.promote().get(), binder.get());
-        // get another ScopedAIBinder_Weak and verify
-        ndk::ScopedAIBinder_Weak wkAIBinder2 =
-                ndk::ScopedAIBinder_Weak(AIBinder_Weak_new(binder.get()));
-        EXPECT_FALSE(AIBinder_Weak_lt(wkAIBinder.get(), wkAIBinder2.get()));
-        EXPECT_FALSE(AIBinder_Weak_lt(wkAIBinder2.get(), wkAIBinder.get()));
-        EXPECT_EQ(wkAIBinder2.promote(), wkAIBinder.promote());
-    }
-}
-
 class MyResultReceiver : public BnResultReceiver {
    public:
     Mutex mMutex;
@@ -866,37 +663,8 @@ TEST(NdkBinder, UseHandleShellCommand) {
     EXPECT_EQ("CMD", shellCmdToString(testService, {"C", "M", "D"}));
 }
 
-TEST(NdkBinder, FlaggedServiceAccessible) {
-    static const sp<android::IServiceManager> sm(android::defaultServiceManager());
-    sp<IBinder> testService = sm->getService(String16(kBinderNdkUnitTestServiceFlagged));
-    ASSERT_NE(nullptr, testService);
-}
-
 TEST(NdkBinder, GetClassInterfaceDescriptor) {
     ASSERT_STREQ(IFoo::kIFooDescriptor, AIBinder_Class_getDescriptor(IFoo::kClass));
-}
-
-static void addOne(int* to) {
-    if (!to) return;
-    ++(*to);
-}
-struct FakeResource : public ndk::impl::ScopedAResource<int*, addOne, nullptr> {
-    explicit FakeResource(int* a) : ScopedAResource(a) {}
-};
-
-TEST(NdkBinder_ScopedAResource, GetDelete) {
-    int deleteCount = 0;
-    { FakeResource resource(&deleteCount); }
-    EXPECT_EQ(deleteCount, 1);
-}
-
-TEST(NdkBinder_ScopedAResource, Release) {
-    int deleteCount = 0;
-    {
-        FakeResource resource(&deleteCount);
-        (void)resource.release();
-    }
-    EXPECT_EQ(deleteCount, 0);
 }
 
 int main(int argc, char* argv[]) {
@@ -925,13 +693,6 @@ int main(int argc, char* argv[]) {
     if (fork() == 0) {
         prctl(PR_SET_PDEATHSIG, SIGHUP);
         return generatedService();
-    }
-    if (fork() == 0) {
-        prctl(PR_SET_PDEATHSIG, SIGHUP);
-        // We may want to change this flag to be more generic ones for the future
-        AServiceManager_AddServiceFlag test_flags =
-                AServiceManager_AddServiceFlag::ADD_SERVICE_ALLOW_ISOLATED;
-        return generatedFlaggedService(test_flags, kBinderNdkUnitTestServiceFlagged);
     }
 
     ABinderProcess_setThreadPoolMaxThreadCount(1);  // to receive death notifications/callbacks

@@ -22,16 +22,12 @@
 #include <compositionengine/LayerFE.h>
 #include <compositionengine/LayerFECompositionState.h>
 #include <compositionengine/RenderSurface.h>
-#include <compositionengine/impl/HwcAsyncWorker.h>
 #include <compositionengine/impl/Output.h>
 #include <compositionengine/impl/OutputCompositionState.h>
 #include <compositionengine/impl/OutputLayer.h>
 #include <compositionengine/impl/OutputLayerCompositionState.h>
 #include <compositionengine/impl/planner/Planner.h>
-#include <ftl/future.h>
-#include <gui/TraceUtils.h>
 
-#include <optional>
 #include <thread>
 
 #include "renderengine/ExternalTexture.h"
@@ -53,15 +49,12 @@
 
 #include "TracedOrdinal.h"
 
-using aidl::android::hardware::graphics::composer3::Composition;
-
 namespace android::compositionengine {
 
 Output::~Output() = default;
 
 namespace impl {
-using CompositionStrategyPredictionState =
-        OutputCompositionState::CompositionStrategyPredictionState;
+
 namespace {
 
 template <typename T>
@@ -118,10 +111,6 @@ const std::string& Output::getName() const {
 
 void Output::setName(const std::string& name) {
     mName = name;
-    auto displayIdOpt = getDisplayId();
-    mNamePlusId = displayIdOpt ? base::StringPrintf("%s (%s)", mName.c_str(),
-                                     to_string(*displayIdOpt).c_str())
-                               : mName;
 }
 
 void Output::setCompositionEnabled(bool enabled) {
@@ -157,58 +146,46 @@ void Output::setLayerCachingEnabled(bool enabled) {
     }
 }
 
-void Output::setLayerCachingTexturePoolEnabled(bool enabled) {
-    if (mPlanner) {
-        mPlanner->setTexturePoolEnabled(enabled);
-    }
-}
-
 void Output::setProjection(ui::Rotation orientation, const Rect& layerStackSpaceRect,
                            const Rect& orientedDisplaySpaceRect) {
     auto& outputState = editState();
 
-    outputState.displaySpace.setOrientation(orientation);
-    LOG_FATAL_IF(outputState.displaySpace.getBoundsAsRect() == Rect::INVALID_RECT,
+    outputState.displaySpace.orientation = orientation;
+    LOG_FATAL_IF(outputState.displaySpace.bounds == Rect::INVALID_RECT,
                  "The display bounds are unknown.");
 
     // Compute orientedDisplaySpace
-    ui::Size orientedSize = outputState.displaySpace.getBounds();
+    ui::Size orientedSize = outputState.displaySpace.bounds.getSize();
     if (orientation == ui::ROTATION_90 || orientation == ui::ROTATION_270) {
         std::swap(orientedSize.width, orientedSize.height);
     }
-    outputState.orientedDisplaySpace.setBounds(orientedSize);
-    outputState.orientedDisplaySpace.setContent(orientedDisplaySpaceRect);
+    outputState.orientedDisplaySpace.bounds = Rect(orientedSize);
+    outputState.orientedDisplaySpace.content = orientedDisplaySpaceRect;
 
     // Compute displaySpace.content
     const uint32_t transformOrientationFlags = ui::Transform::toRotationFlags(orientation);
     ui::Transform rotation;
     if (transformOrientationFlags != ui::Transform::ROT_INVALID) {
-        const auto displaySize = outputState.displaySpace.getBoundsAsRect();
+        const auto displaySize = outputState.displaySpace.bounds;
         rotation.set(transformOrientationFlags, displaySize.width(), displaySize.height());
     }
-    outputState.displaySpace.setContent(rotation.transform(orientedDisplaySpaceRect));
+    outputState.displaySpace.content = rotation.transform(orientedDisplaySpaceRect);
 
     // Compute framebufferSpace
-    outputState.framebufferSpace.setOrientation(orientation);
-    LOG_FATAL_IF(outputState.framebufferSpace.getBoundsAsRect() == Rect::INVALID_RECT,
+    outputState.framebufferSpace.orientation = orientation;
+    LOG_FATAL_IF(outputState.framebufferSpace.bounds == Rect::INVALID_RECT,
                  "The framebuffer bounds are unknown.");
-    const auto scale = getScale(outputState.displaySpace.getBoundsAsRect(),
-                                outputState.framebufferSpace.getBoundsAsRect());
-    outputState.framebufferSpace.setContent(
-            outputState.displaySpace.getContent().scale(scale.x, scale.y));
+    const auto scale =
+            getScale(outputState.displaySpace.bounds, outputState.framebufferSpace.bounds);
+    outputState.framebufferSpace.content = outputState.displaySpace.content.scale(scale.x, scale.y);
 
     // Compute layerStackSpace
-    outputState.layerStackSpace.setContent(layerStackSpaceRect);
-    outputState.layerStackSpace.setBounds(
-            ui::Size(layerStackSpaceRect.getWidth(), layerStackSpaceRect.getHeight()));
+    outputState.layerStackSpace.content = layerStackSpaceRect;
+    outputState.layerStackSpace.bounds = layerStackSpaceRect;
 
     outputState.transform = outputState.layerStackSpace.getTransform(outputState.displaySpace);
     outputState.needsFiltering = outputState.transform.needsBilinearFiltering();
     dirtyEntireOutput();
-}
-
-void Output::setNextBrightness(float brightness) {
-    editState().displayBrightness = brightness;
 }
 
 void Output::setDisplaySize(const ui::Size& size) {
@@ -217,21 +194,21 @@ void Output::setDisplaySize(const ui::Size& size) {
     auto& state = editState();
 
     // Update framebuffer space
-    const ui::Size newBounds(size);
-    state.framebufferSpace.setBounds(newBounds);
+    const Rect newBounds(size);
+    state.framebufferSpace.bounds = newBounds;
 
     // Update display space
-    state.displaySpace.setBounds(newBounds);
+    state.displaySpace.bounds = newBounds;
     state.transform = state.layerStackSpace.getTransform(state.displaySpace);
 
     // Update oriented display space
-    const auto orientation = state.displaySpace.getOrientation();
+    const auto orientation = state.displaySpace.orientation;
     ui::Size orientedSize = size;
     if (orientation == ui::ROTATION_90 || orientation == ui::ROTATION_270) {
         std::swap(orientedSize.width, orientedSize.height);
     }
-    const ui::Size newOrientedBounds(orientedSize);
-    state.orientedDisplaySpace.setBounds(newOrientedBounds);
+    const Rect newOrientedBounds(orientedSize);
+    state.orientedDisplaySpace.bounds = newOrientedBounds;
 
     if (mPlanner) {
         mPlanner->setDisplaySize(size);
@@ -244,8 +221,11 @@ ui::Transform::RotationFlags Output::getTransformHint() const {
     return static_cast<ui::Transform::RotationFlags>(getState().transform.getOrientation());
 }
 
-void Output::setLayerFilter(ui::LayerFilter filter) {
-    editState().layerFilter = filter;
+void Output::setLayerStackFilter(uint32_t layerStackId, bool isInternal) {
+    auto& outputState = editState();
+    outputState.layerStackId = layerStackId;
+    outputState.layerStackInternal = isInternal;
+
     dirtyEntireOutput();
 }
 
@@ -300,15 +280,17 @@ void Output::setDisplayBrightness(float sdrWhitePointNits, float displayBrightne
 }
 
 void Output::dump(std::string& out) const {
-    base::StringAppendF(&out, "Output \"%s\"", mName.c_str());
-    out.append("\n   Composition Output State:\n");
+    using android::base::StringAppendF;
+
+    StringAppendF(&out, "   Composition Output State: [\"%s\"]", mName.c_str());
+
+    out.append("\n   ");
 
     dumpBase(out);
 }
 
 void Output::dumpBase(std::string& out) const {
     dumpState(out);
-    out += '\n';
 
     if (mDisplayColorProfile) {
         mDisplayColorProfile->dump(out);
@@ -316,15 +298,13 @@ void Output::dumpBase(std::string& out) const {
         out.append("    No display color profile!\n");
     }
 
-    out += '\n';
-
     if (mRenderSurface) {
         mRenderSurface->dump(out);
     } else {
         out.append("    No render surface!\n");
     }
 
-    base::StringAppendF(&out, "\n   %zu Layers\n", getOutputLayerCount());
+    android::base::StringAppendF(&out, "\n   %zu Layers\n", getOutputLayerCount());
     for (const auto* outputLayer : getOutputLayersOrderedByZ()) {
         if (!outputLayer) {
             continue;
@@ -335,7 +315,7 @@ void Output::dumpBase(std::string& out) const {
 
 void Output::dumpPlannerInfo(const Vector<String16>& args, std::string& out) const {
     if (!mPlanner) {
-        out.append("Planner is disabled\n");
+        base::StringAppendF(&out, "Planner is disabled\n");
         return;
     }
     base::StringAppendF(&out, "Planner info for display [%s]\n", mName.c_str());
@@ -366,7 +346,7 @@ compositionengine::RenderSurface* Output::getRenderSurface() const {
 void Output::setRenderSurface(std::unique_ptr<compositionengine::RenderSurface> surface) {
     mRenderSurface = std::move(surface);
     const auto size = mRenderSurface->getSize();
-    editState().framebufferSpace.setBounds(size);
+    editState().framebufferSpace.bounds = Rect(size);
     if (mPlanner) {
         mPlanner->setDisplaySize(size);
     }
@@ -385,18 +365,26 @@ void Output::setRenderSurfaceForTest(std::unique_ptr<compositionengine::RenderSu
     mRenderSurface = std::move(surface);
 }
 
-Region Output::getDirtyRegion() const {
+Region Output::getDirtyRegion(bool repaintEverything) const {
     const auto& outputState = getState();
-    return outputState.dirtyRegion.intersect(outputState.layerStackSpace.getContent());
+    Region dirty(outputState.layerStackSpace.content);
+    if (!repaintEverything) {
+        dirty.andSelf(outputState.dirtyRegion);
+    }
+    return dirty;
 }
 
-bool Output::includesLayer(ui::LayerFilter filter) const {
-    return getState().layerFilter.includes(filter);
+bool Output::belongsInOutput(std::optional<uint32_t> layerStackId, bool internalOnly) const {
+    // The layerStackId's must match, and also the layer must not be internal
+    // only when not on an internal output.
+    const auto& outputState = getState();
+    return layerStackId && (*layerStackId == outputState.layerStackId) &&
+            (!internalOnly || outputState.layerStackInternal);
 }
 
-bool Output::includesLayer(const sp<LayerFE>& layerFE) const {
+bool Output::belongsInOutput(const sp<compositionengine::LayerFE>& layerFE) const {
     const auto* layerFEState = layerFE->getCompositionState();
-    return layerFEState && includesLayer(layerFEState->outputFilter);
+    return layerFEState && belongsInOutput(layerFEState->layerStackId, layerFEState->internalOnly);
 }
 
 std::unique_ptr<compositionengine::OutputLayer> Output::createOutputLayer(
@@ -430,11 +418,10 @@ void Output::prepare(const compositionengine::CompositionRefreshArgs& refreshArg
     ALOGV(__FUNCTION__);
 
     rebuildLayerStacks(refreshArgs, geomSnapshots);
-    uncacheBuffers(refreshArgs.bufferIdsToUncache);
 }
 
 void Output::present(const compositionengine::CompositionRefreshArgs& refreshArgs) {
-    ATRACE_FORMAT("%s for %s", __func__, mNamePlusId.c_str());
+    ATRACE_CALL();
     ALOGV(__FUNCTION__);
 
     updateColorProfile(refreshArgs);
@@ -443,28 +430,11 @@ void Output::present(const compositionengine::CompositionRefreshArgs& refreshArg
     writeCompositionState(refreshArgs);
     setColorTransform(refreshArgs);
     beginFrame();
-
-    GpuCompositionResult result;
-    const bool predictCompositionStrategy = canPredictCompositionStrategy(refreshArgs);
-    if (predictCompositionStrategy) {
-        result = prepareFrameAsync();
-    } else {
-        prepareFrame();
-    }
-
+    prepareFrame();
     devOptRepaintFlash(refreshArgs);
-    finishFrame(std::move(result));
+    finishFrame(refreshArgs);
     postFramebuffer();
     renderCachedSets(refreshArgs);
-}
-
-void Output::uncacheBuffers(std::vector<uint64_t> const& bufferIdsToUncache) {
-    if (bufferIdsToUncache.empty()) {
-        return;
-    }
-    for (auto outputLayer : getOutputLayersOrderedByZ()) {
-        outputLayer->uncacheBuffers(bufferIdsToUncache);
-    }
 }
 
 void Output::rebuildLayerStacks(const compositionengine::CompositionRefreshArgs& refreshArgs,
@@ -481,14 +451,11 @@ void Output::rebuildLayerStacks(const compositionengine::CompositionRefreshArgs&
 
     // Process the layers to determine visibility and coverage
     compositionengine::Output::CoverageState coverage{layerFESet};
-    coverage.aboveCoveredLayersExcludingOverlays = refreshArgs.hasTrustedPresentationListener
-            ? std::make_optional<Region>()
-            : std::nullopt;
     collectVisibleLayers(refreshArgs, coverage);
 
     // Compute the resulting coverage for this output, and store it for later
     const ui::Transform& tr = outputState.transform;
-    Region undefinedRegion{outputState.displaySpace.getBoundsAsRect()};
+    Region undefinedRegion{outputState.displaySpace.bounds};
     undefinedRegion.subtractSelf(tr.transform(coverage.aboveOpaqueLayers));
 
     outputState.undefinedRegion = undefinedRegion;
@@ -520,10 +487,11 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     // appear on multiple outputs.
     if (!coverage.latchedLayers.count(layerFE)) {
         coverage.latchedLayers.insert(layerFE);
+        layerFE->prepareCompositionState(compositionengine::LayerFE::StateSubset::BasicGeometry);
     }
 
-    // Only consider the layers on this output
-    if (!includesLayer(layerFE)) {
+    // Only consider the layers on the given layer stack
+    if (!belongsInOutput(layerFE)) {
         return;
     }
 
@@ -537,9 +505,6 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     if (CC_UNLIKELY(!layerFEState->isVisible)) {
         return;
     }
-
-    bool computeAboveCoveredExcludingOverlays = coverage.aboveCoveredLayersExcludingOverlays &&
-            !layerFEState->outputFilter.toInternalDisplay;
 
     /*
      * opaqueRegion: area of a surface that is fully opaque.
@@ -562,18 +527,11 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
 
     /*
      * transparentRegion: area of a surface that is hinted to be completely
-     * transparent.
-     * This is used to tell when the layer has no visible non-transparent
-     * regions and can be removed from the layer list. It does not affect the
-     * visibleRegion of this layer or any layers beneath it. The hint may not
-     * be correct if apps don't respect the SurfaceView restrictions (which,
-     * sadly, some don't).
-     *
-     * In addition, it is used on DISPLAY_DECORATION layers to specify the
-     * blockingRegion, allowing the DPU to skip it to save power. Once we have
-     * hardware that supports a blockingRegion on frames with AFBC, it may be
-     * useful to use this for other layers, too, so long as we can prevent
-     * regressions on b/7179570.
+     * transparent. This is only used to tell when the layer has no visible non-
+     * transparent regions and can be removed from the layer list. It does not
+     * affect the visibleRegion of this layer or any layers beneath it. The hint
+     * may not be correct if apps don't respect the SurfaceView restrictions
+     * (which, sadly, some don't).
      */
     Region transparentRegion;
 
@@ -581,11 +539,6 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
      * shadowRegion: Region cast by the layer's shadow.
      */
     Region shadowRegion;
-
-    /**
-     * covered region above excluding internal display overlay layers
-     */
-    std::optional<Region> coveredRegionExcludingDisplayOverlays = std::nullopt;
 
     const ui::Transform& tr = layerFEState->geomLayerTransform;
 
@@ -612,29 +565,8 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     // Remove the transparent area from the visible region
     if (!layerFEState->isOpaque) {
         if (tr.preserveRects()) {
-            // Clip the transparent region to geomLayerBounds first
-            // The transparent region may be influenced by applications, for
-            // instance, by overriding ViewGroup#gatherTransparentRegion with a
-            // custom view. Once the layer stack -> display mapping is known, we
-            // must guard against very wrong inputs to prevent underflow or
-            // overflow errors. We do this here by constraining the transparent
-            // region to be within the pre-transform layer bounds, since the
-            // layer bounds are expected to play nicely with the full
-            // transform.
-            const Region clippedTransparentRegionHint =
-                    layerFEState->transparentRegionHint.intersect(
-                            Rect(layerFEState->geomLayerBounds));
-
-            if (clippedTransparentRegionHint.isEmpty()) {
-                if (!layerFEState->transparentRegionHint.isEmpty()) {
-                    ALOGD("Layer: %s had an out of bounds transparent region",
-                          layerFE->getDebugName());
-                    layerFEState->transparentRegionHint.dump("transparentRegionHint");
-                }
-                transparentRegion.clear();
-            } else {
-                transparentRegion = tr.transform(clippedTransparentRegionHint);
-            }
+            // transform the transparent region
+            transparentRegion = tr.transform(layerFEState->transparentRegionHint);
         } else {
             // transformation too complex, can't do the
             // transparent region optimization.
@@ -658,12 +590,6 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
 
     // Update accumAboveCoveredLayers for next (lower) layer
     coverage.aboveCoveredLayers.orSelf(visibleRegion);
-
-    if (CC_UNLIKELY(computeAboveCoveredExcludingOverlays)) {
-        coveredRegionExcludingDisplayOverlays =
-                coverage.aboveCoveredLayersExcludingOverlays->intersect(visibleRegion);
-        coverage.aboveCoveredLayersExcludingOverlays->orSelf(visibleRegion);
-    }
 
     // subtract the opaque region covered by the layers above us
     visibleRegion.subtractSelf(coverage.aboveOpaqueLayers);
@@ -726,7 +652,7 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     // TODO(b/121291683): Why does this not use visibleRegion? (see outputSpaceVisibleRegion below)
     const auto& outputState = getState();
     Region drawRegion(outputState.transform.transform(visibleNonTransparentRegion));
-    drawRegion.andSelf(outputState.displaySpace.getBoundsAsRect());
+    drawRegion.andSelf(outputState.displaySpace.bounds);
     if (drawRegion.isEmpty()) {
         return;
     }
@@ -744,21 +670,20 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     outputLayerState.visibleNonTransparentRegion = visibleNonTransparentRegion;
     outputLayerState.coveredRegion = coveredRegion;
     outputLayerState.outputSpaceVisibleRegion = outputState.transform.transform(
-            visibleNonShadowRegion.intersect(outputState.layerStackSpace.getContent()));
+            visibleNonShadowRegion.intersect(outputState.layerStackSpace.content));
     outputLayerState.shadowRegion = shadowRegion;
-    outputLayerState.outputSpaceBlockingRegionHint =
-            layerFEState->compositionType == Composition::DISPLAY_DECORATION
-            ? outputState.transform.transform(
-                      transparentRegion.intersect(outputState.layerStackSpace.getContent()))
-            : Region();
-    if (CC_UNLIKELY(computeAboveCoveredExcludingOverlays)) {
-        outputLayerState.coveredRegionExcludingDisplayOverlays =
-                std::move(coveredRegionExcludingDisplayOverlays);
-    }
 }
 
 void Output::setReleasedLayers(const compositionengine::CompositionRefreshArgs&) {
     // The base class does nothing with this call.
+}
+
+void Output::updateLayerStateFromFE(const CompositionRefreshArgs& args) const {
+    for (auto* layer : getOutputLayersOrderedByZ()) {
+        layer->getLayerFE().prepareCompositionState(
+                args.updatingGeometryThisFrame ? LayerFE::StateSubset::GeometryAndContent
+                                               : LayerFE::StateSubset::Content);
+    }
 }
 
 void Output::updateCompositionState(const compositionengine::CompositionRefreshArgs& refreshArgs) {
@@ -782,44 +707,6 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
             forceClientComposition = false;
         }
     }
-
-    updateCompositionStateForBorder(refreshArgs);
-}
-
-void Output::updateCompositionStateForBorder(
-        const compositionengine::CompositionRefreshArgs& refreshArgs) {
-    std::unordered_map<int32_t, const Region*> layerVisibleRegionMap;
-    // Store a map of layerId to their computed visible region.
-    for (auto* layer : getOutputLayersOrderedByZ()) {
-        int layerId = (layer->getLayerFE()).getSequence();
-        layerVisibleRegionMap[layerId] = &((layer->getState()).visibleRegion);
-    }
-    OutputCompositionState& outputCompositionState = editState();
-    outputCompositionState.borderInfoList.clear();
-    bool clientComposeTopLayer = false;
-    for (const auto& borderInfo : refreshArgs.borderInfoList) {
-        renderengine::BorderRenderInfo info;
-        for (const auto& id : borderInfo.layerIds) {
-            info.combinedRegion.orSelf(*(layerVisibleRegionMap[id]));
-        }
-
-        if (!info.combinedRegion.isEmpty()) {
-            info.width = borderInfo.width;
-            info.color = borderInfo.color;
-            outputCompositionState.borderInfoList.emplace_back(std::move(info));
-            clientComposeTopLayer = true;
-        }
-    }
-
-    // In this situation we must client compose the top layer instead of using hwc
-    // because we want to draw the border above all else.
-    // This could potentially cause a bit of a performance regression if the top
-    // layer would have been rendered using hwc originally.
-    // TODO(b/227656283): Measure system's performance before enabling the border feature
-    if (clientComposeTopLayer) {
-        auto topLayer = getOutputLayerOrderedByZByIndex(getOutputLayerCount() - 1);
-        (topLayer->editState()).forceClientComposition = true;
-    }
 }
 
 void Output::planComposition() {
@@ -842,14 +729,13 @@ void Output::writeCompositionState(const compositionengine::CompositionRefreshAr
     }
 
     editState().earliestPresentTime = refreshArgs.earliestPresentTime;
-    editState().expectedPresentTime = refreshArgs.expectedPresentTime;
+    editState().previousPresentFence = refreshArgs.previousPresentFence;
 
     compositionengine::OutputLayer* peekThroughLayer = nullptr;
     sp<GraphicBuffer> previousOverride = nullptr;
     bool includeGeometry = refreshArgs.updatingGeometryThisFrame;
     uint32_t z = 0;
     bool overrideZ = false;
-    uint64_t outputLayerHash = 0;
     for (auto* layer : getOutputLayersOrderedByZ()) {
         if (layer == peekThroughLayer) {
             // No longer needed, although it should not show up again, so
@@ -876,10 +762,6 @@ void Output::writeCompositionState(const compositionengine::CompositionRefreshAr
                     constexpr bool isPeekingThrough = true;
                     peekThroughLayer->writeStateToHWC(includeGeometry, false, z++, overrideZ,
                                                       isPeekingThrough);
-                    outputLayerHash ^= android::hashCombine(
-                            reinterpret_cast<uint64_t>(&peekThroughLayer->getLayerFE()),
-                            z, includeGeometry, overrideZ, isPeekingThrough,
-                            peekThroughLayer->requiresClientComposition());
                 }
 
                 previousOverride = overrideInfo.buffer->getBuffer();
@@ -888,14 +770,7 @@ void Output::writeCompositionState(const compositionengine::CompositionRefreshAr
 
         constexpr bool isPeekingThrough = false;
         layer->writeStateToHWC(includeGeometry, skipLayer, z++, overrideZ, isPeekingThrough);
-        if (!skipLayer) {
-            outputLayerHash ^= android::hashCombine(
-                    reinterpret_cast<uint64_t>(&layer->getLayerFE()),
-                    z, includeGeometry, overrideZ, isPeekingThrough,
-                    layer->requiresClientComposition());
-        }
     }
-    editState().outputLayerHash = outputLayerHash;
 }
 
 compositionengine::OutputLayer* Output::findLayerRequestingBackgroundComposition() const {
@@ -907,9 +782,6 @@ compositionengine::OutputLayer* Output::findLayerRequestingBackgroundComposition
         // want to force client composition because of the blur.
         if (compState->sidebandStream != nullptr) {
             return nullptr;
-        }
-        if (compState->isOpaque) {
-            continue;
         }
         if (compState->backgroundBlurRadius > 0 || compState->blurRegions.size() > 0) {
             layerRequestingBgComposition = layer;
@@ -935,13 +807,6 @@ ui::Dataspace Output::getBestDataspace(ui::Dataspace* outHdrDataSpace,
                                        bool* outIsHdrClientComposition) const {
     ui::Dataspace bestDataSpace = ui::Dataspace::V0_SRGB;
     *outHdrDataSpace = ui::Dataspace::UNKNOWN;
-
-    // An Output's layers may be stale when it is disabled. As a consequence, the layers returned by
-    // getOutputLayersOrderedByZ may not be in a valid state and it is not safe to access their
-    // properties. Return a default dataspace value in this case.
-    if (!getState().isEnabled) {
-        return ui::Dataspace::V0_SRGB;
-    }
 
     for (const auto* layer : getOutputLayersOrderedByZ()) {
         switch (layer->getLayerFE().getCompositionState()->dataspace) {
@@ -1037,7 +902,7 @@ compositionengine::Output::ColorProfile Output::pickColorProfile(
 
 void Output::beginFrame() {
     auto& outputState = editState();
-    const bool dirty = !getDirtyRegion().isEmpty();
+    const bool dirty = !getDirtyRegion(false).isEmpty();
     const bool empty = getOutputLayerCount() == 0;
     const bool wasEmpty = !outputState.lastCompositionHadVisibleLayers;
 
@@ -1049,17 +914,17 @@ void Output::beginFrame() {
     //   frame, then nothing more until we get new layers.
     // - When a display is created with a private layer stack, we won't
     //   emit any black frames until a layer is added to the layer stack.
-    mMustRecompose = dirty && !(empty && wasEmpty);
+    const bool mustRecompose = dirty && !(empty && wasEmpty);
 
     const char flagPrefix[] = {'-', '+'};
     static_cast<void>(flagPrefix);
-    ALOGV("%s: %s composition for %s (%cdirty %cempty %cwasEmpty)", __func__,
-          mMustRecompose ? "doing" : "skipping", getName().c_str(), flagPrefix[dirty],
-          flagPrefix[empty], flagPrefix[wasEmpty]);
+    ALOGV_IF("%s: %s composition for %s (%cdirty %cempty %cwasEmpty)", __FUNCTION__,
+             mustRecompose ? "doing" : "skipping", getName().c_str(), flagPrefix[dirty],
+             flagPrefix[empty], flagPrefix[wasEmpty]);
 
-    mRenderSurface->beginFrame(mMustRecompose);
+    mRenderSurface->beginFrame(mustRecompose);
 
-    if (mMustRecompose) {
+    if (mustRecompose) {
         outputState.lastCompositionHadVisibleLayers = !empty;
     }
 }
@@ -1068,74 +933,19 @@ void Output::prepareFrame() {
     ATRACE_CALL();
     ALOGV(__FUNCTION__);
 
-    auto& outputState = editState();
+    const auto& outputState = getState();
     if (!outputState.isEnabled) {
         return;
     }
 
-    std::optional<android::HWComposer::DeviceRequestedChanges> changes;
-    bool success = chooseCompositionStrategy(&changes);
-    resetCompositionStrategy();
-    outputState.strategyPrediction = CompositionStrategyPredictionState::DISABLED;
-    outputState.previousDeviceRequestedChanges = changes;
-    outputState.previousDeviceRequestedSuccess = success;
-    if (success) {
-        applyCompositionStrategy(changes);
-    }
-    finishPrepareFrame();
-}
+    chooseCompositionStrategy();
 
-std::future<bool> Output::chooseCompositionStrategyAsync(
-        std::optional<android::HWComposer::DeviceRequestedChanges>* changes) {
-    return mHwComposerAsyncWorker->send(
-            [&, changes]() { return chooseCompositionStrategy(changes); });
-}
-
-GpuCompositionResult Output::prepareFrameAsync() {
-    ATRACE_CALL();
-    ALOGV(__FUNCTION__);
-    auto& state = editState();
-    const auto& previousChanges = state.previousDeviceRequestedChanges;
-    std::optional<android::HWComposer::DeviceRequestedChanges> changes;
-    resetCompositionStrategy();
-    auto hwcResult = chooseCompositionStrategyAsync(&changes);
-    if (state.previousDeviceRequestedSuccess) {
-        applyCompositionStrategy(previousChanges);
-    }
-    finishPrepareFrame();
-
-    base::unique_fd bufferFence;
-    std::shared_ptr<renderengine::ExternalTexture> buffer;
-    updateProtectedContentState();
-    const bool dequeueSucceeded = dequeueRenderBuffer(&bufferFence, &buffer);
-    GpuCompositionResult compositionResult;
-    if (dequeueSucceeded) {
-        std::optional<base::unique_fd> optFd =
-                composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);
-        if (optFd) {
-            compositionResult.fence = std::move(*optFd);
-        }
+    if (mPlanner) {
+        mPlanner->reportFinalPlan(getOutputLayersOrderedByZ());
     }
 
-    auto chooseCompositionSuccess = hwcResult.get();
-    const bool predictionSucceeded = dequeueSucceeded && changes == previousChanges;
-    state.strategyPrediction = predictionSucceeded ? CompositionStrategyPredictionState::SUCCESS
-                                                   : CompositionStrategyPredictionState::FAIL;
-    if (!predictionSucceeded) {
-        ATRACE_NAME("CompositionStrategyPredictionMiss");
-        resetCompositionStrategy();
-        if (chooseCompositionSuccess) {
-            applyCompositionStrategy(changes);
-        }
-        finishPrepareFrame();
-        // Track the dequeued buffer to reuse so we don't need to dequeue another one.
-        compositionResult.buffer = buffer;
-    } else {
-        ATRACE_NAME("CompositionStrategyPredictionHit");
-    }
-    state.previousDeviceRequestedChanges = std::move(changes);
-    state.previousDeviceRequestedSuccess = chooseCompositionSuccess;
-    return compositionResult;
+    mRenderSurface->prepareFrame(outputState.usesClientComposition,
+                                 outputState.usesDeviceComposition);
 }
 
 void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs& refreshArgs) {
@@ -1144,13 +954,14 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
     }
 
     if (getState().isEnabled) {
-        if (const auto dirtyRegion = getDirtyRegion(); !dirtyRegion.isEmpty()) {
-            base::unique_fd bufferFence;
-            std::shared_ptr<renderengine::ExternalTexture> buffer;
-            updateProtectedContentState();
-            dequeueRenderBuffer(&bufferFence, &buffer);
-            static_cast<void>(composeSurfaces(dirtyRegion, buffer, bufferFence));
-            mRenderSurface->queueBuffer(base::unique_fd());
+        // transform the dirty region into this screen's coordinate space
+        const Region dirtyRegion = getDirtyRegion(refreshArgs.repaintEverything);
+        if (!dirtyRegion.isEmpty()) {
+            base::unique_fd readyFence;
+            // redraw the whole screen
+            static_cast<void>(composeSurfaces(dirtyRegion, refreshArgs));
+
+            mRenderSurface->queueBuffer(std::move(readyFence));
         }
     }
 
@@ -1161,48 +972,35 @@ void Output::devOptRepaintFlash(const compositionengine::CompositionRefreshArgs&
     prepareFrame();
 }
 
-void Output::finishFrame(GpuCompositionResult&& result) {
+void Output::finishFrame(const compositionengine::CompositionRefreshArgs& refreshArgs) {
     ATRACE_CALL();
     ALOGV(__FUNCTION__);
-    const auto& outputState = getState();
-    if (!outputState.isEnabled) {
+
+    if (!getState().isEnabled) {
         return;
     }
 
-    std::optional<base::unique_fd> optReadyFence;
-    std::shared_ptr<renderengine::ExternalTexture> buffer;
-    base::unique_fd bufferFence;
-    if (outputState.strategyPrediction == CompositionStrategyPredictionState::SUCCESS) {
-        optReadyFence = std::move(result.fence);
-    } else {
-        if (result.bufferAvailable()) {
-            buffer = std::move(result.buffer);
-            bufferFence = std::move(result.fence);
-        } else {
-            updateProtectedContentState();
-            if (!dequeueRenderBuffer(&bufferFence, &buffer)) {
-                return;
-            }
-        }
-        // Repaint the framebuffer (if needed), getting the optional fence for when
-        // the composition completes.
-        optReadyFence = composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);
-    }
+    // Repaint the framebuffer (if needed), getting the optional fence for when
+    // the composition completes.
+    auto optReadyFence = composeSurfaces(Region::INVALID_REGION, refreshArgs);
     if (!optReadyFence) {
         return;
     }
 
-    if (isPowerHintSessionEnabled()) {
-        // get fence end time to know when gpu is complete in display
-        setHintSessionGpuFence(
-                std::make_unique<FenceTime>(sp<Fence>::make(dup(optReadyFence->get()))));
-    }
     // swap buffers (presentation)
     mRenderSurface->queueBuffer(std::move(*optReadyFence));
 }
 
-void Output::updateProtectedContentState() {
+std::optional<base::unique_fd> Output::composeSurfaces(
+        const Region& debugRegion, const compositionengine::CompositionRefreshArgs& refreshArgs) {
+    ATRACE_CALL();
+    ALOGV(__FUNCTION__);
+
     const auto& outputState = getState();
+    OutputCompositionState& outputCompositionState = editState();
+    const TracedOrdinal<bool> hasClientComposition = {"hasClientComposition",
+                                                      outputState.usesClientComposition};
+
     auto& renderEngine = getCompositionEngine().getRenderEngine();
     const bool supportsProtectedContent = renderEngine.supportsProtectedContent();
 
@@ -1214,82 +1012,83 @@ void Output::updateProtectedContentState() {
         bool needsProtected = std::any_of(layers.begin(), layers.end(), [](auto* layer) {
             return layer->getLayerFE().getCompositionState()->hasProtectedContent;
         });
-        if (needsProtected != mRenderSurface->isProtected()) {
+        if (needsProtected != renderEngine.isProtected()) {
+            renderEngine.useProtectedContext(needsProtected);
+        }
+        if (needsProtected != mRenderSurface->isProtected() &&
+            needsProtected == renderEngine.isProtected()) {
             mRenderSurface->setProtected(needsProtected);
         }
+    } else if (!outputState.isSecure && renderEngine.isProtected()) {
+        renderEngine.useProtectedContext(false);
     }
-}
 
-bool Output::dequeueRenderBuffer(base::unique_fd* bufferFence,
-                                 std::shared_ptr<renderengine::ExternalTexture>* tex) {
-    const auto& outputState = getState();
+    base::unique_fd fd;
+
+    std::shared_ptr<renderengine::ExternalTexture> tex;
 
     // If we aren't doing client composition on this output, but do have a
     // flipClientTarget request for this frame on this output, we still need to
     // dequeue a buffer.
-    if (outputState.usesClientComposition || outputState.flipClientTarget) {
-        *tex = mRenderSurface->dequeueBuffer(bufferFence);
-        if (*tex == nullptr) {
+    if (hasClientComposition || outputState.flipClientTarget) {
+        tex = mRenderSurface->dequeueBuffer(&fd);
+        if (tex == nullptr) {
             ALOGW("Dequeuing buffer for display [%s] failed, bailing out of "
                   "client composition for this frame",
                   mName.c_str());
-            return false;
+            return {};
         }
     }
-    return true;
-}
 
-std::optional<base::unique_fd> Output::composeSurfaces(
-        const Region& debugRegion, std::shared_ptr<renderengine::ExternalTexture> tex,
-        base::unique_fd& fd) {
-    ATRACE_CALL();
-    ALOGV(__FUNCTION__);
-
-    const auto& outputState = getState();
-    const TracedOrdinal<bool> hasClientComposition = {
-        base::StringPrintf("hasClientComposition %s", mNamePlusId.c_str()),
-        outputState.usesClientComposition};
+    base::unique_fd readyFence;
     if (!hasClientComposition) {
         setExpensiveRenderingExpected(false);
-        return base::unique_fd();
-    }
-
-    if (tex == nullptr) {
-        ALOGW("Buffer not valid for display [%s], bailing out of "
-              "client composition for this frame",
-              mName.c_str());
-        return {};
+        return readyFence;
     }
 
     ALOGV("hasClientComposition");
 
-    renderengine::DisplaySettings clientCompositionDisplay =
-            generateClientCompositionDisplaySettings();
+    renderengine::DisplaySettings clientCompositionDisplay;
+    clientCompositionDisplay.physicalDisplay = outputState.framebufferSpace.content;
+    clientCompositionDisplay.clip = outputState.layerStackSpace.content;
+    clientCompositionDisplay.orientation =
+            ui::Transform::toRotationFlags(outputState.displaySpace.orientation);
+    clientCompositionDisplay.outputDataspace = mDisplayColorProfile->hasWideColorGamut()
+            ? outputState.dataspace
+            : ui::Dataspace::UNKNOWN;
+
+    // If we have a valid current display brightness use that, otherwise fall back to the
+    // display's max desired
+    clientCompositionDisplay.maxLuminance = outputState.displayBrightnessNits > 0.f
+            ? outputState.displayBrightnessNits
+            : mDisplayColorProfile->getHdrCapabilities().getDesiredMaxLuminance();
+    clientCompositionDisplay.sdrWhitePointNits = outputState.sdrWhitePointNits;
+
+    // Compute the global color transform matrix.
+    if (!outputState.usesDeviceComposition && !getSkipColorTransform()) {
+        clientCompositionDisplay.colorTransform = outputState.colorTransformMatrix;
+    }
+
+    // Note: Updated by generateClientCompositionRequests
+    clientCompositionDisplay.clearRegion = Region::INVALID_REGION;
 
     // Generate the client composition requests for the layers on this output.
-    auto& renderEngine = getCompositionEngine().getRenderEngine();
-    const bool supportsProtectedContent = renderEngine.supportsProtectedContent();
-    std::vector<LayerFE*> clientCompositionLayersFE;
     std::vector<LayerFE::LayerSettings> clientCompositionLayers =
             generateClientCompositionRequests(supportsProtectedContent,
-                                              clientCompositionDisplay.outputDataspace,
-                                              clientCompositionLayersFE);
+                                              clientCompositionDisplay.clearRegion,
+                                              clientCompositionDisplay.outputDataspace);
     appendRegionFlashRequests(debugRegion, clientCompositionLayers);
 
-    OutputCompositionState& outputCompositionState = editState();
     // Check if the client composition requests were rendered into the provided graphic buffer. If
     // so, we can reuse the buffer and avoid client composition.
     if (mClientCompositionRequestCache) {
         if (mClientCompositionRequestCache->exists(tex->getBuffer()->getId(),
                                                    clientCompositionDisplay,
                                                    clientCompositionLayers)) {
-            ATRACE_NAME("ClientCompositionCacheHit");
             outputCompositionState.reusedClientComposition = true;
             setExpensiveRenderingExpected(false);
-            // b/239944175 pass the fence associated with the buffer.
-            return base::unique_fd(std::move(fd));
+            return readyFence;
         }
-        ATRACE_NAME("ClientCompositionCacheMiss");
         mClientCompositionRequestCache->add(tex->getBuffer()->getId(), clientCompositionDisplay,
                                             clientCompositionLayers);
     }
@@ -1298,22 +1097,20 @@ std::optional<base::unique_fd> Output::composeSurfaces(
     // or complex GPU shaders and it's expensive. We boost the GPU frequency so that
     // GPU composition can finish in time. We must reset GPU frequency afterwards,
     // because high frequency consumes extra battery.
+    const bool expensiveBlurs =
+            refreshArgs.blursAreExpensive && mLayerRequestingBackgroundBlur != nullptr;
     const bool expensiveRenderingExpected =
-            std::any_of(clientCompositionLayers.begin(), clientCompositionLayers.end(),
-                        [outputDataspace =
-                                 clientCompositionDisplay.outputDataspace](const auto& layer) {
-                            return layer.sourceDataspace != outputDataspace;
-                        });
+            clientCompositionDisplay.outputDataspace == ui::Dataspace::DISPLAY_P3 || expensiveBlurs;
     if (expensiveRenderingExpected) {
         setExpensiveRenderingExpected(true);
     }
 
-    std::vector<renderengine::LayerSettings> clientRenderEngineLayers;
-    clientRenderEngineLayers.reserve(clientCompositionLayers.size());
+    std::vector<const renderengine::LayerSettings*> clientCompositionLayerPointers;
+    clientCompositionLayerPointers.reserve(clientCompositionLayers.size());
     std::transform(clientCompositionLayers.begin(), clientCompositionLayers.end(),
-                   std::back_inserter(clientRenderEngineLayers),
-                   [](LayerFE::LayerSettings& settings) -> renderengine::LayerSettings {
-                       return settings;
+                   std::back_inserter(clientCompositionLayerPointers),
+                   [](LayerFE::LayerSettings& settings) -> renderengine::LayerSettings* {
+                       return &settings;
                    });
 
     const nsecs_t renderEngineStart = systemTime();
@@ -1323,94 +1120,46 @@ std::optional<base::unique_fd> Output::composeSurfaces(
     // bounds its framebuffer cache but Skia RenderEngine has no current policy. The best fix is
     // probably to encapsulate the output buffer into a structure that dispatches resource cleanup
     // over to RenderEngine, in which case this flag can be removed from the drawLayers interface.
-    const bool useFramebufferCache = outputState.layerFilter.toInternalDisplay;
+    const bool useFramebufferCache = outputState.layerStackInternal;
+    status_t status =
+            renderEngine.drawLayers(clientCompositionDisplay, clientCompositionLayerPointers, tex,
+                                    useFramebufferCache, std::move(fd), &readyFence);
 
-    auto fenceResult = renderEngine
-                               .drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex,
-                                           useFramebufferCache, std::move(fd))
-                               .get();
-
-    if (mClientCompositionRequestCache && fenceStatus(fenceResult) != NO_ERROR) {
+    if (status != NO_ERROR && mClientCompositionRequestCache) {
         // If rendering was not successful, remove the request from the cache.
         mClientCompositionRequestCache->remove(tex->getBuffer()->getId());
     }
 
-    const auto fence = std::move(fenceResult).value_or(Fence::NO_FENCE);
-
-    if (auto timeStats = getCompositionEngine().getTimeStats()) {
-        if (fence->isValid()) {
-            timeStats->recordRenderEngineDuration(renderEngineStart,
-                                                  std::make_shared<FenceTime>(fence));
-        } else {
-            timeStats->recordRenderEngineDuration(renderEngineStart, systemTime());
-        }
+    auto& timeStats = getCompositionEngine().getTimeStats();
+    if (readyFence.get() < 0) {
+        timeStats.recordRenderEngineDuration(renderEngineStart, systemTime());
+    } else {
+        timeStats.recordRenderEngineDuration(renderEngineStart,
+                                             std::make_shared<FenceTime>(
+                                                     new Fence(dup(readyFence.get()))));
     }
 
-    for (auto* clientComposedLayer : clientCompositionLayersFE) {
-        clientComposedLayer->setWasClientComposed(fence);
-    }
-
-    return base::unique_fd(fence->dup());
-}
-
-renderengine::DisplaySettings Output::generateClientCompositionDisplaySettings() const {
-    const auto& outputState = getState();
-
-    renderengine::DisplaySettings clientCompositionDisplay;
-    clientCompositionDisplay.namePlusId = mNamePlusId;
-    clientCompositionDisplay.physicalDisplay = outputState.framebufferSpace.getContent();
-    clientCompositionDisplay.clip = outputState.layerStackSpace.getContent();
-    clientCompositionDisplay.orientation =
-            ui::Transform::toRotationFlags(outputState.displaySpace.getOrientation());
-    clientCompositionDisplay.outputDataspace = mDisplayColorProfile->hasWideColorGamut()
-            ? outputState.dataspace
-            : ui::Dataspace::UNKNOWN;
-
-    // If we have a valid current display brightness use that, otherwise fall back to the
-    // display's max desired
-    clientCompositionDisplay.currentLuminanceNits = outputState.displayBrightnessNits > 0.f
-            ? outputState.displayBrightnessNits
-            : mDisplayColorProfile->getHdrCapabilities().getDesiredMaxLuminance();
-    clientCompositionDisplay.maxLuminance =
-            mDisplayColorProfile->getHdrCapabilities().getDesiredMaxLuminance();
-    clientCompositionDisplay.targetLuminanceNits =
-            outputState.clientTargetBrightness * outputState.displayBrightnessNits;
-    clientCompositionDisplay.dimmingStage = outputState.clientTargetDimmingStage;
-    clientCompositionDisplay.renderIntent =
-            static_cast<aidl::android::hardware::graphics::composer3::RenderIntent>(
-                    outputState.renderIntent);
-
-    // Compute the global color transform matrix.
-    clientCompositionDisplay.colorTransform = outputState.colorTransformMatrix;
-    for (auto& info : outputState.borderInfoList) {
-        renderengine::BorderRenderInfo borderInfo;
-        borderInfo.width = info.width;
-        borderInfo.color = info.color;
-        borderInfo.combinedRegion = info.combinedRegion;
-        clientCompositionDisplay.borderInfoList.emplace_back(std::move(borderInfo));
-    }
-    clientCompositionDisplay.deviceHandlesColorTransform =
-            outputState.usesDeviceComposition || getSkipColorTransform();
-    return clientCompositionDisplay;
+    return readyFence;
 }
 
 std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
-      bool supportsProtectedContent, ui::Dataspace outputDataspace, std::vector<LayerFE*>& outLayerFEs) {
+        bool supportsProtectedContent, Region& clearRegion, ui::Dataspace outputDataspace) {
     std::vector<LayerFE::LayerSettings> clientCompositionLayers;
     ALOGV("Rendering client layers");
 
     const auto& outputState = getState();
-    const Region viewportRegion(outputState.layerStackSpace.getContent());
+    const Region viewportRegion(outputState.layerStackSpace.content);
     bool firstLayer = true;
+    // Used when a layer clears part of the buffer.
+    Region stubRegion;
 
     bool disableBlurs = false;
-    uint64_t previousOverrideBufferId = 0;
+    sp<GraphicBuffer> previousOverrideBuffer = nullptr;
 
     for (auto* layer : getOutputLayersOrderedByZ()) {
         const auto& layerState = layer->getState();
         const auto* layerFEState = layer->getLayerFE().getCompositionState();
         auto& layerFE = layer->getLayerFE();
-        layerFE.setWasClientComposed(nullptr);
 
         const Region clip(viewportRegion.intersect(layerState.visibleRegion));
         ALOGV("Layer: %s", layerFE.getDebugName());
@@ -1440,10 +1189,11 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
                 !layerState.visibleRegion.subtract(layerState.shadowRegion).isEmpty();
 
         if (clientComposition || clearClientComposition) {
-            if (auto overrideSettings = layer->getOverrideCompositionSettings()) {
-                if (overrideSettings->bufferId != previousOverrideBufferId) {
-                    previousOverrideBufferId = overrideSettings->bufferId;
-                    clientCompositionLayers.push_back(std::move(*overrideSettings));
+            std::vector<LayerFE::LayerSettings> results;
+            if (layer->getState().overrideInfo.buffer != nullptr) {
+                if (layer->getState().overrideInfo.buffer->getBuffer() != previousOverrideBuffer) {
+                    results = layer->getOverrideCompositionList();
+                    previousOverrideBuffer = layer->getState().overrideInfo.buffer->getBuffer();
                     ALOGV("Replacing [%s] with override in RE", layer->getLayerFE().getDebugName());
                 } else {
                     ALOGV("Skipping redundant override buffer for [%s] in RE",
@@ -1463,25 +1213,22 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
                                                outputState.needsFiltering,
                                        .isSecure = outputState.isSecure,
                                        .supportsProtectedContent = supportsProtectedContent,
-                                       .viewport = outputState.layerStackSpace.getContent(),
+                                       .clearRegion = clientComposition ? clearRegion : stubRegion,
+                                       .viewport = outputState.layerStackSpace.content,
                                        .dataspace = outputDataspace,
                                        .realContentIsVisible = realContentIsVisible,
                                        .clearContent = !clientComposition,
-                                       .blurSetting = blurSetting,
-                                       .whitePointNits = layerState.whitePointNits,
-                                       .treat170mAsSrgb = outputState.treat170mAsSrgb};
-                if (auto clientCompositionSettings =
-                            layerFE.prepareClientComposition(targetSettings)) {
-                    clientCompositionLayers.push_back(std::move(*clientCompositionSettings));
-                    if (realContentIsVisible) {
-                        layer->editState().clientCompositionTimestamp = systemTime();
-                    }
+                                       .blurSetting = blurSetting};
+                results = layerFE.prepareClientCompositionList(targetSettings);
+                if (realContentIsVisible && !results.empty()) {
+                    layer->editState().clientCompositionTimestamp = systemTime();
                 }
             }
 
-            if (clientComposition) {
-                outLayerFEs.push_back(&layerFE);
-            }
+            clientCompositionLayers.insert(clientCompositionLayers.end(),
+                                           std::make_move_iterator(results.begin()),
+                                           std::make_move_iterator(results.end()));
+            results.clear();
         }
 
         firstLayer = false;
@@ -1511,16 +1258,8 @@ void Output::setExpensiveRenderingExpected(bool) {
     // The base class does nothing with this call.
 }
 
-void Output::setHintSessionGpuFence(std::unique_ptr<FenceTime>&&) {
-    // The base class does nothing with this call.
-}
-
-bool Output::isPowerHintSessionEnabled() {
-    return false;
-}
-
 void Output::postFramebuffer() {
-    ATRACE_FORMAT("%s for %s", __func__, mNamePlusId.c_str());
+    ATRACE_CALL();
     ALOGV(__FUNCTION__);
 
     if (!getState().isEnabled) {
@@ -1529,6 +1268,7 @@ void Output::postFramebuffer() {
 
     auto& outputState = editState();
     outputState.dirtyRegion.clear();
+    mRenderSurface->flip();
 
     auto frame = presentAndGetFrameFences();
 
@@ -1556,18 +1296,16 @@ void Output::postFramebuffer() {
             releaseFence =
                     Fence::merge("LayerRelease", releaseFence, frame.clientTargetAcquireFence);
         }
-        layer->getLayerFE()
-                .onLayerDisplayed(ftl::yield<FenceResult>(std::move(releaseFence)).share(),
-                                  outputState.layerFilter.layerStack);
+
+        layer->getLayerFE().onLayerDisplayed(releaseFence);
     }
 
     // We've got a list of layers needing fences, that are disjoint with
     // OutputLayersOrderedByZ.  The best we can do is to
     // supply them with the present fence.
     for (auto& weakLayer : mReleasedLayers) {
-        if (const auto layer = weakLayer.promote()) {
-            layer->onLayerDisplayed(ftl::yield<FenceResult>(frame.presentFence).share(),
-                                    outputState.layerFilter.layerStack);
+        if (auto layer = weakLayer.promote(); layer != nullptr) {
+            layer->onLayerDisplayed(frame.presentFence);
         }
     }
 
@@ -1576,19 +1314,17 @@ void Output::postFramebuffer() {
 }
 
 void Output::renderCachedSets(const CompositionRefreshArgs& refreshArgs) {
-    const auto& outputState = getState();
-    if (mPlanner && outputState.isEnabled) {
-        mPlanner->renderCachedSets(outputState, refreshArgs.scheduledFrameTime,
-                                   outputState.usesDeviceComposition || getSkipColorTransform());
+    if (mPlanner) {
+        mPlanner->renderCachedSets(getState(), refreshArgs.nextInvalidateTime);
     }
 }
 
 void Output::dirtyEntireOutput() {
     auto& outputState = editState();
-    outputState.dirtyRegion.set(outputState.displaySpace.getBoundsAsRect());
+    outputState.dirtyRegion.set(outputState.displaySpace.bounds);
 }
 
-void Output::resetCompositionStrategy() {
+void Output::chooseCompositionStrategy() {
     // The base output implementation can only do client composition
     auto& outputState = editState();
     outputState.usesClientComposition = true;
@@ -1606,76 +1342,6 @@ compositionengine::Output::FrameFences Output::presentAndGetFrameFences() {
         result.clientTargetAcquireFence = mRenderSurface->getClientTargetAcquireFence();
     }
     return result;
-}
-
-void Output::setPredictCompositionStrategy(bool predict) {
-    if (predict) {
-        mHwComposerAsyncWorker = std::make_unique<HwcAsyncWorker>();
-    } else {
-        mHwComposerAsyncWorker.reset(nullptr);
-    }
-}
-
-void Output::setTreat170mAsSrgb(bool enable) {
-    editState().treat170mAsSrgb = enable;
-}
-
-bool Output::canPredictCompositionStrategy(const CompositionRefreshArgs& refreshArgs) {
-    uint64_t lastOutputLayerHash = getState().lastOutputLayerHash;
-    uint64_t outputLayerHash = getState().outputLayerHash;
-    editState().lastOutputLayerHash = outputLayerHash;
-
-    if (!getState().isEnabled || !mHwComposerAsyncWorker) {
-        ALOGV("canPredictCompositionStrategy disabled");
-        return false;
-    }
-
-    if (!getState().previousDeviceRequestedChanges) {
-        ALOGV("canPredictCompositionStrategy previous changes not available");
-        return false;
-    }
-
-    if (!mRenderSurface->supportsCompositionStrategyPrediction()) {
-        ALOGV("canPredictCompositionStrategy surface does not support");
-        return false;
-    }
-
-    if (refreshArgs.devOptFlashDirtyRegionsDelay) {
-        ALOGV("canPredictCompositionStrategy devOptFlashDirtyRegionsDelay");
-        return false;
-    }
-
-    if (lastOutputLayerHash != outputLayerHash) {
-        ALOGV("canPredictCompositionStrategy output layers changed");
-        return false;
-    }
-
-    // If no layer uses clientComposition, then don't predict composition strategy
-    // because we have less work to do in parallel.
-    if (!anyLayersRequireClientComposition()) {
-        ALOGV("canPredictCompositionStrategy no layer uses clientComposition");
-        return false;
-    }
-
-    return true;
-}
-
-bool Output::anyLayersRequireClientComposition() const {
-    const auto layers = getOutputLayersOrderedByZ();
-    return std::any_of(layers.begin(), layers.end(),
-                       [](const auto& layer) { return layer->requiresClientComposition(); });
-}
-
-void Output::finishPrepareFrame() {
-    const auto& state = getState();
-    if (mPlanner) {
-        mPlanner->reportFinalPlan(getOutputLayersOrderedByZ());
-    }
-    mRenderSurface->prepareFrame(state.usesClientComposition, state.usesDeviceComposition);
-}
-
-bool Output::mustRecompose() const {
-    return mMustRecompose;
 }
 
 } // namespace impl

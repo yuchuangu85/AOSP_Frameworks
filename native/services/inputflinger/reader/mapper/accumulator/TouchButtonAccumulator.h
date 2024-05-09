@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_TOUCH_BUTTON_ACCUMULATOR_H
+#define _UI_INPUTREADER_TOUCH_BUTTON_ACCUMULATOR_H
 
-#include <cstdint>
-#include "HidUsageAccumulator.h"
+#include <stdint.h>
 
 namespace android {
 
@@ -27,53 +27,40 @@ struct RawEvent;
 /* Keeps track of the state of touch, stylus and tool buttons. */
 class TouchButtonAccumulator {
 public:
-    explicit TouchButtonAccumulator(const InputDeviceContext& deviceContext)
-          : mDeviceContext(deviceContext){};
-
-    void configure();
-    void reset();
+    TouchButtonAccumulator();
+    void configure(InputDeviceContext& deviceContext);
+    void reset(InputDeviceContext& deviceContext);
 
     void process(const RawEvent* rawEvent);
 
     uint32_t getButtonState() const;
-    ToolType getToolType() const;
+    int32_t getToolType() const;
     bool isToolActive() const;
     bool isHovering() const;
     bool hasStylus() const;
-    bool hasButtonTouch() const;
-
-    /*
-     * Returns the number of touches reported by the device through its BTN_TOOL_FINGER and
-     * BTN_TOOL_*TAP "buttons". Note that this count includes touches reported with their
-     * ABS_MT_TOOL_TYPE set to MT_TOOL_PALM.
-     */
-    int getTouchCount() const;
 
 private:
-    bool mHaveBtnTouch{};
-    bool mHaveStylus{};
+    bool mHaveBtnTouch;
+    bool mHaveStylus;
 
-    bool mBtnTouch{};
-    bool mBtnStylus{};
-    bool mBtnStylus2{};
-    bool mBtnToolFinger{};
-    bool mBtnToolPen{};
-    bool mBtnToolRubber{};
-    bool mBtnToolBrush{};
-    bool mBtnToolPencil{};
-    bool mBtnToolAirbrush{};
-    bool mBtnToolMouse{};
-    bool mBtnToolLens{};
-    bool mBtnToolDoubleTap{};
-    bool mBtnToolTripleTap{};
-    bool mBtnToolQuadTap{};
-    bool mBtnToolQuintTap{};
+    bool mBtnTouch;
+    bool mBtnStylus;
+    bool mBtnStylus2;
+    bool mBtnToolFinger;
+    bool mBtnToolPen;
+    bool mBtnToolRubber;
+    bool mBtnToolBrush;
+    bool mBtnToolPencil;
+    bool mBtnToolAirbrush;
+    bool mBtnToolMouse;
+    bool mBtnToolLens;
+    bool mBtnToolDoubleTap;
+    bool mBtnToolTripleTap;
+    bool mBtnToolQuadTap;
 
-    HidUsageAccumulator mHidUsageAccumulator{};
-
-    const InputDeviceContext& mDeviceContext;
-
-    void processMappedKey(int32_t scanCode, bool down);
+    void clearButtons();
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_TOUCH_BUTTON_ACCUMULATOR_H

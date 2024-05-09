@@ -19,9 +19,7 @@
 
 #include <gtest/gtest.h>
 
-#include <scheduler/Fps.h>
-
-#include "FpsOps.h"
+#include "Fps.h"
 #include "Scheduler/LayerHistory.h"
 #include "Scheduler/LayerInfo.h"
 
@@ -49,7 +47,7 @@ namespace {
 
 TEST_F(LayerInfoTest, prefersPresentTime) {
     std::deque<FrameTimeData> frameTimes;
-    constexpr auto kExpectedFps = 50_Hz;
+    constexpr auto kExpectedFps = Fps(50.0f);
     constexpr auto kPeriod = kExpectedFps.getPeriodNsecs();
     constexpr int kNumFrames = 10;
     for (int i = 1; i <= kNumFrames; i++) {
@@ -60,12 +58,14 @@ TEST_F(LayerInfoTest, prefersPresentTime) {
     setFrameTimes(frameTimes);
     const auto averageFrameTime = calculateAverageFrameTime();
     ASSERT_TRUE(averageFrameTime.has_value());
-    ASSERT_EQ(kExpectedFps, Fps::fromPeriodNsecs(*averageFrameTime));
+    const auto averageFps = Fps::fromPeriodNsecs(*averageFrameTime);
+    ASSERT_TRUE(kExpectedFps.equalsWithMargin(averageFps))
+            << "Expected " << averageFps << " to be equal to " << kExpectedFps;
 }
 
 TEST_F(LayerInfoTest, fallbacksToQueueTimeIfNoPresentTime) {
     std::deque<FrameTimeData> frameTimes;
-    constexpr auto kExpectedFps = 50_Hz;
+    constexpr auto kExpectedFps = Fps(50.0f);
     constexpr auto kPeriod = kExpectedFps.getPeriodNsecs();
     constexpr int kNumFrames = 10;
     for (int i = 1; i <= kNumFrames; i++) {
@@ -74,15 +74,17 @@ TEST_F(LayerInfoTest, fallbacksToQueueTimeIfNoPresentTime) {
                                            .pendingModeChange = false});
     }
     setFrameTimes(frameTimes);
-    setLastRefreshRate(20_Hz); // Set to some valid value.
+    setLastRefreshRate(Fps(20.0f)); // Set to some valid value
     const auto averageFrameTime = calculateAverageFrameTime();
     ASSERT_TRUE(averageFrameTime.has_value());
-    ASSERT_EQ(kExpectedFps, Fps::fromPeriodNsecs(*averageFrameTime));
+    const auto averageFps = Fps::fromPeriodNsecs(*averageFrameTime);
+    ASSERT_TRUE(kExpectedFps.equalsWithMargin(averageFps))
+            << "Expected " << averageFps << " to be equal to " << kExpectedFps;
 }
 
 TEST_F(LayerInfoTest, returnsNulloptIfThereWasConfigChange) {
     std::deque<FrameTimeData> frameTimesWithoutConfigChange;
-    const auto period = (50_Hz).getPeriodNsecs();
+    const auto period = Fps(50.0f).getPeriodNsecs();
     constexpr int kNumFrames = 10;
     for (int i = 1; i <= kNumFrames; i++) {
         frameTimesWithoutConfigChange.push_back(FrameTimeData{.presentTime = period * i,
@@ -122,9 +124,9 @@ TEST_F(LayerInfoTest, returnsNulloptIfThereWasConfigChange) {
 // Make sure that this doesn't influence the calculated average FPS.
 TEST_F(LayerInfoTest, ignoresSmallPeriods) {
     std::deque<FrameTimeData> frameTimes;
-    constexpr auto kExpectedFps = 50_Hz;
+    constexpr auto kExpectedFps = Fps(50.0f);
     constexpr auto kExpectedPeriod = kExpectedFps.getPeriodNsecs();
-    constexpr auto kSmallPeriod = (250_Hz).getPeriodNsecs();
+    constexpr auto kSmallPeriod = Fps(250.0f).getPeriodNsecs();
     constexpr int kNumIterations = 10;
     for (int i = 1; i <= kNumIterations; i++) {
         frameTimes.push_back(FrameTimeData{.presentTime = kExpectedPeriod * i,
@@ -139,16 +141,18 @@ TEST_F(LayerInfoTest, ignoresSmallPeriods) {
     setFrameTimes(frameTimes);
     const auto averageFrameTime = calculateAverageFrameTime();
     ASSERT_TRUE(averageFrameTime.has_value());
-    ASSERT_EQ(kExpectedFps, Fps::fromPeriodNsecs(*averageFrameTime));
+    const auto averageFps = Fps::fromPeriodNsecs(*averageFrameTime);
+    ASSERT_TRUE(kExpectedFps.equalsWithMargin(averageFps))
+            << "Expected " << averageFps << " to be equal to " << kExpectedFps;
 }
 
 // There may be a big period of time between two frames. Make sure that
 // this doesn't influence the calculated average FPS.
 TEST_F(LayerInfoTest, ignoresLargePeriods) {
     std::deque<FrameTimeData> frameTimes;
-    constexpr auto kExpectedFps = 50_Hz;
+    constexpr auto kExpectedFps = Fps(50.0f);
     constexpr auto kExpectedPeriod = kExpectedFps.getPeriodNsecs();
-    constexpr auto kLargePeriod = (9_Hz).getPeriodNsecs();
+    constexpr auto kLargePeriod = Fps(9.0f).getPeriodNsecs();
 
     auto record = [&](nsecs_t time) {
         frameTimes.push_back(
@@ -168,7 +172,9 @@ TEST_F(LayerInfoTest, ignoresLargePeriods) {
     setFrameTimes(frameTimes);
     const auto averageFrameTime = calculateAverageFrameTime();
     ASSERT_TRUE(averageFrameTime.has_value());
-    ASSERT_EQ(kExpectedFps, Fps::fromPeriodNsecs(*averageFrameTime));
+    const auto averageFps = Fps::fromPeriodNsecs(*averageFrameTime);
+    ASSERT_TRUE(kExpectedFps.equalsWithMargin(averageFps))
+            << "Expected " << averageFps << " to be equal to " << kExpectedFps;
 }
 
 } // namespace

@@ -35,9 +35,7 @@ protected:
         LayerTransactionTest::SetUp();
         ASSERT_EQ(NO_ERROR, mClient->initCheck());
 
-        const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-        ASSERT_FALSE(ids.empty());
-        mMainDisplay = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+        mMainDisplay = SurfaceComposerClient::getInternalDisplayToken();
         SurfaceComposerClient::getDisplayState(mMainDisplay, &mMainDisplayState);
         SurfaceComposerClient::getActiveDisplayMode(mMainDisplay, &mMainDisplayMode);
 
@@ -54,7 +52,7 @@ protected:
         mColorLayer = 0;
     }
 
-    void createDisplay(const ui::Size& layerStackSize, ui::LayerStack layerStack) {
+    void createDisplay(const ui::Size& layerStackSize, uint32_t layerStack) {
         mVirtualDisplay =
                 SurfaceComposerClient::createDisplay(String8("VirtualDisplay"), false /*secure*/);
         asTransaction([&](Transaction& t) {
@@ -65,7 +63,7 @@ protected:
         });
     }
 
-    void createColorLayer(ui::LayerStack layerStack) {
+    void createColorLayer(uint32_t layerStack) {
         mColorLayer =
                 createSurface(mClient, "ColorLayer", 0 /* buffer width */, 0 /* buffer height */,
                               PIXEL_FORMAT_RGBA_8888, ISurfaceComposerClient::eFXSurfaceEffect);
@@ -92,9 +90,8 @@ protected:
 };
 
 TEST_F(MultiDisplayLayerBoundsTest, RenderLayerInVirtualDisplay) {
-    constexpr ui::LayerStack kLayerStack{1u};
-    createDisplay(mMainDisplayState.layerStackSpaceRect, kLayerStack);
-    createColorLayer(kLayerStack);
+    createDisplay(mMainDisplayState.layerStackSpaceRect, 1 /* layerStack */);
+    createColorLayer(1 /* layerStack */);
 
     asTransaction([&](Transaction& t) { t.setPosition(mColorLayer, 10, 10); });
 
@@ -116,8 +113,8 @@ TEST_F(MultiDisplayLayerBoundsTest, RenderLayerInMirroredVirtualDisplay) {
 
     // Assumption here is that the new mirrored display has the same layer stack rect as the
     // primary display that it is mirroring.
-    createDisplay(mMainDisplayState.layerStackSpaceRect, ui::DEFAULT_LAYER_STACK);
-    createColorLayer(ui::DEFAULT_LAYER_STACK);
+    createDisplay(mMainDisplayState.layerStackSpaceRect, 0 /* layerStack */);
+    createColorLayer(0 /* layerStack */);
 
     asTransaction([&](Transaction& t) { t.setPosition(mColorLayer, 10, 10); });
 

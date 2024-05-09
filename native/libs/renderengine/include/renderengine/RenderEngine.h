@@ -18,7 +18,6 @@
 #define SF_RENDERENGINE_H_
 
 #include <android-base/unique_fd.h>
-#include <ftl/future.h>
 #include <math/mat4.h>
 #include <renderengine/DisplaySettings.h>
 #include <renderengine/ExternalTexture.h>
@@ -27,7 +26,6 @@
 #include <renderengine/LayerSettings.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include <ui/FenceResult.h>
 #include <ui/GraphicTypes.h>
 #include <ui/Transform.h>
 
@@ -77,7 +75,6 @@ class RenderEngineThreaded;
 
 namespace impl {
 class RenderEngine;
-class ExternalTexture;
 }
 
 enum class Protection {
@@ -99,8 +96,6 @@ public:
         THREADED = 2,
         SKIA_GL = 3,
         SKIA_GL_THREADED = 4,
-        SKIA_VK = 5,
-        SKIA_VK_THREADED = 6,
     };
 
     static std::unique_ptr<RenderEngine> create(const RenderEngineCreationArgs& args);
@@ -128,11 +123,15 @@ public:
     // ----- BEGIN NEW INTERFACE -----
 
     // queries that are required to be thread safe
+    virtual bool isProtected() const = 0;
     virtual bool supportsProtectedContent() const = 0;
 
-    // Notify RenderEngine of changes to the dimensions of the active display
+    // Attempt to switch RenderEngine into and out of protectedContext mode
+    virtual void useProtectedContext(bool useProtectedContext) = 0;
+
+    // Notify RenderEngine of changes to the dimensions of the primary display
     // so that it can configure its internal caches accordingly.
-    virtual void onActiveDisplaySizeChanged(ui::Size size) = 0;
+    virtual void onPrimaryDisplaySizeChanged(ui::Size size) = 0;
 
     // Renders layers for a particular display via GPU composition. This method
     // should be called for every display that needs to be rendered via the GPU.
@@ -157,13 +156,17 @@ public:
     // parameter does nothing.
     // @param bufferFence Fence signalling that the buffer is ready to be drawn
     // to.
-    // @return A future object of FenceResult indicating whether drawing was
-    // successful in async mode.
-    virtual ftl::Future<FenceResult> drawLayers(const DisplaySettings& display,
-                                                const std::vector<LayerSettings>& layers,
-                                                const std::shared_ptr<ExternalTexture>& buffer,
-                                                const bool useFramebufferCache,
-                                                base::unique_fd&& bufferFence);
+    // @param drawFence A pointer to a fence, which will fire when the buffer
+    // has been drawn to and is ready to be examined. The fence will be
+    // initialized by this method. The caller will be responsible for owning the
+    // fence.
+    // @return An error code indicating whether drawing was successful. For
+    // now, this always returns NO_ERROR.
+    virtual status_t drawLayers(const DisplaySettings& display,
+                                const std::vector<const LayerSettings*>& layers,
+                                const std::shared_ptr<ExternalTexture>& buffer,
+                                const bool useFramebufferCache, base::unique_fd&& bufferFence,
+                                base::unique_fd* drawFence) = 0;
 
     // Clean-up method that should be called on the main thread after the
     // drawFence returned by drawLayers fires. This method will free up
@@ -172,16 +175,9 @@ public:
     virtual void cleanupPostRender() = 0;
 
     virtual void cleanFramebufferCache() = 0;
-
-    // Returns the priority this context was actually created with. Note: this
-    // may not be the same as specified at context creation time, due to
-    // implementation limits on the number of contexts that can be created at a
-    // specific priority level in the system.
-    //
-    // This should return a valid EGL context priority enum as described by
-    // https://registry.khronos.org/EGL/extensions/IMG/EGL_IMG_context_priority.txt
-    // or
-    // https://registry.khronos.org/EGL/extensions/NV/EGL_NV_context_priority_realtime.txt
+    // Returns the priority this context was actually created with. Note: this may not be
+    // the same as specified at context creation time, due to implementation limits on the
+    // number of contexts that can be created at a specific priority level in the system.
     virtual int getContextPriority() = 0;
 
     // Returns true if blur was requested in the RenderEngineCreationArgs and the implementation
@@ -196,12 +192,6 @@ public:
 
     static void validateInputBufferUsage(const sp<GraphicBuffer>&);
     static void validateOutputBufferUsage(const sp<GraphicBuffer>&);
-
-    // Allows flinger to get the render engine thread id for power management with ADPF
-    // Returns the tid of the renderengine thread if it's threaded, and std::nullopt otherwise
-    virtual std::optional<pid_t> getRenderEngineTid() const { return std::nullopt; }
-
-    virtual void setEnableTracing(bool /*tracingEnabled*/) {}
 
 protected:
     RenderEngine() : RenderEngine(RenderEngineType::GLES) {}
@@ -231,30 +221,17 @@ protected:
     // asynchronously, but the caller can expect that map/unmap calls are performed in a manner
     // that's conflict serializable, i.e. unmap a buffer should never occur before binding the
     // buffer if the caller called mapExternalTextureBuffer before calling unmap.
-    virtual void unmapExternalTextureBuffer(sp<GraphicBuffer>&& buffer) = 0;
+    virtual void unmapExternalTextureBuffer(const sp<GraphicBuffer>& buffer) = 0;
 
     // A thread safe query to determine if any post rendering cleanup is necessary.  Returning true
     // is a signal that calling the postRenderCleanup method would be a no-op and that callers can
     // avoid any thread synchronization that may be required by directly calling postRenderCleanup.
     virtual bool canSkipPostRenderCleanup() const = 0;
 
-    friend class impl::ExternalTexture;
+    friend class ExternalTexture;
     friend class threaded::RenderEngineThreaded;
     friend class RenderEngineTest_cleanupPostRender_cleansUpOnce_Test;
     const RenderEngineType mRenderEngineType;
-
-    // Update protectedContext mode depending on whether or not any layer has a protected buffer.
-    void updateProtectedContext(const std::vector<LayerSettings>&,
-                                const std::shared_ptr<ExternalTexture>&);
-
-    // Attempt to switch RenderEngine into and out of protectedContext mode
-    virtual void useProtectedContext(bool useProtectedContext) = 0;
-
-    virtual void drawLayersInternal(
-            const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
-            const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-            const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-            base::unique_fd&& bufferFence) = 0;
 };
 
 struct RenderEngineCreationArgs {

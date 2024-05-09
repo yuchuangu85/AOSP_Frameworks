@@ -95,7 +95,7 @@ TEST_F(GetDisplayNativePrimaries, internalDisplayWithPrimariesData) {
 }
 
 TEST_F(GetDisplayNativePrimaries, notInternalDisplayToken) {
-    sp<BBinder> notInternalDisplayToken = sp<BBinder>::make();
+    sp<BBinder> notInternalDisplayToken = new BBinder();
 
     ui::DisplayPrimaries primaries;
     populateDummyDisplayNativePrimaries(primaries);

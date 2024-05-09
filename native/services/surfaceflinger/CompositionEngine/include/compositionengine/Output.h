@@ -23,21 +23,17 @@
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include <compositionengine/LayerFE.h>
 #include <renderengine/LayerSettings.h>
 #include <ui/Fence.h>
-#include <ui/FenceTime.h>
 #include <ui/GraphicTypes.h>
-#include <ui/LayerStack.h>
 #include <ui/Region.h>
 #include <ui/Transform.h>
 #include <utils/StrongPointer.h>
 #include <utils/Vector.h>
 
-#include <ui/DisplayIdentification.h>
-#include "DisplayHardware/HWComposer.h"
+#include "DisplayHardware/DisplayIdentification.h"
 
 namespace android {
 
@@ -57,7 +53,6 @@ struct LayerFECompositionState;
 
 namespace impl {
 struct OutputCompositionState;
-struct GpuCompositionResult;
 } // namespace impl
 
 /**
@@ -153,10 +148,6 @@ public:
         Region aboveOpaqueLayers;
         // The region of the output which should be considered dirty
         Region dirtyRegion;
-        // The region of the output which is covered by layers, excluding display overlays. This
-        // only has a value if there's something needing it, like when a TrustedPresentationListener
-        // is set
-        std::optional<Region> aboveCoveredLayersExcludingOverlays;
     };
 
     virtual ~Output();
@@ -175,14 +166,9 @@ public:
     // Enables (or disables) layer caching on this output
     virtual void setLayerCachingEnabled(bool) = 0;
 
-    // Enables (or disables) layer caching texture pool on this output
-    virtual void setLayerCachingTexturePoolEnabled(bool) = 0;
-
     // Sets the projection state to use
     virtual void setProjection(ui::Rotation orientation, const Rect& layerStackSpaceRect,
                                const Rect& orientedDisplaySpaceRect) = 0;
-    // Sets the brightness that will take effect next frame.
-    virtual void setNextBrightness(float brightness) = 0;
     // Sets the bounds to use
     virtual void setDisplaySize(const ui::Size&) = 0;
     // Gets the transform hint used in layers that belong to this output. Used to guide
@@ -191,8 +177,9 @@ public:
     // output.
     virtual ui::Transform::RotationFlags getTransformHint() const = 0;
 
-    // Sets the filter for this output. See Output::includesLayer.
-    virtual void setLayerFilter(ui::LayerFilter) = 0;
+    // Sets the layer stack filtering settings for this output. See
+    // belongsInOutput for full details.
+    virtual void setLayerStackFilter(uint32_t layerStackId, bool isInternal) = 0;
 
     // Sets the output color mode
     virtual void setColorProfile(const ColorProfile&) = 0;
@@ -231,12 +218,20 @@ public:
     virtual OutputCompositionState& editState() = 0;
 
     // Gets the dirty region in layer stack space.
-    virtual Region getDirtyRegion() const = 0;
+    // If repaintEverything is true, this will be the full display bounds.
+    virtual Region getDirtyRegion(bool repaintEverything) const = 0;
 
-    // Returns whether the output includes a layer, based on their respective filters.
-    // See Output::setLayerFilter.
-    virtual bool includesLayer(ui::LayerFilter) const = 0;
-    virtual bool includesLayer(const sp<LayerFE>&) const = 0;
+    // Tests whether a given layerStackId belongs in this output.
+    // A layer belongs to the output if its layerStackId matches the of the output layerStackId,
+    // unless the layer should display on the primary output only and this is not the primary output
+
+    // A layer belongs to the output if its layerStackId matches. Additionally
+    // if the layer should only show in the internal (primary) display only and
+    // this output allows that.
+    virtual bool belongsInOutput(std::optional<uint32_t> layerStackId, bool internalOnly) const = 0;
+
+    // Determines if a layer belongs to the output.
+    virtual bool belongsInOutput(const sp<LayerFE>&) const = 0;
 
     // Returns a pointer to the output layer corresponding to the given layer on
     // this output, or nullptr if the layer does not have one
@@ -267,17 +262,13 @@ public:
     // Presents the output, finalizing all composition details
     virtual void present(const CompositionRefreshArgs&) = 0;
 
-    // Enables predicting composition strategy to run client composition earlier
-    virtual void setPredictCompositionStrategy(bool) = 0;
-
-    // Enables overriding the 170M trasnfer function as sRGB
-    virtual void setTreat170mAsSrgb(bool) = 0;
+    // Latches the front-end layer state for each output layer
+    virtual void updateLayerStateFromFE(const CompositionRefreshArgs&) const = 0;
 
 protected:
     virtual void setDisplayColorProfile(std::unique_ptr<DisplayColorProfile>) = 0;
     virtual void setRenderSurface(std::unique_ptr<RenderSurface>) = 0;
 
-    virtual void uncacheBuffers(const std::vector<uint64_t>&) = 0;
     virtual void rebuildLayerStacks(const CompositionRefreshArgs&, LayerFESet&) = 0;
     virtual void collectVisibleLayers(const CompositionRefreshArgs&, CoverageState&) = 0;
     virtual void ensureOutputLayerIfVisible(sp<LayerFE>&, CoverageState&) = 0;
@@ -290,34 +281,22 @@ protected:
     virtual void updateColorProfile(const CompositionRefreshArgs&) = 0;
     virtual void beginFrame() = 0;
     virtual void prepareFrame() = 0;
-
-    using GpuCompositionResult = compositionengine::impl::GpuCompositionResult;
-    // Runs prepare frame in another thread while running client composition using
-    // the previous frame's composition strategy.
-    virtual GpuCompositionResult prepareFrameAsync() = 0;
     virtual void devOptRepaintFlash(const CompositionRefreshArgs&) = 0;
-    virtual void finishFrame(GpuCompositionResult&&) = 0;
+    virtual void finishFrame(const CompositionRefreshArgs&) = 0;
     virtual std::optional<base::unique_fd> composeSurfaces(
-            const Region&, std::shared_ptr<renderengine::ExternalTexture>, base::unique_fd&) = 0;
+            const Region&, const compositionengine::CompositionRefreshArgs& refreshArgs) = 0;
     virtual void postFramebuffer() = 0;
     virtual void renderCachedSets(const CompositionRefreshArgs&) = 0;
-    virtual bool chooseCompositionStrategy(
-            std::optional<android::HWComposer::DeviceRequestedChanges>*) = 0;
-    virtual void applyCompositionStrategy(
-            const std::optional<android::HWComposer::DeviceRequestedChanges>& changes) = 0;
+    virtual void chooseCompositionStrategy() = 0;
     virtual bool getSkipColorTransform() const = 0;
     virtual FrameFences presentAndGetFrameFences() = 0;
     virtual std::vector<LayerFE::LayerSettings> generateClientCompositionRequests(
-            bool supportsProtectedContent, ui::Dataspace outputDataspace,
-            std::vector<LayerFE*> &outLayerRef) = 0;
+            bool supportsProtectedContent, Region& clearRegion, ui::Dataspace outputDataspace) = 0;
     virtual void appendRegionFlashRequests(
             const Region& flashRegion,
             std::vector<LayerFE::LayerSettings>& clientCompositionLayers) = 0;
     virtual void setExpensiveRenderingExpected(bool enabled) = 0;
-    virtual void setHintSessionGpuFence(std::unique_ptr<FenceTime>&& gpuFence) = 0;
-    virtual bool isPowerHintSessionEnabled() = 0;
     virtual void cacheClientCompositionRequests(uint32_t cacheSize) = 0;
-    virtual bool canPredictCompositionStrategy(const CompositionRefreshArgs&) = 0;
 };
 
 } // namespace compositionengine

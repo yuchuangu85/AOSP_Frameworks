@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
+#include "SensorDevice.h"
 #include "SensorDirectConnection.h"
 #include <android/util/ProtoOutputStream.h>
 #include <frameworks/base/core/proto/android/service/sensor_service.proto.h>
 #include <hardware/sensors.h>
-#include "SensorDevice.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -28,10 +28,11 @@ using util::ProtoOutputStream;
 
 SensorService::SensorDirectConnection::SensorDirectConnection(const sp<SensorService>& service,
         uid_t uid, const sensors_direct_mem_t *mem, int32_t halChannelHandle,
-        const String16& opPackageName, int deviceId)
+        const String16& opPackageName)
         : mService(service), mUid(uid), mMem(*mem),
         mHalChannelHandle(halChannelHandle),
-        mOpPackageName(opPackageName), mDeviceId(deviceId), mDestroyed(false) {
+        mOpPackageName(opPackageName), mDestroyed(false) {
+    mIsRateCappedBasedOnPermission = mService->isRateCappedBasedOnPermission(mOpPackageName);
     mUserId = multiuser_get_user_id(mUid);
     ALOGD_IF(DEBUG_CONNECTIONS, "Created SensorDirectConnection");
 }
@@ -51,7 +52,7 @@ void SensorService::SensorDirectConnection::destroy() {
     stopAll();
     mService->cleanupConnection(this);
     if (mMem.handle != nullptr) {
-        native_handle_close_with_tag(mMem.handle);
+        native_handle_close(mMem.handle);
         native_handle_delete(const_cast<struct native_handle*>(mMem.handle));
     }
     mDestroyed = true;
@@ -151,13 +152,13 @@ int32_t SensorService::SensorDirectConnection::configureChannel(int handle, int 
         return PERMISSION_DENIED;
     }
 
-    std::shared_ptr<SensorInterface> si = mService->getSensorInterfaceFromHandle(handle);
+    sp<SensorInterface> si = mService->getSensorInterfaceFromHandle(handle);
     if (si == nullptr) {
         return NAME_NOT_FOUND;
     }
 
     const Sensor& s = si->getSensor();
-    if (!mService->canAccessSensor(s, "config direct channel", mOpPackageName)) {
+    if (!SensorService::canAccessSensor(s, "config direct channel", mOpPackageName)) {
         return PERMISSION_DENIED;
     }
 
@@ -180,7 +181,8 @@ int32_t SensorService::SensorDirectConnection::configureChannel(int handle, int 
     };
 
     Mutex::Autolock _l(mConnectionLock);
-    int ret = configure(handle, &config);
+    SensorDevice& dev(SensorDevice::getInstance());
+    int ret = dev.configureDirectChannel(handle, getHalChannelHandle(), &config);
 
     if (rateLevel == SENSOR_DIRECT_RATE_STOP) {
         if (ret == NO_ERROR) {
@@ -195,8 +197,8 @@ int32_t SensorService::SensorDirectConnection::configureChannel(int handle, int 
             if (mService->isSensorInCappedSet(s.getType())) {
                 // Back up the rates that the app is allowed to have if the mic toggle is off
                 // This is used in the uncapRates() function.
-                if ((requestedRateLevel <= SENSOR_SERVICE_CAPPED_SAMPLING_RATE_LEVEL) ||
-                    !isRateCappedBasedOnPermission()) {
+                if (!mIsRateCappedBasedOnPermission ||
+                            requestedRateLevel <= SENSOR_SERVICE_CAPPED_SAMPLING_RATE_LEVEL) {
                     mMicRateBackup[handle] = requestedRateLevel;
                 } else {
                     mMicRateBackup[handle] = SENSOR_SERVICE_CAPPED_SAMPLING_RATE_LEVEL;
@@ -223,10 +225,11 @@ void SensorService::SensorDirectConnection::capRates() {
     std::unordered_map<int, int>& existingConnections =
                     (!temporarilyStopped) ? mActivated : mActivatedBackup;
 
+    SensorDevice& dev(SensorDevice::getInstance());
     for (auto &i : existingConnections) {
         int handle = i.first;
         int rateLevel = i.second;
-        std::shared_ptr<SensorInterface> si = mService->getSensorInterfaceFromHandle(handle);
+        sp<SensorInterface> si = mService->getSensorInterfaceFromHandle(handle);
         if (si != nullptr) {
             const Sensor& s = si->getSensor();
             if (mService->isSensorInCappedSet(s.getType()) &&
@@ -237,8 +240,8 @@ void SensorService::SensorDirectConnection::capRates() {
                 // Only reconfigure the channel if it's ongoing
                 if (!temporarilyStopped) {
                     // Stopping before reconfiguring is the well-tested path in CTS
-                    configure(handle, &stopConfig);
-                    configure(handle, &capConfig);
+                    dev.configureDirectChannel(handle, getHalChannelHandle(), &stopConfig);
+                    dev.configureDirectChannel(handle, getHalChannelHandle(), &capConfig);
                 }
             }
         }
@@ -256,6 +259,7 @@ void SensorService::SensorDirectConnection::uncapRates() {
     const struct sensors_direct_cfg_t stopConfig = {
         .rate_level = SENSOR_DIRECT_RATE_STOP
     };
+    SensorDevice& dev(SensorDevice::getInstance());
     for (auto &i : mMicRateBackup) {
         int handle = i.first;
         int rateLevel = i.second;
@@ -270,21 +274,11 @@ void SensorService::SensorDirectConnection::uncapRates() {
         // Only reconfigure the channel if it's ongoing
         if (!temporarilyStopped) {
             // Stopping before reconfiguring is the well-tested path in CTS
-            configure(handle, &stopConfig);
-            configure(handle, &config);
+            dev.configureDirectChannel(handle, getHalChannelHandle(), &stopConfig);
+            dev.configureDirectChannel(handle, getHalChannelHandle(), &config);
         }
     }
     mMicRateBackup.clear();
-}
-
-int SensorService::SensorDirectConnection::configure(
-        int handle, const sensors_direct_cfg_t* config) {
-    if (mDeviceId == RuntimeSensor::DEFAULT_DEVICE_ID) {
-        SensorDevice& dev(SensorDevice::getInstance());
-        return dev.configureDirectChannel(handle, getHalChannelHandle(), config);
-    } else {
-        return mService->configureRuntimeSensorDirectChannel(handle, this, config);
-    }
 }
 
 void SensorService::SensorDirectConnection::stopAll(bool backupRecord) {
@@ -297,8 +291,9 @@ void SensorService::SensorDirectConnection::stopAllLocked(bool backupRecord) {
         .rate_level = SENSOR_DIRECT_RATE_STOP
     };
 
+    SensorDevice& dev(SensorDevice::getInstance());
     for (auto &i : mActivated) {
-        configure(i.first, &config);
+        dev.configureDirectChannel(i.first, getHalChannelHandle(), &config);
     }
 
     if (backupRecord && mActivatedBackup.empty()) {
@@ -312,6 +307,8 @@ void SensorService::SensorDirectConnection::recoverAll() {
     if (!mActivatedBackup.empty()) {
         stopAllLocked(false);
 
+        SensorDevice& dev(SensorDevice::getInstance());
+
         // recover list of report from backup
         ALOG_ASSERT(mActivated.empty(),
                     "mActivated must be empty if mActivatedBackup was non-empty");
@@ -323,7 +320,7 @@ void SensorService::SensorDirectConnection::recoverAll() {
             struct sensors_direct_cfg_t config = {
                 .rate_level = i.second
             };
-            configure(i.first, &config);
+            dev.configureDirectChannel(i.first, getHalChannelHandle(), &config);
         }
     }
 }

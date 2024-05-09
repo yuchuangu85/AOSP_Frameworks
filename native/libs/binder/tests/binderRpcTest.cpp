@@ -14,157 +14,247 @@
  * limitations under the License.
  */
 
+#include <BnBinderRpcSession.h>
+#include <BnBinderRpcTest.h>
 #include <aidl/IBinderRpcTest.h>
-#include <android-base/stringprintf.h>
+#include <android-base/file.h>
+#include <android-base/logging.h>
+#include <android/binder_auto_utils.h>
+#include <android/binder_libbinder.h>
+#include <binder/Binder.h>
+#include <binder/BpBinder.h>
+#include <binder/IServiceManager.h>
+#include <binder/ProcessState.h>
+#include <binder/RpcServer.h>
+#include <binder/RpcSession.h>
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
-#include <type_traits>
 
-#include <dlfcn.h>
-#include <poll.h>
 #include <sys/prctl.h>
-#include <sys/socket.h>
+#include <unistd.h>
 
-#ifdef BINDER_RPC_TO_TRUSTY_TEST
-#include <binder/RpcTransportTipcAndroid.h>
-#include <trusty/tipc.h>
-#endif // BINDER_RPC_TO_TRUSTY_TEST
-
-#include "binderRpcTestCommon.h"
-#include "binderRpcTestFixture.h"
-
-using namespace std::chrono_literals;
-using namespace std::placeholders;
-using testing::AssertionFailure;
-using testing::AssertionResult;
-using testing::AssertionSuccess;
+#include "../RpcState.h"   // for debugging
+#include "../vm_sockets.h" // for VMADDR_*
 
 namespace android {
 
-#ifdef BINDER_TEST_NO_SHARED_LIBS
-constexpr bool kEnableSharedLibs = false;
-#else
-constexpr bool kEnableSharedLibs = true;
-#endif
+TEST(BinderRpcParcel, EntireParcelFormatted) {
+    Parcel p;
+    p.writeInt32(3);
 
-#ifdef BINDER_RPC_TO_TRUSTY_TEST
-constexpr char kTrustyIpcDevice[] = "/dev/trusty-ipc-dev0";
-#endif
-
-static std::string WaitStatusToString(int wstatus) {
-    if (WIFEXITED(wstatus)) {
-        return base::StringPrintf("exit status %d", WEXITSTATUS(wstatus));
-    }
-    if (WIFSIGNALED(wstatus)) {
-        return base::StringPrintf("term signal %d", WTERMSIG(wstatus));
-    }
-    return base::StringPrintf("unexpected state %d", wstatus);
+    EXPECT_DEATH(p.markForBinder(sp<BBinder>::make()), "");
 }
 
-static void debugBacktrace(pid_t pid) {
-    std::cerr << "TAKING BACKTRACE FOR PID " << pid << std::endl;
-    system((std::string("debuggerd -b ") + std::to_string(pid)).c_str());
+TEST(BinderRpc, SetExternalServer) {
+    base::unique_fd sink(TEMP_FAILURE_RETRY(open("/dev/null", O_RDWR)));
+    int sinkFd = sink.get();
+    auto server = RpcServer::make();
+    server->iUnderstandThisCodeIsExperimentalAndIWillNotUseItInProduction();
+    ASSERT_FALSE(server->hasServer());
+    ASSERT_TRUE(server->setupExternalServer(std::move(sink)));
+    ASSERT_TRUE(server->hasServer());
+    base::unique_fd retrieved = server->releaseServer();
+    ASSERT_FALSE(server->hasServer());
+    ASSERT_EQ(sinkFd, retrieved.get());
 }
+
+using android::binder::Status;
+
+#define EXPECT_OK(status)                 \
+    do {                                  \
+        Status stat = (status);           \
+        EXPECT_TRUE(stat.isOk()) << stat; \
+    } while (false)
+
+class MyBinderRpcSession : public BnBinderRpcSession {
+public:
+    static std::atomic<int32_t> gNum;
+
+    MyBinderRpcSession(const std::string& name) : mName(name) { gNum++; }
+    Status getName(std::string* name) override {
+        *name = mName;
+        return Status::ok();
+    }
+    ~MyBinderRpcSession() { gNum--; }
+
+private:
+    std::string mName;
+};
+std::atomic<int32_t> MyBinderRpcSession::gNum;
+
+class MyBinderRpcTest : public BnBinderRpcTest {
+public:
+    wp<RpcServer> server;
+
+    Status sendString(const std::string& str) override {
+        (void)str;
+        return Status::ok();
+    }
+    Status doubleString(const std::string& str, std::string* strstr) override {
+        *strstr = str + str;
+        return Status::ok();
+    }
+    Status countBinders(std::vector<int32_t>* out) override {
+        sp<RpcServer> spServer = server.promote();
+        if (spServer == nullptr) {
+            return Status::fromExceptionCode(Status::EX_NULL_POINTER);
+        }
+        out->clear();
+        for (auto session : spServer->listSessions()) {
+            size_t count = session->state()->countBinders();
+            if (count != 1) {
+                // this is called when there is only one binder held remaining,
+                // so to aid debugging
+                session->state()->dump();
+            }
+            out->push_back(count);
+        }
+        return Status::ok();
+    }
+    Status pingMe(const sp<IBinder>& binder, int32_t* out) override {
+        if (binder == nullptr) {
+            std::cout << "Received null binder!" << std::endl;
+            return Status::fromExceptionCode(Status::EX_NULL_POINTER);
+        }
+        *out = binder->pingBinder();
+        return Status::ok();
+    }
+    Status repeatBinder(const sp<IBinder>& binder, sp<IBinder>* out) override {
+        *out = binder;
+        return Status::ok();
+    }
+    static sp<IBinder> mHeldBinder;
+    Status holdBinder(const sp<IBinder>& binder) override {
+        mHeldBinder = binder;
+        return Status::ok();
+    }
+    Status getHeldBinder(sp<IBinder>* held) override {
+        *held = mHeldBinder;
+        return Status::ok();
+    }
+    Status nestMe(const sp<IBinderRpcTest>& binder, int count) override {
+        if (count <= 0) return Status::ok();
+        return binder->nestMe(this, count - 1);
+    }
+    Status alwaysGiveMeTheSameBinder(sp<IBinder>* out) override {
+        static sp<IBinder> binder = new BBinder;
+        *out = binder;
+        return Status::ok();
+    }
+    Status openSession(const std::string& name, sp<IBinderRpcSession>* out) override {
+        *out = new MyBinderRpcSession(name);
+        return Status::ok();
+    }
+    Status getNumOpenSessions(int32_t* out) override {
+        *out = MyBinderRpcSession::gNum;
+        return Status::ok();
+    }
+
+    std::mutex blockMutex;
+    Status lock() override {
+        blockMutex.lock();
+        return Status::ok();
+    }
+    Status unlockInMsAsync(int32_t ms) override {
+        usleep(ms * 1000);
+        blockMutex.unlock();
+        return Status::ok();
+    }
+    Status lockUnlock() override {
+        std::lock_guard<std::mutex> _l(blockMutex);
+        return Status::ok();
+    }
+
+    Status sleepMs(int32_t ms) override {
+        usleep(ms * 1000);
+        return Status::ok();
+    }
+
+    Status sleepMsAsync(int32_t ms) override {
+        // In-process binder calls are asynchronous, but the call to this method
+        // is synchronous wrt its client. This in/out-process threading model
+        // diffentiation is a classic binder leaky abstraction (for better or
+        // worse) and is preserved here the way binder sockets plugs itself
+        // into BpBinder, as nothing is changed at the higher levels
+        // (IInterface) which result in this behavior.
+        return sleepMs(ms);
+    }
+
+    Status die(bool cleanup) override {
+        if (cleanup) {
+            exit(1);
+        } else {
+            _exit(1);
+        }
+    }
+};
+sp<IBinder> MyBinderRpcTest::mHeldBinder;
+
+class Pipe {
+public:
+    Pipe() { CHECK(android::base::Pipe(&mRead, &mWrite)); }
+    Pipe(Pipe&&) = default;
+    android::base::borrowed_fd readEnd() { return mRead; }
+    android::base::borrowed_fd writeEnd() { return mWrite; }
+
+private:
+    android::base::unique_fd mRead;
+    android::base::unique_fd mWrite;
+};
 
 class Process {
 public:
-    Process(Process&& other)
-          : mCustomExitStatusCheck(std::move(other.mCustomExitStatusCheck)),
-            mReadEnd(std::move(other.mReadEnd)),
-            mWriteEnd(std::move(other.mWriteEnd)) {
-        // The default move constructor doesn't clear mPid after moving it,
-        // which we need to do because the destructor checks for mPid!=0
-        mPid = other.mPid;
-        other.mPid = 0;
-    }
-    Process(const std::function<void(android::base::borrowed_fd /* writeEnd */,
-                                     android::base::borrowed_fd /* readEnd */)>& f) {
-        android::base::unique_fd childWriteEnd;
-        android::base::unique_fd childReadEnd;
-        CHECK(android::base::Pipe(&mReadEnd, &childWriteEnd, 0)) << strerror(errno);
-        CHECK(android::base::Pipe(&childReadEnd, &mWriteEnd, 0)) << strerror(errno);
+    Process(Process&&) = default;
+    Process(const std::function<void(Pipe*)>& f) {
         if (0 == (mPid = fork())) {
             // racey: assume parent doesn't crash before this is set
             prctl(PR_SET_PDEATHSIG, SIGHUP);
 
-            f(childWriteEnd, childReadEnd);
-
-            exit(0);
+            f(&mPipe);
         }
     }
     ~Process() {
         if (mPid != 0) {
-            int wstatus;
-            waitpid(mPid, &wstatus, 0);
-            if (mCustomExitStatusCheck) {
-                mCustomExitStatusCheck(wstatus);
-            } else {
-                EXPECT_TRUE(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 0)
-                        << "server process failed: " << WaitStatusToString(wstatus);
-            }
+            kill(mPid, SIGKILL);
         }
     }
-    android::base::borrowed_fd readEnd() { return mReadEnd; }
-    android::base::borrowed_fd writeEnd() { return mWriteEnd; }
-
-    void setCustomExitStatusCheck(std::function<void(int wstatus)> f) {
-        mCustomExitStatusCheck = std::move(f);
-    }
-
-    // Kill the process. Avoid if possible. Shutdown gracefully via an RPC instead.
-    void terminate() { kill(mPid, SIGTERM); }
-
-    pid_t getPid() { return mPid; }
+    Pipe* getPipe() { return &mPipe; }
 
 private:
-    std::function<void(int wstatus)> mCustomExitStatusCheck;
     pid_t mPid = 0;
-    android::base::unique_fd mReadEnd;
-    android::base::unique_fd mWriteEnd;
+    Pipe mPipe;
 };
 
 static std::string allocateSocketAddress() {
     static size_t id = 0;
     std::string temp = getenv("TMPDIR") ?: "/tmp";
-    auto ret = temp + "/binderRpcTest_" + std::to_string(getpid()) + "_" + std::to_string(id++);
-    unlink(ret.c_str());
-    return ret;
+    return temp + "/binderRpcTest_" + std::to_string(id++);
 };
 
-static unsigned int allocateVsockPort() {
-    static unsigned int vsockPort = 34567;
-    return vsockPort++;
-}
-
-static base::unique_fd initUnixSocket(std::string addr) {
-    auto socket_addr = UnixSocketAddress(addr.c_str());
-    base::unique_fd fd(
-            TEMP_FAILURE_RETRY(socket(socket_addr.addr()->sa_family, SOCK_STREAM, AF_UNIX)));
-    CHECK(fd.ok());
-    CHECK_EQ(0, TEMP_FAILURE_RETRY(bind(fd.get(), socket_addr.addr(), socket_addr.addrSize())));
-    return fd;
-}
-
-// Destructors need to be defined, even if pure virtual
-ProcessSession::~ProcessSession() {}
-
-class LinuxProcessSession : public ProcessSession {
-public:
+struct ProcessSession {
     // reference to process hosting a socket server
     Process host;
 
-    LinuxProcessSession(LinuxProcessSession&&) = default;
-    LinuxProcessSession(Process&& host) : host(std::move(host)) {}
-    ~LinuxProcessSession() override {
+    struct SessionInfo {
+        sp<RpcSession> session;
+        sp<IBinder> root;
+    };
+
+    // client session objects associated with other process
+    // each one represents a separate session
+    std::vector<SessionInfo> sessions;
+
+    ProcessSession(ProcessSession&&) = default;
+    ~ProcessSession() {
         for (auto& session : sessions) {
             session.root = nullptr;
         }
 
-        for (size_t sessionNum = 0; sessionNum < sessions.size(); sessionNum++) {
-            auto& info = sessions.at(sessionNum);
+        for (auto& info : sessions) {
             sp<RpcSession>& session = info.session;
 
             EXPECT_NE(nullptr, session);
@@ -173,252 +263,477 @@ public:
 
             wp<RpcSession> weakSession = session;
             session = nullptr;
-
-            // b/244325464 - 'getStrongCount' is printing '1' on failure here, which indicates the
-            // the object should not actually be promotable. By looping, we distinguish a race here
-            // from a bug causing the object to not be promotable.
-            for (size_t i = 0; i < 3; i++) {
-                sp<RpcSession> strongSession = weakSession.promote();
-                EXPECT_EQ(nullptr, strongSession)
-                        << "For session " << sessionNum << ". "
-                        << (debugBacktrace(host.getPid()), debugBacktrace(getpid()),
-                            "Leaked sess: ")
-                        << strongSession->getStrongCount() << " checked time " << i;
-
-                if (strongSession != nullptr) {
-                    sleep(1);
-                }
-            }
+            EXPECT_EQ(nullptr, weakSession.promote()) << "Leaked session";
         }
     }
-
-    void setCustomExitStatusCheck(std::function<void(int wstatus)> f) override {
-        host.setCustomExitStatusCheck(std::move(f));
-    }
-
-    void terminate() override { host.terminate(); }
 };
 
-static base::unique_fd connectTo(const RpcSocketAddress& addr) {
-    base::unique_fd serverFd(
-            TEMP_FAILURE_RETRY(socket(addr.addr()->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0)));
-    int savedErrno = errno;
-    CHECK(serverFd.ok()) << "Could not create socket " << addr.toString() << ": "
-                         << strerror(savedErrno);
+// Process session where the process hosts IBinderRpcTest, the server used
+// for most testing here
+struct BinderRpcTestProcessSession {
+    ProcessSession proc;
 
-    if (0 != TEMP_FAILURE_RETRY(connect(serverFd.get(), addr.addr(), addr.addrSize()))) {
-        int savedErrno = errno;
-        LOG(FATAL) << "Could not connect to socket " << addr.toString() << ": "
-                   << strerror(savedErrno);
+    // pre-fetched root object (for first session)
+    sp<IBinder> rootBinder;
+
+    // pre-casted root object (for first session)
+    sp<IBinderRpcTest> rootIface;
+
+    // whether session should be invalidated by end of run
+    bool expectInvalid = false;
+
+    BinderRpcTestProcessSession(BinderRpcTestProcessSession&&) = default;
+    ~BinderRpcTestProcessSession() {
+        if (!expectInvalid) {
+            std::vector<int32_t> remoteCounts;
+            // calling over any sessions counts across all sessions
+            EXPECT_OK(rootIface->countBinders(&remoteCounts));
+            EXPECT_EQ(remoteCounts.size(), proc.sessions.size());
+            for (auto remoteCount : remoteCounts) {
+                EXPECT_EQ(remoteCount, 1);
+            }
+        }
+
+        rootIface = nullptr;
+        rootBinder = nullptr;
     }
-    return serverFd;
+};
+
+enum class SocketType {
+    UNIX,
+    VSOCK,
+    INET,
+};
+static inline std::string PrintSocketType(const testing::TestParamInfo<SocketType>& info) {
+    switch (info.param) {
+        case SocketType::UNIX:
+            return "unix_domain_socket";
+        case SocketType::VSOCK:
+            return "vm_socket";
+        case SocketType::INET:
+            return "inet_socket";
+        default:
+            LOG_ALWAYS_FATAL("Unknown socket type");
+            return "";
+    }
 }
+class BinderRpc : public ::testing::TestWithParam<SocketType> {
+public:
+    // This creates a new process serving an interface on a certain number of
+    // threads.
+    ProcessSession createRpcTestSocketServerProcess(
+            size_t numThreads, size_t numSessions,
+            const std::function<void(const sp<RpcServer>&)>& configure) {
+        CHECK_GE(numSessions, 1) << "Must have at least one session to a server";
 
-#ifndef BINDER_RPC_TO_TRUSTY_TEST
-static base::unique_fd connectToUnixBootstrap(const RpcTransportFd& transportFd) {
-    base::unique_fd sockClient, sockServer;
-    if (!base::Socketpair(SOCK_STREAM, &sockClient, &sockServer)) {
-        int savedErrno = errno;
-        LOG(FATAL) << "Failed socketpair(): " << strerror(savedErrno);
-    }
+        SocketType socketType = GetParam();
 
-    int zero = 0;
-    iovec iov{&zero, sizeof(zero)};
-    std::vector<std::variant<base::unique_fd, base::borrowed_fd>> fds;
-    fds.emplace_back(std::move(sockServer));
+        std::string addr = allocateSocketAddress();
+        unlink(addr.c_str());
+        static unsigned int vsockPort = 3456;
+        vsockPort++;
 
-    if (sendMessageOnSocket(transportFd, &iov, 1, &fds) < 0) {
-        int savedErrno = errno;
-        LOG(FATAL) << "Failed sendMessageOnSocket: " << strerror(savedErrno);
-    }
-    return std::move(sockClient);
-}
-#endif // BINDER_RPC_TO_TRUSTY_TEST
+        auto ret = ProcessSession{
+                .host = Process([&](Pipe* pipe) {
+                    sp<RpcServer> server = RpcServer::make();
 
-std::unique_ptr<RpcTransportCtxFactory> BinderRpc::newFactory(RpcSecurity rpcSecurity) {
-    return newTlsFactory(rpcSecurity);
-}
+                    server->iUnderstandThisCodeIsExperimentalAndIWillNotUseItInProduction();
+                    server->setMaxThreads(numThreads);
 
-// This creates a new process serving an interface on a certain number of
-// threads.
-std::unique_ptr<ProcessSession> BinderRpc::createRpcTestSocketServerProcessEtc(
-        const BinderRpcOptions& options) {
-    CHECK_GE(options.numSessions, 1) << "Must have at least one session to a server";
+                    unsigned int outPort = 0;
 
-    if (options.numIncomingConnectionsBySession.size() != 0) {
-        CHECK_EQ(options.numIncomingConnectionsBySession.size(), options.numSessions);
-    }
-
-    SocketType socketType = std::get<0>(GetParam());
-    RpcSecurity rpcSecurity = std::get<1>(GetParam());
-    uint32_t clientVersion = std::get<2>(GetParam());
-    uint32_t serverVersion = std::get<3>(GetParam());
-    bool singleThreaded = std::get<4>(GetParam());
-    bool noKernel = std::get<5>(GetParam());
-
-    std::string path = android::base::GetExecutableDirectory();
-    auto servicePath = android::base::StringPrintf("%s/binder_rpc_test_service%s%s", path.c_str(),
-                                                   singleThreaded ? "_single_threaded" : "",
-                                                   noKernel ? "_no_kernel" : "");
-
-    base::unique_fd bootstrapClientFd, socketFd;
-
-    auto addr = allocateSocketAddress();
-    // Initializes the socket before the fork/exec.
-    if (socketType == SocketType::UNIX_RAW) {
-        socketFd = initUnixSocket(addr);
-    } else if (socketType == SocketType::UNIX_BOOTSTRAP) {
-        // Do not set O_CLOEXEC, bootstrapServerFd needs to survive fork/exec.
-        // This is because we cannot pass ParcelFileDescriptor over a pipe.
-        if (!base::Socketpair(SOCK_STREAM, &bootstrapClientFd, &socketFd)) {
-            int savedErrno = errno;
-            LOG(FATAL) << "Failed socketpair(): " << strerror(savedErrno);
-        }
-    }
-
-    auto ret = std::make_unique<LinuxProcessSession>(
-            Process([=](android::base::borrowed_fd writeEnd, android::base::borrowed_fd readEnd) {
-                if (socketType == SocketType::TIPC) {
-                    // Trusty has a single persistent service
-                    return;
-                }
-
-                auto writeFd = std::to_string(writeEnd.get());
-                auto readFd = std::to_string(readEnd.get());
-                execl(servicePath.c_str(), servicePath.c_str(), writeFd.c_str(), readFd.c_str(),
-                      NULL);
-            }));
-
-    BinderRpcTestServerConfig serverConfig;
-    serverConfig.numThreads = options.numThreads;
-    serverConfig.socketType = static_cast<int32_t>(socketType);
-    serverConfig.rpcSecurity = static_cast<int32_t>(rpcSecurity);
-    serverConfig.serverVersion = serverVersion;
-    serverConfig.vsockPort = allocateVsockPort();
-    serverConfig.addr = addr;
-    serverConfig.socketFd = socketFd.get();
-    for (auto mode : options.serverSupportedFileDescriptorTransportModes) {
-        serverConfig.serverSupportedFileDescriptorTransportModes.push_back(
-                static_cast<int32_t>(mode));
-    }
-    if (socketType != SocketType::TIPC) {
-        writeToFd(ret->host.writeEnd(), serverConfig);
-    }
-
-    std::vector<sp<RpcSession>> sessions;
-    auto certVerifier = std::make_shared<RpcCertificateVerifierSimple>();
-    for (size_t i = 0; i < options.numSessions; i++) {
-        std::unique_ptr<RpcTransportCtxFactory> factory;
-        if (socketType == SocketType::TIPC) {
-#ifdef BINDER_RPC_TO_TRUSTY_TEST
-            factory = RpcTransportCtxFactoryTipcAndroid::make();
-#else
-            LOG_ALWAYS_FATAL("TIPC socket type only supported on vendor");
-#endif
-        } else {
-            factory = newTlsFactory(rpcSecurity, certVerifier);
-        }
-        sessions.emplace_back(RpcSession::make(std::move(factory)));
-    }
-
-    BinderRpcTestServerInfo serverInfo;
-    if (socketType != SocketType::TIPC) {
-        serverInfo = readFromFd<BinderRpcTestServerInfo>(ret->host.readEnd());
-        BinderRpcTestClientInfo clientInfo;
-        for (const auto& session : sessions) {
-            auto& parcelableCert = clientInfo.certs.emplace_back();
-            parcelableCert.data = session->getCertificate(RpcCertificateFormat::PEM);
-        }
-        writeToFd(ret->host.writeEnd(), clientInfo);
-
-        CHECK_LE(serverInfo.port, std::numeric_limits<unsigned int>::max());
-        if (socketType == SocketType::INET) {
-            CHECK_NE(0, serverInfo.port);
-        }
-
-        if (rpcSecurity == RpcSecurity::TLS) {
-            const auto& serverCert = serverInfo.cert.data;
-            CHECK_EQ(OK,
-                     certVerifier->addTrustedPeerCertificate(RpcCertificateFormat::PEM,
-                                                             serverCert));
-        }
-    }
-
-    status_t status;
-
-    for (size_t i = 0; i < sessions.size(); i++) {
-        const auto& session = sessions.at(i);
-
-        size_t numIncoming = options.numIncomingConnectionsBySession.size() > 0
-                ? options.numIncomingConnectionsBySession.at(i)
-                : 0;
-
-        CHECK(session->setProtocolVersion(clientVersion));
-        session->setMaxIncomingThreads(numIncoming);
-        session->setMaxOutgoingConnections(options.numOutgoingConnections);
-        session->setFileDescriptorTransportMode(options.clientFileDescriptorTransportMode);
-
-        switch (socketType) {
-            case SocketType::PRECONNECTED:
-                status = session->setupPreconnectedClient({}, [=]() {
-                    return connectTo(UnixSocketAddress(serverConfig.addr.c_str()));
-                });
-                break;
-            case SocketType::UNIX_RAW:
-            case SocketType::UNIX:
-                status = session->setupUnixDomainClient(serverConfig.addr.c_str());
-                break;
-            case SocketType::UNIX_BOOTSTRAP:
-                status = session->setupUnixDomainSocketBootstrapClient(
-                        base::unique_fd(dup(bootstrapClientFd.get())));
-                break;
-            case SocketType::VSOCK:
-                status = session->setupVsockClient(VMADDR_CID_LOCAL, serverConfig.vsockPort);
-                break;
-            case SocketType::INET:
-                status = session->setupInetClient("127.0.0.1", serverInfo.port);
-                break;
-            case SocketType::TIPC:
-                status = session->setupPreconnectedClient({}, [=]() {
-#ifdef BINDER_RPC_TO_TRUSTY_TEST
-                    auto port = trustyIpcPort(serverVersion);
-                    for (size_t i = 0; i < 5; i++) {
-                        // Try to connect several times,
-                        // in case the service is slow to start
-                        int tipcFd = tipc_connect(kTrustyIpcDevice, port.c_str());
-                        if (tipcFd >= 0) {
-                            return android::base::unique_fd(tipcFd);
+                    switch (socketType) {
+                        case SocketType::UNIX:
+                            CHECK(server->setupUnixDomainServer(addr.c_str())) << addr;
+                            break;
+                        case SocketType::VSOCK:
+                            CHECK(server->setupVsockServer(vsockPort));
+                            break;
+                        case SocketType::INET: {
+                            CHECK(server->setupInetServer(0, &outPort));
+                            CHECK_NE(0, outPort);
+                            break;
                         }
-                        usleep(50000);
+                        default:
+                            LOG_ALWAYS_FATAL("Unknown socket type");
                     }
-                    return android::base::unique_fd();
-#else
-                    LOG_ALWAYS_FATAL("Tried to connect to Trusty outside of vendor");
-                    return android::base::unique_fd();
-#endif
-                });
-                break;
-            default:
-                LOG_ALWAYS_FATAL("Unknown socket type");
+
+                    CHECK(android::base::WriteFully(pipe->writeEnd(), &outPort, sizeof(outPort)));
+
+                    configure(server);
+
+                    server->join();
+                }),
+        };
+
+        // always read socket, so that we have waited for the server to start
+        unsigned int outPort = 0;
+        CHECK(android::base::ReadFully(ret.host.getPipe()->readEnd(), &outPort, sizeof(outPort)));
+        if (socketType == SocketType::INET) {
+            CHECK_NE(0, outPort);
         }
-        if (options.allowConnectFailure && status != OK) {
-            ret->sessions.clear();
-            break;
+
+        for (size_t i = 0; i < numSessions; i++) {
+            sp<RpcSession> session = RpcSession::make();
+            switch (socketType) {
+                case SocketType::UNIX:
+                    if (session->setupUnixDomainClient(addr.c_str())) goto success;
+                    break;
+                case SocketType::VSOCK:
+                    if (session->setupVsockClient(VMADDR_CID_LOCAL, vsockPort)) goto success;
+                    break;
+                case SocketType::INET:
+                    if (session->setupInetClient("127.0.0.1", outPort)) goto success;
+                    break;
+                default:
+                    LOG_ALWAYS_FATAL("Unknown socket type");
+            }
+            LOG_ALWAYS_FATAL("Could not connect");
+        success:
+            ret.sessions.push_back({session, session->getRootObject()});
         }
-        CHECK_EQ(status, OK) << "Could not connect: " << statusToString(status);
-        ret->sessions.push_back({session, session->getRootObject()});
+        return ret;
     }
-    return ret;
+
+    BinderRpcTestProcessSession createRpcTestSocketServerProcess(size_t numThreads,
+                                                                 size_t numSessions = 1) {
+        BinderRpcTestProcessSession ret{
+                .proc = createRpcTestSocketServerProcess(numThreads, numSessions,
+                                                         [&](const sp<RpcServer>& server) {
+                                                             sp<MyBinderRpcTest> service =
+                                                                     new MyBinderRpcTest;
+                                                             server->setRootObject(service);
+                                                             service->server = server;
+                                                         }),
+        };
+
+        ret.rootBinder = ret.proc.sessions.at(0).root;
+        ret.rootIface = interface_cast<IBinderRpcTest>(ret.rootBinder);
+
+        return ret;
+    }
+};
+
+TEST_P(BinderRpc, RootObjectIsNull) {
+    auto proc = createRpcTestSocketServerProcess(1, 1, [](const sp<RpcServer>& server) {
+        // this is the default, but to be explicit
+        server->setRootObject(nullptr);
+    });
+
+    EXPECT_EQ(nullptr, proc.sessions.at(0).root);
+}
+
+TEST_P(BinderRpc, Ping) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    ASSERT_NE(proc.rootBinder, nullptr);
+    EXPECT_EQ(OK, proc.rootBinder->pingBinder());
+}
+
+TEST_P(BinderRpc, GetInterfaceDescriptor) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    ASSERT_NE(proc.rootBinder, nullptr);
+    EXPECT_EQ(IBinderRpcTest::descriptor, proc.rootBinder->getInterfaceDescriptor());
+}
+
+TEST_P(BinderRpc, MultipleSessions) {
+    auto proc = createRpcTestSocketServerProcess(1 /*threads*/, 5 /*sessions*/);
+    for (auto session : proc.proc.sessions) {
+        ASSERT_NE(nullptr, session.root);
+        EXPECT_EQ(OK, session.root->pingBinder());
+    }
+}
+
+TEST_P(BinderRpc, TransactionsMustBeMarkedRpc) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    Parcel data;
+    Parcel reply;
+    EXPECT_EQ(BAD_TYPE, proc.rootBinder->transact(IBinder::PING_TRANSACTION, data, &reply, 0));
+}
+
+TEST_P(BinderRpc, AppendSeparateFormats) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    Parcel p1;
+    p1.markForBinder(proc.rootBinder);
+    p1.writeInt32(3);
+
+    Parcel p2;
+
+    EXPECT_EQ(BAD_TYPE, p1.appendFrom(&p2, 0, p2.dataSize()));
+    EXPECT_EQ(BAD_TYPE, p2.appendFrom(&p1, 0, p1.dataSize()));
+}
+
+TEST_P(BinderRpc, UnknownTransaction) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    Parcel data;
+    data.markForBinder(proc.rootBinder);
+    Parcel reply;
+    EXPECT_EQ(UNKNOWN_TRANSACTION, proc.rootBinder->transact(1337, data, &reply, 0));
+}
+
+TEST_P(BinderRpc, SendSomethingOneway) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    EXPECT_OK(proc.rootIface->sendString("asdf"));
+}
+
+TEST_P(BinderRpc, SendAndGetResultBack) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    std::string doubled;
+    EXPECT_OK(proc.rootIface->doubleString("cool ", &doubled));
+    EXPECT_EQ("cool cool ", doubled);
+}
+
+TEST_P(BinderRpc, SendAndGetResultBackBig) {
+    auto proc = createRpcTestSocketServerProcess(1);
+    std::string single = std::string(1024, 'a');
+    std::string doubled;
+    EXPECT_OK(proc.rootIface->doubleString(single, &doubled));
+    EXPECT_EQ(single + single, doubled);
+}
+
+TEST_P(BinderRpc, CallMeBack) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    int32_t pingResult;
+    EXPECT_OK(proc.rootIface->pingMe(new MyBinderRpcSession("foo"), &pingResult));
+    EXPECT_EQ(OK, pingResult);
+
+    EXPECT_EQ(0, MyBinderRpcSession::gNum);
+}
+
+TEST_P(BinderRpc, RepeatBinder) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> inBinder = new MyBinderRpcSession("foo");
+    sp<IBinder> outBinder;
+    EXPECT_OK(proc.rootIface->repeatBinder(inBinder, &outBinder));
+    EXPECT_EQ(inBinder, outBinder);
+
+    wp<IBinder> weak = inBinder;
+    inBinder = nullptr;
+    outBinder = nullptr;
+
+    // Force reading a reply, to process any pending dec refs from the other
+    // process (the other process will process dec refs there before processing
+    // the ping here).
+    EXPECT_EQ(OK, proc.rootBinder->pingBinder());
+
+    EXPECT_EQ(nullptr, weak.promote());
+
+    EXPECT_EQ(0, MyBinderRpcSession::gNum);
+}
+
+TEST_P(BinderRpc, RepeatTheirBinder) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinderRpcSession> session;
+    EXPECT_OK(proc.rootIface->openSession("aoeu", &session));
+
+    sp<IBinder> inBinder = IInterface::asBinder(session);
+    sp<IBinder> outBinder;
+    EXPECT_OK(proc.rootIface->repeatBinder(inBinder, &outBinder));
+    EXPECT_EQ(inBinder, outBinder);
+
+    wp<IBinder> weak = inBinder;
+    session = nullptr;
+    inBinder = nullptr;
+    outBinder = nullptr;
+
+    // Force reading a reply, to process any pending dec refs from the other
+    // process (the other process will process dec refs there before processing
+    // the ping here).
+    EXPECT_EQ(OK, proc.rootBinder->pingBinder());
+
+    EXPECT_EQ(nullptr, weak.promote());
+}
+
+TEST_P(BinderRpc, RepeatBinderNull) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> outBinder;
+    EXPECT_OK(proc.rootIface->repeatBinder(nullptr, &outBinder));
+    EXPECT_EQ(nullptr, outBinder);
+}
+
+TEST_P(BinderRpc, HoldBinder) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    IBinder* ptr = nullptr;
+    {
+        sp<IBinder> binder = new BBinder();
+        ptr = binder.get();
+        EXPECT_OK(proc.rootIface->holdBinder(binder));
+    }
+
+    sp<IBinder> held;
+    EXPECT_OK(proc.rootIface->getHeldBinder(&held));
+
+    EXPECT_EQ(held.get(), ptr);
+
+    // stop holding binder, because we test to make sure references are cleaned
+    // up
+    EXPECT_OK(proc.rootIface->holdBinder(nullptr));
+    // and flush ref counts
+    EXPECT_EQ(OK, proc.rootBinder->pingBinder());
+}
+
+// START TESTS FOR LIMITATIONS OF SOCKET BINDER
+// These are behavioral differences form regular binder, where certain usecases
+// aren't supported.
+
+TEST_P(BinderRpc, CannotMixBindersBetweenUnrelatedSocketSessions) {
+    auto proc1 = createRpcTestSocketServerProcess(1);
+    auto proc2 = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> outBinder;
+    EXPECT_EQ(INVALID_OPERATION,
+              proc1.rootIface->repeatBinder(proc2.rootBinder, &outBinder).transactionError());
+}
+
+TEST_P(BinderRpc, CannotMixBindersBetweenTwoSessionsToTheSameServer) {
+    auto proc = createRpcTestSocketServerProcess(1 /*threads*/, 2 /*sessions*/);
+
+    sp<IBinder> outBinder;
+    EXPECT_EQ(INVALID_OPERATION,
+              proc.rootIface->repeatBinder(proc.proc.sessions.at(1).root, &outBinder)
+                      .transactionError());
+}
+
+TEST_P(BinderRpc, CannotSendRegularBinderOverSocketBinder) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> someRealBinder = IInterface::asBinder(defaultServiceManager());
+    sp<IBinder> outBinder;
+    EXPECT_EQ(INVALID_OPERATION,
+              proc.rootIface->repeatBinder(someRealBinder, &outBinder).transactionError());
+}
+
+TEST_P(BinderRpc, CannotSendSocketBinderOverRegularBinder) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    // for historical reasons, IServiceManager interface only returns the
+    // exception code
+    EXPECT_EQ(binder::Status::EX_TRANSACTION_FAILED,
+              defaultServiceManager()->addService(String16("not_suspicious"), proc.rootBinder));
+}
+
+// END TESTS FOR LIMITATIONS OF SOCKET BINDER
+
+TEST_P(BinderRpc, RepeatRootObject) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> outBinder;
+    EXPECT_OK(proc.rootIface->repeatBinder(proc.rootBinder, &outBinder));
+    EXPECT_EQ(proc.rootBinder, outBinder);
+}
+
+TEST_P(BinderRpc, NestedTransactions) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    auto nastyNester = sp<MyBinderRpcTest>::make();
+    EXPECT_OK(proc.rootIface->nestMe(nastyNester, 10));
+
+    wp<IBinder> weak = nastyNester;
+    nastyNester = nullptr;
+    EXPECT_EQ(nullptr, weak.promote());
+}
+
+TEST_P(BinderRpc, SameBinderEquality) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> a;
+    EXPECT_OK(proc.rootIface->alwaysGiveMeTheSameBinder(&a));
+
+    sp<IBinder> b;
+    EXPECT_OK(proc.rootIface->alwaysGiveMeTheSameBinder(&b));
+
+    EXPECT_EQ(a, b);
+}
+
+TEST_P(BinderRpc, SameBinderEqualityWeak) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinder> a;
+    EXPECT_OK(proc.rootIface->alwaysGiveMeTheSameBinder(&a));
+    wp<IBinder> weak = a;
+    a = nullptr;
+
+    sp<IBinder> b;
+    EXPECT_OK(proc.rootIface->alwaysGiveMeTheSameBinder(&b));
+
+    // this is the wrong behavior, since BpBinder
+    // doesn't implement onIncStrongAttempted
+    // but make sure there is no crash
+    EXPECT_EQ(nullptr, weak.promote());
+
+    GTEST_SKIP() << "Weak binders aren't currently re-promotable for RPC binder.";
+
+    // In order to fix this:
+    // - need to have incStrongAttempted reflected across IPC boundary (wait for
+    //   response to promote - round trip...)
+    // - sendOnLastWeakRef, to delete entries out of RpcState table
+    EXPECT_EQ(b, weak.promote());
+}
+
+#define expectSessions(expected, iface)                   \
+    do {                                                  \
+        int session;                                      \
+        EXPECT_OK((iface)->getNumOpenSessions(&session)); \
+        EXPECT_EQ(expected, session);                     \
+    } while (false)
+
+TEST_P(BinderRpc, SingleSession) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    sp<IBinderRpcSession> session;
+    EXPECT_OK(proc.rootIface->openSession("aoeu", &session));
+    std::string out;
+    EXPECT_OK(session->getName(&out));
+    EXPECT_EQ("aoeu", out);
+
+    expectSessions(1, proc.rootIface);
+    session = nullptr;
+    expectSessions(0, proc.rootIface);
+}
+
+TEST_P(BinderRpc, ManySessions) {
+    auto proc = createRpcTestSocketServerProcess(1);
+
+    std::vector<sp<IBinderRpcSession>> sessions;
+
+    for (size_t i = 0; i < 15; i++) {
+        expectSessions(i, proc.rootIface);
+        sp<IBinderRpcSession> session;
+        EXPECT_OK(proc.rootIface->openSession(std::to_string(i), &session));
+        sessions.push_back(session);
+    }
+    expectSessions(sessions.size(), proc.rootIface);
+    for (size_t i = 0; i < sessions.size(); i++) {
+        std::string out;
+        EXPECT_OK(sessions.at(i)->getName(&out));
+        EXPECT_EQ(std::to_string(i), out);
+    }
+    expectSessions(sessions.size(), proc.rootIface);
+
+    while (!sessions.empty()) {
+        sessions.pop_back();
+        expectSessions(sessions.size(), proc.rootIface);
+    }
+    expectSessions(0, proc.rootIface);
+}
+
+size_t epochMillis() {
+    using std::chrono::duration_cast;
+    using std::chrono::milliseconds;
+    using std::chrono::seconds;
+    using std::chrono::system_clock;
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
 TEST_P(BinderRpc, ThreadPoolGreaterThanEqualRequested) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
     constexpr size_t kNumThreads = 10;
 
-    auto proc = createRpcTestSocketServerProcess({.numThreads = kNumThreads});
+    auto proc = createRpcTestSocketServerProcess(kNumThreads);
 
     EXPECT_OK(proc.rootIface->lock());
 
@@ -433,7 +748,7 @@ TEST_P(BinderRpc, ThreadPoolGreaterThanEqualRequested) {
     // other calls still work
     EXPECT_EQ(OK, proc.rootBinder->pingBinder());
 
-    constexpr size_t blockTimeMs = 100;
+    constexpr size_t blockTimeMs = 500;
     size_t epochMsBefore = epochMillis();
     // after this, we should never see a response within this time
     EXPECT_OK(proc.rootIface->unlockInMsAsync(blockTimeMs));
@@ -447,62 +762,36 @@ TEST_P(BinderRpc, ThreadPoolGreaterThanEqualRequested) {
     for (auto& t : ts) t.join();
 }
 
-static void testThreadPoolOverSaturated(sp<IBinderRpcTest> iface, size_t numCalls, size_t sleepMs) {
+TEST_P(BinderRpc, ThreadPoolOverSaturated) {
+    constexpr size_t kNumThreads = 10;
+    constexpr size_t kNumCalls = kNumThreads + 3;
+    constexpr size_t kSleepMs = 500;
+
+    auto proc = createRpcTestSocketServerProcess(kNumThreads);
+
     size_t epochMsBefore = epochMillis();
 
     std::vector<std::thread> ts;
-    for (size_t i = 0; i < numCalls; i++) {
-        ts.push_back(std::thread([&] { iface->sleepMs(sleepMs); }));
+    for (size_t i = 0; i < kNumCalls; i++) {
+        ts.push_back(std::thread([&] { proc.rootIface->sleepMs(kSleepMs); }));
     }
 
     for (auto& t : ts) t.join();
 
     size_t epochMsAfter = epochMillis();
 
-    EXPECT_GE(epochMsAfter, epochMsBefore + 2 * sleepMs);
+    EXPECT_GE(epochMsAfter, epochMsBefore + 2 * kSleepMs);
 
     // Potential flake, but make sure calls are handled in parallel.
-    EXPECT_LE(epochMsAfter, epochMsBefore + 3 * sleepMs);
-}
-
-TEST_P(BinderRpc, ThreadPoolOverSaturated) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
-    constexpr size_t kNumThreads = 10;
-    constexpr size_t kNumCalls = kNumThreads + 3;
-    auto proc = createRpcTestSocketServerProcess({.numThreads = kNumThreads});
-
-    // b/272429574 - below 500ms, the test fails
-    testThreadPoolOverSaturated(proc.rootIface, kNumCalls, 500 /*ms*/);
-}
-
-TEST_P(BinderRpc, ThreadPoolLimitOutgoing) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
-    constexpr size_t kNumThreads = 20;
-    constexpr size_t kNumOutgoingConnections = 10;
-    constexpr size_t kNumCalls = kNumOutgoingConnections + 3;
-    auto proc = createRpcTestSocketServerProcess(
-            {.numThreads = kNumThreads, .numOutgoingConnections = kNumOutgoingConnections});
-
-    // b/272429574 - below 500ms, the test fails
-    testThreadPoolOverSaturated(proc.rootIface, kNumCalls, 500 /*ms*/);
+    EXPECT_LE(epochMsAfter, epochMsBefore + 3 * kSleepMs);
 }
 
 TEST_P(BinderRpc, ThreadingStressTest) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
+    constexpr size_t kNumClientThreads = 10;
+    constexpr size_t kNumServerThreads = 10;
+    constexpr size_t kNumCalls = 100;
 
-    constexpr size_t kNumClientThreads = 5;
-    constexpr size_t kNumServerThreads = 5;
-    constexpr size_t kNumCalls = 50;
-
-    auto proc = createRpcTestSocketServerProcess({.numThreads = kNumServerThreads});
+    auto proc = createRpcTestSocketServerProcess(kNumServerThreads);
 
     std::vector<std::thread> threads;
     for (size_t i = 0; i < kNumClientThreads; i++) {
@@ -518,24 +807,12 @@ TEST_P(BinderRpc, ThreadingStressTest) {
     for (auto& t : threads) t.join();
 }
 
-static void saturateThreadPool(size_t threadCount, const sp<IBinderRpcTest>& iface) {
-    std::vector<std::thread> threads;
-    for (size_t i = 0; i < threadCount; i++) {
-        threads.push_back(std::thread([&] { EXPECT_OK(iface->sleepMs(500)); }));
-    }
-    for (auto& t : threads) t.join();
-}
-
 TEST_P(BinderRpc, OnewayStressTest) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
     constexpr size_t kNumClientThreads = 10;
     constexpr size_t kNumServerThreads = 10;
-    constexpr size_t kNumCalls = 1000;
+    constexpr size_t kNumCalls = 100;
 
-    auto proc = createRpcTestSocketServerProcess({.numThreads = kNumServerThreads});
+    auto proc = createRpcTestSocketServerProcess(kNumServerThreads);
 
     std::vector<std::thread> threads;
     for (size_t i = 0; i < kNumClientThreads; i++) {
@@ -543,276 +820,57 @@ TEST_P(BinderRpc, OnewayStressTest) {
             for (size_t j = 0; j < kNumCalls; j++) {
                 EXPECT_OK(proc.rootIface->sendString("a"));
             }
+
+            // check threads are not stuck
+            EXPECT_OK(proc.rootIface->sleepMs(250));
         }));
     }
 
     for (auto& t : threads) t.join();
-
-    saturateThreadPool(kNumServerThreads, proc.rootIface);
 }
 
-TEST_P(BinderRpc, OnewayCallQueueingWithFds) {
-    if (!supportsFdTransport()) {
-        GTEST_SKIP() << "Would fail trivially (which is tested elsewhere)";
-    }
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
+TEST_P(BinderRpc, OnewayCallDoesNotWait) {
+    constexpr size_t kReallyLongTimeMs = 100;
+    constexpr size_t kSleepMs = kReallyLongTimeMs * 5;
 
-    constexpr size_t kNumServerThreads = 3;
+    // more than one thread, just so this doesn't deadlock
+    auto proc = createRpcTestSocketServerProcess(2);
 
-    // This test forces a oneway transaction to be queued by issuing two
-    // `blockingSendFdOneway` calls, then drains the queue by issuing two
-    // `blockingRecvFd` calls.
-    //
-    // For more details about the queuing semantics see
-    // https://developer.android.com/reference/android/os/IBinder#FLAG_ONEWAY
+    size_t epochMsBefore = epochMillis();
 
-    auto proc = createRpcTestSocketServerProcess({
-            .numThreads = kNumServerThreads,
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
+    EXPECT_OK(proc.rootIface->sleepMsAsync(kSleepMs));
 
-    EXPECT_OK(proc.rootIface->blockingSendFdOneway(
-            android::os::ParcelFileDescriptor(mockFileDescriptor("a"))));
-    EXPECT_OK(proc.rootIface->blockingSendFdOneway(
-            android::os::ParcelFileDescriptor(mockFileDescriptor("b"))));
-
-    android::os::ParcelFileDescriptor fdA;
-    EXPECT_OK(proc.rootIface->blockingRecvFd(&fdA));
-    std::string result;
-    CHECK(android::base::ReadFdToString(fdA.get(), &result));
-    EXPECT_EQ(result, "a");
-
-    android::os::ParcelFileDescriptor fdB;
-    EXPECT_OK(proc.rootIface->blockingRecvFd(&fdB));
-    CHECK(android::base::ReadFdToString(fdB.get(), &result));
-    EXPECT_EQ(result, "b");
-
-    saturateThreadPool(kNumServerThreads, proc.rootIface);
+    size_t epochMsAfter = epochMillis();
+    EXPECT_LT(epochMsAfter, epochMsBefore + kReallyLongTimeMs);
 }
 
 TEST_P(BinderRpc, OnewayCallQueueing) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
-    constexpr size_t kNumQueued = 10;
+    constexpr size_t kNumSleeps = 10;
     constexpr size_t kNumExtraServerThreads = 4;
+    constexpr size_t kSleepMs = 50;
 
     // make sure calls to the same object happen on the same thread
-    auto proc = createRpcTestSocketServerProcess({.numThreads = 1 + kNumExtraServerThreads});
+    auto proc = createRpcTestSocketServerProcess(1 + kNumExtraServerThreads);
 
-    // all these *Oneway commands should be queued on the server sequentially,
-    // even though there are multiple threads.
-    for (size_t i = 0; i + 1 < kNumQueued; i++) {
-        proc.rootIface->blockingSendIntOneway(i);
+    EXPECT_OK(proc.rootIface->lock());
+
+    for (size_t i = 0; i < kNumSleeps; i++) {
+        // these should be processed serially
+        proc.rootIface->sleepMsAsync(kSleepMs);
     }
-    for (size_t i = 0; i + 1 < kNumQueued; i++) {
-        int n;
-        proc.rootIface->blockingRecvInt(&n);
-        EXPECT_EQ(n, i);
-    }
+    // should also be processesed serially
+    EXPECT_OK(proc.rootIface->unlockInMsAsync(kSleepMs));
 
-    saturateThreadPool(1 + kNumExtraServerThreads, proc.rootIface);
-}
+    size_t epochMsBefore = epochMillis();
+    EXPECT_OK(proc.rootIface->lockUnlock());
+    size_t epochMsAfter = epochMillis();
 
-TEST_P(BinderRpc, OnewayCallExhaustion) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
-    constexpr size_t kNumClients = 2;
-    constexpr size_t kTooLongMs = 1000;
-
-    auto proc = createRpcTestSocketServerProcess({.numThreads = kNumClients, .numSessions = 2});
-
-    // Build up oneway calls on the second session to make sure it terminates
-    // and shuts down. The first session should be unaffected (proc destructor
-    // checks the first session).
-    auto iface = interface_cast<IBinderRpcTest>(proc.proc->sessions.at(1).root);
-
-    std::vector<std::thread> threads;
-    for (size_t i = 0; i < kNumClients; i++) {
-        // one of these threads will get stuck queueing a transaction once the
-        // socket fills up, the other will be able to fill up transactions on
-        // this object
-        threads.push_back(std::thread([&] {
-            while (iface->sleepMsAsync(kTooLongMs).isOk()) {
-            }
-        }));
-    }
-    for (auto& t : threads) t.join();
-
-    Status status = iface->sleepMsAsync(kTooLongMs);
-    EXPECT_EQ(DEAD_OBJECT, status.transactionError()) << status;
-
-    // now that it has died, wait for the remote session to shutdown
-    std::vector<int32_t> remoteCounts;
-    do {
-        EXPECT_OK(proc.rootIface->countBinders(&remoteCounts));
-    } while (remoteCounts.size() == kNumClients);
-
-    // the second session should be shutdown in the other process by the time we
-    // are able to join above (it'll only be hung up once it finishes processing
-    // any pending commands). We need to erase this session from the record
-    // here, so that the destructor for our session won't check that this
-    // session is valid, but we still want it to test the other session.
-    proc.proc->sessions.erase(proc.proc->sessions.begin() + 1);
-}
-
-TEST_P(BinderRpc, SessionWithIncomingThreadpoolDoesntLeak) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-
-    // session 0 - will check for leaks in destrutor of proc
-    // session 1 - we want to make sure it gets deleted when we drop all references to it
-    auto proc = createRpcTestSocketServerProcess(
-            {.numThreads = 1, .numIncomingConnectionsBySession = {0, 1}, .numSessions = 2});
-
-    wp<RpcSession> session = proc.proc->sessions.at(1).session;
-
-    // remove all references to the second session
-    proc.proc->sessions.at(1).root = nullptr;
-    proc.proc->sessions.erase(proc.proc->sessions.begin() + 1);
-
-    // TODO(b/271830568) more efficient way to wait for other incoming threadpool
-    // to drain commands.
-    for (size_t i = 0; i < 100; i++) {
-        usleep(10 * 1000);
-        if (session.promote() == nullptr) break;
-    }
-
-    EXPECT_EQ(nullptr, session.promote());
-}
-
-TEST_P(BinderRpc, SingleDeathRecipient) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-    class MyDeathRec : public IBinder::DeathRecipient {
-    public:
-        void binderDied(const wp<IBinder>& /* who */) override {
-            dead = true;
-            mCv.notify_one();
-        }
-        std::mutex mMtx;
-        std::condition_variable mCv;
-        bool dead = false;
-    };
-
-    // Death recipient needs to have an incoming connection to be called
-    auto proc = createRpcTestSocketServerProcess(
-            {.numThreads = 1, .numSessions = 1, .numIncomingConnectionsBySession = {1}});
-
-    auto dr = sp<MyDeathRec>::make();
-    ASSERT_EQ(OK, proc.rootBinder->linkToDeath(dr, (void*)1, 0));
-
-    if (auto status = proc.rootIface->scheduleShutdown(); !status.isOk()) {
-        EXPECT_EQ(DEAD_OBJECT, status.transactionError()) << status;
-    }
-
-    std::unique_lock<std::mutex> lock(dr->mMtx);
-    ASSERT_TRUE(dr->mCv.wait_for(lock, 100ms, [&]() { return dr->dead; }));
-
-    // need to wait for the session to shutdown so we don't "Leak session"
-    // can't do this before checking the death recipient by calling
-    // forceShutdown earlier, because shutdownAndWait will also trigger
-    // a death recipient, but if we had a way to wait for the service
-    // to gracefully shutdown, we could use that here.
-    EXPECT_TRUE(proc.proc->sessions.at(0).session->shutdownAndWait(true));
-    proc.expectAlreadyShutdown = true;
-}
-
-TEST_P(BinderRpc, SingleDeathRecipientOnShutdown) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-    class MyDeathRec : public IBinder::DeathRecipient {
-    public:
-        void binderDied(const wp<IBinder>& /* who */) override {
-            dead = true;
-            mCv.notify_one();
-        }
-        std::mutex mMtx;
-        std::condition_variable mCv;
-        bool dead = false;
-    };
-
-    // Death recipient needs to have an incoming connection to be called
-    auto proc = createRpcTestSocketServerProcess(
-            {.numThreads = 1, .numSessions = 1, .numIncomingConnectionsBySession = {1}});
-
-    auto dr = sp<MyDeathRec>::make();
-    EXPECT_EQ(OK, proc.rootBinder->linkToDeath(dr, (void*)1, 0));
-
-    // Explicitly calling shutDownAndWait will cause the death recipients
-    // to be called.
-    EXPECT_TRUE(proc.proc->sessions.at(0).session->shutdownAndWait(true));
-
-    std::unique_lock<std::mutex> lock(dr->mMtx);
-    if (!dr->dead) {
-        EXPECT_EQ(std::cv_status::no_timeout, dr->mCv.wait_for(lock, 100ms));
-    }
-    EXPECT_TRUE(dr->dead) << "Failed to receive the death notification.";
-
-    proc.proc->terminate();
-    proc.proc->setCustomExitStatusCheck([](int wstatus) {
-        EXPECT_TRUE(WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGTERM)
-                << "server process failed incorrectly: " << WaitStatusToString(wstatus);
-    });
-    proc.expectAlreadyShutdown = true;
-}
-
-TEST_P(BinderRpc, DeathRecipientFailsWithoutIncoming) {
-    if (socketType() == SocketType::TIPC) {
-        // This should work, but Trusty takes too long to restart the service
-        GTEST_SKIP() << "Service death test not supported on Trusty";
-    }
-    class MyDeathRec : public IBinder::DeathRecipient {
-    public:
-        void binderDied(const wp<IBinder>& /* who */) override {}
-    };
-
-    auto proc = createRpcTestSocketServerProcess({.numThreads = 1, .numSessions = 1});
-
-    auto dr = sp<MyDeathRec>::make();
-    EXPECT_EQ(INVALID_OPERATION, proc.rootBinder->linkToDeath(dr, (void*)1, 0));
-}
-
-TEST_P(BinderRpc, UnlinkDeathRecipient) {
-    if (clientOrServerSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-    class MyDeathRec : public IBinder::DeathRecipient {
-    public:
-        void binderDied(const wp<IBinder>& /* who */) override {
-            GTEST_FAIL() << "This should not be called after unlinkToDeath";
-        }
-    };
-
-    // Death recipient needs to have an incoming connection to be called
-    auto proc = createRpcTestSocketServerProcess(
-            {.numThreads = 1, .numSessions = 1, .numIncomingConnectionsBySession = {1}});
-
-    auto dr = sp<MyDeathRec>::make();
-    ASSERT_EQ(OK, proc.rootBinder->linkToDeath(dr, (void*)1, 0));
-    ASSERT_EQ(OK, proc.rootBinder->unlinkToDeath(dr, (void*)1, 0, nullptr));
-
-    proc.forceShutdown();
+    EXPECT_GT(epochMsAfter, epochMsBefore + kSleepMs * kNumSleeps);
 }
 
 TEST_P(BinderRpc, Die) {
-    if (socketType() == SocketType::TIPC) {
-        // This should work, but Trusty takes too long to restart the service
-        GTEST_SKIP() << "Service death test not supported on Trusty";
-    }
-
     for (bool doDeathCleanup : {true, false}) {
-        auto proc = createRpcTestSocketServerProcess({});
+        auto proc = createRpcTestSocketServerProcess(1);
 
         // make sure there is some state during crash
         // 1. we hold their binder
@@ -825,238 +883,12 @@ TEST_P(BinderRpc, Die) {
         EXPECT_EQ(DEAD_OBJECT, proc.rootIface->die(doDeathCleanup).transactionError())
                 << "Do death cleanup: " << doDeathCleanup;
 
-        proc.proc->setCustomExitStatusCheck([](int wstatus) {
-            EXPECT_TRUE(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 1)
-                    << "server process failed incorrectly: " << WaitStatusToString(wstatus);
-        });
-        proc.expectAlreadyShutdown = true;
+        proc.expectInvalid = true;
     }
 }
 
-TEST_P(BinderRpc, UseKernelBinderCallingId) {
-    // This test only works if the current process shared the internal state of
-    // ProcessState with the service across the call to fork(). Both the static
-    // libraries and libbinder.so have their own separate copies of all the
-    // globals, so the test only works when the test client and service both use
-    // libbinder.so (when using static libraries, even a client and service
-    // using the same kind of static library should have separate copies of the
-    // variables).
-    if (!kEnableSharedLibs || serverSingleThreaded() || noKernel()) {
-        GTEST_SKIP() << "Test disabled because Binder kernel driver was disabled "
-                        "at build time.";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({});
-
-    // we can't allocate IPCThreadState so actually the first time should
-    // succeed :(
-    EXPECT_OK(proc.rootIface->useKernelBinderCallingId());
-
-    // second time! we catch the error :)
-    EXPECT_EQ(DEAD_OBJECT, proc.rootIface->useKernelBinderCallingId().transactionError());
-
-    proc.proc->setCustomExitStatusCheck([](int wstatus) {
-        EXPECT_TRUE(WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGABRT)
-                << "server process failed incorrectly: " << WaitStatusToString(wstatus);
-    });
-    proc.expectAlreadyShutdown = true;
-}
-
-TEST_P(BinderRpc, FileDescriptorTransportRejectNone) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::NONE,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-            .allowConnectFailure = true,
-    });
-    EXPECT_TRUE(proc.proc->sessions.empty()) << "session connections should have failed";
-    proc.proc->terminate();
-    proc.proc->setCustomExitStatusCheck([](int wstatus) {
-        EXPECT_TRUE(WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGTERM)
-                << "server process failed incorrectly: " << WaitStatusToString(wstatus);
-    });
-    proc.expectAlreadyShutdown = true;
-}
-
-TEST_P(BinderRpc, FileDescriptorTransportRejectUnix) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::NONE},
-            .allowConnectFailure = true,
-    });
-    EXPECT_TRUE(proc.proc->sessions.empty()) << "session connections should have failed";
-    proc.proc->terminate();
-    proc.proc->setCustomExitStatusCheck([](int wstatus) {
-        EXPECT_TRUE(WIFSIGNALED(wstatus) && WTERMSIG(wstatus) == SIGTERM)
-                << "server process failed incorrectly: " << WaitStatusToString(wstatus);
-    });
-    proc.expectAlreadyShutdown = true;
-}
-
-TEST_P(BinderRpc, FileDescriptorTransportOptionalUnix) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::NONE,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::NONE,
-                     RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    android::os::ParcelFileDescriptor out;
-    auto status = proc.rootIface->echoAsFile("hello", &out);
-    EXPECT_EQ(status.transactionError(), FDS_NOT_ALLOWED) << status;
-}
-
-TEST_P(BinderRpc, ReceiveFile) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    android::os::ParcelFileDescriptor out;
-    auto status = proc.rootIface->echoAsFile("hello", &out);
-    if (!supportsFdTransport()) {
-        EXPECT_EQ(status.transactionError(), BAD_VALUE) << status;
-        return;
-    }
-    ASSERT_TRUE(status.isOk()) << status;
-
-    std::string result;
-    CHECK(android::base::ReadFdToString(out.get(), &result));
-    EXPECT_EQ(result, "hello");
-}
-
-TEST_P(BinderRpc, SendFiles) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    std::vector<android::os::ParcelFileDescriptor> files;
-    files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("123")));
-    files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("a")));
-    files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("b")));
-    files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("cd")));
-
-    android::os::ParcelFileDescriptor out;
-    auto status = proc.rootIface->concatFiles(files, &out);
-    if (!supportsFdTransport()) {
-        EXPECT_EQ(status.transactionError(), BAD_VALUE) << status;
-        return;
-    }
-    ASSERT_TRUE(status.isOk()) << status;
-
-    std::string result;
-    CHECK(android::base::ReadFdToString(out.get(), &result));
-    EXPECT_EQ(result, "123abcd");
-}
-
-TEST_P(BinderRpc, SendMaxFiles) {
-    if (!supportsFdTransport()) {
-        GTEST_SKIP() << "Would fail trivially (which is tested by BinderRpc::SendFiles)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    std::vector<android::os::ParcelFileDescriptor> files;
-    for (int i = 0; i < 253; i++) {
-        files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("a")));
-    }
-
-    android::os::ParcelFileDescriptor out;
-    auto status = proc.rootIface->concatFiles(files, &out);
-    ASSERT_TRUE(status.isOk()) << status;
-
-    std::string result;
-    CHECK(android::base::ReadFdToString(out.get(), &result));
-    EXPECT_EQ(result, std::string(253, 'a'));
-}
-
-TEST_P(BinderRpc, SendTooManyFiles) {
-    if (!supportsFdTransport()) {
-        GTEST_SKIP() << "Would fail trivially (which is tested by BinderRpc::SendFiles)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    std::vector<android::os::ParcelFileDescriptor> files;
-    for (int i = 0; i < 254; i++) {
-        files.emplace_back(android::os::ParcelFileDescriptor(mockFileDescriptor("a")));
-    }
-
-    android::os::ParcelFileDescriptor out;
-    auto status = proc.rootIface->concatFiles(files, &out);
-    EXPECT_EQ(status.transactionError(), BAD_VALUE) << status;
-}
-
-TEST_P(BinderRpc, AppendInvalidFd) {
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({
-            .clientFileDescriptorTransportMode = RpcSession::FileDescriptorTransportMode::UNIX,
-            .serverSupportedFileDescriptorTransportModes =
-                    {RpcSession::FileDescriptorTransportMode::UNIX},
-    });
-
-    int badFd = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0);
-    ASSERT_NE(badFd, -1);
-
-    // Close the file descriptor so it becomes invalid for dup
-    close(badFd);
-
-    Parcel p1;
-    p1.markForBinder(proc.rootBinder);
-    p1.writeInt32(3);
-    EXPECT_EQ(OK, p1.writeFileDescriptor(badFd, false));
-
-    Parcel pRaw;
-    pRaw.markForBinder(proc.rootBinder);
-    EXPECT_EQ(OK, pRaw.appendFrom(&p1, 0, p1.dataSize()));
-
-    pRaw.setDataPosition(0);
-    EXPECT_EQ(3, pRaw.readInt32());
-    ASSERT_EQ(-1, pRaw.readFileDescriptor());
-}
-
-#ifndef __ANDROID_VENDOR__ // No AIBinder_fromPlatformBinder on vendor
 TEST_P(BinderRpc, WorksWithLibbinderNdkPing) {
-    if constexpr (!kEnableSharedLibs) {
-        GTEST_SKIP() << "Test disabled because Binder was built as a static library";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({});
+    auto proc = createRpcTestSocketServerProcess(1);
 
     ndk::SpAIBinder binder = ndk::SpAIBinder(AIBinder_fromPlatformBinder(proc.rootBinder));
     ASSERT_NE(binder, nullptr);
@@ -1065,11 +897,7 @@ TEST_P(BinderRpc, WorksWithLibbinderNdkPing) {
 }
 
 TEST_P(BinderRpc, WorksWithLibbinderNdkUserTransaction) {
-    if constexpr (!kEnableSharedLibs) {
-        GTEST_SKIP() << "Test disabled because Binder was built as a static library";
-    }
-
-    auto proc = createRpcTestSocketServerProcess({});
+    auto proc = createRpcTestSocketServerProcess(1);
 
     ndk::SpAIBinder binder = ndk::SpAIBinder(AIBinder_fromPlatformBinder(proc.rootBinder));
     ASSERT_NE(binder, nullptr);
@@ -1082,7 +910,6 @@ TEST_P(BinderRpc, WorksWithLibbinderNdkUserTransaction) {
     ASSERT_TRUE(status.isOk()) << status.getDescription();
     ASSERT_EQ("aoeuaoeu", out);
 }
-#endif // __ANDROID_VENDOR__
 
 ssize_t countFds() {
     DIR* dir = opendir("/proc/self/fd/");
@@ -1095,151 +922,27 @@ ssize_t countFds() {
 }
 
 TEST_P(BinderRpc, Fds) {
-    if (serverSingleThreaded()) {
-        GTEST_SKIP() << "This test requires multiple threads";
-    }
-    if (socketType() == SocketType::TIPC) {
-        GTEST_SKIP() << "File descriptor tests not supported on Trusty (yet)";
-    }
-
     ssize_t beforeFds = countFds();
     ASSERT_GE(beforeFds, 0);
     {
-        auto proc = createRpcTestSocketServerProcess({.numThreads = 10});
+        auto proc = createRpcTestSocketServerProcess(10);
         ASSERT_EQ(OK, proc.rootBinder->pingBinder());
     }
     ASSERT_EQ(beforeFds, countFds()) << (system("ls -l /proc/self/fd/"), "fd leak?");
 }
 
-#ifdef BINDER_RPC_TO_TRUSTY_TEST
-INSTANTIATE_TEST_CASE_P(Trusty, BinderRpc,
-                        ::testing::Combine(::testing::Values(SocketType::TIPC),
-                                           ::testing::Values(RpcSecurity::RAW),
-                                           ::testing::ValuesIn(testVersions()),
-                                           ::testing::ValuesIn(testVersions()),
-                                           ::testing::Values(true), ::testing::Values(true)),
-                        BinderRpc::PrintParamInfo);
-#else // BINDER_RPC_TO_TRUSTY_TEST
-static bool testSupportVsockLoopback() {
-    // We don't need to enable TLS to know if vsock is supported.
-    unsigned int vsockPort = allocateVsockPort();
-
-    android::base::unique_fd serverFd(
-            TEMP_FAILURE_RETRY(socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)));
-
-    if (errno == EAFNOSUPPORT) {
-        return false;
-    }
-
-    LOG_ALWAYS_FATAL_IF(serverFd == -1, "Could not create socket: %s", strerror(errno));
-
-    sockaddr_vm serverAddr{
-            .svm_family = AF_VSOCK,
-            .svm_port = vsockPort,
-            .svm_cid = VMADDR_CID_ANY,
-    };
-    int ret = TEMP_FAILURE_RETRY(
-            bind(serverFd.get(), reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)));
-    LOG_ALWAYS_FATAL_IF(0 != ret, "Could not bind socket to port %u: %s", vsockPort,
-                        strerror(errno));
-
-    ret = TEMP_FAILURE_RETRY(listen(serverFd.get(), 1 /*backlog*/));
-    LOG_ALWAYS_FATAL_IF(0 != ret, "Could not listen socket on port %u: %s", vsockPort,
-                        strerror(errno));
-
-    // Try to connect to the server using the VMADDR_CID_LOCAL cid
-    // to see if the kernel supports it. It's safe to use a blocking
-    // connect because vsock sockets have a 2 second connection timeout,
-    // and they return ETIMEDOUT after that.
-    android::base::unique_fd connectFd(
-            TEMP_FAILURE_RETRY(socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)));
-    LOG_ALWAYS_FATAL_IF(connectFd == -1, "Could not create socket for port %u: %s", vsockPort,
-                        strerror(errno));
-
-    bool success = false;
-    sockaddr_vm connectAddr{
-            .svm_family = AF_VSOCK,
-            .svm_port = vsockPort,
-            .svm_cid = VMADDR_CID_LOCAL,
-    };
-    ret = TEMP_FAILURE_RETRY(connect(connectFd.get(), reinterpret_cast<sockaddr*>(&connectAddr),
-                                     sizeof(connectAddr)));
-    if (ret != 0 && (errno == EAGAIN || errno == EINPROGRESS)) {
-        android::base::unique_fd acceptFd;
-        while (true) {
-            pollfd pfd[]{
-                    {.fd = serverFd.get(), .events = POLLIN, .revents = 0},
-                    {.fd = connectFd.get(), .events = POLLOUT, .revents = 0},
-            };
-            ret = TEMP_FAILURE_RETRY(poll(pfd, arraysize(pfd), -1));
-            LOG_ALWAYS_FATAL_IF(ret < 0, "Error polling: %s", strerror(errno));
-
-            if (pfd[0].revents & POLLIN) {
-                sockaddr_vm acceptAddr;
-                socklen_t acceptAddrLen = sizeof(acceptAddr);
-                ret = TEMP_FAILURE_RETRY(accept4(serverFd.get(),
-                                                 reinterpret_cast<sockaddr*>(&acceptAddr),
-                                                 &acceptAddrLen, SOCK_CLOEXEC));
-                LOG_ALWAYS_FATAL_IF(ret < 0, "Could not accept4 socket: %s", strerror(errno));
-                LOG_ALWAYS_FATAL_IF(acceptAddrLen != static_cast<socklen_t>(sizeof(acceptAddr)),
-                                    "Truncated address");
-
-                // Store the fd in acceptFd so we keep the connection alive
-                // while polling connectFd
-                acceptFd.reset(ret);
-            }
-
-            if (pfd[1].revents & POLLOUT) {
-                // Connect either succeeded or timed out
-                int connectErrno;
-                socklen_t connectErrnoLen = sizeof(connectErrno);
-                int ret = getsockopt(connectFd.get(), SOL_SOCKET, SO_ERROR, &connectErrno,
-                                     &connectErrnoLen);
-                LOG_ALWAYS_FATAL_IF(ret == -1,
-                                    "Could not getsockopt() after connect() "
-                                    "on non-blocking socket: %s.",
-                                    strerror(errno));
-
-                // We're done, this is all we wanted
-                success = connectErrno == 0;
-                break;
-            }
-        }
-    } else {
-        success = ret == 0;
-    }
-
-    ALOGE("Detected vsock loopback supported: %s", success ? "yes" : "no");
-
-    return success;
-}
-
-static std::vector<SocketType> testSocketTypes(bool hasPreconnected = true) {
-    std::vector<SocketType> ret = {SocketType::UNIX, SocketType::UNIX_BOOTSTRAP, SocketType::INET,
-                                   SocketType::UNIX_RAW};
-
-    if (hasPreconnected) ret.push_back(SocketType::PRECONNECTED);
-
-    static bool hasVsockLoopback = testSupportVsockLoopback();
-
-    if (hasVsockLoopback) {
-        ret.push_back(SocketType::VSOCK);
-    }
-
-    return ret;
-}
-
 INSTANTIATE_TEST_CASE_P(PerSocket, BinderRpc,
-                        ::testing::Combine(::testing::ValuesIn(testSocketTypes()),
-                                           ::testing::ValuesIn(RpcSecurityValues()),
-                                           ::testing::ValuesIn(testVersions()),
-                                           ::testing::ValuesIn(testVersions()),
-                                           ::testing::Values(false, true),
-                                           ::testing::Values(false, true)),
-                        BinderRpc::PrintParamInfo);
+                        ::testing::ValuesIn({
+                                SocketType::UNIX,
+// TODO(b/185269356): working on host
+#ifdef __BIONIC__
+                                SocketType::VSOCK,
+#endif
+                                SocketType::INET,
+                        }),
+                        PrintSocketType);
 
-class BinderRpcServerRootObject
-      : public ::testing::TestWithParam<std::tuple<bool, bool, RpcSecurity>> {};
+class BinderRpcServerRootObject : public ::testing::TestWithParam<std::tuple<bool, bool>> {};
 
 TEST_P(BinderRpcServerRootObject, WeakRootObject) {
     using SetFn = std::function<void(RpcServer*, sp<IBinder>)>;
@@ -1247,8 +950,8 @@ TEST_P(BinderRpcServerRootObject, WeakRootObject) {
         return isStrong ? SetFn(&RpcServer::setRootObject) : SetFn(&RpcServer::setRootObjectWeak);
     };
 
-    auto [isStrong1, isStrong2, rpcSecurity] = GetParam();
-    auto server = RpcServer::make(newTlsFactory(rpcSecurity));
+    auto server = RpcServer::make();
+    auto [isStrong1, isStrong2] = GetParam();
     auto binder1 = sp<BBinder>::make();
     IBinder* binderRaw1 = binder1.get();
     setRootObject(isStrong1)(server.get(), binder1);
@@ -1265,754 +968,12 @@ TEST_P(BinderRpcServerRootObject, WeakRootObject) {
 }
 
 INSTANTIATE_TEST_CASE_P(BinderRpc, BinderRpcServerRootObject,
-                        ::testing::Combine(::testing::Bool(), ::testing::Bool(),
-                                           ::testing::ValuesIn(RpcSecurityValues())));
-
-class OneOffSignal {
-public:
-    // If notify() was previously called, or is called within |duration|, return true; else false.
-    template <typename R, typename P>
-    bool wait(std::chrono::duration<R, P> duration) {
-        std::unique_lock<std::mutex> lock(mMutex);
-        return mCv.wait_for(lock, duration, [this] { return mValue; });
-    }
-    void notify() {
-        std::unique_lock<std::mutex> lock(mMutex);
-        mValue = true;
-        lock.unlock();
-        mCv.notify_all();
-    }
-
-private:
-    std::mutex mMutex;
-    std::condition_variable mCv;
-    bool mValue = false;
-};
-
-TEST(BinderRpc, Java) {
-#if !defined(__ANDROID__)
-    GTEST_SKIP() << "This test is only run on Android. Though it can technically run on host on"
-                    "createRpcDelegateServiceManager() with a device attached, such test belongs "
-                    "to binderHostDeviceTest. Hence, just disable this test on host.";
-#endif // !__ANDROID__
-    if constexpr (!kEnableKernelIpc) {
-        GTEST_SKIP() << "Test disabled because Binder kernel driver was disabled "
-                        "at build time.";
-    }
-
-    sp<IServiceManager> sm = defaultServiceManager();
-    ASSERT_NE(nullptr, sm);
-    // Any Java service with non-empty getInterfaceDescriptor() would do.
-    // Let's pick batteryproperties.
-    auto binder = sm->checkService(String16("batteryproperties"));
-    ASSERT_NE(nullptr, binder);
-    auto descriptor = binder->getInterfaceDescriptor();
-    ASSERT_GE(descriptor.size(), 0);
-    ASSERT_EQ(OK, binder->pingBinder());
-
-    auto rpcServer = RpcServer::make();
-    unsigned int port;
-    ASSERT_EQ(OK, rpcServer->setupInetServer(kLocalInetAddress, 0, &port));
-    auto socket = rpcServer->releaseServer();
-
-    auto keepAlive = sp<BBinder>::make();
-    auto setRpcClientDebugStatus = binder->setRpcClientDebug(std::move(socket), keepAlive);
-
-    if (!android::base::GetBoolProperty("ro.debuggable", false) ||
-        android::base::GetProperty("ro.build.type", "") == "user") {
-        ASSERT_EQ(INVALID_OPERATION, setRpcClientDebugStatus)
-                << "setRpcClientDebug should return INVALID_OPERATION on non-debuggable or user "
-                   "builds, but get "
-                << statusToString(setRpcClientDebugStatus);
-        GTEST_SKIP();
-    }
-
-    ASSERT_EQ(OK, setRpcClientDebugStatus);
-
-    auto rpcSession = RpcSession::make();
-    ASSERT_EQ(OK, rpcSession->setupInetClient("127.0.0.1", port));
-    auto rpcBinder = rpcSession->getRootObject();
-    ASSERT_NE(nullptr, rpcBinder);
-
-    ASSERT_EQ(OK, rpcBinder->pingBinder());
-
-    ASSERT_EQ(descriptor, rpcBinder->getInterfaceDescriptor())
-            << "getInterfaceDescriptor should not crash system_server";
-    ASSERT_EQ(OK, rpcBinder->pingBinder());
-}
-
-class BinderRpcServerOnly : public ::testing::TestWithParam<std::tuple<RpcSecurity, uint32_t>> {
-public:
-    static std::string PrintTestParam(const ::testing::TestParamInfo<ParamType>& info) {
-        return std::string(newTlsFactory(std::get<0>(info.param))->toCString()) + "_serverV" +
-                std::to_string(std::get<1>(info.param));
-    }
-};
-
-TEST_P(BinderRpcServerOnly, SetExternalServerTest) {
-    base::unique_fd sink(TEMP_FAILURE_RETRY(open("/dev/null", O_RDWR)));
-    int sinkFd = sink.get();
-    auto server = RpcServer::make(newTlsFactory(std::get<0>(GetParam())));
-    server->setProtocolVersion(std::get<1>(GetParam()));
-    ASSERT_FALSE(server->hasServer());
-    ASSERT_EQ(OK, server->setupExternalServer(std::move(sink)));
-    ASSERT_TRUE(server->hasServer());
-    base::unique_fd retrieved = server->releaseServer();
-    ASSERT_FALSE(server->hasServer());
-    ASSERT_EQ(sinkFd, retrieved.get());
-}
-
-TEST_P(BinderRpcServerOnly, Shutdown) {
-    if constexpr (!kEnableRpcThreads) {
-        GTEST_SKIP() << "Test skipped because threads were disabled at build time";
-    }
-
-    auto addr = allocateSocketAddress();
-    auto server = RpcServer::make(newTlsFactory(std::get<0>(GetParam())));
-    server->setProtocolVersion(std::get<1>(GetParam()));
-    ASSERT_EQ(OK, server->setupUnixDomainServer(addr.c_str()));
-    auto joinEnds = std::make_shared<OneOffSignal>();
-
-    // If things are broken and the thread never stops, don't block other tests. Because the thread
-    // may run after the test finishes, it must not access the stack memory of the test. Hence,
-    // shared pointers are passed.
-    std::thread([server, joinEnds] {
-        server->join();
-        joinEnds->notify();
-    }).detach();
-
-    bool shutdown = false;
-    for (int i = 0; i < 10 && !shutdown; i++) {
-        usleep(30 * 1000); // 30ms; total 300ms
-        if (server->shutdown()) shutdown = true;
-    }
-    ASSERT_TRUE(shutdown) << "server->shutdown() never returns true";
-
-    ASSERT_TRUE(joinEnds->wait(2s))
-            << "After server->shutdown() returns true, join() did not stop after 2s";
-}
-
-INSTANTIATE_TEST_CASE_P(BinderRpc, BinderRpcServerOnly,
-                        ::testing::Combine(::testing::ValuesIn(RpcSecurityValues()),
-                                           ::testing::ValuesIn(testVersions())),
-                        BinderRpcServerOnly::PrintTestParam);
-
-class RpcTransportTestUtils {
-public:
-    // Only parameterized only server version because `RpcSession` is bypassed
-    // in the client half of the tests.
-    using Param =
-            std::tuple<SocketType, RpcSecurity, std::optional<RpcCertificateFormat>, uint32_t>;
-    using ConnectToServer = std::function<base::unique_fd()>;
-
-    // A server that handles client socket connections.
-    class Server {
-    public:
-        using AcceptConnection = std::function<base::unique_fd(Server*)>;
-
-        explicit Server() {}
-        Server(Server&&) = default;
-        ~Server() { shutdownAndWait(); }
-        [[nodiscard]] AssertionResult setUp(
-                const Param& param,
-                std::unique_ptr<RpcAuth> auth = std::make_unique<RpcAuthSelfSigned>()) {
-            auto [socketType, rpcSecurity, certificateFormat, serverVersion] = param;
-            auto rpcServer = RpcServer::make(newTlsFactory(rpcSecurity));
-            rpcServer->setProtocolVersion(serverVersion);
-            switch (socketType) {
-                case SocketType::PRECONNECTED: {
-                    return AssertionFailure() << "Not supported by this test";
-                } break;
-                case SocketType::UNIX: {
-                    auto addr = allocateSocketAddress();
-                    auto status = rpcServer->setupUnixDomainServer(addr.c_str());
-                    if (status != OK) {
-                        return AssertionFailure()
-                                << "setupUnixDomainServer: " << statusToString(status);
-                    }
-                    mConnectToServer = [addr] {
-                        return connectTo(UnixSocketAddress(addr.c_str()));
-                    };
-                } break;
-                case SocketType::UNIX_BOOTSTRAP: {
-                    base::unique_fd bootstrapFdClient, bootstrapFdServer;
-                    if (!base::Socketpair(SOCK_STREAM, &bootstrapFdClient, &bootstrapFdServer)) {
-                        return AssertionFailure() << "Socketpair() failed";
-                    }
-                    auto status = rpcServer->setupUnixDomainSocketBootstrapServer(
-                            std::move(bootstrapFdServer));
-                    if (status != OK) {
-                        return AssertionFailure() << "setupUnixDomainSocketBootstrapServer: "
-                                                  << statusToString(status);
-                    }
-                    mBootstrapSocket = RpcTransportFd(std::move(bootstrapFdClient));
-                    mAcceptConnection = &Server::recvmsgServerConnection;
-                    mConnectToServer = [this] { return connectToUnixBootstrap(mBootstrapSocket); };
-                } break;
-                case SocketType::UNIX_RAW: {
-                    auto addr = allocateSocketAddress();
-                    auto status = rpcServer->setupRawSocketServer(initUnixSocket(addr));
-                    if (status != OK) {
-                        return AssertionFailure()
-                                << "setupRawSocketServer: " << statusToString(status);
-                    }
-                    mConnectToServer = [addr] {
-                        return connectTo(UnixSocketAddress(addr.c_str()));
-                    };
-                } break;
-                case SocketType::VSOCK: {
-                    auto port = allocateVsockPort();
-                    auto status = rpcServer->setupVsockServer(VMADDR_CID_LOCAL, port);
-                    if (status != OK) {
-                        return AssertionFailure() << "setupVsockServer: " << statusToString(status);
-                    }
-                    mConnectToServer = [port] {
-                        return connectTo(VsockSocketAddress(VMADDR_CID_LOCAL, port));
-                    };
-                } break;
-                case SocketType::INET: {
-                    unsigned int port;
-                    auto status = rpcServer->setupInetServer(kLocalInetAddress, 0, &port);
-                    if (status != OK) {
-                        return AssertionFailure() << "setupInetServer: " << statusToString(status);
-                    }
-                    mConnectToServer = [port] {
-                        const char* addr = kLocalInetAddress;
-                        auto aiStart = InetSocketAddress::getAddrInfo(addr, port);
-                        if (aiStart == nullptr) return base::unique_fd{};
-                        for (auto ai = aiStart.get(); ai != nullptr; ai = ai->ai_next) {
-                            auto fd = connectTo(
-                                    InetSocketAddress(ai->ai_addr, ai->ai_addrlen, addr, port));
-                            if (fd.ok()) return fd;
-                        }
-                        ALOGE("None of the socket address resolved for %s:%u can be connected",
-                              addr, port);
-                        return base::unique_fd{};
-                    };
-                } break;
-                case SocketType::TIPC: {
-                    LOG_ALWAYS_FATAL("RpcTransportTest should not be enabled for TIPC");
-                } break;
-            }
-            mFd = rpcServer->releaseServer();
-            if (!mFd.fd.ok()) return AssertionFailure() << "releaseServer returns invalid fd";
-            mCtx = newTlsFactory(rpcSecurity, mCertVerifier, std::move(auth))->newServerCtx();
-            if (mCtx == nullptr) return AssertionFailure() << "newServerCtx";
-            mSetup = true;
-            return AssertionSuccess();
-        }
-        RpcTransportCtx* getCtx() const { return mCtx.get(); }
-        std::shared_ptr<RpcCertificateVerifierSimple> getCertVerifier() const {
-            return mCertVerifier;
-        }
-        ConnectToServer getConnectToServerFn() { return mConnectToServer; }
-        void start() {
-            LOG_ALWAYS_FATAL_IF(!mSetup, "Call Server::setup first!");
-            mThread = std::make_unique<std::thread>(&Server::run, this);
-        }
-
-        base::unique_fd acceptServerConnection() {
-            return base::unique_fd(TEMP_FAILURE_RETRY(
-                    accept4(mFd.fd.get(), nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK)));
-        }
-
-        base::unique_fd recvmsgServerConnection() {
-            std::vector<std::variant<base::unique_fd, base::borrowed_fd>> fds;
-            int buf;
-            iovec iov{&buf, sizeof(buf)};
-
-            if (receiveMessageFromSocket(mFd, &iov, 1, &fds) < 0) {
-                int savedErrno = errno;
-                LOG(FATAL) << "Failed receiveMessage: " << strerror(savedErrno);
-            }
-            if (fds.size() != 1) {
-                LOG(FATAL) << "Expected one FD from receiveMessage(), got " << fds.size();
-            }
-            return std::move(std::get<base::unique_fd>(fds[0]));
-        }
-
-        void run() {
-            LOG_ALWAYS_FATAL_IF(!mSetup, "Call Server::setup first!");
-
-            std::vector<std::thread> threads;
-            while (OK == mFdTrigger->triggerablePoll(mFd, POLLIN)) {
-                base::unique_fd acceptedFd = mAcceptConnection(this);
-                threads.emplace_back(&Server::handleOne, this, std::move(acceptedFd));
-            }
-
-            for (auto& thread : threads) thread.join();
-        }
-        void handleOne(android::base::unique_fd acceptedFd) {
-            ASSERT_TRUE(acceptedFd.ok());
-            RpcTransportFd transportFd(std::move(acceptedFd));
-            auto serverTransport = mCtx->newTransport(std::move(transportFd), mFdTrigger.get());
-            if (serverTransport == nullptr) return; // handshake failed
-            ASSERT_TRUE(mPostConnect(serverTransport.get(), mFdTrigger.get()));
-        }
-        void shutdownAndWait() {
-            shutdown();
-            join();
-        }
-        void shutdown() { mFdTrigger->trigger(); }
-
-        void setPostConnect(
-                std::function<AssertionResult(RpcTransport*, FdTrigger* fdTrigger)> fn) {
-            mPostConnect = std::move(fn);
-        }
-
-    private:
-        std::unique_ptr<std::thread> mThread;
-        ConnectToServer mConnectToServer;
-        AcceptConnection mAcceptConnection = &Server::acceptServerConnection;
-        std::unique_ptr<FdTrigger> mFdTrigger = FdTrigger::make();
-        RpcTransportFd mFd, mBootstrapSocket;
-        std::unique_ptr<RpcTransportCtx> mCtx;
-        std::shared_ptr<RpcCertificateVerifierSimple> mCertVerifier =
-                std::make_shared<RpcCertificateVerifierSimple>();
-        bool mSetup = false;
-        // The function invoked after connection and handshake. By default, it is
-        // |defaultPostConnect| that sends |kMessage| to the client.
-        std::function<AssertionResult(RpcTransport*, FdTrigger* fdTrigger)> mPostConnect =
-                Server::defaultPostConnect;
-
-        void join() {
-            if (mThread != nullptr) {
-                mThread->join();
-                mThread = nullptr;
-            }
-        }
-
-        static AssertionResult defaultPostConnect(RpcTransport* serverTransport,
-                                                  FdTrigger* fdTrigger) {
-            std::string message(kMessage);
-            iovec messageIov{message.data(), message.size()};
-            auto status = serverTransport->interruptableWriteFully(fdTrigger, &messageIov, 1,
-                                                                   std::nullopt, nullptr);
-            if (status != OK) return AssertionFailure() << statusToString(status);
-            return AssertionSuccess();
-        }
-    };
-
-    class Client {
-    public:
-        explicit Client(ConnectToServer connectToServer) : mConnectToServer(connectToServer) {}
-        Client(Client&&) = default;
-        [[nodiscard]] AssertionResult setUp(const Param& param) {
-            auto [socketType, rpcSecurity, certificateFormat, serverVersion] = param;
-            (void)serverVersion;
-            mFdTrigger = FdTrigger::make();
-            mCtx = newTlsFactory(rpcSecurity, mCertVerifier)->newClientCtx();
-            if (mCtx == nullptr) return AssertionFailure() << "newClientCtx";
-            return AssertionSuccess();
-        }
-        RpcTransportCtx* getCtx() const { return mCtx.get(); }
-        std::shared_ptr<RpcCertificateVerifierSimple> getCertVerifier() const {
-            return mCertVerifier;
-        }
-        // connect() and do handshake
-        bool setUpTransport() {
-            mFd = mConnectToServer();
-            if (!mFd.fd.ok()) return AssertionFailure() << "Cannot connect to server";
-            mClientTransport = mCtx->newTransport(std::move(mFd), mFdTrigger.get());
-            return mClientTransport != nullptr;
-        }
-        AssertionResult readMessage(const std::string& expectedMessage = kMessage) {
-            LOG_ALWAYS_FATAL_IF(mClientTransport == nullptr, "setUpTransport not called or failed");
-            std::string readMessage(expectedMessage.size(), '\0');
-            iovec readMessageIov{readMessage.data(), readMessage.size()};
-            status_t readStatus =
-                    mClientTransport->interruptableReadFully(mFdTrigger.get(), &readMessageIov, 1,
-                                                             std::nullopt, nullptr);
-            if (readStatus != OK) {
-                return AssertionFailure() << statusToString(readStatus);
-            }
-            if (readMessage != expectedMessage) {
-                return AssertionFailure()
-                        << "Expected " << expectedMessage << ", actual " << readMessage;
-            }
-            return AssertionSuccess();
-        }
-        void run(bool handshakeOk = true, bool readOk = true) {
-            if (!setUpTransport()) {
-                ASSERT_FALSE(handshakeOk) << "newTransport returns nullptr, but it shouldn't";
-                return;
-            }
-            ASSERT_TRUE(handshakeOk) << "newTransport does not return nullptr, but it should";
-            ASSERT_EQ(readOk, readMessage());
-        }
-
-        bool isTransportWaiting() { return mClientTransport->isWaiting(); }
-
-    private:
-        ConnectToServer mConnectToServer;
-        RpcTransportFd mFd;
-        std::unique_ptr<FdTrigger> mFdTrigger = FdTrigger::make();
-        std::unique_ptr<RpcTransportCtx> mCtx;
-        std::shared_ptr<RpcCertificateVerifierSimple> mCertVerifier =
-                std::make_shared<RpcCertificateVerifierSimple>();
-        std::unique_ptr<RpcTransport> mClientTransport;
-    };
-
-    // Make A trust B.
-    template <typename A, typename B>
-    static status_t trust(RpcSecurity rpcSecurity,
-                          std::optional<RpcCertificateFormat> certificateFormat, const A& a,
-                          const B& b) {
-        if (rpcSecurity != RpcSecurity::TLS) return OK;
-        LOG_ALWAYS_FATAL_IF(!certificateFormat.has_value());
-        auto bCert = b->getCtx()->getCertificate(*certificateFormat);
-        return a->getCertVerifier()->addTrustedPeerCertificate(*certificateFormat, bCert);
-    }
-
-    static constexpr const char* kMessage = "hello";
-};
-
-class RpcTransportTest : public testing::TestWithParam<RpcTransportTestUtils::Param> {
-public:
-    using Server = RpcTransportTestUtils::Server;
-    using Client = RpcTransportTestUtils::Client;
-    static inline std::string PrintParamInfo(const testing::TestParamInfo<ParamType>& info) {
-        auto [socketType, rpcSecurity, certificateFormat, serverVersion] = info.param;
-        auto ret = PrintToString(socketType) + "_" + newTlsFactory(rpcSecurity)->toCString();
-        if (certificateFormat.has_value()) ret += "_" + PrintToString(*certificateFormat);
-        ret += "_serverV" + std::to_string(serverVersion);
-        return ret;
-    }
-    static std::vector<ParamType> getRpcTranportTestParams() {
-        std::vector<ParamType> ret;
-        for (auto serverVersion : testVersions()) {
-            for (auto socketType : testSocketTypes(false /* hasPreconnected */)) {
-                for (auto rpcSecurity : RpcSecurityValues()) {
-                    switch (rpcSecurity) {
-                        case RpcSecurity::RAW: {
-                            ret.emplace_back(socketType, rpcSecurity, std::nullopt, serverVersion);
-                        } break;
-                        case RpcSecurity::TLS: {
-                            ret.emplace_back(socketType, rpcSecurity, RpcCertificateFormat::PEM,
-                                             serverVersion);
-                            ret.emplace_back(socketType, rpcSecurity, RpcCertificateFormat::DER,
-                                             serverVersion);
-                        } break;
-                    }
-                }
-            }
-        }
-        return ret;
-    }
-    template <typename A, typename B>
-    status_t trust(const A& a, const B& b) {
-        auto [socketType, rpcSecurity, certificateFormat, serverVersion] = GetParam();
-        (void)serverVersion;
-        return RpcTransportTestUtils::trust(rpcSecurity, certificateFormat, a, b);
-    }
-    void SetUp() override {
-        if constexpr (!kEnableRpcThreads) {
-            GTEST_SKIP() << "Test skipped because threads were disabled at build time";
-        }
-    }
-};
-
-TEST_P(RpcTransportTest, GoodCertificate) {
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    Client client(server->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(&client, server));
-    ASSERT_EQ(OK, trust(server, &client));
-
-    server->start();
-    client.run();
-}
-
-TEST_P(RpcTransportTest, MultipleClients) {
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    std::vector<Client> clients;
-    for (int i = 0; i < 2; i++) {
-        auto& client = clients.emplace_back(server->getConnectToServerFn());
-        ASSERT_TRUE(client.setUp(GetParam()));
-        ASSERT_EQ(OK, trust(&client, server));
-        ASSERT_EQ(OK, trust(server, &client));
-    }
-
-    server->start();
-    for (auto& client : clients) client.run();
-}
-
-TEST_P(RpcTransportTest, UntrustedServer) {
-    auto [socketType, rpcSecurity, certificateFormat, serverVersion] = GetParam();
-    (void)serverVersion;
-
-    auto untrustedServer = std::make_unique<Server>();
-    ASSERT_TRUE(untrustedServer->setUp(GetParam()));
-
-    Client client(untrustedServer->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(untrustedServer, &client));
-
-    untrustedServer->start();
-
-    // For TLS, this should reject the certificate. For RAW sockets, it should pass because
-    // the client can't verify the server's identity.
-    bool handshakeOk = rpcSecurity != RpcSecurity::TLS;
-    client.run(handshakeOk);
-}
-TEST_P(RpcTransportTest, MaliciousServer) {
-    auto [socketType, rpcSecurity, certificateFormat, serverVersion] = GetParam();
-    (void)serverVersion;
-
-    auto validServer = std::make_unique<Server>();
-    ASSERT_TRUE(validServer->setUp(GetParam()));
-
-    auto maliciousServer = std::make_unique<Server>();
-    ASSERT_TRUE(maliciousServer->setUp(GetParam()));
-
-    Client client(maliciousServer->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(&client, validServer));
-    ASSERT_EQ(OK, trust(validServer, &client));
-    ASSERT_EQ(OK, trust(maliciousServer, &client));
-
-    maliciousServer->start();
-
-    // For TLS, this should reject the certificate. For RAW sockets, it should pass because
-    // the client can't verify the server's identity.
-    bool handshakeOk = rpcSecurity != RpcSecurity::TLS;
-    client.run(handshakeOk);
-}
-
-TEST_P(RpcTransportTest, UntrustedClient) {
-    auto [socketType, rpcSecurity, certificateFormat, serverVersion] = GetParam();
-    (void)serverVersion;
-
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    Client client(server->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(&client, server));
-
-    server->start();
-
-    // For TLS, Client should be able to verify server's identity, so client should see
-    // do_handshake() successfully executed. However, server shouldn't be able to verify client's
-    // identity and should drop the connection, so client shouldn't be able to read anything.
-    bool readOk = rpcSecurity != RpcSecurity::TLS;
-    client.run(true, readOk);
-}
-
-TEST_P(RpcTransportTest, MaliciousClient) {
-    auto [socketType, rpcSecurity, certificateFormat, serverVersion] = GetParam();
-    (void)serverVersion;
-
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    Client validClient(server->getConnectToServerFn());
-    ASSERT_TRUE(validClient.setUp(GetParam()));
-    Client maliciousClient(server->getConnectToServerFn());
-    ASSERT_TRUE(maliciousClient.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(&validClient, server));
-    ASSERT_EQ(OK, trust(&maliciousClient, server));
-
-    server->start();
-
-    // See UntrustedClient.
-    bool readOk = rpcSecurity != RpcSecurity::TLS;
-    maliciousClient.run(true, readOk);
-}
-
-TEST_P(RpcTransportTest, Trigger) {
-    std::string msg2 = ", world!";
-    std::mutex writeMutex;
-    std::condition_variable writeCv;
-    bool shouldContinueWriting = false;
-    auto serverPostConnect = [&](RpcTransport* serverTransport, FdTrigger* fdTrigger) {
-        std::string message(RpcTransportTestUtils::kMessage);
-        iovec messageIov{message.data(), message.size()};
-        auto status = serverTransport->interruptableWriteFully(fdTrigger, &messageIov, 1,
-                                                               std::nullopt, nullptr);
-        if (status != OK) return AssertionFailure() << statusToString(status);
-
-        {
-            std::unique_lock<std::mutex> lock(writeMutex);
-            if (!writeCv.wait_for(lock, 3s, [&] { return shouldContinueWriting; })) {
-                return AssertionFailure() << "write barrier not cleared in time!";
-            }
-        }
-
-        iovec msg2Iov{msg2.data(), msg2.size()};
-        status = serverTransport->interruptableWriteFully(fdTrigger, &msg2Iov, 1, std::nullopt,
-                                                          nullptr);
-        if (status != DEAD_OBJECT)
-            return AssertionFailure() << "When FdTrigger is shut down, interruptableWriteFully "
-                                         "should return DEAD_OBJECT, but it is "
-                                      << statusToString(status);
-        return AssertionSuccess();
-    };
-
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    // Set up client
-    Client client(server->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    // Exchange keys
-    ASSERT_EQ(OK, trust(&client, server));
-    ASSERT_EQ(OK, trust(server, &client));
-
-    server->setPostConnect(serverPostConnect);
-
-    server->start();
-    // connect() to server and do handshake
-    ASSERT_TRUE(client.setUpTransport());
-    // read the first message. This ensures that server has finished handshake and start handling
-    // client fd. Server thread should pause at writeCv.wait_for().
-    ASSERT_TRUE(client.readMessage(RpcTransportTestUtils::kMessage));
-    // Trigger server shutdown after server starts handling client FD. This ensures that the second
-    // write is on an FdTrigger that has been shut down.
-    server->shutdown();
-    // Continues server thread to write the second message.
-    {
-        std::lock_guard<std::mutex> lock(writeMutex);
-        shouldContinueWriting = true;
-    }
-    writeCv.notify_all();
-    // After this line, server thread unblocks and attempts to write the second message, but
-    // shutdown is triggered, so write should failed with DEAD_OBJECT. See |serverPostConnect|.
-    // On the client side, second read fails with DEAD_OBJECT
-    ASSERT_FALSE(client.readMessage(msg2));
-}
-
-TEST_P(RpcTransportTest, CheckWaitingForRead) {
-    std::mutex readMutex;
-    std::condition_variable readCv;
-    bool shouldContinueReading = false;
-    // Server will write data on transport once its started
-    auto serverPostConnect = [&](RpcTransport* serverTransport, FdTrigger* fdTrigger) {
-        std::string message(RpcTransportTestUtils::kMessage);
-        iovec messageIov{message.data(), message.size()};
-        auto status = serverTransport->interruptableWriteFully(fdTrigger, &messageIov, 1,
-                                                               std::nullopt, nullptr);
-        if (status != OK) return AssertionFailure() << statusToString(status);
-
-        {
-            std::unique_lock<std::mutex> lock(readMutex);
-            shouldContinueReading = true;
-            lock.unlock();
-            readCv.notify_all();
-        }
-        return AssertionSuccess();
-    };
-
-    // Setup Server and client
-    auto server = std::make_unique<Server>();
-    ASSERT_TRUE(server->setUp(GetParam()));
-
-    Client client(server->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(GetParam()));
-
-    ASSERT_EQ(OK, trust(&client, server));
-    ASSERT_EQ(OK, trust(server, &client));
-    server->setPostConnect(serverPostConnect);
-
-    server->start();
-    ASSERT_TRUE(client.setUpTransport());
-    {
-        // Wait till server writes data
-        std::unique_lock<std::mutex> lock(readMutex);
-        ASSERT_TRUE(readCv.wait_for(lock, 3s, [&] { return shouldContinueReading; }));
-    }
-
-    // Since there is no read polling here, we will get polling count 0
-    ASSERT_FALSE(client.isTransportWaiting());
-    ASSERT_TRUE(client.readMessage(RpcTransportTestUtils::kMessage));
-    // Thread should increment polling count, read and decrement polling count
-    // Again, polling count should be zero here
-    ASSERT_FALSE(client.isTransportWaiting());
-
-    server->shutdown();
-}
-
-INSTANTIATE_TEST_CASE_P(BinderRpc, RpcTransportTest,
-                        ::testing::ValuesIn(RpcTransportTest::getRpcTranportTestParams()),
-                        RpcTransportTest::PrintParamInfo);
-
-class RpcTransportTlsKeyTest
-      : public testing::TestWithParam<
-                std::tuple<SocketType, RpcCertificateFormat, RpcKeyFormat, uint32_t>> {
-public:
-    template <typename A, typename B>
-    status_t trust(const A& a, const B& b) {
-        auto [socketType, certificateFormat, keyFormat, serverVersion] = GetParam();
-        (void)serverVersion;
-        return RpcTransportTestUtils::trust(RpcSecurity::TLS, certificateFormat, a, b);
-    }
-    static std::string PrintParamInfo(const testing::TestParamInfo<ParamType>& info) {
-        auto [socketType, certificateFormat, keyFormat, serverVersion] = info.param;
-        return PrintToString(socketType) + "_certificate_" + PrintToString(certificateFormat) +
-                "_key_" + PrintToString(keyFormat) + "_serverV" + std::to_string(serverVersion);
-    };
-};
-
-TEST_P(RpcTransportTlsKeyTest, PreSignedCertificate) {
-    if constexpr (!kEnableRpcThreads) {
-        GTEST_SKIP() << "Test skipped because threads were disabled at build time";
-    }
-
-    auto [socketType, certificateFormat, keyFormat, serverVersion] = GetParam();
-
-    std::vector<uint8_t> pkeyData, certData;
-    {
-        auto pkey = makeKeyPairForSelfSignedCert();
-        ASSERT_NE(nullptr, pkey);
-        auto cert = makeSelfSignedCert(pkey.get(), kCertValidSeconds);
-        ASSERT_NE(nullptr, cert);
-        pkeyData = serializeUnencryptedPrivatekey(pkey.get(), keyFormat);
-        certData = serializeCertificate(cert.get(), certificateFormat);
-    }
-
-    auto desPkey = deserializeUnencryptedPrivatekey(pkeyData, keyFormat);
-    auto desCert = deserializeCertificate(certData, certificateFormat);
-    auto auth = std::make_unique<RpcAuthPreSigned>(std::move(desPkey), std::move(desCert));
-    auto utilsParam = std::make_tuple(socketType, RpcSecurity::TLS,
-                                      std::make_optional(certificateFormat), serverVersion);
-
-    auto server = std::make_unique<RpcTransportTestUtils::Server>();
-    ASSERT_TRUE(server->setUp(utilsParam, std::move(auth)));
-
-    RpcTransportTestUtils::Client client(server->getConnectToServerFn());
-    ASSERT_TRUE(client.setUp(utilsParam));
-
-    ASSERT_EQ(OK, trust(&client, server));
-    ASSERT_EQ(OK, trust(server, &client));
-
-    server->start();
-    client.run();
-}
-
-INSTANTIATE_TEST_CASE_P(
-        BinderRpc, RpcTransportTlsKeyTest,
-        testing::Combine(testing::ValuesIn(testSocketTypes(false /* hasPreconnected*/)),
-                         testing::Values(RpcCertificateFormat::PEM, RpcCertificateFormat::DER),
-                         testing::Values(RpcKeyFormat::PEM, RpcKeyFormat::DER),
-                         testing::ValuesIn(testVersions())),
-        RpcTransportTlsKeyTest::PrintParamInfo);
-#endif // BINDER_RPC_TO_TRUSTY_TEST
+                        ::testing::Combine(::testing::Bool(), ::testing::Bool()));
 
 } // namespace android
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     android::base::InitLogging(argv, android::base::StderrLogger, android::base::DefaultAborter);
-
     return RUN_ALL_TESTS();
 }

@@ -20,18 +20,16 @@
 
 namespace android {
 
-SwitchInputMapper::SwitchInputMapper(InputDeviceContext& deviceContext,
-                                     const InputReaderConfiguration& readerConfig)
-      : InputMapper(deviceContext, readerConfig), mSwitchValues(0), mUpdatedSwitchMask(0) {}
+SwitchInputMapper::SwitchInputMapper(InputDeviceContext& deviceContext)
+      : InputMapper(deviceContext), mSwitchValues(0), mUpdatedSwitchMask(0) {}
 
 SwitchInputMapper::~SwitchInputMapper() {}
 
-uint32_t SwitchInputMapper::getSources() const {
+uint32_t SwitchInputMapper::getSources() {
     return AINPUT_SOURCE_SWITCH;
 }
 
-std::list<NotifyArgs> SwitchInputMapper::process(const RawEvent* rawEvent) {
-    std::list<NotifyArgs> out;
+void SwitchInputMapper::process(const RawEvent* rawEvent) {
     switch (rawEvent->type) {
         case EV_SW:
             processSwitch(rawEvent->code, rawEvent->value);
@@ -39,10 +37,9 @@ std::list<NotifyArgs> SwitchInputMapper::process(const RawEvent* rawEvent) {
 
         case EV_SYN:
             if (rawEvent->code == SYN_REPORT) {
-                out += sync(rawEvent->when);
+                sync(rawEvent->when);
             }
     }
-    return out;
 }
 
 void SwitchInputMapper::processSwitch(int32_t switchCode, int32_t switchValue) {
@@ -56,16 +53,15 @@ void SwitchInputMapper::processSwitch(int32_t switchCode, int32_t switchValue) {
     }
 }
 
-std::list<NotifyArgs> SwitchInputMapper::sync(nsecs_t when) {
-    std::list<NotifyArgs> out;
+void SwitchInputMapper::sync(nsecs_t when) {
     if (mUpdatedSwitchMask) {
         uint32_t updatedSwitchValues = mSwitchValues & mUpdatedSwitchMask;
-        out.push_back(NotifySwitchArgs(getContext()->getNextId(), when, /*policyFlags=*/0,
-                                       updatedSwitchValues, mUpdatedSwitchMask));
+        NotifySwitchArgs args(getContext()->getNextId(), when, 0 /*policyFlags*/,
+                              updatedSwitchValues, mUpdatedSwitchMask);
+        getListener()->notifySwitch(&args);
 
         mUpdatedSwitchMask = 0;
     }
-    return out;
 }
 
 int32_t SwitchInputMapper::getSwitchState(uint32_t sourceMask, int32_t switchCode) {

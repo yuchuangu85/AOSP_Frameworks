@@ -17,7 +17,6 @@
 #pragma once
 
 #include <cstdint>
-#include "aidl/android/hardware/graphics/composer3/DimmingStage.h"
 
 #include <math/mat4.h>
 #include <ui/FenceTime.h>
@@ -33,13 +32,9 @@
 #pragma clang diagnostic pop // ignored "-Wconversion -Wextra"
 
 #include <compositionengine/ProjectionSpace.h>
-#include <renderengine/BorderRenderInfo.h>
-#include <ui/LayerStack.h>
 #include <ui/Rect.h>
 #include <ui/Region.h>
 #include <ui/Transform.h>
-
-#include "DisplayHardware/HWComposer.h"
 
 namespace android {
 
@@ -64,8 +59,11 @@ struct OutputCompositionState {
     // If true, the current frame reused the buffer from a previous client composition
     bool reusedClientComposition{false};
 
-    // The conditions for including a layer on this output
-    ui::LayerFilter layerFilter;
+    // If true, this output displays layers that are internal-only
+    bool layerStackInternal{false};
+
+    // The layer stack to display on this display
+    uint32_t layerStackId{~0u};
 
     // The common space for all layers in the layer stack. layerStackSpace.content is the Rect
     // which gets projected on the display. The orientation of this space is always ROTATION_0.
@@ -118,54 +116,18 @@ struct OutputCompositionState {
     // Current target dataspace
     ui::Dataspace targetDataspace{ui::Dataspace::UNKNOWN};
 
-    std::optional<android::HWComposer::DeviceRequestedChanges> previousDeviceRequestedChanges{};
-
-    bool previousDeviceRequestedSuccess = false;
-
-    // Optional.
     // The earliest time to send the present command to the HAL
-    std::optional<std::chrono::steady_clock::time_point> earliestPresentTime;
+    std::chrono::steady_clock::time_point earliestPresentTime;
 
-    // The expected time for the next present
-    nsecs_t expectedPresentTime{0};
+    // The previous present fence. Used together with earliestPresentTime
+    // to prevent an early presentation of a frame.
+    std::shared_ptr<FenceTime> previousPresentFence;
 
     // Current display brightness
     float displayBrightnessNits{-1.f};
 
     // SDR white point
     float sdrWhitePointNits{-1.f};
-
-    // Brightness of the client target, normalized to display brightness
-    float clientTargetBrightness{1.f};
-
-    // Stage in which the client target should apply dimming
-    aidl::android::hardware::graphics::composer3::DimmingStage clientTargetDimmingStage{
-            aidl::android::hardware::graphics::composer3::DimmingStage::NONE};
-
-    // Display brightness that will take effect this frame.
-    // This is slightly distinct from nits, in that nits cannot be passed to hw composer.
-    std::optional<float> displayBrightness = std::nullopt;
-
-    enum class CompositionStrategyPredictionState : uint32_t {
-        // Composition strategy prediction did not run for this frame.
-        DISABLED = 0,
-        // Composition strategy predicted successfully for this frame.
-        SUCCESS = 1,
-        // Composition strategy prediction failed for this frame.
-        FAIL = 2,
-
-        ftl_last = FAIL
-    };
-
-    CompositionStrategyPredictionState strategyPrediction =
-            CompositionStrategyPredictionState::DISABLED;
-
-    bool treat170mAsSrgb = false;
-
-    std::vector<renderengine::BorderRenderInfo> borderInfoList;
-
-    uint64_t lastOutputLayerHash = 0;
-    uint64_t outputLayerHash = 0;
 
     // Debugging
     void dump(std::string& result) const;

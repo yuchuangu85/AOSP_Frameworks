@@ -22,13 +22,8 @@ package {
     default_applicable_licenses: ["frameworks_native_license"],
 }
 
-inputflinger_tidy_checks = [
-    "android-*",
-]
-
 cc_defaults {
     name: "inputflinger_defaults",
-    cpp_std: "c++20",
     cflags: [
         "-Wall",
         "-Wextra",
@@ -38,18 +33,10 @@ cc_defaults {
         "-Wshadow",
         "-Wshadow-field-in-constructor-modified",
         "-Wshadow-uncaptured-local",
-        "-DANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION",
     ],
     sanitize: {
-        misc_undefined: [
-            "bounds",
-        ],
+        misc_undefined: ["bounds"],
     },
-    tidy: true,
-    tidy_checks: [
-        "-*", // Disable all checks not explicitly enabled for now
-    ] + inputflinger_tidy_checks,
-    tidy_checks_as_errors: inputflinger_tidy_checks,
 }
 
 /////////////////////////////////////////////////
@@ -59,10 +46,9 @@ cc_defaults {
 filegroup {
     name: "libinputflinger_sources",
     srcs: [
-        "InputCommonConverter.cpp",
-        "InputProcessor.cpp",
-        "PreferStylusOverTouchBlocker.cpp",
-        "UnwantedInteractionBlocker.cpp",
+        "InputClassifier.cpp",
+        "InputClassifierConverter.cpp",
+        "InputManager.cpp",
     ],
 }
 
@@ -70,43 +56,27 @@ cc_defaults {
     name: "libinputflinger_defaults",
     srcs: [":libinputflinger_sources"],
     shared_libs: [
-        "android.hardware.input.processor-V1-ndk",
+        "android.hardware.input.classifier@1.0",
         "libbase",
         "libbinder",
-        "libbinder_ndk",
-        "libchrome",
         "libcrypto",
         "libcutils",
         "libhidlbase",
+        "libinput",
         "libkll",
         "liblog",
         "libprotobuf-cpp-lite",
         "libstatslog",
+        "libstatspull",
+        "libstatssocket",
         "libutils",
+        "libui",
+        "lib-platform-compat-native-api",
         "server_configurable_flags",
     ],
     static_libs: [
         "libattestation",
-        "libpalmrejection",
-        "libui-types",
     ],
-    target: {
-        android: {
-            shared_libs: [
-                "libgui",
-                "libinput",
-                "libstatspull",
-                "libstatssocket",
-            ],
-        },
-        host: {
-            static_libs: [
-                "libinput",
-                "libstatspull",
-                "libstatssocket",
-            ],
-        },
-    },
 }
 
 cc_library_shared {
@@ -114,10 +84,6 @@ cc_library_shared {
     defaults: [
         "inputflinger_defaults",
         "libinputflinger_defaults",
-    ],
-    srcs: [
-        "InputManager.cpp",
-        // other sources are added via "defaults"
     ],
     cflags: [
         // TODO(b/23084678): Move inputflinger to its own process and mark it hidden
@@ -127,8 +93,8 @@ cc_library_shared {
         // This should consist only of dependencies from inputflinger. Other dependencies should be
         // in cc_defaults so that they are included in the tests.
         "libinputflinger_base",
-        "libinputreader",
         "libinputreporter",
+        "libinputreader",
     ],
     static_libs: [
         "libinputdispatcher",
@@ -148,7 +114,6 @@ cc_library_shared {
 
 cc_library_headers {
     name: "libinputflinger_headers",
-    host_supported: true,
     export_include_dirs: ["include"],
 }
 
@@ -158,8 +123,7 @@ filegroup {
         "InputListener.cpp",
         "InputReaderBase.cpp",
         "InputThread.cpp",
-        "NotifyArgs.cpp",
-        "VibrationElement.cpp",
+        "VibrationElement.cpp"
     ],
 }
 
@@ -168,86 +132,24 @@ cc_defaults {
     srcs: [":libinputflinger_base_sources"],
     shared_libs: [
         "libbase",
-        "libbinder",
         "libcutils",
+        "libinput",
         "liblog",
+        "libui",
         "libutils",
     ],
     header_libs: [
         "libinputflinger_headers",
     ],
-    target: {
-        android: {
-            shared_libs: [
-                "libinput",
-            ],
-        },
-        host: {
-            static_libs: [
-                "libinput",
-                "libui-types",
-            ],
-        },
-    },
 }
 
 cc_library_shared {
     name: "libinputflinger_base",
-    host_supported: true,
     defaults: [
         "inputflinger_defaults",
         "libinputflinger_base_defaults",
     ],
     export_header_lib_headers: [
         "libinputflinger_headers",
-    ],
-}
-
-// This target will build everything 'input-related'. This could be useful for
-// large refactorings of the input code. This is similar to 'm checkbuild', but
-// just for input code.
-// Use 'm checkinput' to build, and then (optionally) use 'm installclean' to
-// remove any of the installed artifacts that you may not want on your actual
-// build.
-phony {
-    name: "checkinput",
-    required: [
-        // native targets
-        "libgui_test",
-        "libinput",
-        "libinputflinger",
-        "inputflinger_tests",
-        "inputflinger_benchmarks",
-        "libinput_tests",
-        "libpalmrejection_test",
-        "libandroid_runtime",
-        "libinputservice_test",
-        "Bug-115739809",
-        "StructLayout_test",
-        // currently unused, but still must build correctly
-        "inputflinger",
-        "libinputflingerhost",
-
-        // native fuzzers
-        "inputflinger_latencytracker_fuzzer",
-        "inputflinger_cursor_input_fuzzer",
-        "inputflinger_keyboard_input_fuzzer",
-        "inputflinger_multitouch_input_fuzzer",
-        "inputflinger_switch_input_fuzzer",
-        "inputflinger_input_reader_fuzzer",
-        "inputflinger_blocking_queue_fuzzer",
-        "inputflinger_input_classifier_fuzzer",
-
-        // Java/Kotlin targets
-        "CtsWindowManagerDeviceTestCases",
-        "InputTests",
-        "CtsHardwareTestCases",
-        "CtsInputTestCases",
-        "CtsViewTestCases",
-        "CtsWidgetTestCases",
-        "FrameworksCoreTests",
-        "FrameworksServicesTests",
-        "CtsSecurityTestCases",
-        "CtsSecurityBulletinHostTestCases",
     ],
 }

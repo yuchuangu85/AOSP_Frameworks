@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_INPUT_CONTROLLER_H
+#define _UI_INPUTREADER_INPUT_CONTROLLER_H
 
 #include "EventHub.h"
 #include "InputDevice.h"
@@ -32,8 +33,6 @@ public:
     PeripheralControllerInterface() {}
     virtual ~PeripheralControllerInterface() {}
 
-    virtual int32_t getEventHubId() const = 0;
-
     // Interface methods for Battery
     virtual std::optional<int32_t> getBatteryCapacity(int32_t batteryId) = 0;
     virtual std::optional<int32_t> getBatteryStatus(int32_t batteryId) = 0;
@@ -49,3 +48,5 @@ public:
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_INPUT_CONTROLLER_H

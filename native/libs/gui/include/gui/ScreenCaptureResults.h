@@ -19,7 +19,6 @@
 #include <binder/Parcel.h>
 #include <binder/Parcelable.h>
 #include <ui/Fence.h>
-#include <ui/FenceResult.h>
 #include <ui/GraphicBuffer.h>
 
 namespace android::gui {
@@ -32,10 +31,10 @@ public:
     status_t readFromParcel(const android::Parcel* parcel) override;
 
     sp<GraphicBuffer> buffer;
-    FenceResult fenceResult = Fence::NO_FENCE;
+    sp<Fence> fence = Fence::NO_FENCE;
     bool capturedSecureLayers{false};
-    bool capturedHdrLayers{false};
     ui::Dataspace capturedDataspace{ui::Dataspace::V0_SRGB};
+    status_t result = OK;
 };
 
 } // namespace android::gui

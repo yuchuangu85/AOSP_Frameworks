@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_EXTERNAL_STYLUS_INPUT_MAPPER_H
+#define _UI_INPUTREADER_EXTERNAL_STYLUS_INPUT_MAPPER_H
 
 #include "InputMapper.h"
 
@@ -26,20 +27,16 @@ namespace android {
 
 class ExternalStylusInputMapper : public InputMapper {
 public:
-    template <class T, class... Args>
-    friend std::unique_ptr<T> createInputMapper(InputDeviceContext& deviceContext,
-                                                const InputReaderConfiguration& readerConfig,
-                                                Args... args);
+    explicit ExternalStylusInputMapper(InputDeviceContext& deviceContext);
     virtual ~ExternalStylusInputMapper() = default;
 
-    uint32_t getSources() const override;
-    void populateDeviceInfo(InputDeviceInfo& deviceInfo) override;
-    void dump(std::string& dump) override;
-    [[nodiscard]] std::list<NotifyArgs> reconfigure(nsecs_t when,
-                                                    const InputReaderConfiguration& config,
-                                                    ConfigurationChanges changes) override;
-    [[nodiscard]] std::list<NotifyArgs> reset(nsecs_t when) override;
-    [[nodiscard]] std::list<NotifyArgs> process(const RawEvent* rawEvent) override;
+    virtual uint32_t getSources() override;
+    virtual void populateDeviceInfo(InputDeviceInfo* deviceInfo) override;
+    virtual void dump(std::string& dump) override;
+    virtual void configure(nsecs_t when, const InputReaderConfiguration* config,
+                           uint32_t changes) override;
+    virtual void reset(nsecs_t when) override;
+    virtual void process(const RawEvent* rawEvent) override;
 
 private:
     SingleTouchMotionAccumulator mSingleTouchMotionAccumulator;
@@ -48,9 +45,9 @@ private:
 
     StylusState mStylusState;
 
-    explicit ExternalStylusInputMapper(InputDeviceContext& deviceContext,
-                                       const InputReaderConfiguration& readerConfig);
-    [[nodiscard]] std::list<NotifyArgs> sync(nsecs_t when);
+    void sync(nsecs_t when);
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_EXTERNAL_STYLUS_INPUT_MAPPER_H

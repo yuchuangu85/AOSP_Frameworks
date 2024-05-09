@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _LIBINPUT_INPUT_H
+#define _LIBINPUT_INPUT_H
 
 #pragma GCC system_header
 
@@ -30,7 +31,10 @@
 #include <stdint.h>
 #include <ui/Transform.h>
 #include <utils/BitSet.h>
+#include <utils/KeyedVector.h>
+#include <utils/RefBase.h>
 #include <utils/Timers.h>
+#include <utils/Vector.h>
 #include <array>
 #include <limits>
 #include <queue>
@@ -84,7 +88,7 @@ enum {
      */
     AMOTION_EVENT_FLAG_NO_FOCUS_CHANGE = 0x40,
 
-#if defined(__linux__)
+#ifdef __linux__
     /**
      * This event was generated or modified by accessibility service.
      */
@@ -118,6 +122,15 @@ constexpr int32_t VERIFIED_MOTION_EVENT_FLAGS = AMOTION_EVENT_FLAG_WINDOW_IS_OBS
  * TODO: Adjust flag to public api
  */
 constexpr int32_t AMOTION_EVENT_FLAG_CANCELED = 0x20;
+
+enum {
+    /* Used when a motion event is not associated with any display.
+     * Typically used for non-pointer events. */
+    ADISPLAY_ID_NONE = -1,
+
+    /* The default display id. */
+    ADISPLAY_ID_DEFAULT = 0,
+};
 
 enum {
     /*
@@ -162,7 +175,7 @@ enum {
  * (We want at least 10 but some touch controllers obstensibly configured for 10 pointers
  * will occasionally emit 11.  There is not much harm making this constant bigger.)
  */
-static constexpr size_t MAX_POINTERS = 16;
+#define MAX_POINTERS 16
 
 /*
  * Maximum number of samples supported per motion event.
@@ -197,65 +210,7 @@ namespace android {
 class Parcel;
 #endif
 
-/*
- * Apply the given transform to the point without applying any translation/offset.
- */
-vec2 transformWithoutTranslation(const ui::Transform& transform, const vec2& xy);
-
-/*
- * Transform an angle on the x-y plane. An angle of 0 radians corresponds to "north" or
- * pointing upwards in the negative Y direction, a positive angle points towards the right, and a
- * negative angle points towards the left.
- */
-float transformAngle(const ui::Transform& transform, float angleRadians);
-
-/**
- * The type of the InputEvent.
- * This should have 1:1 correspondence with the values of anonymous enum defined in input.h.
- */
-enum class InputEventType {
-    KEY = AINPUT_EVENT_TYPE_KEY,
-    MOTION = AINPUT_EVENT_TYPE_MOTION,
-    FOCUS = AINPUT_EVENT_TYPE_FOCUS,
-    CAPTURE = AINPUT_EVENT_TYPE_CAPTURE,
-    DRAG = AINPUT_EVENT_TYPE_DRAG,
-    TOUCH_MODE = AINPUT_EVENT_TYPE_TOUCH_MODE,
-    ftl_first = KEY,
-    ftl_last = TOUCH_MODE,
-};
-
-std::string inputEventSourceToString(int32_t source);
-
-bool isFromSource(uint32_t source, uint32_t test);
-
-/**
- * The pointer tool type.
- */
-enum class ToolType {
-    UNKNOWN = AMOTION_EVENT_TOOL_TYPE_UNKNOWN,
-    FINGER = AMOTION_EVENT_TOOL_TYPE_FINGER,
-    STYLUS = AMOTION_EVENT_TOOL_TYPE_STYLUS,
-    MOUSE = AMOTION_EVENT_TOOL_TYPE_MOUSE,
-    ERASER = AMOTION_EVENT_TOOL_TYPE_ERASER,
-    PALM = AMOTION_EVENT_TOOL_TYPE_PALM,
-    ftl_first = UNKNOWN,
-    ftl_last = PALM,
-};
-
-/**
- * The state of the key. This should have 1:1 correspondence with the values of anonymous enum
- * defined in input.h
- */
-enum class KeyState {
-    UNKNOWN = AKEY_STATE_UNKNOWN,
-    UP = AKEY_STATE_UP,
-    DOWN = AKEY_STATE_DOWN,
-    VIRTUAL = AKEY_STATE_VIRTUAL,
-    ftl_first = UNKNOWN,
-    ftl_last = VIRTUAL,
-};
-
-bool isStylusToolType(ToolType toolType);
+const char* inputEventTypeToString(int32_t type);
 
 /*
  * Flags that flow alongside events in the input dispatch system to help with certain
@@ -322,36 +277,23 @@ enum {
 
 /**
  * Classifications of the current gesture, if available.
+ *
+ * The following values must be kept in sync with MotionEvent.java
  */
 enum class MotionClassification : uint8_t {
     /**
      * No classification is available.
      */
-    NONE = AMOTION_EVENT_CLASSIFICATION_NONE,
+    NONE = 0,
     /**
      * Too early to classify the current gesture. Need more events. Look for changes in the
      * upcoming motion events.
      */
-    AMBIGUOUS_GESTURE = AMOTION_EVENT_CLASSIFICATION_AMBIGUOUS_GESTURE,
+    AMBIGUOUS_GESTURE = 1,
     /**
      * The current gesture likely represents a user intentionally exerting force on the touchscreen.
      */
-    DEEP_PRESS = AMOTION_EVENT_CLASSIFICATION_DEEP_PRESS,
-    /**
-     * The current gesture represents the user swiping with two fingers on a touchpad.
-     */
-    TWO_FINGER_SWIPE = AMOTION_EVENT_CLASSIFICATION_TWO_FINGER_SWIPE,
-    /**
-     * The current gesture represents the user swiping with three or more fingers on a touchpad.
-     * Unlike two-finger swipes, these are only to be handled by the system UI, which is why they
-     * have a separate constant from two-finger swipes.
-     */
-    MULTI_FINGER_SWIPE = AMOTION_EVENT_CLASSIFICATION_MULTI_FINGER_SWIPE,
-    /**
-     * The current gesture represents the user pinching with two fingers on a touchpad. The gesture
-     * is centered around the current cursor position.
-     */
-    PINCH = AMOTION_EVENT_CLASSIFICATION_PINCH,
+    DEEP_PRESS = 2,
 };
 
 /**
@@ -412,28 +354,27 @@ private:
  */
 constexpr float AMOTION_EVENT_INVALID_CURSOR_POSITION = std::numeric_limits<float>::quiet_NaN();
 
+/**
+ * Invalid value for display size. Used when display size isn't available for an event or doesn't
+ * matter. This is just a constant 0 so that it has no effect if unused.
+ */
+constexpr int32_t AMOTION_EVENT_INVALID_DISPLAY_SIZE = 0;
+
 /*
  * Pointer coordinate data.
  */
 struct PointerCoords {
-    enum { MAX_AXES = 30 }; // 30 so that sizeof(PointerCoords) == 136
+    enum { MAX_AXES = 30 }; // 30 so that sizeof(PointerCoords) == 128
 
     // Bitfield of axes that are present in this structure.
     uint64_t bits __attribute__((aligned(8)));
 
     // Values of axes that are stored in this structure packed in order by axis id
     // for each axis that is present in the structure according to 'bits'.
-    std::array<float, MAX_AXES> values;
-
-    // Whether these coordinate data were generated by resampling.
-    bool isResampled;
-
-    static_assert(sizeof(bool) == 1); // Ensure padding is correctly sized.
-    uint8_t empty[7];
+    float values[MAX_AXES];
 
     inline void clear() {
         BitSet64::clear(bits);
-        isResampled = false;
     }
 
     bool isEmpty() const {
@@ -443,10 +384,13 @@ struct PointerCoords {
     float getAxisValue(int32_t axis) const;
     status_t setAxisValue(int32_t axis, float value);
 
+    void scale(float globalScale);
+
     // Scale the pointer coordinates according to a global scale and a
     // window scale. The global scale will be applied to TOUCH/TOOL_MAJOR/MINOR
     // axes, however the window scaling will not.
     void scale(float globalScale, float windowXScale, float windowYScale);
+    void applyOffset(float xOffset, float yOffset);
 
     void transform(const ui::Transform& transform);
 
@@ -470,8 +414,7 @@ struct PointerCoords {
         return !(*this == other);
     }
 
-    inline void copyFrom(const PointerCoords& other) { *this = other; }
-    PointerCoords& operator=(const PointerCoords&) = default;
+    void copyFrom(const PointerCoords& other);
 
 private:
     void tooManyAxes(int axis);
@@ -485,11 +428,11 @@ struct PointerProperties {
     int32_t id;
 
     // The pointer tool type.
-    ToolType toolType;
+    int32_t toolType;
 
     inline void clear() {
         id = -1;
-        toolType = ToolType::UNKNOWN;
+        toolType = 0;
     }
 
     bool operator==(const PointerProperties& other) const;
@@ -507,7 +450,7 @@ class InputEvent : public AInputEvent {
 public:
     virtual ~InputEvent() { }
 
-    virtual InputEventType getType() const = 0;
+    virtual int32_t getType() const = 0;
 
     inline int32_t getId() const { return mId; }
 
@@ -538,8 +481,6 @@ protected:
     std::array<uint8_t, 32> mHmac;
 };
 
-std::ostream& operator<<(std::ostream& out, const InputEvent& event);
-
 /*
  * Key events.
  */
@@ -547,7 +488,7 @@ class KeyEvent : public InputEvent {
 public:
     virtual ~KeyEvent() { }
 
-    virtual InputEventType getType() const { return InputEventType::KEY; }
+    virtual int32_t getType() const { return AINPUT_EVENT_TYPE_KEY; }
 
     inline int32_t getAction() const { return mAction; }
 
@@ -568,7 +509,7 @@ public:
     inline nsecs_t getEventTime() const { return mEventTime; }
 
     static const char* getLabel(int32_t keyCode);
-    static std::optional<int> getKeyCodeFromLabel(const char* label);
+    static int32_t getKeyCodeFromLabel(const char* label);
 
     void initialize(int32_t id, int32_t deviceId, uint32_t source, int32_t displayId,
                     std::array<uint8_t, 32> hmac, int32_t action, int32_t flags, int32_t keyCode,
@@ -589,8 +530,6 @@ protected:
     nsecs_t mEventTime;
 };
 
-std::ostream& operator<<(std::ostream& out, const KeyEvent& event);
-
 /*
  * Motion events.
  */
@@ -598,20 +537,16 @@ class MotionEvent : public InputEvent {
 public:
     virtual ~MotionEvent() { }
 
-    virtual InputEventType getType() const { return InputEventType::MOTION; }
+    virtual int32_t getType() const { return AINPUT_EVENT_TYPE_MOTION; }
 
     inline int32_t getAction() const { return mAction; }
 
-    static int32_t getActionMasked(int32_t action) { return action & AMOTION_EVENT_ACTION_MASK; }
+    inline int32_t getActionMasked() const { return mAction & AMOTION_EVENT_ACTION_MASK; }
 
-    inline int32_t getActionMasked() const { return getActionMasked(mAction); }
-
-    static uint8_t getActionIndex(int32_t action) {
-        return (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>
-                AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    inline int32_t getActionIndex() const {
+        return (mAction & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
+                >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     }
-
-    inline int32_t getActionIndex() const { return getActionIndex(mAction); }
 
     inline void setAction(int32_t action) { mAction = action; }
 
@@ -641,9 +576,7 @@ public:
 
     inline float getYOffset() const { return mTransform.ty(); }
 
-    inline const ui::Transform& getTransform() const { return mTransform; }
-
-    std::optional<ui::Rotation> getSurfaceRotation() const;
+    inline ui::Transform getTransform() const { return mTransform; }
 
     inline float getXPrecision() const { return mXPrecision; }
 
@@ -659,7 +592,7 @@ public:
 
     void setCursorPosition(float x, float y);
 
-    inline const ui::Transform& getRawTransform() const { return mRawTransform; }
+    int2 getDisplaySize() const { return {mDisplayWidth, mDisplayHeight}; }
 
     static inline bool isValidCursorPosition(float x, float y) { return !isnan(x) && !isnan(y); }
 
@@ -677,7 +610,7 @@ public:
         return mPointerProperties[pointerIndex].id;
     }
 
-    inline ToolType getToolType(size_t pointerIndex) const {
+    inline int32_t getToolType(size_t pointerIndex) const {
         return mPointerProperties[pointerIndex].toolType;
     }
 
@@ -828,10 +761,6 @@ public:
                 AMOTION_EVENT_AXIS_ORIENTATION, pointerIndex, historicalIndex);
     }
 
-    inline bool isResampled(size_t pointerIndex, size_t historicalIndex) const {
-        return getHistoricalRawPointerCoords(pointerIndex, historicalIndex)->isResampled;
-    }
-
     ssize_t findPointerIndex(int32_t pointerId) const;
 
     void initialize(int32_t id, int32_t deviceId, uint32_t source, int32_t displayId,
@@ -839,8 +768,8 @@ public:
                     int32_t flags, int32_t edgeFlags, int32_t metaState, int32_t buttonState,
                     MotionClassification classification, const ui::Transform& transform,
                     float xPrecision, float yPrecision, float rawXCursorPosition,
-                    float rawYCursorPosition, const ui::Transform& rawTransform, nsecs_t downTime,
-                    nsecs_t eventTime, size_t pointerCount,
+                    float rawYCursorPosition, int32_t displayWidth, int32_t displayHeight,
+                    nsecs_t downTime, nsecs_t eventTime, size_t pointerCount,
                     const PointerProperties* pointerProperties, const PointerCoords* pointerCoords);
 
     void copyFrom(const MotionEvent* other, bool keepHistory);
@@ -873,29 +802,17 @@ public:
 
     // Low-level accessors.
     inline const PointerProperties* getPointerProperties() const {
-        return mPointerProperties.data();
+        return mPointerProperties.array();
     }
     inline const nsecs_t* getSampleEventTimes() const { return mSampleEventTimes.data(); }
     inline const PointerCoords* getSamplePointerCoords() const {
-        return mSamplePointerCoords.data();
+            return mSamplePointerCoords.array();
     }
 
     static const char* getLabel(int32_t axis);
-    static std::optional<int> getAxisFromLabel(const char* label);
+    static int32_t getAxisFromLabel(const char* label);
 
     static std::string actionToString(int32_t action);
-
-    // MotionEvent will transform various axes in different ways, based on the source. For
-    // example, the x and y axes will not have any offsets/translations applied if it comes from a
-    // relative mouse device (since SOURCE_RELATIVE_MOUSE is a non-pointer source). These methods
-    // are used to apply these transformations for different axes.
-    static vec2 calculateTransformedXY(uint32_t source, const ui::Transform&, const vec2& xy);
-    static float calculateTransformedAxisValue(int32_t axis, uint32_t source, const ui::Transform&,
-                                               const PointerCoords&);
-    static PointerCoords calculateTransformedCoords(uint32_t source, const ui::Transform&,
-                                                    const PointerCoords&);
-    // The rounding precision for transformed motion events.
-    static constexpr float ROUNDING_PRECISION = 0.001f;
 
 protected:
     int32_t mAction;
@@ -910,14 +827,13 @@ protected:
     float mYPrecision;
     float mRawXCursorPosition;
     float mRawYCursorPosition;
-    ui::Transform mRawTransform;
+    int32_t mDisplayWidth;
+    int32_t mDisplayHeight;
     nsecs_t mDownTime;
-    std::vector<PointerProperties> mPointerProperties;
+    Vector<PointerProperties> mPointerProperties;
     std::vector<nsecs_t> mSampleEventTimes;
-    std::vector<PointerCoords> mSamplePointerCoords;
+    Vector<PointerCoords> mSamplePointerCoords;
 };
-
-std::ostream& operator<<(std::ostream& out, const MotionEvent& event);
 
 /*
  * Focus events.
@@ -926,16 +842,19 @@ class FocusEvent : public InputEvent {
 public:
     virtual ~FocusEvent() {}
 
-    virtual InputEventType getType() const override { return InputEventType::FOCUS; }
+    virtual int32_t getType() const override { return AINPUT_EVENT_TYPE_FOCUS; }
 
     inline bool getHasFocus() const { return mHasFocus; }
 
-    void initialize(int32_t id, bool hasFocus);
+    inline bool getInTouchMode() const { return mInTouchMode; }
+
+    void initialize(int32_t id, bool hasFocus, bool inTouchMode);
 
     void initialize(const FocusEvent& from);
 
 protected:
     bool mHasFocus;
+    bool mInTouchMode;
 };
 
 /*
@@ -945,7 +864,7 @@ class CaptureEvent : public InputEvent {
 public:
     virtual ~CaptureEvent() {}
 
-    virtual InputEventType getType() const override { return InputEventType::CAPTURE; }
+    virtual int32_t getType() const override { return AINPUT_EVENT_TYPE_CAPTURE; }
 
     inline bool getPointerCaptureEnabled() const { return mPointerCaptureEnabled; }
 
@@ -964,7 +883,7 @@ class DragEvent : public InputEvent {
 public:
     virtual ~DragEvent() {}
 
-    virtual InputEventType getType() const override { return InputEventType::DRAG; }
+    virtual int32_t getType() const override { return AINPUT_EVENT_TYPE_DRAG; }
 
     inline bool isExiting() const { return mIsExiting; }
 
@@ -979,25 +898,6 @@ public:
 protected:
     bool mIsExiting;
     float mX, mY;
-};
-
-/*
- * Touch mode events.
- */
-class TouchModeEvent : public InputEvent {
-public:
-    virtual ~TouchModeEvent() {}
-
-    virtual InputEventType getType() const override { return InputEventType::TOUCH_MODE; }
-
-    inline bool isInTouchMode() const { return mIsInTouchMode; }
-
-    void initialize(int32_t id, bool isInTouchMode);
-
-    void initialize(const TouchModeEvent& from);
-
-protected:
-    bool mIsInTouchMode;
 };
 
 /**
@@ -1024,8 +924,8 @@ struct __attribute__((__packed__)) VerifiedInputEvent {
  */
 struct __attribute__((__packed__)) VerifiedKeyEvent : public VerifiedInputEvent {
     int32_t action;
-    int32_t flags;
     nsecs_t downTimeNanos;
+    int32_t flags;
     int32_t keyCode;
     int32_t scanCode;
     int32_t metaState;
@@ -1040,8 +940,8 @@ struct __attribute__((__packed__)) VerifiedMotionEvent : public VerifiedInputEve
     float rawX;
     float rawY;
     int32_t actionMasked;
-    int32_t flags;
     nsecs_t downTimeNanos;
+    int32_t flags;
     int32_t metaState;
     int32_t buttonState;
 };
@@ -1064,7 +964,6 @@ public:
     virtual FocusEvent* createFocusEvent() = 0;
     virtual CaptureEvent* createCaptureEvent() = 0;
     virtual DragEvent* createDragEvent() = 0;
-    virtual TouchModeEvent* createTouchModeEvent() = 0;
 };
 
 /*
@@ -1081,7 +980,6 @@ public:
     virtual FocusEvent* createFocusEvent() override { return &mFocusEvent; }
     virtual CaptureEvent* createCaptureEvent() override { return &mCaptureEvent; }
     virtual DragEvent* createDragEvent() override { return &mDragEvent; }
-    virtual TouchModeEvent* createTouchModeEvent() override { return &mTouchModeEvent; }
 
 private:
     KeyEvent mKeyEvent;
@@ -1089,7 +987,6 @@ private:
     FocusEvent mFocusEvent;
     CaptureEvent mCaptureEvent;
     DragEvent mDragEvent;
-    TouchModeEvent mTouchModeEvent;
 };
 
 /*
@@ -1105,7 +1002,6 @@ public:
     virtual FocusEvent* createFocusEvent() override;
     virtual CaptureEvent* createCaptureEvent() override;
     virtual DragEvent* createDragEvent() override;
-    virtual TouchModeEvent* createTouchModeEvent() override;
 
     void recycle(InputEvent* event);
 
@@ -1117,70 +1013,8 @@ private:
     std::queue<std::unique_ptr<FocusEvent>> mFocusEventPool;
     std::queue<std::unique_ptr<CaptureEvent>> mCaptureEventPool;
     std::queue<std::unique_ptr<DragEvent>> mDragEventPool;
-    std::queue<std::unique_ptr<TouchModeEvent>> mTouchModeEventPool;
-};
-
-/*
- * Describes a unique request to enable or disable Pointer Capture.
- */
-struct PointerCaptureRequest {
-public:
-    inline PointerCaptureRequest() : enable(false), seq(0) {}
-    inline PointerCaptureRequest(bool enable, uint32_t seq) : enable(enable), seq(seq) {}
-    inline bool operator==(const PointerCaptureRequest& other) const {
-        return enable == other.enable && seq == other.seq;
-    }
-    explicit inline operator bool() const { return enable; }
-
-    // True iff this is a request to enable Pointer Capture.
-    bool enable;
-
-    // The sequence number for the request.
-    uint32_t seq;
-};
-
-/* Pointer icon styles.
- * Must match the definition in android.view.PointerIcon.
- *
- * Due to backwards compatibility and public api constraints, this is a duplicate (but type safe)
- * definition of PointerIcon.java.
- *
- * TODO(b/235023317) move this definition to an aidl and statically assign to the below java public
- * api values.
- *
- * WARNING: Keep these definitions in sync with
- * frameworks/base/core/java/android/view/PointerIcon.java
- */
-enum class PointerIconStyle : int32_t {
-    TYPE_CUSTOM = -1,
-    TYPE_NULL = 0,
-    TYPE_NOT_SPECIFIED = 1,
-    TYPE_ARROW = 1000,
-    TYPE_CONTEXT_MENU = 1001,
-    TYPE_HAND = 1002,
-    TYPE_HELP = 1003,
-    TYPE_WAIT = 1004,
-    TYPE_CELL = 1006,
-    TYPE_CROSSHAIR = 1007,
-    TYPE_TEXT = 1008,
-    TYPE_VERTICAL_TEXT = 1009,
-    TYPE_ALIAS = 1010,
-    TYPE_COPY = 1011,
-    TYPE_NO_DROP = 1012,
-    TYPE_ALL_SCROLL = 1013,
-    TYPE_HORIZONTAL_DOUBLE_ARROW = 1014,
-    TYPE_VERTICAL_DOUBLE_ARROW = 1015,
-    TYPE_TOP_RIGHT_DOUBLE_ARROW = 1016,
-    TYPE_TOP_LEFT_DOUBLE_ARROW = 1017,
-    TYPE_ZOOM_IN = 1018,
-    TYPE_ZOOM_OUT = 1019,
-    TYPE_GRAB = 1020,
-    TYPE_GRABBING = 1021,
-    TYPE_HANDWRITING = 1022,
-
-    TYPE_SPOT_HOVER = 2000,
-    TYPE_SPOT_TOUCH = 2001,
-    TYPE_SPOT_ANCHOR = 2002,
 };
 
 } // namespace android
+
+#endif // _LIBINPUT_INPUT_H

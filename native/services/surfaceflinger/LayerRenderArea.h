@@ -33,25 +33,26 @@ class SurfaceFlinger;
 class LayerRenderArea : public RenderArea {
 public:
     LayerRenderArea(SurfaceFlinger& flinger, sp<Layer> layer, const Rect& crop, ui::Size reqSize,
-                    ui::Dataspace reqDataSpace, bool childrenOnly, bool allowSecureLayers,
-                    const ui::Transform& layerTransform, const Rect& layerBufferSize,
-                    bool hintForSeamlessTransition);
+                    ui::Dataspace reqDataSpace, bool childrenOnly, const Rect& layerStackRect,
+                    bool allowSecureLayers);
 
     const ui::Transform& getTransform() const override;
+    Rect getBounds() const override;
+    int getHeight() const override;
+    int getWidth() const override;
     bool isSecure() const override;
+    bool needsFiltering() const override;
     sp<const DisplayDevice> getDisplayDevice() const override;
     Rect getSourceCrop() const override;
 
     void render(std::function<void()> drawLayers) override;
-    virtual sp<Layer> getParentLayer() const { return mLayer; }
 
 private:
     const sp<Layer> mLayer;
-    const ui::Transform mLayerTransform;
-    const Rect mLayerBufferSize;
     const Rect mCrop;
 
     ui::Transform mTransform;
+    bool mNeedsFiltering = false;
 
     SurfaceFlinger& mFlinger;
     const bool mChildrenOnly;

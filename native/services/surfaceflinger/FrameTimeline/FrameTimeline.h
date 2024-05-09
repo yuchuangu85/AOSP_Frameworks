@@ -16,17 +16,10 @@
 
 #pragma once
 
-#include <atomic>
-#include <chrono>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <optional>
-#include <string>
-
+#include <../Fps.h>
+#include <../TimeStats/TimeStats.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/JankInfo.h>
-#include <gui/LayerMetadata.h>
 #include <perfetto/trace/android/frame_timeline_event.pbzero.h>
 #include <perfetto/tracing.h>
 #include <ui/FenceTime.h>
@@ -35,9 +28,8 @@
 #include <utils/Timers.h>
 #include <utils/Vector.h>
 
-#include <scheduler/Fps.h>
-
-#include "../TimeStats/TimeStats.h"
+#include <deque>
+#include <mutex>
 
 namespace android::frametimeline {
 
@@ -162,7 +154,7 @@ public:
                  int32_t layerId, std::string layerName, std::string debugName,
                  PredictionState predictionState, TimelineItem&& predictions,
                  std::shared_ptr<TimeStats> timeStats, JankClassificationThresholds thresholds,
-                 TraceCookieCounter* traceCookieCounter, bool isBuffer, GameMode);
+                 TraceCookieCounter* traceCookieCounter, bool isBuffer, int32_t gameMode);
     ~SurfaceFrame() = default;
 
     // Returns std::nullopt if the frame hasn't been classified yet.
@@ -204,9 +196,8 @@ public:
     std::string miniDump() const;
     // Emits a packet for perfetto tracing. The function body will be executed only if tracing is
     // enabled. The displayFrameToken is needed to link the SurfaceFrame to the corresponding
-    // DisplayFrame at the trace processor side. monoBootOffset is the difference
-    // between SYSTEM_TIME_BOOTTIME and SYSTEM_TIME_MONOTONIC.
-    void trace(int64_t displayFrameToken, nsecs_t monoBootOffset) const;
+    // DisplayFrame at the trace processor side.
+    void trace(int64_t displayFrameToken) const;
 
     // Getter functions used only by FrameTimelineTests and SurfaceFrame internally
     TimelineItem getActuals() const;
@@ -226,8 +217,8 @@ public:
             std::chrono::duration_cast<std::chrono::nanoseconds>(2ms).count();
 
 private:
-    void tracePredictions(int64_t displayFrameToken, nsecs_t monoBootOffset) const;
-    void traceActuals(int64_t displayFrameToken, nsecs_t monoBootOffset) const;
+    void tracePredictions(int64_t displayFrameToken) const;
+    void traceActuals(int64_t displayFrameToken) const;
     void classifyJankLocked(int32_t displayFrameJankType, const Fps& refreshRate,
                             nsecs_t& deadlineDelta) REQUIRES(mMutex);
 
@@ -269,7 +260,7 @@ private:
     // buffer(animations)
     bool mIsBuffer;
     // GameMode from the layer. Used in metrics.
-    GameMode mGameMode = GameMode::Unsupported;
+    int32_t mGameMode = 0;
 };
 
 /*
@@ -290,7 +281,7 @@ public:
     virtual std::shared_ptr<SurfaceFrame> createSurfaceFrameForToken(
             const FrameTimelineInfo& frameTimelineInfo, pid_t ownerPid, uid_t ownerUid,
             int32_t layerId, std::string layerName, std::string debugName, bool isBuffer,
-            GameMode) = 0;
+            int32_t gameMode) = 0;
 
     // Adds a new SurfaceFrame to the current DisplayFrame. Frames from multiple layers can be
     // composited into one display frame.
@@ -314,12 +305,12 @@ public:
     virtual void parseArgs(const Vector<String16>& args, std::string& result) = 0;
 
     // Sets the max number of display frames that can be stored. Called by SF backdoor.
-    virtual void setMaxDisplayFrames(uint32_t size) = 0;
+    virtual void setMaxDisplayFrames(uint32_t size);
 
     // Computes the historical fps for the provided set of layer IDs
     // The fps is compted from the linear timeline of present timestamps for DisplayFrames
     // containing at least one layer ID.
-    virtual float computeFps(const std::unordered_set<int32_t>& layerIds) = 0;
+    virtual float computeFps(const std::unordered_set<int32_t>& layerIds);
 
     // Restores the max number of display frames to default. Called by SF backdoor.
     virtual void reset() = 0;
@@ -370,9 +361,8 @@ public:
         // Dumpsys interface - dumps all data irrespective of jank
         void dumpAll(std::string& result, nsecs_t baseTime) const;
         // Emits a packet for perfetto tracing. The function body will be executed only if tracing
-        // is enabled. monoBootOffset is the difference between SYSTEM_TIME_BOOTTIME
-        // and SYSTEM_TIME_MONOTONIC.
-        void trace(pid_t surfaceFlingerPid, nsecs_t monoBootOffset) const;
+        // is enabled.
+        void trace(pid_t surfaceFlingerPid) const;
         // Sets the token, vsyncPeriod, predictions and SF start time.
         void onSfWakeUp(int64_t token, Fps refreshRate, std::optional<TimelineItem> predictions,
                         nsecs_t wakeUpTime);
@@ -403,8 +393,8 @@ public:
 
     private:
         void dump(std::string& result, nsecs_t baseTime) const;
-        void tracePredictions(pid_t surfaceFlingerPid, nsecs_t monoBootOffset) const;
-        void traceActuals(pid_t surfaceFlingerPid, nsecs_t monoBootOffset) const;
+        void tracePredictions(pid_t surfaceFlingerPid) const;
+        void traceActuals(pid_t surfaceFlingerPid) const;
         void classifyJank(nsecs_t& deadlineDelta, nsecs_t& deltaToVsync,
                           nsecs_t previousPresentTime);
 
@@ -444,14 +434,14 @@ public:
     };
 
     FrameTimeline(std::shared_ptr<TimeStats> timeStats, pid_t surfaceFlingerPid,
-                  JankClassificationThresholds thresholds = {}, bool useBootTimeClock = true);
+                  JankClassificationThresholds thresholds = {});
     ~FrameTimeline() = default;
 
     frametimeline::TokenManager* getTokenManager() override { return &mTokenManager; }
     std::shared_ptr<SurfaceFrame> createSurfaceFrameForToken(
             const FrameTimelineInfo& frameTimelineInfo, pid_t ownerPid, uid_t ownerUid,
             int32_t layerId, std::string layerName, std::string debugName, bool isBuffer,
-            GameMode) override;
+            int32_t gameMode) override;
     void addSurfaceFrame(std::shared_ptr<frametimeline::SurfaceFrame> surfaceFrame) override;
     void setSfWakeUp(int64_t token, nsecs_t wakeupTime, Fps refreshRate) override;
     void setSfPresent(nsecs_t sfPresentTime, const std::shared_ptr<FenceTime>& presentFence,
@@ -474,7 +464,6 @@ private:
     friend class android::frametimeline::FrameTimelineTest;
 
     void flushPendingPresentFences() REQUIRES(mMutex);
-    std::optional<size_t> getFirstSignalFenceIndex() const REQUIRES(mMutex);
     void finalizeCurrentDisplayFrame() REQUIRES(mMutex);
     void dumpAll(std::string& result);
     void dumpJank(std::string& result);
@@ -487,7 +476,6 @@ private:
     TokenManager mTokenManager;
     TraceCookieCounter mTraceCookieCounter;
     mutable std::mutex mMutex;
-    const bool mUseBootTimeClock;
     uint32_t mMaxDisplayFrames;
     std::shared_ptr<TimeStats> mTimeStats;
     const pid_t mSurfaceFlingerPid;

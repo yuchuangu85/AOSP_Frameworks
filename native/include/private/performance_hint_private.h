@@ -21,55 +21,124 @@
 
 __BEGIN_DECLS
 
+struct APerformanceHintManager;
+struct APerformanceHintSession;
+
+/**
+ * An opaque type representing a handle to a performance hint manager.
+ * It must be released after use.
+ *
+ * <p>To use:<ul>
+ *    <li>Obtain the performance hint manager instance by calling
+ *        {@link APerformanceHint_getManager} function.</li>
+ *    <li>Create an {@link APerformanceHintSession} with
+ *        {@link APerformanceHint_createSession}.</li>
+ *    <li>Get the preferred update rate in nanoseconds with
+ *        {@link APerformanceHint_getPreferredUpdateRateNanos}.</li>
+ */
+typedef struct APerformanceHintManager APerformanceHintManager;
+
+/**
+ * An opaque type representing a handle to a performance hint session.
+ * A session can only be acquired from a {@link APerformanceHintManager}
+ * with {@link APerformanceHint_getPreferredUpdateRateNanos}. It must be
+ * freed with {@link APerformanceHint_closeSession} after use.
+ *
+ * A Session represents a group of threads with an inter-related workload such that hints for
+ * their performance should be considered as a unit. The threads in a given session should be
+ * long-life and not created or destroyed dynamically.
+ *
+ * <p>Each session is expected to have a periodic workload with a target duration for each
+ * cycle. The cycle duration is likely greater than the target work duration to allow other
+ * parts of the pipeline to run within the available budget. For example, a renderer thread may
+ * work at 60hz in order to produce frames at the display's frame but have a target work
+ * duration of only 6ms.</p>
+ *
+ * <p>After each cycle of work, the client is expected to use
+ * {@link APerformanceHint_reportActualWorkDuration} to report the actual time taken to
+ * complete.</p>
+ *
+ * <p>To use:<ul>
+ *    <li>Update a sessions target duration for each cycle of work
+ *        with  {@link APerformanceHint_updateTargetWorkDuration}.</li>
+ *    <li>Report the actual duration for the last cycle of work with
+ *        {@link APerformanceHint_reportActualWorkDuration}.</li>
+ *    <li>Release the session instance with
+ *        {@link APerformanceHint_closeSession}.</li></ul></p>
+ */
+typedef struct APerformanceHintSession APerformanceHintSession;
+
+/**
+  * Acquire an instance of the performance hint manager.
+  *
+  * @return manager instance on success, nullptr on failure.
+  */
+APerformanceHintManager* APerformanceHint_getManager();
+
+/**
+ * Creates a session for the given set of threads and sets their initial target work
+ * duration.
+ * @param manager The performance hint manager instance.
+ * @param threadIds The list of threads to be associated with this session. They must be part of
+ *     this app's thread group.
+ * @param size the size of threadIds.
+ * @param initialTargetWorkDurationNanos The desired duration in nanoseconds for the new session.
+ *     This must be positive.
+ * @return manager instance on success, nullptr on failure.
+ */
+APerformanceHintSession* APerformanceHint_createSession(APerformanceHintManager* manager,
+                                                        const int32_t* threadIds, size_t size,
+                                                        int64_t initialTargetWorkDurationNanos);
+
+/**
+ * Get preferred update rate information for this device.
+ *
+ * @param manager The performance hint manager instance.
+ * @return the preferred update rate supported by device software.
+ */
+int64_t APerformanceHint_getPreferredUpdateRateNanos(APerformanceHintManager* manager);
+
+/**
+ * Updates this session's target duration for each cycle of work.
+ *
+ * @param session The performance hint session instance to update.
+ * @param targetDurationNanos the new desired duration in nanoseconds. This must be positive.
+ * @return 0 on success
+ *         EINVAL if targetDurationNanos is not positive.
+ *         EPIPE if communication with the system service has failed.
+ */
+int APerformanceHint_updateTargetWorkDuration(APerformanceHintSession* session,
+                                               int64_t targetDurationNanos);
+
+/**
+ * Reports the actual duration for the last cycle of work.
+ *
+ * <p>The system will attempt to adjust the core placement of the threads within the thread
+ * group and/or the frequency of the core on which they are run to bring the actual duration
+ * close to the target duration.</p>
+ *
+ * @param session The performance hint session instance to update.
+ * @param actualDurationNanos how long the thread group took to complete its last task in
+ *     nanoseconds. This must be positive.
+ * @return 0 on success
+ *         EINVAL if actualDurationNanos is not positive.
+ *         EPIPE if communication with the system service has failed.
+ */
+int APerformanceHint_reportActualWorkDuration(APerformanceHintSession* session,
+                                               int64_t actualDurationNanos);
+
+/**
+ * Release the performance hint manager pointer acquired via
+ * {@link APerformanceHint_createSession}.
+ *
+ * @param session The performance hint session instance to release.
+ */
+void APerformanceHint_closeSession(APerformanceHintSession* session);
+
 /**
  * For testing only.
  */
 void APerformanceHint_setIHintManagerForTesting(void* iManager);
-
-/**
- * Hints for the session used to signal upcoming changes in the mode or workload.
- */
-enum SessionHint: int32_t {
-    /**
-     * This hint indicates a sudden increase in CPU workload intensity. It means
-     * that this hint session needs extra CPU resources immediately to meet the
-     * target duration for the current work cycle.
-     */
-    CPU_LOAD_UP = 0,
-    /**
-     * This hint indicates a decrease in CPU workload intensity. It means that
-     * this hint session can reduce CPU resources and still meet the target duration.
-     */
-    CPU_LOAD_DOWN = 1,
-    /*
-     * This hint indicates an upcoming CPU workload that is completely changed and
-     * unknown. It means that the hint session should reset CPU resources to a known
-     * baseline to prepare for an arbitrary load, and must wake up if inactive.
-     */
-    CPU_LOAD_RESET = 2,
-    /*
-     * This hint indicates that the most recent CPU workload is resuming after a
-     * period of inactivity. It means that the hint session should allocate similar
-     * CPU resources to what was used previously, and must wake up if inactive.
-     */
-    CPU_LOAD_RESUME = 3,
-};
-
-/**
- * Sends performance hints to inform the hint session of changes in the workload.
- *
- * @param session The performance hint session instance to update.
- * @param hint The hint to send to the session.
- * @return 0 on success
- *         EPIPE if communication with the system service has failed.
- */
-int APerformanceHint_sendHint(void* session, SessionHint hint);
-
-/**
- * Return the list of thread ids, this API should only be used for testing only.
- */
-int APerformanceHint_getThreadIds(void* aPerformanceHintSession,
-                                  int32_t* const threadIds, size_t* const size);
 
 __END_DECLS
 

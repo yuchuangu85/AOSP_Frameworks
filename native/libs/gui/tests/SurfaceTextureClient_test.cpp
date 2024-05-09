@@ -42,7 +42,7 @@ protected:
     virtual void SetUp() {
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("Begin test: %s.%s", testInfo->test_case_name(),
+        ALOGV("Begin test: %s.%s", testInfo->test_case_name(),
                 testInfo->name());
 
         sp<IGraphicBufferProducer> producer;
@@ -99,7 +99,7 @@ protected:
 
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("End test:   %s.%s", testInfo->test_case_name(),
+        ALOGV("End test:   %s.%s", testInfo->test_case_name(),
                 testInfo->name());
     }
 

@@ -18,13 +18,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wconversion"
 
-// This file is included by modules that have host support but android/looper.h is not supported
-// on host. __REMOVED_IN needs to be defined in order for android/looper.h to be compiled.
-#ifndef __BIONIC__
-#define __REMOVED_IN(x) __attribute__((deprecated))
-#endif
 #include <android/looper.h>
-
 #include <gui/DisplayEventReceiver.h>
 #include <utils/Looper.h>
 
@@ -61,7 +55,8 @@ int main(int /*argc*/, char** /*argv*/)
 {
     DisplayEventReceiver myDisplayEvent;
 
-    sp<Looper> loop = sp<Looper>::make(false);
+
+    sp<Looper> loop = new Looper(false);
     loop->addFd(myDisplayEvent.getFd(), 0, ALOOPER_EVENT_INPUT, receiver,
             &myDisplayEvent);
 

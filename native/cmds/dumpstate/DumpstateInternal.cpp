@@ -162,16 +162,17 @@ int DumpFileFromFdToFd(const std::string& title, const std::string& path_string,
         return 0;
     }
     bool newline = false;
-    int poll_timeout_ms = 30 * 1000;
     while (true) {
+        uint64_t start_time = Nanotime();
         pollfd fds[] = { { .fd = fd, .events = POLLIN } };
-        int ret = TEMP_FAILURE_RETRY(poll(fds, arraysize(fds), poll_timeout_ms));
+        int ret = TEMP_FAILURE_RETRY(poll(fds, arraysize(fds), 30 * 1000));
         if (ret == -1) {
             dprintf(out_fd, "*** %s: poll failed: %s\n", path, strerror(errno));
             newline = true;
             break;
-        } else if (ret == 0 && poll_timeout_ms != 0) {
-            dprintf(out_fd, "*** %s: Timed out after %ds\n", path, poll_timeout_ms / 1000 );
+        } else if (ret == 0) {
+            uint64_t elapsed = Nanotime() - start_time;
+            dprintf(out_fd, "*** %s: Timed out after %.3fs\n", path, (float)elapsed / NANOS_PER_SEC);
             newline = true;
             break;
         } else {
@@ -188,7 +189,6 @@ int DumpFileFromFdToFd(const std::string& title, const std::string& path_string,
                 break;
             }
         }
-        poll_timeout_ms = 0;
     }
 
     if (!newline) dprintf(out_fd, "\n");

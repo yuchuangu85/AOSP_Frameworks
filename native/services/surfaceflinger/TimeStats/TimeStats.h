@@ -17,25 +17,22 @@
 #pragma once
 
 #include <cstdint>
-#include <deque>
-#include <mutex>
-#include <optional>
-#include <unordered_map>
-#include <variant>
 
+#include <../Fps.h>
 #include <android/hardware/graphics/composer/2.4/IComposerClient.h>
 #include <gui/JankInfo.h>
-#include <gui/LayerMetadata.h>
 #include <timestatsproto/TimeStatsHelper.h>
 #include <timestatsproto/TimeStatsProtoHeader.h>
 #include <ui/FenceTime.h>
 #include <utils/String16.h>
 #include <utils/Vector.h>
 
-#include <scheduler/Fps.h>
+#include <deque>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <variant>
 
-using android::gui::GameMode;
-using android::gui::LayerMetadata;
 using namespace android::surfaceflinger;
 
 namespace android {
@@ -47,7 +44,7 @@ public:
     virtual ~TimeStats() = default;
 
     // Process a pull request from statsd.
-    virtual bool onPullAtom(const int atomId, std::vector<uint8_t>* pulledData) = 0;
+    virtual bool onPullAtom(const int atomId, std::string* pulledData);
 
     virtual void parseArgs(bool asProto, const Vector<String16>& args, std::string& result) = 0;
     virtual bool isEnabled() = 0;
@@ -55,8 +52,14 @@ public:
 
     virtual void incrementTotalFrames() = 0;
     virtual void incrementMissedFrames() = 0;
+    virtual void incrementClientCompositionFrames() = 0;
+    virtual void incrementClientCompositionReusedFrames() = 0;
     // Increments the number of times the display refresh rate changed.
     virtual void incrementRefreshRateSwitches() = 0;
+    // Increments the number of changes in composition strategy
+    // The intention is to reflect the number of changes between hwc and gpu
+    // composition, where "gpu composition" may also include mixed composition.
+    virtual void incrementCompositionStrategyChanges() = 0;
     // Records the most up-to-date count of display event connections.
     // The stored count will be the maximum ever recoded.
     virtual void recordDisplayEventConnectionCount(int32_t count) = 0;
@@ -76,7 +79,7 @@ public:
                                             const std::shared_ptr<FenceTime>& readyFence) = 0;
 
     virtual void setPostTime(int32_t layerId, uint64_t frameNumber, const std::string& layerName,
-                             uid_t uid, nsecs_t postTime, GameMode) = 0;
+                             uid_t uid, nsecs_t postTime, int32_t gameMode) = 0;
     virtual void setLatchTime(int32_t layerId, uint64_t frameNumber, nsecs_t latchTime) = 0;
     // Reasons why latching a particular buffer may be skipped
     enum class LatchSkipReason {
@@ -98,11 +101,11 @@ public:
     // rendering path, as they flush prior fences if those fences have fired.
     virtual void setPresentTime(int32_t layerId, uint64_t frameNumber, nsecs_t presentTime,
                                 Fps displayRefreshRate, std::optional<Fps> renderRate,
-                                SetFrameRateVote frameRateVote, GameMode) = 0;
+                                SetFrameRateVote frameRateVote, int32_t gameMode) = 0;
     virtual void setPresentFence(int32_t layerId, uint64_t frameNumber,
                                  const std::shared_ptr<FenceTime>& presentFence,
                                  Fps displayRefreshRate, std::optional<Fps> renderRate,
-                                 SetFrameRateVote frameRateVote, GameMode) = 0;
+                                 SetFrameRateVote frameRateVote, int32_t gameMode) = 0;
 
     // Increments janky frames, blamed to the provided {refreshRate, renderRate, uid, layerName}
     // key, with JankMetadata as supplementary reasons for the jank. Because FrameTimeline is the
@@ -120,21 +123,19 @@ public:
         std::optional<Fps> renderRate;
         uid_t uid = 0;
         std::string layerName;
-        GameMode gameMode = GameMode::Unsupported;
+        int32_t gameMode = 0;
         int32_t reasons = 0;
         nsecs_t displayDeadlineDelta = 0;
         nsecs_t displayPresentJitter = 0;
         nsecs_t appDeadlineDelta = 0;
 
-        static bool isOptApproxEqual(std::optional<Fps> lhs, std::optional<Fps> rhs) {
-            return (!lhs && !rhs) || (lhs && rhs && isApproxEqual(*lhs, *rhs));
-        }
-
         bool operator==(const JankyFramesInfo& o) const {
-            return isApproxEqual(refreshRate, o.refreshRate) &&
-                    isOptApproxEqual(renderRate, o.renderRate) && uid == o.uid &&
-                    layerName == o.layerName && gameMode == o.gameMode && reasons == o.reasons &&
-                    displayDeadlineDelta == o.displayDeadlineDelta &&
+            return Fps::EqualsInBuckets{}(refreshRate, o.refreshRate) &&
+                    ((renderRate == std::nullopt && o.renderRate == std::nullopt) ||
+                     (renderRate != std::nullopt && o.renderRate != std::nullopt &&
+                      Fps::EqualsInBuckets{}(*renderRate, *o.renderRate))) &&
+                    uid == o.uid && layerName == o.layerName && gameMode == o.gameMode &&
+                    reasons == o.reasons && displayDeadlineDelta == o.displayDeadlineDelta &&
                     displayPresentJitter == o.displayPresentJitter &&
                     appDeadlineDelta == o.appDeadlineDelta;
         }
@@ -154,24 +155,6 @@ public:
         }
     };
 
-    struct ClientCompositionRecord {
-        // Frame had client composition or mixed composition
-        bool hadClientComposition = false;
-        // Composition changed between hw composition and mixed/client composition
-        bool changed = false;
-        // Frame reused the client composition result from a previous frame
-        bool reused = false;
-        // Composition strategy predicted for frame
-        bool predicted = false;
-        // Composition strategy prediction succeeded
-        bool predictionSucceeded = false;
-
-        // Whether there is data we want to record.
-        bool hasInterestingData() const {
-            return hadClientComposition || changed || reused || predicted;
-        }
-    };
-
     virtual void incrementJankyFrames(const JankyFramesInfo& info) = 0;
     // Clean up the layer record
     virtual void onDestroy(int32_t layerId) = 0;
@@ -183,7 +166,6 @@ public:
     // Source of truth is RefrehRateStats.
     virtual void recordRefreshRate(uint32_t fps, nsecs_t duration) = 0;
     virtual void setPresentFenceGlobal(const std::shared_ptr<FenceTime>& presentFence) = 0;
-    virtual void pushCompositionStrategyState(const ClientCompositionRecord&) = 0;
 };
 
 namespace impl {
@@ -210,7 +192,7 @@ class TimeStats : public android::TimeStats {
     struct LayerRecord {
         uid_t uid;
         std::string layerName;
-        GameMode gameMode = GameMode::Unsupported;
+        int32_t gameMode = 0;
         // This is the index in timeRecords, at which the timestamps for that
         // specific frame are still not fully received. This is not waiting for
         // fences to signal, but rather waiting to receive those fences/timestamps.
@@ -219,7 +201,6 @@ class TimeStats : public android::TimeStats {
         uint32_t lateAcquireFrames = 0;
         uint32_t badDesiredPresentFrames = 0;
         TimeRecord prevTimeRecord;
-        std::optional<int32_t> prevPresentToPresentMs;
         std::deque<TimeRecord> timeRecords;
     };
 
@@ -245,14 +226,17 @@ public:
     TimeStats(std::optional<size_t> maxPulledLayers,
               std::optional<size_t> maxPulledHistogramBuckets);
 
-    bool onPullAtom(const int atomId, std::vector<uint8_t>* pulledData) override;
+    bool onPullAtom(const int atomId, std::string* pulledData) override;
     void parseArgs(bool asProto, const Vector<String16>& args, std::string& result) override;
     bool isEnabled() override;
     std::string miniDump() override;
 
     void incrementTotalFrames() override;
     void incrementMissedFrames() override;
+    void incrementClientCompositionFrames() override;
+    void incrementClientCompositionReusedFrames() override;
     void incrementRefreshRateSwitches() override;
+    void incrementCompositionStrategyChanges() override;
     void recordDisplayEventConnectionCount(int32_t count) override;
 
     void recordFrameDuration(nsecs_t startTime, nsecs_t endTime) override;
@@ -261,7 +245,7 @@ public:
                                     const std::shared_ptr<FenceTime>& readyFence) override;
 
     void setPostTime(int32_t layerId, uint64_t frameNumber, const std::string& layerName, uid_t uid,
-                     nsecs_t postTime, GameMode) override;
+                     nsecs_t postTime, int32_t gameMode) override;
     void setLatchTime(int32_t layerId, uint64_t frameNumber, nsecs_t latchTime) override;
     void incrementLatchSkipped(int32_t layerId, LatchSkipReason reason) override;
     void incrementBadDesiredPresent(int32_t layerId) override;
@@ -270,11 +254,12 @@ public:
     void setAcquireFence(int32_t layerId, uint64_t frameNumber,
                          const std::shared_ptr<FenceTime>& acquireFence) override;
     void setPresentTime(int32_t layerId, uint64_t frameNumber, nsecs_t presentTime,
-                        Fps displayRefreshRate, std::optional<Fps> renderRate, SetFrameRateVote,
-                        GameMode) override;
+                        Fps displayRefreshRate, std::optional<Fps> renderRate,
+                        SetFrameRateVote frameRateVote, int32_t gameMode) override;
     void setPresentFence(int32_t layerId, uint64_t frameNumber,
                          const std::shared_ptr<FenceTime>& presentFence, Fps displayRefreshRate,
-                         std::optional<Fps> renderRate, SetFrameRateVote, GameMode) override;
+                         std::optional<Fps> renderRate, SetFrameRateVote frameRateVote,
+                         int32_t gameMode) override;
 
     void incrementJankyFrames(const JankyFramesInfo& info) override;
     // Clean up the layer record
@@ -288,20 +273,18 @@ public:
     void recordRefreshRate(uint32_t fps, nsecs_t duration) override;
     void setPresentFenceGlobal(const std::shared_ptr<FenceTime>& presentFence) override;
 
-    void pushCompositionStrategyState(const ClientCompositionRecord&) override;
-
     static const size_t MAX_NUM_TIME_RECORDS = 64;
 
 private:
-    bool populateGlobalAtom(std::vector<uint8_t>* pulledData);
-    bool populateLayerAtom(std::vector<uint8_t>* pulledData);
+    bool populateGlobalAtom(std::string* pulledData);
+    bool populateLayerAtom(std::string* pulledData);
     bool recordReadyLocked(int32_t layerId, TimeRecord* timeRecord);
     void flushAvailableRecordsToStatsLocked(int32_t layerId, Fps displayRefreshRate,
-                                            std::optional<Fps> renderRate, SetFrameRateVote,
-                                            GameMode);
+                                            std::optional<Fps> renderRate,
+                                            SetFrameRateVote frameRateVote, int32_t gameMode);
     void flushPowerTimeLocked();
     void flushAvailableGlobalRecordsToStatsLocked();
-    bool canAddNewAggregatedStats(uid_t uid, const std::string& layerName, GameMode);
+    bool canAddNewAggregatedStats(uid_t uid, const std::string& layerName, int32_t gameMode);
 
     void enable();
     void disable();

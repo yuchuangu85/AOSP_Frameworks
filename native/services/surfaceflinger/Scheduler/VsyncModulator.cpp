@@ -40,7 +40,7 @@ VsyncModulator::VsyncModulator(const VsyncConfigSet& config, Now now)
         mNow(now),
         mTraceDetailedInfo(base::GetBoolProperty("debug.sf.vsync_trace_detailed_info", false)) {}
 
-VsyncConfig VsyncModulator::setVsyncConfigSet(const VsyncConfigSet& config) {
+VsyncModulator::VsyncConfig VsyncModulator::setVsyncConfigSet(const VsyncConfigSet& config) {
     std::lock_guard<std::mutex> lock(mMutex);
     mVsyncConfigSet = config;
     return updateVsyncConfigLocked();
@@ -53,14 +53,14 @@ VsyncModulator::VsyncConfigOpt VsyncModulator::setTransactionSchedule(Transactio
         case Schedule::EarlyStart:
             if (token) {
                 mEarlyWakeupRequests.emplace(token);
-                token->linkToDeath(sp<DeathRecipient>::fromExisting(this));
+                token->linkToDeath(this);
             } else {
                 ALOGW("%s: EarlyStart requested without a valid token", __func__);
             }
             break;
         case Schedule::EarlyEnd: {
             if (token && mEarlyWakeupRequests.erase(token) > 0) {
-                token->unlinkToDeath(sp<DeathRecipient>::fromExisting(this));
+                token->unlinkToDeath(this);
             } else {
                 ALOGW("%s: Unexpected EarlyEnd", __func__);
             }
@@ -129,41 +129,30 @@ VsyncModulator::VsyncConfigOpt VsyncModulator::onDisplayRefresh(bool usedGpuComp
     return updateVsyncConfig();
 }
 
-VsyncConfig VsyncModulator::getVsyncConfig() const {
+VsyncModulator::VsyncConfig VsyncModulator::getVsyncConfig() const {
     std::lock_guard<std::mutex> lock(mMutex);
     return mVsyncConfig;
 }
 
-auto VsyncModulator::getNextVsyncConfigType() const -> VsyncConfigType {
+const VsyncModulator::VsyncConfig& VsyncModulator::getNextVsyncConfig() const {
     // Early offsets are used if we're in the middle of a refresh rate
     // change, or if we recently begin a transaction.
     if (!mEarlyWakeupRequests.empty() || mTransactionSchedule == Schedule::EarlyEnd ||
         mEarlyTransactionFrames > 0 || mRefreshRateChangePending) {
-        return VsyncConfigType::Early;
+        return mVsyncConfigSet.early;
     } else if (mEarlyGpuFrames > 0) {
-        return VsyncConfigType::EarlyGpu;
+        return mVsyncConfigSet.earlyGpu;
     } else {
-        return VsyncConfigType::Late;
+        return mVsyncConfigSet.late;
     }
 }
 
-const VsyncConfig& VsyncModulator::getNextVsyncConfig() const {
-    switch (getNextVsyncConfigType()) {
-        case VsyncConfigType::Early:
-            return mVsyncConfigSet.early;
-        case VsyncConfigType::EarlyGpu:
-            return mVsyncConfigSet.earlyGpu;
-        case VsyncConfigType::Late:
-            return mVsyncConfigSet.late;
-    }
-}
-
-VsyncConfig VsyncModulator::updateVsyncConfig() {
+VsyncModulator::VsyncConfig VsyncModulator::updateVsyncConfig() {
     std::lock_guard<std::mutex> lock(mMutex);
     return updateVsyncConfigLocked();
 }
 
-VsyncConfig VsyncModulator::updateVsyncConfigLocked() {
+VsyncModulator::VsyncConfig VsyncModulator::updateVsyncConfigLocked() {
     const VsyncConfig& offsets = getNextVsyncConfig();
     mVsyncConfig = offsets;
 
@@ -185,11 +174,6 @@ void VsyncModulator::binderDied(const wp<IBinder>& who) {
     mEarlyWakeupRequests.erase(who);
 
     static_cast<void>(updateVsyncConfigLocked());
-}
-
-bool VsyncModulator::isVsyncConfigEarly() const {
-    std::lock_guard<std::mutex> lock(mMutex);
-    return getNextVsyncConfigType() != VsyncConfigType::Late;
 }
 
 } // namespace android::scheduler

@@ -42,6 +42,10 @@
 #define TEST_CONTROLLED_BY_APP false
 #define TEST_PRODUCER_USAGE_BITS (0)
 
+#ifndef USE_BUFFER_HUB_AS_BUFFER_QUEUE
+#define USE_BUFFER_HUB_AS_BUFFER_QUEUE 0
+#endif
+
 namespace android {
 
 namespace {
@@ -73,6 +77,7 @@ namespace {
     // Enums to control which IGraphicBufferProducer backend to test.
     enum IGraphicBufferProducerTestCode {
         USE_BUFFER_QUEUE_PRODUCER = 0,
+        USE_BUFFER_HUB_PRODUCER,
     };
 }; // namespace anonymous
 
@@ -84,7 +89,7 @@ protected:
     virtual void SetUp() {
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("Begin test: %s.%s", testInfo->test_case_name(),
+        ALOGV("Begin test: %s.%s", testInfo->test_case_name(),
                 testInfo->name());
 
         mMC = new MockConsumer;
@@ -92,6 +97,10 @@ protected:
         switch (GetParam()) {
             case USE_BUFFER_QUEUE_PRODUCER: {
                 BufferQueue::createBufferQueue(&mProducer, &mConsumer);
+                break;
+            }
+            case USE_BUFFER_HUB_PRODUCER: {
+                BufferQueue::createBufferHubQueue(&mProducer, &mConsumer);
                 break;
             }
             default: {
@@ -114,7 +123,7 @@ protected:
     virtual void TearDown() {
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("End test:   %s.%s", testInfo->test_case_name(),
+        ALOGV("End test:   %s.%s", testInfo->test_case_name(),
                 testInfo->name());
     }
 
@@ -871,6 +880,11 @@ TEST_P(IGraphicBufferProducerTest, SetMaxDequeuedBufferCount_Fails) {
 }
 
 TEST_P(IGraphicBufferProducerTest, SetAsyncMode_Succeeds) {
+    if (GetParam() == USE_BUFFER_HUB_PRODUCER) {
+        // TODO(b/36724099): Add support for BufferHubProducer::setAsyncMode(true)
+        return;
+    }
+
     ASSERT_OK(mConsumer->setMaxAcquiredBufferCount(1)) << "maxAcquire: " << 1;
     ASSERT_NO_FATAL_FAILURE(ConnectProducer());
     ASSERT_OK(mProducer->setAsyncMode(true)) << "async mode: " << true;
@@ -1103,7 +1117,14 @@ TEST_P(IGraphicBufferProducerTest, DetachThenAttach_Succeeds) {
     }
 }
 
+#if USE_BUFFER_HUB_AS_BUFFER_QUEUE
+INSTANTIATE_TEST_CASE_P(IGraphicBufferProducerBackends, IGraphicBufferProducerTest,
+                        ::testing::Values(USE_BUFFER_QUEUE_PRODUCER, USE_BUFFER_HUB_PRODUCER));
+#else
+// TODO(b/70046255): Remove the #ifdef here and always tests both backends once BufferHubQueue can
+// pass all existing libgui tests.
 INSTANTIATE_TEST_CASE_P(IGraphicBufferProducerBackends, IGraphicBufferProducerTest,
                         ::testing::Values(USE_BUFFER_QUEUE_PRODUCER));
+#endif
 
 } // namespace android

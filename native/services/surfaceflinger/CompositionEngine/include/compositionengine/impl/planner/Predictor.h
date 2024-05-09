@@ -16,8 +16,6 @@
 
 #pragma once
 
-#include <ftl/flags.h>
-
 #include <compositionengine/impl/planner/LayerState.h>
 
 namespace android::compositionengine::impl::planner {
@@ -37,7 +35,7 @@ public:
         // This implies that only one layer is allowed to differ in an approximate match.
         size_t differingIndex;
         // Set of fields that differ for the differing layer in the approximate match.
-        ftl::Flags<LayerStateField> differingFields;
+        Flags<LayerStateField> differingFields;
     };
 
     // Returns an approximate match when comparing this layer stack with the provided list of
@@ -111,7 +109,7 @@ public:
     static std::optional<Plan> fromString(const std::string&);
 
     void reset() { mLayerTypes.clear(); }
-    void addLayerType(aidl::android::hardware::graphics::composer3::Composition type) {
+    void addLayerType(hardware::graphics::composer::hal::Composition type) {
         mLayerTypes.emplace_back(type);
     }
 
@@ -127,7 +125,7 @@ public:
     }
 
 private:
-    std::vector<aidl::android::hardware::graphics::composer3::Composition> mLayerTypes;
+    std::vector<hardware::graphics::composer::hal::Composition> mLayerTypes;
 };
 
 } // namespace android::compositionengine::impl::planner

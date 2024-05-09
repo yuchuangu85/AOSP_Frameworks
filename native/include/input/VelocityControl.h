@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _LIBINPUT_VELOCITY_CONTROL_H
+#define _LIBINPUT_VELOCITY_CONTROL_H
 
-#include <android-base/stringprintf.h>
 #include <input/Input.h>
 #include <input/VelocityTracker.h>
 #include <utils/Timers.h>
-
-using android::base::StringPrintf;
 
 namespace android {
 
@@ -72,12 +70,6 @@ struct VelocityControlParameters {
             scale(scale), lowThreshold(lowThreshold),
             highThreshold(highThreshold), acceleration(acceleration) {
     }
-
-    std::string dump() const {
-        return StringPrintf("scale=%0.3f, lowThreshold=%0.3f, highThreshold=%0.3f, "
-                            "acceleration=%0.3f\n",
-                            scale, lowThreshold, highThreshold, acceleration);
-    }
 };
 
 /*
@@ -86,9 +78,6 @@ struct VelocityControlParameters {
 class VelocityControl {
 public:
     VelocityControl();
-
-    /* Gets the various parameters. */
-    VelocityControlParameters& getParameters();
 
     /* Sets the various parameters. */
     void setParameters(const VelocityControlParameters& parameters);
@@ -109,8 +98,10 @@ private:
     VelocityControlParameters mParameters;
 
     nsecs_t mLastMovementTime;
-    float mRawPositionX, mRawPositionY;
+    VelocityTracker::Position mRawPosition;
     VelocityTracker mVelocityTracker;
 };
 
 } // namespace android
+
+#endif // _LIBINPUT_VELOCITY_CONTROL_H

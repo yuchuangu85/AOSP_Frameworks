@@ -24,10 +24,9 @@ package {
 cc_test {
     name: "libsensor_test",
 
-    cflags: [
-        "-Wall",
-        "-Werror",
-    ],
+    clang: true,
+
+    cflags: ["-Wall", "-Werror"],
 
     srcs: [
         "Sensor_test.cpp",

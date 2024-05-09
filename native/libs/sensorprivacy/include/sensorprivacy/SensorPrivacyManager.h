@@ -31,26 +31,22 @@ class SensorPrivacyManager
 {
 public:
     enum {
-        TOGGLE_SENSOR_MICROPHONE = 1,
-        TOGGLE_SENSOR_CAMERA = 2
-    };
-
-    enum {
-        TOGGLE_TYPE_SOFTWARE = 1,
-        TOGGLE_TYPE_HARDWARE = 2
+        INDIVIDUAL_SENSOR_MICROPHONE = 1,
+        INDIVIDUAL_SENSOR_CAMERA = 2
     };
 
     SensorPrivacyManager();
 
-    bool supportsSensorToggle(int toggleType, int sensor);
+    bool supportsSensorToggle(int sensor);
     void addSensorPrivacyListener(const sp<hardware::ISensorPrivacyListener>& listener);
-    status_t addToggleSensorPrivacyListener(const sp<hardware::ISensorPrivacyListener>& listener);
+    status_t addIndividualSensorPrivacyListener(int userId, int sensor,
+            const sp<hardware::ISensorPrivacyListener>& listener);
     void removeSensorPrivacyListener(const sp<hardware::ISensorPrivacyListener>& listener);
-    void removeToggleSensorPrivacyListener(const sp<hardware::ISensorPrivacyListener>& listener);
+    void removeIndividualSensorPrivacyListener(int sensor,
+            const sp<hardware::ISensorPrivacyListener>& listener);
     bool isSensorPrivacyEnabled();
-    bool isToggleSensorPrivacyEnabled(int sensor);
-    bool isToggleSensorPrivacyEnabled(int toggleType, int sensor);
-    status_t isToggleSensorPrivacyEnabled(int toggleType, int sensor, bool &result);
+    bool isIndividualSensorPrivacyEnabled(int userId, int sensor);
+    status_t isIndividualSensorPrivacyEnabled(int userId, int sensor, bool &result);
 
     status_t linkToDeath(const sp<IBinder::DeathRecipient>& recipient);
     status_t unlinkToDeath(const sp<IBinder::DeathRecipient>& recipient);

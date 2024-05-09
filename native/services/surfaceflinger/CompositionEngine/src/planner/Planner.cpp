@@ -32,46 +32,36 @@ namespace android::compositionengine::impl::planner {
 
 namespace {
 
-std::optional<Flattener::Tunables::RenderScheduling> buildRenderSchedulingTunables() {
+std::optional<Flattener::CachedSetRenderSchedulingTunables> buildFlattenerTuneables() {
     if (!base::GetBoolProperty(std::string("debug.sf.enable_cached_set_render_scheduling"), true)) {
         return std::nullopt;
     }
 
-    const auto renderDuration = std::chrono::nanoseconds(
+    auto renderDuration = std::chrono::nanoseconds(
             base::GetUintProperty<uint64_t>(std::string("debug.sf.cached_set_render_duration_ns"),
-                                            Flattener::Tunables::RenderScheduling::
+                                            Flattener::CachedSetRenderSchedulingTunables::
                                                     kDefaultCachedSetRenderDuration.count()));
 
-    const auto maxDeferRenderAttempts = base::GetUintProperty<
+    auto maxDeferRenderAttempts = base::GetUintProperty<
             size_t>(std::string("debug.sf.cached_set_max_defer_render_attmpts"),
-                    Flattener::Tunables::RenderScheduling::kDefaultMaxDeferRenderAttempts);
+                    Flattener::CachedSetRenderSchedulingTunables::kDefaultMaxDeferRenderAttempts);
 
-    return std::make_optional<Flattener::Tunables::RenderScheduling>(
-            Flattener::Tunables::RenderScheduling{
+    return std::make_optional<Flattener::CachedSetRenderSchedulingTunables>(
+            Flattener::CachedSetRenderSchedulingTunables{
                     .cachedSetRenderDuration = renderDuration,
                     .maxDeferRenderAttempts = maxDeferRenderAttempts,
             });
 }
 
-Flattener::Tunables buildFlattenerTuneables() {
-    const auto activeLayerTimeout = std::chrono::milliseconds(
-            base::GetIntProperty<int32_t>(std::string(
-                                                  "debug.sf.layer_caching_active_layer_timeout_ms"),
-                                          Flattener::Tunables::kDefaultActiveLayerTimeout.count()));
-    const auto enableHolePunch =
-            base::GetBoolProperty(std::string("debug.sf.enable_hole_punch_pip"),
-                                  Flattener::Tunables::kDefaultEnableHolePunch);
-    return Flattener::Tunables{
-            .mActiveLayerTimeout = activeLayerTimeout,
-            .mRenderScheduling = buildRenderSchedulingTunables(),
-            .mEnableHolePunch = enableHolePunch,
-    };
-}
-
 } // namespace
 
 Planner::Planner(renderengine::RenderEngine& renderEngine)
+      // Implicitly, layer caching must also be enabled for the hole punch or
+      // predictor to have any effect.
+      // E.g., setprop debug.sf.enable_layer_caching 1, or
+      // adb shell service call SurfaceFlinger 1040 i32 1 [i64 <display ID>]
       : mFlattener(renderEngine,
+                   base::GetBoolProperty(std::string("debug.sf.enable_hole_punch_pip"), true),
                    buildFlattenerTuneables()) {
     mPredictorEnabled =
             base::GetBoolProperty(std::string("debug.sf.enable_planner_prediction"), false);
@@ -97,7 +87,7 @@ void Planner::plan(
         if (const auto layerEntry = mPreviousLayers.find(id); layerEntry != mPreviousLayers.end()) {
             // Track changes from previous info
             LayerState& state = layerEntry->second;
-            ftl::Flags<LayerStateField> differences = state.update(layer);
+            Flags<LayerStateField> differences = state.update(layer);
             if (differences.get() == 0) {
                 state.incrementFramesSinceBufferUpdate();
             } else {
@@ -193,7 +183,7 @@ void Planner::reportFinalPlan(
 
         finalPlan.addLayerType(
                 forcedOrRequestedClient
-                        ? aidl::android::hardware::graphics::composer3::Composition::CLIENT
+                        ? hardware::graphics::composer::hal::Composition::CLIENT
                         : layer->getLayerFE().getCompositionState()->compositionType);
     }
 
@@ -201,11 +191,11 @@ void Planner::reportFinalPlan(
                             finalPlan);
 }
 
-void Planner::renderCachedSets(const OutputCompositionState& outputState,
-                               std::optional<std::chrono::steady_clock::time_point> renderDeadline,
-                               bool deviceHandlesColorTransform) {
+void Planner::renderCachedSets(
+        const OutputCompositionState& outputState,
+        std::optional<std::chrono::steady_clock::time_point> renderDeadline) {
     ATRACE_CALL();
-    mFlattener.renderCachedSets(outputState, renderDeadline, deviceHandlesColorTransform);
+    mFlattener.renderCachedSets(outputState, renderDeadline);
 }
 
 void Planner::dump(const Vector<String16>& args, std::string& result) {

@@ -18,7 +18,6 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wconversion"
 
-#include <android-base/properties.h>
 #include <private/android_filesystem_config.h>
 #include "LayerTransactionTest.h"
 #include "utils/TransactionUtils.h"
@@ -30,16 +29,14 @@ protected:
     virtual void SetUp() {
         LayerTransactionTest::SetUp();
         ASSERT_EQ(NO_ERROR, mClient->initCheck());
-        const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-        ASSERT_FALSE(ids.empty());
 
-        const auto display = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+        const auto display = SurfaceComposerClient::getInternalDisplayToken();
         ASSERT_FALSE(display == nullptr);
 
         mParentLayer = createColorLayer("Parent layer", Color::RED);
         mChildLayer = createColorLayer("Child layer", Color::GREEN, mParentLayer.get());
         asTransaction([&](Transaction& t) {
-            t.setDisplayLayerStack(display, ui::DEFAULT_LAYER_STACK);
+            t.setDisplayLayerStack(display, 0);
             t.setLayer(mParentLayer, INT32_MAX - 2).show(mParentLayer);
             t.setCrop(mChildLayer, Rect(0, 0, 400, 400)).show(mChildLayer);
             t.setPosition(mChildLayer, 50, 50);
@@ -120,20 +117,15 @@ TEST_F(MirrorLayerTest, MirrorColorLayer) {
         shot->expectColor(Rect(750, 750, 950, 950), Color::BLACK);
     }
 
-    if (base::GetBoolProperty("debug.sf.enable_legacy_frontend", true)) {
-        GTEST_SKIP() << "Skipping test because mirroring behavior changes with legacy frontend";
-    }
-
-    // Remove child layer and verify we can still mirror the layer when
-    // its offscreen.
+    // Remove child layer
     Transaction().reparent(mChildLayer, nullptr).apply();
     {
         SCOPED_TRACE("Removed Child Layer");
         auto shot = screenshot();
         // Grandchild mirror
-        shot->expectColor(Rect(550, 550, 750, 750), Color::BLACK);
+        shot->expectColor(Rect(550, 550, 750, 750), Color::RED);
         // Child mirror
-        shot->expectColor(Rect(750, 750, 950, 950), Color::BLACK);
+        shot->expectColor(Rect(750, 750, 950, 950), Color::RED);
     }
 
     // Add grandchild layer to offscreen layer
@@ -142,9 +134,9 @@ TEST_F(MirrorLayerTest, MirrorColorLayer) {
         SCOPED_TRACE("Added Grandchild Layer");
         auto shot = screenshot();
         // Grandchild mirror
-        shot->expectColor(Rect(550, 550, 750, 750), Color::WHITE);
+        shot->expectColor(Rect(550, 550, 750, 750), Color::RED);
         // Child mirror
-        shot->expectColor(Rect(750, 750, 950, 950), Color::BLACK);
+        shot->expectColor(Rect(750, 750, 950, 950), Color::RED);
     }
 
     // Add child layer
@@ -201,14 +193,14 @@ TEST_F(MirrorLayerTest, MirrorBufferLayer) {
         shot->expectColor(Rect(750, 750, 950, 950), Color::GREEN);
     }
 
-    sp<SurfaceControl> layer =
-            createLayer("Layer", 200, 200, ISurfaceComposerClient::eFXSurfaceBufferState,
+    sp<SurfaceControl> bufferStateLayer =
+            createLayer("BufferStateLayer", 200, 200, ISurfaceComposerClient::eFXSurfaceBufferState,
                         mChildLayer.get());
-    fillBufferLayerColor(layer, Color::BLUE, 200, 200);
-    Transaction().show(layer).apply();
+    fillBufferStateLayerColor(bufferStateLayer, Color::BLUE, 200, 200);
+    Transaction().show(bufferStateLayer).apply();
 
     {
-        SCOPED_TRACE("Initial Mirror Layer");
+        SCOPED_TRACE("Initial Mirror BufferStateLayer");
         auto shot = screenshot();
         // Buffer mirror
         shot->expectColor(Rect(550, 550, 750, 750), Color::BLUE);
@@ -216,9 +208,9 @@ TEST_F(MirrorLayerTest, MirrorBufferLayer) {
         shot->expectColor(Rect(750, 750, 950, 950), Color::GREEN);
     }
 
-    fillBufferLayerColor(layer, Color::WHITE, 200, 200);
+    fillBufferStateLayerColor(bufferStateLayer, Color::WHITE, 200, 200);
     {
-        SCOPED_TRACE("Update Layer");
+        SCOPED_TRACE("Update BufferStateLayer");
         auto shot = screenshot();
         // Buffer mirror
         shot->expectColor(Rect(550, 550, 750, 750), Color::WHITE);
@@ -226,9 +218,9 @@ TEST_F(MirrorLayerTest, MirrorBufferLayer) {
         shot->expectColor(Rect(750, 750, 950, 950), Color::GREEN);
     }
 
-    Transaction().reparent(layer, nullptr).apply();
+    Transaction().reparent(bufferStateLayer, nullptr).apply();
     {
-        SCOPED_TRACE("Removed Layer");
+        SCOPED_TRACE("Removed BufferStateLayer");
         auto shot = screenshot();
         // Buffer mirror
         shot->expectColor(Rect(550, 550, 750, 750), Color::GREEN);
@@ -239,10 +231,7 @@ TEST_F(MirrorLayerTest, MirrorBufferLayer) {
 
 // Test that the mirror layer is initially offscreen.
 TEST_F(MirrorLayerTest, InitialMirrorState) {
-    const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-    ASSERT_FALSE(ids.empty());
-
-    const auto display = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+    const auto display = SurfaceComposerClient::getInternalDisplayToken();
     ui::DisplayMode mode;
     SurfaceComposerClient::getActiveDisplayMode(display, &mode);
     const ui::Size& size = mode.resolution;
@@ -281,63 +270,6 @@ TEST_F(MirrorLayerTest, InitialMirrorState) {
         auto shot = screenshot();
         // Child mirror
         shot->expectColor(Rect(550, 550, 950, 950), Color::GREEN);
-    }
-}
-
-// Test that a mirror layer can be screenshot when offscreen
-TEST_F(MirrorLayerTest, OffscreenMirrorScreenshot) {
-    const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-    ASSERT_FALSE(ids.empty());
-    const auto display = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
-    ui::DisplayMode mode;
-    SurfaceComposerClient::getActiveDisplayMode(display, &mode);
-    const ui::Size& size = mode.resolution;
-
-    sp<SurfaceControl> grandchild =
-            createLayer("Grandchild layer", 50, 50, ISurfaceComposerClient::eFXSurfaceBufferState,
-                        mChildLayer.get());
-    ASSERT_NO_FATAL_FAILURE(fillBufferLayerColor(grandchild, Color::BLUE, 50, 50));
-    Rect childBounds = Rect(50, 50, 450, 450);
-
-    asTransaction([&](Transaction& t) {
-        t.setCrop(grandchild, Rect(0, 0, 50, 50)).show(grandchild);
-        t.setFlags(grandchild, layer_state_t::eLayerOpaque, layer_state_t::eLayerOpaque);
-    });
-
-    sp<SurfaceControl> mirrorLayer = nullptr;
-    {
-        // Run as system to get the ACCESS_SURFACE_FLINGER permission when mirroring
-        UIDFaker f(AID_SYSTEM);
-        // Mirror mChildLayer
-        mirrorLayer = mClient->mirrorSurface(mChildLayer.get());
-        ASSERT_NE(mirrorLayer, nullptr);
-    }
-
-    // Show the mirror layer, but don't reparent to a layer on screen.
-    Transaction().show(mirrorLayer).apply();
-
-    {
-        SCOPED_TRACE("Offscreen Mirror");
-        auto shot = screenshot();
-        shot->expectColor(Rect(0, 0, size.getWidth(), 50), Color::RED);
-        shot->expectColor(Rect(0, 0, 50, size.getHeight()), Color::RED);
-        shot->expectColor(Rect(450, 0, size.getWidth(), size.getHeight()), Color::RED);
-        shot->expectColor(Rect(0, 450, size.getWidth(), size.getHeight()), Color::RED);
-        shot->expectColor(Rect(100, 100, 450, 450), Color::GREEN);
-        shot->expectColor(Rect(50, 50, 100, 100), Color::BLUE);
-    }
-
-    {
-        SCOPED_TRACE("Capture Mirror");
-        // Capture just the mirror layer and child.
-        LayerCaptureArgs captureArgs;
-        captureArgs.layerHandle = mirrorLayer->getHandle();
-        captureArgs.sourceCrop = childBounds;
-        std::unique_ptr<ScreenCapture> shot;
-        ScreenCapture::captureLayers(&shot, captureArgs);
-        shot->expectSize(childBounds.width(), childBounds.height());
-        shot->expectColor(Rect(0, 0, 50, 50), Color::BLUE);
-        shot->expectColor(Rect(50, 50, 400, 400), Color::GREEN);
     }
 }
 

@@ -18,7 +18,6 @@ syntax = "proto2";
 option optimize_for = LITE_RUNTIME;
 
 import "frameworks/native/services/surfaceflinger/layerproto/layers.proto";
-import "frameworks/native/services/surfaceflinger/layerproto/display.proto";
 
 package android.surfaceflinger;
 
@@ -38,13 +37,9 @@ message LayersTraceFileProto {
 
     optional fixed64 magic_number = 1;  /* Must be the first field, set to value in MagicNumber */
     repeated LayersTraceProto entry = 2;
-
-    /* offset between real-time clock and elapsed time clock in nanoseconds.
-       Calculated as: systemTime(SYSTEM_TIME_REALTIME) - systemTime(SYSTEM_TIME_MONOTONIC) */
-    optional fixed64 real_to_elapsed_time_offset_nanos = 3;
 }
 
-/* one layers trace entry. */
+/* one window manager trace entry. */
 message LayersTraceProto {
     /* required: elapsed realtime in nanos since boot of when this entry was logged */
     optional sfixed64 elapsed_realtime_nanos = 1;
@@ -62,8 +57,4 @@ message LayersTraceProto {
 
     /* Number of missed entries since the last entry was recorded. */
     optional uint32 missed_entries = 6;
-
-    repeated DisplayProto displays = 7;
-
-    optional int64 vsync_id = 8;
 }

@@ -7,17 +7,14 @@ package {
     default_applicable_licenses: ["frameworks_native_license"],
 }
 
-cc_library {
+cc_library_shared {
     name: "libsensorservice",
 
     srcs: [
-        "AidlSensorHalWrapper.cpp",
         "BatteryService.cpp",
         "CorrectedGyroSensor.cpp",
         "Fusion.cpp",
         "GravitySensor.cpp",
-        "HidlSensorHalWrapper.cpp",
-        "LimitedAxesImuSensor.cpp",
         "LinearAccelerationSensor.cpp",
         "OrientationSensor.cpp",
         "RecentEventLogger.cpp",
@@ -39,7 +36,7 @@ cc_library {
         "-Wall",
         "-Werror",
         "-Wextra",
-        "-fvisibility=hidden",
+        "-fvisibility=hidden"
     ],
 
     header_libs: [
@@ -63,20 +60,13 @@ cc_library {
         "libbase",
         "libhidlbase",
         "libfmq",
-        "libbinder_ndk",
-        "packagemanager_aidl-cpp",
         "android.hardware.sensors@1.0",
         "android.hardware.sensors@2.0",
         "android.hardware.sensors@2.1",
-        "android.hardware.common-V2-ndk",
-        "android.hardware.common.fmq-V1-ndk",
     ],
 
     static_libs: [
-        "libaidlcommonsupport",
         "android.hardware.sensors@1.0-convert",
-        "android.hardware.sensors-V1-convert",
-        "android.hardware.sensors-V2-ndk",
     ],
 
     generated_headers: ["framework-cppstream-protos"],
@@ -87,14 +77,6 @@ cc_library {
         "libsensorprivacy",
         "libpermission",
     ],
-
-    afdo: true,
-}
-
-cc_library_headers {
-    name: "libsensorservice_headers",
-    export_include_dirs: ["."],
-    visibility: ["//frameworks/native/services/sensorservice/fuzzer"],
 }
 
 cc_binary {

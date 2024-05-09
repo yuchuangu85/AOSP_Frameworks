@@ -24,34 +24,49 @@ using android::base::StringPrintf;
 
 namespace android::inputdispatcher {
 
-void InputTarget::addPointers(std::bitset<MAX_POINTER_ID + 1> newPointerIds,
-                              const ui::Transform& transform) {
-    // The pointerIds can be empty, but still a valid InputTarget. This can happen when there is no
-    // valid pointer property from the input event.
-    if (newPointerIds.none()) {
+std::string dispatchModeToString(int32_t dispatchMode) {
+    switch (dispatchMode) {
+        case InputTarget::FLAG_DISPATCH_AS_IS:
+            return "DISPATCH_AS_IS";
+        case InputTarget::FLAG_DISPATCH_AS_OUTSIDE:
+            return "DISPATCH_AS_OUTSIDE";
+        case InputTarget::FLAG_DISPATCH_AS_HOVER_ENTER:
+            return "DISPATCH_AS_HOVER_ENTER";
+        case InputTarget::FLAG_DISPATCH_AS_HOVER_EXIT:
+            return "DISPATCH_AS_HOVER_EXIT";
+        case InputTarget::FLAG_DISPATCH_AS_SLIPPERY_EXIT:
+            return "DISPATCH_AS_SLIPPERY_EXIT";
+        case InputTarget::FLAG_DISPATCH_AS_SLIPPERY_ENTER:
+            return "DISPATCH_AS_SLIPPERY_ENTER";
+    }
+    return StringPrintf("%" PRId32, dispatchMode);
+}
+
+void InputTarget::addPointers(BitSet32 newPointerIds, const ui::Transform& transform) {
+    // The pointerIds can be empty, but still a valid InputTarget. This can happen for Monitors
+    // and non splittable windows since we will just use all the pointers from the input event.
+    if (newPointerIds.isEmpty()) {
         setDefaultPointerTransform(transform);
         return;
     }
 
     // Ensure that the new set of pointers doesn't overlap with the current set of pointers.
-    LOG_ALWAYS_FATAL_IF((pointerIds & newPointerIds).any());
+    ALOG_ASSERT((pointerIds & newPointerIds) == 0);
 
     pointerIds |= newPointerIds;
-    for (size_t i = 0; i < newPointerIds.size(); i++) {
-        if (!newPointerIds.test(i)) {
-            continue;
-        }
-        pointerTransforms[i] = transform;
+    while (!newPointerIds.isEmpty()) {
+        int32_t pointerId = newPointerIds.clearFirstMarkedBit();
+        pointerTransforms[pointerId] = transform;
     }
 }
 
 void InputTarget::setDefaultPointerTransform(const ui::Transform& transform) {
-    pointerIds.reset();
+    pointerIds.clear();
     pointerTransforms[0] = transform;
 }
 
 bool InputTarget::useDefaultPointerTransform() const {
-    return pointerIds.none();
+    return pointerIds.isEmpty();
 }
 
 const ui::Transform& InputTarget::getDefaultPointerTransform() const {
@@ -66,8 +81,8 @@ std::string InputTarget::getPointerInfoString() const {
         return out;
     }
 
-    for (uint32_t i = 0; i < pointerIds.size(); i++) {
-        if (!pointerIds.test(i)) {
+    for (uint32_t i = pointerIds.firstMarkedBit(); i <= pointerIds.lastMarkedBit(); i++) {
+        if (!pointerIds.hasBit(i)) {
             continue;
         }
 

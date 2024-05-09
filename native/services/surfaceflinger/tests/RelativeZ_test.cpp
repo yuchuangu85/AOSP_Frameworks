@@ -33,9 +33,7 @@ protected:
         LayerTransactionTest::SetUp();
         ASSERT_EQ(NO_ERROR, mClient->initCheck());
 
-        const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-        ASSERT_FALSE(ids.empty());
-        const auto display = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+        const auto display = SurfaceComposerClient::getInternalDisplayToken();
         ASSERT_FALSE(display == nullptr);
 
         // Back layer
@@ -45,7 +43,7 @@ protected:
         mForegroundLayer = createColorLayer("Foreground layer", Color::GREEN);
 
         asTransaction([&](Transaction& t) {
-            t.setDisplayLayerStack(display, ui::DEFAULT_LAYER_STACK);
+            t.setDisplayLayerStack(display, 0);
             t.setLayer(mBackgroundLayer, INT32_MAX - 2).show(mBackgroundLayer);
             t.setLayer(mForegroundLayer, INT32_MAX - 1).show(mForegroundLayer);
         });

@@ -74,8 +74,6 @@ struct binder_frozen_status_info {
     //
     // Indicates whether the process has received any sync calls since last
     // freeze (cleared at freeze/unfreeze)
-    // bit 0: received sync transaction after being frozen
-    // bit 1: new pending sync transaction during freezing
     //
     __u32 sync_recv;
     //
@@ -99,10 +97,5 @@ struct binder_frozen_status_info {
  */
 #define BINDER_ENABLE_ONEWAY_SPAM_DETECTION _IOW('b', 16, __u32)
 #endif // BINDER_ENABLE_ONEWAY_SPAM_DETECTION
-
-#ifndef BR_TRANSACTION_PENDING_FROZEN
-// Temporary definition of BR_TRANSACTION_PENDING_FROZEN until UAPI binder.h includes it.
-#define BR_TRANSACTION_PENDING_FROZEN _IO('r', 20)
-#endif // BR_TRANSACTION_PENDING_FROZEN
 
 #endif // _BINDER_MODULE_H_

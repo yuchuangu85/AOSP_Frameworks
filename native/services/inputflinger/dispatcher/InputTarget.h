@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_INPUTTARGET_H
+#define _UI_INPUT_INPUTDISPATCHER_INPUTTARGET_H
 
-#include <ftl/flags.h>
-#include <gui/constants.h>
 #include <input/InputTransport.h>
 #include <ui/Transform.h>
 #include <utils/BitSet.h>
-#include <bitset>
+#include <utils/RefBase.h>
 
 namespace android::inputdispatcher {
 
@@ -32,89 +31,86 @@ namespace android::inputdispatcher {
  * window area.
  */
 struct InputTarget {
-    enum class Flags : uint32_t {
+    enum {
         /* This flag indicates that the event is being delivered to a foreground application. */
-        FOREGROUND = 1 << 0,
+        FLAG_FOREGROUND = 1 << 0,
 
         /* This flag indicates that the MotionEvent falls within the area of the target
          * obscured by another visible window above it.  The motion event should be
          * delivered with flag AMOTION_EVENT_FLAG_WINDOW_IS_OBSCURED. */
-        WINDOW_IS_OBSCURED = 1 << 1,
+        FLAG_WINDOW_IS_OBSCURED = 1 << 1,
 
         /* This flag indicates that a motion event is being split across multiple windows. */
-        SPLIT = 1 << 2,
+        FLAG_SPLIT = 1 << 2,
 
         /* This flag indicates that the pointer coordinates dispatched to the application
          * will be zeroed out to avoid revealing information to an application. This is
          * used in conjunction with FLAG_DISPATCH_AS_OUTSIDE to prevent apps not sharing
          * the same UID from watching all touches. */
-        ZERO_COORDS = 1 << 3,
+        FLAG_ZERO_COORDS = 1 << 3,
 
         /* This flag indicates that the event should be sent as is.
          * Should always be set unless the event is to be transmuted. */
-        DISPATCH_AS_IS = 1 << 8,
+        FLAG_DISPATCH_AS_IS = 1 << 8,
 
         /* This flag indicates that a MotionEvent with AMOTION_EVENT_ACTION_DOWN falls outside
          * of the area of this target and so should instead be delivered as an
          * AMOTION_EVENT_ACTION_OUTSIDE to this target. */
-        DISPATCH_AS_OUTSIDE = 1 << 9,
+        FLAG_DISPATCH_AS_OUTSIDE = 1 << 9,
 
         /* This flag indicates that a hover sequence is starting in the given window.
          * The event is transmuted into ACTION_HOVER_ENTER. */
-        DISPATCH_AS_HOVER_ENTER = 1 << 10,
+        FLAG_DISPATCH_AS_HOVER_ENTER = 1 << 10,
 
         /* This flag indicates that a hover event happened outside of a window which handled
          * previous hover events, signifying the end of the current hover sequence for that
          * window.
          * The event is transmuted into ACTION_HOVER_ENTER. */
-        DISPATCH_AS_HOVER_EXIT = 1 << 11,
+        FLAG_DISPATCH_AS_HOVER_EXIT = 1 << 11,
 
         /* This flag indicates that the event should be canceled.
          * It is used to transmute ACTION_MOVE into ACTION_CANCEL when a touch slips
          * outside of a window. */
-        DISPATCH_AS_SLIPPERY_EXIT = 1 << 12,
+        FLAG_DISPATCH_AS_SLIPPERY_EXIT = 1 << 12,
 
         /* This flag indicates that the event should be dispatched as an initial down.
          * It is used to transmute ACTION_MOVE into ACTION_DOWN when a touch slips
          * into a new window. */
-        DISPATCH_AS_SLIPPERY_ENTER = 1 << 13,
+        FLAG_DISPATCH_AS_SLIPPERY_ENTER = 1 << 13,
+
+        /* Mask for all dispatch modes. */
+        FLAG_DISPATCH_MASK = FLAG_DISPATCH_AS_IS | FLAG_DISPATCH_AS_OUTSIDE |
+                FLAG_DISPATCH_AS_HOVER_ENTER | FLAG_DISPATCH_AS_HOVER_EXIT |
+                FLAG_DISPATCH_AS_SLIPPERY_EXIT | FLAG_DISPATCH_AS_SLIPPERY_ENTER,
 
         /* This flag indicates that the target of a MotionEvent is partly or wholly
          * obscured by another visible window above it.  The motion event should be
          * delivered with flag AMOTION_EVENT_FLAG_WINDOW_IS_PARTIALLY_OBSCURED. */
-        WINDOW_IS_PARTIALLY_OBSCURED = 1 << 14,
-    };
+        FLAG_WINDOW_IS_PARTIALLY_OBSCURED = 1 << 14,
 
-    /* Mask for all dispatch modes. */
-    static constexpr const ftl::Flags<InputTarget::Flags> DISPATCH_MASK =
-            ftl::Flags<InputTarget::Flags>() | Flags::DISPATCH_AS_IS | Flags::DISPATCH_AS_OUTSIDE |
-            Flags::DISPATCH_AS_HOVER_ENTER | Flags::DISPATCH_AS_HOVER_EXIT |
-            Flags::DISPATCH_AS_SLIPPERY_EXIT | Flags::DISPATCH_AS_SLIPPERY_ENTER;
+    };
 
     // The input channel to be targeted.
     std::shared_ptr<InputChannel> inputChannel;
 
     // Flags for the input target.
-    ftl::Flags<Flags> flags;
+    int32_t flags = 0;
 
     // Scaling factor to apply to MotionEvent as it is delivered.
     // (ignored for KeyEvents)
     float globalScaleFactor = 1.0f;
 
-    // Current display transform. Used for compatibility for raw coordinates.
-    ui::Transform displayTransform;
+    // Display-size in its natural rotation. Used for compatibility transform of raw coordinates.
+    int2 displaySize = {AMOTION_EVENT_INVALID_DISPLAY_SIZE, AMOTION_EVENT_INVALID_DISPLAY_SIZE};
 
     // The subset of pointer ids to include in motion events dispatched to this input target
     // if FLAG_SPLIT is set.
-    std::bitset<MAX_POINTER_ID + 1> pointerIds;
-    // Event time for the first motion event (ACTION_DOWN) dispatched to this input target if
-    // FLAG_SPLIT is set.
-    std::optional<nsecs_t> firstDownTimeInTarget;
+    BitSet32 pointerIds;
     // The data is stored by the pointerId. Use the bit position of pointerIds to look up
     // Transform per pointerId.
     ui::Transform pointerTransforms[MAX_POINTERS];
 
-    void addPointers(std::bitset<MAX_POINTER_ID + 1> pointerIds, const ui::Transform& transform);
+    void addPointers(BitSet32 pointerIds, const ui::Transform& transform);
     void setDefaultPointerTransform(const ui::Transform& transform);
 
     /**
@@ -137,3 +133,5 @@ struct InputTarget {
 std::string dispatchModeToString(int32_t dispatchMode);
 
 } // namespace android::inputdispatcher
+
+#endif // _UI_INPUT_INPUTDISPATCHER_INPUTTARGET_H

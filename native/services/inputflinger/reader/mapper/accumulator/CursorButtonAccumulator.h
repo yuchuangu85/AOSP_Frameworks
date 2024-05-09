@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_CURSOR_BUTTON_ACCUMULATOR_H
+#define _UI_INPUTREADER_CURSOR_BUTTON_ACCUMULATOR_H
 
 #include <stdint.h>
 
@@ -27,19 +28,11 @@ struct RawEvent;
 class CursorButtonAccumulator {
 public:
     CursorButtonAccumulator();
-    void reset(const InputDeviceContext& deviceContext);
+    void reset(InputDeviceContext& deviceContext);
 
     void process(const RawEvent* rawEvent);
 
     uint32_t getButtonState() const;
-    inline bool isLeftPressed() const { return mBtnLeft; }
-    inline bool isRightPressed() const { return mBtnRight; }
-    inline bool isMiddlePressed() const { return mBtnMiddle; }
-    inline bool isBackPressed() const { return mBtnBack; }
-    inline bool isSidePressed() const { return mBtnSide; }
-    inline bool isForwardPressed() const { return mBtnForward; }
-    inline bool isExtraPressed() const { return mBtnExtra; }
-    inline bool isTaskPressed() const { return mBtnTask; }
 
 private:
     bool mBtnLeft;
@@ -55,3 +48,5 @@ private:
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_CURSOR_BUTTON_ACCUMULATOR_H

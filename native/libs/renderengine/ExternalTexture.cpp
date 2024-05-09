@@ -14,41 +14,30 @@
  * limitations under the License.
  */
 
-#include <log/log.h>
+#include <renderengine/ExternalTexture.h>
 #include <renderengine/RenderEngine.h>
-#include <renderengine/impl/ExternalTexture.h>
 #include <ui/GraphicBuffer.h>
-#include <utils/Trace.h>
 
-namespace android::renderengine::impl {
+#include "log/log_main.h"
 
-ExternalTexture::ExternalTexture(const sp<GraphicBuffer>& buffer,
-                                 renderengine::RenderEngine& renderEngine, uint32_t usage)
-      : mBuffer(buffer), mRenderEngine(renderEngine), mWritable(usage & WRITEABLE) {
+namespace android::renderengine {
+
+ExternalTexture::ExternalTexture(const sp<GraphicBuffer>& buffer, RenderEngine& renderEngine,
+                                 uint32_t usage)
+      : mBuffer(buffer), mRenderEngine(renderEngine) {
     LOG_ALWAYS_FATAL_IF(buffer == nullptr,
                         "Attempted to bind a null buffer to an external texture!");
     // GLESRenderEngine has a separate texture cache for output buffers,
-    if (usage == WRITEABLE &&
-        (mRenderEngine.getRenderEngineType() ==
-                 renderengine::RenderEngine::RenderEngineType::GLES ||
-         mRenderEngine.getRenderEngineType() ==
-                 renderengine::RenderEngine::RenderEngineType::THREADED)) {
+    if (usage == Usage::WRITEABLE &&
+        (mRenderEngine.getRenderEngineType() == RenderEngine::RenderEngineType::GLES ||
+         mRenderEngine.getRenderEngineType() == RenderEngine::RenderEngineType::THREADED)) {
         return;
     }
-    mRenderEngine.mapExternalTextureBuffer(mBuffer, mWritable);
+    mRenderEngine.mapExternalTextureBuffer(mBuffer, usage & Usage::WRITEABLE);
 }
 
 ExternalTexture::~ExternalTexture() {
-    mRenderEngine.unmapExternalTextureBuffer(std::move(mBuffer));
+    mRenderEngine.unmapExternalTextureBuffer(mBuffer);
 }
 
-void ExternalTexture::remapBuffer() {
-    ATRACE_CALL();
-    {
-        auto buf = mBuffer;
-        mRenderEngine.unmapExternalTextureBuffer(std::move(buf));
-    }
-    mRenderEngine.mapExternalTextureBuffer(mBuffer, mWritable);
-}
-
-} // namespace android::renderengine::impl
+} // namespace android::renderengine

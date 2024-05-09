@@ -35,7 +35,7 @@ void InputReporter::reportDroppedKey(uint32_t sequenceNum) {
 }
 
 sp<InputReporterInterface> createInputReporter() {
-    return sp<InputReporter>::make();
+    return new InputReporter();
 }
 
 } // namespace android

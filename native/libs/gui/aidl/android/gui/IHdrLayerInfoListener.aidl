@@ -19,9 +19,7 @@ package android.gui;
 /** @hide */
 oneway interface IHdrLayerInfoListener {
     // Callback with the total number of HDR layers, the dimensions of the largest layer,
-    // a placeholder flags, and the max desired HDR/SDR ratio. The max desired HDR/SDR
-    // ratio may be positive infinity to indicate an unbounded ratio.
+    // and a placeholder flags
     // TODO (b/182312559): Define the flags (likely need an indicator that a UDFPS layer is present)
-    void onHdrLayerInfoChanged(int numberOfHdrLayers, int maxW, int maxH,
-            int flags, float maxDesiredHdrSdrRatio);
+    void onHdrLayerInfoChanged(int numberOfHdrLayers, int maxW, int maxH, int flags);
 }

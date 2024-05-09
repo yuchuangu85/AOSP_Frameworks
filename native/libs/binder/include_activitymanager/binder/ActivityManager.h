@@ -18,9 +18,10 @@
 
 #ifndef __ANDROID_VNDK__
 
-#include <android/app/ProcessStateEnum.h>
 #include <binder/IActivityManager.h>
-#include <utils/Mutex.h>
+#include <android/app/ProcessStateEnum.h>
+
+#include <utils/threads.h>
 
 // ---------------------------------------------------------------------------
 namespace android {
@@ -31,21 +32,20 @@ namespace android {
 class ActivityManager
 {
 public:
+
     enum {
         // Flag for registerUidObserver: report uid state changed
-        UID_OBSERVER_PROCSTATE = 1 << 0,
+        UID_OBSERVER_PROCSTATE = 1<<0,
         // Flag for registerUidObserver: report uid gone
-        UID_OBSERVER_GONE = 1 << 1,
+        UID_OBSERVER_GONE = 1<<1,
         // Flag for registerUidObserver: report uid has become idle
-        UID_OBSERVER_IDLE = 1 << 2,
+        UID_OBSERVER_IDLE = 1<<2,
         // Flag for registerUidObserver: report uid has become active
-        UID_OBSERVER_ACTIVE = 1 << 3,
+        UID_OBSERVER_ACTIVE = 1<<3,
         // Flag for registerUidObserver: report uid cached state has changed
-        UID_OBSERVER_CACHED = 1 << 4,
+        UID_OBSERVER_CACHED = 1<<4,
         // Flag for registerUidObserver: report uid capability has changed
-        UID_OBSERVER_CAPABILITY = 1 << 5,
-        // Flag for registerUidObserver: report pid oom adj has changed
-        UID_OBSERVER_PROC_OOM_ADJ = 1 << 6,
+        UID_OBSERVER_CAPABILITY = 1<<5,
     };
 
     // PROCESS_STATE_* must come from frameworks/base/core/java/android/app/ProcessStateEnum.aidl.
@@ -82,15 +82,7 @@ public:
                              const int32_t event,
                              const int32_t cutpoint,
                              const String16& callingPackage);
-    status_t registerUidObserverForUids(const sp<IUidObserver>& observer, const int32_t event,
-                                        const int32_t cutpoint, const String16& callingPackage,
-                                        const int32_t uids[], size_t nUids,
-                                        /*out*/ sp<IBinder>& observerToken);
     status_t unregisterUidObserver(const sp<IUidObserver>& observer);
-    status_t addUidToObserver(const sp<IBinder>& observerToken, const String16& callingPackage,
-                              int32_t uid);
-    status_t removeUidFromObserver(const sp<IBinder>& observerToken, const String16& callingPackage,
-                                   int32_t uid);
     bool isUidActive(const uid_t uid, const String16& callingPackage);
     int getUidProcessState(const uid_t uid, const String16& callingPackage);
     status_t checkPermission(const String16& permission, const pid_t pid, const uid_t uid, int32_t* outResult);

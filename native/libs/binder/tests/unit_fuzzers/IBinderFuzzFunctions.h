@@ -27,6 +27,7 @@
 #include <utils/KeyedVector.h>
 #include <utils/Log.h>
 #include <utils/Mutex.h>
+#include <utils/threads.h>
 
 namespace android {
 
@@ -61,22 +62,20 @@ static const std::vector<std::function<void(FuzzedDataProvider*, IBinder*)>> gIB
              object = fdp->ConsumeIntegral<uint32_t>();
              cleanup_cookie = fdp->ConsumeIntegral<uint32_t>();
              IBinder::object_cleanup_func func = IBinder::object_cleanup_func();
-             (void)ibinder->attachObject(fdp->ConsumeBool() ? reinterpret_cast<void*>(&objectID)
-                                                            : nullptr,
-                                         fdp->ConsumeBool() ? reinterpret_cast<void*>(&object)
-                                                            : nullptr,
-                                         fdp->ConsumeBool()
-                                                 ? reinterpret_cast<void*>(&cleanup_cookie)
-                                                 : nullptr,
-                                         func);
+             ibinder->attachObject(fdp->ConsumeBool() ? reinterpret_cast<void*>(&objectID)
+                                                      : nullptr,
+                                   fdp->ConsumeBool() ? reinterpret_cast<void*>(&object) : nullptr,
+                                   fdp->ConsumeBool() ? reinterpret_cast<void*>(&cleanup_cookie)
+                                                      : nullptr,
+                                   func);
          },
          [](FuzzedDataProvider* fdp, IBinder* ibinder) -> void {
              uint32_t id = fdp->ConsumeIntegral<uint32_t>();
-             (void)ibinder->findObject(reinterpret_cast<void*>(&id));
+             ibinder->findObject(reinterpret_cast<void*>(&id));
          },
          [](FuzzedDataProvider* fdp, IBinder* ibinder) -> void {
              uint32_t id = fdp->ConsumeIntegral<uint32_t>();
-             (void)ibinder->detachObject(reinterpret_cast<void*>(&id));
+             ibinder->detachObject(reinterpret_cast<void*>(&id));
          },
          [](FuzzedDataProvider* fdp, IBinder* ibinder) -> void {
              uint32_t code = fdp->ConsumeIntegral<uint32_t>();

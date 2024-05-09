@@ -1,10 +1,6 @@
 props {
   module: "android.sysprop.SurfaceFlingerProperties"
   prop {
-    api_name: "clear_slots_with_set_layer_buffer"
-    prop_name: "ro.surface_flinger.clear_slots_with_set_layer_buffer"
-  }
-  prop {
     api_name: "color_space_agnostic_dataspace"
     type: Long
     prop_name: "ro.surface_flinger.color_space_agnostic_dataspace"
@@ -71,10 +67,6 @@ props {
   prop {
     api_name: "has_wide_color_display"
     prop_name: "ro.surface_flinger.has_wide_color_display"
-  }
-  prop {
-    api_name: "ignore_hdr_camera_layers"
-    prop_name: "ro.surface_flinger.ignore_hdr_camera_layers"
   }
   prop {
     api_name: "max_frame_buffer_acquired_buffers"
@@ -158,6 +150,10 @@ props {
   prop {
     api_name: "use_context_priority"
     prop_name: "ro.surface_flinger.use_context_priority"
+  }
+  prop {
+    api_name: "use_frame_rate_api"
+    prop_name: "ro.surface_flinger.use_frame_rate_api"
   }
   prop {
     api_name: "use_smart_90_for_video"

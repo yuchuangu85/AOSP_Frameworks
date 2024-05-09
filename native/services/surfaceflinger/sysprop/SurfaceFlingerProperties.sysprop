@@ -414,6 +414,16 @@ prop {
     prop_name: "ro.surface_flinger.supports_background_blur"
 }
 
+# Indicates whether Scheduler should use frame rate API when adjusting the
+# display refresh rate.
+prop {
+    api_name: "use_frame_rate_api"
+    type: Boolean
+    scope: Public
+    access: Readonly
+    prop_name: "ro.surface_flinger.use_frame_rate_api"
+}
+
 # Sets the timeout used to rate limit DISPLAY_UPDATE_IMMINENT Power HAL notifications.
 # SurfaceFlinger wakeups will trigger this boost whenever they are separated by more than this
 # duration (specified in milliseconds). A value of 0 disables the rate limit, and will result in
@@ -462,26 +472,3 @@ prop {
     access: Readonly
     prop_name: "ro.surface_flinger.enable_sdr_dimming"
 }
-
-# Ignores Camera layers when calculating HDR coverage information
-prop {
-    api_name: "ignore_hdr_camera_layers"
-    type: Boolean
-    scope: Public
-    access: Readonly
-    prop_name: "ro.surface_flinger.ignore_hdr_camera_layers"
-}
-
-# When enabled, SurfaceFlinger will attempt to clear the per-layer HAL buffer cache slots for
-# buffers when they are evicted from the app cache by using additional setLayerBuffer commands.
-# Ideally, this behavior would always be enabled to reduce graphics memory consumption. However,
-# Some HAL implementations may not support the additional setLayerBuffer commands used to clear
-# the cache slots.
-prop {
-    api_name: "clear_slots_with_set_layer_buffer"
-    type: Boolean
-    scope: Public
-    access: Readonly
-    prop_name: "ro.surface_flinger.clear_slots_with_set_layer_buffer"
-}
-

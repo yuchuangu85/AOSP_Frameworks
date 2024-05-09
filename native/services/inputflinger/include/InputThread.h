@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_THREAD_H
+#define _UI_INPUT_THREAD_H
 
 #include <utils/Thread.h>
 
@@ -41,3 +42,5 @@ private:
 };
 
 } // namespace android
+
+#endif // _UI_INPUT_THREAD_H

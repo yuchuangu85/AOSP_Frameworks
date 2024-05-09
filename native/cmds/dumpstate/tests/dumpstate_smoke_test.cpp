@@ -160,7 +160,7 @@ class DumpstateListener : public BnDumpstateListener {
         return binder::Status::ok();
     }
 
-    binder::Status onFinished([[maybe_unused]] const std::string& bugreport_file) override {
+    binder::Status onFinished() override {
         std::lock_guard<std::mutex> lock(lock_);
         is_finished_ = true;
         dprintf(out_fd_, "\rFinished");
@@ -240,11 +240,11 @@ TEST_F(ZippedBugreportGenerationTest, Is1MBMBinSize) {
     EXPECT_GE(st.st_size, 1000000 /* 1MB */);
 }
 
-TEST_F(ZippedBugreportGenerationTest, TakesBetween20And300Seconds) {
-    EXPECT_GE(duration, 20s) << "Expected completion in more than 20s. Actual time "
-                             << duration.count() << " ms.";
+TEST_F(ZippedBugreportGenerationTest, TakesBetween30And300Seconds) {
+    EXPECT_GE(duration, 30s) << "Expected completion in more than 30s. Actual time "
+                             << duration.count() << " s.";
     EXPECT_LE(duration, 300s) << "Expected completion in less than 300s. Actual time "
-                              << duration.count() << " ms.";
+                              << duration.count() << " s.";
 }
 
 /**
@@ -497,17 +497,14 @@ TEST_F(DumpstateBinderTest, Baseline) {
     // Prepare arguments
     unique_fd bugreport_fd(OpenForWrite("/bugreports/tmp.zip"));
     unique_fd screenshot_fd(OpenForWrite("/bugreports/tmp.png"));
-    int flags = 0;
 
     EXPECT_NE(bugreport_fd.get(), -1);
     EXPECT_NE(screenshot_fd.get(), -1);
 
     sp<DumpstateListener> listener(new DumpstateListener(dup(fileno(stdout))));
     android::binder::Status status =
-        ds_binder->startBugreport(123, "com.example.package", std::move(bugreport_fd),
-                                  std::move(screenshot_fd),
-                                  Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, flags, listener,
-                                  true);
+        ds_binder->startBugreport(123, "com.dummy.package", std::move(bugreport_fd), std::move(screenshot_fd),
+                                  Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, listener, true);
     // startBugreport is an async call. Verify binder call succeeded first, then wait till listener
     // gets expected callbacks.
     EXPECT_TRUE(status.isOk());
@@ -535,7 +532,6 @@ TEST_F(DumpstateBinderTest, ServiceDies_OnInvalidInput) {
     // Prepare arguments
     unique_fd bugreport_fd(OpenForWrite("/data/local/tmp/tmp.zip"));
     unique_fd screenshot_fd(OpenForWrite("/data/local/tmp/tmp.png"));
-    int flags = 0;
 
     EXPECT_NE(bugreport_fd.get(), -1);
     EXPECT_NE(screenshot_fd.get(), -1);
@@ -543,9 +539,9 @@ TEST_F(DumpstateBinderTest, ServiceDies_OnInvalidInput) {
     // Call startBugreport with bad arguments.
     sp<DumpstateListener> listener(new DumpstateListener(dup(fileno(stdout))));
     android::binder::Status status =
-        ds_binder->startBugreport(123, "com.example.package", std::move(bugreport_fd),
-                                  std::move(screenshot_fd), 2000,  // invalid bugreport mode
-                                  flags, listener, false);
+        ds_binder->startBugreport(123, "com.dummy.package", std::move(bugreport_fd), std::move(screenshot_fd),
+                                  2000,  // invalid bugreport mode
+                                  listener, false);
     EXPECT_EQ(listener->getErrorCode(), IDumpstateListener::BUGREPORT_ERROR_INVALID_INPUT);
 
     // The service should have died, freeing itself up for a new invocation.
@@ -567,7 +563,6 @@ TEST_F(DumpstateBinderTest, SimultaneousBugreportsNotAllowed) {
     unique_fd bugreport_fd2(dup(bugreport_fd.get()));
     unique_fd screenshot_fd(OpenForWrite("/data/local/tmp/tmp.png"));
     unique_fd screenshot_fd2(dup(screenshot_fd.get()));
-    int flags = 0;
 
     EXPECT_NE(bugreport_fd.get(), -1);
     EXPECT_NE(bugreport_fd2.get(), -1);
@@ -576,18 +571,14 @@ TEST_F(DumpstateBinderTest, SimultaneousBugreportsNotAllowed) {
 
     sp<DumpstateListener> listener1(new DumpstateListener(dup(fileno(stdout))));
     android::binder::Status status =
-        ds_binder->startBugreport(123, "com.example.package", std::move(bugreport_fd),
-                                  std::move(screenshot_fd),
-                                  Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, flags, listener1,
-                                  true);
+        ds_binder->startBugreport(123, "com.dummy.package", std::move(bugreport_fd), std::move(screenshot_fd),
+                                  Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, listener1, true);
     EXPECT_TRUE(status.isOk());
 
     // try to make another call to startBugreport. This should fail.
     sp<DumpstateListener> listener2(new DumpstateListener(dup(fileno(stdout))));
-    status = ds_binder->startBugreport(123, "com.example.package", std::move(bugreport_fd2),
-                                        std::move(screenshot_fd2),
-                                       Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, flags,
-                                       listener2, true);
+    status = ds_binder->startBugreport(123, "com.dummy.package", std::move(bugreport_fd2), std::move(screenshot_fd2),
+                                       Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, listener2, true);
     EXPECT_FALSE(status.isOk());
     WaitTillExecutionComplete(listener2.get());
     EXPECT_EQ(listener2->getErrorCode(),

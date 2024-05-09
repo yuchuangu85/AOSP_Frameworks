@@ -16,8 +16,6 @@
 
 #pragma once
 
-#include <optional>
-
 #include <compositionengine/CompositionEngine.h>
 #include <compositionengine/LayerFE.h>
 #include <compositionengine/Output.h>
@@ -35,8 +33,6 @@ public:
 
     MOCK_METHOD1(setHwcLayer, void(std::shared_ptr<HWC2::Layer>));
 
-    MOCK_METHOD1(uncacheBuffers, void(const std::vector<uint64_t>&));
-
     MOCK_CONST_METHOD0(getOutput, const compositionengine::Output&());
     MOCK_CONST_METHOD0(getLayerFE, compositionengine::LayerFE&());
 
@@ -50,12 +46,11 @@ public:
     MOCK_CONST_METHOD0(getHwcLayer, HWC2::Layer*());
     MOCK_CONST_METHOD0(requiresClientComposition, bool());
     MOCK_CONST_METHOD0(isHardwareCursor, bool());
-    MOCK_METHOD1(applyDeviceCompositionTypeChange,
-                 void(aidl::android::hardware::graphics::composer3::Composition));
+    MOCK_METHOD1(applyDeviceCompositionTypeChange, void(Hwc2::IComposerClient::Composition));
     MOCK_METHOD0(prepareForDeviceLayerRequests, void());
     MOCK_METHOD1(applyDeviceLayerRequest, void(Hwc2::IComposerClient::LayerRequest request));
     MOCK_CONST_METHOD0(needsFiltering, bool());
-    MOCK_CONST_METHOD0(getOverrideCompositionSettings, std::optional<LayerFE::LayerSettings>());
+    MOCK_CONST_METHOD0(getOverrideCompositionList, std::vector<LayerFE::LayerSettings>());
 
     MOCK_CONST_METHOD1(dump, void(std::string&));
 };

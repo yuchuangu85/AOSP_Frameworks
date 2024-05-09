@@ -14,32 +14,32 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_DRAGSTATE_H
+#define _UI_INPUT_INPUTDISPATCHER_DRAGSTATE_H
 
-#include <gui/WindowInfo.h>
-#include <utils/StrongPointer.h>
+#include <utils/RefBase.h>
 #include <string>
 
 namespace android {
 
-namespace inputdispatcher {
+class InputWindowHandle;
 
+namespace inputdispatcher {
 struct DragState {
-    DragState(const sp<android::gui::WindowInfoHandle>& windowHandle, int32_t pointerId)
-          : dragWindow(windowHandle), pointerId(pointerId) {}
+    DragState(const sp<android::InputWindowHandle>& windowHandle) : dragWindow(windowHandle) {}
     void dump(std::string& dump, const char* prefix = "");
 
     // The window being dragged.
-    const sp<android::gui::WindowInfoHandle> dragWindow;
+    const sp<InputWindowHandle> dragWindow;
     // The last drag hover window which could receive the drag event.
-    sp<android::gui::WindowInfoHandle> dragHoverWindowHandle;
+    sp<InputWindowHandle> dragHoverWindowHandle;
     // Indicates the if received first event to check for button state.
     bool isStartDrag = false;
     // Indicate if the stylus button is down at the start of the drag.
     bool isStylusButtonDownAtStart = false;
-    // Indicate which pointer id is tracked by the drag and drop.
-    const int32_t pointerId;
 };
 
 } // namespace inputdispatcher
 } // namespace android
+
+#endif // _UI_INPUT_INPUTDISPATCHER_DRAGSTATE_H

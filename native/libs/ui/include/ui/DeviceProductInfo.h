@@ -24,6 +24,8 @@
 #include <variant>
 #include <vector>
 
+#include <utils/Flattenable.h>
+
 namespace android {
 
 // NUL-terminated plug and play ID.
@@ -32,7 +34,7 @@ using PnpId = std::array<char, 4>;
 // Product-specific information about the display or the directly connected device on the
 // display chain. For example, if the display is transitively connected, this field may contain
 // product information about the intermediate device.
-struct DeviceProductInfo {
+struct DeviceProductInfo : LightFlattenable<DeviceProductInfo> {
     struct ModelYear {
         uint32_t year;
     };
@@ -61,8 +63,13 @@ struct DeviceProductInfo {
     // address is unavailable.
     // For example, for HDMI connected device this will be the physical address.
     std::vector<uint8_t> relativeAddress;
-};
 
-std::string to_string(const DeviceProductInfo&);
+    bool isFixedSize() const { return false; }
+    size_t getFlattenedSize() const;
+    status_t flatten(void* buffer, size_t size) const;
+    status_t unflatten(void const* buffer, size_t size);
+
+    void dump(std::string& result) const;
+};
 
 } // namespace android

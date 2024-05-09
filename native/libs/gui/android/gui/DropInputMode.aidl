@@ -36,10 +36,5 @@ enum DropInputMode {
       * event, the event will be dropped and will not go to the window behind. ref: b/197296414
       */
     ALL,
-
-    /**
-      * Similar to DROP but input events are only dropped if the window is considered to be
-      * obscured. ref: b/197364677
-      */
-    OBSCURED
 }
+

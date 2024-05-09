@@ -20,35 +20,33 @@
 #include <utils/RefBase.h>
 #include <utils/Timers.h>
 
-#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "EventThread.h"
-
-#include "RefreshRateSelector.h"
+#include "RefreshRateConfigs.h"
 
 namespace android {
 
 class Layer;
+class TestableScheduler;
 
 namespace scheduler {
 
+class LayerHistoryTest;
 class LayerInfo;
-struct LayerProps;
 
 class LayerHistory {
 public:
-    using LayerVoteType = RefreshRateSelector::LayerVoteType;
+    using LayerVoteType = RefreshRateConfigs::LayerVoteType;
 
-    LayerHistory();
+    LayerHistory(const RefreshRateConfigs&);
     ~LayerHistory();
 
     // Layers are unregistered when the weak reference expires.
-    void registerLayer(Layer*, bool contentDetectionEnabled);
+    void registerLayer(Layer*, LayerVoteType type);
 
     // Sets the display size. Client is responsible for synchronization.
     void setDisplayArea(uint32_t displayArea) { mDisplayArea = displayArea; }
@@ -64,69 +62,46 @@ public:
     };
 
     // Marks the layer as active, and records the given state to its history.
-    void record(int32_t id, const LayerProps& props, nsecs_t presentTime, nsecs_t now,
-                LayerUpdateType updateType);
+    void record(Layer*, nsecs_t presentTime, nsecs_t now, LayerUpdateType updateType);
 
-    // Updates the default frame rate compatibility which takes effect when the app
-    // does not set a preference for refresh rate.
-    void setDefaultFrameRateCompatibility(Layer*, bool contentDetectionEnabled);
-
-    using Summary = std::vector<RefreshRateSelector::LayerRequirement>;
+    using Summary = std::vector<RefreshRateConfigs::LayerRequirement>;
 
     // Rebuilds sets of active/inactive layers, and accumulates stats for active layers.
-    Summary summarize(const RefreshRateSelector&, nsecs_t now);
+    Summary summarize(nsecs_t now);
 
     void clear();
 
     void deregisterLayer(Layer*);
     std::string dump() const;
 
-    // return the frames per second of the layer with the given sequence id.
-    float getLayerFramerate(nsecs_t now, int32_t id) const;
-
-    void attachChoreographer(int32_t layerId,
-                             const sp<EventThreadConnection>& choreographerConnection);
-
 private:
-    friend class LayerHistoryTest;
-    friend class TestableScheduler;
+    friend LayerHistoryTest;
+    friend TestableScheduler;
 
     using LayerPair = std::pair<Layer*, std::unique_ptr<LayerInfo>>;
-    // keyed by id as returned from Layer::getSequence()
-    using LayerInfos = std::unordered_map<int32_t, LayerPair>;
+    using LayerInfos = std::vector<LayerPair>;
 
-    // Iterates over layers maps moving all active layers to mActiveLayerInfos and all inactive
-    // layers to mInactiveLayerInfos.
-    // worst case time complexity is O(2 * inactive + active)
-    void partitionLayers(nsecs_t now) REQUIRES(mLock);
+    struct ActiveLayers {
+        LayerInfos& infos;
+        const size_t index;
 
-    enum class LayerStatus {
-        NotFound,
-        LayerInActiveMap,
-        LayerInInactiveMap,
+        auto begin() { return infos.begin(); }
+        auto end() { return begin() + static_cast<long>(index); }
     };
 
-    // looks up a layer by sequence id in both layerInfo maps.
-    // The first element indicates if and where the item was found
-    std::pair<LayerStatus, LayerPair*> findLayer(int32_t id) REQUIRES(mLock);
+    ActiveLayers activeLayers() REQUIRES(mLock) { return {mLayerInfos, mActiveLayersEnd}; }
 
-    std::pair<LayerStatus, const LayerPair*> findLayer(int32_t id) const REQUIRES(mLock) {
-        return const_cast<LayerHistory*>(this)->findLayer(id);
-    }
+    // Iterates over layers in a single pass, swapping pairs such that active layers precede
+    // inactive layers, and inactive layers precede expired layers. Removes expired layers by
+    // truncating after inactive layers.
+    void partitionLayers(nsecs_t now) REQUIRES(mLock);
 
     mutable std::mutex mLock;
 
-    // Partitioned into two maps to facility two kinds of retrieval:
-    // 1. retrieval of a layer by id (attempt lookup in both maps)
-    // 2. retrieval of all active layers (iterate that map)
-    // The partitioning is allowed to become out of date but calling partitionLayers refreshes the
-    // validity of each map.
-    LayerInfos mActiveLayerInfos GUARDED_BY(mLock);
-    LayerInfos mInactiveLayerInfos GUARDED_BY(mLock);
-
-    // Map keyed by layer ID (sequence) to choreographer connections.
-    std::unordered_multimap<int32_t, wp<EventThreadConnection>> mAttachedChoreographers
-            GUARDED_BY(mLock);
+    // Partitioned such that active layers precede inactive layers. For fast lookup, the few active
+    // layers are at the front, and weak pointers are stored in contiguous memory to hit the cache.
+    LayerInfos mLayerInfos GUARDED_BY(mLock);
+    size_t mActiveLayersEnd GUARDED_BY(mLock) = 0;
 
     uint32_t mDisplayArea = 0;
 

@@ -27,8 +27,12 @@ public:
     virtual ~DefaultFactory();
 
     std::unique_ptr<HWComposer> createHWComposer(const std::string& serviceName) override;
+    std::unique_ptr<MessageQueue> createMessageQueue() override;
     std::unique_ptr<scheduler::VsyncConfiguration> createVsyncConfiguration(
             Fps currentRefreshRate) override;
+    std::unique_ptr<Scheduler> createScheduler(const scheduler::RefreshRateConfigs&,
+                                               ISchedulerCallback&) override;
+    sp<SurfaceInterceptor> createSurfaceInterceptor() override;
     sp<StartPropertySetThread> createStartPropertySetThread(bool timestampPropertyValue) override;
     sp<DisplayDevice> createDisplayDevice(DisplayDeviceCreationArgs&) override;
     sp<GraphicBuffer> createGraphicBuffer(uint32_t width, uint32_t height, PixelFormat format,
@@ -37,12 +41,19 @@ public:
     void createBufferQueue(sp<IGraphicBufferProducer>* outProducer,
                            sp<IGraphicBufferConsumer>* outConsumer,
                            bool consumerIsSurfaceFlinger) override;
+    sp<IGraphicBufferProducer> createMonitoredProducer(const sp<IGraphicBufferProducer>&,
+                                                       const sp<SurfaceFlinger>&,
+                                                       const wp<Layer>&) override;
+    sp<BufferLayerConsumer> createBufferLayerConsumer(const sp<IGraphicBufferConsumer>&,
+                                                      renderengine::RenderEngine&, uint32_t tex,
+                                                      Layer*) override;
     std::unique_ptr<surfaceflinger::NativeWindowSurface> createNativeWindowSurface(
             const sp<IGraphicBufferProducer>&) override;
     std::unique_ptr<compositionengine::CompositionEngine> createCompositionEngine() override;
-    sp<Layer> createBufferStateLayer(const LayerCreationArgs& args) override;
-    sp<Layer> createEffectLayer(const LayerCreationArgs& args) override;
-    sp<LayerFE> createLayerFE(const std::string& layerName) override;
+    sp<BufferQueueLayer> createBufferQueueLayer(const LayerCreationArgs& args) override;
+    sp<BufferStateLayer> createBufferStateLayer(const LayerCreationArgs& args) override;
+    sp<EffectLayer> createEffectLayer(const LayerCreationArgs& args) override;
+    sp<ContainerLayer> createContainerLayer(const LayerCreationArgs& args) override;
     std::unique_ptr<FrameTracer> createFrameTracer() override;
     std::unique_ptr<frametimeline::FrameTimeline> createFrameTimeline(
             std::shared_ptr<TimeStats> timeStats, pid_t surfaceFlingerPid) override;

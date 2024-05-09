@@ -20,7 +20,6 @@
 #include <aidl/android/hardware/graphics/common/ChromaSiting.h>
 #include <aidl/android/hardware/graphics/common/Compression.h>
 #include <aidl/android/hardware/graphics/common/Cta861_3.h>
-#include <aidl/android/hardware/graphics/common/Hdr.h>
 #include <aidl/android/hardware/graphics/common/Interlaced.h>
 #include <aidl/android/hardware/graphics/common/PlaneLayout.h>
 #include <aidl/android/hardware/graphics/common/Smpte2086.h>
@@ -43,6 +42,7 @@ namespace ui {
 using android::hardware::graphics::common::V1_1::RenderIntent;
 using android::hardware::graphics::common::V1_2::ColorMode;
 using android::hardware::graphics::common::V1_2::Dataspace;
+using android::hardware::graphics::common::V1_2::Hdr;
 using android::hardware::graphics::common::V1_2::PixelFormat;
 
 /**
@@ -50,7 +50,6 @@ using android::hardware::graphics::common::V1_2::PixelFormat;
  */
 using aidl::android::hardware::graphics::common::BlendMode;
 using aidl::android::hardware::graphics::common::Cta861_3;
-using aidl::android::hardware::graphics::common::Hdr;
 using aidl::android::hardware::graphics::common::PlaneLayout;
 using aidl::android::hardware::graphics::common::Smpte2086;
 
@@ -62,24 +61,6 @@ using aidl::android::hardware::graphics::common::Smpte2086;
 using ChromaSiting = aidl::android::hardware::graphics::common::ChromaSiting;
 using Compression = aidl::android::hardware::graphics::common::Compression;
 using Interlaced = aidl::android::hardware::graphics::common::Interlaced;
-
-inline aidl::android::hardware::graphics::common::XyColor translate(const android_xy_color& color) {
-    return aidl::android::hardware::graphics::common::XyColor{.x = color.x, .y = color.y};
-}
-
-inline Smpte2086 translate(const android_smpte2086_metadata& metadata) {
-    return Smpte2086{.primaryRed = translate(metadata.displayPrimaryRed),
-                     .primaryGreen = translate(metadata.displayPrimaryGreen),
-                     .primaryBlue = translate(metadata.displayPrimaryBlue),
-                     .whitePoint = translate(metadata.whitePoint),
-                     .maxLuminance = metadata.maxLuminance,
-                     .minLuminance = metadata.minLuminance};
-}
-
-inline Cta861_3 translate(const android_cta861_3_metadata& metadata) {
-    return Cta861_3{.maxContentLightLevel = metadata.maxContentLightLevel,
-                    .maxFrameAverageLightLevel = metadata.maxFrameAverageLightLevel};
-}
 
 }  // namespace ui
 }  // namespace android

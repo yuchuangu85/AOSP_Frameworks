@@ -14,10 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
-
-#include <optional>
-#include <string>
+#ifndef _UI_INPUTREADER_SENSOR_INPUT_MAPPER_H
+#define _UI_INPUTREADER_SENSOR_INPUT_MAPPER_H
 
 #include "InputMapper.h"
 
@@ -27,20 +25,15 @@ static constexpr ssize_t SENSOR_VEC_LEN = 3;
 
 class SensorInputMapper : public InputMapper {
 public:
-    template <class T, class... Args>
-    friend std::unique_ptr<T> createInputMapper(InputDeviceContext& deviceContext,
-                                                const InputReaderConfiguration& readerConfig,
-                                                Args... args);
+    explicit SensorInputMapper(InputDeviceContext& deviceContext);
     ~SensorInputMapper() override;
 
-    uint32_t getSources() const override;
-    void populateDeviceInfo(InputDeviceInfo& deviceInfo) override;
+    uint32_t getSources() override;
+    void populateDeviceInfo(InputDeviceInfo* deviceInfo) override;
     void dump(std::string& dump) override;
-    [[nodiscard]] std::list<NotifyArgs> reconfigure(nsecs_t when,
-                                                    const InputReaderConfiguration& config,
-                                                    ConfigurationChanges changes) override;
-    [[nodiscard]] std::list<NotifyArgs> reset(nsecs_t when) override;
-    [[nodiscard]] std::list<NotifyArgs> process(const RawEvent* rawEvent) override;
+    void configure(nsecs_t when, const InputReaderConfiguration* config, uint32_t changes) override;
+    void reset(nsecs_t when) override;
+    void process(const RawEvent* rawEvent) override;
     bool enableSensor(InputDeviceSensorType sensorType, std::chrono::microseconds samplingPeriod,
                       std::chrono::microseconds maxBatchReportLatency) override;
     void disableSensor(InputDeviceSensorType sensorType) override;
@@ -108,9 +101,6 @@ private:
         }
     };
 
-    explicit SensorInputMapper(InputDeviceContext& deviceContext,
-                               const InputReaderConfiguration& readerConfig);
-
     static Axis createAxis(const AxisInfo& AxisInfo, const RawAbsoluteAxisInfo& rawAxisInfo);
 
     // Axes indexed by raw ABS_* axis index.
@@ -127,7 +117,10 @@ private:
     // Sensor list
     std::unordered_map<InputDeviceSensorType, Sensor> mSensors;
 
-    [[nodiscard]] std::list<NotifyArgs> sync(nsecs_t when, bool force);
+    void sync(nsecs_t when, bool force);
+
+    template <typename T>
+    bool tryGetProperty(std::string keyName, T& outValue);
 
     void parseSensorConfiguration(InputDeviceSensorType sensorType, int32_t absCode,
                                   int32_t sensorDataIndex, const Axis& axis);
@@ -140,3 +133,5 @@ private:
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_SENSOR_INPUT_MAPPER_H

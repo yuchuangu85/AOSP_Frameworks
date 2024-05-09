@@ -16,96 +16,57 @@
 
 #pragma once
 
-#include <ftl/fake_guard.h>
+#include <Scheduler/Scheduler.h>
 #include <gmock/gmock.h>
 #include <gui/ISurfaceComposer.h>
-
-#include <scheduler/interface/ICompositor.h>
 
 #include "Scheduler/EventThread.h"
 #include "Scheduler/LayerHistory.h"
 #include "Scheduler/Scheduler.h"
 #include "Scheduler/VSyncTracker.h"
 #include "Scheduler/VsyncController.h"
-#include "mock/MockVSyncDispatch.h"
 #include "mock/MockVSyncTracker.h"
 #include "mock/MockVsyncController.h"
 
-namespace android::scheduler {
+namespace android {
 
-class TestableScheduler : public Scheduler, private ICompositor {
+class TestableScheduler : public Scheduler {
 public:
-    TestableScheduler(RefreshRateSelectorPtr selectorPtr, ISchedulerCallback& callback)
+    TestableScheduler(const scheduler::RefreshRateConfigs& configs, ISchedulerCallback& callback)
           : TestableScheduler(std::make_unique<mock::VsyncController>(),
-                              std::make_shared<mock::VSyncTracker>(), std::move(selectorPtr),
-                              /* modulatorPtr */ nullptr, callback) {}
+                              std::make_unique<mock::VSyncTracker>(), configs, callback) {}
 
-    TestableScheduler(std::unique_ptr<VsyncController> controller,
-                      std::shared_ptr<VSyncTracker> tracker, RefreshRateSelectorPtr selectorPtr,
-                      sp<VsyncModulator> modulatorPtr, ISchedulerCallback& callback)
-          : Scheduler(*this, callback, Feature::kContentDetection, std::move(modulatorPtr)) {
-        const auto displayId = selectorPtr->getActiveMode().modePtr->getPhysicalDisplayId();
-        registerDisplay(displayId, std::move(selectorPtr), std::move(controller),
-                        std::move(tracker));
-
-        ON_CALL(*this, postMessage).WillByDefault([](sp<MessageHandler>&& handler) {
-            // Execute task to prevent broken promise exception on destruction.
-            handler->handleMessage(Message());
-        });
-    }
-
-    MOCK_METHOD(void, scheduleConfigure, (), (override));
-    MOCK_METHOD(void, scheduleFrame, (), (override));
-    MOCK_METHOD(void, postMessage, (sp<MessageHandler>&&), (override));
+    TestableScheduler(std::unique_ptr<scheduler::VsyncController> vsyncController,
+                      std::unique_ptr<scheduler::VSyncTracker> vsyncTracker,
+                      const scheduler::RefreshRateConfigs& configs, ISchedulerCallback& callback)
+          : Scheduler({std::move(vsyncController), std::move(vsyncTracker), nullptr}, configs,
+                      callback, createLayerHistory(configs),
+                      {.supportKernelTimer = false, .useContentDetection = true}) {}
 
     // Used to inject mock event thread.
     ConnectionHandle createConnection(std::unique_ptr<EventThread> eventThread) {
         return Scheduler::createConnection(std::move(eventThread));
     }
 
-    auto refreshRateSelector() { return pacesetterSelectorPtr(); }
+    /* ------------------------------------------------------------------------
+     * Read-write access to private data to set up preconditions and assert
+     * post-conditions.
+     */
+    auto& mutablePrimaryHWVsyncEnabled() { return mPrimaryHWVsyncEnabled; }
+    auto& mutableHWVsyncAvailable() { return mHWVsyncAvailable; }
 
-    void registerDisplay(PhysicalDisplayId displayId, RefreshRateSelectorPtr selectorPtr) {
-        registerDisplay(displayId, std::move(selectorPtr),
-                        std::make_unique<mock::VsyncController>(),
-                        std::make_shared<mock::VSyncTracker>());
-    }
+    bool hasLayerHistory() const { return static_cast<bool>(mLayerHistory); }
 
-    void registerDisplay(PhysicalDisplayId displayId, RefreshRateSelectorPtr selectorPtr,
-                         std::unique_ptr<VsyncController> controller,
-                         std::shared_ptr<VSyncTracker> tracker) {
-        ftl::FakeGuard guard(kMainThreadContext);
-        Scheduler::registerDisplayInternal(displayId, std::move(selectorPtr),
-                                           std::shared_ptr<VsyncSchedule>(
-                                                   new VsyncSchedule(displayId, std::move(tracker),
-                                                                     std::make_shared<
-                                                                             mock::VSyncDispatch>(),
-                                                                     std::move(controller))));
-    }
-
-    void unregisterDisplay(PhysicalDisplayId displayId) {
-        ftl::FakeGuard guard(kMainThreadContext);
-        Scheduler::unregisterDisplay(displayId);
-    }
-
-    std::optional<PhysicalDisplayId> pacesetterDisplayId() const NO_THREAD_SAFETY_ANALYSIS {
-        return mPacesetterDisplayId;
-    }
-
-    void setPacesetterDisplay(PhysicalDisplayId displayId) {
-        ftl::FakeGuard guard(kMainThreadContext);
-        Scheduler::setPacesetterDisplay(displayId);
-    }
-
-    auto& mutableAppConnectionHandle() { return mAppConnectionHandle; }
-    auto& mutableLayerHistory() { return mLayerHistory; }
+    auto* mutableLayerHistory() { return mLayerHistory.get(); }
 
     size_t layerHistorySize() NO_THREAD_SAFETY_ANALYSIS {
-        return mLayerHistory.mActiveLayerInfos.size() + mLayerHistory.mInactiveLayerInfos.size();
+        if (!mLayerHistory) return 0;
+        return mutableLayerHistory()->mLayerInfos.size();
     }
 
     size_t getNumActiveLayers() NO_THREAD_SAFETY_ANALYSIS {
-        return mLayerHistory.mActiveLayerInfos.size();
+        if (!mLayerHistory) return 0;
+        return mutableLayerHistory()->mActiveLayersEnd;
     }
 
     void replaceTouchTimer(int64_t millis) {
@@ -120,55 +81,33 @@ public:
     }
 
     bool isTouchActive() {
-        std::lock_guard<std::mutex> lock(mPolicyLock);
-        return mPolicy.touch == Scheduler::TouchState::Active;
-    }
-
-    void setTouchStateAndIdleTimerPolicy(GlobalSignals globalSignals) {
-        std::lock_guard<std::mutex> lock(mPolicyLock);
-        mPolicy.touch = globalSignals.touch ? TouchState::Active : TouchState::Inactive;
-        mPolicy.idleTimer = globalSignals.idle ? TimerState::Expired : TimerState::Reset;
-    }
-
-    void setContentRequirements(std::vector<RefreshRateSelector::LayerRequirement> layers) {
-        std::lock_guard<std::mutex> lock(mPolicyLock);
-        mPolicy.contentRequirements = std::move(layers);
-    }
-
-    using Scheduler::DisplayModeChoice;
-    using Scheduler::DisplayModeChoiceMap;
-
-    DisplayModeChoiceMap chooseDisplayModes() NO_THREAD_SAFETY_ANALYSIS {
-        return Scheduler::chooseDisplayModes();
+        std::lock_guard<std::mutex> lock(mFeatureStateLock);
+        return mFeatures.touch == Scheduler::TouchState::Active;
     }
 
     void dispatchCachedReportedMode() {
-        std::lock_guard<std::mutex> lock(mPolicyLock);
-        Scheduler::dispatchCachedReportedMode();
+        std::lock_guard<std::mutex> lock(mFeatureStateLock);
+        return Scheduler::dispatchCachedReportedMode();
     }
 
-    void clearCachedReportedMode() {
-        std::lock_guard<std::mutex> lock(mPolicyLock);
-        mPolicy.cachedModeChangedParams.reset();
+    void clearOptionalFieldsInFeatures() {
+        std::lock_guard<std::mutex> lock(mFeatureStateLock);
+        mFeatures.cachedModeChangedParams.reset();
     }
 
-    void onNonPrimaryDisplayModeChanged(ConnectionHandle handle, const FrameRateMode& mode) {
-        Scheduler::onNonPrimaryDisplayModeChanged(handle, mode);
+    void onNonPrimaryDisplayModeChanged(ConnectionHandle handle, PhysicalDisplayId displayId,
+                                        DisplayModeId modeId, nsecs_t vsyncPeriod) {
+        return Scheduler::onNonPrimaryDisplayModeChanged(handle, displayId, modeId, vsyncPeriod);
     }
 
-    void setInitialHwVsyncEnabled(PhysicalDisplayId id, bool enabled) {
-        auto schedule = getVsyncSchedule(id);
-        std::lock_guard<std::mutex> lock(schedule->mHwVsyncLock);
-        schedule->mHwVsyncState = enabled ? VsyncSchedule::HwVsyncState::Enabled
-                                          : VsyncSchedule::HwVsyncState::Disabled;
+    ~TestableScheduler() {
+        // All these pointer and container clears help ensure that GMock does
+        // not report a leaked object, since the Scheduler instance may
+        // still be referenced by something despite our best efforts to destroy
+        // it after each test is done.
+        mVsyncSchedule.controller.reset();
+        mConnections.clear();
     }
-
-private:
-    // ICompositor overrides:
-    void configure() override {}
-    bool commit(TimePoint, VsyncId, TimePoint) override { return false; }
-    void composite(TimePoint, VsyncId) override {}
-    void sample() override {}
 };
 
-} // namespace android::scheduler
+} // namespace android

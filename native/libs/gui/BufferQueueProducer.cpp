@@ -35,7 +35,6 @@
 #include <gui/GLConsumer.h>
 #include <gui/IConsumerListener.h>
 #include <gui/IProducerListener.h>
-#include <gui/TraceUtils.h>
 #include <private/gui/BufferQueueThreadState.h>
 
 #include <utils/Log.h>
@@ -120,13 +119,7 @@ status_t BufferQueueProducer::requestBuffer(int slot, sp<GraphicBuffer>* buf) {
 
 status_t BufferQueueProducer::setMaxDequeuedBufferCount(
         int maxDequeuedBuffers) {
-    int maxBufferCount;
-    return setMaxDequeuedBufferCount(maxDequeuedBuffers, &maxBufferCount);
-}
-
-status_t BufferQueueProducer::setMaxDequeuedBufferCount(int maxDequeuedBuffers,
-                                                        int* maxBufferCount) {
-    ATRACE_FORMAT("%s(%d)", __func__, maxDequeuedBuffers);
+    ATRACE_CALL();
     BQ_LOGV("setMaxDequeuedBufferCount: maxDequeuedBuffers = %d",
             maxDequeuedBuffers);
 
@@ -140,8 +133,6 @@ status_t BufferQueueProducer::setMaxDequeuedBufferCount(int maxDequeuedBuffers,
                     "abandoned");
             return NO_INIT;
         }
-
-        *maxBufferCount = mCore->getMaxBufferCountLocked();
 
         if (maxDequeuedBuffers == mCore->mMaxDequeuedBufferCount) {
             return NO_ERROR;
@@ -192,7 +183,6 @@ status_t BufferQueueProducer::setMaxDequeuedBufferCount(int maxDequeuedBuffers,
             return BAD_VALUE;
         }
         mCore->mMaxDequeuedBufferCount = maxDequeuedBuffers;
-        *maxBufferCount = mCore->getMaxBufferCountLocked();
         VALIDATE_CONSISTENCY();
         if (delta < 0) {
             listener = mCore->mConsumerListener;
@@ -503,20 +493,6 @@ status_t BufferQueueProducer::dequeueBuffer(int* outSlot, sp<android::Fence>* ou
         if ((buffer == nullptr) ||
                 buffer->needsReallocation(width, height, format, BQ_LAYER_COUNT, usage))
         {
-            if (CC_UNLIKELY(ATRACE_ENABLED())) {
-                if (buffer == nullptr) {
-                    ATRACE_FORMAT_INSTANT("%s buffer reallocation: null", mConsumerName.string());
-                } else {
-                    ATRACE_FORMAT_INSTANT("%s buffer reallocation actual %dx%d format:%d "
-                                          "layerCount:%d "
-                                          "usage:%d requested: %dx%d format:%d layerCount:%d "
-                                          "usage:%d ",
-                                          mConsumerName.string(), width, height, format,
-                                          BQ_LAYER_COUNT, usage, buffer->getWidth(),
-                                          buffer->getHeight(), buffer->getPixelFormat(),
-                                          buffer->getLayerCount(), buffer->getUsage());
-                }
-            }
             mSlots[found].mAcquireCalled = false;
             mSlots[found].mGraphicBuffer = nullptr;
             mSlots[found].mRequestBufferCalled = false;
@@ -669,10 +645,7 @@ status_t BufferQueueProducer::detachBuffer(int slot) {
                     slot, BufferQueueDefs::NUM_BUFFER_SLOTS);
             return BAD_VALUE;
         } else if (!mSlots[slot].mBufferState.isDequeued()) {
-            // TODO(http://b/140581935): This message is BQ_LOGW because it
-            // often logs when no actionable errors are present. Return to
-            // using BQ_LOGE after ensuring this only logs during errors.
-            BQ_LOGW("detachBuffer: slot %d is not owned by the producer "
+            BQ_LOGE("detachBuffer: slot %d is not owned by the producer "
                     "(state = %s)", slot, mSlots[slot].mBufferState.string());
             return BAD_VALUE;
         } else if (!mSlots[slot].mRequestBufferCalled) {

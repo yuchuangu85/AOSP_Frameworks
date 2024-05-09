@@ -17,23 +17,24 @@
 #undef LOG_TAG
 #define LOG_TAG "FpsReporterTest"
 
-#include <chrono>
-
 #include <android/gui/BnFpsListener.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <gui/LayerMetadata.h>
 
+#include "BufferQueueLayer.h"
+#include "BufferStateLayer.h"
+#include "EffectLayer.h"
 #include "FpsReporter.h"
 #include "Layer.h"
 #include "TestableSurfaceFlinger.h"
 #include "fake/FakeClock.h"
 #include "mock/DisplayHardware/MockComposer.h"
+#include "mock/MockEventThread.h"
 #include "mock/MockFrameTimeline.h"
+#include "mock/MockVsyncController.h"
 
 namespace android {
-
-using namespace std::chrono_literals;
 
 using testing::_;
 using testing::DoAll;
@@ -45,7 +46,7 @@ using testing::UnorderedElementsAre;
 using android::Hwc2::IComposer;
 using android::Hwc2::IComposerClient;
 
-using gui::LayerMetadata;
+using FakeHwcDisplayInjector = TestableSurfaceFlinger::FakeHwcDisplayInjector;
 
 struct TestableFpsListener : public gui::BnFpsListener {
     TestableFpsListener() {}
@@ -74,7 +75,8 @@ protected:
     static constexpr uint32_t LAYER_FLAGS = 0;
     static constexpr int32_t PRIORITY_UNSET = -1;
 
-    sp<Layer> createBufferStateLayer(LayerMetadata metadata);
+    void setupScheduler();
+    sp<BufferStateLayer> createBufferStateLayer(LayerMetadata metadata);
 
     TestableSurfaceFlinger mFlinger;
     mock::FrameTimeline mFrameTimeline =
@@ -89,8 +91,8 @@ protected:
 
     sp<TestableFpsListener> mFpsListener;
     fake::FakeClock* mClock = new fake::FakeClock();
-    sp<FpsReporter> mFpsReporter = sp<FpsReporter>::make(mFrameTimeline, *(mFlinger.flinger()),
-                                                         std::unique_ptr<Clock>(mClock));
+    sp<FpsReporter> mFpsReporter =
+            new FpsReporter(mFrameTimeline, *(mFlinger.flinger()), std::unique_ptr<Clock>(mClock));
 };
 
 FpsReporterTest::FpsReporterTest() {
@@ -98,10 +100,10 @@ FpsReporterTest::FpsReporterTest() {
             ::testing::UnitTest::GetInstance()->current_test_info();
     ALOGD("**** Setting up for %s.%s\n", test_info->test_case_name(), test_info->name());
 
-    mFlinger.setupMockScheduler();
+    setupScheduler();
     mFlinger.setupComposer(std::make_unique<Hwc2::mock::Composer>());
 
-    mFpsListener = sp<TestableFpsListener>::make();
+    mFpsListener = new TestableFpsListener();
 }
 
 FpsReporterTest::~FpsReporterTest() {
@@ -110,10 +112,36 @@ FpsReporterTest::~FpsReporterTest() {
     ALOGD("**** Tearing down after %s.%s\n", test_info->test_case_name(), test_info->name());
 }
 
-sp<Layer> FpsReporterTest::createBufferStateLayer(LayerMetadata metadata = {}) {
+sp<BufferStateLayer> FpsReporterTest::createBufferStateLayer(LayerMetadata metadata = {}) {
     sp<Client> client;
-    LayerCreationArgs args(mFlinger.flinger(), client, "buffer-state-layer", LAYER_FLAGS, metadata);
-    return sp<Layer>::make(args);
+    LayerCreationArgs args(mFlinger.flinger(), client, "buffer-state-layer", WIDTH, HEIGHT,
+                           LAYER_FLAGS, metadata);
+    return new BufferStateLayer(args);
+}
+
+void FpsReporterTest::setupScheduler() {
+    auto eventThread = std::make_unique<mock::EventThread>();
+    auto sfEventThread = std::make_unique<mock::EventThread>();
+
+    EXPECT_CALL(*eventThread, registerDisplayEventConnection(_));
+    EXPECT_CALL(*eventThread, createEventConnection(_, _))
+            .WillOnce(Return(new EventThreadConnection(eventThread.get(), /*callingUid=*/0,
+                                                       ResyncCallback())));
+
+    EXPECT_CALL(*sfEventThread, registerDisplayEventConnection(_));
+    EXPECT_CALL(*sfEventThread, createEventConnection(_, _))
+            .WillOnce(Return(new EventThreadConnection(sfEventThread.get(), /*callingUid=*/0,
+                                                       ResyncCallback())));
+
+    auto vsyncController = std::make_unique<mock::VsyncController>();
+    auto vsyncTracker = std::make_unique<mock::VSyncTracker>();
+
+    EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*vsyncTracker, currentPeriod())
+            .WillRepeatedly(Return(FakeHwcDisplayInjector::DEFAULT_VSYNC_PERIOD));
+    EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+    mFlinger.setupScheduler(std::move(vsyncController), std::move(vsyncTracker),
+                            std::move(eventThread), std::move(sfEventThread));
 }
 
 namespace {
@@ -122,7 +150,7 @@ TEST_F(FpsReporterTest, callsListeners) {
     mParent = createBufferStateLayer();
     constexpr int32_t kTaskId = 12;
     LayerMetadata targetMetadata;
-    targetMetadata.setInt32(gui::METADATA_TASK_ID, kTaskId);
+    targetMetadata.setInt32(METADATA_TASK_ID, kTaskId);
     mTarget = createBufferStateLayer(targetMetadata);
     mChild = createBufferStateLayer();
     mGrandChild = createBufferStateLayer();
@@ -157,7 +185,7 @@ TEST_F(FpsReporterTest, callsListeners) {
 TEST_F(FpsReporterTest, rateLimits) {
     const constexpr int32_t kTaskId = 12;
     LayerMetadata targetMetadata;
-    targetMetadata.setInt32(gui::METADATA_TASK_ID, kTaskId);
+    targetMetadata.setInt32(METADATA_TASK_ID, kTaskId);
     mTarget = createBufferStateLayer(targetMetadata);
     mFlinger.mutableCurrentState().layersSortedByZ.add(mTarget);
 

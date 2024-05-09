@@ -14,16 +14,15 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_INPUTSTATE_H
+#define _UI_INPUT_INPUTDISPATCHER_INPUTSTATE_H
 
 #include "CancelationOptions.h"
 #include "Entry.h"
 
 #include <utils/Timers.h>
-#include <bitset>
 
-namespace android {
-namespace inputdispatcher {
+namespace android::inputdispatcher {
 
 static constexpr int32_t INVALID_POINTER_INDEX = -1;
 
@@ -33,6 +32,9 @@ class InputState {
 public:
     explicit InputState(const IdGenerator& idGenerator);
     ~InputState();
+
+    // Returns true if there is no state to be canceled.
+    bool isNeutral() const;
 
     // Returns true if the specified source is known to have received a hover enter
     // motion event.
@@ -62,9 +64,9 @@ public:
     void mergePointerStateTo(InputState& other);
 
     // Gets the fallback key associated with a keycode.
-    // Returns std::nullopt if none.
+    // Returns -1 if none.
     // Returns AKEYCODE_UNKNOWN if we are only dispatching the unhandled key to the policy.
-    std::optional<int32_t> getFallbackKey(int32_t originalKeyCode);
+    int32_t getFallbackKey(int32_t originalKeyCode);
 
     // Sets the fallback key for a particular keycode.
     void setFallbackKey(int32_t originalKeyCode, int32_t fallbackKeyCode);
@@ -72,7 +74,7 @@ public:
     // Removes the fallback key for a particular keycode.
     void removeFallbackKey(int32_t originalKeyCode);
 
-    inline const std::map<int32_t, int32_t>& getFallbackKeys() const { return mFallbackKeys; }
+    inline const KeyedVector<int32_t, int32_t>& getFallbackKeys() const { return mFallbackKeys; }
 
 private:
     struct KeyMemento {
@@ -113,7 +115,7 @@ private:
 
     std::vector<KeyMemento> mKeyMementos;
     std::vector<MotionMemento> mMotionMementos;
-    std::map</*originalKeyCode*/int32_t, /*fallbackKeyCode*/int32_t> mFallbackKeys;
+    KeyedVector<int32_t, int32_t> mFallbackKeys;
 
     ssize_t findKeyMemento(const KeyEntry& entry) const;
     ssize_t findMotionMemento(const MotionEntry& entry, bool hovering) const;
@@ -123,12 +125,8 @@ private:
 
     static bool shouldCancelKey(const KeyMemento& memento, const CancelationOptions& options);
     static bool shouldCancelMotion(const MotionMemento& memento, const CancelationOptions& options);
-
-    // Synthesizes pointer cancel events for a particular set of pointers.
-    std::vector<std::unique_ptr<MotionEntry>> synthesizeCancelationEventsForPointers(
-            const MotionMemento& memento, std::bitset<MAX_POINTER_ID + 1> pointerIds,
-            nsecs_t currentTime);
 };
 
-} // namespace inputdispatcher
-} // namespace android
+} // namespace android::inputdispatcher
+
+#endif // _UI_INPUT_INPUTDISPATCHER_INPUTSTATE_H

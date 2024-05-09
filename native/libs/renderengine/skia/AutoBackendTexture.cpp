@@ -43,12 +43,10 @@ AutoBackendTexture::AutoBackendTexture(GrDirectContext* context, AHardwareBuffer
                                                        createProtectedImage, backendFormat,
                                                        isOutputBuffer);
     mColorType = GrAHardwareBufferUtils::GetSkColorTypeFromBufferFormat(desc.format);
-    if (!mBackendTexture.isValid() || !desc.width || !desc.height) {
-        LOG_ALWAYS_FATAL("Failed to create a valid texture. [%p]:[%d,%d] isProtected:%d "
-                         "isWriteable:%d format:%d",
-                         this, desc.width, desc.height, createProtectedImage, isOutputBuffer,
-                         desc.format);
-    }
+    ALOGE_IF(!mBackendTexture.isValid(),
+             "Failed to create a valid texture. [%p]:[%d,%d] isProtected:%d isWriteable:%d "
+             "format:%d",
+             this, desc.width, desc.height, createProtectedImage, isOutputBuffer, desc.format);
 }
 
 AutoBackendTexture::~AutoBackendTexture() {
@@ -84,18 +82,6 @@ void AutoBackendTexture::releaseImageProc(SkImage::ReleaseContext releaseContext
     textureRelease->unref(false);
 }
 
-void logFatalTexture(const char* msg, const GrBackendTexture& tex, ui::Dataspace dataspace,
-                     SkColorType colorType) {
-    GrGLTextureInfo textureInfo;
-    bool retrievedTextureInfo = tex.getGLTextureInfo(&textureInfo);
-    LOG_ALWAYS_FATAL("%s isTextureValid:%d dataspace:%d"
-                     "\n\tGrBackendTexture: (%i x %i) hasMipmaps: %i isProtected: %i texType: %i"
-                     "\n\t\tGrGLTextureInfo: success: %i fTarget: %u fFormat: %u colorType %i",
-                     msg, tex.isValid(), dataspace, tex.width(), tex.height(), tex.hasMipmaps(),
-                     tex.isProtected(), static_cast<int>(tex.textureType()), retrievedTextureInfo,
-                     textureInfo.fTarget, textureInfo.fFormat, colorType);
-}
-
 sk_sp<SkImage> AutoBackendTexture::makeImage(ui::Dataspace dataspace, SkAlphaType alphaType,
                                              GrDirectContext* context) {
     ATRACE_CALL();
@@ -121,9 +107,9 @@ sk_sp<SkImage> AutoBackendTexture::makeImage(ui::Dataspace dataspace, SkAlphaTyp
 
     mImage = image;
     mDataspace = dataspace;
-    if (!mImage) {
-        logFatalTexture("Unable to generate SkImage.", mBackendTexture, dataspace, colorType);
-    }
+    LOG_ALWAYS_FATAL_IF(mImage == nullptr,
+                        "Unable to generate SkImage. isTextureValid:%d dataspace:%d",
+                        mBackendTexture.isValid(), dataspace);
     return mImage;
 }
 
@@ -145,9 +131,9 @@ sk_sp<SkSurface> AutoBackendTexture::getOrCreateSurface(ui::Dataspace dataspace,
     }
 
     mDataspace = dataspace;
-    if (!mSurface) {
-        logFatalTexture("Unable to generate SkSurface.", mBackendTexture, dataspace, mColorType);
-    }
+    LOG_ALWAYS_FATAL_IF(mSurface == nullptr,
+                        "Unable to generate SkSurface. isTextureValid:%d dataspace:%d",
+                        mBackendTexture.isValid(), dataspace);
     return mSurface;
 }
 

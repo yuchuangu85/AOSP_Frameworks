@@ -36,12 +36,8 @@ enum class BinderCallType {
 // Based on where we are in recursion of nested binder/hwbinder calls, determine
 // which one we are closer to.
 inline static BinderCallType getCurrentServingCall() {
-    auto* hwState = android::hardware::IPCThreadState::selfOrNull();
-    auto* state = android::IPCThreadState::selfOrNull();
-
-    // getServingStackPointer can also return nullptr
-    const void* hwbinderSp = hwState ? hwState->getServingStackPointer() : nullptr;
-    const void* binderSp = state ? state->getServingStackPointer() : nullptr;
+    const void* hwbinderSp = android::hardware::IPCThreadState::self()->getServingStackPointer();
+    const void* binderSp = android::IPCThreadState::self()->getServingStackPointer();
 
     if (hwbinderSp == nullptr && binderSp == nullptr) return BinderCallType::NONE;
     if (hwbinderSp == nullptr) return BinderCallType::BINDER;

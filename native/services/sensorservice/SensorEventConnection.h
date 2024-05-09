@@ -18,7 +18,6 @@
 #define ANDROID_SENSOR_EVENT_CONNECTION_H
 
 #include <atomic>
-#include <optional>
 #include <stdint.h>
 #include <sys/types.h>
 #include <unordered_map>
@@ -149,6 +148,7 @@ private:
     sp<SensorService> const mService;
     sp<BitTube> mChannel;
     uid_t mUid;
+    std::atomic_bool mIsRateCappedBasedOnPermission;
     mutable Mutex mConnectionLock;
     // Number of events from wake up sensors which are still pending and haven't been delivered to
     // the corresponding application. It is incremented by one unit for each write to the socket.
@@ -201,16 +201,6 @@ private:
     // Mapping of sensor handles to its rate before being capped by the mic toggle.
     std::unordered_map<int, nsecs_t> mMicSamplingPeriodBackup;
     userid_t mUserId;
-
-    std::optional<bool> mIsRateCappedBasedOnPermission;
-
-    bool isRateCappedBasedOnPermission() {
-      if (!mIsRateCappedBasedOnPermission.has_value()) {
-        mIsRateCappedBasedOnPermission
-            = mService->isRateCappedBasedOnPermission(mOpPackageName);
-      }
-      return mIsRateCappedBasedOnPermission.value();
-    }
 };
 
 } // namepsace android

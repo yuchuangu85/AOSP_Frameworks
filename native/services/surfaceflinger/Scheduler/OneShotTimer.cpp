@@ -47,7 +47,6 @@ OneShotTimer::OneShotTimer(std::string name, const Interval& interval,
         mInterval(interval),
         mResetCallback(resetCallback),
         mTimeoutCallback(timeoutCallback) {
-    mLastResetTime = std::chrono::steady_clock::time_point::min();
     LOG_ALWAYS_FATAL_IF(!mClock, "Clock must not be provided");
 }
 
@@ -117,35 +116,25 @@ void OneShotTimer::loop() {
 
         auto triggerTime = mClock->now() + mInterval;
         state = TimerState::WAITING;
-        while (true) {
-            // Wait until triggerTime time to check if we need to reset or drop into the idle state.
-            if (const auto triggerInterval = triggerTime - mClock->now(); triggerInterval > 0ns) {
-                mWaiting = true;
-                struct timespec ts;
-                calculateTimeoutTime(triggerInterval, &ts);
-                int result = sem_clockwait(&mSemaphore, CLOCK_MONOTONIC, &ts);
-                if (result && errno != ETIMEDOUT && errno != EINTR) {
-                    std::stringstream ss;
-                    ss << "sem_clockwait failed (" << errno << ")";
-                    LOG_ALWAYS_FATAL("%s", ss.str().c_str());
-                }
+        while (state == TimerState::WAITING) {
+            constexpr auto zero = std::chrono::steady_clock::duration::zero();
+            // Wait for mInterval time for semaphore signal.
+            struct timespec ts;
+            calculateTimeoutTime(std::chrono::nanoseconds(mInterval), &ts);
+            int result = sem_clockwait(&mSemaphore, CLOCK_MONOTONIC, &ts);
+            if (result && errno != ETIMEDOUT && errno != EINTR) {
+                std::stringstream ss;
+                ss << "sem_clockwait failed (" << errno << ")";
+                LOG_ALWAYS_FATAL("%s", ss.str().c_str());
             }
 
-            mWaiting = false;
             state = checkForResetAndStop(state);
-            if (state == TimerState::STOPPED) {
-                break;
-            }
-
-            if (state == TimerState::WAITING && (triggerTime - mClock->now()) <= 0ns) {
+            if (state == TimerState::RESET) {
+                triggerTime = mClock->now() + mInterval;
+                state = TimerState::WAITING;
+            } else if (state == TimerState::WAITING && (triggerTime - mClock->now()) <= zero) {
                 triggerTimeout = true;
                 state = TimerState::IDLE;
-                break;
-            }
-
-            if (state == TimerState::RESET) {
-                triggerTime = mLastResetTime.load() + mInterval;
-                state = TimerState::WAITING;
             }
         }
 
@@ -169,14 +158,15 @@ OneShotTimer::TimerState OneShotTimer::checkForResetAndStop(TimerState state) {
 }
 
 void OneShotTimer::reset() {
-    mLastResetTime = mClock->now();
     mResetTriggered = true;
-    // If mWaiting is true, then we are guaranteed to be in a block where we are waiting on
-    // mSemaphore for a timeout, rather than idling. So we can avoid a sem_post call since we can
-    // just check that we triggered a reset on timeout.
-    if (!mWaiting) {
-        LOG_ALWAYS_FATAL_IF(sem_post(&mSemaphore), "sem_post failed");
-    }
+    int result = sem_post(&mSemaphore);
+    LOG_ALWAYS_FATAL_IF(result, "sem_post failed");
+}
+
+std::string OneShotTimer::dump() const {
+    std::ostringstream stream;
+    stream << mInterval.count() << " ms";
+    return stream.str();
 }
 
 } // namespace scheduler

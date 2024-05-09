@@ -38,23 +38,13 @@ class DumpstateService : public BinderService<DumpstateService>, public BnDumpst
 
     status_t dump(int fd, const Vector<String16>& args) override;
 
-    binder::Status preDumpUiData(const std::string& callingPackage) override;
-
     binder::Status startBugreport(int32_t calling_uid, const std::string& calling_package,
                                   android::base::unique_fd bugreport_fd,
                                   android::base::unique_fd screenshot_fd, int bugreport_mode,
-                                  int bugreport_flags, const sp<IDumpstateListener>& listener,
+                                  const sp<IDumpstateListener>& listener,
                                   bool is_screenshot_requested) override;
 
-    binder::Status retrieveBugreport(int32_t calling_uid,
-                                     const std::string& calling_package,
-                                     android::base::unique_fd bugreport_fd,
-                                     const std::string& bugreport_file,
-                                     const sp<IDumpstateListener>& listener)
-                                     override;
-
-    binder::Status cancelBugreport(int32_t calling_uid,
-                                   const std::string& calling_package) override;
+    binder::Status cancelBugreport(int32_t calling_uid, const std::string& calling_package);
 
   private:
     // Dumpstate object which contains all the bugreporting logic.

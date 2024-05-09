@@ -36,14 +36,7 @@ WindowSurface::WindowSurface() {
         return;
     }
 
-    const auto ids = SurfaceComposerClient::getPhysicalDisplayIds();
-    if (ids.empty()) {
-        fprintf(stderr, "Failed to get ID for any displays.\n");
-        return;
-    }
-
-    // display 0 is picked for now, can extend to support all displays if needed
-    const auto displayToken = SurfaceComposerClient::getPhysicalDisplayToken(ids.front());
+    const auto displayToken = SurfaceComposerClient::getInternalDisplayToken();
     if (displayToken == nullptr) {
         fprintf(stderr, "ERROR: no display\n");
         return;

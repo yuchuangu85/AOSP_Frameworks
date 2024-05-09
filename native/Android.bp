@@ -56,8 +56,7 @@ subdirs = [
 
 cc_library_headers {
     name: "libandroid_sensor_headers",
-    vendor_available: true,
-    host_supported: true,
+    vendor: true,
     export_include_dirs: ["include_sensor"],
 }
 
@@ -65,20 +64,14 @@ filegroup {
     name: "framework_native_aidl_binder",
     srcs: ["aidl/binder/**/*.aidl"],
     path: "aidl/binder",
-    visibility: [
-        "//frameworks/native",
-        "//frameworks/native/libs/gui",
-    ],
+    visibility: ["//frameworks/native"],
 }
 
 filegroup {
     name: "framework_native_aidl_gui",
     srcs: ["aidl/gui/**/*.aidl"],
     path: "aidl/gui",
-    visibility: [
-        "//frameworks/native",
-        "//frameworks/native/libs/gui",
-    ],
+    visibility: ["//frameworks/native"],
 }
 
 filegroup {
@@ -89,7 +82,7 @@ filegroup {
     ],
 }
 
-cc_library_headers {
+cc_library_headers{
     name: "libandroid_headers_private",
     export_include_dirs: ["include/private"],
 }

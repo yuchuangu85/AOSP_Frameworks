@@ -22,7 +22,8 @@ class InputReaderInterface;
 class InputReaderPolicyInterface;
 class InputListenerInterface;
 
-std::unique_ptr<InputReaderInterface> createInputReader(
-        const sp<InputReaderPolicyInterface>& policy, InputListenerInterface& listener);
+sp<InputReaderInterface> createInputReader(
+        const sp<InputReaderPolicyInterface>& policy,
+        const sp<InputListenerInterface>& listener);
 
 } // namespace android

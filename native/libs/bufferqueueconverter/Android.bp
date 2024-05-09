@@ -13,7 +13,7 @@ cc_library_headers {
     export_include_dirs: ["include"],
 }
 
-cc_library {
+cc_library_shared {
     name: "libbufferqueueconverter",
     vendor_available: true,
     vndk: {
@@ -22,7 +22,6 @@ cc_library {
     double_loadable: true,
 
     srcs: [
-        ":libgui_frame_event_aidl",
         "BufferQueueConverter.cpp",
     ],
 

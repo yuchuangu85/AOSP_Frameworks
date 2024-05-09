@@ -23,10 +23,8 @@
 #include <sys/eventfd.h>
 #include <sys/uio.h>
 
-#include <atomic>
 #include <chrono>
 #include <deque>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>

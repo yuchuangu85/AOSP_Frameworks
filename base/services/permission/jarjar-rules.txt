@@ -1,1 +1,0 @@
-rule kotlin.** com.android.server.permission.jarjar.@0

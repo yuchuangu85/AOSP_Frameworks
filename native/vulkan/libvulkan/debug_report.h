@@ -78,7 +78,8 @@ class DebugReportCallbackList {
         VkDebugReportCallbackEXT driver_handle;
     };
 
-    mutable std::shared_mutex rwmutex_;
+    // TODO(b/143295577): use std::shared_mutex when available in libc++
+    mutable std::shared_timed_mutex rwmutex_;
     Node head_;
 };
 

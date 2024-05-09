@@ -1,5 +1,0 @@
-# Bug component: 1193469
-
-set noparent
-
-include platform/frameworks/base:/services/backup/BACKUP_OWNERS

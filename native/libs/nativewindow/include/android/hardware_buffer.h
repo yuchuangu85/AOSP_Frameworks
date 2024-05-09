@@ -158,42 +158,6 @@ enum AHardwareBuffer_Format {
      * cube-maps or multi-layered textures.
      */
     AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420             = 0x23,
-
-    /**
-     * YUV P010 format.
-     * Must have an even width and height. Can be accessed in OpenGL
-     * shaders through an external sampler. Does not support mip-maps
-     * cube-maps or multi-layered textures.
-     */
-    AHARDWAREBUFFER_FORMAT_YCbCr_P010               = 0x36,
-
-    /**
-     * Corresponding formats:
-     *   Vulkan: VK_FORMAT_R8_UNORM
-     *   OpenGL ES: GR_GL_R8
-     */
-    AHARDWAREBUFFER_FORMAT_R8_UNORM                 = 0x38,
-
-    /**
-     * Corresponding formats:
-     *   Vulkan: VK_FORMAT_R16_UINT
-     *   OpenGL ES: GL_R16UI
-     */
-    AHARDWAREBUFFER_FORMAT_R16_UINT                 = 0x39,
-
-    /**
-     * Corresponding formats:
-     *   Vulkan: VK_FORMAT_R16G16_UINT
-     *   OpenGL ES: GL_RG16UI
-     */
-    AHARDWAREBUFFER_FORMAT_R16G16_UINT              = 0x3a,
-
-    /**
-     * Corresponding formats:
-     *   Vulkan: VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16
-     *   OpenGL ES: N/A
-     */
-    AHARDWAREBUFFER_FORMAT_R10G10B10A10_UNORM       = 0x3b,
 };
 
 /**
@@ -310,16 +274,6 @@ enum AHardwareBuffer_UsageFlags {
      * the extension GL_EXT_EGL_image_storage instead of GL_KHR_EGL_image.
      */
     AHARDWAREBUFFER_USAGE_GPU_MIPMAP_COMPLETE   = 1UL << 26,
-
-    /**
-     * Usage: The buffer is used for front-buffer rendering. When
-     * front-buffering rendering is specified, different usages may adjust their
-     * behavior as a result. For example, when used as GPU_COLOR_OUTPUT the buffer
-     * will behave similar to a single-buffered window. When used with
-     * COMPOSER_OVERLAY, the system will try to prioritize the buffer receiving
-     * an overlay plane & avoid caching it in intermediate composition buffers.
-     */
-    AHARDWAREBUFFER_USAGE_FRONT_BUFFER = 1UL << 32,
 
     AHARDWAREBUFFER_USAGE_VENDOR_0  = 1ULL << 28,
     AHARDWAREBUFFER_USAGE_VENDOR_1  = 1ULL << 29,
@@ -601,7 +555,6 @@ int AHardwareBuffer_lockAndGetInfo(AHardwareBuffer* _Nonnull buffer, uint64_t us
                                    void* _Nullable* _Nonnull outVirtualAddress,
                                    int32_t* _Nonnull outBytesPerPixel,
                                    int32_t* _Nonnull outBytesPerStride) __INTRODUCED_IN(29);
-
 
 /**
  * Get the system wide unique id for an AHardwareBuffer.

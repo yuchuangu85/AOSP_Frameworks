@@ -94,7 +94,7 @@ private:
     uint32_t mCode;
 };
 
-std::ostream& operator<<(std::ostream& to, const TypeCode& val);
+TextOutput& operator<<(TextOutput& to, const TypeCode& val);
 
 class HexDump
 {
@@ -123,7 +123,7 @@ private:
     bool mCArrayStyle;
 };
 
-std::ostream& operator<<(std::ostream& to, const HexDump& val);
+TextOutput& operator<<(TextOutput& to, const HexDump& val);
 inline TextOutput& operator<<(TextOutput& to,
                               decltype(std::endl<char,
                                        std::char_traits<char>>)

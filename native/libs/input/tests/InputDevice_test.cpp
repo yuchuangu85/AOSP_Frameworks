@@ -20,7 +20,6 @@
 #include <input/InputDevice.h>
 #include <input/KeyLayoutMap.h>
 #include <input/Keyboard.h>
-#include "android-base/file.h"
 
 namespace android {
 
@@ -64,13 +63,12 @@ protected:
         mKeyMap.keyCharacterMapFile = path;
     }
 
-    void SetUp() override {
-#if !defined(__ANDROID__)
-        GTEST_SKIP() << "b/253299089 Generic files are currently read directly from device.";
-#endif
+    virtual void SetUp() override {
         loadKeyLayout("Generic");
         loadKeyCharacterMap("Generic");
     }
+
+    virtual void TearDown() override {}
 
     KeyMap mKeyMap;
 };
@@ -82,91 +80,6 @@ TEST_F(InputDeviceKeyMapTest, keyCharacterMapParcelingTest) {
     std::shared_ptr<KeyCharacterMap> map = KeyCharacterMap::readFromParcel(&parcel);
     // Verify the key character map is the same as original
     ASSERT_EQ(*map, *mKeyMap.keyCharacterMap);
-}
-
-TEST_F(InputDeviceKeyMapTest, keyCharacterMapWithOverlayParcelingTest) {
-    Parcel parcel;
-    std::string overlayPath = base::GetExecutableDirectory() + "/data/german.kcm";
-    base::Result<std::shared_ptr<KeyCharacterMap>> overlay =
-            KeyCharacterMap::load(overlayPath, KeyCharacterMap::Format::OVERLAY);
-    ASSERT_TRUE(overlay.ok()) << "Cannot load KeyCharacterMap at " << overlayPath;
-    mKeyMap.keyCharacterMap->combine(*overlay->get());
-    mKeyMap.keyCharacterMap->writeToParcel(&parcel);
-    parcel.setDataPosition(0);
-    std::shared_ptr<KeyCharacterMap> map = KeyCharacterMap::readFromParcel(&parcel);
-    ASSERT_EQ(*map, *mKeyMap.keyCharacterMap);
-}
-
-TEST_F(InputDeviceKeyMapTest, keyCharacteMapApplyMultipleOverlaysTest) {
-    std::string frenchOverlayPath = base::GetExecutableDirectory() + "/data/french.kcm";
-    std::string englishOverlayPath = base::GetExecutableDirectory() + "/data/english_us.kcm";
-    std::string germanOverlayPath = base::GetExecutableDirectory() + "/data/german.kcm";
-    base::Result<std::shared_ptr<KeyCharacterMap>> frenchOverlay =
-            KeyCharacterMap::load(frenchOverlayPath, KeyCharacterMap::Format::OVERLAY);
-    ASSERT_TRUE(frenchOverlay.ok()) << "Cannot load KeyCharacterMap at " << frenchOverlayPath;
-    base::Result<std::shared_ptr<KeyCharacterMap>> englishOverlay =
-            KeyCharacterMap::load(englishOverlayPath, KeyCharacterMap::Format::OVERLAY);
-    ASSERT_TRUE(englishOverlay.ok()) << "Cannot load KeyCharacterMap at " << englishOverlayPath;
-    base::Result<std::shared_ptr<KeyCharacterMap>> germanOverlay =
-            KeyCharacterMap::load(germanOverlayPath, KeyCharacterMap::Format::OVERLAY);
-    ASSERT_TRUE(germanOverlay.ok()) << "Cannot load KeyCharacterMap at " << germanOverlayPath;
-
-    // Apply the French overlay
-    mKeyMap.keyCharacterMap->combine(*frenchOverlay->get());
-    // Copy the result for later
-    std::shared_ptr<KeyCharacterMap> frenchOverlaidKeyCharacterMap =
-            std::make_shared<KeyCharacterMap>(*mKeyMap.keyCharacterMap);
-
-    // Apply the English overlay
-    mKeyMap.keyCharacterMap->combine(*englishOverlay->get());
-    // Verify that the result is different from the French overlay result
-    ASSERT_NE(*mKeyMap.keyCharacterMap, *frenchOverlaidKeyCharacterMap);
-
-    // Apply the German overlay
-    mKeyMap.keyCharacterMap->combine(*germanOverlay->get());
-    // Verify that the result is different from the French overlay result
-    ASSERT_NE(*mKeyMap.keyCharacterMap, *frenchOverlaidKeyCharacterMap);
-
-    // Apply the French overlay
-    mKeyMap.keyCharacterMap->combine(*frenchOverlay->get());
-    // Verify that the result is the same like after applying it initially
-    ASSERT_EQ(*mKeyMap.keyCharacterMap, *frenchOverlaidKeyCharacterMap);
-}
-
-TEST_F(InputDeviceKeyMapTest, keyCharacteMapBadAxisLabel) {
-    std::string klPath = base::GetExecutableDirectory() + "/data/bad_axis_label.kl";
-
-    base::Result<std::shared_ptr<KeyLayoutMap>> ret = KeyLayoutMap::load(klPath);
-    ASSERT_FALSE(ret.ok()) << "Should not be able to load KeyLayout at " << klPath;
-}
-
-TEST_F(InputDeviceKeyMapTest, keyCharacteMapBadLedLabel) {
-    std::string klPath = base::GetExecutableDirectory() + "/data/bad_led_label.kl";
-
-    base::Result<std::shared_ptr<KeyLayoutMap>> ret = KeyLayoutMap::load(klPath);
-    ASSERT_FALSE(ret.ok()) << "Should not be able to load KeyLayout at " << klPath;
-}
-
-TEST(InputDeviceKeyLayoutTest, DoesNotLoadWhenRequiredKernelConfigIsMissing) {
-#if !defined(__ANDROID__)
-    GTEST_SKIP() << "Can't check kernel configs on host";
-#endif
-    std::string klPath = base::GetExecutableDirectory() + "/data/kl_with_required_fake_config.kl";
-    base::Result<std::shared_ptr<KeyLayoutMap>> ret = KeyLayoutMap::load(klPath);
-    ASSERT_FALSE(ret.ok()) << "Should not be able to load KeyLayout at " << klPath;
-    // We assert error message here because it's used by 'validatekeymaps' tool
-    ASSERT_EQ("Missing kernel config", ret.error().message());
-}
-
-TEST(InputDeviceKeyLayoutTest, LoadsWhenRequiredKernelConfigIsPresent) {
-#if !defined(__ANDROID__)
-    GTEST_SKIP() << "Can't check kernel configs on host";
-#endif
-    std::string klPath = base::GetExecutableDirectory() + "/data/kl_with_required_real_config.kl";
-    base::Result<std::shared_ptr<KeyLayoutMap>> ret = KeyLayoutMap::load(klPath);
-    ASSERT_TRUE(ret.ok()) << "Cannot load KeyLayout at " << klPath;
-    const std::shared_ptr<KeyLayoutMap>& map = *ret;
-    ASSERT_NE(nullptr, map) << "Map should be valid because CONFIG_UHID should always be present";
 }
 
 } // namespace android

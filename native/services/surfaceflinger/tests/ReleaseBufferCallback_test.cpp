@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include <gui/test/CallbackUtils.h>
 #include "LayerTransactionTest.h"
+#include "utils/CallbackUtils.h"
 
 using namespace std::chrono_literals;
 
@@ -31,7 +31,7 @@ class ReleaseBufferCallbackHelper {
 public:
     static void function(void* callbackContext, ReleaseCallbackId callbackId,
                          const sp<Fence>& releaseFence,
-                         std::optional<uint32_t> /*currentMaxAcquiredBufferCount*/) {
+                         uint32_t /*currentMaxAcquiredBufferCount*/) {
         if (!callbackContext) {
             FAIL() << "failed to get callback context";
         }
@@ -61,7 +61,7 @@ public:
         std::this_thread::sleep_for(300ms);
 
         std::lock_guard lock(mMutex);
-        EXPECT_EQ(mCallbackDataQueue.size(), 0U) << "extra callbacks received";
+        EXPECT_EQ(mCallbackDataQueue.size(), 0) << "extra callbacks received";
         mCallbackDataQueue = {};
     }
 
@@ -85,8 +85,9 @@ public:
                              sp<Fence> fence, CallbackHelper& callback, const ReleaseCallbackId& id,
                              ReleaseBufferCallbackHelper& releaseCallback) {
         Transaction t;
-        t.setBuffer(layer, buffer, fence, id.framenumber, 0 /* producerId */,
-                    releaseCallback.getCallback());
+        t.setFrameNumber(layer, id.framenumber);
+        t.setBuffer(layer, buffer, id, releaseCallback.getCallback());
+        t.setAcquireFence(layer, fence);
         t.addTransactionCompletedCallback(callback.function, callback.getContext());
         t.apply();
     }
@@ -98,10 +99,10 @@ public:
     }
 
     static void waitForReleaseBufferCallback(ReleaseBufferCallbackHelper& releaseCallback,
-                                             const ReleaseCallbackId& expectedReleaseBufferId) {
+                                             const ReleaseCallbackId& expectedCallbackId) {
         ReleaseCallbackId actualReleaseBufferId;
         releaseCallback.getCallbackData(&actualReleaseBufferId);
-        EXPECT_EQ(expectedReleaseBufferId, actualReleaseBufferId);
+        EXPECT_EQ(expectedCallbackId, actualReleaseBufferId);
         releaseCallback.verifyNoCallbacks();
     }
     static ReleaseBufferCallbackHelper* getReleaseBufferCallbackHelper() {
@@ -111,10 +112,10 @@ public:
     }
 
     static sp<GraphicBuffer> getBuffer() {
-        return sp<GraphicBuffer>::make(32u, 32u, PIXEL_FORMAT_RGBA_8888, 1u,
-                                       BufferUsage::CPU_READ_OFTEN | BufferUsage::CPU_WRITE_OFTEN |
-                                               BufferUsage::COMPOSER_OVERLAY,
-                                       "test");
+        return new GraphicBuffer(32, 32, PIXEL_FORMAT_RGBA_8888, 1,
+                                 BufferUsage::CPU_READ_OFTEN | BufferUsage::CPU_WRITE_OFTEN |
+                                         BufferUsage::COMPOSER_OVERLAY,
+                                 "test");
     }
     static uint64_t generateFrameNumber() {
         static uint64_t sFrameNumber = 0;
@@ -301,8 +302,8 @@ TEST_F(ReleaseBufferCallbackTest, DISABLED_FrameDropping) {
     nsecs_t time = systemTime() + std::chrono::nanoseconds(100ms).count();
 
     Transaction t;
-    t.setBuffer(layer, firstBuffer, std::nullopt, firstBufferCallbackId.framenumber,
-                0 /* producerId */, releaseCallback->getCallback());
+    t.setBuffer(layer, firstBuffer, firstBufferCallbackId, releaseCallback->getCallback());
+    t.setAcquireFence(layer, Fence::NO_FENCE);
     t.addTransactionCompletedCallback(transactionCallback.function,
                                       transactionCallback.getContext());
     t.setDesiredPresentTime(time);
@@ -317,8 +318,8 @@ TEST_F(ReleaseBufferCallbackTest, DISABLED_FrameDropping) {
     // Dropping frames in transaction queue emits a callback
     sp<GraphicBuffer> secondBuffer = getBuffer();
     ReleaseCallbackId secondBufferCallbackId(secondBuffer->getId(), generateFrameNumber());
-    t.setBuffer(layer, secondBuffer, std::nullopt, secondBufferCallbackId.framenumber,
-                0 /* producerId */, releaseCallback->getCallback());
+    t.setBuffer(layer, secondBuffer, secondBufferCallbackId, releaseCallback->getCallback());
+    t.setAcquireFence(layer, Fence::NO_FENCE);
     t.addTransactionCompletedCallback(transactionCallback.function,
                                       transactionCallback.getContext());
     t.setDesiredPresentTime(time);
@@ -329,163 +330,6 @@ TEST_F(ReleaseBufferCallbackTest, DISABLED_FrameDropping) {
                         ExpectedResult::Buffer::NOT_ACQUIRED,
                         ExpectedResult::PreviousBuffer::RELEASED);
     ASSERT_NO_FATAL_FAILURE(waitForCallback(transactionCallback, expected));
-    ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
-}
-
-TEST_F(ReleaseBufferCallbackTest, DISABLED_Merge_Different_Processes) {
-    sp<TransactionCompletedListener> firstCompletedListener =
-            sp<TransactionCompletedListener>::make();
-    sp<TransactionCompletedListener> secondCompletedListener =
-            sp<TransactionCompletedListener>::make();
-
-    CallbackHelper callback1, callback2;
-
-    TransactionCompletedListener::setInstance(firstCompletedListener);
-
-    sp<SurfaceControl> layer = createBufferStateLayer();
-    ReleaseBufferCallbackHelper* releaseCallback = getReleaseBufferCallbackHelper();
-
-    sp<GraphicBuffer> firstBuffer = getBuffer();
-    ReleaseCallbackId firstBufferCallbackId(firstBuffer->getId(), generateFrameNumber());
-
-    // Send initial buffer for the layer
-    submitBuffer(layer, firstBuffer, Fence::NO_FENCE, callback1, firstBufferCallbackId,
-                 *releaseCallback);
-
-    ExpectedResult expected;
-    expected.addSurface(ExpectedResult::Transaction::PRESENTED, layer,
-                        ExpectedResult::Buffer::NOT_ACQUIRED);
-    ASSERT_NO_FATAL_FAILURE(waitForCallback(callback1, expected));
-
-    // Sent a second buffer to allow the first buffer to get released.
-    sp<GraphicBuffer> secondBuffer = getBuffer();
-    ReleaseCallbackId secondBufferCallbackId(secondBuffer->getId(), generateFrameNumber());
-
-    Transaction transaction1;
-    transaction1.setBuffer(layer, secondBuffer, std::nullopt, secondBufferCallbackId.framenumber,
-                           0 /* producerId */, releaseCallback->getCallback());
-    transaction1.addTransactionCompletedCallback(callback1.function, callback1.getContext());
-
-    // Set a different TransactionCompletedListener to mimic a second process
-    TransactionCompletedListener::setInstance(secondCompletedListener);
-
-    // Make sure the second "process" has a callback set up.
-    Transaction transaction2;
-    transaction2.addTransactionCompletedCallback(callback2.function, callback2.getContext());
-
-    // This merging order, merge transaction1 first then transaction2, seems to ensure the listener
-    // for transaction2 is ordered first. This makes sure the wrong process is added first to the
-    // layer's vector of listeners. With the bug, only the secondCompletedListener will get the
-    // release callback id, since it's ordered first. Then firstCompletedListener would fail to get
-    // the release callback id and not invoke the release callback.
-    Transaction().merge(std::move(transaction1)).merge(std::move(transaction2)).apply();
-
-    expected = ExpectedResult();
-    expected.addSurface(ExpectedResult::Transaction::PRESENTED, layer,
-                        ExpectedResult::Buffer::NOT_ACQUIRED,
-                        ExpectedResult::PreviousBuffer::RELEASED);
-    ASSERT_NO_FATAL_FAILURE(waitForCallback(callback1, expected));
-    ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
-}
-
-TEST_F(ReleaseBufferCallbackTest, DISABLED_SetBuffer_OverwriteBuffers) {
-    sp<SurfaceControl> layer = createBufferStateLayer();
-    ReleaseBufferCallbackHelper* releaseCallback = getReleaseBufferCallbackHelper();
-
-    sp<GraphicBuffer> firstBuffer = getBuffer();
-    ReleaseCallbackId firstBufferCallbackId(firstBuffer->getId(), generateFrameNumber());
-
-    // Create transaction with a buffer.
-    Transaction transaction;
-    transaction.setBuffer(layer, firstBuffer, std::nullopt, firstBufferCallbackId.framenumber,
-                          0 /* producerId */, releaseCallback->getCallback());
-
-    sp<GraphicBuffer> secondBuffer = getBuffer();
-    ReleaseCallbackId secondBufferCallbackId(secondBuffer->getId(), generateFrameNumber());
-
-    // Call setBuffer on the same transaction with a different buffer.
-    transaction.setBuffer(layer, secondBuffer, std::nullopt, secondBufferCallbackId.framenumber,
-                          0 /* producerId */, releaseCallback->getCallback());
-
-    ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
-}
-
-TEST_F(ReleaseBufferCallbackTest, DISABLED_Merge_Transactions_OverwriteBuffers) {
-    sp<SurfaceControl> layer = createBufferStateLayer();
-    ReleaseBufferCallbackHelper* releaseCallback = getReleaseBufferCallbackHelper();
-
-    sp<GraphicBuffer> firstBuffer = getBuffer();
-    ReleaseCallbackId firstBufferCallbackId(firstBuffer->getId(), generateFrameNumber());
-
-    // Create transaction with a buffer.
-    Transaction transaction1;
-    transaction1.setBuffer(layer, firstBuffer, std::nullopt, firstBufferCallbackId.framenumber,
-                           0 /* producerId */, releaseCallback->getCallback());
-
-    sp<GraphicBuffer> secondBuffer = getBuffer();
-    ReleaseCallbackId secondBufferCallbackId(secondBuffer->getId(), generateFrameNumber());
-
-    // Create a second transaction with a new buffer for the same layer.
-    Transaction transaction2;
-    transaction2.setBuffer(layer, secondBuffer, std::nullopt, secondBufferCallbackId.framenumber,
-                           0 /* producerId */, releaseCallback->getCallback());
-
-    // merge transaction1 into transaction2 so ensure we get a proper buffer release callback.
-    transaction1.merge(std::move(transaction2));
-    ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
-}
-
-TEST_F(ReleaseBufferCallbackTest, DISABLED_MergeBuffers_Different_Processes) {
-    sp<TransactionCompletedListener> firstCompletedListener =
-            sp<TransactionCompletedListener>::make();
-    sp<TransactionCompletedListener> secondCompletedListener =
-            sp<TransactionCompletedListener>::make();
-
-    TransactionCompletedListener::setInstance(firstCompletedListener);
-
-    sp<SurfaceControl> layer = createBufferStateLayer();
-    ReleaseBufferCallbackHelper* releaseCallback = getReleaseBufferCallbackHelper();
-
-    sp<GraphicBuffer> firstBuffer = getBuffer();
-    ReleaseCallbackId firstBufferCallbackId(firstBuffer->getId(), generateFrameNumber());
-
-    Transaction transaction1;
-    transaction1.setBuffer(layer, firstBuffer, std::nullopt, firstBufferCallbackId.framenumber,
-                           0 /* producerId */, releaseCallback->getCallback());
-
-    // Sent a second buffer to allow the first buffer to get released.
-    sp<GraphicBuffer> secondBuffer = getBuffer();
-    ReleaseCallbackId secondBufferCallbackId(secondBuffer->getId(), generateFrameNumber());
-
-    Transaction transaction2;
-    transaction2.setBuffer(layer, secondBuffer, std::nullopt, secondBufferCallbackId.framenumber,
-                           0 /* producerId */, releaseCallback->getCallback());
-
-    // Set a different TransactionCompletedListener to mimic a second process
-    TransactionCompletedListener::setInstance(secondCompletedListener);
-    Transaction().merge(std::move(transaction1)).merge(std::move(transaction2)).apply();
-
-    // Make sure we can still get the release callback even though the merge happened in a different
-    // process.
-    ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
-}
-
-TEST_F(ReleaseBufferCallbackTest, SetBuffer_OverwriteBuffersWithNull) {
-    sp<SurfaceControl> layer = createBufferStateLayer();
-    ReleaseBufferCallbackHelper* releaseCallback = getReleaseBufferCallbackHelper();
-
-    sp<GraphicBuffer> firstBuffer = getBuffer();
-    ReleaseCallbackId firstBufferCallbackId(firstBuffer->getId(), generateFrameNumber());
-
-    // Create transaction with a buffer.
-    Transaction transaction;
-    transaction.setBuffer(layer, firstBuffer, std::nullopt, firstBufferCallbackId.framenumber,
-                          0 /* producerId */, releaseCallback->getCallback());
-
-    // Call setBuffer on the same transaction with a null buffer.
-    transaction.setBuffer(layer, nullptr, std::nullopt, 0, 0 /* producerId */,
-                          releaseCallback->getCallback());
-
     ASSERT_NO_FATAL_FAILURE(waitForReleaseBufferCallback(*releaseCallback, firstBufferCallbackId));
 }
 

@@ -41,19 +41,11 @@ public:
     // Insert target stats into app stats or potentially global stats as well.
     void insertTargetStats(const std::string& appPackageName, const uint64_t driverVersionCode,
                            const GpuStatsInfo::Stats stats, const uint64_t value);
-    void insertTargetStatsArray(const std::string& appPackageName,
-                           const uint64_t driverVersionCode, const GpuStatsInfo::Stats stats,
-                           const uint64_t* values, const uint32_t valueCount);
     // dumpsys interface
     void dump(const Vector<String16>& args, std::string* result);
 
     // This limits the worst case number of loading times tracked.
-    static const size_t MAX_NUM_LOADING_TIMES = 16;
-    // Below limits the memory usage of GpuStats to be less than 10KB. This is
-    // the preferred number for statsd while maintaining nice data quality.
-    static const size_t MAX_NUM_APP_RECORDS = 100;
-    // The number of apps to remove when mAppStats fills up.
-    static const size_t APP_RECORD_HEADROOM = 10;
+    static const size_t MAX_NUM_LOADING_TIMES = 50;
 
 private:
     // Friend class for testing.
@@ -63,10 +55,6 @@ private:
     static AStatsManager_PullAtomCallbackReturn pullAtomCallback(int32_t atomTag,
                                                                  AStatsEventList* data,
                                                                  void* cookie);
-
-    // Remove old packages from mAppStats.
-    void purgeOldDriverStats();
-
     // Pull global into into global atom.
     AStatsManager_PullAtomCallbackReturn pullGlobalInfoAtom(AStatsEventList* data);
     // Pull app into into app atom.
@@ -80,6 +68,9 @@ private:
     // Registers statsd callbacks if they have not already been registered
     void registerStatsdCallbacksIfNeeded();
 
+    // Below limits the memory usage of GpuStats to be less than 10KB. This is
+    // the preferred number for statsd while maintaining nice data quality.
+    static const size_t MAX_NUM_APP_RECORDS = 100;
     // GpuStats access should be guarded by mLock.
     std::mutex mLock;
     // True if statsd callbacks have been registered.

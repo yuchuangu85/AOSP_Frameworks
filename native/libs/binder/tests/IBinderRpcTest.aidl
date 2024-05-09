@@ -18,14 +18,8 @@ interface IBinderRpcTest {
     oneway void sendString(@utf8InCpp String str);
     @utf8InCpp String doubleString(@utf8InCpp String str);
 
-    // get the port that a client used to connect to this object
-    int getClientPort();
-
     // number of known RPC binders to process, RpcState::countBinders by session
     int[] countBinders();
-
-    // Return a null binder with a non-nullable return type.
-    IBinder getNullBinder();
 
     // Caller sends server, callee pings caller's server and returns error code.
     int pingMe(IBinder binder);
@@ -60,28 +54,5 @@ interface IBinderRpcTest {
     void sleepMs(int ms);
     oneway void sleepMsAsync(int ms);
 
-    void doCallback(IBinderRpcCallback callback, boolean isOneway, boolean delayed, @utf8InCpp String value);
-    oneway void doCallbackAsync(IBinderRpcCallback callback, boolean isOneway, boolean delayed, @utf8InCpp String value);
-
     void die(boolean cleanup);
-    void scheduleShutdown();
-
-    void useKernelBinderCallingId();
-
-    ParcelFileDescriptor echoAsFile(@utf8InCpp String content);
-
-    ParcelFileDescriptor concatFiles(in List<ParcelFileDescriptor> files);
-
-    // FDs sent via `blockingSendFdOneway` can be received via
-    // `blockingRecvFd`. The handler for `blockingSendFdOneway` will block
-    // until the next `blockingRecvFd` call.
-    //
-    // This is useful for carefully controlling how/when oneway transactions
-    // get queued.
-    oneway void blockingSendFdOneway(in ParcelFileDescriptor fd);
-    ParcelFileDescriptor blockingRecvFd();
-
-    // Same as blockingSendFdOneway, but with integers.
-    oneway void blockingSendIntOneway(int n);
-    int blockingRecvInt();
 }

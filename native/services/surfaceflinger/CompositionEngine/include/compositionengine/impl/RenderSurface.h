@@ -62,12 +62,14 @@ public:
             base::unique_fd* bufferFence) override;
     void queueBuffer(base::unique_fd readyFence) override;
     void onPresentDisplayCompleted() override;
-    bool supportsCompositionStrategyPrediction() const override;
+    void flip() override;
 
     // Debugging
     void dump(std::string& result) const override;
+    std::uint32_t getPageFlipCount() const override;
 
     // Testing
+    void setPageFlipCountForTest(std::uint32_t);
     void setSizeForTest(const ui::Size&);
     std::shared_ptr<renderengine::ExternalTexture>& mutableTextureForTest();
     base::unique_fd& mutableBufferReadyForTest();
@@ -86,6 +88,7 @@ private:
     ui::Size mSize;
     const size_t mMaxTextureCacheSize;
     bool mProtected{false};
+    std::uint32_t mPageFlipCount{0};
 };
 
 std::unique_ptr<compositionengine::RenderSurface> createRenderSurface(

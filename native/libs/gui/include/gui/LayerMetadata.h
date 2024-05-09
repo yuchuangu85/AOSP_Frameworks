@@ -20,7 +20,7 @@
 
 #include <unordered_map>
 
-namespace android::gui {
+namespace android {
 
 enum {
     METADATA_OWNER_UID = 1,
@@ -30,8 +30,7 @@ enum {
     METADATA_ACCESSIBILITY_ID = 5,
     METADATA_OWNER_PID = 6,
     METADATA_DEQUEUE_TIME = 7,
-    METADATA_GAME_MODE = 8,
-    METADATA_CALLING_UID = 9,
+    METADATA_GAME_MODE = 8
 };
 
 struct LayerMetadata : public Parcelable {
@@ -60,24 +59,4 @@ struct LayerMetadata : public Parcelable {
     std::string itemToString(uint32_t key, const char* separator) const;
 };
 
-// Keep in sync with the GameManager.java constants.
-enum class GameMode : int32_t {
-    Unsupported = 0,
-    Standard = 1,
-    Performance = 2,
-    Battery = 3,
-    Custom = 4,
-
-    ftl_last = Custom
-};
-
-} // namespace android::gui
-
-using android::gui::METADATA_ACCESSIBILITY_ID;
-using android::gui::METADATA_DEQUEUE_TIME;
-using android::gui::METADATA_GAME_MODE;
-using android::gui::METADATA_MOUSE_CURSOR;
-using android::gui::METADATA_OWNER_PID;
-using android::gui::METADATA_OWNER_UID;
-using android::gui::METADATA_TASK_ID;
-using android::gui::METADATA_WINDOW_TYPE;
+} // namespace android

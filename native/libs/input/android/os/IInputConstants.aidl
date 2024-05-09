@@ -25,6 +25,13 @@ interface IInputConstants
     // android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS.
     const int UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS = 5000; // 5 seconds
 
+    // Compatibility changes.
+    /**
+      * TODO(b/157929241): remove this before closing the bug. This is needed temporarily
+      * to identify apps that are using this flag.
+      */
+    const long BLOCK_FLAG_SLIPPERY = 157929241;
+
     // Indicate invalid battery capacity
     const int INVALID_BATTERY_CAPACITY = -1;
 
@@ -33,14 +40,6 @@ interface IInputConstants
      * available.
      */
     const int INVALID_INPUT_EVENT_ID = 0;
-
-    /**
-     * Every input device has an id. This constant value is used when a valid input device id is not
-     * available.
-     * The virtual keyboard uses -1 as the input device id. Therefore, we use -2 as the value for
-     * an invalid input device.
-     */
-    const int INVALID_INPUT_DEVICE_ID = -2;
 
     /**
      * The input event was injected from accessibility. Used in policyFlags for input event
@@ -54,7 +53,4 @@ interface IInputConstants
      * set of flags, including in input/Input.h and in android/input.h.
      */
     const int INPUT_EVENT_FLAG_IS_ACCESSIBILITY_EVENT = 0x800;
-
-    /* The default pointer acceleration value. */
-    const int DEFAULT_POINTER_ACCELERATION = 3;
 }

@@ -14,23 +14,16 @@
  * limitations under the License.
  */
 
-use crate::binder::{
-    AsNative, Interface, InterfaceClassMethods, Remotable, Stability, TransactionCode,
-};
+use crate::binder::{AsNative, Interface, InterfaceClassMethods, Remotable, Stability, TransactionCode};
 use crate::error::{status_result, status_t, Result, StatusCode};
-use crate::parcel::{BorrowedParcel, Serialize};
+use crate::parcel::{Parcel, Serialize};
 use crate::proxy::SpIBinder;
 use crate::sys;
 
 use std::convert::TryFrom;
-use std::ffi::{c_void, CStr, CString};
-use std::fs::File;
+use std::ffi::{c_void, CString};
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
-use std::os::raw::c_char;
-use std::os::unix::io::FromRawFd;
-use std::slice;
-use std::sync::Mutex;
 
 /// Rust wrapper around Binder remotable objects.
 ///
@@ -53,25 +46,6 @@ pub struct Binder<T: Remotable> {
 /// the box-like object inherits `Send` from the two inner values, similarly
 /// to how `Box<T>` is `Send` if `T` is `Send`.
 unsafe impl<T: Remotable> Send for Binder<T> {}
-
-/// # Safety
-///
-/// A `Binder<T>` is a pair of unique owning pointers to two values:
-///   * a C++ ABBinder which is thread-safe, i.e. `Send + Sync`
-///   * a Rust object which implements `Remotable`; this trait requires `Send + Sync`
-///
-/// `ABBinder` contains an immutable `mUserData` pointer, which is actually a
-/// pointer to a boxed `T: Remotable`, which is `Sync`. `ABBinder` also contains
-/// a mutable pointer to its class, but mutation of this field is controlled by
-/// a mutex and it is only allowed to be set once, therefore we can concurrently
-/// access this field safely. `ABBinder` inherits from `BBinder`, which is also
-/// thread-safe. Thus `ABBinder` is thread-safe.
-///
-/// Both pointers are unique (never escape the `Binder<T>` object and are not copied)
-/// so we can essentially treat `Binder<T>` as a box-like containing the two objects;
-/// the box-like object inherits `Sync` from the two inner values, similarly
-/// to how `Box<T>` is `Sync` if `T` is `Sync`.
-unsafe impl<T: Remotable> Sync for Binder<T> {}
 
 impl<T: Remotable> Binder<T> {
     /// Create a new Binder remotable object with default stability
@@ -98,7 +72,10 @@ impl<T: Remotable> Binder<T> {
             // ends.
             sys::AIBinder_new(class.into(), rust_object as *mut c_void)
         };
-        let mut binder = Binder { ibinder, rust_object };
+        let mut binder = Binder {
+            ibinder,
+            rust_object,
+        };
         binder.mark_stability(stability);
         binder
     }
@@ -159,8 +136,8 @@ impl<T: Remotable> Binder<T> {
     ///        # fn on_transact(
     ///        #     service: &dyn IBar,
     ///        #     code: TransactionCode,
-    ///        #     data: &BorrowedParcel,
-    ///        #     reply: &mut BorrowedParcel,
+    ///        #     data: &Parcel,
+    ///        #     reply: &mut Parcel,
     ///        # ) -> binder::Result<()> {
     ///        #     Ok(())
     ///        # }
@@ -209,8 +186,8 @@ impl<T: Remotable> Binder<T> {
     }
 
     /// Mark this binder object with local stability, which is vendor if we are
-    /// building for android_vendor and system otherwise.
-    #[cfg(android_vendor)]
+    /// building for the VNDK and system otherwise.
+    #[cfg(vendor_ndk)]
     fn mark_local_stability(&mut self) {
         unsafe {
             // Safety: Self always contains a valid `AIBinder` pointer, so
@@ -220,8 +197,8 @@ impl<T: Remotable> Binder<T> {
     }
 
     /// Mark this binder object with local stability, which is vendor if we are
-    /// building for android_vendor and system otherwise.
-    #[cfg(not(android_vendor))]
+    /// building for the VNDK and system otherwise.
+    #[cfg(not(vendor_ndk))]
     fn mark_local_stability(&mut self) {
         unsafe {
             // Safety: Self always contains a valid `AIBinder` pointer, so
@@ -275,8 +252,8 @@ impl<T: Remotable> InterfaceClassMethods for Binder<T> {
         reply: *mut sys::AParcel,
     ) -> status_t {
         let res = {
-            let mut reply = BorrowedParcel::from_raw(reply).unwrap();
-            let data = BorrowedParcel::from_raw(data as *mut sys::AParcel).unwrap();
+            let mut reply = Parcel::borrowed(reply).unwrap();
+            let data = Parcel::borrowed(data as *mut sys::AParcel).unwrap();
             let object = sys::AIBinder_getUserData(binder);
             let binder: &T = &*(object as *const T);
             binder.on_transact(code, &data, &mut reply)
@@ -295,7 +272,7 @@ impl<T: Remotable> InterfaceClassMethods for Binder<T> {
     /// Must be called with a valid pointer to a `T` object. After this call,
     /// the pointer will be invalid and should not be dereferenced.
     unsafe extern "C" fn on_destroy(object: *mut c_void) {
-        drop(Box::from_raw(object as *mut T));
+        Box::from_raw(object as *mut T);
     }
 
     /// Called whenever a new, local `AIBinder` object is needed of a specific
@@ -311,49 +288,6 @@ impl<T: Remotable> InterfaceClassMethods for Binder<T> {
         // We just return the argument, as it is already a pointer to the rust
         // object created by Box.
         args
-    }
-
-    /// Called to handle the `dump` transaction.
-    ///
-    /// # Safety
-    ///
-    /// Must be called with a non-null, valid pointer to a local `AIBinder` that
-    /// contains a `T` pointer in its user data. fd should be a non-owned file
-    /// descriptor, and args must be an array of null-terminated string
-    /// poiinters with length num_args.
-    unsafe extern "C" fn on_dump(
-        binder: *mut sys::AIBinder,
-        fd: i32,
-        args: *mut *const c_char,
-        num_args: u32,
-    ) -> status_t {
-        if fd < 0 {
-            return StatusCode::UNEXPECTED_NULL as status_t;
-        }
-        // We don't own this file, so we need to be careful not to drop it.
-        let file = ManuallyDrop::new(File::from_raw_fd(fd));
-
-        if args.is_null() && num_args != 0 {
-            return StatusCode::UNEXPECTED_NULL as status_t;
-        }
-
-        let args = if args.is_null() || num_args == 0 {
-            vec![]
-        } else {
-            slice::from_raw_parts(args, num_args as usize)
-                .iter()
-                .map(|s| CStr::from_ptr(*s))
-                .collect()
-        };
-
-        let object = sys::AIBinder_getUserData(binder);
-        let binder: &T = &*(object as *const T);
-        let res = binder.on_dump(&file, &args);
-
-        match res {
-            Ok(()) => 0,
-            Err(e) => e as status_t,
-        }
     }
 }
 
@@ -389,7 +323,7 @@ impl<T: Remotable> Deref for Binder<T> {
 }
 
 impl<B: Remotable> Serialize for Binder<B> {
-    fn serialize(&self, parcel: &mut BorrowedParcel<'_>) -> Result<()> {
+    fn serialize(&self, parcel: &mut Parcel) -> Result<()> {
         parcel.write_binder(Some(&self.as_binder()))
     }
 }
@@ -418,7 +352,10 @@ impl<B: Remotable> TryFrom<SpIBinder> for Binder<B> {
         // We are transferring the ownership of the AIBinder into the new Binder
         // object.
         let mut ibinder = ManuallyDrop::new(ibinder);
-        Ok(Binder { ibinder: ibinder.as_native_mut(), rust_object: userdata as *mut B })
+        Ok(Binder {
+            ibinder: ibinder.as_native_mut(),
+            rust_object: userdata as *mut B,
+        })
     }
 }
 
@@ -443,8 +380,6 @@ unsafe impl<B: Remotable> AsNative<sys::AIBinder> for Binder<B> {
 ///
 /// Registers the given binder object with the given identifier. If successful,
 /// this service can then be retrieved using that identifier.
-///
-/// This function will panic if the identifier contains a 0 byte (NUL).
 pub fn add_service(identifier: &str, mut binder: SpIBinder) -> Result<()> {
     let instance = CString::new(identifier).unwrap();
     let status = unsafe {
@@ -458,96 +393,6 @@ pub fn add_service(identifier: &str, mut binder: SpIBinder) -> Result<()> {
     status_result(status)
 }
 
-/// Register a dynamic service via the LazyServiceRegistrar.
-///
-/// Registers the given binder object with the given identifier. If successful,
-/// this service can then be retrieved using that identifier. The service process
-/// will be shut down once all registered services are no longer in use.
-///
-/// If any service in the process is registered as lazy, all should be, otherwise
-/// the process may be shut down while a service is in use.
-///
-/// This function will panic if the identifier contains a 0 byte (NUL).
-pub fn register_lazy_service(identifier: &str, mut binder: SpIBinder) -> Result<()> {
-    let instance = CString::new(identifier).unwrap();
-    let status = unsafe {
-        // Safety: `AServiceManager_registerLazyService` expects valid `AIBinder` and C
-        // string pointers. Caller retains ownership of both
-        // pointers. `AServiceManager_registerLazyService` creates a new strong reference
-        // and copies the string, so both pointers need only be valid until the
-        // call returns.
-
-        sys::AServiceManager_registerLazyService(binder.as_native_mut(), instance.as_ptr())
-    };
-    status_result(status)
-}
-
-/// Prevent a process which registers lazy services from being shut down even when none
-/// of the services is in use.
-///
-/// If persist is true then shut down will be blocked until this function is called again with
-/// persist false. If this is to be the initial state, call this function before calling
-/// register_lazy_service.
-///
-/// Consider using [`LazyServiceGuard`] rather than calling this directly.
-pub fn force_lazy_services_persist(persist: bool) {
-    unsafe {
-        // Safety: No borrowing or transfer of ownership occurs here.
-        sys::AServiceManager_forceLazyServicesPersist(persist)
-    }
-}
-
-/// An RAII object to ensure a process which registers lazy services is not killed. During the
-/// lifetime of any of these objects the service manager will not not kill the process even if none
-/// of its lazy services are in use.
-#[must_use]
-#[derive(Debug)]
-pub struct LazyServiceGuard {
-    // Prevent construction outside this module.
-    _private: (),
-}
-
-// Count of how many LazyServiceGuard objects are in existence.
-static GUARD_COUNT: Mutex<u64> = Mutex::new(0);
-
-impl LazyServiceGuard {
-    /// Create a new LazyServiceGuard to prevent the service manager prematurely killing this
-    /// process.
-    pub fn new() -> Self {
-        let mut count = GUARD_COUNT.lock().unwrap();
-        *count += 1;
-        if *count == 1 {
-            // It's important that we make this call with the mutex held, to make sure
-            // that multiple calls (e.g. if the count goes 1 -> 0 -> 1) are correctly
-            // sequenced. (That also means we can't just use an AtomicU64.)
-            force_lazy_services_persist(true);
-        }
-        Self { _private: () }
-    }
-}
-
-impl Drop for LazyServiceGuard {
-    fn drop(&mut self) {
-        let mut count = GUARD_COUNT.lock().unwrap();
-        *count -= 1;
-        if *count == 0 {
-            force_lazy_services_persist(false);
-        }
-    }
-}
-
-impl Clone for LazyServiceGuard {
-    fn clone(&self) -> Self {
-        Self::new()
-    }
-}
-
-impl Default for LazyServiceGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Tests often create a base BBinder instance; so allowing the unit
 /// type to be remotable translates nicely to Binder::new(()).
 impl Remotable for () {
@@ -558,13 +403,9 @@ impl Remotable for () {
     fn on_transact(
         &self,
         _code: TransactionCode,
-        _data: &BorrowedParcel<'_>,
-        _reply: &mut BorrowedParcel<'_>,
+        _data: &Parcel,
+        _reply: &mut Parcel,
     ) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_dump(&self, _file: &File, _args: &[&CStr]) -> Result<()> {
         Ok(())
     }
 
@@ -572,12 +413,3 @@ impl Remotable for () {
 }
 
 impl Interface for () {}
-
-/// Determine whether the current thread is currently executing an incoming
-/// transaction.
-pub fn is_handling_transaction() -> bool {
-    unsafe {
-        // Safety: This method is always safe to call.
-        sys::AIBinder_isHandlingTransaction()
-    }
-}

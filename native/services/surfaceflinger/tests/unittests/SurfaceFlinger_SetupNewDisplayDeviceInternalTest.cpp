@@ -17,8 +17,6 @@
 #undef LOG_TAG
 #define LOG_TAG "LibSurfaceFlingerUnittests"
 
-#include <ftl/fake_guard.h>
-
 #include "DisplayHardware/DisplayMode.h"
 
 #include "DisplayTransactionTestHelpers.h"
@@ -36,13 +34,17 @@ struct WideColorP3ColorimetricSupportedVariant {
     static constexpr bool WIDE_COLOR_SUPPORTED = true;
 
     static void injectConfigChange(DisplayTransactionTest* test) {
-        test->mFlinger.mutableSupportsWideColor() = true;
+        test->mFlinger.mutableUseColorManagement() = true;
+        test->mFlinger.mutableHasWideColorDisplay() = true;
         test->mFlinger.mutableDisplayColorSetting() = DisplayColorSetting::kUnmanaged;
     }
 
     static void setupComposerCallExpectations(DisplayTransactionTest* test) {
         EXPECT_CALL(*test->mNativeWindow, perform(NATIVE_WINDOW_SET_BUFFERS_DATASPACE)).Times(1);
 
+        EXPECT_CALL(*test->mComposer, getColorModes(Display::HWC_DISPLAY_ID, _))
+                .WillOnce(DoAll(SetArgPointee<1>(std::vector<ColorMode>({ColorMode::DISPLAY_P3})),
+                                Return(Error::NONE)));
         EXPECT_CALL(*test->mComposer,
                     getRenderIntents(Display::HWC_DISPLAY_ID, ColorMode::DISPLAY_P3, _))
                 .WillOnce(DoAll(SetArgPointee<2>(
@@ -196,10 +198,10 @@ public:
 
 template <typename Case>
 void SetupNewDisplayDeviceInternalTest::setupNewDisplayDeviceInternalTest() {
-    const sp<BBinder> displayToken = sp<BBinder>::make();
+    const sp<BBinder> displayToken = new BBinder();
     const sp<compositionengine::mock::DisplaySurface> displaySurface =
-            sp<compositionengine::mock::DisplaySurface>::make();
-    const auto producer = sp<mock::GraphicBufferProducer>::make();
+            new compositionengine::mock::DisplaySurface();
+    const sp<mock::GraphicBufferProducer> producer = new mock::GraphicBufferProducer();
 
     // --------------------------------------------------------------------
     // Preconditions
@@ -239,30 +241,22 @@ void SetupNewDisplayDeviceInternalTest::setupNewDisplayDeviceInternalTest() {
         ASSERT_TRUE(hwcDisplayId);
         mFlinger.getHwComposer().allocatePhysicalDisplay(*hwcDisplayId, *displayId);
         DisplayModePtr activeMode = DisplayMode::Builder(Case::Display::HWC_ACTIVE_CONFIG_ID)
-                                            .setResolution(Case::Display::RESOLUTION)
+                                            .setWidth(Case::Display::WIDTH)
+                                            .setHeight(Case::Display::HEIGHT)
                                             .setVsyncPeriod(DEFAULT_VSYNC_PERIOD)
                                             .setDpiX(DEFAULT_DPI)
                                             .setDpiY(DEFAULT_DPI)
                                             .setGroup(0)
                                             .build();
-
+        DisplayModes modes{activeMode};
         state.physical = {.id = *displayId,
+                          .type = *connectionType,
                           .hwcDisplayId = *hwcDisplayId,
+                          .supportedModes = modes,
                           .activeMode = activeMode};
-
-        ui::ColorModes colorModes;
-        if constexpr (Case::WideColorSupport::WIDE_COLOR_SUPPORTED) {
-            colorModes.push_back(ColorMode::DISPLAY_P3);
-        }
-
-        mFlinger.mutablePhysicalDisplays().emplace_or_replace(*displayId, displayToken, *displayId,
-                                                              *connectionType,
-                                                              makeModes(activeMode),
-                                                              std::move(colorModes), std::nullopt);
     }
 
     state.isSecure = static_cast<bool>(Case::Display::SECURE);
-    state.flags = Case::Display::DISPLAY_FLAGS;
 
     auto device = mFlinger.setupNewDisplayDeviceInternal(displayToken, compositionDisplay, state,
                                                          displaySurface, producer);
@@ -270,12 +264,14 @@ void SetupNewDisplayDeviceInternalTest::setupNewDisplayDeviceInternalTest() {
     // --------------------------------------------------------------------
     // Postconditions
 
-    ASSERT_NE(nullptr, device);
+    ASSERT_TRUE(device != nullptr);
     EXPECT_EQ(Case::Display::DISPLAY_ID::get(), device->getId());
+    EXPECT_EQ(Case::Display::CONNECTION_TYPE::value, device->getConnectionType());
     EXPECT_EQ(static_cast<bool>(Case::Display::VIRTUAL), device->isVirtual());
     EXPECT_EQ(static_cast<bool>(Case::Display::SECURE), device->isSecure());
     EXPECT_EQ(static_cast<bool>(Case::Display::PRIMARY), device->isPrimary());
-    EXPECT_EQ(Case::Display::RESOLUTION, device->getSize());
+    EXPECT_EQ(Case::Display::WIDTH, device->getWidth());
+    EXPECT_EQ(Case::Display::HEIGHT, device->getHeight());
     EXPECT_EQ(Case::WideColorSupport::WIDE_COLOR_SUPPORTED, device->hasWideColorGamut());
     EXPECT_EQ(Case::HdrSupport::HDR10_PLUS_SUPPORTED, device->hasHDR10PlusSupport());
     EXPECT_EQ(Case::HdrSupport::HDR10_SUPPORTED, device->hasHDR10Support());
@@ -283,12 +279,11 @@ void SetupNewDisplayDeviceInternalTest::setupNewDisplayDeviceInternalTest() {
     EXPECT_EQ(Case::HdrSupport::HDR_DOLBY_VISION_SUPPORTED, device->hasDolbyVisionSupport());
     EXPECT_EQ(Case::PerFrameMetadataSupport::PER_FRAME_METADATA_KEYS,
               device->getSupportedPerFrameMetadata());
-    EXPECT_EQ(Case::Display::DISPLAY_FLAGS & DisplayDevice::eReceivesInput,
-              device->receivesInput());
 
     if constexpr (Case::Display::CONNECTION_TYPE::value) {
-        ftl::FakeGuard guard(kMainThreadContext);
-        EXPECT_EQ(Case::Display::HWC_ACTIVE_CONFIG_ID, device->getActiveMode().modePtr->getHwcId());
+        EXPECT_EQ(1, device->getSupportedModes().size());
+        EXPECT_NE(nullptr, device->getActiveMode());
+        EXPECT_EQ(Case::Display::HWC_ACTIVE_CONFIG_ID, device->getActiveMode()->getHwcId());
     }
 }
 
@@ -297,9 +292,7 @@ TEST_F(SetupNewDisplayDeviceInternalTest, createSimplePrimaryDisplay) {
 }
 
 TEST_F(SetupNewDisplayDeviceInternalTest, createSimpleExternalDisplay) {
-    // External displays must be secondary, as the primary display cannot be disconnected.
-    EXPECT_EXIT(setupNewDisplayDeviceInternalTest<SimpleExternalDisplayCase>(),
-                testing::KilledBySignal(SIGABRT), "Missing primary display");
+    setupNewDisplayDeviceInternalTest<SimpleExternalDisplayCase>();
 }
 
 TEST_F(SetupNewDisplayDeviceInternalTest, createNonHwcVirtualDisplay) {

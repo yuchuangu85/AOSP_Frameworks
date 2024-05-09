@@ -25,7 +25,7 @@ CursorButtonAccumulator::CursorButtonAccumulator() {
     clearButtons();
 }
 
-void CursorButtonAccumulator::reset(const InputDeviceContext& deviceContext) {
+void CursorButtonAccumulator::reset(InputDeviceContext& deviceContext) {
     mBtnLeft = deviceContext.isKeyPressed(BTN_LEFT);
     mBtnRight = deviceContext.isKeyPressed(BTN_RIGHT);
     mBtnMiddle = deviceContext.isKeyPressed(BTN_MIDDLE);

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "VibratorHalControllerBenchmarks"
+#define LOG_TAG "PowerHalControllerBenchmarks"
 
 #include <benchmark/benchmark.h>
 #include <vibratorservice/VibratorHalController.h>
@@ -183,7 +183,7 @@ BENCHMARK_WRAPPER(VibratorBench, setAmplitudeCached, {
         return;
     }
 
-    auto duration = 60s;
+    auto duration = 6000s;
     auto callback = []() {};
     auto amplitude = 1.0f;
 

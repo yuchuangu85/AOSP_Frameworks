@@ -16,15 +16,17 @@
 
 #pragma once
 
+#include <utils/Log.h>
+#include <utils/Timers.h>
 #include <functional>
 #include <optional>
 #include <string>
 
-#include <utils/Timers.h>
-
 #include "StrongTyping.h"
 
 namespace android::scheduler {
+class TimeKeeper;
+class VSyncTracker;
 
 using ScheduleResult = std::optional<nsecs_t>;
 
@@ -62,7 +64,8 @@ public:
      *                          invocation of callbackFn.
      *
      */
-    virtual CallbackToken registerCallback(Callback, std::string callbackName) = 0;
+    virtual CallbackToken registerCallback(Callback const& callbackFn,
+                                           std::string callbackName) = 0;
 
     /*
      * Unregisters a callback.
@@ -126,17 +129,6 @@ public:
      */
     virtual ScheduleResult schedule(CallbackToken token, ScheduleTiming scheduleTiming) = 0;
 
-    /*
-     * Update the timing information for a scheduled callback.
-     * If the callback is not scheduled, then this function does nothing.
-     *
-     * \param [in] token           The callback to schedule.
-     * \param [in] scheduleTiming  The timing information for this schedule call
-     * \return                     The expected callback time if a callback was scheduled.
-     *                             std::nullopt if the callback is not registered.
-     */
-    virtual ScheduleResult update(CallbackToken token, ScheduleTiming scheduleTiming) = 0;
-
     /* Cancels a scheduled callback, if possible.
      *
      * \param [in] token    The callback to cancel.
@@ -150,34 +142,35 @@ public:
 
 protected:
     VSyncDispatch() = default;
-
-    VSyncDispatch(const VSyncDispatch&) = delete;
-    VSyncDispatch& operator=(const VSyncDispatch&) = delete;
+    VSyncDispatch(VSyncDispatch const&) = delete;
+    VSyncDispatch& operator=(VSyncDispatch const&) = delete;
 };
 
+/*
+ * Helper class to operate on registered callbacks. It is up to user of the class to ensure
+ * that VsyncDispatch lifetime exceeds the lifetime of VSyncCallbackRegistation.
+ */
 class VSyncCallbackRegistration {
 public:
-    VSyncCallbackRegistration(std::shared_ptr<VSyncDispatch>, VSyncDispatch::Callback,
-                              std::string callbackName);
-    ~VSyncCallbackRegistration();
-
+    VSyncCallbackRegistration(VSyncDispatch&, VSyncDispatch::Callback const& callbackFn,
+                              std::string const& callbackName);
     VSyncCallbackRegistration(VSyncCallbackRegistration&&);
     VSyncCallbackRegistration& operator=(VSyncCallbackRegistration&&);
+    ~VSyncCallbackRegistration();
 
     // See documentation for VSyncDispatch::schedule.
     ScheduleResult schedule(VSyncDispatch::ScheduleTiming scheduleTiming);
-
-    // See documentation for VSyncDispatch::update.
-    ScheduleResult update(VSyncDispatch::ScheduleTiming scheduleTiming);
 
     // See documentation for VSyncDispatch::cancel.
     CancelResult cancel();
 
 private:
-    friend class VSyncCallbackRegistrationTest;
+    VSyncCallbackRegistration(VSyncCallbackRegistration const&) = delete;
+    VSyncCallbackRegistration& operator=(VSyncCallbackRegistration const&) = delete;
 
-    std::shared_ptr<VSyncDispatch> mDispatch;
-    std::optional<VSyncDispatch::CallbackToken> mToken;
+    std::reference_wrapper<VSyncDispatch> mDispatch;
+    VSyncDispatch::CallbackToken mToken;
+    bool mValidToken;
 };
 
 } // namespace android::scheduler

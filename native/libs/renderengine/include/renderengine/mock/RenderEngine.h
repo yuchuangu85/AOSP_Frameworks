@@ -47,23 +47,19 @@ public:
     MOCK_METHOD1(useProtectedContext, void(bool));
     MOCK_METHOD0(cleanupPostRender, void());
     MOCK_CONST_METHOD0(canSkipPostRenderCleanup, bool());
-    MOCK_METHOD5(drawLayers,
-                 ftl::Future<FenceResult>(const DisplaySettings&, const std::vector<LayerSettings>&,
-                                          const std::shared_ptr<ExternalTexture>&, const bool,
-                                          base::unique_fd&&));
-    MOCK_METHOD6(drawLayersInternal,
-                 void(const std::shared_ptr<std::promise<FenceResult>>&&, const DisplaySettings&,
-                      const std::vector<LayerSettings>&, const std::shared_ptr<ExternalTexture>&,
-                      const bool, base::unique_fd&&));
+    MOCK_METHOD6(drawLayers,
+                 status_t(const DisplaySettings&, const std::vector<const LayerSettings*>&,
+                          const std::shared_ptr<ExternalTexture>&, const bool, base::unique_fd&&,
+                          base::unique_fd*));
     MOCK_METHOD0(cleanFramebufferCache, void());
     MOCK_METHOD0(getContextPriority, int());
     MOCK_METHOD0(supportsBackgroundBlur, bool());
-    MOCK_METHOD1(onActiveDisplaySizeChanged, void(ui::Size));
+    MOCK_METHOD1(onPrimaryDisplaySizeChanged, void(ui::Size));
 
 protected:
     // mock renderengine still needs to implement these, but callers should never need to call them.
     void mapExternalTextureBuffer(const sp<GraphicBuffer>&, bool) {}
-    void unmapExternalTextureBuffer(sp<GraphicBuffer>&&) {}
+    void unmapExternalTextureBuffer(const sp<GraphicBuffer>&) {}
 };
 
 } // namespace mock

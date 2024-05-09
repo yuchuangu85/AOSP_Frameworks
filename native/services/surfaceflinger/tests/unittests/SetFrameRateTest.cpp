@@ -24,45 +24,107 @@
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wconversion"
+#include "BufferQueueLayer.h"
+#include "BufferStateLayer.h"
+#include "EffectLayer.h"
 #include "Layer.h"
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic pop // ignored "-Wconversion"
-#include "FpsOps.h"
-#include "LayerTestUtils.h"
 #include "TestableSurfaceFlinger.h"
 #include "mock/DisplayHardware/MockComposer.h"
+#include "mock/MockEventThread.h"
+#include "mock/MockMessageQueue.h"
 #include "mock/MockVsyncController.h"
 
 namespace android {
 
+using testing::_;
 using testing::DoAll;
 using testing::Mock;
+using testing::Return;
 using testing::SetArgPointee;
 
 using android::Hwc2::IComposer;
 using android::Hwc2::IComposerClient;
 
-using scheduler::LayerHistory;
+using FakeHwcDisplayInjector = TestableSurfaceFlinger::FakeHwcDisplayInjector;
 
 using FrameRate = Layer::FrameRate;
 using FrameRateCompatibility = Layer::FrameRateCompatibility;
 
+class LayerFactory {
+public:
+    virtual ~LayerFactory() = default;
+
+    virtual std::string name() = 0;
+    virtual sp<Layer> createLayer(TestableSurfaceFlinger& flinger) = 0;
+
+protected:
+    static constexpr uint32_t WIDTH = 100;
+    static constexpr uint32_t HEIGHT = 100;
+    static constexpr uint32_t LAYER_FLAGS = 0;
+};
+
+class BufferQueueLayerFactory : public LayerFactory {
+public:
+    std::string name() override { return "BufferQueueLayer"; }
+    sp<Layer> createLayer(TestableSurfaceFlinger& flinger) override {
+        sp<Client> client;
+        LayerCreationArgs args(flinger.flinger(), client, "buffer-queue-layer", WIDTH, HEIGHT,
+                               LAYER_FLAGS, LayerMetadata());
+        return new BufferQueueLayer(args);
+    }
+};
+
+class BufferStateLayerFactory : public LayerFactory {
+public:
+    std::string name() override { return "BufferStateLayer"; }
+    sp<Layer> createLayer(TestableSurfaceFlinger& flinger) override {
+        sp<Client> client;
+        LayerCreationArgs args(flinger.flinger(), client, "buffer-state-layer", WIDTH, HEIGHT,
+                               LAYER_FLAGS, LayerMetadata());
+        return new BufferStateLayer(args);
+    }
+};
+
+class EffectLayerFactory : public LayerFactory {
+public:
+    std::string name() override { return "EffectLayer"; }
+    sp<Layer> createLayer(TestableSurfaceFlinger& flinger) override {
+        sp<Client> client;
+        LayerCreationArgs args(flinger.flinger(), client, "color-layer", WIDTH, HEIGHT, LAYER_FLAGS,
+                               LayerMetadata());
+        return new EffectLayer(args);
+    }
+};
+
+std::string PrintToStringParamName(
+        const ::testing::TestParamInfo<std::shared_ptr<LayerFactory>>& info) {
+    return info.param->name();
+}
+
 /**
  * This class tests the behaviour of Layer::SetFrameRate and Layer::GetFrameRate
  */
-class SetFrameRateTest : public BaseLayerTest {
+class SetFrameRateTest : public ::testing::TestWithParam<std::shared_ptr<LayerFactory>> {
 protected:
-    const FrameRate FRAME_RATE_VOTE1 = FrameRate(67_Hz, FrameRateCompatibility::Default);
-    const FrameRate FRAME_RATE_VOTE2 = FrameRate(14_Hz, FrameRateCompatibility::ExactOrMultiple);
-    const FrameRate FRAME_RATE_VOTE3 = FrameRate(99_Hz, FrameRateCompatibility::NoVote);
-    const FrameRate FRAME_RATE_TREE = FrameRate(Fps(), FrameRateCompatibility::NoVote);
-    const FrameRate FRAME_RATE_NO_VOTE = FrameRate(Fps(), FrameRateCompatibility::Default);
+    const FrameRate FRAME_RATE_VOTE1 = FrameRate(Fps(67.f), FrameRateCompatibility::Default);
+    const FrameRate FRAME_RATE_VOTE2 =
+            FrameRate(Fps(14.f), FrameRateCompatibility::ExactOrMultiple);
+    const FrameRate FRAME_RATE_VOTE3 = FrameRate(Fps(99.f), FrameRateCompatibility::NoVote);
+    const FrameRate FRAME_RATE_TREE = FrameRate(Fps(0.f), FrameRateCompatibility::NoVote);
+    const FrameRate FRAME_RATE_NO_VOTE = FrameRate(Fps(0.f), FrameRateCompatibility::Default);
 
     SetFrameRateTest();
+
+    void setupScheduler();
 
     void addChild(sp<Layer> layer, sp<Layer> child);
     void removeChild(sp<Layer> layer, sp<Layer> child);
     void commitTransaction();
+
+    TestableSurfaceFlinger mFlinger;
+    mock::MessageQueue* mMessageQueue = new mock::MessageQueue();
 
     std::vector<sp<Layer>> mLayers;
 };
@@ -72,15 +134,20 @@ SetFrameRateTest::SetFrameRateTest() {
             ::testing::UnitTest::GetInstance()->current_test_info();
     ALOGD("**** Setting up for %s.%s\n", test_info->test_case_name(), test_info->name());
 
+    mFlinger.mutableUseFrameRateApi() = true;
+
+    setupScheduler();
+
     mFlinger.setupComposer(std::make_unique<Hwc2::mock::Composer>());
+    mFlinger.mutableEventQueue().reset(mMessageQueue);
 }
 
 void SetFrameRateTest::addChild(sp<Layer> layer, sp<Layer> child) {
-    layer->addChild(child);
+    layer.get()->addChild(child.get());
 }
 
 void SetFrameRateTest::removeChild(sp<Layer> layer, sp<Layer> child) {
-    layer->removeChild(child);
+    layer.get()->removeChild(child.get());
 }
 
 void SetFrameRateTest::commitTransaction() {
@@ -90,10 +157,38 @@ void SetFrameRateTest::commitTransaction() {
     }
 }
 
-namespace {
+void SetFrameRateTest::setupScheduler() {
+    auto eventThread = std::make_unique<mock::EventThread>();
+    auto sfEventThread = std::make_unique<mock::EventThread>();
 
+    EXPECT_CALL(*eventThread, registerDisplayEventConnection(_));
+    EXPECT_CALL(*eventThread, createEventConnection(_, _))
+            .WillOnce(Return(new EventThreadConnection(eventThread.get(), /*callingUid=*/0,
+                                                       ResyncCallback())));
+
+    EXPECT_CALL(*sfEventThread, registerDisplayEventConnection(_));
+    EXPECT_CALL(*sfEventThread, createEventConnection(_, _))
+            .WillOnce(Return(new EventThreadConnection(sfEventThread.get(), /*callingUid=*/0,
+                                                       ResyncCallback())));
+
+    auto vsyncController = std::make_unique<mock::VsyncController>();
+    auto vsyncTracker = std::make_unique<mock::VSyncTracker>();
+
+    EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+    EXPECT_CALL(*vsyncTracker, currentPeriod())
+            .WillRepeatedly(Return(FakeHwcDisplayInjector::DEFAULT_VSYNC_PERIOD));
+    EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+    mFlinger.setupScheduler(std::move(vsyncController), std::move(vsyncTracker),
+                            std::move(eventThread), std::move(sfEventThread), /*callback*/ nullptr,
+                            /*hasMultipleModes*/ true);
+}
+
+namespace {
+/* ------------------------------------------------------------------------
+ * Test cases
+ */
 TEST_P(SetFrameRateTest, SetAndGet) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -104,7 +199,7 @@ TEST_P(SetFrameRateTest, SetAndGet) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetParent) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -129,7 +224,7 @@ TEST_P(SetFrameRateTest, SetAndGetParent) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetParentAllVote) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -168,7 +263,7 @@ TEST_P(SetFrameRateTest, SetAndGetParentAllVote) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetChild) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -193,7 +288,7 @@ TEST_P(SetFrameRateTest, SetAndGetChild) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetChildAllVote) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -232,7 +327,7 @@ TEST_P(SetFrameRateTest, SetAndGetChildAllVote) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetChildAddAfterVote) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -262,7 +357,7 @@ TEST_P(SetFrameRateTest, SetAndGetChildAddAfterVote) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetChildRemoveAfterVote) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -293,7 +388,7 @@ TEST_P(SetFrameRateTest, SetAndGetChildRemoveAfterVote) {
 }
 
 TEST_P(SetFrameRateTest, SetAndGetParentNotInTree) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 
@@ -322,7 +417,8 @@ TEST_P(SetFrameRateTest, SetAndGetParentNotInTree) {
 }
 
 INSTANTIATE_TEST_SUITE_P(PerLayerType, SetFrameRateTest,
-                         testing::Values(std::make_shared<BufferStateLayerFactory>(),
+                         testing::Values(std::make_shared<BufferQueueLayerFactory>(),
+                                         std::make_shared<BufferStateLayerFactory>(),
                                          std::make_shared<EffectLayerFactory>()),
                          PrintToStringParamName);
 
@@ -335,22 +431,10 @@ TEST_F(SetFrameRateTest, ValidateFrameRate) {
                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS, ""));
     EXPECT_TRUE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
-
-    // Privileged APIs.
-    EXPECT_FALSE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_EXACT,
-                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
-    EXPECT_FALSE(ValidateFrameRate(0.0f, ANATIVEWINDOW_FRAME_RATE_NO_VOTE,
-                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
-
-    constexpr bool kPrivileged = true;
     EXPECT_TRUE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_EXACT,
                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, "",
-                                  kPrivileged));
-    EXPECT_TRUE(ValidateFrameRate(0.0f, ANATIVEWINDOW_FRAME_RATE_NO_VOTE,
-                                  ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, "",
-                                  kPrivileged));
+                                  /*privileged=*/true));
 
-    // Invalid frame rate.
     EXPECT_FALSE(ValidateFrameRate(-1, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT,
                                    ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
     EXPECT_FALSE(ValidateFrameRate(1.0f / 0.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT,
@@ -358,12 +442,15 @@ TEST_F(SetFrameRateTest, ValidateFrameRate) {
     EXPECT_FALSE(ValidateFrameRate(0.0f / 0.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT,
                                    ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
 
-    // Invalid compatibility.
+    EXPECT_FALSE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_EXACT,
+                                   ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
+
+    // Invalid compatibility
     EXPECT_FALSE(
             ValidateFrameRate(60.0f, -1, ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
     EXPECT_FALSE(ValidateFrameRate(60.0f, 2, ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, ""));
 
-    // Invalid change frame rate strategy.
+    // Invalid change frame rate strategy
     EXPECT_FALSE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_EXACT, -1, ""));
     EXPECT_FALSE(ValidateFrameRate(60.0f, ANATIVEWINDOW_FRAME_RATE_EXACT, 2, ""));
 }
@@ -372,6 +459,11 @@ TEST_P(SetFrameRateTest, SetOnParentActivatesTree) {
     const auto& layerFactory = GetParam();
 
     auto parent = mLayers.emplace_back(layerFactory->createLayer(mFlinger));
+    if (!parent->isVisible()) {
+        // This is a hack as all the test layers except EffectLayer are not visible,
+        // but since the logic is unified in Layer, it should be fine.
+        return;
+    }
 
     auto child = mLayers.emplace_back(layerFactory->createLayer(mFlinger));
     addChild(parent, child);
@@ -379,22 +471,22 @@ TEST_P(SetFrameRateTest, SetOnParentActivatesTree) {
     parent->setFrameRate(FRAME_RATE_VOTE1);
     commitTransaction();
 
-    auto& history = mFlinger.mutableScheduler().mutableLayerHistory();
-    history.record(parent->getSequence(), parent->getLayerProps(), 0, 0,
-                   LayerHistory::LayerUpdateType::Buffer);
-    history.record(child->getSequence(), child->getLayerProps(), 0, 0,
-                   LayerHistory::LayerUpdateType::Buffer);
+    mFlinger.mutableScheduler()
+            .mutableLayerHistory()
+            ->record(parent.get(), 0, 0, LayerHistory::LayerUpdateType::Buffer);
+    mFlinger.mutableScheduler()
+            .mutableLayerHistory()
+            ->record(child.get(), 0, 0, LayerHistory::LayerUpdateType::Buffer);
 
-    const auto selectorPtr = mFlinger.mutableScheduler().refreshRateSelector();
-    const auto summary = history.summarize(*selectorPtr, 0);
-
-    ASSERT_EQ(2u, summary.size());
-    EXPECT_EQ(FRAME_RATE_VOTE1.rate, summary[0].desiredRefreshRate);
-    EXPECT_EQ(FRAME_RATE_VOTE1.rate, summary[1].desiredRefreshRate);
+    const auto layerHistorySummary =
+            mFlinger.mutableScheduler().mutableLayerHistory()->summarize(0);
+    ASSERT_EQ(2u, layerHistorySummary.size());
+    EXPECT_TRUE(FRAME_RATE_VOTE1.rate.equalsWithMargin(layerHistorySummary[0].desiredRefreshRate));
+    EXPECT_TRUE(FRAME_RATE_VOTE1.rate.equalsWithMargin(layerHistorySummary[1].desiredRefreshRate));
 }
 
 TEST_P(SetFrameRateTest, addChildForParentWithTreeVote) {
-    EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
+    EXPECT_CALL(*mMessageQueue, invalidate()).Times(1);
 
     const auto& layerFactory = GetParam();
 

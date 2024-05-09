@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERCONFIGURATION_H
+#define _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERCONFIGURATION_H
 
 #include <utils/Timers.h>
 
@@ -39,3 +40,5 @@ struct InputDispatcherConfiguration {
 };
 
 } // namespace android
+
+#endif // _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERCONFIGURATION_H

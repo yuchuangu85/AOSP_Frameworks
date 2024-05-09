@@ -22,22 +22,19 @@
 #define LOG_TAG "LibSurfaceFlingerUnittests"
 #define LOG_NDEBUG 0
 
-#include <array>
+#include "Scheduler/TimeKeeper.h"
+#include "Scheduler/VSyncDispatch.h"
+#include "Scheduler/VSyncReactor.h"
+#include "Scheduler/VSyncTracker.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <ui/Fence.h>
 #include <ui/FenceTime.h>
-
-#include <scheduler/TimeKeeper.h>
-
-#include "Scheduler/VSyncDispatch.h"
-#include "Scheduler/VSyncReactor.h"
-#include "Scheduler/VSyncTracker.h"
+#include <array>
 
 using namespace testing;
 using namespace std::literals;
-
 namespace android::scheduler {
 
 class MockVSyncTracker : public VSyncTracker {
@@ -50,7 +47,6 @@ public:
     MOCK_METHOD0(resetModel, void());
     MOCK_CONST_METHOD0(needsMoreSamples, bool());
     MOCK_CONST_METHOD2(isVSyncInPhase, bool(nsecs_t, Fps));
-    MOCK_METHOD(void, setRenderRate, (Fps), (override));
     MOCK_CONST_METHOD1(dump, void(std::string&));
 };
 
@@ -69,13 +65,23 @@ private:
     std::shared_ptr<Clock> const mClock;
 };
 
+class MockVSyncDispatch : public VSyncDispatch {
+public:
+    MOCK_METHOD2(registerCallback,
+                 CallbackToken(std::function<void(nsecs_t, nsecs_t, nsecs_t)> const&, std::string));
+    MOCK_METHOD1(unregisterCallback, void(CallbackToken));
+    MOCK_METHOD2(schedule, ScheduleResult(CallbackToken, ScheduleTiming));
+    MOCK_METHOD1(cancel, CancelResult(CallbackToken token));
+    MOCK_CONST_METHOD1(dump, void(std::string&));
+};
+
 std::shared_ptr<android::FenceTime> generateInvalidFence() {
-    sp<Fence> fence = sp<Fence>::make();
+    sp<Fence> fence = new Fence();
     return std::make_shared<android::FenceTime>(fence);
 }
 
 std::shared_ptr<android::FenceTime> generatePendingFence() {
-    sp<Fence> fence = sp<Fence>::make(dup(fileno(tmpfile())));
+    sp<Fence> fence = new Fence(dup(fileno(tmpfile())));
     return std::make_shared<android::FenceTime>(fence);
 }
 
@@ -85,21 +91,19 @@ void signalFenceWithTime(std::shared_ptr<android::FenceTime> const& fence, nsecs
 }
 
 std::shared_ptr<android::FenceTime> generateSignalledFenceWithTime(nsecs_t time) {
-    sp<Fence> fence = sp<Fence>::make(dup(fileno(tmpfile())));
+    sp<Fence> fence = new Fence(dup(fileno(tmpfile())));
     std::shared_ptr<android::FenceTime> ft = std::make_shared<android::FenceTime>(fence);
     signalFenceWithTime(ft, time);
     return ft;
 }
-
-constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID = PhysicalDisplayId::fromPort(42u);
 
 class VSyncReactorTest : public testing::Test {
 protected:
     VSyncReactorTest()
           : mMockTracker(std::make_shared<NiceMock<MockVSyncTracker>>()),
             mMockClock(std::make_shared<NiceMock<MockClock>>()),
-            mReactor(DEFAULT_DISPLAY_ID, std::make_unique<ClockWrapper>(mMockClock), *mMockTracker,
-                     kPendingLimit, false /* supportKernelIdleTimer */) {
+            mReactor(std::make_unique<ClockWrapper>(mMockClock), *mMockTracker, kPendingLimit,
+                     false /* supportKernelIdleTimer */) {
         ON_CALL(*mMockClock, now()).WillByDefault(Return(mFakeNow));
         ON_CALL(*mMockTracker, currentPeriod()).WillByDefault(Return(period));
     }
@@ -194,7 +198,7 @@ TEST_F(VSyncReactorTest, ignoresProperlyAfterAPeriodConfirmation) {
     mReactor.setIgnorePresentFences(true);
 
     nsecs_t const newPeriod = 5000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(0, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
@@ -207,7 +211,7 @@ TEST_F(VSyncReactorTest, ignoresProperlyAfterAPeriodConfirmation) {
 TEST_F(VSyncReactorTest, setPeriodCalledOnceConfirmedChange) {
     nsecs_t const newPeriod = 5000;
     EXPECT_CALL(*mMockTracker, setPeriod(_)).Times(0);
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     bool periodFlushed = true;
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(10000, std::nullopt, &periodFlushed));
@@ -226,7 +230,7 @@ TEST_F(VSyncReactorTest, setPeriodCalledOnceConfirmedChange) {
 TEST_F(VSyncReactorTest, changingPeriodBackAbortsConfirmationProcess) {
     nsecs_t sampleTime = 0;
     nsecs_t const newPeriod = 5000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
     bool periodFlushed = true;
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(sampleTime += period, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
@@ -234,7 +238,7 @@ TEST_F(VSyncReactorTest, changingPeriodBackAbortsConfirmationProcess) {
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(sampleTime += period, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
 
-    mReactor.startPeriodTransition(period, false);
+    mReactor.startPeriodTransition(period);
     EXPECT_FALSE(mReactor.addHwVsyncTimestamp(sampleTime += period, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
 }
@@ -244,13 +248,13 @@ TEST_F(VSyncReactorTest, changingToAThirdPeriodWillWaitForLastPeriod) {
     nsecs_t const secondPeriod = 5000;
     nsecs_t const thirdPeriod = 2000;
 
-    mReactor.startPeriodTransition(secondPeriod, false);
+    mReactor.startPeriodTransition(secondPeriod);
     bool periodFlushed = true;
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(sampleTime += period, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(sampleTime += period, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
-    mReactor.startPeriodTransition(thirdPeriod, false);
+    mReactor.startPeriodTransition(thirdPeriod);
     EXPECT_TRUE(
             mReactor.addHwVsyncTimestamp(sampleTime += secondPeriod, std::nullopt, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
@@ -291,14 +295,14 @@ TEST_F(VSyncReactorTest, reportedBadTimestampFromPredictorWillReactivateHwVSyncP
 
 TEST_F(VSyncReactorTest, presentFenceAdditionDoesNotInterruptConfirmationProcess) {
     nsecs_t const newPeriod = 5000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
     EXPECT_TRUE(mReactor.addPresentFence(generateSignalledFenceWithTime(0)));
 }
 
 TEST_F(VSyncReactorTest, setPeriodCalledFirstTwoEventsNewPeriod) {
     nsecs_t const newPeriod = 5000;
     EXPECT_CALL(*mMockTracker, setPeriod(_)).Times(0);
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     bool periodFlushed = true;
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(5000, std::nullopt, &periodFlushed));
@@ -323,7 +327,7 @@ TEST_F(VSyncReactorTest, addResyncSamplePeriodChanges) {
     bool periodFlushed = false;
     nsecs_t const newPeriod = 4000;
 
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     auto time = 0;
     auto constexpr numTimestampSubmissions = 10;
@@ -344,28 +348,11 @@ TEST_F(VSyncReactorTest, addResyncSamplePeriodChanges) {
     }
 }
 
-TEST_F(VSyncReactorTest, addHwVsyncTimestampDozePreempt) {
-    bool periodFlushed = false;
-    nsecs_t const newPeriod = 4000;
-
-    mReactor.startPeriodTransition(newPeriod, false);
-
-    auto time = 0;
-    // If the power mode is not DOZE or DOZE_SUSPEND, it is still collecting timestamps.
-    EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time, std::nullopt, &periodFlushed));
-    EXPECT_FALSE(periodFlushed);
-
-    // Set power mode to DOZE to trigger period flushing.
-    mReactor.setDisplayPowerMode(hal::PowerMode::DOZE);
-    EXPECT_FALSE(mReactor.addHwVsyncTimestamp(time, std::nullopt, &periodFlushed));
-    EXPECT_TRUE(periodFlushed);
-}
-
 TEST_F(VSyncReactorTest, addPresentFenceWhileAwaitingPeriodConfirmationRequestsHwVsync) {
     auto time = 0;
     bool periodFlushed = false;
     nsecs_t const newPeriod = 4000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     time += period;
     mReactor.addHwVsyncTimestamp(time, std::nullopt, &periodFlushed);
@@ -381,7 +368,7 @@ TEST_F(VSyncReactorTest, hwVsyncIsRequestedForTracker) {
     auto time = 0;
     bool periodFlushed = false;
     nsecs_t const newPeriod = 4000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     static auto constexpr numSamplesWithNewPeriod = 4;
     Sequence seq;
@@ -408,7 +395,7 @@ TEST_F(VSyncReactorTest, hwVsyncturnsOffOnConfirmationWhenTrackerDoesntRequest) 
     auto time = 0;
     bool periodFlushed = false;
     nsecs_t const newPeriod = 4000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     Sequence seq;
     EXPECT_CALL(*mMockTracker, needsMoreSamples())
@@ -428,7 +415,7 @@ TEST_F(VSyncReactorTest, hwVsyncIsRequestedForTrackerMultiplePeriodChanges) {
     nsecs_t const newPeriod1 = 4000;
     nsecs_t const newPeriod2 = 7000;
 
-    mReactor.startPeriodTransition(newPeriod1, false);
+    mReactor.startPeriodTransition(newPeriod1);
 
     Sequence seq;
     EXPECT_CALL(*mMockTracker, needsMoreSamples())
@@ -447,7 +434,7 @@ TEST_F(VSyncReactorTest, hwVsyncIsRequestedForTrackerMultiplePeriodChanges) {
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time += newPeriod1, std::nullopt, &periodFlushed));
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time += newPeriod1, std::nullopt, &periodFlushed));
 
-    mReactor.startPeriodTransition(newPeriod2, false);
+    mReactor.startPeriodTransition(newPeriod2);
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time += newPeriod1, std::nullopt, &periodFlushed));
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time += newPeriod2, std::nullopt, &periodFlushed));
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(time += newPeriod2, std::nullopt, &periodFlushed));
@@ -460,7 +447,7 @@ TEST_F(VSyncReactorTest, periodChangeWithGivenVsyncPeriod) {
     mReactor.setIgnorePresentFences(true);
 
     nsecs_t const newPeriod = 5000;
-    mReactor.startPeriodTransition(newPeriod, false);
+    mReactor.startPeriodTransition(newPeriod);
 
     EXPECT_TRUE(mReactor.addHwVsyncTimestamp(0, 0, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
@@ -474,9 +461,8 @@ TEST_F(VSyncReactorTest, periodChangeWithGivenVsyncPeriod) {
 
 TEST_F(VSyncReactorTest, periodIsMeasuredIfIgnoringComposer) {
     // Create a reactor which supports the kernel idle timer
-    auto idleReactor =
-            VSyncReactor(DEFAULT_DISPLAY_ID, std::make_unique<ClockWrapper>(mMockClock),
-                         *mMockTracker, kPendingLimit, true /* supportKernelIdleTimer */);
+    auto idleReactor = VSyncReactor(std::make_unique<ClockWrapper>(mMockClock), *mMockTracker,
+                                    kPendingLimit, true /* supportKernelIdleTimer */);
 
     bool periodFlushed = true;
     EXPECT_CALL(*mMockTracker, addVsyncTimestamp(_)).Times(4);
@@ -484,7 +470,7 @@ TEST_F(VSyncReactorTest, periodIsMeasuredIfIgnoringComposer) {
 
     // First, set the same period, which should only be confirmed when we receive two
     // matching callbacks
-    idleReactor.startPeriodTransition(10000, false);
+    idleReactor.startPeriodTransition(10000);
     EXPECT_TRUE(idleReactor.addHwVsyncTimestamp(0, 0, &periodFlushed));
     EXPECT_FALSE(periodFlushed);
     // Correct period but incorrect timestamp delta
@@ -497,7 +483,7 @@ TEST_F(VSyncReactorTest, periodIsMeasuredIfIgnoringComposer) {
     // Then, set a new period, which should be confirmed as soon as we receive a callback
     // reporting the new period
     nsecs_t const newPeriod = 5000;
-    idleReactor.startPeriodTransition(newPeriod, false);
+    idleReactor.startPeriodTransition(newPeriod);
     // Incorrect timestamp delta and period
     EXPECT_TRUE(idleReactor.addHwVsyncTimestamp(20000, 10000, &periodFlushed));
     EXPECT_FALSE(periodFlushed);

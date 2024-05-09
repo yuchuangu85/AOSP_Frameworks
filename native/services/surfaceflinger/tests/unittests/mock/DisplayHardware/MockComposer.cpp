@@ -18,7 +18,6 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wconversion"
 
-#undef LOG_TAG
 #define LOG_TAG "MockComposer"
 #include "mock/DisplayHardware/MockComposer.h"
 

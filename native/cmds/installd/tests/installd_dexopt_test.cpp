@@ -23,7 +23,6 @@
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
-#include <android-base/macros.h>
 #include <android-base/properties.h>
 #include <android-base/scopeguard.h>
 #include <android-base/stringprintf.h>
@@ -51,9 +50,22 @@ using android::base::unique_fd;
 namespace android {
 namespace installd {
 
-constexpr int kTimeoutMs = 60000;
-
-static const std::string kRuntimeIsa = ABI_STRING;
+// TODO(calin): try to dedup this code.
+#if defined(__arm__)
+static const std::string kRuntimeIsa = "arm";
+#elif defined(__aarch64__)
+static const std::string kRuntimeIsa = "arm64";
+#elif defined(__mips__) && !defined(__LP64__)
+static const std::string kRuntimeIsa = "mips";
+#elif defined(__mips__) && defined(__LP64__)
+static const std::string kRuntimeIsa = "mips64";
+#elif defined(__i386__)
+static const std::string kRuntimeIsa = "x86";
+#elif defined(__x86_64__)
+static const std::string kRuntimeIsa = "x86_64";
+#else
+static const std::string kRuntimeIsa = "none";
+#endif
 
 int get_property(const char *key, char *value, const char *default_value) {
     return property_get(key, value, default_value);
@@ -71,10 +83,6 @@ bool calculate_odex_file_path(char path[PKG_PATH_MAX], const char *apk_path,
 
 bool create_cache_path(char path[PKG_PATH_MAX], const char *src, const char *instruction_set) {
     return create_cache_path_default(path, src, instruction_set);
-}
-
-bool force_compile_without_image() {
-    return false;
 }
 
 static void run_cmd(const std::string& cmd) {
@@ -189,7 +197,7 @@ protected:
     std::optional<std::string> volume_uuid_;
     std::string package_name_;
     std::string apk_path_;
-    std::string dm_file_;
+    std::string empty_dm_file_;
     std::string app_apk_dir_;
     std::string app_private_dir_ce_;
     std::string app_private_dir_de_;
@@ -203,10 +211,6 @@ protected:
     std::string secondary_dex_de_;
 
     virtual void SetUp() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP() << "Skipping legacy dexopt tests when ART Service is enabled";
-        }
-
         setenv("ANDROID_LOG_TAGS", "*:v", 1);
         android::base::InitLogging(nullptr);
         // Initialize the globals holding the file system main paths (/data/, /system/ etc..).
@@ -227,12 +231,7 @@ protected:
     }
 
     virtual void TearDown() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP();
-        }
-
         if (!kDebug) {
-            service_->controlDexOptBlocking(false);
             service_->destroyAppData(
                 volume_uuid_, package_name_, kTestUserId, kAppDataFlags, ce_data_inode_);
             run_cmd("rm -rf " + app_apk_dir_);
@@ -260,6 +259,26 @@ protected:
                                                  << " : " << error_msg;
         }
 
+        // Create an empty dm file.
+        empty_dm_file_ = apk_path_ + ".dm";
+        {
+            int fd = open(empty_dm_file_.c_str(), O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+            if (fd < 0) {
+                return ::testing::AssertionFailure() << "Could not open " << empty_dm_file_;
+            }
+            FILE* file = fdopen(fd, "wb");
+            if (file == nullptr) {
+                return ::testing::AssertionFailure() << "Null file for " << empty_dm_file_
+                         << " fd=" << fd;
+            }
+            ZipWriter writer(file);
+            // Add vdex to zip.
+            writer.StartEntry("primary.prof", ZipWriter::kCompress);
+            writer.FinishEntry();
+            writer.Finish();
+            fclose(file);
+          }
+
         // Create the app user data.
         binder::Status status = service_->createAppData(
                 volume_uuid_,
@@ -267,7 +286,6 @@ protected:
                 kTestUserId,
                 kAppDataFlags,
                 kTestAppUid,
-                0 /* previousAppId */,
                 se_info_,
                 kOSdkVersion,
                 &ce_data_inode_);
@@ -308,46 +326,6 @@ protected:
                                                  << secondary_dex_de_ << " : " << error_msg;
         }
 
-        // Create a non-empty dm file.
-        dm_file_ = apk_path_ + ".dm";
-        {
-            android::base::unique_fd fd(open(dm_file_.c_str(),
-                                          O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR));
-            if (fd.get() < 0) {
-                return ::testing::AssertionFailure() << "Could not open " << dm_file_;
-            }
-            FILE* file = fdopen(fd.release(), "wb");
-            if (file == nullptr) {
-                return ::testing::AssertionFailure() << "Null file for " << dm_file_
-                                  << " fd=" << fd.get();
-            }
-
-            // Create a profile file.
-            std::string profile_file = app_private_dir_ce_ + "/primary.prof";
-            run_cmd("profman --generate-test-profile=" + profile_file);
-
-            // Add profile to zip.
-            ZipWriter writer(file);
-            writer.StartEntry("primary.prof", ZipWriter::kCompress);
-            android::base::unique_fd profile_fd(open(profile_file.c_str(), O_RDONLY));
-            if (profile_fd.get() < 0) {
-                return ::testing::AssertionFailure() << "Failed to open profile '"
-                                  << profile_file << "'";
-            }
-            std::string profile_content;
-            if (!android::base::ReadFdToString(profile_fd, &profile_content)) {
-                return ::testing::AssertionFailure() << "Failed to read profile "
-                                  << profile_file << "'";
-            }
-            writer.WriteBytes(profile_content.c_str(), profile_content.length());
-            writer.FinishEntry();
-            writer.Finish();
-            fclose(file);
-
-            // Delete the temp file.
-            unlink(profile_file.c_str());
-        }
-
         // Fix app data uid.
         status = service_->fixupAppData(volume_uuid_, kTestUserId);
         if (!status.isOk()) {
@@ -369,7 +347,7 @@ protected:
     void CompileSecondaryDex(const std::string& path, int32_t dex_storage_flag,
             bool should_binder_call_succeed, bool should_dex_be_compiled = true,
             /*out */ binder::Status* binder_result = nullptr, int32_t uid = -1,
-            const char* class_loader_context = nullptr, bool expect_completed = true) {
+            const char* class_loader_context = nullptr) {
         if (uid == -1) {
             uid = kTestAppUid;
         }
@@ -386,7 +364,6 @@ protected:
         std::optional<std::string> dm_path;
         std::optional<std::string> compilation_reason;
 
-        bool completed = false;
         binder::Status result = service_->dexopt(path,
                                                  uid,
                                                  package_name_,
@@ -402,10 +379,8 @@ protected:
                                                  target_sdk_version,
                                                  profile_name,
                                                  dm_path,
-                                                 compilation_reason,
-                                                 &completed);
+                                                 compilation_reason);
         ASSERT_EQ(should_binder_call_succeed, result.isOk()) << result.toString8().c_str();
-        ASSERT_EQ(expect_completed, completed);
         int expected_access = should_dex_be_compiled ? 0 : -1;
         std::string odex = GetSecondaryDexArtifact(path, "odex");
         std::string vdex = GetSecondaryDexArtifact(path, "vdex");
@@ -456,11 +431,6 @@ protected:
         ASSERT_EQ(mode, st.st_mode);
     }
 
-    void AssertNoFile(const std::string& file) {
-        struct stat st;
-        ASSERT_EQ(-1, stat(file.c_str(), &st));
-    }
-
     void CompilePrimaryDexOk(std::string compiler_filter,
                              int32_t dex_flags,
                              const char* oat_dir,
@@ -476,7 +446,6 @@ protected:
                           dexopt_needed,
                           dm_path,
                           downgrade,
-                          true,
                           true,
                           binder_result);
     }
@@ -497,27 +466,6 @@ protected:
                           dm_path,
                           downgrade,
                           false,
-                          true,
-                          binder_result);
-    }
-
-    void CompilePrimaryDexCancelled(std::string compiler_filter,
-                               int32_t dex_flags,
-                               const char* oat_dir,
-                               int32_t uid,
-                               int32_t dexopt_needed,
-                               binder::Status* binder_result = nullptr,
-                               const char* dm_path = nullptr,
-                               bool downgrade = false) {
-        CompilePrimaryDex(compiler_filter,
-                          dex_flags,
-                          oat_dir,
-                          uid,
-                          dexopt_needed,
-                          dm_path,
-                          downgrade,
-                          true, // should_binder_call_succeed
-                          false, // expect_completed
                           binder_result);
     }
 
@@ -529,7 +477,6 @@ protected:
                            const char* dm_path,
                            bool downgrade,
                            bool should_binder_call_succeed,
-                           bool expect_completed,
                            /*out */ binder::Status* binder_result) {
         std::optional<std::string> out_path = oat_dir ? std::make_optional<std::string>(oat_dir) : std::nullopt;
         std::string class_loader_context = "PCL[]";
@@ -544,7 +491,6 @@ protected:
                 dm_path_opt, &prof_result));
         ASSERT_TRUE(prof_result);
 
-        bool completed = false;
         binder::Status result = service_->dexopt(apk_path_,
                                                  uid,
                                                  package_name_,
@@ -560,10 +506,8 @@ protected:
                                                  target_sdk_version,
                                                  profile_name,
                                                  dm_path_opt,
-                                                 compilation_reason,
-                                                 &completed);
+                                                 compilation_reason);
         ASSERT_EQ(should_binder_call_succeed, result.isOk()) << result.toString8().c_str();
-        ASSERT_EQ(expect_completed, completed);
 
         if (!should_binder_call_succeed) {
             if (binder_result != nullptr) {
@@ -581,20 +525,11 @@ protected:
 
         bool is_public = (dex_flags & DEXOPT_PUBLIC) != 0;
         mode_t mode = S_IFREG | (is_public ? 0644 : 0640);
-        if (expect_completed) {
-            CheckFileAccess(odex, kSystemUid, uid, mode);
-            CheckFileAccess(vdex, kSystemUid, uid, mode);
-        } else {
-            AssertNoFile(odex);
-            AssertNoFile(vdex);
-        }
+        CheckFileAccess(odex, kSystemUid, uid, mode);
+        CheckFileAccess(vdex, kSystemUid, uid, mode);
 
         if (compiler_filter == "speed-profile") {
-            if (expect_completed) {
-                CheckFileAccess(art, kSystemUid, uid, mode);
-            } else {
-                AssertNoFile(art);
-            }
+            CheckFileAccess(art, kSystemUid, uid, mode);
         }
         if (binder_result != nullptr) {
             *binder_result = result;
@@ -640,7 +575,7 @@ protected:
                 kTestAppGid,
                 DEX2OAT_FROM_SCRATCH,
                 /*binder_result=*/nullptr,
-                dm_file_.c_str());
+                empty_dm_file_.c_str());
 
 
         int64_t odex_size = GetSize(GetPrimaryDexArtifact(oat_dir, apk_path_,
@@ -655,7 +590,6 @@ protected:
 
         int64_t bytes_freed;
         binder::Status result = service_->deleteOdex(
-            package_name_,
             apk_path_,
             kRuntimeIsa,
             in_dalvik_cache ? std::nullopt : std::make_optional<std::string>(app_oat_dir_.c_str()),
@@ -667,36 +601,6 @@ protected:
         ASSERT_GE(art_size, 0);
 
         ASSERT_EQ(expected_bytes_freed, bytes_freed);
-    }
-
-    void checkVisibility(bool in_dalvik_cache, int32_t expected_visibility) {
-        int32_t visibility;
-        ASSERT_BINDER_SUCCESS(service_->getOdexVisibility(package_name_, apk_path_, kRuntimeIsa,
-                                                          in_dalvik_cache
-                                                                  ? std::nullopt
-                                                                  : std::make_optional<std::string>(
-                                                                            app_oat_dir_.c_str()),
-                                                          &visibility));
-        EXPECT_EQ(visibility, expected_visibility);
-    }
-
-    void TestGetOdexVisibility(bool in_dalvik_cache) {
-        const char* oat_dir = in_dalvik_cache ? nullptr : app_oat_dir_.c_str();
-
-        checkVisibility(in_dalvik_cache, ODEX_NOT_FOUND);
-
-        CompilePrimaryDexOk("speed-profile",
-                            DEXOPT_BOOTCOMPLETE | DEXOPT_PROFILE_GUIDED | DEXOPT_PUBLIC |
-                                    DEXOPT_GENERATE_APP_IMAGE,
-                            oat_dir, kTestAppGid, DEX2OAT_FROM_SCRATCH,
-                            /*binder_result=*/nullptr, dm_file_.c_str());
-        checkVisibility(in_dalvik_cache, ODEX_IS_PUBLIC);
-
-        CompilePrimaryDexOk("speed-profile",
-                            DEXOPT_BOOTCOMPLETE | DEXOPT_PROFILE_GUIDED | DEXOPT_GENERATE_APP_IMAGE,
-                            oat_dir, kTestAppGid, DEX2OAT_FROM_SCRATCH,
-                            /*binder_result=*/nullptr, dm_file_.c_str());
-        checkVisibility(in_dalvik_cache, ODEX_IS_PRIVATE);
     }
 };
 
@@ -780,7 +684,7 @@ TEST_F(DexoptTest, DexoptPrimaryPublic) {
 
 TEST_F(DexoptTest, DexoptPrimaryPublicCreateOatDir) {
     LOG(INFO) << "DexoptPrimaryPublic";
-    ASSERT_BINDER_SUCCESS(service_->createOatDir(package_name_, app_oat_dir_, kRuntimeIsa));
+    ASSERT_BINDER_SUCCESS(service_->createOatDir(app_oat_dir_, kRuntimeIsa));
     CompilePrimaryDexOk("verify",
                         DEXOPT_BOOTCOMPLETE | DEXOPT_PUBLIC,
                         app_oat_dir_.c_str(),
@@ -819,7 +723,7 @@ TEST_F(DexoptTest, DexoptPrimaryProfileNonPublic) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
 }
 
 TEST_F(DexoptTest, DexoptPrimaryProfilePublic) {
@@ -831,7 +735,7 @@ TEST_F(DexoptTest, DexoptPrimaryProfilePublic) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
 }
 
 TEST_F(DexoptTest, DexoptPrimaryBackgroundOk) {
@@ -843,29 +747,7 @@ TEST_F(DexoptTest, DexoptPrimaryBackgroundOk) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
-}
-
-TEST_F(DexoptTest, DexoptBlockPrimary) {
-    LOG(INFO) << "DexoptPrimaryPublic";
-    service_->controlDexOptBlocking(true);
-    CompilePrimaryDexCancelled("verify",
-                        DEXOPT_BOOTCOMPLETE | DEXOPT_PUBLIC,
-                        app_oat_dir_.c_str(),
-                        kTestAppGid,
-                        DEX2OAT_FROM_SCRATCH, nullptr, nullptr);
-    service_->controlDexOptBlocking(false);
-}
-
-TEST_F(DexoptTest, DexoptUnblockPrimary) {
-    LOG(INFO) << "DexoptPrimaryPublic";
-    service_->controlDexOptBlocking(true);
-    service_->controlDexOptBlocking(false);
-    CompilePrimaryDexOk("verify",
-                        DEXOPT_BOOTCOMPLETE | DEXOPT_PUBLIC,
-                        app_oat_dir_.c_str(),
-                        kTestAppGid,
-                        DEX2OAT_FROM_SCRATCH, nullptr, nullptr);
+                        empty_dm_file_.c_str());
 }
 
 TEST_F(DexoptTest, DeleteDexoptArtifactsData) {
@@ -876,16 +758,6 @@ TEST_F(DexoptTest, DeleteDexoptArtifactsData) {
 TEST_F(DexoptTest, DeleteDexoptArtifactsDalvikCache) {
     LOG(INFO) << "DeleteDexoptArtifactsDalvikCache";
     TestDeleteOdex(/*in_dalvik_cache=*/ true);
-}
-
-TEST_F(DexoptTest, GetOdexVisibilityData) {
-    LOG(INFO) << "GetOdexVisibilityData";
-    TestGetOdexVisibility(/*in_dalvik_cache=*/false);
-}
-
-TEST_F(DexoptTest, GetOdexVisibilityDalvikCache) {
-    LOG(INFO) << "GetOdexVisibilityDalvikCache";
-    TestGetOdexVisibility(/*in_dalvik_cache=*/true);
 }
 
 TEST_F(DexoptTest, ResolveStartupConstStrings) {
@@ -906,7 +778,7 @@ TEST_F(DexoptTest, ResolveStartupConstStrings) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
     run_cmd_and_process_output(
             "oatdump --header-only --oat-file=" + odex,
             [&](const std::string& line) {
@@ -925,7 +797,7 @@ TEST_F(DexoptTest, ResolveStartupConstStrings) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
     run_cmd_and_process_output(
             "oatdump --header-only --oat-file=" + odex,
             [&](const std::string& line) {
@@ -938,11 +810,6 @@ TEST_F(DexoptTest, ResolveStartupConstStrings) {
 
 TEST_F(DexoptTest, DexoptDex2oat64Enabled) {
     LOG(INFO) << "DexoptDex2oat64Enabled";
-    std::string zygote_prop = android::base::GetProperty("ro.zygote", "");
-    ASSERT_GT(zygote_prop.size(), 0);
-    if (zygote_prop != "zygote32_64" && zygote_prop != "zygote64_32") {
-        GTEST_SKIP() << "DexoptDex2oat64Enabled skipped for single-bitness Zygote.";
-    }
     const std::string property = "dalvik.vm.dex2oat64.enabled";
     const std::string previous_value = android::base::GetProperty(property, "");
     auto restore_property = android::base::make_scope_guard([=]() {
@@ -958,7 +825,7 @@ TEST_F(DexoptTest, DexoptDex2oat64Enabled) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
     // Enable the property and use dex2oat64.
     ASSERT_TRUE(android::base::SetProperty(property, "true")) << property;
     CompilePrimaryDexOk("speed-profile",
@@ -968,16 +835,12 @@ TEST_F(DexoptTest, DexoptDex2oat64Enabled) {
                         kTestAppGid,
                         DEX2OAT_FROM_SCRATCH,
                         /*binder_result=*/nullptr,
-                        dm_file_.c_str());
+                        empty_dm_file_.c_str());
 }
 
 class PrimaryDexReCompilationTest : public DexoptTest {
   public:
     virtual void SetUp() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP() << "Skipping legacy dexopt tests when ART Service is enabled";
-        }
-
         DexoptTest::SetUp();
         CompilePrimaryDexOk("verify",
                             DEXOPT_BOOTCOMPLETE | DEXOPT_PUBLIC,
@@ -992,10 +855,6 @@ class PrimaryDexReCompilationTest : public DexoptTest {
     }
 
     virtual void TearDown() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP();
-        }
-
         first_compilation_odex_fd_.reset(-1);
         first_compilation_vdex_fd_.reset(-1);
         DexoptTest::TearDown();
@@ -1018,10 +877,6 @@ TEST_F(PrimaryDexReCompilationTest, DexoptPrimaryUpdateInPlaceVdex) {
 
 class ReconcileTest : public DexoptTest {
     virtual void SetUp() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP() << "Skipping legacy dexopt tests when ART Service is enabled";
-        }
-
         DexoptTest::SetUp();
         CompileSecondaryDex(secondary_dex_ce_, DEXOPT_STORAGE_CE,
             /*binder_ok*/ true, /*compile_ok*/ true);
@@ -1087,10 +942,6 @@ class ProfileTest : public DexoptTest {
     static constexpr const char* kPrimaryProfile = "primary.prof";
 
     virtual void SetUp() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP() << "Skipping legacy dexopt tests when ART Service is enabled";
-        }
-
         DexoptTest::SetUp();
         cur_profile_ = create_current_profile_path(
                 kTestUserId, package_name_, kPrimaryProfile, /*is_secondary_dex*/ false);
@@ -1154,7 +1005,7 @@ class ProfileTest : public DexoptTest {
             _exit(0);
         }
         /* parent */
-        ASSERT_TRUE(WIFEXITED(wait_child_with_timeout(pid, kTimeoutMs)));
+        ASSERT_TRUE(WIFEXITED(wait_child(pid)));
     }
 
     void mergePackageProfiles(const std::string& package_name,
@@ -1184,16 +1035,13 @@ class ProfileTest : public DexoptTest {
         ASSERT_TRUE(AreFilesEqual(ref_profile_content, ref_profile_));
     }
 
+    // TODO(calin): add dex metadata tests once the ART change is merged.
     void preparePackageProfile(const std::string& package_name, const std::string& profile_name,
-                               bool has_dex_metadata, bool has_user_id, bool expected_result) {
+            bool expected_result) {
         bool result;
-        ASSERT_BINDER_SUCCESS(
-                service_->prepareAppProfile(package_name, has_user_id ? kTestUserId : USER_NULL,
-                                            kTestAppId, profile_name, apk_path_,
-                                            has_dex_metadata ? std::make_optional<std::string>(
-                                                                       dm_file_)
-                                                             : std::nullopt,
-                                            &result));
+        ASSERT_BINDER_SUCCESS(service_->prepareAppProfile(
+                package_name, kTestUserId, kTestAppId, profile_name, apk_path_,
+                /*dex_metadata*/ {}, &result));
         ASSERT_EQ(expected_result, result);
 
         if (!expected_result) {
@@ -1201,29 +1049,16 @@ class ProfileTest : public DexoptTest {
             return;
         }
 
-        std::string code_path_cur_prof =
-                create_current_profile_path(kTestUserId, package_name, profile_name,
-                                            /*is_secondary_dex*/ false);
-        std::string code_path_ref_profile =
-                create_reference_profile_path(package_name, profile_name,
-                                              /*is_secondary_dex*/ false);
+        std::string code_path_cur_prof = create_current_profile_path(
+                kTestUserId, package_name, profile_name, /*is_secondary_dex*/ false);
+        std::string code_path_ref_profile = create_reference_profile_path(package_name,
+                profile_name, /*is_secondary_dex*/ false);
 
-        if (has_user_id) {
-            // Check that we created the current profile.
-            CheckFileAccess(code_path_cur_prof, kTestAppUid, kTestAppUid, 0600 | S_IFREG);
-        } else {
-            // Without a user ID, we don't generate a current profile.
-            ASSERT_EQ(-1, access(code_path_cur_prof.c_str(), R_OK));
-        }
+        // Check that we created the current profile.
+        CheckFileAccess(code_path_cur_prof, kTestAppUid, kTestAppUid, 0600 | S_IFREG);
 
-        if (has_dex_metadata) {
-            int32_t uid = has_user_id ? kTestAppUid : multiuser_get_uid(USER_SYSTEM, kTestAppId);
-            // Check that we created the reference profile.
-            CheckFileAccess(code_path_ref_profile, uid, uid, 0640 | S_IFREG);
-        } else {
-            // Without dex metadata, we don't generate a reference profile.
-            ASSERT_EQ(-1, access(code_path_ref_profile.c_str(), R_OK));
-        }
+        // Without dex metadata we don't generate a reference profile.
+        ASSERT_EQ(-1, access(code_path_ref_profile.c_str(), R_OK));
     }
 
   protected:
@@ -1356,7 +1191,6 @@ TEST_F(ProfileTest, ProfileDirOkAfterFixup) {
             kTestUserId,
             kAppDataFlags,
             kTestAppUid,
-            0 /* previousAppId */,
             se_info_,
             kOSdkVersion,
             &ce_data_inode_));
@@ -1368,32 +1202,12 @@ TEST_F(ProfileTest, ProfileDirOkAfterFixup) {
 
 TEST_F(ProfileTest, ProfilePrepareOk) {
     LOG(INFO) << "ProfilePrepareOk";
-    preparePackageProfile(package_name_, "split.prof", /*has_dex_metadata*/ true,
-                          /*has_user_id*/ true, /*expected_result*/ true);
-}
-
-TEST_F(ProfileTest, ProfilePrepareOkNoUser) {
-    LOG(INFO) << "ProfilePrepareOk";
-    preparePackageProfile(package_name_, "split.prof", /*has_dex_metadata*/ true,
-                          /*has_user_id*/ false, /*expected_result*/ true);
-}
-
-TEST_F(ProfileTest, ProfilePrepareOkNoDm) {
-    LOG(INFO) << "ProfilePrepareOk";
-    preparePackageProfile(package_name_, "split.prof", /*has_dex_metadata*/ false,
-                          /*has_user_id*/ true, /*expected_result*/ true);
-}
-
-TEST_F(ProfileTest, ProfilePrepareOkNoUserNoDm) {
-    LOG(INFO) << "ProfilePrepareOk";
-    preparePackageProfile(package_name_, "split.prof", /*has_dex_metadata*/ false,
-                          /*has_user_id*/ false, /*expected_result*/ true);
+    preparePackageProfile(package_name_, "split.prof", /*expected_result*/ true);
 }
 
 TEST_F(ProfileTest, ProfilePrepareFailInvalidPackage) {
     LOG(INFO) << "ProfilePrepareFailInvalidPackage";
-    preparePackageProfile("not.there.package", "split.prof", /*has_dex_metadata*/ true,
-                          /*has_user_id*/ true, /*expected_result*/ false);
+    preparePackageProfile("not.there.package", "split.prof", /*expected_result*/ false);
 }
 
 TEST_F(ProfileTest, ProfilePrepareFailProfileChangedUid) {
@@ -1401,62 +1215,9 @@ TEST_F(ProfileTest, ProfilePrepareFailProfileChangedUid) {
     SetupProfiles(/*setup_ref*/ false);
     // Change the uid on the profile to trigger a failure.
     ::chown(cur_profile_.c_str(), kTestAppUid + 1, kTestAppGid + 1);
-    preparePackageProfile(package_name_, "primary.prof", /*has_dex_metadata*/ true,
-                          /*has_user_id*/ true, /*expected_result*/ false);
+    preparePackageProfile(package_name_, "primary.prof", /*expected_result*/ false);
 }
 
-TEST_F(ProfileTest, ClearAppProfilesOk) {
-    LOG(INFO) << "ClearAppProfilesOk";
-
-    ASSERT_BINDER_SUCCESS(service_->clearAppProfiles(package_name_, "primary.prof"));
-    ASSERT_BINDER_SUCCESS(service_->clearAppProfiles(package_name_, "image_editor.split.prof"));
-}
-
-TEST_F(ProfileTest, ClearAppProfilesFailWrongProfileName) {
-    LOG(INFO) << "ClearAppProfilesFailWrongProfileName";
-
-    ASSERT_BINDER_FAIL(
-            service_->clearAppProfiles(package_name_,
-                                       "../../../../dalvik-cache/arm64/"
-                                       "system@app@SecureElement@SecureElement.apk@classes.vdex"));
-    ASSERT_BINDER_FAIL(service_->clearAppProfiles(package_name_, "image_editor.split.apk"));
-}
-
-TEST_F(ProfileTest, CopySystemProfileOk) {
-    LOG(INFO) << "CopySystemProfileOk";
-
-    bool result;
-    ASSERT_BINDER_SUCCESS(
-            service_->copySystemProfile("/data/app/random.string/package.name.random/base.apk.prof",
-                                        kTestAppUid, package_name_, "primary.prof", &result));
-}
-
-TEST_F(ProfileTest, CopySystemProfileFailWrongSystemProfilePath) {
-    LOG(INFO) << "CopySystemProfileFailWrongSystemProfilePath";
-
-    bool result;
-    ASSERT_BINDER_FAIL(service_->copySystemProfile("../../secret.dat", kTestAppUid, package_name_,
-                                                   "primary.prof", &result));
-    ASSERT_BINDER_FAIL(service_->copySystemProfile("/data/user/package.name/secret.data",
-                                                   kTestAppUid, package_name_, "primary.prof",
-                                                   &result));
-}
-
-TEST_F(ProfileTest, CopySystemProfileFailWrongProfileName) {
-    LOG(INFO) << "CopySystemProfileFailWrongProfileName";
-
-    bool result;
-    ASSERT_BINDER_FAIL(
-            service_->copySystemProfile("/data/app/random.string/package.name.random/base.apk.prof",
-                                        kTestAppUid, package_name_,
-                                        "../../../../dalvik-cache/arm64/test.vdex", &result));
-    ASSERT_BINDER_FAIL(
-            service_->copySystemProfile("/data/app/random.string/package.name.random/base.apk.prof",
-                                        kTestAppUid, package_name_, "/test.prof", &result));
-    ASSERT_BINDER_FAIL(
-            service_->copySystemProfile("/data/app/random.string/package.name.random/base.apk.prof",
-                                        kTestAppUid, package_name_, "base.apk", &result));
-}
 
 class BootProfileTest : public ProfileTest {
   public:
@@ -1464,9 +1225,6 @@ class BootProfileTest : public ProfileTest {
     std::vector<int64_t> extra_ce_data_inodes_;
 
     virtual void SetUp() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP() << "Skipping legacy dexopt tests when ART Service is enabled";
-        }
 
         ProfileTest::SetUp();
         intial_android_profiles_dir = android_profiles_dir;
@@ -1480,10 +1238,6 @@ class BootProfileTest : public ProfileTest {
     }
 
     virtual void TearDown() {
-        if (base::GetBoolProperty("dalvik.vm.useartservice", false)) {
-            GTEST_SKIP();
-        }
-
         android_profiles_dir = intial_android_profiles_dir;
         deleteAppProfilesForBootMerge();
         ProfileTest::TearDown();
@@ -1500,7 +1254,6 @@ class BootProfileTest : public ProfileTest {
                     kTestUserId,
                     kAppDataFlags,
                     kTestAppUid,
-                    0 /* previousAppId */,
                     se_info_,
                     kOSdkVersion,
                     &ce_data_inode));
@@ -1554,7 +1307,7 @@ class BootProfileTest : public ProfileTest {
             _exit(0);
         }
         /* parent */
-        ASSERT_TRUE(WIFEXITED(wait_child_with_timeout(pid, kTimeoutMs)));
+        ASSERT_TRUE(WIFEXITED(wait_child(pid)));
     }
   protected:
     std::string intial_android_profiles_dir;

@@ -21,28 +21,26 @@
 
 #include <cinttypes>
 
-#include <android-base/stringprintf.h>
-#include <gui/TraceUtils.h>
-#include <renderengine/impl/ExternalTexture.h>
-
 #include "ClientCache.h"
 
 namespace android {
 
+using base::StringAppendF;
+
 ANDROID_SINGLETON_STATIC_INSTANCE(ClientCache);
 
-ClientCache::ClientCache() : mDeathRecipient(sp<CacheDeathRecipient>::make()) {}
+ClientCache::ClientCache() : mDeathRecipient(new CacheDeathRecipient) {}
 
 bool ClientCache::getBuffer(const client_cache_t& cacheId,
                             ClientCacheBuffer** outClientCacheBuffer) {
     auto& [processToken, id] = cacheId;
     if (processToken == nullptr) {
-        ALOGE_AND_TRACE("ClientCache::getBuffer - invalid (nullptr) process token");
+        ALOGE("failed to get buffer, invalid (nullptr) process token");
         return false;
     }
     auto it = mBuffers.find(processToken);
     if (it == mBuffers.end()) {
-        ALOGE_AND_TRACE("ClientCache::getBuffer - invalid process token");
+        ALOGE("failed to get buffer, invalid process token");
         return false;
     }
 
@@ -50,7 +48,7 @@ bool ClientCache::getBuffer(const client_cache_t& cacheId,
 
     auto bufItr = processBuffers.find(id);
     if (bufItr == processBuffers.end()) {
-        ALOGE_AND_TRACE("ClientCache::getBuffer - invalid buffer id");
+        ALOGV("failed to get buffer, invalid buffer id");
         return false;
     }
 
@@ -59,17 +57,16 @@ bool ClientCache::getBuffer(const client_cache_t& cacheId,
     return true;
 }
 
-base::expected<std::shared_ptr<renderengine::ExternalTexture>, ClientCache::AddError>
-ClientCache::add(const client_cache_t& cacheId, const sp<GraphicBuffer>& buffer) {
+bool ClientCache::add(const client_cache_t& cacheId, const sp<GraphicBuffer>& buffer) {
     auto& [processToken, id] = cacheId;
     if (processToken == nullptr) {
-        ALOGE_AND_TRACE("ClientCache::add - invalid (nullptr) process token");
-        return base::unexpected(AddError::Unspecified);
+        ALOGE("failed to cache buffer: invalid process token");
+        return false;
     }
 
     if (!buffer) {
-        ALOGE_AND_TRACE("ClientCache::add - invalid (nullptr) buffer");
-        return base::unexpected(AddError::Unspecified);
+        ALOGE("failed to cache buffer: invalid buffer");
+        return false;
     }
 
     std::lock_guard lock(mMutex);
@@ -81,17 +78,14 @@ ClientCache::add(const client_cache_t& cacheId, const sp<GraphicBuffer>& buffer)
     if (it == mBuffers.end()) {
         token = processToken.promote();
         if (!token) {
-            ALOGE_AND_TRACE("ClientCache::add - invalid token");
-            return base::unexpected(AddError::Unspecified);
+            ALOGE("failed to cache buffer: invalid token");
+            return false;
         }
 
-        // Only call linkToDeath if not a local binder
-        if (token->localBinder() == nullptr) {
-            status_t err = token->linkToDeath(mDeathRecipient);
-            if (err != NO_ERROR) {
-                ALOGE_AND_TRACE("ClientCache::add - could not link to death");
-                return base::unexpected(AddError::Unspecified);
-            }
+        status_t err = token->linkToDeath(mDeathRecipient);
+        if (err != NO_ERROR) {
+            ALOGE("failed to cache buffer: could not link to death");
+            return false;
         }
         auto [itr, success] =
                 mBuffers.emplace(processToken,
@@ -104,22 +98,20 @@ ClientCache::add(const client_cache_t& cacheId, const sp<GraphicBuffer>& buffer)
     auto& processBuffers = it->second.second;
 
     if (processBuffers.size() > BUFFER_CACHE_MAX_SIZE) {
-        ALOGE_AND_TRACE("ClientCache::add - cache is full");
-        return base::unexpected(AddError::CacheFull);
+        ALOGE("failed to cache buffer: cache is full");
+        return false;
     }
 
     LOG_ALWAYS_FATAL_IF(mRenderEngine == nullptr,
                         "Attempted to build the ClientCache before a RenderEngine instance was "
                         "ready!");
-
-    return (processBuffers[id].buffer = std::make_shared<
-                    renderengine::impl::ExternalTexture>(buffer, *mRenderEngine,
-                                                         renderengine::impl::ExternalTexture::
-                                                                 Usage::READABLE));
+    processBuffers[id].buffer = std::make_shared<
+            renderengine::ExternalTexture>(buffer, *mRenderEngine,
+                                           renderengine::ExternalTexture::Usage::READABLE);
+    return true;
 }
 
-sp<GraphicBuffer> ClientCache::erase(const client_cache_t& cacheId) {
-    sp<GraphicBuffer> buffer;
+void ClientCache::erase(const client_cache_t& cacheId) {
     auto& [processToken, id] = cacheId;
     std::vector<sp<ErasedRecipient>> pendingErase;
     {
@@ -127,10 +119,8 @@ sp<GraphicBuffer> ClientCache::erase(const client_cache_t& cacheId) {
         ClientCacheBuffer* buf = nullptr;
         if (!getBuffer(cacheId, &buf)) {
             ALOGE("failed to erase buffer, could not retrieve buffer");
-            return nullptr;
+            return;
         }
-
-        buffer = buf->buffer->getBuffer();
 
         for (auto& recipient : buf->recipients) {
             sp<ErasedRecipient> erasedRecipient = recipient.promote();
@@ -145,7 +135,6 @@ sp<GraphicBuffer> ClientCache::erase(const client_cache_t& cacheId) {
     for (auto& recipient : pendingErase) {
         recipient->bufferErased(cacheId);
     }
-    return buffer;
 }
 
 std::shared_ptr<renderengine::ExternalTexture> ClientCache::get(const client_cache_t& cacheId) {
@@ -223,15 +212,16 @@ void ClientCache::CacheDeathRecipient::binderDied(const wp<IBinder>& who) {
 
 void ClientCache::dump(std::string& result) {
     std::lock_guard lock(mMutex);
-    for (const auto& [_, cache] : mBuffers) {
-        base::StringAppendF(&result, " Cache owner: %p\n", cache.first.get());
-
-        for (const auto& [id, entry] : cache.second) {
-            const auto& buffer = entry.buffer->getBuffer();
-            base::StringAppendF(&result, "\tID: %" PRIu64 ", size: %ux%u\n", id, buffer->getWidth(),
-                                buffer->getHeight());
+    for (auto i : mBuffers) {
+        const sp<IBinder>& cacheOwner = i.second.first;
+        StringAppendF(&result," Cache owner: %p\n", cacheOwner.get());
+        auto &buffers = i.second.second;
+        for (auto& [id, clientCacheBuffer] : buffers) {
+            StringAppendF(&result, "\t ID: %d, Width/Height: %d,%d\n", (int)id,
+                          (int)clientCacheBuffer.buffer->getBuffer()->getWidth(),
+                          (int)clientCacheBuffer.buffer->getBuffer()->getHeight());
         }
     }
 }
 
-} // namespace android
+}; // namespace android

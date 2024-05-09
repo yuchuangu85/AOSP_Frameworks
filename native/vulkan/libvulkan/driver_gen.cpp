@@ -162,15 +162,6 @@ VKAPI_ATTR void checkedGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2
     }
 }
 
-VKAPI_ATTR VkResult checkedReleaseSwapchainImagesEXT(VkDevice device, const VkReleaseSwapchainImagesInfoEXT* pReleaseInfo) {
-    if (GetData(device).hook_extensions[ProcHook::EXT_swapchain_maintenance1]) {
-        return ReleaseSwapchainImagesEXT(device, pReleaseInfo);
-    } else {
-        Logger(device).Err(device, "VK_EXT_swapchain_maintenance1 not enabled. vkReleaseSwapchainImagesEXT not executed.");
-        return VK_SUCCESS;
-    }
-}
-
 // clang-format on
 
 const ProcHook g_proc_hooks[] = {
@@ -505,13 +496,6 @@ const ProcHook g_proc_hooks[] = {
         nullptr,
     },
     {
-        "vkGetSwapchainGrallocUsage3ANDROID",
-        ProcHook::DEVICE,
-        ProcHook::ANDROID_native_buffer,
-        nullptr,
-        nullptr,
-    },
-    {
         "vkGetSwapchainGrallocUsageANDROID",
         ProcHook::DEVICE,
         ProcHook::ANDROID_native_buffer,
@@ -554,13 +538,6 @@ const ProcHook g_proc_hooks[] = {
         nullptr,
     },
     {
-        "vkReleaseSwapchainImagesEXT",
-        ProcHook::DEVICE,
-        ProcHook::EXT_swapchain_maintenance1,
-        reinterpret_cast<PFN_vkVoidFunction>(ReleaseSwapchainImagesEXT),
-        reinterpret_cast<PFN_vkVoidFunction>(checkedReleaseSwapchainImagesEXT),
-    },
-    {
         "vkSetHdrMetadataEXT",
         ProcHook::DEVICE,
         ProcHook::EXT_hdr_metadata,
@@ -588,16 +565,12 @@ ProcHook::Extension GetProcHookExtension(const char* name) {
     if (strcmp(name, "VK_EXT_hdr_metadata") == 0) return ProcHook::EXT_hdr_metadata;
     if (strcmp(name, "VK_EXT_swapchain_colorspace") == 0) return ProcHook::EXT_swapchain_colorspace;
     if (strcmp(name, "VK_GOOGLE_display_timing") == 0) return ProcHook::GOOGLE_display_timing;
-    if (strcmp(name, "VK_GOOGLE_surfaceless_query") == 0) return ProcHook::GOOGLE_surfaceless_query;
     if (strcmp(name, "VK_KHR_android_surface") == 0) return ProcHook::KHR_android_surface;
     if (strcmp(name, "VK_KHR_get_surface_capabilities2") == 0) return ProcHook::KHR_get_surface_capabilities2;
     if (strcmp(name, "VK_KHR_incremental_present") == 0) return ProcHook::KHR_incremental_present;
     if (strcmp(name, "VK_KHR_shared_presentable_image") == 0) return ProcHook::KHR_shared_presentable_image;
     if (strcmp(name, "VK_KHR_surface") == 0) return ProcHook::KHR_surface;
-    if (strcmp(name, "VK_KHR_surface_protected_capabilities") == 0) return ProcHook::KHR_surface_protected_capabilities;
     if (strcmp(name, "VK_KHR_swapchain") == 0) return ProcHook::KHR_swapchain;
-    if (strcmp(name, "VK_EXT_swapchain_maintenance1") == 0) return ProcHook::EXT_swapchain_maintenance1;
-    if (strcmp(name, "VK_EXT_surface_maintenance1") == 0) return ProcHook::EXT_surface_maintenance1;
     if (strcmp(name, "VK_ANDROID_external_memory_android_hardware_buffer") == 0) return ProcHook::ANDROID_external_memory_android_hardware_buffer;
     if (strcmp(name, "VK_KHR_bind_memory2") == 0) return ProcHook::KHR_bind_memory2;
     if (strcmp(name, "VK_KHR_get_physical_device_properties2") == 0) return ProcHook::KHR_get_physical_device_properties2;
@@ -605,7 +578,6 @@ ProcHook::Extension GetProcHookExtension(const char* name) {
     if (strcmp(name, "VK_KHR_external_memory_capabilities") == 0) return ProcHook::KHR_external_memory_capabilities;
     if (strcmp(name, "VK_KHR_external_semaphore_capabilities") == 0) return ProcHook::KHR_external_semaphore_capabilities;
     if (strcmp(name, "VK_KHR_external_fence_capabilities") == 0) return ProcHook::KHR_external_fence_capabilities;
-    if (strcmp(name, "VK_KHR_external_fence_fd") == 0) return ProcHook::KHR_external_fence_fd;
     // clang-format on
     return ProcHook::EXTENSION_UNKNOWN;
 }
@@ -685,13 +657,11 @@ bool InitDriverTable(VkDevice dev,
     INIT_PROC(true, dev, CreateImage);
     INIT_PROC(true, dev, DestroyImage);
     INIT_PROC(true, dev, AllocateCommandBuffers);
-    INIT_PROC_EXT(KHR_external_fence_fd, true, dev, ImportFenceFdKHR);
     INIT_PROC(false, dev, BindImageMemory2);
     INIT_PROC_EXT(KHR_bind_memory2, true, dev, BindImageMemory2KHR);
     INIT_PROC(false, dev, GetDeviceQueue2);
     INIT_PROC_EXT(ANDROID_native_buffer, false, dev, GetSwapchainGrallocUsageANDROID);
     INIT_PROC_EXT(ANDROID_native_buffer, false, dev, GetSwapchainGrallocUsage2ANDROID);
-    INIT_PROC_EXT(ANDROID_native_buffer, false, dev, GetSwapchainGrallocUsage3ANDROID);
     INIT_PROC_EXT(ANDROID_native_buffer, true, dev, AcquireImageANDROID);
     INIT_PROC_EXT(ANDROID_native_buffer, true, dev, QueueSignalReleaseImageANDROID);
     // clang-format on

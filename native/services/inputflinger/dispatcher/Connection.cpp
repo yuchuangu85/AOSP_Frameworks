@@ -22,11 +22,13 @@ namespace android::inputdispatcher {
 
 Connection::Connection(const std::shared_ptr<InputChannel>& inputChannel, bool monitor,
                        const IdGenerator& idGenerator)
-      : status(Status::NORMAL),
+      : status(STATUS_NORMAL),
         inputChannel(inputChannel),
         monitor(monitor),
         inputPublisher(inputChannel),
         inputState(idGenerator) {}
+
+Connection::~Connection() {}
 
 const std::string Connection::getWindowName() const {
     if (inputChannel != nullptr) {
@@ -36,6 +38,19 @@ const std::string Connection::getWindowName() const {
         return "monitor";
     }
     return "?";
+}
+
+const char* Connection::getStatusLabel() const {
+    switch (status) {
+        case STATUS_NORMAL:
+            return "NORMAL";
+        case STATUS_BROKEN:
+            return "BROKEN";
+        case STATUS_ZOMBIE:
+            return "ZOMBIE";
+        default:
+            return "UNKNOWN";
+    }
 }
 
 std::deque<DispatchEntry*>::iterator Connection::findWaitQueueEntry(uint32_t seq) {

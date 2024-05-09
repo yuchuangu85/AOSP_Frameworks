@@ -17,9 +17,6 @@
 #define LOG_TAG "ITransactionCompletedListener"
 //#define LOG_NDEBUG 0
 
-#include <cstdint>
-#include <optional>
-
 #include <gui/ISurfaceComposer.h>
 #include <gui/ITransactionCompletedListener.h>
 #include <gui/LayerState.h>
@@ -32,16 +29,8 @@ namespace { // Anonymous
 enum class Tag : uint32_t {
     ON_TRANSACTION_COMPLETED = IBinder::FIRST_CALL_TRANSACTION,
     ON_RELEASE_BUFFER,
-    ON_TRANSACTION_QUEUE_STALLED,
-    ON_TRUSTED_PRESENTATION_CHANGED,
-    LAST = ON_TRUSTED_PRESENTATION_CHANGED,
+    LAST = ON_RELEASE_BUFFER,
 };
-
-} // Anonymous namespace
-
-namespace { // Anonymous
-
-constexpr int32_t kSerializedCallbackTypeOnCompelteWithJankData = 2;
 
 } // Anonymous namespace
 
@@ -122,26 +111,14 @@ status_t JankData::readFromParcel(const Parcel* input) {
 
 status_t SurfaceStats::writeToParcel(Parcel* output) const {
     SAFE_PARCEL(output->writeStrongBinder, surfaceControl);
-    if (const auto* acquireFence = std::get_if<sp<Fence>>(&acquireTimeOrFence)) {
-        SAFE_PARCEL(output->writeBool, true);
-        SAFE_PARCEL(output->write, **acquireFence);
-    } else {
-        SAFE_PARCEL(output->writeBool, false);
-        SAFE_PARCEL(output->writeInt64, std::get<nsecs_t>(acquireTimeOrFence));
-    }
-
+    SAFE_PARCEL(output->writeInt64, acquireTime);
     if (previousReleaseFence) {
         SAFE_PARCEL(output->writeBool, true);
         SAFE_PARCEL(output->write, *previousReleaseFence);
     } else {
         SAFE_PARCEL(output->writeBool, false);
     }
-
-    SAFE_PARCEL(output->writeBool, transformHint.has_value());
-    if (transformHint.has_value()) {
-        output->writeUint32(transformHint.value());
-    }
-
+    SAFE_PARCEL(output->writeUint32, transformHint);
     SAFE_PARCEL(output->writeUint32, currentMaxAcquiredBufferCount);
     SAFE_PARCEL(output->writeParcelable, eventStats);
     SAFE_PARCEL(output->writeInt32, static_cast<int32_t>(jankData.size()));
@@ -154,33 +131,14 @@ status_t SurfaceStats::writeToParcel(Parcel* output) const {
 
 status_t SurfaceStats::readFromParcel(const Parcel* input) {
     SAFE_PARCEL(input->readStrongBinder, &surfaceControl);
-
+    SAFE_PARCEL(input->readInt64, &acquireTime);
     bool hasFence = false;
-    SAFE_PARCEL(input->readBool, &hasFence);
-    if (hasFence) {
-        acquireTimeOrFence = sp<Fence>::make();
-        SAFE_PARCEL(input->read, *std::get<sp<Fence>>(acquireTimeOrFence));
-    } else {
-        nsecs_t acquireTime;
-        SAFE_PARCEL(input->readInt64, &acquireTime);
-        acquireTimeOrFence = acquireTime;
-    }
-
     SAFE_PARCEL(input->readBool, &hasFence);
     if (hasFence) {
         previousReleaseFence = new Fence();
         SAFE_PARCEL(input->read, *previousReleaseFence);
     }
-    bool hasTransformHint = false;
-    SAFE_PARCEL(input->readBool, &hasTransformHint);
-    if (hasTransformHint) {
-        uint32_t tempTransformHint;
-        SAFE_PARCEL(input->readUint32, &tempTransformHint);
-        transformHint = std::make_optional(tempTransformHint);
-    } else {
-        transformHint = std::nullopt;
-    }
-
+    SAFE_PARCEL(input->readUint32, &transformHint);
     SAFE_PARCEL(input->readUint32, &currentMaxAcquiredBufferCount);
     SAFE_PARCEL(input->readParcelable, &eventStats);
 
@@ -296,23 +254,12 @@ public:
     }
 
     void onReleaseBuffer(ReleaseCallbackId callbackId, sp<Fence> releaseFence,
-                         uint32_t currentMaxAcquiredBufferCount) override {
-        callRemoteAsync<decltype(&ITransactionCompletedListener::
-                                         onReleaseBuffer)>(Tag::ON_RELEASE_BUFFER, callbackId,
-                                                           releaseFence,
-                                                           currentMaxAcquiredBufferCount);
-    }
-
-    void onTransactionQueueStalled(const String8& reason) override {
-        callRemoteAsync<
-                decltype(&ITransactionCompletedListener::
-                                 onTransactionQueueStalled)>(Tag::ON_TRANSACTION_QUEUE_STALLED,
-                                                             reason);
-    }
-
-    void onTrustedPresentationChanged(int id, bool inTrustedPresentationState) override {
-        callRemoteAsync<decltype(&ITransactionCompletedListener::onTrustedPresentationChanged)>(
-                Tag::ON_TRUSTED_PRESENTATION_CHANGED, id, inTrustedPresentationState);
+                         uint32_t transformHint, uint32_t currentMaxAcquiredBufferCount) override {
+        callRemoteAsync<decltype(
+                &ITransactionCompletedListener::onReleaseBuffer)>(Tag::ON_RELEASE_BUFFER,
+                                                                  callbackId, releaseFence,
+                                                                  transformHint,
+                                                                  currentMaxAcquiredBufferCount);
     }
 };
 
@@ -334,12 +281,6 @@ status_t BnTransactionCompletedListener::onTransact(uint32_t code, const Parcel&
                                   &ITransactionCompletedListener::onTransactionCompleted);
         case Tag::ON_RELEASE_BUFFER:
             return callLocalAsync(data, reply, &ITransactionCompletedListener::onReleaseBuffer);
-        case Tag::ON_TRANSACTION_QUEUE_STALLED:
-            return callLocalAsync(data, reply,
-                                  &ITransactionCompletedListener::onTransactionQueueStalled);
-        case Tag::ON_TRUSTED_PRESENTATION_CHANGED:
-            return callLocalAsync(data, reply,
-                                  &ITransactionCompletedListener::onTrustedPresentationChanged);
     }
 }
 
@@ -355,11 +296,7 @@ ListenerCallbacks ListenerCallbacks::filter(CallbackId::Type type) const {
 
 status_t CallbackId::writeToParcel(Parcel* output) const {
     SAFE_PARCEL(output->writeInt64, id);
-    if (type == Type::ON_COMPLETE && includeJankData) {
-        SAFE_PARCEL(output->writeInt32, kSerializedCallbackTypeOnCompelteWithJankData);
-    } else {
-        SAFE_PARCEL(output->writeInt32, static_cast<int32_t>(type));
-    }
+    SAFE_PARCEL(output->writeInt32, static_cast<int32_t>(type));
     return NO_ERROR;
 }
 
@@ -367,13 +304,7 @@ status_t CallbackId::readFromParcel(const Parcel* input) {
     SAFE_PARCEL(input->readInt64, &id);
     int32_t typeAsInt;
     SAFE_PARCEL(input->readInt32, &typeAsInt);
-    if (typeAsInt == kSerializedCallbackTypeOnCompelteWithJankData) {
-        type = Type::ON_COMPLETE;
-        includeJankData = true;
-    } else {
-        type = static_cast<CallbackId::Type>(typeAsInt);
-        includeJankData = false;
-    }
+    type = static_cast<CallbackId::Type>(typeAsInt);
     return NO_ERROR;
 }
 

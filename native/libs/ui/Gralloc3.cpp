@@ -101,15 +101,6 @@ status_t Gralloc3Mapper::validateBufferDescriptorInfo(
               descriptorInfo->usage & ~validUsageBits);
         return BAD_VALUE;
     }
-
-    // Gralloc3 implementations never understand non-BLOB with GPU_DATA_BUFFER
-    // and do not reliably reject it.
-    if (descriptorInfo->usage & BufferUsage::GPU_DATA_BUFFER &&
-        descriptorInfo->format != hardware::graphics::common::V1_2::PixelFormat::BLOB) {
-        ALOGE("gralloc3 does not support non-BLOB pixel formats with GPU_DATA_BUFFER usage");
-        return BAD_VALUE;
-    }
-
     return NO_ERROR;
 }
 
@@ -138,7 +129,7 @@ status_t Gralloc3Mapper::createDescriptor(void* bufferDescriptorInfo,
     return static_cast<status_t>((ret.isOk()) ? error : kTransactionError);
 }
 
-status_t Gralloc3Mapper::importBuffer(const native_handle_t* rawHandle,
+status_t Gralloc3Mapper::importBuffer(const hardware::hidl_handle& rawHandle,
                                       buffer_handle_t* outBufferHandle) const {
     Error error;
     auto ret = mMapper->importBuffer(rawHandle, [&](const auto& tmpError, const auto& tmpBuffer) {

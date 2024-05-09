@@ -44,14 +44,11 @@ namespace android {
 namespace {
 
 using testing::_;
-using testing::AllOf;
 using testing::AnyNumber;
 using testing::Contains;
-using testing::ElementsAre;
 using testing::HasSubstr;
 using testing::InSequence;
 using testing::Not;
-using testing::Property;
 using testing::SizeIs;
 using testing::StrEq;
 using testing::UnorderedElementsAre;
@@ -67,15 +64,17 @@ using SurfaceflingerStatsLayerInfoWrapper =
 #define LAYER_ID_0            0
 #define LAYER_ID_1            1
 #define UID_0                 123
+#define REFRESH_RATE_0        61
+#define RENDER_RATE_0         31
 #define REFRESH_RATE_BUCKET_0 60
 #define RENDER_RATE_BUCKET_0  30
 #define LAYER_ID_INVALID      -1
 #define NUM_LAYERS            1
 #define NUM_LAYERS_INVALID    "INVALID"
 
-constexpr Fps kRefreshRate0 = 61_Hz;
-constexpr Fps kRenderRate0 = 31_Hz;
-constexpr GameMode kGameMode = GameMode::Unsupported;
+const constexpr Fps kRefreshRate0 = Fps(static_cast<float>(REFRESH_RATE_0));
+const constexpr Fps kRenderRate0 = Fps(static_cast<float>(RENDER_RATE_0));
+static constexpr int32_t kGameMode = TimeStatsHelper::GameModeUnsupported;
 
 enum InputCommand : int32_t {
     ENABLE                 = 0,
@@ -148,14 +147,14 @@ public:
     std::string inputCommand(InputCommand cmd, bool useProto);
 
     void setTimeStamp(TimeStamp type, int32_t id, uint64_t frameNumber, nsecs_t ts,
-                      TimeStats::SetFrameRateVote, GameMode);
+                      TimeStats::SetFrameRateVote frameRateVote, int32_t gameMode);
 
     int32_t genRandomInt32(int32_t begin, int32_t end);
 
     template <size_t N>
     void insertTimeRecord(const TimeStamp (&sequence)[N], int32_t id, uint64_t frameNumber,
                           nsecs_t ts, TimeStats::SetFrameRateVote frameRateVote = {},
-                          GameMode gameMode = kGameMode) {
+                          int32_t gameMode = kGameMode) {
         for (size_t i = 0; i < N; i++, ts += 1000000) {
             setTimeStamp(sequence[i], id, frameNumber, ts, frameRateVote, gameMode);
         }
@@ -206,7 +205,7 @@ static std::string genLayerName(int32_t layerId) {
 }
 
 void TimeStatsTest::setTimeStamp(TimeStamp type, int32_t id, uint64_t frameNumber, nsecs_t ts,
-                                 TimeStats::SetFrameRateVote frameRateVote, GameMode gameMode) {
+                                 TimeStats::SetFrameRateVote frameRateVote, int32_t gameMode) {
     switch (type) {
         case TimeStamp::POST:
             ASSERT_NO_FATAL_FAILURE(mTimeStats->setPostTime(id, frameNumber, genLayerName(id),
@@ -271,11 +270,8 @@ TEST_F(TimeStatsTest, canIncreaseGlobalStats) {
     for (size_t i = 0; i < MISSED_FRAMES; i++) {
         ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementMissedFrames());
     }
-    TimeStats::ClientCompositionRecord record;
-    record.hadClientComposition = true;
-
     for (size_t i = 0; i < CLIENT_COMPOSITION_FRAMES; i++) {
-        ASSERT_NO_FATAL_FAILURE(mTimeStats->pushCompositionStrategyState(record));
+        ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementClientCompositionFrames());
     }
 
     SFTimeStatsGlobalProto globalProto;
@@ -465,49 +461,19 @@ TEST_F(TimeStatsTest, canCaptureSetFrameRateVoteAfterZeroForLayer) {
     EXPECT_THAT(result, HasSubstr(expectedResult));
 }
 
-TEST_F(TimeStatsTest, canIncreaseClientCompositionStats) {
+TEST_F(TimeStatsTest, canIncreaseClientCompositionReusedFrames) {
     // this stat is not in the proto so verify by checking the string dump
-    constexpr size_t COMPOSITION_STRATEGY_CHANGED_FRAMES = 1;
-    constexpr size_t HAD_CLIENT_COMPOSITION_FRAMES = 2;
-    constexpr size_t REUSED_CLIENT_COMPOSITION_FRAMES = 3;
-    constexpr size_t COMPOSITION_STRATEGY_PREDICTION_SUCCEEDED_FRAMES = 4;
-    constexpr size_t COMPOSITION_STRATEGY_PREDICTED_FRAMES = 5;
+    constexpr size_t CLIENT_COMPOSITION_REUSED_FRAMES = 2;
 
     EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
-    for (size_t i = 0; i <= COMPOSITION_STRATEGY_PREDICTED_FRAMES; i++) {
-        TimeStats::ClientCompositionRecord record;
-        record.hadClientComposition = i < HAD_CLIENT_COMPOSITION_FRAMES;
-        record.changed = i < COMPOSITION_STRATEGY_CHANGED_FRAMES;
-        record.reused = i < REUSED_CLIENT_COMPOSITION_FRAMES;
-        record.predicted = i < COMPOSITION_STRATEGY_PREDICTED_FRAMES;
-        record.predictionSucceeded = i < COMPOSITION_STRATEGY_PREDICTION_SUCCEEDED_FRAMES;
-        mTimeStats->pushCompositionStrategyState(record);
+    for (size_t i = 0; i < CLIENT_COMPOSITION_REUSED_FRAMES; i++) {
+        ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementClientCompositionReusedFrames());
     }
 
     const std::string result(inputCommand(InputCommand::DUMP_ALL, FMT_STRING));
-    std::string expected =
-            "compositionStrategyChanges = " + std::to_string(COMPOSITION_STRATEGY_CHANGED_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
-
-    expected = "clientCompositionFrames = " + std::to_string(HAD_CLIENT_COMPOSITION_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
-
-    expected =
-            "clientCompositionReusedFrames = " + std::to_string(REUSED_CLIENT_COMPOSITION_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
-
-    expected = "compositionStrategyPredicted = " +
-            std::to_string(COMPOSITION_STRATEGY_PREDICTED_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
-
-    expected = "compositionStrategyPredictionSucceeded = " +
-            std::to_string(COMPOSITION_STRATEGY_PREDICTION_SUCCEEDED_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
-
-    expected = "compositionStrategyPredictionFailed = " +
-            std::to_string(COMPOSITION_STRATEGY_PREDICTED_FRAMES -
-                           COMPOSITION_STRATEGY_PREDICTION_SUCCEEDED_FRAMES);
-    EXPECT_THAT(result, HasSubstr(expected));
+    const std::string expectedResult =
+            "clientCompositionReusedFrames = " + std::to_string(CLIENT_COMPOSITION_REUSED_FRAMES);
+    EXPECT_THAT(result, HasSubstr(expectedResult));
 }
 
 TEST_F(TimeStatsTest, canIncreaseRefreshRateSwitches) {
@@ -522,6 +488,21 @@ TEST_F(TimeStatsTest, canIncreaseRefreshRateSwitches) {
     const std::string result(inputCommand(InputCommand::DUMP_ALL, FMT_STRING));
     const std::string expectedResult =
             "refreshRateSwitches = " + std::to_string(REFRESH_RATE_SWITCHES);
+    EXPECT_THAT(result, HasSubstr(expectedResult));
+}
+
+TEST_F(TimeStatsTest, canIncreaseCompositionStrategyChanges) {
+    // this stat is not in the proto so verify by checking the string dump
+    constexpr size_t COMPOSITION_STRATEGY_CHANGES = 2;
+
+    EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
+    for (size_t i = 0; i < COMPOSITION_STRATEGY_CHANGES; i++) {
+        ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementCompositionStrategyChanges());
+    }
+
+    const std::string result(inputCommand(InputCommand::DUMP_ALL, FMT_STRING));
+    const std::string expectedResult =
+            "compositionStrategyChanges = " + std::to_string(COMPOSITION_STRATEGY_CHANGES);
     EXPECT_THAT(result, HasSubstr(expectedResult));
 }
 
@@ -648,7 +629,7 @@ TEST_F(TimeStatsTest, canInsertOneLayerTimeStats) {
     ASSERT_TRUE(globalProto.ParseFromString(inputCommand(InputCommand::DUMP_ALL, FMT_PROTO)));
 
     ASSERT_EQ(1, globalProto.stats_size());
-    const SFTimeStatsLayerProto& layerProto = globalProto.stats(0);
+    const SFTimeStatsLayerProto& layerProto = globalProto.stats().Get(0);
     ASSERT_TRUE(layerProto.has_layer_name());
     EXPECT_EQ(genLayerName(LAYER_ID_0), layerProto.layer_name());
     ASSERT_TRUE(layerProto.has_total_frames());
@@ -656,7 +637,7 @@ TEST_F(TimeStatsTest, canInsertOneLayerTimeStats) {
     ASSERT_EQ(6, layerProto.deltas_size());
     for (const SFTimeStatsDeltaProto& deltaProto : layerProto.deltas()) {
         ASSERT_EQ(1, deltaProto.histograms_size());
-        const SFTimeStatsHistogramBucketProto& histogramProto = deltaProto.histograms(0);
+        const SFTimeStatsHistogramBucketProto& histogramProto = deltaProto.histograms().Get(0);
         EXPECT_EQ(1, histogramProto.frame_count());
         if ("post2acquire" == deltaProto.delta_name()) {
             EXPECT_EQ(1, histogramProto.time_millis());
@@ -674,46 +655,6 @@ TEST_F(TimeStatsTest, canInsertOneLayerTimeStats) {
             FAIL() << "Unknown delta_name: " << deltaProto.delta_name();
         }
     }
-}
-
-using LayerProto = SFTimeStatsLayerProto;
-using DeltaProto = SFTimeStatsDeltaProto;
-using BucketProto = SFTimeStatsHistogramBucketProto;
-
-TEST_F(TimeStatsTest, canComputeLayerStabilityHistogram) {
-    EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
-
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 2, 2000000);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 3, 3000000); // 0ms delta
-    // Slightly unstable frames
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 4, 5000000); // 1ms delta
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 5, 6000000); // 1ms delta
-
-    SFTimeStatsGlobalProto globalProto;
-    ASSERT_TRUE(globalProto.ParseFromString(inputCommand(InputCommand::DUMP_ALL, FMT_PROTO)));
-
-    EXPECT_THAT(globalProto.stats(),
-                ElementsAre(AllOf(
-                        Property(&LayerProto::layer_name, genLayerName(LAYER_ID_0)),
-                        Property(&LayerProto::total_frames, 4),
-                        Property(&LayerProto::deltas,
-                                 Contains(AllOf(Property(&DeltaProto::delta_name,
-                                                         "present2presentDelta"),
-                                                Property(&DeltaProto::histograms,
-                                                         UnorderedElementsAre(
-                                                                 AllOf(Property(&BucketProto::
-                                                                                        time_millis,
-                                                                                0),
-                                                                       Property(&BucketProto::
-                                                                                        frame_count,
-                                                                                1)),
-                                                                 AllOf(Property(&BucketProto::
-                                                                                        time_millis,
-                                                                                1),
-                                                                       Property(&BucketProto::
-                                                                                        frame_count,
-                                                                                2))))))))));
 }
 
 TEST_F(TimeStatsTest, canNotInsertInvalidLayerNameTimeStats) {
@@ -897,7 +838,7 @@ TEST_F(TimeStatsTest, canClearTimeStats) {
 
     ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementTotalFrames());
     ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementMissedFrames());
-    ASSERT_NO_FATAL_FAILURE(mTimeStats->pushCompositionStrategyState({}));
+    ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementClientCompositionFrames());
     ASSERT_NO_FATAL_FAILURE(mTimeStats->setPowerMode(PowerMode::ON));
 
     mTimeStats->recordFrameDuration(std::chrono::nanoseconds(3ms).count(),
@@ -928,8 +869,9 @@ TEST_F(TimeStatsTest, canClearTimeStats) {
 TEST_F(TimeStatsTest, canClearDumpOnlyTimeStats) {
     // These stats are not in the proto so verify by checking the string dump.
     EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
-    ASSERT_NO_FATAL_FAILURE(mTimeStats->pushCompositionStrategyState({}));
+    ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementClientCompositionReusedFrames());
     ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementRefreshRateSwitches());
+    ASSERT_NO_FATAL_FAILURE(mTimeStats->incrementCompositionStrategyChanges());
     mTimeStats->setPowerMode(PowerMode::ON);
     mTimeStats->recordFrameDuration(std::chrono::nanoseconds(1ms).count(),
                                     std::chrono::nanoseconds(5ms).count());
@@ -1092,10 +1034,8 @@ TEST_F(TimeStatsTest, globalStatsCallback) {
     for (size_t i = 0; i < MISSED_FRAMES; i++) {
         mTimeStats->incrementMissedFrames();
     }
-    TimeStats::ClientCompositionRecord record;
-    record.hadClientComposition = true;
     for (size_t i = 0; i < CLIENT_COMPOSITION_FRAMES; i++) {
-        mTimeStats->pushCompositionStrategyState(record);
+        mTimeStats->incrementClientCompositionFrames();
     }
 
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000);
@@ -1142,10 +1082,8 @@ TEST_F(TimeStatsTest, globalStatsCallback) {
                                       kGameMode, JankType::None, DISPLAY_DEADLINE_DELTA,
                                       DISPLAY_PRESENT_JITTER, APP_DEADLINE_DELTA});
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10062 /*SURFACEFLINGER_STATS_GLOBAL_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10062 /*SURFACEFLINGER_STATS_GLOBAL_INFO*/, &pulledData));
 
     android::surfaceflinger::SurfaceflingerStatsGlobalInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1232,7 +1170,8 @@ TEST_F(TimeStatsTest, layerStatsCallback_pullsAllAndClears) {
     constexpr nsecs_t APP_DEADLINE_DELTA_3MS = 3'000'000;
     EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
 
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000, {}, GameMode::Standard);
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000, {},
+                     TimeStatsHelper::GameModeStandard);
     for (size_t i = 0; i < LATE_ACQUIRE_FRAMES; i++) {
         mTimeStats->incrementLatchSkipped(LAYER_ID_0, TimeStats::LatchSkipReason::LateAcquire);
     }
@@ -1245,44 +1184,45 @@ TEST_F(TimeStatsTest, layerStatsCallback_pullsAllAndClears) {
                     TimeStats::SetFrameRateVote::FrameRateCompatibility::ExactOrMultiple,
             .seamlessness = TimeStats::SetFrameRateVote::Seamlessness::NotRequired,
     };
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 2, 2000000, frameRate60, GameMode::Standard);
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 2, 2000000, frameRate60,
+                     TimeStatsHelper::GameModeStandard);
 
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::SurfaceFlingerCpuDeadlineMissed,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_3MS});
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::SurfaceFlingerGpuDeadlineMissed,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_3MS});
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::DisplayHAL,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_3MS});
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::AppDeadlineMissed,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_3MS});
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::SurfaceFlingerScheduling,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_2MS});
-    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::PredictionError,
-                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
-                                      APP_DEADLINE_DELTA_2MS});
     mTimeStats->incrementJankyFrames(
-            {kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0), GameMode::Standard,
-             JankType::AppDeadlineMissed | JankType::BufferStuffing, DISPLAY_DEADLINE_DELTA,
-             APP_DEADLINE_DELTA_2MS, APP_DEADLINE_DELTA_2MS});
+            {kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+             TimeStatsHelper::GameModeStandard, JankType::SurfaceFlingerCpuDeadlineMissed,
+             DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER, APP_DEADLINE_DELTA_3MS});
+    mTimeStats->incrementJankyFrames(
+            {kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+             TimeStatsHelper::GameModeStandard, JankType::SurfaceFlingerGpuDeadlineMissed,
+             DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER, APP_DEADLINE_DELTA_3MS});
     mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
-                                      GameMode::Standard, JankType::None, DISPLAY_DEADLINE_DELTA,
+                                      TimeStatsHelper::GameModeStandard, JankType::DisplayHAL,
+                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
+                                      APP_DEADLINE_DELTA_3MS});
+    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+                                      TimeStatsHelper::GameModeStandard,
+                                      JankType::AppDeadlineMissed, DISPLAY_DEADLINE_DELTA,
                                       DISPLAY_PRESENT_JITTER, APP_DEADLINE_DELTA_3MS});
+    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+                                      TimeStatsHelper::GameModeStandard,
+                                      JankType::SurfaceFlingerScheduling, DISPLAY_DEADLINE_DELTA,
+                                      DISPLAY_PRESENT_JITTER, APP_DEADLINE_DELTA_2MS});
+    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+                                      TimeStatsHelper::GameModeStandard, JankType::PredictionError,
+                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
+                                      APP_DEADLINE_DELTA_2MS});
+    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+                                      TimeStatsHelper::GameModeStandard,
+                                      JankType::AppDeadlineMissed | JankType::BufferStuffing,
+                                      DISPLAY_DEADLINE_DELTA, APP_DEADLINE_DELTA_2MS,
+                                      APP_DEADLINE_DELTA_2MS});
+    mTimeStats->incrementJankyFrames({kRefreshRate0, kRenderRate0, UID_0, genLayerName(LAYER_ID_0),
+                                      TimeStatsHelper::GameModeStandard, JankType::None,
+                                      DISPLAY_DEADLINE_DELTA, DISPLAY_PRESENT_JITTER,
+                                      APP_DEADLINE_DELTA_3MS});
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1355,31 +1295,32 @@ TEST_F(TimeStatsTest, layerStatsCallback_multipleGameModes) {
     constexpr size_t BAD_DESIRED_PRESENT_FRAMES = 3;
     EXPECT_TRUE(inputCommand(InputCommand::ENABLE, FMT_STRING).empty());
 
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000, {}, GameMode::Standard);
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 1, 1000000, {},
+                     TimeStatsHelper::GameModeStandard);
     for (size_t i = 0; i < LATE_ACQUIRE_FRAMES; i++) {
         mTimeStats->incrementLatchSkipped(LAYER_ID_0, TimeStats::LatchSkipReason::LateAcquire);
     }
     for (size_t i = 0; i < BAD_DESIRED_PRESENT_FRAMES; i++) {
         mTimeStats->incrementBadDesiredPresent(LAYER_ID_0);
     }
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 2, 2000000, {},
+                     TimeStatsHelper::GameModeStandard);
 
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 2, 2000000, {}, GameMode::Standard);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 3, 3000000, {}, GameMode::Performance);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 4, 4000000, {}, GameMode::Battery);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 5, 4000000, {}, GameMode::Battery);
-    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 6, 5000000, {}, GameMode::Custom);
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 3, 3000000, {},
+                     TimeStatsHelper::GameModePerformance);
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 4, 4000000, {}, TimeStatsHelper::GameModeBattery);
+    insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 5, 4000000, {}, TimeStatsHelper::GameModeBattery);
+
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
     // The first time record is never uploaded to stats.
-    ASSERT_EQ(atomList.atom_size(), 4);
+    ASSERT_EQ(atomList.atom_size(), 3);
     // Layers are ordered based on the hash in LayerStatsKey. For this test, the order happens to
-    // be: 0 - Battery 1 - Custom 2 - Performance 3 - Standard
+    // be: 0 - Battery 1 - Performance 2 - Standard
     const SurfaceflingerStatsLayerInfo& atom0 = atomList.atom(0);
 
     EXPECT_EQ(atom0.layer_name(), genLayerName(LAYER_ID_0));
@@ -1414,7 +1355,7 @@ TEST_F(TimeStatsTest, layerStatsCallback_multipleGameModes) {
     EXPECT_EQ(atom1.uid(), UID_0);
     EXPECT_EQ(atom1.display_refresh_rate_bucket(), REFRESH_RATE_BUCKET_0);
     EXPECT_EQ(atom1.render_rate_bucket(), RENDER_RATE_BUCKET_0);
-    EXPECT_EQ(atom1.game_mode(), SurfaceflingerStatsLayerInfo::GAME_MODE_CUSTOM);
+    EXPECT_EQ(atom1.game_mode(), SurfaceflingerStatsLayerInfo::GAME_MODE_PERFORMANCE);
 
     const SurfaceflingerStatsLayerInfo& atom2 = atomList.atom(2);
 
@@ -1427,30 +1368,12 @@ TEST_F(TimeStatsTest, layerStatsCallback_multipleGameModes) {
     EXPECT_THAT(atom2.latch_to_present(), HistogramEq(buildExpectedHistogram({2}, {1})));
     EXPECT_THAT(atom2.desired_to_present(), HistogramEq(buildExpectedHistogram({1}, {1})));
     EXPECT_THAT(atom2.post_to_acquire(), HistogramEq(buildExpectedHistogram({1}, {1})));
-    EXPECT_EQ(atom2.late_acquire_frames(), 0);
-    EXPECT_EQ(atom2.bad_desired_present_frames(), 0);
+    EXPECT_EQ(atom2.late_acquire_frames(), LATE_ACQUIRE_FRAMES);
+    EXPECT_EQ(atom2.bad_desired_present_frames(), BAD_DESIRED_PRESENT_FRAMES);
     EXPECT_EQ(atom2.uid(), UID_0);
     EXPECT_EQ(atom2.display_refresh_rate_bucket(), REFRESH_RATE_BUCKET_0);
     EXPECT_EQ(atom2.render_rate_bucket(), RENDER_RATE_BUCKET_0);
-    EXPECT_EQ(atom2.game_mode(), SurfaceflingerStatsLayerInfo::GAME_MODE_PERFORMANCE);
-
-    const SurfaceflingerStatsLayerInfo& atom3 = atomList.atom(3);
-
-    EXPECT_EQ(atom3.layer_name(), genLayerName(LAYER_ID_0));
-    EXPECT_EQ(atom3.total_frames(), 1);
-    EXPECT_EQ(atom3.dropped_frames(), 0);
-    EXPECT_THAT(atom3.present_to_present(), HistogramEq(buildExpectedHistogram({1}, {1})));
-    EXPECT_THAT(atom3.post_to_present(), HistogramEq(buildExpectedHistogram({4}, {1})));
-    EXPECT_THAT(atom3.acquire_to_present(), HistogramEq(buildExpectedHistogram({3}, {1})));
-    EXPECT_THAT(atom3.latch_to_present(), HistogramEq(buildExpectedHistogram({2}, {1})));
-    EXPECT_THAT(atom3.desired_to_present(), HistogramEq(buildExpectedHistogram({1}, {1})));
-    EXPECT_THAT(atom3.post_to_acquire(), HistogramEq(buildExpectedHistogram({1}, {1})));
-    EXPECT_EQ(atom3.late_acquire_frames(), LATE_ACQUIRE_FRAMES);
-    EXPECT_EQ(atom3.bad_desired_present_frames(), BAD_DESIRED_PRESENT_FRAMES);
-    EXPECT_EQ(atom3.uid(), UID_0);
-    EXPECT_EQ(atom3.display_refresh_rate_bucket(), REFRESH_RATE_BUCKET_0);
-    EXPECT_EQ(atom3.render_rate_bucket(), RENDER_RATE_BUCKET_0);
-    EXPECT_EQ(atom3.game_mode(), SurfaceflingerStatsLayerInfo::GAME_MODE_STANDARD);
+    EXPECT_EQ(atom2.game_mode(), SurfaceflingerStatsLayerInfo::GAME_MODE_STANDARD);
 }
 
 TEST_F(TimeStatsTest, layerStatsCallback_pullsMultipleLayers) {
@@ -1461,10 +1384,8 @@ TEST_F(TimeStatsTest, layerStatsCallback_pullsMultipleLayers) {
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_1, 1, 2000000);
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_1, 2, 3000000);
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1488,10 +1409,8 @@ TEST_F(TimeStatsTest, layerStatsCallback_pullsMultipleBuckets) {
     mTimeStats->setPresentFenceGlobal(std::make_shared<FenceTime>(3000000));
     mTimeStats->setPresentFenceGlobal(std::make_shared<FenceTime>(5000000));
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1509,10 +1428,8 @@ TEST_F(TimeStatsTest, layerStatsCallback_limitsHistogramBuckets) {
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 3, 4000000);
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_0, 4, 5000000);
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1531,10 +1448,8 @@ TEST_F(TimeStatsTest, layerStatsCallback_limitsLayers) {
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_1, 2, 3000000);
     insertTimeRecord(NORMAL_SEQUENCE, LAYER_ID_1, 4, 5000000);
 
-    std::vector<uint8_t> pulledBytes;
-    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledBytes));
     std::string pulledData;
-    pulledData.assign(pulledBytes.begin(), pulledBytes.end());
+    EXPECT_TRUE(mTimeStats->onPullAtom(10063 /*SURFACEFLINGER_STATS_LAYER_INFO*/, &pulledData));
 
     SurfaceflingerStatsLayerInfoWrapper atomList;
     ASSERT_TRUE(atomList.ParseFromString(pulledData));
@@ -1583,14 +1498,14 @@ TEST_F(TimeStatsTest, refreshRateIsClampedToNearestBucket) {
         EXPECT_THAT(result, HasSubstr(expectedResult)) << "failed for " << fps;
     };
 
-    verifyRefreshRateBucket(91_Hz, 90);
-    verifyRefreshRateBucket(89_Hz, 90);
+    verifyRefreshRateBucket(Fps(91.f), 90);
+    verifyRefreshRateBucket(Fps(89.f), 90);
 
-    verifyRefreshRateBucket(61_Hz, 60);
-    verifyRefreshRateBucket(59_Hz, 60);
+    verifyRefreshRateBucket(Fps(61.f), 60);
+    verifyRefreshRateBucket(Fps(59.f), 60);
 
-    verifyRefreshRateBucket(31_Hz, 30);
-    verifyRefreshRateBucket(29_Hz, 30);
+    verifyRefreshRateBucket(Fps(31.f), 30);
+    verifyRefreshRateBucket(Fps(29.f), 30);
 }
 
 } // namespace

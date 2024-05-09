@@ -20,9 +20,6 @@ namespace android {
 namespace renderengine {
 namespace skia {
 
-// please keep in sync with hwui/utils/Color.cpp
-// TODO: Scale by the dimming ratio here instead of in a generic 3x3 transform
-// Otherwise there may be luminance shift for e.g., HLG.
 sk_sp<SkColorSpace> toSkColorSpace(ui::Dataspace dataspace) {
     skcms_Matrix3x3 gamut;
     switch (dataspace & HAL_DATASPACE_STANDARD_MASK) {
@@ -35,17 +32,6 @@ sk_sp<SkColorSpace> toSkColorSpace(ui::Dataspace dataspace) {
         case HAL_DATASPACE_STANDARD_DCI_P3:
             gamut = SkNamedGamut::kDisplayP3;
             break;
-        case HAL_DATASPACE_STANDARD_ADOBE_RGB:
-            gamut = SkNamedGamut::kAdobeRGB;
-            break;
-        case HAL_DATASPACE_STANDARD_BT601_625:
-        case HAL_DATASPACE_STANDARD_BT601_625_UNADJUSTED:
-        case HAL_DATASPACE_STANDARD_BT601_525:
-        case HAL_DATASPACE_STANDARD_BT601_525_UNADJUSTED:
-        case HAL_DATASPACE_STANDARD_BT2020_CONSTANT_LUMINANCE:
-        case HAL_DATASPACE_STANDARD_BT470M:
-        case HAL_DATASPACE_STANDARD_FILM:
-        case HAL_DATASPACE_STANDARD_UNSPECIFIED:
         default:
             gamut = SkNamedGamut::kSRGB;
             break;
@@ -56,28 +42,10 @@ sk_sp<SkColorSpace> toSkColorSpace(ui::Dataspace dataspace) {
             return SkColorSpace::MakeRGB(SkNamedTransferFn::kLinear, gamut);
         case HAL_DATASPACE_TRANSFER_SRGB:
             return SkColorSpace::MakeRGB(SkNamedTransferFn::kSRGB, gamut);
-        case HAL_DATASPACE_TRANSFER_GAMMA2_2:
-            return SkColorSpace::MakeRGB({2.2f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, gamut);
-        case HAL_DATASPACE_TRANSFER_GAMMA2_6:
-            return SkColorSpace::MakeRGB({2.6f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, gamut);
-        case HAL_DATASPACE_TRANSFER_GAMMA2_8:
-            return SkColorSpace::MakeRGB({2.8f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, gamut);
         case HAL_DATASPACE_TRANSFER_ST2084:
-            return SkColorSpace::MakeRGB({-2.f, -1.55522297832f, 1.86045365631f, 32 / 2523.0f,
-                                          2413 / 128.0f, -2392 / 128.0f, 8192 / 1305.0f},
-                                         gamut);
-        case HAL_DATASPACE_TRANSFER_SMPTE_170M:
-            return SkColorSpace::MakeRGB(SkNamedTransferFn::kRec2020, gamut);
+            return SkColorSpace::MakeRGB(SkNamedTransferFn::kPQ, gamut);
         case HAL_DATASPACE_TRANSFER_HLG:
-            skcms_TransferFunction hlgFn;
-            if (skcms_TransferFunction_makeScaledHLGish(&hlgFn, 0.314509843, 2.f, 2.f,
-                                                        1.f / 0.17883277f, 0.28466892f,
-                                                        0.55991073f)) {
-                return SkColorSpace::MakeRGB(hlgFn, gamut);
-            } else {
-                return SkColorSpace::MakeRGB(SkNamedTransferFn::kSRGB, gamut);
-            }
-        case HAL_DATASPACE_TRANSFER_UNSPECIFIED:
+            return SkColorSpace::MakeRGB(SkNamedTransferFn::kHLG, gamut);
         default:
             return SkColorSpace::MakeRGB(SkNamedTransferFn::kSRGB, gamut);
     }

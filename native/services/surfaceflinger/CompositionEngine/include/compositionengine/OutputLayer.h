@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <vector>
 
 #include <ui/Transform.h>
 #include <utils/StrongPointer.h>
@@ -29,12 +28,10 @@
 #pragma clang diagnostic ignored "-Wconversion"
 #pragma clang diagnostic ignored "-Wextra"
 
-#include <ui/DisplayIdentification.h>
 #include "DisplayHardware/ComposerHal.h"
+#include "DisplayHardware/DisplayIdentification.h"
 
 #include "LayerFE.h"
-
-#include <aidl/android/hardware/graphics/composer3/Composition.h>
 
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic pop // ignored "-Wconversion -Wextra"
@@ -82,10 +79,6 @@ public:
     // TODO(lpique): Make this protected once it is only internally called.
     virtual CompositionState& editState() = 0;
 
-    // Clear the cache entries for a set of buffers that SurfaceFlinger no
-    // longer cares about.
-    virtual void uncacheBuffers(const std::vector<uint64_t>& bufferIdsToUncache) = 0;
-
     // Recalculates the state of the output layer from the output-independent
     // layer. If includeGeometry is false, the geometry state can be skipped.
     // internalDisplayRotationFlags must be set to the rotation flags for the
@@ -119,8 +112,7 @@ public:
     virtual bool isHardwareCursor() const = 0;
 
     // Applies a HWC device requested composition type change
-    virtual void applyDeviceCompositionTypeChange(
-            aidl::android::hardware::graphics::composer3::Composition) = 0;
+    virtual void applyDeviceCompositionTypeChange(Hwc2::IComposerClient::Composition) = 0;
 
     // Prepares to apply any HWC device layer requests
     virtual void prepareForDeviceLayerRequests() = 0;
@@ -131,9 +123,9 @@ public:
     // Returns true if the composition settings scale pixels
     virtual bool needsFiltering() const = 0;
 
-    // Returns LayerSettings to be used by RenderEngine if the layer has been overridden
+    // Returns a composition list to be used by RenderEngine if the layer has been overridden
     // during the composition process
-    virtual std::optional<LayerFE::LayerSettings> getOverrideCompositionSettings() const = 0;
+    virtual std::vector<LayerFE::LayerSettings> getOverrideCompositionList() const = 0;
 
     // Debugging
     virtual void dump(std::string& result) const = 0;

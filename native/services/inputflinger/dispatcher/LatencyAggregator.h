@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_LATENCYAGGREGATOR_H
+#define _UI_INPUT_INPUTDISPATCHER_LATENCYAGGREGATOR_H
 
 #include <kll.h>
 #include <statslog.h>
@@ -56,7 +57,7 @@ public:
      */
     void processTimeline(const InputEventTimeline& timeline) override;
 
-    std::string dump(const char* prefix) const;
+    std::string dump(const char* prefix);
 
     ~LatencyAggregator();
 
@@ -85,3 +86,5 @@ private:
 };
 
 } // namespace android::inputdispatcher
+
+#endif // _UI_INPUT_INPUTDISPATCHER_LATENCYAGGREGATOR_H

@@ -27,9 +27,6 @@
 #include <utils/Trace.h>
 
 #include "CommonPool.h"
-#include "SkCanvas.h"
-#include "SkRect.h"
-#include "SkTypeface.h"
 #include "src/utils/SkMultiPictureDocument.h"
 
 namespace android {

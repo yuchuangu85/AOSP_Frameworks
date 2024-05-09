@@ -17,8 +17,8 @@
 #ifndef ANDROID_GUI_SURFACE_H
 #define ANDROID_GUI_SURFACE_H
 
-#include <android/gui/FrameTimelineInfo.h>
 #include <gui/BufferQueueDefs.h>
+#include <gui/FrameTimelineInfo.h>
 #include <gui/HdrMetadata.h>
 #include <gui/IGraphicBufferProducer.h>
 #include <gui/IProducerListener.h>
@@ -35,13 +35,7 @@
 
 namespace android {
 
-namespace gui {
 class ISurfaceComposer;
-} // namespace gui
-
-class ISurfaceComposer;
-
-using gui::FrameTimelineInfo;
 
 /* This is the same as ProducerListener except that onBuffersDiscarded is
  * called with a vector of graphic buffers instead of buffer slots.
@@ -105,30 +99,12 @@ public:
      */
     sp<IGraphicBufferProducer> getIGraphicBufferProducer() const;
 
-    sp<IBinder> getSurfaceControlHandle() const;
+    sp<IBinder> getSurfaceControlHandle() const { return mSurfaceControlHandle; }
 
     /* convenience function to check that the given surface is non NULL as
      * well as its IGraphicBufferProducer */
     static bool isValid(const sp<Surface>& surface) {
         return surface != nullptr && surface->getIGraphicBufferProducer() != nullptr;
-    }
-
-    static sp<IGraphicBufferProducer> getIGraphicBufferProducer(ANativeWindow* window) {
-        int val;
-        if (window->query(window, NATIVE_WINDOW_CONCRETE_TYPE, &val) >= 0 &&
-            val == NATIVE_WINDOW_SURFACE) {
-            return ((Surface*) window)->mGraphicBufferProducer;
-        }
-        return nullptr;
-    }
-
-    static sp<IBinder> getSurfaceControlHandle(ANativeWindow* window) {
-        int val;
-        if (window->query(window, NATIVE_WINDOW_CONCRETE_TYPE, &val) >= 0 &&
-            val == NATIVE_WINDOW_SURFACE) {
-            return ((Surface*) window)->mSurfaceControlHandle;
-        }
-        return nullptr;
     }
 
     /* Attaches a sideband buffer stream to the Surface's IGraphicBufferProducer.
@@ -205,22 +181,21 @@ public:
             nsecs_t* outDisplayPresentTime, nsecs_t* outDequeueReadyTime,
             nsecs_t* outReleaseTime);
 
-    status_t getWideColorSupport(bool* supported) __attribute__((__deprecated__));
-    status_t getHdrSupport(bool* supported) __attribute__((__deprecated__));
+    status_t getWideColorSupport(bool* supported);
+    status_t getHdrSupport(bool* supported);
 
     status_t getUniqueId(uint64_t* outId) const;
     status_t getConsumerUsage(uint64_t* outUsage) const;
 
     virtual status_t setFrameRate(float frameRate, int8_t compatibility,
                                   int8_t changeFrameRateStrategy);
-    virtual status_t setFrameTimelineInfo(uint64_t frameNumber, const FrameTimelineInfo& info);
+    virtual status_t setFrameTimelineInfo(const FrameTimelineInfo& info);
 
 protected:
     virtual ~Surface();
 
     // Virtual for testing.
     virtual sp<ISurfaceComposer> composerService() const;
-    virtual sp<gui::ISurfaceComposer> composerServiceAIDL() const;
     virtual nsecs_t now() const;
 
 private:
@@ -303,10 +278,6 @@ private:
     int dispatchGetLastQueuedBuffer2(va_list args);
     int dispatchSetFrameTimelineInfo(va_list args);
 
-    std::mutex mNameMutex;
-    std::string mName;
-    const char* getDebugName();
-
 protected:
     virtual int dequeueBuffer(ANativeWindowBuffer** buffer, int* fenceFd);
     virtual int cancelBuffer(ANativeWindowBuffer* buffer, int fenceFd);
@@ -362,7 +333,6 @@ public:
     virtual int connect(
             int api, bool reportBufferRemoval,
             const sp<SurfaceListener>& sListener);
-    virtual void destroy();
 
     // When client connects to Surface with reportBufferRemoval set to true, any buffers removed
     // from this Surface will be collected and returned here. Once this method returns, these
@@ -427,13 +397,6 @@ protected:
     void getQueueBufferInputLocked(android_native_buffer_t* buffer, int fenceFd, nsecs_t timestamp,
             IGraphicBufferProducer::QueueBufferInput* out);
 
-    // For easing in adoption of gralloc4 metadata by vendor components, as well as for supporting
-    // the public ANativeWindow api, allow setting relevant metadata when queueing a buffer through
-    // a native window
-    void applyGrallocMetadataLocked(
-            android_native_buffer_t* buffer,
-            const IGraphicBufferProducer::QueueBufferInput& queueBufferInput);
-
     void onBufferQueuedLocked(int slot, sp<Fence> fence,
             const IGraphicBufferProducer::QueueBufferOutput& output);
 
@@ -465,11 +428,11 @@ protected:
     uint32_t mReqHeight;
 
     // mReqFormat is the buffer pixel format that will be requested at the next
-    // dequeue operation. It is initialized to PIXEL_FORMAT_RGBA_8888.
+    // deuque operation. It is initialized to PIXEL_FORMAT_RGBA_8888.
     PixelFormat mReqFormat;
 
     // mReqUsage is the set of buffer usage flags that will be requested
-    // at the next dequeue operation. It is initialized to 0.
+    // at the next deuque operation. It is initialized to 0.
     uint64_t mReqUsage;
 
     // mTimestamp is the timestamp that will be used for the next buffer queue
@@ -485,11 +448,6 @@ protected:
     // mHdrMetadata is the HDR metadata that will be used for the next buffer
     // queue operation.  There is no HDR metadata by default.
     HdrMetadata mHdrMetadata;
-
-    // mHdrMetadataIsSet is a bitfield to track which HDR metadata has been set.
-    // Prevent Surface from resetting HDR metadata that was set on a bufer when
-    // HDR metadata is not set on this Surface.
-    uint32_t mHdrMetadataIsSet{0};
 
     // mCrop is the crop rectangle that will be used for the next buffer
     // that gets queued. It is set by calling setCrop.

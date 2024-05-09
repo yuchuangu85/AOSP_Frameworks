@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _LIBINPUT_KEYBOARD_H
+#define _LIBINPUT_KEYBOARD_H
 
 #include <input/Input.h>
 #include <input/InputDevice.h>
@@ -60,7 +61,9 @@ private:
     bool probeKeyMap(const InputDeviceIdentifier& deviceIdentifier, const std::string& name);
     status_t loadKeyLayout(const InputDeviceIdentifier& deviceIdentifier, const std::string& name);
     status_t loadKeyCharacterMap(const InputDeviceIdentifier& deviceIdentifier,
-                                 const std::string& name);
+            const std::string& name);
+    std::string getPath(const InputDeviceIdentifier& deviceIdentifier,
+            const std::string& name, InputDeviceConfigurationFileType type);
 };
 
 /**
@@ -87,3 +90,5 @@ extern int32_t normalizeMetaState(int32_t oldMetaState);
 extern bool isMetaKey(int32_t keyCode);
 
 } // namespace android
+
+#endif // _LIBINPUT_KEYBOARD_H

@@ -15,9 +15,5 @@
  */
 #pragma once
 
-#include <fuzzer/FuzzedDataProvider.h>
-
-#include <functional>
-
 template <typename P>
-using ParcelRead = std::function<void(const P& p, FuzzedDataProvider& provider)>;
+using ParcelRead = std::function<void(const P& p, uint8_t data)>;

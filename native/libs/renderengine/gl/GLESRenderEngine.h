@@ -31,7 +31,6 @@
 #include <renderengine/RenderEngine.h>
 #include <renderengine/private/Description.h>
 #include <sys/types.h>
-#include <ui/FenceResult.h>
 #include "GLShadowTexture.h"
 #include "ImageManager.h"
 
@@ -61,13 +60,18 @@ public:
     std::future<void> primeCache() override;
     void genTextures(size_t count, uint32_t* names) override;
     void deleteTextures(size_t count, uint32_t const* names) override;
-    bool isProtected() const { return mInProtectedContext; }
+    bool isProtected() const override { return mInProtectedContext; }
     bool supportsProtectedContent() const override;
     void useProtectedContext(bool useProtectedContext) override;
+    status_t drawLayers(const DisplaySettings& display,
+                        const std::vector<const LayerSettings*>& layers,
+                        const std::shared_ptr<ExternalTexture>& buffer,
+                        const bool useFramebufferCache, base::unique_fd&& bufferFence,
+                        base::unique_fd* drawFence) override;
     void cleanupPostRender() override;
     int getContextPriority() override;
     bool supportsBackgroundBlur() override { return mBlurFilter != nullptr; }
-    void onActiveDisplaySizeChanged(ui::Size size) override {}
+    void onPrimaryDisplaySizeChanged(ui::Size size) override {}
 
     EGLDisplay getEGLDisplay() const { return mEGLDisplay; }
     // Creates an output image for rendering to
@@ -101,13 +105,8 @@ protected:
     size_t getMaxViewportDims() const override;
     void mapExternalTextureBuffer(const sp<GraphicBuffer>& buffer, bool isRenderable)
             EXCLUDES(mRenderingMutex);
-    void unmapExternalTextureBuffer(sp<GraphicBuffer>&& buffer) EXCLUDES(mRenderingMutex);
+    void unmapExternalTextureBuffer(const sp<GraphicBuffer>& buffer) EXCLUDES(mRenderingMutex);
     bool canSkipPostRenderCleanup() const override;
-    void drawLayersInternal(const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
-                            const DisplaySettings& display,
-                            const std::vector<LayerSettings>& layers,
-                            const std::shared_ptr<ExternalTexture>& buffer,
-                            const bool useFramebufferCache, base::unique_fd&& bufferFence) override;
 
 private:
     friend class BindNativeBufferAsFramebuffer;

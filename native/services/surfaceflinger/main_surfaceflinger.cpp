@@ -63,17 +63,18 @@ static status_t startGraphicsAllocatorService() {
     return OK;
 }
 
-static void startDisplayService() {
+static status_t startDisplayService() {
     using android::frameworks::displayservice::V1_0::implementation::DisplayService;
     using android::frameworks::displayservice::V1_0::IDisplayService;
 
-    sp<IDisplayService> displayservice = sp<DisplayService>::make();
+    sp<IDisplayService> displayservice = new DisplayService();
     status_t err = displayservice->registerAsService();
 
-    // b/141930622
     if (err != OK) {
-        ALOGE("Did not register (deprecated) IDisplayService service.");
+        ALOGE("Could not register IDisplayService service.");
     }
+
+    return err;
 }
 
 int main(int, char**) {
@@ -91,7 +92,7 @@ int main(int, char**) {
     // Set uclamp.min setting on all threads, maybe an overkill but we want
     // to cover important threads like RenderEngine.
     if (SurfaceFlinger::setSchedAttr(true) != NO_ERROR) {
-        ALOGW("Failed to set uclamp.min during boot: %s", strerror(errno));
+        ALOGW("Couldn't set uclamp.min: %s\n", strerror(errno));
     }
 
     // The binder threadpool we start will inherit sched policy and priority
@@ -139,6 +140,11 @@ int main(int, char**) {
 
     set_sched_policy(0, SP_FOREGROUND);
 
+    // Put most SurfaceFlinger threads in the system-background cpuset
+    // Keeps us from unnecessarily using big cores
+    // Do this after the binder thread pool init
+    if (cpusets_enabled()) set_cpuset_policy(0, SP_SYSTEM);
+
     // initialize before clients can connect
     flinger->init();
 
@@ -147,15 +153,10 @@ int main(int, char**) {
     sm->addService(String16(SurfaceFlinger::getServiceName()), flinger, false,
                    IServiceManager::DUMP_FLAG_PRIORITY_CRITICAL | IServiceManager::DUMP_FLAG_PROTO);
 
-    // publish gui::ISurfaceComposer, the new AIDL interface
-    sp<SurfaceComposerAIDL> composerAIDL = sp<SurfaceComposerAIDL>::make(flinger);
-    sm->addService(String16("SurfaceFlingerAIDL"), composerAIDL, false,
-                   IServiceManager::DUMP_FLAG_PRIORITY_CRITICAL | IServiceManager::DUMP_FLAG_PROTO);
-
     startDisplayService(); // dependency on SF getting registered above
 
     if (SurfaceFlinger::setSchedFifo(true) != NO_ERROR) {
-        ALOGW("Failed to set SCHED_FIFO during boot: %s", strerror(errno));
+        ALOGW("Couldn't set to SCHED_FIFO: %s", strerror(errno));
     }
 
     // run surface flinger in this thread

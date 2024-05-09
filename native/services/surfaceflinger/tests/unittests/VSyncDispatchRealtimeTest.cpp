@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-#include <thread>
+#include "Scheduler/TimeKeeper.h"
+#include "Scheduler/Timer.h"
+#include "Scheduler/VSyncDispatchTimerQueue.h"
+#include "Scheduler/VSyncTracker.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-
-#include <scheduler/Timer.h>
-
-#include "Scheduler/VSyncDispatchTimerQueue.h"
-#include "Scheduler/VSyncTracker.h"
+#include <thread>
 
 using namespace testing;
 using namespace std::literals;
@@ -54,7 +53,6 @@ public:
     void resetModel() final {}
     bool needsMoreSamples() const final { return false; }
     bool isVSyncInPhase(nsecs_t, Fps) const final { return false; }
-    void setRenderRate(Fps) final {}
     void dump(std::string&) const final {}
 
 private:
@@ -92,7 +90,6 @@ public:
     void resetModel() final {}
     bool needsMoreSamples() const final { return false; }
     bool isVSyncInPhase(nsecs_t, Fps) const final { return false; }
-    void setRenderRate(Fps) final {}
     void dump(std::string&) const final {}
 
 private:
@@ -109,8 +106,7 @@ struct VSyncDispatchRealtimeTest : testing::Test {
 
 class RepeatingCallbackReceiver {
 public:
-    RepeatingCallbackReceiver(std::shared_ptr<VSyncDispatch> dispatch, nsecs_t workload,
-                              nsecs_t readyDuration)
+    RepeatingCallbackReceiver(VSyncDispatch& dispatch, nsecs_t workload, nsecs_t readyDuration)
           : mWorkload(workload),
             mReadyDuration(readyDuration),
             mCallback(
@@ -167,10 +163,9 @@ private:
 };
 
 TEST_F(VSyncDispatchRealtimeTest, triple_alarm) {
-    auto tracker = std::make_shared<FixedRateIdealStubTracker>();
-    auto dispatch =
-            std::make_shared<VSyncDispatchTimerQueue>(std::make_unique<Timer>(), tracker,
-                                                      mDispatchGroupThreshold, mVsyncMoveThreshold);
+    FixedRateIdealStubTracker tracker;
+    VSyncDispatchTimerQueue dispatch(std::make_unique<Timer>(), tracker, mDispatchGroupThreshold,
+                                     mVsyncMoveThreshold);
 
     static size_t constexpr num_clients = 3;
     std::array<RepeatingCallbackReceiver, num_clients>
@@ -197,15 +192,14 @@ TEST_F(VSyncDispatchRealtimeTest, triple_alarm) {
 // starts at 333hz, slides down to 43hz
 TEST_F(VSyncDispatchRealtimeTest, vascillating_vrr) {
     auto next_vsync_interval = toNs(3ms);
-    auto tracker = std::make_shared<VRRStubTracker>(next_vsync_interval);
-    auto dispatch =
-            std::make_shared<VSyncDispatchTimerQueue>(std::make_unique<Timer>(), tracker,
-                                                      mDispatchGroupThreshold, mVsyncMoveThreshold);
+    VRRStubTracker tracker(next_vsync_interval);
+    VSyncDispatchTimerQueue dispatch(std::make_unique<Timer>(), tracker, mDispatchGroupThreshold,
+                                     mVsyncMoveThreshold);
 
     RepeatingCallbackReceiver cb_receiver(dispatch, toNs(1ms), toNs(5ms));
 
     auto const on_each_frame = [&](nsecs_t last_known) {
-        tracker->set_interval(next_vsync_interval += toNs(1ms), last_known);
+        tracker.set_interval(next_vsync_interval += toNs(1ms), last_known);
     };
 
     std::thread eventThread([&] { cb_receiver.repeatedly_schedule(mIterations, on_each_frame); });
@@ -216,10 +210,9 @@ TEST_F(VSyncDispatchRealtimeTest, vascillating_vrr) {
 
 // starts at 333hz, jumps to 200hz at frame 10
 TEST_F(VSyncDispatchRealtimeTest, fixed_jump) {
-    auto tracker = std::make_shared<VRRStubTracker>(toNs(3ms));
-    auto dispatch =
-            std::make_shared<VSyncDispatchTimerQueue>(std::make_unique<Timer>(), tracker,
-                                                      mDispatchGroupThreshold, mVsyncMoveThreshold);
+    VRRStubTracker tracker(toNs(3ms));
+    VSyncDispatchTimerQueue dispatch(std::make_unique<Timer>(), tracker, mDispatchGroupThreshold,
+                                     mVsyncMoveThreshold);
 
     RepeatingCallbackReceiver cb_receiver(dispatch, toNs(1ms), toNs(5ms));
 
@@ -227,7 +220,7 @@ TEST_F(VSyncDispatchRealtimeTest, fixed_jump) {
     auto constexpr jump_frame_at = 10u;
     auto const on_each_frame = [&](nsecs_t last_known) {
         if (jump_frame_counter++ == jump_frame_at) {
-            tracker->set_interval(toNs(5ms), last_known);
+            tracker.set_interval(toNs(5ms), last_known);
         }
     };
     std::thread eventThread([&] { cb_receiver.repeatedly_schedule(mIterations, on_each_frame); });

@@ -49,7 +49,7 @@ TouchVideoDevice::TouchVideoDevice(int fd, std::string&& name, std::string&& dev
 };
 
 std::unique_ptr<TouchVideoDevice> TouchVideoDevice::create(std::string devicePath) {
-    unique_fd fd(open(devicePath.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC));
+    unique_fd fd(open(devicePath.c_str(), O_RDWR | O_NONBLOCK));
     if (fd.get() == INVALID_FD) {
         ALOGE("Could not open video device %s: %s", devicePath.c_str(), strerror(errno));
         return nullptr;
@@ -198,9 +198,8 @@ std::optional<TouchVideoFrame> TouchVideoDevice::readFrame() {
     if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) != V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
         // We use CLOCK_MONOTONIC for input events, so if the clocks don't match,
         // we can't compare timestamps. Just log a warning, since this is a driver issue
-        ALOGW("The timestamp %lld.%lld was not acquired using CLOCK_MONOTONIC",
-              static_cast<long long>(buf.timestamp.tv_sec),
-              static_cast<long long>(buf.timestamp.tv_usec));
+        ALOGW("The timestamp %ld.%ld was not acquired using CLOCK_MONOTONIC", buf.timestamp.tv_sec,
+              buf.timestamp.tv_usec);
     }
     std::vector<int16_t> data(mHeight * mWidth);
     const int16_t* readFrom = mReadLocations[buf.index];

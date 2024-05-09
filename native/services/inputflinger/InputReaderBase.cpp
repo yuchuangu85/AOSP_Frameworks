@@ -21,10 +21,10 @@
 #include "InputReaderBase.h"
 #include "input/DisplayViewport.h"
 #include "input/Input.h"
+#include "input/NamedEnum.h"
 
-#include <android-base/stringprintf.h>
 #include <android/log.h>
-#include <ftl/enum.h>
+#include <android-base/stringprintf.h>
 
 #define INDENT "  "
 #define INDENT2 "    "
@@ -37,6 +37,44 @@ using android::base::StringPrintf;
 namespace android {
 
 // --- InputReaderConfiguration ---
+
+std::string InputReaderConfiguration::changesToString(uint32_t changes) {
+    if (changes == 0) {
+        return "<none>";
+    }
+    std::string result;
+    if (changes & CHANGE_POINTER_SPEED) {
+        result += "POINTER_SPEED | ";
+    }
+    if (changes & CHANGE_POINTER_GESTURE_ENABLEMENT) {
+        result += "POINTER_GESTURE_ENABLEMENT | ";
+    }
+    if (changes & CHANGE_DISPLAY_INFO) {
+        result += "DISPLAY_INFO | ";
+    }
+    if (changes & CHANGE_SHOW_TOUCHES) {
+        result += "SHOW_TOUCHES | ";
+    }
+    if (changes & CHANGE_KEYBOARD_LAYOUTS) {
+        result += "KEYBOARD_LAYOUTS | ";
+    }
+    if (changes & CHANGE_DEVICE_ALIAS) {
+        result += "DEVICE_ALIAS | ";
+    }
+    if (changes & CHANGE_TOUCH_AFFINE_TRANSFORMATION) {
+        result += "TOUCH_AFFINE_TRANSFORMATION | ";
+    }
+    if (changes & CHANGE_EXTERNAL_STYLUS_PRESENCE) {
+        result += "EXTERNAL_STYLUS_PRESENCE | ";
+    }
+    if (changes & CHANGE_ENABLED_STATE) {
+        result += "ENABLED_STATE | ";
+    }
+    if (changes & CHANGE_MUST_REOPEN) {
+        result += "MUST_REOPEN | ";
+    }
+    return result;
+}
 
 std::optional<DisplayViewport> InputReaderConfiguration::getDisplayViewportByUniqueId(
         const std::string& uniqueDisplayId) const {
@@ -76,7 +114,7 @@ std::optional<DisplayViewport> InputReaderConfiguration::getDisplayViewportByTyp
     }
     if (count > 1) {
         ALOGW("Found %zu viewports with type %s, but expected 1 at most", count,
-              ftl::enum_string(type).c_str());
+              NamedEnum::string(type).c_str());
     }
     return result;
 }

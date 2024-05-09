@@ -18,41 +18,35 @@
 #undef LOG_TAG
 #define LOG_TAG "VSyncReactor"
 //#define LOG_NDEBUG 0
-
-#include <assert.h>
+#include "VSyncReactor.h"
 #include <cutils/properties.h>
-#include <ftl/concat.h>
-#include <gui/TraceUtils.h>
 #include <log/log.h>
 #include <utils/Trace.h>
-
 #include "../TracedOrdinal.h"
+#include "TimeKeeper.h"
 #include "VSyncDispatch.h"
-#include "VSyncReactor.h"
 #include "VSyncTracker.h"
 
 namespace android::scheduler {
-
 using base::StringAppendF;
 
 VsyncController::~VsyncController() = default;
 
+Clock::~Clock() = default;
 nsecs_t SystemClock::now() const {
     return systemTime(SYSTEM_TIME_MONOTONIC);
 }
 
-VSyncReactor::VSyncReactor(PhysicalDisplayId id, std::unique_ptr<Clock> clock,
-                           VSyncTracker& tracker, size_t pendingFenceLimit,
-                           bool supportKernelIdleTimer)
-      : mId(id),
-        mClock(std::move(clock)),
+VSyncReactor::VSyncReactor(std::unique_ptr<Clock> clock, VSyncTracker& tracker,
+                           size_t pendingFenceLimit, bool supportKernelIdleTimer)
+      : mClock(std::move(clock)),
         mTracker(tracker),
         mPendingLimit(pendingFenceLimit),
         mSupportKernelIdleTimer(supportKernelIdleTimer) {}
 
 VSyncReactor::~VSyncReactor() = default;
 
-bool VSyncReactor::addPresentFence(std::shared_ptr<FenceTime> fence) {
+bool VSyncReactor::addPresentFence(const std::shared_ptr<android::FenceTime>& fence) {
     if (!fence) {
         return false;
     }
@@ -85,7 +79,7 @@ bool VSyncReactor::addPresentFence(std::shared_ptr<FenceTime> fence) {
         if (mPendingLimit == mUnfiredFences.size()) {
             mUnfiredFences.erase(mUnfiredFences.begin());
         }
-        mUnfiredFences.push_back(std::move(fence));
+        mUnfiredFences.push_back(fence);
     } else {
         timestampAccepted &= mTracker.addVsyncTimestamp(signalTime);
     }
@@ -117,7 +111,7 @@ void VSyncReactor::updateIgnorePresentFencesInternal() {
 }
 
 void VSyncReactor::startPeriodTransitionInternal(nsecs_t newPeriod) {
-    ATRACE_FORMAT("%s %" PRIu64, __func__, mId.value);
+    ATRACE_CALL();
     mPeriodConfirmationInProgress = true;
     mPeriodTransitioningTo = newPeriod;
     mMoreSamplesNeeded = true;
@@ -125,18 +119,18 @@ void VSyncReactor::startPeriodTransitionInternal(nsecs_t newPeriod) {
 }
 
 void VSyncReactor::endPeriodTransition() {
-    ATRACE_FORMAT("%s %" PRIu64, __func__, mId.value);
+    ATRACE_CALL();
     mPeriodTransitioningTo.reset();
     mPeriodConfirmationInProgress = false;
     mLastHwVsync.reset();
 }
 
-void VSyncReactor::startPeriodTransition(nsecs_t period, bool force) {
-    ATRACE_INT64(ftl::Concat("VSR-", __func__, " ", mId.value).c_str(), period);
+void VSyncReactor::startPeriodTransition(nsecs_t period) {
+    ATRACE_INT64("VSR-setPeriod", period);
     std::lock_guard lock(mMutex);
     mLastHwVsync.reset();
 
-    if (!mSupportKernelIdleTimer && period == mTracker.currentPeriod() && !force) {
+    if (!mSupportKernelIdleTimer && period == mTracker.currentPeriod()) {
         endPeriodTransition();
         setIgnorePresentFencesInternal(false);
         mMoreSamplesNeeded = false;
@@ -148,11 +142,6 @@ void VSyncReactor::startPeriodTransition(nsecs_t period, bool force) {
 bool VSyncReactor::periodConfirmed(nsecs_t vsync_timestamp, std::optional<nsecs_t> HwcVsyncPeriod) {
     if (!mPeriodConfirmationInProgress) {
         return false;
-    }
-
-    if (mDisplayPowerMode == hal::PowerMode::DOZE ||
-        mDisplayPowerMode == hal::PowerMode::DOZE_SUSPEND) {
-        return true;
     }
 
     if (!mLastHwVsync && !HwcVsyncPeriod) {
@@ -184,7 +173,7 @@ bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t>
 
     std::lock_guard lock(mMutex);
     if (periodConfirmed(timestamp, hwcVsyncPeriod)) {
-        ATRACE_FORMAT("VSR %" PRIu64 ": period confirmed", mId.value);
+        ATRACE_NAME("VSR: period confirmed");
         if (mPeriodTransitioningTo) {
             mTracker.setPeriod(*mPeriodTransitioningTo);
             *periodFlushed = true;
@@ -198,12 +187,12 @@ bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t>
         endPeriodTransition();
         mMoreSamplesNeeded = mTracker.needsMoreSamples();
     } else if (mPeriodConfirmationInProgress) {
-        ATRACE_FORMAT("VSR %" PRIu64 ": still confirming period", mId.value);
+        ATRACE_NAME("VSR: still confirming period");
         mLastHwVsync = timestamp;
         mMoreSamplesNeeded = true;
         *periodFlushed = false;
     } else {
-        ATRACE_FORMAT("VSR %" PRIu64 ": adding sample", mId.value);
+        ATRACE_NAME("VSR: adding sample");
         *periodFlushed = false;
         mTracker.addVsyncTimestamp(timestamp);
         mMoreSamplesNeeded = mTracker.needsMoreSamples();
@@ -213,11 +202,6 @@ bool VSyncReactor::addHwVsyncTimestamp(nsecs_t timestamp, std::optional<nsecs_t>
         setIgnorePresentFencesInternal(false);
     }
     return mMoreSamplesNeeded;
-}
-
-void VSyncReactor::setDisplayPowerMode(hal::PowerMode powerMode) {
-    std::scoped_lock lock(mMutex);
-    mDisplayPowerMode = powerMode;
 }
 
 void VSyncReactor::dump(std::string& result) const {

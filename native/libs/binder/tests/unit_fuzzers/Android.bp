@@ -30,28 +30,16 @@ cc_defaults {
         "-Wall",
         "-Werror",
     ],
+    shared_libs: [
+        "libbinder",
+        "libutils",
+        "libbase",
+    ],
     target: {
-        android: {
-            shared_libs: [
-                "libcutils",
-                "libutils",
-                "libbase",
-                "libbinder",
-            ],
-        },
-        host: {
-            static_libs: [
-                "libcutils",
-                "liblog",
-                "libutils",
-                "libbase",
-                "libbinder",
-            ],
-        },
         darwin: {
             enabled: false,
-        },
-    },
+        }
+    }
 }
 
 cc_fuzz {
@@ -63,6 +51,7 @@ cc_fuzz {
 cc_fuzz {
     name: "binder_bpBinderFuzz",
     defaults: ["binder_fuzz_defaults"],
+    host_supported: false,
     srcs: ["BpBinderFuzz.cpp"],
 }
 
@@ -103,43 +92,4 @@ cc_fuzz {
     name: "binder_memoryDealerFuzz",
     defaults: ["binder_fuzz_defaults"],
     srcs: ["MemoryDealerFuzz.cpp"],
-}
-
-cc_fuzz {
-    name: "binder_recordedTransactionFileFuzz",
-    defaults: ["binder_fuzz_defaults"],
-    srcs: ["RecordedTransactionFileFuzz.cpp"],
-    corpus: [
-        "recorded_transaction_corpus/*",
-    ],
-}
-
-cc_fuzz {
-    name: "binder_recordedTransactionFuzz",
-    defaults: ["binder_fuzz_defaults"],
-    srcs: ["RecordedTransactionFuzz.cpp"],
-    target: {
-        android: {
-            shared_libs: [
-                "libcutils",
-                "libutils",
-                "libbase",
-                "libbinder",
-            ],
-            static_libs: ["libbinder_random_parcel"],
-        },
-        host: {
-            static_libs: [
-                "libcutils",
-                "liblog",
-                "libutils",
-                "libbase",
-                "libbinder",
-                "libbinder_random_parcel",
-            ],
-        },
-        darwin: {
-            enabled: false,
-        },
-    },
 }

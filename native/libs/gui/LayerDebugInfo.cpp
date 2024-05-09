@@ -27,7 +27,7 @@ using android::base::StringAppendF;
 
 #define RETURN_ON_ERROR(X) do {status_t res = (X); if (res != NO_ERROR) return res;} while(false)
 
-namespace android::gui {
+namespace android {
 
 status_t LayerDebugInfo::writeToParcel(Parcel* parcel) const {
     RETURN_ON_ERROR(parcel->writeCString(mName.c_str()));
@@ -58,6 +58,7 @@ status_t LayerDebugInfo::writeToParcel(Parcel* parcel) const {
     RETURN_ON_ERROR(parcel->writeInt32(mActiveBufferStride));
     RETURN_ON_ERROR(parcel->writeInt32(mActiveBufferFormat));
     RETURN_ON_ERROR(parcel->writeInt32(mNumQueuedFrames));
+    RETURN_ON_ERROR(parcel->writeBool(mRefreshPending));
     RETURN_ON_ERROR(parcel->writeBool(mIsOpaque));
     RETURN_ON_ERROR(parcel->writeBool(mContentDirty));
     RETURN_ON_ERROR(parcel->write(mStretchEffect));
@@ -102,6 +103,7 @@ status_t LayerDebugInfo::readFromParcel(const Parcel* parcel) {
     RETURN_ON_ERROR(parcel->readInt32(&mActiveBufferStride));
     RETURN_ON_ERROR(parcel->readInt32(&mActiveBufferFormat));
     RETURN_ON_ERROR(parcel->readInt32(&mNumQueuedFrames));
+    RETURN_ON_ERROR(parcel->readBool(&mRefreshPending));
     RETURN_ON_ERROR(parcel->readBool(&mIsOpaque));
     RETURN_ON_ERROR(parcel->readBool(&mContentDirty));
     RETURN_ON_ERROR(parcel->read(mStretchEffect));
@@ -144,9 +146,10 @@ std::string to_string(const LayerDebugInfo& info) {
     StringAppendF(&result, "      activeBuffer=[%4ux%4u:%4u,%s],", info.mActiveBufferWidth,
                   info.mActiveBufferHeight, info.mActiveBufferStride,
                   decodePixelFormat(info.mActiveBufferFormat).c_str());
-    StringAppendF(&result, " queued-frames=%d", info.mNumQueuedFrames);
+    StringAppendF(&result, " queued-frames=%d, mRefreshPending=%d", info.mNumQueuedFrames,
+                  info.mRefreshPending);
     result.append("\n");
     return result;
 }
 
-} // namespace android::gui
+} // android

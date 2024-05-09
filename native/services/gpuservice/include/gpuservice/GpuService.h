@@ -29,10 +29,6 @@
 
 namespace android {
 
-namespace gpuwork {
-class GpuWork;
-}
-
 class GpuMem;
 class GpuStats;
 class GpuMemTracer;
@@ -58,12 +54,8 @@ private:
                      int64_t driverLoadingTime) override;
     void setTargetStats(const std::string& appPackageName, const uint64_t driverVersionCode,
                         const GpuStatsInfo::Stats stats, const uint64_t value) override;
-    void setTargetStatsArray(const std::string& appPackageName,
-                        const uint64_t driverVersionCode, const GpuStatsInfo::Stats stats,
-                        const uint64_t* values, const uint32_t valueCount) override;
     void setUpdatableDriverPath(const std::string& driverPath) override;
     std::string getUpdatableDriverPath() override;
-    void toggleAngleAsSystemDriver(bool enabled) override;
 
     /*
      * IBinder interface
@@ -87,13 +79,11 @@ private:
      * Attributes
      */
     std::shared_ptr<GpuMem> mGpuMem;
-    std::shared_ptr<gpuwork::GpuWork> mGpuWork;
     std::unique_ptr<GpuStats> mGpuStats;
     std::unique_ptr<GpuMemTracer> mGpuMemTracer;
     std::mutex mLock;
     std::string mDeveloperDriverPath;
     std::unique_ptr<std::thread> mGpuMemAsyncInitThread;
-    std::unique_ptr<std::thread> mGpuWorkAsyncInitThread;
 };
 
 } // namespace android

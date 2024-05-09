@@ -63,8 +63,7 @@ public:
         sp<Fence> mFence;
     };
 
-    TexturePool(renderengine::RenderEngine& renderEngine)
-          : mRenderEngine(renderEngine), mEnabled(false) {}
+    TexturePool(renderengine::RenderEngine& renderEngine) : mRenderEngine(renderEngine) {}
 
     virtual ~TexturePool() = default;
 
@@ -78,12 +77,6 @@ public:
     // When the AutoTexture object is destroyed, the scratch texture is automatically returned
     // to the pool.
     std::shared_ptr<AutoTexture> borrowTexture();
-
-    // Enables or disables the pool. When the pool is disabled, no buffers will
-    // be held by the pool. This is useful when the active display changes.
-    void setEnabled(bool enable);
-
-    void dump(std::string& out) const;
 
 protected:
     // Proteted visibility so that they can be used for testing
@@ -102,10 +95,8 @@ private:
     // Returns a previously borrowed texture to the pool.
     void returnTexture(std::shared_ptr<renderengine::ExternalTexture>&& texture,
                        const sp<Fence>& fence);
-    void allocatePool();
     renderengine::RenderEngine& mRenderEngine;
     ui::Size mSize;
-    bool mEnabled;
 };
 
 } // namespace android::compositionengine::impl::planner

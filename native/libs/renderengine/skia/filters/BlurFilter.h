@@ -27,19 +27,29 @@ namespace android {
 namespace renderengine {
 namespace skia {
 
+/**
+ * This is an implementation of a Kawase blur, as described in here:
+ * https://community.arm.com/cfs-file/__key/communityserver-blogs-components-weblogfiles/
+ * 00-00-00-20-66/siggraph2015_2D00_mmg_2D00_marius_2D00_notes.pdf
+ */
 class BlurFilter {
 public:
     // Downsample FBO to improve performance
     static constexpr float kInputScale = 0.25f;
     // Downsample scale factor used to improve performance
     static constexpr float kInverseInputScale = 1.0f / kInputScale;
+    // Maximum number of render passes
+    static constexpr uint32_t kMaxPasses = 4;
+    // To avoid downscaling artifacts, we interpolate the blurred fbo with the full composited
+    // image, up to this radius.
+    static constexpr float kMaxCrossFadeRadius = 10.0f;
 
-    explicit BlurFilter(float maxCrossFadeRadius = 10.0f);
-    virtual ~BlurFilter(){}
+    explicit BlurFilter();
+    virtual ~BlurFilter(){};
 
     // Execute blur, saving it to a texture
-    virtual sk_sp<SkImage> generate(GrRecordingContext* context, const uint32_t radius,
-                            const sk_sp<SkImage> blurInput, const SkRect& blurRect) const = 0;
+    sk_sp<SkImage> generate(GrRecordingContext* context, const uint32_t radius,
+                            const sk_sp<SkImage> blurInput, const SkRect& blurRect) const;
 
     /**
      * Draw the blurred content (from the generate method) into the canvas.
@@ -51,20 +61,13 @@ public:
      * @param blurredImage down-sampled blurred content that was produced by the generate() method
      * @param input original unblurred input that is used to crossfade with the blurredImage
      */
-    void drawBlurRegion(SkCanvas* canvas, const SkRRect& effectRegion,
-                                const uint32_t blurRadius, const float blurAlpha,
-                                const SkRect& blurRect, sk_sp<SkImage> blurredImage,
-                                sk_sp<SkImage> input);
-
-    float getMaxCrossFadeRadius() const;
+    void drawBlurRegion(SkCanvas* canvas, const SkRRect& effectRegion, const uint32_t blurRadius,
+                        const float blurAlpha, const SkRect& blurRect, sk_sp<SkImage> blurredImage,
+                        sk_sp<SkImage> input);
 
 private:
-    // To avoid downscaling artifacts, we interpolate the blurred fbo with the full composited
-    // image, up to this radius.
-    const float mMaxCrossFadeRadius;
-
-    // Optional blend used for crossfade only if mMaxCrossFadeRadius > 0
-    const sk_sp<SkRuntimeEffect> mMixEffect;
+    sk_sp<SkRuntimeEffect> mBlurEffect;
+    sk_sp<SkRuntimeEffect> mMixEffect;
 };
 
 } // namespace skia

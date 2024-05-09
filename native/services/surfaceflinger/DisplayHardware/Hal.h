@@ -20,10 +20,6 @@
 #include <android/hardware/graphics/composer/2.4/IComposer.h>
 #include <android/hardware/graphics/composer/2.4/IComposerClient.h>
 
-#include <aidl/android/hardware/graphics/common/Hdr.h>
-#include <aidl/android/hardware/graphics/composer3/Composition.h>
-#include <aidl/android/hardware/graphics/composer3/DisplayCapability.h>
-
 #define ERROR_HAS_CHANGES 5
 
 namespace android {
@@ -40,6 +36,7 @@ using types::V1_0::Transform;
 using types::V1_1::RenderIntent;
 using types::V1_2::ColorMode;
 using types::V1_2::Dataspace;
+using types::V1_2::Hdr;
 using types::V1_2::PixelFormat;
 
 using V2_1::Error;
@@ -51,10 +48,13 @@ using V2_4::VsyncPeriodNanos;
 
 using Attribute = IComposerClient::Attribute;
 using BlendMode = IComposerClient::BlendMode;
+using Color = IComposerClient::Color;
+using Composition = IComposerClient::Composition;
 using Connection = IComposerCallback::Connection;
 using ContentType = IComposerClient::ContentType;
 using Capability = IComposer::Capability;
 using ClientTargetProperty = IComposerClient::ClientTargetProperty;
+using DisplayCapability = IComposerClient::DisplayCapability;
 using DisplayRequest = IComposerClient::DisplayRequest;
 using DisplayType = IComposerClient::DisplayType;
 using HWConfigId = V2_1::Config;
@@ -69,7 +69,6 @@ using PerFrameMetadataBlob = IComposerClient::PerFrameMetadataBlob;
 using PowerMode = IComposerClient::PowerMode;
 using Vsync = IComposerClient::Vsync;
 using VsyncPeriodChangeConstraints = IComposerClient::VsyncPeriodChangeConstraints;
-using Hdr = aidl::android::hardware::graphics::common::Hdr;
 
 } // namespace hardware::graphics::composer::hal
 
@@ -96,50 +95,20 @@ inline std::string to_string(hardware::graphics::composer::hal::Attribute attrib
     }
 }
 
-inline std::string to_string(
-        aidl::android::hardware::graphics::composer3::Composition composition) {
+inline std::string to_string(hardware::graphics::composer::hal::Composition composition) {
     switch (composition) {
-        case aidl::android::hardware::graphics::composer3::Composition::INVALID:
+        case hardware::graphics::composer::hal::Composition::INVALID:
             return "Invalid";
-        case aidl::android::hardware::graphics::composer3::Composition::CLIENT:
+        case hardware::graphics::composer::hal::Composition::CLIENT:
             return "Client";
-        case aidl::android::hardware::graphics::composer3::Composition::DEVICE:
+        case hardware::graphics::composer::hal::Composition::DEVICE:
             return "Device";
-        case aidl::android::hardware::graphics::composer3::Composition::SOLID_COLOR:
+        case hardware::graphics::composer::hal::Composition::SOLID_COLOR:
             return "SolidColor";
-        case aidl::android::hardware::graphics::composer3::Composition::CURSOR:
+        case hardware::graphics::composer::hal::Composition::CURSOR:
             return "Cursor";
-        case aidl::android::hardware::graphics::composer3::Composition::SIDEBAND:
+        case hardware::graphics::composer::hal::Composition::SIDEBAND:
             return "Sideband";
-        case aidl::android::hardware::graphics::composer3::Composition::DISPLAY_DECORATION:
-            return "DisplayDecoration";
-        case aidl::android::hardware::graphics::composer3::Composition::REFRESH_RATE_INDICATOR:
-            return "RefreshRateIndicator";
-        default:
-            return "Unknown";
-    }
-}
-
-inline std::string to_string(
-        aidl::android::hardware::graphics::composer3::DisplayCapability displayCapability) {
-    switch (displayCapability) {
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::INVALID:
-            return "Invalid";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::
-                SKIP_CLIENT_COLOR_TRANSFORM:
-            return "SkipColorTransform";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::DOZE:
-            return "Doze";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::BRIGHTNESS:
-            return "Brightness";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::PROTECTED_CONTENTS:
-            return "ProtectedContents";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::AUTO_LOW_LATENCY_MODE:
-            return "AutoLowLatencyMode";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::SUSPEND:
-            return "Suspend";
-        case aidl::android::hardware::graphics::composer3::DisplayCapability::DISPLAY_IDLE_TIMER:
-            return "DisplayIdleTimer";
         default:
             return "Unknown";
     }
@@ -180,10 +149,6 @@ inline std::string to_string(hardware::graphics::composer::hal::Error error) {
     return to_string(static_cast<hardware::graphics::composer::hal::V2_4::Error>(error));
 }
 
-// For utils::Dumper ADL.
-namespace hardware::graphics::composer {
-namespace V2_2 {
-
 inline std::string to_string(hardware::graphics::composer::hal::PowerMode mode) {
     switch (mode) {
         case hardware::graphics::composer::hal::PowerMode::OFF:
@@ -201,21 +166,4 @@ inline std::string to_string(hardware::graphics::composer::hal::PowerMode mode) 
     }
 }
 
-} // namespace V2_2
-
-namespace V2_1 {
-
-inline std::string to_string(hardware::graphics::composer::hal::Vsync vsync) {
-    switch (vsync) {
-        case hardware::graphics::composer::hal::Vsync::ENABLE:
-            return "Enable";
-        case hardware::graphics::composer::hal::Vsync::DISABLE:
-            return "Disable";
-        default:
-            return "Unknown";
-    }
-}
-
-} // namespace V2_1
-} // namespace hardware::graphics::composer
 } // namespace android

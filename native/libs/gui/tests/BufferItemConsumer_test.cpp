@@ -68,7 +68,7 @@ class BufferItemConsumerTest : public ::testing::Test {
     void HandleBufferFreed() {
         std::lock_guard<std::mutex> lock(mMutex);
         mFreedBufferCount++;
-        ALOGD("HandleBufferFreed, mFreedBufferCount=%d", mFreedBufferCount);
+        ALOGV("HandleBufferFreed, mFreedBufferCount=%d", mFreedBufferCount);
     }
 
     void DequeueBuffer(int* outSlot) {
@@ -80,7 +80,7 @@ class BufferItemConsumerTest : public ::testing::Test {
                                                 nullptr, nullptr);
         ASSERT_GE(ret, 0);
 
-        ALOGD("dequeueBuffer: slot=%d", slot);
+        ALOGV("dequeueBuffer: slot=%d", slot);
         if (ret & IGraphicBufferProducer::BUFFER_NEEDS_REALLOCATION) {
             ret = mProducer->requestBuffer(slot, &mBuffers[slot]);
             ASSERT_EQ(NO_ERROR, ret);
@@ -89,7 +89,7 @@ class BufferItemConsumerTest : public ::testing::Test {
     }
 
     void QueueBuffer(int slot) {
-        ALOGD("enqueueBuffer: slot=%d", slot);
+        ALOGV("enqueueBuffer: slot=%d", slot);
         IGraphicBufferProducer::QueueBufferInput bufferInput(
             0ULL, true, HAL_DATASPACE_UNKNOWN, Rect::INVALID_RECT,
             NATIVE_WINDOW_SCALING_MODE_FREEZE, 0, Fence::NO_FENCE);
@@ -104,12 +104,12 @@ class BufferItemConsumerTest : public ::testing::Test {
         status_t ret = mBIC->acquireBuffer(&buffer, 0, false);
         ASSERT_EQ(NO_ERROR, ret);
 
-        ALOGD("acquireBuffer: slot=%d", buffer.mSlot);
+        ALOGV("acquireBuffer: slot=%d", buffer.mSlot);
         *outSlot = buffer.mSlot;
     }
 
     void ReleaseBuffer(int slot) {
-        ALOGD("releaseBuffer: slot=%d", slot);
+        ALOGV("releaseBuffer: slot=%d", slot);
         BufferItem buffer;
         buffer.mSlot = slot;
         buffer.mGraphicBuffer = mBuffers[slot];

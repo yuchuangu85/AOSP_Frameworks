@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERPOLICYINTERFACE_H
+#define _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERPOLICYINTERFACE_H
 
 #include "InputDispatcherConfiguration.h"
 
 #include <binder/IBinder.h>
-#include <gui/InputApplication.h>
 #include <input/Input.h>
+#include <input/InputApplication.h>
 #include <utils/RefBase.h>
 
 namespace android {
@@ -35,11 +36,12 @@ namespace android {
  * The actual implementation is partially supported by callbacks into the DVM
  * via JNI.  This interface is also mocked in the unit tests.
  */
-class InputDispatcherPolicyInterface {
-public:
-    InputDispatcherPolicyInterface() = default;
-    virtual ~InputDispatcherPolicyInterface() = default;
+class InputDispatcherPolicyInterface : public virtual RefBase {
+protected:
+    InputDispatcherPolicyInterface() {}
+    virtual ~InputDispatcherPolicyInterface() {}
 
+public:
     /* Notifies the system that a configuration change has occurred. */
     virtual void notifyConfigurationChanged(nsecs_t when) = 0;
 
@@ -49,19 +51,30 @@ public:
             const std::shared_ptr<InputApplicationHandle>& inputApplicationHandle) = 0;
 
     /* Notifies the system that a window just became unresponsive. This indicates that ANR
-     * should be raised for this window. The window can be identified via its input token and the
-     * pid of the owner. The string reason contains information about the input event that we
-     * haven't received a response for.
+     * should be raised for this window. The window is identified via token.
+     * The string reason contains information about the input event that we haven't received
+     * a response for.
      */
-    virtual void notifyWindowUnresponsive(const sp<IBinder>& token, std::optional<int32_t> pid,
-                                          const std::string& reason) = 0;
+    virtual void notifyWindowUnresponsive(const sp<IBinder>& token, const std::string& reason) = 0;
+    /* Notifies the system that a monitor just became unresponsive. This indicates that ANR
+     * should be raised for this monitor. The monitor is identified via its pid.
+     * The string reason contains information about the input event that we haven't received
+     * a response for.
+     */
+    virtual void notifyMonitorUnresponsive(int32_t pid, const std::string& reason) = 0;
 
     /* Notifies the system that a window just became responsive. This is only called after the
      * window was first marked "unresponsive". This indicates that ANR dialog (if any) should
      * no longer should be shown to the user. The window is eligible to cause a new ANR in the
      * future.
      */
-    virtual void notifyWindowResponsive(const sp<IBinder>& token, std::optional<int32_t> pid) = 0;
+    virtual void notifyWindowResponsive(const sp<IBinder>& token) = 0;
+    /* Notifies the system that a monitor just became responsive. This is only called after the
+     * monitor was first marked "unresponsive". This indicates that ANR dialog (if any) should
+     * no longer should be shown to the user. The monitor is eligible to cause a new ANR in the
+     * future.
+     */
+    virtual void notifyMonitorResponsive(int32_t pid) = 0;
 
     /* Notifies the system that an input channel is unrecoverably broken. */
     virtual void notifyInputChannelBroken(const sp<IBinder>& token) = 0;
@@ -73,15 +86,18 @@ public:
                                       InputDeviceSensorAccuracy accuracy) = 0;
     virtual void notifyVibratorState(int32_t deviceId, bool isOn) = 0;
 
+    /* Notifies the system that an untrusted touch occurred. */
+    virtual void notifyUntrustedTouch(const std::string& obscuringPackage) = 0;
+
     /* Gets the input dispatcher configuration. */
-    virtual InputDispatcherConfiguration getDispatcherConfiguration() = 0;
+    virtual void getDispatcherConfiguration(InputDispatcherConfiguration* outConfig) = 0;
 
     /* Filters an input event.
      * Return true to dispatch the event unmodified, false to consume the event.
      * A filter can also transform and inject events later by passing POLICY_FLAG_FILTERED
      * to injectInputEvent.
      */
-    virtual bool filterInputEvent(const InputEvent& inputEvent, uint32_t policyFlags) = 0;
+    virtual bool filterInputEvent(const InputEvent* inputEvent, uint32_t policyFlags) = 0;
 
     /* Intercepts a key event immediately before queueing it.
      * The policy can use this method as an opportunity to perform power management functions
@@ -90,7 +106,7 @@ public:
      * This method is expected to set the POLICY_FLAG_PASS_TO_USER policy flag if the event
      * should be dispatched to applications.
      */
-    virtual void interceptKeyBeforeQueueing(const KeyEvent& keyEvent, uint32_t& policyFlags) = 0;
+    virtual void interceptKeyBeforeQueueing(const KeyEvent* keyEvent, uint32_t& policyFlags) = 0;
 
     /* Intercepts a touch, trackball or other motion event before queueing it.
      * The policy can use this method as an opportunity to perform power management functions
@@ -99,19 +115,18 @@ public:
      * This method is expected to set the POLICY_FLAG_PASS_TO_USER policy flag if the event
      * should be dispatched to applications.
      */
-    virtual void interceptMotionBeforeQueueing(int32_t displayId, nsecs_t when,
+    virtual void interceptMotionBeforeQueueing(const int32_t displayId, nsecs_t when,
                                                uint32_t& policyFlags) = 0;
 
     /* Allows the policy a chance to intercept a key before dispatching. */
     virtual nsecs_t interceptKeyBeforeDispatching(const sp<IBinder>& token,
-                                                  const KeyEvent& keyEvent,
+                                                  const KeyEvent* keyEvent,
                                                   uint32_t policyFlags) = 0;
 
     /* Allows the policy a chance to perform default processing for an unhandled key.
-     * Returns an alternate key event to redispatch as a fallback, if needed. */
-    virtual std::optional<KeyEvent> dispatchUnhandledKey(const sp<IBinder>& token,
-                                                         const KeyEvent& keyEvent,
-                                                         uint32_t policyFlags) = 0;
+     * Returns an alternate keycode to redispatch as a fallback, or 0 to give up. */
+    virtual bool dispatchUnhandledKey(const sp<IBinder>& token, const KeyEvent* keyEvent,
+                                      uint32_t policyFlags, KeyEvent* outFallbackKeyEvent) = 0;
 
     /* Notifies the policy about switch events.
      */
@@ -120,6 +135,15 @@ public:
 
     /* Poke user activity for an event dispatched to a window. */
     virtual void pokeUserActivity(nsecs_t eventTime, int32_t eventType, int32_t displayId) = 0;
+
+    /* Checks whether a given application pid/uid has permission to inject input events
+     * into other applications.
+     *
+     * This method is special in that its implementation promises to be non-reentrant and
+     * is safe to call while holding other locks.  (Most other methods make no such guarantees!)
+     */
+    virtual bool checkInjectEventsPermissionNonReentrant(int32_t injectorPid,
+                                                         int32_t injectorUid) = 0;
 
     /* Notifies the policy that a pointer down event has occurred outside the current focused
      * window.
@@ -132,10 +156,12 @@ public:
      *
      * InputDispatcher is solely responsible for updating the Pointer Capture state.
      */
-    virtual void setPointerCapture(const PointerCaptureRequest&) = 0;
+    virtual void setPointerCapture(bool enabled) = 0;
 
     /* Notifies the policy that the drag window has moved over to another window */
     virtual void notifyDropWindow(const sp<IBinder>& token, float x, float y) = 0;
 };
 
 } // namespace android
+
+#endif // _UI_INPUT_INPUTDISPATCHER_INPUTDISPATCHERPOLICYINTERFACE_H

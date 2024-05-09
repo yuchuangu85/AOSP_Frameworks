@@ -42,15 +42,26 @@ protected:
     sp<SurfaceComposerClient> mScc;
     sp<SurfaceControl> mNotSc;
     void SetUp() override {
-        mScc = sp<SurfaceComposerClient>::make();
+        mScc = new SurfaceComposerClient;
         ASSERT_EQ(NO_ERROR, mScc->initCheck());
         mNotSc = makeNotSurfaceControl();
     }
 
     sp<SurfaceControl> makeNotSurfaceControl() {
-        return sp<SurfaceControl>::make(mScc, sp<NotALayer>::make(), 1, "#1");
+        return new SurfaceControl(mScc, new NotALayer(), nullptr, true);
     }
 };
+
+TEST_F(InvalidHandleTest, createSurfaceInvalidParentHandle) {
+    // The createSurface is scheduled now, we could still get a created surface from createSurface.
+    // Should verify if it actually added into current state by checking the screenshot.
+    auto notSc = mScc->createSurface(String8("lolcats"), 19, 47, PIXEL_FORMAT_RGBA_8888, 0,
+                                     mNotSc->getHandle());
+    LayerCaptureArgs args;
+    args.layerHandle = notSc->getHandle();
+    ScreenCaptureResults captureResults;
+    ASSERT_EQ(NAME_NOT_FOUND, ScreenCapture::captureLayers(args, captureResults));
+}
 
 TEST_F(InvalidHandleTest, captureLayersInvalidHandle) {
     LayerCaptureArgs args;

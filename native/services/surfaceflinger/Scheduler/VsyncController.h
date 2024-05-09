@@ -17,17 +17,18 @@
 #pragma once
 
 #include <cstddef>
-#include <memory>
-#include <mutex>
 
-#include <DisplayHardware/HWComposer.h>
-#include <DisplayHardware/Hal.h>
-#include <ui/FenceTime.h>
 #include <utils/Mutex.h>
 #include <utils/RefBase.h>
 #include <utils/Timers.h>
 
+#include <ui/FenceTime.h>
+
+#include <memory>
+
 namespace android::scheduler {
+
+class FenceTime;
 
 class VsyncController {
 public:
@@ -42,7 +43,7 @@ public:
      *                      an accurate prediction,
      *                      False otherwise
      */
-    virtual bool addPresentFence(std::shared_ptr<FenceTime>) = 0;
+    virtual bool addPresentFence(const std::shared_ptr<android::FenceTime>&) = 0;
 
     /*
      * Adds a hw sync timestamp to the model. The controller will use the timestamp
@@ -63,9 +64,8 @@ public:
      * itself. The controller will end the period transition internally.
      *
      * \param [in] period   The period that the system is changing into.
-     * \param [in] force    True to recalibrate even if period matches the existing period.
      */
-    virtual void startPeriodTransition(nsecs_t period, bool force) = 0;
+    virtual void startPeriodTransition(nsecs_t period) = 0;
 
     /*
      * Tells the tracker to stop using present fences to get a vsync signal.
@@ -73,13 +73,6 @@ public:
      * \param [in] ignore  Whether to ignore the present fences or not
      */
     virtual void setIgnorePresentFences(bool ignore) = 0;
-
-    /*
-     * Sets the primary display power mode to the controller.
-     *
-     * \param [in] powerMode
-     */
-    virtual void setDisplayPowerMode(hal::PowerMode powerMode) = 0;
 
     virtual void dump(std::string& result) const = 0;
 

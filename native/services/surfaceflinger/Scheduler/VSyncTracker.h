@@ -17,9 +17,7 @@
 #pragma once
 
 #include <utils/Timers.h>
-
-#include <scheduler/Fps.h>
-
+#include "Fps.h"
 #include "VSyncDispatch.h"
 
 namespace android::scheduler {
@@ -78,18 +76,6 @@ public:
      * \param [in] frameRate  The frame rate to check for
      */
     virtual bool isVSyncInPhase(nsecs_t timePoint, Fps frameRate) const = 0;
-
-    /*
-     * Sets a render rate on the tracker. If the render rate is not a divisor
-     * of the period, the render rate is ignored until the period changes.
-     * The tracker will continue to track the vsync timeline and expect it
-     * to match the current period, however, nextAnticipatedVSyncTimeFrom will
-     * return vsyncs according to the render rate set. Setting a render rate is useful
-     * when a display is running at 120Hz but the render frame rate is 60Hz.
-     *
-     * \param [in] Fps   The render rate the tracker should operate at.
-     */
-    virtual void setRenderRate(Fps) = 0;
 
     virtual void dump(std::string& result) const = 0;
 

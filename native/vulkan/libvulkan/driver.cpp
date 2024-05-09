@@ -365,7 +365,7 @@ CreateInfoWrapper::CreateInfoWrapper(const VkInstanceCreateInfo& create_info,
                                      const VkAllocationCallbacks& allocator)
     : is_instance_(true),
       allocator_(allocator),
-      loader_api_version_(VK_API_VERSION_1_3),
+      loader_api_version_(VK_API_VERSION_1_1),
       icd_api_version_(icd_api_version),
       physical_dev_(VK_NULL_HANDLE),
       instance_info_(create_info),
@@ -377,7 +377,7 @@ CreateInfoWrapper::CreateInfoWrapper(VkPhysicalDevice physical_dev,
                                      const VkAllocationCallbacks& allocator)
     : is_instance_(false),
       allocator_(allocator),
-      loader_api_version_(VK_API_VERSION_1_3),
+      loader_api_version_(VK_API_VERSION_1_1),
       icd_api_version_(icd_api_version),
       physical_dev_(physical_dev),
       dev_info_(create_info),
@@ -519,14 +519,6 @@ VkResult CreateInfoWrapper::SanitizeExtensions() {
         is_instance_ ? loader_api_version_
                      : std::min(icd_api_version_, loader_api_version_);
     switch (api_version) {
-        case VK_API_VERSION_1_3:
-            hook_extensions_.set(ProcHook::EXTENSION_CORE_1_3);
-            hal_extensions_.set(ProcHook::EXTENSION_CORE_1_3);
-            [[clang::fallthrough]];
-        case VK_API_VERSION_1_2:
-            hook_extensions_.set(ProcHook::EXTENSION_CORE_1_2);
-            hal_extensions_.set(ProcHook::EXTENSION_CORE_1_2);
-            [[clang::fallthrough]];
         case VK_API_VERSION_1_1:
             hook_extensions_.set(ProcHook::EXTENSION_CORE_1_1);
             hal_extensions_.set(ProcHook::EXTENSION_CORE_1_1);
@@ -632,11 +624,8 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
         switch (ext_bit) {
             case ProcHook::KHR_android_surface:
             case ProcHook::KHR_surface:
-            case ProcHook::KHR_surface_protected_capabilities:
             case ProcHook::EXT_swapchain_colorspace:
             case ProcHook::KHR_get_surface_capabilities2:
-            case ProcHook::GOOGLE_surfaceless_query:
-            case ProcHook::EXT_surface_maintenance1:
                 hook_extensions_.set(ext_bit);
                 // return now as these extensions do not require HAL support
                 return;
@@ -658,15 +647,12 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
             case ProcHook::KHR_shared_presentable_image:
             case ProcHook::KHR_swapchain:
             case ProcHook::EXT_hdr_metadata:
-            case ProcHook::EXT_swapchain_maintenance1:
             case ProcHook::ANDROID_external_memory_android_hardware_buffer:
             case ProcHook::ANDROID_native_buffer:
             case ProcHook::GOOGLE_display_timing:
-            case ProcHook::KHR_external_fence_fd:
             case ProcHook::EXTENSION_CORE_1_0:
             case ProcHook::EXTENSION_CORE_1_1:
             case ProcHook::EXTENSION_CORE_1_2:
-            case ProcHook::EXTENSION_CORE_1_3:
             case ProcHook::EXTENSION_COUNT:
                 // Device and meta extensions. If we ever get here it's a bug in
                 // our code. But enumerating them lets us avoid having a default
@@ -693,22 +679,16 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
                 ext_bit = ProcHook::ANDROID_native_buffer;
                 break;
             case ProcHook::KHR_incremental_present:
-            case ProcHook::KHR_shared_presentable_image:
             case ProcHook::GOOGLE_display_timing:
+            case ProcHook::KHR_shared_presentable_image:
                 hook_extensions_.set(ext_bit);
                 // return now as these extensions do not require HAL support
                 return;
-            case ProcHook::EXT_swapchain_maintenance1:
-                // map VK_KHR_swapchain_maintenance1 to KHR_external_fence_fd
-                name = VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME;
-                ext_bit = ProcHook::KHR_external_fence_fd;
-                break;
             case ProcHook::EXT_hdr_metadata:
             case ProcHook::KHR_bind_memory2:
                 hook_extensions_.set(ext_bit);
                 break;
             case ProcHook::ANDROID_external_memory_android_hardware_buffer:
-            case ProcHook::KHR_external_fence_fd:
             case ProcHook::EXTENSION_UNKNOWN:
                 // Extensions we don't need to do anything about at this level
                 break;
@@ -721,16 +701,12 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
             case ProcHook::KHR_external_fence_capabilities:
             case ProcHook::KHR_get_surface_capabilities2:
             case ProcHook::KHR_surface:
-            case ProcHook::KHR_surface_protected_capabilities:
             case ProcHook::EXT_debug_report:
             case ProcHook::EXT_swapchain_colorspace:
-            case ProcHook::EXT_surface_maintenance1:
-            case ProcHook::GOOGLE_surfaceless_query:
             case ProcHook::ANDROID_native_buffer:
             case ProcHook::EXTENSION_CORE_1_0:
             case ProcHook::EXTENSION_CORE_1_1:
             case ProcHook::EXTENSION_CORE_1_2:
-            case ProcHook::EXTENSION_CORE_1_3:
             case ProcHook::EXTENSION_COUNT:
                 // Instance and meta extensions. If we ever get here it's a bug
                 // in our code. But enumerating them lets us avoid having a
@@ -757,18 +733,10 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
         if (strcmp(name, props.extensionName) != 0)
             continue;
 
-        if (ext_bit != ProcHook::EXTENSION_UNKNOWN &&
-                hal_extensions_.test(ext_bit)) {
-            ALOGI("CreateInfoWrapper::FilterExtension: already have '%s'.", name);
-            continue;
-        }
-
         filter.names[filter.name_count++] = name;
         if (ext_bit != ProcHook::EXTENSION_UNKNOWN) {
             if (ext_bit == ProcHook::ANDROID_native_buffer)
                 hook_extensions_.set(ProcHook::KHR_swapchain);
-            if (ext_bit == ProcHook::KHR_external_fence_fd)
-                hook_extensions_.set(ProcHook::EXT_swapchain_maintenance1);
 
             hal_extensions_.set(ext_bit);
         }
@@ -942,25 +910,18 @@ VkResult EnumerateInstanceExtensionProperties(
     uint32_t* pPropertyCount,
     VkExtensionProperties* pProperties) {
     std::vector<VkExtensionProperties> loader_extensions;
-    loader_extensions.push_back(
-        {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_SURFACE_SPEC_VERSION});
-    loader_extensions.push_back(
-        {VK_KHR_SURFACE_PROTECTED_CAPABILITIES_EXTENSION_NAME,
-         VK_KHR_SURFACE_PROTECTED_CAPABILITIES_SPEC_VERSION});
+    loader_extensions.push_back({
+        VK_KHR_SURFACE_EXTENSION_NAME,
+        VK_KHR_SURFACE_SPEC_VERSION});
     loader_extensions.push_back({
         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
         VK_KHR_ANDROID_SURFACE_SPEC_VERSION});
     loader_extensions.push_back({
         VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME,
         VK_EXT_SWAPCHAIN_COLOR_SPACE_SPEC_VERSION});
-    loader_extensions.push_back(
-        {VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
-         VK_KHR_GET_SURFACE_CAPABILITIES_2_SPEC_VERSION});
-    loader_extensions.push_back({VK_GOOGLE_SURFACELESS_QUERY_EXTENSION_NAME,
-                                 VK_GOOGLE_SURFACELESS_QUERY_SPEC_VERSION});
     loader_extensions.push_back({
-        VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
-        VK_EXT_SURFACE_MAINTENANCE_1_SPEC_VERSION});
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+        VK_KHR_GET_SURFACE_CAPABILITIES_2_SPEC_VERSION});
 
     static const VkExtensionProperties loader_debug_report_extension = {
         VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION,
@@ -1018,8 +979,6 @@ VkResult EnumerateInstanceExtensionProperties(
 void QueryPresentationProperties(
     VkPhysicalDevice physicalDevice,
     VkPhysicalDevicePresentationPropertiesANDROID* presentation_properties) {
-    ATRACE_CALL();
-
     // Request the android-specific presentation properties via GPDP2
     VkPhysicalDeviceProperties2 properties = {
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
@@ -1035,89 +994,7 @@ void QueryPresentationProperties(
     presentation_properties->pNext = nullptr;
     presentation_properties->sharedImage = VK_FALSE;
 
-    const auto& driver = GetData(physicalDevice).driver;
-
-    if (driver.GetPhysicalDeviceProperties2) {
-        // >= 1.1 driver, supports core GPDP2 entrypoint.
-        driver.GetPhysicalDeviceProperties2(physicalDevice, &properties);
-    } else if (driver.GetPhysicalDeviceProperties2KHR) {
-        // Old driver, but may support presentation properties
-        // if we have the GPDP2 extension. Otherwise, no presentation
-        // properties supported.
-        driver.GetPhysicalDeviceProperties2KHR(physicalDevice, &properties);
-    }
-}
-
-VkResult GetAndroidNativeBufferSpecVersion9Support(
-    VkPhysicalDevice physicalDevice,
-    bool& support) {
-    support = false;
-
-    const InstanceData& data = GetData(physicalDevice);
-
-    // Call to get propertyCount
-    uint32_t propertyCount = 0;
-    ATRACE_BEGIN("driver.EnumerateDeviceExtensionProperties");
-    VkResult result = data.driver.EnumerateDeviceExtensionProperties(
-        physicalDevice, nullptr, &propertyCount, nullptr);
-    ATRACE_END();
-
-    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-        return result;
-    }
-
-    // Call to enumerate properties
-    std::vector<VkExtensionProperties> properties(propertyCount);
-    ATRACE_BEGIN("driver.EnumerateDeviceExtensionProperties");
-    result = data.driver.EnumerateDeviceExtensionProperties(
-        physicalDevice, nullptr, &propertyCount, properties.data());
-    ATRACE_END();
-
-    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-        return result;
-    }
-
-    for (uint32_t i = 0; i < propertyCount; i++) {
-        auto& prop = properties[i];
-
-        if (strcmp(prop.extensionName,
-                   VK_ANDROID_NATIVE_BUFFER_EXTENSION_NAME) != 0)
-            continue;
-
-        if (prop.specVersion >= 9) {
-            support = true;
-            return result;
-        }
-    }
-
-    return result;
-}
-
-bool CanSupportSwapchainMaintenance1Extension(VkPhysicalDevice physicalDevice) {
-    const auto& driver = GetData(physicalDevice).driver;
-    if (!driver.GetPhysicalDeviceExternalFenceProperties)
-        return false;
-
-    // Requires support for external fences imported from sync fds.
-    // This is _almost_ universal on Android, but may be missing on
-    // some extremely old drivers, or on strange implementations like
-    // cuttlefish.
-    VkPhysicalDeviceExternalFenceInfo fenceInfo = {
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO,
-        nullptr,
-        VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT
-    };
-    VkExternalFenceProperties fenceProperties = {
-        VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES,
-        nullptr,
-        0, 0, 0
-    };
-
-    GetPhysicalDeviceExternalFenceProperties(physicalDevice, &fenceInfo, &fenceProperties);
-    if (fenceProperties.externalFenceFeatures & VK_EXTERNAL_FENCE_FEATURE_IMPORTABLE_BIT)
-        return true;
-
-    return false;
+    GetPhysicalDeviceProperties2(physicalDevice, &properties);
 }
 
 VkResult EnumerateDeviceExtensionProperties(
@@ -1154,55 +1031,6 @@ VkResult EnumerateDeviceExtensionProperties(
                 VK_GOOGLE_DISPLAY_TIMING_SPEC_VERSION});
     }
 
-    // Conditionally add VK_EXT_IMAGE_COMPRESSION_CONTROL* if feature and ANB
-    // support is provided by the driver
-    VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT
-        swapchainCompFeats = {};
-    swapchainCompFeats.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_FEATURES_EXT;
-    swapchainCompFeats.pNext = nullptr;
-    swapchainCompFeats.imageCompressionControlSwapchain = false;
-    VkPhysicalDeviceImageCompressionControlFeaturesEXT imageCompFeats = {};
-    imageCompFeats.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT;
-    imageCompFeats.pNext = &swapchainCompFeats;
-    imageCompFeats.imageCompressionControl = false;
-
-    VkPhysicalDeviceFeatures2 feats2 = {};
-    feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    feats2.pNext = &imageCompFeats;
-
-    const auto& driver = GetData(physicalDevice).driver;
-    if (driver.GetPhysicalDeviceFeatures2 ||
-        driver.GetPhysicalDeviceFeatures2KHR) {
-        GetPhysicalDeviceFeatures2(physicalDevice, &feats2);
-    }
-
-    bool anb9 = false;
-    VkResult result =
-        GetAndroidNativeBufferSpecVersion9Support(physicalDevice, anb9);
-
-    if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-        return result;
-    }
-
-    if (anb9 && imageCompFeats.imageCompressionControl) {
-        loader_extensions.push_back(
-            {VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME,
-             VK_EXT_IMAGE_COMPRESSION_CONTROL_SPEC_VERSION});
-    }
-    if (anb9 && swapchainCompFeats.imageCompressionControlSwapchain) {
-        loader_extensions.push_back(
-            {VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_EXTENSION_NAME,
-             VK_EXT_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_SPEC_VERSION});
-    }
-
-    if (CanSupportSwapchainMaintenance1Extension(physicalDevice)) {
-        loader_extensions.push_back({
-                VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
-                VK_EXT_SWAPCHAIN_MAINTENANCE_1_SPEC_VERSION});
-    }
-
     // enumerate our extensions first
     if (!pLayerName && pProperties) {
         uint32_t count = std::min(
@@ -1220,7 +1048,7 @@ VkResult EnumerateDeviceExtensionProperties(
     }
 
     ATRACE_BEGIN("driver.EnumerateDeviceExtensionProperties");
-    result = data.driver.EnumerateDeviceExtensionProperties(
+    VkResult result = data.driver.EnumerateDeviceExtensionProperties(
         physicalDevice, pLayerName, pPropertyCount, pProperties);
     ATRACE_END();
 
@@ -1271,7 +1099,7 @@ VkResult CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
         if (result != VK_SUCCESS)
             return result;
 
-        icd_api_version ^= VK_API_VERSION_PATCH(icd_api_version);
+        icd_api_version ^= VK_VERSION_PATCH(icd_api_version);
     }
 
     CreateInfoWrapper wrapper(*pCreateInfo, icd_api_version, data_allocator);
@@ -1320,27 +1148,6 @@ VkResult CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
         return VK_ERROR_INCOMPATIBLE_DRIVER;
     }
 
-    // TODO(b/259516419) avoid getting stats from hwui
-    // const bool reportStats = (pCreateInfo->pApplicationInfo == nullptr )
-    //         || (strcmp("android framework",
-    //         pCreateInfo->pApplicationInfo->pEngineName) != 0);
-    const bool reportStats = true;
-    if (reportStats) {
-        // Set stats for Vulkan api version requested with application info
-        if (pCreateInfo->pApplicationInfo) {
-            const uint32_t vulkanApiVersion =
-                pCreateInfo->pApplicationInfo->apiVersion;
-            android::GraphicsEnv::getInstance().setTargetStats(
-                android::GpuStatsInfo::Stats::CREATED_VULKAN_API_VERSION,
-                vulkanApiVersion);
-        }
-
-        // Update stats for the extensions requested
-        android::GraphicsEnv::getInstance().setVulkanInstanceExtensions(
-            pCreateInfo->enabledExtensionCount,
-            pCreateInfo->ppEnabledExtensionNames);
-    }
-
     *pInstance = instance;
 
     return VK_SUCCESS;
@@ -1376,7 +1183,7 @@ VkResult CreateDevice(VkPhysicalDevice physicalDevice,
 
     CreateInfoWrapper wrapper(
         physicalDevice, *pCreateInfo,
-        properties.apiVersion ^ VK_API_VERSION_PATCH(properties.apiVersion),
+        properties.apiVersion ^ VK_VERSION_PATCH(properties.apiVersion),
         data_allocator);
     VkResult result = wrapper.Validate();
     if (result != VK_SUCCESS)
@@ -1417,18 +1224,15 @@ VkResult CreateDevice(VkPhysicalDevice physicalDevice,
         return VK_ERROR_INCOMPATIBLE_DRIVER;
     }
 
-    // Confirming ANDROID_native_buffer implementation, whose set of
+    // sanity check ANDROID_native_buffer implementation, whose set of
     // entrypoints varies according to the spec version.
     if ((wrapper.GetHalExtensions()[ProcHook::ANDROID_native_buffer]) &&
         !data->driver.GetSwapchainGrallocUsageANDROID &&
-        !data->driver.GetSwapchainGrallocUsage2ANDROID &&
-        !data->driver.GetSwapchainGrallocUsage3ANDROID) {
-        ALOGE(
-            "Driver's implementation of ANDROID_native_buffer is broken;"
-            " must expose at least one of "
-            "vkGetSwapchainGrallocUsageANDROID or "
-            "vkGetSwapchainGrallocUsage2ANDROID or "
-            "vkGetSwapchainGrallocUsage3ANDROID");
+        !data->driver.GetSwapchainGrallocUsage2ANDROID) {
+        ALOGE("Driver's implementation of ANDROID_native_buffer is broken;"
+              " must expose at least one of "
+              "vkGetSwapchainGrallocUsageANDROID or "
+              "vkGetSwapchainGrallocUsage2ANDROID");
 
         data->driver.DestroyDevice(dev, pAllocator);
         FreeDeviceData(data, data_allocator);
@@ -1445,65 +1249,6 @@ VkResult CreateDevice(VkPhysicalDevice physicalDevice,
     data->driver_device = dev;
 
     *pDevice = dev;
-
-    // TODO(b/259516419) avoid getting stats from hwui
-    const bool reportStats = true;
-    if (reportStats) {
-        android::GraphicsEnv::getInstance().setTargetStats(
-            android::GpuStatsInfo::Stats::CREATED_VULKAN_DEVICE);
-
-        // Set stats for creating a Vulkan device and report features in use
-        const VkPhysicalDeviceFeatures* pEnabledFeatures =
-            pCreateInfo->pEnabledFeatures;
-        if (!pEnabledFeatures) {
-            // Use features from the chained VkPhysicalDeviceFeatures2
-            // structure, if given
-            const VkPhysicalDeviceFeatures2* features2 =
-                reinterpret_cast<const VkPhysicalDeviceFeatures2*>(
-                    pCreateInfo->pNext);
-            while (features2 &&
-                   features2->sType !=
-                       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
-                features2 = reinterpret_cast<const VkPhysicalDeviceFeatures2*>(
-                    features2->pNext);
-            }
-            if (features2) {
-                pEnabledFeatures = &features2->features;
-            }
-        }
-        const VkBool32* pFeatures =
-            reinterpret_cast<const VkBool32*>(pEnabledFeatures);
-        if (pFeatures) {
-            // VkPhysicalDeviceFeatures consists of VkBool32 values, go over all
-            // of them using pointer arithmetic here and save the features in a
-            // 64-bit bitfield
-            static_assert(
-                (sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32)) <= 64,
-                "VkPhysicalDeviceFeatures has too many elements for bitfield "
-                "packing");
-            static_assert(
-                (sizeof(VkPhysicalDeviceFeatures) % sizeof(VkBool32)) == 0,
-                "VkPhysicalDeviceFeatures has invalid size for bitfield "
-                "packing");
-            const int numFeatures =
-                sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
-
-            uint64_t enableFeatureBits = 0;
-            for (int i = 0; i < numFeatures; i++) {
-                if (pFeatures[i] != VK_FALSE) {
-                    enableFeatureBits |= (uint64_t(1) << i);
-                }
-            }
-            android::GraphicsEnv::getInstance().setTargetStats(
-                android::GpuStatsInfo::Stats::VULKAN_DEVICE_FEATURES_ENABLED,
-                enableFeatureBits);
-        }
-
-        // Update stats for the extensions requested
-        android::GraphicsEnv::getInstance().setVulkanDeviceExtensions(
-            pCreateInfo->enabledExtensionCount,
-            pCreateInfo->ppEnabledExtensionNames);
-    }
 
     return VK_SUCCESS;
 }
@@ -1666,95 +1411,10 @@ void GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
 
     if (driver.GetPhysicalDeviceFeatures2) {
         driver.GetPhysicalDeviceFeatures2(physicalDevice, pFeatures);
-    } else {
-        driver.GetPhysicalDeviceFeatures2KHR(physicalDevice, pFeatures);
-    }
-
-    // Conditionally add imageCompressionControlSwapchain if
-    // imageCompressionControl is supported Check for imageCompressionControl in
-    // the pChain
-    bool imageCompressionControl = false;
-    bool imageCompressionControlInChain = false;
-    bool imageCompressionControlSwapchainInChain = false;
-    VkPhysicalDeviceFeatures2* pFeats = pFeatures;
-    while (pFeats) {
-        switch (pFeats->sType) {
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT: {
-                const VkPhysicalDeviceImageCompressionControlFeaturesEXT*
-                    compressionFeat = reinterpret_cast<
-                        const VkPhysicalDeviceImageCompressionControlFeaturesEXT*>(
-                        pFeats);
-                imageCompressionControl =
-                    compressionFeat->imageCompressionControl;
-                imageCompressionControlInChain = true;
-            } break;
-
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_FEATURES_EXT: {
-                VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT*
-                    compressionFeat = reinterpret_cast<
-                        VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT*>(
-                        pFeats);
-                compressionFeat->imageCompressionControlSwapchain = false;
-                imageCompressionControlSwapchainInChain = true;
-            } break;
-
-            case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT: {
-                auto smf = reinterpret_cast<VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *>(
-                        pFeats);
-                smf->swapchainMaintenance1 = true;
-            } break;
-
-            default:
-                break;
-        }
-        pFeats = reinterpret_cast<VkPhysicalDeviceFeatures2*>(pFeats->pNext);
-    }
-
-    if (!imageCompressionControlSwapchainInChain) {
         return;
     }
 
-    // If not in pchain, explicitly query for imageCompressionControl
-    if (!imageCompressionControlInChain) {
-        VkPhysicalDeviceImageCompressionControlFeaturesEXT imageCompFeats = {};
-        imageCompFeats.sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT;
-        imageCompFeats.pNext = nullptr;
-        imageCompFeats.imageCompressionControl = false;
-
-        VkPhysicalDeviceFeatures2 feats2 = {};
-        feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-        feats2.pNext = &imageCompFeats;
-
-        if (driver.GetPhysicalDeviceFeatures2) {
-            driver.GetPhysicalDeviceFeatures2(physicalDevice, &feats2);
-        } else {
-            driver.GetPhysicalDeviceFeatures2KHR(physicalDevice, &feats2);
-        }
-
-        imageCompressionControl = imageCompFeats.imageCompressionControl;
-    }
-
-    // Only enumerate imageCompressionControlSwapchin if imageCompressionControl
-    if (imageCompressionControl) {
-        pFeats = pFeatures;
-        while (pFeats) {
-            switch (pFeats->sType) {
-                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_SWAPCHAIN_FEATURES_EXT: {
-                    VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT*
-                        compressionFeat = reinterpret_cast<
-                            VkPhysicalDeviceImageCompressionControlSwapchainFeaturesEXT*>(
-                            pFeats);
-                    compressionFeat->imageCompressionControlSwapchain = true;
-                } break;
-
-                default:
-                    break;
-            }
-            pFeats =
-                reinterpret_cast<VkPhysicalDeviceFeatures2*>(pFeats->pNext);
-        }
-    }
+    driver.GetPhysicalDeviceFeatures2KHR(physicalDevice, pFeatures);
 }
 
 void GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,

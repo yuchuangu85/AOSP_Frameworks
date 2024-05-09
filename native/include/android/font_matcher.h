@@ -75,7 +75,6 @@
 
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <sys/cdefs.h>
 
 #include <android/font.h>
@@ -117,12 +116,11 @@ enum {
     AFAMILY_VARIANT_ELEGANT = 2,
 };
 
-struct AFontMatcher;
 /**
  * AFontMatcher performs match operation on given parameters and available font files.
  * This matcher is not a thread-safe object. Do not pass this matcher to other threads.
  */
-typedef struct AFontMatcher AFontMatcher;
+struct AFontMatcher;
 
 /**
  * Select the best font from given parameters.

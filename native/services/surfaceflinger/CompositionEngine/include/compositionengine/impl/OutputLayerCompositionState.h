@@ -35,8 +35,6 @@
 
 #include "DisplayHardware/ComposerHal.h"
 
-#include <aidl/android/hardware/graphics/composer3/Composition.h>
-
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic pop // ignored "-Wconversion -Wextra"
 
@@ -63,14 +61,8 @@ struct OutputLayerCompositionState {
     // The portion of the layer that is not obscured and is also opaque
     Region visibleNonTransparentRegion;
 
-    // The portion of the layer that is obscured by all layers on top. This includes transparent and
-    // opaque.
+    // The portion of the layer that is obscured by opaque layers on top
     Region coveredRegion;
-
-    // The portion of the layer that is obscured by all layers on top excluding display overlays.
-    // This only has a value if there's something needing it, like when a
-    // TrustedPresentationListener is set.
-    std::optional<Region> coveredRegionExcludingDisplayOverlays;
 
     // The visibleRegion transformed to output space
     Region outputSpaceVisibleRegion;
@@ -95,10 +87,6 @@ struct OutputLayerCompositionState {
 
     // The dataspace for this layer
     ui::Dataspace dataspace{ui::Dataspace::UNKNOWN};
-
-    // A hint to the HWC that this region is transparent and may be skipped in
-    // order to save power.
-    Region outputSpaceBlockingRegionHint;
 
     // Overrides the buffer, acquire fence, and display frame stored in LayerFECompositionState
     struct {
@@ -135,16 +123,12 @@ struct OutputLayerCompositionState {
         std::shared_ptr<HWC2::Layer> hwcLayer;
 
         // The most recently set HWC composition type for this layer
-        aidl::android::hardware::graphics::composer3::Composition hwcCompositionType{
-                aidl::android::hardware::graphics::composer3::Composition::INVALID};
+        Hwc2::IComposerClient::Composition hwcCompositionType{
+                Hwc2::IComposerClient::Composition::INVALID};
 
         // The buffer cache for this layer. This is used to lower the
         // cost of sending reused buffers to the HWC.
         HwcBufferCache hwcBufferCache;
-
-        // The previously-active buffer for this layer.
-        uint64_t activeBufferId;
-        uint32_t activeBufferSlot;
 
         // Set to true when overridden info has been sent to HW composer
         bool stateOverridden = false;
@@ -162,12 +146,6 @@ struct OutputLayerCompositionState {
 
     // Timestamp for when the layer is queued for client composition
     nsecs_t clientCompositionTimestamp{0};
-
-    static constexpr float kDefaultWhitePointNits = 200.f;
-    float whitePointNits = kDefaultWhitePointNits;
-    // Dimming ratio of the layer from [0, 1]
-    static constexpr float kDefaultDimmingRatio = 1.f;
-    float dimmingRatio = kDefaultDimmingRatio;
 };
 
 } // namespace compositionengine::impl

@@ -16,43 +16,42 @@
 
 #pragma once
 
-#include <thread>
-
 #include <android-base/macros.h>
-#include <android-base/result.h>
-#include <android-base/unique_fd.h>
+#include <ostream>
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
-#include <ostream>
 
 #include "NullableOStream.h"
 
 namespace android {
 namespace lshal {
 
-/**
- * Creates a pipe and spawns a thread that relays any data
+/* Creates an AF_UNIX socketpair and spawns a thread that relays any data
  * written to the "write"-end of the pair to the specified output stream "os".
  */
 struct PipeRelay {
-    static android::base::Result<std::unique_ptr<PipeRelay>> create(
-            std::ostream& os, const NullableOStream<std::ostream>& err, const std::string& fqName);
+    explicit PipeRelay(std::ostream& os,
+                       const NullableOStream<std::ostream>& err,
+                       const std::string& interfaceName,
+                       const std::string& instanceName);
     ~PipeRelay();
+
+    status_t initCheck() const;
 
     // Returns the file descriptor corresponding to the "write"-end of the
     // connection.
-    android::base::borrowed_fd fd() const { return mWrite; }
+    int fd() const;
 
 private:
-    PipeRelay() = default;
-    DISALLOW_COPY_AND_ASSIGN(PipeRelay);
-    static void thread(android::base::unique_fd rfd, android::base::unique_fd rfdTrigger,
-                       std::ostream* out, const NullableOStream<std::ostream>* err,
-                       std::string fqName);
+    struct RelayThread;
 
-    android::base::unique_fd mWrite;
-    android::base::unique_fd mWriteTrigger;
-    std::unique_ptr<std::thread> mThread;
+    status_t mInitCheck;
+    int mFds[2];
+    sp<RelayThread> mThread;
+
+    static void CloseFd(int *fd);
+
+    DISALLOW_COPY_AND_ASSIGN(PipeRelay);
 };
 
 }  // namespace lshal

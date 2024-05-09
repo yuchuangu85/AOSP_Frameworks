@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(native_android14_security_release)
+project(native_android12_security_release)
 
 set(CMAKE_CXX_STANDARD 14)
 
@@ -15,6 +15,7 @@ include_directories(cmds/lshal)
 include_directories(cmds/lshal/libprocpartition/include)
 include_directories(cmds/lshal/libprocpartition/include/procpartition)
 include_directories(cmds/servicemanager)
+include_directories(cmds/surfacereplayer/replayer)
 include_directories(headers)
 include_directories(headers/media_plugin)
 include_directories(headers/media_plugin/media)
@@ -30,7 +31,6 @@ include_directories(include/audiomanager)
 include_directories(include/binder)
 include_directories(include/diskusage)
 include_directories(include/ftl)
-include_directories(include/ftl/details)
 include_directories(include/input)
 include_directories(include/powermanager)
 include_directories(include/private)
@@ -45,7 +45,6 @@ include_directories(libs/android_runtime_lazy/include/android_runtime)
 include_directories(libs/arect)
 include_directories(libs/arect/include)
 include_directories(libs/arect/include/android)
-include_directories(libs/battery)
 include_directories(libs/binder)
 include_directories(libs/binder/include)
 include_directories(libs/binder/include/binder)
@@ -55,11 +54,6 @@ include_directories(libs/binder/include_batterystats)
 include_directories(libs/binder/include_batterystats/batterystats)
 include_directories(libs/binder/include_processinfo)
 include_directories(libs/binder/include_processinfo/processinfo)
-include_directories(libs/binder/include_rpc_unstable)
-include_directories(libs/binder/include_tls)
-include_directories(libs/binder/include_tls/binder)
-include_directories(libs/binder/include_trusty)
-include_directories(libs/binder/include_trusty/binder)
 include_directories(libs/binder/ndk)
 include_directories(libs/binder/ndk/include_cpp)
 include_directories(libs/binder/ndk/include_cpp/android)
@@ -71,29 +65,11 @@ include_directories(libs/binder/ndk/tests/include)
 include_directories(libs/binder/ndk/tests/include/iface)
 include_directories(libs/binder/rust/sys)
 include_directories(libs/binder/rust/tests)
-include_directories(libs/binder/rust/tests/parcel_fuzzer)
-include_directories(libs/binder/rust/tests/parcel_fuzzer/random_parcel)
-include_directories(libs/binder/rust/tests/parcel_fuzzer/random_parcel/wrappers)
 include_directories(libs/binder/tests)
-include_directories(libs/binder/tests/include_tls_test_utils)
-include_directories(libs/binder/tests/include_tls_test_utils/binder)
 include_directories(libs/binder/tests/parcel_fuzzer)
 include_directories(libs/binder/tests/parcel_fuzzer/include_random_parcel)
 include_directories(libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder)
 include_directories(libs/binder/tests/unit_fuzzers)
-include_directories(libs/binder/trusty)
-include_directories(libs/binder/trusty/include)
-include_directories(libs/binder/trusty/include/binder)
-include_directories(libs/binder/trusty/include/log)
-include_directories(libs/binder/trusty/include_mock)
-include_directories(libs/binder/trusty/include_mock/lib)
-include_directories(libs/binder/trusty/include_mock/lib/tipc)
-include_directories(libs/binder/trusty/include_mock/lk)
-include_directories(libs/binder/trusty/include_mock/openssl)
-include_directories(libs/binder/trusty/include_mock/uapi)
-include_directories(libs/binder/trusty/ndk)
-include_directories(libs/binder/trusty/ndk/include)
-include_directories(libs/binder/trusty/ndk/include/sys)
 include_directories(libs/binderdebug/include)
 include_directories(libs/binderdebug/include/binderdebug)
 include_directories(libs/binderthreadstate/include)
@@ -103,22 +79,18 @@ include_directories(libs/bufferqueueconverter/include/bufferqueueconverter)
 include_directories(libs/cputimeinstate)
 include_directories(libs/dumputils/include)
 include_directories(libs/dumputils/include/dumputils)
-include_directories(libs/fakeservicemanager/include)
-include_directories(libs/fakeservicemanager/include/fakeservicemanager)
+include_directories(libs/fakeservicemanager)
 include_directories(libs/gralloc/types/fuzzer)
 include_directories(libs/gralloc/types/include)
 include_directories(libs/gralloc/types/include/gralloctypes)
 include_directories(libs/graphicsenv/include)
 include_directories(libs/graphicsenv/include/graphicsenv)
-include_directories(libs/gui/fuzzer)
 include_directories(libs/gui/include)
 include_directories(libs/gui/include/gui)
 include_directories(libs/gui/include/gui/bufferqueue)
 include_directories(libs/gui/include/gui/bufferqueue/1.0)
 include_directories(libs/gui/include/gui/bufferqueue/2.0)
-include_directories(libs/gui/include/gui/fake)
 include_directories(libs/gui/include/gui/mock)
-include_directories(libs/gui/include/gui/test)
 include_directories(libs/gui/include/gui/view)
 include_directories(libs/gui/include/private)
 include_directories(libs/gui/include/private/gui)
@@ -150,12 +122,10 @@ include_directories(libs/permission/include)
 include_directories(libs/permission/include/android)
 include_directories(libs/permission/include/android/permission)
 include_directories(libs/permission/include/binder)
-include_directories(libs/renderengine/benchmark)
 include_directories(libs/renderengine/gl)
 include_directories(libs/renderengine/gl/filters)
 include_directories(libs/renderengine/include)
 include_directories(libs/renderengine/include/renderengine)
-include_directories(libs/renderengine/include/renderengine/impl)
 include_directories(libs/renderengine/include/renderengine/mock)
 include_directories(libs/renderengine/include/renderengine/private)
 include_directories(libs/renderengine/skia)
@@ -166,15 +136,8 @@ include_directories(libs/sensor/include)
 include_directories(libs/sensor/include/sensor)
 include_directories(libs/sensorprivacy/include)
 include_directories(libs/sensorprivacy/include/sensorprivacy)
-include_directories(libs/shaders/include)
-include_directories(libs/shaders/include/shaders)
-include_directories(libs/tonemap/include)
-include_directories(libs/tonemap/include/tonemap)
 include_directories(libs/ui/include)
 include_directories(libs/ui/include/ui)
-include_directories(libs/ui/include/ui/fuzzer)
-include_directories(libs/ui/include_mock)
-include_directories(libs/ui/include_mock/ui)
 include_directories(libs/ui/include_private)
 include_directories(libs/ui/include_private/ui)
 include_directories(libs/ui/include_types)
@@ -182,8 +145,6 @@ include_directories(libs/ui/include_types/ui)
 include_directories(libs/ui/include_vndk)
 include_directories(libs/ui/include_vndk/ui)
 include_directories(libs/ui/tests/mock)
-include_directories(libs/ultrahdr/include)
-include_directories(libs/ultrahdr/include/ultrahdr)
 include_directories(libs/vibrator/include)
 include_directories(libs/vibrator/include/vibrator)
 include_directories(libs/vr/libbroadcastring/include)
@@ -191,9 +152,16 @@ include_directories(libs/vr/libbroadcastring/include/libbroadcastring)
 include_directories(libs/vr/libbufferhub/include)
 include_directories(libs/vr/libbufferhub/include/private)
 include_directories(libs/vr/libbufferhub/include/private/dvr)
+include_directories(libs/vr/libbufferhubqueue/include)
+include_directories(libs/vr/libbufferhubqueue/include/private)
+include_directories(libs/vr/libbufferhubqueue/include/private/dvr)
+include_directories(libs/vr/libdisplay/include)
+include_directories(libs/vr/libdisplay/include/private)
+include_directories(libs/vr/libdisplay/include/private/dvr)
 include_directories(libs/vr/libdvr)
 include_directories(libs/vr/libdvr/include)
 include_directories(libs/vr/libdvr/include/dvr)
+include_directories(libs/vr/libdvr/tests)
 include_directories(libs/vr/libdvrcommon/include)
 include_directories(libs/vr/libdvrcommon/include/private)
 include_directories(libs/vr/libdvrcommon/include/private/dvr)
@@ -220,6 +188,13 @@ include_directories(libs/vr/libperformance/include/private/dvr)
 include_directories(libs/vr/libvr_manager/include)
 include_directories(libs/vr/libvr_manager/include/private)
 include_directories(libs/vr/libvr_manager/include/private/dvr)
+include_directories(libs/vr/libvrflinger)
+include_directories(libs/vr/libvrflinger/include)
+include_directories(libs/vr/libvrflinger/include/dvr)
+include_directories(libs/vr/libvrsensor/include)
+include_directories(libs/vr/libvrsensor/include/dvr)
+include_directories(libs/vr/libvrsensor/include/private)
+include_directories(libs/vr/libvrsensor/include/private/dvr)
 include_directories(opengl/include)
 include_directories(opengl/include/EGL)
 include_directories(opengl/include/ETC1)
@@ -248,10 +223,6 @@ include_directories(services/gpuservice/gpumem/include)
 include_directories(services/gpuservice/gpumem/include/gpumem)
 include_directories(services/gpuservice/gpustats/include)
 include_directories(services/gpuservice/gpustats/include/gpustats)
-include_directories(services/gpuservice/gpuwork/bpfprogs/include)
-include_directories(services/gpuservice/gpuwork/bpfprogs/include/gpuwork)
-include_directories(services/gpuservice/gpuwork/include)
-include_directories(services/gpuservice/gpuwork/include/gpuwork)
 include_directories(services/gpuservice/include)
 include_directories(services/gpuservice/include/gpuservice)
 include_directories(services/gpuservice/tests/unittests)
@@ -267,10 +238,8 @@ include_directories(services/inputflinger/reader/controller)
 include_directories(services/inputflinger/reader/include)
 include_directories(services/inputflinger/reader/mapper)
 include_directories(services/inputflinger/reader/mapper/accumulator)
-include_directories(services/inputflinger/reader/mapper/gestures)
 include_directories(services/inputflinger/reporter)
 include_directories(services/inputflinger/tests)
-include_directories(services/inputflinger/tests/fuzzers)
 include_directories(services/memtrackproxy/include)
 include_directories(services/memtrackproxy/include/memtrackproxy)
 include_directories(services/powermanager/include)
@@ -278,9 +247,6 @@ include_directories(services/powermanager/include/android)
 include_directories(services/schedulerservice/include)
 include_directories(services/schedulerservice/include/schedulerservice)
 include_directories(services/sensorservice)
-include_directories(services/sensorservice/aidl)
-include_directories(services/sensorservice/aidl/include)
-include_directories(services/sensorservice/aidl/include/sensorserviceaidl)
 include_directories(services/sensorservice/hidl)
 include_directories(services/sensorservice/hidl/include)
 include_directories(services/sensorservice/hidl/include/sensorservicehidl)
@@ -293,22 +259,16 @@ include_directories(services/surfaceflinger/CompositionEngine/include/compositio
 include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner)
 include_directories(services/surfaceflinger/CompositionEngine/include/compositionengine/mock)
 include_directories(services/surfaceflinger/CompositionEngine/tests)
-include_directories(services/surfaceflinger/Display)
 include_directories(services/surfaceflinger/DisplayHardware)
 include_directories(services/surfaceflinger/Effects)
 include_directories(services/surfaceflinger/EventLog)
 include_directories(services/surfaceflinger/FrameTimeline)
 include_directories(services/surfaceflinger/FrameTracer)
-include_directories(services/surfaceflinger/FrontEnd)
-include_directories(services/surfaceflinger/fuzzer)
 include_directories(services/surfaceflinger/layerproto/include)
 include_directories(services/surfaceflinger/layerproto/include/layerproto)
 include_directories(services/surfaceflinger/Scheduler)
-include_directories(services/surfaceflinger/Scheduler/include)
-include_directories(services/surfaceflinger/Scheduler/include/scheduler)
-include_directories(services/surfaceflinger/Scheduler/include/scheduler/interface)
-include_directories(services/surfaceflinger/Scheduler/tests)
 include_directories(services/surfaceflinger/tests)
+include_directories(services/surfaceflinger/tests/fakehwc)
 include_directories(services/surfaceflinger/tests/unittests)
 include_directories(services/surfaceflinger/tests/unittests/fake)
 include_directories(services/surfaceflinger/tests/unittests/mock)
@@ -318,9 +278,6 @@ include_directories(services/surfaceflinger/tests/utils)
 include_directories(services/surfaceflinger/TimeStats)
 include_directories(services/surfaceflinger/TimeStats/timestatsproto/include)
 include_directories(services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto)
-include_directories(services/surfaceflinger/Tracing)
-include_directories(services/surfaceflinger/Tracing/tools)
-include_directories(services/surfaceflinger/Utils)
 include_directories(services/utils/include)
 include_directories(services/utils/include/serviceutils)
 include_directories(services/vibratorservice/include)
@@ -329,6 +286,9 @@ include_directories(services/vibratorservice/test)
 include_directories(services/vr/bufferhubd/include)
 include_directories(services/vr/bufferhubd/include/private)
 include_directories(services/vr/bufferhubd/include/private/dvr)
+include_directories(services/vr/hardware_composer)
+include_directories(services/vr/hardware_composer/aidl/android/dvr)
+include_directories(services/vr/hardware_composer/impl)
 include_directories(services/vr/performanced)
 include_directories(services/vr/virtual_touchpad)
 include_directories(services/vr/virtual_touchpad/include)
@@ -340,14 +300,13 @@ include_directories(vulkan/libvulkan)
 include_directories(vulkan/nulldrv)
 include_directories(vulkan/vkjson)
 
-add_executable(native_android14_security_release
+add_executable(native_android12_security_release
         cmds/atrace/atrace.cpp
         cmds/bugreport/bugreport.cpp
         cmds/bugreportz/bugreportz.cpp
         cmds/bugreportz/bugreportz.h
         cmds/bugreportz/bugreportz_test.cpp
         cmds/bugreportz/main.cpp
-        cmds/cmd/fuzzer/cmd_fuzzer.cpp
         cmds/cmd/cmd.cpp
         cmds/cmd/cmd.h
         cmds/cmd/main.cpp
@@ -411,7 +370,6 @@ add_executable(native_android14_security_release
         cmds/installd/tests/binder_test_utils.h
         cmds/installd/tests/installd_cache_test.cpp
         cmds/installd/tests/installd_dexopt_test.cpp
-        cmds/installd/tests/installd_file_test.cpp
         cmds/installd/tests/installd_otapreopt_test.cpp
         cmds/installd/tests/installd_service_test.cpp
         cmds/installd/tests/installd_utils_test.cpp
@@ -444,14 +402,10 @@ add_executable(native_android14_security_release
         cmds/installd/otapreopt_utils.h
         cmds/installd/QuotaUtils.cpp
         cmds/installd/QuotaUtils.h
-        cmds/installd/restorable_file.cpp
-        cmds/installd/restorable_file.h
         cmds/installd/run_dex2oat.cpp
         cmds/installd/run_dex2oat.h
         cmds/installd/run_dex2oat_test.cpp
         cmds/installd/system_properties.h
-        cmds/installd/SysTrace.cpp
-        cmds/installd/SysTrace.h
         cmds/installd/unique_file.cpp
         cmds/installd/unique_file.h
         cmds/installd/utils.cpp
@@ -489,15 +443,20 @@ add_executable(native_android14_security_release
         cmds/rawbu/backup.cpp
         cmds/rss_hwm_reset/rss_hwm_reset.cc
         cmds/service/service.cpp
-        cmds/servicemanager/fuzzers/ServiceManagerTestFuzzer.cpp
         cmds/servicemanager/Access.cpp
         cmds/servicemanager/Access.h
         cmds/servicemanager/main.cpp
         cmds/servicemanager/ServiceManager.cpp
         cmds/servicemanager/ServiceManager.h
-        cmds/servicemanager/ServiceManagerFuzzer.cpp
         cmds/servicemanager/test_sm.cpp
+        cmds/surfacereplayer/replayer/BufferQueueScheduler.cpp
+        cmds/surfacereplayer/replayer/BufferQueueScheduler.h
+        cmds/surfacereplayer/replayer/Color.h
+        cmds/surfacereplayer/replayer/Event.cpp
+        cmds/surfacereplayer/replayer/Event.h
+        cmds/surfacereplayer/replayer/Main.cpp
         cmds/surfacereplayer/replayer/Replayer.cpp
+        cmds/surfacereplayer/replayer/Replayer.h
         headers/media_plugin/media/cas/CasAPI.h
         headers/media_plugin/media/cas/DescramblerAPI.h
         headers/media_plugin/media/drm/DrmAPI.h
@@ -538,14 +497,12 @@ add_executable(native_android14_security_release
         include/android/native_activity.h
         include/android/native_window_jni.h
         include/android/obb.h
-        include/android/performance_hint.h
         include/android/permission_manager.h
         include/android/sensor.h
         include/android/sharedmem.h
         include/android/sharedmem_jni.h
         include/android/storage_manager.h
         include/android/surface_control.h
-        include/android/surface_control_jni.h
         include/android/surface_texture.h
         include/android/surface_texture_jni.h
         include/android/system_fonts.h
@@ -555,51 +512,30 @@ add_executable(native_android14_security_release
         include/attestation/HmacKeyManager.h
         include/audiomanager/AudioManager.h
         include/audiomanager/IAudioManager.h
+        include/binder/Enum.h
         include/diskusage/dirsize.h
-        include/ftl/details/array_traits.h
-        include/ftl/details/cast.h
-        include/ftl/details/concat.h
-        include/ftl/details/future.h
-        include/ftl/details/match.h
-        include/ftl/details/mixins.h
-        include/ftl/details/optional.h
-        include/ftl/details/type_traits.h
-        include/ftl/algorithm.h
-        include/ftl/cast.h
-        include/ftl/concat.h
-        include/ftl/enum.h
-        include/ftl/fake_guard.h
-        include/ftl/flags.h
+        include/ftl/array_traits.h
         include/ftl/future.h
         include/ftl/initializer_list.h
-        include/ftl/match.h
-        include/ftl/mixins.h
-        include/ftl/non_null.h
-        include/ftl/optional.h
-        include/ftl/shared_mutex.h
         include/ftl/small_map.h
         include/ftl/small_vector.h
         include/ftl/static_vector.h
-        include/ftl/string.h
-        include/ftl/unit.h
         include/input/DisplayViewport.h
+        include/input/Flags.h
         include/input/Input.h
+        include/input/InputApplication.h
         include/input/InputDevice.h
         include/input/InputEventLabels.h
         include/input/InputTransport.h
-        include/input/InputVerifier.h
+        include/input/InputWindow.h
         include/input/Keyboard.h
         include/input/KeyCharacterMap.h
         include/input/KeyLayoutMap.h
-        include/input/MotionPredictor.h
-        include/input/PrintTools.h
+        include/input/NamedEnum.h
         include/input/PropertyMap.h
-        include/input/RingBuffer.h
-        include/input/TfLiteMotionPredictor.h
         include/input/TouchVideoFrame.h
         include/input/VelocityControl.h
         include/input/VelocityTracker.h
-        include/input/VirtualInputDevice.h
         include/input/VirtualKeyMap.h
         include/powermanager/PowerHalController.h
         include/powermanager/PowerHalLoader.h
@@ -617,15 +553,9 @@ add_executable(native_android14_security_release
         libs/arect/include/android/rect.h
         libs/attestation/tests/HmacKeyManager_test.cpp
         libs/attestation/HmacKeyManager.cpp
-        libs/battery/LongArrayMultiStateCounter.cpp
-        libs/battery/LongArrayMultiStateCounter.h
-        libs/battery/LongArrayMultiStateCounterTest.cpp
-        libs/battery/MultiStateCounter.h
-        libs/battery/MultiStateCounterTest.cpp
         libs/binder/include/binder/Binder.h
         libs/binder/include/binder/BinderService.h
         libs/binder/include/binder/BpBinder.h
-        libs/binder/include/binder/Delegate.h
         libs/binder/include/binder/Enums.h
         libs/binder/include/binder/IBinder.h
         libs/binder/include/binder/IInterface.h
@@ -647,32 +577,19 @@ add_executable(native_android14_security_release
         libs/binder/include/binder/PermissionController.h
         libs/binder/include/binder/PersistableBundle.h
         libs/binder/include/binder/ProcessState.h
-        libs/binder/include/binder/RecordedTransaction.h
-        libs/binder/include/binder/RpcCertificateFormat.h
-        libs/binder/include/binder/RpcKeyFormat.h
+        libs/binder/include/binder/RpcAddress.h
         libs/binder/include/binder/RpcServer.h
         libs/binder/include/binder/RpcSession.h
-        libs/binder/include/binder/RpcThreads.h
-        libs/binder/include/binder/RpcTransport.h
-        libs/binder/include/binder/RpcTransportRaw.h
         libs/binder/include/binder/SafeInterface.h
         libs/binder/include/binder/Stability.h
         libs/binder/include/binder/Status.h
         libs/binder/include/binder/TextOutput.h
-        libs/binder/include/binder/Trace.h
         libs/binder/include_activitymanager/binder/ActivityManager.h
         libs/binder/include_activitymanager/binder/IActivityManager.h
         libs/binder/include_activitymanager/binder/IUidObserver.h
         libs/binder/include_batterystats/batterystats/IBatteryStats.h
         libs/binder/include_processinfo/processinfo/IProcessInfoService.h
         libs/binder/include_processinfo/processinfo/ProcessInfoService.h
-        libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp
-        libs/binder/include_tls/binder/RpcAuth.h
-        libs/binder/include_tls/binder/RpcCertificateVerifier.h
-        libs/binder/include_tls/binder/RpcTlsUtils.h
-        libs/binder/include_tls/binder/RpcTransportTls.h
-        libs/binder/include_trusty/binder/RpcTransportTipcAndroid.h
-        libs/binder/include_trusty/binder/RpcTrusty.h
         libs/binder/ndk/include_cpp/android/binder_auto_utils.h
         libs/binder/ndk/include_cpp/android/binder_enums.h
         libs/binder/ndk/include_cpp/android/binder_interface_utils.h
@@ -699,7 +616,6 @@ add_executable(native_android14_security_release
         libs/binder/ndk/ibinder.cpp
         libs/binder/ndk/ibinder_internal.h
         libs/binder/ndk/ibinder_jni.cpp
-        libs/binder/ndk/libbinder.cpp
         libs/binder/ndk/parcel.cpp
         libs/binder/ndk/parcel_internal.h
         libs/binder/ndk/parcel_jni.cpp
@@ -709,30 +625,22 @@ add_executable(native_android14_security_release
         libs/binder/ndk/status.cpp
         libs/binder/ndk/status_internal.h
         libs/binder/rust/sys/BinderBindings.hpp
-        libs/binder/rust/tests/parcel_fuzzer/random_parcel/wrappers/RandomParcelWrapper.hpp
         libs/binder/rust/tests/binderRustNdkInteropTest.cpp
         libs/binder/rust/tests/serialization.cpp
         libs/binder/rust/tests/serialization.hpp
-        libs/binder/tests/include_tls_test_utils/binder/RpcTlsTestUtils.h
-        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/libbinder_driver.h
-        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/libbinder_ndk_driver.h
-        libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/random_binder.h
         libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/random_fd.h
         libs/binder/tests/parcel_fuzzer/include_random_parcel/fuzzbinder/random_parcel.h
-        libs/binder/tests/parcel_fuzzer/rust_interface/RandomParcelWrapper.cpp
         libs/binder/tests/parcel_fuzzer/binder.cpp
         libs/binder/tests/parcel_fuzzer/binder.h
         libs/binder/tests/parcel_fuzzer/binder_ndk.cpp
         libs/binder/tests/parcel_fuzzer/binder_ndk.h
         libs/binder/tests/parcel_fuzzer/hwbinder.cpp
         libs/binder/tests/parcel_fuzzer/hwbinder.h
-        libs/binder/tests/parcel_fuzzer/libbinder_driver.cpp
-        libs/binder/tests/parcel_fuzzer/libbinder_ndk_driver.cpp
         libs/binder/tests/parcel_fuzzer/main.cpp
         libs/binder/tests/parcel_fuzzer/parcel_fuzzer.h
-        libs/binder/tests/parcel_fuzzer/random_binder.cpp
         libs/binder/tests/parcel_fuzzer/random_fd.cpp
         libs/binder/tests/parcel_fuzzer/random_parcel.cpp
+        libs/binder/tests/parcel_fuzzer/util.cpp
         libs/binder/tests/parcel_fuzzer/util.h
         libs/binder/tests/rpc_fuzzer/main.cpp
         libs/binder/tests/unit_fuzzers/BinderFuzz.cpp
@@ -745,8 +653,6 @@ add_executable(native_android14_security_release
         libs/binder/tests/unit_fuzzers/MemoryDealerFuzz.cpp
         libs/binder/tests/unit_fuzzers/PersistableBundleFuzz.cpp
         libs/binder/tests/unit_fuzzers/PersistableBundleFuzzFunctions.h
-        libs/binder/tests/unit_fuzzers/RecordedTransactionFileFuzz.cpp
-        libs/binder/tests/unit_fuzzers/RecordedTransactionFuzz.cpp
         libs/binder/tests/unit_fuzzers/StabilityFuzz.cpp
         libs/binder/tests/unit_fuzzers/StabilityFuzzFunctions.h
         libs/binder/tests/unit_fuzzers/StatusFuzz.cpp
@@ -754,66 +660,26 @@ add_executable(native_android14_security_release
         libs/binder/tests/unit_fuzzers/TextOutputFuzz.cpp
         libs/binder/tests/binderAbiHelper.h
         libs/binder/tests/binderAllocationLimits.cpp
-        libs/binder/tests/binderBinderUnitTest.cpp
         libs/binder/tests/binderClearBufTest.cpp
         libs/binder/tests/binderDriverInterfaceTest.cpp
-        libs/binder/tests/binderHostDeviceTest.cpp
-        libs/binder/tests/binderHostDeviceTestService.cpp
         libs/binder/tests/binderLibTest.cpp
-        libs/binder/tests/binderMemoryHeapBaseUnitTest.cpp
         libs/binder/tests/binderParcelBenchmark.cpp
-        libs/binder/tests/binderParcelUnitTest.cpp
-        libs/binder/tests/binderRecordedTransactionTest.cpp
+        libs/binder/tests/binderParcelTest.cpp
         libs/binder/tests/binderRpcBenchmark.cpp
         libs/binder/tests/binderRpcTest.cpp
-        libs/binder/tests/binderRpcTestCommon.cpp
-        libs/binder/tests/binderRpcTestCommon.h
-        libs/binder/tests/binderRpcTestFixture.h
-        libs/binder/tests/binderRpcTestService.cpp
-        libs/binder/tests/binderRpcTestServiceTrusty.cpp
-        libs/binder/tests/binderRpcTestTrusty.cpp
-        libs/binder/tests/binderRpcUniversalTests.cpp
-        libs/binder/tests/binderRpcWireProtocolTest.cpp
         libs/binder/tests/binderSafeInterfaceTest.cpp
         libs/binder/tests/binderStabilityTest.cpp
-        libs/binder/tests/binderStatusUnitTest.cpp
         libs/binder/tests/binderTextOutputTest.cpp
         libs/binder/tests/binderThroughputTest.cpp
-        libs/binder/tests/binderUtilsHostTest.cpp
-        libs/binder/tests/RpcTlsTestUtils.cpp
-        libs/binder/tests/RpcTlsUtilsTest.cpp
         libs/binder/tests/schd-dbg.cpp
-        libs/binder/trusty/include/binder/RpcServerTrusty.h
-        libs/binder/trusty/include/binder/RpcTransportTipcTrusty.h
-        libs/binder/trusty/include/log/log.h
-        libs/binder/trusty/include_mock/lib/tipc/tipc.h
-        libs/binder/trusty/include_mock/lib/tipc/tipc_srv.h
-        libs/binder/trusty/include_mock/lk/err_ptr.h
-        libs/binder/trusty/include_mock/openssl/rand.h
-        libs/binder/trusty/include_mock/uapi/err.h
-        libs/binder/trusty/include_mock/uapi/trusty_uuid.h
-        libs/binder/trusty/include_mock/trusty-gtest.h
-        libs/binder/trusty/include_mock/trusty_ipc.h
-        libs/binder/trusty/include_mock/trusty_log.h
-        libs/binder/trusty/ndk/include/sys/cdefs.h
-        libs/binder/trusty/logging.cpp
-        libs/binder/trusty/OS.cpp
-        libs/binder/trusty/RpcServerTrusty.cpp
-        libs/binder/trusty/RpcTransportTipcTrusty.cpp
-        libs/binder/trusty/socket.cpp
-        libs/binder/trusty/TrustyStatus.cpp
-        libs/binder/trusty/TrustyStatus.h
         libs/binder/ActivityManager.cpp
         libs/binder/Binder.cpp
         libs/binder/binder_module.h
         libs/binder/BpBinder.cpp
         libs/binder/BufferedTextOutput.cpp
         libs/binder/BufferedTextOutput.h
-        libs/binder/BuildFlags.h
         libs/binder/Debug.cpp
         libs/binder/Debug.h
-        libs/binder/FdTrigger.cpp
-        libs/binder/FdTrigger.h
         libs/binder/IActivityManager.cpp
         libs/binder/IBatteryStats.cpp
         libs/binder/IInterface.cpp
@@ -826,12 +692,9 @@ add_executable(native_android14_security_release
         libs/binder/IShellCallback.cpp
         libs/binder/IUidObserver.cpp
         libs/binder/LazyServiceRegistrar.cpp
-        libs/binder/libbinder_rpc_unstable.cpp
         libs/binder/MemoryBase.cpp
         libs/binder/MemoryDealer.cpp
         libs/binder/MemoryHeapBase.cpp
-        libs/binder/OS.cpp
-        libs/binder/OS.h
         libs/binder/Parcel.cpp
         libs/binder/ParcelableHolder.cpp
         libs/binder/ParcelFileDescriptor.cpp
@@ -841,67 +704,41 @@ add_executable(native_android14_security_release
         libs/binder/PersistableBundle.cpp
         libs/binder/ProcessInfoService.cpp
         libs/binder/ProcessState.cpp
-        libs/binder/RecordedTransaction.cpp
+        libs/binder/RpcAddress.cpp
         libs/binder/RpcServer.cpp
         libs/binder/RpcSession.cpp
         libs/binder/RpcSocketAddress.h
         libs/binder/RpcState.cpp
         libs/binder/RpcState.h
-        libs/binder/RpcTlsUtils.cpp
-        libs/binder/RpcTransportRaw.cpp
-        libs/binder/RpcTransportTipcAndroid.cpp
-        libs/binder/RpcTransportTls.cpp
-        libs/binder/RpcTransportUtils.h
-        libs/binder/RpcTrusty.cpp
         libs/binder/RpcWireFormat.h
-        libs/binder/servicedispatcher.cpp
-        libs/binder/ServiceManagerHost.cpp
-        libs/binder/ServiceManagerHost.h
         libs/binder/Stability.cpp
         libs/binder/Static.cpp
         libs/binder/Static.h
         libs/binder/Status.cpp
         libs/binder/TextOutput.cpp
-        libs/binder/Trace.cpp
         libs/binder/Utils.cpp
         libs/binder/Utils.h
-        libs/binder/UtilsHost.cpp
-        libs/binder/UtilsHost.h
         libs/binder/vm_sockets.h
         libs/binderdebug/include/binderdebug/BinderDebug.h
         libs/binderdebug/tests/binderdebug_test.cpp
         libs/binderdebug/BinderDebug.cpp
-        libs/binderdebug/stats.cpp
         libs/binderthreadstate/include/binderthreadstate/CallerUtils.h
         libs/binderthreadstate/test.cpp
         libs/bufferqueueconverter/include/bufferqueueconverter/BufferQueueConverter.h
         libs/bufferqueueconverter/BufferQueueConverter.cpp
-        libs/cputimeinstate/fuzz/cputimeinstate_fuzzer/cputimeinstate_fuzzer.cpp
         libs/cputimeinstate/cputimeinstate.cpp
         libs/cputimeinstate/cputimeinstate.h
         libs/cputimeinstate/testtimeinstate.cpp
         libs/diskusage/dirsize.c
         libs/dumputils/include/dumputils/dump_utils.h
         libs/dumputils/dump_utils.cpp
-        libs/fakeservicemanager/include/fakeservicemanager/FakeServiceManager.h
-        libs/fakeservicemanager/FakeServiceManager.cpp
+        libs/fakeservicemanager/ServiceManager.cpp
+        libs/fakeservicemanager/ServiceManager.h
         libs/fakeservicemanager/test_sm.cpp
-        libs/ftl/algorithm_test.cpp
-        libs/ftl/cast_test.cpp
-        libs/ftl/concat_test.cpp
-        libs/ftl/enum_test.cpp
-        libs/ftl/fake_guard_test.cpp
-        libs/ftl/flags_test.cpp
         libs/ftl/future_test.cpp
-        libs/ftl/match_test.cpp
-        libs/ftl/mixins_test.cpp
-        libs/ftl/non_null_test.cpp
-        libs/ftl/optional_test.cpp
-        libs/ftl/shared_mutex_test.cpp
         libs/ftl/small_map_test.cpp
         libs/ftl/small_vector_test.cpp
         libs/ftl/static_vector_test.cpp
-        libs/ftl/string_test.cpp
         libs/gralloc/types/fuzzer/gralloctypes.cpp
         libs/gralloc/types/fuzzer/gralloctypes.h
         libs/gralloc/types/fuzzer/main.cpp
@@ -926,13 +763,6 @@ add_executable(native_android14_security_release
         libs/gui/bufferqueue/2.0/H2BGraphicBufferProducer.cpp
         libs/gui/bufferqueue/2.0/H2BProducerListener.cpp
         libs/gui/bufferqueue/2.0/types.cpp
-        libs/gui/fuzzer/libgui_bufferQueue_fuzzer.cpp
-        libs/gui/fuzzer/libgui_consumer_fuzzer.cpp
-        libs/gui/fuzzer/libgui_displayEvent_fuzzer.cpp
-        libs/gui/fuzzer/libgui_fuzzer_utils.h
-        libs/gui/fuzzer/libgui_parcelable_fuzzer.cpp
-        libs/gui/fuzzer/libgui_surfaceComposer_fuzzer.cpp
-        libs/gui/fuzzer/libgui_surfaceComposerClient_fuzzer.cpp
         libs/gui/include/gui/bufferqueue/1.0/B2HProducerListener.h
         libs/gui/include/gui/bufferqueue/1.0/Conversion.h
         libs/gui/include/gui/bufferqueue/1.0/H2BGraphicBufferProducer.h
@@ -944,13 +774,12 @@ add_executable(native_android14_security_release
         libs/gui/include/gui/bufferqueue/2.0/H2BGraphicBufferProducer.h
         libs/gui/include/gui/bufferqueue/2.0/H2BProducerListener.h
         libs/gui/include/gui/bufferqueue/2.0/types.h
-        libs/gui/include/gui/fake/BufferData.h
         libs/gui/include/gui/mock/GraphicBufferConsumer.h
         libs/gui/include/gui/mock/GraphicBufferProducer.h
-        libs/gui/include/gui/test/CallbackUtils.h
         libs/gui/include/gui/view/Surface.h
-        libs/gui/include/gui/AidlStatusUtil.h
         libs/gui/include/gui/BLASTBufferQueue.h
+        libs/gui/include/gui/BufferHubConsumer.h
+        libs/gui/include/gui/BufferHubProducer.h
         libs/gui/include/gui/BufferItem.h
         libs/gui/include/gui/BufferItemConsumer.h
         libs/gui/include/gui/BufferQueue.h
@@ -959,51 +788,40 @@ add_executable(native_android14_security_release
         libs/gui/include/gui/BufferQueueDefs.h
         libs/gui/include/gui/BufferQueueProducer.h
         libs/gui/include/gui/BufferSlot.h
-        libs/gui/include/gui/Choreographer.h
-        libs/gui/include/gui/CompositorTiming.h
-        libs/gui/include/gui/constants.h
         libs/gui/include/gui/ConsumerBase.h
         libs/gui/include/gui/CpuConsumer.h
         libs/gui/include/gui/DebugEGLImageTracker.h
-        libs/gui/include/gui/DisplayCaptureArgs.h
         libs/gui/include/gui/DisplayEventDispatcher.h
         libs/gui/include/gui/DisplayEventReceiver.h
-        libs/gui/include/gui/DisplayInfo.h
-        libs/gui/include/gui/FenceMonitor.h
+        libs/gui/include/gui/FrameTimelineInfo.h
         libs/gui/include/gui/FrameTimestamps.h
         libs/gui/include/gui/GLConsumer.h
         libs/gui/include/gui/HdrMetadata.h
         libs/gui/include/gui/IConsumerListener.h
+        libs/gui/include/gui/IDisplayEventConnection.h
         libs/gui/include/gui/IGraphicBufferConsumer.h
         libs/gui/include/gui/IGraphicBufferProducer.h
-        libs/gui/include/gui/InputApplication.h
         libs/gui/include/gui/IProducerListener.h
+        libs/gui/include/gui/IRegionSamplingListener.h
         libs/gui/include/gui/ISurfaceComposer.h
+        libs/gui/include/gui/ISurfaceComposerClient.h
         libs/gui/include/gui/ITransactionCompletedListener.h
         libs/gui/include/gui/JankInfo.h
-        libs/gui/include/gui/LayerCaptureArgs.h
         libs/gui/include/gui/LayerDebugInfo.h
         libs/gui/include/gui/LayerMetadata.h
         libs/gui/include/gui/LayerState.h
-        libs/gui/include/gui/LayerStatePermissions.h
         libs/gui/include/gui/OccupancyTracker.h
         libs/gui/include/gui/ScreenCaptureResults.h
-        libs/gui/include/gui/SpHash.h
         libs/gui/include/gui/StreamSplitter.h
         libs/gui/include/gui/Surface.h
         libs/gui/include/gui/SurfaceComposerClient.h
         libs/gui/include/gui/SurfaceControl.h
         libs/gui/include/gui/SyncScreenCaptureListener.h
         libs/gui/include/gui/TraceUtils.h
-        libs/gui/include/gui/VsyncEventData.h
-        libs/gui/include/gui/WindowInfo.h
-        libs/gui/include/gui/WindowInfosListener.h
-        libs/gui/include/gui/WindowInfosListenerReporter.h
-        libs/gui/include/gui/WindowInfosUpdate.h
+        libs/gui/include/gui/TransactionTracing.h
         libs/gui/include/private/gui/BitTube.h
         libs/gui/include/private/gui/BufferQueueThreadState.h
         libs/gui/include/private/gui/ComposerService.h
-        libs/gui/include/private/gui/ComposerServiceAIDL.h
         libs/gui/include/private/gui/ParcelUtils.h
         libs/gui/include/private/gui/SyncFeatures.h
         libs/gui/mock/GraphicBufferConsumer.cpp
@@ -1011,12 +829,10 @@ add_executable(native_android14_security_release
         libs/gui/tests/BLASTBufferQueue_test.cpp
         libs/gui/tests/BufferItemConsumer_test.cpp
         libs/gui/tests/BufferQueue_test.cpp
-        libs/gui/tests/CompositorTiming_test.cpp
         libs/gui/tests/CpuConsumer_test.cpp
         libs/gui/tests/DisconnectWaiter.h
         libs/gui/tests/DisplayedContentSampling_test.cpp
         libs/gui/tests/DisplayEventStructLayout_test.cpp
-        libs/gui/tests/DisplayInfo_test.cpp
         libs/gui/tests/EndToEndNativeInputTest.cpp
         libs/gui/tests/FillBuffer.cpp
         libs/gui/tests/FillBuffer.h
@@ -1031,6 +847,7 @@ add_executable(native_android14_security_release
         libs/gui/tests/SamplingDemo.cpp
         libs/gui/tests/StreamSplitter_test.cpp
         libs/gui/tests/Surface_test.cpp
+        libs/gui/tests/SurfaceParcelable_test.cpp
         libs/gui/tests/SurfaceTextureClient_test.cpp
         libs/gui/tests/SurfaceTextureFBO.h
         libs/gui/tests/SurfaceTextureFBO_test.cpp
@@ -1044,12 +861,12 @@ add_executable(native_android14_security_release
         libs/gui/tests/SurfaceTextureMultiContextGL_test.cpp
         libs/gui/tests/TextureRenderer.cpp
         libs/gui/tests/TextureRenderer.h
-        libs/gui/tests/VsyncEventData_test.cpp
-        libs/gui/tests/WindowInfo_test.cpp
         libs/gui/view/Surface.cpp
         libs/gui/BatchBufferOps.cpp
         libs/gui/BitTube.cpp
         libs/gui/BLASTBufferQueue.cpp
+        libs/gui/BufferHubConsumer.cpp
+        libs/gui/BufferHubProducer.cpp
         libs/gui/BufferItem.cpp
         libs/gui/BufferItemConsumer.cpp
         libs/gui/BufferQueue.cpp
@@ -1058,30 +875,29 @@ add_executable(native_android14_security_release
         libs/gui/BufferQueueProducer.cpp
         libs/gui/BufferQueueThreadState.cpp
         libs/gui/BufferSlot.cpp
-        libs/gui/Choreographer.cpp
-        libs/gui/CompositorTiming.cpp
         libs/gui/ConsumerBase.cpp
         libs/gui/CpuConsumer.cpp
         libs/gui/DebugEGLImageTracker.cpp
         libs/gui/DisplayEventDispatcher.cpp
         libs/gui/DisplayEventReceiver.cpp
-        libs/gui/DisplayInfo.cpp
-        libs/gui/FenceMonitor.cpp
+        libs/gui/FrameTimelineInfo.cpp
         libs/gui/FrameTimestamps.cpp
         libs/gui/GLConsumer.cpp
         libs/gui/GLConsumerUtils.cpp
         libs/gui/HdrMetadata.cpp
         libs/gui/IConsumerListener.cpp
+        libs/gui/IDisplayEventConnection.cpp
         libs/gui/IGraphicBufferConsumer.cpp
         libs/gui/IGraphicBufferProducer.cpp
         libs/gui/IGraphicBufferProducerFlattenables.cpp
         libs/gui/IProducerListener.cpp
+        libs/gui/IRegionSamplingListener.cpp
         libs/gui/ISurfaceComposer.cpp
+        libs/gui/ISurfaceComposerClient.cpp
         libs/gui/ITransactionCompletedListener.cpp
         libs/gui/LayerDebugInfo.cpp
         libs/gui/LayerMetadata.cpp
         libs/gui/LayerState.cpp
-        libs/gui/LayerStatePermissions.cpp
         libs/gui/OccupancyTracker.cpp
         libs/gui/ScreenCaptureResults.cpp
         libs/gui/StreamSplitter.cpp
@@ -1089,23 +905,19 @@ add_executable(native_android14_security_release
         libs/gui/SurfaceComposerClient.cpp
         libs/gui/SurfaceControl.cpp
         libs/gui/SyncFeatures.cpp
-        libs/gui/VsyncEventData.cpp
-        libs/gui/WindowInfo.cpp
-        libs/gui/WindowInfosListenerReporter.cpp
-        libs/gui/WindowInfosUpdate.cpp
+        libs/gui/TransactionTracing.cpp
         libs/incidentcompanion/include/android/os/IncidentManager.h
         libs/incidentcompanion/src/IncidentManager.cpp
+        libs/input/tests/Flags_test.cpp
         libs/input/tests/IdGenerator_test.cpp
         libs/input/tests/InputChannel_test.cpp
         libs/input/tests/InputDevice_test.cpp
         libs/input/tests/InputEvent_test.cpp
         libs/input/tests/InputPublisherAndConsumer_test.cpp
-        libs/input/tests/MotionPredictor_test.cpp
-        libs/input/tests/RingBuffer_test.cpp
+        libs/input/tests/InputWindow_test.cpp
+        libs/input/tests/NamedEnum_test.cpp
         libs/input/tests/StructLayout_test.cpp
         libs/input/tests/TestHelpers.h
-        libs/input/tests/TfLiteMotionPredictor_test.cpp
-        libs/input/tests/TouchResampling_test.cpp
         libs/input/tests/TouchVideoFrame_test.cpp
         libs/input/tests/VelocityTracker_test.cpp
         libs/input/tests/VerifiedInputEvent_test.cpp
@@ -1113,19 +925,15 @@ add_executable(native_android14_security_release
         libs/input/InputDevice.cpp
         libs/input/InputEventLabels.cpp
         libs/input/InputTransport.cpp
-        libs/input/InputVerifier.cpp
+        libs/input/InputWindow.cpp
         libs/input/Keyboard.cpp
         libs/input/KeyCharacterMap.cpp
         libs/input/KeyLayoutMap.cpp
-        libs/input/MotionPredictor.cpp
-        libs/input/PrintTools.cpp
         libs/input/PropertyMap.cpp
         libs/input/PropertyMap_fuzz.cpp
-        libs/input/TfLiteMotionPredictor.cpp
         libs/input/TouchVideoFrame.cpp
         libs/input/VelocityControl.cpp
         libs/input/VelocityTracker.cpp
-        libs/input/VirtualInputDevice.cpp
         libs/input/VirtualKeyMap.cpp
         libs/math/include/math/half.h
         libs/math/include/math/HashCombine.h
@@ -1161,10 +969,8 @@ add_executable(native_android14_security_release
         libs/nativedisplay/ADisplay.cpp
         libs/nativewindow/include/android/data_space.h
         libs/nativewindow/include/android/hardware_buffer.h
-        libs/nativewindow/include/android/hardware_buffer_aidl.h
         libs/nativewindow/include/android/hdr_metadata.h
         libs/nativewindow/include/android/native_window.h
-        libs/nativewindow/include/android/native_window_aidl.h
         libs/nativewindow/include/apex/window.h
         libs/nativewindow/include/system/window.h
         libs/nativewindow/include/vndk/hardware_buffer.h
@@ -1183,11 +989,6 @@ add_executable(native_android14_security_release
         libs/permission/AppOpsManager.cpp
         libs/permission/IAppOpsCallback.cpp
         libs/permission/IAppOpsService.cpp
-        libs/renderengine/benchmark/Codec.cpp
-        libs/renderengine/benchmark/Flags.cpp
-        libs/renderengine/benchmark/main.cpp
-        libs/renderengine/benchmark/RenderEngineBench.cpp
-        libs/renderengine/benchmark/RenderEngineBench.h
         libs/renderengine/gl/filters/BlurFilter.cpp
         libs/renderengine/gl/filters/BlurFilter.h
         libs/renderengine/gl/filters/GenericProgram.cpp
@@ -1214,20 +1015,16 @@ add_executable(native_android14_security_release
         libs/renderengine/gl/Program.h
         libs/renderengine/gl/ProgramCache.cpp
         libs/renderengine/gl/ProgramCache.h
-        libs/renderengine/include/renderengine/impl/ExternalTexture.h
-        libs/renderengine/include/renderengine/mock/FakeExternalTexture.h
         libs/renderengine/include/renderengine/mock/Framebuffer.h
         libs/renderengine/include/renderengine/mock/Image.h
         libs/renderengine/include/renderengine/mock/RenderEngine.h
         libs/renderengine/include/renderengine/private/Description.h
-        libs/renderengine/include/renderengine/BorderRenderInfo.h
         libs/renderengine/include/renderengine/DisplaySettings.h
         libs/renderengine/include/renderengine/ExternalTexture.h
         libs/renderengine/include/renderengine/Framebuffer.h
         libs/renderengine/include/renderengine/Image.h
         libs/renderengine/include/renderengine/LayerSettings.h
         libs/renderengine/include/renderengine/Mesh.h
-        libs/renderengine/include/renderengine/PrintMatrix.h
         libs/renderengine/include/renderengine/RenderEngine.h
         libs/renderengine/include/renderengine/Texture.h
         libs/renderengine/mock/Framebuffer.cpp
@@ -1243,10 +1040,6 @@ add_executable(native_android14_security_release
         libs/renderengine/skia/debug/SkiaMemoryReporter.h
         libs/renderengine/skia/filters/BlurFilter.cpp
         libs/renderengine/skia/filters/BlurFilter.h
-        libs/renderengine/skia/filters/GaussianBlurFilter.cpp
-        libs/renderengine/skia/filters/GaussianBlurFilter.h
-        libs/renderengine/skia/filters/KawaseBlurFilter.cpp
-        libs/renderengine/skia/filters/KawaseBlurFilter.h
         libs/renderengine/skia/filters/LinearEffect.cpp
         libs/renderengine/skia/filters/LinearEffect.h
         libs/renderengine/skia/filters/StretchShaderFactory.cpp
@@ -1261,10 +1054,6 @@ add_executable(native_android14_security_release
         libs/renderengine/skia/SkiaGLRenderEngine.h
         libs/renderengine/skia/SkiaRenderEngine.cpp
         libs/renderengine/skia/SkiaRenderEngine.h
-        libs/renderengine/skia/SkiaVkRenderEngine.cpp
-        libs/renderengine/skia/SkiaVkRenderEngine.h
-        libs/renderengine/tests/DisplaySettingsTest.cpp
-        libs/renderengine/tests/LayerSettingsTest.cpp
         libs/renderengine/tests/RenderEngineTest.cpp
         libs/renderengine/tests/RenderEngineThreadedTest.cpp
         libs/renderengine/threaded/RenderEngineThreaded.cpp
@@ -1274,8 +1063,6 @@ add_executable(native_android14_security_release
         libs/renderengine/Mesh.cpp
         libs/renderengine/RenderEngine.cpp
         libs/renderengine/Texture.cpp
-        libs/sensor/fuzz/bittube_fuzzer/bittube_fuzzer.cpp
-        libs/sensor/fuzz/sensor_fuzzer/sensor_fuzzer.cpp
         libs/sensor/include/sensor/BitTube.h
         libs/sensor/include/sensor/ISensorEventConnection.h
         libs/sensor/include/sensor/ISensorServer.h
@@ -1292,31 +1079,21 @@ add_executable(native_android14_security_release
         libs/sensor/SensorManager.cpp
         libs/sensorprivacy/include/sensorprivacy/SensorPrivacyManager.h
         libs/sensorprivacy/SensorPrivacyManager.cpp
-        libs/shaders/include/shaders/shaders.h
-        libs/shaders/tests/shaders_test.cpp
-        libs/shaders/shaders.cpp
-        libs/tonemap/include/tonemap/tonemap.h
-        libs/tonemap/tests/tonemap_test.cpp
-        libs/tonemap/tonemap.cpp
-        libs/ui/include/ui/fuzzer/FuzzableDataspaces.h
         libs/ui/include/ui/ANativeObjectBase.h
         libs/ui/include/ui/BlurRegion.h
         libs/ui/include/ui/BufferHubDefs.h
         libs/ui/include/ui/BufferQueueDefs.h
-        libs/ui/include/ui/ColorMode.h
         libs/ui/include/ui/ConfigStoreTypes.h
         libs/ui/include/ui/DebugUtils.h
         libs/ui/include/ui/DeviceProductInfo.h
         libs/ui/include/ui/DisplayedFrameStats.h
         libs/ui/include/ui/DisplayId.h
-        libs/ui/include/ui/DisplayIdentification.h
         libs/ui/include/ui/DisplayMode.h
         libs/ui/include/ui/DisplayState.h
         libs/ui/include/ui/DisplayStatInfo.h
         libs/ui/include/ui/DynamicDisplayInfo.h
         libs/ui/include/ui/FatVector.h
         libs/ui/include/ui/Fence.h
-        libs/ui/include/ui/FenceResult.h
         libs/ui/include/ui/FenceTime.h
         libs/ui/include/ui/FloatRect.h
         libs/ui/include/ui/FrameStats.h
@@ -1324,13 +1101,11 @@ add_executable(native_android14_security_release
         libs/ui/include/ui/Gralloc2.h
         libs/ui/include/ui/Gralloc3.h
         libs/ui/include/ui/Gralloc4.h
-        libs/ui/include/ui/Gralloc5.h
         libs/ui/include/ui/GraphicBuffer.h
         libs/ui/include/ui/GraphicBufferAllocator.h
         libs/ui/include/ui/GraphicBufferMapper.h
         libs/ui/include/ui/GraphicTypes.h
         libs/ui/include/ui/HdrCapabilities.h
-        libs/ui/include/ui/LayerStack.h
         libs/ui/include/ui/PixelFormat.h
         libs/ui/include/ui/Point.h
         libs/ui/include/ui/PublicFormat.h
@@ -1341,32 +1116,26 @@ add_executable(native_android14_security_release
         libs/ui/include/ui/StaticDisplayInfo.h
         libs/ui/include/ui/StretchEffect.h
         libs/ui/include/ui/Transform.h
-        libs/ui/include_mock/ui/MockFence.h
         libs/ui/include_private/ui/FlattenableHelpers.h
         libs/ui/include_private/ui/RegionHelper.h
         libs/ui/include_types/ui/ColorSpace.h
-        libs/ui/include_types/ui/DataspaceUtils.h
         libs/ui/include_vndk/ui/ConfigStoreTypes.h
         libs/ui/tests/mock/MockGrallocAllocator.cpp
         libs/ui/tests/mock/MockGrallocAllocator.h
         libs/ui/tests/colorspace_test.cpp
-        libs/ui/tests/DataspaceUtils_test.cpp
         libs/ui/tests/DisplayId_test.cpp
-        libs/ui/tests/DisplayIdentification_test.cpp
         libs/ui/tests/FlattenableHelpers_test.cpp
         libs/ui/tests/GraphicBuffer_test.cpp
         libs/ui/tests/GraphicBufferAllocator_test.cpp
         libs/ui/tests/GraphicBufferOverBinder_test.cpp
-        libs/ui/tests/MockFence_test.cpp
         libs/ui/tests/Rect_test.cpp
         libs/ui/tests/Region_test.cpp
         libs/ui/tests/Size_test.cpp
-        libs/ui/tests/Transform_test.cpp
         libs/ui/tools/lutgen.cpp
         libs/ui/ColorSpace.cpp
         libs/ui/DebugUtils.cpp
         libs/ui/DeviceProductInfo.cpp
-        libs/ui/DisplayIdentification.cpp
+        libs/ui/DisplayMode.cpp
         libs/ui/DynamicDisplayInfo.cpp
         libs/ui/Fence.cpp
         libs/ui/FenceTime.cpp
@@ -1375,39 +1144,17 @@ add_executable(native_android14_security_release
         libs/ui/Gralloc2.cpp
         libs/ui/Gralloc3.cpp
         libs/ui/Gralloc4.cpp
-        libs/ui/Gralloc5.cpp
         libs/ui/GraphicBuffer.cpp
         libs/ui/GraphicBufferAllocator.cpp
         libs/ui/GraphicBufferMapper.cpp
+        libs/ui/HdrCapabilities.cpp
         libs/ui/PixelFormat.cpp
         libs/ui/PublicFormat.cpp
         libs/ui/Rect.cpp
         libs/ui/Region.cpp
-        libs/ui/StaticAsserts.cpp
+        libs/ui/Size.cpp
+        libs/ui/StaticDisplayInfo.cpp
         libs/ui/Transform.cpp
-        libs/ultrahdr/fuzzer/ultrahdr_dec_fuzzer.cpp
-        libs/ultrahdr/fuzzer/ultrahdr_enc_fuzzer.cpp
-        libs/ultrahdr/include/ultrahdr/gainmapmath.h
-        libs/ultrahdr/include/ultrahdr/icc.h
-        libs/ultrahdr/include/ultrahdr/jpegdecoderhelper.h
-        libs/ultrahdr/include/ultrahdr/jpegencoderhelper.h
-        libs/ultrahdr/include/ultrahdr/jpegr.h
-        libs/ultrahdr/include/ultrahdr/jpegrerrorcode.h
-        libs/ultrahdr/include/ultrahdr/jpegrutils.h
-        libs/ultrahdr/include/ultrahdr/multipictureformat.h
-        libs/ultrahdr/include/ultrahdr/ultrahdr.h
-        libs/ultrahdr/tests/gainmapmath_test.cpp
-        libs/ultrahdr/tests/icchelper_test.cpp
-        libs/ultrahdr/tests/jpegdecoderhelper_test.cpp
-        libs/ultrahdr/tests/jpegencoderhelper_test.cpp
-        libs/ultrahdr/tests/jpegr_test.cpp
-        libs/ultrahdr/gainmapmath.cpp
-        libs/ultrahdr/icc.cpp
-        libs/ultrahdr/jpegdecoderhelper.cpp
-        libs/ultrahdr/jpegencoderhelper.cpp
-        libs/ultrahdr/jpegr.cpp
-        libs/ultrahdr/jpegrutils.cpp
-        libs/ultrahdr/multipictureformat.cpp
         libs/vibrator/fuzzer/vibrator_fuzzer.cpp
         libs/vibrator/include/vibrator/ExternalVibration.h
         libs/vibrator/include/vibrator/ExternalVibrationUtils.h
@@ -1428,6 +1175,24 @@ add_executable(native_android14_security_release
         libs/vr/libbufferhub/consumer_buffer.cpp
         libs/vr/libbufferhub/ion_buffer.cpp
         libs/vr/libbufferhub/producer_buffer.cpp
+        libs/vr/libbufferhubqueue/benchmarks/buffer_transport_benchmark.cpp
+        libs/vr/libbufferhubqueue/include/private/dvr/buffer_hub_queue_client.h
+        libs/vr/libbufferhubqueue/include/private/dvr/buffer_hub_queue_parcelable.h
+        libs/vr/libbufferhubqueue/include/private/dvr/epoll_file_descriptor.h
+        libs/vr/libbufferhubqueue/tests/buffer_hub_queue-test.cpp
+        libs/vr/libbufferhubqueue/tests/buffer_hub_queue_producer-test.cpp
+        libs/vr/libbufferhubqueue/buffer_hub_queue_client.cpp
+        libs/vr/libbufferhubqueue/buffer_hub_queue_parcelable.cpp
+        libs/vr/libdisplay/include/private/dvr/display_client.h
+        libs/vr/libdisplay/include/private/dvr/display_manager_client.h
+        libs/vr/libdisplay/include/private/dvr/display_protocol.h
+        libs/vr/libdisplay/include/private/dvr/shared_buffer_helpers.h
+        libs/vr/libdisplay/include/private/dvr/vsync_service.h
+        libs/vr/libdisplay/display_client.cpp
+        libs/vr/libdisplay/display_manager_client.cpp
+        libs/vr/libdisplay/display_protocol.cpp
+        libs/vr/libdisplay/shared_buffer_helpers.cpp
+        libs/vr/libdisplay/vsync_service.cpp
         libs/vr/libdvr/include/dvr/dvr_api.h
         libs/vr/libdvr/include/dvr/dvr_api_entries.h
         libs/vr/libdvr/include/dvr/dvr_buffer.h
@@ -1446,6 +1211,24 @@ add_executable(native_android14_security_release
         libs/vr/libdvr/include/dvr/dvr_tracking.h
         libs/vr/libdvr/include/dvr/dvr_tracking_types.h
         libs/vr/libdvr/include/dvr/dvr_vsync.h
+        libs/vr/libdvr/tests/dvr_api_test.h
+        libs/vr/libdvr/tests/dvr_buffer_queue-test.cpp
+        libs/vr/libdvr/tests/dvr_display-test.cpp
+        libs/vr/libdvr/tests/dvr_display_manager-test.cpp
+        libs/vr/libdvr/tests/dvr_named_buffer-test.cpp
+        libs/vr/libdvr/tests/dvr_tracking-test.cpp
+        libs/vr/libdvr/dvr_api.cpp
+        libs/vr/libdvr/dvr_buffer.cpp
+        libs/vr/libdvr/dvr_buffer_queue.cpp
+        libs/vr/libdvr/dvr_buffer_queue_internal.h
+        libs/vr/libdvr/dvr_configuration_data.cpp
+        libs/vr/libdvr/dvr_display_manager.cpp
+        libs/vr/libdvr/dvr_hardware_composer_client.cpp
+        libs/vr/libdvr/dvr_internal.h
+        libs/vr/libdvr/dvr_performance.cpp
+        libs/vr/libdvr/dvr_pose.cpp
+        libs/vr/libdvr/dvr_surface.cpp
+        libs/vr/libdvr/dvr_tracking.cpp
         libs/vr/libdvrcommon/include/private/dvr/test/test_macros.h
         libs/vr/libdvrcommon/include/private/dvr/benchmark.h
         libs/vr/libdvrcommon/include/private/dvr/clock_ns.h
@@ -1558,6 +1341,28 @@ add_executable(native_android14_security_release
         libs/vr/libvr_manager/include/private/dvr/trusted_uids.h
         libs/vr/libvr_manager/trusted_uids.cpp
         libs/vr/libvr_manager/vr_manager.cpp
+        libs/vr/libvrflinger/include/dvr/vr_flinger.h
+        libs/vr/libvrflinger/tests/vrflinger_test.cpp
+        libs/vr/libvrflinger/acquired_buffer.cpp
+        libs/vr/libvrflinger/acquired_buffer.h
+        libs/vr/libvrflinger/display_manager_service.cpp
+        libs/vr/libvrflinger/display_manager_service.h
+        libs/vr/libvrflinger/display_service.cpp
+        libs/vr/libvrflinger/display_service.h
+        libs/vr/libvrflinger/display_surface.cpp
+        libs/vr/libvrflinger/display_surface.h
+        libs/vr/libvrflinger/epoll_event_dispatcher.cpp
+        libs/vr/libvrflinger/epoll_event_dispatcher.h
+        libs/vr/libvrflinger/hardware_composer.cpp
+        libs/vr/libvrflinger/hardware_composer.h
+        libs/vr/libvrflinger/hwc_types.h
+        libs/vr/libvrflinger/vr_flinger.cpp
+        libs/vr/libvrsensor/include/dvr/pose_client.h
+        libs/vr/libvrsensor/include/private/dvr/latency_model.h
+        libs/vr/libvrsensor/include/private/dvr/pose-ipc.h
+        libs/vr/libvrsensor/include/private/dvr/pose_client_internal.h
+        libs/vr/libvrsensor/latency_model.cpp
+        libs/vr/libvrsensor/pose_client.cpp
         opengl/include/EGL/egl.h
         opengl/include/EGL/eglext.h
         opengl/include/EGL/eglext_angle.h
@@ -1577,7 +1382,6 @@ add_executable(native_android14_security_release
         opengl/include/GLES3/gl3ext.h
         opengl/include/GLES3/gl3platform.h
         opengl/include/KHR/khrplatform.h
-        opengl/libs/EGL/fuzzer/MultifileBlobCache_fuzzer.cpp
         opengl/libs/EGL/include/private/EGL/cache.h
         opengl/libs/EGL/include/private/EGL/display.h
         opengl/libs/EGL/BlobCache.cpp
@@ -1607,9 +1411,6 @@ add_executable(native_android14_security_release
         opengl/libs/EGL/getProcAddress.cpp
         opengl/libs/EGL/Loader.cpp
         opengl/libs/EGL/Loader.h
-        opengl/libs/EGL/MultifileBlobCache.cpp
-        opengl/libs/EGL/MultifileBlobCache.h
-        opengl/libs/EGL/MultifileBlobCache_test.cpp
         opengl/libs/ETC1/etc1.cpp
         opengl/libs/GLES2/gl2.cpp
         opengl/libs/GLES_CM/gl.cpp
@@ -1731,15 +1532,11 @@ add_executable(native_android14_security_release
         services/displayservice/include/displayservice/DisplayService.h
         services/displayservice/DisplayEventReceiver.cpp
         services/displayservice/DisplayService.cpp
-        services/gpuservice/bpfprogs/gpuMem.c
+        services/gpuservice/bpfprogs/gpu_mem.c
         services/gpuservice/gpumem/include/gpumem/GpuMem.h
         services/gpuservice/gpumem/GpuMem.cpp
         services/gpuservice/gpustats/include/gpustats/GpuStats.h
         services/gpuservice/gpustats/GpuStats.cpp
-        services/gpuservice/gpuwork/bpfprogs/include/gpuwork/gpuWork.h
-        services/gpuservice/gpuwork/bpfprogs/gpuWork.c
-        services/gpuservice/gpuwork/include/gpuwork/GpuWork.h
-        services/gpuservice/gpuwork/GpuWork.cpp
         services/gpuservice/include/gpuservice/GpuService.h
         services/gpuservice/tests/unittests/GpuMemTest.cpp
         services/gpuservice/tests/unittests/GpuMemTracerTest.cpp
@@ -1761,8 +1558,6 @@ add_executable(native_android14_security_release
         services/inputflinger/dispatcher/CancelationOptions.h
         services/inputflinger/dispatcher/Connection.cpp
         services/inputflinger/dispatcher/Connection.h
-        services/inputflinger/dispatcher/DebugConfig.cpp
-        services/inputflinger/dispatcher/DebugConfig.h
         services/inputflinger/dispatcher/DragState.cpp
         services/inputflinger/dispatcher/DragState.h
         services/inputflinger/dispatcher/Entry.cpp
@@ -1786,7 +1581,6 @@ add_executable(native_android14_security_release
         services/inputflinger/dispatcher/LatencyTracker.h
         services/inputflinger/dispatcher/Monitor.cpp
         services/inputflinger/dispatcher/Monitor.h
-        services/inputflinger/dispatcher/TouchedWindow.cpp
         services/inputflinger/dispatcher/TouchedWindow.h
         services/inputflinger/dispatcher/TouchState.cpp
         services/inputflinger/dispatcher/TouchState.h
@@ -1801,9 +1595,7 @@ add_executable(native_android14_security_release
         services/inputflinger/include/InputReaderBase.h
         services/inputflinger/include/InputReaderFactory.h
         services/inputflinger/include/InputThread.h
-        services/inputflinger/include/NotifyArgs.h
         services/inputflinger/include/PointerControllerInterface.h
-        services/inputflinger/include/UnwantedInteractionBlockerInterface.h
         services/inputflinger/include/VibrationElement.h
         services/inputflinger/reader/controller/PeripheralController.cpp
         services/inputflinger/reader/controller/PeripheralController.h
@@ -1818,23 +1610,10 @@ add_executable(native_android14_security_release
         services/inputflinger/reader/mapper/accumulator/CursorButtonAccumulator.h
         services/inputflinger/reader/mapper/accumulator/CursorScrollAccumulator.cpp
         services/inputflinger/reader/mapper/accumulator/CursorScrollAccumulator.h
-        services/inputflinger/reader/mapper/accumulator/HidUsageAccumulator.cpp
-        services/inputflinger/reader/mapper/accumulator/HidUsageAccumulator.h
-        services/inputflinger/reader/mapper/accumulator/MultiTouchMotionAccumulator.cpp
-        services/inputflinger/reader/mapper/accumulator/MultiTouchMotionAccumulator.h
         services/inputflinger/reader/mapper/accumulator/SingleTouchMotionAccumulator.cpp
         services/inputflinger/reader/mapper/accumulator/SingleTouchMotionAccumulator.h
         services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.cpp
         services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.h
-        services/inputflinger/reader/mapper/gestures/GestureConverter.cpp
-        services/inputflinger/reader/mapper/gestures/GestureConverter.h
-        services/inputflinger/reader/mapper/gestures/GesturesLogging.cpp
-        services/inputflinger/reader/mapper/gestures/HardwareStateConverter.cpp
-        services/inputflinger/reader/mapper/gestures/HardwareStateConverter.h
-        services/inputflinger/reader/mapper/gestures/PropertyProvider.cpp
-        services/inputflinger/reader/mapper/gestures/PropertyProvider.h
-        services/inputflinger/reader/mapper/CapturedTouchpadEventConverter.cpp
-        services/inputflinger/reader/mapper/CapturedTouchpadEventConverter.h
         services/inputflinger/reader/mapper/CursorInputMapper.cpp
         services/inputflinger/reader/mapper/CursorInputMapper.h
         services/inputflinger/reader/mapper/ExternalStylusInputMapper.cpp
@@ -1855,84 +1634,43 @@ add_executable(native_android14_security_release
         services/inputflinger/reader/mapper/SingleTouchInputMapper.h
         services/inputflinger/reader/mapper/SwitchInputMapper.cpp
         services/inputflinger/reader/mapper/SwitchInputMapper.h
-        services/inputflinger/reader/mapper/TouchCursorInputMapperCommon.cpp
         services/inputflinger/reader/mapper/TouchCursorInputMapperCommon.h
         services/inputflinger/reader/mapper/TouchInputMapper.cpp
         services/inputflinger/reader/mapper/TouchInputMapper.h
-        services/inputflinger/reader/mapper/TouchpadInputMapper.cpp
-        services/inputflinger/reader/mapper/TouchpadInputMapper.h
         services/inputflinger/reader/mapper/VibratorInputMapper.cpp
         services/inputflinger/reader/mapper/VibratorInputMapper.h
         services/inputflinger/reader/EventHub.cpp
         services/inputflinger/reader/InputDevice.cpp
         services/inputflinger/reader/InputReader.cpp
         services/inputflinger/reader/InputReaderFactory.cpp
-        services/inputflinger/reader/Macros.cpp
         services/inputflinger/reader/Macros.h
         services/inputflinger/reader/TouchVideoDevice.cpp
         services/inputflinger/reporter/InputReporter.cpp
         services/inputflinger/reporter/InputReporterInterface.h
-        services/inputflinger/tests/fuzzers/BlockingQueueFuzzer.cpp
-        services/inputflinger/tests/fuzzers/CursorInputFuzzer.cpp
-        services/inputflinger/tests/fuzzers/FuzzContainer.h
-        services/inputflinger/tests/fuzzers/InputClassifierFuzzer.cpp
-        services/inputflinger/tests/fuzzers/InputReaderFuzzer.cpp
-        services/inputflinger/tests/fuzzers/KeyboardInputFuzzer.cpp
-        services/inputflinger/tests/fuzzers/LatencyTrackerFuzzer.cpp
-        services/inputflinger/tests/fuzzers/MapperHelpers.h
-        services/inputflinger/tests/fuzzers/MultiTouchInputFuzzer.cpp
-        services/inputflinger/tests/fuzzers/SwitchInputFuzzer.cpp
-        services/inputflinger/tests/fuzzers/ThreadSafeFuzzedDataProvider.h
         services/inputflinger/tests/AnrTracker_test.cpp
         services/inputflinger/tests/BlockingQueue_test.cpp
-        services/inputflinger/tests/CapturedTouchpadEventConverter_test.cpp
-        services/inputflinger/tests/CursorInputMapper_test.cpp
         services/inputflinger/tests/EventHub_test.cpp
-        services/inputflinger/tests/FakeEventHub.cpp
-        services/inputflinger/tests/FakeEventHub.h
-        services/inputflinger/tests/FakeInputReaderPolicy.cpp
-        services/inputflinger/tests/FakeInputReaderPolicy.h
-        services/inputflinger/tests/FakePointerController.cpp
-        services/inputflinger/tests/FakePointerController.h
         services/inputflinger/tests/FocusResolver_test.cpp
-        services/inputflinger/tests/GestureConverter_test.cpp
-        services/inputflinger/tests/HardwareStateConverter_test.cpp
+        services/inputflinger/tests/InputClassifier_test.cpp
+        services/inputflinger/tests/InputClassifierConverter_test.cpp
         services/inputflinger/tests/InputDispatcher_test.cpp
-        services/inputflinger/tests/InputMapperTest.cpp
-        services/inputflinger/tests/InputMapperTest.h
-        services/inputflinger/tests/InputProcessor_test.cpp
-        services/inputflinger/tests/InputProcessorConverter_test.cpp
+        services/inputflinger/tests/InputFlingerService_test.cpp
         services/inputflinger/tests/InputReader_test.cpp
-        services/inputflinger/tests/InstrumentedInputReader.cpp
-        services/inputflinger/tests/InstrumentedInputReader.h
-        services/inputflinger/tests/InterfaceMocks.h
         services/inputflinger/tests/LatencyTracker_test.cpp
-        services/inputflinger/tests/NotifyArgs_test.cpp
-        services/inputflinger/tests/PreferStylusOverTouch_test.cpp
-        services/inputflinger/tests/PropertyProvider_test.cpp
-        services/inputflinger/tests/TestConstants.h
         services/inputflinger/tests/TestInputListener.cpp
         services/inputflinger/tests/TestInputListener.h
-        services/inputflinger/tests/TestInputListenerMatchers.h
-        services/inputflinger/tests/TouchpadInputMapper_test.cpp
         services/inputflinger/tests/UinputDevice.cpp
         services/inputflinger/tests/UinputDevice.h
-        services/inputflinger/tests/UnwantedInteractionBlocker_test.cpp
         services/inputflinger/BlockingQueue.h
-        services/inputflinger/InputCommonConverter.cpp
-        services/inputflinger/InputCommonConverter.h
+        services/inputflinger/InputClassifier.cpp
+        services/inputflinger/InputClassifier.h
+        services/inputflinger/InputClassifierConverter.cpp
+        services/inputflinger/InputClassifierConverter.h
         services/inputflinger/InputListener.cpp
         services/inputflinger/InputManager.cpp
         services/inputflinger/InputManager.h
-        services/inputflinger/InputProcessor.cpp
-        services/inputflinger/InputProcessor.h
         services/inputflinger/InputReaderBase.cpp
         services/inputflinger/InputThread.cpp
-        services/inputflinger/NotifyArgs.cpp
-        services/inputflinger/PreferStylusOverTouchBlocker.cpp
-        services/inputflinger/PreferStylusOverTouchBlocker.h
-        services/inputflinger/UnwantedInteractionBlocker.cpp
-        services/inputflinger/UnwantedInteractionBlocker.h
         services/inputflinger/VibrationElement.cpp
         services/memtrackproxy/include/memtrackproxy/MemtrackProxy.h
         services/memtrackproxy/test/MemtrackProxyTest.cpp
@@ -1955,9 +1693,6 @@ add_executable(native_android14_security_release
         services/powermanager/tests/PowerHalWrapperAidlTest.cpp
         services/powermanager/tests/PowerHalWrapperHidlV1_0Test.cpp
         services/powermanager/tests/PowerHalWrapperHidlV1_1Test.cpp
-        services/powermanager/tests/PowerHalWrapperHidlV1_2Test.cpp
-        services/powermanager/tests/PowerHalWrapperHidlV1_3Test.cpp
-        services/powermanager/tests/WorkSourceTest.cpp
         services/powermanager/BatterySaverPolicyConfig.cpp
         services/powermanager/CoolingDevice.cpp
         services/powermanager/ParcelDuration.cpp
@@ -1969,15 +1704,6 @@ add_executable(native_android14_security_release
         services/powermanager/WorkSource.cpp
         services/schedulerservice/include/schedulerservice/SchedulingPolicyService.h
         services/schedulerservice/SchedulingPolicyService.cpp
-        services/sensorservice/aidl/fuzzer/fuzzer.cpp
-        services/sensorservice/aidl/include/sensorserviceaidl/SensorManagerAidl.h
-        services/sensorservice/aidl/DirectReportChannel.cpp
-        services/sensorservice/aidl/DirectReportChannel.h
-        services/sensorservice/aidl/EventQueue.cpp
-        services/sensorservice/aidl/EventQueue.h
-        services/sensorservice/aidl/SensorManager.cpp
-        services/sensorservice/aidl/utils.cpp
-        services/sensorservice/aidl/utils.h
         services/sensorservice/hidl/include/sensorservicehidl/SensorManager.h
         services/sensorservice/hidl/DirectReportChannel.cpp
         services/sensorservice/hidl/DirectReportChannel.h
@@ -1987,8 +1713,6 @@ add_executable(native_android14_security_release
         services/sensorservice/hidl/utils.cpp
         services/sensorservice/hidl/utils.h
         services/sensorservice/tests/sensorservicetest.cpp
-        services/sensorservice/AidlSensorHalWrapper.cpp
-        services/sensorservice/AidlSensorHalWrapper.h
         services/sensorservice/BatteryService.cpp
         services/sensorservice/BatteryService.h
         services/sensorservice/CorrectedGyroSensor.cpp
@@ -1997,11 +1721,6 @@ add_executable(native_android14_security_release
         services/sensorservice/Fusion.h
         services/sensorservice/GravitySensor.cpp
         services/sensorservice/GravitySensor.h
-        services/sensorservice/HidlSensorHalWrapper.cpp
-        services/sensorservice/HidlSensorHalWrapper.h
-        services/sensorservice/ISensorHalWrapper.h
-        services/sensorservice/LimitedAxesImuSensor.cpp
-        services/sensorservice/LimitedAxesImuSensor.h
         services/sensorservice/LinearAccelerationSensor.cpp
         services/sensorservice/LinearAccelerationSensor.h
         services/sensorservice/main_sensorservice.cpp
@@ -2052,8 +1771,6 @@ add_executable(native_android14_security_release
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Display.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/DisplayColorProfile.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/DumpHelpers.h
-        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/GpuCompositionResult.h
-        services/surfaceflinger/CompositionEngine/include/compositionengine/impl/HwcAsyncWorker.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/HwcBufferCache.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/Output.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/OutputCompositionState.h
@@ -2074,7 +1791,6 @@ add_executable(native_android14_security_release
         services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayColorProfile.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/DisplayCreationArgs.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/DisplaySurface.h
-        services/surfaceflinger/CompositionEngine/include/compositionengine/Feature.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFE.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/LayerFECompositionState.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/Output.h
@@ -2104,7 +1820,6 @@ add_executable(native_android14_security_release
         services/surfaceflinger/CompositionEngine/src/DisplayColorProfile.cpp
         services/surfaceflinger/CompositionEngine/src/DisplaySurface.cpp
         services/surfaceflinger/CompositionEngine/src/DumpHelpers.cpp
-        services/surfaceflinger/CompositionEngine/src/HwcAsyncWorker.cpp
         services/surfaceflinger/CompositionEngine/src/HwcBufferCache.cpp
         services/surfaceflinger/CompositionEngine/src/LayerFECompositionState.cpp
         services/surfaceflinger/CompositionEngine/src/Output.cpp
@@ -2133,21 +1848,14 @@ add_executable(native_android14_security_release
         services/surfaceflinger/CompositionEngine/tests/ProjectionSpaceTest.cpp
         services/surfaceflinger/CompositionEngine/tests/RegionMatcher.h
         services/surfaceflinger/CompositionEngine/tests/RenderSurfaceTest.cpp
-        services/surfaceflinger/Display/DisplayMap.h
-        services/surfaceflinger/Display/DisplayModeRequest.h
-        services/surfaceflinger/Display/DisplaySnapshot.cpp
-        services/surfaceflinger/Display/DisplaySnapshot.h
-        services/surfaceflinger/Display/PhysicalDisplay.h
-        services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp
-        services/surfaceflinger/DisplayHardware/AidlComposerHal.h
         services/surfaceflinger/DisplayHardware/ComposerHal.cpp
         services/surfaceflinger/DisplayHardware/ComposerHal.h
+        services/surfaceflinger/DisplayHardware/DisplayIdentification.cpp
+        services/surfaceflinger/DisplayHardware/DisplayIdentification.h
         services/surfaceflinger/DisplayHardware/DisplayMode.h
         services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp
         services/surfaceflinger/DisplayHardware/FramebufferSurface.h
         services/surfaceflinger/DisplayHardware/Hal.h
-        services/surfaceflinger/DisplayHardware/HidlComposerHal.cpp
-        services/surfaceflinger/DisplayHardware/HidlComposerHal.h
         services/surfaceflinger/DisplayHardware/HWC2.cpp
         services/surfaceflinger/DisplayHardware/HWC2.h
         services/surfaceflinger/DisplayHardware/HWComposer.cpp
@@ -2164,61 +1872,14 @@ add_executable(native_android14_security_release
         services/surfaceflinger/FrameTimeline/FrameTimeline.h
         services/surfaceflinger/FrameTracer/FrameTracer.cpp
         services/surfaceflinger/FrameTracer/FrameTracer.h
-        services/surfaceflinger/FrontEnd/DisplayInfo.h
-        services/surfaceflinger/FrontEnd/LayerCreationArgs.cpp
-        services/surfaceflinger/FrontEnd/LayerCreationArgs.h
-        services/surfaceflinger/FrontEnd/LayerHandle.cpp
-        services/surfaceflinger/FrontEnd/LayerHandle.h
-        services/surfaceflinger/FrontEnd/LayerHierarchy.cpp
-        services/surfaceflinger/FrontEnd/LayerHierarchy.h
-        services/surfaceflinger/FrontEnd/LayerLifecycleManager.cpp
-        services/surfaceflinger/FrontEnd/LayerLifecycleManager.h
-        services/surfaceflinger/FrontEnd/LayerLog.h
-        services/surfaceflinger/FrontEnd/LayerSnapshot.cpp
-        services/surfaceflinger/FrontEnd/LayerSnapshot.h
-        services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp
-        services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.h
-        services/surfaceflinger/FrontEnd/RequestedLayerState.cpp
-        services/surfaceflinger/FrontEnd/RequestedLayerState.h
-        services/surfaceflinger/FrontEnd/SwapErase.h
-        services/surfaceflinger/FrontEnd/TransactionHandler.cpp
-        services/surfaceflinger/FrontEnd/TransactionHandler.h
-        services/surfaceflinger/FrontEnd/Update.h
-        services/surfaceflinger/fuzzer/surfaceflinger_displayhardware_fuzzer.cpp
-        services/surfaceflinger/fuzzer/surfaceflinger_displayhardware_fuzzer_utils.h
-        services/surfaceflinger/fuzzer/surfaceflinger_frametracer_fuzzer.cpp
-        services/surfaceflinger/fuzzer/surfaceflinger_fuzzer.cpp
-        services/surfaceflinger/fuzzer/surfaceflinger_fuzzers_utils.h
-        services/surfaceflinger/fuzzer/surfaceflinger_layer_fuzzer.cpp
-        services/surfaceflinger/fuzzer/surfaceflinger_scheduler_fuzzer.cpp
-        services/surfaceflinger/fuzzer/surfaceflinger_scheduler_fuzzer.h
         services/surfaceflinger/layerproto/include/layerproto/LayerProtoHeader.h
         services/surfaceflinger/layerproto/include/layerproto/LayerProtoParser.h
-        services/surfaceflinger/layerproto/include/layerproto/TransactionProto.h
         services/surfaceflinger/layerproto/LayerProtoParser.cpp
-        services/surfaceflinger/Scheduler/include/scheduler/interface/CompositionCoverage.h
-        services/surfaceflinger/Scheduler/include/scheduler/interface/ICompositor.h
-        services/surfaceflinger/Scheduler/include/scheduler/Features.h
-        services/surfaceflinger/Scheduler/include/scheduler/Fps.h
-        services/surfaceflinger/Scheduler/include/scheduler/FrameRateMode.h
-        services/surfaceflinger/Scheduler/include/scheduler/PresentLatencyTracker.h
-        services/surfaceflinger/Scheduler/include/scheduler/Seamlessness.h
-        services/surfaceflinger/Scheduler/include/scheduler/Time.h
-        services/surfaceflinger/Scheduler/include/scheduler/TimeKeeper.h
-        services/surfaceflinger/Scheduler/include/scheduler/Timer.h
-        services/surfaceflinger/Scheduler/include/scheduler/TransactionSchedule.h
-        services/surfaceflinger/Scheduler/include/scheduler/VsyncConfig.h
-        services/surfaceflinger/Scheduler/include/scheduler/VsyncId.h
-        services/surfaceflinger/Scheduler/src/PresentLatencyTracker.cpp
-        services/surfaceflinger/Scheduler/src/Timer.cpp
-        services/surfaceflinger/Scheduler/tests/AsyncCallRecorder.h
-        services/surfaceflinger/Scheduler/tests/PresentLatencyTrackerTest.cpp
-        services/surfaceflinger/Scheduler/tests/TimerTest.cpp
+        services/surfaceflinger/Scheduler/DispSyncSource.cpp
+        services/surfaceflinger/Scheduler/DispSyncSource.h
         services/surfaceflinger/Scheduler/EventThread.cpp
         services/surfaceflinger/Scheduler/EventThread.h
-        services/surfaceflinger/Scheduler/FrameRateOverrideMappings.cpp
-        services/surfaceflinger/Scheduler/FrameRateOverrideMappings.h
-        services/surfaceflinger/Scheduler/ISchedulerCallback.h
+        services/surfaceflinger/Scheduler/InjectVSyncSource.h
         services/surfaceflinger/Scheduler/LayerHistory.cpp
         services/surfaceflinger/Scheduler/LayerHistory.h
         services/surfaceflinger/Scheduler/LayerInfo.cpp
@@ -2227,12 +1888,18 @@ add_executable(native_android14_security_release
         services/surfaceflinger/Scheduler/MessageQueue.h
         services/surfaceflinger/Scheduler/OneShotTimer.cpp
         services/surfaceflinger/Scheduler/OneShotTimer.h
-        services/surfaceflinger/Scheduler/RefreshRateSelector.cpp
-        services/surfaceflinger/Scheduler/RefreshRateSelector.h
+        services/surfaceflinger/Scheduler/RefreshRateConfigs.cpp
+        services/surfaceflinger/Scheduler/RefreshRateConfigs.h
         services/surfaceflinger/Scheduler/RefreshRateStats.h
         services/surfaceflinger/Scheduler/Scheduler.cpp
         services/surfaceflinger/Scheduler/Scheduler.h
+        services/surfaceflinger/Scheduler/SchedulerUtils.cpp
+        services/surfaceflinger/Scheduler/SchedulerUtils.h
+        services/surfaceflinger/Scheduler/Seamlessness.h
         services/surfaceflinger/Scheduler/StrongTyping.h
+        services/surfaceflinger/Scheduler/TimeKeeper.h
+        services/surfaceflinger/Scheduler/Timer.cpp
+        services/surfaceflinger/Scheduler/Timer.h
         services/surfaceflinger/Scheduler/VsyncConfiguration.cpp
         services/surfaceflinger/Scheduler/VsyncConfiguration.h
         services/surfaceflinger/Scheduler/VsyncController.h
@@ -2245,134 +1912,110 @@ add_executable(native_android14_security_release
         services/surfaceflinger/Scheduler/VSyncPredictor.h
         services/surfaceflinger/Scheduler/VSyncReactor.cpp
         services/surfaceflinger/Scheduler/VSyncReactor.h
-        services/surfaceflinger/Scheduler/VsyncSchedule.cpp
-        services/surfaceflinger/Scheduler/VsyncSchedule.h
         services/surfaceflinger/Scheduler/VSyncTracker.h
-        services/surfaceflinger/tests/tracing/TransactionTraceTestSuite.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerClient.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerClient.h
+        services/surfaceflinger/tests/fakehwc/FakeComposerService.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerService.h
+        services/surfaceflinger/tests/fakehwc/FakeComposerUtils.cpp
+        services/surfaceflinger/tests/fakehwc/FakeComposerUtils.h
+        services/surfaceflinger/tests/fakehwc/MockComposerHal.h
+        services/surfaceflinger/tests/fakehwc/RenderState.h
+        services/surfaceflinger/tests/fakehwc/SFFakeHwc_test.cpp
         services/surfaceflinger/tests/unittests/fake/FakeClock.h
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockComposer.cpp
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockComposer.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockDisplayMode.h
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.cpp
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPowerHintSession.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPowerHintSession.h
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.cpp
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHalController.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHalController.h
         services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.cpp
         services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.h
-        services/surfaceflinger/tests/unittests/mock/MockDisplayModeSpecs.h
         services/surfaceflinger/tests/unittests/mock/MockEventThread.cpp
         services/surfaceflinger/tests/unittests/mock/MockEventThread.h
-        services/surfaceflinger/tests/unittests/mock/MockFrameRateMode.h
         services/surfaceflinger/tests/unittests/mock/MockFrameTimeline.cpp
         services/surfaceflinger/tests/unittests/mock/MockFrameTimeline.h
         services/surfaceflinger/tests/unittests/mock/MockFrameTracer.cpp
         services/surfaceflinger/tests/unittests/mock/MockFrameTracer.h
         services/surfaceflinger/tests/unittests/mock/MockLayer.h
+        services/surfaceflinger/tests/unittests/mock/MockMessageQueue.cpp
+        services/surfaceflinger/tests/unittests/mock/MockMessageQueue.h
         services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.cpp
         services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.h
         services/surfaceflinger/tests/unittests/mock/MockSchedulerCallback.h
+        services/surfaceflinger/tests/unittests/mock/MockSurfaceInterceptor.cpp
+        services/surfaceflinger/tests/unittests/mock/MockSurfaceInterceptor.h
         services/surfaceflinger/tests/unittests/mock/MockTimeStats.cpp
         services/surfaceflinger/tests/unittests/mock/MockTimeStats.h
         services/surfaceflinger/tests/unittests/mock/MockVsyncController.cpp
         services/surfaceflinger/tests/unittests/mock/MockVsyncController.h
-        services/surfaceflinger/tests/unittests/mock/MockVSyncDispatch.cpp
-        services/surfaceflinger/tests/unittests/mock/MockVSyncDispatch.h
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.cpp
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.h
-        services/surfaceflinger/tests/unittests/ActiveDisplayRotationFlagsTest.cpp
-        services/surfaceflinger/tests/unittests/BackgroundExecutorTest.cpp
+        services/surfaceflinger/tests/unittests/AsyncCallRecorder.h
+        services/surfaceflinger/tests/unittests/CachingTest.cpp
         services/surfaceflinger/tests/unittests/CompositionTest.cpp
         services/surfaceflinger/tests/unittests/DisplayDevice_GetBestColorModeTest.cpp
-        services/surfaceflinger/tests/unittests/DisplayDevice_InitiateModeChange.cpp
-        services/surfaceflinger/tests/unittests/DisplayDevice_SetDisplayBrightnessTest.cpp
         services/surfaceflinger/tests/unittests/DisplayDevice_SetProjectionTest.cpp
-        services/surfaceflinger/tests/unittests/DisplayIdentificationTestHelpers.h
+        services/surfaceflinger/tests/unittests/DisplayIdentificationTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayIdentificationTest.h
         services/surfaceflinger/tests/unittests/DisplayIdGeneratorTest.cpp
         services/surfaceflinger/tests/unittests/DisplayTransactionTest.cpp
         services/surfaceflinger/tests/unittests/DisplayTransactionTestHelpers.h
+        services/surfaceflinger/tests/unittests/DispSyncSourceTest.cpp
         services/surfaceflinger/tests/unittests/EventThreadTest.cpp
-        services/surfaceflinger/tests/unittests/FakeDisplayInjector.h
         services/surfaceflinger/tests/unittests/FakeVsyncConfiguration.h
-        services/surfaceflinger/tests/unittests/FlagManagerTest.cpp
-        services/surfaceflinger/tests/unittests/FpsOps.h
         services/surfaceflinger/tests/unittests/FpsReporterTest.cpp
         services/surfaceflinger/tests/unittests/FpsTest.cpp
         services/surfaceflinger/tests/unittests/FramebufferSurfaceTest.cpp
-        services/surfaceflinger/tests/unittests/FrameRateOverrideMappingsTest.cpp
-        services/surfaceflinger/tests/unittests/FrameRateSelectionPriorityTest.cpp
         services/surfaceflinger/tests/unittests/FrameTimelineTest.cpp
         services/surfaceflinger/tests/unittests/FrameTracerTest.cpp
         services/surfaceflinger/tests/unittests/GameModeTest.cpp
         services/surfaceflinger/tests/unittests/HWComposerTest.cpp
-        services/surfaceflinger/tests/unittests/LayerHierarchyTest.cpp
-        services/surfaceflinger/tests/unittests/LayerHierarchyTest.h
         services/surfaceflinger/tests/unittests/LayerHistoryTest.cpp
         services/surfaceflinger/tests/unittests/LayerInfoTest.cpp
-        services/surfaceflinger/tests/unittests/LayerLifecycleManagerTest.cpp
         services/surfaceflinger/tests/unittests/LayerMetadataTest.cpp
-        services/surfaceflinger/tests/unittests/LayerSnapshotTest.cpp
-        services/surfaceflinger/tests/unittests/LayerTest.cpp
-        services/surfaceflinger/tests/unittests/LayerTestUtils.cpp
-        services/surfaceflinger/tests/unittests/LayerTestUtils.h
         services/surfaceflinger/tests/unittests/libsurfaceflinger_unittest_main.cpp
         services/surfaceflinger/tests/unittests/libsurfaceflinger_unittest_main.h
         services/surfaceflinger/tests/unittests/MessageQueueTest.cpp
         services/surfaceflinger/tests/unittests/OneShotTimerTest.cpp
-        services/surfaceflinger/tests/unittests/PowerAdvisorTest.cpp
-        services/surfaceflinger/tests/unittests/RefreshRateSelectorTest.cpp
+        services/surfaceflinger/tests/unittests/RefreshRateConfigsTest.cpp
+        services/surfaceflinger/tests/unittests/RefreshRateSelectionTest.cpp
         services/surfaceflinger/tests/unittests/RefreshRateStatsTest.cpp
         services/surfaceflinger/tests/unittests/RegionSamplingTest.cpp
         services/surfaceflinger/tests/unittests/SchedulerTest.cpp
+        services/surfaceflinger/tests/unittests/SchedulerUtilsTest.cpp
         services/surfaceflinger/tests/unittests/SetFrameRateTest.cpp
         services/surfaceflinger/tests/unittests/StrongTypingTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_CreateDisplayTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_DestroyDisplayTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_DisplayModeSwitching.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_DisplayTransactionCommitTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_ExcludeDolbyVisionTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_GetDisplayNativePrimariesTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_GetDisplayStatsTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_HdrOutputControlTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_HandleTransactionLockedTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_HotplugTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_InitializeDisplaysTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_MultiDisplayPacesetterTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_NotifyPowerBoostTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_PowerHintTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_OnInitializeDisplaysTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_SetDisplayStateTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_SetPowerModeInternalTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_SetupNewDisplayDeviceInternalTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_UpdateLayerMetadataSnapshotTest.cpp
         services/surfaceflinger/tests/unittests/TestableScheduler.h
         services/surfaceflinger/tests/unittests/TestableSurfaceFlinger.h
+        services/surfaceflinger/tests/unittests/TimerTest.cpp
         services/surfaceflinger/tests/unittests/TimeStatsTest.cpp
         services/surfaceflinger/tests/unittests/TransactionApplicationTest.cpp
         services/surfaceflinger/tests/unittests/TransactionFrameTracerTest.cpp
-        services/surfaceflinger/tests/unittests/TransactionProtoParserTest.cpp
         services/surfaceflinger/tests/unittests/TransactionSurfaceFrameTest.cpp
-        services/surfaceflinger/tests/unittests/TransactionTracingTest.cpp
         services/surfaceflinger/tests/unittests/TunnelModeEnabledReporterTest.cpp
-        services/surfaceflinger/tests/unittests/VSyncCallbackRegistrationTest.cpp
         services/surfaceflinger/tests/unittests/VsyncConfigurationTest.cpp
         services/surfaceflinger/tests/unittests/VSyncDispatchRealtimeTest.cpp
         services/surfaceflinger/tests/unittests/VSyncDispatchTimerQueueTest.cpp
         services/surfaceflinger/tests/unittests/VsyncModulatorTest.cpp
         services/surfaceflinger/tests/unittests/VSyncPredictorTest.cpp
         services/surfaceflinger/tests/unittests/VSyncReactorTest.cpp
-        services/surfaceflinger/tests/unittests/VsyncScheduleTest.cpp
-        services/surfaceflinger/tests/unittests/WindowInfosListenerInvokerTest.cpp
+        services/surfaceflinger/tests/utils/CallbackUtils.h
         services/surfaceflinger/tests/utils/ColorUtils.h
         services/surfaceflinger/tests/utils/ScreenshotUtils.h
         services/surfaceflinger/tests/utils/TransactionUtils.h
-        services/surfaceflinger/tests/utils/WindowInfosListenerUtils.h
         services/surfaceflinger/tests/vsync/vsync.cpp
         services/surfaceflinger/tests/waitforvsync/waitforvsync.cpp
-        services/surfaceflinger/tests/BootDisplayMode_test.cpp
         services/surfaceflinger/tests/BufferGenerator.cpp
         services/surfaceflinger/tests/BufferGenerator.h
         services/surfaceflinger/tests/BufferGeneratorShader.h
@@ -2380,17 +2023,14 @@ add_executable(native_android14_security_release
         services/surfaceflinger/tests/Credentials_test.cpp
         services/surfaceflinger/tests/DereferenceSurfaceControl_test.cpp
         services/surfaceflinger/tests/DisplayConfigs_test.cpp
-        services/surfaceflinger/tests/DisplayEventReceiver_test.cpp
         services/surfaceflinger/tests/EffectLayer_test.cpp
         services/surfaceflinger/tests/InvalidHandles_test.cpp
         services/surfaceflinger/tests/IPC_test.cpp
-        services/surfaceflinger/tests/LayerBorder_test.cpp
         services/surfaceflinger/tests/LayerCallback_test.cpp
         services/surfaceflinger/tests/LayerRenderTypeTransaction_test.cpp
         services/surfaceflinger/tests/LayerState_test.cpp
         services/surfaceflinger/tests/LayerTransaction_test.cpp
         services/surfaceflinger/tests/LayerTransactionTest.h
-        services/surfaceflinger/tests/LayerTrustedPresentationListener_test.cpp
         services/surfaceflinger/tests/LayerTypeAndRenderTypeTransaction_test.cpp
         services/surfaceflinger/tests/LayerTypeTransaction_test.cpp
         services/surfaceflinger/tests/LayerUpdate_test.cpp
@@ -2401,45 +2041,40 @@ add_executable(native_android14_security_release
         services/surfaceflinger/tests/ReleaseBufferCallback_test.cpp
         services/surfaceflinger/tests/ScreenCapture_test.cpp
         services/surfaceflinger/tests/SetFrameRate_test.cpp
-        services/surfaceflinger/tests/SetFrameRateOverride_test.cpp
         services/surfaceflinger/tests/SetGeometry_test.cpp
         services/surfaceflinger/tests/Stress_test.cpp
-        services/surfaceflinger/tests/TextureFiltering_test.cpp
+        services/surfaceflinger/tests/SurfaceInterceptor_test.cpp
         services/surfaceflinger/tests/TransactionTestHarnesses.h
         services/surfaceflinger/tests/VirtualDisplay_test.cpp
-        services/surfaceflinger/tests/WindowInfosListener_test.cpp
         services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto/TimeStatsHelper.h
         services/surfaceflinger/TimeStats/timestatsproto/include/timestatsproto/TimeStatsProtoHeader.h
         services/surfaceflinger/TimeStats/timestatsproto/TimeStatsHelper.cpp
         services/surfaceflinger/TimeStats/TimeStats.cpp
         services/surfaceflinger/TimeStats/TimeStats.h
-        services/surfaceflinger/Tracing/tools/LayerTraceGenerator.cpp
-        services/surfaceflinger/Tracing/tools/LayerTraceGenerator.h
-        services/surfaceflinger/Tracing/tools/main.cpp
-        services/surfaceflinger/Tracing/LayerTracing.cpp
-        services/surfaceflinger/Tracing/LayerTracing.h
-        services/surfaceflinger/Tracing/LocklessStack.h
-        services/surfaceflinger/Tracing/RingBuffer.h
-        services/surfaceflinger/Tracing/TransactionProtoParser.cpp
-        services/surfaceflinger/Tracing/TransactionProtoParser.h
-        services/surfaceflinger/Tracing/TransactionTracing.cpp
-        services/surfaceflinger/Tracing/TransactionTracing.h
-        services/surfaceflinger/Utils/Dumper.h
-        services/surfaceflinger/BackgroundExecutor.cpp
-        services/surfaceflinger/BackgroundExecutor.h
+        services/surfaceflinger/BufferLayer.cpp
+        services/surfaceflinger/BufferLayer.h
+        services/surfaceflinger/BufferLayerConsumer.cpp
+        services/surfaceflinger/BufferLayerConsumer.h
+        services/surfaceflinger/BufferQueueLayer.cpp
+        services/surfaceflinger/BufferQueueLayer.h
+        services/surfaceflinger/BufferStateLayer.cpp
+        services/surfaceflinger/BufferStateLayer.h
         services/surfaceflinger/Client.cpp
         services/surfaceflinger/Client.h
         services/surfaceflinger/ClientCache.cpp
         services/surfaceflinger/ClientCache.h
         services/surfaceflinger/Clock.h
         services/surfaceflinger/Colorizer.h
+        services/surfaceflinger/ContainerLayer.cpp
+        services/surfaceflinger/ContainerLayer.h
         services/surfaceflinger/DisplayDevice.cpp
         services/surfaceflinger/DisplayDevice.h
         services/surfaceflinger/DisplayIdGenerator.h
         services/surfaceflinger/DisplayRenderArea.cpp
         services/surfaceflinger/DisplayRenderArea.h
-        services/surfaceflinger/FlagManager.cpp
-        services/surfaceflinger/FlagManager.h
+        services/surfaceflinger/EffectLayer.cpp
+        services/surfaceflinger/EffectLayer.h
+        services/surfaceflinger/Fps.h
         services/surfaceflinger/FpsReporter.cpp
         services/surfaceflinger/FpsReporter.h
         services/surfaceflinger/FrameTracker.cpp
@@ -2448,17 +2083,17 @@ add_executable(native_android14_security_release
         services/surfaceflinger/HdrLayerInfoReporter.h
         services/surfaceflinger/Layer.cpp
         services/surfaceflinger/Layer.h
-        services/surfaceflinger/LayerFE.cpp
-        services/surfaceflinger/LayerFE.h
         services/surfaceflinger/LayerProtoHelper.cpp
         services/surfaceflinger/LayerProtoHelper.h
+        services/surfaceflinger/LayerRejecter.cpp
+        services/surfaceflinger/LayerRejecter.h
         services/surfaceflinger/LayerRenderArea.cpp
         services/surfaceflinger/LayerRenderArea.h
         services/surfaceflinger/LayerVector.cpp
         services/surfaceflinger/LayerVector.h
-        services/surfaceflinger/LocklessQueue.h
         services/surfaceflinger/main_surfaceflinger.cpp
-        services/surfaceflinger/MutexUtils.h
+        services/surfaceflinger/MonitoredProducer.cpp
+        services/surfaceflinger/MonitoredProducer.h
         services/surfaceflinger/NativeWindowSurface.cpp
         services/surfaceflinger/NativeWindowSurface.h
         services/surfaceflinger/RefreshRateOverlay.cpp
@@ -2467,9 +2102,6 @@ add_executable(native_android14_security_release
         services/surfaceflinger/RegionSamplingThread.h
         services/surfaceflinger/RenderArea.cpp
         services/surfaceflinger/RenderArea.h
-        services/surfaceflinger/ScreenCaptureOutput.cpp
-        services/surfaceflinger/ScreenCaptureOutput.h
-        services/surfaceflinger/ScreenCaptureRenderSurface.h
         services/surfaceflinger/StartPropertySetThread.cpp
         services/surfaceflinger/StartPropertySetThread.h
         services/surfaceflinger/SurfaceFlinger.cpp
@@ -2480,16 +2112,15 @@ add_executable(native_android14_security_release
         services/surfaceflinger/SurfaceFlingerFactory.h
         services/surfaceflinger/SurfaceFlingerProperties.cpp
         services/surfaceflinger/SurfaceFlingerProperties.h
-        services/surfaceflinger/ThreadContext.h
+        services/surfaceflinger/SurfaceInterceptor.cpp
+        services/surfaceflinger/SurfaceInterceptor.h
+        services/surfaceflinger/SurfaceTracing.cpp
+        services/surfaceflinger/SurfaceTracing.h
         services/surfaceflinger/TracedOrdinal.h
         services/surfaceflinger/TransactionCallbackInvoker.cpp
         services/surfaceflinger/TransactionCallbackInvoker.h
-        services/surfaceflinger/TransactionState.h
         services/surfaceflinger/TunnelModeEnabledReporter.cpp
         services/surfaceflinger/TunnelModeEnabledReporter.h
-        services/surfaceflinger/WindowInfosListenerInvoker.cpp
-        services/surfaceflinger/WindowInfosListenerInvoker.h
-        services/surfaceflinger/WpHash.h
         services/utils/include/serviceutils/PriorityDumper.h
         services/utils/tests/PriorityDumper_test.cpp
         services/utils/PriorityDumper.cpp
@@ -2526,6 +2157,19 @@ add_executable(native_android14_security_release
         services/vr/bufferhubd/consumer_queue_channel.cpp
         services/vr/bufferhubd/producer_channel.cpp
         services/vr/bufferhubd/producer_queue_channel.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_frame.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_frame.h
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_layer.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_composer_layer.h
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_unique_fd.cpp
+        services/vr/hardware_composer/aidl/android/dvr/parcelable_unique_fd.h
+        services/vr/hardware_composer/impl/vr_composer_client.cpp
+        services/vr/hardware_composer/impl/vr_composer_client.h
+        services/vr/hardware_composer/impl/vr_hwc.cpp
+        services/vr/hardware_composer/impl/vr_hwc.h
+        services/vr/hardware_composer/tests/vr_composer_test.cpp
+        services/vr/hardware_composer/vr_composer.cpp
+        services/vr/hardware_composer/vr_composer.h
         services/vr/performanced/cpu_set.cpp
         services/vr/performanced/cpu_set.h
         services/vr/performanced/directory_reader.h

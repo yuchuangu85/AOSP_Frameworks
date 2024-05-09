@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _LIBINPUT_INPUT_TRANSPORT_H
+#define _LIBINPUT_INPUT_TRANSPORT_H
 
 #pragma GCC system_header
 
@@ -38,7 +39,6 @@
 #include <binder/IBinder.h>
 #include <binder/Parcelable.h>
 #include <input/Input.h>
-#include <input/InputVerifier.h>
 #include <sys/stat.h>
 #include <ui/Transform.h>
 #include <utils/BitSet.h>
@@ -72,9 +72,6 @@ struct InputMessage {
         CAPTURE,
         DRAG,
         TIMELINE,
-        TOUCH_MODE,
-
-        ftl_last = TOUCH_MODE
     };
 
     struct Header {
@@ -114,7 +111,7 @@ struct InputMessage {
 
         struct Motion {
             int32_t eventId;
-            uint32_t pointerCount;
+            uint32_t empty1;
             nsecs_t eventTime __attribute__((aligned(8)));
             int32_t deviceId;
             int32_t source;
@@ -129,22 +126,20 @@ struct InputMessage {
             uint8_t empty2[3];                   // 3 bytes to fill gap created by classification
             int32_t edgeFlags;
             nsecs_t downTime __attribute__((aligned(8)));
-            float dsdx; // Begin window transform
-            float dtdx; //
-            float dtdy; //
-            float dsdy; //
-            float tx;   //
-            float ty;   // End window transform
+            float dsdx;
+            float dtdx;
+            float dtdy;
+            float dsdy;
+            float tx;
+            float ty;
             float xPrecision;
             float yPrecision;
             float xCursorPosition;
             float yCursorPosition;
-            float dsdxRaw; // Begin raw transform
-            float dtdxRaw; //
-            float dtdyRaw; //
-            float dsdyRaw; //
-            float txRaw;   //
-            float tyRaw;   // End raw transform
+            int32_t displayWidth;
+            int32_t displayHeight;
+            uint32_t pointerCount;
+            uint32_t empty3;
             /**
              * The "pointers" field must be the last field of the struct InputMessage.
              * When we send the struct InputMessage across the socket, we are not
@@ -178,9 +173,10 @@ struct InputMessage {
 
         struct Focus {
             int32_t eventId;
-            // The following 2 fields take up 4 bytes total
+            // The following 3 fields take up 4 bytes total
             bool hasFocus;
-            uint8_t empty[3];
+            bool inTouchMode;
+            uint8_t empty[2];
 
             inline size_t size() const { return sizeof(Focus); }
         } focus;
@@ -210,15 +206,6 @@ struct InputMessage {
 
             inline size_t size() const { return sizeof(Timeline); }
         } timeline;
-
-        struct TouchMode {
-            int32_t eventId;
-            // The following 2 fields take up 4 bytes total
-            bool isInTouchMode;
-            uint8_t empty[3];
-
-            inline size_t size() const { return sizeof(TouchMode); }
-        } touchMode;
     } __attribute__((aligned(8))) body;
 
     bool isValid(size_t actualSize) const;
@@ -368,7 +355,7 @@ public:
                                 int32_t metaState, int32_t buttonState,
                                 MotionClassification classification, const ui::Transform& transform,
                                 float xPrecision, float yPrecision, float xCursorPosition,
-                                float yCursorPosition, const ui::Transform& rawTransform,
+                                float yCursorPosition, int32_t displayWidth, int32_t displayHeight,
                                 nsecs_t downTime, nsecs_t eventTime, uint32_t pointerCount,
                                 const PointerProperties* pointerProperties,
                                 const PointerCoords* pointerCoords);
@@ -380,7 +367,7 @@ public:
      * Returns DEAD_OBJECT if the channel's peer has been closed.
      * Other errors probably indicate that the channel is broken.
      */
-    status_t publishFocusEvent(uint32_t seq, int32_t eventId, bool hasFocus);
+    status_t publishFocusEvent(uint32_t seq, int32_t eventId, bool hasFocus, bool inTouchMode);
 
     /* Publishes a capture event to the input channel.
      *
@@ -399,15 +386,6 @@ public:
      * Other errors probably indicate that the channel is broken.
      */
     status_t publishDragEvent(uint32_t seq, int32_t eventId, float x, float y, bool isExiting);
-
-    /* Publishes a touch mode event to the input channel.
-     *
-     * Returns OK on success.
-     * Returns WOULD_BLOCK if the channel is full.
-     * Returns DEAD_OBJECT if the channel's peer has been closed.
-     * Other errors probably indicate that the channel is broken.
-     */
-    status_t publishTouchModeEvent(uint32_t seq, int32_t eventId, bool isInTouchMode);
 
     struct Finished {
         uint32_t seq;
@@ -445,7 +423,6 @@ public:
 
 private:
     std::shared_ptr<InputChannel> mChannel;
-    InputVerifier mInputVerifier;
 };
 
 /*
@@ -453,11 +430,8 @@ private:
  */
 class InputConsumer {
 public:
-    /* Create a consumer associated with an input channel. */
+    /* Creates a consumer associated with an input channel. */
     explicit InputConsumer(const std::shared_ptr<InputChannel>& channel);
-    /* Create a consumer associated with an input channel, override resampling system property */
-    explicit InputConsumer(const std::shared_ptr<InputChannel>& channel,
-                           bool enableTouchResampling);
 
     /* Destroys the consumer and releases its input channel. */
     ~InputConsumer();
@@ -503,6 +477,24 @@ public:
 
     status_t sendTimeline(int32_t inputEventId,
                           std::array<nsecs_t, GraphicsTimeline::SIZE> timeline);
+
+    /* Returns true if there is a deferred event waiting.
+     *
+     * Should be called after calling consume() to determine whether the consumer
+     * has a deferred event to be processed.  Deferred events are somewhat special in
+     * that they have already been removed from the input channel.  If the input channel
+     * becomes empty, the client may need to do extra work to ensure that it processes
+     * the deferred event despite the fact that the input channel's file descriptor
+     * is not readable.
+     *
+     * One option is simply to call consume() in a loop until it returns WOULD_BLOCK.
+     * This guarantees that all deferred events will be processed.
+     *
+     * Alternately, the caller can call hasDeferredEvent() to determine whether there is
+     * a deferred event waiting and then ensure that its event loop wakes up at least
+     * one more time to consume the deferred event.
+     */
+    bool hasDeferredEvent() const;
 
     /* Returns true if there is a pending batch.
      *
@@ -665,12 +657,14 @@ private:
     static void initializeFocusEvent(FocusEvent* event, const InputMessage* msg);
     static void initializeCaptureEvent(CaptureEvent* event, const InputMessage* msg);
     static void initializeDragEvent(DragEvent* event, const InputMessage* msg);
-    static void initializeTouchModeEvent(TouchModeEvent* event, const InputMessage* msg);
     static void addSample(MotionEvent* event, const InputMessage* msg);
     static bool canAddSample(const Batch& batch, const InputMessage* msg);
     static ssize_t findSampleNoLaterThan(const Batch& batch, nsecs_t time);
+    static bool shouldResampleTool(int32_t toolType);
 
     static bool isTouchResamplingEnabled();
 };
 
 } // namespace android
+
+#endif // _LIBINPUT_INPUT_TRANSPORT_H

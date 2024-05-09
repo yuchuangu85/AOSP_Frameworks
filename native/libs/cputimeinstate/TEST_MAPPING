@@ -1,7 +1,0 @@
-{
-  "presubmit": [
-    {
-      "name": "libtimeinstate_test"
-    }
-  ]
-}

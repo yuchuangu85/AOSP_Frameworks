@@ -33,7 +33,4 @@ enum InputEventInjectionSync {
 
     /* Waits for the input event to be completely processed. */
     WAIT_FOR_FINISHED = 2,
-
-    ftl_first = NONE,
-    ftl_last = WAIT_FOR_FINISHED,
 }

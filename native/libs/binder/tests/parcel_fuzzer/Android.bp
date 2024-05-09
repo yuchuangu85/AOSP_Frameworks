@@ -7,28 +7,9 @@ package {
     default_applicable_licenses: ["frameworks_native_license"],
 }
 
-aidl_interface {
-    name: "binderReadParcelIface",
-    host_supported: true,
-    unstable: true,
-    srcs: [
-        "parcelables/EmptyParcelable.aidl",
-        "parcelables/SingleDataParcelable.aidl",
-        "parcelables/GenericDataParcelable.aidl",
-    ],
-    backend: {
-        java: {
-            enabled: true,
-            platform_apis: true,
-        },
-        rust: {
-            enabled: true,
-        },
-    },
-}
-
 cc_fuzz {
     name: "binder_parcel_fuzzer",
+    defaults: ["libbinder_ndk_host_user"],
     host_supported: true,
 
     fuzz_config: {
@@ -42,15 +23,19 @@ cc_fuzz {
         "main.cpp",
         "random_fd.cpp",
         "random_parcel.cpp",
+        "util.cpp",
     ],
     static_libs: [
         "libbase",
         "libbinder_random_parcel",
+        "libcgrouprc",
+        "libcgrouprc_format",
         "libcutils",
         "libhidlbase",
         "liblog",
-        "binderReadParcelIface-cpp",
-        "binderReadParcelIface-ndk",
+        "libprocessgroup",
+        "libjsoncpp",
+        "libutils",
     ],
 
     target: {
@@ -58,18 +43,13 @@ cc_fuzz {
             shared_libs: [
                 "libbinder_ndk",
                 "libbinder",
-                "libutils",
             ],
         },
         host: {
             static_libs: [
                 "libbinder_ndk",
                 "libbinder",
-                "libutils",
             ],
-        },
-        darwin: {
-            enabled: false,
         },
     },
     // This flag enables verbose output in the fuzz target, and is very useful
@@ -81,23 +61,18 @@ cc_fuzz {
 cc_library_static {
     name: "libbinder_random_parcel",
     host_supported: true,
-    vendor_available: true,
     target: {
         darwin: {
             enabled: false,
-        },
+        }
     },
     srcs: [
-        "random_binder.cpp",
         "random_fd.cpp",
         "random_parcel.cpp",
-        "libbinder_driver.cpp",
-        "libbinder_ndk_driver.cpp",
     ],
     shared_libs: [
         "libbase",
         "libbinder",
-        "libbinder_ndk",
         "libcutils",
         "libutils",
     ],

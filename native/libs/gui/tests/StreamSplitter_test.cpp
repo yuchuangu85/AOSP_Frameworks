@@ -36,14 +36,14 @@ protected:
     StreamSplitterTest() {
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("Begin test: %s.%s", testInfo->test_case_name(),
+        ALOGV("Begin test: %s.%s", testInfo->test_case_name(),
                 testInfo->name());
     }
 
     ~StreamSplitterTest() {
         const ::testing::TestInfo* const testInfo =
             ::testing::UnitTest::GetInstance()->current_test_info();
-        ALOGD("End test:   %s.%s", testInfo->test_case_name(),
+        ALOGV("End test:   %s.%s", testInfo->test_case_name(),
                 testInfo->name());
     }
 };

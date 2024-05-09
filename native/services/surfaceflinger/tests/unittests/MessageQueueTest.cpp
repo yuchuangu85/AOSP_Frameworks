@@ -23,7 +23,6 @@
 #include "FrameTimeline.h"
 #include "Scheduler/MessageQueue.h"
 #include "SurfaceFlinger.h"
-#include "mock/MockVSyncDispatch.h"
 
 namespace android {
 
@@ -32,137 +31,147 @@ using namespace testing;
 
 using CallbackToken = scheduler::VSyncDispatch::CallbackToken;
 
-struct NoOpCompositor final : ICompositor {
-    void configure() override {}
-    bool commit(TimePoint, VsyncId, TimePoint) override { return false; }
-    void composite(TimePoint, VsyncId) override {}
-    void sample() override {}
-} gNoOpCompositor;
-
 class TestableMessageQueue : public impl::MessageQueue {
-    struct MockHandler : MessageQueue::Handler {
-        using MessageQueue::Handler::Handler;
-
-        MOCK_METHOD(void, dispatchFrame, (VsyncId, TimePoint), (override));
+public:
+    class MockHandler : public MessageQueue::Handler {
+    public:
+        explicit MockHandler(MessageQueue& queue) : MessageQueue::Handler(queue) {}
+        ~MockHandler() override = default;
+        MOCK_METHOD2(dispatchInvalidate, void(int64_t vsyncId, nsecs_t expectedVSyncTimestamp));
     };
 
-    explicit TestableMessageQueue(sp<MockHandler> handler)
-          : impl::MessageQueue(gNoOpCompositor, handler), mHandler(std::move(handler)) {}
+    TestableMessageQueue() = default;
+    ~TestableMessageQueue() override = default;
 
-    // impl::MessageQueue overrides:
-    void onFrameSignal(ICompositor&, VsyncId, TimePoint) override {}
+    void initHandler(const sp<MockHandler>& handler) { mHandler = handler; }
 
-public:
-    TestableMessageQueue() : TestableMessageQueue(sp<MockHandler>::make(*this)) {}
-
-    using impl::MessageQueue::vsyncCallback;
-
-    const sp<MockHandler> mHandler;
+    void triggerVsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {
+        vsyncCallback(vsyncTime, targetWakeupTime, readyTime);
+    }
 };
 
-struct MockTokenManager : frametimeline::TokenManager {
+class MockVSyncDispatch : public scheduler::VSyncDispatch {
+public:
+    MockVSyncDispatch() = default;
+    ~MockVSyncDispatch() override = default;
+
+    MOCK_METHOD2(registerCallback,
+                 CallbackToken(std::function<void(nsecs_t, nsecs_t, nsecs_t)> const&, std::string));
+    MOCK_METHOD1(unregisterCallback, void(CallbackToken));
+    MOCK_METHOD2(schedule, scheduler::ScheduleResult(CallbackToken, ScheduleTiming));
+    MOCK_METHOD1(cancel, scheduler::CancelResult(CallbackToken token));
+    MOCK_CONST_METHOD1(dump, void(std::string&));
+};
+
+class MockTokenManager : public frametimeline::TokenManager {
+public:
+    MockTokenManager() = default;
+    ~MockTokenManager() override = default;
+
     MOCK_METHOD1(generateTokenForPredictions, int64_t(frametimeline::TimelineItem&& prediction));
     MOCK_CONST_METHOD1(getPredictionsForToken, std::optional<frametimeline::TimelineItem>(int64_t));
 };
 
-struct MessageQueueTest : testing::Test {
+class MessageQueueTest : public testing::Test {
+public:
+    MessageQueueTest() = default;
+    ~MessageQueueTest() override = default;
+
     void SetUp() override {
-        EXPECT_CALL(*mVSyncDispatch, registerCallback(_, "sf")).WillOnce(Return(mCallbackToken));
-        EXPECT_NO_FATAL_FAILURE(mEventQueue.initVsync(mVSyncDispatch, mTokenManager, kDuration));
-        EXPECT_CALL(*mVSyncDispatch, unregisterCallback(mCallbackToken)).Times(1);
+        EXPECT_NO_FATAL_FAILURE(mEventQueue.initHandler(mHandler));
+
+        EXPECT_CALL(mVSyncDispatch, registerCallback(_, "sf")).WillOnce(Return(mCallbackToken));
+        EXPECT_NO_FATAL_FAILURE(mEventQueue.initVsync(mVSyncDispatch, mTokenManager, mDuration));
+        EXPECT_CALL(mVSyncDispatch, unregisterCallback(mCallbackToken)).Times(1);
     }
 
-    std::shared_ptr<mock::VSyncDispatch> mVSyncDispatch = std::make_shared<mock::VSyncDispatch>();
+    sp<TestableMessageQueue::MockHandler> mHandler =
+            new TestableMessageQueue::MockHandler(mEventQueue);
+    MockVSyncDispatch mVSyncDispatch;
     MockTokenManager mTokenManager;
     TestableMessageQueue mEventQueue;
 
     const CallbackToken mCallbackToken{5};
-
-    static constexpr Duration kDuration = 100ms;
-    static constexpr Duration kDifferentDuration = 250ms;
+    constexpr static auto mDuration = std::chrono::nanoseconds(100ms);
+    constexpr static auto mDifferentDuration = std::chrono::nanoseconds(250ms);
 };
 
 namespace {
-
-TEST_F(MessageQueueTest, commit) {
-    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = kDuration.ns(),
+/* ------------------------------------------------------------------------
+ * Test cases
+ */
+TEST_F(MessageQueueTest, invalidate) {
+    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = mDuration.count(),
                                                                  .readyDuration = 0,
                                                                  .earliestVsync = 0};
-    EXPECT_FALSE(mEventQueue.getScheduledFrameTime());
+    EXPECT_FALSE(mEventQueue.nextExpectedInvalidate().has_value());
 
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
-
-    ASSERT_TRUE(mEventQueue.getScheduledFrameTime());
-    EXPECT_EQ(1234, mEventQueue.getScheduledFrameTime()->time_since_epoch().count());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
+    EXPECT_TRUE(mEventQueue.nextExpectedInvalidate().has_value());
+    EXPECT_EQ(1234, mEventQueue.nextExpectedInvalidate().value().time_since_epoch().count());
 }
 
-TEST_F(MessageQueueTest, commitTwice) {
+TEST_F(MessageQueueTest, invalidateTwice) {
     InSequence s;
-    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = kDuration.ns(),
+    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = mDuration.count(),
                                                                  .readyDuration = 0,
                                                                  .earliestVsync = 0};
 
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
+    EXPECT_TRUE(mEventQueue.nextExpectedInvalidate().has_value());
+    EXPECT_EQ(1234, mEventQueue.nextExpectedInvalidate().value().time_since_epoch().count());
 
-    ASSERT_TRUE(mEventQueue.getScheduledFrameTime());
-    EXPECT_EQ(1234, mEventQueue.getScheduledFrameTime()->time_since_epoch().count());
-
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(4567));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
-
-    ASSERT_TRUE(mEventQueue.getScheduledFrameTime());
-    EXPECT_EQ(4567, mEventQueue.getScheduledFrameTime()->time_since_epoch().count());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(4567));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
+    EXPECT_TRUE(mEventQueue.nextExpectedInvalidate().has_value());
+    EXPECT_EQ(4567, mEventQueue.nextExpectedInvalidate().value().time_since_epoch().count());
 }
 
-TEST_F(MessageQueueTest, commitTwiceWithCallback) {
+TEST_F(MessageQueueTest, invalidateTwiceWithCallback) {
     InSequence s;
-    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = kDuration.ns(),
+    const auto timing = scheduler::VSyncDispatch::ScheduleTiming{.workDuration = mDuration.count(),
                                                                  .readyDuration = 0,
                                                                  .earliestVsync = 0};
 
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(1234));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
+    EXPECT_TRUE(mEventQueue.nextExpectedInvalidate().has_value());
+    EXPECT_EQ(1234, mEventQueue.nextExpectedInvalidate().value().time_since_epoch().count());
 
-    ASSERT_TRUE(mEventQueue.getScheduledFrameTime());
-    EXPECT_EQ(1234, mEventQueue.getScheduledFrameTime()->time_since_epoch().count());
-
-    constexpr TimePoint kStartTime = TimePoint::fromNs(100);
-    constexpr TimePoint kEndTime = kStartTime + kDuration;
-    constexpr TimePoint kPresentTime = TimePoint::fromNs(500);
-    constexpr VsyncId vsyncId{42};
-
+    const auto startTime = 100;
+    const auto endTime = startTime + mDuration.count();
+    const auto presentTime = 500;
+    const auto vsyncId = 42;
     EXPECT_CALL(mTokenManager,
-                generateTokenForPredictions(frametimeline::TimelineItem(kStartTime.ns(),
-                                                                        kEndTime.ns(),
-                                                                        kPresentTime.ns())))
-            .WillOnce(Return(vsyncId.value));
-    EXPECT_CALL(*mEventQueue.mHandler, dispatchFrame(vsyncId, kPresentTime)).Times(1);
-    EXPECT_NO_FATAL_FAILURE(
-            mEventQueue.vsyncCallback(kPresentTime.ns(), kStartTime.ns(), kEndTime.ns()));
+                generateTokenForPredictions(
+                        frametimeline::TimelineItem(startTime, endTime, presentTime)))
+            .WillOnce(Return(vsyncId));
+    EXPECT_CALL(*mHandler, dispatchInvalidate(vsyncId, presentTime)).Times(1);
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.triggerVsyncCallback(presentTime, startTime, endTime));
 
-    EXPECT_FALSE(mEventQueue.getScheduledFrameTime());
+    EXPECT_FALSE(mEventQueue.nextExpectedInvalidate().has_value());
 
     const auto timingAfterCallback =
-            scheduler::VSyncDispatch::ScheduleTiming{.workDuration = kDuration.ns(),
+            scheduler::VSyncDispatch::ScheduleTiming{.workDuration = mDuration.count(),
                                                      .readyDuration = 0,
-                                                     .earliestVsync = kPresentTime.ns()};
+                                                     .earliestVsync = presentTime};
 
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timingAfterCallback)).WillOnce(Return(0));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timingAfterCallback)).WillOnce(Return(0));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
 }
 
-TEST_F(MessageQueueTest, commitWithDurationChange) {
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.setDuration(kDifferentDuration));
+TEST_F(MessageQueueTest, invalidateWithDurationChange) {
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.setDuration(mDifferentDuration));
 
     const auto timing =
-            scheduler::VSyncDispatch::ScheduleTiming{.workDuration = kDifferentDuration.ns(),
+            scheduler::VSyncDispatch::ScheduleTiming{.workDuration = mDifferentDuration.count(),
                                                      .readyDuration = 0,
                                                      .earliestVsync = 0};
 
-    EXPECT_CALL(*mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(0));
-    EXPECT_NO_FATAL_FAILURE(mEventQueue.scheduleFrame());
+    EXPECT_CALL(mVSyncDispatch, schedule(mCallbackToken, timing)).WillOnce(Return(0));
+    EXPECT_NO_FATAL_FAILURE(mEventQueue.invalidate());
 }
 
 } // namespace

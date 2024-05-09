@@ -30,19 +30,22 @@
 #include <gui/IProducerListener.h>
 #include <gui/LayerMetadata.h>
 #include <log/log.h>
-#include <renderengine/mock/FakeExternalTexture.h>
 #include <renderengine/mock/Framebuffer.h>
 #include <renderengine/mock/Image.h>
 #include <renderengine/mock/RenderEngine.h>
 #include <system/window.h>
 #include <utils/String8.h>
 
+#include "BufferQueueLayer.h"
+#include "ContainerLayer.h"
 #include "DisplayRenderArea.h"
+#include "EffectLayer.h"
 #include "Layer.h"
 #include "TestableSurfaceFlinger.h"
 #include "mock/DisplayHardware/MockComposer.h"
 #include "mock/DisplayHardware/MockPowerAdvisor.h"
 #include "mock/MockEventThread.h"
+#include "mock/MockMessageQueue.h"
 #include "mock/MockTimeStats.h"
 #include "mock/MockVsyncController.h"
 #include "mock/system/window/MockNativeWindow.h"
@@ -57,8 +60,6 @@ using hal::IComposer;
 using hal::IComposerClient;
 using hal::PowerMode;
 using hal::Transform;
-
-using aidl::android::hardware::graphics::composer3::Capability;
 
 using testing::_;
 using testing::AtLeast;
@@ -76,21 +77,16 @@ constexpr hal::HWDisplayId HWC_DISPLAY = FakeHwcDisplayInjector::DEFAULT_HWC_DIS
 constexpr hal::HWLayerId HWC_LAYER = 5000;
 constexpr Transform DEFAULT_TRANSFORM = static_cast<Transform>(0);
 
-constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID = PhysicalDisplayId::fromPort(42u);
+constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID(42);
 constexpr int DEFAULT_DISPLAY_WIDTH = 1920;
 constexpr int DEFAULT_DISPLAY_HEIGHT = 1024;
 
 constexpr int DEFAULT_TEXTURE_ID = 6000;
-constexpr ui::LayerStack LAYER_STACK{7000u};
+constexpr int DEFAULT_LAYER_STACK = 7000;
 
 constexpr int DEFAULT_DISPLAY_MAX_LUMINANCE = 500;
 
 constexpr int DEFAULT_SIDEBAND_STREAM = 51;
-
-MATCHER(IsIdentityMatrix, "") {
-    constexpr auto kIdentity = mat4();
-    return (mat4(arg) == kIdentity);
-}
 
 class CompositionTest : public testing::Test {
 public:
@@ -99,7 +95,8 @@ public:
                 ::testing::UnitTest::GetInstance()->current_test_info();
         ALOGD("**** Setting up for %s.%s\n", test_info->test_case_name(), test_info->name());
 
-        mFlinger.setupMockScheduler({.displayId = DEFAULT_DISPLAY_ID});
+        mFlinger.mutableEventQueue().reset(mMessageQueue);
+        setupScheduler();
 
         EXPECT_CALL(*mNativeWindow, query(NATIVE_WINDOW_WIDTH, _))
                 .WillRepeatedly(DoAll(SetArgPointee<1>(DEFAULT_DISPLAY_WIDTH), Return(0)));
@@ -110,9 +107,8 @@ public:
         mFlinger.setupTimeStats(std::shared_ptr<TimeStats>(mTimeStats));
 
         mComposer = new Hwc2::mock::Composer();
-        mPowerAdvisor = new Hwc2::mock::PowerAdvisor();
         mFlinger.setupComposer(std::unique_ptr<Hwc2::Composer>(mComposer));
-        mFlinger.setupPowerAdvisor(std::unique_ptr<Hwc2::PowerAdvisor>(mPowerAdvisor));
+
         mFlinger.mutableMaxRenderTargetSize() = 16384;
     }
 
@@ -122,6 +118,38 @@ public:
         ALOGD("**** Tearing down after %s.%s\n", test_info->test_case_name(), test_info->name());
     }
 
+    void setupScheduler() {
+        auto eventThread = std::make_unique<mock::EventThread>();
+        auto sfEventThread = std::make_unique<mock::EventThread>();
+
+        EXPECT_CALL(*eventThread, registerDisplayEventConnection(_));
+        EXPECT_CALL(*eventThread, createEventConnection(_, _))
+                .WillOnce(Return(new EventThreadConnection(eventThread.get(), /*callingUid=*/0,
+                                                           ResyncCallback())));
+
+        EXPECT_CALL(*sfEventThread, registerDisplayEventConnection(_));
+        EXPECT_CALL(*sfEventThread, createEventConnection(_, _))
+                .WillOnce(Return(new EventThreadConnection(sfEventThread.get(), /*callingUid=*/0,
+                                                           ResyncCallback())));
+
+        auto vsyncController = std::make_unique<mock::VsyncController>();
+        auto vsyncTracker = std::make_unique<mock::VSyncTracker>();
+
+        EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+        EXPECT_CALL(*vsyncTracker, currentPeriod())
+                .WillRepeatedly(Return(FakeHwcDisplayInjector::DEFAULT_VSYNC_PERIOD));
+        EXPECT_CALL(*vsyncTracker, nextAnticipatedVSyncTimeFrom(_)).WillRepeatedly(Return(0));
+
+        constexpr ISchedulerCallback* kCallback = nullptr;
+        constexpr bool kHasMultipleConfigs = true;
+        mFlinger.setupScheduler(std::move(vsyncController), std::move(vsyncTracker),
+                                std::move(eventThread), std::move(sfEventThread), kCallback,
+                                kHasMultipleConfigs);
+
+        // Layer history should be created if there are multiple configs.
+        ASSERT_TRUE(mFlinger.scheduler()->hasLayerHistory());
+    }
+
     void setupForceGeometryDirty() {
         // TODO: This requires the visible region and other related
         // state to be set, and is problematic for BufferLayers since they are
@@ -129,7 +157,7 @@ public:
         // pain)
         // mFlinger.mutableVisibleRegionsDirty() = true;
 
-        mFlinger.mutableGeometryDirty() = true;
+        mFlinger.mutableGeometryInvalid() = true;
     }
 
     template <typename Case>
@@ -141,25 +169,25 @@ public:
     template <typename Case>
     void captureScreenComposition();
 
-    std::unordered_set<Capability> mDefaultCapabilities = {Capability::SIDEBAND_STREAM};
+    std::unordered_set<hal::Capability> mDefaultCapabilities = {hal::Capability::SIDEBAND_STREAM};
 
     bool mDisplayOff = false;
     TestableSurfaceFlinger mFlinger;
     sp<DisplayDevice> mDisplay;
+    sp<DisplayDevice> mExternalDisplay;
     sp<compositionengine::mock::DisplaySurface> mDisplaySurface =
-            sp<compositionengine::mock::DisplaySurface>::make();
-    sp<mock::NativeWindow> mNativeWindow = sp<mock::NativeWindow>::make();
+            new compositionengine::mock::DisplaySurface();
+    mock::NativeWindow* mNativeWindow = new mock::NativeWindow();
     std::vector<sp<Layer>> mAuxiliaryLayers;
 
-    sp<GraphicBuffer> mBuffer =
-            sp<GraphicBuffer>::make(1u, 1u, PIXEL_FORMAT_RGBA_8888,
-                                    GRALLOC_USAGE_SW_WRITE_OFTEN | GRALLOC_USAGE_SW_READ_OFTEN);
+    sp<GraphicBuffer> mBuffer = new GraphicBuffer();
     ANativeWindowBuffer* mNativeWindowBuffer = mBuffer->getNativeBuffer();
 
     Hwc2::mock::Composer* mComposer = nullptr;
     renderengine::mock::RenderEngine* mRenderEngine = new renderengine::mock::RenderEngine();
     mock::TimeStats* mTimeStats = new mock::TimeStats();
-    Hwc2::mock::PowerAdvisor* mPowerAdvisor = nullptr;
+    mock::MessageQueue* mMessageQueue = new mock::MessageQueue();
+    Hwc2::mock::PowerAdvisor mPowerAdvisor;
 
     sp<Fence> mClientTargetAcquireFence = Fence::NO_FENCE;
 
@@ -174,7 +202,8 @@ void CompositionTest::displayRefreshCompositionDirtyGeometry() {
     // --------------------------------------------------------------------
     // Invocation
 
-    mFlinger.commitAndComposite();
+    mFlinger.onMessageReceived(MessageQueue::INVALIDATE);
+    mFlinger.onMessageReceived(MessageQueue::REFRESH);
 
     LayerCase::cleanup(this);
 }
@@ -186,7 +215,8 @@ void CompositionTest::displayRefreshCompositionDirtyFrame() {
     // --------------------------------------------------------------------
     // Invocation
 
-    mFlinger.commitAndComposite();
+    mFlinger.onMessageReceived(MessageQueue::INVALIDATE);
+    mFlinger.onMessageReceived(MessageQueue::REFRESH);
 
     LayerCase::cleanup(this);
 }
@@ -200,42 +230,29 @@ void CompositionTest::captureScreenComposition() {
     constexpr bool regionSampling = false;
 
     auto renderArea = DisplayRenderArea::create(mDisplay, sourceCrop, sourceCrop.getSize(),
-                                                ui::Dataspace::V0_SRGB, true, true);
+                                                ui::Dataspace::V0_SRGB, ui::Transform::ROT_0);
 
     auto traverseLayers = [this](const LayerVector::Visitor& visitor) {
         return mFlinger.traverseLayersInLayerStack(mDisplay->getLayerStack(),
-                                                   CaptureArgs::UNSET_UID, {}, visitor);
+                                                   CaptureArgs::UNSET_UID, visitor);
     };
 
-    auto getLayerSnapshots = RenderArea::fromTraverseLayersLambda(traverseLayers);
-
+    // TODO: Eliminate expensive/real allocation if possible.
     const uint32_t usage = GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN |
             GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_TEXTURE;
-    mCaptureScreenBuffer =
-            std::make_shared<renderengine::mock::FakeExternalTexture>(renderArea->getReqWidth(),
-                                                                      renderArea->getReqHeight(),
-                                                                      HAL_PIXEL_FORMAT_RGBA_8888, 1,
-                                                                      usage);
+    mCaptureScreenBuffer = std::make_shared<
+            renderengine::ExternalTexture>(new GraphicBuffer(renderArea->getReqWidth(),
+                                                             renderArea->getReqHeight(),
+                                                             HAL_PIXEL_FORMAT_RGBA_8888, 1, usage,
+                                                             "screenshot"),
+                                           *mRenderEngine, true);
 
-    auto future = mFlinger.renderScreenImpl(std::move(renderArea), getLayerSnapshots,
-                                            mCaptureScreenBuffer, forSystem, regionSampling);
-    ASSERT_TRUE(future.valid());
-    const auto fenceResult = future.get();
-
-    EXPECT_EQ(NO_ERROR, fenceStatus(fenceResult));
-    if (fenceResult.ok()) {
-        fenceResult.value()->waitForever(LOG_TAG);
-    }
+    status_t result =
+            mFlinger.renderScreenImplLocked(*renderArea, traverseLayers, mCaptureScreenBuffer,
+                                            forSystem, regionSampling);
+    EXPECT_EQ(NO_ERROR, result);
 
     LayerCase::cleanup(this);
-}
-
-template <class T>
-std::future<T> futureOf(T obj) {
-    std::promise<T> resultPromise;
-    std::future<T> resultFuture = resultPromise.get_future();
-    resultPromise.set_value(std::move(obj));
-    return resultFuture;
 }
 
 /* ------------------------------------------------------------------------
@@ -270,9 +287,11 @@ struct BaseDisplayVariant {
 
         auto ceDisplayArgs = compositionengine::DisplayCreationArgsBuilder()
                                      .setId(DEFAULT_DISPLAY_ID)
+                                     .setConnectionType(ui::DisplayConnectionType::Internal)
                                      .setPixels({DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT})
                                      .setIsSecure(Derived::IS_SECURE)
-                                     .setPowerAdvisor(test->mPowerAdvisor)
+                                     .setLayerStackId(DEFAULT_LAYER_STACK)
+                                     .setPowerAdvisor(&test->mPowerAdvisor)
                                      .setName(std::string("Injected display for ") +
                                               test_info->test_case_name() + "." + test_info->name())
                                      .build();
@@ -281,37 +300,30 @@ struct BaseDisplayVariant {
                 compositionengine::impl::createDisplay(test->mFlinger.getCompositionEngine(),
                                                        ceDisplayArgs);
 
-        constexpr auto kDisplayConnectionType = ui::DisplayConnectionType::Internal;
-        constexpr bool kIsPrimary = true;
-
-        test->mDisplay =
-                FakeDisplayDeviceInjector(test->mFlinger, compositionDisplay,
-                                          kDisplayConnectionType, HWC_DISPLAY, kIsPrimary)
-                        .setDisplaySurface(test->mDisplaySurface)
-                        .setNativeWindow(test->mNativeWindow)
-                        .setSecure(Derived::IS_SECURE)
-                        .setPowerMode(Derived::INIT_POWER_MODE)
-                        .setRefreshRateSelector(test->mFlinger.scheduler()->refreshRateSelector())
-                        .skipRegisterDisplay()
-                        .inject();
-        Mock::VerifyAndClear(test->mNativeWindow.get());
-
-        constexpr bool kIsInternal = kDisplayConnectionType == ui::DisplayConnectionType::Internal;
-        test->mDisplay->setLayerFilter({LAYER_STACK, kIsInternal});
+        test->mDisplay = FakeDisplayDeviceInjector(test->mFlinger, compositionDisplay,
+                                                   ui::DisplayConnectionType::Internal, HWC_DISPLAY,
+                                                   true /* isPrimary */)
+                                 .setDisplaySurface(test->mDisplaySurface)
+                                 .setNativeWindow(test->mNativeWindow)
+                                 .setSecure(Derived::IS_SECURE)
+                                 .setPowerMode(Derived::INIT_POWER_MODE)
+                                 .inject();
+        Mock::VerifyAndClear(test->mNativeWindow);
+        test->mDisplay->setLayerStack(DEFAULT_LAYER_STACK);
     }
 
     template <typename Case>
     static void setupPreconditionCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mComposer, getDisplayCapabilities(HWC_DISPLAY, _))
-                .WillOnce(DoAll(SetArgPointee<1>(
-                                        std::vector<aidl::android::hardware::graphics::composer3::
-                                                            DisplayCapability>({})),
+                .WillOnce(DoAll(SetArgPointee<1>(std::vector<Hwc2::DisplayCapability>({})),
                                 Return(Error::NONE)));
     }
 
     template <typename Case>
     static void setupCommonCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, setColorTransform(HWC_DISPLAY, IsIdentityMatrix())).Times(1);
+        EXPECT_CALL(*test->mComposer,
+                    setColorTransform(HWC_DISPLAY, _, Hwc2::ColorTransform::IDENTITY))
+                .Times(1);
         EXPECT_CALL(*test->mComposer, getDisplayRequests(HWC_DISPLAY, _, _, _)).Times(1);
         EXPECT_CALL(*test->mComposer, acceptDisplayChanges(HWC_DISPLAY)).Times(1);
         EXPECT_CALL(*test->mComposer, presentDisplay(HWC_DISPLAY, _)).Times(1);
@@ -327,16 +339,16 @@ struct BaseDisplayVariant {
     template <typename Case>
     static void setupCommonScreensCaptureCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
-                .WillRepeatedly([&](const renderengine::DisplaySettings& displaySettings,
-                                    const std::vector<renderengine::LayerSettings>&,
-                                    const std::shared_ptr<renderengine::ExternalTexture>&,
-                                    const bool, base::unique_fd&&) -> std::future<FenceResult> {
+                .WillRepeatedly([](const renderengine::DisplaySettings& displaySettings,
+                                   const std::vector<const renderengine::LayerSettings*>&,
+                                   const std::shared_ptr<renderengine::ExternalTexture>&,
+                                   const bool, base::unique_fd&&, base::unique_fd*) -> status_t {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.clip);
-                    return futureOf<FenceResult>(Fence::NO_FENCE);
+                    return NO_ERROR;
                 });
     }
 
@@ -349,26 +361,24 @@ struct BaseDisplayVariant {
     }
 
     static void setupHwcCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _))
-                .Times(1);
+        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _)).Times(1);
 
         EXPECT_CALL(*test->mDisplaySurface,
-                    prepareFrame(compositionengine::DisplaySurface::CompositionType::Hwc))
+                    prepareFrame(compositionengine::DisplaySurface::COMPOSITION_HWC))
                 .Times(1);
     }
 
     static void setupHwcClientCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _))
-                .Times(1);
+        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _)).Times(1);
     }
 
     static void setupHwcForcedClientCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, validateDisplay(HWC_DISPLAY, _, _, _)).Times(1);
+        EXPECT_CALL(*test->mComposer, validateDisplay(HWC_DISPLAY, _, _)).Times(1);
     }
 
     static void setupRECompositionCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mDisplaySurface,
-                    prepareFrame(compositionengine::DisplaySurface::CompositionType::Gpu))
+                    prepareFrame(compositionengine::DisplaySurface::COMPOSITION_GPU))
                 .Times(1);
         EXPECT_CALL(*test->mDisplaySurface, getClientTargetAcquireFence())
                 .WillRepeatedly(ReturnRef(test->mClientTargetAcquireFence));
@@ -378,17 +388,17 @@ struct BaseDisplayVariant {
                 .WillOnce(DoAll(SetArgPointee<0>(test->mNativeWindowBuffer), SetArgPointee<1>(-1),
                                 Return(0)));
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
-                .WillRepeatedly([&](const renderengine::DisplaySettings& displaySettings,
-                                    const std::vector<renderengine::LayerSettings>&,
-                                    const std::shared_ptr<renderengine::ExternalTexture>&,
-                                    const bool, base::unique_fd&&) -> std::future<FenceResult> {
+                .WillRepeatedly([](const renderengine::DisplaySettings& displaySettings,
+                                   const std::vector<const renderengine::LayerSettings*>&,
+                                   const std::shared_ptr<renderengine::ExternalTexture>&,
+                                   const bool, base::unique_fd&&, base::unique_fd*) -> status_t {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.clip);
                     EXPECT_EQ(ui::Dataspace::UNKNOWN, displaySettings.outputDataspace);
-                    return futureOf<FenceResult>(Fence::NO_FENCE);
+                    return NO_ERROR;
                 });
     }
 
@@ -428,7 +438,9 @@ struct PoweredOffDisplaySetupVariant : public BaseDisplayVariant<PoweredOffDispl
     template <typename Case>
     static void setupCommonCompositionCallExpectations(CompositionTest* test) {
         // TODO: This seems like an unnecessary call if display is powered off.
-        EXPECT_CALL(*test->mComposer, setColorTransform(HWC_DISPLAY, IsIdentityMatrix())).Times(1);
+        EXPECT_CALL(*test->mComposer,
+                    setColorTransform(HWC_DISPLAY, _, Hwc2::ColorTransform::IDENTITY))
+                .Times(1);
 
         // TODO: This seems like an unnecessary call if display is powered off.
         Case::CompositionType::setupHwcSetCallExpectations(test);
@@ -467,31 +479,64 @@ struct BaseLayerProperties {
     static constexpr IComposerClient::BlendMode BLENDMODE =
             IComposerClient::BlendMode::PREMULTIPLIED;
 
-    static void setupLatchedBuffer(CompositionTest* test, sp<Layer> layer) {
+    static void enqueueBuffer(CompositionTest*, sp<BufferQueueLayer> layer) {
+        auto producer = layer->getProducer();
+
+        IGraphicBufferProducer::QueueBufferOutput qbo;
+        status_t result = producer->connect(nullptr, NATIVE_WINDOW_API_EGL, false, &qbo);
+        if (result != NO_ERROR) {
+            ALOGE("Failed to connect() (%d)", result);
+            return;
+        }
+
+        int slot;
+        sp<Fence> fence;
+        result = producer->dequeueBuffer(&slot, &fence, LayerProperties::WIDTH,
+                                         LayerProperties::HEIGHT, LayerProperties::FORMAT,
+                                         LayerProperties::USAGE, nullptr, nullptr);
+        if (result != IGraphicBufferProducer::BUFFER_NEEDS_REALLOCATION) {
+            ALOGE("Failed to dequeueBuffer() (%d)", result);
+            return;
+        }
+
+        sp<GraphicBuffer> buffer;
+        result = producer->requestBuffer(slot, &buffer);
+        if (result != NO_ERROR) {
+            ALOGE("Failed to requestBuffer() (%d)", result);
+            return;
+        }
+
+        IGraphicBufferProducer::QueueBufferInput qbi(systemTime(), false /* isAutoTimestamp */,
+                                                     LayerProperties::DATASPACE,
+                                                     Rect(LayerProperties::WIDTH,
+                                                          LayerProperties::HEIGHT),
+                                                     LayerProperties::SCALING_MODE,
+                                                     LayerProperties::TRANSFORM, Fence::NO_FENCE);
+        result = producer->queueBuffer(slot, qbi, &qbo);
+        if (result != NO_ERROR) {
+            ALOGE("Failed to queueBuffer (%d)", result);
+            return;
+        }
+    }
+
+    static void setupLatchedBuffer(CompositionTest* test, sp<BufferQueueLayer> layer) {
+        // TODO: Eliminate the complexity of actually creating a buffer
+        status_t err =
+                layer->setDefaultBufferProperties(LayerProperties::WIDTH, LayerProperties::HEIGHT,
+                                                  LayerProperties::FORMAT);
+        ASSERT_EQ(NO_ERROR, err);
         Mock::VerifyAndClear(test->mRenderEngine);
 
-        const auto buffer = std::make_shared<
-                renderengine::mock::FakeExternalTexture>(LayerProperties::WIDTH,
-                                                         LayerProperties::HEIGHT,
-                                                         DEFAULT_TEXTURE_ID,
-                                                         LayerProperties::FORMAT,
-                                                         LayerProperties::USAGE |
-                                                                 GraphicBuffer::USAGE_HW_TEXTURE);
-
-        auto& layerDrawingState = test->mFlinger.mutableLayerDrawingState(layer);
-        layerDrawingState.crop = Rect(0, 0, LayerProperties::HEIGHT, LayerProperties::WIDTH);
-        layerDrawingState.buffer = buffer;
-        layerDrawingState.acquireFence = Fence::NO_FENCE;
-        layerDrawingState.dataspace = ui::Dataspace::UNKNOWN;
-        layer->setSurfaceDamageRegion(
-                Region(Rect(LayerProperties::HEIGHT, LayerProperties::WIDTH)));
+        EXPECT_CALL(*test->mMessageQueue, invalidate()).Times(1);
+        enqueueBuffer(test, layer);
+        Mock::VerifyAndClearExpectations(test->mMessageQueue);
 
         bool ignoredRecomputeVisibleRegions;
-        layer->latchBuffer(ignoredRecomputeVisibleRegions, 0);
+        layer->latchBuffer(ignoredRecomputeVisibleRegions, 0, 0);
         Mock::VerifyAndClear(test->mRenderEngine);
     }
 
-    static void setupLayerState(CompositionTest* test, sp<Layer> layer) {
+    static void setupLayerState(CompositionTest* test, sp<BufferQueueLayer> layer) {
         setupLatchedBuffer(test, layer);
     }
 
@@ -562,8 +607,7 @@ struct BaseLayerProperties {
             // TODO: use COLOR
             EXPECT_CALL(*test->mComposer,
                         setLayerColor(HWC_DISPLAY, HWC_LAYER,
-                                      aidl::android::hardware::graphics::composer3::Color(
-                                              {1.0f, 1.0f, 1.0f, 1.0f})))
+                                      IComposerClient::Color({0xff, 0xff, 0xff, 0xff})))
                     .Times(1);
         }
     }
@@ -578,10 +622,10 @@ struct BaseLayerProperties {
 
     static void setupREBufferCompositionCommonCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
-                .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
-                              const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                .WillOnce([](const renderengine::DisplaySettings& displaySettings,
+                             const std::vector<const renderengine::LayerSettings*>& layerSettings,
+                             const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
+                             base::unique_fd&&, base::unique_fd*) -> status_t {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -589,25 +633,23 @@ struct BaseLayerProperties {
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so gtet the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE() << "layerSettings was not expected to be empty in "
                                          "setupREBufferCompositionCommonCallExpectations "
                                          "verification lambda";
-                        return resultFuture;
+                        return NO_ERROR;
                     }
-                    const renderengine::LayerSettings layer = layerSettings.back();
-                    EXPECT_THAT(layer.source.buffer.buffer, Not(IsNull()));
-                    EXPECT_THAT(layer.source.buffer.fence, Not(IsNull()));
-                    EXPECT_EQ(DEFAULT_TEXTURE_ID, layer.source.buffer.textureName);
-                    EXPECT_EQ(false, layer.source.buffer.isY410BT2020);
-                    EXPECT_EQ(true, layer.source.buffer.usePremultipliedAlpha);
-                    EXPECT_EQ(false, layer.source.buffer.isOpaque);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.x);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.y);
-                    EXPECT_EQ(ui::Dataspace::V0_SRGB, layer.sourceDataspace);
-                    EXPECT_EQ(LayerProperties::COLOR[3], layer.alpha);
-                    return resultFuture;
+                    const renderengine::LayerSettings* layer = layerSettings.back();
+                    EXPECT_THAT(layer->source.buffer.buffer, Not(IsNull()));
+                    EXPECT_THAT(layer->source.buffer.fence, Not(IsNull()));
+                    EXPECT_EQ(DEFAULT_TEXTURE_ID, layer->source.buffer.textureName);
+                    EXPECT_EQ(false, layer->source.buffer.isY410BT2020);
+                    EXPECT_EQ(true, layer->source.buffer.usePremultipliedAlpha);
+                    EXPECT_EQ(false, layer->source.buffer.isOpaque);
+                    EXPECT_EQ(0.0, layer->geometry.roundedCornersRadius);
+                    EXPECT_EQ(ui::Dataspace::UNKNOWN, layer->sourceDataspace);
+                    EXPECT_EQ(LayerProperties::COLOR[3], layer->alpha);
+                    return NO_ERROR;
                 });
     }
 
@@ -629,10 +671,10 @@ struct BaseLayerProperties {
 
     static void setupREColorCompositionCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
-                .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
-                              const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                .WillOnce([](const renderengine::DisplaySettings& displaySettings,
+                             const std::vector<const renderengine::LayerSettings*>& layerSettings,
+                             const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
+                             base::unique_fd&&, base::unique_fd*) -> status_t {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -640,23 +682,21 @@ struct BaseLayerProperties {
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so get the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE()
                                 << "layerSettings was not expected to be empty in "
                                    "setupREColorCompositionCallExpectations verification lambda";
-                        return resultFuture;
+                        return NO_ERROR;
                     }
-                    const renderengine::LayerSettings layer = layerSettings.back();
-                    EXPECT_THAT(layer.source.buffer.buffer, IsNull());
+                    const renderengine::LayerSettings* layer = layerSettings.back();
+                    EXPECT_THAT(layer->source.buffer.buffer, IsNull());
                     EXPECT_EQ(half3(LayerProperties::COLOR[0], LayerProperties::COLOR[1],
                                     LayerProperties::COLOR[2]),
-                              layer.source.solidColor);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.x);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.y);
-                    EXPECT_EQ(ui::Dataspace::V0_SRGB, layer.sourceDataspace);
-                    EXPECT_EQ(LayerProperties::COLOR[3], layer.alpha);
-                    return resultFuture;
+                              layer->source.solidColor);
+                    EXPECT_EQ(0.0, layer->geometry.roundedCornersRadius);
+                    EXPECT_EQ(ui::Dataspace::UNKNOWN, layer->sourceDataspace);
+                    EXPECT_EQ(LayerProperties::COLOR[3], layer->alpha);
+                    return NO_ERROR;
                 });
     }
 
@@ -675,14 +715,11 @@ struct SidebandLayerProperties : public BaseLayerProperties<SidebandLayerPropert
     using Base = BaseLayerProperties<SidebandLayerProperties>;
     static constexpr IComposerClient::BlendMode BLENDMODE = IComposerClient::BlendMode::NONE;
 
-    static void setupLayerState(CompositionTest* test, sp<Layer> layer) {
+    static void setupLayerState(CompositionTest* test, sp<BufferQueueLayer> layer) {
         sp<NativeHandle> stream =
                 NativeHandle::create(reinterpret_cast<native_handle_t*>(DEFAULT_SIDEBAND_STREAM),
                                      false);
         test->mFlinger.setLayerSidebandStream(layer, stream);
-        auto& layerDrawingState = test->mFlinger.mutableLayerDrawingState(layer);
-        layerDrawingState.crop =
-                Rect(0, 0, SidebandLayerProperties::HEIGHT, SidebandLayerProperties::WIDTH);
     }
 
     static void setupHwcSetSourceCropBufferCallExpectations(CompositionTest* test) {
@@ -711,10 +748,10 @@ struct CommonSecureLayerProperties : public BaseLayerProperties<LayerProperties>
 
     static void setupInsecureREBufferCompositionCommonCallExpectations(CompositionTest* test) {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
-                .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
-                              const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                .WillOnce([](const renderengine::DisplaySettings& displaySettings,
+                             const std::vector<const renderengine::LayerSettings*>& layerSettings,
+                             const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
+                             base::unique_fd&&, base::unique_fd*) -> status_t {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -722,21 +759,19 @@ struct CommonSecureLayerProperties : public BaseLayerProperties<LayerProperties>
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so get the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE() << "layerSettings was not expected to be empty in "
                                          "setupInsecureREBufferCompositionCommonCallExpectations "
                                          "verification lambda";
-                        return resultFuture;
+                        return NO_ERROR;
                     }
-                    const renderengine::LayerSettings layer = layerSettings.back();
-                    EXPECT_THAT(layer.source.buffer.buffer, IsNull());
-                    EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), layer.source.solidColor);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.x);
-                    EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.y);
-                    EXPECT_EQ(ui::Dataspace::V0_SRGB, layer.sourceDataspace);
-                    EXPECT_EQ(1.0f, layer.alpha);
-                    return resultFuture;
+                    const renderengine::LayerSettings* layer = layerSettings.back();
+                    EXPECT_THAT(layer->source.buffer.buffer, IsNull());
+                    EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), layer->source.solidColor);
+                    EXPECT_EQ(0.0, layer->geometry.roundedCornersRadius);
+                    EXPECT_EQ(ui::Dataspace::UNKNOWN, layer->sourceDataspace);
+                    EXPECT_EQ(1.0f, layer->alpha);
+                    return NO_ERROR;
                 });
     }
 
@@ -759,14 +794,14 @@ struct SecureLayerProperties : public CommonSecureLayerProperties<SecureLayerPro
 struct CursorLayerProperties : public BaseLayerProperties<CursorLayerProperties> {
     using Base = BaseLayerProperties<CursorLayerProperties>;
 
-    static void setupLayerState(CompositionTest* test, sp<Layer> layer) {
+    static void setupLayerState(CompositionTest* test, sp<BufferQueueLayer> layer) {
         Base::setupLayerState(test, layer);
         test->mFlinger.setLayerPotentialCursor(layer, true);
     }
 };
 
 struct NoLayerVariant {
-    using FlingerLayerType = sp<Layer>;
+    using FlingerLayerType = sp<BufferQueueLayer>;
 
     static FlingerLayerType createLayer(CompositionTest*) { return FlingerLayerType(); }
     static void injectLayer(CompositionTest*, FlingerLayerType) {}
@@ -780,16 +815,16 @@ template <typename LayerProperties>
 struct BaseLayerVariant {
     template <typename L, typename F>
     static sp<L> createLayerWithFactory(CompositionTest* test, F factory) {
-        EXPECT_CALL(*test->mFlinger.scheduler(), postMessage(_)).Times(0);
+        EXPECT_CALL(*test->mMessageQueue, postMessage(_)).Times(0);
 
         sp<L> layer = factory();
 
         // Layer should be registered with scheduler.
-        EXPECT_EQ(1u, test->mFlinger.scheduler()->layerHistorySize());
+        EXPECT_EQ(1, test->mFlinger.scheduler()->layerHistorySize());
 
         Mock::VerifyAndClear(test->mComposer);
         Mock::VerifyAndClear(test->mRenderEngine);
-        Mock::VerifyAndClearExpectations(test->mFlinger.scheduler());
+        Mock::VerifyAndClearExpectations(test->mMessageQueue);
 
         initLayerDrawingStateAndComputeBounds(test, layer);
 
@@ -799,7 +834,9 @@ struct BaseLayerVariant {
     template <typename L>
     static void initLayerDrawingStateAndComputeBounds(CompositionTest* test, sp<L> layer) {
         auto& layerDrawingState = test->mFlinger.mutableLayerDrawingState(layer);
-        layerDrawingState.layerStack = LAYER_STACK;
+        layerDrawingState.layerStack = DEFAULT_LAYER_STACK;
+        layerDrawingState.width = 100;
+        layerDrawingState.height = 100;
         layerDrawingState.color = half4(LayerProperties::COLOR[0], LayerProperties::COLOR[1],
                                         LayerProperties::COLOR[2], LayerProperties::COLOR[3]);
         layer->computeBounds(FloatRect(0, 0, 100, 100), ui::Transform(), 0.f /* shadowRadius */);
@@ -817,7 +854,6 @@ struct BaseLayerVariant {
         Mock::VerifyAndClear(test->mComposer);
 
         test->mFlinger.mutableDrawingState().layersSortedByZ.add(layer);
-        test->mFlinger.mutableVisibleRegionsDirty() = true;
     }
 
     static void cleanupInjectedLayers(CompositionTest* test) {
@@ -826,24 +862,24 @@ struct BaseLayerVariant {
 
         test->mDisplay->getCompositionDisplay()->clearOutputLayers();
         test->mFlinger.mutableDrawingState().layersSortedByZ.clear();
-        test->mFlinger.mutablePreviouslyComposedLayers().clear();
 
         // Layer should be unregistered with scheduler.
-        test->mFlinger.commit();
-        EXPECT_EQ(0u, test->mFlinger.scheduler()->layerHistorySize());
+        test->mFlinger.onMessageReceived(MessageQueue::INVALIDATE);
+        EXPECT_EQ(0, test->mFlinger.scheduler()->layerHistorySize());
     }
 };
 
 template <typename LayerProperties>
 struct EffectLayerVariant : public BaseLayerVariant<LayerProperties> {
     using Base = BaseLayerVariant<LayerProperties>;
-    using FlingerLayerType = sp<Layer>;
+    using FlingerLayerType = sp<EffectLayer>;
 
     static FlingerLayerType createLayer(CompositionTest* test) {
-        FlingerLayerType layer = Base::template createLayerWithFactory<Layer>(test, [test]() {
-            return sp<Layer>::make(LayerCreationArgs(test->mFlinger.flinger(), sp<Client>(),
-                                                     "test-layer", LayerProperties::LAYER_FLAGS,
-                                                     LayerMetadata()));
+        FlingerLayerType layer = Base::template createLayerWithFactory<EffectLayer>(test, [test]() {
+            return new EffectLayer(
+                    LayerCreationArgs(test->mFlinger.flinger(), sp<Client>(), "test-layer",
+                                      LayerProperties::WIDTH, LayerProperties::HEIGHT,
+                                      LayerProperties::LAYER_FLAGS, LayerMetadata()));
         });
 
         auto& layerDrawingState = test->mFlinger.mutableLayerDrawingState(layer);
@@ -873,17 +909,18 @@ struct EffectLayerVariant : public BaseLayerVariant<LayerProperties> {
 template <typename LayerProperties>
 struct BufferLayerVariant : public BaseLayerVariant<LayerProperties> {
     using Base = BaseLayerVariant<LayerProperties>;
-    using FlingerLayerType = sp<Layer>;
+    using FlingerLayerType = sp<BufferQueueLayer>;
 
     static FlingerLayerType createLayer(CompositionTest* test) {
         test->mFlinger.mutableTexturePool().push_back(DEFAULT_TEXTURE_ID);
 
         FlingerLayerType layer =
-                Base::template createLayerWithFactory<Layer>(test, [test]() {
+                Base::template createLayerWithFactory<BufferQueueLayer>(test, [test]() {
                     LayerCreationArgs args(test->mFlinger.flinger(), sp<Client>(), "test-layer",
+                                           LayerProperties::WIDTH, LayerProperties::HEIGHT,
                                            LayerProperties::LAYER_FLAGS, LayerMetadata());
                     args.textureName = test->mFlinger.mutableTexturePool().back();
-                    return sp<Layer>::make(args);
+                    return new BufferQueueLayer(args);
                 });
 
         LayerProperties::setupLayerState(test, layer);
@@ -892,6 +929,7 @@ struct BufferLayerVariant : public BaseLayerVariant<LayerProperties> {
     }
 
     static void cleanupInjectedLayers(CompositionTest* test) {
+        EXPECT_CALL(*test->mMessageQueue, postMessage(_)).Times(1);
         Base::cleanupInjectedLayers(test);
     }
 
@@ -925,12 +963,13 @@ struct BufferLayerVariant : public BaseLayerVariant<LayerProperties> {
 template <typename LayerProperties>
 struct ContainerLayerVariant : public BaseLayerVariant<LayerProperties> {
     using Base = BaseLayerVariant<LayerProperties>;
-    using FlingerLayerType = sp<Layer>;
+    using FlingerLayerType = sp<ContainerLayer>;
 
     static FlingerLayerType createLayer(CompositionTest* test) {
         LayerCreationArgs args(test->mFlinger.flinger(), sp<Client>(), "test-container-layer",
+                               LayerProperties::WIDTH, LayerProperties::HEIGHT,
                                LayerProperties::LAYER_FLAGS, LayerMetadata());
-        FlingerLayerType layer = sp<Layer>::make(args);
+        FlingerLayerType layer = new ContainerLayer(args);
         Base::template initLayerDrawingStateAndComputeBounds(test, layer);
         return layer;
     }
@@ -976,10 +1015,9 @@ struct NoCompositionTypeVariant {
     }
 };
 
-template <aidl::android::hardware::graphics::composer3::Composition CompositionType>
+template <IComposerClient::Composition CompositionType>
 struct KeepCompositionTypeVariant {
-    static constexpr aidl::android::hardware::graphics::composer3::Composition TYPE =
-            CompositionType;
+    static constexpr hal::Composition TYPE = CompositionType;
 
     static void setupHwcSetCallExpectations(CompositionTest* test) {
         if (!test->mDisplayOff) {
@@ -994,11 +1032,10 @@ struct KeepCompositionTypeVariant {
     }
 };
 
-template <aidl::android::hardware::graphics::composer3::Composition InitialCompositionType,
-          aidl::android::hardware::graphics::composer3::Composition FinalCompositionType>
+template <IComposerClient::Composition InitialCompositionType,
+          IComposerClient::Composition FinalCompositionType>
 struct ChangeCompositionTypeVariant {
-    static constexpr aidl::android::hardware::graphics::composer3::Composition TYPE =
-            FinalCompositionType;
+    static constexpr hal::Composition TYPE = FinalCompositionType;
 
     static void setupHwcSetCallExpectations(CompositionTest* test) {
         if (!test->mDisplayOff) {
@@ -1012,9 +1049,8 @@ struct ChangeCompositionTypeVariant {
         EXPECT_CALL(*test->mComposer, getChangedCompositionTypes(HWC_DISPLAY, _, _))
                 .WillOnce(DoAll(SetArgPointee<1>(std::vector<Hwc2::Layer>{
                                         static_cast<Hwc2::Layer>(HWC_LAYER)}),
-                                SetArgPointee<2>(
-                                        std::vector<aidl::android::hardware::graphics::composer3::
-                                                            Composition>{FinalCompositionType}),
+                                SetArgPointee<2>(std::vector<IComposerClient::Composition>{
+                                        FinalCompositionType}),
                                 Return(Error::NONE)));
     }
 };
@@ -1208,28 +1244,25 @@ TEST_F(CompositionTest, noLayersDoesMinimalWorkToCaptureScreen) {
  */
 
 TEST_F(CompositionTest, HWCComposedNormalBufferLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedNormalBufferLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, REComposedNormalBufferLayer) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            RECompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
+                            ChangeCompositionTypeVariant<IComposerClient::Composition::DEVICE,
+                                                         IComposerClient::Composition::CLIENT>,
+                            RECompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenNormalBufferLayer) {
@@ -1243,28 +1276,25 @@ TEST_F(CompositionTest, captureScreenNormalBufferLayer) {
  */
 
 TEST_F(CompositionTest, HWCComposedEffectLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SOLID_COLOR>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::SOLID_COLOR>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedEffectLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SOLID_COLOR>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::SOLID_COLOR>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, REComposedEffectLayer) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SOLID_COLOR,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            RECompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, EffectLayerVariant<EffectLayerProperties>,
+                            ChangeCompositionTypeVariant<IComposerClient::Composition::SOLID_COLOR,
+                                                         IComposerClient::Composition::CLIENT>,
+                            RECompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenEffectLayer) {
@@ -1278,28 +1308,25 @@ TEST_F(CompositionTest, captureScreenEffectLayer) {
  */
 
 TEST_F(CompositionTest, HWCComposedSidebandBufferLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SIDEBAND>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::SIDEBAND>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedSidebandBufferLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SIDEBAND>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::SIDEBAND>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, REComposedSidebandBufferLayer) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::SIDEBAND,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            RECompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SidebandLayerProperties>,
+                            ChangeCompositionTypeVariant<IComposerClient::Composition::SIDEBAND,
+                                                         IComposerClient::Composition::CLIENT>,
+                            RECompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenSidebandBufferLayer) {
@@ -1313,28 +1340,25 @@ TEST_F(CompositionTest, captureScreenSidebandBufferLayer) {
  */
 
 TEST_F(CompositionTest, HWCComposedSecureBufferLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedSecureBufferLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, REComposedSecureBufferLayer) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            RECompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
+                            ChangeCompositionTypeVariant<IComposerClient::Composition::DEVICE,
+                                                         IComposerClient::Composition::CLIENT>,
+                            RECompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenSecureBufferLayerOnSecureDisplay) {
@@ -1348,19 +1372,17 @@ TEST_F(CompositionTest, captureScreenSecureBufferLayerOnSecureDisplay) {
  */
 
 TEST_F(CompositionTest, HWCComposedSecureBufferLayerOnInsecureDisplayWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            InsecureDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<InsecureDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedSecureBufferLayerOnInsecureDisplayWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            InsecureDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<InsecureDisplaySetupVariant, BufferLayerVariant<SecureLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenSecureBufferLayerOnInsecureDisplay) {
@@ -1375,24 +1397,22 @@ TEST_F(CompositionTest, captureScreenSecureBufferLayerOnInsecureDisplay) {
 
 TEST_F(CompositionTest,
        HWCComposedBufferLayerWithSecureParentLayerOnInsecureDisplayWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            InsecureDisplaySetupVariant,
-            ChildLayerVariant<BufferLayerVariant<ParentSecureLayerProperties>,
-                              ContainerLayerVariant<SecureLayerProperties>>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<InsecureDisplaySetupVariant,
+                            ChildLayerVariant<BufferLayerVariant<ParentSecureLayerProperties>,
+                                              ContainerLayerVariant<SecureLayerProperties>>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest,
        HWCComposedBufferLayerWithSecureParentLayerOnInsecureDisplayWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            InsecureDisplaySetupVariant,
-            ChildLayerVariant<BufferLayerVariant<ParentSecureLayerProperties>,
-                              ContainerLayerVariant<SecureLayerProperties>>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<InsecureDisplaySetupVariant,
+                            ChildLayerVariant<BufferLayerVariant<ParentSecureLayerProperties>,
+                                              ContainerLayerVariant<SecureLayerProperties>>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenBufferLayerWithSecureParentLayerOnInsecureDisplay) {
@@ -1408,28 +1428,25 @@ TEST_F(CompositionTest, captureScreenBufferLayerWithSecureParentLayerOnInsecureD
  */
 
 TEST_F(CompositionTest, HWCComposedCursorLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CURSOR>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CURSOR>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, HWCComposedCursorLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CURSOR>,
-            HwcCompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CURSOR>,
+                            HwcCompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, REComposedCursorLayer) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CURSOR,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            RECompositionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<CursorLayerProperties>,
+                            ChangeCompositionTypeVariant<IComposerClient::Composition::CURSOR,
+                                                         IComposerClient::Composition::CLIENT>,
+                            RECompositionResultVariant>>();
 }
 
 TEST_F(CompositionTest, captureScreenCursorLayer) {
@@ -1446,8 +1463,7 @@ TEST_F(CompositionTest, displayOffHWCComposedNormalBufferLayerWithDirtyGeometry)
     mDisplayOff = true;
     displayRefreshCompositionDirtyGeometry<CompositionCase<
             PoweredOffDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
+            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
             HwcCompositionResultVariant>>();
 }
 
@@ -1455,8 +1471,7 @@ TEST_F(CompositionTest, displayOffHWCComposedNormalBufferLayerWithDirtyFrame) {
     mDisplayOff = true;
     displayRefreshCompositionDirtyFrame<CompositionCase<
             PoweredOffDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE>,
+            KeepCompositionTypeVariant<IComposerClient::Composition::DEVICE>,
             HwcCompositionResultVariant>>();
 }
 
@@ -1464,9 +1479,8 @@ TEST_F(CompositionTest, displayOffREComposedNormalBufferLayer) {
     mDisplayOff = true;
     displayRefreshCompositionDirtyFrame<CompositionCase<
             PoweredOffDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            ChangeCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::DEVICE,
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
+            ChangeCompositionTypeVariant<IComposerClient::Composition::DEVICE,
+                                         IComposerClient::Composition::CLIENT>,
             RECompositionResultVariant>>();
 }
 
@@ -1481,19 +1495,17 @@ TEST_F(CompositionTest, captureScreenNormalBufferLayerOnPoweredOffDisplay) {
  */
 
 TEST_F(CompositionTest, DebugOptionForcingClientCompositionOfBufferLayerWithDirtyGeometry) {
-    displayRefreshCompositionDirtyGeometry<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionViaDebugOptionResultVariant>>();
+    displayRefreshCompositionDirtyGeometry<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionViaDebugOptionResultVariant>>();
 }
 
 TEST_F(CompositionTest, DebugOptionForcingClientCompositionOfBufferLayerWithDirtyFrame) {
-    displayRefreshCompositionDirtyFrame<CompositionCase<
-            DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
-            KeepCompositionTypeVariant<
-                    aidl::android::hardware::graphics::composer3::Composition::CLIENT>,
-            ForcedClientCompositionViaDebugOptionResultVariant>>();
+    displayRefreshCompositionDirtyFrame<
+            CompositionCase<DefaultDisplaySetupVariant, BufferLayerVariant<DefaultLayerProperties>,
+                            KeepCompositionTypeVariant<IComposerClient::Composition::CLIENT>,
+                            ForcedClientCompositionViaDebugOptionResultVariant>>();
 }
 
 } // namespace

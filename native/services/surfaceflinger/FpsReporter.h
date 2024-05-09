@@ -24,7 +24,6 @@
 
 #include "Clock.h"
 #include "FrameTimeline/FrameTimeline.h"
-#include "WpHash.h"
 
 namespace android {
 
@@ -51,6 +50,11 @@ public:
 
 private:
     mutable std::mutex mMutex;
+    struct WpHash {
+        size_t operator()(const wp<IBinder>& p) const {
+            return std::hash<IBinder*>()(p.unsafe_get());
+        }
+    };
 
     struct TrackedListener {
         sp<gui::IFpsListener> listener;

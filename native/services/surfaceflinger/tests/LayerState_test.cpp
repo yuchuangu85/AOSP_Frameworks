@@ -22,8 +22,6 @@
 #include <gui/LayerState.h>
 
 namespace android {
-using gui::DisplayCaptureArgs;
-using gui::LayerCaptureArgs;
 using gui::ScreenCaptureResults;
 
 namespace test {
@@ -35,18 +33,18 @@ TEST(LayerStateTest, ParcellingDisplayCaptureArgs) {
     args.frameScaleX = 2;
     args.frameScaleY = 4;
     args.captureSecureLayers = true;
-    args.displayToken = sp<BBinder>::make();
+    args.displayToken = new BBinder();
     args.width = 10;
     args.height = 20;
     args.useIdentityTransform = true;
     args.grayscale = true;
 
     Parcel p;
-    args.writeToParcel(&p);
+    args.write(p);
     p.setDataPosition(0);
 
     DisplayCaptureArgs args2;
-    args2.readFromParcel(&p);
+    args2.read(p);
 
     ASSERT_EQ(args.pixelFormat, args2.pixelFormat);
     ASSERT_EQ(args.sourceCrop, args2.sourceCrop);
@@ -67,17 +65,17 @@ TEST(LayerStateTest, ParcellingLayerCaptureArgs) {
     args.frameScaleX = 2;
     args.frameScaleY = 4;
     args.captureSecureLayers = true;
-    args.layerHandle = sp<BBinder>::make();
-    args.excludeHandles = {sp<BBinder>::make(), sp<BBinder>::make()};
+    args.layerHandle = new BBinder();
+    args.excludeHandles = {new BBinder(), new BBinder()};
     args.childrenOnly = false;
     args.grayscale = true;
 
     Parcel p;
-    args.writeToParcel(&p);
+    args.write(p);
     p.setDataPosition(0);
 
     LayerCaptureArgs args2;
-    args2.readFromParcel(&p);
+    args2.read(p);
 
     ASSERT_EQ(args.pixelFormat, args2.pixelFormat);
     ASSERT_EQ(args.sourceCrop, args2.sourceCrop);
@@ -90,12 +88,13 @@ TEST(LayerStateTest, ParcellingLayerCaptureArgs) {
     ASSERT_EQ(args.grayscale, args2.grayscale);
 }
 
-TEST(LayerStateTest, ParcellingScreenCaptureResultsWithFence) {
+TEST(LayerStateTest, ParcellingScreenCaptureResults) {
     ScreenCaptureResults results;
-    results.buffer = sp<GraphicBuffer>::make(100u, 200u, PIXEL_FORMAT_RGBA_8888, 1u, 0u);
-    results.fenceResult = sp<Fence>::make(dup(fileno(tmpfile())));
+    results.buffer = new GraphicBuffer(100, 200, PIXEL_FORMAT_RGBA_8888, 1, 0);
+    results.fence = new Fence(dup(fileno(tmpfile())));
     results.capturedSecureLayers = true;
     results.capturedDataspace = ui::Dataspace::DISPLAY_P3;
+    results.result = BAD_VALUE;
 
     Parcel p;
     results.writeToParcel(&p);
@@ -109,41 +108,10 @@ TEST(LayerStateTest, ParcellingScreenCaptureResultsWithFence) {
     ASSERT_EQ(results.buffer->getWidth(), results2.buffer->getWidth());
     ASSERT_EQ(results.buffer->getHeight(), results2.buffer->getHeight());
     ASSERT_EQ(results.buffer->getPixelFormat(), results2.buffer->getPixelFormat());
-    ASSERT_TRUE(results.fenceResult.ok());
-    ASSERT_TRUE(results2.fenceResult.ok());
-    ASSERT_EQ(results.fenceResult.value()->isValid(), results2.fenceResult.value()->isValid());
+    ASSERT_EQ(results.fence->isValid(), results2.fence->isValid());
     ASSERT_EQ(results.capturedSecureLayers, results2.capturedSecureLayers);
     ASSERT_EQ(results.capturedDataspace, results2.capturedDataspace);
-}
-
-TEST(LayerStateTest, ParcellingScreenCaptureResultsWithNoFenceOrError) {
-    ScreenCaptureResults results;
-
-    Parcel p;
-    results.writeToParcel(&p);
-    p.setDataPosition(0);
-
-    ScreenCaptureResults results2;
-    results2.readFromParcel(&p);
-
-    ASSERT_TRUE(results2.fenceResult.ok());
-    ASSERT_EQ(results2.fenceResult.value(), Fence::NO_FENCE);
-}
-
-TEST(LayerStateTest, ParcellingScreenCaptureResultsWithFenceError) {
-    ScreenCaptureResults results;
-    results.fenceResult = base::unexpected(BAD_VALUE);
-
-    Parcel p;
-    results.writeToParcel(&p);
-    p.setDataPosition(0);
-
-    ScreenCaptureResults results2;
-    results2.readFromParcel(&p);
-
-    ASSERT_FALSE(results.fenceResult.ok());
-    ASSERT_FALSE(results2.fenceResult.ok());
-    ASSERT_EQ(results.fenceResult.error(), results2.fenceResult.error());
+    ASSERT_EQ(results.result, results2.result);
 }
 
 } // namespace test

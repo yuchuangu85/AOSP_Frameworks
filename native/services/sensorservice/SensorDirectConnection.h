@@ -17,7 +17,6 @@
 #ifndef ANDROID_SENSOR_DIRECT_CONNECTION_H
 #define ANDROID_SENSOR_DIRECT_CONNECTION_H
 
-#include <optional>
 #include <stdint.h>
 #include <sys/types.h>
 
@@ -39,7 +38,7 @@ class SensorService::SensorDirectConnection: public BnSensorEventConnection {
 public:
     SensorDirectConnection(const sp<SensorService>& service, uid_t uid,
             const sensors_direct_mem_t *mem, int32_t halChannelHandle,
-            const String16& opPackageName, int deviceId);
+            const String16& opPackageName);
     void dump(String8& result) const;
     void dump(util::ProtoOutputStream* proto) const;
     uid_t getUid() const { return mUid; }
@@ -53,7 +52,6 @@ public:
     void onSensorAccessChanged(bool hasAccess);
     void onMicSensorAccessChanged(bool isMicToggleOn);
     userid_t getUserId() const { return mUserId; }
-    int getDeviceId() const { return mDeviceId; }
 
 protected:
     virtual ~SensorDirectConnection();
@@ -68,9 +66,6 @@ protected:
     virtual void destroy();
 private:
     bool hasSensorAccess() const;
-
-    // Sends the configuration to the relevant sensor device.
-    int configure(int handle, const sensors_direct_cfg_t* config);
 
     // Stops all active sensor direct report requests.
     //
@@ -99,26 +94,16 @@ private:
     const sensors_direct_mem_t mMem;
     const int32_t mHalChannelHandle;
     const String16 mOpPackageName;
-    const int mDeviceId;
 
     mutable Mutex mConnectionLock;
     std::unordered_map<int, int> mActivated;
     std::unordered_map<int, int> mActivatedBackup;
     std::unordered_map<int, int> mMicRateBackup;
 
+    std::atomic_bool mIsRateCappedBasedOnPermission;
     mutable Mutex mDestroyLock;
     bool mDestroyed;
     userid_t mUserId;
-
-    std::optional<bool> mIsRateCappedBasedOnPermission;
-
-    bool isRateCappedBasedOnPermission() {
-      if (!mIsRateCappedBasedOnPermission.has_value()) {
-        mIsRateCappedBasedOnPermission =
-            mService->isRateCappedBasedOnPermission(mOpPackageName);
-      }
-      return mIsRateCappedBasedOnPermission.value();
-    }
 };
 
 } // namepsace android

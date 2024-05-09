@@ -24,18 +24,18 @@
 
 #include <ui/GraphicTypes.h>
 #include <ui/HdrCapabilities.h>
+#include <utils/Flattenable.h>
 
 namespace android::ui {
 
 // Information about a physical display which may change on hotplug reconnect.
-struct DynamicDisplayInfo {
+struct DynamicDisplayInfo : LightFlattenable<DynamicDisplayInfo> {
     std::vector<ui::DisplayMode> supportedDisplayModes;
 
     // This struct is going to be serialized over binder, so
     // we can't use size_t because it may have different width
     // in the client process.
-    ui::DisplayModeId activeDisplayModeId;
-    float renderFrameRate;
+    int32_t activeDisplayModeId;
 
     std::vector<ui::ColorMode> supportedColorModes;
     ui::ColorMode activeColorMode;
@@ -49,10 +49,12 @@ struct DynamicDisplayInfo {
     // For more information, see the HDMI 1.4 specification.
     bool gameContentTypeSupported;
 
-    // The boot display mode preferred by the implementation.
-    ui::DisplayModeId preferredBootDisplayMode;
-
     std::optional<ui::DisplayMode> getActiveDisplayMode() const;
+
+    bool isFixedSize() const { return false; }
+    size_t getFlattenedSize() const;
+    status_t flatten(void* buffer, size_t size) const;
+    status_t unflatten(const void* buffer, size_t size);
 };
 
 } // namespace android::ui

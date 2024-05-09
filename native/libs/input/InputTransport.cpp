@@ -5,6 +5,20 @@
 //
 #define LOG_TAG "InputTransport"
 
+//#define LOG_NDEBUG 0
+
+// Log debug messages about channel messages (send message, receive message)
+#define DEBUG_CHANNEL_MESSAGES 0
+
+// Log debug messages whenever InputChannel objects are created/destroyed
+static constexpr bool DEBUG_CHANNEL_LIFECYCLE = false;
+
+// Log debug messages about transport actions
+static constexpr bool DEBUG_TRANSPORT_ACTIONS = false;
+
+// Log debug messages about touch event resampling
+#define DEBUG_RESAMPLING 0
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -13,72 +27,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 #include <binder/Parcel.h>
 #include <cutils/properties.h>
-#include <ftl/enum.h>
 #include <log/log.h>
 #include <utils/Trace.h>
 
 #include <input/InputTransport.h>
-
-namespace {
-
-/**
- * Log debug messages about channel messages (send message, receive message).
- * Enable this via "adb shell setprop log.tag.InputTransportMessages DEBUG"
- * (requires restart)
- */
-const bool DEBUG_CHANNEL_MESSAGES =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Messages", ANDROID_LOG_INFO);
-
-/**
- * Log debug messages whenever InputChannel objects are created/destroyed.
- * Enable this via "adb shell setprop log.tag.InputTransportLifecycle DEBUG"
- * (requires restart)
- */
-const bool DEBUG_CHANNEL_LIFECYCLE =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Lifecycle", ANDROID_LOG_INFO);
-
-/**
- * Log debug messages relating to the consumer end of the transport channel.
- * Enable this via "adb shell setprop log.tag.InputTransportConsumer DEBUG" (requires restart)
- */
-
-const bool DEBUG_TRANSPORT_CONSUMER =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Consumer", ANDROID_LOG_INFO);
-
-const bool IS_DEBUGGABLE_BUILD =
-#if defined(__ANDROID__)
-        android::base::GetBoolProperty("ro.debuggable", false);
-#else
-        true;
-#endif
-
-/**
- * Log debug messages relating to the producer end of the transport channel.
- * Enable this via "adb shell setprop log.tag.InputTransportPublisher DEBUG".
- * This requires a restart on non-debuggable (e.g. user) builds, but should take effect immediately
- * on debuggable builds (e.g. userdebug).
- */
-bool debugTransportPublisher() {
-    if (!IS_DEBUGGABLE_BUILD) {
-        static const bool DEBUG_TRANSPORT_PUBLISHER =
-                __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Publisher", ANDROID_LOG_INFO);
-        return DEBUG_TRANSPORT_PUBLISHER;
-    }
-    return __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Publisher", ANDROID_LOG_INFO);
-}
-
-/**
- * Log debug messages about touch event resampling.
- * Enable this via "adb shell setprop log.tag.InputTransportResampling DEBUG" (requires restart)
- */
-const bool DEBUG_RESAMPLING =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Resampling", ANDROID_LOG_INFO);
-
-} // namespace
+#include <input/NamedEnum.h>
 
 using android::base::StringPrintf;
 
@@ -95,7 +51,7 @@ static const nsecs_t NANOS_PER_MS = 1000000;
 
 // Latency added during resampling.  A few milliseconds doesn't hurt much but
 // reduces the impact of mispredicted touch positions.
-const std::chrono::duration RESAMPLE_LATENCY = 5ms;
+static const nsecs_t RESAMPLE_LATENCY = 5 * NANOS_PER_MS;
 
 // Minimum time difference between consecutive samples before attempting to resample.
 static const nsecs_t RESAMPLE_MIN_DELTA = 2 * NANOS_PER_MS;
@@ -120,14 +76,6 @@ static const nsecs_t RESAMPLE_MAX_PREDICTION = 8 * NANOS_PER_MS;
  */
 static const char* PROPERTY_RESAMPLING_ENABLED = "ro.input.resampling";
 
-/**
- * Crash if the events that are getting sent to the InputPublisher are inconsistent.
- * Enable this via "adb shell setprop log.tag.InputTransportVerifyEvents DEBUG"
- */
-static bool verifyEvents() {
-    return __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "VerifyEvents", ANDROID_LOG_INFO);
-}
-
 template<typename T>
 inline static T min(const T& a, const T& b) {
     return a < b ? a : b;
@@ -143,10 +91,6 @@ inline static bool isPointerEvent(int32_t source) {
 
 inline static const char* toString(bool value) {
     return value ? "true" : "false";
-}
-
-static bool shouldResampleTool(ToolType toolType) {
-    return toolType == ToolType::FINGER || toolType == ToolType::UNKNOWN;
 }
 
 // --- InputMessage ---
@@ -172,7 +116,6 @@ bool InputMessage::isValid(size_t actualSize) const {
         case Type::FOCUS:
         case Type::CAPTURE:
         case Type::DRAG:
-        case Type::TOUCH_MODE:
             return true;
         case Type::TIMELINE: {
             const nsecs_t gpuCompletedTime =
@@ -188,7 +131,7 @@ bool InputMessage::isValid(size_t actualSize) const {
             return valid;
         }
     }
-    ALOGE("Invalid message type: %s", ftl::enum_string(header.type).c_str());
+    ALOGE("Invalid message type: %" PRIu32, header.type);
     return false;
 }
 
@@ -208,8 +151,6 @@ size_t InputMessage::size() const {
             return sizeof(Header) + body.drag.size();
         case Type::TIMELINE:
             return sizeof(Header) + body.timeline.size();
-        case Type::TOUCH_MODE:
-            return sizeof(Header) + body.touchMode.size();
     }
     return sizeof(Header);
 }
@@ -259,8 +200,6 @@ void InputMessage::getSanitizedCopy(InputMessage* msg) const {
         case InputMessage::Type::MOTION: {
             // int32_t eventId
             msg->body.motion.eventId = body.motion.eventId;
-            // uint32_t pointerCount
-            msg->body.motion.pointerCount = body.motion.pointerCount;
             // nsecs_t eventTime
             msg->body.motion.eventTime = body.motion.eventTime;
             // int32_t deviceId
@@ -303,14 +242,12 @@ void InputMessage::getSanitizedCopy(InputMessage* msg) const {
             msg->body.motion.xCursorPosition = body.motion.xCursorPosition;
             // float yCursorPosition
             msg->body.motion.yCursorPosition = body.motion.yCursorPosition;
-
-            msg->body.motion.dsdxRaw = body.motion.dsdxRaw;
-            msg->body.motion.dtdxRaw = body.motion.dtdxRaw;
-            msg->body.motion.dtdyRaw = body.motion.dtdyRaw;
-            msg->body.motion.dsdyRaw = body.motion.dsdyRaw;
-            msg->body.motion.txRaw = body.motion.txRaw;
-            msg->body.motion.tyRaw = body.motion.tyRaw;
-
+            // int32_t displayW
+            msg->body.motion.displayWidth = body.motion.displayWidth;
+            // int32_t displayH
+            msg->body.motion.displayHeight = body.motion.displayHeight;
+            // uint32_t pointerCount
+            msg->body.motion.pointerCount = body.motion.pointerCount;
             //struct Pointer pointers[MAX_POINTERS]
             for (size_t i = 0; i < body.motion.pointerCount; i++) {
                 // PointerProperties properties
@@ -323,8 +260,6 @@ void InputMessage::getSanitizedCopy(InputMessage* msg) const {
                 memcpy(&msg->body.motion.pointers[i].coords.values[0],
                         &body.motion.pointers[i].coords.values[0],
                         count * (sizeof(body.motion.pointers[i].coords.values[0])));
-                msg->body.motion.pointers[i].coords.isResampled =
-                        body.motion.pointers[i].coords.isResampled;
             }
             break;
         }
@@ -336,6 +271,7 @@ void InputMessage::getSanitizedCopy(InputMessage* msg) const {
         case InputMessage::Type::FOCUS: {
             msg->body.focus.eventId = body.focus.eventId;
             msg->body.focus.hasFocus = body.focus.hasFocus;
+            msg->body.focus.inTouchMode = body.focus.inTouchMode;
             break;
         }
         case InputMessage::Type::CAPTURE: {
@@ -354,10 +290,6 @@ void InputMessage::getSanitizedCopy(InputMessage* msg) const {
             msg->body.timeline.eventId = body.timeline.eventId;
             msg->body.timeline.graphicsTimeline = body.timeline.graphicsTimeline;
             break;
-        }
-        case InputMessage::Type::TOUCH_MODE: {
-            msg->body.touchMode.eventId = body.touchMode.eventId;
-            msg->body.touchMode.isInTouchMode = body.touchMode.isInTouchMode;
         }
     }
 }
@@ -378,13 +310,15 @@ std::unique_ptr<InputChannel> InputChannel::create(const std::string& name,
 
 InputChannel::InputChannel(const std::string name, android::base::unique_fd fd, sp<IBinder> token)
       : mName(std::move(name)), mFd(std::move(fd)), mToken(std::move(token)) {
-    ALOGD_IF(DEBUG_CHANNEL_LIFECYCLE, "Input channel constructed: name='%s', fd=%d",
-             getName().c_str(), getFd().get());
+    if (DEBUG_CHANNEL_LIFECYCLE) {
+        ALOGD("Input channel constructed: name='%s', fd=%d", getName().c_str(), getFd().get());
+    }
 }
 
 InputChannel::~InputChannel() {
-    ALOGD_IF(DEBUG_CHANNEL_LIFECYCLE, "Input channel destroyed: name='%s', fd=%d",
-             getName().c_str(), getFd().get());
+    if (DEBUG_CHANNEL_LIFECYCLE) {
+        ALOGD("Input channel destroyed: name='%s', fd=%d", getName().c_str(), getFd().get());
+    }
 }
 
 status_t InputChannel::openInputChannelPair(const std::string& name,
@@ -429,8 +363,10 @@ status_t InputChannel::sendMessage(const InputMessage* msg) {
 
     if (nWrite < 0) {
         int error = errno;
-        ALOGD_IF(DEBUG_CHANNEL_MESSAGES, "channel '%s' ~ error sending message of type %s, %s",
-                 mName.c_str(), ftl::enum_string(msg->header.type).c_str(), strerror(error));
+#if DEBUG_CHANNEL_MESSAGES
+        ALOGD("channel '%s' ~ error sending message of type %d, %s", mName.c_str(),
+              msg->header.type, strerror(error));
+#endif
         if (error == EAGAIN || error == EWOULDBLOCK) {
             return WOULD_BLOCK;
         }
@@ -441,14 +377,16 @@ status_t InputChannel::sendMessage(const InputMessage* msg) {
     }
 
     if (size_t(nWrite) != msgLength) {
-        ALOGD_IF(DEBUG_CHANNEL_MESSAGES,
-                 "channel '%s' ~ error sending message type %s, send was incomplete", mName.c_str(),
-                 ftl::enum_string(msg->header.type).c_str());
+#if DEBUG_CHANNEL_MESSAGES
+        ALOGD("channel '%s' ~ error sending message type %d, send was incomplete",
+                mName.c_str(), msg->header.type);
+#endif
         return DEAD_OBJECT;
     }
 
-    ALOGD_IF(DEBUG_CHANNEL_MESSAGES, "channel '%s' ~ sent message of type %s", mName.c_str(),
-             ftl::enum_string(msg->header.type).c_str());
+#if DEBUG_CHANNEL_MESSAGES
+    ALOGD("channel '%s' ~ sent message of type %d", mName.c_str(), msg->header.type);
+#endif
     return OK;
 }
 
@@ -460,8 +398,9 @@ status_t InputChannel::receiveMessage(InputMessage* msg) {
 
     if (nRead < 0) {
         int error = errno;
-        ALOGD_IF(DEBUG_CHANNEL_MESSAGES, "channel '%s' ~ receive message failed, errno=%d",
-                 mName.c_str(), errno);
+#if DEBUG_CHANNEL_MESSAGES
+        ALOGD("channel '%s' ~ receive message failed, errno=%d", mName.c_str(), errno);
+#endif
         if (error == EAGAIN || error == EWOULDBLOCK) {
             return WOULD_BLOCK;
         }
@@ -472,8 +411,9 @@ status_t InputChannel::receiveMessage(InputMessage* msg) {
     }
 
     if (nRead == 0) { // check for EOF
-        ALOGD_IF(DEBUG_CHANNEL_MESSAGES,
-                 "channel '%s' ~ receive message failed because peer was closed", mName.c_str());
+#if DEBUG_CHANNEL_MESSAGES
+        ALOGD("channel '%s' ~ receive message failed because peer was closed", mName.c_str());
+#endif
         return DEAD_OBJECT;
     }
 
@@ -482,8 +422,9 @@ status_t InputChannel::receiveMessage(InputMessage* msg) {
         return BAD_VALUE;
     }
 
-    ALOGD_IF(DEBUG_CHANNEL_MESSAGES, "channel '%s' ~ received message of type %s", mName.c_str(),
-             ftl::enum_string(msg->header.type).c_str());
+#if DEBUG_CHANNEL_MESSAGES
+    ALOGD("channel '%s' ~ received message of type %d", mName.c_str(), msg->header.type);
+#endif
     return OK;
 }
 
@@ -539,8 +480,7 @@ base::unique_fd InputChannel::dupFd() const {
 
 // --- InputPublisher ---
 
-InputPublisher::InputPublisher(const std::shared_ptr<InputChannel>& channel)
-      : mChannel(channel), mInputVerifier(channel->getName()) {}
+InputPublisher::InputPublisher(const std::shared_ptr<InputChannel>& channel) : mChannel(channel) {}
 
 InputPublisher::~InputPublisher() {
 }
@@ -552,19 +492,17 @@ status_t InputPublisher::publishKeyEvent(uint32_t seq, int32_t eventId, int32_t 
                                          int32_t metaState, int32_t repeatCount, nsecs_t downTime,
                                          nsecs_t eventTime) {
     if (ATRACE_ENABLED()) {
-        std::string message =
-                StringPrintf("publishKeyEvent(inputChannel=%s, action=%s, keyCode=%s)",
-                             mChannel->getName().c_str(), KeyEvent::actionToString(action),
-                             KeyEvent::getLabel(keyCode));
+        std::string message = StringPrintf("publishKeyEvent(inputChannel=%s, keyCode=%" PRId32 ")",
+                mChannel->getName().c_str(), keyCode);
         ATRACE_NAME(message.c_str());
     }
-    ALOGD_IF(debugTransportPublisher(),
-             "channel '%s' publisher ~ %s: seq=%u, id=%d, deviceId=%d, source=%s, "
-             "action=%s, flags=0x%x, keyCode=%s, scanCode=%d, metaState=0x%x, repeatCount=%d,"
-             "downTime=%" PRId64 ", eventTime=%" PRId64,
-             mChannel->getName().c_str(), __func__, seq, eventId, deviceId,
-             inputEventSourceToString(source).c_str(), KeyEvent::actionToString(action), flags,
-             KeyEvent::getLabel(keyCode), scanCode, metaState, repeatCount, downTime, eventTime);
+    if (DEBUG_TRANSPORT_ACTIONS) {
+        ALOGD("channel '%s' publisher ~ publishKeyEvent: seq=%u, deviceId=%d, source=0x%x, "
+              "action=0x%x, flags=0x%x, keyCode=%d, scanCode=%d, metaState=0x%x, repeatCount=%d,"
+              "downTime=%" PRId64 ", eventTime=%" PRId64,
+              mChannel->getName().c_str(), seq, deviceId, source, action, flags, keyCode, scanCode,
+              metaState, repeatCount, downTime, eventTime);
+    }
 
     if (!seq) {
         ALOGE("Attempted to publish a key event with sequence number 0.");
@@ -595,34 +533,28 @@ status_t InputPublisher::publishMotionEvent(
         std::array<uint8_t, 32> hmac, int32_t action, int32_t actionButton, int32_t flags,
         int32_t edgeFlags, int32_t metaState, int32_t buttonState,
         MotionClassification classification, const ui::Transform& transform, float xPrecision,
-        float yPrecision, float xCursorPosition, float yCursorPosition,
-        const ui::Transform& rawTransform, nsecs_t downTime, nsecs_t eventTime,
-        uint32_t pointerCount, const PointerProperties* pointerProperties,
-        const PointerCoords* pointerCoords) {
+        float yPrecision, float xCursorPosition, float yCursorPosition, int32_t displayWidth,
+        int32_t displayHeight, nsecs_t downTime, nsecs_t eventTime, uint32_t pointerCount,
+        const PointerProperties* pointerProperties, const PointerCoords* pointerCoords) {
     if (ATRACE_ENABLED()) {
-        std::string message = StringPrintf("publishMotionEvent(inputChannel=%s, action=%s)",
-                                           mChannel->getName().c_str(),
-                                           MotionEvent::actionToString(action).c_str());
+        std::string message = StringPrintf(
+                "publishMotionEvent(inputChannel=%s, action=%" PRId32 ")",
+                mChannel->getName().c_str(), action);
         ATRACE_NAME(message.c_str());
     }
-    if (verifyEvents()) {
-        mInputVerifier.processMovement(deviceId, action, pointerCount, pointerProperties,
-                                       pointerCoords, flags);
-    }
-    if (debugTransportPublisher()) {
+    if (DEBUG_TRANSPORT_ACTIONS) {
         std::string transformString;
         transform.dump(transformString, "transform", "        ");
-        ALOGD("channel '%s' publisher ~ %s: seq=%u, id=%d, deviceId=%d, source=%s, "
+        ALOGD("channel '%s' publisher ~ publishMotionEvent: seq=%u, deviceId=%d, source=0x%x, "
               "displayId=%" PRId32 ", "
-              "action=%s, actionButton=0x%08x, flags=0x%x, edgeFlags=0x%x, "
+              "action=0x%x, actionButton=0x%08x, flags=0x%x, edgeFlags=0x%x, "
               "metaState=0x%x, buttonState=0x%x, classification=%s,"
               "xPrecision=%f, yPrecision=%f, downTime=%" PRId64 ", eventTime=%" PRId64 ", "
               "pointerCount=%" PRIu32 " \n%s",
-              mChannel->getName().c_str(), __func__, seq, eventId, deviceId,
-              inputEventSourceToString(source).c_str(), displayId,
-              MotionEvent::actionToString(action).c_str(), actionButton, flags, edgeFlags,
-              metaState, buttonState, motionClassificationToString(classification), xPrecision,
-              yPrecision, downTime, eventTime, pointerCount, transformString.c_str());
+              mChannel->getName().c_str(), seq, deviceId, source, displayId, action, actionButton,
+              flags, edgeFlags, metaState, buttonState,
+              motionClassificationToString(classification), xPrecision, yPrecision, downTime,
+              eventTime, pointerCount, transformString.c_str());
     }
 
     if (!seq) {
@@ -661,12 +593,8 @@ status_t InputPublisher::publishMotionEvent(
     msg.body.motion.yPrecision = yPrecision;
     msg.body.motion.xCursorPosition = xCursorPosition;
     msg.body.motion.yCursorPosition = yCursorPosition;
-    msg.body.motion.dsdxRaw = rawTransform.dsdx();
-    msg.body.motion.dtdxRaw = rawTransform.dtdx();
-    msg.body.motion.dtdyRaw = rawTransform.dtdy();
-    msg.body.motion.dsdyRaw = rawTransform.dsdy();
-    msg.body.motion.txRaw = rawTransform.tx();
-    msg.body.motion.tyRaw = rawTransform.ty();
+    msg.body.motion.displayWidth = displayWidth;
+    msg.body.motion.displayHeight = displayHeight;
     msg.body.motion.downTime = downTime;
     msg.body.motion.eventTime = eventTime;
     msg.body.motion.pointerCount = pointerCount;
@@ -678,20 +606,22 @@ status_t InputPublisher::publishMotionEvent(
     return mChannel->sendMessage(&msg);
 }
 
-status_t InputPublisher::publishFocusEvent(uint32_t seq, int32_t eventId, bool hasFocus) {
+status_t InputPublisher::publishFocusEvent(uint32_t seq, int32_t eventId, bool hasFocus,
+                                           bool inTouchMode) {
     if (ATRACE_ENABLED()) {
-        std::string message = StringPrintf("publishFocusEvent(inputChannel=%s, hasFocus=%s)",
-                                           mChannel->getName().c_str(), toString(hasFocus));
+        std::string message =
+                StringPrintf("publishFocusEvent(inputChannel=%s, hasFocus=%s, inTouchMode=%s)",
+                             mChannel->getName().c_str(), toString(hasFocus),
+                             toString(inTouchMode));
         ATRACE_NAME(message.c_str());
     }
-    ALOGD_IF(debugTransportPublisher(), "channel '%s' publisher ~ %s: seq=%u, id=%d, hasFocus=%s",
-             mChannel->getName().c_str(), __func__, seq, eventId, toString(hasFocus));
 
     InputMessage msg;
     msg.header.type = InputMessage::Type::FOCUS;
     msg.header.seq = seq;
     msg.body.focus.eventId = eventId;
     msg.body.focus.hasFocus = hasFocus;
+    msg.body.focus.inTouchMode = inTouchMode;
     return mChannel->sendMessage(&msg);
 }
 
@@ -703,9 +633,6 @@ status_t InputPublisher::publishCaptureEvent(uint32_t seq, int32_t eventId,
                              mChannel->getName().c_str(), toString(pointerCaptureEnabled));
         ATRACE_NAME(message.c_str());
     }
-    ALOGD_IF(debugTransportPublisher(),
-             "channel '%s' publisher ~ %s: seq=%u, id=%d, pointerCaptureEnabled=%s",
-             mChannel->getName().c_str(), __func__, seq, eventId, toString(pointerCaptureEnabled));
 
     InputMessage msg;
     msg.header.type = InputMessage::Type::CAPTURE;
@@ -723,9 +650,6 @@ status_t InputPublisher::publishDragEvent(uint32_t seq, int32_t eventId, float x
                              mChannel->getName().c_str(), x, y, toString(isExiting));
         ATRACE_NAME(message.c_str());
     }
-    ALOGD_IF(debugTransportPublisher(),
-             "channel '%s' publisher ~ %s: seq=%u, id=%d, x=%f, y=%f, isExiting=%s",
-             mChannel->getName().c_str(), __func__, seq, eventId, x, y, toString(isExiting));
 
     InputMessage msg;
     msg.header.type = InputMessage::Type::DRAG;
@@ -737,38 +661,17 @@ status_t InputPublisher::publishDragEvent(uint32_t seq, int32_t eventId, float x
     return mChannel->sendMessage(&msg);
 }
 
-status_t InputPublisher::publishTouchModeEvent(uint32_t seq, int32_t eventId, bool isInTouchMode) {
-    if (ATRACE_ENABLED()) {
-        std::string message =
-                StringPrintf("publishTouchModeEvent(inputChannel=%s, isInTouchMode=%s)",
-                             mChannel->getName().c_str(), toString(isInTouchMode));
-        ATRACE_NAME(message.c_str());
-    }
-    ALOGD_IF(debugTransportPublisher(),
-             "channel '%s' publisher ~ %s: seq=%u, id=%d, isInTouchMode=%s",
-             mChannel->getName().c_str(), __func__, seq, eventId, toString(isInTouchMode));
-
-    InputMessage msg;
-    msg.header.type = InputMessage::Type::TOUCH_MODE;
-    msg.header.seq = seq;
-    msg.body.touchMode.eventId = eventId;
-    msg.body.touchMode.isInTouchMode = isInTouchMode;
-    return mChannel->sendMessage(&msg);
-}
-
 android::base::Result<InputPublisher::ConsumerResponse> InputPublisher::receiveConsumerResponse() {
+    if (DEBUG_TRANSPORT_ACTIONS) {
+        ALOGD("channel '%s' publisher ~ %s", mChannel->getName().c_str(), __func__);
+    }
+
     InputMessage msg;
     status_t result = mChannel->receiveMessage(&msg);
     if (result) {
-        ALOGD_IF(debugTransportPublisher(), "channel '%s' publisher ~ %s: %s",
-                 mChannel->getName().c_str(), __func__, strerror(result));
         return android::base::Error(result);
     }
     if (msg.header.type == InputMessage::Type::FINISHED) {
-        ALOGD_IF(debugTransportPublisher(),
-                 "channel '%s' publisher ~ %s: finished: seq=%u, handled=%s",
-                 mChannel->getName().c_str(), __func__, msg.header.seq,
-                 toString(msg.body.finished.handled));
         return Finished{
                 .seq = msg.header.seq,
                 .handled = msg.body.finished.handled,
@@ -777,8 +680,6 @@ android::base::Result<InputPublisher::ConsumerResponse> InputPublisher::receiveC
     }
 
     if (msg.header.type == InputMessage::Type::TIMELINE) {
-        ALOGD_IF(debugTransportPublisher(), "channel '%s' publisher ~ %s: timeline: id=%d",
-                 mChannel->getName().c_str(), __func__, msg.body.timeline.eventId);
         return Timeline{
                 .inputEventId = msg.body.timeline.eventId,
                 .graphicsTimeline = msg.body.timeline.graphicsTimeline,
@@ -786,18 +687,14 @@ android::base::Result<InputPublisher::ConsumerResponse> InputPublisher::receiveC
     }
 
     ALOGE("channel '%s' publisher ~ Received unexpected %s message from consumer",
-          mChannel->getName().c_str(), ftl::enum_string(msg.header.type).c_str());
+          mChannel->getName().c_str(), NamedEnum::string(msg.header.type).c_str());
     return android::base::Error(UNKNOWN_ERROR);
 }
 
 // --- InputConsumer ---
 
 InputConsumer::InputConsumer(const std::shared_ptr<InputChannel>& channel)
-      : InputConsumer(channel, isTouchResamplingEnabled()) {}
-
-InputConsumer::InputConsumer(const std::shared_ptr<InputChannel>& channel,
-                             bool enableTouchResampling)
-      : mResampleTouch(enableTouchResampling), mChannel(channel), mMsgDeferred(false) {}
+      : mResampleTouch(isTouchResamplingEnabled()), mChannel(channel), mMsgDeferred(false) {}
 
 InputConsumer::~InputConsumer() {
 }
@@ -808,9 +705,10 @@ bool InputConsumer::isTouchResamplingEnabled() {
 
 status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consumeBatches,
                                 nsecs_t frameTime, uint32_t* outSeq, InputEvent** outEvent) {
-    ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-             "channel '%s' consumer ~ consume: consumeBatches=%s, frameTime=%" PRId64,
-             mChannel->getName().c_str(), toString(consumeBatches), frameTime);
+    if (DEBUG_TRANSPORT_ACTIONS) {
+        ALOGD("channel '%s' consumer ~ consume: consumeBatches=%s, frameTime=%" PRId64,
+              mChannel->getName().c_str(), toString(consumeBatches), frameTime);
+    }
 
     *outSeq = 0;
     *outEvent = nullptr;
@@ -826,19 +724,17 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
             // Receive a fresh message.
             status_t result = mChannel->receiveMessage(&mMsg);
             if (result == OK) {
-                const auto [_, inserted] =
-                        mConsumeTimes.emplace(mMsg.header.seq, systemTime(SYSTEM_TIME_MONOTONIC));
-                LOG_ALWAYS_FATAL_IF(!inserted, "Already have a consume time for seq=%" PRIu32,
-                                    mMsg.header.seq);
+                mConsumeTimes.emplace(mMsg.header.seq, systemTime(SYSTEM_TIME_MONOTONIC));
             }
             if (result) {
                 // Consume the next batched event unless batches are being held for later.
                 if (consumeBatches || result != WOULD_BLOCK) {
                     result = consumeBatch(factory, frameTime, outSeq, outEvent);
                     if (*outEvent) {
-                        ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                                 "channel '%s' consumer ~ consumed batch event, seq=%u",
-                                 mChannel->getName().c_str(), *outSeq);
+                        if (DEBUG_TRANSPORT_ACTIONS) {
+                            ALOGD("channel '%s' consumer ~ consumed batch event, seq=%u",
+                                  mChannel->getName().c_str(), *outSeq);
+                        }
                         break;
                     }
                 }
@@ -854,10 +750,11 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                 initializeKeyEvent(keyEvent, &mMsg);
                 *outSeq = mMsg.header.seq;
                 *outEvent = keyEvent;
-                ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                         "channel '%s' consumer ~ consumed key event, seq=%u",
-                         mChannel->getName().c_str(), *outSeq);
-                break;
+                if (DEBUG_TRANSPORT_ACTIONS) {
+                    ALOGD("channel '%s' consumer ~ consumed key event, seq=%u",
+                          mChannel->getName().c_str(), *outSeq);
+                }
+            break;
             }
 
             case InputMessage::Type::MOTION: {
@@ -866,10 +763,11 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                     Batch& batch = mBatches[batchIndex];
                     if (canAddSample(batch, &mMsg)) {
                         batch.samples.push_back(mMsg);
-                        ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                                 "channel '%s' consumer ~ appended to batch event",
-                                 mChannel->getName().c_str());
-                        break;
+                        if (DEBUG_TRANSPORT_ACTIONS) {
+                            ALOGD("channel '%s' consumer ~ appended to batch event",
+                                  mChannel->getName().c_str());
+                        }
+                    break;
                     } else if (isPointerEvent(mMsg.body.motion.source) &&
                                mMsg.body.motion.action == AMOTION_EVENT_ACTION_CANCEL) {
                         // No need to process events that we are going to cancel anyways
@@ -890,11 +788,12 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                         if (result) {
                             return result;
                         }
-                        ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                                 "channel '%s' consumer ~ consumed batch event and "
-                                 "deferred current event, seq=%u",
-                                 mChannel->getName().c_str(), *outSeq);
-                        break;
+                        if (DEBUG_TRANSPORT_ACTIONS) {
+                            ALOGD("channel '%s' consumer ~ consumed batch event and "
+                                  "deferred current event, seq=%u",
+                                  mChannel->getName().c_str(), *outSeq);
+                        }
+                    break;
                     }
                 }
 
@@ -904,9 +803,10 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                     Batch batch;
                     batch.samples.push_back(mMsg);
                     mBatches.push_back(batch);
-                    ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                             "channel '%s' consumer ~ started batch event",
-                             mChannel->getName().c_str());
+                    if (DEBUG_TRANSPORT_ACTIONS) {
+                        ALOGD("channel '%s' consumer ~ started batch event",
+                              mChannel->getName().c_str());
+                    }
                     break;
                 }
 
@@ -918,9 +818,10 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                 *outSeq = mMsg.header.seq;
                 *outEvent = motionEvent;
 
-                ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-                         "channel '%s' consumer ~ consumed motion event, seq=%u",
-                         mChannel->getName().c_str(), *outSeq);
+                if (DEBUG_TRANSPORT_ACTIONS) {
+                    ALOGD("channel '%s' consumer ~ consumed motion event, seq=%u",
+                          mChannel->getName().c_str(), *outSeq);
+                }
                 break;
             }
 
@@ -928,7 +829,7 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
             case InputMessage::Type::TIMELINE: {
                 LOG_ALWAYS_FATAL("Consumed a %s message, which should never be seen by "
                                  "InputConsumer!",
-                                 ftl::enum_string(mMsg.header.type).c_str());
+                                 NamedEnum::string(mMsg.header.type).c_str());
                 break;
             }
 
@@ -961,16 +862,6 @@ status_t InputConsumer::consume(InputEventFactoryInterface* factory, bool consum
                 *outEvent = dragEvent;
                 break;
             }
-
-            case InputMessage::Type::TOUCH_MODE: {
-                TouchModeEvent* touchModeEvent = factory->createTouchModeEvent();
-                if (!touchModeEvent) return NO_MEMORY;
-
-                initializeTouchModeEvent(touchModeEvent, &mMsg);
-                *outSeq = mMsg.header.seq;
-                *outEvent = touchModeEvent;
-                break;
-            }
         }
     }
     return OK;
@@ -990,7 +881,7 @@ status_t InputConsumer::consumeBatch(InputEventFactoryInterface* factory,
 
         nsecs_t sampleTime = frameTime;
         if (mResampleTouch) {
-            sampleTime -= std::chrono::nanoseconds(RESAMPLE_LATENCY).count();
+            sampleTime -= RESAMPLE_LATENCY;
         }
         ssize_t split = findSampleNoLaterThan(batch, sampleTime);
         if (split < 0) {
@@ -1137,12 +1028,13 @@ void InputConsumer::rewriteMessage(TouchState& state, InputMessage& msg) {
                     state.recentCoordinatesAreIdentical(id)) {
                 PointerCoords& msgCoords = msg.body.motion.pointers[i].coords;
                 const PointerCoords& resampleCoords = state.lastResample.getPointerById(id);
-                ALOGD_IF(DEBUG_RESAMPLING, "[%d] - rewrite (%0.3f, %0.3f), old (%0.3f, %0.3f)", id,
-                         resampleCoords.getX(), resampleCoords.getY(), msgCoords.getX(),
-                         msgCoords.getY());
+#if DEBUG_RESAMPLING
+                ALOGD("[%d] - rewrite (%0.3f, %0.3f), old (%0.3f, %0.3f)", id,
+                        resampleCoords.getX(), resampleCoords.getY(),
+                        msgCoords.getX(), msgCoords.getY());
+#endif
                 msgCoords.setAxisValue(AMOTION_EVENT_AXIS_X, resampleCoords.getX());
                 msgCoords.setAxisValue(AMOTION_EVENT_AXIS_Y, resampleCoords.getY());
-                msgCoords.isResampled = true;
             } else {
                 state.lastResample.idBits.clearBit(id);
             }
@@ -1160,13 +1052,17 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
 
     ssize_t index = findTouchState(event->getDeviceId(), event->getSource());
     if (index < 0) {
-        ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, no touch state for device.");
+#if DEBUG_RESAMPLING
+        ALOGD("Not resampled, no touch state for device.");
+#endif
         return;
     }
 
     TouchState& touchState = mTouchStates[index];
     if (touchState.historySize < 1) {
-        ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, no history for device.");
+#if DEBUG_RESAMPLING
+        ALOGD("Not resampled, no history for device.");
+#endif
         return;
     }
 
@@ -1176,7 +1072,9 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
     for (size_t i = 0; i < pointerCount; i++) {
         uint32_t id = event->getPointerId(i);
         if (!current->idBits.hasBit(id)) {
-            ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, missing id %d", id);
+#if DEBUG_RESAMPLING
+            ALOGD("Not resampled, missing id %d", id);
+#endif
             return;
         }
     }
@@ -1192,8 +1090,9 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
         other = &future;
         nsecs_t delta = future.eventTime - current->eventTime;
         if (delta < RESAMPLE_MIN_DELTA) {
-            ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, delta time is too small: %" PRId64 " ns.",
-                     delta);
+#if DEBUG_RESAMPLING
+            ALOGD("Not resampled, delta time is too small: %" PRId64 " ns.", delta);
+#endif
             return;
         }
         alpha = float(sampleTime - current->eventTime) / delta;
@@ -1203,30 +1102,30 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
         other = touchState.getHistory(1);
         nsecs_t delta = current->eventTime - other->eventTime;
         if (delta < RESAMPLE_MIN_DELTA) {
-            ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, delta time is too small: %" PRId64 " ns.",
-                     delta);
+#if DEBUG_RESAMPLING
+            ALOGD("Not resampled, delta time is too small: %" PRId64 " ns.", delta);
+#endif
             return;
         } else if (delta > RESAMPLE_MAX_DELTA) {
-            ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, delta time is too large: %" PRId64 " ns.",
-                     delta);
+#if DEBUG_RESAMPLING
+            ALOGD("Not resampled, delta time is too large: %" PRId64 " ns.", delta);
+#endif
             return;
         }
         nsecs_t maxPredict = current->eventTime + min(delta / 2, RESAMPLE_MAX_PREDICTION);
         if (sampleTime > maxPredict) {
-            ALOGD_IF(DEBUG_RESAMPLING,
-                     "Sample time is too far in the future, adjusting prediction "
-                     "from %" PRId64 " to %" PRId64 " ns.",
-                     sampleTime - current->eventTime, maxPredict - current->eventTime);
+#if DEBUG_RESAMPLING
+            ALOGD("Sample time is too far in the future, adjusting prediction "
+                    "from %" PRId64 " to %" PRId64 " ns.",
+                    sampleTime - current->eventTime, maxPredict - current->eventTime);
+#endif
             sampleTime = maxPredict;
         }
         alpha = float(current->eventTime - sampleTime) / delta;
     } else {
-        ALOGD_IF(DEBUG_RESAMPLING, "Not resampled, insufficient data.");
-        return;
-    }
-
-    if (current->eventTime == sampleTime) {
-        // Prevents having 2 events with identical times and coordinates.
+#if DEBUG_RESAMPLING
+        ALOGD("Not resampled, insufficient data.");
+#endif
         return;
     }
 
@@ -1243,8 +1142,6 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
             // We maintain the previously resampled value for this pointer (stored in
             // oldLastResample) when the coordinates for this pointer haven't changed since then.
             // This way we don't introduce artificial jitter when pointers haven't actually moved.
-            // The isResampled flag isn't cleared as the values don't reflect what the device is
-            // actually reporting.
 
             // We know here that the coordinates for the pointer haven't changed because we
             // would've cleared the resampled bit in rewriteMessage if they had. We can't modify
@@ -1256,32 +1153,43 @@ void InputConsumer::resampleTouchState(nsecs_t sampleTime, MotionEvent* event,
         PointerCoords& resampledCoords = touchState.lastResample.pointers[i];
         const PointerCoords& currentCoords = current->getPointerById(id);
         resampledCoords.copyFrom(currentCoords);
-        if (other->idBits.hasBit(id) && shouldResampleTool(event->getToolType(i))) {
+        if (other->idBits.hasBit(id)
+                && shouldResampleTool(event->getToolType(i))) {
             const PointerCoords& otherCoords = other->getPointerById(id);
             resampledCoords.setAxisValue(AMOTION_EVENT_AXIS_X,
-                                         lerp(currentCoords.getX(), otherCoords.getX(), alpha));
+                    lerp(currentCoords.getX(), otherCoords.getX(), alpha));
             resampledCoords.setAxisValue(AMOTION_EVENT_AXIS_Y,
-                                         lerp(currentCoords.getY(), otherCoords.getY(), alpha));
-            resampledCoords.isResampled = true;
-            ALOGD_IF(DEBUG_RESAMPLING,
-                     "[%d] - out (%0.3f, %0.3f), cur (%0.3f, %0.3f), "
-                     "other (%0.3f, %0.3f), alpha %0.3f",
-                     id, resampledCoords.getX(), resampledCoords.getY(), currentCoords.getX(),
-                     currentCoords.getY(), otherCoords.getX(), otherCoords.getY(), alpha);
+                    lerp(currentCoords.getY(), otherCoords.getY(), alpha));
+#if DEBUG_RESAMPLING
+            ALOGD("[%d] - out (%0.3f, %0.3f), cur (%0.3f, %0.3f), "
+                    "other (%0.3f, %0.3f), alpha %0.3f",
+                    id, resampledCoords.getX(), resampledCoords.getY(),
+                    currentCoords.getX(), currentCoords.getY(),
+                    otherCoords.getX(), otherCoords.getY(),
+                    alpha);
+#endif
         } else {
-            ALOGD_IF(DEBUG_RESAMPLING, "[%d] - out (%0.3f, %0.3f), cur (%0.3f, %0.3f)", id,
-                     resampledCoords.getX(), resampledCoords.getY(), currentCoords.getX(),
-                     currentCoords.getY());
+#if DEBUG_RESAMPLING
+            ALOGD("[%d] - out (%0.3f, %0.3f), cur (%0.3f, %0.3f)",
+                    id, resampledCoords.getX(), resampledCoords.getY(),
+                    currentCoords.getX(), currentCoords.getY());
+#endif
         }
     }
 
     event->addSample(sampleTime, touchState.lastResample.pointers);
 }
 
+bool InputConsumer::shouldResampleTool(int32_t toolType) {
+    return toolType == AMOTION_EVENT_TOOL_TYPE_FINGER
+            || toolType == AMOTION_EVENT_TOOL_TYPE_UNKNOWN;
+}
+
 status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled) {
-    ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-             "channel '%s' consumer ~ sendFinishedSignal: seq=%u, handled=%s",
-             mChannel->getName().c_str(), seq, toString(handled));
+    if (DEBUG_TRANSPORT_ACTIONS) {
+        ALOGD("channel '%s' consumer ~ sendFinishedSignal: seq=%u, handled=%s",
+              mChannel->getName().c_str(), seq, toString(handled));
+    }
 
     if (!seq) {
         ALOGE("Attempted to send a finished signal with sequence number 0.");
@@ -1328,12 +1236,13 @@ status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled) {
 
 status_t InputConsumer::sendTimeline(int32_t inputEventId,
                                      std::array<nsecs_t, GraphicsTimeline::SIZE> graphicsTimeline) {
-    ALOGD_IF(DEBUG_TRANSPORT_CONSUMER,
-             "channel '%s' consumer ~ sendTimeline: inputEventId=%" PRId32
-             ", gpuCompletedTime=%" PRId64 ", presentTime=%" PRId64,
-             mChannel->getName().c_str(), inputEventId,
-             graphicsTimeline[GraphicsTimeline::GPU_COMPLETED_TIME],
-             graphicsTimeline[GraphicsTimeline::PRESENT_TIME]);
+    if (DEBUG_TRANSPORT_ACTIONS) {
+        ALOGD("channel '%s' consumer ~ sendTimeline: inputEventId=%" PRId32
+              ", gpuCompletedTime=%" PRId64 ", presentTime=%" PRId64,
+              mChannel->getName().c_str(), inputEventId,
+              graphicsTimeline[GraphicsTimeline::GPU_COMPLETED_TIME],
+              graphicsTimeline[GraphicsTimeline::PRESENT_TIME]);
+    }
 
     InputMessage msg;
     msg.header.type = InputMessage::Type::TIMELINE;
@@ -1370,6 +1279,10 @@ status_t InputConsumer::sendUnchainedFinishedSignal(uint32_t seq, bool handled) 
         popConsumeTime(seq);
     }
     return result;
+}
+
+bool InputConsumer::hasDeferredEvent() const {
+    return mMsgDeferred;
 }
 
 bool InputConsumer::hasPendingBatch() const {
@@ -1416,7 +1329,8 @@ void InputConsumer::initializeKeyEvent(KeyEvent* event, const InputMessage* msg)
 }
 
 void InputConsumer::initializeFocusEvent(FocusEvent* event, const InputMessage* msg) {
-    event->initialize(msg->body.focus.eventId, msg->body.focus.hasFocus);
+    event->initialize(msg->body.focus.eventId, msg->body.focus.hasFocus,
+                      msg->body.focus.inTouchMode);
 }
 
 void InputConsumer::initializeCaptureEvent(CaptureEvent* event, const InputMessage* msg) {
@@ -1440,10 +1354,6 @@ void InputConsumer::initializeMotionEvent(MotionEvent* event, const InputMessage
     ui::Transform transform;
     transform.set({msg->body.motion.dsdx, msg->body.motion.dtdx, msg->body.motion.tx,
                    msg->body.motion.dtdy, msg->body.motion.dsdy, msg->body.motion.ty, 0, 0, 1});
-    ui::Transform displayTransform;
-    displayTransform.set({msg->body.motion.dsdxRaw, msg->body.motion.dtdxRaw,
-                          msg->body.motion.txRaw, msg->body.motion.dtdyRaw,
-                          msg->body.motion.dsdyRaw, msg->body.motion.tyRaw, 0, 0, 1});
     event->initialize(msg->body.motion.eventId, msg->body.motion.deviceId, msg->body.motion.source,
                       msg->body.motion.displayId, msg->body.motion.hmac, msg->body.motion.action,
                       msg->body.motion.actionButton, msg->body.motion.flags,
@@ -1451,12 +1361,9 @@ void InputConsumer::initializeMotionEvent(MotionEvent* event, const InputMessage
                       msg->body.motion.buttonState, msg->body.motion.classification, transform,
                       msg->body.motion.xPrecision, msg->body.motion.yPrecision,
                       msg->body.motion.xCursorPosition, msg->body.motion.yCursorPosition,
-                      displayTransform, msg->body.motion.downTime, msg->body.motion.eventTime,
-                      pointerCount, pointerProperties, pointerCoords);
-}
-
-void InputConsumer::initializeTouchModeEvent(TouchModeEvent* event, const InputMessage* msg) {
-    event->initialize(msg->body.touchMode.eventId, msg->body.touchMode.isInTouchMode);
+                      msg->body.motion.displayWidth, msg->body.motion.displayHeight,
+                      msg->body.motion.downTime, msg->body.motion.eventTime, pointerCount,
+                      pointerProperties, pointerCoords);
 }
 
 void InputConsumer::addSample(MotionEvent* event, const InputMessage* msg) {
@@ -1501,14 +1408,14 @@ std::string InputConsumer::dump() const {
     out = out + "mChannel = " + mChannel->getName() + "\n";
     out = out + "mMsgDeferred: " + toString(mMsgDeferred) + "\n";
     if (mMsgDeferred) {
-        out = out + "mMsg : " + ftl::enum_string(mMsg.header.type) + "\n";
+        out = out + "mMsg : " + NamedEnum::string(mMsg.header.type) + "\n";
     }
     out += "Batches:\n";
     for (const Batch& batch : mBatches) {
         out += "    Batch:\n";
         for (const InputMessage& msg : batch.samples) {
             out += android::base::StringPrintf("        Message %" PRIu32 ": %s ", msg.header.seq,
-                                               ftl::enum_string(msg.header.type).c_str());
+                                               NamedEnum::string(msg.header.type).c_str());
             switch (msg.header.type) {
                 case InputMessage::Type::KEY: {
                     out += android::base::StringPrintf("action=%s keycode=%" PRId32,
@@ -1535,8 +1442,9 @@ std::string InputConsumer::dump() const {
                     break;
                 }
                 case InputMessage::Type::FOCUS: {
-                    out += android::base::StringPrintf("hasFocus=%s",
-                                                       toString(msg.body.focus.hasFocus));
+                    out += android::base::StringPrintf("hasFocus=%s inTouchMode=%s",
+                                                       toString(msg.body.focus.hasFocus),
+                                                       toString(msg.body.focus.inTouchMode));
                     break;
                 }
                 case InputMessage::Type::CAPTURE: {
@@ -1562,11 +1470,6 @@ std::string InputConsumer::dump() const {
                                                        ", presentTime=%" PRId64,
                                                        msg.body.timeline.eventId, gpuCompletedTime,
                                                        presentTime);
-                    break;
-                }
-                case InputMessage::Type::TOUCH_MODE: {
-                    out += android::base::StringPrintf("isInTouchMode=%s",
-                                                       toString(msg.body.touchMode.isInTouchMode));
                     break;
                 }
             }

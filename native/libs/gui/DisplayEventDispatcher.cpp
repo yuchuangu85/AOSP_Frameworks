@@ -33,17 +33,10 @@ namespace android {
 // using just a few large reads.
 static const size_t EVENT_BUFFER_SIZE = 100;
 
-static constexpr nsecs_t WAITING_FOR_VSYNC_TIMEOUT = ms2ns(300);
-
-DisplayEventDispatcher::DisplayEventDispatcher(const sp<Looper>& looper,
-                                               gui::ISurfaceComposer::VsyncSource vsyncSource,
-                                               EventRegistrationFlags eventRegistration,
-                                               const sp<IBinder>& layerHandle)
-      : mLooper(looper),
-        mReceiver(vsyncSource, eventRegistration, layerHandle),
-        mWaitingForVsync(false),
-        mLastVsyncCount(0),
-        mLastScheduleVsyncTime(0) {
+DisplayEventDispatcher::DisplayEventDispatcher(
+        const sp<Looper>& looper, ISurfaceComposer::VsyncSource vsyncSource,
+        ISurfaceComposer::EventRegistrationFlags eventRegistration)
+      : mLooper(looper), mReceiver(vsyncSource, eventRegistration), mWaitingForVsync(false) {
     ALOGV("dispatcher %p ~ Initializing display event dispatcher.", this);
 }
 
@@ -93,7 +86,6 @@ status_t DisplayEventDispatcher::scheduleVsync() {
         }
 
         mWaitingForVsync = true;
-        mLastScheduleVsyncTime = systemTime(SYSTEM_TIME_MONOTONIC);
     }
     return OK;
 }
@@ -130,21 +122,9 @@ int DisplayEventDispatcher::handleEvent(int, int events, void*) {
         ALOGV("dispatcher %p ~ Vsync pulse: timestamp=%" PRId64
               ", displayId=%s, count=%d, vsyncId=%" PRId64,
               this, ns2ms(vsyncTimestamp), to_string(vsyncDisplayId).c_str(), vsyncCount,
-              vsyncEventData.preferredVsyncId());
+              vsyncEventData.id);
         mWaitingForVsync = false;
-        mLastVsyncCount = vsyncCount;
         dispatchVsync(vsyncTimestamp, vsyncDisplayId, vsyncCount, vsyncEventData);
-    }
-
-    if (mWaitingForVsync) {
-        const nsecs_t currentTime = systemTime(SYSTEM_TIME_MONOTONIC);
-        const nsecs_t vsyncScheduleDelay = currentTime - mLastScheduleVsyncTime;
-        if (vsyncScheduleDelay > WAITING_FOR_VSYNC_TIMEOUT) {
-            ALOGW("Vsync time out! vsyncScheduleDelay=%" PRId64 "ms", ns2ms(vsyncScheduleDelay));
-            mWaitingForVsync = false;
-            dispatchVsync(currentTime, vsyncDisplayId /* displayId is not used */,
-                          ++mLastVsyncCount, vsyncEventData /* empty data */);
-        }
     }
 
     return 1; // keep the callback
@@ -170,7 +150,9 @@ bool DisplayEventDispatcher::processPendingEvents(nsecs_t* outTimestamp,
                     *outTimestamp = ev.header.timestamp;
                     *outDisplayId = ev.header.displayId;
                     *outCount = ev.vsync.count;
-                    *outVsyncEventData = ev.vsync.vsyncData;
+                    outVsyncEventData->id = ev.vsync.vsyncId;
+                    outVsyncEventData->deadlineTimestamp = ev.vsync.deadlineTimestamp;
+                    outVsyncEventData->frameInterval = ev.vsync.frameInterval;
                     break;
                 case DisplayEventReceiver::DISPLAY_EVENT_HOTPLUG:
                     dispatchHotplug(ev.header.timestamp, ev.header.displayId, ev.hotplug.connected);
@@ -199,11 +181,6 @@ bool DisplayEventDispatcher::processPendingEvents(nsecs_t* outTimestamp,
         ALOGW("Failed to get events from display event dispatcher, status=%d", status_t(n));
     }
     return gotVsync;
-}
-
-status_t DisplayEventDispatcher::getLatestVsyncEventData(
-        ParcelableVsyncEventData* outVsyncEventData) const {
-    return mReceiver.getLatestVsyncEventData(outVsyncEventData);
 }
 
 } // namespace android

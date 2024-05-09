@@ -22,8 +22,6 @@
 
 #include <unordered_map>
 
-#include "WpHash.h"
-
 namespace android {
 
 class HdrLayerInfoReporter final : public IBinder::DeathRecipient {
@@ -33,29 +31,13 @@ public:
         int32_t maxW = 0;
         int32_t maxH = 0;
         int32_t flags = 0;
-        // Counter-intuitively a value of "1" means "as much as you can give me" due to "1" being
-        // the default value for all layers, so any HDR layer with a value of 1.f means no
-        // reduced maximum has been requested
-        // TODO: Should the max desired ratio have a better meaning for HLG/PQ so this can be
-        // eliminated? If we assume an SDR white point of even just 100 nits for those content
-        // then HLG could have a meaningful max ratio of 10.f and PQ of 100.f instead of needing
-        // to treat 1.f as "uncapped"
-        // With peak display brightnesses exceeding 1,000 nits currently, HLG's request could
-        // actually be satisfied in some ambient conditions such that limiting that max for that
-        // content in theory makes sense
-        float maxDesiredHdrSdrRatio = 0.f;
 
         bool operator==(const HdrLayerInfo& other) const {
             return numberOfHdrLayers == other.numberOfHdrLayers && maxW == other.maxW &&
-                    maxH == other.maxH && flags == other.flags &&
-                    maxDesiredHdrSdrRatio == other.maxDesiredHdrSdrRatio;
+                    maxH == other.maxH && flags == other.flags;
         }
 
         bool operator!=(const HdrLayerInfo& other) const { return !(*this == other); }
-
-        void mergeDesiredRatio(float update) {
-            maxDesiredHdrSdrRatio = std::max(maxDesiredHdrSdrRatio, update);
-        }
     };
 
     HdrLayerInfoReporter() = default;
@@ -81,6 +63,11 @@ public:
 
 private:
     mutable std::mutex mMutex;
+    struct WpHash {
+        size_t operator()(const wp<IBinder>& p) const {
+            return std::hash<IBinder*>()(p.unsafe_get());
+        }
+    };
 
     struct TrackedListener {
         sp<gui::IHdrLayerInfoListener> listener;

@@ -22,7 +22,6 @@
 #include <gmock/gmock-actions.h>
 #include <gtest/gtest.h>
 #include <renderengine/ExternalTexture.h>
-#include <renderengine/mock/FakeExternalTexture.h>
 #include <renderengine/mock/RenderEngine.h>
 #include <ui/GraphicTypes.h>
 #include <utils/Errors.h>
@@ -54,19 +53,11 @@ MATCHER_P(ClientCompositionTargetSettingsBlurSettingsEq, expectedBlurSetting, ""
 }
 
 MATCHER_P(ClientCompositionTargetSettingsSecureEq, expectedSecureSetting, "") {
-    *result_listener << "ClientCompositionTargetSettings' isSecure bits aren't equal \n";
+    *result_listener << "ClientCompositionTargetSettings' SecureSettings aren't equal \n";
     *result_listener << "expected " << expectedSecureSetting << "\n";
     *result_listener << "actual " << arg.isSecure << "\n";
 
     return expectedSecureSetting == arg.isSecure;
-}
-
-MATCHER_P(ClientCompositionTargetSettingsWhitePointEq, expectedWhitePoint, "") {
-    *result_listener << "ClientCompositionTargetSettings' white points aren't equal \n";
-    *result_listener << "expected " << expectedWhitePoint << "\n";
-    *result_listener << "actual " << arg.whitePointNits << "\n";
-
-    return expectedWhitePoint == arg.whitePointNits;
 }
 
 static const ui::Size kOutputSize = ui::Size(1, 1);
@@ -130,7 +121,7 @@ void CachedSetTest::SetUp() {
         // set up minimium params needed for rendering
         mOutputState.dataspace = ui::Dataspace::SRGB;
         mOutputState.framebufferSpace = ProjectionSpace(ui::Size(10, 20), Rect(10, 5));
-        mOutputState.framebufferSpace.setOrientation(ui::ROTATION_90);
+        mOutputState.framebufferSpace.orientation = ui::ROTATION_90;
         mOutputState.layerStackSpace = ProjectionSpace(ui::Size(20, 10), Rect(5, 10));
     }
 }
@@ -343,35 +334,38 @@ TEST_F(CachedSetTest, renderUnsecureOutput) {
     CachedSet cachedSet(layer1);
     cachedSet.append(CachedSet(layer2));
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    clientComp1->alpha = 0.5f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    clientCompList1[0].alpha = 0.5f;
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    clientComp2->alpha = 0.75f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    clientCompList2[0].alpha = 0.75f;
 
     const auto drawLayers = [&](const renderengine::DisplaySettings& displaySettings,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
-        EXPECT_EQ(mOutputState.framebufferSpace.getContent(), displaySettings.physicalDisplay);
-        EXPECT_EQ(mOutputState.layerStackSpace.getContent(), displaySettings.clip);
-        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.getOrientation()),
+                                base::unique_fd&&, base::unique_fd*) -> size_t {
+        EXPECT_EQ(mOutputState.framebufferSpace.content, displaySettings.physicalDisplay);
+        EXPECT_EQ(mOutputState.layerStackSpace.content, displaySettings.clip);
+        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.orientation),
                   displaySettings.orientation);
-        EXPECT_EQ(0.5f, layers[0].alpha);
-        EXPECT_EQ(0.75f, layers[1].alpha);
+        EXPECT_EQ(0.5f, layers[0]->alpha);
+        EXPECT_EQ(0.75f, layers[1]->alpha);
         EXPECT_EQ(ui::Dataspace::SRGB, displaySettings.outputDataspace);
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+
+        return NO_ERROR;
     };
 
-    EXPECT_CALL(*layerFE1, prepareClientComposition(ClientCompositionTargetSettingsSecureEq(false)))
-            .WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2, prepareClientComposition(ClientCompositionTargetSettingsSecureEq(false)))
-            .WillOnce(Return(clientComp2));
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
+    EXPECT_CALL(*layerFE1,
+                prepareClientCompositionList(ClientCompositionTargetSettingsSecureEq(false)))
+            .WillOnce(Return(clientCompList1));
+    EXPECT_CALL(*layerFE2,
+                prepareClientCompositionList(ClientCompositionTargetSettingsSecureEq(false)))
+            .WillOnce(Return(clientCompList2));
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
     mOutputState.isSecure = false;
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
     expectReadyBuffer(cachedSet);
 
     EXPECT_EQ(mOutputState.framebufferSpace, cachedSet.getOutputSpace());
@@ -392,133 +386,38 @@ TEST_F(CachedSetTest, renderSecureOutput) {
     CachedSet cachedSet(layer1);
     cachedSet.append(CachedSet(layer2));
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    clientComp1->alpha = 0.5f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    clientCompList1[0].alpha = 0.5f;
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    clientComp2->alpha = 0.75f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    clientCompList2[0].alpha = 0.75f;
 
     const auto drawLayers = [&](const renderengine::DisplaySettings& displaySettings,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
-        EXPECT_EQ(mOutputState.framebufferSpace.getContent(), displaySettings.physicalDisplay);
-        EXPECT_EQ(mOutputState.layerStackSpace.getContent(), displaySettings.clip);
-        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.getOrientation()),
+                                base::unique_fd&&, base::unique_fd*) -> size_t {
+        EXPECT_EQ(mOutputState.framebufferSpace.content, displaySettings.physicalDisplay);
+        EXPECT_EQ(mOutputState.layerStackSpace.content, displaySettings.clip);
+        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.orientation),
                   displaySettings.orientation);
-        EXPECT_EQ(0.5f, layers[0].alpha);
-        EXPECT_EQ(0.75f, layers[1].alpha);
+        EXPECT_EQ(0.5f, layers[0]->alpha);
+        EXPECT_EQ(0.75f, layers[1]->alpha);
         EXPECT_EQ(ui::Dataspace::SRGB, displaySettings.outputDataspace);
 
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
-    };
-
-    EXPECT_CALL(*layerFE1, prepareClientComposition(ClientCompositionTargetSettingsSecureEq(true)))
-            .WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2, prepareClientComposition(ClientCompositionTargetSettingsSecureEq(true)))
-            .WillOnce(Return(clientComp2));
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    mOutputState.isSecure = true;
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
-    expectReadyBuffer(cachedSet);
-
-    EXPECT_EQ(mOutputState.framebufferSpace, cachedSet.getOutputSpace());
-    EXPECT_EQ(Rect(kOutputSize.width, kOutputSize.height), cachedSet.getTextureBounds());
-
-    // Now check that appending a new cached set properly cleans up RenderEngine resources.
-    CachedSet::Layer& layer3 = *mTestLayers[2]->cachedSetLayer.get();
-    cachedSet.append(CachedSet(layer3));
-}
-
-TEST_F(CachedSetTest, renderWhitePoint) {
-    // Skip the 0th layer to ensure that the bounding box of the layers is offset from (0, 0)
-    CachedSet::Layer& layer1 = *mTestLayers[1]->cachedSetLayer.get();
-    sp<mock::LayerFE> layerFE1 = mTestLayers[1]->layerFE;
-    CachedSet::Layer& layer2 = *mTestLayers[2]->cachedSetLayer.get();
-    sp<mock::LayerFE> layerFE2 = mTestLayers[2]->layerFE;
-
-    CachedSet cachedSet(layer1);
-    cachedSet.append(CachedSet(layer2));
-
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-
-    mOutputState.displayBrightnessNits = 400.f;
-
-    const auto drawLayers = [&](const renderengine::DisplaySettings& displaySettings,
-                                const std::vector<renderengine::LayerSettings>&,
-                                const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
-        EXPECT_EQ(mOutputState.displayBrightnessNits, displaySettings.targetLuminanceNits);
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+        return NO_ERROR;
     };
 
     EXPECT_CALL(*layerFE1,
-                prepareClientComposition(ClientCompositionTargetSettingsWhitePointEq(
-                        mOutputState.displayBrightnessNits)))
-            .WillOnce(Return(clientComp1));
+                prepareClientCompositionList(ClientCompositionTargetSettingsSecureEq(true)))
+            .WillOnce(Return(clientCompList1));
     EXPECT_CALL(*layerFE2,
-                prepareClientComposition(ClientCompositionTargetSettingsWhitePointEq(
-                        mOutputState.displayBrightnessNits)))
-            .WillOnce(Return(clientComp2));
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
+                prepareClientCompositionList(ClientCompositionTargetSettingsSecureEq(true)))
+            .WillOnce(Return(clientCompList2));
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
     mOutputState.isSecure = true;
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
-    expectReadyBuffer(cachedSet);
-
-    EXPECT_EQ(mOutputState.framebufferSpace, cachedSet.getOutputSpace());
-    EXPECT_EQ(Rect(kOutputSize.width, kOutputSize.height), cachedSet.getTextureBounds());
-
-    // Now check that appending a new cached set properly cleans up RenderEngine resources.
-    CachedSet::Layer& layer3 = *mTestLayers[2]->cachedSetLayer.get();
-    cachedSet.append(CachedSet(layer3));
-}
-
-TEST_F(CachedSetTest, renderWhitePointNoColorTransform) {
-    // Skip the 0th layer to ensure that the bounding box of the layers is offset from (0, 0)
-    // This is a duplicate of the "renderWhitePoint" test, but setting "deviceHandlesColorTransform"
-    // to false, in the render call.
-
-    CachedSet::Layer& layer1 = *mTestLayers[1]->cachedSetLayer.get();
-    sp<mock::LayerFE> layerFE1 = mTestLayers[1]->layerFE;
-    CachedSet::Layer& layer2 = *mTestLayers[2]->cachedSetLayer.get();
-    sp<mock::LayerFE> layerFE2 = mTestLayers[2]->layerFE;
-
-    CachedSet cachedSet(layer1);
-    cachedSet.append(CachedSet(layer2));
-
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-
-    mOutputState.displayBrightnessNits = 400.f;
-
-    const auto drawLayers = [&](const renderengine::DisplaySettings& displaySettings,
-                                const std::vector<renderengine::LayerSettings>&,
-                                const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
-        EXPECT_EQ(mOutputState.displayBrightnessNits, displaySettings.targetLuminanceNits);
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
-    };
-
-    EXPECT_CALL(*layerFE1,
-                prepareClientComposition(ClientCompositionTargetSettingsWhitePointEq(
-                        mOutputState.displayBrightnessNits)))
-            .WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2,
-                prepareClientComposition(ClientCompositionTargetSettingsWhitePointEq(
-                        mOutputState.displayBrightnessNits)))
-            .WillOnce(Return(clientComp2));
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    mOutputState.isSecure = true;
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, false);
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
     expectReadyBuffer(cachedSet);
 
     EXPECT_EQ(mOutputState.framebufferSpace, cachedSet.getOutputSpace());
@@ -539,35 +438,35 @@ TEST_F(CachedSetTest, rendersWithOffsetFramebufferContent) {
     CachedSet cachedSet(layer1);
     cachedSet.append(CachedSet(layer2));
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    clientComp1->alpha = 0.5f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    clientCompList1[0].alpha = 0.5f;
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    clientComp2->alpha = 0.75f;
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    clientCompList2[0].alpha = 0.75f;
 
     mOutputState.framebufferSpace = ProjectionSpace(ui::Size(10, 20), Rect(2, 3, 10, 5));
 
     const auto drawLayers = [&](const renderengine::DisplaySettings& displaySettings,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
-        EXPECT_EQ(mOutputState.framebufferSpace.getContent(), displaySettings.physicalDisplay);
-        EXPECT_EQ(mOutputState.layerStackSpace.getContent(), displaySettings.clip);
-        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.getOrientation()),
+                                base::unique_fd&&, base::unique_fd*) -> size_t {
+        EXPECT_EQ(mOutputState.framebufferSpace.content, displaySettings.physicalDisplay);
+        EXPECT_EQ(mOutputState.layerStackSpace.content, displaySettings.clip);
+        EXPECT_EQ(ui::Transform::toRotationFlags(mOutputState.framebufferSpace.orientation),
                   displaySettings.orientation);
-        EXPECT_EQ(0.5f, layers[0].alpha);
-        EXPECT_EQ(0.75f, layers[1].alpha);
+        EXPECT_EQ(0.5f, layers[0]->alpha);
+        EXPECT_EQ(0.75f, layers[1]->alpha);
         EXPECT_EQ(ui::Dataspace::SRGB, displaySettings.outputDataspace);
 
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+        return NO_ERROR;
     };
 
-    EXPECT_CALL(*layerFE1, prepareClientComposition(_)).WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2, prepareClientComposition(_)).WillOnce(Return(clientComp2));
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
+    EXPECT_CALL(*layerFE1, prepareClientCompositionList(_)).WillOnce(Return(clientCompList1));
+    EXPECT_CALL(*layerFE2, prepareClientCompositionList(_)).WillOnce(Return(clientCompList2));
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
     expectReadyBuffer(cachedSet);
 
     EXPECT_EQ(mOutputState.framebufferSpace, cachedSet.getOutputSpace());
@@ -577,24 +476,8 @@ TEST_F(CachedSetTest, rendersWithOffsetFramebufferContent) {
     cachedSet.append(CachedSet(layer3));
 }
 
-TEST_F(CachedSetTest, cachingHintIncludesLayersByDefault) {
-    CachedSet cachedSet(*mTestLayers[0]->cachedSetLayer.get());
-    EXPECT_FALSE(cachedSet.cachingHintExcludesLayers());
-}
-
-TEST_F(CachedSetTest, cachingHintExcludesLayersWhenDisabled) {
-    CachedSet::Layer& layer1 = *mTestLayers[0]->cachedSetLayer.get();
-    mTestLayers[0]->layerFECompositionState.cachingHint = gui::CachingHint::Disabled;
-    mTestLayers[0]->layerState->update(&mTestLayers[0]->outputLayer);
-
-    CachedSet cachedSet(layer1);
-    EXPECT_TRUE(cachedSet.cachingHintExcludesLayers());
-}
-
 TEST_F(CachedSetTest, holePunch_requiresBuffer) {
     CachedSet::Layer& layer1 = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
     sp<mock::LayerFE> layerFE1 = mTestLayers[0]->layerFE;
 
     CachedSet cachedSet(layer1);
@@ -605,9 +488,7 @@ TEST_F(CachedSetTest, holePunch_requiresBuffer) {
 
 TEST_F(CachedSetTest, holePunch_requiresRoundedCorners) {
     CachedSet::Layer& layer1 = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
+    mTestLayers[0]->layerFECompositionState.buffer = sp<GraphicBuffer>::make();
 
     CachedSet cachedSet(layer1);
 
@@ -616,9 +497,7 @@ TEST_F(CachedSetTest, holePunch_requiresRoundedCorners) {
 
 TEST_F(CachedSetTest, holePunch_requiresSingleLayer) {
     CachedSet::Layer& layer1 = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
+    mTestLayers[0]->layerFECompositionState.buffer = sp<GraphicBuffer>::make();
     sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
     EXPECT_CALL(*layerFE, hasRoundedCorners()).WillRepeatedly(Return(true));
 
@@ -635,9 +514,7 @@ TEST_F(CachedSetTest, holePunch_requiresNonHdr) {
     mTestLayers[0]->layerState->update(&mTestLayers[0]->outputLayer);
 
     CachedSet::Layer& layer = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
+    mTestLayers[0]->layerFECompositionState.buffer = sp<GraphicBuffer>::make();
     sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
 
     CachedSet cachedSet(layer);
@@ -651,42 +528,7 @@ TEST_F(CachedSetTest, holePunch_requiresNonBT601_625) {
     mTestLayers[0]->layerState->update(&mTestLayers[0]->outputLayer);
 
     CachedSet::Layer& layer = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
-    sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
-
-    CachedSet cachedSet(layer);
-    EXPECT_CALL(*layerFE, hasRoundedCorners()).WillRepeatedly(Return(true));
-
-    EXPECT_FALSE(cachedSet.requiresHolePunch());
-}
-
-TEST_F(CachedSetTest, holePunch_requiresNonHdrWithExtendedBrightness) {
-    const auto dataspace = static_cast<ui::Dataspace>(ui::Dataspace::STANDARD_DCI_P3 |
-                                                      ui::Dataspace::TRANSFER_SRGB |
-                                                      ui::Dataspace::RANGE_EXTENDED);
-    mTestLayers[0]->outputLayerCompositionState.dataspace = dataspace;
-    mTestLayers[0]->layerFECompositionState.currentHdrSdrRatio = 5.f;
-    mTestLayers[0]->layerState->update(&mTestLayers[0]->outputLayer);
-
-    CachedSet::Layer& layer = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
-    sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
-
-    CachedSet cachedSet(layer);
-    EXPECT_CALL(*layerFE, hasRoundedCorners()).WillRepeatedly(Return(true));
-
-    EXPECT_FALSE(cachedSet.requiresHolePunch());
-}
-
-TEST_F(CachedSetTest, holePunch_requiresNoBlending) {
-    CachedSet::Layer& layer = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::PREMULTIPLIED;
+    mTestLayers[0]->layerFECompositionState.buffer = sp<GraphicBuffer>::make();
     sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
 
     CachedSet cachedSet(layer);
@@ -697,9 +539,7 @@ TEST_F(CachedSetTest, holePunch_requiresNoBlending) {
 
 TEST_F(CachedSetTest, requiresHolePunch) {
     CachedSet::Layer& layer = *mTestLayers[0]->cachedSetLayer.get();
-    auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
-    layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
+    mTestLayers[0]->layerFECompositionState.buffer = sp<GraphicBuffer>::make();
     sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
 
     CachedSet cachedSet(layer);
@@ -713,7 +553,6 @@ TEST_F(CachedSetTest, holePunch_requiresDeviceComposition) {
     sp<mock::LayerFE> layerFE = mTestLayers[0]->layerFE;
     auto& layerFECompositionState = mTestLayers[0]->layerFECompositionState;
     layerFECompositionState.buffer = sp<GraphicBuffer>::make();
-    layerFECompositionState.blendMode = hal::BlendMode::NONE;
     layerFECompositionState.forceClientComposition = true;
 
     CachedSet cachedSet(layer);
@@ -796,55 +635,53 @@ TEST_F(CachedSetTest, addHolePunch) {
 
     cachedSet.addHolePunchLayerIfFeasible(layer3, true);
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp3;
-    clientComp3.emplace();
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList3;
+    clientCompList3.push_back({});
 
-    clientComp3->source.buffer.buffer =
-            std::make_shared<renderengine::mock::FakeExternalTexture>(1U /*width*/, 1U /*height*/,
-                                                                      1ULL /* bufferId */,
-                                                                      HAL_PIXEL_FORMAT_RGBA_8888,
-                                                                      0ULL /*usage*/);
+    clientCompList3[0].source.buffer.buffer = std::make_shared<
+            renderengine::ExternalTexture>(sp<GraphicBuffer>::make(), mRenderEngine,
+                                           renderengine::ExternalTexture::READABLE);
 
-    EXPECT_CALL(*layerFE1, prepareClientComposition(_)).WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2, prepareClientComposition(_)).WillOnce(Return(clientComp2));
-    EXPECT_CALL(*layerFE3, prepareClientComposition(_)).WillOnce(Return(clientComp3));
+    EXPECT_CALL(*layerFE1, prepareClientCompositionList(_)).WillOnce(Return(clientCompList1));
+    EXPECT_CALL(*layerFE2, prepareClientCompositionList(_)).WillOnce(Return(clientCompList2));
+    EXPECT_CALL(*layerFE3, prepareClientCompositionList(_)).WillOnce(Return(clientCompList3));
 
     const auto drawLayers = [&](const renderengine::DisplaySettings&,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
+                                base::unique_fd&&, base::unique_fd*) -> size_t {
         // If the highlight layer is enabled, it will increase the size by 1.
         // We're interested in the third layer either way.
         EXPECT_GE(layers.size(), 4u);
         {
-            const auto holePunchSettings = layers[3];
-            EXPECT_EQ(nullptr, holePunchSettings.source.buffer.buffer);
-            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchSettings.source.solidColor);
-            EXPECT_TRUE(holePunchSettings.disableBlending);
-            EXPECT_EQ(0.0f, holePunchSettings.alpha);
+            const auto* holePunchSettings = layers[3];
+            EXPECT_EQ(nullptr, holePunchSettings->source.buffer.buffer);
+            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchSettings->source.solidColor);
+            EXPECT_TRUE(holePunchSettings->disableBlending);
+            EXPECT_EQ(0.0f, holePunchSettings->alpha);
         }
 
         {
-            const auto holePunchBackgroundSettings = layers[0];
-            EXPECT_EQ(nullptr, holePunchBackgroundSettings.source.buffer.buffer);
-            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchBackgroundSettings.source.solidColor);
-            EXPECT_FALSE(holePunchBackgroundSettings.disableBlending);
-            EXPECT_EQ(1.0f, holePunchBackgroundSettings.alpha);
+            const auto* holePunchBackgroundSettings = layers[0];
+            EXPECT_EQ(nullptr, holePunchBackgroundSettings->source.buffer.buffer);
+            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchBackgroundSettings->source.solidColor);
+            EXPECT_FALSE(holePunchBackgroundSettings->disableBlending);
+            EXPECT_EQ(1.0f, holePunchBackgroundSettings->alpha);
         }
 
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+        return NO_ERROR;
     };
 
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
 }
 
 TEST_F(CachedSetTest, addHolePunch_noBuffer) {
-    // Same as addHolePunch, except that clientComp3 does not contain a
+    // Same as addHolePunch, except that clientCompList3 does not contain a
     // buffer. This imitates the case where the buffer had protected content, so
     // BufferLayer did not add it to the LayerSettings. This should not assert.
     mTestLayers[0]->outputLayerCompositionState.displayFrame = Rect(0, 0, 5, 5);
@@ -862,46 +699,46 @@ TEST_F(CachedSetTest, addHolePunch_noBuffer) {
 
     cachedSet.addHolePunchLayerIfFeasible(layer3, true);
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp3;
-    clientComp3.emplace();
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList3;
+    clientCompList3.push_back({});
 
-    EXPECT_CALL(*layerFE1, prepareClientComposition(_)).WillOnce(Return(clientComp1));
-    EXPECT_CALL(*layerFE2, prepareClientComposition(_)).WillOnce(Return(clientComp2));
-    EXPECT_CALL(*layerFE3, prepareClientComposition(_)).WillOnce(Return(clientComp3));
+    EXPECT_CALL(*layerFE1, prepareClientCompositionList(_)).WillOnce(Return(clientCompList1));
+    EXPECT_CALL(*layerFE2, prepareClientCompositionList(_)).WillOnce(Return(clientCompList2));
+    EXPECT_CALL(*layerFE3, prepareClientCompositionList(_)).WillOnce(Return(clientCompList3));
 
     const auto drawLayers = [&](const renderengine::DisplaySettings&,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
+                                base::unique_fd&&, base::unique_fd*) -> size_t {
         // If the highlight layer is enabled, it will increase the size by 1.
         // We're interested in the third layer either way.
         EXPECT_GE(layers.size(), 4u);
 
         {
-            const auto holePunchSettings = layers[3];
-            EXPECT_EQ(nullptr, holePunchSettings.source.buffer.buffer);
-            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchSettings.source.solidColor);
-            EXPECT_TRUE(holePunchSettings.disableBlending);
-            EXPECT_EQ(0.0f, holePunchSettings.alpha);
+            const auto* holePunchSettings = layers[3];
+            EXPECT_EQ(nullptr, holePunchSettings->source.buffer.buffer);
+            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchSettings->source.solidColor);
+            EXPECT_TRUE(holePunchSettings->disableBlending);
+            EXPECT_EQ(0.0f, holePunchSettings->alpha);
         }
 
         {
-            const auto holePunchBackgroundSettings = layers[0];
-            EXPECT_EQ(nullptr, holePunchBackgroundSettings.source.buffer.buffer);
-            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchBackgroundSettings.source.solidColor);
-            EXPECT_FALSE(holePunchBackgroundSettings.disableBlending);
-            EXPECT_EQ(1.0f, holePunchBackgroundSettings.alpha);
+            const auto* holePunchBackgroundSettings = layers[0];
+            EXPECT_EQ(nullptr, holePunchBackgroundSettings->source.buffer.buffer);
+            EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), holePunchBackgroundSettings->source.solidColor);
+            EXPECT_FALSE(holePunchBackgroundSettings->disableBlending);
+            EXPECT_EQ(1.0f, holePunchBackgroundSettings->alpha);
         }
 
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+        return NO_ERROR;
     };
 
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
 }
 
 TEST_F(CachedSetTest, append_removesHolePunch) {
@@ -995,52 +832,50 @@ TEST_F(CachedSetTest, addBlur) {
 
     cachedSet.addBackgroundBlurLayer(layer3);
 
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp1;
-    clientComp1.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp2;
-    clientComp2.emplace();
-    std::optional<compositionengine::LayerFE::LayerSettings> clientComp3;
-    clientComp3.emplace();
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList1;
+    clientCompList1.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList2;
+    clientCompList2.push_back({});
+    std::vector<compositionengine::LayerFE::LayerSettings> clientCompList3;
+    clientCompList3.push_back({});
 
-    clientComp3->source.buffer.buffer =
-            std::make_shared<renderengine::mock::FakeExternalTexture>(1U /*width*/, 1U /*height*/,
-                                                                      1ULL /* bufferId */,
-                                                                      HAL_PIXEL_FORMAT_RGBA_8888,
-                                                                      0ULL /*usage*/);
+    clientCompList3[0].source.buffer.buffer = std::make_shared<
+            renderengine::ExternalTexture>(sp<GraphicBuffer>::make(), mRenderEngine,
+                                           renderengine::ExternalTexture::READABLE);
 
     EXPECT_CALL(*layerFE1,
-                prepareClientComposition(ClientCompositionTargetSettingsBlurSettingsEq(
+                prepareClientCompositionList(ClientCompositionTargetSettingsBlurSettingsEq(
                         compositionengine::LayerFE::ClientCompositionTargetSettings::BlurSetting::
                                 Enabled)))
-            .WillOnce(Return(clientComp1));
+            .WillOnce(Return(clientCompList1));
     EXPECT_CALL(*layerFE2,
-                prepareClientComposition(ClientCompositionTargetSettingsBlurSettingsEq(
+                prepareClientCompositionList(ClientCompositionTargetSettingsBlurSettingsEq(
                         compositionengine::LayerFE::ClientCompositionTargetSettings::BlurSetting::
                                 Enabled)))
-            .WillOnce(Return(clientComp2));
+            .WillOnce(Return(clientCompList2));
     EXPECT_CALL(*layerFE3,
-                prepareClientComposition(ClientCompositionTargetSettingsBlurSettingsEq(
+                prepareClientCompositionList(ClientCompositionTargetSettingsBlurSettingsEq(
                         compositionengine::LayerFE::ClientCompositionTargetSettings::BlurSetting::
                                 BackgroundBlurOnly)))
-            .WillOnce(Return(clientComp3));
+            .WillOnce(Return(clientCompList3));
 
     const auto drawLayers = [&](const renderengine::DisplaySettings&,
-                                const std::vector<renderengine::LayerSettings>& layers,
+                                const std::vector<const renderengine::LayerSettings*>& layers,
                                 const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                                base::unique_fd&&) -> ftl::Future<FenceResult> {
+                                base::unique_fd&&, base::unique_fd*) -> int32_t {
         // If the highlight layer is enabled, it will increase the size by 1.
         // We're interested in the third layer either way.
         EXPECT_GE(layers.size(), 3u);
-        const auto blurSettings = layers[2];
-        EXPECT_TRUE(blurSettings.skipContentDraw);
-        EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), blurSettings.source.solidColor);
-        EXPECT_EQ(0.0f, blurSettings.alpha);
+        const auto* blurSettings = layers[2];
+        EXPECT_TRUE(blurSettings->skipContentDraw);
+        EXPECT_EQ(half3(0.0f, 0.0f, 0.0f), blurSettings->source.solidColor);
+        EXPECT_EQ(0.0f, blurSettings->alpha);
 
-        return ftl::yield<FenceResult>(Fence::NO_FENCE);
+        return NO_ERROR;
     };
 
-    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _)).WillOnce(Invoke(drawLayers));
-    cachedSet.render(mRenderEngine, mTexturePool, mOutputState, true);
+    EXPECT_CALL(mRenderEngine, drawLayers(_, _, _, _, _, _)).WillOnce(Invoke(drawLayers));
+    cachedSet.render(mRenderEngine, mTexturePool, mOutputState);
 }
 
 } // namespace

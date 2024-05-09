@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <optional>
 
-#include <ui/DisplayIdentification.h>
+#include "DisplayHardware/DisplayIdentification.h"
 
 #include <compositionengine/Output.h>
 
@@ -55,9 +55,6 @@ public:
     // Creates a cache to cache duplicate client composition requests and skip
     // similar requests if needed.
     virtual void createClientCompositionCache(uint32_t cacheSize) = 0;
-
-    // Sends the brightness setting to HWC
-    virtual void applyDisplayBrightness(const bool applyImmediately) = 0;
 
 protected:
     ~Display() = default;

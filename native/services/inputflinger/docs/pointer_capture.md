@@ -17,8 +17,6 @@
 
 `InputDispatcher` is responsible for controlling the state of Pointer Capture. Since the feature requires changes to how events are generated, Pointer Capture is configured in `InputReader`.
 
-We use a sequence number to synchronize different requests to enable Pointer Capture between InputReader and InputDispatcher.
-
 ### Enabling Pointer Capture
 
 There are four key steps that take place when Pointer Capture is enabled:
@@ -42,5 +40,5 @@ When an `InputWindow` with Pointer Capture loses focus, Pointer Capture is disab
 
 `InputDispatcher` tracks two pieces of state information regarding Pointer Capture:
 
-- `mCurrentPointerCaptureRequest`: The sequence number of the current Pointer Capture request. This request is enabled iff the focused window has requested Pointer Capture. This is updated whenever the Dispatcher receives requests from `InputManagerService`.
+- `mFocusedWindowRequestedPointerCapture`: Whether or not the focused window has requested Pointer Capture. This is updated whenever the Dispatcher receives requests from `InputManagerService`.
 - `mWindowTokenWithPointerCapture`: The Binder token of the `InputWindow` that currently has Pointer Capture. This is only updated during the dispatch cycle. If it is not `nullptr`, it signifies that the window was notified that it has Pointer Capture.

@@ -17,7 +17,6 @@
 #pragma once
 
 #include <android-base/thread_annotations.h>
-#include <android/gui/IRegionSamplingListener.h>
 #include <binder/IBinder.h>
 #include <renderengine/ExternalTexture.h>
 #include <ui/GraphicBuffer.h>
@@ -26,21 +25,19 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
 
 #include "Scheduler/OneShotTimer.h"
-#include "WpHash.h"
 
 namespace android {
 
+class IRegionSamplingListener;
 class Layer;
+class Scheduler;
 class SurfaceFlinger;
 struct SamplingOffsetCallback;
-
-using gui::IRegionSamplingListener;
 
 float sampleArea(const uint32_t* data, int32_t width, int32_t height, int32_t stride,
                  uint32_t orientation, const Rect& area);
@@ -73,7 +70,7 @@ public:
 
     // Add a listener to receive luma notifications. The luma reported via listener will
     // report the median luma for the layers under the stopLayerHandle, in the samplingArea region.
-    void addListener(const Rect& samplingArea, uint32_t stopLayerId,
+    void addListener(const Rect& samplingArea, const wp<Layer>& stopLayer,
                      const sp<IRegionSamplingListener>& listener);
     // Remove the listener to stop receiving median luma notifications.
     void removeListener(const sp<IRegionSamplingListener>& listener);
@@ -87,10 +84,15 @@ public:
 private:
     struct Descriptor {
         Rect area = Rect::EMPTY_RECT;
-        uint32_t stopLayerId;
+        wp<Layer> stopLayer;
         sp<IRegionSamplingListener> listener;
     };
 
+    struct WpHash {
+        size_t operator()(const wp<IBinder>& p) const {
+            return std::hash<IBinder*>()(p.unsafe_get());
+        }
+    };
     std::vector<float> sampleBuffer(
             const sp<GraphicBuffer>& buffer, const Point& leftTop,
             const std::vector<RegionSamplingThread::Descriptor>& descriptors, uint32_t orientation);

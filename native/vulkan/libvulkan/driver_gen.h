@@ -41,16 +41,12 @@ struct ProcHook {
         EXT_hdr_metadata,
         EXT_swapchain_colorspace,
         GOOGLE_display_timing,
-        GOOGLE_surfaceless_query,
         KHR_android_surface,
         KHR_get_surface_capabilities2,
         KHR_incremental_present,
         KHR_shared_presentable_image,
         KHR_surface,
-        KHR_surface_protected_capabilities,
         KHR_swapchain,
-        EXT_swapchain_maintenance1,
-        EXT_surface_maintenance1,
         ANDROID_external_memory_android_hardware_buffer,
         KHR_bind_memory2,
         KHR_get_physical_device_properties2,
@@ -58,12 +54,10 @@ struct ProcHook {
         KHR_external_memory_capabilities,
         KHR_external_semaphore_capabilities,
         KHR_external_fence_capabilities,
-        KHR_external_fence_fd,
 
         EXTENSION_CORE_1_0,
         EXTENSION_CORE_1_1,
         EXTENSION_CORE_1_2,
-        EXTENSION_CORE_1_3,
         EXTENSION_COUNT,
         EXTENSION_UNKNOWN,
     };
@@ -121,13 +115,11 @@ struct DeviceDriverTable {
     PFN_vkCreateImage CreateImage;
     PFN_vkDestroyImage DestroyImage;
     PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
-    PFN_vkImportFenceFdKHR ImportFenceFdKHR;
     PFN_vkBindImageMemory2 BindImageMemory2;
     PFN_vkBindImageMemory2KHR BindImageMemory2KHR;
     PFN_vkGetDeviceQueue2 GetDeviceQueue2;
     PFN_vkGetSwapchainGrallocUsageANDROID GetSwapchainGrallocUsageANDROID;
     PFN_vkGetSwapchainGrallocUsage2ANDROID GetSwapchainGrallocUsage2ANDROID;
-    PFN_vkGetSwapchainGrallocUsage3ANDROID GetSwapchainGrallocUsage3ANDROID;
     PFN_vkAcquireImageANDROID AcquireImageANDROID;
     PFN_vkQueueSignalReleaseImageANDROID QueueSignalReleaseImageANDROID;
     // clang-format on

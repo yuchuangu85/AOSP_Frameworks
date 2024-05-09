@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef ANDROID_INPUT_FLINGER_H
+#define ANDROID_INPUT_FLINGER_H
 
 #include <stdint.h>
 #include <sys/types.h>
@@ -22,14 +23,15 @@
 #include "InputHost.h"
 
 #include <android/os/BnInputFlinger.h>
+#include <android/os/ISetInputWindowsListener.h>
 #include <binder/Binder.h>
 #include <cutils/compiler.h>
 #include <utils/String16.h>
 #include <utils/String8.h>
 #include <utils/StrongPointer.h>
 
-using android::gui::FocusRequest;
 using android::os::BnInputFlinger;
+using android::os::ISetInputWindowsListener;
 
 namespace android {
 
@@ -42,6 +44,10 @@ public:
     InputFlinger() ANDROID_API;
 
     status_t dump(int fd, const Vector<String16>& args) override;
+    binder::Status setInputWindows(const std::vector<InputWindowInfo>&,
+                                   const sp<ISetInputWindowsListener>&) override {
+        return binder::Status::ok();
+    }
     binder::Status createInputChannel(const std::string&, InputChannel*) override {
         return binder::Status::ok();
     }
@@ -57,3 +63,5 @@ private:
 };
 
 } // namespace android
+
+#endif // ANDROID_INPUT_FLINGER_H

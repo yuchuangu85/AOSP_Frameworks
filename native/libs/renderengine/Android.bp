@@ -21,10 +21,7 @@ cc_defaults {
 
 cc_defaults {
     name: "librenderengine_defaults",
-    defaults: [
-        "android.hardware.graphics.composer3-ndk_shared",
-        "renderengine_defaults",
-    ],
+    defaults: ["renderengine_defaults"],
     cflags: [
         "-DGL_GLEXT_PROTOTYPES",
         "-DEGL_EGLEXT_PROTOTYPES",
@@ -42,12 +39,6 @@ cc_defaults {
         "libsync",
         "libui",
         "libutils",
-        "libvulkan",
-    ],
-
-    static_libs: [
-        "libshaders",
-        "libtonemap",
     ],
     local_include_dirs: ["include"],
     export_include_dirs: ["include"],
@@ -98,37 +89,21 @@ filegroup {
         "skia/ColorSpaces.cpp",
         "skia/SkiaRenderEngine.cpp",
         "skia/SkiaGLRenderEngine.cpp",
-        "skia/SkiaVkRenderEngine.cpp",
         "skia/debug/CaptureTimer.cpp",
         "skia/debug/CommonPool.cpp",
         "skia/debug/SkiaCapture.cpp",
         "skia/debug/SkiaMemoryReporter.cpp",
         "skia/filters/BlurFilter.cpp",
-        "skia/filters/GaussianBlurFilter.cpp",
-        "skia/filters/KawaseBlurFilter.cpp",
         "skia/filters/LinearEffect.cpp",
-        "skia/filters/StretchShaderFactory.cpp",
+        "skia/filters/StretchShaderFactory.cpp"
     ],
 }
 
-// Used to consolidate and simplify pulling Skia & Skia deps into targets that depend on
-// librenderengine. This allows shared deps to be deduplicated (e.g. Perfetto), which doesn't seem
-// possible if libskia_renderengine is just pulled into librenderengine via whole_static_libs.
-cc_defaults {
-    name: "librenderengine_deps",
-    defaults: ["skia_renderengine_deps"],
-    static_libs: ["libskia_renderengine"],
-}
-
-// Note: if compilation fails when adding librenderengine as a dependency, try adding
-// librenderengine_deps to the defaults field of your dependent target.
 cc_library_static {
     name: "librenderengine",
-    defaults: [
-        "librenderengine_defaults",
-        "librenderengine_deps",
-    ],
+    defaults: ["librenderengine_defaults"],
     double_loadable: true,
+    clang: true,
     cflags: [
         "-fvisibility=hidden",
         "-Werror=format",
@@ -140,12 +115,10 @@ cc_library_static {
         ":librenderengine_threaded_sources",
         ":librenderengine_skia_sources",
     ],
-    header_libs: [
-        "libtonemap_headers",
-    ],
     include_dirs: [
         "external/skia/src/gpu",
     ],
+    whole_static_libs: ["libskia_renderengine"],
     lto: {
         thin: true,
     },

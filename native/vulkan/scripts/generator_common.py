@@ -33,7 +33,6 @@ _BLOCKED_EXTENSIONS = [
     'VK_EXT_metal_surface',
     'VK_FUCHSIA_imagepipe_surface',
     'VK_GGP_stream_descriptor_surface',
-    'VK_HUAWEI_subpass_shading',
     'VK_KHR_display',
     'VK_KHR_display_swapchain',
     'VK_KHR_external_fence_win32',
@@ -48,13 +47,11 @@ _BLOCKED_EXTENSIONS = [
     'VK_MVK_ios_surface',
     'VK_MVK_macos_surface',
     'VK_NN_vi_surface',
-    'VK_NV_acquire_winrt_display',
     'VK_NV_cooperative_matrix',
     'VK_NV_coverage_reduction_mode',
     'VK_NV_external_memory_win32',
     'VK_NV_win32_keyed_mutex',
     'VK_NVX_image_view_handle',
-    'VK_QNX_screen_surface',
 ]
 
 # Extensions having functions exported by the loader.
@@ -69,7 +66,6 @@ _EXPORTED_EXTENSIONS = [
 _OPTIONAL_COMMANDS = [
     'vkGetSwapchainGrallocUsageANDROID',
     'vkGetSwapchainGrallocUsage2ANDROID',
-    'vkGetSwapchainGrallocUsage3ANDROID',
 ]
 
 # Dict for mapping dispatch table to a type.

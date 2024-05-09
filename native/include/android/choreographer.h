@@ -16,28 +16,6 @@
 
 /**
  * @addtogroup Choreographer
- *
- * Choreographer coordinates the timing of frame rendering. This is the C version of the
- * android.view.Choreographer object in Java.
- *
- * As of API level 33, apps can follow proper frame pacing and even choose a future frame to render.
- * The API is used as follows:
- * 1. The app posts an {@link AChoreographer_vsyncCallback} to Choreographer to run on the next
- * frame.
- * 2. The callback is called when it is the time to start the frame with an {@link
- * AChoreographerFrameCallbackData} payload: information about multiple possible frame
- * timelines.
- * 3. Apps can choose a frame timeline from the {@link
- * AChoreographerFrameCallbackData} payload, depending on the frame deadline they can meet when
- * rendering the frame and their desired presentation time, and subsequently
- * {@link ASurfaceTransaction_setFrameTimeline notify SurfaceFlinger}
- * of the choice. Alternatively, for apps that do not choose a frame timeline, their frame would be
- * presented at the earliest possible timeline.
- *   - The preferred frame timeline is the default frame
- * timeline that the platform scheduled for the app, based on device configuration.
- * 4. SurfaceFlinger attempts to follow the chosen frame timeline, by not applying transactions or
- * latching buffers before the desired presentation time.
- *
  * @{
  */
 
@@ -61,19 +39,6 @@ struct AChoreographer;
  */
 typedef struct AChoreographer AChoreographer;
 
-
-/**
- * The identifier of a frame timeline.
- */
-typedef int64_t AVsyncId;
-
-struct AChoreographerFrameCallbackData;
-/**
- * Opaque type that provides access to an AChoreographerFrameCallbackData object, which contains
- * various methods to extract frame information.
- */
-typedef struct AChoreographerFrameCallbackData AChoreographerFrameCallbackData;
-
 /**
  * Prototype of the function that is called when a new frame is being rendered.
  * It's passed the time that the frame is being rendered as nanoseconds in the
@@ -93,15 +58,6 @@ typedef void (*AChoreographer_frameCallback)(long frameTimeNanos, void* data);
  * whenever events need to be synchronized (e.g. animations).
  */
 typedef void (*AChoreographer_frameCallback64)(int64_t frameTimeNanos, void* data);
-
-/**
- * Prototype of the function that is called when a new frame is being rendered.
- * It is called with \c callbackData describing multiple frame timelines, as well as the \c data
- * pointer provided by the application that registered a callback. The \c callbackData does not
- * outlive the callback.
- */
-typedef void (*AChoreographer_vsyncCallback)(
-        const AChoreographerFrameCallbackData* callbackData, void* data);
 
 /**
  * Prototype of the function that is called when the display refresh rate
@@ -134,7 +90,7 @@ void AChoreographer_postFrameCallbackDelayed(AChoreographer* choreographer,
         __DEPRECATED_IN(29);
 
 /**
- * Post a callback to be run on the next frame.  The data pointer provided will
+ * Power a callback to be run on the next frame.  The data pointer provided will
  * be passed to the callback function when it's called.
  *
  * Available since API level 29.
@@ -153,16 +109,6 @@ void AChoreographer_postFrameCallback64(AChoreographer* choreographer,
 void AChoreographer_postFrameCallbackDelayed64(AChoreographer* choreographer,
                                                AChoreographer_frameCallback64 callback, void* data,
                                                uint32_t delayMillis) __INTRODUCED_IN(29);
-
-/**
- * Posts a callback to be run on the next frame. The data pointer provided will
- * be passed to the callback function when it's called.
- *
- * Available since API level 33.
- */
-void AChoreographer_postVsyncCallback(AChoreographer* choreographer,
-                                        AChoreographer_vsyncCallback callback, void* data)
-        __INTRODUCED_IN(33);
 
 /**
  * Registers a callback to be run when the display refresh rate changes. The
@@ -213,71 +159,6 @@ void AChoreographer_registerRefreshRateCallback(AChoreographer* choreographer,
 void AChoreographer_unregisterRefreshRateCallback(AChoreographer* choreographer,
                                                   AChoreographer_refreshRateCallback, void* data)
         __INTRODUCED_IN(30);
-
-/**
- * The time in nanoseconds at which the frame started being rendered.
- *
- * Note that this time should \b not be used to advance animation clocks.
- * Instead, see AChoreographerFrameCallbackData_getFrameTimelineExpectedPresentationTimeNanos().
- *
- * Available since API level 33.
- */
-int64_t AChoreographerFrameCallbackData_getFrameTimeNanos(
-        const AChoreographerFrameCallbackData* data) __INTRODUCED_IN(33);
-
-/**
- * The number of possible frame timelines.
- *
- * Available since API level 33.
- */
-size_t AChoreographerFrameCallbackData_getFrameTimelinesLength(
-        const AChoreographerFrameCallbackData* data) __INTRODUCED_IN(33);
-
-/**
- * Gets the index of the platform-preferred frame timeline.
- * The preferred frame timeline is the default
- * by which the platform scheduled the app, based on the device configuration.
- *
- * Available since API level 33.
- */
-size_t AChoreographerFrameCallbackData_getPreferredFrameTimelineIndex(
-        const AChoreographerFrameCallbackData* data) __INTRODUCED_IN(33);
-
-/**
- * Gets the token used by the platform to identify the frame timeline at the given \c index.
- * q
- * Available since API level 33.
- *
- * \param index index of a frame timeline, in \f( [0, FrameTimelinesLength) \f). See
- * AChoreographerFrameCallbackData_getFrameTimelinesLength()
- *
- */
-AVsyncId AChoreographerFrameCallbackData_getFrameTimelineVsyncId(
-        const AChoreographerFrameCallbackData* data, size_t index) __INTRODUCED_IN(33);
-
-/**
- * Gets the time in nanoseconds at which the frame described at the given \c index is expected to
- * be presented. This time should be used to advance any animation clocks.
- *
- * Available since API level 33.
- *
- * \param index index of a frame timeline, in \f( [0, FrameTimelinesLength) \f). See
- * AChoreographerFrameCallbackData_getFrameTimelinesLength()
- */
-int64_t AChoreographerFrameCallbackData_getFrameTimelineExpectedPresentationTimeNanos(
-        const AChoreographerFrameCallbackData* data, size_t index) __INTRODUCED_IN(33);
-
-/**
- * Gets the time in nanoseconds at which the frame described at the given \c index needs to be
- * ready by in order to be presented on time.
- *
- * Available since API level 33.
- *
- * \param index index of a frame timeline, in \f( [0, FrameTimelinesLength) \f). See
- * AChoreographerFrameCallbackData_getFrameTimelinesLength()
- */
-int64_t AChoreographerFrameCallbackData_getFrameTimelineDeadlineNanos(
-        const AChoreographerFrameCallbackData* data, size_t index) __INTRODUCED_IN(33);
 
 __END_DECLS
 

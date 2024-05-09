@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_INJECTIONSTATE_H
+#define _UI_INPUT_INPUTDISPATCHER_INJECTIONSTATE_H
 
 #include <stdint.h>
 #include "InputDispatcherInterface.h"
@@ -26,12 +27,13 @@ namespace inputdispatcher {
 struct InjectionState {
     mutable int32_t refCount;
 
-    std::optional<int32_t> targetUid;
+    int32_t injectorPid;
+    int32_t injectorUid;
     android::os::InputEventInjectionResult injectionResult; // initially PENDING
     bool injectionIsAsync;               // set to true if injection is not waiting for the result
     int32_t pendingForegroundDispatches; // the number of foreground dispatches in progress
 
-    explicit InjectionState(const std::optional<int32_t>& targetUid);
+    InjectionState(int32_t injectorPid, int32_t injectorUid);
     void release();
 
 private:
@@ -40,3 +42,5 @@ private:
 
 } // namespace inputdispatcher
 } // namespace android
+
+#endif // _UI_INPUT_INPUTDISPATCHER_INJECTIONSTATE_H

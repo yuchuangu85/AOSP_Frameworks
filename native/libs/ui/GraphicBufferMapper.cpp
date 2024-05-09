@@ -36,7 +36,6 @@
 #include <ui/Gralloc2.h>
 #include <ui/Gralloc3.h>
 #include <ui/Gralloc4.h>
-#include <ui/Gralloc5.h>
 #include <ui/GraphicBuffer.h>
 
 #include <system/graphics.h>
@@ -50,15 +49,9 @@ void GraphicBufferMapper::preloadHal() {
     Gralloc2Mapper::preload();
     Gralloc3Mapper::preload();
     Gralloc4Mapper::preload();
-    Gralloc5Mapper::preload();
 }
 
 GraphicBufferMapper::GraphicBufferMapper() {
-    mMapper = std::make_unique<const Gralloc5Mapper>();
-    if (mMapper->isLoaded()) {
-        mMapperVersion = Version::GRALLOC_5;
-        return;
-    }
     mMapper = std::make_unique<const Gralloc4Mapper>();
     if (mMapper->isLoaded()) {
         mMapperVersion = Version::GRALLOC_4;
@@ -89,14 +82,15 @@ void GraphicBufferMapper::dumpBufferToSystemLog(buffer_handle_t bufferHandle, bo
     ALOGD("%s", s.c_str());
 }
 
-status_t GraphicBufferMapper::importBuffer(const native_handle_t* rawHandle, uint32_t width,
-                                           uint32_t height, uint32_t layerCount, PixelFormat format,
-                                           uint64_t usage, uint32_t stride,
-                                           buffer_handle_t* outHandle) {
+status_t GraphicBufferMapper::importBuffer(buffer_handle_t rawHandle,
+        uint32_t width, uint32_t height, uint32_t layerCount,
+        PixelFormat format, uint64_t usage, uint32_t stride,
+        buffer_handle_t* outHandle)
+{
     ATRACE_CALL();
 
     buffer_handle_t bufferHandle;
-    status_t error = mMapper->importBuffer(rawHandle, &bufferHandle);
+    status_t error = mMapper->importBuffer(hardware::hidl_handle(rawHandle), &bufferHandle);
     if (error != NO_ERROR) {
         ALOGW("importBuffer(%p) failed: %d", rawHandle, error);
         return error;
@@ -113,11 +107,6 @@ status_t GraphicBufferMapper::importBuffer(const native_handle_t* rawHandle, uin
     *outHandle = bufferHandle;
 
     return NO_ERROR;
-}
-
-status_t GraphicBufferMapper::importBufferNoValidate(const native_handle_t* rawHandle,
-                                                     buffer_handle_t* outHandle) {
-    return mMapper->importBuffer(rawHandle, outHandle);
 }
 
 void GraphicBufferMapper::getTransportSize(buffer_handle_t handle,
@@ -292,10 +281,6 @@ status_t GraphicBufferMapper::getDataspace(buffer_handle_t bufferHandle,
     return mMapper->getDataspace(bufferHandle, outDataspace);
 }
 
-status_t GraphicBufferMapper::setDataspace(buffer_handle_t bufferHandle, ui::Dataspace dataspace) {
-    return mMapper->setDataspace(bufferHandle, dataspace);
-}
-
 status_t GraphicBufferMapper::getBlendMode(buffer_handle_t bufferHandle,
                                            ui::BlendMode* outBlendMode) {
     return mMapper->getBlendMode(bufferHandle, outBlendMode);
@@ -306,19 +291,9 @@ status_t GraphicBufferMapper::getSmpte2086(buffer_handle_t bufferHandle,
     return mMapper->getSmpte2086(bufferHandle, outSmpte2086);
 }
 
-status_t GraphicBufferMapper::setSmpte2086(buffer_handle_t bufferHandle,
-                                           std::optional<ui::Smpte2086> smpte2086) {
-    return mMapper->setSmpte2086(bufferHandle, smpte2086);
-}
-
 status_t GraphicBufferMapper::getCta861_3(buffer_handle_t bufferHandle,
                                           std::optional<ui::Cta861_3>* outCta861_3) {
     return mMapper->getCta861_3(bufferHandle, outCta861_3);
-}
-
-status_t GraphicBufferMapper::setCta861_3(buffer_handle_t bufferHandle,
-                                          std::optional<ui::Cta861_3> cta861_3) {
-    return mMapper->setCta861_3(bufferHandle, cta861_3);
 }
 
 status_t GraphicBufferMapper::getSmpte2094_40(
@@ -326,19 +301,83 @@ status_t GraphicBufferMapper::getSmpte2094_40(
     return mMapper->getSmpte2094_40(bufferHandle, outSmpte2094_40);
 }
 
-status_t GraphicBufferMapper::setSmpte2094_40(buffer_handle_t bufferHandle,
-                                              std::optional<std::vector<uint8_t>> smpte2094_40) {
-    return mMapper->setSmpte2094_40(bufferHandle, smpte2094_40);
+status_t GraphicBufferMapper::getDefaultPixelFormatFourCC(uint32_t width, uint32_t height,
+                                                          PixelFormat format, uint32_t layerCount,
+                                                          uint64_t usage,
+                                                          uint32_t* outPixelFormatFourCC) {
+    return mMapper->getDefaultPixelFormatFourCC(width, height, format, layerCount, usage,
+                                                outPixelFormatFourCC);
 }
 
-status_t GraphicBufferMapper::getSmpte2094_10(
-        buffer_handle_t bufferHandle, std::optional<std::vector<uint8_t>>* outSmpte2094_10) {
-    return mMapper->getSmpte2094_10(bufferHandle, outSmpte2094_10);
+status_t GraphicBufferMapper::getDefaultPixelFormatModifier(uint32_t width, uint32_t height,
+                                                            PixelFormat format, uint32_t layerCount,
+                                                            uint64_t usage,
+                                                            uint64_t* outPixelFormatModifier) {
+    return mMapper->getDefaultPixelFormatModifier(width, height, format, layerCount, usage,
+                                                  outPixelFormatModifier);
 }
 
-status_t GraphicBufferMapper::setSmpte2094_10(buffer_handle_t bufferHandle,
-                                              std::optional<std::vector<uint8_t>> smpte2094_10) {
-    return mMapper->setSmpte2094_10(bufferHandle, smpte2094_10);
+status_t GraphicBufferMapper::getDefaultAllocationSize(uint32_t width, uint32_t height,
+                                                       PixelFormat format, uint32_t layerCount,
+                                                       uint64_t usage,
+                                                       uint64_t* outAllocationSize) {
+    return mMapper->getDefaultAllocationSize(width, height, format, layerCount, usage,
+                                             outAllocationSize);
+}
+
+status_t GraphicBufferMapper::getDefaultProtectedContent(uint32_t width, uint32_t height,
+                                                         PixelFormat format, uint32_t layerCount,
+                                                         uint64_t usage,
+                                                         uint64_t* outProtectedContent) {
+    return mMapper->getDefaultProtectedContent(width, height, format, layerCount, usage,
+                                               outProtectedContent);
+}
+
+status_t GraphicBufferMapper::getDefaultCompression(
+        uint32_t width, uint32_t height, PixelFormat format, uint32_t layerCount, uint64_t usage,
+        aidl::android::hardware::graphics::common::ExtendableType* outCompression) {
+    return mMapper->getDefaultCompression(width, height, format, layerCount, usage, outCompression);
+}
+
+status_t GraphicBufferMapper::getDefaultCompression(uint32_t width, uint32_t height,
+                                                    PixelFormat format, uint32_t layerCount,
+                                                    uint64_t usage,
+                                                    ui::Compression* outCompression) {
+    return mMapper->getDefaultCompression(width, height, format, layerCount, usage, outCompression);
+}
+
+status_t GraphicBufferMapper::getDefaultInterlaced(
+        uint32_t width, uint32_t height, PixelFormat format, uint32_t layerCount, uint64_t usage,
+        aidl::android::hardware::graphics::common::ExtendableType* outInterlaced) {
+    return mMapper->getDefaultInterlaced(width, height, format, layerCount, usage, outInterlaced);
+}
+
+status_t GraphicBufferMapper::getDefaultInterlaced(uint32_t width, uint32_t height,
+                                                   PixelFormat format, uint32_t layerCount,
+                                                   uint64_t usage, ui::Interlaced* outInterlaced) {
+    return mMapper->getDefaultInterlaced(width, height, format, layerCount, usage, outInterlaced);
+}
+
+status_t GraphicBufferMapper::getDefaultChromaSiting(
+        uint32_t width, uint32_t height, PixelFormat format, uint32_t layerCount, uint64_t usage,
+        aidl::android::hardware::graphics::common::ExtendableType* outChromaSiting) {
+    return mMapper->getDefaultChromaSiting(width, height, format, layerCount, usage,
+                                           outChromaSiting);
+}
+
+status_t GraphicBufferMapper::getDefaultChromaSiting(uint32_t width, uint32_t height,
+                                                     PixelFormat format, uint32_t layerCount,
+                                                     uint64_t usage,
+                                                     ui::ChromaSiting* outChromaSiting) {
+    return mMapper->getDefaultChromaSiting(width, height, format, layerCount, usage,
+                                           outChromaSiting);
+}
+
+status_t GraphicBufferMapper::getDefaultPlaneLayouts(
+        uint32_t width, uint32_t height, PixelFormat format, uint32_t layerCount, uint64_t usage,
+        std::vector<ui::PlaneLayout>* outPlaneLayouts) {
+    return mMapper->getDefaultPlaneLayouts(width, height, format, layerCount, usage,
+                                           outPlaneLayouts);
 }
 
 // ---------------------------------------------------------------------------

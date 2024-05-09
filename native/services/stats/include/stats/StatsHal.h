@@ -16,6 +16,7 @@
 
 #include <android/frameworks/stats/1.0/IStats.h>
 #include <android/frameworks/stats/1.0/types.h>
+
 #include <stats_event.h>
 
 using namespace android::frameworks::stats::V1_0;
@@ -29,8 +30,8 @@ namespace implementation {
 using android::hardware::Return;
 
 /**
- * Implements the Stats HAL
- */
+* Implements the Stats HAL
+*/
 class StatsHal : public IStats {
 public:
     StatsHal();
@@ -49,12 +50,12 @@ public:
      * Binder call to get PhysicalDropDetected atom.
      */
     virtual Return<void> reportPhysicalDropDetected(
-            const PhysicalDropDetected& physicalDropDetected) override;
+             const PhysicalDropDetected& physicalDropDetected) override;
 
     /**
      * Binder call to get ChargeCyclesReported atom.
      */
-    virtual Return<void> reportChargeCycles(const ChargeCycles& chargeCycles) override;
+     virtual Return<void> reportChargeCycles(const ChargeCycles& chargeCycles) override;
 
     /**
      * Binder call to get BatteryHealthSnapshot atom.
@@ -82,7 +83,8 @@ public:
     /**
      * Binder call to get Speech DSP state atom.
      */
-    virtual Return<void> reportSpeechDspStat(const SpeechDspStat& speechDspStat) override;
+    virtual Return<void> reportSpeechDspStat(
+            const SpeechDspStat& speechDspStat) override;
 
     /**
      * Binder call to get vendor atom.

@@ -16,19 +16,16 @@
 
 #pragma once
 
-#include <chrono>
-#include <deque>
-#include <optional>
-#include <string>
-#include <unordered_map>
-
 #include <ui/Transform.h>
 #include <utils/Timers.h>
 
-#include <scheduler/Seamlessness.h>
+#include <chrono>
+#include <deque>
 
 #include "LayerHistory.h"
-#include "RefreshRateSelector.h"
+#include "RefreshRateConfigs.h"
+#include "Scheduler/Seamlessness.h"
+#include "SchedulerUtils.h"
 
 namespace android {
 
@@ -37,7 +34,7 @@ class Layer;
 namespace scheduler {
 
 using namespace std::chrono_literals;
-struct LayerProps;
+
 // Maximum period between presents for a layer to be considered active.
 constexpr std::chrono::nanoseconds MAX_ACTIVE_LAYER_PERIOD_NS = 1200ms;
 
@@ -53,8 +50,8 @@ class LayerInfo {
     // Layer is considered frequent if the earliest value in the window of most recent present times
     // is within a threshold. If a layer is infrequent, its average refresh rate is disregarded in
     // favor of a low refresh rate.
-    static constexpr size_t kFrequentLayerWindowSize = 4;
-    static constexpr Fps kMinFpsForFrequentLayer = 10_Hz;
+    static constexpr size_t kFrequentLayerWindowSize = 3;
+    static constexpr Fps kMinFpsForFrequentLayer{10.0f};
     static constexpr auto kMaxPeriodForFrequentLayerNs =
             std::chrono::nanoseconds(kMinFpsForFrequentLayer.getPeriodNsecs()) + 1ms;
 
@@ -65,7 +62,7 @@ public:
     // Holds information about the layer vote
     struct LayerVote {
         LayerHistory::LayerVoteType type = LayerHistory::LayerVoteType::Heuristic;
-        Fps fps;
+        Fps fps{0.0f};
         Seamlessness seamlessness = Seamlessness::Default;
     };
 
@@ -74,8 +71,6 @@ public:
     enum class FrameRateCompatibility {
         Default, // Layer didn't specify any specific handling strategy
 
-        Min, // Layer needs the minimum frame rate.
-
         Exact, // Layer needs the exact frame rate.
 
         ExactOrMultiple, // Layer needs the exact frame rate (or a multiple of it) to present the
@@ -83,8 +78,6 @@ public:
 
         NoVote, // Layer doesn't have any requirements for the refresh rate and
                 // should not be considered when the display refresh rate is determined.
-
-        ftl_last = NoVote
     };
 
     // Encapsulates the frame rate and compatibility of the layer. This information will be used
@@ -93,17 +86,19 @@ public:
         using Seamlessness = scheduler::Seamlessness;
 
         Fps rate;
-        FrameRateCompatibility type = FrameRateCompatibility::Default;
-        Seamlessness seamlessness = Seamlessness::Default;
+        FrameRateCompatibility type;
+        Seamlessness seamlessness;
 
-        FrameRate() = default;
-
+        FrameRate()
+              : rate(0),
+                type(FrameRateCompatibility::Default),
+                seamlessness(Seamlessness::Default) {}
         FrameRate(Fps rate, FrameRateCompatibility type,
                   Seamlessness seamlessness = Seamlessness::OnlySeamless)
               : rate(rate), type(type), seamlessness(getSeamlessness(rate, seamlessness)) {}
 
         bool operator==(const FrameRate& other) const {
-            return isApproxEqual(rate, other.rate) && type == other.type &&
+            return rate.equalsWithMargin(other.rate) && type == other.type &&
                     seamlessness == other.seamlessness;
         }
 
@@ -127,16 +122,28 @@ public:
 
     static void setTraceEnabled(bool enabled) { sTraceEnabled = enabled; }
 
+    static void setRefreshRateConfigs(const RefreshRateConfigs& refreshRateConfigs) {
+        sRefreshRateConfigs = &refreshRateConfigs;
+    }
+
     LayerInfo(const std::string& name, uid_t ownerUid, LayerHistory::LayerVoteType defaultVote);
 
     LayerInfo(const LayerInfo&) = delete;
     LayerInfo& operator=(const LayerInfo&) = delete;
 
+    struct LayerProps {
+        bool visible = false;
+        FloatRect bounds;
+        ui::Transform transform;
+        FrameRate setFrameRateVote;
+        int32_t frameRateSelectionPriority = -1;
+    };
+
     // Records the last requested present time. It also stores information about when
     // the layer was last updated. If the present time is farther in the future than the
     // updated time, the updated time is the present time.
     void setLastPresentTime(nsecs_t lastPresentTime, nsecs_t now, LayerUpdateType updateType,
-                            bool pendingModeChange, const LayerProps& props);
+                            bool pendingModeChange, LayerProps props);
 
     // Sets an explicit layer vote. This usually comes directly from the application via
     // ANativeWindow_setFrameRate API
@@ -148,29 +155,28 @@ public:
     void setDefaultLayerVote(LayerHistory::LayerVoteType type) { mDefaultVote = type; }
 
     // Resets the layer vote to its default.
-    void resetLayerVote() { mLayerVote = {mDefaultVote, Fps(), Seamlessness::Default}; }
+    void resetLayerVote() { mLayerVote = {mDefaultVote, Fps(0.0f), Seamlessness::Default}; }
 
     std::string getName() const { return mName; }
 
     uid_t getOwnerUid() const { return mOwnerUid; }
 
-    LayerVote getRefreshRateVote(const RefreshRateSelector&, nsecs_t now);
+    LayerVote getRefreshRateVote(nsecs_t now);
 
     // Return the last updated time. If the present time is farther in the future than the
     // updated time, the updated time is the present time.
     nsecs_t getLastUpdatedTime() const { return mLastUpdatedTime; }
 
-    FrameRate getSetFrameRateVote() const;
-    bool isVisible() const;
-    int32_t getFrameRateSelectionPriority() const;
-    FloatRect getBounds() const;
-    ui::Transform getTransform() const;
+    FrameRate getSetFrameRateVote() const { return mLayerProps.setFrameRateVote; }
+    bool isVisible() const { return mLayerProps.visible; }
+    int32_t getFrameRateSelectionPriority() const { return mLayerProps.frameRateSelectionPriority; }
+
+    FloatRect getBounds() const { return mLayerProps.bounds; }
+
+    ui::Transform getTransform() const { return mLayerProps.transform; }
 
     // Returns a C string for tracing a vote
     const char* getTraceTag(LayerHistory::LayerVoteType type) const;
-
-    // Return the framerate of this layer.
-    Fps getFps(nsecs_t now) const;
 
     void onLayerInactive(nsecs_t now) {
         // Mark mFrameTimeValidSince to now to ignore all previous frame times.
@@ -181,7 +187,6 @@ public:
         mFrameTimeValidSince = std::chrono::time_point<std::chrono::steady_clock>(timePoint);
         mLastRefreshRate = {};
         mRefreshRateHistory.clear();
-        mIsFrequencyConclusive = true;
     }
 
     void clearHistory(nsecs_t now) {
@@ -200,15 +205,12 @@ private:
     // Holds information about the calculated and reported refresh rate
     struct RefreshRateHeuristicData {
         // Rate calculated on the layer
-        Fps calculated;
+        Fps calculated{0.0f};
         // Last reported rate for LayerInfo::getRefreshRate()
-        Fps reported;
+        Fps reported{0.0f};
         // Whether the last reported rate for LayerInfo::getRefreshRate()
         // was due to animation or infrequent updates
-        bool animating = false;
-        // Whether the last reported rate for LayerInfo::getRefreshRate()
-        // was due to infrequent updates
-        bool infrequent = false;
+        bool animatingOrInfrequent = false;
     };
 
     // Class to store past calculated refresh rate and determine whether
@@ -231,8 +233,14 @@ private:
 
         // Holds the refresh rate when it was calculated
         struct RefreshRateData {
-            Fps refreshRate;
+            Fps refreshRate{0.0f};
             nsecs_t timestamp = 0;
+
+            bool operator<(const RefreshRateData& other) const {
+                // We don't need comparison with margins since we are using
+                // this to find the min and max refresh rates.
+                return refreshRate.getValue() < other.refreshRate.getValue();
+            }
         };
 
         // Holds tracing strings
@@ -252,18 +260,10 @@ private:
         static constexpr float MARGIN_CONSISTENT_FPS = 1.0;
     };
 
-    // Represents whether we were able to determine either layer is frequent or infrequent
-    bool mIsFrequencyConclusive = true;
-    struct Frequent {
-        bool isFrequent;
-        bool clearHistory;
-        // Represents whether we were able to determine isFrequent conclusively
-        bool isConclusive;
-    };
-    Frequent isFrequent(nsecs_t now) const;
+    bool isFrequent(nsecs_t now) const;
     bool isAnimating(nsecs_t now) const;
     bool hasEnoughDataForHeuristic() const;
-    std::optional<Fps> calculateRefreshRateIfPossible(const RefreshRateSelector&, nsecs_t now);
+    std::optional<Fps> calculateRefreshRateIfPossible(nsecs_t now);
     std::optional<nsecs_t> calculateAverageFrameTime() const;
     bool isFrameTimeValid(const FrameTimeData&) const;
 
@@ -272,7 +272,7 @@ private:
 
     // Used for sanitizing the heuristic data. If two frames are less than
     // this period apart from each other they'll be considered as duplicates.
-    static constexpr nsecs_t kMinPeriodBetweenFrames = (240_Hz).getPeriodNsecs();
+    static constexpr nsecs_t kMinPeriodBetweenFrames = Fps(240.f).getPeriodNsecs();
     // Used for sanitizing the heuristic data. If two frames are more than
     // this period apart from each other, the interval between them won't be
     // taken into account when calculating average frame rate.
@@ -293,22 +293,15 @@ private:
     static constexpr size_t HISTORY_SIZE = RefreshRateHistory::HISTORY_SIZE;
     static constexpr std::chrono::nanoseconds HISTORY_DURATION = 1s;
 
-    std::unique_ptr<LayerProps> mLayerProps;
+    LayerProps mLayerProps;
 
     RefreshRateHistory mRefreshRateHistory;
 
     mutable std::unordered_map<LayerHistory::LayerVoteType, std::string> mTraceTags;
 
     // Shared for all LayerInfo instances
+    static const RefreshRateConfigs* sRefreshRateConfigs;
     static bool sTraceEnabled;
-};
-
-struct LayerProps {
-    bool visible = false;
-    FloatRect bounds;
-    ui::Transform transform;
-    LayerInfo::FrameRate setFrameRateVote;
-    int32_t frameRateSelectionPriority = -1;
 };
 
 } // namespace scheduler

@@ -14,20 +14,23 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef ANDROID_SF_VIRTUAL_DISPLAY_SURFACE_H
+#define ANDROID_SF_VIRTUAL_DISPLAY_SURFACE_H
 
 #include <optional>
 #include <string>
 
 #include <compositionengine/DisplaySurface.h>
-#include <gui/BufferQueue.h>
+#include <compositionengine/impl/HwcBufferCache.h>
 #include <gui/ConsumerBase.h>
 #include <gui/IGraphicBufferProducer.h>
 #include <ui/DisplayId.h>
 
-#include <ui/DisplayIdentification.h>
+#include "DisplayIdentification.h"
 
+// ---------------------------------------------------------------------------
 namespace android {
+// ---------------------------------------------------------------------------
 
 class HWComposer;
 class IProducerListener;
@@ -89,18 +92,9 @@ public:
     virtual void dumpAsString(String8& result) const;
     virtual void resizeBuffers(const ui::Size&) override;
     virtual const sp<Fence>& getClientTargetAcquireFence() const override;
-    // Virtual display surface needs to prepare the frame based on composition type. Skip
-    // any client composition prediction.
-    virtual bool supportsCompositionStrategyPrediction() const override { return false; };
 
 private:
-    enum Source : size_t {
-        SOURCE_SINK = 0,
-        SOURCE_SCRATCH = 1,
-
-        ftl_first = SOURCE_SINK,
-        ftl_last = SOURCE_SCRATCH,
-    };
+    enum Source {SOURCE_SINK = 0, SOURCE_SCRATCH = 1};
 
     virtual ~VirtualDisplaySurface();
 
@@ -139,8 +133,6 @@ private:
     // Utility methods
     //
     static Source fbSourceForCompositionType(CompositionType);
-    static std::string toString(CompositionType);
-
     status_t dequeueBuffer(Source, PixelFormat, uint64_t usage, int* sslot, sp<Fence>*);
     void updateQueueBufferOutput(QueueBufferOutput&&);
     void resetPerFrameState();
@@ -163,10 +155,6 @@ private:
     const std::string mDisplayName;
     sp<IGraphicBufferProducer> mSource[2]; // indexed by SOURCE_*
     uint32_t mDefaultOutputFormat;
-
-    // Buffers that HWC has seen before, indexed by HWC slot number.
-    // NOTE: The BufferQueue slot number is the same as the HWC slot number.
-    uint64_t mHwcBufferIds[BufferQueue::NUM_BUFFER_SLOTS];
 
     //
     // Inter-frame state
@@ -209,7 +197,7 @@ private:
 
     // Composition type and graphics buffer source for the current frame.
     // Valid after prepareFrame(), cleared in onFrameCommitted.
-    CompositionType mCompositionType = CompositionType::Unknown;
+    CompositionType mCompositionType;
 
     // mFbFence is the fence HWC should wait for before reading the framebuffer
     // target buffer.
@@ -231,40 +219,47 @@ private:
     // +-----------+-------------------+-------------+
     // | State     | Event             || Next State |
     // +-----------+-------------------+-------------+
-    // | Idle      | beginFrame        || Begun      |
-    // | Begun     | prepareFrame      || Prepared   |
-    // | Prepared  | dequeueBuffer [1] || Gpu        |
-    // | Prepared  | advanceFrame [2]  || Hwc        |
-    // | Gpu       | queueBuffer       || GpuDone    |
-    // | GpuDone   | advanceFrame      || Hwc        |
-    // | Hwc       | onFrameCommitted  || Idle       |
+    // | IDLE      | beginFrame        || BEGUN      |
+    // | BEGUN     | prepareFrame      || PREPARED   |
+    // | PREPARED  | dequeueBuffer [1] || GPU        |
+    // | PREPARED  | advanceFrame [2]  || HWC        |
+    // | GPU       | queueBuffer       || GPU_DONE   |
+    // | GPU_DONE  | advanceFrame      || HWC        |
+    // | HWC       | onFrameCommitted  || IDLE       |
     // +-----------+-------------------++------------+
-    // [1] CompositionType::Gpu and CompositionType::Mixed frames.
-    // [2] CompositionType::Hwc frames.
+    // [1] COMPOSITION_GPU and COMPOSITION_MIXED frames.
+    // [2] COMPOSITION_HWC frames.
     //
-    enum class DebugState {
+    enum DbgState {
         // no buffer dequeued, don't know anything about the next frame
-        Idle,
+        DBG_STATE_IDLE,
         // output buffer dequeued, framebuffer source not yet known
-        Begun,
+        DBG_STATE_BEGUN,
         // output buffer dequeued, framebuffer source known but not provided
         // to GPU yet.
-        Prepared,
+        DBG_STATE_PREPARED,
         // GPU driver has a buffer dequeued
-        Gpu,
+        DBG_STATE_GPU,
         // GPU driver has queued the buffer, we haven't sent it to HWC yet
-        GpuDone,
+        DBG_STATE_GPU_DONE,
         // HWC has the buffer for this frame
-        Hwc,
-
-        ftl_last = Hwc
+        DBG_STATE_HWC,
     };
-    DebugState mDebugState = DebugState::Idle;
-    CompositionType mDebugLastCompositionType = CompositionType::Unknown;
+    DbgState mDbgState;
+    CompositionType mDbgLastCompositionType;
 
-    bool mMustRecompose = false;
+    const char* dbgStateStr() const;
+    static const char* dbgSourceStr(Source s);
+
+    bool mMustRecompose;
+
+    compositionengine::impl::HwcBufferCache mHwcBufferCache;
 
     bool mForceHwcCopy;
 };
 
+// ---------------------------------------------------------------------------
 } // namespace android
+// ---------------------------------------------------------------------------
+
+#endif // ANDROID_SF_VIRTUAL_DISPLAY_SURFACE_H

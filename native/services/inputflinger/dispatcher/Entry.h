@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_ENTRY_H
+#define _UI_INPUT_INPUTDISPATCHER_ENTRY_H
 
 #include "InjectionState.h"
 #include "InputTarget.h"
 
-#include <gui/InputApplication.h>
 #include <input/Input.h>
+#include <input/InputApplication.h>
 #include <stdint.h>
 #include <utils/Timers.h>
 #include <functional>
@@ -38,9 +39,6 @@ struct EventEntry {
         SENSOR,
         POINTER_CAPTURE_CHANGED,
         DRAG,
-        TOUCH_MODE_CHANGED,
-
-        ftl_last = TOUCH_MODE_CHANGED
     };
 
     int32_t id;
@@ -106,9 +104,9 @@ struct FocusEntry : EventEntry {
 };
 
 struct PointerCaptureChangedEntry : EventEntry {
-    const PointerCaptureRequest pointerCaptureRequest;
+    bool pointerCaptureEnabled;
 
-    PointerCaptureChangedEntry(int32_t id, nsecs_t eventTime, const PointerCaptureRequest&);
+    PointerCaptureChangedEntry(int32_t id, nsecs_t eventTime, bool hasPointerCapture);
     std::string getDescription() const override;
 
     ~PointerCaptureChangedEntry() override;
@@ -140,11 +138,11 @@ struct KeyEntry : EventEntry {
 
     bool syntheticRepeat; // set to true for synthetic key repeats
 
-    enum class InterceptKeyResult {
-        UNKNOWN,
-        SKIP,
-        CONTINUE,
-        TRY_AGAIN_LATER,
+    enum InterceptKeyResult {
+        INTERCEPT_KEY_RESULT_UNKNOWN,
+        INTERCEPT_KEY_RESULT_SKIP,
+        INTERCEPT_KEY_RESULT_CONTINUE,
+        INTERCEPT_KEY_RESULT_TRY_AGAIN_LATER,
     };
     InterceptKeyResult interceptKeyResult; // set based on the interception result
     nsecs_t interceptKeyWakeupTime;        // used with INTERCEPT_KEY_RESULT_TRY_AGAIN_LATER
@@ -183,10 +181,11 @@ struct MotionEntry : EventEntry {
                 int32_t metaState, int32_t buttonState, MotionClassification classification,
                 int32_t edgeFlags, float xPrecision, float yPrecision, float xCursorPosition,
                 float yCursorPosition, nsecs_t downTime, uint32_t pointerCount,
-                const PointerProperties* pointerProperties, const PointerCoords* pointerCoords);
+                const PointerProperties* pointerProperties, const PointerCoords* pointerCoords,
+                float xOffset, float yOffset);
     std::string getDescription() const override;
 
-    ~MotionEntry() override;
+    virtual ~MotionEntry();
 };
 
 struct SensorEntry : EventEntry {
@@ -208,25 +207,15 @@ struct SensorEntry : EventEntry {
     ~SensorEntry() override;
 };
 
-struct TouchModeEntry : EventEntry {
-    bool inTouchMode;
-    int32_t displayId;
-
-    TouchModeEntry(int32_t id, nsecs_t eventTime, bool inTouchMode, int32_t displayId);
-    std::string getDescription() const override;
-
-    ~TouchModeEntry() override;
-};
-
 // Tracks the progress of dispatching a particular event to a particular connection.
 struct DispatchEntry {
     const uint32_t seq; // unique sequence number, never 0
 
     std::shared_ptr<EventEntry> eventEntry; // the event to dispatch
-    ftl::Flags<InputTarget::Flags> targetFlags;
+    int32_t targetFlags;
     ui::Transform transform;
-    ui::Transform rawTransform;
     float globalScaleFactor;
+    int2 displaySize;
     // Both deliveryTime and timeoutTime are only populated when the entry is sent to the app,
     // and will be undefined before that.
     nsecs_t deliveryTime; // time when the event was actually delivered
@@ -238,15 +227,12 @@ struct DispatchEntry {
     int32_t resolvedAction;
     int32_t resolvedFlags;
 
-    DispatchEntry(std::shared_ptr<EventEntry> eventEntry,
-                  ftl::Flags<InputTarget::Flags> targetFlags, const ui::Transform& transform,
-                  const ui::Transform& rawTransform, float globalScaleFactor);
+    DispatchEntry(std::shared_ptr<EventEntry> eventEntry, int32_t targetFlags,
+                  ui::Transform transform, float globalScaleFactor, int2 displaySize);
 
-    inline bool hasForegroundTarget() const {
-        return targetFlags.test(InputTarget::Flags::FOREGROUND);
-    }
+    inline bool hasForegroundTarget() const { return targetFlags & InputTarget::FLAG_FOREGROUND; }
 
-    inline bool isSplit() const { return targetFlags.test(InputTarget::Flags::SPLIT); }
+    inline bool isSplit() const { return targetFlags & InputTarget::FLAG_SPLIT; }
 
 private:
     static volatile int32_t sNextSeqAtomic;
@@ -254,10 +240,58 @@ private:
     static uint32_t nextSeq();
 };
 
-std::ostream& operator<<(std::ostream& out, const DispatchEntry& entry);
-
 VerifiedKeyEvent verifiedKeyEventFromKeyEntry(const KeyEntry& entry);
-VerifiedMotionEvent verifiedMotionEventFromMotionEntry(const MotionEntry& entry,
-                                                       const ui::Transform& rawTransform);
+VerifiedMotionEvent verifiedMotionEventFromMotionEntry(const MotionEntry& entry);
+
+class InputDispatcher;
+// A command entry captures state and behavior for an action to be performed in the
+// dispatch loop after the initial processing has taken place.  It is essentially
+// a kind of continuation used to postpone sensitive policy interactions to a point
+// in the dispatch loop where it is safe to release the lock (generally after finishing
+// the critical parts of the dispatch cycle).
+//
+// The special thing about commands is that they can voluntarily release and reacquire
+// the dispatcher lock at will.  Initially when the command starts running, the
+// dispatcher lock is held.  However, if the command needs to call into the policy to
+// do some work, it can release the lock, do the work, then reacquire the lock again
+// before returning.
+//
+// This mechanism is a bit clunky but it helps to preserve the invariant that the dispatch
+// never calls into the policy while holding its lock.
+//
+// Commands are implicitly 'LockedInterruptible'.
+struct CommandEntry;
+typedef std::function<void(InputDispatcher&, CommandEntry*)> Command;
+
+class Connection;
+struct CommandEntry {
+    explicit CommandEntry(Command command);
+    ~CommandEntry();
+
+    Command command;
+
+    // parameters for the command (usage varies by command)
+    sp<Connection> connection;
+    nsecs_t eventTime;
+    std::shared_ptr<KeyEntry> keyEntry;
+    std::shared_ptr<SensorEntry> sensorEntry;
+    std::shared_ptr<InputApplicationHandle> inputApplicationHandle;
+    std::string reason;
+    int32_t userActivityEventType;
+    uint32_t seq;
+    bool handled;
+    sp<IBinder> connectionToken;
+    sp<IBinder> oldToken;
+    sp<IBinder> newToken;
+    std::string obscuringPackage;
+    bool enabled;
+    int32_t pid;
+    nsecs_t consumeTime; // time when the event was consumed by InputConsumer
+    int32_t displayId;
+    float x;
+    float y;
+};
 
 } // namespace android::inputdispatcher
+
+#endif // _UI_INPUT_INPUTDISPATCHER_ENTRY_H

@@ -53,14 +53,12 @@ struct AIBinder : public virtual ::android::RefBase {
     }
 
    private:
+    std::optional<bool> associateClassInternal(const AIBinder_Class* clazz,
+                                               const ::android::String16& newDescriptor, bool set);
+
     // AIBinder instance is instance of this class for a local object. In order to transact on a
     // remote object, this also must be set for simplicity (although right now, only the
     // interfaceDescriptor from it is used).
-    //
-    // WARNING: When multiple classes exist with the same interface descriptor in different
-    // linkernamespaces, the first one to be associated with mClazz becomes the canonical one
-    // and the only requirement on this is that the interface descriptors match. If this
-    // is an ABpBinder, no other state can be referenced from mClazz.
     const AIBinder_Class* mClazz;
     std::mutex mClazzMutex;
 };
@@ -93,7 +91,7 @@ struct ABBinder : public AIBinder, public ::android::BBinder {
 
 // This binder object may be remote or local (even though it is 'Bp'). The implication if it is
 // local is that it is an IBinder object created outside of the domain of libbinder_ndk.
-struct ABpBinder : public AIBinder {
+struct ABpBinder : public AIBinder, public ::android::BpRefBase {
     // Looks up to see if this object has or is an existing ABBinder or ABpBinder object, otherwise
     // it creates an ABpBinder object.
     static ::android::sp<AIBinder> lookupOrCreateFromBinder(
@@ -101,13 +99,13 @@ struct ABpBinder : public AIBinder {
 
     virtual ~ABpBinder();
 
-    ::android::sp<::android::IBinder> getBinder() override { return mRemote; }
+    void onLastStrongRef(const void* id) override;
+
+    ::android::sp<::android::IBinder> getBinder() override { return remote(); }
     ABpBinder* asABpBinder() override { return this; }
 
    private:
-    friend android::sp<ABpBinder>;
     explicit ABpBinder(const ::android::sp<::android::IBinder>& binder);
-    ::android::sp<::android::IBinder> mRemote;
 };
 
 struct AIBinder_Class {
@@ -116,9 +114,6 @@ struct AIBinder_Class {
 
     const ::android::String16& getInterfaceDescriptor() const { return mWideInterfaceDescriptor; }
     const char* getInterfaceDescriptorUtf8() const { return mInterfaceDescriptor.c_str(); }
-
-    // whether a transaction header should be written
-    bool writeHeader = true;
 
     // required to be non-null, implemented for every class
     const AIBinder_Class_onCreate onCreate = nullptr;
@@ -149,14 +144,8 @@ struct AIBinder_DeathRecipient : ::android::RefBase {
     struct TransferDeathRecipient : ::android::IBinder::DeathRecipient {
         TransferDeathRecipient(const ::android::wp<::android::IBinder>& who, void* cookie,
                                const ::android::wp<AIBinder_DeathRecipient>& parentRecipient,
-                               const AIBinder_DeathRecipient_onBinderDied onDied,
-                               const AIBinder_DeathRecipient_onBinderUnlinked onUnlinked)
-            : mWho(who),
-              mCookie(cookie),
-              mParentRecipient(parentRecipient),
-              mOnDied(onDied),
-              mOnUnlinked(onUnlinked) {}
-        ~TransferDeathRecipient();
+                               const AIBinder_DeathRecipient_onBinderDied onDied)
+            : mWho(who), mCookie(cookie), mParentRecipient(parentRecipient), mOnDied(onDied) {}
 
         void binderDied(const ::android::wp<::android::IBinder>& who) override;
 
@@ -172,13 +161,11 @@ struct AIBinder_DeathRecipient : ::android::RefBase {
         // This is kept separately from AIBinder_DeathRecipient in case the death recipient is
         // deleted while the death notification is fired
         const AIBinder_DeathRecipient_onBinderDied mOnDied;
-        const AIBinder_DeathRecipient_onBinderUnlinked mOnUnlinked;
     };
 
     explicit AIBinder_DeathRecipient(AIBinder_DeathRecipient_onBinderDied onDied);
     binder_status_t linkToDeath(const ::android::sp<::android::IBinder>&, void* cookie);
     binder_status_t unlinkToDeath(const ::android::sp<::android::IBinder>& binder, void* cookie);
-    void setOnUnlinked(AIBinder_DeathRecipient_onBinderUnlinked onUnlinked);
 
    private:
     // When the user of this API deletes a Bp object but not the death recipient, the
@@ -189,5 +176,4 @@ struct AIBinder_DeathRecipient : ::android::RefBase {
     std::mutex mDeathRecipientsMutex;
     std::vector<::android::sp<TransferDeathRecipient>> mDeathRecipients;
     AIBinder_DeathRecipient_onBinderDied mOnDied;
-    AIBinder_DeathRecipient_onBinderUnlinked mOnUnlinked;
 };

@@ -13,33 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <optional>
-#define LOG_TAG "InputDispatcher"
+
+#define LOG_TAG "FocusResolver"
 #define ATRACE_TAG ATRACE_TAG_INPUT
 
 #define INDENT "  "
 #define INDENT2 "    "
 
+// Log debug messages about input focus tracking.
+static constexpr bool DEBUG_FOCUS = false;
+
 #include <inttypes.h>
 
 #include <android-base/stringprintf.h>
 #include <binder/Binder.h>
-#include <ftl/enum.h>
-#include <gui/WindowInfo.h>
-#include <unordered_set>
+#include <input/InputWindow.h>
+#include <input/NamedEnum.h>
+#include <log/log.h>
 
-#include "DebugConfig.h"
 #include "FocusResolver.h"
 
-using android::gui::FocusRequest;
-using android::gui::WindowInfoHandle;
-
 namespace android::inputdispatcher {
-
-template <typename T>
-struct SpHash {
-    size_t operator()(const sp<T>& k) const { return std::hash<T*>()(k.get()); }
-};
 
 sp<IBinder> FocusResolver::getFocusedWindowToken(int32_t displayId) const {
     auto it = mFocusedWindowTokenByDisplay.find(displayId);
@@ -58,33 +52,33 @@ std::optional<FocusRequest> FocusResolver::getFocusRequest(int32_t displayId) {
  * we will check if the previous focus request is eligible to receive focus.
  */
 std::optional<FocusResolver::FocusChanges> FocusResolver::setInputWindows(
-        int32_t displayId, const std::vector<sp<WindowInfoHandle>>& windows) {
+        int32_t displayId, const std::vector<sp<InputWindowHandle>>& windows) {
     std::string removeFocusReason;
 
-    const std::optional<FocusRequest> request = getFocusRequest(displayId);
+    // Check if the currently focused window is still focusable.
     const sp<IBinder> currentFocus = getFocusedWindowToken(displayId);
-
-    // Find the next focused token based on the latest FocusRequest. If the requested focus window
-    // cannot be focused, focus will be removed.
-    if (request) {
-        sp<IBinder> requestedFocus = request->token;
-        sp<WindowInfoHandle> resolvedFocusWindow;
-        Focusability result = getResolvedFocusWindow(requestedFocus, windows, resolvedFocusWindow);
-        if (result == Focusability::OK && resolvedFocusWindow->getToken() == currentFocus) {
+    if (currentFocus) {
+        Focusability result = isTokenFocusable(currentFocus, windows);
+        if (result == Focusability::OK) {
             return std::nullopt;
         }
+        removeFocusReason = NamedEnum::string(result);
+    }
+
+    // We don't have a focused window or the currently focused window is no longer focusable. Check
+    // to see if we can grant focus to the window that previously requested focus.
+    const std::optional<FocusRequest> request = getFocusRequest(displayId);
+    if (request) {
+        sp<IBinder> requestedFocus = request->token;
+        const Focusability result = isTokenFocusable(requestedFocus, windows);
         const Focusability previousResult = mLastFocusResultByDisplay[displayId];
         mLastFocusResultByDisplay[displayId] = result;
         if (result == Focusability::OK) {
-            LOG_ALWAYS_FATAL_IF(!resolvedFocusWindow,
-                                "Focused window should be non-null when result is OK!");
             return updateFocusedWindow(displayId,
                                        "Window became focusable. Previous reason: " +
-                                               ftl::enum_string(previousResult),
-                                       resolvedFocusWindow->getToken(),
-                                       resolvedFocusWindow->getName());
+                                               NamedEnum::string(previousResult),
+                                       requestedFocus, request->windowName);
         }
-        removeFocusReason = ftl::enum_string(result);
     }
 
     // Focused window is no longer focusable and we don't have a suitable focus request to grant.
@@ -93,7 +87,7 @@ std::optional<FocusResolver::FocusChanges> FocusResolver::setInputWindows(
 }
 
 std::optional<FocusResolver::FocusChanges> FocusResolver::setFocusedWindow(
-        const FocusRequest& request, const std::vector<sp<WindowInfoHandle>>& windows) {
+        const FocusRequest& request, const std::vector<sp<InputWindowHandle>>& windows) {
     const int32_t displayId = request.displayId;
     const sp<IBinder> currentFocus = getFocusedWindowToken(displayId);
     if (currentFocus == request.token) {
@@ -103,74 +97,59 @@ std::optional<FocusResolver::FocusChanges> FocusResolver::setFocusedWindow(
         return std::nullopt;
     }
 
-    sp<WindowInfoHandle> resolvedFocusWindow;
-    Focusability result = getResolvedFocusWindow(request.token, windows, resolvedFocusWindow);
+    // Handle conditional focus requests, i.e. requests that have a focused token. These requests
+    // are not persistent. If the window is no longer focusable, we expect focus to go back to the
+    // previously focused window.
+    if (request.focusedToken) {
+        if (currentFocus != request.focusedToken) {
+            ALOGW("setFocusedWindow %s on display %" PRId32
+                  " ignored, reason: focusedToken %s is not focused",
+                  request.windowName.c_str(), displayId, request.focusedWindowName.c_str());
+            return std::nullopt;
+        }
+        Focusability result = isTokenFocusable(request.token, windows);
+        if (result == Focusability::OK) {
+            return updateFocusedWindow(displayId, "setFocusedWindow with focus check",
+                                       request.token, request.windowName);
+        }
+        ALOGW("setFocusedWindow %s on display %" PRId32 " ignored, reason: %s",
+              request.windowName.c_str(), displayId, NamedEnum::string(result).c_str());
+        return std::nullopt;
+    }
+
+    Focusability result = isTokenFocusable(request.token, windows);
     // Update focus request. The focus resolver will always try to handle this request if there is
     // no focused window on the display.
     mFocusRequestByDisplay[displayId] = request;
     mLastFocusResultByDisplay[displayId] = result;
 
     if (result == Focusability::OK) {
-        LOG_ALWAYS_FATAL_IF(!resolvedFocusWindow,
-                            "Focused window should be non-null when result is OK!");
-        return updateFocusedWindow(displayId, "setFocusedWindow", resolvedFocusWindow->getToken(),
-                                   resolvedFocusWindow->getName());
+        return updateFocusedWindow(displayId, "setFocusedWindow", request.token,
+                                   request.windowName);
     }
 
     // The requested window is not currently focusable. Wait for the window to become focusable
     // but remove focus from the current window so that input events can go into a pending queue
     // and be sent to the window when it becomes focused.
-    return updateFocusedWindow(displayId, "Waiting for window because " + ftl::enum_string(result),
+    return updateFocusedWindow(displayId, "Waiting for window because " + NamedEnum::string(result),
                                nullptr);
 }
 
-FocusResolver::Focusability FocusResolver::getResolvedFocusWindow(
-        const sp<IBinder>& token, const std::vector<sp<WindowInfoHandle>>& windows,
-        sp<WindowInfoHandle>& outFocusableWindow) {
-    sp<IBinder> curFocusCandidate = token;
-    bool focusedWindowFound = false;
-
-    // Keep track of all windows reached to prevent a cyclical transferFocus request.
-    std::unordered_set<sp<IBinder>, SpHash<IBinder>> tokensReached;
-
-    while (curFocusCandidate != nullptr && tokensReached.count(curFocusCandidate) == 0) {
-        tokensReached.emplace(curFocusCandidate);
-        Focusability result = isTokenFocusable(curFocusCandidate, windows, outFocusableWindow);
-        if (result == Focusability::OK) {
-            LOG_ALWAYS_FATAL_IF(!outFocusableWindow,
-                                "Focused window should be non-null when result is OK!");
-            focusedWindowFound = true;
-            // outFocusableWindow has been updated by isTokenFocusable to contain
-            // the window info for curFocusCandidate. See if we can grant focus
-            // to the token that it wants to transfer its focus to.
-            curFocusCandidate = outFocusableWindow->getInfo()->focusTransferTarget;
-        }
-
-        // If the initial token is not focusable, return early with the failed result.
-        if (!focusedWindowFound) {
-            return result;
-        }
-    }
-
-    return focusedWindowFound ? Focusability::OK : Focusability::NO_WINDOW;
-}
-
 FocusResolver::Focusability FocusResolver::isTokenFocusable(
-        const sp<IBinder>& token, const std::vector<sp<WindowInfoHandle>>& windows,
-        sp<WindowInfoHandle>& outFocusableWindow) {
+        const sp<IBinder>& token, const std::vector<sp<InputWindowHandle>>& windows) {
     bool allWindowsAreFocusable = true;
+    bool visibleWindowFound = false;
     bool windowFound = false;
-    sp<WindowInfoHandle> visibleWindowHandle = nullptr;
-    for (const sp<WindowInfoHandle>& window : windows) {
+    for (const sp<InputWindowHandle>& window : windows) {
         if (window->getToken() != token) {
             continue;
         }
         windowFound = true;
-        if (!window->getInfo()->inputConfig.test(gui::WindowInfo::InputConfig::NOT_VISIBLE)) {
+        if (window->getInfo()->visible) {
             // Check if at least a single window is visible.
-            visibleWindowHandle = window;
+            visibleWindowFound = true;
         }
-        if (window->getInfo()->inputConfig.test(gui::WindowInfo::InputConfig::NOT_FOCUSABLE)) {
+        if (!window->getInfo()->focusable) {
             // Check if all windows with the window token are focusable.
             allWindowsAreFocusable = false;
             break;
@@ -183,12 +162,10 @@ FocusResolver::Focusability FocusResolver::isTokenFocusable(
     if (!allWindowsAreFocusable) {
         return Focusability::NOT_FOCUSABLE;
     }
-    if (!visibleWindowHandle) {
+    if (!visibleWindowFound) {
         return Focusability::NOT_VISIBLE;
     }
 
-    // Only set the outFoundWindow if the window can be focused
-    outFocusableWindow = visibleWindowHandle;
     return Focusability::OK;
 }
 
@@ -232,7 +209,7 @@ std::string FocusResolver::dump() const {
     for (const auto& [displayId, request] : mFocusRequestByDisplay) {
         auto it = mLastFocusResultByDisplay.find(displayId);
         std::string result =
-                it != mLastFocusResultByDisplay.end() ? ftl::enum_string(it->second) : "";
+                it != mLastFocusResultByDisplay.end() ? NamedEnum::string(it->second) : "";
         dump += base::StringPrintf(INDENT2 "displayId=%" PRId32 ", name='%s' result='%s'\n",
                                    displayId, request.windowName.c_str(), result.c_str());
     }

@@ -27,16 +27,12 @@ _INTERCEPTED_EXTENSIONS = [
     'VK_EXT_hdr_metadata',
     'VK_EXT_swapchain_colorspace',
     'VK_GOOGLE_display_timing',
-    'VK_GOOGLE_surfaceless_query',
     'VK_KHR_android_surface',
     'VK_KHR_get_surface_capabilities2',
     'VK_KHR_incremental_present',
     'VK_KHR_shared_presentable_image',
     'VK_KHR_surface',
-    'VK_KHR_surface_protected_capabilities',
     'VK_KHR_swapchain',
-    'VK_EXT_swapchain_maintenance1',
-    'VK_EXT_surface_maintenance1',
 ]
 
 # Extensions known to vulkan::driver level.
@@ -48,7 +44,6 @@ _KNOWN_EXTENSIONS = _INTERCEPTED_EXTENSIONS + [
     'VK_KHR_external_memory_capabilities',
     'VK_KHR_external_semaphore_capabilities',
     'VK_KHR_external_fence_capabilities',
-    'VK_KHR_external_fence_fd',
 ]
 
 # Functions needed at vulkan::driver level.
@@ -115,9 +110,6 @@ _NEEDED_COMMANDS = [
     # For promoted VK_KHR_external_fence_capabilities
     'vkGetPhysicalDeviceExternalFenceProperties',
     'vkGetPhysicalDeviceExternalFencePropertiesKHR',
-
-    # VK_KHR_swapchain_maintenance1 requirement
-    'vkImportFenceFdKHR',
 ]
 
 # Functions intercepted at vulkan::driver level.

@@ -19,8 +19,6 @@
 
 #include <stdint.h>
 
-#include <android/choreographer.h>
-
 __BEGIN_DECLS
 
 struct ASurfaceControl;
@@ -31,8 +29,8 @@ typedef struct ASurfaceControlStats ASurfaceControlStats;
 /**
  * Callback to be notified when surface stats for a specific surface control are available.
  */
-typedef void (*ASurfaceControl_SurfaceStatsListener)(void* context, int32_t id,
-        ASurfaceControlStats* stats);
+typedef void (*ASurfaceControl_SurfaceStatsListener)(void* context,
+        ASurfaceControl* control, ASurfaceControlStats* stats);
 
 /**
  * Registers a callback to be invoked when surface stats from a specific surface are available.
@@ -44,7 +42,7 @@ typedef void (*ASurfaceControl_SurfaceStatsListener)(void* context, int32_t id,
  *
  * \param func The callback to be invoked when surface stats are available.
  */
-void ASurfaceControl_registerSurfaceStatsListener(ASurfaceControl* control, int32_t id, void* context,
+void ASurfaceControl_registerSurfaceStatsListener(ASurfaceControl* control, void* context,
         ASurfaceControl_SurfaceStatsListener func);
 
 /**
@@ -56,13 +54,6 @@ void ASurfaceControl_registerSurfaceStatsListener(ASurfaceControl* control, int3
  */
 void ASurfaceControl_unregisterSurfaceStatsListener(void* context,
                                        ASurfaceControl_SurfaceStatsListener func);
-
-/**
- * Gets the attached AChoreographer instance from the given \c surfaceControl. If there is no
- * choreographer associated with the surface control, then a new instance of choreographer is
- * created. The new choreographer is associated with the current thread's Looper.
- */
-AChoreographer* ASurfaceControl_getChoreographer(ASurfaceControl* surfaceControl);
 
 /**
  * Returns the timestamp of when the buffer was acquired for a specific frame with frame number

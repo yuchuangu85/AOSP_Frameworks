@@ -42,7 +42,6 @@ public:
         }
         mStability = other.mStability;
     }
-    ParcelableHolder(ParcelableHolder&& other) = default;
 
     status_t writeToParcel(Parcel* parcel) const override;
     status_t readFromParcel(const Parcel* parcel) override;
@@ -86,7 +85,7 @@ public:
                 *ret = nullptr;
                 return android::BAD_VALUE;
             }
-            *ret = std::static_pointer_cast<T>(mParcelable);
+            *ret = std::shared_ptr<T>(mParcelable, reinterpret_cast<T*>(mParcelable.get()));
             return android::OK;
         }
         this->mParcelPtr->setDataPosition(0);
@@ -105,17 +104,12 @@ public:
             return status;
         }
         this->mParcelPtr = nullptr;
-        *ret = std::static_pointer_cast<T>(mParcelable);
+        *ret = std::shared_ptr<T>(mParcelable, reinterpret_cast<T*>(mParcelable.get()));
         return android::OK;
     }
 
     Stability getStability() const override { return mStability; }
 
-    inline std::string toString() const {
-        return "ParcelableHolder:" +
-                (mParcelableName ? std::string(String8(mParcelableName.value()).c_str())
-                                 : "<parceled>");
-    }
     inline bool operator!=(const ParcelableHolder& rhs) const {
         return this != &rhs;
     }

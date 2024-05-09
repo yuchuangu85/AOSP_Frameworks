@@ -20,9 +20,9 @@
 #include <optional>
 #include <unordered_map>
 
-#include <android/gui/FocusRequest.h>
+#include <android/FocusRequest.h>
 #include <binder/Binder.h>
-#include <gui/WindowInfo.h>
+#include <input/InputWindow.h>
 
 namespace android::inputdispatcher {
 
@@ -58,10 +58,9 @@ public:
         std::string reason;
     };
     std::optional<FocusResolver::FocusChanges> setInputWindows(
-            int32_t displayId, const std::vector<sp<android::gui::WindowInfoHandle>>& windows);
+            int32_t displayId, const std::vector<sp<InputWindowHandle>>& windows);
     std::optional<FocusResolver::FocusChanges> setFocusedWindow(
-            const android::gui::FocusRequest& request,
-            const std::vector<sp<android::gui::WindowInfoHandle>>& windows);
+            const FocusRequest& request, const std::vector<sp<InputWindowHandle>>& windows);
 
     // Display has been removed from the system, clean up old references.
     void displayRemoved(int32_t displayId);
@@ -77,8 +76,6 @@ private:
         NO_WINDOW,
         NOT_FOCUSABLE,
         NOT_VISIBLE,
-
-        ftl_last = NOT_VISIBLE
     };
 
     // Checks if the window token can be focused on a display. The token can be focused if there is
@@ -90,15 +87,8 @@ private:
     // we expect the focusability of the windows to match since its hard to reason why one window
     // can receive focus events and the other cannot when both are backed by the same input channel.
     //
-    static Focusability isTokenFocusable(
-            const sp<IBinder>& token,
-            const std::vector<sp<android::gui::WindowInfoHandle>>& windows,
-            sp<android::gui::WindowInfoHandle>& outFocusableWindow);
-
-    static FocusResolver::Focusability getResolvedFocusWindow(
-            const sp<IBinder>& token,
-            const std::vector<sp<android::gui::WindowInfoHandle>>& windows,
-            sp<android::gui::WindowInfoHandle>& outFocusableWindow);
+    static Focusability isTokenFocusable(const sp<IBinder>& token,
+                                         const std::vector<sp<InputWindowHandle>>& windows);
 
     // Focus tracking for keys, trackball, etc. A window token can be associated with one or
     // more InputWindowHandles. If a window is mirrored, the window and its mirror will share
@@ -109,7 +99,7 @@ private:
 
     // This map will store the focus request per display. When the input window handles are updated,
     // the current request will be checked to see if it can be processed at that time.
-    std::unordered_map<int32_t /* displayId */, android::gui::FocusRequest> mFocusRequestByDisplay;
+    std::unordered_map<int32_t /* displayId */, FocusRequest> mFocusRequestByDisplay;
 
     // Last reason for not granting a focus request. This is used to add more debug information
     // in the event logs.
@@ -118,7 +108,7 @@ private:
     std::optional<FocusResolver::FocusChanges> updateFocusedWindow(
             int32_t displayId, const std::string& reason, const sp<IBinder>& token,
             const std::string& tokenName = "");
-    std::optional<android::gui::FocusRequest> getFocusRequest(int32_t displayId);
+    std::optional<FocusRequest> getFocusRequest(int32_t displayId);
 };
 
 } // namespace android::inputdispatcher

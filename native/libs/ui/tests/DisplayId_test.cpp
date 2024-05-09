@@ -32,9 +32,6 @@ TEST(DisplayIdTest, createPhysicalIdFromEdid) {
     EXPECT_FALSE(GpuVirtualDisplayId::tryCast(id));
     EXPECT_TRUE(PhysicalDisplayId::tryCast(id));
     EXPECT_TRUE(HalDisplayId::tryCast(id));
-
-    EXPECT_EQ(id, DisplayId::fromValue(id.value));
-    EXPECT_EQ(id, DisplayId::fromValue<PhysicalDisplayId>(id.value));
 }
 
 TEST(DisplayIdTest, createPhysicalIdFromPort) {
@@ -46,9 +43,6 @@ TEST(DisplayIdTest, createPhysicalIdFromPort) {
     EXPECT_FALSE(GpuVirtualDisplayId::tryCast(id));
     EXPECT_TRUE(PhysicalDisplayId::tryCast(id));
     EXPECT_TRUE(HalDisplayId::tryCast(id));
-
-    EXPECT_EQ(id, DisplayId::fromValue(id.value));
-    EXPECT_EQ(id, DisplayId::fromValue<PhysicalDisplayId>(id.value));
 }
 
 TEST(DisplayIdTest, createGpuVirtualId) {
@@ -58,9 +52,6 @@ TEST(DisplayIdTest, createGpuVirtualId) {
     EXPECT_FALSE(HalVirtualDisplayId::tryCast(id));
     EXPECT_FALSE(PhysicalDisplayId::tryCast(id));
     EXPECT_FALSE(HalDisplayId::tryCast(id));
-
-    EXPECT_EQ(id, DisplayId::fromValue(id.value));
-    EXPECT_EQ(id, DisplayId::fromValue<GpuVirtualDisplayId>(id.value));
 }
 
 TEST(DisplayIdTest, createHalVirtualId) {
@@ -70,9 +61,6 @@ TEST(DisplayIdTest, createHalVirtualId) {
     EXPECT_FALSE(GpuVirtualDisplayId::tryCast(id));
     EXPECT_FALSE(PhysicalDisplayId::tryCast(id));
     EXPECT_TRUE(HalDisplayId::tryCast(id));
-
-    EXPECT_EQ(id, DisplayId::fromValue(id.value));
-    EXPECT_EQ(id, DisplayId::fromValue<HalVirtualDisplayId>(id.value));
 }
 
 } // namespace android::ui

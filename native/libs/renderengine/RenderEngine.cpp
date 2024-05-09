@@ -19,43 +19,63 @@
 #include <cutils/properties.h>
 #include <log/log.h>
 #include "gl/GLESRenderEngine.h"
-#include "renderengine/ExternalTexture.h"
 #include "threaded/RenderEngineThreaded.h"
 
 #include "skia/SkiaGLRenderEngine.h"
-#include "skia/SkiaVkRenderEngine.h"
 
 namespace android {
 namespace renderengine {
 
 std::unique_ptr<RenderEngine> RenderEngine::create(const RenderEngineCreationArgs& args) {
-    switch (args.renderEngineType) {
+    RenderEngineType renderEngineType = args.renderEngineType;
+
+    // Keep the ability to override by PROPERTIES:
+    char prop[PROPERTY_VALUE_MAX];
+    property_get(PROPERTY_DEBUG_RENDERENGINE_BACKEND, prop, "");
+    if (strcmp(prop, "gles") == 0) {
+        renderEngineType = RenderEngineType::GLES;
+    }
+    if (strcmp(prop, "threaded") == 0) {
+        renderEngineType = RenderEngineType::THREADED;
+    }
+    if (strcmp(prop, "skiagl") == 0) {
+        renderEngineType = RenderEngineType::SKIA_GL;
+    }
+    if (strcmp(prop, "skiaglthreaded") == 0) {
+        renderEngineType = RenderEngineType::SKIA_GL_THREADED;
+    }
+
+    switch (renderEngineType) {
         case RenderEngineType::THREADED:
             ALOGD("Threaded RenderEngine with GLES Backend");
             return renderengine::threaded::RenderEngineThreaded::create(
                     [args]() { return android::renderengine::gl::GLESRenderEngine::create(args); },
-                    args.renderEngineType);
+                    renderEngineType);
         case RenderEngineType::SKIA_GL:
             ALOGD("RenderEngine with SkiaGL Backend");
             return renderengine::skia::SkiaGLRenderEngine::create(args);
-        case RenderEngineType::SKIA_VK:
-            ALOGD("RenderEngine with SkiaVK Backend");
-            return renderengine::skia::SkiaVkRenderEngine::create(args);
         case RenderEngineType::SKIA_GL_THREADED: {
+            // These need to be recreated, since they are a constant reference, and we need to
+            // let SkiaRE know that it's running as threaded, and all GL operation will happen on
+            // the same thread.
+            RenderEngineCreationArgs skiaArgs =
+                    RenderEngineCreationArgs::Builder()
+                            .setPixelFormat(args.pixelFormat)
+                            .setImageCacheSize(args.imageCacheSize)
+                            .setUseColorManagerment(args.useColorManagement)
+                            .setEnableProtectedContext(args.enableProtectedContext)
+                            .setPrecacheToneMapperShaderOnly(args.precacheToneMapperShaderOnly)
+                            .setSupportsBackgroundBlur(args.supportsBackgroundBlur)
+                            .setContextPriority(args.contextPriority)
+                            .setRenderEngineType(renderEngineType)
+                            .build();
             ALOGD("Threaded RenderEngine with SkiaGL Backend");
             return renderengine::threaded::RenderEngineThreaded::create(
-                    [args]() {
-                        return android::renderengine::skia::SkiaGLRenderEngine::create(args);
+                    [skiaArgs]() {
+                        return android::renderengine::skia::SkiaGLRenderEngine::create(skiaArgs);
                     },
-                    args.renderEngineType);
+                    renderEngineType);
         }
-        case RenderEngineType::SKIA_VK_THREADED:
-            ALOGD("Threaded RenderEngine with SkiaVK Backend");
-            return renderengine::threaded::RenderEngineThreaded::create(
-                    [args]() {
-                        return android::renderengine::skia::SkiaVkRenderEngine::create(args);
-                    },
-                    args.renderEngineType);
         case RenderEngineType::GLES:
         default:
             ALOGD("RenderEngine with GLES Backend");
@@ -73,30 +93,6 @@ void RenderEngine::validateInputBufferUsage(const sp<GraphicBuffer>& buffer) {
 void RenderEngine::validateOutputBufferUsage(const sp<GraphicBuffer>& buffer) {
     LOG_ALWAYS_FATAL_IF(!(buffer->getUsage() & GraphicBuffer::USAGE_HW_RENDER),
                         "output buffer not gpu writeable");
-}
-
-ftl::Future<FenceResult> RenderEngine::drawLayers(const DisplaySettings& display,
-                                                  const std::vector<LayerSettings>& layers,
-                                                  const std::shared_ptr<ExternalTexture>& buffer,
-                                                  const bool useFramebufferCache,
-                                                  base::unique_fd&& bufferFence) {
-    const auto resultPromise = std::make_shared<std::promise<FenceResult>>();
-    std::future<FenceResult> resultFuture = resultPromise->get_future();
-    updateProtectedContext(layers, buffer);
-    drawLayersInternal(std::move(resultPromise), display, layers, buffer, useFramebufferCache,
-                       std::move(bufferFence));
-    return resultFuture;
-}
-
-void RenderEngine::updateProtectedContext(const std::vector<LayerSettings>& layers,
-                                          const std::shared_ptr<ExternalTexture>& buffer) {
-    const bool needsProtectedContext =
-            (buffer && (buffer->getUsage() & GRALLOC_USAGE_PROTECTED)) ||
-            std::any_of(layers.begin(), layers.end(), [](const LayerSettings& layer) {
-                const std::shared_ptr<ExternalTexture>& buffer = layer.source.buffer.buffer;
-                return buffer && (buffer->getUsage() & GRALLOC_USAGE_PROTECTED);
-            });
-    useProtectedContext(needsProtectedContext);
 }
 
 } // namespace renderengine

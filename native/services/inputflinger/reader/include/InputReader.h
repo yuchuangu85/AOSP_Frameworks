@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUTREADER_INPUT_READER_H
+#define _UI_INPUTREADER_INPUT_READER_H
 
 #include <PointerControllerInterface.h>
 #include <android-base/thread_annotations.h>
@@ -51,7 +52,8 @@ struct StylusState;
 class InputReader : public InputReaderInterface {
 public:
     InputReader(std::shared_ptr<EventHubInterface> eventHub,
-                const sp<InputReaderPolicyInterface>& policy, InputListenerInterface& listener);
+                const sp<InputReaderPolicyInterface>& policy,
+                const sp<InputListenerInterface>& listener);
     virtual ~InputReader();
 
     void dump(std::string& dump) override;
@@ -68,16 +70,12 @@ public:
     int32_t getKeyCodeState(int32_t deviceId, uint32_t sourceMask, int32_t keyCode) override;
     int32_t getSwitchState(int32_t deviceId, uint32_t sourceMask, int32_t sw) override;
 
-    void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode, int32_t toKeyCode) const override;
-
-    int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const override;
-
     void toggleCapsLockState(int32_t deviceId) override;
 
-    bool hasKeys(int32_t deviceId, uint32_t sourceMask, const std::vector<int32_t>& keyCodes,
+    bool hasKeys(int32_t deviceId, uint32_t sourceMask, size_t numCodes, const int32_t* keyCodes,
                  uint8_t* outFlags) override;
 
-    void requestRefreshConfiguration(ConfigurationChanges changes) override;
+    void requestRefreshConfiguration(uint32_t changes) override;
 
     void vibrate(int32_t deviceId, const VibrationSequence& sequence, ssize_t repeat,
                  int32_t token) override;
@@ -101,8 +99,6 @@ public:
 
     std::optional<int32_t> getBatteryStatus(int32_t deviceId) override;
 
-    std::optional<std::string> getBatteryDevicePath(int32_t deviceId) override;
-
     std::vector<InputDeviceLightInfo> getLights(int32_t deviceId) override;
 
     std::vector<InputDeviceSensorInfo> getSensors(int32_t deviceId) override;
@@ -114,10 +110,6 @@ public:
     std::optional<int32_t> getLightColor(int32_t deviceId, int32_t lightId) override;
 
     std::optional<int32_t> getLightPlayerId(int32_t deviceId, int32_t lightId) override;
-
-    std::optional<std::string> getBluetoothAddress(int32_t deviceId) const override;
-
-    void sysfsNodeChanged(const std::string& sysfsNodePath) override;
 
 protected:
     // These members are protected so they can be instrumented by test cases.
@@ -148,9 +140,10 @@ protected:
         int32_t bumpGeneration() NO_THREAD_SAFETY_ANALYSIS override;
         void getExternalStylusDevices(std::vector<InputDeviceInfo>& outDevices)
                 REQUIRES(mReader->mLock) override;
-        [[nodiscard]] std::list<NotifyArgs> dispatchExternalStylusState(const StylusState& outState)
+        void dispatchExternalStylusState(const StylusState& outState)
                 REQUIRES(mReader->mLock) override;
         InputReaderPolicyInterface* getPolicy() REQUIRES(mReader->mLock) override;
+        InputListenerInterface* getListener() REQUIRES(mReader->mLock) override;
         EventHubInterface* getEventHub() REQUIRES(mReader->mLock) override;
         int32_t getNextId() NO_THREAD_SAFETY_ANALYSIS override;
         void updateLedMetaState(int32_t metaState) REQUIRES(mReader->mLock) override;
@@ -171,9 +164,13 @@ private:
     // in parallel to passing it to the InputReader.
     std::shared_ptr<EventHubInterface> mEventHub;
     sp<InputReaderPolicyInterface> mPolicy;
-    QueuedInputListener mQueuedListener;
+    sp<QueuedInputListener> mQueuedListener;
 
     InputReaderConfiguration mConfig GUARDED_BY(mLock);
+
+    // The event queue.
+    static const int EVENT_BUFFER_SIZE = 256;
+    RawEvent mEventBuffer[EVENT_BUFFER_SIZE] GUARDED_BY(mLock);
 
     // An input device can represent a collection of EventHub devices. This map provides a way
     // to lookup the input device instance from the EventHub device id.
@@ -186,15 +183,13 @@ private:
             mDeviceToEventHubIdsMap GUARDED_BY(mLock);
 
     // low-level input event decoding and device management
-    [[nodiscard]] std::list<NotifyArgs> processEventsLocked(const RawEvent* rawEvents, size_t count)
-            REQUIRES(mLock);
+    void processEventsLocked(const RawEvent* rawEvents, size_t count) REQUIRES(mLock);
 
     void addDeviceLocked(nsecs_t when, int32_t eventHubId) REQUIRES(mLock);
     void removeDeviceLocked(nsecs_t when, int32_t eventHubId) REQUIRES(mLock);
-    [[nodiscard]] std::list<NotifyArgs> processEventsForDeviceLocked(int32_t eventHubId,
-                                                                     const RawEvent* rawEvents,
-                                                                     size_t count) REQUIRES(mLock);
-    [[nodiscard]] std::list<NotifyArgs> timeoutExpiredLocked(nsecs_t when) REQUIRES(mLock);
+    void processEventsForDeviceLocked(int32_t eventHubId, const RawEvent* rawEvents, size_t count)
+            REQUIRES(mLock);
+    void timeoutExpiredLocked(nsecs_t when) REQUIRES(mLock);
 
     void handleConfigurationChangedLocked(nsecs_t when) REQUIRES(mLock);
 
@@ -208,8 +203,7 @@ private:
 
     void notifyExternalStylusPresenceChangedLocked() REQUIRES(mLock);
     void getExternalStylusDevicesLocked(std::vector<InputDeviceInfo>& outDevices) REQUIRES(mLock);
-    [[nodiscard]] std::list<NotifyArgs> dispatchExternalStylusStateLocked(const StylusState& state)
-            REQUIRES(mLock);
+    void dispatchExternalStylusStateLocked(const StylusState& state) REQUIRES(mLock);
 
     // The PointerController that is shared among all the input devices that need it.
     std::weak_ptr<PointerControllerInterface> mPointerController;
@@ -233,23 +227,20 @@ private:
     nsecs_t mNextTimeout GUARDED_BY(mLock);
     void requestTimeoutAtTimeLocked(nsecs_t when) REQUIRES(mLock);
 
-    ConfigurationChanges mConfigurationChangesToRefresh GUARDED_BY(mLock);
-    void refreshConfigurationLocked(ConfigurationChanges changes) REQUIRES(mLock);
-
-    void notifyAll(std::list<NotifyArgs>&& argsList);
-
-    PointerCaptureRequest mCurrentPointerCaptureRequest GUARDED_BY(mLock);
+    uint32_t mConfigurationChangesToRefresh GUARDED_BY(mLock);
+    void refreshConfigurationLocked(uint32_t changes) REQUIRES(mLock);
 
     // state queries
     typedef int32_t (InputDevice::*GetStateFunc)(uint32_t sourceMask, int32_t code);
     int32_t getStateLocked(int32_t deviceId, uint32_t sourceMask, int32_t code,
                            GetStateFunc getStateFunc) REQUIRES(mLock);
-    bool markSupportedKeyCodesLocked(int32_t deviceId, uint32_t sourceMask,
-                                     const std::vector<int32_t>& keyCodes, uint8_t* outFlags)
-            REQUIRES(mLock);
+    bool markSupportedKeyCodesLocked(int32_t deviceId, uint32_t sourceMask, size_t numCodes,
+                                     const int32_t* keyCodes, uint8_t* outFlags) REQUIRES(mLock);
 
     // find an InputDevice from an InputDevice id
-    InputDevice* findInputDeviceLocked(int32_t deviceId) const REQUIRES(mLock);
+    InputDevice* findInputDeviceLocked(int32_t deviceId) REQUIRES(mLock);
 };
 
 } // namespace android
+
+#endif // _UI_INPUTREADER_INPUT_READER_H

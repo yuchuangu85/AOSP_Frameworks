@@ -13,7 +13,8 @@ cc_library {
 
     srcs: [
         "LayerProtoParser.cpp",
-        "*.proto",
+        "layers.proto",
+        "layerstrace.proto",
     ],
 
     shared_libs: [
@@ -44,11 +45,10 @@ cc_library {
 }
 
 java_library_static {
-    name: "layersprotoslite",
+    name: "layersprotosnano",
     host_supported: true,
     proto: {
-        type: "lite",
-        include_dirs: ["external/protobuf/src"],
+        type: "nano",
     },
     srcs: ["*.proto"],
     sdk_version: "core_platform",
@@ -57,7 +57,7 @@ java_library_static {
             jarjar_rules: "jarjar-rules.txt",
         },
         host: {
-            static_libs: ["libprotobuf-java-lite"],
+            static_libs: ["libprotobuf-java-nano"],
         },
     },
 }

@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_TEST_INPUT_LISTENER_H
+#define _UI_TEST_INPUT_LISTENER_H
 
 #include <android-base/thread_annotations.h>
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "InputListener.h"
 
@@ -28,15 +28,12 @@ namespace android {
 // --- TestInputListener ---
 
 class TestInputListener : public InputListenerInterface {
+protected:
+    virtual ~TestInputListener();
+
 public:
     TestInputListener(std::chrono::milliseconds eventHappenedTimeout = 0ms,
                       std::chrono::milliseconds eventDidNotHappenTimeout = 0ms);
-    virtual ~TestInputListener();
-
-    using TimePoint = std::chrono::time_point<std::chrono::system_clock>;
-
-    void assertNotifyInputDevicesChangedWasCalled(
-            NotifyInputDevicesChangedArgs* outEventArgs = nullptr);
 
     void assertNotifyConfigurationChangedWasCalled(
             NotifyConfigurationChangedArgs* outEventArgs = nullptr);
@@ -49,61 +46,50 @@ public:
 
     void assertNotifyKeyWasCalled(NotifyKeyArgs* outEventArgs = nullptr);
 
-    void assertNotifyKeyWasCalled(const ::testing::Matcher<NotifyKeyArgs>& matcher);
-
     void assertNotifyKeyWasNotCalled();
 
-    void assertNotifyMotionWasCalled(NotifyMotionArgs* outEventArgs = nullptr,
-                                     std::optional<TimePoint> waitUntil = {});
+    void assertNotifyMotionWasCalled(NotifyMotionArgs* outEventArgs = nullptr);
 
-    void assertNotifyMotionWasCalled(const ::testing::Matcher<NotifyMotionArgs>& matcher,
-                                     std::optional<TimePoint> waitUntil = {});
-
-    void assertNotifyMotionWasNotCalled(std::optional<TimePoint> waitUntil = {});
+    void assertNotifyMotionWasNotCalled();
 
     void assertNotifySwitchWasCalled(NotifySwitchArgs* outEventArgs = nullptr);
 
     void assertNotifyCaptureWasCalled(NotifyPointerCaptureChangedArgs* outEventArgs = nullptr);
-    void assertNotifyCaptureWasNotCalled();
     void assertNotifySensorWasCalled(NotifySensorArgs* outEventArgs = nullptr);
     void assertNotifyVibratorStateWasCalled(NotifyVibratorStateArgs* outEventArgs = nullptr);
 
 private:
     template <class NotifyArgsType>
-    void assertCalled(NotifyArgsType* outEventArgs, std::string message,
-                      std::optional<TimePoint> waitUntil = {});
+    void assertCalled(NotifyArgsType* outEventArgs, std::string message);
 
     template <class NotifyArgsType>
-    void assertNotCalled(std::string message, std::optional<TimePoint> timeout = {});
+    void assertNotCalled(std::string message);
 
     template <class NotifyArgsType>
-    void addToQueue(const NotifyArgsType& args);
+    void notify(const NotifyArgsType* args);
 
-    virtual void notifyInputDevicesChanged(const NotifyInputDevicesChangedArgs& args) override;
+    virtual void notifyConfigurationChanged(const NotifyConfigurationChangedArgs* args) override;
 
-    virtual void notifyConfigurationChanged(const NotifyConfigurationChangedArgs& args) override;
+    virtual void notifyDeviceReset(const NotifyDeviceResetArgs* args) override;
 
-    virtual void notifyDeviceReset(const NotifyDeviceResetArgs& args) override;
+    virtual void notifyKey(const NotifyKeyArgs* args) override;
 
-    virtual void notifyKey(const NotifyKeyArgs& args) override;
+    virtual void notifyMotion(const NotifyMotionArgs* args) override;
 
-    virtual void notifyMotion(const NotifyMotionArgs& args) override;
+    virtual void notifySwitch(const NotifySwitchArgs* args) override;
 
-    virtual void notifySwitch(const NotifySwitchArgs& args) override;
+    virtual void notifySensor(const NotifySensorArgs* args) override;
 
-    virtual void notifySensor(const NotifySensorArgs& args) override;
+    virtual void notifyVibratorState(const NotifyVibratorStateArgs* args) override;
 
-    virtual void notifyVibratorState(const NotifyVibratorStateArgs& args) override;
-
-    virtual void notifyPointerCaptureChanged(const NotifyPointerCaptureChangedArgs& args) override;
+    virtual void notifyPointerCaptureChanged(const NotifyPointerCaptureChangedArgs* args) override;
 
     std::mutex mLock;
     std::condition_variable mCondition;
     const std::chrono::milliseconds mEventHappenedTimeout;
     const std::chrono::milliseconds mEventDidNotHappenTimeout;
 
-    std::tuple<std::vector<NotifyInputDevicesChangedArgs>,   //
-               std::vector<NotifyConfigurationChangedArgs>,  //
+    std::tuple<std::vector<NotifyConfigurationChangedArgs>,  //
                std::vector<NotifyDeviceResetArgs>,           //
                std::vector<NotifyKeyArgs>,                   //
                std::vector<NotifyMotionArgs>,                //
@@ -115,3 +101,4 @@ private:
 };
 
 } // namespace android
+#endif

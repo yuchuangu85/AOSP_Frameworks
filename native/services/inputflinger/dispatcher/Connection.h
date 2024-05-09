@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _UI_INPUT_INPUTDISPATCHER_CONNECTION_H
+#define _UI_INPUT_INPUTDISPATCHER_CONNECTION_H
 
 #include "InputState.h"
 
 #include <input/InputTransport.h>
-#include <utils/RefBase.h>
 #include <deque>
 
 namespace android::inputdispatcher {
@@ -27,18 +27,18 @@ namespace android::inputdispatcher {
 struct DispatchEntry;
 
 /* Manages the dispatch state associated with a single input channel. */
-class Connection {
-public:
-    enum class Status {
-        // Everything is peachy.
-        NORMAL,
-        // An unrecoverable communication error has occurred.
-        BROKEN,
-        // The input channel has been unregistered.
-        ZOMBIE,
+class Connection : public RefBase {
+protected:
+    virtual ~Connection();
 
-        ftl_first = NORMAL,
-        ftl_last = ZOMBIE,
+public:
+    enum Status {
+        // Everything is peachy.
+        STATUS_NORMAL,
+        // An unrecoverable communication error has occurred.
+        STATUS_BROKEN,
+        // The input channel has been unregistered.
+        STATUS_ZOMBIE
     };
 
     Status status;
@@ -65,8 +65,11 @@ public:
     inline const std::string getInputChannelName() const { return inputChannel->getName(); }
 
     const std::string getWindowName() const;
+    const char* getStatusLabel() const;
 
     std::deque<DispatchEntry*>::iterator findWaitQueueEntry(uint32_t seq);
 };
 
 } // namespace android::inputdispatcher
+
+#endif // _UI_INPUT_INPUTDISPATCHER_CONNECTION_H

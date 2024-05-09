@@ -87,14 +87,13 @@
 
 __BEGIN_DECLS
 
-struct ASystemFontIterator;
 /**
  * ASystemFontIterator provides access to the system font configuration.
  *
  * ASystemFontIterator is an iterator for all available system font settings.
  * This iterator is not a thread-safe object. Do not pass this iterator to other threads.
  */
-typedef struct ASystemFontIterator ASystemFontIterator;
+struct ASystemFontIterator;
 
 /**
  * Create a system font iterator.

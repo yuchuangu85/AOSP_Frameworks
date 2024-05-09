@@ -40,19 +40,16 @@ const std::vector<int16_t>& TouchVideoFrame::getData() const { return mData; }
 
 const struct timeval& TouchVideoFrame::getTimestamp() const { return mTimestamp; }
 
-void TouchVideoFrame::rotate(ui::Rotation orientation) {
+void TouchVideoFrame::rotate(int32_t orientation) {
     switch (orientation) {
-        case ui::ROTATION_90:
-            rotateQuarterTurn(/*clockwise=*/false);
+        case DISPLAY_ORIENTATION_90:
+            rotateQuarterTurn(false /*clockwise*/);
             break;
-        case ui::ROTATION_180:
+        case DISPLAY_ORIENTATION_180:
             rotate180();
             break;
-        case ui::ROTATION_270:
-            rotateQuarterTurn(/*clockwise=*/true);
-            break;
-        case ui::ROTATION_0:
-            // No need to rotate if there's no rotation.
+        case DISPLAY_ORIENTATION_270:
+            rotateQuarterTurn(true /*clockwise*/);
             break;
     }
 }

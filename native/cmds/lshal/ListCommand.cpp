@@ -28,7 +28,6 @@
 #include <sstream>
 
 #include <android-base/file.h>
-#include <android-base/hex.h>
 #include <android-base/logging.h>
 #include <android/hidl/manager/1.0/IServiceManager.h>
 #include <hidl-hash/Hash.h>
@@ -353,16 +352,8 @@ bool ListCommand::addEntryWithInstance(const TableEntry& entry,
         return false;
     }
 
-    auto vintfFqInstance = vintf::FqInstance::from(fqInstance.string());
-    if (!vintfFqInstance.has_value()) {
-        err() << "Unable to convert " << fqInstance.string() << " to vintf::FqInstance"
-              << std::endl;
-        return false;
-    }
-
     std::string e;
-    if (!manifest->insertInstance(*vintfFqInstance, entry.transport, arch, vintf::HalFormat::HIDL,
-                                  &e)) {
+    if (!manifest->insertInstance(fqInstance, entry.transport, arch, vintf::HalFormat::HIDL, &e)) {
         err() << "Warning: Cannot insert '" << fqInstance.string() << ": " << e << std::endl;
         return false;
     }
@@ -700,7 +691,8 @@ Status ListCommand::fetchBinderizedEntry(const sp<IServiceManager> &manager,
             }
 
             auto&& hashArray = hashChain[hashIndex];
-            entry->hash = android::base::HexString(hashArray.data(), hashArray.size());
+            std::vector<uint8_t> hashVec{hashArray.data(), hashArray.data() + hashArray.size()};
+            entry->hash = Hash::hexString(hashVec);
         });
         if (!hashRet.isOk()) {
             handleError(TRANSACTION_ERROR, "getHashChain failed: " + hashRet.description());

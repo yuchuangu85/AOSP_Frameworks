@@ -15,7 +15,6 @@
  */
 
 //#define LOG_NDEBUG 0
-#define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include "BlobCache.h"
 
@@ -23,7 +22,6 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <log/log.h>
-#include <utils/Trace.h>
 
 #include <chrono>
 
@@ -54,37 +52,35 @@ BlobCache::BlobCache(size_t maxKeySize, size_t maxValueSize, size_t maxTotalSize
     ALOGV("initializing random seed using %lld", (unsigned long long)now);
 }
 
-BlobCache::InsertResult BlobCache::set(const void* key, size_t keySize, const void* value,
-                                       size_t valueSize) {
+void BlobCache::set(const void* key, size_t keySize, const void* value, size_t valueSize) {
     if (mMaxKeySize < keySize) {
         ALOGV("set: not caching because the key is too large: %zu (limit: %zu)", keySize,
               mMaxKeySize);
-        return InsertResult::kKeyTooBig;
+        return;
     }
     if (mMaxValueSize < valueSize) {
         ALOGV("set: not caching because the value is too large: %zu (limit: %zu)", valueSize,
               mMaxValueSize);
-        return InsertResult::kValueTooBig;
+        return;
     }
     if (mMaxTotalSize < keySize + valueSize) {
         ALOGV("set: not caching because the combined key/value size is too "
               "large: %zu (limit: %zu)",
               keySize + valueSize, mMaxTotalSize);
-        return InsertResult::kCombinedTooBig;
+        return;
     }
     if (keySize == 0) {
         ALOGW("set: not caching because keySize is 0");
-        return InsertResult::kInvalidKeySize;
+        return;
     }
-    if (valueSize == 0) {
+    if (valueSize <= 0) {
         ALOGW("set: not caching because valueSize is 0");
-        return InsertResult::kInvalidValueSize;
+        return;
     }
 
     std::shared_ptr<Blob> cacheKey(new Blob(key, keySize, false));
     CacheEntry cacheEntry(cacheKey, nullptr);
 
-    bool didClean = false;
     while (true) {
         auto index = std::lower_bound(mCacheEntries.begin(), mCacheEntries.end(), cacheEntry);
         if (index == mCacheEntries.end() || cacheEntry < *index) {
@@ -96,14 +92,13 @@ BlobCache::InsertResult BlobCache::set(const void* key, size_t keySize, const vo
                 if (isCleanable()) {
                     // Clean the cache and try again.
                     clean();
-                    didClean = true;
                     continue;
                 } else {
                     ALOGV("set: not caching new key/value pair because the "
                           "total cache size limit would be exceeded: %zu "
                           "(limit: %zu)",
                           keySize + valueSize, mMaxTotalSize);
-                    return InsertResult::kNotEnoughSpace;
+                    break;
                 }
             }
             mCacheEntries.insert(index, CacheEntry(keyBlob, valueBlob));
@@ -119,13 +114,12 @@ BlobCache::InsertResult BlobCache::set(const void* key, size_t keySize, const vo
                 if (isCleanable()) {
                     // Clean the cache and try again.
                     clean();
-                    didClean = true;
                     continue;
                 } else {
                     ALOGV("set: not caching new value because the total cache "
                           "size limit would be exceeded: %zu (limit: %zu)",
                           keySize + valueSize, mMaxTotalSize);
-                    return InsertResult::kNotEnoughSpace;
+                    break;
                 }
             }
             index->setValue(valueBlob);
@@ -134,7 +128,7 @@ BlobCache::InsertResult BlobCache::set(const void* key, size_t keySize, const vo
                   "value",
                   keySize, valueSize);
         }
-        return didClean ? InsertResult::kDidClean : InsertResult::kInserted;
+        break;
     }
 }
 
@@ -232,10 +226,8 @@ int BlobCache::flatten(void* buffer, size_t size) const {
 }
 
 int BlobCache::unflatten(void const* buffer, size_t size) {
-    ATRACE_NAME("BlobCache::unflatten");
-
     // All errors should result in the BlobCache being in an empty state.
-    clear();
+    mCacheEntries.clear();
 
     // Read the cache header
     if (size < sizeof(Header)) {
@@ -262,7 +254,7 @@ int BlobCache::unflatten(void const* buffer, size_t size) {
     size_t numEntries = header->mNumEntries;
     for (size_t i = 0; i < numEntries; i++) {
         if (byteOffset + sizeof(EntryHeader) > size) {
-            clear();
+            mCacheEntries.clear();
             ALOGE("unflatten: not enough room for cache entry headers");
             return -EINVAL;
         }
@@ -274,7 +266,7 @@ int BlobCache::unflatten(void const* buffer, size_t size) {
 
         size_t totalSize = align4(entrySize);
         if (byteOffset + totalSize > size) {
-            clear();
+            mCacheEntries.clear();
             ALOGE("unflatten: not enough room for cache entry headers");
             return -EINVAL;
         }
@@ -297,8 +289,6 @@ long int BlobCache::blob_random() {
 }
 
 void BlobCache::clean() {
-    ATRACE_NAME("BlobCache::clean");
-
     // Remove a random cache entry until the total cache size gets below half
     // the maximum total cache size.
     while (mTotalSize > mMaxTotalSize / 2) {

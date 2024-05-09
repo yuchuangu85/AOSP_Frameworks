@@ -77,7 +77,6 @@ public:
     float dtdx() const;
     float dtdy() const;
     float dsdy() const;
-    float det() const;
 
     float getScaleX() const;
     float getScaleY() const;

@@ -17,8 +17,7 @@
 
 package android.content.pm;
 
-import android.content.pm.IStagedApexObserver;
-import android.content.pm.StagedApexInfo;
+import android.content.pm.IPackageChangeObserver;
 
 /**
  * Parallel implementation of certain {@link PackageManager} APIs that need to
@@ -91,6 +90,18 @@ interface IPackageManagerNative {
      */
     @utf8InCpp String getModuleMetadataPackageName();
 
+    /* Returns the names of all packages. */
+    @utf8InCpp String[] getAllPackages();
+
+    /** Register an extra package change observer to receive the multi-cast. */
+    void registerPackageChangeObserver(in IPackageChangeObserver observer);
+
+    /**
+     * Unregister an existing package change observer.
+     * This does nothing if this observer was not already registered.
+     */
+    void unregisterPackageChangeObserver(in IPackageChangeObserver observer);
+
     /**
      * Returns true if the package has the SHA 256 version of the signing certificate.
      * @see PackageManager#hasSigningCertificate(String, byte[], int), where type
@@ -112,24 +123,4 @@ interface IPackageManagerNative {
      * requested version.
      */
     boolean hasSystemFeature(in String featureName, in int version);
-
-    /** Register a observer for change in set of staged APEX ready for installation */
-    void registerStagedApexObserver(in IStagedApexObserver observer);
-
-    /**
-     * Unregister an existing staged apex observer.
-     * This does nothing if this observer was not already registered.
-     */
-    void unregisterStagedApexObserver(in IStagedApexObserver observer);
-
-    /**
-     * Get APEX module names of all APEX that are staged ready for installation
-     */
-    @utf8InCpp String[] getStagedApexModuleNames();
-
-    /**
-     * Get information of APEX which is staged ready for installation.
-     * Returns null if no such APEX is found.
-     */
-    @nullable StagedApexInfo getStagedApexInfo(in @utf8InCpp String moduleName);
 }

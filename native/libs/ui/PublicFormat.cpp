@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-#include "aidl/android/hardware/graphics/common/Dataspace.h"
+#include <ui/GraphicTypes.h> // ui::Dataspace
 #include <ui/PublicFormat.h>
-
 
 // ----------------------------------------------------------------------------
 namespace android {
 // ----------------------------------------------------------------------------
 
-using ::aidl::android::hardware::graphics::common::Dataspace;
+using ui::Dataspace;
 
 int mapPublicFormatToHalFormat(PublicFormat f) {
     switch (f) {
@@ -30,7 +29,6 @@ int mapPublicFormatToHalFormat(PublicFormat f) {
         case PublicFormat::DEPTH_POINT_CLOUD:
         case PublicFormat::DEPTH_JPEG:
         case PublicFormat::HEIC:
-        case PublicFormat::JPEG_R:
             return HAL_PIXEL_FORMAT_BLOB;
         case PublicFormat::DEPTH16:
             return HAL_PIXEL_FORMAT_Y16;
@@ -49,7 +47,7 @@ android_dataspace mapPublicFormatToHalDataspace(PublicFormat f) {
     Dataspace dataspace;
     switch (f) {
         case PublicFormat::JPEG:
-            dataspace = Dataspace::JFIF;
+            dataspace = Dataspace::V0_JFIF;
             break;
         case PublicFormat::DEPTH_POINT_CLOUD:
         case PublicFormat::DEPTH16:
@@ -66,16 +64,13 @@ android_dataspace mapPublicFormatToHalDataspace(PublicFormat f) {
         case PublicFormat::YUV_420_888:
         case PublicFormat::NV21:
         case PublicFormat::YV12:
-            dataspace = Dataspace::JFIF;
+            dataspace = Dataspace::V0_JFIF;
             break;
         case PublicFormat::DEPTH_JPEG:
             dataspace = Dataspace::DYNAMIC_DEPTH;
             break;
         case PublicFormat::HEIC:
             dataspace = Dataspace::HEIF;
-            break;
-        case PublicFormat::JPEG_R:
-            dataspace = Dataspace::JPEG_R;
             break;
         default:
             // Most formats map to UNKNOWN
@@ -144,16 +139,14 @@ PublicFormat mapHalFormatDataspaceToPublicFormat(int format, android_dataspace d
             switch (ds) {
                 case Dataspace::DEPTH:
                     return PublicFormat::DEPTH_POINT_CLOUD;
-                case Dataspace::JFIF:
+                case Dataspace::V0_JFIF:
                     return PublicFormat::JPEG;
                 case Dataspace::HEIF:
                     return PublicFormat::HEIC;
                 default:
                     if (dataSpace == static_cast<android_dataspace>(HAL_DATASPACE_DYNAMIC_DEPTH)) {
                         return PublicFormat::DEPTH_JPEG;
-                    } else if (dataSpace == static_cast<android_dataspace>(Dataspace::JPEG_R)) {
-                        return PublicFormat::JPEG_R;
-                    }else {
+                    } else {
                         // Assume otherwise-marked blobs are also JPEG
                         return PublicFormat::JPEG;
                     }

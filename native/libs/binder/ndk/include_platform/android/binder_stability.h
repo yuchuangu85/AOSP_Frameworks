@@ -50,15 +50,6 @@ static inline void AIBinder_markCompilationUnitStability(AIBinder* binder) {
  * requirements associated with that higher stability level. For instance, a
  * VINTF stability binder is required to be in the VINTF manifest. This API
  * can be called to use that same interface within the vendor partition.
- *
- * WARNING: you must hold on to a binder instance after this is set, while you
- * are using it. If you get a binder (e.g. `...->asBinder().get()`), you must
- * save this binder and then
- * use it. For instance:
- *
- *     auto binder = ...->asBinder();
- *     AIBinder_forceDowngradeToVendorStability(binder.get());
- *     doSomething(binder);
  */
 void AIBinder_forceDowngradeToVendorStability(AIBinder* binder);
 
@@ -88,15 +79,6 @@ static inline void AIBinder_markCompilationUnitStability(AIBinder* binder) {
  * requirements associated with that higher stability level. For instance, a
  * VINTF stability binder is required to be in the VINTF manifest. This API
  * can be called to use that same interface within the system partition.
- *
- * WARNING: you must hold on to a binder instance after this is set, while you
- * are using it. If you get a binder (e.g. `...->asBinder().get()`), you must
- * save this binder and then
- * use it. For instance:
- *
- *     auto binder = ...->asBinder();
- *     AIBinder_forceDowngradeToSystemStability(binder.get());
- *     doSomething(binder);
  */
 void AIBinder_forceDowngradeToSystemStability(AIBinder* binder);
 
@@ -115,10 +97,6 @@ static inline void AIBinder_forceDowngradeToLocalStability(AIBinder* binder) {
  *
  * This interface has system<->vendor stability
  */
-// b/227835797 - can't use __INTRODUCED_IN(30) because old targets load this code
-#if defined(__ANDROID_MIN_SDK_VERSION__) && __ANDROID_MIN_SDK_VERSION__ < 30
-__attribute__((weak))
-#endif  // defined(__ANDROID_MIN_SDK_VERSION__) && __ANDROID_MIN_SDK_VERSION__ < 30
 void AIBinder_markVintfStability(AIBinder* binder);
 
 __END_DECLS

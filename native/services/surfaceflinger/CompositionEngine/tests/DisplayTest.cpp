@@ -30,22 +30,13 @@
 #include <compositionengine/mock/OutputLayer.h>
 #include <compositionengine/mock/RenderSurface.h>
 #include <gtest/gtest.h>
-#include <renderengine/mock/FakeExternalTexture.h>
 #include <renderengine/mock/RenderEngine.h>
-
 #include <ui/Rect.h>
 #include <ui/StaticDisplayInfo.h>
 
 #include "MockHWC2.h"
 #include "MockHWComposer.h"
 #include "MockPowerAdvisor.h"
-#include "ftl/future.h"
-
-#include <aidl/android/hardware/graphics/composer3/Composition.h>
-
-using aidl::android::hardware::graphics::composer3::Capability;
-using aidl::android::hardware::graphics::composer3::Composition;
-using aidl::android::hardware::graphics::composer3::DimmingStage;
 
 namespace android::compositionengine {
 namespace {
@@ -53,7 +44,6 @@ namespace {
 namespace hal = android::hardware::graphics::composer::hal;
 
 using testing::_;
-using testing::ByMove;
 using testing::DoAll;
 using testing::Eq;
 using testing::InSequence;
@@ -70,7 +60,8 @@ constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID = PhysicalDisplayId::fromPort(123
 constexpr HalVirtualDisplayId HAL_VIRTUAL_DISPLAY_ID{456u};
 constexpr GpuVirtualDisplayId GPU_VIRTUAL_DISPLAY_ID{789u};
 
-constexpr ui::Size DEFAULT_RESOLUTION{1920, 1080};
+const ui::Size DEFAULT_RESOLUTION{1920, 1080};
+constexpr uint32_t DEFAULT_LAYER_STACK = 42;
 
 struct Layer {
     Layer() {
@@ -78,7 +69,7 @@ struct Layer {
         EXPECT_CALL(*outputLayer, getHwcLayer()).WillRepeatedly(Return(&hwc2Layer));
     }
 
-    sp<StrictMock<mock::LayerFE>> layerFE = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> layerFE = new StrictMock<mock::LayerFE>();
     StrictMock<mock::OutputLayer>* outputLayer = new StrictMock<mock::OutputLayer>();
     StrictMock<HWC2::mock::Layer> hwc2Layer;
 };
@@ -89,7 +80,7 @@ struct LayerNoHWC2Layer {
         EXPECT_CALL(*outputLayer, getHwcLayer()).WillRepeatedly(Return(nullptr));
     }
 
-    sp<StrictMock<mock::LayerFE>> layerFE = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> layerFE = new StrictMock<mock::LayerFE>();
     StrictMock<mock::OutputLayer>* outputLayer = new StrictMock<mock::OutputLayer>();
 };
 
@@ -116,9 +107,8 @@ struct DisplayTestCommon : public testing::Test {
             return mCompositionEngine;
         };
 
-        size_t getOutputLayerCount() const override { return 1u; }
-
         // Mock implementation overrides
+        MOCK_CONST_METHOD0(getOutputLayerCount, size_t());
         MOCK_CONST_METHOD1(getOutputLayerOrderedByZByIndex,
                            compositionengine::OutputLayer*(size_t));
         MOCK_METHOD2(ensureOutputLayer,
@@ -169,14 +159,15 @@ struct DisplayTestCommon : public testing::Test {
         EXPECT_CALL(mCompositionEngine, getRenderEngine()).WillRepeatedly(ReturnRef(mRenderEngine));
         EXPECT_CALL(mRenderEngine, supportsProtectedContent()).WillRepeatedly(Return(false));
         EXPECT_CALL(mRenderEngine, isProtected()).WillRepeatedly(Return(false));
-        EXPECT_CALL(mPowerAdvisor, usePowerHintSession()).WillRepeatedly(Return(false));
     }
 
-    DisplayCreationArgs getDisplayCreationArgsForPhysicalDisplay() {
+    DisplayCreationArgs getDisplayCreationArgsForPhysicalHWCDisplay() {
         return DisplayCreationArgsBuilder()
                 .setId(DEFAULT_DISPLAY_ID)
+                .setConnectionType(ui::DisplayConnectionType::Internal)
                 .setPixels(DEFAULT_RESOLUTION)
                 .setIsSecure(true)
+                .setLayerStackId(DEFAULT_LAYER_STACK)
                 .setPowerAdvisor(&mPowerAdvisor)
                 .build();
     }
@@ -186,6 +177,7 @@ struct DisplayTestCommon : public testing::Test {
                 .setId(GPU_VIRTUAL_DISPLAY_ID)
                 .setPixels(DEFAULT_RESOLUTION)
                 .setIsSecure(false)
+                .setLayerStackId(DEFAULT_LAYER_STACK)
                 .setPowerAdvisor(&mPowerAdvisor)
                 .build();
     }
@@ -194,40 +186,21 @@ struct DisplayTestCommon : public testing::Test {
     StrictMock<Hwc2::mock::PowerAdvisor> mPowerAdvisor;
     StrictMock<renderengine::mock::RenderEngine> mRenderEngine;
     StrictMock<mock::CompositionEngine> mCompositionEngine;
-    sp<mock::NativeWindow> mNativeWindow = sp<StrictMock<mock::NativeWindow>>::make();
+    sp<mock::NativeWindow> mNativeWindow = new StrictMock<mock::NativeWindow>();
 };
 
 struct PartialMockDisplayTestCommon : public DisplayTestCommon {
     using Display = DisplayTestCommon::PartialMockDisplay;
     std::shared_ptr<Display> mDisplay =
             createPartialMockDisplay<Display>(mCompositionEngine,
-                                              getDisplayCreationArgsForPhysicalDisplay());
-
-    android::HWComposer::DeviceRequestedChanges mDeviceRequestedChanges{
-            {{nullptr, Composition::CLIENT}},
-            hal::DisplayRequest::FLIP_CLIENT_TARGET,
-            {{nullptr, hal::LayerRequest::CLEAR_CLIENT_TARGET}},
-            {DEFAULT_DISPLAY_ID.value,
-             {aidl::android::hardware::graphics::common::PixelFormat::RGBA_8888,
-              aidl::android::hardware::graphics::common::Dataspace::UNKNOWN},
-             -1.f,
-             DimmingStage::NONE},
-    };
-
-    void chooseCompositionStrategy(Display* display) {
-        std::optional<android::HWComposer::DeviceRequestedChanges> changes;
-        bool success = display->chooseCompositionStrategy(&changes);
-        display->resetCompositionStrategy();
-        if (success) {
-            display->applyCompositionStrategy(changes);
-        }
-    }
+                                              getDisplayCreationArgsForPhysicalHWCDisplay());
 };
 
 struct FullDisplayImplTestCommon : public DisplayTestCommon {
     using Display = DisplayTestCommon::FullImplDisplay;
     std::shared_ptr<Display> mDisplay =
-            createDisplay<Display>(mCompositionEngine, getDisplayCreationArgsForPhysicalDisplay());
+            createDisplay<Display>(mCompositionEngine,
+                                   getDisplayCreationArgsForPhysicalHWCDisplay());
 };
 
 struct DisplayWithLayersTestCommon : public FullDisplayImplTestCommon {
@@ -238,11 +211,6 @@ struct DisplayWithLayersTestCommon : public FullDisplayImplTestCommon {
                 std::unique_ptr<compositionengine::OutputLayer>(mLayer2.outputLayer));
         mDisplay->injectOutputLayerForTest(
                 std::unique_ptr<compositionengine::OutputLayer>(mLayer3.outputLayer));
-        mResultWithBuffer.buffer = std::make_shared<
-                renderengine::mock::FakeExternalTexture>(1U /*width*/, 1U /*height*/,
-                                                         1ULL /* bufferId */,
-                                                         HAL_PIXEL_FORMAT_RGBA_8888,
-                                                         0ULL /*usage*/);
     }
 
     Layer mLayer1;
@@ -250,9 +218,8 @@ struct DisplayWithLayersTestCommon : public FullDisplayImplTestCommon {
     LayerNoHWC2Layer mLayer3;
     StrictMock<HWC2::mock::Layer> hwc2LayerUnknown;
     std::shared_ptr<Display> mDisplay =
-            createDisplay<Display>(mCompositionEngine, getDisplayCreationArgsForPhysicalDisplay());
-    impl::GpuCompositionResult mResultWithBuffer;
-    impl::GpuCompositionResult mResultWithoutBuffer;
+            createDisplay<Display>(mCompositionEngine,
+                                   getDisplayCreationArgsForPhysicalHWCDisplay());
 };
 
 /*
@@ -265,7 +232,7 @@ struct DisplayCreationTest : public DisplayTestCommon {
 
 TEST_F(DisplayCreationTest, createPhysicalInternalDisplay) {
     auto display =
-            impl::createDisplay(mCompositionEngine, getDisplayCreationArgsForPhysicalDisplay());
+            impl::createDisplay(mCompositionEngine, getDisplayCreationArgsForPhysicalHWCDisplay());
     EXPECT_TRUE(display->isSecure());
     EXPECT_FALSE(display->isVirtual());
     EXPECT_EQ(DEFAULT_DISPLAY_ID, display->getId());
@@ -285,11 +252,13 @@ TEST_F(DisplayCreationTest, createGpuVirtualDisplay) {
 
 using DisplaySetConfigurationTest = PartialMockDisplayTestCommon;
 
-TEST_F(DisplaySetConfigurationTest, configuresPhysicalDisplay) {
+TEST_F(DisplaySetConfigurationTest, configuresInternalSecurePhysicalDisplay) {
     mDisplay->setConfiguration(DisplayCreationArgsBuilder()
                                        .setId(DEFAULT_DISPLAY_ID)
+                                       .setConnectionType(ui::DisplayConnectionType::Internal)
                                        .setPixels(DEFAULT_RESOLUTION)
                                        .setIsSecure(true)
+                                       .setLayerStackId(DEFAULT_LAYER_STACK)
                                        .setPowerAdvisor(&mPowerAdvisor)
                                        .setName(getDisplayNameFromCurrentTest())
                                        .build());
@@ -297,11 +266,28 @@ TEST_F(DisplaySetConfigurationTest, configuresPhysicalDisplay) {
     EXPECT_EQ(DEFAULT_DISPLAY_ID, mDisplay->getId());
     EXPECT_TRUE(mDisplay->isSecure());
     EXPECT_FALSE(mDisplay->isVirtual());
+    EXPECT_EQ(DEFAULT_LAYER_STACK, mDisplay->getState().layerStackId);
+    EXPECT_TRUE(mDisplay->getState().layerStackInternal);
     EXPECT_FALSE(mDisplay->isValid());
+}
 
-    const auto& filter = mDisplay->getState().layerFilter;
-    EXPECT_EQ(ui::INVALID_LAYER_STACK, filter.layerStack);
-    EXPECT_FALSE(filter.toInternalDisplay);
+TEST_F(DisplaySetConfigurationTest, configuresExternalInsecurePhysicalDisplay) {
+    mDisplay->setConfiguration(DisplayCreationArgsBuilder()
+                                       .setId(DEFAULT_DISPLAY_ID)
+                                       .setConnectionType(ui::DisplayConnectionType::External)
+                                       .setPixels(DEFAULT_RESOLUTION)
+                                       .setIsSecure(false)
+                                       .setLayerStackId(DEFAULT_LAYER_STACK)
+                                       .setPowerAdvisor(&mPowerAdvisor)
+                                       .setName(getDisplayNameFromCurrentTest())
+                                       .build());
+
+    EXPECT_EQ(DEFAULT_DISPLAY_ID, mDisplay->getId());
+    EXPECT_FALSE(mDisplay->isSecure());
+    EXPECT_FALSE(mDisplay->isVirtual());
+    EXPECT_EQ(DEFAULT_LAYER_STACK, mDisplay->getState().layerStackId);
+    EXPECT_FALSE(mDisplay->getState().layerStackInternal);
+    EXPECT_FALSE(mDisplay->isValid());
 }
 
 TEST_F(DisplaySetConfigurationTest, configuresHalVirtualDisplay) {
@@ -309,6 +295,7 @@ TEST_F(DisplaySetConfigurationTest, configuresHalVirtualDisplay) {
                                        .setId(HAL_VIRTUAL_DISPLAY_ID)
                                        .setPixels(DEFAULT_RESOLUTION)
                                        .setIsSecure(false)
+                                       .setLayerStackId(DEFAULT_LAYER_STACK)
                                        .setPowerAdvisor(&mPowerAdvisor)
                                        .setName(getDisplayNameFromCurrentTest())
                                        .build());
@@ -316,11 +303,9 @@ TEST_F(DisplaySetConfigurationTest, configuresHalVirtualDisplay) {
     EXPECT_EQ(HAL_VIRTUAL_DISPLAY_ID, mDisplay->getId());
     EXPECT_FALSE(mDisplay->isSecure());
     EXPECT_TRUE(mDisplay->isVirtual());
+    EXPECT_EQ(DEFAULT_LAYER_STACK, mDisplay->getState().layerStackId);
+    EXPECT_FALSE(mDisplay->getState().layerStackInternal);
     EXPECT_FALSE(mDisplay->isValid());
-
-    const auto& filter = mDisplay->getState().layerFilter;
-    EXPECT_EQ(ui::INVALID_LAYER_STACK, filter.layerStack);
-    EXPECT_FALSE(filter.toInternalDisplay);
 }
 
 TEST_F(DisplaySetConfigurationTest, configuresGpuVirtualDisplay) {
@@ -328,6 +313,7 @@ TEST_F(DisplaySetConfigurationTest, configuresGpuVirtualDisplay) {
                                        .setId(GPU_VIRTUAL_DISPLAY_ID)
                                        .setPixels(DEFAULT_RESOLUTION)
                                        .setIsSecure(false)
+                                       .setLayerStackId(DEFAULT_LAYER_STACK)
                                        .setPowerAdvisor(&mPowerAdvisor)
                                        .setName(getDisplayNameFromCurrentTest())
                                        .build());
@@ -335,11 +321,9 @@ TEST_F(DisplaySetConfigurationTest, configuresGpuVirtualDisplay) {
     EXPECT_EQ(GPU_VIRTUAL_DISPLAY_ID, mDisplay->getId());
     EXPECT_FALSE(mDisplay->isSecure());
     EXPECT_TRUE(mDisplay->isVirtual());
+    EXPECT_EQ(DEFAULT_LAYER_STACK, mDisplay->getState().layerStackId);
+    EXPECT_FALSE(mDisplay->getState().layerStackInternal);
     EXPECT_FALSE(mDisplay->isValid());
-
-    const auto& filter = mDisplay->getState().layerFilter;
-    EXPECT_EQ(ui::INVALID_LAYER_STACK, filter.layerStack);
-    EXPECT_FALSE(filter.toInternalDisplay);
 }
 
 /*
@@ -501,7 +485,7 @@ TEST_F(DisplayCreateRenderSurfaceTest, setsRenderSurface) {
 using DisplayCreateOutputLayerTest = FullDisplayImplTestCommon;
 
 TEST_F(DisplayCreateOutputLayerTest, setsHwcLayer) {
-    sp<StrictMock<mock::LayerFE>> layerFE = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> layerFE = new StrictMock<mock::LayerFE>();
     auto hwcLayer = std::make_shared<StrictMock<HWC2::mock::Layer>>();
 
     EXPECT_CALL(mHwComposer, createLayer(HalDisplayId(DEFAULT_DISPLAY_ID)))
@@ -524,7 +508,7 @@ TEST_F(DisplaySetReleasedLayersTest, doesNothingIfGpuDisplay) {
     auto args = getDisplayCreationArgsForGpuVirtualDisplay();
     std::shared_ptr<impl::Display> gpuDisplay = impl::createDisplay(mCompositionEngine, args);
 
-    sp<mock::LayerFE> layerXLayerFE = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> layerXLayerFE = new StrictMock<mock::LayerFE>();
 
     {
         Output::ReleasedLayers releasedLayers;
@@ -542,7 +526,7 @@ TEST_F(DisplaySetReleasedLayersTest, doesNothingIfGpuDisplay) {
 }
 
 TEST_F(DisplaySetReleasedLayersTest, doesNothingIfNoLayersWithQueuedFrames) {
-    sp<mock::LayerFE> layerXLayerFE = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> layerXLayerFE = new StrictMock<mock::LayerFE>();
 
     {
         Output::ReleasedLayers releasedLayers;
@@ -558,7 +542,7 @@ TEST_F(DisplaySetReleasedLayersTest, doesNothingIfNoLayersWithQueuedFrames) {
 }
 
 TEST_F(DisplaySetReleasedLayersTest, setReleasedLayers) {
-    sp<mock::LayerFE> unknownLayer = sp<StrictMock<mock::LayerFE>>::make();
+    sp<mock::LayerFE> unknownLayer = new StrictMock<mock::LayerFE>();
 
     CompositionRefreshArgs refreshArgs;
     refreshArgs.layersWithQueuedFrames.push_back(mLayer1.layerFE);
@@ -585,7 +569,7 @@ TEST_F(DisplayChooseCompositionStrategyTest, takesEarlyOutIfGpuDisplay) {
             createPartialMockDisplay<Display>(mCompositionEngine, args);
     EXPECT_TRUE(GpuVirtualDisplayId::tryCast(gpuDisplay->getId()));
 
-    chooseCompositionStrategy(gpuDisplay.get());
+    gpuDisplay->chooseCompositionStrategy();
 
     auto& state = gpuDisplay->getState();
     EXPECT_TRUE(state.usesClientComposition);
@@ -598,12 +582,11 @@ TEST_F(DisplayChooseCompositionStrategyTest, takesEarlyOutOnHwcError) {
                 getDeviceCompositionChanges(HalDisplayId(DEFAULT_DISPLAY_ID), false, _, _, _))
             .WillOnce(Return(INVALID_OPERATION));
 
-    chooseCompositionStrategy(mDisplay.get());
+    mDisplay->chooseCompositionStrategy();
 
     auto& state = mDisplay->getState();
     EXPECT_TRUE(state.usesClientComposition);
     EXPECT_FALSE(state.usesDeviceComposition);
-    EXPECT_FALSE(state.previousDeviceRequestedChanges.has_value());
 }
 
 TEST_F(DisplayChooseCompositionStrategyTest, normalOperation) {
@@ -620,46 +603,24 @@ TEST_F(DisplayChooseCompositionStrategyTest, normalOperation) {
 
     EXPECT_CALL(mHwComposer,
                 getDeviceCompositionChanges(HalDisplayId(DEFAULT_DISPLAY_ID), true, _, _, _))
-            .WillOnce(testing::DoAll(testing::SetArgPointee<4>(mDeviceRequestedChanges),
-                                     Return(NO_ERROR)));
-    EXPECT_CALL(*mDisplay, applyChangedTypesToLayers(mDeviceRequestedChanges.changedTypes))
-            .Times(1);
-    EXPECT_CALL(*mDisplay, applyDisplayRequests(mDeviceRequestedChanges.displayRequests)).Times(1);
-    EXPECT_CALL(*mDisplay, applyLayerRequestsToLayers(mDeviceRequestedChanges.layerRequests))
-            .Times(1);
+            .WillOnce(Return(NO_ERROR));
     EXPECT_CALL(*mDisplay, allLayersRequireClientComposition()).WillOnce(Return(false));
 
-    chooseCompositionStrategy(mDisplay.get());
+    mDisplay->chooseCompositionStrategy();
 
     auto& state = mDisplay->getState();
     EXPECT_FALSE(state.usesClientComposition);
     EXPECT_TRUE(state.usesDeviceComposition);
 }
 
-TEST_F(DisplayChooseCompositionStrategyTest, normalOperationWithDisplayBrightness) {
-    // Since two calls are made to anyLayersRequireClientComposition with different return
-    // values, use a Sequence to control the matching so the values are returned in a known
-    // order.
-    constexpr float kDisplayBrightness = 0.5f;
-    constexpr float kDisplayBrightnessNits = 200.f;
-    EXPECT_CALL(mHwComposer,
-                setDisplayBrightness(DEFAULT_DISPLAY_ID, kDisplayBrightness, kDisplayBrightnessNits,
-                                     Hwc2::Composer::DisplayBrightnessOptions{.applyImmediately =
-                                                                                      false}))
-            .WillOnce(Return(ByMove(ftl::yield<status_t>(NO_ERROR))));
-
-    mDisplay->setNextBrightness(kDisplayBrightness);
-    mock::RenderSurface* renderSurface = new StrictMock<mock::RenderSurface>();
-    EXPECT_CALL(*renderSurface, beginFrame(_)).Times(1);
-    mDisplay->setRenderSurfaceForTest(std::unique_ptr<RenderSurface>(renderSurface));
-    mDisplay->editState().displayBrightnessNits = kDisplayBrightnessNits;
-    mDisplay->beginFrame();
-
-    auto& state = mDisplay->getState();
-    EXPECT_FALSE(state.displayBrightness.has_value());
-}
-
 TEST_F(DisplayChooseCompositionStrategyTest, normalOperationWithChanges) {
+    android::HWComposer::DeviceRequestedChanges changes{
+            {{nullptr, hal::Composition::CLIENT}},
+            hal::DisplayRequest::FLIP_CLIENT_TARGET,
+            {{nullptr, hal::LayerRequest::CLEAR_CLIENT_TARGET}},
+            {hal::PixelFormat::RGBA_8888, hal::Dataspace::UNKNOWN},
+    };
+
     // Since two calls are made to anyLayersRequireClientComposition with different return
     // values, use a Sequence to control the matching so the values are returned in a known
     // order.
@@ -673,15 +634,13 @@ TEST_F(DisplayChooseCompositionStrategyTest, normalOperationWithChanges) {
 
     EXPECT_CALL(mHwComposer,
                 getDeviceCompositionChanges(HalDisplayId(DEFAULT_DISPLAY_ID), true, _, _, _))
-            .WillOnce(DoAll(SetArgPointee<4>(mDeviceRequestedChanges), Return(NO_ERROR)));
-    EXPECT_CALL(*mDisplay, applyChangedTypesToLayers(mDeviceRequestedChanges.changedTypes))
-            .Times(1);
-    EXPECT_CALL(*mDisplay, applyDisplayRequests(mDeviceRequestedChanges.displayRequests)).Times(1);
-    EXPECT_CALL(*mDisplay, applyLayerRequestsToLayers(mDeviceRequestedChanges.layerRequests))
-            .Times(1);
+            .WillOnce(DoAll(SetArgPointee<4>(changes), Return(NO_ERROR)));
+    EXPECT_CALL(*mDisplay, applyChangedTypesToLayers(changes.changedTypes)).Times(1);
+    EXPECT_CALL(*mDisplay, applyDisplayRequests(changes.displayRequests)).Times(1);
+    EXPECT_CALL(*mDisplay, applyLayerRequestsToLayers(changes.layerRequests)).Times(1);
     EXPECT_CALL(*mDisplay, allLayersRequireClientComposition()).WillOnce(Return(false));
 
-    chooseCompositionStrategy(mDisplay.get());
+    mDisplay->chooseCompositionStrategy();
 
     auto& state = mDisplay->getState();
     EXPECT_FALSE(state.usesClientComposition);
@@ -693,10 +652,9 @@ TEST_F(DisplayChooseCompositionStrategyTest, normalOperationWithChanges) {
  */
 
 using DisplayGetSkipColorTransformTest = DisplayWithLayersTestCommon;
-using aidl::android::hardware::graphics::composer3::DisplayCapability;
 
 TEST_F(DisplayGetSkipColorTransformTest, checksCapabilityIfGpuDisplay) {
-    EXPECT_CALL(mHwComposer, hasCapability(Capability::SKIP_CLIENT_COLOR_TRANSFORM))
+    EXPECT_CALL(mHwComposer, hasCapability(hal::Capability::SKIP_CLIENT_COLOR_TRANSFORM))
             .WillOnce(Return(true));
     auto args = getDisplayCreationArgsForGpuVirtualDisplay();
     auto gpuDisplay{impl::createDisplay(mCompositionEngine, args)};
@@ -706,7 +664,7 @@ TEST_F(DisplayGetSkipColorTransformTest, checksCapabilityIfGpuDisplay) {
 TEST_F(DisplayGetSkipColorTransformTest, checksDisplayCapability) {
     EXPECT_CALL(mHwComposer,
                 hasDisplayCapability(HalDisplayId(DEFAULT_DISPLAY_ID),
-                                     DisplayCapability::SKIP_CLIENT_COLOR_TRANSFORM))
+                                     hal::DisplayCapability::SKIP_CLIENT_COLOR_TRANSFORM))
             .WillOnce(Return(true));
     EXPECT_TRUE(mDisplay->getSkipColorTransform());
 }
@@ -764,15 +722,17 @@ TEST_F(DisplayApplyChangedTypesToLayersTest, takesEarlyOutIfNoChangedLayers) {
 }
 
 TEST_F(DisplayApplyChangedTypesToLayersTest, appliesChanges) {
-    EXPECT_CALL(*mLayer1.outputLayer, applyDeviceCompositionTypeChange(Composition::CLIENT))
+    EXPECT_CALL(*mLayer1.outputLayer,
+                applyDeviceCompositionTypeChange(Hwc2::IComposerClient::Composition::CLIENT))
             .Times(1);
-    EXPECT_CALL(*mLayer2.outputLayer, applyDeviceCompositionTypeChange(Composition::DEVICE))
+    EXPECT_CALL(*mLayer2.outputLayer,
+                applyDeviceCompositionTypeChange(Hwc2::IComposerClient::Composition::DEVICE))
             .Times(1);
 
     mDisplay->applyChangedTypesToLayers(impl::Display::ChangedTypes{
-            {&mLayer1.hwc2Layer, Composition::CLIENT},
-            {&mLayer2.hwc2Layer, Composition::DEVICE},
-            {&hwc2LayerUnknown, Composition::SOLID_COLOR},
+            {&mLayer1.hwc2Layer, hal::Composition::CLIENT},
+            {&mLayer2.hwc2Layer, hal::Composition::DEVICE},
+            {&hwc2LayerUnknown, hal::Composition::SOLID_COLOR},
     });
 }
 
@@ -846,37 +806,20 @@ TEST_F(DisplayApplyLayerRequestsToLayersTest, appliesDeviceLayerRequests) {
 using DisplayApplyClientTargetRequests = DisplayWithLayersTestCommon;
 
 TEST_F(DisplayApplyLayerRequestsToLayersTest, applyClientTargetRequests) {
-    static constexpr float kWhitePointNits = 800.f;
-
     Display::ClientTargetProperty clientTargetProperty = {
-            .clientTargetProperty =
-                    {
-                            .pixelFormat =
-                                    aidl::android::hardware::graphics::common::PixelFormat::RGB_565,
-                            .dataspace = aidl::android::hardware::graphics::common::Dataspace::
-                                    STANDARD_BT470M,
-                    },
-            .brightness = kWhitePointNits,
-            .dimmingStage = aidl::android::hardware::graphics::composer3::DimmingStage::GAMMA_OETF,
+            .pixelFormat = hal::PixelFormat::RGB_565,
+            .dataspace = hal::Dataspace::STANDARD_BT470M,
     };
 
     mock::RenderSurface* renderSurface = new StrictMock<mock::RenderSurface>();
     mDisplay->setRenderSurfaceForTest(std::unique_ptr<RenderSurface>(renderSurface));
 
-    EXPECT_CALL(*renderSurface,
-                setBufferPixelFormat(static_cast<ui::PixelFormat>(
-                        clientTargetProperty.clientTargetProperty.pixelFormat)));
-    EXPECT_CALL(*renderSurface,
-                setBufferDataspace(static_cast<ui::Dataspace>(
-                        clientTargetProperty.clientTargetProperty.dataspace)));
+    EXPECT_CALL(*renderSurface, setBufferPixelFormat(clientTargetProperty.pixelFormat));
+    EXPECT_CALL(*renderSurface, setBufferDataspace(clientTargetProperty.dataspace));
     mDisplay->applyClientTargetRequests(clientTargetProperty);
 
     auto& state = mDisplay->getState();
-    EXPECT_EQ(clientTargetProperty.clientTargetProperty.dataspace,
-              static_cast<aidl::android::hardware::graphics::common::Dataspace>(state.dataspace));
-    EXPECT_EQ(kWhitePointNits, state.clientTargetBrightness);
-    EXPECT_EQ(aidl::android::hardware::graphics::composer3::DimmingStage::GAMMA_OETF,
-              state.clientTargetDimmingStage);
+    EXPECT_EQ(clientTargetProperty.dataspace, state.dataspace);
 }
 
 /*
@@ -897,11 +840,11 @@ TEST_F(DisplayPresentAndGetFrameFencesTest, returnsNoFencesOnGpuDisplay) {
 }
 
 TEST_F(DisplayPresentAndGetFrameFencesTest, returnsPresentAndLayerFences) {
-    sp<Fence> presentFence = sp<Fence>::make();
-    sp<Fence> layer1Fence = sp<Fence>::make();
-    sp<Fence> layer2Fence = sp<Fence>::make();
+    sp<Fence> presentFence = new Fence();
+    sp<Fence> layer1Fence = new Fence();
+    sp<Fence> layer2Fence = new Fence();
 
-    EXPECT_CALL(mHwComposer, presentAndGetReleaseFences(HalDisplayId(DEFAULT_DISPLAY_ID), _))
+    EXPECT_CALL(mHwComposer, presentAndGetReleaseFences(HalDisplayId(DEFAULT_DISPLAY_ID), _, _))
             .Times(1);
     EXPECT_CALL(mHwComposer, getPresentFence(HalDisplayId(DEFAULT_DISPLAY_ID)))
             .WillOnce(Return(presentFence));
@@ -956,10 +899,13 @@ TEST_F(DisplayFinishFrameTest, doesNotSkipCompositionIfNotDirtyOnHwcDisplay) {
 
     mDisplay->editState().isEnabled = true;
     mDisplay->editState().usesClientComposition = false;
-    mDisplay->editState().layerStackSpace.setContent(Rect(0, 0, 1, 1));
+    mDisplay->editState().layerStackSpace.content = Rect(0, 0, 1, 1);
     mDisplay->editState().dirtyRegion = Region::INVALID_REGION;
 
-    mDisplay->finishFrame(std::move(mResultWithBuffer));
+    CompositionRefreshArgs refreshArgs;
+    refreshArgs.repaintEverything = false;
+
+    mDisplay->finishFrame(refreshArgs);
 }
 
 TEST_F(DisplayFinishFrameTest, skipsCompositionIfNotDirty) {
@@ -971,40 +917,19 @@ TEST_F(DisplayFinishFrameTest, skipsCompositionIfNotDirty) {
 
     // We expect no calls to queueBuffer if composition was skipped.
     EXPECT_CALL(*renderSurface, queueBuffer(_)).Times(0);
-    EXPECT_CALL(*renderSurface, beginFrame(false));
 
     gpuDisplay->editState().isEnabled = true;
     gpuDisplay->editState().usesClientComposition = false;
-    gpuDisplay->editState().layerStackSpace.setContent(Rect(0, 0, 1, 1));
+    gpuDisplay->editState().layerStackSpace.content = Rect(0, 0, 1, 1);
     gpuDisplay->editState().dirtyRegion = Region::INVALID_REGION;
-    gpuDisplay->editState().lastCompositionHadVisibleLayers = true;
 
-    gpuDisplay->beginFrame();
-    gpuDisplay->finishFrame(std::move(mResultWithoutBuffer));
+    CompositionRefreshArgs refreshArgs;
+    refreshArgs.repaintEverything = false;
+
+    gpuDisplay->finishFrame(refreshArgs);
 }
 
-TEST_F(DisplayFinishFrameTest, skipsCompositionIfEmpty) {
-    auto args = getDisplayCreationArgsForGpuVirtualDisplay();
-    std::shared_ptr<impl::Display> gpuDisplay = impl::createDisplay(mCompositionEngine, args);
-
-    mock::RenderSurface* renderSurface = new StrictMock<mock::RenderSurface>();
-    gpuDisplay->setRenderSurfaceForTest(std::unique_ptr<RenderSurface>(renderSurface));
-
-    // We expect no calls to queueBuffer if composition was skipped.
-    EXPECT_CALL(*renderSurface, queueBuffer(_)).Times(0);
-    EXPECT_CALL(*renderSurface, beginFrame(false));
-
-    gpuDisplay->editState().isEnabled = true;
-    gpuDisplay->editState().usesClientComposition = false;
-    gpuDisplay->editState().layerStackSpace.setContent(Rect(0, 0, 1, 1));
-    gpuDisplay->editState().dirtyRegion = Region(Rect(0, 0, 1, 1));
-    gpuDisplay->editState().lastCompositionHadVisibleLayers = false;
-
-    gpuDisplay->beginFrame();
-    gpuDisplay->finishFrame(std::move(mResultWithoutBuffer));
-}
-
-TEST_F(DisplayFinishFrameTest, performsCompositionIfDirtyAndNotEmpty) {
+TEST_F(DisplayFinishFrameTest, performsCompositionIfDirty) {
     auto args = getDisplayCreationArgsForGpuVirtualDisplay();
     std::shared_ptr<impl::Display> gpuDisplay = impl::createDisplay(mCompositionEngine, args);
 
@@ -1013,16 +938,37 @@ TEST_F(DisplayFinishFrameTest, performsCompositionIfDirtyAndNotEmpty) {
 
     // We expect a single call to queueBuffer when composition is not skipped.
     EXPECT_CALL(*renderSurface, queueBuffer(_)).Times(1);
-    EXPECT_CALL(*renderSurface, beginFrame(true));
 
     gpuDisplay->editState().isEnabled = true;
     gpuDisplay->editState().usesClientComposition = false;
-    gpuDisplay->editState().layerStackSpace.setContent(Rect(0, 0, 1, 1));
+    gpuDisplay->editState().layerStackSpace.content = Rect(0, 0, 1, 1);
     gpuDisplay->editState().dirtyRegion = Region(Rect(0, 0, 1, 1));
-    gpuDisplay->editState().lastCompositionHadVisibleLayers = true;
 
-    gpuDisplay->beginFrame();
-    gpuDisplay->finishFrame(std::move(mResultWithBuffer));
+    CompositionRefreshArgs refreshArgs;
+    refreshArgs.repaintEverything = false;
+
+    gpuDisplay->finishFrame(refreshArgs);
+}
+
+TEST_F(DisplayFinishFrameTest, performsCompositionIfRepaintEverything) {
+    auto args = getDisplayCreationArgsForGpuVirtualDisplay();
+    std::shared_ptr<impl::Display> gpuDisplay = impl::createDisplay(mCompositionEngine, args);
+
+    mock::RenderSurface* renderSurface = new StrictMock<mock::RenderSurface>();
+    gpuDisplay->setRenderSurfaceForTest(std::unique_ptr<RenderSurface>(renderSurface));
+
+    // We expect a single call to queueBuffer when composition is not skipped.
+    EXPECT_CALL(*renderSurface, queueBuffer(_)).Times(1);
+
+    gpuDisplay->editState().isEnabled = true;
+    gpuDisplay->editState().usesClientComposition = false;
+    gpuDisplay->editState().layerStackSpace.content = Rect(0, 0, 1, 1);
+    gpuDisplay->editState().dirtyRegion = Region::INVALID_REGION;
+
+    CompositionRefreshArgs refreshArgs;
+    refreshArgs.repaintEverything = true;
+
+    gpuDisplay->finishFrame(refreshArgs);
 }
 
 /*
@@ -1038,39 +984,35 @@ struct DisplayFunctionalTest : public testing::Test {
 
     DisplayFunctionalTest() {
         EXPECT_CALL(mCompositionEngine, getHwComposer()).WillRepeatedly(ReturnRef(mHwComposer));
-        mDisplay = createDisplay();
-        mRenderSurface = createRenderSurface();
+
         mDisplay->setRenderSurfaceForTest(std::unique_ptr<RenderSurface>(mRenderSurface));
     }
 
     NiceMock<android::mock::HWComposer> mHwComposer;
     NiceMock<Hwc2::mock::PowerAdvisor> mPowerAdvisor;
     NiceMock<mock::CompositionEngine> mCompositionEngine;
-    sp<mock::NativeWindow> mNativeWindow = sp<NiceMock<mock::NativeWindow>>::make();
-    sp<mock::DisplaySurface> mDisplaySurface = sp<NiceMock<mock::DisplaySurface>>::make();
-    std::shared_ptr<Display> mDisplay;
-    impl::RenderSurface* mRenderSurface;
+    sp<mock::NativeWindow> mNativeWindow = new NiceMock<mock::NativeWindow>();
+    sp<mock::DisplaySurface> mDisplaySurface = new NiceMock<mock::DisplaySurface>();
 
-    std::shared_ptr<Display> createDisplay() {
-        return impl::createDisplayTemplated<Display>(mCompositionEngine,
-                                                     DisplayCreationArgsBuilder()
-                                                             .setId(DEFAULT_DISPLAY_ID)
-                                                             .setPixels(DEFAULT_RESOLUTION)
-                                                             .setIsSecure(true)
-                                                             .setPowerAdvisor(&mPowerAdvisor)
-                                                             .build());
-        ;
-    }
+    std::shared_ptr<Display> mDisplay = impl::createDisplayTemplated<
+            Display>(mCompositionEngine,
+                     DisplayCreationArgsBuilder()
+                             .setId(DEFAULT_DISPLAY_ID)
+                             .setConnectionType(ui::DisplayConnectionType::Internal)
+                             .setPixels(DEFAULT_RESOLUTION)
+                             .setIsSecure(true)
+                             .setLayerStackId(DEFAULT_LAYER_STACK)
+                             .setPowerAdvisor(&mPowerAdvisor)
+                             .build());
 
-    impl::RenderSurface* createRenderSurface() {
-        return new impl::RenderSurface{mCompositionEngine, *mDisplay,
-                                       RenderSurfaceCreationArgsBuilder()
-                                               .setDisplayWidth(DEFAULT_RESOLUTION.width)
-                                               .setDisplayHeight(DEFAULT_RESOLUTION.height)
-                                               .setNativeWindow(mNativeWindow)
-                                               .setDisplaySurface(mDisplaySurface)
-                                               .build()};
-    }
+    impl::RenderSurface* mRenderSurface =
+            new impl::RenderSurface{mCompositionEngine, *mDisplay,
+                                    RenderSurfaceCreationArgsBuilder()
+                                            .setDisplayWidth(DEFAULT_RESOLUTION.width)
+                                            .setDisplayHeight(DEFAULT_RESOLUTION.height)
+                                            .setNativeWindow(mNativeWindow)
+                                            .setDisplaySurface(mDisplaySurface)
+                                            .build()};
 };
 
 TEST_F(DisplayFunctionalTest, postFramebufferCriticalCallsAreOrdered) {
@@ -1078,7 +1020,7 @@ TEST_F(DisplayFunctionalTest, postFramebufferCriticalCallsAreOrdered) {
 
     mDisplay->editState().isEnabled = true;
 
-    EXPECT_CALL(mHwComposer, presentAndGetReleaseFences(_, _));
+    EXPECT_CALL(mHwComposer, presentAndGetReleaseFences(_, _, _));
     EXPECT_CALL(*mDisplaySurface, onFrameCommitted());
 
     mDisplay->postFramebuffer();

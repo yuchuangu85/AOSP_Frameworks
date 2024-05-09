@@ -41,41 +41,39 @@ enum {
         if (_status != STATUS_OK) return _status; \
     } while (false)
 
-// AParcelableHolder has been introduced in 31.
-#if __ANDROID_API__ >= 31
 class AParcelableHolder {
    public:
     AParcelableHolder() = delete;
     explicit AParcelableHolder(parcelable_stability_t stability)
         : mParcel(AParcel_create()), mStability(stability) {}
 
-    AParcelableHolder(const AParcelableHolder& other)
-        : mParcel(AParcel_create()), mStability(other.mStability) {
-        AParcel_appendFrom(other.mParcel.get(), this->mParcel.get(), 0,
-                           AParcel_getDataSize(other.mParcel.get()));
-    }
-
-    AParcelableHolder(AParcelableHolder&& other) = default;
     virtual ~AParcelableHolder() = default;
 
     binder_status_t writeToParcel(AParcel* parcel) const {
         RETURN_ON_FAILURE(AParcel_writeInt32(parcel, static_cast<int32_t>(this->mStability)));
-        int32_t size = AParcel_getDataSize(this->mParcel.get());
-        RETURN_ON_FAILURE(AParcel_writeInt32(parcel, size));
-        size = AParcel_getDataSize(this->mParcel.get());
-        RETURN_ON_FAILURE(AParcel_appendFrom(this->mParcel.get(), parcel, 0, size));
+        if (__builtin_available(android 31, *)) {
+            int32_t size = AParcel_getDataSize(this->mParcel.get());
+            RETURN_ON_FAILURE(AParcel_writeInt32(parcel, size));
+        } else {
+            return STATUS_INVALID_OPERATION;
+        }
+        if (__builtin_available(android 31, *)) {
+            int32_t size = AParcel_getDataSize(this->mParcel.get());
+            RETURN_ON_FAILURE(AParcel_appendFrom(this->mParcel.get(), parcel, 0, size));
+        } else {
+            return STATUS_INVALID_OPERATION;
+        }
         return STATUS_OK;
     }
 
     binder_status_t readFromParcel(const AParcel* parcel) {
-        AParcel_reset(mParcel.get());
-
-        parcelable_stability_t wireStability;
-        RETURN_ON_FAILURE(AParcel_readInt32(parcel, &wireStability));
-        if (this->mStability != wireStability) {
-            return STATUS_BAD_VALUE;
+        if (__builtin_available(android 31, *)) {
+            AParcel_reset(mParcel.get());
+        } else {
+            return STATUS_INVALID_OPERATION;
         }
 
+        RETURN_ON_FAILURE(AParcel_readInt32(parcel, &this->mStability));
         int32_t dataSize;
         binder_status_t status = AParcel_readInt32(parcel, &dataSize);
 
@@ -89,7 +87,11 @@ class AParcelableHolder {
             return STATUS_BAD_VALUE;
         }
 
-        status = AParcel_appendFrom(parcel, mParcel.get(), dataStartPos, dataSize);
+        if (__builtin_available(android 31, *)) {
+            status = AParcel_appendFrom(parcel, mParcel.get(), dataStartPos, dataSize);
+        } else {
+            status = STATUS_INVALID_OPERATION;
+        }
         if (status != STATUS_OK) {
             return status;
         }
@@ -101,7 +103,11 @@ class AParcelableHolder {
         if (this->mStability > T::_aidl_stability) {
             return STATUS_BAD_VALUE;
         }
-        AParcel_reset(mParcel.get());
+        if (__builtin_available(android 31, *)) {
+            AParcel_reset(mParcel.get());
+        } else {
+            return STATUS_INVALID_OPERATION;
+        }
         AParcel_writeString(mParcel.get(), T::descriptor, strlen(T::descriptor));
         p.writeToParcel(mParcel.get());
         return STATUS_OK;
@@ -111,9 +117,13 @@ class AParcelableHolder {
     binder_status_t getParcelable(std::optional<T>* ret) const {
         const std::string parcelableDesc(T::descriptor);
         AParcel_setDataPosition(mParcel.get(), 0);
-        if (AParcel_getDataSize(mParcel.get()) == 0) {
-            *ret = std::nullopt;
-            return STATUS_OK;
+        if (__builtin_available(android 31, *)) {
+            if (AParcel_getDataSize(mParcel.get()) == 0) {
+                *ret = std::nullopt;
+                return STATUS_OK;
+            }
+        } else {
+            return STATUS_INVALID_OPERATION;
         }
         std::string parcelableDescInParcel;
         binder_status_t status = AParcel_readString(mParcel.get(), &parcelableDescInParcel);
@@ -130,7 +140,11 @@ class AParcelableHolder {
         return STATUS_OK;
     }
 
-    void reset() { AParcel_reset(mParcel.get()); }
+    void reset() {
+        if (__builtin_available(android 31, *)) {
+            AParcel_reset(mParcel.get());
+        }
+    }
 
     inline bool operator!=(const AParcelableHolder& rhs) const { return this != &rhs; }
     inline bool operator<(const AParcelableHolder& rhs) const { return this < &rhs; }
@@ -138,23 +152,11 @@ class AParcelableHolder {
     inline bool operator==(const AParcelableHolder& rhs) const { return this == &rhs; }
     inline bool operator>(const AParcelableHolder& rhs) const { return this > &rhs; }
     inline bool operator>=(const AParcelableHolder& rhs) const { return this >= &rhs; }
-    inline AParcelableHolder& operator=(const AParcelableHolder& rhs) {
-        this->reset();
-        if (this->mStability != rhs.mStability) {
-            syslog(LOG_ERR, "AParcelableHolder stability mismatch: this %d rhs %d!",
-                   this->mStability, rhs.mStability);
-            abort();
-        }
-        AParcel_appendFrom(rhs.mParcel.get(), this->mParcel.get(), 0,
-                           AParcel_getDataSize(rhs.mParcel.get()));
-        return *this;
-    }
 
    private:
     mutable ndk::ScopedAParcel mParcel;
     parcelable_stability_t mStability;
 };
-#endif  // __ANDROID_API__ >= 31
 
 #undef RETURN_ON_FAILURE
 }  // namespace ndk

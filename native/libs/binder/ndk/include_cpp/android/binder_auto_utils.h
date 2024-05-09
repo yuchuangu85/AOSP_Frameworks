@@ -30,11 +30,11 @@
 #include <android/binder_internal_logging.h>
 #include <android/binder_parcel.h>
 #include <android/binder_status.h>
-#include <assert.h>
-#include <unistd.h>
 
+#include <assert.h>
+
+#include <unistd.h>
 #include <cstddef>
-#include <iostream>
 #include <string>
 
 namespace ndk {
@@ -163,15 +163,6 @@ class ScopedAResource {
     const T get() const { return mT; }
 
     /**
-     * Release the underlying resource.
-     */
-    [[nodiscard]] T release() {
-        T a = mT;
-        mT = DEFAULT;
-        return a;
-    }
-
-    /**
      * This allows the value in this class to be set from beneath it. If you call this method and
      * then change the value of T*, you must take ownership of the value you are replacing and add
      * ownership to the object that is put in here.
@@ -268,21 +259,12 @@ class ScopedAStatus : public impl::ScopedAResource<AStatus*, AStatus_delete, nul
     const char* getMessage() const { return AStatus_getMessage(get()); }
 
     std::string getDescription() const {
-#ifdef __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__
         if (__builtin_available(android 30, *)) {
-#endif
-
-#if defined(__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__) || __ANDROID_API__ >= 30
             const char* cStr = AStatus_getDescription(get());
             std::string ret = cStr;
             AStatus_deleteDescription(cStr);
             return ret;
-#endif
-
-#ifdef __ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__
         }
-#endif
-
         binder_exception_t exception = getExceptionCode();
         std::string desc = std::to_string(exception);
         if (exception == EX_SERVICE_SPECIFIC) {
@@ -320,11 +302,6 @@ class ScopedAStatus : public impl::ScopedAResource<AStatus*, AStatus_delete, nul
     }
 };
 
-static inline std::ostream& operator<<(std::ostream& os, const ScopedAStatus& status) {
-    return os << status.getDescription();
-    return os;
-}
-
 /**
  * Convenience wrapper. See AIBinder_DeathRecipient.
  */
@@ -359,7 +336,7 @@ class ScopedAIBinder_Weak
     /**
      * See AIBinder_Weak_promote.
      */
-    SpAIBinder promote() const { return SpAIBinder(AIBinder_Weak_promote(get())); }
+    SpAIBinder promote() { return SpAIBinder(AIBinder_Weak_promote(get())); }
 };
 
 namespace internal {
@@ -387,8 +364,6 @@ class ScopedFileDescriptor : public impl::ScopedAResource<int, internal::closeWi
     ~ScopedFileDescriptor() {}
     ScopedFileDescriptor(ScopedFileDescriptor&&) = default;
     ScopedFileDescriptor& operator=(ScopedFileDescriptor&&) = default;
-
-    ScopedFileDescriptor dup() const { return ScopedFileDescriptor(::dup(get())); }
 
     bool operator!=(const ScopedFileDescriptor& rhs) const { return get() != rhs.get(); }
     bool operator<(const ScopedFileDescriptor& rhs) const { return get() < rhs.get(); }

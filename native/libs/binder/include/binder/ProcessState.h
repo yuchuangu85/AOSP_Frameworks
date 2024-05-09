@@ -18,9 +18,10 @@
 
 #include <binder/IBinder.h>
 #include <utils/KeyedVector.h>
-#include <utils/Mutex.h>
-#include <utils/String16.h>
 #include <utils/String8.h>
+#include <utils/String16.h>
+
+#include <utils/threads.h>
 
 #include <pthread.h>
 
@@ -29,16 +30,11 @@ namespace android {
 
 class IPCThreadState;
 
-/**
- * Kernel binder process state. All operations here refer to kernel binder. This
- * object is allocated per process.
- */
-class ProcessState : public virtual RefBase {
+class ProcessState : public virtual RefBase
+{
 public:
-    static sp<ProcessState> self();
-    static sp<ProcessState> selfOrNull();
-
-    static bool isVndservicemanagerEnabled();
+    static  sp<ProcessState>    self();
+    static  sp<ProcessState>    selfOrNull();
 
     /* initWithDriver() can be used to configure libbinder to use
      * a different binder driver dev node. It must be called *before*
@@ -48,130 +44,94 @@ public:
      *
      * If this is called with nullptr, the behavior is the same as selfOrNull.
      */
-    static sp<ProcessState> initWithDriver(const char* driver);
+    static  sp<ProcessState>    initWithDriver(const char *driver);
 
-    sp<IBinder> getContextObject(const sp<IBinder>& caller);
+            sp<IBinder>         getContextObject(const sp<IBinder>& caller);
 
-    // For main functions - dangerous for libraries to use
-    void startThreadPool();
+            void                startThreadPool();
 
-    bool becomeContextManager();
+            bool                becomeContextManager();
 
-    sp<IBinder> getStrongProxyForHandle(int32_t handle);
-    void expungeHandle(int32_t handle, IBinder* binder);
+            sp<IBinder>         getStrongProxyForHandle(int32_t handle);
+            void                expungeHandle(int32_t handle, IBinder* binder);
 
-    // TODO: deprecate.
-    void spawnPooledThread(bool isMain);
+            void                spawnPooledThread(bool isMain);
+            
+            status_t            setThreadPoolMaxThreadCount(size_t maxThreads);
+            status_t            enableOnewaySpamDetection(bool enable);
+            void                giveThreadPoolName();
 
-    // For main functions - dangerous for libraries to use
-    status_t setThreadPoolMaxThreadCount(size_t maxThreads);
-    status_t enableOnewaySpamDetection(bool enable);
+            String8             getDriverName();
 
-    // Set the name of the current thread to look like a threadpool
-    // thread. Typically this is called before joinThreadPool.
-    //
-    // TODO: remove this API, and automatically set it intelligently.
-    void giveThreadPoolName();
+            ssize_t             getKernelReferences(size_t count, uintptr_t* buf);
 
-    String8 getDriverName();
+                                // Only usable by the context manager.
+                                // This refcount includes:
+                                // 1. Strong references to the node by this and other processes
+                                // 2. Temporary strong references held by the kernel during a
+                                //    transaction on the node.
+                                // It does NOT include local strong references to the node
+            ssize_t             getStrongRefCountForNode(const sp<BpBinder>& binder);
 
-    ssize_t getKernelReferences(size_t count, uintptr_t* buf);
-
-    // Only usable by the context manager.
-    // This refcount includes:
-    // 1. Strong references to the node by this and other processes
-    // 2. Temporary strong references held by the kernel during a
-    //    transaction on the node.
-    // It does NOT include local strong references to the node
-    ssize_t getStrongRefCountForNode(const sp<BpBinder>& binder);
-
-    enum class CallRestriction {
-        // all calls okay
-        NONE,
-        // log when calls are blocking
-        ERROR_IF_NOT_ONEWAY,
-        // abort process on blocking calls
-        FATAL_IF_NOT_ONEWAY,
-    };
-    // Sets calling restrictions for all transactions in this process. This must be called
-    // before any threads are spawned.
-    void setCallRestriction(CallRestriction restriction);
-
-    /**
-     * Get the max number of threads that have joined the thread pool.
-     * This includes kernel started threads, user joined threads and polling
-     * threads if used.
-     */
-    size_t getThreadPoolMaxTotalThreadCount() const;
-
-    /**
-     * Check to see if the thread pool has started.
-     */
-    bool isThreadPoolStarted() const;
-
-    enum class DriverFeature {
-        ONEWAY_SPAM_DETECTION,
-        EXTENDED_ERROR,
-    };
-    // Determine whether a feature is supported by the binder driver.
-    static bool isDriverFeatureEnabled(const DriverFeature feature);
+            enum class CallRestriction {
+                // all calls okay
+                NONE,
+                // log when calls are blocking
+                ERROR_IF_NOT_ONEWAY,
+                // abort process on blocking calls
+                FATAL_IF_NOT_ONEWAY,
+            };
+            // Sets calling restrictions for all transactions in this process. This must be called
+            // before any threads are spawned.
+            void setCallRestriction(CallRestriction restriction);
 
 private:
-    static sp<ProcessState> init(const char* defaultDriver, bool requireDefault);
-
-    static void onFork();
-    static void parentPostFork();
-    static void childPostFork();
+    static  sp<ProcessState>    init(const char *defaultDriver, bool requireDefault);
 
     friend class IPCThreadState;
     friend class sp<ProcessState>;
 
-    explicit ProcessState(const char* driver);
-    ~ProcessState();
+            explicit            ProcessState(const char* driver);
+                                ~ProcessState();
 
-    ProcessState(const ProcessState& o);
-    ProcessState& operator=(const ProcessState& o);
-    String8 makeBinderThreadName();
+                                ProcessState(const ProcessState& o);
+            ProcessState&       operator=(const ProcessState& o);
+            String8             makeBinderThreadName();
 
-    struct handle_entry {
-        IBinder* binder;
-        RefBase::weakref_type* refs;
-    };
+            struct handle_entry {
+                IBinder* binder;
+                RefBase::weakref_type* refs;
+            };
 
-    handle_entry* lookupHandleLocked(int32_t handle);
+            handle_entry*       lookupHandleLocked(int32_t handle);
 
-    String8 mDriverName;
-    int mDriverFD;
-    void* mVMStart;
+            String8             mDriverName;
+            int                 mDriverFD;
+            void*               mVMStart;
 
-    // Protects thread count and wait variables below.
-    mutable pthread_mutex_t mThreadCountLock;
-    // Broadcast whenever mWaitingForThreads > 0
-    pthread_cond_t mThreadCountDecrement;
-    // Number of binder threads current executing a command.
-    size_t mExecutingThreadsCount;
-    // Number of threads calling IPCThreadState::blockUntilThreadAvailable()
-    size_t mWaitingForThreads;
-    // Maximum number of lazy threads to be started in the threadpool by the kernel.
-    size_t mMaxThreads;
-    // Current number of threads inside the thread pool.
-    size_t mCurrentThreads;
-    // Current number of pooled threads inside the thread pool.
-    size_t mKernelStartedThreads;
-    // Time when thread pool was emptied
-    int64_t mStarvationStartTimeMs;
+            // Protects thread count and wait variables below.
+            pthread_mutex_t     mThreadCountLock;
+            // Broadcast whenever mWaitingForThreads > 0
+            pthread_cond_t      mThreadCountDecrement;
+            // Number of binder threads current executing a command.
+            size_t              mExecutingThreadsCount;
+            // Number of threads calling IPCThreadState::blockUntilThreadAvailable()
+            size_t              mWaitingForThreads;
+            // Maximum number for binder threads allowed for this process.
+            size_t              mMaxThreads;
+            // Time when thread pool was emptied
+            int64_t             mStarvationStartTimeMs;
 
-    mutable Mutex mLock; // protects everything below.
+    mutable Mutex               mLock;  // protects everything below.
 
-    Vector<handle_entry> mHandleToObject;
+            Vector<handle_entry>mHandleToObject;
 
-    bool mForked;
-    bool mThreadPoolStarted;
-    volatile int32_t mThreadPoolSeq;
+            bool                mThreadPoolStarted;
+    volatile int32_t            mThreadPoolSeq;
 
-    CallRestriction mCallRestriction;
+            CallRestriction     mCallRestriction;
 };
-
+    
 } // namespace android
 
 // ---------------------------------------------------------------------------

@@ -44,9 +44,17 @@
 #include "HWComposer.h"
 #include "../SurfaceFlinger.h"
 
+// ----------------------------------------------------------------------------
 namespace android {
+// ----------------------------------------------------------------------------
 
 using ui::Dataspace;
+
+/*
+ * This implements the (main) framebuffer management. This class is used
+ * mostly by SurfaceFlinger, but also by command line GL application.
+ *
+ */
 
 FramebufferSurface::FramebufferSurface(HWComposer& hwc, PhysicalDisplayId displayId,
                                        const sp<IGraphicBufferConsumer>& consumer,
@@ -72,10 +80,6 @@ FramebufferSurface::FramebufferSurface(HWComposer& hwc, PhysicalDisplayId displa
     mConsumer->setDefaultBufferSize(limitedSize.width, limitedSize.height);
     mConsumer->setMaxAcquiredBufferCount(
             SurfaceFlinger::maxFrameBufferAcquiredBuffers - 1);
-
-    for (size_t i = 0; i < sizeof(mHwcBufferIds) / sizeof(mHwcBufferIds[0]); ++i) {
-        mHwcBufferIds[i] = UINT64_MAX;
-    }
 }
 
 void FramebufferSurface::resizeBuffers(const ui::Size& newSize) {
@@ -92,16 +96,31 @@ status_t FramebufferSurface::prepareFrame(CompositionType /*compositionType*/) {
 }
 
 status_t FramebufferSurface::advanceFrame() {
+    uint32_t slot = 0;
+    sp<GraphicBuffer> buf;
+    sp<Fence> acquireFence(Fence::NO_FENCE);
+    Dataspace dataspace = Dataspace::UNKNOWN;
+    status_t result = nextBuffer(slot, buf, acquireFence, dataspace);
+    mDataSpace = dataspace;
+    if (result != NO_ERROR) {
+        ALOGE("error latching next FramebufferSurface buffer: %s (%d)",
+                strerror(-result), result);
+    }
+    return result;
+}
+
+status_t FramebufferSurface::nextBuffer(uint32_t& outSlot,
+        sp<GraphicBuffer>& outBuffer, sp<Fence>& outFence,
+        Dataspace& outDataspace) {
     Mutex::Autolock lock(mMutex);
 
     BufferItem item;
     status_t err = acquireBufferLocked(&item, 0);
     if (err == BufferQueue::NO_BUFFER_AVAILABLE) {
-        mDataspace = Dataspace::UNKNOWN;
+        mHwcBufferCache.getHwcBuffer(mCurrentBufferSlot, mCurrentBuffer, &outSlot, &outBuffer);
         return NO_ERROR;
     } else if (err != NO_ERROR) {
         ALOGE("error acquiring buffer: %s (%d)", strerror(-err), err);
-        mDataspace = Dataspace::UNKNOWN;
         return err;
     }
 
@@ -122,18 +141,13 @@ status_t FramebufferSurface::advanceFrame() {
     mCurrentBufferSlot = item.mSlot;
     mCurrentBuffer = mSlots[mCurrentBufferSlot].mGraphicBuffer;
     mCurrentFence = item.mFence;
-    mDataspace = static_cast<Dataspace>(item.mDataSpace);
 
-    // assume HWC has previously seen the buffer in this slot
-    sp<GraphicBuffer> hwcBuffer = sp<GraphicBuffer>(nullptr);
-    if (mCurrentBuffer->getId() != mHwcBufferIds[mCurrentBufferSlot]) {
-        mHwcBufferIds[mCurrentBufferSlot] = mCurrentBuffer->getId();
-        hwcBuffer = mCurrentBuffer; // HWC hasn't previously seen this buffer in this slot
-    }
-    status_t result = mHwc.setClientTarget(mDisplayId, mCurrentBufferSlot, mCurrentFence, hwcBuffer,
-                                           mDataspace);
+    outFence = item.mFence;
+    mHwcBufferCache.getHwcBuffer(mCurrentBufferSlot, mCurrentBuffer, &outSlot, &outBuffer);
+    outDataspace = static_cast<Dataspace>(item.mDataSpace);
+    status_t result = mHwc.setClientTarget(mDisplayId, outSlot, outFence, outBuffer, outDataspace);
     if (result != NO_ERROR) {
-        ALOGE("error posting framebuffer: %s (%d)", strerror(-result), result);
+        ALOGE("error posting framebuffer: %d", result);
         return result;
     }
 
@@ -184,21 +198,21 @@ ui::Size FramebufferSurface::limitSizeInternal(const ui::Size& size, const ui::S
         limitedSize.width = maxSize.height * aspectRatio;
         wasLimited = true;
     }
-    ALOGI_IF(wasLimited, "Framebuffer size has been limited to [%dx%d] from [%dx%d]",
+    ALOGI_IF(wasLimited, "framebuffer size has been limited to [%dx%d] from [%dx%d]",
              limitedSize.width, limitedSize.height, size.width, size.height);
     return limitedSize;
 }
 
 void FramebufferSurface::dumpAsString(String8& result) const {
     Mutex::Autolock lock(mMutex);
-    result.append("   FramebufferSurface\n");
-    result.appendFormat("      mDataspace=%s (%d)\n",
-                        dataspaceDetails(static_cast<android_dataspace>(mDataspace)).c_str(),
-                        mDataspace);
-    ConsumerBase::dumpLocked(result, "      ");
+    result.appendFormat("  FramebufferSurface: dataspace: %s(%d)\n",
+                        dataspaceDetails(static_cast<android_dataspace>(mDataSpace)).c_str(),
+                        mDataSpace);
+    ConsumerBase::dumpLocked(result, "   ");
 }
 
-void FramebufferSurface::dumpLocked(String8& result, const char* prefix) const {
+void FramebufferSurface::dumpLocked(String8& result, const char* prefix) const
+{
     ConsumerBase::dumpLocked(result, prefix);
 }
 
@@ -206,7 +220,9 @@ const sp<Fence>& FramebufferSurface::getClientTargetAcquireFence() const {
     return mCurrentFence;
 }
 
-} // namespace android
+// ----------------------------------------------------------------------------
+}; // namespace android
+// ----------------------------------------------------------------------------
 
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
 #pragma clang diagnostic pop // ignored "-Wconversion"

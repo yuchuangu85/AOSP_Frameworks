@@ -24,9 +24,9 @@ enum JankType {
     None = 0x0,
     // Jank that occurs in the layers below SurfaceFlinger
     DisplayHAL = 0x1,
-    // SF took too long on the CPU; deadline missed during HWC
+    // SF took too long on the CPU
     SurfaceFlingerCpuDeadlineMissed = 0x2,
-    // SF took too long on the GPU; deadline missed during GPU composition
+    // SF took too long on the GPU
     SurfaceFlingerGpuDeadlineMissed = 0x4,
     // Either App or GPU took too long on the frame
     AppDeadlineMissed = 0x8,

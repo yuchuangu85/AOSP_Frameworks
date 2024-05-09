@@ -60,8 +60,19 @@ bool isSameStack(const std::vector<const LayerState*>& incomingLayers,
 
 } // namespace
 
-Flattener::Flattener(renderengine::RenderEngine& renderEngine, const Tunables& tunables)
-      : mRenderEngine(renderEngine), mTunables(tunables), mTexturePool(mRenderEngine) {}
+Flattener::Flattener(
+        renderengine::RenderEngine& renderEngine, bool enableHolePunch,
+        std::optional<CachedSetRenderSchedulingTunables> cachedSetRenderSchedulingTunables)
+      : mRenderEngine(renderEngine),
+        mEnableHolePunch(enableHolePunch),
+        mCachedSetRenderSchedulingTunables(cachedSetRenderSchedulingTunables),
+        mTexturePool(mRenderEngine) {
+    const int timeoutInMs =
+            base::GetIntProperty(std::string("debug.sf.layer_caching_active_layer_timeout_ms"), 0);
+    if (timeoutInMs != 0) {
+        mActiveLayerTimeout = std::chrono::milliseconds(timeoutInMs);
+    }
+}
 
 NonBufferHash Flattener::flattenLayers(const std::vector<const LayerState*>& layers,
                                        NonBufferHash hash, time_point now) {
@@ -99,8 +110,7 @@ NonBufferHash Flattener::flattenLayers(const std::vector<const LayerState*>& lay
 
 void Flattener::renderCachedSets(
         const OutputCompositionState& outputState,
-        std::optional<std::chrono::steady_clock::time_point> renderDeadline,
-        bool deviceHandlesColorTransform) {
+        std::optional<std::chrono::steady_clock::time_point> renderDeadline) {
     ATRACE_CALL();
 
     if (!mNewCachedSet) {
@@ -118,14 +128,14 @@ void Flattener::renderCachedSets(
     // If we have a render deadline, and the flattener is configured to skip rendering if we don't
     // have enough time, then we skip rendering the cached set if we think that we'll steal too much
     // time from the next frame.
-    if (renderDeadline && mTunables.mRenderScheduling) {
+    if (renderDeadline && mCachedSetRenderSchedulingTunables) {
         if (const auto estimatedRenderFinish =
-                    now + mTunables.mRenderScheduling->cachedSetRenderDuration;
+                    now + mCachedSetRenderSchedulingTunables->cachedSetRenderDuration;
             estimatedRenderFinish > *renderDeadline) {
             mNewCachedSet->incrementSkipCount();
 
             if (mNewCachedSet->getSkipCount() <=
-                mTunables.mRenderScheduling->maxDeferRenderAttempts) {
+                mCachedSetRenderSchedulingTunables->maxDeferRenderAttempts) {
                 ATRACE_FORMAT("DeadlinePassed: exceeded deadline by: %d us",
                               std::chrono::duration_cast<std::chrono::microseconds>(
                                       estimatedRenderFinish - *renderDeadline)
@@ -137,7 +147,7 @@ void Flattener::renderCachedSets(
         }
     }
 
-    mNewCachedSet->render(mRenderEngine, mTexturePool, outputState, deviceHandlesColorTransform);
+    mNewCachedSet->render(mRenderEngine, mTexturePool, outputState);
 }
 
 void Flattener::dumpLayers(std::string& result) const {
@@ -195,9 +205,6 @@ void Flattener::dump(std::string& result) const {
                         durationString(lastUpdate).c_str());
 
     dumpLayers(result);
-
-    base::StringAppendF(&result, "\n");
-    mTexturePool.dump(result);
 }
 
 size_t Flattener::calculateDisplayCost(const std::vector<const LayerState*>& layers) const {
@@ -212,8 +219,7 @@ size_t Flattener::calculateDisplayCost(const std::vector<const LayerState*>& lay
         displayCost += static_cast<size_t>(layer->getDisplayFrame().width() *
                                            layer->getDisplayFrame().height());
 
-        hasClientComposition |= layer->getCompositionType() ==
-                aidl::android::hardware::graphics::composer3::Composition::CLIENT;
+        hasClientComposition |= layer->getCompositionType() == hal::Composition::CLIENT;
     }
 
     if (hasClientComposition) {
@@ -411,31 +417,23 @@ std::vector<Flattener::Run> Flattener::findCandidateRuns(time_point now) const {
     bool runHasFirstLayer = false;
 
     for (auto currentSet = mLayers.cbegin(); currentSet != mLayers.cend(); ++currentSet) {
-        bool layerIsInactive = now - currentSet->getLastUpdate() > mTunables.mActiveLayerTimeout;
+        const bool layerIsInactive = now - currentSet->getLastUpdate() > mActiveLayerTimeout;
         const bool layerHasBlur = currentSet->hasBlurBehind();
-        const bool layerDeniedFromCaching = currentSet->cachingHintExcludesLayers();
-
-        // Layers should also be considered inactive whenever their framerate is lower than 1fps.
-        if (!layerIsInactive && currentSet->getLayerCount() == kNumLayersFpsConsideration) {
-            auto layerFps = currentSet->getFirstLayer().getState()->getFps();
-            if (layerFps > 0 && layerFps <= kFpsActiveThreshold) {
-                ATRACE_FORMAT("layer is considered inactive due to low FPS [%s] %f",
-                              currentSet->getFirstLayer().getName().c_str(), layerFps);
-                layerIsInactive = true;
-            }
-        }
-
-        if (!layerDeniedFromCaching && layerIsInactive &&
-            (firstLayer || runHasFirstLayer || !layerHasBlur) &&
+        if (layerIsInactive && (firstLayer || runHasFirstLayer || !layerHasBlur) &&
             !currentSet->hasUnsupportedDataspace()) {
             if (isPartOfRun) {
-                builder.increment();
+                builder.append(currentSet->getLayerCount());
             } else {
-                builder.init(currentSet);
-                if (firstLayer) {
-                    runHasFirstLayer = true;
+                // Runs can't start with a non-buffer layer
+                if (currentSet->getFirstLayer().getBuffer() == nullptr) {
+                    ALOGV("[%s] Skipping initial non-buffer layer", __func__);
+                } else {
+                    builder.init(currentSet);
+                    if (firstLayer) {
+                        runHasFirstLayer = true;
+                    }
+                    isPartOfRun = true;
                 }
-                isPartOfRun = true;
             }
         } else if (isPartOfRun) {
             builder.setHolePunchCandidate(&(*currentSet));
@@ -501,13 +499,6 @@ void Flattener::buildCachedSets(time_point now) {
         }
     }
 
-    for (const CachedSet& layer : mLayers) {
-        if (layer.hasSolidColorLayers()) {
-            ATRACE_NAME("layer->hasSolidColorLayers()");
-            return;
-        }
-    }
-
     std::vector<Run> runs = findCandidateRuns(now);
 
     std::optional<Run> bestRun = findBestRun(runs);
@@ -528,7 +519,7 @@ void Flattener::buildCachedSets(time_point now) {
         mNewCachedSet->addBackgroundBlurLayer(*bestRun->getBlurringLayer());
     }
 
-    if (mTunables.mEnableHolePunch && bestRun->getHolePunchCandidate() &&
+    if (mEnableHolePunch && bestRun->getHolePunchCandidate() &&
         bestRun->getHolePunchCandidate()->requiresHolePunch()) {
         // Add the pip layer to mNewCachedSet, but in a special way - it should
         // replace the buffer with a clear round rect.

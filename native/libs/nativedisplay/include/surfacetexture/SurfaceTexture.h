@@ -272,11 +272,10 @@ public:
     status_t attachToContext(uint32_t tex);
 
     sp<GraphicBuffer> dequeueBuffer(int* outSlotid, android_dataspace* outDataspace,
-                                    HdrMetadata* outHdrMetadata, float* outTransformMatrix,
-                                    uint32_t* outTransform, bool* outQueueEmpty,
+                                    float* outTransformMatrix, bool* outQueueEmpty,
                                     SurfaceTexture_createReleaseFence createFence,
                                     SurfaceTexture_fenceWait fenceWait,
-                                    void* fencePassThroughHandle, ARect* currentCrop);
+                                    void* fencePassThroughHandle);
 
     /**
      * takeConsumerOwnership attaches a SurfaceTexture that is currently in the

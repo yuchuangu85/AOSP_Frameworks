@@ -22,16 +22,23 @@
 #include <cutils/properties.h>
 #include <ui/GraphicBuffer.h>
 
+#include "BufferLayerConsumer.h"
+#include "BufferQueueLayer.h"
+#include "BufferStateLayer.h"
+#include "ContainerLayer.h"
 #include "DisplayDevice.h"
+#include "EffectLayer.h"
 #include "FrameTracer/FrameTracer.h"
 #include "Layer.h"
+#include "MonitoredProducer.h"
 #include "NativeWindowSurface.h"
 #include "StartPropertySetThread.h"
 #include "SurfaceFlingerDefaultFactory.h"
 #include "SurfaceFlingerProperties.h"
+#include "SurfaceInterceptor.h"
 
 #include "DisplayHardware/ComposerHal.h"
-#include "FrameTimeline/FrameTimeline.h"
+#include "Scheduler/MessageQueue.h"
 #include "Scheduler/Scheduler.h"
 #include "Scheduler/VsyncConfiguration.h"
 #include "Scheduler/VsyncController.h"
@@ -44,6 +51,10 @@ std::unique_ptr<HWComposer> DefaultFactory::createHWComposer(const std::string& 
     return std::make_unique<android::impl::HWComposer>(serviceName);
 }
 
+std::unique_ptr<MessageQueue> DefaultFactory::createMessageQueue() {
+    return std::make_unique<android::impl::MessageQueue>();
+}
+
 std::unique_ptr<scheduler::VsyncConfiguration> DefaultFactory::createVsyncConfiguration(
         Fps currentRefreshRate) {
     if (property_get_bool("debug.sf.use_phase_offsets_as_durations", false)) {
@@ -53,25 +64,46 @@ std::unique_ptr<scheduler::VsyncConfiguration> DefaultFactory::createVsyncConfig
     }
 }
 
+std::unique_ptr<Scheduler> DefaultFactory::createScheduler(
+        const scheduler::RefreshRateConfigs& configs, ISchedulerCallback& callback) {
+    return std::make_unique<Scheduler>(configs, callback);
+}
+
+sp<SurfaceInterceptor> DefaultFactory::createSurfaceInterceptor() {
+    return new android::impl::SurfaceInterceptor();
+}
+
 sp<StartPropertySetThread> DefaultFactory::createStartPropertySetThread(
         bool timestampPropertyValue) {
-    return sp<StartPropertySetThread>::make(timestampPropertyValue);
+    return new StartPropertySetThread(timestampPropertyValue);
 }
 
 sp<DisplayDevice> DefaultFactory::createDisplayDevice(DisplayDeviceCreationArgs& creationArgs) {
-    return sp<DisplayDevice>::make(creationArgs);
+    return new DisplayDevice(creationArgs);
 }
 
 sp<GraphicBuffer> DefaultFactory::createGraphicBuffer(uint32_t width, uint32_t height,
                                                       PixelFormat format, uint32_t layerCount,
                                                       uint64_t usage, std::string requestorName) {
-    return sp<GraphicBuffer>::make(width, height, format, layerCount, usage, requestorName);
+    return new GraphicBuffer(width, height, format, layerCount, usage, requestorName);
 }
 
 void DefaultFactory::createBufferQueue(sp<IGraphicBufferProducer>* outProducer,
                                        sp<IGraphicBufferConsumer>* outConsumer,
                                        bool consumerIsSurfaceFlinger) {
     BufferQueue::createBufferQueue(outProducer, outConsumer, consumerIsSurfaceFlinger);
+}
+
+sp<IGraphicBufferProducer> DefaultFactory::createMonitoredProducer(
+        const sp<IGraphicBufferProducer>& producer, const sp<SurfaceFlinger>& flinger,
+        const wp<Layer>& layer) {
+    return new MonitoredProducer(producer, flinger, layer);
+}
+
+sp<BufferLayerConsumer> DefaultFactory::createBufferLayerConsumer(
+        const sp<IGraphicBufferConsumer>& consumer, renderengine::RenderEngine& renderEngine,
+        uint32_t textureName, Layer* layer) {
+    return new BufferLayerConsumer(consumer, renderEngine, textureName, layer);
 }
 
 std::unique_ptr<surfaceflinger::NativeWindowSurface> DefaultFactory::createNativeWindowSurface(
@@ -83,16 +115,20 @@ std::unique_ptr<compositionengine::CompositionEngine> DefaultFactory::createComp
     return compositionengine::impl::createCompositionEngine();
 }
 
-sp<Layer> DefaultFactory::createBufferStateLayer(const LayerCreationArgs& args) {
-    return sp<Layer>::make(args);
+sp<ContainerLayer> DefaultFactory::createContainerLayer(const LayerCreationArgs& args) {
+    return new ContainerLayer(args);
 }
 
-sp<Layer> DefaultFactory::createEffectLayer(const LayerCreationArgs& args) {
-    return sp<Layer>::make(args);
+sp<BufferQueueLayer> DefaultFactory::createBufferQueueLayer(const LayerCreationArgs& args) {
+    return new BufferQueueLayer(args);
 }
 
-sp<LayerFE> DefaultFactory::createLayerFE(const std::string& layerName) {
-    return sp<LayerFE>::make(layerName);
+sp<BufferStateLayer> DefaultFactory::createBufferStateLayer(const LayerCreationArgs& args) {
+    return new BufferStateLayer(args);
+}
+
+sp<EffectLayer> DefaultFactory::createEffectLayer(const LayerCreationArgs& args) {
+    return new EffectLayer(args);
 }
 
 std::unique_ptr<FrameTracer> DefaultFactory::createFrameTracer() {

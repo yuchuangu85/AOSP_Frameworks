@@ -31,10 +31,8 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <filesystem>
 #include <thread>
 
-#include <aidl/android/hardware/dumpstate/IDumpstateDevice.h>
 #include <android-base/file.h>
 #include <android-base/properties.h>
 #include <android-base/stringprintf.h>
@@ -49,7 +47,6 @@ namespace android {
 namespace os {
 namespace dumpstate {
 
-using DumpstateDeviceAidl = ::aidl::android::hardware::dumpstate::IDumpstateDevice;
 using ::android::hardware::dumpstate::V1_1::DumpstateMode;
 using ::testing::EndsWith;
 using ::testing::Eq;
@@ -71,7 +68,7 @@ class DumpstateListenerMock : public IDumpstateListener {
   public:
     MOCK_METHOD1(onProgress, binder::Status(int32_t progress));
     MOCK_METHOD1(onError, binder::Status(int32_t error_code));
-    MOCK_METHOD1(onFinished, binder::Status(const std::string& bugreport_file));
+    MOCK_METHOD0(onFinished, binder::Status());
     MOCK_METHOD1(onScreenshotTaken, binder::Status(bool success));
     MOCK_METHOD0(onUiIntensiveBugreportDumpsFinished, binder::Status());
 
@@ -189,6 +186,7 @@ TEST_F(DumpOptionsTest, InitializeNone) {
     EXPECT_FALSE(options_.do_progress_updates);
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.limited_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializeAdbBugreport) {
@@ -212,6 +210,7 @@ TEST_F(DumpOptionsTest, InitializeAdbBugreport) {
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.stream_to_socket);
     EXPECT_FALSE(options_.limited_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializeAdbShellBugreport) {
@@ -235,11 +234,13 @@ TEST_F(DumpOptionsTest, InitializeAdbShellBugreport) {
     EXPECT_FALSE(options_.do_progress_updates);
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.limited_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializeFullBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_FULL, fd, fd, true);
     EXPECT_TRUE(options_.do_screenshot);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::FULL);
 
     // Other options retain default values
     EXPECT_TRUE(options_.do_vibrate);
@@ -252,9 +253,10 @@ TEST_F(DumpOptionsTest, InitializeFullBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeInteractiveBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, fd, fd, true);
     EXPECT_TRUE(options_.do_progress_updates);
     EXPECT_TRUE(options_.do_screenshot);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::INTERACTIVE);
 
     // Other options retain default values
     EXPECT_TRUE(options_.do_vibrate);
@@ -266,10 +268,11 @@ TEST_F(DumpOptionsTest, InitializeInteractiveBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeRemoteBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_REMOTE, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_REMOTE, fd, fd, false);
     EXPECT_TRUE(options_.is_remote_mode);
     EXPECT_FALSE(options_.do_vibrate);
     EXPECT_FALSE(options_.do_screenshot);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::REMOTE);
 
     // Other options retain default values
     EXPECT_FALSE(options_.progress_updates_to_socket);
@@ -280,14 +283,14 @@ TEST_F(DumpOptionsTest, InitializeRemoteBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeWearBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WEAR, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WEAR, fd, fd, true);
     EXPECT_TRUE(options_.do_screenshot);
     EXPECT_TRUE(options_.do_progress_updates);
-
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::WEAR);
 
     // Other options retain default values
+    EXPECT_TRUE(options_.do_vibrate);
     EXPECT_FALSE(options_.progress_updates_to_socket);
-    EXPECT_FALSE(options_.do_vibrate);
     EXPECT_FALSE(options_.show_header_only);
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.stream_to_socket);
@@ -295,10 +298,11 @@ TEST_F(DumpOptionsTest, InitializeWearBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeTelephonyBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_TELEPHONY, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_TELEPHONY, fd, fd, false);
     EXPECT_FALSE(options_.do_screenshot);
     EXPECT_TRUE(options_.telephony_only);
     EXPECT_TRUE(options_.do_progress_updates);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::CONNECTIVITY);
 
     // Other options retain default values
     EXPECT_TRUE(options_.do_vibrate);
@@ -310,9 +314,10 @@ TEST_F(DumpOptionsTest, InitializeTelephonyBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeWifiBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WIFI, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WIFI, fd, fd, false);
     EXPECT_FALSE(options_.do_screenshot);
     EXPECT_TRUE(options_.wifi_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::WIFI);
 
     // Other options retain default values
     EXPECT_TRUE(options_.do_vibrate);
@@ -349,6 +354,7 @@ TEST_F(DumpOptionsTest, InitializeLimitedOnlyBugreport) {
     EXPECT_FALSE(options_.do_progress_updates);
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.stream_to_socket);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializeDefaultBugReport) {
@@ -365,6 +371,7 @@ TEST_F(DumpOptionsTest, InitializeDefaultBugReport) {
 
     EXPECT_EQ(status, Dumpstate::RunStatus::OK);
     EXPECT_TRUE(options_.do_screenshot);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 
     // Other options retain default values
     EXPECT_TRUE(options_.do_vibrate);
@@ -401,6 +408,7 @@ TEST_F(DumpOptionsTest, InitializePartial1) {
     EXPECT_FALSE(options_.do_progress_updates);
     EXPECT_FALSE(options_.is_remote_mode);
     EXPECT_FALSE(options_.limited_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializePartial2) {
@@ -428,6 +436,7 @@ TEST_F(DumpOptionsTest, InitializePartial2) {
     EXPECT_FALSE(options_.stream_to_socket);
     EXPECT_FALSE(options_.progress_updates_to_socket);
     EXPECT_FALSE(options_.limited_only);
+    EXPECT_EQ(options_.dumpstate_hal_mode, DumpstateMode::DEFAULT);
 }
 
 TEST_F(DumpOptionsTest, InitializeHelp) {
@@ -484,20 +493,6 @@ TEST_F(DumpOptionsTest, ValidateOptionsRemoteMode) {
 
     options_.do_progress_updates = false;
     EXPECT_TRUE(options_.ValidateOptions());
-}
-
-TEST_F(DumpOptionsTest, InitializeBugreportFlags) {
-    int flags = Dumpstate::BugreportFlag::BUGREPORT_USE_PREDUMPED_UI_DATA |
-                Dumpstate::BugreportFlag::BUGREPORT_FLAG_DEFER_CONSENT;
-    options_.Initialize(
-      Dumpstate::BugreportMode::BUGREPORT_FULL, flags, fd, fd, true);
-    EXPECT_TRUE(options_.is_consent_deferred);
-    EXPECT_TRUE(options_.use_predumped_ui_data);
-
-    options_.Initialize(
-      Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true);
-    EXPECT_FALSE(options_.is_consent_deferred);
-    EXPECT_FALSE(options_.use_predumped_ui_data);
 }
 
 class DumpstateTest : public DumpstateBaseTest {
@@ -997,24 +992,6 @@ TEST_F(DumpstateTest, DumpPool_withParallelRunDisabled_isNull) {
     EXPECT_FALSE(ds.dump_pool_);
 }
 
-TEST_F(DumpstateTest, PreDumpUiData) {
-    // These traces are always enabled, i.e. they are always pre-dumped
-    const std::vector<std::filesystem::path> uiTraces = {
-        std::filesystem::path{"/data/misc/wmtrace/transactions_trace.winscope"},
-        std::filesystem::path{"/data/misc/wmtrace/wm_transition_trace.winscope"},
-        std::filesystem::path{"/data/misc/wmtrace/shell_transition_trace.winscope"},
-    };
-
-    for (const auto traceFile : uiTraces) {
-        std::system(("rm -f " + traceFile.string()).c_str());
-        EXPECT_FALSE(std::filesystem::exists(traceFile)) << traceFile << " was not deleted.";
-
-        Dumpstate& ds_ = Dumpstate::GetInstance();
-        ds_.PreDumpUiData();
-        EXPECT_TRUE(std::filesystem::exists(traceFile)) << traceFile << " was not created.";
-    }
-}
-
 class ZippedBugReportStreamTest : public DumpstateBaseTest {
   public:
     void SetUp() {
@@ -1056,8 +1033,7 @@ class ZippedBugReportStreamTest : public DumpstateBaseTest {
 };
 
 // Generate a quick LimitedOnly report redirected to a file, open it and verify entry exist.
-// TODO: broken test tracked in b/249983726
-TEST_F(ZippedBugReportStreamTest, DISABLED_StreamLimitedOnlyReport) {
+TEST_F(ZippedBugReportStreamTest, StreamLimitedOnlyReport) {
     std::string out_path = kTestDataPath + "StreamLimitedOnlyReportOut.zip";
     android::base::unique_fd out_fd;
     CreateFd(out_path, &out_fd);
@@ -1078,6 +1054,11 @@ TEST_F(ZippedBugReportStreamTest, DISABLED_StreamLimitedOnlyReport) {
                 testing::ContainsRegex("(bugreport-.+(-[[:digit:]]+){6}\\.txt)"));
     VerifyEntry(handle_, bugreport_txt_name, &entry);
 }
+
+class DumpstateServiceTest : public DumpstateBaseTest {
+  public:
+    DumpstateService dss;
+};
 
 class ProgressTest : public DumpstateBaseTest {
   public:
@@ -1749,13 +1730,14 @@ TEST_F(DumpPoolTest, EnqueueTaskWithFd) {
         dprintf(out_fd, "C");
     };
     setLogDuration(/* log_duration = */false);
-    auto t1 = dump_pool_->enqueueTaskWithFd("", dump_func_1, std::placeholders::_1);
-    auto t2 = dump_pool_->enqueueTaskWithFd("", dump_func_2, std::placeholders::_1);
-    auto t3 = dump_pool_->enqueueTaskWithFd("", dump_func_3, std::placeholders::_1);
+    dump_pool_->enqueueTaskWithFd(/* task_name = */"1", dump_func_1, std::placeholders::_1);
+    dump_pool_->enqueueTaskWithFd(/* task_name = */"2", dump_func_2, std::placeholders::_1);
+    dump_pool_->enqueueTaskWithFd(/* task_name = */"3", dump_func_3, std::placeholders::_1);
 
-    WaitForTask(std::move(t1), "", out_fd_.get());
-    WaitForTask(std::move(t2), "", out_fd_.get());
-    WaitForTask(std::move(t3), "", out_fd_.get());
+    dump_pool_->waitForTask("1", "", out_fd_.get());
+    dump_pool_->waitForTask("2", "", out_fd_.get());
+    dump_pool_->waitForTask("3", "", out_fd_.get());
+    dump_pool_->shutdown();
 
     std::string result;
     ReadFileToString(out_path_, &result);
@@ -1769,13 +1751,35 @@ TEST_F(DumpPoolTest, EnqueueTask_withDurationLog) {
         run_1 = true;
     };
 
-    auto t1 = dump_pool_->enqueueTask(/* duration_title = */"1", dump_func_1);
-    WaitForTask(std::move(t1), "", out_fd_.get());
+    dump_pool_->enqueueTask(/* task_name = */"1", dump_func_1);
+    dump_pool_->waitForTask("1", "", out_fd_.get());
+    dump_pool_->shutdown();
 
     std::string result;
     ReadFileToString(out_path_, &result);
     EXPECT_TRUE(run_1);
     EXPECT_THAT(result, StrEq("------ 0.000s was the duration of '1' ------\n"));
+    EXPECT_THAT(getTempFileCounts(kTestDataPath), Eq(0));
+}
+
+TEST_F(DumpPoolTest, Shutdown_withoutCrash) {
+    bool run_1 = false;
+    auto dump_func_1 = [&]() {
+        run_1 = true;
+    };
+    auto dump_func = []() {
+        sleep(1);
+    };
+
+    dump_pool_->start(/* thread_counts = */1);
+    dump_pool_->enqueueTask(/* task_name = */"1", dump_func_1);
+    dump_pool_->enqueueTask(/* task_name = */"2", dump_func);
+    dump_pool_->enqueueTask(/* task_name = */"3", dump_func);
+    dump_pool_->enqueueTask(/* task_name = */"4", dump_func);
+    dump_pool_->waitForTask("1", "", out_fd_.get());
+    dump_pool_->shutdown();
+
+    EXPECT_TRUE(run_1);
     EXPECT_THAT(getTempFileCounts(kTestDataPath), Eq(0));
 }
 

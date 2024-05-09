@@ -20,17 +20,12 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-#include <ftl/flags.h>
-
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 #include <utils/Timers.h>
 
-#include <android/gui/ISurfaceComposer.h>
 #include <binder/IInterface.h>
-#include <gui/VsyncEventData.h>
-
-#include <ui/DisplayId.h>
+#include <gui/ISurfaceComposer.h>
 
 // ----------------------------------------------------------------------------
 
@@ -38,11 +33,7 @@ namespace android {
 
 // ----------------------------------------------------------------------------
 
-using EventRegistrationFlags = ftl::Flags<gui::ISurfaceComposer::EventRegistration>;
-
-using gui::IDisplayEventConnection;
-using gui::ParcelableVsyncEventData;
-using gui::VsyncEventData;
+class IDisplayEventConnection;
 
 namespace gui {
 class BitTube;
@@ -58,7 +49,6 @@ static inline constexpr uint32_t fourcc(char c1, char c2, char c3, char c4) {
 // ----------------------------------------------------------------------------
 class DisplayEventReceiver {
 public:
-
     enum {
         DISPLAY_EVENT_VSYNC = fourcc('v', 's', 'y', 'n'),
         DISPLAY_EVENT_HOTPLUG = fourcc('p', 'l', 'u', 'g'),
@@ -83,7 +73,10 @@ public:
 
         struct VSync {
             uint32_t count;
-            VsyncEventData vsyncData;
+            nsecs_t expectedVSyncTimestamp __attribute__((aligned(8)));
+            nsecs_t deadlineTimestamp __attribute__((aligned(8)));
+            nsecs_t frameInterval __attribute__((aligned(8)));
+            int64_t vsyncId;
         };
 
         struct Hotplug {
@@ -117,10 +110,9 @@ public:
      * To receive ModeChanged and/or FrameRateOverrides events specify this in
      * the constructor. Other events start being delivered immediately.
      */
-    explicit DisplayEventReceiver(gui::ISurfaceComposer::VsyncSource vsyncSource =
-                                          gui::ISurfaceComposer::VsyncSource::eVsyncSourceApp,
-                                  EventRegistrationFlags eventRegistration = {},
-                                  const sp<IBinder>& layerHandle = nullptr);
+    explicit DisplayEventReceiver(
+            ISurfaceComposer::VsyncSource vsyncSource = ISurfaceComposer::eVsyncSourceApp,
+            ISurfaceComposer::EventRegistrationFlags eventRegistration = {});
 
     /*
      * ~DisplayEventReceiver severs the connection with SurfaceFlinger, new events
@@ -171,21 +163,10 @@ public:
      */
     status_t requestNextVsync();
 
-    /**
-     * getLatestVsyncEventData() gets the latest vsync event data.
-     */
-    status_t getLatestVsyncEventData(ParcelableVsyncEventData* outVsyncEventData) const;
-
 private:
     sp<IDisplayEventConnection> mEventConnection;
     std::unique_ptr<gui::BitTube> mDataChannel;
-    std::optional<status_t> mInitError;
 };
-
-inline bool operator==(DisplayEventReceiver::Event::FrameRateOverride lhs,
-                       DisplayEventReceiver::Event::FrameRateOverride rhs) {
-    return (lhs.uid == rhs.uid) && std::abs(lhs.frameRateHz - rhs.frameRateHz) < 0.001f;
-}
 
 // ----------------------------------------------------------------------------
 }; // namespace android

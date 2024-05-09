@@ -14,14 +14,12 @@
  * limitations under the License.
  */
 
-#pragma once
+#ifndef _LIBINPUT_DISPLAY_VIEWPORT_H
+#define _LIBINPUT_DISPLAY_VIEWPORT_H
 
 #include <android-base/stringprintf.h>
-#include <ftl/enum.h>
-#include <ftl/string.h>
-#include <gui/constants.h>
 #include <input/Input.h>
-#include <ui/Rotation.h>
+#include <input/NamedEnum.h>
 
 #include <cinttypes>
 #include <optional>
@@ -29,6 +27,13 @@
 using android::base::StringPrintf;
 
 namespace android {
+
+enum {
+    DISPLAY_ORIENTATION_0 = 0,
+    DISPLAY_ORIENTATION_90 = 1,
+    DISPLAY_ORIENTATION_180 = 2,
+    DISPLAY_ORIENTATION_270 = 3
+};
 
 /**
  * Describes the different type of viewports supported by input flinger.
@@ -38,8 +43,6 @@ enum class ViewportType : int32_t {
     INTERNAL = 1,
     EXTERNAL = 2,
     VIRTUAL = 3,
-
-    ftl_last = VIRTUAL
 };
 
 /*
@@ -48,7 +51,7 @@ enum class ViewportType : int32_t {
  */
 struct DisplayViewport {
     int32_t displayId; // -1 if invalid
-    ui::Rotation orientation;
+    int32_t orientation;
     int32_t logicalLeft;
     int32_t logicalTop;
     int32_t logicalRight;
@@ -68,7 +71,7 @@ struct DisplayViewport {
 
     DisplayViewport()
           : displayId(ADISPLAY_ID_NONE),
-            orientation(ui::ROTATION_0),
+            orientation(DISPLAY_ORIENTATION_0),
             logicalLeft(0),
             logicalTop(0),
             logicalRight(0),
@@ -105,7 +108,7 @@ struct DisplayViewport {
 
     void setNonDisplayViewport(int32_t width, int32_t height) {
         displayId = ADISPLAY_ID_NONE;
-        orientation = ui::ROTATION_0;
+        orientation = DISPLAY_ORIENTATION_0;
         logicalLeft = 0;
         logicalTop = 0;
         logicalRight = width;
@@ -128,8 +131,9 @@ struct DisplayViewport {
                             "physicalFrame=[%d, %d, %d, %d], "
                             "deviceSize=[%d, %d], "
                             "isActive=[%d]",
-                            ftl::enum_string(type).c_str(), displayId, uniqueId.c_str(),
-                            physicalPort ? ftl::to_string(*physicalPort).c_str() : "<none>",
+                            NamedEnum::string(type).c_str(), displayId, uniqueId.c_str(),
+                            physicalPort ? StringPrintf("%" PRIu8, *physicalPort).c_str()
+                                         : "<none>",
                             orientation, logicalLeft, logicalTop, logicalRight, logicalBottom,
                             physicalLeft, physicalTop, physicalRight, physicalBottom, deviceWidth,
                             deviceHeight, isActive);
@@ -137,3 +141,5 @@ struct DisplayViewport {
 };
 
 } // namespace android
+
+#endif // _LIBINPUT_DISPLAY_VIEWPORT_H
