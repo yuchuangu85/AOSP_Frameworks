@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/plugin/ExamplePlugin/ExamplePlugin.iml" filepath="$PROJECT_DIR$/plugin/ExamplePlugin/ExamplePlugin.iml" />
+      <module fileurl="file://$PROJECT_DIR$/SystemUI.iml" filepath="$PROJECT_DIR$/SystemUI.iml" />
+      <module fileurl="file://$PROJECT_DIR$/animation/animation.iml" filepath="$PROJECT_DIR$/animation/animation.iml" />
+      <module fileurl="file://$PROJECT_DIR$/plugin/bcsmartspace/bcsmartspace.iml" filepath="$PROJECT_DIR$/plugin/bcsmartspace/bcsmartspace.iml" />
+      <module fileurl="file://$PROJECT_DIR$/checks/checks.iml" filepath="$PROJECT_DIR$/checks/checks.iml" />
+      <module fileurl="file://$PROJECT_DIR$/monet/monet.iml" filepath="$PROJECT_DIR$/monet/monet.iml" />
+      <module fileurl="file://$PROJECT_DIR$/plugin/plugin.iml" filepath="$PROJECT_DIR$/plugin/plugin.iml" />
+      <module fileurl="file://$PROJECT_DIR$/plugin_core/plugin_core.iml" filepath="$PROJECT_DIR$/plugin_core/plugin_core.iml" />
+      <module fileurl="file://$PROJECT_DIR$/shared/shared.iml" filepath="$PROJECT_DIR$/shared/shared.iml" />
+      <module fileurl="file://$PROJECT_DIR$/checks/tests/tests.iml" filepath="$PROJECT_DIR$/checks/tests/tests.iml" />
+      <module fileurl="file://$PROJECT_DIR$/tests/tests1.iml" filepath="$PROJECT_DIR$/tests/tests1.iml" />
+    </modules>
+  </component>
+</project>
