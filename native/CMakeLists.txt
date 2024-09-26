@@ -2574,4 +2574,5 @@ add_executable(native_android14_security_release
         vulkan/nulldrv/null_driver_gen.h
         vulkan/vkjson/vkjson.cc
         vulkan/vkjson/vkjson.h
-        vulkan/vkjson/vkjson_instance.cc)
+        vulkan/vkjson/vkjson_instance.cc
+        libs/gui/include/gui/DisplayEventDispatcher.h)

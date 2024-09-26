@@ -191,6 +191,7 @@ binder::Status EventThreadConnection::stealReceiveChannel(gui::BitTube* outChann
     return binder::Status::ok();
 }
 
+// 设置帧率
 binder::Status EventThreadConnection::setVsyncRate(int rate) {
     mEventThread->setVsyncRate(static_cast<uint32_t>(rate),
                                sp<EventThreadConnection>::fromExisting(this));
