@@ -16,26 +16,48 @@
 
 #pragma once
 
+#include <cstdint>
+#include <list>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <EventHub.h>
+#include <InputReaderBase.h>
+#include <InputReaderContext.h>
+#include <NotifyArgs.h>
+#include <PointerChoreographerPolicyInterface.h>
+#include <StylusState.h>
+#include <VibrationElement.h>
 #include <android-base/logging.h>
+#include <android-base/result.h>
 #include <gmock/gmock.h>
+#include <input/InputDevice.h>
+#include <input/KeyCharacterMap.h>
+#include <input/KeyLayoutMap.h>
+#include <input/KeyboardClassifier.h>
+#include <input/PropertyMap.h>
+#include <input/TouchVideoFrame.h>
+#include <input/VirtualKeyMap.h>
+#include <utils/Errors.h>
+#include <utils/Timers.h>
 
 namespace android {
 
 class MockInputReaderContext : public InputReaderContext {
 public:
     MOCK_METHOD(void, updateGlobalMetaState, (), (override));
-    int32_t getGlobalMetaState() override { return 0; };
+    MOCK_METHOD(int32_t, getGlobalMetaState, (), (override));
 
     MOCK_METHOD(void, disableVirtualKeysUntil, (nsecs_t time), (override));
     MOCK_METHOD(bool, shouldDropVirtualKey, (nsecs_t now, int32_t keyCode, int32_t scanCode),
                 (override));
 
-    MOCK_METHOD(void, fadePointer, (), (override));
-    MOCK_METHOD(std::shared_ptr<PointerControllerInterface>, getPointerController,
-                (int32_t deviceId), (override));
-
     MOCK_METHOD(void, requestTimeoutAtTime, (nsecs_t when), (override));
-    MOCK_METHOD(int32_t, bumpGeneration, (), (override));
+    int32_t bumpGeneration() override { return ++mGeneration; }
 
     MOCK_METHOD(void, getExternalStylusDevices, (std::vector<InputDeviceInfo> & outDevices),
                 (override));
@@ -49,6 +71,18 @@ public:
 
     MOCK_METHOD(void, updateLedMetaState, (int32_t metaState), (override));
     MOCK_METHOD(int32_t, getLedMetaState, (), (override));
+
+    MOCK_METHOD(void, setPreventingTouchpadTaps, (bool prevent), (override));
+    MOCK_METHOD(bool, isPreventingTouchpadTaps, (), (override));
+
+    MOCK_METHOD(void, setLastKeyDownTimestamp, (nsecs_t when));
+    MOCK_METHOD(nsecs_t, getLastKeyDownTimestamp, ());
+
+    KeyboardClassifier& getKeyboardClassifier() override { return *mClassifier; };
+
+private:
+    int32_t mGeneration = 0;
+    std::unique_ptr<KeyboardClassifier> mClassifier = std::make_unique<KeyboardClassifier>();
 };
 
 class MockEventHubInterface : public EventHubInterface {
@@ -99,6 +133,9 @@ public:
 
     MOCK_METHOD(status_t, getAbsoluteAxisValue, (int32_t deviceId, int32_t axis, int32_t* outValue),
                 (const, override));
+    MOCK_METHOD(base::Result<std::vector<int32_t>>, getMtSlotValues,
+                (int32_t deviceId, int32_t axis, size_t slotCount), (const, override));
+
     MOCK_METHOD(int32_t, getKeyCodeForKeyLocation, (int32_t deviceId, int32_t locationKeyCode),
                 (const, override));
     MOCK_METHOD(bool, markSupportedKeyCodes,
@@ -141,6 +178,15 @@ public:
     MOCK_METHOD(status_t, enableDevice, (int32_t deviceId), (override));
     MOCK_METHOD(status_t, disableDevice, (int32_t deviceId), (override));
     MOCK_METHOD(void, sysfsNodeChanged, (const std::string& sysfsNodePath), (override));
+};
+
+class MockPointerChoreographerPolicyInterface : public PointerChoreographerPolicyInterface {
+public:
+    MOCK_METHOD(std::shared_ptr<PointerControllerInterface>, createPointerController,
+                (PointerControllerInterface::ControllerType), (override));
+    MOCK_METHOD(void, notifyPointerDisplayIdChanged,
+                (ui::LogicalDisplayId displayId, const FloatPoint& position), (override));
+    MOCK_METHOD(bool, isInputMethodConnectionActive, (), (override));
 };
 
 } // namespace android

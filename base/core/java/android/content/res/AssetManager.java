@@ -16,6 +16,9 @@
 
 package android.content.res;
 
+import static android.content.res.Resources.ID_NULL;
+import static android.app.ResourcesManager.ApkKey;
+
 import android.annotation.AnyRes;
 import android.annotation.ArrayRes;
 import android.annotation.AttrRes;
@@ -24,12 +27,14 @@ import android.annotation.Nullable;
 import android.annotation.StringRes;
 import android.annotation.StyleRes;
 import android.annotation.TestApi;
+import android.app.ResourcesManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration.NativeConfig;
 import android.content.res.loader.ResourcesLoader;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
 import android.util.SparseArray;
@@ -135,6 +140,8 @@ public final class AssetManager implements AutoCloseable {
         private ArrayList<ApkAssets> mUserApkAssets = new ArrayList<>();
         private ArrayList<ResourcesLoader> mLoaders = new ArrayList<>();
 
+        private boolean mNoInit = false;
+
         public Builder addApkAssets(ApkAssets apkAssets) {
             mUserApkAssets.add(apkAssets);
             return this;
@@ -142,6 +149,11 @@ public final class AssetManager implements AutoCloseable {
 
         public Builder addLoader(ResourcesLoader loader) {
             mLoaders.add(loader);
+            return this;
+        }
+
+        public Builder setNoInit() {
+            mNoInit = true;
             return this;
         }
 
@@ -186,7 +198,7 @@ public final class AssetManager implements AutoCloseable {
             final AssetManager assetManager = new AssetManager(false /*sentinel*/);
             assetManager.mApkAssets = apkAssets;
             AssetManager.nativeSetApkAssets(assetManager.mObject, apkAssets,
-                    false /*invalidateCaches*/);
+                    false /*invalidateCaches*/, mNoInit /*preset*/);
             assetManager.mLoaders = mLoaders.isEmpty() ? null
                     : mLoaders.toArray(new ResourcesLoader[0]);
 
@@ -255,7 +267,7 @@ public final class AssetManager implements AutoCloseable {
             }
 
             sSystemApkAssetsSet = new ArraySet<>(apkAssets);
-            sSystemApkAssets = apkAssets.toArray(new ApkAssets[apkAssets.size()]);
+            sSystemApkAssets = apkAssets.toArray(new ApkAssets[0]);
             if (sSystem == null) {
                 sSystem = new AssetManager(true /*sentinel*/);
             }
@@ -327,7 +339,7 @@ public final class AssetManager implements AutoCloseable {
         synchronized (this) {
             ensureOpenLocked();
             mApkAssets = newApkAssets;
-            nativeSetApkAssets(mObject, mApkAssets, invalidateCaches);
+            nativeSetApkAssets(mObject, mApkAssets, invalidateCaches, false);
             if (invalidateCaches) {
                 // Invalidate all caches.
                 invalidateCachesLocked(-1);
@@ -439,7 +451,7 @@ public final class AssetManager implements AutoCloseable {
     @Deprecated
     @UnsupportedAppUsage
     public int addAssetPath(String path) {
-        return addAssetPathInternal(path, false /*overlay*/, false /*appAsLib*/);
+        return addAssetPathInternal(List.of(new ApkKey(path, false, false)), false);
     }
 
     /**
@@ -449,7 +461,7 @@ public final class AssetManager implements AutoCloseable {
     @Deprecated
     @UnsupportedAppUsage
     public int addAssetPathAsSharedLibrary(String path) {
-        return addAssetPathInternal(path, false /*overlay*/, true /*appAsLib*/);
+        return addAssetPathInternal(List.of(new ApkKey(path, true, false)), false);
     }
 
     /**
@@ -459,45 +471,110 @@ public final class AssetManager implements AutoCloseable {
     @Deprecated
     @UnsupportedAppUsage
     public int addOverlayPath(String path) {
-        return addAssetPathInternal(path, true /*overlay*/, false /*appAsLib*/);
+        return addAssetPathInternal(List.of(new ApkKey(path, false, true)), false);
     }
 
-    private int addAssetPathInternal(String path, boolean overlay, boolean appAsLib) {
-        Objects.requireNonNull(path, "path");
+    /**
+     * @hide
+     */
+    public void addPresetApkKeys(@NonNull List<ApkKey> keys) {
+        addAssetPathInternal(keys, true);
+    }
+
+    private int addAssetPathInternal(List<ApkKey> apkKeys, boolean presetAssets) {
+        Objects.requireNonNull(apkKeys, "apkKeys");
+        if (apkKeys.isEmpty()) {
+            return 0;
+        }
+
         synchronized (this) {
             ensureOpenLocked();
             final int count = mApkAssets.length;
 
-            // See if we already have it loaded.
-            for (int i = 0; i < count; i++) {
-                if (mApkAssets[i].getAssetPath().equals(path)) {
-                    return i + 1;
-                }
+            // See if we already have some of the apkKeys loaded.
+            final int originalAssetsCount = mApkAssets.length;
+
+            // Getting an assets' path is a relatively expensive operation, cache them.
+            final ArrayMap<String, Integer> assetPaths = new ArrayMap<>(originalAssetsCount);
+            for (int i = 0; i < originalAssetsCount; i++) {
+                assetPaths.put(mApkAssets[i].getAssetPath(), i);
             }
 
-            final ApkAssets assets;
-            try {
-                if (overlay) {
-                    // TODO(b/70343104): This hardcoded path will be removed once
-                    // addAssetPathInternal is deleted.
-                    final String idmapPath = "/data/resource-cache/"
-                            + path.substring(1).replace('/', '@')
-                            + "@idmap";
-                    assets = ApkAssets.loadOverlayFromPath(idmapPath, 0 /* flags */);
+            final var newKeys = new ArrayList<ApkKey>(apkKeys.size());
+            int lastFoundIndex = -1;
+            for (int i = 0, pathsSize = apkKeys.size(); i < pathsSize; i++) {
+                final var key = apkKeys.get(i);
+                final var index = assetPaths.get(key.path);
+                if (index == null) {
+                    newKeys.add(key);
                 } else {
-                    assets = ApkAssets.loadFromPath(path,
-                            appAsLib ? ApkAssets.PROPERTY_DYNAMIC : 0);
+                    lastFoundIndex = index;
                 }
-            } catch (IOException e) {
+            }
+            if (newKeys.isEmpty()) {
+                return lastFoundIndex + 1;
+            }
+
+            final var newAssets = loadAssets(newKeys);
+            if (newAssets.isEmpty()) {
                 return 0;
             }
-
-            mApkAssets = Arrays.copyOf(mApkAssets, count + 1);
-            mApkAssets[count] = assets;
-            nativeSetApkAssets(mObject, mApkAssets, true);
+            mApkAssets = makeNewAssetsArrayLocked(newAssets);
+            nativeSetApkAssets(mObject, mApkAssets, true, presetAssets);
             invalidateCachesLocked(-1);
-            return count + 1;
+            return originalAssetsCount + 1;
         }
+    }
+
+    /**
+     * Insert the new assets preserving the correct order: all non-loader assets go before all
+     * of the loader assets.
+     */
+    @GuardedBy("this")
+    private @NonNull ApkAssets[] makeNewAssetsArrayLocked(
+            @NonNull ArrayList<ApkAssets> newNonLoaderAssets) {
+        final int originalAssetsCount = mApkAssets.length;
+        int firstLoaderIndex = originalAssetsCount;
+        for (int i = 0; i < originalAssetsCount; i++) {
+            if (mApkAssets[i].isForLoader()) {
+                firstLoaderIndex = i;
+                break;
+            }
+        }
+        final int newAssetsSize = newNonLoaderAssets.size();
+        final var newAssetsArray = new ApkAssets[originalAssetsCount + newAssetsSize];
+        if (firstLoaderIndex > 0) {
+            // This should always be true, but who knows...
+            System.arraycopy(mApkAssets, 0, newAssetsArray, 0, firstLoaderIndex);
+        }
+        for (int i = 0; i < newAssetsSize; i++) {
+            newAssetsArray[firstLoaderIndex + i] = newNonLoaderAssets.get(i);
+        }
+        if (originalAssetsCount > firstLoaderIndex) {
+            System.arraycopy(
+                    mApkAssets, firstLoaderIndex,
+                    newAssetsArray, firstLoaderIndex + newAssetsSize,
+                    originalAssetsCount - firstLoaderIndex);
+        }
+        return newAssetsArray;
+    }
+
+    private static @NonNull ArrayList<ApkAssets> loadAssets(@NonNull ArrayList<ApkKey> keys) {
+        final int pathsSize = keys.size();
+        final var loadedAssets = new ArrayList<ApkAssets>(pathsSize);
+        final var resourcesManager = ResourcesManager.getInstance();
+        for (int i = 0; i < pathsSize; i++) {
+            final var key = keys.get(i);
+            try {
+                // ResourcesManager has a cache of loaded assets, ensuring we don't open the same
+                // file repeatedly, which is useful for the common overlays and registered
+                // shared libraries.
+                loadedAssets.add(resourcesManager.loadApkAssets(key));
+            } catch (IOException e) {
+                Log.w(TAG, "Failed to load asset, key = " + key, e);
+            }
+        }
+        return loadedAssets;
     }
 
     /** @hide */
@@ -1089,7 +1166,7 @@ public final class AssetManager implements AutoCloseable {
     public @NonNull XmlResourceParser openXmlResourceParser(int cookie, @NonNull String fileName)
             throws IOException {
         try (XmlBlock block = openXmlBlockAsset(cookie, fileName)) {
-            XmlResourceParser parser = block.newParser();
+            XmlResourceParser parser = block.newParser(ID_NULL, new Validator());
             // If openXmlBlockAsset doesn't throw, it will always return an XmlBlock object with
             // a valid native pointer, which makes newParser always return non-null. But let's
             // be careful.
@@ -1419,7 +1496,7 @@ public final class AssetManager implements AutoCloseable {
      * <a href="https://tools.ietf.org/html/bcp47">BCP-47</a> language tags and can be
      * parsed using {@link Locale#forLanguageTag(String)}.
      *
-     * <p>On SDK 20 (Android 4.4W: Kitkat for watches) and below, locale strings
+     * <p>On SDK 20 (Android 4.4W: KitKat for watches) and below, locale strings
      * are of the form {@code ll_CC} where {@code ll} is a two letter language code,
      * and {@code CC} is a two letter country code.
      */
@@ -1478,12 +1555,52 @@ public final class AssetManager implements AutoCloseable {
             int screenWidth, int screenHeight, int smallestScreenWidthDp, int screenWidthDp,
             int screenHeightDp, int screenLayout, int uiMode, int colorMode, int grammaticalGender,
             int majorVersion) {
-        synchronized (this) {
-            ensureValidLocked();
-            nativeSetConfiguration(mObject, mcc, mnc, locale, orientation, touchscreen, density,
+        if (locale != null) {
+            setConfiguration(mcc, mnc, null, new String[]{locale}, orientation, touchscreen,
+                    density, keyboard, keyboardHidden, navigation, screenWidth, screenHeight,
+                    smallestScreenWidthDp, screenWidthDp, screenHeightDp, screenLayout, uiMode,
+                    colorMode, grammaticalGender, majorVersion);
+        } else {
+            setConfiguration(mcc, mnc, null, null, orientation, touchscreen, density,
                     keyboard, keyboardHidden, navigation, screenWidth, screenHeight,
                     smallestScreenWidthDp, screenWidthDp, screenHeightDp, screenLayout, uiMode,
                     colorMode, grammaticalGender, majorVersion);
+        }
+    }
+
+    /**
+     * Change the configuration used when retrieving resources.  Not for use by
+     * applications.
+     * @hide
+     */
+    public void setConfiguration(int mcc, int mnc, String defaultLocale, String[] locales,
+            int orientation, int touchscreen, int density, int keyboard, int keyboardHidden,
+            int navigation, int screenWidth, int screenHeight, int smallestScreenWidthDp,
+            int screenWidthDp, int screenHeightDp, int screenLayout, int uiMode, int colorMode,
+            int grammaticalGender, int majorVersion) {
+        setConfigurationInternal(mcc, mnc, defaultLocale, locales, orientation,
+                touchscreen, density, keyboard, keyboardHidden, navigation, screenWidth,
+                screenHeight, smallestScreenWidthDp, screenWidthDp, screenHeightDp,
+                screenLayout, uiMode, colorMode, grammaticalGender, majorVersion, false);
+    }
+
+    /**
+     * Change the configuration used when retrieving resources, and potentially force a refresh of
+     * the state.  Not for use by applications.
+     * @hide
+     */
+    void setConfigurationInternal(int mcc, int mnc, String defaultLocale, String[] locales,
+            int orientation, int touchscreen, int density, int keyboard, int keyboardHidden,
+            int navigation, int screenWidth, int screenHeight, int smallestScreenWidthDp,
+            int screenWidthDp, int screenHeightDp, int screenLayout, int uiMode, int colorMode,
+            int grammaticalGender, int majorVersion, boolean forceRefresh) {
+        synchronized (this) {
+            ensureValidLocked();
+            nativeSetConfiguration(mObject, mcc, mnc, defaultLocale, locales, orientation,
+                    touchscreen, density, keyboard, keyboardHidden, navigation, screenWidth,
+                    screenHeight, smallestScreenWidthDp, screenWidthDp, screenHeightDp,
+                    screenLayout, uiMode, colorMode, grammaticalGender, majorVersion,
+                    forceRefresh);
         }
     }
 
@@ -1568,12 +1685,13 @@ public final class AssetManager implements AutoCloseable {
     private static native long nativeCreate();
     private static native void nativeDestroy(long ptr);
     private static native void nativeSetApkAssets(long ptr, @NonNull ApkAssets[] apkAssets,
-            boolean invalidateCaches);
+            boolean invalidateCaches, boolean preset);
     private static native void nativeSetConfiguration(long ptr, int mcc, int mnc,
-            @Nullable String locale, int orientation, int touchscreen, int density, int keyboard,
-            int keyboardHidden, int navigation, int screenWidth, int screenHeight,
-            int smallestScreenWidthDp, int screenWidthDp, int screenHeightDp, int screenLayout,
-            int uiMode, int colorMode, int grammaticalGender, int majorVersion);
+            @Nullable String defaultLocale, @NonNull String[] locales, int orientation,
+            int touchscreen, int density, int keyboard, int keyboardHidden, int navigation,
+            int screenWidth, int screenHeight, int smallestScreenWidthDp, int screenWidthDp,
+            int screenHeightDp, int screenLayout, int uiMode, int colorMode, int grammaticalGender,
+            int majorVersion, boolean forceRefresh);
     private static native @NonNull SparseArray<String> nativeGetAssignedPackageIdentifiers(
             long ptr, boolean includeOverlays, boolean includeLoaders);
 

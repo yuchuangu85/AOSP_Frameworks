@@ -27,21 +27,18 @@
 #include <processgroup/processgroup.h>
 #include <utils/Trace.h>
 
-#include "gl/GLESRenderEngine.h"
-
 using namespace std::chrono_literals;
 
 namespace android {
 namespace renderengine {
 namespace threaded {
 
-std::unique_ptr<RenderEngineThreaded> RenderEngineThreaded::create(CreateInstanceFactory factory,
-                                                                   RenderEngineType type) {
-    return std::make_unique<RenderEngineThreaded>(std::move(factory), type);
+std::unique_ptr<RenderEngineThreaded> RenderEngineThreaded::create(CreateInstanceFactory factory) {
+    return std::make_unique<RenderEngineThreaded>(std::move(factory));
 }
 
-RenderEngineThreaded::RenderEngineThreaded(CreateInstanceFactory factory, RenderEngineType type)
-      : RenderEngine(type) {
+RenderEngineThreaded::RenderEngineThreaded(CreateInstanceFactory factory)
+      : RenderEngine(Threaded::YES) {
     ATRACE_CALL();
 
     std::lock_guard lockThread(mThreadMutex);
@@ -127,11 +124,13 @@ void RenderEngineThreaded::threadMain(CreateInstanceFactory factory) NO_THREAD_S
 }
 
 void RenderEngineThreaded::waitUntilInitialized() const {
-    std::unique_lock<std::mutex> lock(mInitializedMutex);
-    mInitializedCondition.wait(lock, [=] { return mIsInitialized; });
+    if (!mIsInitialized) {
+        std::unique_lock<std::mutex> lock(mInitializedMutex);
+        mInitializedCondition.wait(lock, [this] { return mIsInitialized.load(); });
+    }
 }
 
-std::future<void> RenderEngineThreaded::primeCache() {
+std::future<void> RenderEngineThreaded::primeCache(PrimeCacheConfig config) {
     const auto resultPromise = std::make_shared<std::promise<void>>();
     std::future<void> resultFuture = resultPromise->get_future();
     ATRACE_CALL();
@@ -139,13 +138,13 @@ std::future<void> RenderEngineThreaded::primeCache() {
     // for the futures.
     {
         std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([resultPromise](renderengine::RenderEngine& instance) {
+        mFunctionCalls.push([resultPromise, config](renderengine::RenderEngine& instance) {
             ATRACE_NAME("REThreaded::primeCache");
             if (setSchedFifo(false) != NO_ERROR) {
                 ALOGW("Couldn't set SCHED_OTHER for primeCache");
             }
 
-            instance.primeCache();
+            instance.primeCache(config);
             resultPromise->set_value();
 
             if (setSchedFifo(true) != NO_ERROR) {
@@ -173,46 +172,6 @@ void RenderEngineThreaded::dump(std::string& result) {
     mCondition.notify_one();
     // Note: This is an rvalue.
     result.assign(resultFuture.get());
-}
-
-void RenderEngineThreaded::genTextures(size_t count, uint32_t* names) {
-    ATRACE_CALL();
-    // This is a no-op in SkiaRenderEngine.
-    if (getRenderEngineType() != RenderEngineType::THREADED) {
-        return;
-    }
-    std::promise<void> resultPromise;
-    std::future<void> resultFuture = resultPromise.get_future();
-    {
-        std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([&resultPromise, count, names](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::genTextures");
-            instance.genTextures(count, names);
-            resultPromise.set_value();
-        });
-    }
-    mCondition.notify_one();
-    resultFuture.wait();
-}
-
-void RenderEngineThreaded::deleteTextures(size_t count, uint32_t const* names) {
-    ATRACE_CALL();
-    // This is a no-op in SkiaRenderEngine.
-    if (getRenderEngineType() != RenderEngineType::THREADED) {
-        return;
-    }
-    std::promise<void> resultPromise;
-    std::future<void> resultFuture = resultPromise.get_future();
-    {
-        std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([&resultPromise, count, &names](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::deleteTextures");
-            instance.deleteTextures(count, names);
-            resultPromise.set_value();
-        });
-    }
-    mCondition.notify_one();
-    resultFuture.wait();
 }
 
 void RenderEngineThreaded::mapExternalTextureBuffer(const sp<GraphicBuffer>& buffer,
@@ -273,58 +232,43 @@ void RenderEngineThreaded::cleanupPostRender() {
             ATRACE_NAME("REThreaded::cleanupPostRender");
             instance.cleanupPostRender();
         });
+        mNeedsPostRenderCleanup = false;
     }
     mCondition.notify_one();
 }
 
 bool RenderEngineThreaded::canSkipPostRenderCleanup() const {
-    waitUntilInitialized();
-    return mRenderEngine->canSkipPostRenderCleanup();
+    return !mNeedsPostRenderCleanup;
 }
 
 void RenderEngineThreaded::drawLayersInternal(
         const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
         const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-        const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-        base::unique_fd&& bufferFence) {
+        const std::shared_ptr<ExternalTexture>& buffer, base::unique_fd&& bufferFence) {
     resultPromise->set_value(Fence::NO_FENCE);
     return;
 }
 
 ftl::Future<FenceResult> RenderEngineThreaded::drawLayers(
         const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-        const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-        base::unique_fd&& bufferFence) {
+        const std::shared_ptr<ExternalTexture>& buffer, base::unique_fd&& bufferFence) {
     ATRACE_CALL();
     const auto resultPromise = std::make_shared<std::promise<FenceResult>>();
     std::future<FenceResult> resultFuture = resultPromise->get_future();
     int fd = bufferFence.release();
     {
         std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([resultPromise, display, layers, buffer, useFramebufferCache,
-                             fd](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::drawLayers");
-            instance.updateProtectedContext(layers, buffer);
-            instance.drawLayersInternal(std::move(resultPromise), display, layers, buffer,
-                                        useFramebufferCache, base::unique_fd(fd));
-        });
+        mNeedsPostRenderCleanup = true;
+        mFunctionCalls.push(
+                [resultPromise, display, layers, buffer, fd](renderengine::RenderEngine& instance) {
+                    ATRACE_NAME("REThreaded::drawLayers");
+                    instance.updateProtectedContext(layers, buffer);
+                    instance.drawLayersInternal(std::move(resultPromise), display, layers, buffer,
+                                                base::unique_fd(fd));
+                });
     }
     mCondition.notify_one();
     return resultFuture;
-}
-
-void RenderEngineThreaded::cleanFramebufferCache() {
-    ATRACE_CALL();
-    // This function is designed so it can run asynchronously, so we do not need to wait
-    // for the futures.
-    {
-        std::lock_guard lock(mThreadMutex);
-        mFunctionCalls.push([](renderengine::RenderEngine& instance) {
-            ATRACE_NAME("REThreaded::cleanFramebufferCache");
-            instance.cleanFramebufferCache();
-        });
-    }
-    mCondition.notify_one();
 }
 
 int RenderEngineThreaded::getContextPriority() {

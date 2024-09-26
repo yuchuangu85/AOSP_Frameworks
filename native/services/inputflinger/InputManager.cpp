@@ -23,18 +23,27 @@
 #include "InputReaderFactory.h"
 #include "UnwantedInteractionBlocker.h"
 
+#include <aidl/com/android/server/inputflinger/IInputFlingerRust.h>
+#include <android/binder_interface_utils.h>
+#include <android/sysprop/InputProperties.sysprop.h>
 #include <binder/IPCThreadState.h>
-
+#include <com_android_input_flags.h>
+#include <inputflinger_bootstrap.rs.h>
 #include <log/log.h>
-#include <unordered_map>
-
 #include <private/android_filesystem_config.h>
+
+namespace input_flags = com::android::input::flags;
 
 namespace android {
 
-using gui::FocusRequest;
+namespace {
 
-static int32_t exceptionCodeFromStatusT(status_t status) {
+const bool ENABLE_INPUT_DEVICE_USAGE_METRICS =
+        sysprop::InputProperties::enable_input_device_usage_metrics().value_or(true);
+
+const bool ENABLE_INPUT_FILTER_RUST = input_flags::enable_input_filter_rust_impl();
+
+int32_t exceptionCodeFromStatusT(status_t status) {
     switch (status) {
         case OK:
             return binder::Status::EX_NONE;
@@ -53,16 +62,105 @@ static int32_t exceptionCodeFromStatusT(status_t status) {
     }
 }
 
+// Convert a binder interface into a raw pointer to an AIBinder.
+using IInputFlingerRustBootstrapCallback = aidl::com::android::server::inputflinger::
+        IInputFlingerRust::IInputFlingerRustBootstrapCallback;
+IInputFlingerRustBootstrapCallbackAIBinder* binderToPointer(
+        IInputFlingerRustBootstrapCallback& interface) {
+    ndk::SpAIBinder spAIBinder = interface.asBinder();
+    auto* ptr = spAIBinder.get();
+    AIBinder_incStrong(ptr);
+    return ptr;
+}
+
+// Create the Rust component of InputFlinger that uses AIDL interfaces as a the foreign function
+// interface (FFI). The bootstraping process for IInputFlingerRust is as follows:
+//   - Create BnInputFlingerRustBootstrapCallback in C++.
+//   - Use the cxxbridge ffi interface to call the Rust function `create_inputflinger_rust()`, and
+//     pass the callback binder object as a raw pointer.
+//   - The Rust implementation will create the implementation of IInputFlingerRust, and pass it
+//     to C++ through the callback.
+//   - After the Rust function returns, the binder interface provided to the callback will be the
+//     only strong reference to the IInputFlingerRust.
+std::shared_ptr<IInputFlingerRust> createInputFlingerRust() {
+    using namespace aidl::com::android::server::inputflinger;
+
+    class Callback : public IInputFlingerRust::BnInputFlingerRustBootstrapCallback {
+        ndk::ScopedAStatus onProvideInputFlingerRust(
+                const std::shared_ptr<IInputFlingerRust>& inputFlingerRust) override {
+            mService = inputFlingerRust;
+            return ndk::ScopedAStatus::ok();
+        }
+
+    public:
+        std::shared_ptr<IInputFlingerRust> consumeInputFlingerRust() {
+            auto service = mService;
+            mService.reset();
+            return service;
+        }
+
+    private:
+        std::shared_ptr<IInputFlingerRust> mService;
+    };
+
+    auto callback = ndk::SharedRefBase::make<Callback>();
+    create_inputflinger_rust(binderToPointer(*callback));
+    auto service = callback->consumeInputFlingerRust();
+    LOG_ALWAYS_FATAL_IF(!service,
+                        "create_inputflinger_rust did not provide the IInputFlingerRust "
+                        "implementation through the callback.");
+    return service;
+}
+
+} // namespace
+
 /**
  * The event flow is via the "InputListener" interface, as follows:
- * InputReader -> UnwantedInteractionBlocker -> InputProcessor -> InputDispatcher
+ *   InputReader
+ *     -> UnwantedInteractionBlocker
+ *     -> InputFilter
+ *     -> PointerChoreographer
+ *     -> InputProcessor
+ *     -> InputDeviceMetricsCollector
+ *     -> InputDispatcher
  */
 InputManager::InputManager(const sp<InputReaderPolicyInterface>& readerPolicy,
-                           InputDispatcherPolicyInterface& dispatcherPolicy) {
+                           InputDispatcherPolicyInterface& dispatcherPolicy,
+                           PointerChoreographerPolicyInterface& choreographerPolicy,
+                           InputFilterPolicyInterface& inputFilterPolicy) {
+    mInputFlingerRust = createInputFlingerRust();
+
     mDispatcher = createInputDispatcher(dispatcherPolicy);
-    mProcessor = std::make_unique<InputProcessor>(*mDispatcher);
-    mBlocker = std::make_unique<UnwantedInteractionBlocker>(*mProcessor);
-    mReader = createInputReader(readerPolicy, *mBlocker);
+    mTracingStages.emplace_back(
+            std::make_unique<TracedInputListener>("InputDispatcher", *mDispatcher));
+
+    if (ENABLE_INPUT_FILTER_RUST) {
+        mInputFilter = std::make_unique<InputFilter>(*mTracingStages.back(), *mInputFlingerRust,
+                                                     inputFilterPolicy);
+        mTracingStages.emplace_back(
+                std::make_unique<TracedInputListener>("InputFilter", *mInputFilter));
+    }
+
+    if (ENABLE_INPUT_DEVICE_USAGE_METRICS) {
+        mCollector = std::make_unique<InputDeviceMetricsCollector>(*mTracingStages.back());
+        mTracingStages.emplace_back(
+                std::make_unique<TracedInputListener>("MetricsCollector", *mCollector));
+    }
+
+    mProcessor = std::make_unique<InputProcessor>(*mTracingStages.back());
+    mTracingStages.emplace_back(
+            std::make_unique<TracedInputListener>("InputProcessor", *mProcessor));
+
+    mChoreographer =
+            std::make_unique<PointerChoreographer>(*mTracingStages.back(), choreographerPolicy);
+    mTracingStages.emplace_back(
+            std::make_unique<TracedInputListener>("PointerChoreographer", *mChoreographer));
+
+    mBlocker = std::make_unique<UnwantedInteractionBlocker>(*mTracingStages.back());
+    mTracingStages.emplace_back(
+            std::make_unique<TracedInputListener>("UnwantedInteractionBlocker", *mBlocker));
+
+    mReader = createInputReader(readerPolicy, *mTracingStages.back());
 }
 
 InputManager::~InputManager() {
@@ -109,18 +207,33 @@ InputReaderInterface& InputManager::getReader() {
     return *mReader;
 }
 
+PointerChoreographerInterface& InputManager::getChoreographer() {
+    return *mChoreographer;
+}
+
 InputProcessorInterface& InputManager::getProcessor() {
     return *mProcessor;
+}
+
+InputDeviceMetricsCollectorInterface& InputManager::getMetricsCollector() {
+    return *mCollector;
 }
 
 InputDispatcherInterface& InputManager::getDispatcher() {
     return *mDispatcher;
 }
 
+InputFilterInterface& InputManager::getInputFilter() {
+    return *mInputFilter;
+}
+
 void InputManager::monitor() {
     mReader->monitor();
     mBlocker->monitor();
     mProcessor->monitor();
+    if (ENABLE_INPUT_DEVICE_USAGE_METRICS) {
+        mCollector->monitor();
+    }
     mDispatcher->monitor();
 }
 
@@ -129,20 +242,29 @@ void InputManager::dump(std::string& dump) {
     dump += '\n';
     mBlocker->dump(dump);
     dump += '\n';
+    mChoreographer->dump(dump);
+    dump += '\n';
     mProcessor->dump(dump);
     dump += '\n';
+    if (ENABLE_INPUT_DEVICE_USAGE_METRICS) {
+        mCollector->dump(dump);
+        dump += '\n';
+    }
     mDispatcher->dump(dump);
     dump += '\n';
 }
 
 // Used by tests only.
-binder::Status InputManager::createInputChannel(const std::string& name, InputChannel* outChannel) {
+binder::Status InputManager::createInputChannel(const std::string& name,
+                                                android::os::InputChannelCore* outChannel) {
     IPCThreadState* ipc = IPCThreadState::self();
-    const int uid = ipc->getCallingUid();
+    const uid_t uid = ipc->getCallingUid();
     if (uid != AID_SHELL && uid != AID_ROOT) {
-        ALOGE("Invalid attempt to register input channel over IPC"
-                "from non shell/root entity (PID: %d)", ipc->getCallingPid());
-        return binder::Status::ok();
+        LOG(ERROR) << __func__ << " can only be called by SHELL or ROOT users, "
+                   << "but was called from UID " << uid;
+        return binder::Status::
+                fromExceptionCode(EX_SECURITY,
+                                  "This uid is not allowed to call createInputChannel");
     }
 
     base::Result<std::unique_ptr<InputChannel>> channel = mDispatcher->createInputChannel(name);
@@ -150,7 +272,7 @@ binder::Status InputManager::createInputChannel(const std::string& name, InputCh
         return binder::Status::fromExceptionCode(exceptionCodeFromStatusT(channel.error().code()),
                                                  channel.error().message().c_str());
     }
-    (*channel)->copyTo(*outChannel);
+    InputChannel::moveChannel(std::move(*channel), *outChannel);
     return binder::Status::ok();
 }
 
@@ -164,11 +286,11 @@ status_t InputManager::dump(int fd, const Vector<String16>& args) {
 
     dump += " InputFlinger dump\n";
 
-    ::write(fd, dump.c_str(), dump.size());
+    TEMP_FAILURE_RETRY(::write(fd, dump.c_str(), dump.size()));
     return NO_ERROR;
 }
 
-binder::Status InputManager::setFocusedWindow(const FocusRequest& request) {
+binder::Status InputManager::setFocusedWindow(const gui::FocusRequest& request) {
     mDispatcher->setFocusedWindow(request);
     return binder::Status::ok();
 }

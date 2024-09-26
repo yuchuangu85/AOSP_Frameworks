@@ -16,6 +16,8 @@
 
 package com.android.server.display;
 
+import static android.view.Display.Mode.INVALID_MODE_ID;
+
 import android.hardware.display.DeviceProductInfo;
 import android.hardware.display.DisplayViewport;
 import android.util.DisplayMetrics;
@@ -120,11 +122,10 @@ final class DisplayDeviceInfo {
 
     /**
      * Flag: This flag identifies secondary displays that should show system decorations, such as
-     * status bar, navigation bar, home activity or IME.
+     * navigation bar, home activity or wallpaper.
      * <p>Note that this flag doesn't work without {@link #FLAG_TRUSTED}</p>
      * @hide
      */
-    // TODO (b/114338689): Remove the flag and use IWindowManager#setShouldShowSystemDecors
     public static final int FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 << 12;
 
     /**
@@ -211,24 +212,46 @@ final class DisplayDeviceInfo {
     public static final int TOUCH_VIRTUAL = 3;
 
     /**
-     * Diff result: The {@link #state} or {@link #committedState} fields differ.
-     */
-    public static final int DIFF_STATE = 1 << 0;
-
-    /**
      * Diff result: Other fields differ.
      */
-    public static final int DIFF_OTHER = 1 << 1;
+    public static final int DIFF_OTHER = 1 << 0;
+
+    /**
+     * Diff result: The {@link #state} or {@link #committedState} fields differ.
+     */
+    public static final int DIFF_STATE = 1 << 1;
+
+    /**
+     * Diff result: The committed state differs. Note this is slightly different from the state,
+     * which is what most of the device should care about.
+     */
+    public static final int DIFF_COMMITTED_STATE = 1 << 2;
 
     /**
      * Diff result: The color mode fields differ.
      */
-    public static final int DIFF_COLOR_MODE = 1 << 2;
+    public static final int DIFF_COLOR_MODE = 1 << 3;
 
     /**
      * Diff result: The hdr/sdr ratio differs
      */
-    public static final int DIFF_HDR_SDR_RATIO = 1 << 3;
+    public static final int DIFF_HDR_SDR_RATIO = 1 << 4;
+
+    /**
+     * Diff result: The rotation differs
+     */
+    public static final int DIFF_ROTATION = 1 << 5;
+
+    /**
+     * Diff result: The render timings. Note this could be any of {@link #renderFrameRate},
+     * {@link #presentationDeadlineNanos}, or {@link #appVsyncOffsetNanos}.
+     */
+    public static final int DIFF_RENDER_TIMINGS = 1 << 6;
+
+    /**
+     * Diff result: The mode ID differs.
+     */
+    public static final int DIFF_MODE_ID = 1 << 7;
 
     /**
      * Diff result: Catch-all for "everything changed"
@@ -273,6 +296,11 @@ final class DisplayDeviceInfo {
      * The default mode of the display.
      */
     public int defaultModeId;
+
+    /**
+     * The mode of the display which is preferred by user.
+     */
+    public int userPreferredModeId = INVALID_MODE_ID;
 
     /**
      * The supported modes of the display.
@@ -456,8 +484,11 @@ final class DisplayDeviceInfo {
      */
     public int diff(DisplayDeviceInfo other) {
         int diff = 0;
-        if (state != other.state || committedState != other.committedState) {
+        if (state != other.state) {
             diff |= DIFF_STATE;
+        }
+        if (committedState != other.committedState) {
+            diff |= DIFF_COMMITTED_STATE;
         }
         if (colorMode != other.colorMode) {
             diff |= DIFF_COLOR_MODE;
@@ -465,13 +496,23 @@ final class DisplayDeviceInfo {
         if (!BrightnessSynchronizer.floatEquals(hdrSdrRatio, other.hdrSdrRatio)) {
             diff |= DIFF_HDR_SDR_RATIO;
         }
+        if (rotation != other.rotation) {
+            diff |= DIFF_ROTATION;
+        }
+        if (renderFrameRate != other.renderFrameRate
+                || presentationDeadlineNanos != other.presentationDeadlineNanos
+                || appVsyncOffsetNanos != other.appVsyncOffsetNanos) {
+            diff |= DIFF_RENDER_TIMINGS;
+        }
+        if (modeId != other.modeId) {
+            diff |= DIFF_MODE_ID;
+        }
         if (!Objects.equals(name, other.name)
                 || !Objects.equals(uniqueId, other.uniqueId)
                 || width != other.width
                 || height != other.height
-                || modeId != other.modeId
-                || renderFrameRate != other.renderFrameRate
                 || defaultModeId != other.defaultModeId
+                || userPreferredModeId != other.userPreferredModeId
                 || !Arrays.equals(supportedModes, other.supportedModes)
                 || !Arrays.equals(supportedColorModes, other.supportedColorModes)
                 || !Objects.equals(hdrCapabilities, other.hdrCapabilities)
@@ -480,12 +521,9 @@ final class DisplayDeviceInfo {
                 || densityDpi != other.densityDpi
                 || xDpi != other.xDpi
                 || yDpi != other.yDpi
-                || appVsyncOffsetNanos != other.appVsyncOffsetNanos
-                || presentationDeadlineNanos != other.presentationDeadlineNanos
                 || flags != other.flags
                 || !Objects.equals(displayCutout, other.displayCutout)
                 || touch != other.touch
-                || rotation != other.rotation
                 || type != other.type
                 || !Objects.equals(address, other.address)
                 || !Objects.equals(deviceProductInfo, other.deviceProductInfo)
@@ -517,6 +555,7 @@ final class DisplayDeviceInfo {
         modeId = other.modeId;
         renderFrameRate = other.renderFrameRate;
         defaultModeId = other.defaultModeId;
+        userPreferredModeId = other.userPreferredModeId;
         supportedModes = other.supportedModes;
         colorMode = other.colorMode;
         supportedColorModes = other.supportedColorModes;
@@ -559,6 +598,7 @@ final class DisplayDeviceInfo {
         sb.append(", modeId ").append(modeId);
         sb.append(", renderFrameRate ").append(renderFrameRate);
         sb.append(", defaultModeId ").append(defaultModeId);
+        sb.append(", userPreferredModeId ").append(userPreferredModeId);
         sb.append(", supportedModes ").append(Arrays.toString(supportedModes));
         sb.append(", colorMode ").append(colorMode);
         sb.append(", supportedColorModes ").append(Arrays.toString(supportedColorModes));

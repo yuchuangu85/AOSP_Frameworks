@@ -61,10 +61,7 @@ public:
         return sp<Layer>::make(args);
     }
 
-    void commitTransaction(Layer* layer) {
-        auto c = layer->getDrawingState();
-        layer->commitTransaction(c);
-    }
+    void commitTransaction(Layer* layer) { layer->commitTransaction(); }
 
     TestableSurfaceFlinger mFlinger;
     renderengine::mock::RenderEngine* mRenderEngine = new renderengine::mock::RenderEngine();
@@ -97,7 +94,7 @@ public:
                                                          HAL_PIXEL_FORMAT_RGBA_8888,
                                                          0ULL /*usage*/);
         layer->setBuffer(externalTexture, bufferData, postTime, /*desiredPresentTime*/ 30, false,
-                         dequeueTime, FrameTimelineInfo{});
+                         FrameTimelineInfo{});
 
         commitTransaction(layer.get());
         nsecs_t latchTime = 25;
@@ -115,7 +112,7 @@ public:
         EXPECT_CALL(*mFlinger.getFrameTracer(),
                     traceFence(layerId, bufferId, frameNumber, presentFence,
                                FrameTracer::FrameEvent::PRESENT_FENCE, /*startTime*/ 0));
-        layer->onPostComposition(nullptr, glDoneFence, presentFence, compositorTiming);
+        layer->onCompositionPresented(nullptr, glDoneFence, presentFence, compositorTiming);
     }
 };
 

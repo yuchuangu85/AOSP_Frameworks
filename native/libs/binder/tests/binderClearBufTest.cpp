@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <android-base/hex.h>
 #include <android-base/logging.h>
 #include <binder/Binder.h>
 #include <binder/IBinder.h>
@@ -23,6 +22,8 @@
 #include <binder/Parcel.h>
 #include <binder/Stability.h>
 #include <gtest/gtest.h>
+
+#include "../Utils.h"
 
 #include <sys/prctl.h>
 #include <thread>
@@ -68,13 +69,16 @@ class FooBar : public BBinder {
             lastReply = reply.data();
             lastReplySize = reply.dataSize();
         }
-        *outBuffer = android::base::HexString(lastReply, lastReplySize);
+        *outBuffer = android::HexString(lastReply, lastReplySize);
         return result;
     }
 };
 
 TEST(BinderClearBuf, ClearKernelBuffer) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     sp<IBinder> binder = defaultServiceManager()->getService(kServerName);
+#pragma clang diagnostic pop
     ASSERT_NE(nullptr, binder);
 
     std::string replyBuffer;
@@ -84,7 +88,7 @@ TEST(BinderClearBuf, ClearKernelBuffer) {
     // the buffer must have at least some length for the string, but we will
     // just check it has some length, to avoid assuming anything about the
     // format
-    EXPECT_GT(replyBuffer.size(), 0);
+    EXPECT_GT(replyBuffer.size(), 0u);
 
     for (size_t i = 0; i < replyBuffer.size(); i++) {
         EXPECT_EQ(replyBuffer[i], '0') << "reply buffer at " << i;

@@ -4,6 +4,7 @@ import android.app.admin.DevicePolicyManager
 import android.app.admin.DevicePolicyResourcesManager
 import android.content.pm.UserInfo
 import android.os.UserManager
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.widget.LockPatternUtils
 import com.android.internal.widget.LockscreenCredential
@@ -11,8 +12,8 @@ import com.android.internal.widget.VerifyCredentialResponse
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.biometrics.domain.model.BiometricOperationInfo
 import com.android.systemui.biometrics.domain.model.BiometricPromptRequest
-import com.android.systemui.biometrics.domain.model.BiometricUserInfo
 import com.android.systemui.biometrics.promptInfo
+import com.android.systemui.biometrics.shared.model.BiometricUserInfo
 import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.whenever
@@ -25,7 +26,6 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.JUnit4
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.anyLong
 import org.mockito.Mock
@@ -38,7 +38,7 @@ private const val MAX_ATTEMPTS = 5
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
-@RunWith(JUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class CredentialInteractorImplTest : SysuiTestCase() {
 
     @JvmField @Rule var mockitoRule = MockitoJUnit.rule()
@@ -87,6 +87,26 @@ class CredentialInteractorImplTest : SysuiTestCase() {
 
             assertThat(interactor.getCredentialOwnerOrSelfId(USER_ID)).isEqualTo(value)
         }
+    }
+
+    @Test
+    fun testParentProfile() {
+        for (value in listOf(12, 8, 4)) {
+            whenever(userManager.getProfileParent(eq(USER_ID)))
+                .thenReturn(UserInfo(value, "test", 0))
+
+            assertThat(interactor.getParentProfileIdOrSelfId(USER_ID)).isEqualTo(value)
+        }
+    }
+
+    @Test
+    fun useCredentialOwnerWhenParentProfileIsNull() {
+        val value = 1
+
+        whenever(userManager.getProfileParent(eq(USER_ID))).thenReturn(null)
+        whenever(userManager.getCredentialOwnerProfile(eq(USER_ID))).thenReturn(value)
+
+        assertThat(interactor.getParentProfileIdOrSelfId(USER_ID)).isEqualTo(value)
     }
 
     @Test fun pinCredentialWhenGood() = pinCredential(goodCredential())

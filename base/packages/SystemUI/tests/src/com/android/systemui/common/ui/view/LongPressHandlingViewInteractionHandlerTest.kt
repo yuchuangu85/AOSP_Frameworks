@@ -18,6 +18,7 @@
 package com.android.systemui.common.ui.view
 
 import android.view.ViewConfiguration
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.common.ui.view.LongPressHandlingViewInteractionHandler.MotionEventModel
@@ -33,7 +34,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.JUnit4
 import org.mockito.Mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -41,7 +41,7 @@ import org.mockito.MockitoAnnotations
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
-@RunWith(JUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class LongPressHandlingViewInteractionHandlerTest : SysuiTestCase() {
 
     @Mock private lateinit var postDelayed: (Runnable, Long) -> DisposableHandle
@@ -67,6 +67,7 @@ class LongPressHandlingViewInteractionHandlerTest : SysuiTestCase() {
                 isAttachedToWindow = { isAttachedToWindow },
                 onLongPressDetected = onLongPressDetected,
                 onSingleTapDetected = onSingleTapDetected,
+                longPressDuration = { ViewConfiguration.getLongPressTimeout().toLong() }
             )
         underTest.isLongPressHandlingEnabled = true
     }

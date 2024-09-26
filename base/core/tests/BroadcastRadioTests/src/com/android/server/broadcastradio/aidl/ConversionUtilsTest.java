@@ -16,24 +16,34 @@
 
 package com.android.server.broadcastradio.aidl;
 
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.anyInt;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.anyLong;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doAnswer;
 
 import android.app.compat.CompatChanges;
 import android.hardware.broadcastradio.AmFmBandRange;
 import android.hardware.broadcastradio.AmFmRegionConfig;
+import android.hardware.broadcastradio.ConfigFlag;
 import android.hardware.broadcastradio.DabTableEntry;
 import android.hardware.broadcastradio.IdentifierType;
+import android.hardware.broadcastradio.Metadata;
+import android.hardware.broadcastradio.ProgramFilter;
 import android.hardware.broadcastradio.ProgramIdentifier;
 import android.hardware.broadcastradio.ProgramInfo;
-import android.hardware.broadcastradio.ProgramListChunk;
 import android.hardware.broadcastradio.Properties;
 import android.hardware.broadcastradio.Result;
 import android.hardware.broadcastradio.VendorKeyValue;
 import android.hardware.radio.Announcement;
+import android.hardware.radio.Flags;
 import android.hardware.radio.ProgramList;
 import android.hardware.radio.ProgramSelector;
 import android.hardware.radio.RadioManager;
+import android.hardware.radio.RadioMetadata;
+import android.hardware.radio.UniqueProgramIdentifier;
 import android.os.ServiceSpecificException;
+import android.platform.test.flag.junit.SetFlagsRule;
+import android.util.ArrayMap;
+import android.util.ArraySet;
 
 import com.android.dx.mockito.inline.extended.StaticMockitoSessionBuilder;
 import com.android.server.broadcastradio.ExtendedRadioMockitoTestCase;
@@ -43,14 +53,17 @@ import com.google.common.truth.Expect;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.mockito.stubbing.Answer;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
 
-    private static final int U_APP_UID = 1001;
-    private static final int T_APP_UID = 1002;
+    private static final int T_APP_UID = 1001;
+    private static final int U_APP_UID = 1002;
+    private static final int V_APP_UID = 1003;
 
     private static final int FM_LOWER_LIMIT = 87_500;
     private static final int FM_UPPER_LIMIT = 108_000;
@@ -75,23 +88,33 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
 
     private static final int TEST_SIGNAL_QUALITY = 1;
     private static final long TEST_DAB_DMB_SID_EXT_VALUE = 0xA000000111L;
+    private static final long TEST_DAB_SID_EXT_LEGACY_VALUE = 0xA00111L;
     private static final long TEST_DAB_ENSEMBLE_VALUE = 0x1001;
     private static final long TEST_DAB_FREQUENCY_VALUE = 220_352;
     private static final long TEST_FM_FREQUENCY_VALUE = 92_100;
+    private static final long TEST_HD_FREQUENCY_VALUE = 95_300;
+    private static final long TEST_HD_STATION_ID_EXT_VALUE = 0x100000001L
+            | (TEST_HD_FREQUENCY_VALUE << 36);
+    private static final long TEST_HD_LOCATION_VALUE =  0x4E647007665CF6L;
     private static final long TEST_VENDOR_ID_VALUE = 9_901;
+
+    private static final ProgramSelector.Identifier TEST_INVALID_ID =
+            new ProgramSelector.Identifier(ProgramSelector.IDENTIFIER_TYPE_INVALID, 1);
+    private static final ProgramIdentifier TEST_HAL_INVALID_ID =
+            AidlTestUtils.makeHalIdentifier(IdentifierType.INVALID, 1);
 
     private static final ProgramSelector.Identifier TEST_DAB_SID_EXT_ID =
             new ProgramSelector.Identifier(
                     ProgramSelector.IDENTIFIER_TYPE_DAB_DMB_SID_EXT, TEST_DAB_DMB_SID_EXT_VALUE);
+    private static final ProgramSelector.Identifier TEST_DAB_SID_EXT_LEGACY_ID =
+            new ProgramSelector.Identifier(
+                    ProgramSelector.IDENTIFIER_TYPE_DAB_SID_EXT, TEST_DAB_SID_EXT_LEGACY_VALUE);
     private static final ProgramSelector.Identifier TEST_DAB_ENSEMBLE_ID =
             new ProgramSelector.Identifier(
                     ProgramSelector.IDENTIFIER_TYPE_DAB_ENSEMBLE, TEST_DAB_ENSEMBLE_VALUE);
     private static final ProgramSelector.Identifier TEST_DAB_FREQUENCY_ID =
             new ProgramSelector.Identifier(
                     ProgramSelector.IDENTIFIER_TYPE_DAB_FREQUENCY, TEST_DAB_FREQUENCY_VALUE);
-    private static final ProgramSelector.Identifier TEST_FM_FREQUENCY_ID =
-            new ProgramSelector.Identifier(
-                    ProgramSelector.IDENTIFIER_TYPE_AMFM_FREQUENCY, TEST_FM_FREQUENCY_VALUE);
     private static final ProgramSelector.Identifier TEST_VENDOR_ID =
             new ProgramSelector.Identifier(
                     ProgramSelector.IDENTIFIER_TYPE_VENDOR_START, TEST_VENDOR_ID_VALUE);
@@ -103,31 +126,57 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     private static final ProgramIdentifier TEST_HAL_DAB_FREQUENCY_ID =
             AidlTestUtils.makeHalIdentifier(IdentifierType.DAB_FREQUENCY_KHZ,
                     TEST_DAB_FREQUENCY_VALUE);
-    private static final ProgramIdentifier TEST_HAL_FM_FREQUENCY_ID =
-            AidlTestUtils.makeHalIdentifier(IdentifierType.AMFM_FREQUENCY_KHZ,
-                    TEST_FM_FREQUENCY_VALUE);
-    private static final ProgramIdentifier TEST_HAL_VENDOR_ID =
-            AidlTestUtils.makeHalIdentifier(IdentifierType.VENDOR_START,
-                    TEST_VENDOR_ID_VALUE);
 
     private static final ProgramSelector TEST_DAB_SELECTOR = new ProgramSelector(
             ProgramSelector.PROGRAM_TYPE_DAB, TEST_DAB_SID_EXT_ID,
             new ProgramSelector.Identifier[]{TEST_DAB_FREQUENCY_ID, TEST_DAB_ENSEMBLE_ID},
             /* vendorIds= */ null);
+    private static final ProgramSelector TEST_DAB_SELECTOR_LEGACY = new ProgramSelector(
+            ProgramSelector.PROGRAM_TYPE_DAB, TEST_DAB_SID_EXT_LEGACY_ID,
+            new ProgramSelector.Identifier[]{TEST_DAB_FREQUENCY_ID, TEST_DAB_ENSEMBLE_ID},
+            /* vendorIds= */ null);
     private static final ProgramSelector TEST_FM_SELECTOR =
             AidlTestUtils.makeFmSelector(TEST_FM_FREQUENCY_VALUE);
+
+    private static final ProgramSelector.Identifier TEST_HD_STATION_EXT_ID =
+            new ProgramSelector.Identifier(ProgramSelector.IDENTIFIER_TYPE_HD_STATION_ID_EXT,
+                    TEST_HD_STATION_ID_EXT_VALUE);
+
+    private static final ProgramIdentifier TEST_HAL_HD_STATION_EXT_ID =
+            AidlTestUtils.makeHalIdentifier(IdentifierType.HD_STATION_ID_EXT,
+                    TEST_HD_STATION_ID_EXT_VALUE);
+    private static final ProgramIdentifier TEST_HAL_HD_STATION_LOCATION_ID =
+            AidlTestUtils.makeHalIdentifier(IdentifierType.HD_STATION_LOCATION,
+                    TEST_HD_LOCATION_VALUE);
+
+    private static final UniqueProgramIdentifier TEST_DAB_UNIQUE_ID = new UniqueProgramIdentifier(
+            TEST_DAB_SELECTOR);
+
+    private static final UniqueProgramIdentifier TEST_VENDOR_UNIQUE_ID =
+            new UniqueProgramIdentifier(TEST_VENDOR_ID);
 
     private static final int TEST_ENABLED_TYPE = Announcement.TYPE_EMERGENCY;
     private static final int TEST_ANNOUNCEMENT_FREQUENCY = FM_LOWER_LIMIT + FM_SPACING;
 
     private static final RadioManager.ModuleProperties MODULE_PROPERTIES =
-            convertToModuleProperties();
+            createModuleProperties();
     private static final Announcement ANNOUNCEMENT =
             ConversionUtils.announcementFromHalAnnouncement(
                     AidlTestUtils.makeAnnouncement(TEST_ENABLED_TYPE, TEST_ANNOUNCEMENT_FREQUENCY));
 
+    private static final String TEST_SONG_TITLE = "titleTest";
+    private static final int TEST_ALBUM_ART = 2;
+    private static final int TEST_HD_SUBCHANNELS = 1;
+
+    private static final Metadata TEST_HAL_SONG_TITLE = Metadata.songTitle(TEST_SONG_TITLE);
+    private static final Metadata TEST_HAL_ALBUM_ART = Metadata.albumArt(TEST_ALBUM_ART);
+    private static final Metadata TEST_HAL_HD_SUBCHANNELS = Metadata.hdSubChannelsAvailable(
+            TEST_HD_SUBCHANNELS);
+
     @Rule
     public final Expect expect = Expect.create();
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     @Override
     protected void initializeSession(StaticMockitoSessionBuilder builder) {
@@ -136,22 +185,42 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
 
     @Before
     public void setUp() {
-        doReturn(true).when(() -> CompatChanges.isChangeEnabled(
-                ConversionUtils.RADIO_U_VERSION_REQUIRED, U_APP_UID));
-        doReturn(false).when(() -> CompatChanges.isChangeEnabled(
-                ConversionUtils.RADIO_U_VERSION_REQUIRED, T_APP_UID));
+        doAnswer((Answer<Boolean>) invocationOnMock -> {
+                    long changeId = invocationOnMock.getArgument(0);
+                    int uid = invocationOnMock.getArgument(1);
+                    if (uid == V_APP_UID) {
+                        return changeId == ConversionUtils.RADIO_V_VERSION_REQUIRED
+                                || changeId == ConversionUtils.RADIO_U_VERSION_REQUIRED;
+                    } else if (uid == U_APP_UID) {
+                        return changeId == ConversionUtils.RADIO_U_VERSION_REQUIRED;
+                    }
+                    return false;
+                }
+        ).when(() -> CompatChanges.isChangeEnabled(anyLong(), anyInt()));
     }
 
     @Test
-    public void isAtLeastU_withTSdkVersion_returnsFalse() {
+    public void isAtLeastU_withLowerSdkVersion_returnsFalse() {
         expect.withMessage("Target SDK version of T")
                 .that(ConversionUtils.isAtLeastU(T_APP_UID)).isFalse();
     }
 
     @Test
-    public void isAtLeastU_withCurrentSdkVersion_returnsTrue() {
+    public void isAtLeastU_withUSdkVersion_returnsTrue() {
         expect.withMessage("Target SDK version of U")
                 .that(ConversionUtils.isAtLeastU(U_APP_UID)).isTrue();
+    }
+
+    @Test
+    public void isAtLeastV_withLowerSdkVersion_returnsFalse() {
+        expect.withMessage("Target SDK version U lower than V")
+                .that(ConversionUtils.isAtLeastV(U_APP_UID)).isFalse();
+    }
+
+    @Test
+    public void isAtLeastV_withVSdkVersion_returnsTrue() {
+        expect.withMessage("Target SDK version of V not lower than V")
+                .that(ConversionUtils.isAtLeastV(V_APP_UID)).isTrue();
     }
 
     @Test
@@ -162,6 +231,27 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
 
         expect.withMessage("Exception thrown for canceling error").that(thrown)
                 .hasMessageThat().contains("tune: CANCELED");
+    }
+
+    @Test
+    public void throwOnError_withInvalidArgumentException() {
+        ServiceSpecificException halException = new ServiceSpecificException(
+                Result.INVALID_ARGUMENTS);
+
+        RuntimeException thrown = ConversionUtils.throwOnError(halException, "tune");
+
+        expect.withMessage("Exception thrown for invalid argument error")
+                .that(thrown).hasMessageThat().contains("tune: INVALID_ARGUMENTS");
+    }
+
+    @Test
+    public void throwOnError_withTimeoutException() {
+        ServiceSpecificException halException = new ServiceSpecificException(Result.TIMEOUT);
+
+        RuntimeException thrown = ConversionUtils.throwOnError(halException, "seek");
+
+        expect.withMessage("Exception thrown for timeout error")
+                .that(thrown).hasMessageThat().contains("seek: TIMEOUT");
     }
 
     @Test
@@ -242,12 +332,69 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     }
 
     @Test
+    public void propertiesFromHalProperties_withoutAmFmAndDabConfigs() {
+        RadioManager.ModuleProperties properties = createModuleProperties(/* amFmConfig= */ null,
+                /* dabTableEntries= */ null);
+
+        expect.withMessage("Empty AM/FM config")
+                .that(properties.getBands()).asList().isEmpty();
+        expect.withMessage("Empty DAB config")
+                .that(properties.getDabFrequencyTable()).isNull();
+    }
+
+    @Test
+    public void propertiesFromHalProperties_withInvalidBand() {
+        AmFmRegionConfig amFmRegionConfig = new AmFmRegionConfig();
+        amFmRegionConfig.ranges = new AmFmBandRange[]{createAmFmBandRange(/* lowerBound= */ 50000,
+                /* upperBound= */ 60000, /* spacing= */ 10),
+                createAmFmBandRange(FM_LOWER_LIMIT, FM_UPPER_LIMIT, FM_SPACING)};
+
+        RadioManager.ModuleProperties properties = createModuleProperties(amFmRegionConfig,
+                new DabTableEntry[]{});
+
+        RadioManager.BandDescriptor[] bands = properties.getBands();
+        expect.withMessage("Band descriptors").that(bands).hasLength(1);
+        expect.withMessage("FM band frequency lower limit")
+                .that(bands[0].getLowerLimit()).isEqualTo(FM_LOWER_LIMIT);
+        expect.withMessage("FM band frequency upper limit")
+                .that(bands[0].getUpperLimit()).isEqualTo(FM_UPPER_LIMIT);
+        expect.withMessage("FM band frequency spacing")
+                .that(bands[0].getSpacing()).isEqualTo(FM_SPACING);
+    }
+
+    @Test
     public void identifierToHalProgramIdentifier_withDabId() {
         ProgramIdentifier halDabId =
                 ConversionUtils.identifierToHalProgramIdentifier(TEST_DAB_SID_EXT_ID);
 
         expect.withMessage("Converted HAL DAB identifier").that(halDabId)
                 .isEqualTo(TEST_HAL_DAB_SID_EXT_ID);
+    }
+
+    @Test
+    public void identifierToHalProgramIdentifier_withDeprecateDabId() {
+        long value = 0x98765ABCDL;
+        ProgramSelector.Identifier dabId = new ProgramSelector.Identifier(
+                        ProgramSelector.IDENTIFIER_TYPE_DAB_SID_EXT, value);
+        ProgramIdentifier halDabIdExpected = AidlTestUtils.makeHalIdentifier(
+                IdentifierType.DAB_SID_EXT, 0x987650000ABCDL);
+
+        ProgramIdentifier halDabId = ConversionUtils.identifierToHalProgramIdentifier(dabId);
+
+        expect.withMessage("Converted 28-bit DAB identifier for HAL").that(halDabId)
+                .isEqualTo(halDabIdExpected);
+    }
+
+    @Test
+    public void identifierToHalProgramIdentifier_withFlagEnabled() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        ProgramSelector.Identifier hdLocationId = createHdStationLocationIdWithFlagEnabled();
+
+        ProgramIdentifier halHdLocationId =
+                ConversionUtils.identifierToHalProgramIdentifier(hdLocationId);
+
+        expect.withMessage("Converted HD location identifier for HAL").that(halHdLocationId)
+                .isEqualTo(TEST_HAL_HD_STATION_LOCATION_ID);
     }
 
     @Test
@@ -259,6 +406,37 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     }
 
     @Test
+    public void identifierFromHalProgramIdentifier_withFlagEnabled() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        ProgramSelector.Identifier hdLocationIdExpected =
+                createHdStationLocationIdWithFlagEnabled();
+
+        ProgramSelector.Identifier hdLocationId =
+                ConversionUtils.identifierFromHalProgramIdentifier(TEST_HAL_HD_STATION_LOCATION_ID);
+
+        expect.withMessage("Converted HD location identifier").that(hdLocationId)
+                .isEqualTo(hdLocationIdExpected);
+    }
+
+    @Test
+    public void identifierFromHalProgramIdentifier_withFlagDisabled_returnsNull() {
+        mSetFlagsRule.disableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+
+        ProgramSelector.Identifier hdLocationId =
+                ConversionUtils.identifierFromHalProgramIdentifier(TEST_HAL_HD_STATION_LOCATION_ID);
+
+        expect.withMessage("Null HD location identifier with feature flag disabled")
+                .that(hdLocationId).isNull();
+    }
+
+    @Test
+    public void identifierFromHalProgramIdentifier_withInvalidIdentifier() {
+        expect.withMessage("Identifier converted from invalid HAL identifier")
+                .that(ConversionUtils.identifierFromHalProgramIdentifier(TEST_HAL_INVALID_ID))
+                .isNull();
+    }
+
+    @Test
     public void programSelectorToHalProgramSelector_withValidSelector() {
         android.hardware.broadcastradio.ProgramSelector halDabSelector =
                 ConversionUtils.programSelectorToHalProgramSelector(TEST_DAB_SELECTOR);
@@ -267,6 +445,23 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 .that(halDabSelector.primaryId).isEqualTo(TEST_HAL_DAB_SID_EXT_ID);
         expect.withMessage("Secondary identifiers of converted HAL DAB selector")
                 .that(halDabSelector.secondaryIds).asList()
+                .containsExactly(TEST_HAL_DAB_FREQUENCY_ID, TEST_HAL_DAB_ENSEMBLE_ID);
+    }
+
+    @Test
+    public void programSelectorToHalProgramSelector_withInvalidSecondaryId() {
+        ProgramSelector dabSelector = new ProgramSelector(ProgramSelector.PROGRAM_TYPE_DAB,
+                TEST_DAB_SID_EXT_ID, new ProgramSelector.Identifier[]{TEST_INVALID_ID,
+                    TEST_DAB_FREQUENCY_ID, TEST_DAB_ENSEMBLE_ID}, /* vendorIds= */ null);
+
+        android.hardware.broadcastradio.ProgramSelector halDabSelector =
+                ConversionUtils.programSelectorToHalProgramSelector(dabSelector);
+
+        expect.withMessage("Primary identifier of converted HAL DAB selector with invalid "
+                        + "secondary id").that(halDabSelector.primaryId)
+                .isEqualTo(TEST_HAL_DAB_SID_EXT_ID);
+        expect.withMessage("Secondary identifiers of converted HAL DAB selector with "
+                        + "invalid secondary id").that(halDabSelector.secondaryIds).asList()
                 .containsExactly(TEST_HAL_DAB_FREQUENCY_ID, TEST_HAL_DAB_ENSEMBLE_ID);
     }
 
@@ -283,6 +478,33 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 .that(dabSelector.getPrimaryId()).isEqualTo(TEST_DAB_SID_EXT_ID);
         expect.withMessage("Secondary identifiers of converted DAB selector")
                 .that(dabSelector.getSecondaryIds()).asList()
+                .containsExactly(TEST_DAB_FREQUENCY_ID, TEST_DAB_ENSEMBLE_ID);
+    }
+
+    @Test
+    public void programSelectorFromHalProgramSelector_withInvalidSelector() {
+        android.hardware.broadcastradio.ProgramSelector invalidSelector =
+                AidlTestUtils.makeHalSelector(TEST_HAL_INVALID_ID, new ProgramIdentifier[]{});
+
+        expect.withMessage("Selector converted from invalid HAL selector")
+                .that(ConversionUtils.programSelectorFromHalProgramSelector(invalidSelector))
+                .isNull();
+    }
+
+    @Test
+    public void programSelectorFromHalProgramSelector_withInvalidSecondaryId() {
+        android.hardware.broadcastradio.ProgramSelector halDabSelector =
+                AidlTestUtils.makeHalSelector(TEST_HAL_DAB_SID_EXT_ID, new ProgramIdentifier[]{
+                        TEST_HAL_INVALID_ID, TEST_HAL_DAB_ENSEMBLE_ID, TEST_HAL_DAB_FREQUENCY_ID});
+
+        ProgramSelector dabSelector =
+                ConversionUtils.programSelectorFromHalProgramSelector(halDabSelector);
+
+        expect.withMessage("Primary identifier of converted DAB selector with invalid "
+                        + "secondary id").that(dabSelector.getPrimaryId())
+                .isEqualTo(TEST_DAB_SID_EXT_ID);
+        expect.withMessage("Secondary identifiers of converted DAB selector with invalid "
+                        + "secondary id").that(dabSelector.getSecondaryIds()).asList()
                 .containsExactly(TEST_DAB_FREQUENCY_ID, TEST_DAB_ENSEMBLE_ID);
     }
 
@@ -311,6 +533,22 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     }
 
     @Test
+    public void programInfoFromHalProgramInfo_withRelatedContent() {
+        android.hardware.broadcastradio.ProgramSelector halDabSelector =
+                AidlTestUtils.makeHalSelector(TEST_HAL_DAB_SID_EXT_ID, new ProgramIdentifier[]{
+                        TEST_HAL_DAB_ENSEMBLE_ID, TEST_HAL_DAB_FREQUENCY_ID});
+        ProgramInfo halProgramInfo = AidlTestUtils.makeHalProgramInfo(halDabSelector,
+                TEST_HAL_DAB_SID_EXT_ID, TEST_HAL_DAB_FREQUENCY_ID, TEST_SIGNAL_QUALITY,
+                new ProgramIdentifier[]{TEST_HAL_HD_STATION_EXT_ID}, new Metadata[]{});
+
+        RadioManager.ProgramInfo programInfo =
+                ConversionUtils.programInfoFromHalProgramInfo(halProgramInfo);
+
+        expect.withMessage("Related content of converted program info")
+                .that(programInfo.getRelatedContent()).containsExactly(TEST_HD_STATION_EXT_ID);
+    }
+
+    @Test
     public void programInfoFromHalProgramInfo_withInvalidDabProgramInfo() {
         android.hardware.broadcastradio.ProgramSelector invalidHalDabSelector =
                 AidlTestUtils.makeHalSelector(TEST_HAL_DAB_SID_EXT_ID,
@@ -326,61 +564,20 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     }
 
     @Test
-    public void chunkFromHalProgramListChunk_withValidChunk() {
-        boolean purge = false;
-        boolean complete = true;
-        android.hardware.broadcastradio.ProgramSelector halDabSelector =
-                AidlTestUtils.makeHalSelector(TEST_HAL_DAB_SID_EXT_ID, new ProgramIdentifier[]{
-                        TEST_HAL_DAB_ENSEMBLE_ID, TEST_HAL_DAB_FREQUENCY_ID});
-        ProgramInfo halDabInfo = AidlTestUtils.makeHalProgramInfo(halDabSelector,
-                TEST_HAL_DAB_SID_EXT_ID, TEST_HAL_DAB_FREQUENCY_ID, TEST_SIGNAL_QUALITY);
-        RadioManager.ProgramInfo dabInfo =
-                ConversionUtils.programInfoFromHalProgramInfo(halDabInfo);
-        ProgramListChunk halChunk = AidlTestUtils.makeHalChunk(purge, complete,
-                new ProgramInfo[]{halDabInfo},
-                new ProgramIdentifier[]{TEST_HAL_VENDOR_ID, TEST_HAL_FM_FREQUENCY_ID});
-
-        ProgramList.Chunk chunk = ConversionUtils.chunkFromHalProgramListChunk(halChunk);
-
-        expect.withMessage("Purged state of the converted valid program list chunk")
-                .that(chunk.isPurge()).isEqualTo(purge);
-        expect.withMessage("Completion state of the converted valid program list chunk")
-                .that(chunk.isComplete()).isEqualTo(complete);
-        expect.withMessage("Modified program info in the converted valid program list chunk")
-                .that(chunk.getModified()).containsExactly(dabInfo);
-        expect.withMessage("Removed program ides in the converted valid program list chunk")
-                .that(chunk.getRemoved()).containsExactly(TEST_VENDOR_ID, TEST_FM_FREQUENCY_ID);
+    public void programSelectorMeetsSdkVersionRequirement_withLowerVersionPrimaryId_returnsFalse() {
+        expect.withMessage("Selector %s with primary id requiring higher-version SDK version",
+                        TEST_DAB_SELECTOR).that(ConversionUtils
+                .programSelectorMeetsSdkVersionRequirement(TEST_DAB_SELECTOR, T_APP_UID)).isFalse();
     }
 
     @Test
-    public void chunkFromHalProgramListChunk_withInvalidModifiedProgramInfo() {
-        boolean purge = true;
-        boolean complete = false;
-        android.hardware.broadcastradio.ProgramSelector halDabSelector =
-                AidlTestUtils.makeHalSelector(TEST_HAL_DAB_SID_EXT_ID, new ProgramIdentifier[]{
-                        TEST_HAL_DAB_ENSEMBLE_ID, TEST_HAL_DAB_FREQUENCY_ID});
-        ProgramInfo halDabInfo = AidlTestUtils.makeHalProgramInfo(halDabSelector,
-                TEST_HAL_DAB_SID_EXT_ID, TEST_HAL_DAB_ENSEMBLE_ID, TEST_SIGNAL_QUALITY);
-        ProgramListChunk halChunk = AidlTestUtils.makeHalChunk(purge, complete,
-                new ProgramInfo[]{halDabInfo}, new ProgramIdentifier[]{TEST_HAL_FM_FREQUENCY_ID});
+    public void programSelectorMeetsSdkVersionRequirement_withLowerVersionSecondaryId() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        ProgramSelector hdSelector = createHdSelectorWithFlagEnabled();
 
-        ProgramList.Chunk chunk = ConversionUtils.chunkFromHalProgramListChunk(halChunk);
-
-        expect.withMessage("Purged state of the converted invalid program list chunk")
-                .that(chunk.isPurge()).isEqualTo(purge);
-        expect.withMessage("Completion state of the converted invalid program list chunk")
-                .that(chunk.isComplete()).isEqualTo(complete);
-        expect.withMessage("Modified program info in the converted invalid program list chunk")
-                .that(chunk.getModified()).isEmpty();
-        expect.withMessage("Removed program ids in the converted invalid program list chunk")
-                .that(chunk.getRemoved()).containsExactly(TEST_FM_FREQUENCY_ID);
-    }
-
-    @Test
-    public void programSelectorMeetsSdkVersionRequirement_withLowerVersionId_returnsFalse() {
-        expect.withMessage("Selector %s without required SDK version", TEST_DAB_SELECTOR)
-                .that(ConversionUtils.programSelectorMeetsSdkVersionRequirement(TEST_DAB_SELECTOR,
-                        T_APP_UID)).isFalse();
+        expect.withMessage("Selector %s with secondary id requiring higher-version SDK version",
+                hdSelector).that(ConversionUtils.programSelectorMeetsSdkVersionRequirement(
+                        hdSelector, U_APP_UID)).isFalse();
     }
 
     @Test
@@ -391,6 +588,16 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     }
 
     @Test
+    public void programSelectorMeetsSdkVersionRequirement_withRequiredVersionAndFlagEnabled() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        ProgramSelector hdSelector = createHdSelectorWithFlagEnabled();
+
+        expect.withMessage("Selector %s with required SDK version and feature flag enabled",
+                hdSelector).that(ConversionUtils.programSelectorMeetsSdkVersionRequirement(
+                        hdSelector, V_APP_UID)).isTrue();
+    }
+
+    @Test
     public void programInfoMeetsSdkVersionRequirement_withLowerVersionId_returnsFalse() {
         RadioManager.ProgramInfo dabProgramInfo = AidlTestUtils.makeProgramInfo(TEST_DAB_SELECTOR,
                 TEST_DAB_SID_EXT_ID, TEST_DAB_FREQUENCY_ID, TEST_SIGNAL_QUALITY);
@@ -398,6 +605,29 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
         expect.withMessage("Program info %s without required SDK version", dabProgramInfo)
                 .that(ConversionUtils.programInfoMeetsSdkVersionRequirement(dabProgramInfo,
                         T_APP_UID)).isFalse();
+    }
+
+    @Test
+    public void programInfoMeetsSdkVersionRequirement_withLowerVersionIdForLogicallyTunedTo() {
+        RadioManager.ProgramInfo dabProgramInfo = AidlTestUtils.makeProgramInfo(
+                TEST_DAB_SELECTOR_LEGACY, TEST_DAB_SID_EXT_ID, TEST_DAB_FREQUENCY_ID,
+                TEST_SIGNAL_QUALITY);
+
+        expect.withMessage("Program info %s with logically tuned to ID not of required SDK version",
+                        dabProgramInfo).that(ConversionUtils.programInfoMeetsSdkVersionRequirement(
+                                dabProgramInfo, T_APP_UID)).isFalse();
+    }
+
+    @Test
+    public void programInfoMeetsSdkVersionRequirement_withLowerVersionIdForRelatedContent() {
+        RadioManager.ProgramInfo dabProgramInfo = new RadioManager.ProgramInfo(
+                TEST_DAB_SELECTOR_LEGACY, TEST_DAB_SID_EXT_ID, TEST_DAB_FREQUENCY_ID,
+                List.of(TEST_DAB_SID_EXT_ID), /* infoFlags= */ 0, TEST_SIGNAL_QUALITY,
+                new RadioMetadata.Builder().build(), new ArrayMap<>());
+
+        expect.withMessage("Program info %s with related content not of required SDK version",
+                dabProgramInfo).that(ConversionUtils.programInfoMeetsSdkVersionRequirement(
+                dabProgramInfo, T_APP_UID)).isFalse();
     }
 
     @Test
@@ -418,7 +648,7 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 TEST_SIGNAL_QUALITY);
         ProgramList.Chunk chunk = new ProgramList.Chunk(/* purge= */ true,
                 /* complete= */ true, Set.of(dabProgramInfo, fmProgramInfo),
-                Set.of(TEST_DAB_SID_EXT_ID, TEST_DAB_ENSEMBLE_ID, TEST_VENDOR_ID));
+                Set.of(TEST_DAB_UNIQUE_ID, TEST_VENDOR_UNIQUE_ID));
 
         ProgramList.Chunk convertedChunk = ConversionUtils.convertChunkToTargetSdkVersion(chunk,
                 T_APP_UID);
@@ -434,8 +664,7 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 .that(convertedChunk.getModified()).containsExactly(fmProgramInfo);
         expect.withMessage(
                 "Removed program ids in the converted program list chunk with lower SDK version")
-                .that(convertedChunk.getRemoved())
-                .containsExactly(TEST_DAB_ENSEMBLE_ID, TEST_VENDOR_ID);
+                .that(convertedChunk.getRemoved()).containsExactly(TEST_VENDOR_UNIQUE_ID);
     }
 
     @Test
@@ -446,7 +675,7 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 TEST_SIGNAL_QUALITY);
         ProgramList.Chunk chunk = new ProgramList.Chunk(/* purge= */ true,
                 /* complete= */ true, Set.of(dabProgramInfo, fmProgramInfo),
-                Set.of(TEST_DAB_SID_EXT_ID, TEST_DAB_ENSEMBLE_ID, TEST_VENDOR_ID));
+                Set.of(TEST_DAB_UNIQUE_ID, TEST_VENDOR_UNIQUE_ID));
 
         ProgramList.Chunk convertedChunk = ConversionUtils.convertChunkToTargetSdkVersion(chunk,
                 U_APP_UID);
@@ -480,11 +709,253 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 .that(ANNOUNCEMENT.getVendorInfo()).isEmpty();
     }
 
-    private static RadioManager.ModuleProperties convertToModuleProperties() {
+    @Test
+    public void configFlagMeetsSdkVersionRequirement_withRequiredSdkVersionAndFlagEnabled() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        int halForceAmAnalogFlag = ConfigFlag.FORCE_ANALOG_FM;
+
+        expect.withMessage("Force Analog FM flag with required SDK version and feature flag"
+                        + " enabled").that(ConversionUtils.configFlagMeetsSdkVersionRequirement(
+                                halForceAmAnalogFlag, V_APP_UID)).isTrue();
+    }
+
+    @Test
+    public void configFlagMeetsSdkVersionRequirement_withRequiredSdkVersionAndFlagDisabled() {
+        mSetFlagsRule.disableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        int halForceAmAnalogFlag = ConfigFlag.FORCE_ANALOG_FM;
+
+        expect.withMessage("Force Analog FM with required SDK version and with feature flag"
+                        + " disabled").that(ConversionUtils.configFlagMeetsSdkVersionRequirement(
+                                halForceAmAnalogFlag, V_APP_UID)).isFalse();
+    }
+
+    @Test
+    public void configFlagMeetsSdkVersionRequirement_withLowerSdkVersion() {
+        int halForceAmAnalogFlag = ConfigFlag.FORCE_ANALOG_FM;
+
+        expect.withMessage("Force Analog FM without required SDK version")
+                .that(ConversionUtils.configFlagMeetsSdkVersionRequirement(halForceAmAnalogFlag,
+                        U_APP_UID)).isFalse();
+    }
+
+    @Test
+    public void configFlagMeetsSdkVersionRequirement_withFConfigFlagWithoutSdkVersionRequired() {
+        int halForceAmAnalogFlag = ConfigFlag.FORCE_DIGITAL;
+
+        expect.withMessage("Force digital config flag")
+                .that(ConversionUtils.configFlagMeetsSdkVersionRequirement(halForceAmAnalogFlag,
+                        T_APP_UID)).isTrue();
+    }
+
+    @Test
+    public void radioMetadataFromHalMetadata() {
+        int rdsPtyValue = 3;
+        int rbdsPtyValue = 4;
+        String rdsRtValue = "rdsRtTest";
+        String songAlbumValue = "songAlbumTest";
+        String programNameValue = "programNameTest";
+        RadioMetadata convertedMetadata = ConversionUtils.radioMetadataFromHalMetadata(
+                new Metadata[]{TEST_HAL_SONG_TITLE, TEST_HAL_ALBUM_ART,
+                        Metadata.rdsPty(rdsPtyValue), Metadata.rbdsPty(rbdsPtyValue),
+                        Metadata.rdsRt(rdsRtValue), Metadata.songAlbum(songAlbumValue),
+                        Metadata.programName(programNameValue)});
+
+        expect.withMessage("Song title with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_TITLE))
+                .isEqualTo(TEST_SONG_TITLE);
+        expect.withMessage("Album art with flag enabled")
+                .that(convertedMetadata.getInt(RadioMetadata.METADATA_KEY_ART))
+                .isEqualTo(TEST_ALBUM_ART);
+        expect.withMessage("RDS PTY with flag enabled")
+                .that(convertedMetadata.getInt(RadioMetadata.METADATA_KEY_RDS_PTY))
+                .isEqualTo(rdsPtyValue);
+        expect.withMessage("RBDS PTY with flag enabled")
+                .that(convertedMetadata.getInt(RadioMetadata.METADATA_KEY_RBDS_PTY))
+                .isEqualTo(rbdsPtyValue);
+        expect.withMessage("RDS RT with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_RDS_RT))
+                .isEqualTo(rdsRtValue);
+        expect.withMessage("Album with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_ALBUM))
+                .isEqualTo(songAlbumValue);
+        expect.withMessage("Program name with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_PROGRAM_NAME))
+                .isEqualTo(programNameValue);
+    }
+
+    @Test
+    public void radioMetadataFromHalMetadata_withDabMetadata() {
+        String dabEnsembleNameValue = "dabEnsembleNameTest";
+        String dabEnsembleNameShortValue = "dabEnsembleNameShortTest";
+        String dabServiceNameValue = "dabServiceNameTest";
+        String dabServiceNameShortValue = "dabServiceNameShortTest";
+        String dabComponentNameValue = "dabComponentNameTest";
+        String dabComponentNameShortValue = "dabComponentNameShortTest";
+        RadioMetadata convertedMetadata = ConversionUtils.radioMetadataFromHalMetadata(
+                new Metadata[]{Metadata.dabEnsembleName(dabEnsembleNameValue),
+                        Metadata.dabEnsembleNameShort(dabEnsembleNameShortValue),
+                        Metadata.dabServiceName(dabServiceNameValue),
+                        Metadata.dabServiceNameShort(dabServiceNameShortValue),
+                        Metadata.dabComponentName(dabComponentNameValue),
+                        Metadata.dabComponentNameShort(dabComponentNameShortValue)});
+
+        expect.withMessage("DAB Ensemble name with flag enabled")
+                .that(convertedMetadata.getString(
+                        RadioMetadata.METADATA_KEY_DAB_ENSEMBLE_NAME))
+                .isEqualTo(dabEnsembleNameValue);
+        expect.withMessage("DAB Ensemble short name with flag enabled")
+                .that(convertedMetadata.getString(
+                        RadioMetadata.METADATA_KEY_DAB_ENSEMBLE_NAME_SHORT))
+                .isEqualTo(dabEnsembleNameShortValue);
+        expect.withMessage("DAB service service name with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_DAB_SERVICE_NAME))
+                .isEqualTo(dabServiceNameValue);
+        expect.withMessage("DAB service service short name with flag enabled")
+                .that(convertedMetadata.getString(
+                        RadioMetadata.METADATA_KEY_DAB_SERVICE_NAME_SHORT))
+                .isEqualTo(dabServiceNameShortValue);
+        expect.withMessage("DAB component name with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_DAB_COMPONENT_NAME))
+                .isEqualTo(dabComponentNameValue);
+        expect.withMessage("DAB component short name with flag enabled")
+                .that(convertedMetadata.getString(
+                        RadioMetadata.METADATA_KEY_DAB_COMPONENT_NAME_SHORT))
+                .isEqualTo(dabComponentNameShortValue);
+    }
+
+    @Test
+    public void radioMetadataFromHalMetadata_withHdMedatadataAndFlagEnabled() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+        String genreValue = "genreTest";
+        String commentShortDescriptionValue = "commentShortDescriptionTest";
+        String commentActualTextValue = "commentActualTextTest";
+        String commercialValue = "commercialTest";
+        List<String> ufidsValue = List.of("ufids1Test", "ufids2Test");
+        String hdStationNameShortValue = "hdStationNameShortTest";
+        String hdStationNameLongValue = "hdStationNameLongTest";
+        RadioMetadata convertedMetadata = ConversionUtils.radioMetadataFromHalMetadata(
+                new Metadata[]{TEST_HAL_HD_SUBCHANNELS, Metadata.genre(genreValue),
+                        Metadata.commentShortDescription(commentShortDescriptionValue),
+                        Metadata.commentActualText(commentActualTextValue),
+                        Metadata.commercial(commercialValue),
+                        Metadata.ufids(ufidsValue.toArray(new String[0])),
+                        Metadata.hdStationNameShort(hdStationNameShortValue),
+                        Metadata.hdStationNameLong(hdStationNameLongValue)});
+
+        expect.withMessage("Genre with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_GENRE))
+                .isEqualTo(genreValue);
+        expect.withMessage("Short description of comment with flag enabled")
+                .that(convertedMetadata.getString(
+                        RadioMetadata.METADATA_KEY_COMMENT_SHORT_DESCRIPTION))
+                .isEqualTo(commentShortDescriptionValue);
+        expect.withMessage("Actual text of comment with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_COMMENT_ACTUAL_TEXT))
+                .isEqualTo(commentActualTextValue);
+        expect.withMessage("Commercial with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_COMMERCIAL))
+                .isEqualTo(commercialValue);
+        expect.withMessage("UFIDs with flag enabled")
+                .that(convertedMetadata.getStringArray(RadioMetadata.METADATA_KEY_UFIDS)).asList()
+                .containsExactlyElementsIn(ufidsValue);
+        expect.withMessage("HD station short name with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_HD_STATION_NAME_SHORT))
+                .isEqualTo(hdStationNameShortValue);
+        expect.withMessage("HD station long name with flag enabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_HD_STATION_NAME_LONG))
+                .isEqualTo(hdStationNameLongValue);
+        expect.withMessage("HD sub-channels with flag enabled")
+                .that(convertedMetadata.getInt(RadioMetadata
+                        .METADATA_KEY_HD_SUBCHANNELS_AVAILABLE)).isEqualTo(TEST_HD_SUBCHANNELS);
+    }
+
+    @Test
+    public void radioMetadataFromHalMetadata_withFlagDisabled() {
+        mSetFlagsRule.disableFlags(Flags.FLAG_HD_RADIO_IMPROVED);
+
+        RadioMetadata convertedMetadata = ConversionUtils.radioMetadataFromHalMetadata(
+                new Metadata[]{TEST_HAL_SONG_TITLE, TEST_HAL_HD_SUBCHANNELS, TEST_HAL_ALBUM_ART});
+
+        expect.withMessage("Metadata with flag disabled").that(convertedMetadata.size())
+                .isEqualTo(2);
+        expect.withMessage("Song title with flag disabled")
+                .that(convertedMetadata.getString(RadioMetadata.METADATA_KEY_TITLE))
+                .isEqualTo(TEST_SONG_TITLE);
+        expect.withMessage("Album art with flag disabled")
+                .that(convertedMetadata.getInt(RadioMetadata.METADATA_KEY_ART))
+                .isEqualTo(TEST_ALBUM_ART);
+    }
+
+    @Test
+    public void getBands_withInvalidFrequency() {
+        expect.withMessage("Band for invalid frequency")
+                .that(Utils.getBand(/* freq= */ 110000)).isEqualTo(Utils.FrequencyBand.UNKNOWN);
+    }
+
+    @Test
+    public void filterToHalProgramFilter_withNullFilter() {
+        ProgramFilter filter = ConversionUtils.filterToHalProgramFilter(null);
+
+        expect.withMessage("Filter identifier types").that(filter.identifierTypes)
+                .asList().isEmpty();
+        expect.withMessage("Filter identifiers").that(filter.identifiers).asList()
+                .isEmpty();
+    }
+
+    @Test
+    public void filterToHalProgramFilter_withInvalidIdentifier() {
+        Set<ProgramSelector.Identifier> identifiers =
+                new ArraySet<ProgramSelector.Identifier>(2);
+        identifiers.add(TEST_INVALID_ID);
+        identifiers.add(TEST_DAB_SID_EXT_ID);
+        ProgramList.Filter filter = new ProgramList.Filter(/* identifierTypes */ new ArraySet<>(),
+                identifiers, /* includeCategories= */ true, /* excludeModifications= */ false);
+        ProgramFilter halFilter = ConversionUtils.filterToHalProgramFilter(filter);
+
+        expect.withMessage("Filter identifiers with invalid ones removed")
+                .that(halFilter.identifiers).asList().containsExactly(
+                        ConversionUtils.identifierToHalProgramIdentifier(TEST_DAB_SID_EXT_ID));
+    }
+
+    @Test
+    public void vendorInfoToHalVendorKeyValues_withNull() {
+        expect.withMessage("Null vendor info converted to HAL")
+                .that(ConversionUtils.vendorInfoToHalVendorKeyValues(/* info= */ null)).asList()
+                .isEmpty();
+    }
+
+    @Test
+    public void vendorInfoToHalVendorKeyValues_withNullValue() {
+        Map<String, String> vendorInfo = new ArrayMap<>();
+        vendorInfo.put(VENDOR_INFO_KEY_1, null);
+
+        expect.withMessage("Vendor info with null value converted to HAL")
+                .that(ConversionUtils.vendorInfoToHalVendorKeyValues(vendorInfo)).asList()
+                .isEmpty();
+    }
+
+    @Test
+    public void vendorInfoFromHalVendorKeyValues_withNullElements() {
+        VendorKeyValue halVendorInfo = new VendorKeyValue();
+        halVendorInfo.key = null;
+        halVendorInfo.value = VENDOR_INFO_VALUE_1;
+        VendorKeyValue[] halVendorInfoArray = new VendorKeyValue[]{halVendorInfo};
+
+        expect.withMessage("Null vendor info converted from HAL")
+                .that(ConversionUtils.vendorInfoFromHalVendorKeyValues(halVendorInfoArray))
+                .isEmpty();
+    }
+
+    private static RadioManager.ModuleProperties createModuleProperties() {
         AmFmRegionConfig amFmConfig = createAmFmRegionConfig();
         DabTableEntry[] dabTableEntries = new DabTableEntry[]{
                 createDabTableEntry(DAB_ENTRY_LABEL_1, DAB_ENTRY_FREQUENCY_1),
                 createDabTableEntry(DAB_ENTRY_LABEL_2, DAB_ENTRY_FREQUENCY_2)};
+        return createModuleProperties(amFmConfig, dabTableEntries);
+    }
+
+    private static RadioManager.ModuleProperties createModuleProperties(
+            AmFmRegionConfig amFmConfig, DabTableEntry[] dabTableEntries) {
         Properties properties = createHalProperties();
 
         return ConversionUtils.propertiesFromHalProperties(TEST_ID, TEST_SERVICE_NAME, properties,
@@ -518,7 +989,8 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
     private static Properties createHalProperties() {
         Properties halProperties = new Properties();
         halProperties.supportedIdentifierTypes = new int[]{IdentifierType.AMFM_FREQUENCY_KHZ,
-                IdentifierType.RDS_PI, IdentifierType.DAB_SID_EXT};
+                IdentifierType.RDS_PI, IdentifierType.DAB_SID_EXT, IdentifierType.HD_STATION_ID_EXT,
+                IdentifierType.DRMO_SERVICE_ID};
         halProperties.maker = TEST_MAKER;
         halProperties.product = TEST_PRODUCT;
         halProperties.version = TEST_VERSION;
@@ -527,5 +999,16 @@ public final class ConversionUtilsTest extends ExtendedRadioMockitoTestCase {
                 AidlTestUtils.makeVendorKeyValue(VENDOR_INFO_KEY_1, VENDOR_INFO_VALUE_1),
                 AidlTestUtils.makeVendorKeyValue(VENDOR_INFO_KEY_2, VENDOR_INFO_VALUE_2)};
         return halProperties;
+    }
+
+    private ProgramSelector.Identifier createHdStationLocationIdWithFlagEnabled() {
+        return new ProgramSelector.Identifier(ProgramSelector.IDENTIFIER_TYPE_HD_STATION_LOCATION,
+                TEST_HD_LOCATION_VALUE);
+    }
+
+    private ProgramSelector createHdSelectorWithFlagEnabled() {
+        return new ProgramSelector(ProgramSelector.PROGRAM_TYPE_FM_HD, TEST_HD_STATION_EXT_ID,
+                new ProgramSelector.Identifier[]{createHdStationLocationIdWithFlagEnabled()},
+                /* vendorIds= */ null);
     }
 }

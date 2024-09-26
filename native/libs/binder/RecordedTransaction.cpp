@@ -14,17 +14,23 @@
  * limitations under the License.
  */
 
-#include <android-base/file.h>
-#include <android-base/logging.h>
-#include <android-base/scopeguard.h>
-#include <android-base/unique_fd.h>
+#include "file.h"
+
+#include <binder/Functional.h>
 #include <binder/RecordedTransaction.h>
+#include <binder/unique_fd.h>
+
+#include <inttypes.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <algorithm>
 
+using namespace android::binder::impl;
 using android::Parcel;
-using android::base::borrowed_fd;
-using android::base::unique_fd;
+using android::binder::borrowed_fd;
+using android::binder::ReadFully;
+using android::binder::unique_fd;
+using android::binder::WriteFully;
 using android::binder::debug::RecordedTransaction;
 
 #define PADDING8(s) ((8 - (s) % 8) % 8)
@@ -108,8 +114,8 @@ static_assert(PADDING8(8) == 0);
 
 RecordedTransaction::RecordedTransaction(RecordedTransaction&& t) noexcept {
     mData = t.mData;
-    mSent.setData(t.getDataParcel().data(), t.getDataParcel().dataSize());
-    mReply.setData(t.getReplyParcel().data(), t.getReplyParcel().dataSize());
+    mSentDataOnly.setData(t.getDataParcel().data(), t.getDataParcel().dataSize());
+    mReplyDataOnly.setData(t.getReplyParcel().data(), t.getReplyParcel().dataSize());
 }
 
 std::optional<RecordedTransaction> RecordedTransaction::fromDetails(
@@ -124,20 +130,28 @@ std::optional<RecordedTransaction> RecordedTransaction::fromDetails(
                        static_cast<int32_t>(timestamp.tv_nsec),
                        0};
 
-    t.mData.mInterfaceName = std::string(String8(interfaceName).string());
+    t.mData.mInterfaceName = std::string(String8(interfaceName).c_str());
     if (interfaceName.size() != t.mData.mInterfaceName.size()) {
-        LOG(ERROR) << "Interface Name is not valid. Contains characters that aren't single byte "
-                      "utf-8.";
+        ALOGE("Interface Name is not valid. Contains characters that aren't single byte utf-8.");
         return std::nullopt;
     }
 
-    if (t.mSent.setData(dataParcel.data(), dataParcel.dataBufferSize()) != android::NO_ERROR) {
-        LOG(ERROR) << "Failed to set sent parcel data.";
+    if (const auto* kernelFields = dataParcel.maybeKernelFields()) {
+        for (size_t i = 0; i < kernelFields->mObjectsSize; i++) {
+            uint64_t offset = kernelFields->mObjects[i];
+            t.mData.mSentObjectData.push_back(offset);
+        }
+    }
+
+    if (t.mSentDataOnly.setData(dataParcel.data(), dataParcel.dataBufferSize()) !=
+        android::NO_ERROR) {
+        ALOGE("Failed to set sent parcel data.");
         return std::nullopt;
     }
 
-    if (t.mReply.setData(replyParcel.data(), replyParcel.dataBufferSize()) != android::NO_ERROR) {
-        LOG(ERROR) << "Failed to set reply parcel data.";
+    if (t.mReplyDataOnly.setData(replyParcel.data(), replyParcel.dataBufferSize()) !=
+        android::NO_ERROR) {
+        ALOGE("Failed to set reply parcel data.");
         return std::nullopt;
     }
 
@@ -149,6 +163,7 @@ enum {
     DATA_PARCEL_CHUNK = 2,
     REPLY_PARCEL_CHUNK = 3,
     INTERFACE_NAME_CHUNK = 4,
+    DATA_PARCEL_OBJECT_CHUNK = 5,
     END_CHUNK = 0x00ffffff,
 };
 
@@ -161,53 +176,43 @@ static_assert(sizeof(ChunkDescriptor) % 8 == 0);
 constexpr uint32_t kMaxChunkDataSize = 0xfffffff0;
 typedef uint64_t transaction_checksum_t;
 
-static android::status_t readChunkDescriptor(borrowed_fd fd, ChunkDescriptor* chunkOut,
-                                             transaction_checksum_t* sum) {
-    if (!android::base::ReadFully(fd, chunkOut, sizeof(ChunkDescriptor))) {
-        LOG(ERROR) << "Failed to read Chunk Descriptor from fd " << fd.get();
-        return android::UNKNOWN_ERROR;
-    }
-
-    *sum ^= *reinterpret_cast<transaction_checksum_t*>(chunkOut);
-    return android::NO_ERROR;
-}
-
 std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd& fd) {
     RecordedTransaction t;
     ChunkDescriptor chunk;
     const long pageSize = sysconf(_SC_PAGE_SIZE);
     struct stat fileStat;
     if (fstat(fd.get(), &fileStat) != 0) {
-        LOG(ERROR) << "Unable to get file information";
+        ALOGE("Unable to get file information");
         return std::nullopt;
     }
 
     off_t fdCurrentPosition = lseek(fd.get(), 0, SEEK_CUR);
     if (fdCurrentPosition == -1) {
-        LOG(ERROR) << "Invalid offset in file descriptor.";
+        ALOGE("Invalid offset in file descriptor.");
         return std::nullopt;
     }
     do {
         if (fileStat.st_size < (fdCurrentPosition + (off_t)sizeof(ChunkDescriptor))) {
-            LOG(ERROR) << "Not enough file remains to contain expected chunk descriptor";
-            return std::nullopt;
-        }
-        transaction_checksum_t checksum = 0;
-        if (NO_ERROR != readChunkDescriptor(fd, &chunk, &checksum)) {
-            LOG(ERROR) << "Failed to read chunk descriptor.";
+            ALOGE("Not enough file remains to contain expected chunk descriptor");
             return std::nullopt;
         }
 
+        if (!ReadFully(fd, &chunk, sizeof(ChunkDescriptor))) {
+            ALOGE("Failed to read ChunkDescriptor from fd %d. %s", fd.get(), strerror(errno));
+            return std::nullopt;
+        }
+        transaction_checksum_t checksum = *reinterpret_cast<transaction_checksum_t*>(&chunk);
+
         fdCurrentPosition = lseek(fd.get(), 0, SEEK_CUR);
         if (fdCurrentPosition == -1) {
-            LOG(ERROR) << "Invalid offset in file descriptor.";
+            ALOGE("Invalid offset in file descriptor.");
             return std::nullopt;
         }
         off_t mmapPageAlignedStart = (fdCurrentPosition / pageSize) * pageSize;
         off_t mmapPayloadStartOffset = fdCurrentPosition - mmapPageAlignedStart;
 
         if (chunk.dataSize > kMaxChunkDataSize) {
-            LOG(ERROR) << "Chunk data exceeds maximum size.";
+            ALOGE("Chunk data exceeds maximum size.");
             return std::nullopt;
         }
 
@@ -215,19 +220,19 @@ std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd
                 chunk.dataSize + PADDING8(chunk.dataSize) + sizeof(transaction_checksum_t);
 
         if (chunkPayloadSize > (size_t)(fileStat.st_size - fdCurrentPosition)) {
-            LOG(ERROR) << "Chunk payload exceeds remaining file size.";
+            ALOGE("Chunk payload exceeds remaining file size.");
             return std::nullopt;
         }
 
         if (PADDING8(chunkPayloadSize) != 0) {
-            LOG(ERROR) << "Invalid chunk size, not aligned " << chunkPayloadSize;
+            ALOGE("Invalid chunk size, not aligned %zu", chunkPayloadSize);
             return std::nullopt;
         }
 
         size_t memoryMappedSize = chunkPayloadSize + mmapPayloadStartOffset;
-        void* mappedMemory =
-                mmap(NULL, memoryMappedSize, PROT_READ, MAP_SHARED, fd.get(), mmapPageAlignedStart);
-        auto mmap_guard = android::base::make_scope_guard(
+        void* mappedMemory = mmap(nullptr, memoryMappedSize, PROT_READ, MAP_SHARED, fd.get(),
+                                  mmapPageAlignedStart);
+        auto mmap_guard = make_scope_guard(
                 [mappedMemory, memoryMappedSize] { munmap(mappedMemory, memoryMappedSize); });
 
         transaction_checksum_t* payloadMap =
@@ -236,8 +241,7 @@ std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd
                 sizeof(transaction_checksum_t); // Skip chunk descriptor and required mmap
                                                 // page-alignment
         if (payloadMap == MAP_FAILED) {
-            LOG(ERROR) << "Memory mapping failed for fd " << fd.get() << ": " << errno << " "
-                       << strerror(errno);
+            ALOGE("Memory mapping failed for fd %d: %d %s", fd.get(), errno, strerror(errno));
             return std::nullopt;
         }
         for (size_t checksumIndex = 0;
@@ -245,21 +249,21 @@ std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd
             checksum ^= payloadMap[checksumIndex];
         }
         if (checksum != 0) {
-            LOG(ERROR) << "Checksum failed.";
+            ALOGE("Checksum failed.");
             return std::nullopt;
         }
 
         fdCurrentPosition = lseek(fd.get(), chunkPayloadSize, SEEK_CUR);
         if (fdCurrentPosition == -1) {
-            LOG(ERROR) << "Invalid offset in file descriptor.";
+            ALOGE("Invalid offset in file descriptor.");
             return std::nullopt;
         }
 
         switch (chunk.chunkType) {
             case HEADER_CHUNK: {
                 if (chunk.dataSize != static_cast<uint32_t>(sizeof(TransactionHeader))) {
-                    LOG(ERROR) << "Header Chunk indicated size " << chunk.dataSize << "; Expected "
-                               << sizeof(TransactionHeader) << ".";
+                    ALOGE("Header Chunk indicated size %" PRIu32 "; Expected %zu.", chunk.dataSize,
+                          sizeof(TransactionHeader));
                     return std::nullopt;
                 }
                 t.mData.mHeader = *reinterpret_cast<TransactionHeader*>(payloadMap);
@@ -271,25 +275,34 @@ std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd
                 break;
             }
             case DATA_PARCEL_CHUNK: {
-                if (t.mSent.setData(reinterpret_cast<const unsigned char*>(payloadMap),
-                                    chunk.dataSize) != android::NO_ERROR) {
-                    LOG(ERROR) << "Failed to set sent parcel data.";
+                if (t.mSentDataOnly.setData(reinterpret_cast<const unsigned char*>(payloadMap),
+                                            chunk.dataSize) != android::NO_ERROR) {
+                    ALOGE("Failed to set sent parcel data.");
                     return std::nullopt;
                 }
                 break;
             }
             case REPLY_PARCEL_CHUNK: {
-                if (t.mReply.setData(reinterpret_cast<const unsigned char*>(payloadMap),
-                                     chunk.dataSize) != android::NO_ERROR) {
-                    LOG(ERROR) << "Failed to set reply parcel data.";
+                if (t.mReplyDataOnly.setData(reinterpret_cast<const unsigned char*>(payloadMap),
+                                             chunk.dataSize) != android::NO_ERROR) {
+                    ALOGE("Failed to set reply parcel data.");
                     return std::nullopt;
+                }
+                break;
+            }
+            case DATA_PARCEL_OBJECT_CHUNK: {
+                const uint64_t* objects = reinterpret_cast<const uint64_t*>(payloadMap);
+                size_t metaDataSize = (chunk.dataSize / sizeof(uint64_t));
+                ALOGI("Total objects found in saved parcel %zu", metaDataSize);
+                for (size_t index = 0; index < metaDataSize; ++index) {
+                    t.mData.mSentObjectData.push_back(objects[index]);
                 }
                 break;
             }
             case END_CHUNK:
                 break;
             default:
-                LOG(INFO) << "Unrecognized chunk.";
+                ALOGI("Unrecognized chunk.");
                 break;
         }
     } while (chunk.chunkType != END_CHUNK);
@@ -300,7 +313,7 @@ std::optional<RecordedTransaction> RecordedTransaction::fromFile(const unique_fd
 android::status_t RecordedTransaction::writeChunk(borrowed_fd fd, uint32_t chunkType,
                                                   size_t byteCount, const uint8_t* data) const {
     if (byteCount > kMaxChunkDataSize) {
-        LOG(ERROR) << "Chunk data exceeds maximum size";
+        ALOGE("Chunk data exceeds maximum size");
         return BAD_VALUE;
     }
     ChunkDescriptor descriptor = {.chunkType = chunkType,
@@ -328,8 +341,8 @@ android::status_t RecordedTransaction::writeChunk(borrowed_fd fd, uint32_t chunk
     buffer.insert(buffer.end(), checksumBytes, checksumBytes + sizeof(transaction_checksum_t));
 
     // Write buffer to file
-    if (!android::base::WriteFully(fd, buffer.data(), buffer.size())) {
-        LOG(ERROR) << "Failed to write chunk fd " << fd.get();
+    if (!WriteFully(fd, buffer.data(), buffer.size())) {
+        ALOGE("Failed to write chunk fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
     return NO_ERROR;
@@ -339,26 +352,38 @@ android::status_t RecordedTransaction::dumpToFile(const unique_fd& fd) const {
     if (NO_ERROR !=
         writeChunk(fd, HEADER_CHUNK, sizeof(TransactionHeader),
                    reinterpret_cast<const uint8_t*>(&(mData.mHeader)))) {
-        LOG(ERROR) << "Failed to write transactionHeader to fd " << fd.get();
+        ALOGE("Failed to write transactionHeader to fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
     if (NO_ERROR !=
         writeChunk(fd, INTERFACE_NAME_CHUNK, mData.mInterfaceName.size() * sizeof(uint8_t),
                    reinterpret_cast<const uint8_t*>(mData.mInterfaceName.c_str()))) {
-        LOG(INFO) << "Failed to write Interface Name Chunk to fd " << fd.get();
+        ALOGI("Failed to write Interface Name Chunk to fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
 
-    if (NO_ERROR != writeChunk(fd, DATA_PARCEL_CHUNK, mSent.dataBufferSize(), mSent.data())) {
-        LOG(ERROR) << "Failed to write sent Parcel to fd " << fd.get();
+    if (NO_ERROR !=
+        writeChunk(fd, DATA_PARCEL_CHUNK, mSentDataOnly.dataBufferSize(), mSentDataOnly.data())) {
+        ALOGE("Failed to write sent Parcel to fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
-    if (NO_ERROR != writeChunk(fd, REPLY_PARCEL_CHUNK, mReply.dataBufferSize(), mReply.data())) {
-        LOG(ERROR) << "Failed to write reply Parcel to fd " << fd.get();
+
+    if (NO_ERROR !=
+        writeChunk(fd, REPLY_PARCEL_CHUNK, mReplyDataOnly.dataBufferSize(),
+                   mReplyDataOnly.data())) {
+        ALOGE("Failed to write reply Parcel to fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
-    if (NO_ERROR != writeChunk(fd, END_CHUNK, 0, NULL)) {
-        LOG(ERROR) << "Failed to write end chunk to fd " << fd.get();
+
+    if (NO_ERROR !=
+        writeChunk(fd, DATA_PARCEL_OBJECT_CHUNK, mData.mSentObjectData.size() * sizeof(uint64_t),
+                   reinterpret_cast<const uint8_t*>(mData.mSentObjectData.data()))) {
+        ALOGE("Failed to write sent parcel object metadata to fd %d", fd.get());
+        return UNKNOWN_ERROR;
+    }
+
+    if (NO_ERROR != writeChunk(fd, END_CHUNK, 0, nullptr)) {
+        ALOGE("Failed to write end chunk to fd %d", fd.get());
         return UNKNOWN_ERROR;
     }
     return NO_ERROR;
@@ -390,10 +415,14 @@ uint32_t RecordedTransaction::getVersion() const {
     return mData.mHeader.version;
 }
 
+const std::vector<uint64_t>& RecordedTransaction::getObjectOffsets() const {
+    return mData.mSentObjectData;
+}
+
 const Parcel& RecordedTransaction::getDataParcel() const {
-    return mSent;
+    return mSentDataOnly;
 }
 
 const Parcel& RecordedTransaction::getReplyParcel() const {
-    return mReply;
+    return mReplyDataOnly;
 }

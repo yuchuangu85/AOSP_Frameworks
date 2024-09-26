@@ -20,6 +20,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,17 @@ namespace android {
 
 template <size_t N>
 std::string bitsetToString(const std::bitset<N>& bitset) {
+    if (bitset.none()) {
+        return "<none>";
+    }
     return bitset.to_string();
+}
+
+template <class T>
+std::string streamableToString(const T& streamable) {
+    std::stringstream out;
+    out << streamable;
+    return out.str();
 }
 
 template <typename T>
@@ -72,11 +83,12 @@ std::string dumpSet(const std::set<T>& v, std::string (*toString)(const T&) = co
 }
 
 /**
- * Convert a map to string. Both keys and values of the map should be integral type.
+ * Convert a map or multimap to string. Both keys and values of the map should be integral type.
  */
-template <typename K, typename V>
-std::string dumpMap(const std::map<K, V>& map, std::string (*keyToString)(const K&) = constToString,
-                    std::string (*valueToString)(const V&) = constToString) {
+template <typename T>
+std::string dumpMap(const T& map,
+                    std::string (*keyToString)(const typename T::key_type&) = constToString,
+                    std::string (*valueToString)(const typename T::mapped_type&) = constToString) {
     std::string out;
     for (const auto& [k, v] : map) {
         if (!out.empty()) {
@@ -88,16 +100,29 @@ std::string dumpMap(const std::map<K, V>& map, std::string (*keyToString)(const 
 }
 
 /**
- * Convert a vector to a string. The values of the vector should be of a type supported by
- * constToString.
+ * Convert map keys to string. The keys of the map should be integral type.
  */
-template <typename T>
-std::string dumpVector(std::vector<T> values) {
-    std::string dump = constToString(values[0]);
-    for (size_t i = 1; i < values.size(); i++) {
-        dump += ", " + constToString(values[i]);
+template <typename K, typename V>
+std::string dumpMapKeys(const std::map<K, V>& map,
+                        std::string (*keyToString)(const K&) = constToString) {
+    std::string out;
+    for (const auto& [k, _] : map) {
+        out += out.empty() ? "{" : ", ";
+        out += keyToString(k);
     }
-    return dump;
+    return out.empty() ? "{}" : (out + "}");
+}
+
+/** Convert a vector to a string. */
+template <typename T>
+std::string dumpVector(const std::vector<T>& values,
+                       std::string (*valueToString)(const T&) = constToString) {
+    std::string out;
+    for (const auto& value : values) {
+        out += out.empty() ? "[" : ", ";
+        out += valueToString(value);
+    }
+    return out.empty() ? "[]" : (out + "]");
 }
 
 const char* toString(bool value);

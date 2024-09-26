@@ -16,7 +16,7 @@
 
 package com.android.systemui.controls.dagger
 
-import android.testing.AndroidTestingRunner
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.widget.LockPatternUtils
 import com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_NOT_REQUIRED
@@ -29,7 +29,6 @@ import com.android.systemui.controls.settings.FakeControlsSettingsRepository
 import com.android.systemui.controls.ui.ControlsUiController
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.statusbar.policy.KeyguardStateController
-import dagger.Lazy
 import java.util.Optional
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -46,7 +45,7 @@ import org.mockito.Mockito.`when`
 import org.mockito.MockitoAnnotations
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 class ControlsComponentTest : SysuiTestCase() {
 
     @Mock private lateinit var controller: ControlsController
@@ -173,10 +172,9 @@ class ControlsComponentTest : SysuiTestCase() {
     private fun setupComponent(enabled: Boolean): ControlsComponent {
         return ControlsComponent(
             enabled,
-            mContext,
-            Lazy { controller },
-            Lazy { uiController },
-            Lazy { listingController },
+            { controller },
+            { uiController },
+            { listingController },
             lockPatternUtils,
             keyguardStateController,
             userTracker,

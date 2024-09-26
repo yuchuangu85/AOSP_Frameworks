@@ -23,6 +23,10 @@ package {
 
 cc_test {
     name: "libpowermanager_test",
+    defaults: [
+        "android.hardware.power-ndk_shared",
+        "android.hardware.power-ndk_shared",
+    ],
     test_suites: ["device-tests"],
     srcs: [
         "IThermalManagerTest.cpp",
@@ -33,6 +37,7 @@ cc_test {
         "PowerHalWrapperHidlV1_1Test.cpp",
         "PowerHalWrapperHidlV1_2Test.cpp",
         "PowerHalWrapperHidlV1_3Test.cpp",
+        "PowerHintSessionWrapperTest.cpp",
         "WorkSourceTest.cpp",
     ],
     cflags: [
@@ -43,6 +48,7 @@ cc_test {
     shared_libs: [
         "libbase",
         "libbinder",
+        "libbinder_ndk",
         "libhidlbase",
         "liblog",
         "libpowermanager",
@@ -51,9 +57,9 @@ cc_test {
         "android.hardware.power@1.1",
         "android.hardware.power@1.2",
         "android.hardware.power@1.3",
-        "android.hardware.power-V4-cpp",
     ],
     static_libs: [
         "libgmock",
     ],
+    require_root: true,
 }

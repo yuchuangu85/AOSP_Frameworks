@@ -13,14 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// #define LOG_NDEBUG 0
 
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 #undef LOG_TAG
-#define LOG_TAG "RequestedLayerState"
+#define LOG_TAG "SurfaceFlinger"
 
+#include <gui/TraceUtils.h>
 #include <log/log.h>
 #include <private/android_filesystem_config.h>
 #include <sys/types.h>
+
+#include <scheduler/Fps.h>
 
 #include "Layer.h"
 #include "LayerCreationArgs.h"
@@ -49,7 +53,6 @@ RequestedLayerState::RequestedLayerState(const LayerCreationArgs& args)
         name(args.name + "#" + std::to_string(args.sequence)),
         canBeRoot(args.addToRoot),
         layerCreationFlags(args.flags),
-        textureName(args.textureName),
         ownerUid(args.ownerUid),
         ownerPid(args.ownerPid),
         parentId(args.parentId),
@@ -95,8 +98,7 @@ RequestedLayerState::RequestedLayerState(const LayerCreationArgs& args)
     z = 0;
     layerStack = ui::DEFAULT_LAYER_STACK;
     transformToDisplayInverse = false;
-    dataspace = ui::Dataspace::UNKNOWN;
-    desiredHdrSdrRatio = 1.f;
+    desiredHdrSdrRatio = -1.f;
     currentHdrSdrRatio = 1.f;
     dataspaceRequested = false;
     hdrMetadata.validTypes = 0;
@@ -116,52 +118,116 @@ RequestedLayerState::RequestedLayerState(const LayerCreationArgs& args)
     shadowRadius = 0.f;
     fixedTransformHint = ui::Transform::ROT_INVALID;
     destinationFrame.makeInvalid();
-    isTrustedOverlay = false;
+    trustedOverlay = gui::TrustedOverlay::UNSET;
     dropInputMode = gui::DropInputMode::NONE;
     dimmingEnabled = true;
-    defaultFrameRateCompatibility =
-            static_cast<int8_t>(scheduler::LayerInfo::FrameRateCompatibility::Default);
+    defaultFrameRateCompatibility = static_cast<int8_t>(scheduler::FrameRateCompatibility::Default);
+    frameRateCategory = static_cast<int8_t>(FrameRateCategory::Default);
+    frameRateCategorySmoothSwitchOnly = false;
+    frameRateSelectionStrategy =
+            static_cast<int8_t>(scheduler::LayerInfo::FrameRateSelectionStrategy::Propagate);
     dataspace = ui::Dataspace::V0_SRGB;
     gameMode = gui::GameMode::Unsupported;
     requestedFrameRate = {};
     cachingHint = gui::CachingHint::Enabled;
+
+    if (name.length() > 77) {
+        std::string shortened;
+        shortened.append(name, 0, 36);
+        shortened.append("[...]");
+        shortened.append(name, name.length() - 36);
+        debugName = std::move(shortened);
+    } else {
+        debugName = name;
+    }
 }
 
 void RequestedLayerState::merge(const ResolvedComposerState& resolvedComposerState) {
     const uint32_t oldFlags = flags;
     const half oldAlpha = color.a;
     const bool hadBuffer = externalTexture != nullptr;
+    uint64_t oldFramenumber = hadBuffer ? bufferData->frameNumber : 0;
+    const ui::Size oldBufferSize = hadBuffer
+            ? ui::Size(externalTexture->getWidth(), externalTexture->getHeight())
+            : ui::Size();
+    const uint64_t oldUsageFlags = hadBuffer ? externalTexture->getUsage() : 0;
+    const bool oldBufferFormatOpaque = LayerSnapshot::isOpaqueFormat(
+            externalTexture ? externalTexture->getPixelFormat() : PIXEL_FORMAT_NONE);
+
     const bool hadSideStream = sidebandStream != nullptr;
     const layer_state_t& clientState = resolvedComposerState.state;
-    const bool hadBlur = hasBlur();
+    const bool hadSomethingToDraw = hasSomethingToDraw();
     uint64_t clientChanges = what | layer_state_t::diff(clientState);
     layer_state_t::merge(clientState);
     what = clientChanges;
+    LLOGV(layerId, "requested=%" PRIu64 "flags=%" PRIu64, clientState.what, clientChanges);
 
     if (clientState.what & layer_state_t::eFlagsChanged) {
-        if ((oldFlags ^ flags) & layer_state_t::eLayerHidden) {
+        if ((oldFlags ^ flags) &
+            (layer_state_t::eLayerHidden | layer_state_t::eLayerOpaque |
+             layer_state_t::eLayerSecure)) {
             changes |= RequestedLayerState::Changes::Visibility |
                     RequestedLayerState::Changes::VisibleRegion;
         }
         if ((oldFlags ^ flags) & layer_state_t::eIgnoreDestinationFrame) {
             changes |= RequestedLayerState::Changes::Geometry;
         }
+        if ((oldFlags ^ flags) & layer_state_t::eCanOccludePresentation) {
+            changes |= RequestedLayerState::Changes::Input;
+        }
     }
+
     if (clientState.what & layer_state_t::eBufferChanged) {
         externalTexture = resolvedComposerState.externalTexture;
-        barrierProducerId = std::max(bufferData->producerId, barrierProducerId);
-        barrierFrameNumber = std::max(bufferData->frameNumber, barrierFrameNumber);
-        // TODO(b/277265947) log and flush transaction trace when we detect out of order updates
-
         const bool hasBuffer = externalTexture != nullptr;
         if (hasBuffer || hasBuffer != hadBuffer) {
             changes |= RequestedLayerState::Changes::Buffer;
+            const ui::Size newBufferSize = hasBuffer
+                    ? ui::Size(externalTexture->getWidth(), externalTexture->getHeight())
+                    : ui::Size();
+            if (oldBufferSize != newBufferSize) {
+                changes |= RequestedLayerState::Changes::BufferSize;
+                changes |= RequestedLayerState::Changes::Geometry;
+            }
+            const uint64_t usageFlags = hasBuffer ? externalTexture->getUsage() : 0;
+            if (oldUsageFlags != usageFlags) {
+                changes |= RequestedLayerState::Changes::BufferUsageFlags;
+            }
         }
 
         if (hasBuffer != hadBuffer) {
             changes |= RequestedLayerState::Changes::Geometry |
                     RequestedLayerState::Changes::VisibleRegion |
                     RequestedLayerState::Changes::Visibility | RequestedLayerState::Changes::Input;
+        }
+
+        if (hasBuffer) {
+            const bool frameNumberChanged =
+                    bufferData->flags.test(BufferData::BufferDataChange::frameNumberChanged);
+            const uint64_t frameNumber =
+                    frameNumberChanged ? bufferData->frameNumber : oldFramenumber + 1;
+            bufferData->frameNumber = frameNumber;
+
+            if ((barrierProducerId > bufferData->producerId) ||
+                ((barrierProducerId == bufferData->producerId) &&
+                 (barrierFrameNumber > bufferData->frameNumber))) {
+                ALOGE("Out of order buffers detected for %s producedId=%d frameNumber=%" PRIu64
+                      " -> producedId=%d frameNumber=%" PRIu64,
+                      getDebugString().c_str(), barrierProducerId, barrierFrameNumber,
+                      bufferData->producerId, frameNumber);
+                TransactionTraceWriter::getInstance().invoke("out_of_order_buffers_",
+                                                             /*overwrite=*/false);
+            }
+
+            barrierProducerId = std::max(bufferData->producerId, barrierProducerId);
+            barrierFrameNumber = std::max(bufferData->frameNumber, barrierFrameNumber);
+        }
+
+        const bool newBufferFormatOpaque = LayerSnapshot::isOpaqueFormat(
+                externalTexture ? externalTexture->getPixelFormat() : PIXEL_FORMAT_NONE);
+        if (newBufferFormatOpaque != oldBufferFormatOpaque) {
+            changes |= RequestedLayerState::Changes::Visibility |
+                    RequestedLayerState::Changes::VisibleRegion;
         }
     }
 
@@ -176,15 +242,13 @@ void RequestedLayerState::merge(const ResolvedComposerState& resolvedComposerSta
     }
     if (what & (layer_state_t::eAlphaChanged)) {
         if (oldAlpha == 0 || color.a == 0) {
-            changes |= RequestedLayerState::Changes::Visibility |
-                    RequestedLayerState::Changes::VisibleRegion;
+            changes |= RequestedLayerState::Changes::Visibility;
         }
     }
-    if (what & (layer_state_t::eBackgroundBlurRadiusChanged | layer_state_t::eBlurRegionsChanged)) {
-        if (hadBlur != hasBlur()) {
-            changes |= RequestedLayerState::Changes::Visibility |
-                    RequestedLayerState::Changes::VisibleRegion;
-        }
+
+    if (hadSomethingToDraw != hasSomethingToDraw()) {
+        changes |= RequestedLayerState::Changes::Visibility |
+                RequestedLayerState::Changes::VisibleRegion;
     }
     if (clientChanges & layer_state_t::HIERARCHY_CHANGES)
         changes |= RequestedLayerState::Changes::Hierarchy;
@@ -261,7 +325,7 @@ void RequestedLayerState::merge(const ResolvedComposerState& resolvedComposerSta
             // child layers.
             if (static_cast<int32_t>(gameMode) != requestedGameMode) {
                 gameMode = static_cast<gui::GameMode>(requestedGameMode);
-                changes |= RequestedLayerState::Changes::AffectsChildren;
+                changes |= RequestedLayerState::Changes::GameMode;
             }
         }
     }
@@ -270,8 +334,14 @@ void RequestedLayerState::merge(const ResolvedComposerState& resolvedComposerSta
                 Layer::FrameRate::convertCompatibility(clientState.frameRateCompatibility);
         const auto strategy = Layer::FrameRate::convertChangeFrameRateStrategy(
                 clientState.changeFrameRateStrategy);
-        requestedFrameRate =
-                Layer::FrameRate(Fps::fromValue(clientState.frameRate), compatibility, strategy);
+        requestedFrameRate.vote =
+                Layer::FrameRate::FrameRateVote(Fps::fromValue(clientState.frameRate),
+                                                compatibility, strategy);
+        changes |= RequestedLayerState::Changes::FrameRate;
+    }
+    if (clientState.what & layer_state_t::eFrameRateCategoryChanged) {
+        const auto category = Layer::FrameRate::convertCategory(clientState.frameRateCategory);
+        requestedFrameRate.category = category;
         changes |= RequestedLayerState::Changes::FrameRate;
     }
 }
@@ -335,7 +405,26 @@ std::string RequestedLayerState::getDebugString() const {
     if (!handleAlive) debug << " !handle";
     if (z != 0) debug << " z=" << z;
     if (layerStack.id != 0) debug << " layerStack=" << layerStack.id;
+    debug << "}";
     return debug.str();
+}
+
+std::ostream& operator<<(std::ostream& out, const scheduler::LayerInfo::FrameRate& obj) {
+    out << obj.vote.rate;
+    out << " " << ftl::enum_string_full(obj.vote.type);
+    out << " " << ftl::enum_string_full(obj.category);
+    return out;
+}
+
+std::ostream& operator<<(std::ostream& out, const RequestedLayerState& obj) {
+    out << obj.debugName;
+    if (obj.relativeParentId != UNASSIGNED_LAYER_ID) out << " parent=" << obj.parentId;
+    if (!obj.handleAlive) out << " handleNotAlive";
+    if (obj.requestedFrameRate.isValid())
+        out << " requestedFrameRate: {" << obj.requestedFrameRate << "}";
+    if (obj.dropInputMode != gui::DropInputMode::NONE)
+        out << " dropInputMode=" << static_cast<uint32_t>(obj.dropInputMode);
+    return out;
 }
 
 std::string RequestedLayerState::getDebugStringShort() const {
@@ -352,7 +441,7 @@ bool RequestedLayerState::isHiddenByPolicy() const {
     return (flags & layer_state_t::eLayerHidden) == layer_state_t::eLayerHidden;
 };
 half4 RequestedLayerState::getColor() const {
-    if ((sidebandStream != nullptr) || (externalTexture != nullptr)) {
+    if (sidebandStream || externalTexture) {
         return {0._hf, 0._hf, 0._hf, color.a};
     }
     return color;
@@ -394,12 +483,18 @@ Rect RequestedLayerState::getCroppedBufferSize(const Rect& bufferSize) const {
 Rect RequestedLayerState::getBufferCrop() const {
     // this is the crop rectangle that applies to the buffer
     // itself (as opposed to the window)
-    if (!bufferCrop.isEmpty()) {
-        // if the buffer crop is defined, we use that
-        return bufferCrop;
+    if (!bufferCrop.isEmpty() && externalTexture != nullptr) {
+        // if the buffer crop is defined and there's a valid buffer, intersect buffer size and crop
+        // since the crop should never exceed the size of the buffer.
+        Rect sizeAndCrop;
+        externalTexture->getBounds().intersect(bufferCrop, &sizeAndCrop);
+        return sizeAndCrop;
     } else if (externalTexture != nullptr) {
         // otherwise we use the whole buffer
         return externalTexture->getBounds();
+    } else if (!bufferCrop.isEmpty()) {
+        // if the buffer crop is defined, we use that
+        return bufferCrop;
     } else {
         // if we don't have a buffer yet, we use an empty/invalid crop
         return Rect();
@@ -418,6 +513,9 @@ aidl::android::hardware::graphics::composer3::Composition RequestedLayerState::g
     }
     if (flags & layer_state_t::eLayerIsDisplayDecoration) {
         return Composition::DISPLAY_DECORATION;
+    }
+    if (flags & layer_state_t::eLayerIsRefreshRateIndicator) {
+        return Composition::REFRESH_RATE_INDICATOR;
     }
     if (potentialCursor) {
         return Composition::CURSOR;
@@ -473,6 +571,66 @@ bool RequestedLayerState::hasSidebandStreamFrame() const {
 
 bool RequestedLayerState::willReleaseBufferOnLatch() const {
     return changes.test(Changes::Buffer) && !externalTexture;
+}
+
+bool RequestedLayerState::backpressureEnabled() const {
+    return flags & layer_state_t::eEnableBackpressure;
+}
+
+bool RequestedLayerState::isSimpleBufferUpdate(const layer_state_t& s) const {
+    static constexpr uint64_t requiredFlags = layer_state_t::eBufferChanged;
+    if ((s.what & requiredFlags) != requiredFlags) {
+        ATRACE_FORMAT_INSTANT("%s: false [missing required flags 0x%" PRIx64 "]", __func__,
+                              (s.what | requiredFlags) & ~s.what);
+        return false;
+    }
+
+    const uint64_t deniedFlags = layer_state_t::eProducerDisconnect | layer_state_t::eLayerChanged |
+            layer_state_t::eRelativeLayerChanged | layer_state_t::eTransparentRegionChanged |
+            layer_state_t::eBlurRegionsChanged | layer_state_t::eLayerStackChanged |
+            layer_state_t::eReparent |
+            (FlagManager::getInstance().latch_unsignaled_with_auto_refresh_changed()
+                     ? 0
+                     : (layer_state_t::eAutoRefreshChanged | layer_state_t::eFlagsChanged));
+    if (s.what & deniedFlags) {
+        ATRACE_FORMAT_INSTANT("%s: false [has denied flags 0x%" PRIx64 "]", __func__,
+                              s.what & deniedFlags);
+        return false;
+    }
+
+    const uint64_t changedFlags = diff(s);
+    const uint64_t deniedChanges = layer_state_t::ePositionChanged | layer_state_t::eAlphaChanged |
+            layer_state_t::eColorTransformChanged | layer_state_t::eBackgroundColorChanged |
+            layer_state_t::eMatrixChanged | layer_state_t::eCornerRadiusChanged |
+            layer_state_t::eBackgroundBlurRadiusChanged | layer_state_t::eBufferTransformChanged |
+            layer_state_t::eTransformToDisplayInverseChanged | layer_state_t::eCropChanged |
+            layer_state_t::eDataspaceChanged | layer_state_t::eHdrMetadataChanged |
+            layer_state_t::eSidebandStreamChanged | layer_state_t::eColorSpaceAgnosticChanged |
+            layer_state_t::eShadowRadiusChanged | layer_state_t::eFixedTransformHintChanged |
+            layer_state_t::eTrustedOverlayChanged | layer_state_t::eStretchChanged |
+            layer_state_t::eBufferCropChanged | layer_state_t::eDestinationFrameChanged |
+            layer_state_t::eDimmingEnabledChanged | layer_state_t::eExtendedRangeBrightnessChanged |
+            layer_state_t::eDesiredHdrHeadroomChanged |
+            (FlagManager::getInstance().latch_unsignaled_with_auto_refresh_changed()
+                     ? layer_state_t::eFlagsChanged
+                     : 0);
+    if (changedFlags & deniedChanges) {
+        ATRACE_FORMAT_INSTANT("%s: false [has denied changes flags 0x%" PRIx64 "]", __func__,
+                              changedFlags & deniedChanges);
+        return false;
+    }
+
+    return true;
+}
+
+bool RequestedLayerState::isProtected() const {
+    return externalTexture && externalTexture->getUsage() & GRALLOC_USAGE_PROTECTED;
+}
+
+bool RequestedLayerState::hasSomethingToDraw() const {
+    return externalTexture != nullptr || sidebandStream != nullptr || shadowRadius > 0.f ||
+            backgroundBlurRadius > 0 || blurRegions.size() > 0 ||
+            (color.r >= 0.0_hf && color.g >= 0.0_hf && color.b >= 0.0_hf);
 }
 
 void RequestedLayerState::clearChanges() {

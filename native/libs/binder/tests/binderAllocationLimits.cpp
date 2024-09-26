@@ -16,6 +16,7 @@
 
 #include <android-base/logging.h>
 #include <binder/Binder.h>
+#include <binder/Functional.h>
 #include <binder/IServiceManager.h>
 #include <binder/Parcel.h>
 #include <binder/RpcServer.h>
@@ -27,6 +28,8 @@
 #include <malloc.h>
 #include <functional>
 #include <vector>
+
+using namespace android::binder::impl;
 
 static android::String8 gEmpty(""); // make sure first allocation from optimization runs
 
@@ -111,12 +114,12 @@ TEST(TestTheTest, OnMalloc) {
     {
         const auto on_malloc = OnMalloc([&](size_t bytes) {
             mallocs++;
-            EXPECT_EQ(bytes, 40);
+            EXPECT_EQ(bytes, 40u);
         });
 
         imaginary_use = new int[10];
     }
-    EXPECT_EQ(mallocs, 1);
+    EXPECT_EQ(mallocs, 1u);
 }
 
 
@@ -172,6 +175,18 @@ TEST(BinderAllocation, PingTransaction) {
     a_binder->pingBinder();
 }
 
+TEST(BinderAllocation, MakeScopeGuard) {
+    const auto m = ScopeDisallowMalloc();
+    {
+        auto guard1 = make_scope_guard([] {});
+        guard1.release();
+
+        auto guard2 = make_scope_guard([&guard1, ptr = imaginary_use] {
+            if (ptr == nullptr) guard1.release();
+        });
+    }
+}
+
 TEST(BinderAllocation, InterfaceDescriptorTransaction) {
     sp<IBinder> a_binder = GetRemoteBinder();
 
@@ -181,9 +196,9 @@ TEST(BinderAllocation, InterfaceDescriptorTransaction) {
         // Happens to be SM package length. We could switch to forking
         // and registering our own service if it became an issue.
 #if defined(__LP64__)
-        EXPECT_EQ(bytes, 78);
+        EXPECT_EQ(bytes, 78u);
 #else
-        EXPECT_EQ(bytes, 70);
+        EXPECT_EQ(bytes, 70u);
 #endif
     });
 
@@ -191,7 +206,7 @@ TEST(BinderAllocation, InterfaceDescriptorTransaction) {
     a_binder->getInterfaceDescriptor();
     a_binder->getInterfaceDescriptor();
 
-    EXPECT_EQ(mallocs, 1);
+    EXPECT_EQ(mallocs, 1u);
 }
 
 TEST(BinderAllocation, SmallTransaction) {
@@ -202,11 +217,11 @@ TEST(BinderAllocation, SmallTransaction) {
     const auto on_malloc = OnMalloc([&](size_t bytes) {
         mallocs++;
         // Parcel should allocate a small amount by default
-        EXPECT_EQ(bytes, 128);
+        EXPECT_EQ(bytes, 128u);
     });
     manager->checkService(empty_descriptor);
 
-    EXPECT_EQ(mallocs, 1);
+    EXPECT_EQ(mallocs, 1u);
 }
 
 TEST(RpcBinderAllocation, SetupRpcServer) {
@@ -216,16 +231,16 @@ TEST(RpcBinderAllocation, SetupRpcServer) {
     auto server = RpcServer::make();
     server->setRootObject(sp<BBinder>::make());
 
-    CHECK_EQ(OK, server->setupUnixDomainServer(addr.c_str()));
+    ASSERT_EQ(OK, server->setupUnixDomainServer(addr.c_str()));
 
     std::thread([server]() { server->join(); }).detach();
 
-    status_t status;
     auto session = RpcSession::make();
-    status = session->setupUnixDomainClient(addr.c_str());
-    CHECK_EQ(status, OK) << "Could not connect: " << addr << ": " << statusToString(status).c_str();
+    status_t status = session->setupUnixDomainClient(addr.c_str());
+    ASSERT_EQ(status, OK) << "Could not connect: " << addr << ": " << statusToString(status).c_str();
 
     auto remoteBinder = session->getRootObject();
+    ASSERT_NE(remoteBinder, nullptr);
 
     size_t mallocs = 0, totalBytes = 0;
     {
@@ -233,10 +248,10 @@ TEST(RpcBinderAllocation, SetupRpcServer) {
             mallocs++;
             totalBytes += bytes;
         });
-        CHECK_EQ(OK, remoteBinder->pingBinder());
+        ASSERT_EQ(OK, remoteBinder->pingBinder());
     }
-    EXPECT_EQ(mallocs, 1);
-    EXPECT_EQ(totalBytes, 40);
+    EXPECT_EQ(mallocs, 1u);
+    EXPECT_EQ(totalBytes, 40u);
 }
 
 int main(int argc, char** argv) {

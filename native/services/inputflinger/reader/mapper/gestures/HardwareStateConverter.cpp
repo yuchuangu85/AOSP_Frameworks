@@ -22,9 +22,14 @@
 #include <chrono>
 #include <vector>
 
+#include <com_android_input_flags.h>
 #include <linux/input-event-codes.h>
 
+namespace input_flags = com::android::input::flags;
+
 namespace android {
+
+const bool REPORT_PALMS_TO_GESTURES_LIBRARY = input_flags::report_palms_to_gestures_library();
 
 HardwareStateConverter::HardwareStateConverter(const InputDeviceContext& deviceContext,
                                                MultiTouchMotionAccumulator& motionAccumulator)
@@ -35,15 +40,15 @@ HardwareStateConverter::HardwareStateConverter(const InputDeviceContext& deviceC
 }
 
 std::optional<SelfContainedHardwareState> HardwareStateConverter::processRawEvent(
-        const RawEvent* rawEvent) {
+        const RawEvent& rawEvent) {
     std::optional<SelfContainedHardwareState> out;
-    if (rawEvent->type == EV_SYN && rawEvent->code == SYN_REPORT) {
-        out = produceHardwareState(rawEvent->when);
+    if (rawEvent.type == EV_SYN && rawEvent.code == SYN_REPORT) {
+        out = produceHardwareState(rawEvent.when);
         mMotionAccumulator.finishSync();
         mMscTimestamp = 0;
     }
-    if (rawEvent->type == EV_MSC && rawEvent->code == MSC_TIMESTAMP) {
-        mMscTimestamp = rawEvent->value;
+    if (rawEvent.type == EV_MSC && rawEvent.code == MSC_TIMESTAMP) {
+        mMscTimestamp = rawEvent.value;
     }
     mCursorButtonAccumulator.process(rawEvent);
     mMotionAccumulator.process(rawEvent);
@@ -84,7 +89,7 @@ SelfContainedHardwareState HardwareStateConverter::produceHardwareState(nsecs_t 
         }
         // Some touchpads continue to report contacts even after they've identified them as palms.
         // We want to exclude these contacts from the HardwareStates.
-        if (slot.getToolType() == ToolType::PALM) {
+        if (!REPORT_PALMS_TO_GESTURES_LIBRARY && slot.getToolType() == ToolType::PALM) {
             numPalms++;
             continue;
         }
@@ -100,6 +105,11 @@ SelfContainedHardwareState HardwareStateConverter::produceHardwareState(nsecs_t 
         fingerState.position_x = slot.getX();
         fingerState.position_y = slot.getY();
         fingerState.tracking_id = slot.getTrackingId();
+        if (REPORT_PALMS_TO_GESTURES_LIBRARY) {
+            fingerState.tool_type = slot.getToolType() == ToolType::PALM
+                    ? FingerState::ToolType::kPalm
+                    : FingerState::ToolType::kFinger;
+        }
     }
     schs.state.fingers = schs.fingers.data();
     schs.state.finger_cnt = schs.fingers.size();

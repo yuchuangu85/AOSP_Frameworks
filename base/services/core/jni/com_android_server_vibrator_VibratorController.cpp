@@ -131,17 +131,28 @@ public:
     }
 
     std::function<void()> createCallback(jlong vibrationId) {
-        return [vibrationId, this]() {
+        auto callbackId = ++mCallbackId;
+        return [vibrationId, callbackId, this]() {
+            auto currentCallbackId = mCallbackId.load();
+            if (currentCallbackId != callbackId) {
+                // This callback is from an older HAL call that is no longer relevant to the service
+                return;
+            }
             auto jniEnv = GetOrAttachJNIEnvironment(sJvm);
             jniEnv->CallVoidMethod(mCallbackListener, sMethodIdOnComplete, mVibratorId,
                                    vibrationId);
         };
     }
 
+    void disableOldCallbacks() {
+        mCallbackId++;
+    }
+
 private:
     const std::shared_ptr<vibrator::HalController> mHal;
     const int32_t mVibratorId;
     const jobject mCallbackListener;
+    std::atomic<int64_t> mCallbackId;
 };
 
 static aidl::BrakingPwle brakingPwle(aidl::Braking braking, int32_t duration) {
@@ -236,6 +247,7 @@ static void vibratorOff(JNIEnv* env, jclass /* clazz */, jlong ptr) {
     }
     auto offFn = [](vibrator::HalWrapper* hal) { return hal->off(); };
     wrapper->halCall<void>(offFn, "off");
+    wrapper->disableOldCallbacks();
 }
 
 static void vibratorSetAmplitude(JNIEnv* env, jclass /* clazz */, jlong ptr, jfloat amplitude) {
@@ -370,6 +382,7 @@ static jboolean vibratorGetInfo(JNIEnv* env, jclass /* clazz */, jlong ptr,
         return JNI_FALSE;
     }
     vibrator::Info info = wrapper->getVibratorInfo();
+    info.logFailures();
 
     if (info.capabilities.isOk()) {
         env->CallObjectMethod(vibratorInfoBuilder, sVibratorInfoBuilderClassInfo.setCapabilities,
@@ -443,7 +456,7 @@ static jboolean vibratorGetInfo(JNIEnv* env, jclass /* clazz */, jlong ptr,
     env->CallObjectMethod(vibratorInfoBuilder, sVibratorInfoBuilderClassInfo.setFrequencyProfile,
                           frequencyProfile);
 
-    return info.isFailedLogged("vibratorGetInfo") ? JNI_FALSE : JNI_TRUE;
+    return info.shouldRetry() ? JNI_FALSE : JNI_TRUE;
 }
 
 static const JNINativeMethod method_table[] = {

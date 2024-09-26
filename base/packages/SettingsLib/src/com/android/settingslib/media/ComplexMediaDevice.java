@@ -16,10 +16,11 @@
 
 package com.android.settingslib.media;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.media.MediaRoute2Info;
-import android.media.MediaRouter2Manager;
 import android.media.RouteListingPreference;
 
 import com.android.settingslib.R;
@@ -32,10 +33,11 @@ public class ComplexMediaDevice extends MediaDevice {
 
     private final String mSummary = "";
 
-    ComplexMediaDevice(Context context, MediaRouter2Manager routerManager,
-            MediaRoute2Info info, String packageName,
-            RouteListingPreference.Item item) {
-        super(context, routerManager, info, packageName, item);
+    ComplexMediaDevice(
+            @NonNull Context context,
+            @NonNull MediaRoute2Info info,
+            @Nullable RouteListingPreference.Item item) {
+        super(context, info, item);
     }
 
     // MediaRoute2Info.getName was made public on API 34, but exists since API 30.
@@ -62,7 +64,7 @@ public class ComplexMediaDevice extends MediaDevice {
 
     @Override
     public String getId() {
-        return MediaDeviceUtils.getId(mRouteInfo);
+        return mRouteInfo.getId();
     }
 
     public boolean isConnected() {

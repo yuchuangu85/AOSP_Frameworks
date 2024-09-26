@@ -23,6 +23,7 @@
 using android::BBinder;
 using android::IBinder;
 using android::IPCThreadState;
+using android::NO_ERROR;
 using android::OK;
 using android::Parcel;
 using android::sp;
@@ -30,6 +31,7 @@ using android::status_t;
 using android::String16;
 using android::String8;
 using android::binder::Status;
+using android::binder::unique_fd;
 
 TEST(Parcel, NonNullTerminatedString8) {
     String8 kTestString = String8("test-is-good");
@@ -110,6 +112,205 @@ TEST(Parcel, DebugReadAllFds) {
     ASSERT_EQ(ret.size(), 2);
     EXPECT_EQ(ret[0], STDOUT_FILENO);
     EXPECT_EQ(ret[1], STDIN_FILENO);
+}
+
+TEST(Parcel, AppendFromEmpty) {
+    Parcel p1;
+    Parcel p2;
+    p2.writeInt32(2);
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, p2.dataSize()));
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(2, p1.readInt32());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+}
+
+TEST(Parcel, AppendPlainData) {
+    Parcel p1;
+    p1.writeInt32(1);
+    Parcel p2;
+    p2.writeInt32(2);
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, p2.dataSize()));
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_EQ(2, p1.readInt32());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+}
+
+TEST(Parcel, AppendPlainDataPartial) {
+    Parcel p1;
+    p1.writeInt32(1);
+    Parcel p2;
+    p2.writeInt32(2);
+    p2.writeInt32(3);
+    p2.writeInt32(4);
+
+    // only copy 8 bytes (two int32's worth)
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, 8));
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_EQ(2, p1.readInt32());
+    ASSERT_EQ(3, p1.readInt32());
+    ASSERT_EQ(0, p1.readInt32()); // not 4, end of Parcel
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+}
+
+TEST(Parcel, HasBinders) {
+    sp<IBinder> b1 = sp<BBinder>::make();
+
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeStrongBinder(b1);
+
+    bool result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBinders(&result));
+    ASSERT_EQ(true, result);
+
+    p1.setDataSize(0); // clear data
+    result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBinders(&result));
+    ASSERT_EQ(false, result);
+    p1.writeStrongBinder(b1); // reset with binder data
+    result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBinders(&result));
+    ASSERT_EQ(true, result);
+
+    Parcel p3;
+    p3.appendFrom(&p1, 0, p1.dataSize());
+    result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBinders(&result));
+    ASSERT_EQ(true, result);
+}
+
+TEST(Parcel, HasBindersInRange) {
+    sp<IBinder> b1 = sp<BBinder>::make();
+    Parcel p1;
+    p1.writeStrongBinder(b1);
+    bool result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBindersInRange(0, p1.dataSize(), &result));
+    ASSERT_EQ(true, result);
+    result = false;
+    ASSERT_EQ(NO_ERROR, p1.hasBinders(&result));
+    ASSERT_EQ(true, result);
+}
+
+TEST(Parcel, AppendWithBinder) {
+    sp<IBinder> b1 = sp<BBinder>::make();
+    sp<IBinder> b2 = sp<BBinder>::make();
+
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeStrongBinder(b1);
+    Parcel p2;
+    p2.writeInt32(2);
+    p2.writeStrongBinder(b2);
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, p2.dataSize()));
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_EQ(b1, p1.readStrongBinder());
+    ASSERT_EQ(2, p1.readInt32());
+    ASSERT_EQ(b2, p1.readStrongBinder());
+    ASSERT_EQ(2, p1.objectsCount());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+    ASSERT_EQ(b2, p2.readStrongBinder());
+}
+
+TEST(Parcel, AppendWithBinderPartial) {
+    sp<IBinder> b1 = sp<BBinder>::make();
+    sp<IBinder> b2 = sp<BBinder>::make();
+
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeStrongBinder(b1);
+    Parcel p2;
+    p2.writeInt32(2);
+    p2.writeStrongBinder(b2);
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, 8)); // BAD: 4 bytes into strong binder
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_EQ(b1, p1.readStrongBinder());
+    ASSERT_EQ(2, p1.readInt32());
+    ASSERT_EQ(1935813253, p1.readInt32()); // whatever garbage that is there (ABI)
+    ASSERT_EQ(1, p1.objectsCount());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+    ASSERT_EQ(b2, p2.readStrongBinder());
+}
+
+TEST(Parcel, AppendWithFd) {
+    unique_fd fd1 = unique_fd(dup(0));
+    unique_fd fd2 = unique_fd(dup(0));
+
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeDupFileDescriptor(0);      // with ownership
+    p1.writeFileDescriptor(fd1.get()); // without ownership
+    Parcel p2;
+    p2.writeInt32(2);
+    p2.writeDupFileDescriptor(0);      // with ownership
+    p2.writeFileDescriptor(fd2.get()); // without ownership
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, p2.dataSize()));
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_EQ(2, p1.readInt32());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_EQ(4, p1.objectsCount());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+}
+
+TEST(Parcel, AppendWithFdPartial) {
+    unique_fd fd1 = unique_fd(dup(0));
+    unique_fd fd2 = unique_fd(dup(0));
+
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeDupFileDescriptor(0);      // with ownership
+    p1.writeFileDescriptor(fd1.get()); // without ownership
+    Parcel p2;
+    p2.writeInt32(2);
+    p2.writeDupFileDescriptor(0);      // with ownership
+    p2.writeFileDescriptor(fd2.get()); // without ownership
+
+    ASSERT_EQ(OK, p1.appendFrom(&p2, 0, 8)); // BAD: 4 bytes into binder
+
+    p1.setDataPosition(0);
+    ASSERT_EQ(1, p1.readInt32());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_EQ(2, p1.readInt32());
+    ASSERT_EQ(1717840517, p1.readInt32()); // whatever garbage that is there (ABI)
+    ASSERT_EQ(2, p1.objectsCount());
+
+    p2.setDataPosition(0);
+    ASSERT_EQ(2, p2.readInt32());
+    ASSERT_NE(-1, p1.readFileDescriptor());
+    ASSERT_NE(-1, p1.readFileDescriptor());
 }
 
 // Tests a second operation results in a parcel at the same location as it

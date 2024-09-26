@@ -18,8 +18,10 @@
 
 #define LOG_TAG "InputDispatcher"
 
-#include <log/log.h>
-#include <log/log_event_list.h>
+#include <android-base/logging.h>
+#include <com_android_input_flags.h>
+
+namespace input_flags = com::android::input::flags;
 
 namespace android::inputdispatcher {
 
@@ -42,14 +44,14 @@ bool debugInboundEventDetails();
  * Enable this via "adb shell setprop log.tag.InputDispatcherOutboundEvent DEBUG" (requires restart)
  */
 const bool DEBUG_OUTBOUND_EVENT_DETAILS =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "OutboundEvent", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "OutboundEvent");
 
 /**
  * Log debug messages about the dispatch cycle.
  * Enable this via "adb shell setprop log.tag.InputDispatcherDispatchCycle DEBUG" (requires restart)
  */
 const bool DEBUG_DISPATCH_CYCLE =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "DispatchCycle", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "DispatchCycle");
 
 /**
  * Log debug messages about channel creation
@@ -57,28 +59,38 @@ const bool DEBUG_DISPATCH_CYCLE =
  * restart)
  */
 const bool DEBUG_CHANNEL_CREATION =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "ChannelCreation", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "ChannelCreation");
 
 /**
  * Log debug messages about input event injection.
  * Enable this via "adb shell setprop log.tag.InputDispatcherInjection DEBUG" (requires restart)
  */
 const bool DEBUG_INJECTION =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Injection", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "Injection");
+
+/**
+ * Generally, we always log whenever events are dropped. However, to reduce logspam, some messages
+ * are suppressed.
+ * Log additional debug messages about dropped input events with this flag.
+ * Enable this via "adb shell setprop log.tag.InputDispatcherDroppedEventsVerbose DEBUG".
+ * Requires system_server restart via `adb shell stop && adb shell start`.
+ */
+const bool DEBUG_DROPPED_EVENTS_VERBOSE =
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "DroppedEventsVerbose");
 
 /**
  * Log debug messages about input focus tracking.
  * Enable this via "adb shell setprop log.tag.InputDispatcherFocus DEBUG" (requires restart)
  */
 const bool DEBUG_FOCUS =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Focus", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "Focus");
 
 /**
  * Log debug messages about touch mode event
  * Enable this via "adb shell setprop log.tag.InputDispatcherTouchMode DEBUG" (requires restart)
  */
 const bool DEBUG_TOUCH_MODE =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "TouchMode", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "TouchMode");
 
 /**
  * Log debug messages about touch occlusion
@@ -86,17 +98,17 @@ const bool DEBUG_TOUCH_MODE =
 constexpr bool DEBUG_TOUCH_OCCLUSION = true;
 
 /**
- * Log debug messages about the app switch latency optimization.
- * Enable this via "adb shell setprop log.tag.InputDispatcherAppSwitch DEBUG" (requires restart)
- */
-const bool DEBUG_APP_SWITCH =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "AppSwitch", ANDROID_LOG_INFO);
-
-/**
  * Log debug messages about hover events.
  * Enable this via "adb shell setprop log.tag.InputDispatcherHover DEBUG" (requires restart)
  */
 const bool DEBUG_HOVER =
-        __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG "Hover", ANDROID_LOG_INFO);
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "Hover");
+
+/**
+ * Crash if a bad stream from InputListener is detected.
+ * Enable this via "adb shell setprop log.tag.InputDispatcherVerifyEvents DEBUG" (requires restart)
+ */
+const bool DEBUG_VERIFY_EVENTS = input_flags::enable_inbound_event_verification() ||
+        android::base::ShouldLog(android::base::LogSeverity::DEBUG, LOG_TAG "VerifyEvents");
 
 } // namespace android::inputdispatcher

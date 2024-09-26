@@ -19,6 +19,8 @@
 #include <bitset>
 #include <climits>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <ostream>
 #include <string>
 #include <unordered_map>
@@ -83,64 +85,67 @@ std::ostream& operator<<(std::ostream& out, const RawAbsoluteAxisInfo& info);
 
 /*
  * Input device classes.
+ *
+ * These classes are duplicated in rust side here: /frameworks/native/libs/input/rust/input.rs.
+ * If any new classes are added, we need to add them in rust input side too.
  */
 enum class InputDeviceClass : uint32_t {
     /* The input device is a keyboard or has buttons. */
-    KEYBOARD = 0x00000001,
+    KEYBOARD = android::os::IInputConstants::DEVICE_CLASS_KEYBOARD,
 
     /* The input device is an alpha-numeric keyboard (not just a dial pad). */
-    ALPHAKEY = 0x00000002,
+    ALPHAKEY = android::os::IInputConstants::DEVICE_CLASS_ALPHAKEY,
 
     /* The input device is a touchscreen or a touchpad (either single-touch or multi-touch). */
-    TOUCH = 0x00000004,
+    TOUCH = android::os::IInputConstants::DEVICE_CLASS_TOUCH,
 
     /* The input device is a cursor device such as a trackball or mouse. */
-    CURSOR = 0x00000008,
+    CURSOR = android::os::IInputConstants::DEVICE_CLASS_CURSOR,
 
     /* The input device is a multi-touch touchscreen or touchpad. */
-    TOUCH_MT = 0x00000010,
+    TOUCH_MT = android::os::IInputConstants::DEVICE_CLASS_TOUCH_MT,
 
     /* The input device is a directional pad (implies keyboard, has DPAD keys). */
-    DPAD = 0x00000020,
+    DPAD = android::os::IInputConstants::DEVICE_CLASS_DPAD,
 
     /* The input device is a gamepad (implies keyboard, has BUTTON keys). */
-    GAMEPAD = 0x00000040,
+    GAMEPAD = android::os::IInputConstants::DEVICE_CLASS_GAMEPAD,
 
     /* The input device has switches. */
-    SWITCH = 0x00000080,
+    SWITCH = android::os::IInputConstants::DEVICE_CLASS_SWITCH,
 
     /* The input device is a joystick (implies gamepad, has joystick absolute axes). */
-    JOYSTICK = 0x00000100,
+    JOYSTICK = android::os::IInputConstants::DEVICE_CLASS_JOYSTICK,
 
     /* The input device has a vibrator (supports FF_RUMBLE). */
-    VIBRATOR = 0x00000200,
+    VIBRATOR = android::os::IInputConstants::DEVICE_CLASS_VIBRATOR,
 
     /* The input device has a microphone. */
-    MIC = 0x00000400,
+    MIC = android::os::IInputConstants::DEVICE_CLASS_MIC,
 
     /* The input device is an external stylus (has data we want to fuse with touch data). */
-    EXTERNAL_STYLUS = 0x00000800,
+    EXTERNAL_STYLUS = android::os::IInputConstants::DEVICE_CLASS_EXTERNAL_STYLUS,
 
     /* The input device has a rotary encoder */
-    ROTARY_ENCODER = 0x00001000,
+    ROTARY_ENCODER = android::os::IInputConstants::DEVICE_CLASS_ROTARY_ENCODER,
 
     /* The input device has a sensor like accelerometer, gyro, etc */
-    SENSOR = 0x00002000,
+    SENSOR = android::os::IInputConstants::DEVICE_CLASS_SENSOR,
 
     /* The input device has a battery */
-    BATTERY = 0x00004000,
+    BATTERY = android::os::IInputConstants::DEVICE_CLASS_BATTERY,
 
     /* The input device has sysfs controllable lights */
-    LIGHT = 0x00008000,
+    LIGHT = android::os::IInputConstants::DEVICE_CLASS_LIGHT,
 
     /* The input device is a touchpad, requiring an on-screen cursor. */
-    TOUCHPAD = 0x00010000,
+    TOUCHPAD = android::os::IInputConstants::DEVICE_CLASS_TOUCHPAD,
 
     /* The input device is virtual (not a real device, not part of UI configuration). */
-    VIRTUAL = 0x40000000,
+    VIRTUAL = android::os::IInputConstants::DEVICE_CLASS_VIRTUAL,
 
     /* The input device is external (not built-in). */
-    EXTERNAL = 0x80000000,
+    EXTERNAL = android::os::IInputConstants::DEVICE_CLASS_EXTERNAL,
 };
 
 enum class SysfsClass : uint32_t {
@@ -175,6 +180,8 @@ enum class InputLightClass : uint32_t {
     MAX_BRIGHTNESS = 0x00000080,
     /* The input light has kbd_backlight name */
     KEYBOARD_BACKLIGHT = 0x00000100,
+    /* The input light has mic_mute name */
+    KEYBOARD_MIC_MUTE = 0x00000200,
 };
 
 enum class InputBatteryClass : uint32_t {
@@ -334,6 +341,10 @@ public:
     virtual int32_t getSwitchState(int32_t deviceId, int32_t sw) const = 0;
     virtual status_t getAbsoluteAxisValue(int32_t deviceId, int32_t axis,
                                           int32_t* outValue) const = 0;
+    /* Query Multi-Touch slot values for an axis. Returns error or an 1 indexed array of size
+     * (slotCount + 1). The value at the 0 index is set to queried axis. */
+    virtual base::Result<std::vector<int32_t>> getMtSlotValues(int32_t deviceId, int32_t axis,
+                                                               size_t slotCount) const = 0;
     virtual int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const = 0;
 
     /*
@@ -411,7 +422,17 @@ public:
      * Note the parameter "bit" is an index to the bit, 0 <= bit < BITS.
      */
     inline bool test(size_t bit) const {
-        return (bit < BITS) ? mData[bit / WIDTH].test(bit % WIDTH) : false;
+        return (bit < BITS) && mData[bit / WIDTH].test(bit % WIDTH);
+    }
+    /* Sets the given bit in the bit array to given value.
+     * Returns true if the given bit is a valid index and thus was set successfully.
+     */
+    inline bool set(size_t bit, bool value) {
+        if (bit >= BITS) {
+            return false;
+        }
+        mData[bit / WIDTH].set(bit % WIDTH, value);
+        return true;
     }
     /* Returns total number of bytes needed for the array */
     inline size_t bytes() { return (BITS + CHAR_BIT - 1) / CHAR_BIT; }
@@ -458,6 +479,20 @@ public:
         for (size_t i = 0; i < COUNT; i++) {
             mData[i] = std::bitset<WIDTH>(buffer[i]);
         }
+    }
+    /* Dump the indices in the bit array that are set. */
+    inline std::string dumpSetIndices(std::string separator,
+                                      std::function<std::string(size_t /*index*/)> format) {
+        std::string dmp;
+        for (size_t i = 0; i < BITS; i++) {
+            if (test(i)) {
+                if (!dmp.empty()) {
+                    dmp += separator;
+                }
+                dmp += format(i);
+            }
+        }
+        return dmp.empty() ? "<none>" : dmp;
     }
 
 private:
@@ -526,6 +561,8 @@ public:
                                      int32_t locationKeyCode) const override final;
     status_t getAbsoluteAxisValue(int32_t deviceId, int32_t axis,
                                   int32_t* outValue) const override final;
+    base::Result<std::vector<int32_t>> getMtSlotValues(int32_t deviceId, int32_t axis,
+                                                       size_t slotCount) const override final;
 
     bool markSupportedKeyCodes(int32_t deviceId, const std::vector<int32_t>& keyCodes,
                                uint8_t* outFlags) const override final;
@@ -600,16 +637,21 @@ private:
 
         ftl::Flags<InputDeviceClass> classes;
 
-        BitArray<KEY_MAX> keyBitmask;
-        BitArray<KEY_MAX> keyState;
-        BitArray<ABS_MAX> absBitmask;
-        BitArray<REL_MAX> relBitmask;
-        BitArray<SW_MAX> swBitmask;
-        BitArray<SW_MAX> swState;
-        BitArray<LED_MAX> ledBitmask;
-        BitArray<FF_MAX> ffBitmask;
-        BitArray<INPUT_PROP_MAX> propBitmask;
-        BitArray<MSC_MAX> mscBitmask;
+        BitArray<KEY_CNT> keyBitmask;
+        BitArray<KEY_CNT> keyState;
+        BitArray<REL_CNT> relBitmask;
+        BitArray<SW_CNT> swBitmask;
+        BitArray<SW_CNT> swState;
+        BitArray<LED_CNT> ledBitmask;
+        BitArray<FF_CNT> ffBitmask;
+        BitArray<INPUT_PROP_CNT> propBitmask;
+        BitArray<MSC_CNT> mscBitmask;
+        BitArray<ABS_CNT> absBitmask;
+        struct AxisState {
+            RawAbsoluteAxisInfo info;
+            int value;
+        };
+        std::map<int /*axis*/, AxisState> absState;
 
         std::string configurationFile;
         std::unique_ptr<PropertyMap> configuration;
@@ -643,6 +685,7 @@ private:
         status_t readDeviceBitMask(unsigned long ioctlCode, BitArray<N>& bitArray);
 
         void configureFd();
+        void populateAbsoluteAxisStates();
         bool hasKeycodeLocked(int keycode) const;
         void loadConfigurationLocked();
         bool loadVirtualKeyMapLocked();
@@ -652,6 +695,10 @@ private:
         void setLedForControllerLocked();
         status_t mapLed(int32_t led, int32_t* outScanCode) const;
         void setLedStateLocked(int32_t led, bool on);
+
+        bool currentFrameDropped;
+        void trackInputEvent(const struct input_event& event);
+        void readDeviceState();
     };
 
     /**

@@ -59,9 +59,11 @@ public:
             std::optional<android::HWComposer::DeviceRequestedChanges>*) override;
     void applyCompositionStrategy(const std::optional<DeviceRequestedChanges>&) override;
     bool getSkipColorTransform() const override;
-    compositionengine::Output::FrameFences presentAndGetFrameFences() override;
+    compositionengine::Output::FrameFences presentFrame() override;
+    void executeCommands() override;
     void setExpensiveRenderingExpected(bool) override;
     void finishFrame(GpuCompositionResult&&) override;
+    bool supportsOffloadPresent() const override;
 
     // compositionengine::Display overrides
     DisplayId getId() const override;
@@ -72,7 +74,8 @@ public:
             const compositionengine::DisplayColorProfileCreationArgs&) override;
     void createRenderSurface(const compositionengine::RenderSurfaceCreationArgs&) override;
     void createClientCompositionCache(uint32_t cacheSize) override;
-    void applyDisplayBrightness(const bool applyImmediately) override;
+    void applyDisplayBrightness(bool applyImmediately) override;
+    void setSecure(bool secure) override;
 
     // Internal helpers used by chooseCompositionStrategy()
     using ChangedTypes = android::HWComposer::DeviceRequestedChanges::ChangedTypes;
@@ -91,7 +94,10 @@ public:
 
 private:
     bool isPowerHintSessionEnabled() override;
+    bool isPowerHintSessionGpuReportingEnabled() override;
+    void setHintSessionGpuStart(TimePoint startTime) override;
     void setHintSessionGpuFence(std::unique_ptr<FenceTime>&& gpuFence) override;
+    void setHintSessionRequiresRenderEngine(bool requiresRenderEngine) override;
     DisplayId mId;
     bool mIsDisconnected = false;
     Hwc2::PowerAdvisor* mPowerAdvisor = nullptr;

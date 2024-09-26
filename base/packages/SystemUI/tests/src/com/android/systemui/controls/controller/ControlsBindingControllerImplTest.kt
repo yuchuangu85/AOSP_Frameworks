@@ -24,7 +24,7 @@ import android.service.controls.Control
 import android.service.controls.DeviceTypes
 import android.service.controls.IControlsSubscriber
 import android.service.controls.IControlsSubscription
-import android.testing.AndroidTestingRunner
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.settings.UserTracker
@@ -49,7 +49,7 @@ import org.mockito.Mockito.`when`
 import org.mockito.MockitoAnnotations
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 class ControlsBindingControllerImplTest : SysuiTestCase() {
 
     companion object {
@@ -116,11 +116,7 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 
     @Test
     fun testBindAndLoad_cancel() {
-        val callback = object : ControlsBindingController.LoadCallback {
-            override fun error(message: String) {}
-
-            override fun accept(t: List<Control>) {}
-        }
+        val callback = mock(ControlsBindingController.LoadCallback::class.java)
         val subscription = mock(IControlsSubscription::class.java)
 
         val canceller = controller.bindAndLoad(TEST_COMPONENT_NAME_1, callback)
@@ -130,6 +126,7 @@ class ControlsBindingControllerImplTest : SysuiTestCase() {
 
         canceller.run()
         verify(providers[0]).cancelSubscription(subscription)
+        verify(callback).error(any())
     }
 
     @Test

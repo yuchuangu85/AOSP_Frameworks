@@ -26,10 +26,12 @@
 #include <algorithm>
 #include <utility>
 
+#include <android/native_window.h>
 #include <cutils/compiler.h>
 #include <cutils/trace.h>
 #include <ftl/enum.h>
 #include <gui/TraceUtils.h>
+#include <system/window.h>
 
 #undef LOG_TAG
 #define LOG_TAG "LayerInfo"
@@ -53,23 +55,33 @@ void LayerInfo::setLastPresentTime(nsecs_t lastPresentTime, nsecs_t now, LayerUp
                                    bool pendingModeChange, const LayerProps& props) {
     lastPresentTime = std::max(lastPresentTime, static_cast<nsecs_t>(0));
 
-    mLastUpdatedTime = std::max(lastPresentTime, now);
     *mLayerProps = props;
     switch (updateType) {
         case LayerUpdateType::AnimationTX:
+            mLastUpdatedTime = std::max(lastPresentTime, now);
             mLastAnimationTime = std::max(lastPresentTime, now);
             break;
         case LayerUpdateType::SetFrameRate:
+            if (FlagManager::getInstance().vrr_config()) {
+                break;
+            }
+            FALLTHROUGH_INTENDED;
         case LayerUpdateType::Buffer:
+            mLastUpdatedTime = std::max(lastPresentTime, now);
             FrameTimeData frameTime = {.presentTime = lastPresentTime,
                                        .queueTime = mLastUpdatedTime,
-                                       .pendingModeChange = pendingModeChange};
+                                       .pendingModeChange = pendingModeChange,
+                                       .isSmallDirty = props.isSmallDirty};
             mFrameTimes.push_back(frameTime);
             if (mFrameTimes.size() > HISTORY_SIZE) {
                 mFrameTimes.pop_front();
             }
             break;
     }
+}
+
+void LayerInfo::setProperties(const android::scheduler::LayerProps& properties) {
+    *mLayerProps = properties;
 }
 
 bool LayerInfo::isFrameTimeValid(const FrameTimeData& frameTime) const {
@@ -99,21 +111,38 @@ LayerInfo::Frequent LayerInfo::isFrequent(nsecs_t now) const {
     // classification.
     bool isFrequent = true;
     bool isInfrequent = true;
+    int32_t smallDirtyCount = 0;
     const auto n = mFrameTimes.size() - 1;
     for (size_t i = 0; i < kFrequentLayerWindowSize - 1; i++) {
         if (mFrameTimes[n - i].queueTime - mFrameTimes[n - i - 1].queueTime <
             kMaxPeriodForFrequentLayerNs.count()) {
             isInfrequent = false;
+            if (mFrameTimes[n - i].presentTime == 0 && mFrameTimes[n - i].isSmallDirty) {
+                smallDirtyCount++;
+            }
         } else {
             isFrequent = false;
         }
+    }
+
+    // Vote the small dirty when a layer contains at least HISTORY_SIZE of small dirty updates.
+    bool isSmallDirty = false;
+    if (smallDirtyCount >= kNumSmallDirtyThreshold) {
+        if (mLastSmallDirtyCount >= HISTORY_SIZE) {
+            isSmallDirty = true;
+        } else {
+            mLastSmallDirtyCount++;
+        }
+    } else {
+        mLastSmallDirtyCount = 0;
     }
 
     if (isFrequent || isInfrequent) {
         // If the layer was previously inconclusive, we clear
         // the history as indeterminate layers changed to frequent,
         // and we should not look at the stale data.
-        return {isFrequent, isFrequent && !mIsFrequencyConclusive, /* isConclusive */ true};
+        return {isFrequent, isFrequent && !mIsFrequencyConclusive, /* isConclusive */ true,
+                isSmallDirty};
     }
 
     // If we can't determine whether the layer is frequent or not, we return
@@ -152,19 +181,19 @@ bool LayerInfo::isAnimating(nsecs_t now) const {
 bool LayerInfo::hasEnoughDataForHeuristic() const {
     // The layer had to publish at least HISTORY_SIZE or HISTORY_DURATION of updates
     if (mFrameTimes.size() < 2) {
-        ALOGV("fewer than 2 frames recorded: %zu", mFrameTimes.size());
+        ALOGV("%s fewer than 2 frames recorded: %zu", mName.c_str(), mFrameTimes.size());
         return false;
     }
 
     if (!isFrameTimeValid(mFrameTimes.front())) {
-        ALOGV("stale frames still captured");
+        ALOGV("%s stale frames still captured", mName.c_str());
         return false;
     }
 
     const auto totalDuration = mFrameTimes.back().queueTime - mFrameTimes.front().queueTime;
     if (mFrameTimes.size() < HISTORY_SIZE && totalDuration < HISTORY_DURATION.count()) {
-        ALOGV("not enough frames captured: %zu | %.2f seconds", mFrameTimes.size(),
-              totalDuration / 1e9f);
+        ALOGV("%s not enough frames captured: %zu | %.2f seconds", mName.c_str(),
+              mFrameTimes.size(), totalDuration / 1e9f);
         return false;
     }
 
@@ -202,11 +231,19 @@ std::optional<nsecs_t> LayerInfo::calculateAverageFrameTime() const {
 
     nsecs_t totalDeltas = 0;
     int numDeltas = 0;
+    int32_t smallDirtyCount = 0;
     auto prevFrame = mFrameTimes.begin();
     for (auto it = mFrameTimes.begin() + 1; it != mFrameTimes.end(); ++it) {
         const auto currDelta = getFrameTime(*it) - getFrameTime(*prevFrame);
         if (currDelta < kMinPeriodBetweenFrames) {
             // Skip this frame, but count the delta into the next frame
+            continue;
+        }
+
+        // If this is a small area update, we don't want to consider it for calculating the average
+        // frame time. Instead, we let the bigger frame updates to drive the calculation.
+        if (it->isSmallDirty && currDelta < kMinPeriodBetweenSmallDirtyFrames) {
+            smallDirtyCount++;
             continue;
         }
 
@@ -219,6 +256,10 @@ std::optional<nsecs_t> LayerInfo::calculateAverageFrameTime() const {
 
         totalDeltas += currDelta;
         numDeltas++;
+    }
+
+    if (smallDirtyCount > 0) {
+        ATRACE_FORMAT_INSTANT("small dirty = %" PRIu32, smallDirtyCount);
     }
 
     if (numDeltas == 0) {
@@ -240,17 +281,16 @@ std::optional<Fps> LayerInfo::calculateRefreshRateIfPossible(const RefreshRateSe
 
     if (const auto averageFrameTime = calculateAverageFrameTime()) {
         const auto refreshRate = Fps::fromPeriodNsecs(*averageFrameTime);
-        const bool refreshRateConsistent = mRefreshRateHistory.add(refreshRate, now);
-        if (refreshRateConsistent) {
-            const auto knownRefreshRate = selector.findClosestKnownFrameRate(refreshRate);
+        const auto closestKnownRefreshRate = mRefreshRateHistory.add(refreshRate, now, selector);
+        if (closestKnownRefreshRate.isValid()) {
             using fps_approx_ops::operator!=;
 
             // To avoid oscillation, use the last calculated refresh rate if it is close enough.
             if (std::abs(mLastRefreshRate.calculated.getValue() - refreshRate.getValue()) >
                         MARGIN &&
-                mLastRefreshRate.reported != knownRefreshRate) {
+                mLastRefreshRate.reported != closestKnownRefreshRate) {
                 mLastRefreshRate.calculated = refreshRate;
-                mLastRefreshRate.reported = knownRefreshRate;
+                mLastRefreshRate.reported = closestKnownRefreshRate;
             }
 
             ALOGV("%s %s rounded to nearest known frame rate %s", mName.c_str(),
@@ -265,19 +305,50 @@ std::optional<Fps> LayerInfo::calculateRefreshRateIfPossible(const RefreshRateSe
                                                : std::nullopt;
 }
 
-LayerInfo::LayerVote LayerInfo::getRefreshRateVote(const RefreshRateSelector& selector,
-                                                   nsecs_t now) {
+LayerInfo::RefreshRateVotes LayerInfo::getRefreshRateVote(const RefreshRateSelector& selector,
+                                                          nsecs_t now) {
     ATRACE_CALL();
+    LayerInfo::RefreshRateVotes votes;
+
     if (mLayerVote.type != LayerHistory::LayerVoteType::Heuristic) {
-        ALOGV("%s voted %d ", mName.c_str(), static_cast<int>(mLayerVote.type));
-        return mLayerVote;
+        if (mLayerVote.category != FrameRateCategory::Default) {
+            const auto voteType = mLayerVote.type == LayerHistory::LayerVoteType::NoVote
+                    ? LayerHistory::LayerVoteType::NoVote
+                    : LayerHistory::LayerVoteType::ExplicitCategory;
+            ATRACE_FORMAT_INSTANT("Vote %s (category=%s)", ftl::enum_string(voteType).c_str(),
+                                  ftl::enum_string(mLayerVote.category).c_str());
+            ALOGV("%s voted %s with category: %s", mName.c_str(),
+                  ftl::enum_string(voteType).c_str(),
+                  ftl::enum_string(mLayerVote.category).c_str());
+            votes.push_back({voteType, Fps(), Seamlessness::Default, mLayerVote.category,
+                             mLayerVote.categorySmoothSwitchOnly});
+        }
+
+        if (mLayerVote.fps.isValid() ||
+            mLayerVote.type != LayerHistory::LayerVoteType::ExplicitDefault) {
+            ATRACE_FORMAT_INSTANT("Vote %s", ftl::enum_string(mLayerVote.type).c_str());
+            ALOGV("%s voted %d", mName.c_str(), static_cast<int>(mLayerVote.type));
+            votes.push_back({mLayerVote.type, mLayerVote.fps, mLayerVote.seamlessness,
+                             FrameRateCategory::Default, mLayerVote.categorySmoothSwitchOnly});
+        }
+
+        return votes;
     }
 
     if (isAnimating(now)) {
         ATRACE_FORMAT_INSTANT("animating");
         ALOGV("%s is animating", mName.c_str());
         mLastRefreshRate.animating = true;
-        return {LayerHistory::LayerVoteType::Max, Fps()};
+        votes.push_back({LayerHistory::LayerVoteType::Max, Fps()});
+        return votes;
+    }
+
+    // Vote for max refresh rate whenever we're front-buffered.
+    if (FlagManager::getInstance().vrr_config() && isFrontBuffered()) {
+        ATRACE_FORMAT_INSTANT("front buffered");
+        ALOGV("%s is front-buffered", mName.c_str());
+        votes.push_back({LayerHistory::LayerVoteType::Max, Fps()});
+        return votes;
     }
 
     const LayerInfo::Frequent frequent = isFrequent(now);
@@ -286,23 +357,39 @@ LayerInfo::LayerVote LayerInfo::getRefreshRateVote(const RefreshRateSelector& se
         ATRACE_FORMAT_INSTANT("infrequent");
         ALOGV("%s is infrequent", mName.c_str());
         mLastRefreshRate.infrequent = true;
+        mLastSmallDirtyCount = 0;
         // Infrequent layers vote for minimal refresh rate for
         // battery saving purposes and also to prevent b/135718869.
-        return {LayerHistory::LayerVoteType::Min, Fps()};
+        votes.push_back({LayerHistory::LayerVoteType::Min, Fps()});
+        return votes;
     }
 
     if (frequent.clearHistory) {
+        ATRACE_FORMAT_INSTANT("frequent.clearHistory");
+        ALOGV("%s frequent.clearHistory", mName.c_str());
         clearHistory(now);
+    }
+
+    // Return no vote if the recent frames are small dirty.
+    if (frequent.isSmallDirty && !mLastRefreshRate.reported.isValid()) {
+        ATRACE_FORMAT_INSTANT("NoVote (small dirty)");
+        ALOGV("%s is small dirty", mName.c_str());
+        votes.push_back({LayerHistory::LayerVoteType::NoVote, Fps()});
+        return votes;
     }
 
     auto refreshRate = calculateRefreshRateIfPossible(selector, now);
     if (refreshRate.has_value()) {
+        ATRACE_FORMAT_INSTANT("calculated (%s)", to_string(*refreshRate).c_str());
         ALOGV("%s calculated refresh rate: %s", mName.c_str(), to_string(*refreshRate).c_str());
-        return {LayerHistory::LayerVoteType::Heuristic, refreshRate.value()};
+        votes.push_back({LayerHistory::LayerVoteType::Heuristic, refreshRate.value()});
+        return votes;
     }
 
+    ATRACE_FORMAT_INSTANT("Max (can't resolve refresh rate)");
     ALOGV("%s Max (can't resolve refresh rate)", mName.c_str());
-    return {LayerHistory::LayerVoteType::Max, Fps()};
+    votes.push_back({LayerHistory::LayerVoteType::Max, Fps()});
+    return votes;
 }
 
 const char* LayerInfo::getTraceTag(LayerHistory::LayerVoteType type) const {
@@ -324,6 +411,10 @@ bool LayerInfo::isVisible() const {
 
 int32_t LayerInfo::getFrameRateSelectionPriority() const {
     return mLayerProps->frameRateSelectionPriority;
+}
+
+bool LayerInfo::isFrontBuffered() const {
+    return mLayerProps->isFrontBuffered;
 }
 
 FloatRect LayerInfo::getBounds() const {
@@ -348,7 +439,8 @@ void LayerInfo::RefreshRateHistory::clear() {
     mRefreshRates.clear();
 }
 
-bool LayerInfo::RefreshRateHistory::add(Fps refreshRate, nsecs_t now) {
+Fps LayerInfo::RefreshRateHistory::add(Fps refreshRate, nsecs_t now,
+                                       const RefreshRateSelector& selector) {
     mRefreshRates.push_back({refreshRate, now});
     while (mRefreshRates.size() >= HISTORY_SIZE ||
            now - mRefreshRates.front().timestamp > HISTORY_DURATION.count()) {
@@ -363,11 +455,11 @@ bool LayerInfo::RefreshRateHistory::add(Fps refreshRate, nsecs_t now) {
         ATRACE_INT(mHeuristicTraceTagData->average.c_str(), refreshRate.getIntValue());
     }
 
-    return isConsistent();
+    return selectRefreshRate(selector);
 }
 
-bool LayerInfo::RefreshRateHistory::isConsistent() const {
-    if (mRefreshRates.empty()) return true;
+Fps LayerInfo::RefreshRateHistory::selectRefreshRate(const RefreshRateSelector& selector) const {
+    if (mRefreshRates.empty()) return Fps();
 
     const auto [min, max] =
             std::minmax_element(mRefreshRates.begin(), mRefreshRates.end(),
@@ -375,8 +467,19 @@ bool LayerInfo::RefreshRateHistory::isConsistent() const {
                                     return isStrictlyLess(lhs.refreshRate, rhs.refreshRate);
                                 });
 
-    const bool consistent =
-            max->refreshRate.getValue() - min->refreshRate.getValue() < MARGIN_CONSISTENT_FPS;
+    const auto maxClosestRate = selector.findClosestKnownFrameRate(max->refreshRate);
+    const bool consistent = [&](Fps maxFps, Fps minFps) {
+        if (FlagManager::getInstance().use_known_refresh_rate_for_fps_consistency()) {
+            if (maxFps.getValue() - minFps.getValue() <
+                MARGIN_CONSISTENT_FPS_FOR_CLOSEST_REFRESH_RATE) {
+                const auto minClosestRate = selector.findClosestKnownFrameRate(minFps);
+                using fps_approx_ops::operator==;
+                return maxClosestRate == minClosestRate;
+            }
+            return false;
+        }
+        return maxFps.getValue() - minFps.getValue() < MARGIN_CONSISTENT_FPS;
+    }(max->refreshRate, min->refreshRate);
 
     if (CC_UNLIKELY(sTraceEnabled)) {
         if (!mHeuristicTraceTagData.has_value()) {
@@ -388,7 +491,116 @@ bool LayerInfo::RefreshRateHistory::isConsistent() const {
         ATRACE_INT(mHeuristicTraceTagData->consistent.c_str(), consistent);
     }
 
-    return consistent;
+    return consistent ? maxClosestRate : Fps();
+}
+
+FrameRateCompatibility LayerInfo::FrameRate::convertCompatibility(int8_t compatibility) {
+    switch (compatibility) {
+        case ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT:
+            return FrameRateCompatibility::Default;
+        case ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE:
+            return FrameRateCompatibility::ExactOrMultiple;
+        case ANATIVEWINDOW_FRAME_RATE_EXACT:
+            return FrameRateCompatibility::Exact;
+        case ANATIVEWINDOW_FRAME_RATE_MIN:
+            return FrameRateCompatibility::Min;
+        case ANATIVEWINDOW_FRAME_RATE_GTE:
+            return FrameRateCompatibility::Gte;
+        case ANATIVEWINDOW_FRAME_RATE_NO_VOTE:
+            return FrameRateCompatibility::NoVote;
+        default:
+            LOG_ALWAYS_FATAL("Invalid frame rate compatibility value %d", compatibility);
+            return FrameRateCompatibility::Default;
+    }
+}
+
+Seamlessness LayerInfo::FrameRate::convertChangeFrameRateStrategy(int8_t strategy) {
+    switch (strategy) {
+        case ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS:
+            return Seamlessness::OnlySeamless;
+        case ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS:
+            return Seamlessness::SeamedAndSeamless;
+        default:
+            LOG_ALWAYS_FATAL("Invalid change frame sate strategy value %d", strategy);
+            return Seamlessness::Default;
+    }
+}
+
+FrameRateCategory LayerInfo::FrameRate::convertCategory(int8_t category) {
+    switch (category) {
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_DEFAULT:
+            return FrameRateCategory::Default;
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_NO_PREFERENCE:
+            return FrameRateCategory::NoPreference;
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_LOW:
+            return FrameRateCategory::Low;
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_NORMAL:
+            return FrameRateCategory::Normal;
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_HIGH_HINT:
+            return FrameRateCategory::HighHint;
+        case ANATIVEWINDOW_FRAME_RATE_CATEGORY_HIGH:
+            return FrameRateCategory::High;
+        default:
+            LOG_ALWAYS_FATAL("Invalid frame rate category value %d", category);
+            return FrameRateCategory::Default;
+    }
+}
+
+LayerInfo::FrameRateSelectionStrategy LayerInfo::convertFrameRateSelectionStrategy(
+        int8_t strategy) {
+    switch (strategy) {
+        case ANATIVEWINDOW_FRAME_RATE_SELECTION_STRATEGY_PROPAGATE:
+            return FrameRateSelectionStrategy::Propagate;
+        case ANATIVEWINDOW_FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN:
+            return FrameRateSelectionStrategy::OverrideChildren;
+        case ANATIVEWINDOW_FRAME_RATE_SELECTION_STRATEGY_SELF:
+            return FrameRateSelectionStrategy::Self;
+        default:
+            LOG_ALWAYS_FATAL("Invalid frame rate selection strategy value %d", strategy);
+            return FrameRateSelectionStrategy::Self;
+    }
+}
+
+bool LayerInfo::FrameRate::isNoVote() const {
+    return vote.type == FrameRateCompatibility::NoVote;
+}
+
+bool LayerInfo::FrameRate::isValuelessType() const {
+    // For a valueless frame rate compatibility (type), the frame rate should be unspecified (0 Hz).
+    if (!isApproxEqual(vote.rate, 0_Hz)) {
+        return false;
+    }
+    switch (vote.type) {
+        case FrameRateCompatibility::Min:
+        case FrameRateCompatibility::NoVote:
+            return true;
+        case FrameRateCompatibility::Default:
+        case FrameRateCompatibility::ExactOrMultiple:
+        case FrameRateCompatibility::Exact:
+        case FrameRateCompatibility::Gte:
+            return false;
+    }
+}
+
+bool LayerInfo::FrameRate::isValid() const {
+    return isValuelessType() || vote.rate.isValid() || category != FrameRateCategory::Default;
+}
+
+bool LayerInfo::FrameRate::isVoteValidForMrr(bool isVrrDevice) const {
+    if (isVrrDevice || FlagManager::getInstance().frame_rate_category_mrr()) {
+        return true;
+    }
+
+    if (category == FrameRateCategory::Default) {
+        return true;
+    }
+
+    return false;
+}
+
+std::ostream& operator<<(std::ostream& stream, const LayerInfo::FrameRate& rate) {
+    return stream << "{rate=" << rate.vote.rate << " type=" << ftl::enum_string(rate.vote.type)
+                  << " seamlessness=" << ftl::enum_string(rate.vote.seamlessness) << '}';
 }
 
 } // namespace android::scheduler

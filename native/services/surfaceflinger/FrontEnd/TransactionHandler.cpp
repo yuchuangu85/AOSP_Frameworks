@@ -16,12 +16,13 @@
 
 // #define LOG_NDEBUG 0
 #undef LOG_TAG
-#define LOG_TAG "TransactionHandler"
+#define LOG_TAG "SurfaceFlinger"
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include <cutils/trace.h>
 #include <utils/Log.h>
 #include <utils/Trace.h>
+#include "FrontEnd/LayerLog.h"
 
 #include "TransactionHandler.h"
 
@@ -33,7 +34,7 @@ void TransactionHandler::queueTransaction(TransactionState&& state) {
     ATRACE_INT("TransactionQueue", static_cast<int>(mPendingTransactionCount.load()));
 }
 
-std::vector<TransactionState> TransactionHandler::flushTransactions() {
+void TransactionHandler::collectTransactions() {
     while (!mLocklessTransactionQueue.isEmpty()) {
         auto maybeTransaction = mLocklessTransactionQueue.pop();
         if (!maybeTransaction.has_value()) {
@@ -42,7 +43,9 @@ std::vector<TransactionState> TransactionHandler::flushTransactions() {
         auto transaction = maybeTransaction.value();
         mPendingTransactionQueues[transaction.applyToken].emplace(std::move(transaction));
     }
+}
 
+std::vector<TransactionState> TransactionHandler::flushTransactions() {
     // Collect transaction that are ready to be applied.
     std::vector<TransactionState> transactions;
     TransactionFlushState flushState;
@@ -85,8 +88,8 @@ void TransactionHandler::applyUnsignaledBufferTransaction(
     }
 
     auto it = mPendingTransactionQueues.find(flushState.queueWithUnsignaledBuffer);
-    LOG_ALWAYS_FATAL_IF(it == mPendingTransactionQueues.end(),
-                        "Could not find queue with unsignaled buffer!");
+    LLOG_ALWAYS_FATAL_WITH_TRACE_IF(it == mPendingTransactionQueues.end(),
+                                    "Could not find queue with unsignaled buffer!");
 
     auto& queue = it->second;
     popTransactionFromPending(transactions, flushState, queue);
@@ -186,21 +189,36 @@ bool TransactionHandler::hasPendingTransactions() {
 }
 
 void TransactionHandler::onTransactionQueueStalled(uint64_t transactionId,
-                                                   sp<ITransactionCompletedListener>& listener,
-                                                   const std::string& reason) {
-    if (std::find(mStalledTransactions.begin(), mStalledTransactions.end(), transactionId) !=
-        mStalledTransactions.end()) {
-        return;
-    }
-
-    mStalledTransactions.push_back(transactionId);
-    listener->onTransactionQueueStalled(String8(reason.c_str()));
+                                                   StalledTransactionInfo stalledTransactionInfo) {
+    std::lock_guard lock{mStalledMutex};
+    mStalledTransactions.emplace(transactionId, std::move(stalledTransactionInfo));
 }
 
-void TransactionHandler::removeFromStalledTransactions(uint64_t id) {
-    auto it = std::find(mStalledTransactions.begin(), mStalledTransactions.end(), id);
-    if (it != mStalledTransactions.end()) {
-        mStalledTransactions.erase(it);
+void TransactionHandler::removeFromStalledTransactions(uint64_t transactionId) {
+    std::lock_guard lock{mStalledMutex};
+    mStalledTransactions.erase(transactionId);
+}
+
+std::optional<TransactionHandler::StalledTransactionInfo>
+TransactionHandler::getStalledTransactionInfo(pid_t pid) {
+    std::lock_guard lock{mStalledMutex};
+    for (auto [_, stalledTransactionInfo] : mStalledTransactions) {
+        if (pid == stalledTransactionInfo.pid) {
+            return stalledTransactionInfo;
+        }
+    }
+    return std::nullopt;
+}
+
+void TransactionHandler::onLayerDestroyed(uint32_t layerId) {
+    std::lock_guard lock{mStalledMutex};
+    for (auto it = mStalledTransactions.begin(); it != mStalledTransactions.end();) {
+        if (it->second.layerId == layerId) {
+            it = mStalledTransactions.erase(it);
+        } else {
+            it++;
+        }
     }
 }
+
 } // namespace android::surfaceflinger::frontend

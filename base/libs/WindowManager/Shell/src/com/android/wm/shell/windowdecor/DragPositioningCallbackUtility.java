@@ -22,14 +22,16 @@ import static com.android.wm.shell.windowdecor.DragPositioningCallback.CTRL_TYPE
 import static com.android.wm.shell.windowdecor.DragPositioningCallback.CTRL_TYPE_TOP;
 import static com.android.wm.shell.windowdecor.DragPositioningCallback.CTRL_TYPE_UNDEFINED;
 
+import android.content.Context;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.util.DisplayMetrics;
 import android.view.SurfaceControl;
-import android.window.WindowContainerTransaction;
 
-import com.android.wm.shell.ShellTaskOrganizer;
+import com.android.window.flags.Flags;
+import com.android.wm.shell.R;
 import com.android.wm.shell.common.DisplayController;
+import com.android.wm.shell.shared.DesktopModeStatus;
 
 /**
  * Utility class that contains logic common to classes implementing {@link DragPositioningCallback}
@@ -37,11 +39,11 @@ import com.android.wm.shell.common.DisplayController;
  * and applying that change to the task bounds when applicable.
  */
 public class DragPositioningCallbackUtility {
-
     /**
      * Determine the delta between input's current point and the input start point.
-     * @param inputX current input x coordinate
-     * @param inputY current input y coordinate
+     *
+     * @param inputX               current input x coordinate
+     * @param inputY               current input y coordinate
      * @param repositionStartPoint initial input coordinate
      * @return delta between these two points
      */
@@ -54,13 +56,14 @@ public class DragPositioningCallbackUtility {
     /**
      * Based on type of resize and delta provided, calculate the new bounds to display for this
      * task.
-     * @param ctrlType type of drag being performed
-     * @param repositionTaskBounds the bounds the task is being repositioned to
+     *
+     * @param ctrlType              type of drag being performed
+     * @param repositionTaskBounds  the bounds the task is being repositioned to
      * @param taskBoundsAtDragStart the bounds of the task on the first drag input event
-     * @param stableBounds bounds that represent the resize limit of this task
-     * @param delta difference between start input and current input in x/y coordinates
-     * @param displayController task's display controller
-     * @param windowDecoration window decoration of the task being dragged
+     * @param stableBounds          bounds that represent the resize limit of this task
+     * @param delta                 difference between start input and current input in x/y
+     *                              coordinates
+     * @param windowDecoration      window decoration of the task being dragged
      * @return whether this method changed repositionTaskBounds
      */
     static boolean changeBounds(int ctrlType, Rect repositionTaskBounds, Rect taskBoundsAtDragStart,
@@ -83,8 +86,6 @@ public class DragPositioningCallbackUtility {
         // Make sure the new resizing destination in any direction falls within the stable bounds.
         // If not, set the bounds back to the old location that was valid to avoid conflicts with
         // some regions such as the gesture area.
-        displayController.getDisplayLayout(windowDecoration.mDisplay.getDisplayId())
-                .getStableBounds(stableBounds);
         if ((ctrlType & CTRL_TYPE_LEFT) != 0) {
             final int candidateLeft = repositionTaskBounds.left + (int) delta.x;
             repositionTaskBounds.left = (candidateLeft > stableBounds.left)
@@ -132,8 +133,7 @@ public class DragPositioningCallbackUtility {
             Rect taskBoundsAtDragStart, PointF repositionStartPoint, SurfaceControl.Transaction t,
             float x, float y) {
         updateTaskBounds(repositionTaskBounds, taskBoundsAtDragStart, repositionStartPoint, x, y);
-        t.setPosition(decoration.mTaskSurface, repositionTaskBounds.left,
-                repositionTaskBounds.top);
+        t.setPosition(decoration.mTaskSurface, repositionTaskBounds.left, repositionTaskBounds.top);
     }
 
     static void updateTaskBounds(Rect repositionTaskBounds, Rect taskBoundsAtDragStart,
@@ -145,29 +145,67 @@ public class DragPositioningCallbackUtility {
     }
 
     /**
-     * Apply a bounds change to a task.
-     * @param windowDecoration decor of task we are changing bounds for
-     * @param taskBounds new bounds of this task
-     * @param taskOrganizer applies the provided WindowContainerTransaction
+     * If task bounds are outside of provided drag area, snap the bounds to be just inside the
+     * drag area.
+     *
+     * @param repositionTaskBounds bounds determined by task positioner
+     * @param validDragArea        the area that task must be positioned inside
+     * @return whether bounds were modified
      */
-    static void applyTaskBoundsChange(WindowContainerTransaction wct,
-            WindowDecoration windowDecoration, Rect taskBounds, ShellTaskOrganizer taskOrganizer) {
-        wct.setBounds(windowDecoration.mTaskInfo.token, taskBounds);
-        taskOrganizer.applyTransaction(wct);
+    public static boolean snapTaskBoundsIfNecessary(Rect repositionTaskBounds, Rect validDragArea) {
+        // If we were never supplied a valid drag area, do not restrict movement.
+        // Otherwise, we restrict deltas to keep task position inside the Rect.
+        if (validDragArea.width() == 0) return false;
+        boolean result = false;
+        if (repositionTaskBounds.left < validDragArea.left) {
+            repositionTaskBounds.offset(validDragArea.left - repositionTaskBounds.left, 0);
+            result = true;
+        } else if (repositionTaskBounds.left > validDragArea.right) {
+            repositionTaskBounds.offset(validDragArea.right - repositionTaskBounds.left, 0);
+            result = true;
+        }
+        if (repositionTaskBounds.top < validDragArea.top) {
+            repositionTaskBounds.offset(0, validDragArea.top - repositionTaskBounds.top);
+            result = true;
+        } else if (repositionTaskBounds.top > validDragArea.bottom) {
+            repositionTaskBounds.offset(0, validDragArea.bottom - repositionTaskBounds.top);
+            result = true;
+        }
+        return result;
     }
 
     private static float getMinWidth(DisplayController displayController,
             WindowDecoration windowDecoration) {
-        return windowDecoration.mTaskInfo.minWidth < 0 ? getDefaultMinSize(displayController,
+        return windowDecoration.mTaskInfo.minWidth < 0 ? getDefaultMinWidth(displayController,
                 windowDecoration)
                 : windowDecoration.mTaskInfo.minWidth;
     }
 
     private static float getMinHeight(DisplayController displayController,
             WindowDecoration windowDecoration) {
-        return windowDecoration.mTaskInfo.minHeight < 0 ? getDefaultMinSize(displayController,
+        return windowDecoration.mTaskInfo.minHeight < 0 ? getDefaultMinHeight(displayController,
                 windowDecoration)
                 : windowDecoration.mTaskInfo.minHeight;
+    }
+
+    private static float getDefaultMinWidth(DisplayController displayController,
+            WindowDecoration windowDecoration) {
+        if (isSizeConstraintForDesktopModeEnabled(windowDecoration.mDecorWindowContext)) {
+            return WindowDecoration.loadDimensionPixelSize(
+                    windowDecoration.mDecorWindowContext.getResources(),
+                    R.dimen.desktop_mode_minimum_window_width);
+        }
+        return getDefaultMinSize(displayController, windowDecoration);
+    }
+
+    private static float getDefaultMinHeight(DisplayController displayController,
+            WindowDecoration windowDecoration) {
+        if (isSizeConstraintForDesktopModeEnabled(windowDecoration.mDecorWindowContext)) {
+            return WindowDecoration.loadDimensionPixelSize(
+                    windowDecoration.mDecorWindowContext.getResources(),
+                    R.dimen.desktop_mode_minimum_window_height);
+        }
+        return getDefaultMinSize(displayController, windowDecoration);
     }
 
     private static float getDefaultMinSize(DisplayController displayController,
@@ -177,9 +215,15 @@ public class DragPositioningCallbackUtility {
         return windowDecoration.mTaskInfo.defaultMinSize * density;
     }
 
+    private static boolean isSizeConstraintForDesktopModeEnabled(Context context) {
+        return DesktopModeStatus.canEnterDesktopMode(context)
+                && Flags.enableDesktopWindowingSizeConstraints();
+    }
+
     interface DragStartListener {
         /**
          * Inform the implementing class that a drag resize has started
+         *
          * @param taskId id of this positioner's {@link WindowDecoration}
          */
         void onDragStart(int taskId);

@@ -16,11 +16,11 @@
 
 package com.android.systemui.decor
 
-import android.testing.AndroidTestingRunner
 import android.util.Size
 import android.view.DisplayCutout
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.SysuiTestCase
 import org.junit.Assert
 import org.junit.Before
@@ -30,7 +30,7 @@ import org.mockito.Mock
 import org.mockito.Mockito
 import org.mockito.Mockito.spy
 
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @SmallTest
 class RoundedCornerDecorProviderFactoryTest : SysuiTestCase() {
 
@@ -39,7 +39,7 @@ class RoundedCornerDecorProviderFactoryTest : SysuiTestCase() {
 
     @Before
     fun setUp() {
-        roundedCornerResDelegate = spy(RoundedCornerResDelegate(mContext.resources, null))
+        roundedCornerResDelegate = spy(RoundedCornerResDelegateImpl(mContext.resources, null))
     }
 
     @Test

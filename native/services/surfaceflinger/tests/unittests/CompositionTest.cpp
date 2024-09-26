@@ -25,14 +25,13 @@
 
 #include <compositionengine/Display.h>
 #include <compositionengine/mock/DisplaySurface.h>
+#include <ftl/future.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <gui/IProducerListener.h>
 #include <gui/LayerMetadata.h>
 #include <log/log.h>
 #include <renderengine/mock/FakeExternalTexture.h>
-#include <renderengine/mock/Framebuffer.h>
-#include <renderengine/mock/Image.h>
 #include <renderengine/mock/RenderEngine.h>
 #include <system/window.h>
 #include <utils/String8.h>
@@ -71,6 +70,7 @@ using testing::SetArgPointee;
 
 using FakeHwcDisplayInjector = TestableSurfaceFlinger::FakeHwcDisplayInjector;
 using FakeDisplayDeviceInjector = TestableSurfaceFlinger::FakeDisplayDeviceInjector;
+using namespace ftl::flag_operators;
 
 constexpr hal::HWDisplayId HWC_DISPLAY = FakeHwcDisplayInjector::DEFAULT_HWC_DISPLAY_ID;
 constexpr hal::HWLayerId HWC_LAYER = 5000;
@@ -196,18 +196,21 @@ void CompositionTest::captureScreenComposition() {
     LayerCase::setupForScreenCapture(this);
 
     const Rect sourceCrop(0, 0, DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT);
-    constexpr bool forSystem = true;
     constexpr bool regionSampling = false;
 
-    auto renderArea = DisplayRenderArea::create(mDisplay, sourceCrop, sourceCrop.getSize(),
-                                                ui::Dataspace::V0_SRGB, true, true);
+    auto renderArea =
+            DisplayRenderArea::create(mDisplay, sourceCrop, sourceCrop.getSize(),
+                                      ui::Dataspace::V0_SRGB,
+                                      RenderArea::Options::CAPTURE_SECURE_LAYERS |
+                                              RenderArea::Options::HINT_FOR_SEAMLESS_TRANSITION);
 
     auto traverseLayers = [this](const LayerVector::Visitor& visitor) {
         return mFlinger.traverseLayersInLayerStack(mDisplay->getLayerStack(),
                                                    CaptureArgs::UNSET_UID, {}, visitor);
     };
 
-    auto getLayerSnapshots = RenderArea::fromTraverseLayersLambda(traverseLayers);
+    // TODO: Use SurfaceFlinger::getLayerSnapshotsForScreenshots instead of this legacy function
+    auto getLayerSnapshotsFn = RenderArea::fromTraverseLayersLambda(traverseLayers);
 
     const uint32_t usage = GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN |
             GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_TEXTURE;
@@ -217,8 +220,8 @@ void CompositionTest::captureScreenComposition() {
                                                                       HAL_PIXEL_FORMAT_RGBA_8888, 1,
                                                                       usage);
 
-    auto future = mFlinger.renderScreenImpl(std::move(renderArea), getLayerSnapshots,
-                                            mCaptureScreenBuffer, forSystem, regionSampling);
+    auto future = mFlinger.renderScreenImpl(mDisplay, std::move(renderArea), getLayerSnapshotsFn,
+                                            mCaptureScreenBuffer, regionSampling);
     ASSERT_TRUE(future.valid());
     const auto fenceResult = future.get();
 
@@ -228,14 +231,6 @@ void CompositionTest::captureScreenComposition() {
     }
 
     LayerCase::cleanup(this);
-}
-
-template <class T>
-std::future<T> futureOf(T obj) {
-    std::promise<T> resultPromise;
-    std::future<T> resultFuture = resultPromise.get_future();
-    resultPromise.set_value(std::move(obj));
-    return resultFuture;
 }
 
 /* ------------------------------------------------------------------------
@@ -292,7 +287,7 @@ struct BaseDisplayVariant {
                         .setSecure(Derived::IS_SECURE)
                         .setPowerMode(Derived::INIT_POWER_MODE)
                         .setRefreshRateSelector(test->mFlinger.scheduler()->refreshRateSelector())
-                        .skipRegisterDisplay()
+                        .skipSchedulerRegistration()
                         .inject();
         Mock::VerifyAndClear(test->mNativeWindow.get());
 
@@ -318,7 +313,7 @@ struct BaseDisplayVariant {
         EXPECT_CALL(*test->mComposer, getReleaseFences(HWC_DISPLAY, _, _)).Times(1);
 
         EXPECT_CALL(*test->mDisplaySurface, onFrameCommitted()).Times(1);
-        EXPECT_CALL(*test->mDisplaySurface, advanceFrame()).Times(1);
+        EXPECT_CALL(*test->mDisplaySurface, advanceFrame(_)).Times(1);
 
         Case::CompositionType::setupHwcSetCallExpectations(test);
         Case::CompositionType::setupHwcGetCallExpectations(test);
@@ -330,13 +325,13 @@ struct BaseDisplayVariant {
                 .WillRepeatedly([&](const renderengine::DisplaySettings& displaySettings,
                                     const std::vector<renderengine::LayerSettings>&,
                                     const std::shared_ptr<renderengine::ExternalTexture>&,
-                                    const bool, base::unique_fd&&) -> std::future<FenceResult> {
+                                    base::unique_fd&&) -> ftl::Future<FenceResult> {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.clip);
-                    return futureOf<FenceResult>(Fence::NO_FENCE);
+                    return ftl::yield<FenceResult>(Fence::NO_FENCE);
                 });
     }
 
@@ -349,7 +344,7 @@ struct BaseDisplayVariant {
     }
 
     static void setupHwcCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _))
+        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _, _))
                 .Times(1);
 
         EXPECT_CALL(*test->mDisplaySurface,
@@ -358,12 +353,12 @@ struct BaseDisplayVariant {
     }
 
     static void setupHwcClientCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _))
+        EXPECT_CALL(*test->mComposer, presentOrValidateDisplay(HWC_DISPLAY, _, _, _, _, _, _))
                 .Times(1);
     }
 
     static void setupHwcForcedClientCompositionCallExpectations(CompositionTest* test) {
-        EXPECT_CALL(*test->mComposer, validateDisplay(HWC_DISPLAY, _, _, _)).Times(1);
+        EXPECT_CALL(*test->mComposer, validateDisplay(HWC_DISPLAY, _, _, _, _)).Times(1);
     }
 
     static void setupRECompositionCallExpectations(CompositionTest* test) {
@@ -381,14 +376,14 @@ struct BaseDisplayVariant {
                 .WillRepeatedly([&](const renderengine::DisplaySettings& displaySettings,
                                     const std::vector<renderengine::LayerSettings>&,
                                     const std::shared_ptr<renderengine::ExternalTexture>&,
-                                    const bool, base::unique_fd&&) -> std::future<FenceResult> {
+                                    base::unique_fd&&) -> ftl::Future<FenceResult> {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.clip);
                     EXPECT_EQ(ui::Dataspace::UNKNOWN, displaySettings.outputDataspace);
-                    return futureOf<FenceResult>(Fence::NO_FENCE);
+                    return ftl::yield<FenceResult>(Fence::NO_FENCE);
                 });
     }
 
@@ -580,8 +575,8 @@ struct BaseLayerProperties {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
                 .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
                               const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                              const std::shared_ptr<renderengine::ExternalTexture>&,
+                              base::unique_fd&&) -> ftl::Future<FenceResult> {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -589,7 +584,8 @@ struct BaseLayerProperties {
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so gtet the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
+                    ftl::Future<FenceResult> resultFuture =
+                            ftl::yield<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE() << "layerSettings was not expected to be empty in "
                                          "setupREBufferCompositionCommonCallExpectations "
@@ -599,8 +595,6 @@ struct BaseLayerProperties {
                     const renderengine::LayerSettings layer = layerSettings.back();
                     EXPECT_THAT(layer.source.buffer.buffer, Not(IsNull()));
                     EXPECT_THAT(layer.source.buffer.fence, Not(IsNull()));
-                    EXPECT_EQ(DEFAULT_TEXTURE_ID, layer.source.buffer.textureName);
-                    EXPECT_EQ(false, layer.source.buffer.isY410BT2020);
                     EXPECT_EQ(true, layer.source.buffer.usePremultipliedAlpha);
                     EXPECT_EQ(false, layer.source.buffer.isOpaque);
                     EXPECT_EQ(0.0, layer.geometry.roundedCornersRadius.x);
@@ -631,8 +625,8 @@ struct BaseLayerProperties {
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
                 .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
                               const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                              const std::shared_ptr<renderengine::ExternalTexture>&,
+                              base::unique_fd&&) -> ftl::Future<FenceResult> {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -640,7 +634,8 @@ struct BaseLayerProperties {
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so get the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
+                    ftl::Future<FenceResult> resultFuture =
+                            ftl::yield<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE()
                                 << "layerSettings was not expected to be empty in "
@@ -713,8 +708,8 @@ struct CommonSecureLayerProperties : public BaseLayerProperties<LayerProperties>
         EXPECT_CALL(*test->mRenderEngine, drawLayers)
                 .WillOnce([&](const renderengine::DisplaySettings& displaySettings,
                               const std::vector<renderengine::LayerSettings>& layerSettings,
-                              const std::shared_ptr<renderengine::ExternalTexture>&, const bool,
-                              base::unique_fd&&) -> std::future<FenceResult> {
+                              const std::shared_ptr<renderengine::ExternalTexture>&,
+                              base::unique_fd&&) -> ftl::Future<FenceResult> {
                     EXPECT_EQ(DEFAULT_DISPLAY_MAX_LUMINANCE, displaySettings.maxLuminance);
                     EXPECT_EQ(Rect(DEFAULT_DISPLAY_WIDTH, DEFAULT_DISPLAY_HEIGHT),
                               displaySettings.physicalDisplay);
@@ -722,7 +717,8 @@ struct CommonSecureLayerProperties : public BaseLayerProperties<LayerProperties>
                               displaySettings.clip);
                     // screen capture adds an additional color layer as an alpha
                     // prefill, so get the back layer.
-                    std::future<FenceResult> resultFuture = futureOf<FenceResult>(Fence::NO_FENCE);
+                    ftl::Future<FenceResult> resultFuture =
+                            ftl::yield<FenceResult>(Fence::NO_FENCE);
                     if (layerSettings.empty()) {
                         ADD_FAILURE() << "layerSettings was not expected to be empty in "
                                          "setupInsecureREBufferCompositionCommonCallExpectations "
@@ -876,15 +872,11 @@ struct BufferLayerVariant : public BaseLayerVariant<LayerProperties> {
     using FlingerLayerType = sp<Layer>;
 
     static FlingerLayerType createLayer(CompositionTest* test) {
-        test->mFlinger.mutableTexturePool().push_back(DEFAULT_TEXTURE_ID);
-
-        FlingerLayerType layer =
-                Base::template createLayerWithFactory<Layer>(test, [test]() {
-                    LayerCreationArgs args(test->mFlinger.flinger(), sp<Client>(), "test-layer",
-                                           LayerProperties::LAYER_FLAGS, LayerMetadata());
-                    args.textureName = test->mFlinger.mutableTexturePool().back();
-                    return sp<Layer>::make(args);
-                });
+        FlingerLayerType layer = Base::template createLayerWithFactory<Layer>(test, [test]() {
+            LayerCreationArgs args(test->mFlinger.flinger(), sp<Client>(), "test-layer",
+                                   LayerProperties::LAYER_FLAGS, LayerMetadata());
+            return sp<Layer>::make(args);
+        });
 
         LayerProperties::setupLayerState(test, layer);
 

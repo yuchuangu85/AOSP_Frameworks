@@ -21,10 +21,11 @@
 
 #include <binder/IBinder.h>
 #include <ui/DisplayId.h>
+#include <ui/DisplayMap.h>
 #include <utils/StrongPointer.h>
 
-#include "DisplayMap.h"
 #include "DisplaySnapshot.h"
+#include "DisplaySnapshotRef.h"
 
 namespace android::display {
 
@@ -45,8 +46,7 @@ public:
 
     // Transformers for PhysicalDisplays::get.
 
-    using SnapshotRef = std::reference_wrapper<const DisplaySnapshot>;
-    SnapshotRef snapshotRef() const { return std::cref(mSnapshot); }
+    DisplaySnapshotRef snapshotRef() const { return std::cref(mSnapshot); }
 
     bool isInternal() const {
         return mSnapshot.connectionType() == ui::DisplayConnectionType::Internal;
@@ -66,7 +66,7 @@ private:
     DisplaySnapshot mSnapshot;
 };
 
-using PhysicalDisplays = PhysicalDisplayMap<PhysicalDisplayId, PhysicalDisplay>;
+using PhysicalDisplays = ui::PhysicalDisplayMap<PhysicalDisplayId, PhysicalDisplay>;
 
 // Combinator for ftl::Optional<PhysicalDisplayId>::and_then.
 constexpr auto getPhysicalDisplay(const PhysicalDisplays& displays) {

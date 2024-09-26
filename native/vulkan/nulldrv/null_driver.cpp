@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <android/hardware_buffer.h>
 #include <hardware/hwvulkan.h>
 
 #include <errno.h>
@@ -951,6 +952,17 @@ VkResult GetSwapchainGrallocUsage2ANDROID(VkDevice,
 VkResult GetSwapchainGrallocUsage3ANDROID(
     VkDevice,
     const VkGrallocUsageInfoANDROID* grallocUsageInfo,
+    uint64_t* grallocUsage) {
+    // The null driver never reads or writes the gralloc buffer
+    ALOGV("TODO: vk%s - grallocUsageInfo->format:%i", __FUNCTION__,
+          grallocUsageInfo->format);
+    *grallocUsage = 0;
+    return VK_SUCCESS;
+}
+
+VkResult GetSwapchainGrallocUsage4ANDROID(
+    VkDevice,
+    const VkGrallocUsageInfo2ANDROID* grallocUsageInfo,
     uint64_t* grallocUsage) {
     // The null driver never reads or writes the gralloc buffer
     ALOGV("TODO: vk%s - grallocUsageInfo->format:%i", __FUNCTION__,

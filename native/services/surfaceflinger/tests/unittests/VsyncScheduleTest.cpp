@@ -25,29 +25,31 @@
 #include <scheduler/Fps.h>
 #include "Scheduler/VsyncSchedule.h"
 #include "ThreadContext.h"
-#include "mock/MockSchedulerCallback.h"
+#include "mock/DisplayHardware/MockDisplayMode.h"
 #include "mock/MockVSyncDispatch.h"
 #include "mock/MockVSyncTracker.h"
 #include "mock/MockVsyncController.h"
 
+using android::mock::createDisplayMode;
 using testing::_;
 
 namespace android {
 
-constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID = PhysicalDisplayId::fromPort(42u);
+constexpr PhysicalDisplayId kDisplayId = PhysicalDisplayId::fromPort(42u);
 
 class VsyncScheduleTest : public testing::Test {
 protected:
     VsyncScheduleTest();
     ~VsyncScheduleTest() override;
 
-    scheduler::mock::SchedulerCallback mCallback;
+    testing::MockFunction<void(PhysicalDisplayId, bool)> mRequestHardwareVsync;
+
     const std::unique_ptr<scheduler::VsyncSchedule> mVsyncSchedule =
             std::unique_ptr<scheduler::VsyncSchedule>(
-                    new scheduler::VsyncSchedule(DEFAULT_DISPLAY_ID,
-                                                 std::make_shared<mock::VSyncTracker>(),
+                    new scheduler::VsyncSchedule(kDisplayId, std::make_shared<mock::VSyncTracker>(),
                                                  std::make_shared<mock::VSyncDispatch>(),
-                                                 std::make_unique<mock::VsyncController>()));
+                                                 std::make_unique<mock::VsyncController>(),
+                                                 mRequestHardwareVsync.AsStdFunction()));
 
     mock::VsyncController& getController() {
         return *static_cast<mock::VsyncController*>(&mVsyncSchedule->getController());
@@ -75,21 +77,21 @@ TEST_F(VsyncScheduleTest, InitiallyDisallowed) {
 }
 
 TEST_F(VsyncScheduleTest, EnableDoesNothingWhenDisallowed) {
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
 
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 }
 
 TEST_F(VsyncScheduleTest, DisableDoesNothingWhenDisallowed) {
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
 
-    mVsyncSchedule->disableHardwareVsync(mCallback, false /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(false /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, DisableDoesNothingWhenDisallowed2) {
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
 
-    mVsyncSchedule->disableHardwareVsync(mCallback, true /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(true /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, MakeAllowed) {
@@ -98,33 +100,33 @@ TEST_F(VsyncScheduleTest, MakeAllowed) {
 
 TEST_F(VsyncScheduleTest, DisableDoesNothingWhenDisabled) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
 
-    mVsyncSchedule->disableHardwareVsync(mCallback, false /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(false /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, DisableDoesNothingWhenDisabled2) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
 
-    mVsyncSchedule->disableHardwareVsync(mCallback, true /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(true /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, EnableWorksWhenDisabled) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
 
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 }
 
 TEST_F(VsyncScheduleTest, EnableWorksOnce) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
 
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
+    mVsyncSchedule->enableHardwareVsync();
 }
 
 TEST_F(VsyncScheduleTest, AllowedIsSticky) {
@@ -134,22 +136,22 @@ TEST_F(VsyncScheduleTest, AllowedIsSticky) {
 
 TEST_F(VsyncScheduleTest, EnableDisable) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
 
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, false));
-    mVsyncSchedule->disableHardwareVsync(mCallback, false /* disallow */);
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, false));
+    mVsyncSchedule->disableHardwareVsync(false /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, EnableDisable2) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
 
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, false));
-    mVsyncSchedule->disableHardwareVsync(mCallback, true /* disallow */);
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, false));
+    mVsyncSchedule->disableHardwareVsync(true /* disallow */);
 }
 
 TEST_F(VsyncScheduleTest, StartPeriodTransition) {
@@ -157,45 +159,45 @@ TEST_F(VsyncScheduleTest, StartPeriodTransition) {
     // allowed.
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
 
-    const Period period = (60_Hz).getPeriod();
+    const auto mode = ftl::as_non_null(createDisplayMode(DisplayModeId(0), 60_Hz));
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
-    EXPECT_CALL(getController(), startPeriodTransition(period.ns(), false));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
+    EXPECT_CALL(getController(), onDisplayModeChanged(mode, false));
 
-    mVsyncSchedule->startPeriodTransition(mCallback, period, false);
+    mVsyncSchedule->onDisplayModeChanged(mode, false);
 }
 
 TEST_F(VsyncScheduleTest, StartPeriodTransitionAlreadyEnabled) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
-    const Period period = (60_Hz).getPeriod();
+    const auto mode = ftl::as_non_null(createDisplayMode(DisplayModeId(0), 60_Hz));
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
-    EXPECT_CALL(getController(), startPeriodTransition(period.ns(), false));
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
+    EXPECT_CALL(getController(), onDisplayModeChanged(mode, false));
 
-    mVsyncSchedule->startPeriodTransition(mCallback, period, false);
+    mVsyncSchedule->onDisplayModeChanged(mode, false);
 }
 
 TEST_F(VsyncScheduleTest, StartPeriodTransitionForce) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
 
-    const Period period = (60_Hz).getPeriod();
+    const auto mode = ftl::as_non_null(createDisplayMode(DisplayModeId(0), 60_Hz));
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, true));
-    EXPECT_CALL(getController(), startPeriodTransition(period.ns(), true));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, true));
+    EXPECT_CALL(getController(), onDisplayModeChanged(mode, true));
 
-    mVsyncSchedule->startPeriodTransition(mCallback, period, true);
+    mVsyncSchedule->onDisplayModeChanged(mode, true);
 }
 
 TEST_F(VsyncScheduleTest, AddResyncSampleDisallowed) {
     const Period period = (60_Hz).getPeriod();
     const auto timestamp = TimePoint::now();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
     EXPECT_CALL(getController(), addHwVsyncTimestamp(_, _, _)).Times(0);
 
-    mVsyncSchedule->addResyncSample(mCallback, timestamp, period);
+    mVsyncSchedule->addResyncSample(timestamp, period);
 }
 
 TEST_F(VsyncScheduleTest, AddResyncSampleDisabled) {
@@ -203,40 +205,40 @@ TEST_F(VsyncScheduleTest, AddResyncSampleDisabled) {
     const Period period = (60_Hz).getPeriod();
     const auto timestamp = TimePoint::now();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
     EXPECT_CALL(getController(), addHwVsyncTimestamp(_, _, _)).Times(0);
 
-    mVsyncSchedule->addResyncSample(mCallback, timestamp, period);
+    mVsyncSchedule->addResyncSample(timestamp, period);
 }
 
 TEST_F(VsyncScheduleTest, AddResyncSampleReturnsTrue) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
     const Period period = (60_Hz).getPeriod();
     const auto timestamp = TimePoint::now();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(_, _)).Times(0);
+    EXPECT_CALL(mRequestHardwareVsync, Call(_, _)).Times(0);
     EXPECT_CALL(getController(),
                 addHwVsyncTimestamp(timestamp.ns(), std::optional<nsecs_t>(period.ns()), _))
             .WillOnce(Return(true));
 
-    mVsyncSchedule->addResyncSample(mCallback, timestamp, period);
+    mVsyncSchedule->addResyncSample(timestamp, period);
 }
 
 TEST_F(VsyncScheduleTest, AddResyncSampleReturnsFalse) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    mVsyncSchedule->enableHardwareVsync(mCallback);
+    mVsyncSchedule->enableHardwareVsync();
 
     const Period period = (60_Hz).getPeriod();
     const auto timestamp = TimePoint::now();
 
-    EXPECT_CALL(mCallback, setVsyncEnabled(DEFAULT_DISPLAY_ID, false));
+    EXPECT_CALL(mRequestHardwareVsync, Call(kDisplayId, false));
     EXPECT_CALL(getController(),
                 addHwVsyncTimestamp(timestamp.ns(), std::optional<nsecs_t>(period.ns()), _))
             .WillOnce(Return(false));
 
-    mVsyncSchedule->addResyncSample(mCallback, timestamp, period);
+    mVsyncSchedule->addResyncSample(timestamp, period);
 }
 
 TEST_F(VsyncScheduleTest, PendingState) FTL_FAKE_GUARD(kMainThreadContext) {
@@ -250,19 +252,19 @@ TEST_F(VsyncScheduleTest, PendingState) FTL_FAKE_GUARD(kMainThreadContext) {
 
 TEST_F(VsyncScheduleTest, DisableDoesNotMakeAllowed) {
     ASSERT_FALSE(mVsyncSchedule->isHardwareVsyncAllowed(false /* makeAllowed */));
-    mVsyncSchedule->disableHardwareVsync(mCallback, false /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(false /* disallow */);
     ASSERT_FALSE(mVsyncSchedule->isHardwareVsyncAllowed(false /* makeAllowed */));
 }
 
 TEST_F(VsyncScheduleTest, DisallowMakesNotAllowed) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    mVsyncSchedule->disableHardwareVsync(mCallback, true /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(true /* disallow */);
     ASSERT_FALSE(mVsyncSchedule->isHardwareVsyncAllowed(false /* makeAllowed */));
 }
 
 TEST_F(VsyncScheduleTest, StillAllowedAfterDisable) {
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(true /* makeAllowed */));
-    mVsyncSchedule->disableHardwareVsync(mCallback, false /* disallow */);
+    mVsyncSchedule->disableHardwareVsync(false /* disallow */);
     ASSERT_TRUE(mVsyncSchedule->isHardwareVsyncAllowed(false /* makeAllowed */));
 }
 

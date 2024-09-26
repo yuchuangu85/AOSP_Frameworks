@@ -31,6 +31,7 @@
 #include <ui/Rect.h>
 #include <ui/Region.h>
 
+#include <gui/AdditionalOptions.h>
 #include <gui/FrameTimestamps.h>
 #include <gui/HdrMetadata.h>
 
@@ -40,6 +41,8 @@
 
 #include <optional>
 #include <vector>
+
+#include <com_android_graphics_libgui_flags.h>
 
 namespace android {
 // ----------------------------------------------------------------------------
@@ -675,6 +678,16 @@ public:
     // specifies a 90 or 270 degree rotation, if auto prerotation is enabled,
     // the width and height used for dequeueBuffer will be additionally swapped.
     virtual status_t setAutoPrerotation(bool autoPrerotation);
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_SETFRAMERATE)
+    // Sets the apps intended frame rate.
+    virtual status_t setFrameRate(float frameRate, int8_t compatibility,
+                                  int8_t changeFrameRateStrategy);
+#endif
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+    virtual status_t setAdditionalOptions(const std::vector<gui::AdditionalOptions>& options);
+#endif
 
     struct RequestBufferOutput : public Flattenable<RequestBufferOutput> {
         RequestBufferOutput() = default;

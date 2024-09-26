@@ -23,8 +23,9 @@
 #include <unordered_map>
 
 #include <LayerProtoHelper.h>
-#include <LayerTraceGenerator.h>
+#include <Tracing/LayerTracing.h>
 #include <Tracing/TransactionProtoParser.h>
+#include <Tracing/tools/LayerTraceGenerator.h>
 #include <layerproto/LayerProtoHeader.h>
 #include <log/log.h>
 
@@ -40,9 +41,9 @@ public:
     static constexpr std::string_view sLayersTracePrefix = "layers_trace_";
     static constexpr std::string_view sTracePostfix = ".winscope";
 
-    proto::TransactionTraceFile mTransactionTrace;
-    LayersTraceFileProto mExpectedLayersTraceProto;
-    LayersTraceFileProto mActualLayersTraceProto;
+    perfetto::protos::TransactionTraceFile mTransactionTrace;
+    perfetto::protos::LayersTraceFileProto mExpectedLayersTraceProto;
+    perfetto::protos::LayersTraceFileProto mActualLayersTraceProto;
 
 protected:
     void SetUp() override {
@@ -56,18 +57,24 @@ protected:
         EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(expectedLayersTracePath)));
         parseLayersTraceFromFile(expectedLayersTracePath.c_str(), mExpectedLayersTraceProto);
         TemporaryDir temp_dir;
+
         std::string actualLayersTracePath =
                 std::string(temp_dir.path) + "/" + expectedLayersFilename + "_actual";
+        {
+            auto traceFlags = LayerTracing::TRACE_INPUT | LayerTracing::TRACE_BUFFERS;
+            std::ofstream outStream{actualLayersTracePath, std::ios::binary | std::ios::app};
+            auto layerTracing = LayerTracing{outStream};
+            EXPECT_TRUE(LayerTraceGenerator().generate(mTransactionTrace, traceFlags, layerTracing,
+                                                       /*onlyLastEntry=*/true))
+                    << "Failed to generate layers trace from " << transactionTracePath;
+        }
 
-        EXPECT_TRUE(
-                LayerTraceGenerator().generate(mTransactionTrace, actualLayersTracePath.c_str()))
-                << "Failed to generate layers trace from " << transactionTracePath;
         EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(actualLayersTracePath)));
         parseLayersTraceFromFile(actualLayersTracePath.c_str(), mActualLayersTraceProto);
     }
 
     void parseTransactionTraceFromFile(const char* transactionTracePath,
-                                       proto::TransactionTraceFile& outProto) {
+                                       perfetto::protos::TransactionTraceFile& outProto) {
         ALOGD("Parsing file %s...", transactionTracePath);
         std::fstream input(transactionTracePath, std::ios::in | std::ios::binary);
         EXPECT_TRUE(input) << "Error could not open " << transactionTracePath;
@@ -75,7 +82,8 @@ protected:
                 << "Failed to parse " << transactionTracePath;
     }
 
-    void parseLayersTraceFromFile(const char* layersTracePath, LayersTraceFileProto& outProto) {
+    void parseLayersTraceFromFile(const char* layersTracePath,
+                                  perfetto::protos::LayersTraceFileProto& outProto) {
         ALOGD("Parsing file %s...", layersTracePath);
         std::fstream input(layersTracePath, std::ios::in | std::ios::binary);
         EXPECT_TRUE(input) << "Error could not open " << layersTracePath;
@@ -86,9 +94,9 @@ protected:
 std::vector<std::filesystem::path> TransactionTraceTestSuite::sTransactionTraces{};
 
 struct LayerInfo {
-    int32_t id;
+    uint64_t id;
     std::string name;
-    int32_t parent;
+    uint64_t parent;
     int z;
     uint64_t curr_frame;
     float x;
@@ -118,13 +126,13 @@ inline void PrintTo(const LayerInfo& info, ::std::ostream* os) {
         << info.touchableRegionBounds.right << "," << info.touchableRegionBounds.bottom << "}";
 }
 
-struct find_id : std::unary_function<LayerInfo, bool> {
-    int id;
-    find_id(int id) : id(id) {}
+struct find_id {
+    uint64_t id;
+    find_id(uint64_t id) : id(id) {}
     bool operator()(LayerInfo const& m) const { return m.id == id; }
 };
 
-static LayerInfo getLayerInfoFromProto(::android::surfaceflinger::LayerProto& proto) {
+static LayerInfo getLayerInfoFromProto(perfetto::protos::LayerProto& proto) {
     Rect touchableRegionBounds = Rect::INVALID_RECT;
     // ignore touchable region for layers without buffers, the new fe aggressively avoids
     // calculating state for layers that are not visible which could lead to mismatches
@@ -136,9 +144,9 @@ static LayerInfo getLayerInfoFromProto(::android::surfaceflinger::LayerProto& pr
         touchableRegionBounds = touchableRegion.bounds();
     }
 
-    return {proto.id(),
+    return {static_cast<uint64_t>(proto.id()),
             proto.name(),
-            proto.parent(),
+            static_cast<uint64_t>(proto.parent()),
             proto.z(),
             proto.curr_frame(),
             proto.has_position() ? proto.position().x() : -1,
@@ -148,9 +156,8 @@ static LayerInfo getLayerInfoFromProto(::android::surfaceflinger::LayerProto& pr
             touchableRegionBounds};
 }
 
-static std::vector<LayerInfo> getLayerInfosFromProto(
-        android::surfaceflinger::LayersTraceProto& entry) {
-    std::unordered_map<int32_t /* snapshotId*/, int32_t /*layerId*/> snapshotIdToLayerId;
+static std::vector<LayerInfo> getLayerInfosFromProto(perfetto::protos::LayersSnapshotProto& entry) {
+    std::unordered_map<uint64_t /* snapshotId*/, uint64_t /*layerId*/> snapshotIdToLayerId;
     std::vector<LayerInfo> layers;
     layers.reserve(static_cast<size_t>(entry.layers().layers_size()));
     bool mapSnapshotIdToLayerId = false;
@@ -158,7 +165,12 @@ static std::vector<LayerInfo> getLayerInfosFromProto(
         auto layer = entry.layers().layers(i);
         LayerInfo layerInfo = getLayerInfoFromProto(layer);
 
-        snapshotIdToLayerId[layerInfo.id] = static_cast<int32_t>(layer.original_id());
+        uint64_t layerId = layerInfo.name.find("(Mirror)") == std::string::npos
+                ? static_cast<uint64_t>(layer.original_id())
+                : static_cast<uint64_t>(layer.original_id()) | 1ull << 63;
+
+        snapshotIdToLayerId[layerInfo.id] = layerId;
+
         if (layer.original_id() != 0) {
             mapSnapshotIdToLayerId = true;
         }
@@ -172,7 +184,7 @@ static std::vector<LayerInfo> getLayerInfosFromProto(
     for (auto& layer : layers) {
         layer.id = snapshotIdToLayerId[layer.id];
         auto it = snapshotIdToLayerId.find(layer.parent);
-        layer.parent = it == snapshotIdToLayerId.end() ? -1 : it->second;
+        layer.parent = it == snapshotIdToLayerId.end() ? static_cast<uint64_t>(-1) : it->second;
     }
     return layers;
 }
@@ -189,7 +201,6 @@ TEST_P(TransactionTraceTestSuite, validateEndState) {
 
     std::vector<LayerInfo> expectedLayers = getLayerInfosFromProto(expectedLastEntry);
     std::vector<LayerInfo> actualLayers = getLayerInfosFromProto(actualLastEntry);
-    ;
 
     size_t i = 0;
     for (; i < actualLayers.size() && i < expectedLayers.size(); i++) {
@@ -197,9 +208,9 @@ TEST_P(TransactionTraceTestSuite, validateEndState) {
                                find_id(expectedLayers[i].id));
         EXPECT_NE(it, actualLayers.end());
         EXPECT_EQ(expectedLayers[i], *it);
-        ALOGV("Validating %s[%d] parent=%d z=%d frame=%" PRIu64, expectedLayers[i].name.c_str(),
-              expectedLayers[i].id, expectedLayers[i].parent, expectedLayers[i].z,
-              expectedLayers[i].curr_frame);
+        ALOGV("Validating %s[%" PRIu64 "] parent=%" PRIu64 " z=%d frame=%" PRIu64,
+              expectedLayers[i].name.c_str(), expectedLayers[i].id, expectedLayers[i].parent,
+              expectedLayers[i].z, expectedLayers[i].curr_frame);
     }
 
     EXPECT_EQ(expectedLayers.size(), actualLayers.size());
@@ -208,9 +219,9 @@ TEST_P(TransactionTraceTestSuite, validateEndState) {
         for (size_t j = 0; j < actualLayers.size(); j++) {
             if (std::find_if(expectedLayers.begin(), expectedLayers.end(),
                              find_id(actualLayers[j].id)) == expectedLayers.end()) {
-                ALOGD("actualLayers [%d]:%s parent=%d z=%d frame=%" PRIu64, actualLayers[j].id,
-                      actualLayers[j].name.c_str(), actualLayers[j].parent, actualLayers[j].z,
-                      actualLayers[j].curr_frame);
+                ALOGD("actualLayers [%" PRIu64 "]:%s parent=%" PRIu64 " z=%d frame=%" PRIu64,
+                      actualLayers[j].id, actualLayers[j].name.c_str(), actualLayers[j].parent,
+                      actualLayers[j].z, actualLayers[j].curr_frame);
             }
         }
         FAIL();
@@ -220,9 +231,9 @@ TEST_P(TransactionTraceTestSuite, validateEndState) {
         for (size_t j = 0; j < expectedLayers.size(); j++) {
             if (std::find_if(actualLayers.begin(), actualLayers.end(),
                              find_id(expectedLayers[j].id)) == actualLayers.end()) {
-                ALOGD("expectedLayers [%d]:%s parent=%d z=%d frame=%" PRIu64, expectedLayers[j].id,
-                      expectedLayers[j].name.c_str(), expectedLayers[j].parent, expectedLayers[j].z,
-                      expectedLayers[j].curr_frame);
+                ALOGD("expectedLayers [%" PRIu64 "]:%s parent=%" PRIu64 " z=%d frame=%" PRIu64,
+                      expectedLayers[j].id, expectedLayers[j].name.c_str(),
+                      expectedLayers[j].parent, expectedLayers[j].z, expectedLayers[j].curr_frame);
             }
         }
         FAIL();

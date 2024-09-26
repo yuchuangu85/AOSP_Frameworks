@@ -24,13 +24,13 @@ import android.graphics.drawable.Icon
 import android.service.controls.Control
 import android.service.controls.DeviceTypes
 import android.service.controls.templates.ControlTemplate
-import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.controls.ControlsMetricsLogger
 import com.android.systemui.controls.controller.ControlInfo
@@ -44,7 +44,7 @@ import org.junit.runner.RunWith
 import org.mockito.Mockito.mock
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @TestableLooper.RunWithLooper
 class ControlViewHolderTest : SysuiTestCase() {
 
@@ -125,7 +125,7 @@ class ControlViewHolderTest : SysuiTestCase() {
             control
         )
         cvh.bindData(cws, false)
-        val chevronIcon = baseLayout.findViewById<View>(R.id.chevron_icon)
+        val chevronIcon = baseLayout.requireViewById<View>(R.id.chevron_icon)
 
         assertThat(chevronIcon.visibility).isEqualTo(View.VISIBLE)
     }

@@ -32,6 +32,7 @@ import android.util.ArraySet;
 import android.util.Slog;
 
 import com.android.internal.widget.VerifyCredentialResponse;
+import com.android.server.biometrics.BiometricHandlerProvider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -132,9 +133,11 @@ public class BiometricDeferredQueue {
         mFaceResetLockoutTask = null;
     };
 
-    BiometricDeferredQueue(@NonNull SyntheticPasswordManager spManager, @NonNull Handler handler) {
+    BiometricDeferredQueue(@NonNull SyntheticPasswordManager spManager) {
         mSpManager = spManager;
-        mHandler = handler;
+
+        //Using a higher priority thread to avoid any delays and interruption of clients
+        mHandler = BiometricHandlerProvider.getInstance().getBiometricCallbackHandler();
         mPendingResetLockoutsForFingerprint = new ArrayList<>();
         mPendingResetLockoutsForFace = new ArrayList<>();
         mPendingResetLockouts = new ArrayList<>();
@@ -311,7 +314,7 @@ public class BiometricDeferredQueue {
 
     @Nullable
     private static synchronized IGateKeeperService getGatekeeperService() {
-        final IBinder service = ServiceManager.getService(Context.GATEKEEPER_SERVICE);
+        final IBinder service = ServiceManager.waitForService(Context.GATEKEEPER_SERVICE);
         if (service == null) {
             Slog.e(TAG, "Unable to acquire GateKeeperService");
             return null;

@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <android-base/thread_annotations.h>
+#include <ftl/expected.h>
 #include <ftl/future.h>
 #include <ui/DisplayIdentification.h>
 #include <ui/FenceTime.h>
@@ -60,6 +61,7 @@ namespace hal = hardware::graphics::composer::hal;
 struct DisplayedFrameStats;
 class GraphicBuffer;
 class TestableSurfaceFlinger;
+struct HWComposerTest;
 struct CompositionInfo;
 
 namespace Hwc2 {
@@ -99,14 +101,16 @@ public:
         int32_t width = -1;
         int32_t height = -1;
         nsecs_t vsyncPeriod = -1;
-        int32_t dpiX = -1;
-        int32_t dpiY = -1;
+        float dpiX = -1.f;
+        float dpiY = -1.f;
         int32_t configGroup = -1;
+        std::optional<hal::VrrConfig> vrrConfig;
 
         friend std::ostream& operator<<(std::ostream& os, const HWCDisplayMode& mode) {
             return os << "id=" << mode.hwcId << " res=" << mode.width << "x" << mode.height
                       << " vsyncPeriod=" << mode.vsyncPeriod << " dpi=" << mode.dpiX << "x"
-                      << mode.dpiY << " group=" << mode.configGroup;
+                      << mode.dpiY << " group=" << mode.configGroup
+                      << " vrrConfig=" << to_string(mode.vrrConfig).c_str();
         }
     };
 
@@ -144,15 +148,19 @@ public:
     virtual status_t getDeviceCompositionChanges(
             HalDisplayId, bool frameUsesClientComposition,
             std::optional<std::chrono::steady_clock::time_point> earliestPresentTime,
-            nsecs_t expectedPresentTime, std::optional<DeviceRequestedChanges>* outChanges) = 0;
+            nsecs_t expectedPresentTime, Fps frameInterval,
+            std::optional<DeviceRequestedChanges>* outChanges) = 0;
 
     virtual status_t setClientTarget(HalDisplayId, uint32_t slot, const sp<Fence>& acquireFence,
-                                     const sp<GraphicBuffer>& target, ui::Dataspace) = 0;
+                                     const sp<GraphicBuffer>& target, ui::Dataspace,
+                                     float hdrSdrRatio) = 0;
 
     // Present layers to the display and read releaseFences.
     virtual status_t presentAndGetReleaseFences(
             HalDisplayId,
             std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) = 0;
+
+    virtual status_t executeCommands(HalDisplayId) = 0;
 
     // set power mode
     virtual status_t setPowerMode(PhysicalDisplayId, hal::PowerMode) = 0;
@@ -229,9 +237,10 @@ public:
 
     virtual bool isConnected(PhysicalDisplayId) const = 0;
 
-    virtual std::vector<HWCDisplayMode> getModes(PhysicalDisplayId) const = 0;
+    virtual std::vector<HWCDisplayMode> getModes(PhysicalDisplayId,
+                                                 int32_t maxFrameIntervalNs) const = 0;
 
-    virtual std::optional<hal::HWConfigId> getActiveMode(PhysicalDisplayId) const = 0;
+    virtual ftl::Expected<hal::HWConfigId, status_t> getActiveMode(PhysicalDisplayId) const = 0;
 
     virtual std::vector<ui::ColorMode> getColorModes(PhysicalDisplayId) const = 0;
 
@@ -241,8 +250,7 @@ public:
     // Composer 2.4
     virtual ui::DisplayConnectionType getDisplayConnectionType(PhysicalDisplayId) const = 0;
     virtual bool isVsyncPeriodSwitchSupported(PhysicalDisplayId) const = 0;
-    virtual status_t getDisplayVsyncPeriod(PhysicalDisplayId displayId,
-                                           nsecs_t* outVsyncPeriod) const = 0;
+    virtual ftl::Expected<nsecs_t, status_t> getDisplayVsyncPeriod(PhysicalDisplayId) const = 0;
     virtual status_t setActiveModeWithConstraints(PhysicalDisplayId, hal::HWConfigId,
                                                   const hal::VsyncPeriodChangeConstraints&,
                                                   hal::VsyncPeriodChangeTimeline* outTimeline) = 0;
@@ -262,6 +270,8 @@ public:
             const = 0;
 
     virtual void dump(std::string& out) const = 0;
+
+    virtual void dumpOverlayProperties(std::string& out) const = 0;
 
     virtual Hwc2::Composer* getComposer() const = 0;
 
@@ -297,6 +307,8 @@ public:
             aidl::android::hardware::graphics::common::HdrConversionStrategy,
             aidl::android::hardware::graphics::common::Hdr*) = 0;
     virtual status_t setRefreshRateChangedCallbackDebugEnabled(PhysicalDisplayId, bool enabled) = 0;
+    virtual status_t notifyExpectedPresent(PhysicalDisplayId, TimePoint expectedPresentTime,
+                                           Fps frameInterval) = 0;
 };
 
 static inline bool operator==(const android::HWComposer::DeviceRequestedChanges& lhs,
@@ -339,16 +351,19 @@ public:
     status_t getDeviceCompositionChanges(
             HalDisplayId, bool frameUsesClientComposition,
             std::optional<std::chrono::steady_clock::time_point> earliestPresentTime,
-            nsecs_t expectedPresentTime,
+            nsecs_t expectedPresentTime, Fps frameInterval,
             std::optional<DeviceRequestedChanges>* outChanges) override;
 
     status_t setClientTarget(HalDisplayId, uint32_t slot, const sp<Fence>& acquireFence,
-                             const sp<GraphicBuffer>& target, ui::Dataspace) override;
+                             const sp<GraphicBuffer>& target, ui::Dataspace,
+                             float hdrSdrRatio) override;
 
     // Present layers to the display and read releaseFences.
     status_t presentAndGetReleaseFences(
             HalDisplayId,
             std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) override;
+
+    status_t executeCommands(HalDisplayId) override;
 
     // set power mode
     status_t setPowerMode(PhysicalDisplayId, hal::PowerMode mode) override;
@@ -412,9 +427,10 @@ public:
 
     bool isConnected(PhysicalDisplayId) const override;
 
-    std::vector<HWCDisplayMode> getModes(PhysicalDisplayId) const override;
+    std::vector<HWCDisplayMode> getModes(PhysicalDisplayId,
+                                         int32_t maxFrameIntervalNs) const override;
 
-    std::optional<hal::HWConfigId> getActiveMode(PhysicalDisplayId) const override;
+    ftl::Expected<hal::HWConfigId, status_t> getActiveMode(PhysicalDisplayId) const override;
 
     std::vector<ui::ColorMode> getColorModes(PhysicalDisplayId) const override;
 
@@ -425,8 +441,7 @@ public:
     // Composer 2.4
     ui::DisplayConnectionType getDisplayConnectionType(PhysicalDisplayId) const override;
     bool isVsyncPeriodSwitchSupported(PhysicalDisplayId) const override;
-    status_t getDisplayVsyncPeriod(PhysicalDisplayId displayId,
-                                   nsecs_t* outVsyncPeriod) const override;
+    ftl::Expected<nsecs_t, status_t> getDisplayVsyncPeriod(PhysicalDisplayId) const override;
     status_t setActiveModeWithConstraints(PhysicalDisplayId, hal::HWConfigId,
                                           const hal::VsyncPeriodChangeConstraints&,
                                           hal::VsyncPeriodChangeTimeline* outTimeline) override;
@@ -454,9 +469,12 @@ public:
             aidl::android::hardware::graphics::common::HdrConversionStrategy,
             aidl::android::hardware::graphics::common::Hdr*) override;
     status_t setRefreshRateChangedCallbackDebugEnabled(PhysicalDisplayId, bool enabled) override;
+    status_t notifyExpectedPresent(PhysicalDisplayId, TimePoint expectedPresentTime,
+                                   Fps frameInterval) override;
 
     // for debugging ----------------------------------------------------------
     void dump(std::string& out) const override;
+    void dumpOverlayProperties(std::string& out) const override;
 
     Hwc2::Composer* getComposer() const override { return mComposer.get(); }
 
@@ -479,6 +497,7 @@ public:
 private:
     // For unit tests
     friend TestableSurfaceFlinger;
+    friend HWComposerTest;
 
     struct DisplayData {
         std::unique_ptr<HWC2::Display> hwcDisplay;
@@ -500,6 +519,10 @@ private:
     std::optional<DisplayIdentificationInfo> onHotplugConnect(hal::HWDisplayId);
     std::optional<DisplayIdentificationInfo> onHotplugDisconnect(hal::HWDisplayId);
     bool shouldIgnoreHotplugConnect(hal::HWDisplayId, bool hasDisplayIdentificationData) const;
+
+    std::vector<HWCDisplayMode> getModesFromDisplayConfigurations(uint64_t hwcDisplayId,
+                                                                  int32_t maxFrameIntervalNs) const;
+    std::vector<HWCDisplayMode> getModesFromLegacyDisplayConfigs(uint64_t hwcDisplayId) const;
 
     int32_t getAttribute(hal::HWDisplayId hwcDisplayId, hal::HWConfigId configId,
                          hal::Attribute attribute) const;
@@ -526,6 +549,7 @@ private:
 
     const size_t mMaxVirtualDisplayDimension;
     const bool mUpdateDeviceProductInfoOnHotplugReconnect;
+    bool mEnableVrrTimeout;
 };
 
 } // namespace impl

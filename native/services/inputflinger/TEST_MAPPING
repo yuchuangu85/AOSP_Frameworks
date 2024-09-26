@@ -1,10 +1,10 @@
 {
   "presubmit": [
     {
-      "name": "CtsWindowManagerDeviceTestCases",
+      "name": "CtsWindowManagerDeviceInput",
       "options": [
         {
-          "include-filter": "android.server.wm.WindowInputTests"
+          "include-filter": "android.server.wm.input.WindowInputTests"
         }
       ]
     },
@@ -39,6 +39,9 @@
       "options": [
         {
           "include-filter": "android.hardware.input.cts.tests"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.FlakyTest"
         }
       ]
     },
@@ -49,15 +52,35 @@
       "name": "CtsViewTestCases",
       "options": [
         {
-          "include-filter": "android.view.cts.input",
-          "include-filter": "android.view.cts.HoverTest",
-          "include-filter": "android.view.cts.MotionEventTest",
-          "include-filter": "android.view.cts.PointerCaptureTest",
-          "include-filter": "android.view.cts.TooltipTest",
-          "include-filter": "android.view.cts.TouchDelegateTest",
-          "include-filter": "android.view.cts.VelocityTrackerTest",
-          "include-filter": "android.view.cts.VerifyInputEventTest",
-          "include-filter": "android.view.cts.ViewTest",
+          "include-filter": "android.view.cts.input"
+        }
+      ]
+    },
+    {
+      "name": "CtsViewTestCases",
+      "options": [
+        {
+          "include-filter": "android.view.cts.HoverTest"
+        },
+        {
+          "include-filter": "android.view.cts.MotionEventTest"
+        },
+        {
+          "include-filter": "android.view.cts.PointerCaptureTest"
+        },
+        {
+          "include-filter": "android.view.cts.TooltipTest"
+        },
+        {
+          "include-filter": "android.view.cts.TouchDelegateTest"
+        },
+        {
+          "include-filter": "android.view.cts.VerifyInputEventTest"
+        },
+        {
+          "include-filter": "android.view.cts.ViewTest"
+        },
+        {
           "include-filter": "android.view.cts.ViewUnbufferedTest"
         }
       ]
@@ -66,7 +89,9 @@
       "name": "CtsWidgetTestCases",
       "options": [
         {
-          "include-filter": "android.widget.cts.NumberPickerTest",
+          "include-filter": "android.widget.cts.NumberPickerTest"
+        },
+        {
           "include-filter": "android.widget.cts.SeekBarTest"
         }
       ]
@@ -75,9 +100,26 @@
       "name": "FrameworksCoreTests",
       "options": [
         {
-          "include-filter": "android.hardware.input",
-          "include-filter": "android.view.VerifiedKeyEventTest",
+          "include-filter": "android.hardware.input"
+        }
+      ]
+    },
+    {
+      "name": "FrameworksCoreTests",
+      "options": [
+        {
+          "include-filter": "android.view.VerifiedKeyEventTest"
+        },
+        {
           "include-filter": "android.view.VerifiedMotionEventTest"
+        }
+      ]
+    },
+    {
+      "name": "CtsAppTestCases",
+      "options": [
+        {
+          "include-filter": "android.app.cts.ToolbarActionBarTest"
         }
       ]
     },
@@ -104,14 +146,17 @@
           "include-filter": "android.security.cts.Poc19_03#testPocBug_115739809"
         }
       ]
+    },
+    {
+      "name": "monkey_test"
     }
   ],
-  "hwasan-postsubmit": [
+  "postsubmit": [
     {
-      "name": "CtsWindowManagerDeviceTestCases",
+      "name": "CtsWindowManagerDeviceWindow",
       "options": [
         {
-          "include-filter": "android.server.wm.WindowInputTests"
+          "include-filter": "android.server.wm.window.WindowInputTests"
         }
       ]
     },
@@ -153,15 +198,35 @@
       "name": "CtsViewTestCases",
       "options": [
         {
-          "include-filter": "android.view.cts.input",
-          "include-filter": "android.view.cts.HoverTest",
-          "include-filter": "android.view.cts.MotionEventTest",
-          "include-filter": "android.view.cts.PointerCaptureTest",
-          "include-filter": "android.view.cts.TooltipTest",
-          "include-filter": "android.view.cts.TouchDelegateTest",
-          "include-filter": "android.view.cts.VelocityTrackerTest",
-          "include-filter": "android.view.cts.VerifyInputEventTest",
-          "include-filter": "android.view.cts.ViewTest",
+          "include-filter": "android.view.cts.input"
+        }
+      ]
+    },
+    {
+      "name": "CtsViewTestCases",
+      "options": [
+        {
+          "include-filter": "android.view.cts.HoverTest"
+        },
+        {
+          "include-filter": "android.view.cts.MotionEventTest"
+        },
+        {
+          "include-filter": "android.view.cts.PointerCaptureTest"
+        },
+        {
+          "include-filter": "android.view.cts.TooltipTest"
+        },
+        {
+          "include-filter": "android.view.cts.TouchDelegateTest"
+        },
+        {
+          "include-filter": "android.view.cts.VerifyInputEventTest"
+        },
+        {
+          "include-filter": "android.view.cts.ViewTest"
+        },
+        {
           "include-filter": "android.view.cts.ViewUnbufferedTest"
         }
       ]
@@ -170,7 +235,9 @@
       "name": "CtsWidgetTestCases",
       "options": [
         {
-          "include-filter": "android.widget.cts.NumberPickerTest",
+          "include-filter": "android.widget.cts.NumberPickerTest"
+        },
+        {
           "include-filter": "android.widget.cts.SeekBarTest"
         }
       ]
@@ -179,8 +246,18 @@
       "name": "FrameworksCoreTests",
       "options": [
         {
-          "include-filter": "android.view.VerifiedKeyEventTest",
+          "include-filter": "android.view.VerifiedKeyEventTest"
+        },
+        {
           "include-filter": "android.view.VerifiedMotionEventTest"
+        }
+      ]
+    },
+    {
+      "name": "CtsAppTestCases",
+      "options": [
+        {
+          "include-filter": "android.app.cts.ToolbarActionBarTest"
         }
       ]
     },
@@ -207,6 +284,17 @@
           "include-filter": "android.security.cts.Poc19_03#testPocBug_115739809"
         }
       ]
+    },
+    {
+      "name": "CtsInputHostTestCases"
+    },
+    {
+      "name": "monkey_test"
+    }
+  ],
+  "staged-platinum-postsubmit": [
+    {
+      "name": "inputflinger_tests"
     }
   ]
 }

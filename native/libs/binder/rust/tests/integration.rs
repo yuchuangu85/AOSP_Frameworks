@@ -26,7 +26,7 @@ use binder::binder_impl::{
 
 use std::convert::{TryFrom, TryInto};
 use std::ffi::CStr;
-use std::fs::File;
+use std::io::Write;
 use std::sync::Mutex;
 
 /// Name of service runner.
@@ -118,7 +118,7 @@ impl TryFrom<u32> for TestTransactionCode {
 }
 
 impl Interface for TestService {
-    fn dump(&self, _file: &File, args: &[&CStr]) -> Result<(), StatusCode> {
+    fn dump(&self, _writer: &mut dyn Write, args: &[&CStr]) -> Result<(), StatusCode> {
         let mut dump_args = self.dump_args.lock().unwrap();
         dump_args.extend(args.iter().map(|s| s.to_str().unwrap().to_owned()));
         Ok(())
@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn check_services() {
+    fn check_get_service() {
         let mut sm = binder::get_service("manager").expect("Did not get manager binder service");
         assert!(sm.is_binder_alive());
         assert!(sm.ping_binder().is_ok());
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_services_async() {
+    async fn check_get_service_async() {
         let mut sm = binder::get_service("manager").expect("Did not get manager binder service");
         assert!(sm.is_binder_alive());
         assert!(sm.ping_binder().is_ok());
@@ -469,6 +469,62 @@ mod tests {
         );
         assert_eq!(
             binder_tokio::get_interface::<dyn IATest<Tokio>>("manager").await.err(),
+            Some(StatusCode::BAD_TYPE)
+        );
+    }
+
+    #[test]
+    fn check_check_service() {
+        let mut sm = binder::check_service("manager").expect("Did not find manager binder service");
+        assert!(sm.is_binder_alive());
+        assert!(sm.ping_binder().is_ok());
+
+        assert!(binder::check_service("this_service_does_not_exist").is_none());
+        assert_eq!(
+            binder::check_interface::<dyn ITest>("this_service_does_not_exist").err(),
+            Some(StatusCode::NAME_NOT_FOUND)
+        );
+        assert_eq!(
+            binder::check_interface::<dyn IATest<Tokio>>("this_service_does_not_exist").err(),
+            Some(StatusCode::NAME_NOT_FOUND)
+        );
+
+        // The service manager service isn't an ITest, so this must fail.
+        assert_eq!(
+            binder::check_interface::<dyn ITest>("manager").err(),
+            Some(StatusCode::BAD_TYPE)
+        );
+        assert_eq!(
+            binder::check_interface::<dyn IATest<Tokio>>("manager").err(),
+            Some(StatusCode::BAD_TYPE)
+        );
+    }
+
+    #[tokio::test]
+    async fn check_check_service_async() {
+        let mut sm = binder::check_service("manager").expect("Did not find manager binder service");
+        assert!(sm.is_binder_alive());
+        assert!(sm.ping_binder().is_ok());
+
+        assert!(binder::check_service("this_service_does_not_exist").is_none());
+        assert_eq!(
+            binder_tokio::check_interface::<dyn ITest>("this_service_does_not_exist").await.err(),
+            Some(StatusCode::NAME_NOT_FOUND)
+        );
+        assert_eq!(
+            binder_tokio::check_interface::<dyn IATest<Tokio>>("this_service_does_not_exist")
+                .await
+                .err(),
+            Some(StatusCode::NAME_NOT_FOUND)
+        );
+
+        // The service manager service isn't an ITest, so this must fail.
+        assert_eq!(
+            binder_tokio::check_interface::<dyn ITest>("manager").await.err(),
+            Some(StatusCode::BAD_TYPE)
+        );
+        assert_eq!(
+            binder_tokio::check_interface::<dyn IATest<Tokio>>("manager").await.err(),
             Some(StatusCode::BAD_TYPE)
         );
     }
@@ -545,6 +601,11 @@ mod tests {
     }
 
     fn get_expected_selinux_context() -> &'static str {
+        // SAFETY: The pointer we pass to `getcon` is valid because it comes from a reference, and
+        // `getcon` doesn't retain it after it returns. If `getcon` succeeds then `out_ptr` will
+        // point to a valid C string, otherwise it will remain null. We check for null, so the
+        // pointer we pass to `CStr::from_ptr` must be a valid pointer to a C string. There is a
+        // memory leak as we don't call `freecon`, but that's fine because this is just a test.
         unsafe {
             let mut out_ptr = ptr::null_mut();
             assert_eq!(selinux_sys::getcon(&mut out_ptr), 0);

@@ -29,6 +29,7 @@
 
 #include "EventThread.h"
 
+#include "FrameRateCompatibility.h"
 #include "RefreshRateSelector.h"
 
 namespace android {
@@ -42,7 +43,9 @@ struct LayerProps;
 
 class LayerHistory {
 public:
+    using FrameRateOverride = DisplayEventReceiver::Event::FrameRateOverride;
     using LayerVoteType = RefreshRateSelector::LayerVoteType;
+    static constexpr std::chrono::nanoseconds kMaxPeriodForHistory = 1s;
 
     LayerHistory();
     ~LayerHistory();
@@ -69,8 +72,9 @@ public:
 
     // Updates the default frame rate compatibility which takes effect when the app
     // does not set a preference for refresh rate.
-    void setDefaultFrameRateCompatibility(Layer*, bool contentDetectionEnabled);
-
+    void setDefaultFrameRateCompatibility(int32_t id, FrameRateCompatibility frameRateCompatibility,
+                                          bool contentDetectionEnabled);
+    void setLayerProperties(int32_t id, const LayerProps&);
     using Summary = std::vector<RefreshRateSelector::LayerRequirement>;
 
     // Rebuilds sets of active/inactive layers, and accumulates stats for active layers.
@@ -84,21 +88,35 @@ public:
     // return the frames per second of the layer with the given sequence id.
     float getLayerFramerate(nsecs_t now, int32_t id) const;
 
-    void attachChoreographer(int32_t layerId,
-                             const sp<EventThreadConnection>& choreographerConnection);
+    bool isSmallDirtyArea(uint32_t dirtyArea, float threshold) const;
+
+    // Updates the frame rate override set by game mode intervention
+    void updateGameModeFrameRateOverride(FrameRateOverride frameRateOverride) EXCLUDES(mLock);
+
+    // Updates the frame rate override set by game default frame rate
+    void updateGameDefaultFrameRateOverride(FrameRateOverride frameRateOverride) EXCLUDES(mLock);
+
+    std::pair<Fps, Fps> getGameFrameRateOverride(uid_t uid) const EXCLUDES(mLock);
+    std::pair<Fps, Fps> getGameFrameRateOverrideLocked(uid_t uid) const REQUIRES(mLock);
 
 private:
     friend class LayerHistoryTest;
+    friend class LayerHistoryIntegrationTest;
     friend class TestableScheduler;
 
     using LayerPair = std::pair<Layer*, std::unique_ptr<LayerInfo>>;
     // keyed by id as returned from Layer::getSequence()
     using LayerInfos = std::unordered_map<int32_t, LayerPair>;
 
+    std::string dumpGameFrameRateOverridesLocked() const REQUIRES(mLock);
+
     // Iterates over layers maps moving all active layers to mActiveLayerInfos and all inactive
-    // layers to mInactiveLayerInfos.
+    // layers to mInactiveLayerInfos. Layer's active state is determined by multiple factors
+    // such as update activity, visibility, and frame rate vote.
     // worst case time complexity is O(2 * inactive + active)
-    void partitionLayers(nsecs_t now) REQUIRES(mLock);
+    // now: the current time (system time) when calling the method
+    // isVrrDevice: true if the device has DisplayMode with VrrConfig specified.
+    void partitionLayers(nsecs_t now, bool isVrrDevice) REQUIRES(mLock);
 
     enum class LayerStatus {
         NotFound,
@@ -124,10 +142,6 @@ private:
     LayerInfos mActiveLayerInfos GUARDED_BY(mLock);
     LayerInfos mInactiveLayerInfos GUARDED_BY(mLock);
 
-    // Map keyed by layer ID (sequence) to choreographer connections.
-    std::unordered_multimap<int32_t, wp<EventThreadConnection>> mAttachedChoreographers
-            GUARDED_BY(mLock);
-
     uint32_t mDisplayArea = 0;
 
     // Whether to emit systrace output and debug logs.
@@ -138,6 +152,13 @@ private:
 
     // Whether a mode change is in progress or not
     std::atomic<bool> mModeChangePending = false;
+
+    // A list to look up the game frame rate overrides
+    // Each entry includes:
+    // 1. the uid of the app
+    // 2. a pair of game mode intervention frame frame and game default frame rate override
+    // set to 0.0 if there is no such override
+    std::map<uid_t, std::pair<Fps, Fps>> mGameFrameRateOverride GUARDED_BY(mLock);
 };
 
 } // namespace scheduler

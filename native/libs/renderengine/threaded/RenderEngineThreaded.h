@@ -37,17 +37,14 @@ using CreateInstanceFactory = std::function<std::unique_ptr<renderengine::Render
  */
 class RenderEngineThreaded : public RenderEngine {
 public:
-    static std::unique_ptr<RenderEngineThreaded> create(CreateInstanceFactory factory,
-                                                        RenderEngineType type);
+    static std::unique_ptr<RenderEngineThreaded> create(CreateInstanceFactory factory);
 
-    RenderEngineThreaded(CreateInstanceFactory factory, RenderEngineType type);
+    RenderEngineThreaded(CreateInstanceFactory factory);
     ~RenderEngineThreaded() override;
-    std::future<void> primeCache() override;
+    std::future<void> primeCache(PrimeCacheConfig config) override;
 
     void dump(std::string& result) override;
 
-    void genTextures(size_t count, uint32_t* names) override;
-    void deleteTextures(size_t count, uint32_t const* names) override;
     size_t getMaxTextureSize() const override;
     size_t getMaxViewportDims() const override;
 
@@ -57,10 +54,8 @@ public:
     ftl::Future<FenceResult> drawLayers(const DisplaySettings& display,
                                         const std::vector<LayerSettings>& layers,
                                         const std::shared_ptr<ExternalTexture>& buffer,
-                                        const bool useFramebufferCache,
                                         base::unique_fd&& bufferFence) override;
 
-    void cleanFramebufferCache() override;
     int getContextPriority() override;
     bool supportsBackgroundBlur() override;
     void onActiveDisplaySizeChanged(ui::Size size) override;
@@ -75,7 +70,7 @@ protected:
                             const DisplaySettings& display,
                             const std::vector<LayerSettings>& layers,
                             const std::shared_ptr<ExternalTexture>& buffer,
-                            const bool useFramebufferCache, base::unique_fd&& bufferFence) override;
+                            base::unique_fd&& bufferFence) override;
 
 private:
     void threadMain(CreateInstanceFactory factory);
@@ -93,6 +88,7 @@ private:
     mutable std::mutex mThreadMutex;
     std::thread mThread GUARDED_BY(mThreadMutex);
     std::atomic<bool> mRunning = true;
+    std::atomic<bool> mNeedsPostRenderCleanup = false;
 
     using Work = std::function<void(renderengine::RenderEngine&)>;
     mutable std::queue<Work> mFunctionCalls GUARDED_BY(mThreadMutex);
@@ -100,7 +96,7 @@ private:
 
     // Used to allow select thread safe methods to be accessed without requiring the
     // method to be invoked on the RenderEngine thread
-    bool mIsInitialized = false;
+    std::atomic_bool mIsInitialized = false;
     mutable std::mutex mInitializedMutex;
     mutable std::condition_variable mInitializedCondition;
 

@@ -18,6 +18,7 @@
 
 #include <android-base/expected.h>
 #include <android-base/thread_annotations.h>
+#include <ftl/expected.h>
 #include <ftl/future.h>
 #include <gui/HdrMetadata.h>
 #include <math/mat4.h>
@@ -38,6 +39,7 @@
 #include "Hal.h"
 
 #include <aidl/android/hardware/graphics/common/DisplayDecorationSupport.h>
+#include <aidl/android/hardware/graphics/common/DisplayHotplugEvent.h>
 #include <aidl/android/hardware/graphics/composer3/Capability.h>
 #include <aidl/android/hardware/graphics/composer3/ClientTargetPropertyWithBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/Color.h>
@@ -64,15 +66,16 @@ class Layer;
 
 namespace hal = android::hardware::graphics::composer::hal;
 
+using aidl::android::hardware::graphics::common::DisplayHotplugEvent;
 using aidl::android::hardware::graphics::composer3::RefreshRateChangedDebugData;
 
 // Implement this interface to receive hardware composer events.
 //
 // These callback functions will generally be called on a hwbinder thread, but
-// when first registering the callback the onComposerHalHotplug() function will
-// immediately be called on the thread calling registerCallback().
+// when first registering the callback the onComposerHalHotplugEvent() function
+// will immediately be called on the thread calling registerCallback().
 struct ComposerCallback {
-    virtual void onComposerHalHotplug(hal::HWDisplayId, hal::Connection) = 0;
+    virtual void onComposerHalHotplugEvent(hal::HWDisplayId, DisplayHotplugEvent) = 0;
     virtual void onComposerHalRefresh(hal::HWDisplayId) = 0;
     virtual void onComposerHalVsync(hal::HWDisplayId, nsecs_t timestamp,
                                     std::optional<hal::VsyncPeriodNanos>) = 0;
@@ -118,7 +121,8 @@ public:
     [[nodiscard]] virtual hal::Error getRequests(
             hal::DisplayRequest* outDisplayRequests,
             std::unordered_map<Layer*, hal::LayerRequest>* outLayerRequests) = 0;
-    [[nodiscard]] virtual hal::Error getConnectionType(ui::DisplayConnectionType*) const = 0;
+    [[nodiscard]] virtual ftl::Expected<ui::DisplayConnectionType, hal::Error> getConnectionType()
+            const = 0;
     [[nodiscard]] virtual hal::Error supportsDoze(bool* outSupport) const = 0;
     [[nodiscard]] virtual hal::Error getHdrCapabilities(
             android::HdrCapabilities* outCapabilities) const = 0;
@@ -139,7 +143,8 @@ public:
     [[nodiscard]] virtual hal::Error present(android::sp<android::Fence>* outPresentFence) = 0;
     [[nodiscard]] virtual hal::Error setClientTarget(
             uint32_t slot, const android::sp<android::GraphicBuffer>& target,
-            const android::sp<android::Fence>& acquireFence, hal::Dataspace dataspace) = 0;
+            const android::sp<android::Fence>& acquireFence, hal::Dataspace dataspace,
+            float hdrSdrRatio) = 0;
     [[nodiscard]] virtual hal::Error setColorMode(hal::ColorMode mode,
                                                   hal::RenderIntent renderIntent) = 0;
     [[nodiscard]] virtual hal::Error setColorTransform(const android::mat4& matrix) = 0;
@@ -148,9 +153,10 @@ public:
             const android::sp<android::Fence>& releaseFence) = 0;
     [[nodiscard]] virtual hal::Error setPowerMode(hal::PowerMode mode) = 0;
     [[nodiscard]] virtual hal::Error setVsyncEnabled(hal::Vsync enabled) = 0;
-    [[nodiscard]] virtual hal::Error validate(nsecs_t expectedPresentTime, uint32_t* outNumTypes,
-                                              uint32_t* outNumRequests) = 0;
+    [[nodiscard]] virtual hal::Error validate(nsecs_t expectedPresentTime, int32_t frameIntervalNs,
+                                              uint32_t* outNumTypes, uint32_t* outNumRequests) = 0;
     [[nodiscard]] virtual hal::Error presentOrValidate(nsecs_t expectedPresentTime,
+                                                       int32_t frameIntervalNs,
                                                        uint32_t* outNumTypes,
                                                        uint32_t* outNumRequests,
                                                        android::sp<android::Fence>* outPresentFence,
@@ -209,7 +215,7 @@ public:
     hal::Error getRequests(
             hal::DisplayRequest* outDisplayRequests,
             std::unordered_map<HWC2::Layer*, hal::LayerRequest>* outLayerRequests) override;
-    hal::Error getConnectionType(ui::DisplayConnectionType*) const override;
+    ftl::Expected<ui::DisplayConnectionType, hal::Error> getConnectionType() const override;
     hal::Error supportsDoze(bool* outSupport) const override EXCLUDES(mDisplayCapabilitiesMutex);
     hal::Error getHdrCapabilities(android::HdrCapabilities* outCapabilities) const override;
     hal::Error getOverlaySupport(aidl::android::hardware::graphics::composer3::OverlayProperties*
@@ -226,17 +232,17 @@ public:
     hal::Error present(android::sp<android::Fence>* outPresentFence) override;
     hal::Error setClientTarget(uint32_t slot, const android::sp<android::GraphicBuffer>& target,
                                const android::sp<android::Fence>& acquireFence,
-                               hal::Dataspace dataspace) override;
+                               hal::Dataspace dataspace, float hdrSdrRatio) override;
     hal::Error setColorMode(hal::ColorMode, hal::RenderIntent) override;
     hal::Error setColorTransform(const android::mat4& matrix) override;
     hal::Error setOutputBuffer(const android::sp<android::GraphicBuffer>&,
                                const android::sp<android::Fence>& releaseFence) override;
     hal::Error setPowerMode(hal::PowerMode) override;
     hal::Error setVsyncEnabled(hal::Vsync enabled) override;
-    hal::Error validate(nsecs_t expectedPresentTime, uint32_t* outNumTypes,
+    hal::Error validate(nsecs_t expectedPresentTime, int32_t frameIntervalNs, uint32_t* outNumTypes,
                         uint32_t* outNumRequests) override;
-    hal::Error presentOrValidate(nsecs_t expectedPresentTime, uint32_t* outNumTypes,
-                                 uint32_t* outNumRequests,
+    hal::Error presentOrValidate(nsecs_t expectedPresentTime, int32_t frameIntervalNs,
+                                 uint32_t* outNumTypes, uint32_t* outNumRequests,
                                  android::sp<android::Fence>* outPresentFence,
                                  uint32_t* state) override;
     ftl::Future<hal::Error> setDisplayBrightness(
@@ -272,6 +278,7 @@ public:
     hal::Error getPhysicalDisplayOrientation(Hwc2::AidlTransform* outTransform) const override;
 
 private:
+    void loadDisplayCapabilities();
 
     // This may fail (and return a null pointer) if no layer with this ID exists
     // on this display
@@ -290,6 +297,8 @@ private:
 
     const hal::HWDisplayId mId;
     hal::DisplayType mType;
+    // Cached on first call to getConnectionType.
+    mutable std::optional<ftl::Expected<ui::DisplayConnectionType, hal::Error>> mConnectionType;
     bool mIsConnected = false;
 
     using Layers = std::unordered_map<hal::HWLayerId, std::weak_ptr<HWC2::impl::Layer>>;

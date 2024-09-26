@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_input_framework",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_native_license"
@@ -52,6 +53,7 @@ filegroup {
         "mapper/RotaryEncoderInputMapper.cpp",
         "mapper/SensorInputMapper.cpp",
         "mapper/SingleTouchInputMapper.cpp",
+        "mapper/SlopController.cpp",
         "mapper/SwitchInputMapper.cpp",
         "mapper/TouchCursorInputMapperCommon.cpp",
         "mapper/TouchInputMapper.cpp",
@@ -65,8 +67,10 @@ filegroup {
         "mapper/accumulator/TouchButtonAccumulator.cpp",
         "mapper/gestures/GestureConverter.cpp",
         "mapper/gestures/GesturesLogging.cpp",
+        "mapper/gestures/HardwareProperties.cpp",
         "mapper/gestures/HardwareStateConverter.cpp",
         "mapper/gestures/PropertyProvider.cpp",
+        "mapper/gestures/TimerProvider.cpp",
     ],
 }
 
@@ -79,13 +83,14 @@ cc_defaults {
         "libcrypto",
         "libcutils",
         "libjsoncpp",
+        "libinput",
         "liblog",
         "libPlatformProperties",
         "libstatslog",
+        "libstatspull",
         "libutils",
     ],
     static_libs: [
-        "libc++fs",
         "libchrome-gestures",
         "libui-types",
     ],
@@ -95,14 +100,8 @@ cc_defaults {
         "libinputreader_headers",
     ],
     target: {
-        android: {
-            shared_libs: [
-                "libinput",
-            ],
-        },
         host: {
             static_libs: [
-                "libinput",
                 "libbinder",
             ],
         },
@@ -156,7 +155,6 @@ cc_library_shared {
         },
     },
     static_libs: [
-        "libc++fs",
         "libchrome-gestures",
     ],
 }

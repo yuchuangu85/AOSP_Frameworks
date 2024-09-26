@@ -31,6 +31,8 @@
 namespace android {
 namespace battery {
 
+#define REPORTED_INVALID_TIMESTAMP_DELTA_MS 60000
+
 typedef uint16_t state_t;
 
 template <class T>
@@ -59,6 +61,12 @@ public:
     void setEnabled(bool enabled, time_t timestamp);
 
     void setState(state_t state, time_t timestamp);
+
+    /**
+     * Copies the current state and accumulated times-in-state from the source. Resets
+     * the accumulated value.
+     */
+    void copyStatesFrom(const MultiStateCounter<T>& source);
 
     void setValue(state_t state, const T& value);
 
@@ -171,8 +179,12 @@ void MultiStateCounter<T>::setState(state_t state, time_t timestamp) {
         if (timestamp >= lastStateChangeTimestamp) {
             states[currentState].timeInStateSinceUpdate += timestamp - lastStateChangeTimestamp;
         } else {
-            ALOGE("setState is called with an earlier timestamp: %lu, previous timestamp: %lu\n",
-                  (unsigned long)timestamp, (unsigned long)lastStateChangeTimestamp);
+            if (timestamp < lastStateChangeTimestamp - REPORTED_INVALID_TIMESTAMP_DELTA_MS) {
+                ALOGE("setState is called with an earlier timestamp: %lu, "
+                      "previous timestamp: %lu\n",
+                      (unsigned long)timestamp, (unsigned long)lastStateChangeTimestamp);
+            }
+
             // The accumulated durations have become unreliable. For example, if the timestamp
             // sequence was 1000, 2000, 1000, 3000, if we accumulated the positive deltas,
             // we would get 4000, which is greater than (last - first). This could lead to
@@ -184,6 +196,22 @@ void MultiStateCounter<T>::setState(state_t state, time_t timestamp) {
     }
     currentState = state;
     lastStateChangeTimestamp = timestamp;
+}
+
+template <class T>
+void MultiStateCounter<T>::copyStatesFrom(const MultiStateCounter<T>& source) {
+    if (stateCount != source.stateCount) {
+        ALOGE("State count mismatch: %u vs. %u\n", stateCount, source.stateCount);
+        return;
+    }
+
+    currentState = source.currentState;
+    for (int i = 0; i < stateCount; i++) {
+        states[i].timeInStateSinceUpdate = source.states[i].timeInStateSinceUpdate;
+        states[i].counter = emptyValue;
+    }
+    lastStateChangeTimestamp = source.lastStateChangeTimestamp;
+    lastUpdateTimestamp = source.lastUpdateTimestamp;
 }
 
 template <class T>
@@ -232,8 +260,10 @@ const T& MultiStateCounter<T>::updateValue(const T& value, time_t timestamp) {
                     }
                 }
             } else if (timestamp < lastUpdateTimestamp) {
-                ALOGE("updateValue is called with an earlier timestamp: %lu, previous: %lu\n",
-                      (unsigned long)timestamp, (unsigned long)lastUpdateTimestamp);
+                if (timestamp < lastUpdateTimestamp - REPORTED_INVALID_TIMESTAMP_DELTA_MS) {
+                    ALOGE("updateValue is called with an earlier timestamp: %lu, previous: %lu\n",
+                          (unsigned long)timestamp, (unsigned long)lastUpdateTimestamp);
+                }
 
                 for (int i = 0; i < stateCount; i++) {
                     states[i].timeInStateSinceUpdate = 0;

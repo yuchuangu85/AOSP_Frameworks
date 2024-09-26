@@ -16,10 +16,11 @@
 
 package android.telephony.satellite.stub;
 
+import android.telephony.satellite.stub.NtnSignalStrength;
 import android.telephony.satellite.stub.NTRadioTechnology;
 import android.telephony.satellite.stub.PointingInfo;
+import android.telephony.satellite.stub.SatelliteCapabilities;
 import android.telephony.satellite.stub.SatelliteDatagram;
-import android.telephony.satellite.stub.SatelliteError;
 import android.telephony.satellite.stub.SatelliteModemState;
 
 /**
@@ -59,4 +60,33 @@ oneway interface ISatelliteListener {
      * @param state The current satellite modem state.
      */
     void onSatelliteModemStateChanged(in SatelliteModemState state);
+
+    /**
+     * Called when NTN signal strength changes.
+     *
+     * @param ntnSignalStrength The new NTN signal strength.
+     */
+    void onNtnSignalStrengthChanged(in NtnSignalStrength ntnSignalStrength);
+
+    /**
+     * Called when satellite capabilities of the satellite service have changed.
+     *
+     * @param SatelliteCapabilities The current satellite capabilities.
+     */
+    void onSatelliteCapabilitiesChanged(in SatelliteCapabilities capabilities);
+
+    /**
+     * Called when supported state of satellite has changed
+     *
+     * @param supported True means satellite service is supported and false means it is not.
+     */
+    void onSatelliteSupportedStateChanged(in boolean supported);
+
+    /**
+     * Indicates that the satellite registration failed with following failure code
+     *
+     * @param causeCode the primary failure cause code of the procedure.
+     *        For LTE (EMM), cause codes are TS 24.301 Sec 9.9.3.9
+     */
+    void onRegistrationFailure(in int causeCode);
 }

@@ -30,15 +30,18 @@
 #include "SkCanvas.h"
 #include "SkRect.h"
 #include "SkTypeface.h"
-#include "src/utils/SkMultiPictureDocument.h"
+#include "include/docs/SkMultiPictureDocument.h"
+#include <sys/stat.h>
 
 namespace android {
 namespace renderengine {
 namespace skia {
 
 // The root of the filename to write a recorded SKP to. In order for this file to
-// be written to /data/user/, user must run 'adb shell setenforce 0' on the device.
-static const std::string CAPTURED_FILENAME_BASE = "/data/user/re_skiacapture";
+// be written, user must run 'adb shell setenforce 0' on the device. Note: This
+// is handled by record.sh. FIXME(b/296282988): With updated selinux policies,
+// 'adb shell setenforce 0' should be unnecessary.
+static const std::string CAPTURED_FILE_DIR = "/data/misc/mskps";
 
 SkiaCapture::~SkiaCapture() {
     mTimer.stop();
@@ -169,11 +172,12 @@ bool SkiaCapture::setupMultiFrameCapture() {
     ATRACE_CALL();
     ALOGD("Set up multi-frame capture, ms = %llu", mTimerInterval.count());
     base::SetProperty(PROPERTY_DEBUG_RENDERENGINE_CAPTURE_FILENAME, "");
-    const std::scoped_lock lock(mMutex);
 
-    // Attach a timestamp to the file.
+    mkdir(CAPTURED_FILE_DIR.c_str(), 0700);
+
+    const std::scoped_lock lock(mMutex);
     mCaptureFile.clear();
-    base::StringAppendF(&mCaptureFile, "%s_%lld.mskp", CAPTURED_FILENAME_BASE.c_str(),
+    base::StringAppendF(&mCaptureFile, "%s/re_skiacapture_%lld.mskp", CAPTURED_FILE_DIR.c_str(),
                         std::chrono::steady_clock::now().time_since_epoch().count());
     auto stream = std::make_unique<SkFILEWStream>(mCaptureFile.c_str());
     // We own this stream and need to hold it until close() finishes.
@@ -192,7 +196,7 @@ bool SkiaCapture::setupMultiFrameCapture() {
         // procs doesn't need to outlive this Make call
         // The last argument is a callback for the endPage behavior.
         // See SkSharingProc.h for more explanation of this callback.
-        mMultiPic = SkMakeMultiPictureDocument(
+        mMultiPic = SkMultiPictureDocument::Make(
                 mOpenMultiPicStream.get(), &procs,
                 [sharingCtx = mSerialContext.get()](const SkPicture* pic) {
                     SkSharingSerialContext::collectNonTextureImagesFromPicture(pic, sharingCtx);

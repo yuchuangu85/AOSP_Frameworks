@@ -45,8 +45,6 @@ cc_library_shared {
         "-DANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION",
     ],
 
-    // Workaround Clang LTO crash.
-    lto: {
-        never: true,
-    },
+    // TODO(b/330503129) Workaround LTO build breakage.
+    lto_O0: true,
 }

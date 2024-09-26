@@ -33,6 +33,7 @@
 #include <utils/String8.h>
 #include <utils/Trace.h>
 #include <vkjson.h>
+#include <vkprofiles.h>
 
 #include <thread>
 #include <memory>
@@ -44,6 +45,7 @@ using base::StringAppendF;
 namespace {
 status_t cmdHelp(int out);
 status_t cmdVkjson(int out, int err);
+status_t cmdVkprofiles(int out, int err);
 void dumpGameDriverInfo(std::string* result);
 } // namespace
 
@@ -70,6 +72,9 @@ GpuService::GpuService()
 };
 
 GpuService::~GpuService() {
+    mGpuMem->stop();
+    mGpuWork->stop();
+
     mGpuWorkAsyncInitThread->join();
     mGpuMemAsyncInitThread->join();
 }
@@ -93,6 +98,12 @@ void GpuService::setTargetStatsArray(const std::string& appPackageName,
                                 const uint64_t driverVersionCode, const GpuStatsInfo::Stats stats,
                                 const uint64_t* values, const uint32_t valueCount) {
     mGpuStats->insertTargetStatsArray(appPackageName, driverVersionCode, stats, values, valueCount);
+}
+
+void GpuService::addVulkanEngineName(const std::string& appPackageName,
+                                     const uint64_t driverVersionCode,
+                                     const char* engineName) {
+    mGpuStats->addVulkanEngineName(appPackageName, driverVersionCode, engineName);
 }
 
 void GpuService::toggleAngleAsSystemDriver(bool enabled) {
@@ -143,10 +154,11 @@ status_t GpuService::shellCommand(int /*in*/, int out, int err, std::vector<Stri
 
     ALOGV("shellCommand");
     for (size_t i = 0, n = args.size(); i < n; i++)
-        ALOGV("  arg[%zu]: '%s'", i, String8(args[i]).string());
+        ALOGV("  arg[%zu]: '%s'", i, String8(args[i]).c_str());
 
     if (args.size() >= 1) {
         if (args[0] == String16("vkjson")) return cmdVkjson(out, err);
+        if (args[0] == String16("vkprofiles")) return cmdVkprofiles(out, err);
         if (args[0] == String16("help")) return cmdHelp(out);
     }
     // no command, or unrecognized command
@@ -213,31 +225,24 @@ namespace {
 status_t cmdHelp(int out) {
     FILE* outs = fdopen(out, "w");
     if (!outs) {
-        ALOGE("vkjson: failed to create out stream: %s (%d)", strerror(errno), errno);
+        ALOGE("gpuservice: failed to create out stream: %s (%d)", strerror(errno), errno);
         return BAD_VALUE;
     }
     fprintf(outs,
             "GPU Service commands:\n"
-            "  vkjson   dump Vulkan properties as JSON\n");
+            "  vkjson      dump Vulkan properties as JSON\n"
+            "  vkprofiles  print support for select Vulkan profiles\n");
     fclose(outs);
     return NO_ERROR;
 }
 
-void vkjsonPrint(FILE* out) {
-    std::string json = VkJsonInstanceToJson(VkJsonGetInstance());
-    fwrite(json.data(), 1, json.size(), out);
-    fputc('\n', out);
+status_t cmdVkjson(int out, int /*err*/) {
+    dprintf(out, "%s\n", VkJsonInstanceToJson(VkJsonGetInstance()).c_str());
+    return NO_ERROR;
 }
 
-status_t cmdVkjson(int out, int /*err*/) {
-    FILE* outs = fdopen(out, "w");
-    if (!outs) {
-        int errnum = errno;
-        ALOGE("vkjson: failed to create output stream: %s", strerror(errnum));
-        return -errnum;
-    }
-    vkjsonPrint(outs);
-    fclose(outs);
+status_t cmdVkprofiles(int out, int /*err*/) {
+    dprintf(out, "%s\n", android::vkprofiles::vkProfiles().c_str());
     return NO_ERROR;
 }
 

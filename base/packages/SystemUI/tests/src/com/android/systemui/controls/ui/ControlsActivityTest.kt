@@ -19,12 +19,12 @@ package com.android.systemui.controls.ui
 import android.content.Intent
 import android.content.res.Configuration
 import android.service.dreams.IDreamManager
-import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import androidx.test.rule.ActivityTestRule
-import androidx.test.runner.intercepting.SingleActivityFactory
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.activity.SingleActivityFactory
 import com.android.systemui.broadcast.BroadcastDispatcher
 import com.android.systemui.controls.settings.ControlsSettingsDialogManager
 import com.android.systemui.flags.FeatureFlags
@@ -39,7 +39,7 @@ import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @TestableLooper.RunWithLooper
 class ControlsActivityTest : SysuiTestCase() {
     @Mock private lateinit var uiController: ControlsUiController
@@ -53,23 +53,18 @@ class ControlsActivityTest : SysuiTestCase() {
     @JvmField
     var activityRule =
         ActivityTestRule(
-            object :
-                SingleActivityFactory<TestableControlsActivity>(
-                    TestableControlsActivity::class.java
-                ) {
-                override fun create(intent: Intent?): TestableControlsActivity {
-                    return TestableControlsActivity(
-                        uiController,
-                        broadcastDispatcher,
-                        dreamManager,
-                        featureFlags,
-                        controlsSettingsDialogManager,
-                        keyguardStateController,
-                    )
-                }
+            /* activityFactory= */ SingleActivityFactory {
+                TestableControlsActivity(
+                    uiController,
+                    broadcastDispatcher,
+                    dreamManager,
+                    featureFlags,
+                    controlsSettingsDialogManager,
+                    keyguardStateController,
+                )
             },
-            false,
-            false
+            /* initialTouchMode= */ false,
+            /* launchActivity= */ false,
         )
 
     @Before

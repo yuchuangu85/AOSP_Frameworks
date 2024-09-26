@@ -16,7 +16,7 @@
 
 // #define LOG_NDEBUG 0
 #undef LOG_TAG
-#define LOG_TAG "LayerFE"
+#define LOG_TAG "SurfaceFlinger"
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include <gui/GLConsumer.h>
@@ -27,6 +27,9 @@
 
 #include "LayerFE.h"
 #include "SurfaceFlinger.h"
+#include "common/FlagManager.h"
+#include "ui/FenceResult.h"
+#include "ui/LayerStack.h"
 
 namespace android {
 
@@ -78,12 +81,21 @@ void getDrawingTransformMatrix(const std::shared_ptr<renderengine::ExternalTextu
 
 LayerFE::LayerFE(const std::string& name) : mName(name) {}
 
+LayerFE::~LayerFE() {
+    // Ensures that no promise is left unfulfilled before the LayerFE is destroyed.
+    // An unfulfilled promise could occur when a screenshot is attempted, but the
+    // render area is invalid and there is no memory for the capture result.
+    if (FlagManager::getInstance().ce_fence_promise() &&
+        mReleaseFencePromiseStatus == ReleaseFencePromiseStatus::INITIALIZED) {
+        setReleaseFence(Fence::NO_FENCE);
+    }
+}
+
 const compositionengine::LayerFECompositionState* LayerFE::getCompositionState() const {
     return mSnapshot.get();
 }
 
-bool LayerFE::onPreComposition(nsecs_t refreshStartTime, bool) {
-    mCompositionResult.refreshStartTime = refreshStartTime;
+bool LayerFE::onPreComposition(bool) {
     return mSnapshot->hasReadyFrame;
 }
 
@@ -208,9 +220,15 @@ void LayerFE::prepareBufferStateClientComposition(
         // activeBuffer, then we need to return LayerSettings.
         return;
     }
-    const bool blackOutLayer =
-            (mSnapshot->hasProtectedContent && !targetSettings.supportsProtectedContent) ||
-            ((mSnapshot->isSecure || mSnapshot->hasProtectedContent) && !targetSettings.isSecure);
+    bool blackOutLayer;
+    if (FlagManager::getInstance().display_protected()) {
+        blackOutLayer = (mSnapshot->hasProtectedContent && !targetSettings.isProtected) ||
+                (mSnapshot->isSecure && !targetSettings.isSecure);
+    } else {
+        blackOutLayer = (mSnapshot->hasProtectedContent && !targetSettings.isProtected) ||
+                ((mSnapshot->isSecure || mSnapshot->hasProtectedContent) &&
+                 !targetSettings.isSecure);
+    }
     const bool bufferCanBeUsedAsHwTexture =
             mSnapshot->externalTexture->getUsage() & GraphicBuffer::USAGE_HW_TEXTURE;
     if (blackOutLayer || !bufferCanBeUsedAsHwTexture) {
@@ -223,9 +241,7 @@ void LayerFE::prepareBufferStateClientComposition(
     layerSettings.source.buffer.buffer = mSnapshot->externalTexture;
     layerSettings.source.buffer.isOpaque = mSnapshot->contentOpaque;
     layerSettings.source.buffer.fence = mSnapshot->acquireFence;
-    layerSettings.source.buffer.textureName = mSnapshot->textureName;
     layerSettings.source.buffer.usePremultipliedAlpha = mSnapshot->premultipliedAlpha;
-    layerSettings.source.buffer.isY410BT2020 = mSnapshot->isHdrY410;
     bool hasSmpte2086 = mSnapshot->hdrMetadata.validTypes & HdrMetadata::SMPTE2086;
     bool hasCta861_3 = mSnapshot->hdrMetadata.validTypes & HdrMetadata::CTA861_3;
     float maxLuminance = 0.f;
@@ -249,10 +265,13 @@ void LayerFE::prepareBufferStateClientComposition(
     layerSettings.frameNumber = mSnapshot->frameNumber;
     layerSettings.bufferId = mSnapshot->externalTexture->getId();
 
+    const bool useFiltering = targetSettings.needsFiltering ||
+                              mSnapshot->geomLayerTransform.needsBilinearFiltering();
+
     // Query the texture matrix given our current filtering mode.
     float textureMatrix[16];
     getDrawingTransformMatrix(layerSettings.source.buffer.buffer, mSnapshot->geomContentCrop,
-                              mSnapshot->geomBufferTransform, targetSettings.needsFiltering,
+                              mSnapshot->geomBufferTransform, useFiltering,
                               textureMatrix);
 
     if (mSnapshot->geomBufferUsesDisplayInverseTransform) {
@@ -303,7 +322,7 @@ void LayerFE::prepareBufferStateClientComposition(
             mat4::translate(vec4(translateX, translateY, 0.f, 1.f)) *
             mat4::scale(vec4(scaleWidth, scaleHeight, 1.0f, 1.0f));
 
-    layerSettings.source.buffer.useTextureFiltering = targetSettings.needsFiltering;
+    layerSettings.source.buffer.useTextureFiltering = useFiltering;
     layerSettings.source.buffer.textureTransform =
             mat4(static_cast<const float*>(textureMatrix)) * tr;
 
@@ -312,7 +331,7 @@ void LayerFE::prepareBufferStateClientComposition(
 
 void LayerFE::prepareShadowClientComposition(LayerFE::LayerSettings& caster,
                                              const Rect& layerStackRect) const {
-    renderengine::ShadowSettings state = mSnapshot->shadowSettings;
+    ShadowSettings state = mSnapshot->shadowSettings;
     if (state.length <= 0.f || (state.ambientColor.a <= 0.f && state.spotColor.a <= 0.f)) {
         return;
     }
@@ -347,7 +366,7 @@ const LayerMetadata* LayerFE::getRelativeMetadata() const {
 }
 
 int32_t LayerFE::getSequence() const {
-    return mSnapshot->sequence;
+    return static_cast<int32_t>(mSnapshot->uniqueSequence);
 }
 
 bool LayerFE::hasRoundedCorners() const {
@@ -381,4 +400,29 @@ const sp<GraphicBuffer> LayerFE::getBuffer() const {
     return mSnapshot->externalTexture ? mSnapshot->externalTexture->getBuffer() : nullptr;
 }
 
+void LayerFE::setReleaseFence(const FenceResult& releaseFence) {
+    // Promises should not be fulfilled more than once. This case can occur if virtual
+    // displays with the same layerstack ID are being created and destroyed in quick
+    // succession, such as in tests. This would result in a race condition in which
+    // multiple displays have the same layerstack ID within the same vsync interval.
+    if (mReleaseFencePromiseStatus == ReleaseFencePromiseStatus::FULFILLED) {
+        return;
+    }
+    mReleaseFence.set_value(releaseFence);
+    mReleaseFencePromiseStatus = ReleaseFencePromiseStatus::FULFILLED;
+}
+
+// LayerFEs are reused and a new fence needs to be created whevever a buffer is latched.
+ftl::Future<FenceResult> LayerFE::createReleaseFenceFuture() {
+    if (mReleaseFencePromiseStatus == ReleaseFencePromiseStatus::INITIALIZED) {
+        LOG_ALWAYS_FATAL("Attempting to create a new promise while one is still unfulfilled.");
+    }
+    mReleaseFence = std::promise<FenceResult>();
+    mReleaseFencePromiseStatus = ReleaseFencePromiseStatus::INITIALIZED;
+    return mReleaseFence.get_future();
+}
+
+LayerFE::ReleaseFencePromiseStatus LayerFE::getReleaseFencePromiseStatus() {
+    return mReleaseFencePromiseStatus;
+}
 } // namespace android

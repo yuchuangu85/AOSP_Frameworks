@@ -17,13 +17,16 @@
 package com.android.systemui.biometrics.domain.interactor
 
 import android.graphics.Rect
-import android.test.suitebuilder.annotation.SmallTest
+import android.hardware.fingerprint.FingerprintManager
 import android.view.MotionEvent
 import android.view.Surface
-import com.android.settingslib.udfps.UdfpsOverlayParams
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.biometrics.AuthController
+import com.android.systemui.biometrics.shared.model.UdfpsOverlayParams
 import com.android.systemui.coroutines.collectLastValue
+import com.android.systemui.user.domain.interactor.SelectedUserInteractor
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -33,7 +36,6 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.JUnit4
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Captor
@@ -43,18 +45,20 @@ import org.mockito.Mockito.`when` as whenever
 import org.mockito.junit.MockitoJUnit
 
 @SmallTest
-@RunWith(JUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class UdfpsOverlayInteractorTest : SysuiTestCase() {
 
     @JvmField @Rule var mockitoRule = MockitoJUnit.rule()
 
     private lateinit var testScope: TestScope
 
+    @Mock private lateinit var fingerprintManager: FingerprintManager
     @Mock private lateinit var authController: AuthController
     @Captor private lateinit var authControllerCallback: ArgumentCaptor<AuthController.Callback>
 
     @Mock private lateinit var udfpsOverlayParams: UdfpsOverlayParams
     @Mock private lateinit var overlayBounds: Rect
+    @Mock private lateinit var selectedUserInteractor: SelectedUserInteractor
 
     private lateinit var underTest: UdfpsOverlayInteractor
 
@@ -66,7 +70,7 @@ class UdfpsOverlayInteractorTest : SysuiTestCase() {
     @Test
     fun testShouldInterceptTouch() =
         testScope.runTest {
-            createUdpfsOverlayInteractor()
+            createUdfpsOverlayInteractor()
 
             // When fingerprint enrolled and touch is within bounds
             verify(authController).addCallback(authControllerCallback.capture())
@@ -90,7 +94,7 @@ class UdfpsOverlayInteractorTest : SysuiTestCase() {
     @Test
     fun testUdfpsOverlayParamsChange() =
         testScope.runTest {
-            createUdpfsOverlayInteractor()
+            createUdfpsOverlayInteractor()
             val udfpsOverlayParams = collectLastValue(underTest.udfpsOverlayParams)
             runCurrent()
 
@@ -103,8 +107,15 @@ class UdfpsOverlayInteractorTest : SysuiTestCase() {
             assertThat(udfpsOverlayParams()).isEqualTo(firstParams)
         }
 
-    private fun createUdpfsOverlayInteractor() {
-        underTest = UdfpsOverlayInteractor(authController, testScope.backgroundScope)
+    private fun createUdfpsOverlayInteractor() {
+        underTest =
+            UdfpsOverlayInteractor(
+                context,
+                authController,
+                selectedUserInteractor,
+                fingerprintManager,
+                testScope.backgroundScope
+            )
         testScope.runCurrent()
     }
 }

@@ -13,12 +13,22 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_input_framework",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_native_license"
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["frameworks_native_license"],
+}
+
+// Source files shared with InputDispatcher's benchmarks and fuzzers
+filegroup {
+    name: "inputdispatcher_common_test_sources",
+    srcs: [
+        "FakeInputDispatcherPolicy.cpp",
+        "FakeWindows.cpp",
+    ],
 }
 
 cc_test {
@@ -37,29 +47,42 @@ cc_test {
         "libinputflinger_defaults",
     ],
     srcs: [
+        ":inputdispatcher_common_test_sources",
         "AnrTracker_test.cpp",
-        "BlockingQueue_test.cpp",
         "CapturedTouchpadEventConverter_test.cpp",
         "CursorInputMapper_test.cpp",
         "EventHub_test.cpp",
         "FakeEventHub.cpp",
         "FakeInputReaderPolicy.cpp",
+        "FakeInputTracingBackend.cpp",
         "FakePointerController.cpp",
         "FocusResolver_test.cpp",
         "GestureConverter_test.cpp",
+        "HardwareProperties_test.cpp",
         "HardwareStateConverter_test.cpp",
+        "InputDeviceMetricsCollector_test.cpp",
+        "InputDeviceMetricsSource_test.cpp",
         "InputMapperTest.cpp",
         "InputProcessor_test.cpp",
         "InputProcessorConverter_test.cpp",
         "InputDispatcher_test.cpp",
         "InputReader_test.cpp",
+        "InputTraceSession.cpp",
+        "InputTracingTest.cpp",
         "InstrumentedInputReader.cpp",
         "LatencyTracker_test.cpp",
+        "MultiTouchMotionAccumulator_test.cpp",
         "NotifyArgs_test.cpp",
+        "PointerChoreographer_test.cpp",
         "PreferStylusOverTouch_test.cpp",
         "PropertyProvider_test.cpp",
+        "SlopController_test.cpp",
+        "SyncQueue_test.cpp",
+        "TimerProvider_test.cpp",
         "TestInputListener.cpp",
         "TouchpadInputMapper_test.cpp",
+        "MultiTouchInputMapper_test.cpp",
+        "KeyboardInputMapper_test.cpp",
         "UinputDevice.cpp",
         "UnwantedInteractionBlocker_test.cpp",
     ],
@@ -72,24 +95,12 @@ cc_test {
     target: {
         android: {
             shared_libs: [
-                "libinput",
                 "libvintf",
-            ],
-        },
-        host: {
-            include_dirs: [
-                "bionic/libc/kernel/android/uapi/",
-                "bionic/libc/kernel/uapi",
-            ],
-            cflags: [
-                "-D__ANDROID_HOST__",
-            ],
-            static_libs: [
-                "libinput",
             ],
         },
     },
     sanitize: {
+        hwaddress: true,
         undefined: true,
         all_undefined: true,
         diag: {
@@ -97,7 +108,7 @@ cc_test {
         },
     },
     static_libs: [
-        "libc++fs",
+        "libflagtest",
         "libgmock",
     ],
     require_root: true,

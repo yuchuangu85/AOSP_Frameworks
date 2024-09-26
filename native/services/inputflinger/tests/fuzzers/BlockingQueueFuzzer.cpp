@@ -15,8 +15,8 @@
  */
 
 #include <fuzzer/FuzzedDataProvider.h>
+#include <input/BlockingQueue.h>
 #include <thread>
-#include "BlockingQueue.h"
 
 // Chosen to be a number large enough for variation in fuzzer runs, but not consume too much memory.
 static constexpr size_t MAX_CAPACITY = 1024;
@@ -47,12 +47,22 @@ extern "C" int LLVMFuzzerTestOneInput(uint8_t *data, size_t size) {
                     filled > numPops ? filled -= numPops : filled = 0;
                 },
                 [&]() -> void {
+                    // Pops blocks if it is empty, so only pop up to num elements inserted.
+                    size_t numPops = fdp.ConsumeIntegralInRange<size_t>(0, filled);
+                    for (size_t i = 0; i < numPops; i++) {
+                        // Provide a random timeout up to 1 second
+                        queue.popWithTimeout(std::chrono::nanoseconds(
+                                fdp.ConsumeIntegralInRange<int64_t>(0, 1E9)));
+                    }
+                    filled > numPops ? filled -= numPops : filled = 0;
+                },
+                [&]() -> void {
                     queue.clear();
                     filled = 0;
                 },
                 [&]() -> void {
                     int32_t eraseElement = fdp.ConsumeIntegral<int32_t>();
-                    queue.erase([&](int32_t element) {
+                    queue.erase_if([&](int32_t element) {
                         if (element == eraseElement) {
                             filled--;
                             return true;

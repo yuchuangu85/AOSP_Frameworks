@@ -27,7 +27,7 @@ import android.media.AudioManager.MuteAwaitConnectionCallback.EVENT_CONNECTION
 import androidx.test.filters.SmallTest
 import com.android.settingslib.media.DeviceIconUtil
 import com.android.settingslib.media.LocalMediaManager
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.util.concurrency.FakeExecutor
 import com.android.systemui.util.mockito.any
@@ -62,7 +62,7 @@ class MediaMuteAwaitConnectionManagerTest : SysuiTestCase() {
         MockitoAnnotations.initMocks(this)
         context.addMockSystemService(Context.AUDIO_SERVICE, audioManager)
         icon = context.getDrawable(R.drawable.ic_cake)!!
-        whenever(deviceIconUtil.getIconFromAudioDeviceType(any(), any())).thenReturn(icon)
+        whenever(deviceIconUtil.getIconFromAudioDeviceType(any())).thenReturn(icon)
 
         muteAwaitConnectionManager = MediaMuteAwaitConnectionManager(
             FakeExecutor(FakeSystemClock()),

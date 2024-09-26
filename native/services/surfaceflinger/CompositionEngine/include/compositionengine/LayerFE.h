@@ -58,8 +58,7 @@ public:
     // Called before composition starts. Should return true if this layer has
     // pending updates which would require an extra display refresh cycle to
     // process.
-    virtual bool onPreComposition(nsecs_t refreshStartTime,
-                                  bool updatingOutputGeometryThisFrame) = 0;
+    virtual bool onPreComposition(bool updatingOutputGeometryThisFrame) = 0;
 
     struct ClientCompositionTargetSettings {
         enum class BlurSetting {
@@ -97,7 +96,7 @@ public:
         const bool isSecure;
 
         // If set to true, the target buffer has protected content support.
-        const bool supportsProtectedContent;
+        const bool isProtected;
 
         // Viewport of the target being rendered to. This is used to determine
         // the shadow light position.
@@ -134,6 +133,15 @@ public:
         uint64_t frameNumber = 0;
     };
 
+    // Describes the states of the release fence. Checking the states allows checks
+    // to ensure that set_value() is not called on the same promise multiple times,
+    // and can indicate if the promise has been fulfilled.
+    enum class ReleaseFencePromiseStatus {
+        UNINITIALIZED, // Promise not created
+        INITIALIZED,   // Promise created, fence has not been set
+        FULFILLED      // Promise fulfilled, fence is set
+    };
+
     // Returns the LayerSettings to pass to RenderEngine::drawLayers. The state may contain shadows
     // casted by the layer or the content of the layer itself. If the layer does not render then an
     // empty optional will be returned.
@@ -142,6 +150,19 @@ public:
 
     // Called after the layer is displayed to update the presentation fence
     virtual void onLayerDisplayed(ftl::SharedFuture<FenceResult>, ui::LayerStack layerStack) = 0;
+
+    // Initializes a promise for a buffer release fence and provides the future for that
+    // fence. This should only be called when a promise has not yet been created, or
+    // after the previous promise has already been fulfilled. Attempting to call this
+    // when an existing promise is INITIALIZED will fail because the promise has not
+    // yet been fulfilled.
+    virtual ftl::Future<FenceResult> createReleaseFenceFuture() = 0;
+
+    // Sets promise with its buffer's release fence
+    virtual void setReleaseFence(const FenceResult& releaseFence) = 0;
+
+    // Checks if the buffer's release fence has been set
+    virtual LayerFE::ReleaseFencePromiseStatus getReleaseFencePromiseStatus() = 0;
 
     // Gets some kind of identifier for the layer for debug purposes.
     virtual const char* getDebugName() const = 0;
@@ -167,8 +188,7 @@ using LayerFESet = std::unordered_set<sp<LayerFE>, LayerFESpHash>;
 static inline bool operator==(const LayerFE::ClientCompositionTargetSettings& lhs,
                               const LayerFE::ClientCompositionTargetSettings& rhs) {
     return lhs.clip.hasSameRects(rhs.clip) && lhs.needsFiltering == rhs.needsFiltering &&
-            lhs.isSecure == rhs.isSecure &&
-            lhs.supportsProtectedContent == rhs.supportsProtectedContent &&
+            lhs.isSecure == rhs.isSecure && lhs.isProtected == rhs.isProtected &&
             lhs.viewport == rhs.viewport && lhs.dataspace == rhs.dataspace &&
             lhs.realContentIsVisible == rhs.realContentIsVisible &&
             lhs.clearContent == rhs.clearContent;
@@ -189,7 +209,7 @@ static inline void PrintTo(const LayerFE::ClientCompositionTargetSettings& setti
     PrintTo(settings.clip, os);
     *os << "\n    .needsFiltering = " << settings.needsFiltering;
     *os << "\n    .isSecure = " << settings.isSecure;
-    *os << "\n    .supportsProtectedContent = " << settings.supportsProtectedContent;
+    *os << "\n    .isProtected = " << settings.isProtected;
     *os << "\n    .viewport = ";
     PrintTo(settings.viewport, os);
     *os << "\n    .dataspace = ";

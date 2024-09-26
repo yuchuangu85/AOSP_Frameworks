@@ -28,25 +28,71 @@ void FakePointerController::setBounds(float minX, float minY, float maxX, float 
     mMaxY = maxY;
 }
 
-const std::map<int32_t, std::vector<int32_t>>& FakePointerController::getSpots() {
+void FakePointerController::clearBounds() {
+    mHaveBounds = false;
+}
+
+const std::map<ui::LogicalDisplayId, std::vector<int32_t>>& FakePointerController::getSpots() {
     return mSpotsByDisplay;
 }
 
 void FakePointerController::setPosition(float x, float y) {
+    if (!mEnabled) return;
+
     mX = x;
     mY = y;
 }
 
 FloatPoint FakePointerController::getPosition() const {
+    if (!mEnabled) {
+        return {0, 0};
+    }
+
     return {mX, mY};
 }
 
-int32_t FakePointerController::getDisplayId() const {
-    return mDisplayId;
+ui::LogicalDisplayId FakePointerController::getDisplayId() const {
+    if (!mEnabled || !mDisplayId) {
+        return ui::LogicalDisplayId::INVALID;
+    }
+    return *mDisplayId;
 }
 
 void FakePointerController::setDisplayViewport(const DisplayViewport& viewport) {
     mDisplayId = viewport.displayId;
+    setBounds(viewport.logicalLeft, viewport.logicalTop, viewport.logicalRight - 1,
+              viewport.logicalBottom - 1);
+}
+
+void FakePointerController::updatePointerIcon(PointerIconStyle iconId) {
+    ASSERT_FALSE(mIconStyle.has_value()) << "Pointer icon was set more than once";
+    mIconStyle = iconId;
+}
+
+void FakePointerController::setCustomPointerIcon(const SpriteIcon& icon) {
+    if (!mEnabled) return;
+
+    ASSERT_FALSE(mCustomIconStyle.has_value()) << "Custom pointer icon was set more than once";
+    mCustomIconStyle = icon.style;
+}
+
+void FakePointerController::setSkipScreenshotFlagForDisplay(ui::LogicalDisplayId displayId) {
+    mDisplaysToSkipScreenshotFlagChanged = true;
+    mDisplaysToSkipScreenshot.insert(displayId);
+}
+
+void FakePointerController::clearSkipScreenshotFlags() {
+    mDisplaysToSkipScreenshotFlagChanged = true;
+    mDisplaysToSkipScreenshot.clear();
+}
+
+void FakePointerController::assertViewportSet(ui::LogicalDisplayId displayId) {
+    ASSERT_TRUE(mDisplayId);
+    ASSERT_EQ(displayId, mDisplayId);
+}
+
+void FakePointerController::assertViewportNotSet() {
+    ASSERT_EQ(std::nullopt, mDisplayId);
 }
 
 void FakePointerController::assertPosition(float x, float y) {
@@ -55,15 +101,62 @@ void FakePointerController::assertPosition(float x, float y) {
     ASSERT_NEAR(y, actualY, 1);
 }
 
+void FakePointerController::assertSpotCount(ui::LogicalDisplayId displayId, int32_t count) {
+    auto it = mSpotsByDisplay.find(displayId);
+    ASSERT_TRUE(it != mSpotsByDisplay.end()) << "Spots not found for display " << displayId;
+    ASSERT_EQ(static_cast<size_t>(count), it->second.size());
+}
+
+void FakePointerController::assertPointerIconSet(PointerIconStyle iconId) {
+    ASSERT_TRUE(mIconStyle) << "Pointer icon style was not set";
+    ASSERT_EQ(iconId, mIconStyle);
+    mIconStyle.reset();
+}
+
+void FakePointerController::assertPointerIconNotSet() {
+    ASSERT_EQ(std::nullopt, mIconStyle);
+}
+
+void FakePointerController::assertCustomPointerIconSet(PointerIconStyle iconId) {
+    ASSERT_TRUE(mCustomIconStyle) << "Custom pointer icon was not set";
+    ASSERT_EQ(iconId, mCustomIconStyle);
+    mCustomIconStyle.reset();
+}
+
+void FakePointerController::assertCustomPointerIconNotSet() {
+    ASSERT_EQ(std::nullopt, mCustomIconStyle);
+}
+
+void FakePointerController::assertIsSkipScreenshotFlagSet(ui::LogicalDisplayId displayId) {
+    ASSERT_TRUE(mDisplaysToSkipScreenshot.find(displayId) != mDisplaysToSkipScreenshot.end());
+}
+
+void FakePointerController::assertIsSkipScreenshotFlagNotSet(ui::LogicalDisplayId displayId) {
+    ASSERT_TRUE(mDisplaysToSkipScreenshot.find(displayId) == mDisplaysToSkipScreenshot.end());
+}
+
+void FakePointerController::assertSkipScreenshotFlagChanged() {
+    ASSERT_TRUE(mDisplaysToSkipScreenshotFlagChanged);
+    mDisplaysToSkipScreenshotFlagChanged = false;
+}
+
+void FakePointerController::assertSkipScreenshotFlagNotChanged() {
+    ASSERT_FALSE(mDisplaysToSkipScreenshotFlagChanged);
+}
+
 bool FakePointerController::isPointerShown() {
     return mIsPointerShown;
 }
 
 std::optional<FloatRect> FakePointerController::getBounds() const {
+    if (!mEnabled) return std::nullopt;
+
     return mHaveBounds ? std::make_optional<FloatRect>(mMinX, mMinY, mMaxX, mMaxY) : std::nullopt;
 }
 
 void FakePointerController::move(float deltaX, float deltaY) {
+    if (!mEnabled) return;
+
     mX += deltaX;
     if (mX < mMinX) mX = mMinX;
     if (mX > mMaxX) mX = mMaxX;
@@ -73,14 +166,20 @@ void FakePointerController::move(float deltaX, float deltaY) {
 }
 
 void FakePointerController::fade(Transition) {
+    if (!mEnabled) return;
+
     mIsPointerShown = false;
 }
 void FakePointerController::unfade(Transition) {
+    if (!mEnabled) return;
+
     mIsPointerShown = true;
 }
 
 void FakePointerController::setSpots(const PointerCoords*, const uint32_t*, BitSet32 spotIdBits,
-                                     int32_t displayId) {
+                                     ui::LogicalDisplayId displayId) {
+    if (!mEnabled) return;
+
     std::vector<int32_t> newSpots;
     // Add spots for fingers that are down.
     for (BitSet32 idBits(spotIdBits); !idBits.isEmpty();) {
@@ -92,6 +191,8 @@ void FakePointerController::setSpots(const PointerCoords*, const uint32_t*, BitS
 }
 
 void FakePointerController::clearSpots() {
+    if (!mEnabled) return;
+
     mSpotsByDisplay.clear();
 }
 

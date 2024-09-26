@@ -54,16 +54,12 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <android/keycodes.h>
-
-// This file is included by modules that have host support but android/looper.h is not supported
-// on host. __REMOVED_IN needs to be defined in order for android/looper.h to be compiled.
-#ifndef __BIONIC__
-#define __REMOVED_IN(x) __attribute__((deprecated))
-#endif
 #include <android/looper.h>
 
 #include <jni.h>
 
+// This file may also be built on glibc or on Windows/MacOS libc's, so no-op
+// definitions are provided.
 #if !defined(__INTRODUCED_IN)
 #define __INTRODUCED_IN(__api_level) /* nothing */
 #endif
@@ -781,6 +777,8 @@ enum {
      *
      * These values are relative to the state from the last event, not accumulated, so developers
      * should make sure to process this axis value for all batched historical events.
+     *
+     * This axis is only set on the first pointer in a motion event.
      */
     AMOTION_EVENT_AXIS_GESTURE_X_OFFSET = 48,
     /**
@@ -797,6 +795,8 @@ enum {
      *
      * These values are relative to the state from the last event, not accumulated, so developers
      * should make sure to process this axis value for all batched historical events.
+     *
+     * This axis is only set on the first pointer in a motion event.
      */
     AMOTION_EVENT_AXIS_GESTURE_SCROLL_X_DISTANCE = 50,
     /**
@@ -815,8 +815,21 @@ enum {
      *
      * These values are relative to the state from the last event, not accumulated, so developers
      * should make sure to process this axis value for all batched historical events.
+     *
+     * This axis is only set on the first pointer in a motion event.
      */
     AMOTION_EVENT_AXIS_GESTURE_PINCH_SCALE_FACTOR = 52,
+
+    /**
+     * Axis constant: the number of fingers being used in a multi-finger swipe gesture.
+     *
+     * - For a touch pad, reports the number of fingers being used in a multi-finger swipe gesture
+     *   (with CLASSIFICATION_MULTI_FINGER_SWIPE).
+     *
+     * Since CLASSIFICATION_MULTI_FINGER_SWIPE is a hidden API, so is this axis. It is only set on
+     * the first pointer in a motion event.
+     */
+    AMOTION_EVENT_AXIS_GESTURE_SWIPE_FINGER_COUNT = 53,
 
     /**
      * Note: This is not an "Axis constant". It does not represent any axis, nor should it be used
@@ -824,7 +837,7 @@ enum {
      * to make some computations (like iterating through all possible axes) cleaner.
      * Please update the value accordingly if you add a new axis.
      */
-    AMOTION_EVENT_MAXIMUM_VALID_AXIS_VALUE = AMOTION_EVENT_AXIS_GESTURE_PINCH_SCALE_FACTOR,
+    AMOTION_EVENT_MAXIMUM_VALID_AXIS_VALUE = AMOTION_EVENT_AXIS_GESTURE_SWIPE_FINGER_COUNT,
 
     // NOTE: If you add a new axis here you must also add it to several other files.
     //       Refer to frameworks/base/core/java/android/view/MotionEvent.java for the full list.
@@ -989,7 +1002,6 @@ enum {
  * Keyboard types.
  *
  * Refer to the documentation on android.view.InputDevice for more details.
- * Note: When adding a new keyboard type here InputDeviceInfo::setKeyboardType needs to be updated.
  */
 enum {
     /** none */
@@ -1476,6 +1488,17 @@ int32_t AMotionEvent_getClassification(const AInputEvent* motion_event)
  * Available since API level 31.
  */
 const AInputEvent* AMotionEvent_fromJava(JNIEnv* env, jobject motionEvent) __INTRODUCED_IN(31);
+
+/**
+ * Creates a java android.view.InputEvent object that is a copy of the specified native
+ * {@link AInputEvent}.
+ *
+ * Specified {@link AInputEvent} is require to be a valid {@link MotionEvent} or {@link KeyEvent}
+ * object.
+ *
+ *  Available since API level 35.
+ */
+jobject AInputEvent_toJava(JNIEnv* env, const AInputEvent* aInputEvent) __INTRODUCED_IN(35);
 
 struct AInputQueue;
 /**

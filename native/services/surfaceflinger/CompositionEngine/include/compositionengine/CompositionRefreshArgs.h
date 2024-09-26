@@ -19,11 +19,13 @@
 #include <chrono>
 #include <optional>
 #include <vector>
+#include "utils/Timers.h"
 
 #include <compositionengine/Display.h>
 #include <compositionengine/LayerFE.h>
 #include <compositionengine/OutputColorSetting.h>
 #include <math/mat4.h>
+#include <scheduler/interface/ICompositor.h>
 #include <ui/FenceTime.h>
 #include <ui/Transform.h>
 
@@ -32,11 +34,14 @@ namespace android::compositionengine {
 using Layers = std::vector<sp<compositionengine::LayerFE>>;
 using Outputs = std::vector<std::shared_ptr<compositionengine::Output>>;
 
-struct BorderRenderInfo {
-    float width = 0;
-    half4 color;
-    std::vector<int32_t> layerIds;
+// Interface of composition engine power hint callback.
+struct ICEPowerCallback {
+    virtual void notifyCpuLoadUp() = 0;
+
+protected:
+    ~ICEPowerCallback() = default;
 };
+
 /**
  * A parameter object for refreshing a set of outputs
  */
@@ -57,9 +62,6 @@ struct CompositionRefreshArgs {
 
     // Controls how the color mode is chosen for an output
     OutputColorSetting outputColorSetting{OutputColorSetting::kEnhanced};
-
-    // If not Dataspace::UNKNOWN, overrides the dataspace on each output
-    ui::Dataspace colorSpaceAgnosticDataspace{ui::Dataspace::UNKNOWN};
 
     // Forces a color mode on the outputs being refreshed
     ui::ColorMode forceOutputColorMode{ui::ColorMode::NATIVE};
@@ -83,19 +85,22 @@ struct CompositionRefreshArgs {
     // If set, causes the dirty regions to flash with the delay
     std::optional<std::chrono::microseconds> devOptFlashDirtyRegionsDelay;
 
-    // Optional.
-    // The earliest time to send the present command to the HAL.
-    std::optional<std::chrono::steady_clock::time_point> earliestPresentTime;
+    scheduler::FrameTargets frameTargets;
 
-    // The expected time for the next present
-    nsecs_t expectedPresentTime{0};
+    // The frameInterval for the next present
+    // TODO (b/315371484): Calculate per display and store on `FrameTarget`.
+    Fps frameInterval;
 
     // If set, a frame has been scheduled for that time.
+    // TODO (b/255601557): Calculate per display.
     std::optional<std::chrono::steady_clock::time_point> scheduledFrameTime;
 
-    std::vector<BorderRenderInfo> borderInfoList;
-
     bool hasTrustedPresentationListener = false;
+
+    ICEPowerCallback* powerCallback = nullptr;
+
+    // System time for when frame refresh starts. Used for stats.
+    nsecs_t refreshStartTime = 0;
 };
 
 } // namespace android::compositionengine

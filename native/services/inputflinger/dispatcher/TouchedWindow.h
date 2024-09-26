@@ -20,6 +20,8 @@
 #include <input/Input.h>
 #include <utils/BitSet.h>
 #include <bitset>
+#include <ostream>
+#include <set>
 #include "InputTarget.h"
 
 namespace android {
@@ -29,30 +31,64 @@ namespace inputdispatcher {
 // Focus tracking for touch.
 struct TouchedWindow {
     sp<gui::WindowInfoHandle> windowHandle;
+    InputTarget::DispatchMode dispatchMode = InputTarget::DispatchMode::AS_IS;
     ftl::Flags<InputTarget::Flags> targetFlags;
-    std::bitset<MAX_POINTER_ID + 1> pointerIds;
-    // The pointer ids of the pointers that this window is currently pilfering
-    std::bitset<MAX_POINTER_ID + 1> pilferedPointerIds;
-    // Time at which the first action down occurred on this window.
-    // NOTE: This is not initialized in case of HOVER entry/exit and DISPATCH_AS_OUTSIDE scenario.
-    std::optional<nsecs_t> firstDownTimeInTarget;
 
+    // Hovering
     bool hasHoveringPointers() const;
-    bool hasHoveringPointers(int32_t deviceId) const;
+    bool hasHoveringPointers(DeviceId deviceId) const;
+    bool hasHoveringPointer(DeviceId deviceId, int32_t pointerId) const;
+    void addHoveringPointer(DeviceId deviceId, const PointerProperties& pointer);
+    void removeHoveringPointer(DeviceId deviceId, int32_t pointerId);
 
-    bool hasHoveringPointer(int32_t deviceId, int32_t pointerId) const;
-    void addHoveringPointer(int32_t deviceId, int32_t pointerId);
-    void removeHoveringPointer(int32_t deviceId, int32_t pointerId);
-    void removeTouchingPointer(int32_t pointerId);
+    // Touching
+    bool hasTouchingPointer(DeviceId deviceId, int32_t pointerId) const;
+    bool hasTouchingPointers() const;
+    bool hasTouchingPointers(DeviceId deviceId) const;
+    std::vector<PointerProperties> getTouchingPointers(DeviceId deviceId) const;
+    android::base::Result<void> addTouchingPointers(DeviceId deviceId,
+                                                    const std::vector<PointerProperties>& pointers);
+    void removeTouchingPointer(DeviceId deviceId, int32_t pointerId);
+    void removeTouchingPointers(DeviceId deviceId, std::bitset<MAX_POINTER_ID + 1> pointers);
+    bool hasActiveStylus() const;
+    std::set<DeviceId> getTouchingDeviceIds() const;
 
-    void removeAllTouchingPointers();
-    void removeAllHoveringPointersForDevice(int32_t deviceId);
-    void clearHoveringPointers();
+    // Pilfering pointers
+    bool hasPilferingPointers(DeviceId deviceId) const;
+    void addPilferingPointers(DeviceId deviceId, std::bitset<MAX_POINTER_ID + 1> pointerIds);
+    void addPilferingPointer(DeviceId deviceId, int32_t pointerId);
+    std::bitset<MAX_POINTER_ID + 1> getPilferingPointers(DeviceId deviceId) const;
+    std::map<DeviceId, std::bitset<MAX_POINTER_ID + 1>> getPilferingPointers() const;
+
+    // Down time
+    std::optional<nsecs_t> getDownTimeInTarget(DeviceId deviceId) const;
+    void trySetDownTimeInTarget(DeviceId deviceId, nsecs_t downTime);
+
+    void removeAllTouchingPointersForDevice(DeviceId deviceId);
+    void removeAllHoveringPointersForDevice(DeviceId deviceId);
+    void clearHoveringPointers(DeviceId deviceId);
     std::string dump() const;
 
 private:
-    std::map<int32_t /*deviceId*/, std::bitset<MAX_POINTER_ID + 1>> mHoveringPointerIdsByDevice;
+    struct DeviceState {
+        std::vector<PointerProperties> touchingPointers;
+        // The pointer ids of the pointers that this window is currently pilfering, by device
+        std::bitset<MAX_POINTER_ID + 1> pilferingPointerIds;
+        // Time at which the first action down occurred on this window, for each device
+        // NOTE: This is not initialized in case of HOVER entry/exit and DISPATCH_AS_OUTSIDE
+        // scenario.
+        std::optional<nsecs_t> downTimeInTarget;
+        std::vector<PointerProperties> hoveringPointers;
+
+        bool hasPointers() const { return !touchingPointers.empty() || !hoveringPointers.empty(); };
+    };
+
+    std::map<DeviceId, DeviceState> mDeviceStates;
+
+    static std::string deviceStateToString(const TouchedWindow::DeviceState& state);
 };
+
+std::ostream& operator<<(std::ostream& out, const TouchedWindow& window);
 
 } // namespace inputdispatcher
 } // namespace android

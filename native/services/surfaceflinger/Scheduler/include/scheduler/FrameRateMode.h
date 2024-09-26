@@ -36,7 +36,11 @@ struct FrameRateMode {
 };
 
 inline std::string to_string(const FrameRateMode& mode) {
-    return to_string(mode.fps) + " (" + to_string(mode.modePtr->getFps()) + ")";
+    return base::StringPrintf("{fps=%s, modePtr={id=%d, vsyncRate=%s, peakRefreshRate=%s}}",
+                              to_string(mode.fps).c_str(),
+                              ftl::to_underlying(mode.modePtr->getId()),
+                              to_string(mode.modePtr->getVsyncRate()).c_str(),
+                              to_string(mode.modePtr->getPeakFps()).c_str());
 }
 
 } // namespace android::scheduler

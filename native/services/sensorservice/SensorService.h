@@ -17,9 +17,6 @@
 #ifndef ANDROID_SENSOR_SERVICE_H
 #define ANDROID_SENSOR_SERVICE_H
 
-#include "SensorList.h"
-#include "RecentEventLogger.h"
-
 #include <android-base/macros.h>
 #include <binder/AppOpsManager.h>
 #include <binder/BinderService.h>
@@ -27,11 +24,11 @@
 #include <cutils/compiler.h>
 #include <cutils/multiuser.h>
 #include <private/android_filesystem_config.h>
-#include <sensor/ISensorServer.h>
 #include <sensor/ISensorEventConnection.h>
+#include <sensor/ISensorServer.h>
 #include <sensor/Sensor.h>
-#include "android/hardware/BnSensorPrivacyListener.h"
-
+#include <stdint.h>
+#include <sys/types.h>
 #include <utils/AndroidThreads.h>
 #include <utils/KeyedVector.h>
 #include <utils/Looper.h>
@@ -40,12 +37,16 @@
 #include <utils/Vector.h>
 #include <utils/threads.h>
 
-#include <stdint.h>
-#include <sys/types.h>
+#include <condition_variable>
+#include <mutex>
 #include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+#include "RecentEventLogger.h"
+#include "SensorList.h"
+#include "android/hardware/BnSensorPrivacyListener.h"
 
 #if __clang__
 // Clang warns about SensorEventConnection::dump hiding BBinder::dump. The cause isn't fixable
@@ -55,13 +56,13 @@
 
 // ---------------------------------------------------------------------------
 #define IGNORE_HARDWARE_FUSION  false
-#define DEBUG_CONNECTIONS   false
+#define DEBUG_CONNECTIONS false
 // Max size is 100 KB which is enough to accept a batch of about 1000 events.
 #define MAX_SOCKET_BUFFER_SIZE_BATCHED (100 * 1024)
 // For older HALs which don't support batching, use a smaller socket buffer size.
 #define SOCKET_BUFFER_SIZE_NON_BATCHED (4 * 1024)
 
-#define SENSOR_REGISTRATIONS_BUF_SIZE 200
+#define SENSOR_REGISTRATIONS_BUF_SIZE 500
 
 // Apps that targets S+ and do not have HIGH_SAMPLING_RATE_SENSORS permission will be capped
 // at 200 Hz. The cap also applies to all requests when the mic toggle is flipped to on, regardless
@@ -120,6 +121,11 @@ public:
        // delivered to all requesting apps rather than just the package allowed to inject data.
        // This mode is only allowed to be used on development builds.
        REPLAY_DATA_INJECTION = 3,
+       // Like REPLAY_DATA_INJECTION but injected data is not sent into the HAL. It is stored in a
+       // buffer in SensorDevice and played back to SensorService when SensorDevice::poll() is
+       // called. This is useful for playing back sensor data on the platform without relying on
+       // the HAL to support data injection.
+       HAL_BYPASS_REPLAY_DATA_INJECTION = 4,
 
       // State Transitions supported.
       //     RESTRICTED   <---  NORMAL   ---> DATA_INJECTION/REPLAY_DATA_INJECTION
@@ -208,6 +214,7 @@ private:
     class SensorEventAckReceiver;
     class SensorRecord;
     class SensorRegistrationInfo;
+    class RuntimeSensorHandler;
 
     // Promoting a SensorEventConnection or SensorDirectConnection from wp to sp must be done with
     // mLock held, but destroying that sp must be done unlocked to avoid a race condition that
@@ -262,6 +269,14 @@ private:
         friend class ConnectionSafeAutolock;
         SortedVector< wp<SensorEventConnection> > mActiveConnections;
         SortedVector< wp<SensorDirectConnection> > mDirectConnections;
+    };
+
+    class RuntimeSensorHandler : public Thread {
+        sp<SensorService> const mService;
+    public:
+        virtual bool threadLoop();
+        explicit RuntimeSensorHandler(const sp<SensorService>& service) : mService(service) {
+        }
     };
 
     // If accessing a sensor we need to make sure the UID has access to it. If
@@ -325,6 +340,12 @@ private:
             binder::Status onSensorPrivacyChanged(int toggleType, int sensor,
                                                   bool enabled);
 
+            // This callback is used for additional automotive-specific state for sensor privacy
+            // such as ENABLED_EXCEPT_ALLOWLISTED_APPS. The newly defined states will only be valid
+            // for camera privacy on automotive devices. onSensorPrivacyChanged() will still be
+            // invoked whenever the enabled status of a toggle changes.
+            binder::Status onSensorPrivacyStateChanged(int, int, int) {return binder::Status::ok();}
+
         protected:
             std::atomic_bool mSensorPrivacyEnabled;
             wp<SensorService> mService;
@@ -368,6 +389,8 @@ private:
     // Thread interface
     virtual bool threadLoop();
 
+    void processRuntimeSensorEvents();
+
     // ISensorServer interface
     virtual Vector<Sensor> getSensorList(const String16& opPackageName);
     virtual Vector<Sensor> getDynamicSensorList(const String16& opPackageName);
@@ -376,6 +399,8 @@ private:
             const String8& packageName,
             int requestedMode, const String16& opPackageName, const String16& attributionTag);
     virtual int isDataInjectionEnabled();
+    virtual int isReplayDataInjectionEnabled();
+    virtual int isHalBypassReplayDataInjectionEnabled();
     virtual sp<ISensorEventConnection> createSensorDirectConnection(const String16& opPackageName,
             int deviceId, uint32_t size, int32_t type, int32_t format,
             const native_handle *resource);
@@ -432,6 +457,11 @@ private:
 
     // Send events from the event cache for this particular connection.
     void sendEventsFromCache(const sp<SensorEventConnection>& connection);
+
+    // Send all events in the buffer to all clients.
+    void sendEventsToAllClients(
+        const std::vector<sp<SensorEventConnection>>& activeConnections,
+        ssize_t count);
 
     // If SensorService is operating in RESTRICTED mode, only select whitelisted packages are
     // allowed to register for or call flush on sensors. Typically only cts test packages are
@@ -494,6 +524,16 @@ private:
     // Removes the capped rate on active direct connections (when the mic toggle is flipped to off)
     void uncapRates();
 
+    bool isInjectionMode(int mode);
+
+    void handleDeviceReconnection(SensorDevice& device);
+
+    // Removes a connected dynamic sensor and send the corresponding event to
+    // all connections.
+    void disconnectDynamicSensor(
+        int handle,
+        const std::vector<sp<SensorEventConnection>>& activeConnections);
+
     static inline bool isAudioServerOrSystemServerUid(uid_t uid) {
         return multiuser_get_app_id(uid) == AID_SYSTEM || uid == AID_AUDIOSERVER;
     }
@@ -512,6 +552,10 @@ private:
     uint32_t mSocketBufferSize;
     sp<Looper> mLooper;
     sp<SensorEventAckReceiver> mAckReceiver;
+    sp<RuntimeSensorHandler> mRuntimeSensorHandler;
+    // Mutex and CV used to notify the mRuntimeSensorHandler thread that there are new events.
+    std::mutex mRutimeSensorThreadMutex;
+    std::condition_variable mRuntimeSensorsCv;
 
     // protected by mLock
     mutable Mutex mLock;
@@ -519,7 +563,7 @@ private:
     std::unordered_set<int> mActiveVirtualSensors;
     SensorConnectionHolder mConnectionHolder;
     bool mWakeLockAcquired;
-    sensors_event_t *mSensorEventBuffer, *mSensorEventScratch;
+    sensors_event_t *mSensorEventBuffer, *mSensorEventScratch, *mRuntimeSensorEventBuffer;
     // WARNING: these SensorEventConnection instances must not be promoted to sp, except via
     // modification to add support for them in ConnectionSafeAutolock
     wp<const SensorEventConnection> * mMapFlushEventsToConnections;
@@ -557,6 +601,10 @@ private:
     bool mLastReportedProxIsActive;
     // Listeners subscribed to receive updates on the proximity sensor active state.
     std::vector<sp<ProximityActiveListener>> mProximityActiveListeners;
+
+    // Stores the handle of the dynamic_meta sensor to send clean up event once
+    // HAL crashes.
+    std::optional<int> mDynamicMetaSensorHandle;
 };
 
 } // namespace android

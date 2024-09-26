@@ -21,12 +21,14 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.testing.AndroidTestingRunner;
 import android.view.MotionEvent;
 import android.view.accessibility.AccessibilityManager;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.logging.MetricsLogger;
@@ -40,6 +42,8 @@ import com.android.systemui.statusbar.policy.KeyguardStateController;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -49,7 +53,7 @@ import java.util.List;
 import java.util.Set;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 public class BrightLineFalsingManagerTest extends SysuiTestCase {
     private BrightLineFalsingManager mBrightLineFalsingManager;
     @Mock
@@ -71,6 +75,10 @@ public class BrightLineFalsingManagerTest extends SysuiTestCase {
     private KeyguardStateController mKeyguardStateController;
     @Mock
     private AccessibilityManager mAccessibilityManager;
+    @Captor
+    private ArgumentCaptor<FalsingDataProvider.SessionListener> mSessionListenerArgumentCaptor;
+    @Captor
+    private ArgumentCaptor<HistoryTracker.BeliefListener> mBeliefListenerArgumentCaptor;
 
     private final FalsingClassifier.Result mPassedResult = FalsingClassifier.Result.passed(1);
     private final FalsingClassifier.Result mFalsedResult =
@@ -186,5 +194,36 @@ public class BrightLineFalsingManagerTest extends SysuiTestCase {
         assertThat(mBrightLineFalsingManager.isFalseTouch(Classifier.GENERIC)).isTrue();
         when(mFalsingDataProvider.isUnfolded()).thenReturn(true);
         assertThat(mBrightLineFalsingManager.isFalseTouch(Classifier.GENERIC)).isFalse();
+    }
+
+    @Test
+    public void testTrackpadGesture() {
+        assertThat(mBrightLineFalsingManager.isFalseTouch(Classifier.GENERIC)).isTrue();
+        when(mFalsingDataProvider.isFromTrackpad()).thenReturn(true);
+        assertThat(mBrightLineFalsingManager.isFalseTouch(Classifier.GENERIC)).isFalse();
+    }
+
+    @Test
+    public void testAddAndRemoveFalsingBeliefListener() {
+        verify(mHistoryTracker, never()).addBeliefListener(any());
+
+        // Session started
+        final FalsingDataProvider.SessionListener sessionListener = captureSessionListener();
+        sessionListener.onSessionStarted();
+
+        // Verify belief listener added when session started
+        verify(mHistoryTracker).addBeliefListener(mBeliefListenerArgumentCaptor.capture());
+        verify(mHistoryTracker, never()).removeBeliefListener(any());
+
+        // Session ended
+        sessionListener.onSessionEnded();
+
+        // Verify belief listener removed when session ended
+        verify(mHistoryTracker).removeBeliefListener(mBeliefListenerArgumentCaptor.getValue());
+    }
+
+    private FalsingDataProvider.SessionListener captureSessionListener() {
+        verify(mFalsingDataProvider).addSessionListener(mSessionListenerArgumentCaptor.capture());
+        return mSessionListenerArgumentCaptor.getValue();
     }
 }

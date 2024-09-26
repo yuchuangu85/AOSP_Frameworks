@@ -49,13 +49,15 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
 import android.graphics.Insets;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.view.Choreographer;
 import android.view.MotionEvent;
@@ -68,11 +70,12 @@ import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageView;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.graphics.SfVsyncFrameCallbackProvider;
-import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.res.R;
 
 import org.junit.After;
 import org.junit.Before;
@@ -87,7 +90,7 @@ import org.mockito.MockitoAnnotations;
 import java.util.List;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class MagnificationModeSwitchTest extends SysuiTestCase {
 
@@ -183,6 +186,87 @@ public class MagnificationModeSwitchTest extends SysuiTestCase {
                 DEFAULT_FADE_OUT_ANIMATION_DELAY_MS, AccessibilityManager.FLAG_CONTENT_ICONS
                         | AccessibilityManager.FLAG_CONTENT_CONTROLS);
         verify(mSpyImageView).postOnAnimationDelayed(any(Runnable.class), eq((long) a11yTimeout));
+    }
+
+    @Test
+    public void showMagnificationButton_noA11yServicesRunning_postDelayedAnimationsWithTimeout() {
+        final int a11yTimeout = 12345;
+        when(mAccessibilityManager.getRecommendedTimeoutMillis(anyInt(), anyInt())).thenReturn(
+                a11yTimeout);
+        when(mAccessibilityManager.getEnabledAccessibilityServiceList(anyInt()))
+                .thenReturn(List.of());
+
+        mMagnificationModeSwitch.showButton(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        verify(mAccessibilityManager).getRecommendedTimeoutMillis(
+                DEFAULT_FADE_OUT_ANIMATION_DELAY_MS, AccessibilityManager.FLAG_CONTENT_ICONS
+                        | AccessibilityManager.FLAG_CONTENT_CONTROLS);
+        verify(mSpyImageView).postOnAnimationDelayed(any(Runnable.class), eq((long) a11yTimeout));
+    }
+
+    @Test
+    public void showMagnificationButton_voiceAccessRunning_noTimeout() {
+        var serviceInfo = createServiceInfoWithName(
+                "com.google.android.apps.accessibility.voiceaccess.JustSpeakService");
+        when(mAccessibilityManager.getEnabledAccessibilityServiceList(anyInt()))
+                .thenReturn(List.of(serviceInfo));
+
+        mMagnificationModeSwitch.showButton(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        verify(mSpyImageView, never()).postOnAnimationDelayed(any(Runnable.class), anyLong());
+    }
+
+    @Test
+    public void showMagnificationButton_switchAccessRunning_noTimeout() {
+        var serviceInfo = createServiceInfoWithName(
+                "com.android.switchaccess.SwitchAccessService");
+        when(mAccessibilityManager.getEnabledAccessibilityServiceList(anyInt()))
+                .thenReturn(List.of(serviceInfo));
+
+        mMagnificationModeSwitch.showButton(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        verify(mSpyImageView, never()).postOnAnimationDelayed(any(Runnable.class), anyLong());
+    }
+
+    @Test
+    public void showMagnificationButton_switchAccessAndVoiceAccessBothRunning_noTimeout() {
+        var switchAccessServiceInfo = createServiceInfoWithName(
+                "com.android.switchaccess.SwitchAccessService");
+        var voiceAccessServiceInfo = createServiceInfoWithName(
+                "com.google.android.apps.accessibility.voiceaccess.JustSpeakService");
+        when(mAccessibilityManager.getEnabledAccessibilityServiceList(anyInt()))
+                .thenReturn(List.of(switchAccessServiceInfo, voiceAccessServiceInfo));
+
+        mMagnificationModeSwitch.showButton(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        verify(mSpyImageView, never()).postOnAnimationDelayed(any(Runnable.class), anyLong());
+    }
+
+    @Test
+    public void showMagnificationButton_someOtherServiceRunning_postDelayedAnimationsWithTimeout() {
+        final int a11yTimeout = 12345;
+        when(mAccessibilityManager.getRecommendedTimeoutMillis(anyInt(), anyInt())).thenReturn(
+                a11yTimeout);
+        var serviceInfo1 = createServiceInfoWithName("com.test.someService1");
+        var serviceInfo2 = createServiceInfoWithName("com.test.someService2");
+        when(mAccessibilityManager.getEnabledAccessibilityServiceList(anyInt()))
+                .thenReturn(List.of(serviceInfo1, serviceInfo2));
+
+        mMagnificationModeSwitch.showButton(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        verify(mAccessibilityManager).getRecommendedTimeoutMillis(
+                DEFAULT_FADE_OUT_ANIMATION_DELAY_MS, AccessibilityManager.FLAG_CONTENT_ICONS
+                        | AccessibilityManager.FLAG_CONTENT_CONTROLS);
+        verify(mSpyImageView).postOnAnimationDelayed(any(Runnable.class), eq((long) a11yTimeout));
+    }
+
+    private AccessibilityServiceInfo createServiceInfoWithName(String name) {
+        var resolveInfo = new ResolveInfo();
+        resolveInfo.serviceInfo = new ServiceInfo();
+        resolveInfo.serviceInfo.name = name;
+        var serviceInfo = new AccessibilityServiceInfo();
+        serviceInfo.setResolveInfo(resolveInfo);
+        return serviceInfo;
     }
 
     @Test

@@ -19,11 +19,14 @@ package com.android.server.wm;
 import static android.app.ActivityManager.LOCK_TASK_MODE_LOCKED;
 import static android.app.ActivityManager.LOCK_TASK_MODE_NONE;
 import static android.view.Display.DEFAULT_DISPLAY;
+import static android.view.ViewRootImpl.CLIENT_TRANSIENT;
+import static android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
 import static android.window.DisplayAreaOrganizer.FEATURE_UNDEFINED;
 import static android.window.DisplayAreaOrganizer.KEY_ROOT_DISPLAY_AREA_ID;
 
 import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.app.ActivityThread;
@@ -33,6 +36,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Insets;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.os.Binder;
 import android.os.Bundle;
@@ -40,7 +44,6 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
-import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
@@ -48,7 +51,6 @@ import android.util.DisplayMetrics;
 import android.util.Slog;
 import android.view.Display;
 import android.view.Gravity;
-import android.view.IWindowManager;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -56,11 +58,11 @@ import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.WindowInsets.Type;
 import android.view.WindowManager;
-import android.view.WindowManagerGlobal;
 import android.view.animation.AnimationUtils;
 import android.view.animation.Interpolator;
 import android.widget.Button;
 import android.widget.FrameLayout;
+import android.widget.RelativeLayout;
 
 import com.android.internal.R;
 
@@ -95,6 +97,10 @@ public class ImmersiveModeConfirmation {
      */
     @Nullable
     private Context mWindowContext;
+    /**
+     * The root display area feature id that the {@link #mWindowContext} is attaching to.
+     */
+    private int mWindowContextRootDisplayAreaId = FEATURE_UNDEFINED;
     // Local copy of vr mode enabled state, to avoid calling into VrManager with
     // the lock held.
     private boolean mVrModeEnabled;
@@ -206,12 +212,15 @@ public class ImmersiveModeConfirmation {
     private void handleHide() {
         if (mClingWindow != null) {
             if (DEBUG) Slog.d(TAG, "Hiding immersive mode confirmation");
-            // We don't care which root display area the window manager is specifying for removal.
-            try {
-                getWindowManager(FEATURE_UNDEFINED).removeView(mClingWindow);
-            } catch (WindowManager.InvalidDisplayException e) {
-                Slog.w(TAG, "Fail to hide the immersive confirmation window because of " + e);
-                return;
+            if (mWindowManager != null) {
+                try {
+                    mWindowManager.removeView(mClingWindow);
+                } catch (WindowManager.InvalidDisplayException e) {
+                    Slog.w(TAG, "Fail to hide the immersive confirmation window because of "
+                            + e);
+                }
+                mWindowManager = null;
+                mWindowContext = null;
             }
             mClingWindow = null;
         }
@@ -227,9 +236,11 @@ public class ImmersiveModeConfirmation {
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         lp.setFitInsetsTypes(lp.getFitInsetsTypes() & ~Type.statusBars());
+        lp.layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         // Trusted overlay so touches outside the touchable area are allowed to pass through
         lp.privateFlags |= WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS
-                | WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY;
+                | WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY
+                | WindowManager.LayoutParams.PRIVATE_FLAG_IMMERSIVE_CONFIRMATION_WINDOW;
         lp.setTitle("ImmersiveModeConfirmation");
         lp.windowAnimations = com.android.internal.R.style.Animation_ImmersiveModeConfirmation;
         lp.token = getWindowToken();
@@ -238,10 +249,17 @@ public class ImmersiveModeConfirmation {
 
     private FrameLayout.LayoutParams getBubbleLayoutParams() {
         return new FrameLayout.LayoutParams(
-                mContext.getResources().getDimensionPixelSize(
-                        R.dimen.immersive_mode_cling_width),
+                getClingWindowWidth(),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER_HORIZONTAL | Gravity.TOP);
+    }
+
+    /**
+     * Returns the width of the cling window.
+     */
+    private int getClingWindowWidth() {
+        return mContext.getResources().getDimensionPixelSize(
+                R.dimen.immersive_mode_cling_width);
     }
 
     /**
@@ -380,6 +398,24 @@ public class ImmersiveModeConfirmation {
 
         @Override
         public WindowInsets onApplyWindowInsets(WindowInsets insets) {
+            // If the top display cutout overlaps with the full-width (windowWidth=-1)/centered
+            // dialog, then adjust the dialog contents by the cutout
+            final int width = getWidth();
+            final int windowWidth = getClingWindowWidth();
+            final Rect topDisplayCutout = insets.getDisplayCutout() != null
+                    ? insets.getDisplayCutout().getBoundingRectTop()
+                    : new Rect();
+            final boolean intersectsTopCutout = topDisplayCutout.intersects(
+                    width - (windowWidth / 2), 0,
+                    width + (windowWidth / 2), topDisplayCutout.bottom);
+            if (mClingWindow != null &&
+                    (windowWidth < 0 || (width > 0 && intersectsTopCutout))) {
+                final View iconView = mClingWindow.findViewById(R.id.immersive_cling_icon);
+                RelativeLayout.LayoutParams lp = (RelativeLayout.LayoutParams)
+                        iconView.getLayoutParams();
+                lp.topMargin = topDisplayCutout.bottom;
+                iconView.setLayoutParams(lp);
+            }
             // we will be hiding the nav bar, so layout as if it's already hidden
             return new WindowInsets.Builder(insets).setInsets(
                     Type.systemBars(), Insets.NONE).build();
@@ -394,26 +430,18 @@ public class ImmersiveModeConfirmation {
      * @return the WindowManager specifying with the {@code rootDisplayAreaId} to attach the
      *         confirmation window.
      */
-    private WindowManager getWindowManager(int rootDisplayAreaId) {
-        if (mWindowManager == null || mWindowContext == null) {
-            // Create window context to specify the RootDisplayArea
-            final Bundle options = getOptionsForWindowContext(rootDisplayAreaId);
-            mWindowContext = mContext.createWindowContext(
-                    IMMERSIVE_MODE_CONFIRMATION_WINDOW_TYPE, options);
-            mWindowManager = mWindowContext.getSystemService(WindowManager.class);
-            return mWindowManager;
+    @NonNull
+    private WindowManager createWindowManager(int rootDisplayAreaId) {
+        if (mWindowManager != null) {
+            throw new IllegalStateException(
+                    "Must not create a new WindowManager while there is an existing one");
         }
-
-        // Update the window context and window manager to specify the RootDisplayArea
+        // Create window context to specify the RootDisplayArea
         final Bundle options = getOptionsForWindowContext(rootDisplayAreaId);
-        final IWindowManager wms = WindowManagerGlobal.getWindowManagerService();
-        try {
-            wms.attachWindowContextToDisplayArea(mWindowContext.getWindowContextToken(),
-                    IMMERSIVE_MODE_CONFIRMATION_WINDOW_TYPE, mContext.getDisplayId(), options);
-        }  catch (RemoteException e) {
-            throw e.rethrowAsRuntimeException();
-        }
-
+        mWindowContextRootDisplayAreaId = rootDisplayAreaId;
+        mWindowContext = mContext.createWindowContext(
+                IMMERSIVE_MODE_CONFIRMATION_WINDOW_TYPE, options);
+        mWindowManager = mWindowContext.getSystemService(WindowManager.class);
         return mWindowManager;
     }
 
@@ -434,14 +462,23 @@ public class ImmersiveModeConfirmation {
     }
 
     private void handleShow(int rootDisplayAreaId) {
+        if (mClingWindow != null) {
+            if (rootDisplayAreaId == mWindowContextRootDisplayAreaId) {
+                if (DEBUG) Slog.d(TAG, "Immersive mode confirmation has already been shown");
+                return;
+            } else {
+                // Hide the existing confirmation before show a new one in the new root.
+                if (DEBUG) Slog.d(TAG, "Immersive mode confirmation was shown in a different root");
+                handleHide();
+            }
+        }
+
         if (DEBUG) Slog.d(TAG, "Showing immersive mode confirmation");
-
         mClingWindow = new ClingWindowView(mContext, mConfirm);
-
         // show the confirmation
-        WindowManager.LayoutParams lp = getClingWindowLayoutParams();
+        final WindowManager.LayoutParams lp = getClingWindowLayoutParams();
         try {
-            getWindowManager(rootDisplayAreaId).addView(mClingWindow, lp);
+            createWindowManager(rootDisplayAreaId).addView(mClingWindow, lp);
         } catch (WindowManager.InvalidDisplayException e) {
             Slog.w(TAG, "Fail to show the immersive confirmation window because of " + e);
         }
@@ -469,6 +506,9 @@ public class ImmersiveModeConfirmation {
 
         @Override
         public void handleMessage(Message msg) {
+            if (CLIENT_TRANSIENT) {
+                return;
+            }
             switch(msg.what) {
                 case SHOW:
                     handleShow(msg.arg1);

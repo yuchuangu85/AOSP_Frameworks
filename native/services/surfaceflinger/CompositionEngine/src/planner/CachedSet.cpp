@@ -27,8 +27,7 @@
 #include <renderengine/DisplaySettings.h>
 #include <renderengine/RenderEngine.h>
 #include <ui/DebugUtils.h>
-#include <utils/Trace.h>
-
+#include <ui/HdrRenderTypeUtils.h>
 #include <utils/Trace.h>
 
 namespace android::compositionengine::impl::planner {
@@ -162,6 +161,9 @@ void CachedSet::render(renderengine::RenderEngine& renderEngine, TexturePool& te
                        const OutputCompositionState& outputState,
                        bool deviceHandlesColorTransform) {
     ATRACE_CALL();
+    if (outputState.powerCallback) {
+        outputState.powerCallback->notifyCpuLoadUp();
+    }
     const Rect& viewport = outputState.layerStackSpace.getContent();
     const ui::Dataspace& outputDataspace = outputState.dataspace;
     const ui::Transform::RotationFlags orientation =
@@ -177,18 +179,19 @@ void CachedSet::render(renderengine::RenderEngine& renderEngine, TexturePool& te
             .targetLuminanceNits = outputState.displayBrightnessNits,
     };
 
-    LayerFE::ClientCompositionTargetSettings targetSettings{
-            .clip = Region(viewport),
-            .needsFiltering = false,
-            .isSecure = outputState.isSecure,
-            .supportsProtectedContent = false,
-            .viewport = viewport,
-            .dataspace = outputDataspace,
-            .realContentIsVisible = true,
-            .clearContent = false,
-            .blurSetting = LayerFE::ClientCompositionTargetSettings::BlurSetting::Enabled,
-            .whitePointNits = outputState.displayBrightnessNits,
-    };
+    LayerFE::ClientCompositionTargetSettings
+            targetSettings{.clip = Region(viewport),
+                           .needsFiltering = false,
+                           .isSecure = outputState.isSecure,
+                           .isProtected = false,
+                           .viewport = viewport,
+                           .dataspace = outputDataspace,
+                           .realContentIsVisible = true,
+                           .clearContent = false,
+                           .blurSetting =
+                                   LayerFE::ClientCompositionTargetSettings::BlurSetting::Enabled,
+                           .whitePointNits = outputState.displayBrightnessNits,
+                           .treat170mAsSrgb = outputState.treat170mAsSrgb};
 
     std::vector<renderengine::LayerSettings> layerSettings;
     renderengine::LayerSettings highlight;
@@ -271,11 +274,9 @@ void CachedSet::render(renderengine::RenderEngine& renderEngine, TexturePool& te
         bufferFence.reset(texture->getReadyFence()->dup());
     }
 
-    constexpr bool kUseFramebufferCache = false;
-
     auto fenceResult = renderEngine
                                .drawLayers(displaySettings, layerSettings, texture->get(),
-                                           kUseFramebufferCache, std::move(bufferFence))
+                                           std::move(bufferFence))
                                .get();
 
     if (fenceStatus(fenceResult) == NO_ERROR) {
@@ -304,7 +305,7 @@ bool CachedSet::requiresHolePunch() const {
         return false;
     }
 
-    if (hasUnsupportedDataspace()) {
+    if (hasKnownColorShift()) {
         return false;
     }
 
@@ -364,22 +365,27 @@ compositionengine::OutputLayer* CachedSet::getBlurLayer() const {
     return mBlurLayer ? mBlurLayer->getOutputLayer() : nullptr;
 }
 
-bool CachedSet::hasUnsupportedDataspace() const {
+bool CachedSet::hasKnownColorShift() const {
     return std::any_of(mLayers.cbegin(), mLayers.cend(), [](const Layer& layer) {
         auto dataspace = layer.getState()->getDataspace();
-        const auto transfer = static_cast<ui::Dataspace>(dataspace & ui::Dataspace::TRANSFER_MASK);
-        if (transfer == ui::Dataspace::TRANSFER_ST2084 || transfer == ui::Dataspace::TRANSFER_HLG) {
-            // Skip HDR.
+
+        // Layers are never dimmed when rendering a cached set, meaning that we may ask HWC to
+        // dim a cached set. But this means that we can never cache any HDR layers so that we
+        // don't accidentally dim those layers.
+        const auto hdrType = getHdrRenderType(dataspace, layer.getState()->getPixelFormat(),
+                                              layer.getState()->getHdrSdrRatio());
+        if (hdrType != HdrRenderType::SDR) {
+            return true;
+        }
+
+        // Layers that have dimming disabled pretend that they're HDR.
+        if (!layer.getState()->isDimmingEnabled()) {
             return true;
         }
 
         if ((dataspace & HAL_DATASPACE_STANDARD_MASK) == HAL_DATASPACE_STANDARD_BT601_625) {
             // RenderEngine does not match some DPUs, so skip
             // to avoid flickering/color differences.
-            return true;
-        }
-        // TODO(b/274804887): temp fix of overdimming issue, skip caching if hsdr/sdr ratio > 1.01f
-        if (layer.getState()->getHdrSdrRatio() > 1.01f) {
             return true;
         }
         return false;
@@ -389,12 +395,6 @@ bool CachedSet::hasUnsupportedDataspace() const {
 bool CachedSet::hasProtectedLayers() const {
     return std::any_of(mLayers.cbegin(), mLayers.cend(),
                        [](const Layer& layer) { return layer.getState()->isProtected(); });
-}
-
-bool CachedSet::hasSolidColorLayers() const {
-    return std::any_of(mLayers.cbegin(), mLayers.cend(), [](const Layer& layer) {
-        return layer.getState()->hasSolidColorCompositionType();
-    });
 }
 
 bool CachedSet::cachingHintExcludesLayers() const {

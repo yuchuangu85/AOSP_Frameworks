@@ -116,7 +116,7 @@ Choreographer::~Choreographer() {
     std::lock_guard<std::mutex> _l(gChoreographers.lock);
     gChoreographers.ptrs.erase(std::remove_if(gChoreographers.ptrs.begin(),
                                               gChoreographers.ptrs.end(),
-                                              [=](Choreographer* c) { return c == this; }),
+                                              [=, this](Choreographer* c) { return c == this; }),
                                gChoreographers.ptrs.end());
     // Only poke DisplayManagerGlobal to unregister if we previously registered
     // callbacks.
@@ -143,9 +143,9 @@ Choreographer::~Choreographer() {
 void Choreographer::postFrameCallbackDelayed(AChoreographer_frameCallback cb,
                                              AChoreographer_frameCallback64 cb64,
                                              AChoreographer_vsyncCallback vsyncCallback, void* data,
-                                             nsecs_t delay) {
+                                             nsecs_t delay, CallbackType callbackType) {
     nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
-    FrameCallback callback{cb, cb64, vsyncCallback, data, now + delay};
+    FrameCallback callback{cb, cb64, vsyncCallback, data, now + delay, callbackType};
     {
         std::lock_guard<std::mutex> _l{mLock};
         mFrameCallbacks.push(callback);
@@ -285,18 +285,8 @@ void Choreographer::handleRefreshRateUpdates() {
     }
 }
 
-void Choreographer::dispatchVsync(nsecs_t timestamp, PhysicalDisplayId, uint32_t,
-                                  VsyncEventData vsyncEventData) {
-    std::vector<FrameCallback> callbacks{};
-    {
-        std::lock_guard<std::mutex> _l{mLock};
-        nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
-        while (!mFrameCallbacks.empty() && mFrameCallbacks.top().dueTime < now) {
-            callbacks.push_back(mFrameCallbacks.top());
-            mFrameCallbacks.pop();
-        }
-    }
-    mLastVsyncEventData = vsyncEventData;
+void Choreographer::dispatchCallbacks(const std::vector<FrameCallback>& callbacks,
+                                      VsyncEventData vsyncEventData, nsecs_t timestamp) {
     for (const auto& cb : callbacks) {
         if (cb.vsyncCallback != nullptr) {
             ATRACE_FORMAT("AChoreographer_vsyncCallback %" PRId64,
@@ -319,9 +309,43 @@ void Choreographer::dispatchVsync(nsecs_t timestamp, PhysicalDisplayId, uint32_t
     }
 }
 
+void Choreographer::dispatchVsync(nsecs_t timestamp, PhysicalDisplayId, uint32_t,
+                                  VsyncEventData vsyncEventData) {
+    std::vector<FrameCallback> animationCallbacks{};
+    std::vector<FrameCallback> inputCallbacks{};
+    {
+        std::lock_guard<std::mutex> _l{mLock};
+        nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
+        while (!mFrameCallbacks.empty() && mFrameCallbacks.top().dueTime < now) {
+            if (mFrameCallbacks.top().callbackType == CALLBACK_INPUT) {
+                inputCallbacks.push_back(mFrameCallbacks.top());
+            } else {
+                animationCallbacks.push_back(mFrameCallbacks.top());
+            }
+            mFrameCallbacks.pop();
+        }
+    }
+    mLastVsyncEventData = vsyncEventData;
+    // Callbacks with type CALLBACK_INPUT should always run first
+    {
+        ATRACE_FORMAT("CALLBACK_INPUT");
+        dispatchCallbacks(inputCallbacks, vsyncEventData, timestamp);
+    }
+    {
+        ATRACE_FORMAT("CALLBACK_ANIMATION");
+        dispatchCallbacks(animationCallbacks, vsyncEventData, timestamp);
+    }
+}
+
 void Choreographer::dispatchHotplug(nsecs_t, PhysicalDisplayId displayId, bool connected) {
     ALOGV("choreographer %p ~ received hotplug event (displayId=%s, connected=%s), ignoring.", this,
           to_string(displayId).c_str(), toString(connected));
+}
+
+void Choreographer::dispatchHotplugConnectionError(nsecs_t, int32_t connectionError) {
+    ALOGV("choreographer %p ~ received hotplug connection error event (connectionError=%d), "
+          "ignoring.",
+          this, connectionError);
 }
 
 void Choreographer::dispatchModeChanged(nsecs_t, PhysicalDisplayId, int32_t, nsecs_t) {
@@ -336,6 +360,13 @@ void Choreographer::dispatchFrameRateOverrides(nsecs_t, PhysicalDisplayId,
 void Choreographer::dispatchNullEvent(nsecs_t, PhysicalDisplayId) {
     ALOGV("choreographer %p ~ received null event.", this);
     handleRefreshRateUpdates();
+}
+
+void Choreographer::dispatchHdcpLevelsChanged(PhysicalDisplayId displayId, int32_t connectedLevel,
+                                              int32_t maxLevel) {
+    ALOGV("choreographer %p ~ received hdcp levels change event (displayId=%s, connectedLevel=%d, "
+          "maxLevel=%d), ignoring.",
+          this, to_string(displayId).c_str(), connectedLevel, maxLevel);
 }
 
 void Choreographer::handleMessage(const Message& message) {
@@ -392,6 +423,10 @@ int64_t Choreographer::getStartTimeNanosForVsyncId(AVsyncId vsyncId) {
         return 0;
     }
     return iter->second;
+}
+
+const sp<Looper> Choreographer::getLooper() {
+    return mLooper;
 }
 
 } // namespace android

@@ -20,6 +20,7 @@
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #include <android-base/properties.h>
+#include <common/FlagManager.h>
 #include <compositionengine/impl/planner/Flattener.h>
 #include <compositionengine/impl/planner/LayerState.h>
 
@@ -50,8 +51,19 @@ bool isSameStack(const std::vector<const LayerState*>& incomingLayers,
     for (size_t i = 0; i < incomingLayers.size(); i++) {
         // Checking the IDs here is very strict, but we do this as otherwise we may mistakenly try
         // to access destroyed OutputLayers later on.
-        if (incomingLayers[i]->getId() != existingLayers[i]->getId() ||
-            incomingLayers[i]->getDifferingFields(*(existingLayers[i])) != LayerStateField::None) {
+        if (incomingLayers[i]->getId() != existingLayers[i]->getId()) {
+            return false;
+        }
+
+        // Do not unflatten if source crop is only moved.
+        if (FlagManager::getInstance().cache_when_source_crop_layer_only_moved() &&
+            incomingLayers[i]->isSourceCropSizeEqual(*(existingLayers[i])) &&
+            incomingLayers[i]->getDifferingFields(*(existingLayers[i])) ==
+                    LayerStateField::SourceCrop) {
+            continue;
+        }
+
+        if (incomingLayers[i]->getDifferingFields(*(existingLayers[i])) != LayerStateField::None) {
             return false;
         }
     }
@@ -427,7 +439,7 @@ std::vector<Flattener::Run> Flattener::findCandidateRuns(time_point now) const {
 
         if (!layerDeniedFromCaching && layerIsInactive &&
             (firstLayer || runHasFirstLayer || !layerHasBlur) &&
-            !currentSet->hasUnsupportedDataspace()) {
+            !currentSet->hasKnownColorShift()) {
             if (isPartOfRun) {
                 builder.increment();
             } else {
@@ -497,13 +509,6 @@ void Flattener::buildCachedSets(time_point now) {
         // TODO (b/191997217): make it less aggressive, and sync with findCandidateRuns
         if (layer.hasProtectedLayers()) {
             ATRACE_NAME("layer->hasProtectedLayers()");
-            return;
-        }
-    }
-
-    for (const CachedSet& layer : mLayers) {
-        if (layer.hasSolidColorLayers()) {
-            ATRACE_NAME("layer->hasSolidColorLayers()");
             return;
         }
     }

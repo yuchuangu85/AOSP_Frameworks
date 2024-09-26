@@ -17,10 +17,10 @@
 package com.android.systemui.compose
 
 import android.content.Context
-import android.testing.AndroidTestingRunner
 import android.testing.ViewUtils
 import android.widget.FrameLayout
 import androidx.compose.ui.platform.ComposeView
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.google.common.truth.Truth.assertThat
@@ -28,14 +28,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 class ComposeInitializerTest : SysuiTestCase() {
     @Test
     fun testCanAddComposeViewInInitializedWindow() {
-        if (!ComposeFacade.isComposeAvailable()) {
-            return
-        }
-
         val root = TestWindowRoot(context)
         try {
             runOnMainThreadAndWaitForIdleSync { ViewUtils.attachView(root) }
@@ -55,12 +51,12 @@ class ComposeInitializerTest : SysuiTestCase() {
     class TestWindowRoot(context: Context) : FrameLayout(context) {
         override fun onAttachedToWindow() {
             super.onAttachedToWindow()
-            ComposeFacade.composeInitializer().onAttachedToWindow(this)
+            ComposeInitializer.onAttachedToWindow(this)
         }
 
         override fun onDetachedFromWindow() {
             super.onDetachedFromWindow()
-            ComposeFacade.composeInitializer().onDetachedFromWindow(this)
+            ComposeInitializer.onDetachedFromWindow(this)
         }
     }
 }

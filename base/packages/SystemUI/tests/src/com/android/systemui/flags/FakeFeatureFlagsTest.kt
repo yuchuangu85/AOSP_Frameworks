@@ -16,7 +16,7 @@
 
 package com.android.systemui.flags
 
-import android.testing.AndroidTestingRunner
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.google.common.truth.Truth.assertThat
@@ -25,15 +25,15 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 class FakeFeatureFlagsTest : SysuiTestCase() {
 
-    private val unreleasedFlag = UnreleasedFlag(-1000, "-1000", "test")
-    private val releasedFlag = ReleasedFlag(-1001, "-1001", "test")
-    private val stringFlag = StringFlag(-1002, "-1002", "test")
-    private val resourceBooleanFlag = ResourceBooleanFlag(-1003, "-1003", "test", resourceId = -1)
-    private val resourceStringFlag = ResourceStringFlag(-1004, "-1004", "test", resourceId = -1)
-    private val sysPropBooleanFlag = SysPropBooleanFlag(-1005, "test", "test")
+    private val unreleasedFlag = UnreleasedFlag("-1000", "test")
+    private val releasedFlag = ReleasedFlag("-1001", "test")
+    private val stringFlag = StringFlag("-1002", "test")
+    private val resourceBooleanFlag = ResourceBooleanFlag("-1003", "test", resourceId = -1)
+    private val resourceStringFlag = ResourceStringFlag("-1004", "test", resourceId = -1)
+    private val sysPropBooleanFlag = SysPropBooleanFlag("test", "test")
 
     /**
      * FakeFeatureFlags does not honor any default values. All flags which are accessed must be
@@ -43,46 +43,46 @@ class FakeFeatureFlagsTest : SysuiTestCase() {
     fun accessingUnspecifiedFlags_throwsException() {
         val flags: FeatureFlags = FakeFeatureFlags()
         try {
-            assertThat(flags.isEnabled(Flags.TEAMFOOD)).isFalse()
+            assertThat(flags.isEnabled(Flags.NULL_FLAG)).isFalse()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("id=1")
+            assertThat(ex.message).contains("UNKNOWN(null_flag)")
         }
         try {
             assertThat(flags.isEnabled(unreleasedFlag)).isFalse()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1000)")
+            assertThat(ex.message).contains("UNKNOWN(-1000)")
         }
         try {
             assertThat(flags.isEnabled(releasedFlag)).isFalse()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1001)")
+            assertThat(ex.message).contains("UNKNOWN(-1001)")
         }
         try {
             assertThat(flags.isEnabled(resourceBooleanFlag)).isFalse()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1003)")
+            assertThat(ex.message).contains("UNKNOWN(-1003)")
         }
         try {
             assertThat(flags.isEnabled(sysPropBooleanFlag)).isFalse()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1005)")
+            assertThat(ex.message).contains("UNKNOWN(test)")
         }
         try {
             assertThat(flags.getString(stringFlag)).isEmpty()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1002)")
+            assertThat(ex.message).contains("UNKNOWN(-1002)")
         }
         try {
             assertThat(flags.getString(resourceStringFlag)).isEmpty()
             fail("Expected an exception when accessing an unspecified flag.")
         } catch (ex: IllegalStateException) {
-            assertThat(ex.message).contains("UNKNOWN(id=-1004)")
+            assertThat(ex.message).contains("UNKNOWN(-1004)")
         }
     }
 

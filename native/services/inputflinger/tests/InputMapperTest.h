@@ -32,6 +32,7 @@
 #include "InterfaceMocks.h"
 #include "TestConstants.h"
 #include "TestInputListener.h"
+#include "input/PropertyMap.h"
 
 namespace android {
 
@@ -39,7 +40,15 @@ class InputMapperUnitTest : public testing::Test {
 protected:
     static constexpr int32_t EVENTHUB_ID = 1;
     static constexpr int32_t DEVICE_ID = END_RESERVED_ID + 1000;
-    virtual void SetUp() override;
+    virtual void SetUp() override { SetUpWithBus(0); }
+    virtual void SetUpWithBus(int bus);
+
+    /**
+     * Initializes mDevice and mDeviceContext. When this happens, mDevice takes a copy of
+     * mPropertyMap, so tests that need to set configuration properties should do so before calling
+     * this. Others will most likely want to call it in their SetUp method.
+     */
+    void createDevice();
 
     void setupAxis(int axis, bool valid, int32_t min, int32_t max, int32_t resolution);
 
@@ -50,9 +59,11 @@ protected:
     void setKeyCodeState(KeyState state, std::set<int> keyCodes);
 
     std::list<NotifyArgs> process(int32_t type, int32_t code, int32_t value);
+    std::list<NotifyArgs> process(nsecs_t when, int32_t type, int32_t code, int32_t value);
 
+    InputDeviceIdentifier mIdentifier;
     MockEventHubInterface mMockEventHub;
-    std::shared_ptr<FakePointerController> mFakePointerController;
+    sp<FakeInputReaderPolicy> mFakePolicy;
     MockInputReaderContext mMockInputReaderContext;
     std::unique_ptr<InputDevice> mDevice;
 
@@ -60,6 +71,7 @@ protected:
     InputReaderConfiguration mReaderConfiguration;
     // The mapper should be created by the subclasses.
     std::unique_ptr<InputMapper> mMapper;
+    PropertyMap mPropertyMap;
 };
 
 /**
@@ -116,7 +128,7 @@ protected:
                                                  args...);
     }
 
-    void setDisplayInfoAndReconfigure(int32_t displayId, int32_t width, int32_t height,
+    void setDisplayInfoAndReconfigure(ui::LogicalDisplayId displayId, int32_t width, int32_t height,
                                       ui::Rotation orientation, const std::string& uniqueId,
                                       std::optional<uint8_t> physicalPort,
                                       ViewportType viewportType);
@@ -126,13 +138,13 @@ protected:
     void resetMapper(InputMapper& mapper, nsecs_t when);
 
     std::list<NotifyArgs> handleTimeout(InputMapper& mapper, nsecs_t when);
-
-    static void assertMotionRange(const InputDeviceInfo& info, int32_t axis, uint32_t source,
-                                  float min, float max, float flat, float fuzz);
-    static void assertPointerCoords(const PointerCoords& coords, float x, float y, float pressure,
-                                    float size, float touchMajor, float touchMinor, float toolMajor,
-                                    float toolMinor, float orientation, float distance,
-                                    float scaledAxisEpsilon = 1.f);
 };
+
+void assertMotionRange(const InputDeviceInfo& info, int32_t axis, uint32_t source, float min,
+                       float max, float flat, float fuzz);
+
+void assertPointerCoords(const PointerCoords& coords, float x, float y, float pressure, float size,
+                         float touchMajor, float touchMinor, float toolMajor, float toolMinor,
+                         float orientation, float distance, float scaledAxisEpsilon = 1.f);
 
 } // namespace android

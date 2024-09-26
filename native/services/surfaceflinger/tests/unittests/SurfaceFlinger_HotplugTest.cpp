@@ -17,7 +17,13 @@
 #undef LOG_TAG
 #define LOG_TAG "LibSurfaceFlingerUnittests"
 
+#include <aidl/android/hardware/graphics/common/DisplayHotplugEvent.h>
+#include <com_android_graphics_surfaceflinger_flags.h>
+#include <common/test/FlagUtils.h>
 #include "DisplayTransactionTestHelpers.h"
+
+using namespace com::android::graphics::surfaceflinger;
+using ::aidl::android::hardware::graphics::common::DisplayHotplugEvent;
 
 namespace android {
 
@@ -27,10 +33,10 @@ TEST_F(HotplugTest, schedulesConfigureToProcessHotplugEvents) {
     EXPECT_CALL(*mFlinger.scheduler(), scheduleConfigure()).Times(2);
 
     constexpr HWDisplayId hwcDisplayId1 = 456;
-    mFlinger.onComposerHalHotplug(hwcDisplayId1, Connection::CONNECTED);
+    mFlinger.onComposerHalHotplugEvent(hwcDisplayId1, DisplayHotplugEvent::CONNECTED);
 
     constexpr HWDisplayId hwcDisplayId2 = 654;
-    mFlinger.onComposerHalHotplug(hwcDisplayId2, Connection::DISCONNECTED);
+    mFlinger.onComposerHalHotplugEvent(hwcDisplayId2, DisplayHotplugEvent::DISCONNECTED);
 
     const auto& pendingEvents = mFlinger.mutablePendingHotplugEvents();
     ASSERT_EQ(2u, pendingEvents.size());
@@ -45,7 +51,7 @@ TEST_F(HotplugTest, schedulesFrameToCommitDisplayTransaction) {
     EXPECT_CALL(*mFlinger.scheduler(), scheduleFrame()).Times(1);
 
     constexpr HWDisplayId displayId1 = 456;
-    mFlinger.onComposerHalHotplug(displayId1, Connection::DISCONNECTED);
+    mFlinger.onComposerHalHotplugEvent(displayId1, DisplayHotplugEvent::DISCONNECTED);
     mFlinger.configure();
 
     // The configure stage should consume the hotplug queue and produce a display transaction.
@@ -87,12 +93,18 @@ TEST_F(HotplugTest, ignoresDuplicateDisconnection) {
 }
 
 TEST_F(HotplugTest, rejectsHotplugIfFailedToLoadDisplayModes) {
+    SET_FLAG_FOR_TEST(flags::connected_display, true);
+
     // Inject a primary display.
     PrimaryDisplayVariant::injectHwcDisplay(this);
 
     using ExternalDisplay = ExternalDisplayVariant;
     constexpr bool kFailedHotplug = true;
     ExternalDisplay::setupHwcHotplugCallExpectations<kFailedHotplug>(this);
+
+    EXPECT_CALL(*mEventThread,
+                onHotplugConnectionError(static_cast<int32_t>(DisplayHotplugEvent::ERROR_UNKNOWN)))
+            .Times(1);
 
     // Simulate a connect event that fails to load display modes due to HWC already having
     // disconnected the display but SF yet having to process the queued disconnect event.

@@ -49,7 +49,7 @@ import android.widget.TextView
 import androidx.annotation.ColorInt
 import androidx.annotation.VisibleForTesting
 import com.android.internal.graphics.ColorUtils
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.app.animation.Interpolators
 import com.android.systemui.controls.ControlsMetricsLogger
 import com.android.systemui.controls.controller.ControlsController
@@ -384,7 +384,7 @@ class ControlViewHolder(
                 )
             }
             addListener(object : AnimatorListenerAdapter() {
-                override fun onAnimationEnd(animation: Animator?) {
+                override fun onAnimationEnd(animation: Animator) {
                     stateAnimator = null
                 }
             })
@@ -438,7 +438,7 @@ class ControlViewHolder(
                 duration = 200L
                 interpolator = Interpolators.LINEAR
                 addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator?) {
+                    override fun onAnimationEnd(animation: Animator) {
                         statusRowUpdater.invoke()
                     }
                 })
@@ -450,7 +450,7 @@ class ControlViewHolder(
             statusAnimator = AnimatorSet().apply {
                 playSequentially(fadeOut, fadeIn)
                 addListener(object : AnimatorListenerAdapter() {
-                    override fun onAnimationEnd(animation: Animator?) {
+                    override fun onAnimationEnd(animation: Animator) {
                         status.alpha = STATUS_ALPHA_ENABLED
                         statusAnimator = null
                     }

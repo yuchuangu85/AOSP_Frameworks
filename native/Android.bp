@@ -36,6 +36,14 @@ license {
     ],
 }
 
+cc_library_headers {
+    name: "native_headers",
+    host_supported: true,
+    export_include_dirs: [
+        "include/",
+    ],
+}
+
 ndk_headers {
     name: "libandroid_headers",
     from: "include/android",
@@ -89,9 +97,21 @@ filegroup {
     ],
 }
 
+aidl_library {
+    name: "PersistableBundle_aidl",
+    hdrs: ["aidl/binder/android/os/PersistableBundle.aidl"],
+    strip_import_prefix: "aidl/binder",
+}
+
 cc_library_headers {
     name: "libandroid_headers_private",
+    host_supported: true,
     export_include_dirs: ["include/private"],
+    target: {
+        windows: {
+            enabled: true,
+        },
+    },
 }
 
 filegroup {

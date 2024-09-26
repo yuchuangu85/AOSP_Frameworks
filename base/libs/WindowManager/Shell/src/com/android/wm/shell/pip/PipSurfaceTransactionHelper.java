@@ -81,7 +81,27 @@ public class PipSurfaceTransactionHelper {
      */
     public PipSurfaceTransactionHelper scale(SurfaceControl.Transaction tx, SurfaceControl leash,
             Rect sourceBounds, Rect destinationBounds) {
+        mTmpDestinationRectF.set(destinationBounds);
+        return scale(tx, leash, sourceBounds, mTmpDestinationRectF, 0 /* degrees */);
+    }
+
+    /**
+     * Operates the scale (setMatrix) on a given transaction and leash
+     * @return same {@link PipSurfaceTransactionHelper} instance for method chaining
+     */
+    public PipSurfaceTransactionHelper scale(SurfaceControl.Transaction tx, SurfaceControl leash,
+            Rect sourceBounds, RectF destinationBounds) {
         return scale(tx, leash, sourceBounds, destinationBounds, 0 /* degrees */);
+    }
+
+    /**
+     * Operates the scale (setMatrix) on a given transaction and leash
+     * @return same {@link PipSurfaceTransactionHelper} instance for method chaining
+     */
+    public PipSurfaceTransactionHelper scale(SurfaceControl.Transaction tx, SurfaceControl leash,
+            Rect sourceBounds, Rect destinationBounds, float degrees) {
+        mTmpDestinationRectF.set(destinationBounds);
+        return scale(tx, leash, sourceBounds, mTmpDestinationRectF, degrees);
     }
 
     /**
@@ -89,7 +109,7 @@ public class PipSurfaceTransactionHelper {
      * @return same {@link PipSurfaceTransactionHelper} instance for method chaining
      */
     public PipSurfaceTransactionHelper scale(SurfaceControl.Transaction tx, SurfaceControl leash,
-            Rect sourceBounds, Rect destinationBounds, float degrees) {
+            Rect sourceBounds, RectF destinationBounds, float degrees) {
         mTmpSourceRectF.set(sourceBounds);
         // We want the matrix to position the surface relative to the screen coordinates so offset
         // the source to 0,0
@@ -117,7 +137,7 @@ public class PipSurfaceTransactionHelper {
         mTmpDestinationRect.inset(insets);
         // Scale to the bounds no smaller than the destination and offset such that the top/left
         // of the scaled inset source rect aligns with the top/left of the destination bounds
-        final float scale;
+        final float scale, left, top;
         if (isInPipDirection
                 && sourceRectHint != null && sourceRectHint.width() < sourceBounds.width()) {
             // scale by sourceRectHint if it's not edge-to-edge, for entering PiP transition only.
@@ -128,12 +148,15 @@ public class PipSurfaceTransactionHelper {
                     ? (float) destinationBounds.width() / sourceBounds.width()
                     : (float) destinationBounds.height() / sourceBounds.height();
             scale = (1 - fraction) * startScale + fraction * endScale;
+            left = destinationBounds.left - insets.left * scale;
+            top = destinationBounds.top - insets.top * scale;
         } else {
             scale = Math.max((float) destinationBounds.width() / sourceBounds.width(),
                     (float) destinationBounds.height() / sourceBounds.height());
+            // Work around the rounding error by fix the position at very beginning.
+            left = scale == 1 ? 0 : destinationBounds.left - insets.left * scale;
+            top = scale == 1 ? 0 : destinationBounds.top - insets.top * scale;
         }
-        final float left = destinationBounds.left - insets.left * scale;
-        final float top = destinationBounds.top - insets.top * scale;
         mTmpTransform.setScale(scale, scale);
         tx.setMatrix(leash, mTmpTransform, mTmpFloat9)
                 .setCrop(leash, mTmpDestinationRect)

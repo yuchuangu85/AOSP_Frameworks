@@ -17,8 +17,9 @@
 #pragma once
 
 #include "ComposerHal.h"
+
 #include <ftl/shared_mutex.h>
-#include <ftl/small_map.h>
+#include <ui/DisplayMap.h>
 
 #include <functional>
 #include <optional>
@@ -65,6 +66,7 @@ public:
     ~AidlComposer() override;
 
     bool isSupported(OptionalFeature) const;
+    bool isVrrSupported() const;
 
     std::vector<aidl::android::hardware::graphics::composer3::Capability> getCapabilities()
             override;
@@ -94,6 +96,8 @@ public:
     Error getDisplayAttribute(Display display, Config config, IComposerClient::Attribute attribute,
                               int32_t* outValue) override;
     Error getDisplayConfigs(Display display, std::vector<Config>* outConfigs);
+    Error getDisplayConfigurations(Display, int32_t maxFrameIntervalNs,
+                                   std::vector<DisplayConfiguration>*);
     Error getDisplayName(Display display, std::string* outName) override;
 
     Error getDisplayRequests(Display display, uint32_t* outDisplayRequestMask,
@@ -120,7 +124,8 @@ public:
      */
     Error setClientTarget(Display display, uint32_t slot, const sp<GraphicBuffer>& target,
                           int acquireFence, Dataspace dataspace,
-                          const std::vector<IComposerClient::Rect>& damage) override;
+                          const std::vector<IComposerClient::Rect>& damage,
+                          float hdrSdrRatio) override;
     Error setColorMode(Display display, ColorMode mode, RenderIntent renderIntent) override;
     Error setColorTransform(Display display, const float* matrix) override;
     Error setOutputBuffer(Display display, const native_handle_t* buffer,
@@ -130,12 +135,13 @@ public:
 
     Error setClientTargetSlotCount(Display display) override;
 
-    Error validateDisplay(Display display, nsecs_t expectedPresentTime, uint32_t* outNumTypes,
-                          uint32_t* outNumRequests) override;
+    Error validateDisplay(Display display, nsecs_t expectedPresentTime, int32_t frameIntervalNs,
+                          uint32_t* outNumTypes, uint32_t* outNumRequests) override;
 
     Error presentOrValidateDisplay(Display display, nsecs_t expectedPresentTime,
-                                   uint32_t* outNumTypes, uint32_t* outNumRequests,
-                                   int* outPresentFence, uint32_t* state) override;
+                                   int32_t frameIntervalNs, uint32_t* outNumTypes,
+                                   uint32_t* outNumRequests, int* outPresentFence,
+                                   uint32_t* state) override;
 
     Error setCursorPosition(Display display, Layer layer, int32_t x, int32_t y) override;
     /* see setClientTarget for the purpose of slot */
@@ -236,6 +242,8 @@ public:
     Error getHdrConversionCapabilities(std::vector<HdrConversionCapability>*) override;
     Error setHdrConversionStrategy(HdrConversionStrategy, Hdr*) override;
     Error setRefreshRateChangedCallbackDebugEnabled(Display, bool) override;
+    Error notifyExpectedPresent(Display, nsecs_t expectedPresentTime,
+                                int32_t frameIntervalNs) override;
 
 private:
     // Many public functions above simply write a command into the command
@@ -254,7 +262,7 @@ private:
     void removeDisplay(Display) EXCLUDES(mMutex);
     void addReader(Display) REQUIRES(mMutex);
     void removeReader(Display) REQUIRES(mMutex);
-
+    bool getLayerLifecycleBatchCommand();
     bool hasMultiThreadedPresentSupport(Display);
 
     // 64KiB minus a small space for metadata such as read/write pointers
@@ -272,9 +280,9 @@ private:
     // Invalid displayId used as a key to mReaders when mSingleReader is true.
     static constexpr int64_t kSingleReaderKey = 0;
 
-    // TODO (b/256881188): Use display::PhysicalDisplayMap instead of hard-coded `3`
-    ftl::SmallMap<Display, ComposerClientWriter, 3> mWriters GUARDED_BY(mMutex);
-    ftl::SmallMap<Display, ComposerClientReader, 3> mReaders GUARDED_BY(mMutex);
+    ui::PhysicalDisplayMap<Display, ComposerClientWriter> mWriters GUARDED_BY(mMutex);
+    ui::PhysicalDisplayMap<Display, ComposerClientReader> mReaders GUARDED_BY(mMutex);
+
     // Protect access to mWriters and mReaders with a shared_mutex. Adding and
     // removing a display require exclusive access, since the iterator or the
     // writer/reader may be invalidated. Other calls need shared access while
@@ -284,8 +292,10 @@ private:
     // threading annotations.
     ftl::SharedMutex mMutex;
 
-    // Whether or not explicitly clearing buffer slots is supported.
-    bool mSupportsBufferSlotsToClear;
+    int32_t mComposerInterfaceVersion = 1;
+    bool mEnableLayerCommandBatchingFlag = false;
+    std::atomic<int64_t> mLayerID = 1;
+
     // Buffer slots for layers are cleared by setting the slot buffer to this buffer.
     sp<GraphicBuffer> mClearSlotBuffer;
 

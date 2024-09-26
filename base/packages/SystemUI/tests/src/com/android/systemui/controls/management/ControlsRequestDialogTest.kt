@@ -25,13 +25,13 @@ import android.os.UserHandle
 import android.service.controls.Control
 import android.service.controls.ControlsProviderService
 import android.service.controls.DeviceTypes
-import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
 import androidx.lifecycle.Lifecycle
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.MediumTest
 import androidx.test.rule.ActivityTestRule
-import androidx.test.runner.intercepting.SingleActivityFactory
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.activity.SingleActivityFactory
 import com.android.systemui.controls.controller.ControlInfo
 import com.android.systemui.controls.controller.ControlsController
 import com.android.systemui.settings.UserTracker
@@ -53,7 +53,7 @@ import org.mockito.MockitoAnnotations
 import java.util.concurrent.Executor
 
 @MediumTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @TestableLooper.RunWithLooper
 class ControlsRequestDialogTest : SysuiTestCase() {
 
@@ -81,19 +81,18 @@ class ControlsRequestDialogTest : SysuiTestCase() {
 
     @Rule
     @JvmField
-    var activityRule = ActivityTestRule<TestControlsRequestDialog>(
-            object : SingleActivityFactory<TestControlsRequestDialog>(
-                    TestControlsRequestDialog::class.java
-            ) {
-                    override fun create(intent: Intent?): TestControlsRequestDialog {
-                        return TestControlsRequestDialog(
-                                mainExecutor,
-                                controller,
-                                userTracker,
-                                listingController
-                        )
-                    }
-            }, false, false)
+    var activityRule = ActivityTestRule(
+        /* activityFactory= */ SingleActivityFactory {
+            TestControlsRequestDialog(
+                    mainExecutor,
+                    controller,
+                    userTracker,
+                    listingController
+            )
+        },
+        /* initialTouchMode= */ false,
+        /* launchActivity= */ false,
+    )
 
     private lateinit var control: Control
 

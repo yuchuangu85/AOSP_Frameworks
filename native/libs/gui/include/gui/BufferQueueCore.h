@@ -17,6 +17,9 @@
 #ifndef ANDROID_GUI_BUFFERQUEUECORE_H
 #define ANDROID_GUI_BUFFERQUEUECORE_H
 
+#include <com_android_graphics_libgui_flags.h>
+
+#include <gui/AdditionalOptions.h>
 #include <gui/BufferItem.h>
 #include <gui/BufferQueueDefs.h>
 #include <gui/BufferSlot.h>
@@ -34,13 +37,13 @@
 #include <mutex>
 #include <condition_variable>
 
-#define ATRACE_BUFFER_INDEX(index)                                                         \
-    do {                                                                                   \
-        if (ATRACE_ENABLED()) {                                                            \
-            char ___traceBuf[1024];                                                        \
-            snprintf(___traceBuf, 1024, "%s: %d", mCore->mConsumerName.string(), (index)); \
-            android::ScopedTrace ___bufTracer(ATRACE_TAG, ___traceBuf);                    \
-        }                                                                                  \
+#define ATRACE_BUFFER_INDEX(index)                                                        \
+    do {                                                                                  \
+        if (ATRACE_ENABLED()) {                                                           \
+            char ___traceBuf[1024];                                                       \
+            snprintf(___traceBuf, 1024, "%s: %d", mCore->mConsumerName.c_str(), (index)); \
+            android::ScopedTrace ___bufTracer(ATRACE_TAG, ___traceBuf);                   \
+        }                                                                                 \
     } while (false)
 
 namespace android {
@@ -357,6 +360,14 @@ private:
     // This allows the consumer to acquire an additional buffer if that buffer is not droppable and
     // will eventually be released or acquired by the consumer.
     bool mAllowExtraAcquire = false;
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+    // Additional options to pass when allocating GraphicBuffers.
+    // GenerationID changes when the options change, indicating reallocation is required
+    uint32_t mAdditionalOptionsGenerationId = 0;
+    std::vector<gui::AdditionalOptions> mAdditionalOptions;
+#endif
+
 }; // class BufferQueueCore
 
 } // namespace android

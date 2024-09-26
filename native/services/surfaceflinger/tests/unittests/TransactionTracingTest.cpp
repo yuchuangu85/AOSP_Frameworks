@@ -25,7 +25,6 @@
 #include "FrontEnd/LayerCreationArgs.h"
 #include "FrontEnd/Update.h"
 #include "Tracing/LayerTracing.h"
-#include "Tracing/RingBuffer.h"
 #include "Tracing/TransactionTracing.h"
 
 using namespace android::surfaceflinger;
@@ -37,12 +36,12 @@ protected:
     static constexpr size_t SMALL_BUFFER_SIZE = 1024;
     TransactionTracing mTracing;
 
-    void flush(int64_t vsyncId) { mTracing.flush(vsyncId); }
-    proto::TransactionTraceFile writeToProto() { return mTracing.writeToProto(); }
+    void flush() { mTracing.flush(); }
+    perfetto::protos::TransactionTraceFile writeToProto() { return mTracing.writeToProto(); }
 
-    proto::TransactionTraceEntry bufferFront() {
+    perfetto::protos::TransactionTraceEntry bufferFront() {
         std::scoped_lock<std::mutex> lock(mTracing.mTraceLock);
-        proto::TransactionTraceEntry entry;
+        perfetto::protos::TransactionTraceEntry entry;
         entry.ParseFromString(mTracing.mBuffer.front());
         return entry;
     }
@@ -57,10 +56,10 @@ protected:
         std::vector<TransactionState> transactions;
         update.transactions.emplace_back(transaction);
         mTracing.addCommittedTransactions(vsyncId, 0, update, {}, false);
-        flush(vsyncId);
+        flush();
     }
 
-    void verifyEntry(const proto::TransactionTraceEntry& actualProto,
+    void verifyEntry(const perfetto::protos::TransactionTraceEntry& actualProto,
                      const std::vector<TransactionState>& expectedTransactions,
                      int64_t expectedVsyncId) {
         EXPECT_EQ(actualProto.vsync_id(), expectedVsyncId);
@@ -116,9 +115,9 @@ TEST_F(TransactionTracingTest, addTransactions) {
     secondUpdate.transactions =
             std::vector<TransactionState>(transactions.begin(), transactions.begin() + 50);
     mTracing.addCommittedTransactions(secondTransactionSetVsyncId, 0, secondUpdate, {}, false);
-    flush(secondTransactionSetVsyncId);
+    flush();
 
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     ASSERT_EQ(proto.entry().size(), 2);
     verifyEntry(proto.entry(0), firstUpdate.transactions, firstTransactionSetVsyncId);
     verifyEntry(proto.entry(1), secondUpdate.transactions, secondTransactionSetVsyncId);
@@ -158,7 +157,7 @@ protected:
             VSYNC_ID_FIRST_LAYER_CHANGE = ++mVsyncId;
             mTracing.addCommittedTransactions(VSYNC_ID_FIRST_LAYER_CHANGE, 0, update, {}, false);
 
-            flush(VSYNC_ID_FIRST_LAYER_CHANGE);
+            flush();
         }
 
         // add transactions that modify the layer state further so we can test that layer state
@@ -178,7 +177,7 @@ protected:
             update.transactions.emplace_back(transaction);
             VSYNC_ID_SECOND_LAYER_CHANGE = ++mVsyncId;
             mTracing.addCommittedTransactions(VSYNC_ID_SECOND_LAYER_CHANGE, 0, update, {}, false);
-            flush(VSYNC_ID_SECOND_LAYER_CHANGE);
+            flush();
         }
 
         // remove child layer
@@ -204,7 +203,7 @@ TEST_F(TransactionTracingLayerHandlingTest, addStartingState) {
     while (bufferFront().vsync_id() <= VSYNC_ID_FIRST_LAYER_CHANGE) {
         queueAndCommitTransaction(++mVsyncId);
     }
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     // verify we can still retrieve the layer change from the first entry containing starting
     // states.
     EXPECT_GT(proto.entry().size(), 0);
@@ -215,6 +214,7 @@ TEST_F(TransactionTracingLayerHandlingTest, addStartingState) {
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(0).z(), 42);
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(1).layer_id(), mChildLayerId);
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(1).z(), 43);
+    EXPECT_TRUE(proto.entry(0).displays_changed());
 }
 
 TEST_F(TransactionTracingLayerHandlingTest, updateStartingState) {
@@ -222,9 +222,10 @@ TEST_F(TransactionTracingLayerHandlingTest, updateStartingState) {
     while (bufferFront().vsync_id() <= VSYNC_ID_SECOND_LAYER_CHANGE) {
         queueAndCommitTransaction(++mVsyncId);
     }
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     // verify starting states are updated correctly
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(0).z(), 41);
+    EXPECT_TRUE(proto.entry(0).displays_changed());
 }
 
 TEST_F(TransactionTracingLayerHandlingTest, removeStartingState) {
@@ -232,10 +233,11 @@ TEST_F(TransactionTracingLayerHandlingTest, removeStartingState) {
     while (bufferFront().vsync_id() <= VSYNC_ID_CHILD_LAYER_REMOVED) {
         queueAndCommitTransaction(++mVsyncId);
     }
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     // verify the child layer has been removed from the trace
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes().size(), 1);
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(0).layer_id(), mParentLayerId);
+    EXPECT_TRUE(proto.entry(0).displays_changed());
 }
 
 TEST_F(TransactionTracingLayerHandlingTest, startingStateSurvivesBufferFlush) {
@@ -243,7 +245,7 @@ TEST_F(TransactionTracingLayerHandlingTest, startingStateSurvivesBufferFlush) {
     while (bufferFront().vsync_id() <= VSYNC_ID_SECOND_LAYER_CHANGE) {
         queueAndCommitTransaction(++mVsyncId);
     }
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     // verify we have two starting states
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes().size(), 2);
 
@@ -255,6 +257,7 @@ TEST_F(TransactionTracingLayerHandlingTest, startingStateSurvivesBufferFlush) {
     // verify we still have the parent layer state
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes().size(), 1);
     EXPECT_EQ(proto.entry(0).transactions(0).layer_changes(0).layer_id(), mParentLayerId);
+    EXPECT_TRUE(proto.entry(0).displays_changed());
 }
 
 class TransactionTracingMirrorLayerTest : public TransactionTracingTest {
@@ -290,7 +293,7 @@ protected:
 
             update.transactions.emplace_back(transaction);
             mTracing.addCommittedTransactions(mVsyncId, 0, update, {}, false);
-            flush(mVsyncId);
+            flush();
         }
     }
 
@@ -303,7 +306,7 @@ protected:
 };
 
 TEST_F(TransactionTracingMirrorLayerTest, canAddMirrorLayers) {
-    proto::TransactionTraceFile proto = writeToProto();
+    perfetto::protos::TransactionTraceFile proto = writeToProto();
     // We don't have any starting states since no layer was removed from.
     EXPECT_EQ(proto.entry().size(), 1);
 
@@ -318,18 +321,18 @@ TEST_F(TransactionTracingMirrorLayerTest, canAddMirrorLayers) {
 // Verify we can write the layers traces by entry to reduce mem pressure
 // on the system when generating large traces.
 TEST(LayerTraceTest, canStreamLayersTrace) {
-    LayersTraceFileProto inProto = LayerTracing::createTraceFileProto();
+    perfetto::protos::LayersTraceFileProto inProto = LayerTracing::createTraceFileProto();
     inProto.add_entry();
     inProto.add_entry();
 
     std::string output;
     inProto.SerializeToString(&output);
-    LayersTraceFileProto inProto2 = LayerTracing::createTraceFileProto();
+    perfetto::protos::LayersTraceFileProto inProto2 = LayerTracing::createTraceFileProto();
     inProto2.add_entry();
     std::string output2;
     inProto2.SerializeToString(&output2);
 
-    LayersTraceFileProto outProto;
+    perfetto::protos::LayersTraceFileProto outProto;
     outProto.ParseFromString(output + output2);
     // magic?
     EXPECT_EQ(outProto.entry().size(), 3);

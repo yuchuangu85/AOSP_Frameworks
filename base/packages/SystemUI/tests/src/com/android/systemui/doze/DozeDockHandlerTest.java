@@ -28,9 +28,9 @@ import static org.mockito.Mockito.when;
 
 import android.app.ActivityManager;
 import android.hardware.display.AmbientDisplayConfiguration;
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper.RunWithLooper;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
@@ -46,7 +46,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @RunWithLooper
 public class DozeDockHandlerTest extends SysuiTestCase {
     @Mock private DozeMachine mMachine;
@@ -63,6 +63,7 @@ public class DozeDockHandlerTest extends SysuiTestCase {
         mDockHandler = new DozeDockHandler(mConfig, mDockManagerFake, mUserTracker);
         mDockHandler.setDozeMachine(mMachine);
 
+        when(mMachine.isExecutingTransition()).thenReturn(false);
         when(mUserTracker.getUserId()).thenReturn(ActivityManager.getCurrentUser());
         when(mMachine.getState()).thenReturn(State.DOZE_AOD);
         doReturn(true).when(mConfig).alwaysOnEnabled(anyInt());
@@ -143,6 +144,15 @@ public class DozeDockHandlerTest extends SysuiTestCase {
     @Test
     public void onEvent_hideWhilePulsing_wontRequestStateChange() {
         when(mMachine.getState()).thenReturn(State.DOZE_PULSING);
+
+        mDockManagerFake.setDockEvent(DockManager.STATE_DOCKED_HIDE);
+
+        verify(mMachine, never()).requestState(any(State.class));
+    }
+
+    @Test
+    public void onEvent_dockedWhileTransitioning_wontRequestStateChange() {
+        when(mMachine.isExecutingTransition()).thenReturn(true);
 
         mDockManagerFake.setDockEvent(DockManager.STATE_DOCKED_HIDE);
 

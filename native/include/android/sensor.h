@@ -29,6 +29,8 @@
 #ifndef ANDROID_SENSOR_H
 #define ANDROID_SENSOR_H
 
+#include <sys/cdefs.h>
+
 /******************************************************************
  *
  * IMPORTANT NOTICE:
@@ -45,11 +47,6 @@
  *   - DO NOT CHANGE THE LAYOUT OR SIZE OF STRUCTURES
  */
 
-// This file is included by modules that have host support but android/looper.h is not supported
-// on host. __REMOVED_IN needs to be defined in order for android/looper.h to be compiled.
-#ifndef __BIONIC__
-#define __REMOVED_IN(x) __attribute__((deprecated))
-#endif
 #include <android/looper.h>
 
 #include <stdbool.h>
@@ -57,11 +54,13 @@
 #include <math.h>
 #include <stdint.h>
 
+// This file may also be built on glibc or on Windows/MacOS libc's, so no-op
+// and deprecated definitions are provided.
 #if !defined(__INTRODUCED_IN)
 #define __INTRODUCED_IN(__api_level) /* nothing */
 #endif
 #if !defined(__DEPRECATED_IN)
-#define __DEPRECATED_IN(__api_level) __attribute__((__deprecated__))
+#define __DEPRECATED_IN(__api_level, msg) __attribute__((__deprecated__(msg)))
 #endif
 
 #ifdef __cplusplus
@@ -658,7 +657,7 @@ typedef struct ASensorEvent {
     uint32_t flags;
     int32_t reserved1[3];
 } ASensorEvent;
-// LINT.ThenChange (hardware/libhardware/include/hardware/sensors.h)
+// LINT.ThenChange(hardware/libhardware/include/hardware/sensors.h)
 
 struct ASensorManager;
 /**
@@ -749,7 +748,8 @@ typedef ASensorRef const* ASensorList;
  *     ASensorManager* sensorManager = ASensorManager_getInstance();
  *
  */
-ASensorManager* ASensorManager_getInstance() __DEPRECATED_IN(26);
+ASensorManager* ASensorManager_getInstance()
+        __DEPRECATED_IN(26, "Use ASensorManager_getInstanceForPackage instead");
 
 /**
  * Get a reference to the sensor manager. ASensorManager is a singleton

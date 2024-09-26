@@ -19,5 +19,7 @@
 mod server;
 mod session;
 
-pub use server::{RpcServer, RpcServerRef};
+pub use server::RpcServer;
+#[cfg(not(target_os = "trusty"))]
+pub use server::RpcServerRef;
 pub use session::{FileDescriptorTransportMode, RpcSession, RpcSessionRef};

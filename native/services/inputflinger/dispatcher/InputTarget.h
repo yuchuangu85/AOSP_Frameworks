@@ -17,11 +17,12 @@
 #pragma once
 
 #include <ftl/flags.h>
-#include <gui/constants.h>
-#include <input/InputTransport.h>
+#include <gui/WindowInfo.h>
 #include <ui/Transform.h>
 #include <utils/BitSet.h>
 #include <bitset>
+#include "Connection.h"
+#include "InputTargetFlags.h"
 
 namespace android::inputdispatcher {
 
@@ -31,71 +32,46 @@ namespace android::inputdispatcher {
  * be added to input event coordinates to compensate for the absolute position of the
  * window area.
  */
-struct InputTarget {
-    enum class Flags : uint32_t {
-        /* This flag indicates that the event is being delivered to a foreground application. */
-        FOREGROUND = 1 << 0,
+class InputTarget {
+public:
+    using Flags = InputTargetFlags;
 
-        /* This flag indicates that the MotionEvent falls within the area of the target
-         * obscured by another visible window above it.  The motion event should be
-         * delivered with flag AMOTION_EVENT_FLAG_WINDOW_IS_OBSCURED. */
-        WINDOW_IS_OBSCURED = 1 << 1,
-
-        /* This flag indicates that a motion event is being split across multiple windows. */
-        SPLIT = 1 << 2,
-
-        /* This flag indicates that the pointer coordinates dispatched to the application
-         * will be zeroed out to avoid revealing information to an application. This is
-         * used in conjunction with FLAG_DISPATCH_AS_OUTSIDE to prevent apps not sharing
-         * the same UID from watching all touches. */
-        ZERO_COORDS = 1 << 3,
-
+    enum class DispatchMode {
         /* This flag indicates that the event should be sent as is.
          * Should always be set unless the event is to be transmuted. */
-        DISPATCH_AS_IS = 1 << 8,
-
+        AS_IS,
         /* This flag indicates that a MotionEvent with AMOTION_EVENT_ACTION_DOWN falls outside
          * of the area of this target and so should instead be delivered as an
          * AMOTION_EVENT_ACTION_OUTSIDE to this target. */
-        DISPATCH_AS_OUTSIDE = 1 << 9,
-
+        OUTSIDE,
         /* This flag indicates that a hover sequence is starting in the given window.
          * The event is transmuted into ACTION_HOVER_ENTER. */
-        DISPATCH_AS_HOVER_ENTER = 1 << 10,
-
+        HOVER_ENTER,
         /* This flag indicates that a hover event happened outside of a window which handled
          * previous hover events, signifying the end of the current hover sequence for that
          * window.
          * The event is transmuted into ACTION_HOVER_ENTER. */
-        DISPATCH_AS_HOVER_EXIT = 1 << 11,
-
+        HOVER_EXIT,
         /* This flag indicates that the event should be canceled.
          * It is used to transmute ACTION_MOVE into ACTION_CANCEL when a touch slips
          * outside of a window. */
-        DISPATCH_AS_SLIPPERY_EXIT = 1 << 12,
-
+        SLIPPERY_EXIT,
         /* This flag indicates that the event should be dispatched as an initial down.
          * It is used to transmute ACTION_MOVE into ACTION_DOWN when a touch slips
          * into a new window. */
-        DISPATCH_AS_SLIPPERY_ENTER = 1 << 13,
+        SLIPPERY_ENTER,
 
-        /* This flag indicates that the target of a MotionEvent is partly or wholly
-         * obscured by another visible window above it.  The motion event should be
-         * delivered with flag AMOTION_EVENT_FLAG_WINDOW_IS_PARTIALLY_OBSCURED. */
-        WINDOW_IS_PARTIALLY_OBSCURED = 1 << 14,
+        ftl_last = SLIPPERY_ENTER,
     };
 
-    /* Mask for all dispatch modes. */
-    static constexpr const ftl::Flags<InputTarget::Flags> DISPATCH_MASK =
-            ftl::Flags<InputTarget::Flags>() | Flags::DISPATCH_AS_IS | Flags::DISPATCH_AS_OUTSIDE |
-            Flags::DISPATCH_AS_HOVER_ENTER | Flags::DISPATCH_AS_HOVER_EXIT |
-            Flags::DISPATCH_AS_SLIPPERY_EXIT | Flags::DISPATCH_AS_SLIPPERY_ENTER;
-
-    // The input channel to be targeted.
-    std::shared_ptr<InputChannel> inputChannel;
+    // The input connection to be targeted.
+    std::shared_ptr<Connection> connection;
 
     // Flags for the input target.
     ftl::Flags<Flags> flags;
+
+    // The dispatch mode that should be used for this target.
+    DispatchMode dispatchMode = DispatchMode::AS_IS;
 
     // Scaling factor to apply to MotionEvent as it is delivered.
     // (ignored for KeyEvents)
@@ -104,17 +80,19 @@ struct InputTarget {
     // Current display transform. Used for compatibility for raw coordinates.
     ui::Transform displayTransform;
 
-    // The subset of pointer ids to include in motion events dispatched to this input target
-    // if FLAG_SPLIT is set.
-    std::bitset<MAX_POINTER_ID + 1> pointerIds;
     // Event time for the first motion event (ACTION_DOWN) dispatched to this input target if
     // FLAG_SPLIT is set.
     std::optional<nsecs_t> firstDownTimeInTarget;
-    // The data is stored by the pointerId. Use the bit position of pointerIds to look up
-    // Transform per pointerId.
-    ui::Transform pointerTransforms[MAX_POINTERS];
 
-    void addPointers(std::bitset<MAX_POINTER_ID + 1> pointerIds, const ui::Transform& transform);
+    // The window that this input target is being dispatched to. It is possible for this to be
+    // null for cases like global monitors.
+    sp<gui::WindowInfoHandle> windowHandle;
+
+    InputTarget() = default;
+    InputTarget(const std::shared_ptr<Connection>&, ftl::Flags<Flags> = {});
+
+    android::base::Result<void> addPointers(std::bitset<MAX_POINTER_ID + 1> pointerIds,
+                                            const ui::Transform& transform);
     void setDefaultPointerTransform(const ui::Transform& transform);
 
     /**
@@ -131,9 +109,24 @@ struct InputTarget {
      */
     const ui::Transform& getDefaultPointerTransform() const;
 
+    const ui::Transform& getTransformForPointer(int32_t pointerId) const;
+
+    std::bitset<MAX_POINTER_ID + 1> getPointerIds() const;
+
     std::string getPointerInfoString() const;
+
+private:
+    template <typename K, typename V>
+    using ArrayMap = std::vector<std::pair<K, V>>;
+    using PointerIds = std::bitset<MAX_POINTER_ID + 1>;
+    // The mapping of pointer IDs to the transform that should be used for that collection of IDs.
+    // Each of the pointer IDs are mutually disjoint, and their union makes up pointer IDs to
+    // include in the motion events dispatched to this target. We use an ArrayMap to store this to
+    // avoid having to define hash or comparison functions for ui::Transform, which would be needed
+    // to use std::unordered_map or std::map respectively.
+    ArrayMap<ui::Transform, PointerIds> mPointerTransforms;
 };
 
-std::string dispatchModeToString(int32_t dispatchMode);
+std::ostream& operator<<(std::ostream& out, const InputTarget& target);
 
 } // namespace android::inputdispatcher

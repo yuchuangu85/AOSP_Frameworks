@@ -23,7 +23,11 @@
 
 using ::android::internal::Stability;
 
-#ifdef __ANDROID_VNDK__
+#if defined(__ANDROID_VNDK__) && !defined(__TRUSTY__)
+#error libbinder_ndk should only be built in a system context
+#endif
+
+#if defined(__ANDROID_VENDOR__) && !defined(__TRUSTY__)
 #error libbinder_ndk should only be built in a system context
 #endif
 

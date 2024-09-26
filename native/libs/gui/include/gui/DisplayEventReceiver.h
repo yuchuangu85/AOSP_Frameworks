@@ -58,7 +58,6 @@ static inline constexpr uint32_t fourcc(char c1, char c2, char c3, char c4) {
 // ----------------------------------------------------------------------------
 class DisplayEventReceiver {
 public:
-
     enum {
         DISPLAY_EVENT_VSYNC = fourcc('v', 's', 'y', 'n'),
         DISPLAY_EVENT_HOTPLUG = fourcc('p', 'l', 'u', 'g'),
@@ -66,6 +65,7 @@ public:
         DISPLAY_EVENT_NULL = fourcc('n', 'u', 'l', 'l'),
         DISPLAY_EVENT_FRAME_RATE_OVERRIDE = fourcc('r', 'a', 't', 'e'),
         DISPLAY_EVENT_FRAME_RATE_OVERRIDE_FLUSH = fourcc('f', 'l', 's', 'h'),
+        DISPLAY_EVENT_HDCP_LEVELS_CHANGE = fourcc('h', 'd', 'c', 'p'),
     };
 
     struct Event {
@@ -88,6 +88,7 @@ public:
 
         struct Hotplug {
             bool connected;
+            int32_t connectionError __attribute__((aligned(4)));
         };
 
         struct ModeChange {
@@ -100,14 +101,25 @@ public:
             float frameRateHz __attribute__((aligned(8)));
         };
 
+        /*
+         * The values are defined in aidl:
+         * hardware/interfaces/drm/aidl/android/hardware/drm/HdcpLevel.aidl
+         */
+        struct HdcpLevelsChange {
+            int32_t connectedLevel;
+            int32_t maxLevel;
+        };
+
         Header header;
         union {
             VSync vsync;
             Hotplug hotplug;
             ModeChange modeChange;
             FrameRateOverride frameRateOverride;
+            HdcpLevelsChange hdcpLevelsChange;
         };
     };
+    static_assert(sizeof(Event) == 216);
 
 public:
     /*

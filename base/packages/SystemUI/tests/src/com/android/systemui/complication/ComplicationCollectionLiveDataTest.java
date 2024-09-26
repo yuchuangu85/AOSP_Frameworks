@@ -21,17 +21,19 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 
 import androidx.lifecycle.Observer;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.dreams.DreamOverlayStateController;
 import com.android.systemui.flags.FakeFeatureFlags;
 import com.android.systemui.flags.Flags;
+import com.android.systemui.log.core.FakeLogBuffer;
 import com.android.systemui.util.concurrency.FakeExecutor;
+import com.android.systemui.util.reference.FakeWeakReferenceFactory;
 import com.android.systemui.util.time.FakeSystemClock;
 
 import org.junit.Before;
@@ -46,7 +48,7 @@ import java.util.Collection;
 import java.util.HashSet;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class ComplicationCollectionLiveDataTest extends SysuiTestCase {
 
@@ -66,7 +68,9 @@ public class ComplicationCollectionLiveDataTest extends SysuiTestCase {
         mStateController = new DreamOverlayStateController(
                 mExecutor,
                 /* overlayEnabled= */ true,
-                mFeatureFlags);
+                mFeatureFlags,
+                FakeLogBuffer.Factory.Companion.create(),
+                new FakeWeakReferenceFactory());
         mLiveData = new ComplicationCollectionLiveData(mStateController);
     }
 

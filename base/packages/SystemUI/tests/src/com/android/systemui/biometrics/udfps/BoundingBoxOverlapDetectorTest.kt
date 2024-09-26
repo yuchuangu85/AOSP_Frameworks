@@ -21,14 +21,15 @@ import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4
+import platform.test.runner.parameterized.Parameters
+import platform.test.runner.parameterized.Parameter
 import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
-import org.junit.runners.Parameterized.Parameters
 
 @SmallTest
-@RunWith(Parameterized::class)
+@RunWith(ParameterizedAndroidJunit4::class)
 class BoundingBoxOverlapDetectorTest(val testCase: TestCase) : SysuiTestCase() {
-    val underTest = BoundingBoxOverlapDetector()
+    val underTest = BoundingBoxOverlapDetector(1f)
 
     @Test
     fun isGoodOverlap() {
@@ -83,7 +84,7 @@ private val TOUCH_DATA =
         GESTURE_START
     )
 
-private val SENSOR = Rect(100 /* left */, 200 /* top */, 300 /* right */, 500 /* bottom */)
+private val SENSOR = Rect(100 /* left */, 200 /* top */, 300 /* right */, 400 /* bottom */)
 private val OVERLAY = Rect(0 /* left */, 100 /* top */, 400 /* right */, 600 /* bottom */)
 
 private fun genTestCases(

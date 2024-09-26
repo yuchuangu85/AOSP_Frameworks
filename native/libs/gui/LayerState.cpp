@@ -22,6 +22,7 @@
 #include <android/gui/ISurfaceComposerClient.h>
 #include <android/native_window.h>
 #include <binder/Parcel.h>
+#include <gui/FrameRateUtils.h>
 #include <gui/IGraphicBufferProducer.h>
 #include <gui/LayerState.h>
 #include <gui/SurfaceControl.h>
@@ -83,10 +84,12 @@ layer_state_t::layer_state_t()
         frameRateCompatibility(ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT),
         changeFrameRateStrategy(ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS),
         defaultFrameRateCompatibility(ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT),
+        frameRateCategory(ANATIVEWINDOW_FRAME_RATE_CATEGORY_DEFAULT),
+        frameRateCategorySmoothSwitchOnly(false),
+        frameRateSelectionStrategy(ANATIVEWINDOW_FRAME_RATE_SELECTION_STRATEGY_PROPAGATE),
         fixedTransformHint(ui::Transform::ROT_INVALID),
         autoRefresh(false),
-        isTrustedOverlay(false),
-        borderEnabled(false),
+        trustedOverlay(gui::TrustedOverlay::UNSET),
         bufferCrop(Rect::INVALID_RECT),
         destinationFrame(Rect::INVALID_RECT),
         dropInputMode(gui::DropInputMode::NONE) {
@@ -118,12 +121,6 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.write, transparentRegion);
     SAFE_PARCEL(output.writeUint32, bufferTransform);
     SAFE_PARCEL(output.writeBool, transformToDisplayInverse);
-    SAFE_PARCEL(output.writeBool, borderEnabled);
-    SAFE_PARCEL(output.writeFloat, borderWidth);
-    SAFE_PARCEL(output.writeFloat, borderColor.r);
-    SAFE_PARCEL(output.writeFloat, borderColor.g);
-    SAFE_PARCEL(output.writeFloat, borderColor.b);
-    SAFE_PARCEL(output.writeFloat, borderColor.a);
     SAFE_PARCEL(output.writeUint32, static_cast<uint32_t>(dataspace));
     SAFE_PARCEL(output.write, hdrMetadata);
     SAFE_PARCEL(output.write, surfaceDamageRegion);
@@ -158,6 +155,9 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.writeByte, frameRateCompatibility);
     SAFE_PARCEL(output.writeByte, changeFrameRateStrategy);
     SAFE_PARCEL(output.writeByte, defaultFrameRateCompatibility);
+    SAFE_PARCEL(output.writeByte, frameRateCategory);
+    SAFE_PARCEL(output.writeBool, frameRateCategorySmoothSwitchOnly);
+    SAFE_PARCEL(output.writeByte, frameRateSelectionStrategy);
     SAFE_PARCEL(output.writeUint32, fixedTransformHint);
     SAFE_PARCEL(output.writeBool, autoRefresh);
     SAFE_PARCEL(output.writeBool, dimmingEnabled);
@@ -179,7 +179,7 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.write, stretchEffect);
     SAFE_PARCEL(output.write, bufferCrop);
     SAFE_PARCEL(output.write, destinationFrame);
-    SAFE_PARCEL(output.writeBool, isTrustedOverlay);
+    SAFE_PARCEL(output.writeInt32, static_cast<uint32_t>(trustedOverlay));
 
     SAFE_PARCEL(output.writeUint32, static_cast<uint32_t>(dropInputMode));
 
@@ -192,7 +192,7 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.writeParcelable, trustedPresentationListener);
     SAFE_PARCEL(output.writeFloat, currentHdrSdrRatio);
     SAFE_PARCEL(output.writeFloat, desiredHdrSdrRatio);
-    SAFE_PARCEL(output.writeInt32, static_cast<int32_t>(cachingHint))
+    SAFE_PARCEL(output.writeInt32, static_cast<int32_t>(cachingHint));
     return NO_ERROR;
 }
 
@@ -231,17 +231,6 @@ status_t layer_state_t::read(const Parcel& input)
     SAFE_PARCEL(input.read, transparentRegion);
     SAFE_PARCEL(input.readUint32, &bufferTransform);
     SAFE_PARCEL(input.readBool, &transformToDisplayInverse);
-    SAFE_PARCEL(input.readBool, &borderEnabled);
-    SAFE_PARCEL(input.readFloat, &tmpFloat);
-    borderWidth = tmpFloat;
-    SAFE_PARCEL(input.readFloat, &tmpFloat);
-    borderColor.r = tmpFloat;
-    SAFE_PARCEL(input.readFloat, &tmpFloat);
-    borderColor.g = tmpFloat;
-    SAFE_PARCEL(input.readFloat, &tmpFloat);
-    borderColor.b = tmpFloat;
-    SAFE_PARCEL(input.readFloat, &tmpFloat);
-    borderColor.a = tmpFloat;
 
     uint32_t tmpUint32 = 0;
     SAFE_PARCEL(input.readUint32, &tmpUint32);
@@ -290,6 +279,9 @@ status_t layer_state_t::read(const Parcel& input)
     SAFE_PARCEL(input.readByte, &frameRateCompatibility);
     SAFE_PARCEL(input.readByte, &changeFrameRateStrategy);
     SAFE_PARCEL(input.readByte, &defaultFrameRateCompatibility);
+    SAFE_PARCEL(input.readByte, &frameRateCategory);
+    SAFE_PARCEL(input.readBool, &frameRateCategorySmoothSwitchOnly);
+    SAFE_PARCEL(input.readByte, &frameRateSelectionStrategy);
     SAFE_PARCEL(input.readUint32, &tmpUint32);
     fixedTransformHint = static_cast<ui::Transform::RotationFlags>(tmpUint32);
     SAFE_PARCEL(input.readBool, &autoRefresh);
@@ -316,7 +308,9 @@ status_t layer_state_t::read(const Parcel& input)
     SAFE_PARCEL(input.read, stretchEffect);
     SAFE_PARCEL(input.read, bufferCrop);
     SAFE_PARCEL(input.read, destinationFrame);
-    SAFE_PARCEL(input.readBool, &isTrustedOverlay);
+    uint32_t trustedOverlayInt;
+    SAFE_PARCEL(input.readUint32, &trustedOverlayInt);
+    trustedOverlay = static_cast<gui::TrustedOverlay>(trustedOverlayInt);
 
     uint32_t mode;
     SAFE_PARCEL(input.readUint32, &mode);
@@ -474,6 +468,12 @@ void layer_state_t::sanitize(int32_t permissions) {
             flags &= ~eLayerIsDisplayDecoration;
             ALOGE("Stripped attempt to set LayerIsDisplayDecoration in sanitize");
         }
+        if ((mask & eCanOccludePresentation) &&
+            !(permissions & Permission::ACCESS_SURFACE_FLINGER)) {
+            flags &= ~eCanOccludePresentation;
+            mask &= ~eCanOccludePresentation;
+            ALOGE("Stripped attempt to set eCanOccludePresentation in sanitize");
+        }
     }
 
     if (what & layer_state_t::eInputInfoChanged) {
@@ -595,6 +595,10 @@ void layer_state_t::merge(const layer_state_t& other) {
         desiredHdrSdrRatio = other.desiredHdrSdrRatio;
         currentHdrSdrRatio = other.currentHdrSdrRatio;
     }
+    if (other.what & eDesiredHdrHeadroomChanged) {
+        what |= eDesiredHdrHeadroomChanged;
+        desiredHdrSdrRatio = other.desiredHdrSdrRatio;
+    }
     if (other.what & eCachingHintChanged) {
         what |= eCachingHintChanged;
         cachingHint = other.cachingHint;
@@ -639,12 +643,6 @@ void layer_state_t::merge(const layer_state_t& other) {
         what |= eShadowRadiusChanged;
         shadowRadius = other.shadowRadius;
     }
-    if (other.what & eRenderBorderChanged) {
-        what |= eRenderBorderChanged;
-        borderEnabled = other.borderEnabled;
-        borderWidth = other.borderWidth;
-        borderColor = other.borderColor;
-    }
     if (other.what & eDefaultFrameRateCompatibilityChanged) {
         what |= eDefaultFrameRateCompatibilityChanged;
         defaultFrameRateCompatibility = other.defaultFrameRateCompatibility;
@@ -659,6 +657,15 @@ void layer_state_t::merge(const layer_state_t& other) {
         frameRateCompatibility = other.frameRateCompatibility;
         changeFrameRateStrategy = other.changeFrameRateStrategy;
     }
+    if (other.what & eFrameRateCategoryChanged) {
+        what |= eFrameRateCategoryChanged;
+        frameRateCategory = other.frameRateCategory;
+        frameRateCategorySmoothSwitchOnly = other.frameRateCategorySmoothSwitchOnly;
+    }
+    if (other.what & eFrameRateSelectionStrategyChanged) {
+        what |= eFrameRateSelectionStrategyChanged;
+        frameRateSelectionStrategy = other.frameRateSelectionStrategy;
+    }
     if (other.what & eFixedTransformHintChanged) {
         what |= eFixedTransformHintChanged;
         fixedTransformHint = other.fixedTransformHint;
@@ -669,7 +676,7 @@ void layer_state_t::merge(const layer_state_t& other) {
     }
     if (other.what & eTrustedOverlayChanged) {
         what |= eTrustedOverlayChanged;
-        isTrustedOverlay = other.isTrustedOverlay;
+        trustedOverlay = other.trustedOverlay;
     }
     if (other.what & eStretchChanged) {
         what |= eStretchChanged;
@@ -749,6 +756,7 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF(diff, eDataspaceChanged, other, dataspace);
     CHECK_DIFF2(diff, eExtendedRangeBrightnessChanged, other, currentHdrSdrRatio,
                 desiredHdrSdrRatio);
+    CHECK_DIFF(diff, eDesiredHdrHeadroomChanged, other, desiredHdrSdrRatio);
     CHECK_DIFF(diff, eCachingHintChanged, other, cachingHint);
     CHECK_DIFF(diff, eHdrMetadataChanged, other, hdrMetadata);
     if (other.what & eSurfaceDamageRegionChanged &&
@@ -764,14 +772,16 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF2(diff, eBackgroundColorChanged, other, bgColor, bgColorDataspace);
     if (other.what & eMetadataChanged) diff |= eMetadataChanged;
     CHECK_DIFF(diff, eShadowRadiusChanged, other, shadowRadius);
-    CHECK_DIFF3(diff, eRenderBorderChanged, other, borderEnabled, borderWidth, borderColor);
     CHECK_DIFF(diff, eDefaultFrameRateCompatibilityChanged, other, defaultFrameRateCompatibility);
     CHECK_DIFF(diff, eFrameRateSelectionPriority, other, frameRateSelectionPriority);
     CHECK_DIFF3(diff, eFrameRateChanged, other, frameRate, frameRateCompatibility,
                 changeFrameRateStrategy);
+    CHECK_DIFF2(diff, eFrameRateCategoryChanged, other, frameRateCategory,
+                frameRateCategorySmoothSwitchOnly);
+    CHECK_DIFF(diff, eFrameRateSelectionStrategyChanged, other, frameRateSelectionStrategy);
     CHECK_DIFF(diff, eFixedTransformHintChanged, other, fixedTransformHint);
     CHECK_DIFF(diff, eAutoRefreshChanged, other, autoRefresh);
-    CHECK_DIFF(diff, eTrustedOverlayChanged, other, isTrustedOverlay);
+    CHECK_DIFF(diff, eTrustedOverlayChanged, other, trustedOverlay);
     CHECK_DIFF(diff, eStretchChanged, other, stretchEffect);
     CHECK_DIFF(diff, eBufferCropChanged, other, bufferCrop);
     CHECK_DIFF(diff, eDestinationFrameChanged, other, destinationFrame);
@@ -855,34 +865,6 @@ status_t InputWindowCommands::read(const Parcel& input) {
     return NO_ERROR;
 }
 
-bool ValidateFrameRate(float frameRate, int8_t compatibility, int8_t changeFrameRateStrategy,
-                       const char* inFunctionName, bool privileged) {
-    const char* functionName = inFunctionName != nullptr ? inFunctionName : "call";
-    int floatClassification = std::fpclassify(frameRate);
-    if (frameRate < 0 || floatClassification == FP_INFINITE || floatClassification == FP_NAN) {
-        ALOGE("%s failed - invalid frame rate %f", functionName, frameRate);
-        return false;
-    }
-
-    if (compatibility != ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT &&
-        compatibility != ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE &&
-        (!privileged ||
-         (compatibility != ANATIVEWINDOW_FRAME_RATE_EXACT &&
-          compatibility != ANATIVEWINDOW_FRAME_RATE_NO_VOTE))) {
-        ALOGE("%s failed - invalid compatibility value %d privileged: %s", functionName,
-              compatibility, privileged ? "yes" : "no");
-        return false;
-    }
-
-    if (changeFrameRateStrategy != ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS &&
-        changeFrameRateStrategy != ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS) {
-        ALOGE("%s failed - invalid change frame rate strategy value %d", functionName,
-              changeFrameRateStrategy);
-    }
-
-    return true;
-}
-
 // ----------------------------------------------------------------------------
 
 namespace gui {
@@ -936,7 +918,6 @@ status_t DisplayCaptureArgs::writeToParcel(Parcel* output) const {
     SAFE_PARCEL(output->writeStrongBinder, displayToken);
     SAFE_PARCEL(output->writeUint32, width);
     SAFE_PARCEL(output->writeUint32, height);
-    SAFE_PARCEL(output->writeBool, useIdentityTransform);
     return NO_ERROR;
 }
 
@@ -946,7 +927,6 @@ status_t DisplayCaptureArgs::readFromParcel(const Parcel* input) {
     SAFE_PARCEL(input->readStrongBinder, &displayToken);
     SAFE_PARCEL(input->readUint32, &width);
     SAFE_PARCEL(input->readUint32, &height);
-    SAFE_PARCEL(input->readBool, &useIdentityTransform);
     return NO_ERROR;
 }
 
@@ -1005,6 +985,7 @@ status_t BufferData::writeToParcel(Parcel* output) const {
     SAFE_PARCEL(output->writeBool, hasBarrier);
     SAFE_PARCEL(output->writeUint64, barrierFrameNumber);
     SAFE_PARCEL(output->writeUint32, producerId);
+    SAFE_PARCEL(output->writeInt64, dequeueTime);
 
     return NO_ERROR;
 }
@@ -1044,6 +1025,7 @@ status_t BufferData::readFromParcel(const Parcel* input) {
     SAFE_PARCEL(input->readBool, &hasBarrier);
     SAFE_PARCEL(input->readUint64, &barrierFrameNumber);
     SAFE_PARCEL(input->readUint32, &producerId);
+    SAFE_PARCEL(input->readInt64, &dequeueTime);
 
     return NO_ERROR;
 }

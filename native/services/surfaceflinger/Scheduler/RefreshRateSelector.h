@@ -16,8 +16,6 @@
 
 #pragma once
 
-#include <algorithm>
-#include <numeric>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -33,20 +31,12 @@
 
 #include "DisplayHardware/DisplayMode.h"
 #include "Scheduler/OneShotTimer.h"
-#include "Scheduler/StrongTyping.h"
 #include "ThreadContext.h"
 #include "Utils/Dumper.h"
 
 namespace android::scheduler {
 
 using namespace std::chrono_literals;
-
-enum class DisplayModeEvent : unsigned { None = 0b0, Changed = 0b1 };
-
-inline DisplayModeEvent operator|(DisplayModeEvent lhs, DisplayModeEvent rhs) {
-    using T = std::underlying_type_t<DisplayModeEvent>;
-    return static_cast<DisplayModeEvent>(static_cast<T>(lhs) | static_cast<T>(rhs));
-}
 
 using FrameRateOverride = DisplayEventReceiver::Event::FrameRateOverride;
 
@@ -77,29 +67,47 @@ public:
         FpsRanges primaryRanges;
         // The app request refresh rate ranges. @see DisplayModeSpecs.aidl for details.
         FpsRanges appRequestRanges;
+        // The idle timer configuration, if provided.
+        std::optional<gui::DisplayModeSpecs::IdleScreenRefreshRateConfig> idleScreenConfigOpt;
 
         Policy() = default;
 
         Policy(DisplayModeId defaultMode, FpsRange range,
-               bool allowGroupSwitching = kAllowGroupSwitchingDefault)
+               bool allowGroupSwitching = kAllowGroupSwitchingDefault,
+               const std::optional<gui::DisplayModeSpecs::IdleScreenRefreshRateConfig>&
+                       idleScreenConfigOpt = std::nullopt)
               : Policy(defaultMode, FpsRanges{range, range}, FpsRanges{range, range},
-                       allowGroupSwitching) {}
+                       allowGroupSwitching, idleScreenConfigOpt) {}
 
         Policy(DisplayModeId defaultMode, FpsRanges primaryRanges, FpsRanges appRequestRanges,
-               bool allowGroupSwitching = kAllowGroupSwitchingDefault)
+               bool allowGroupSwitching = kAllowGroupSwitchingDefault,
+               const std::optional<gui::DisplayModeSpecs::IdleScreenRefreshRateConfig>&
+                       idleScreenConfigOpt = std::nullopt)
               : defaultMode(defaultMode),
                 allowGroupSwitching(allowGroupSwitching),
                 primaryRanges(primaryRanges),
-                appRequestRanges(appRequestRanges) {}
+                appRequestRanges(appRequestRanges),
+                idleScreenConfigOpt(idleScreenConfigOpt) {}
 
         bool operator==(const Policy& other) const {
             using namespace fps_approx_ops;
-            return defaultMode == other.defaultMode && primaryRanges == other.primaryRanges &&
-                    appRequestRanges == other.appRequestRanges &&
-                    allowGroupSwitching == other.allowGroupSwitching;
+            return similarExceptIdleConfig(other) &&
+                    idleScreenConfigOpt == other.idleScreenConfigOpt;
         }
 
         bool operator!=(const Policy& other) const { return !(*this == other); }
+
+        bool primaryRangeIsSingleRate() const {
+            return isApproxEqual(primaryRanges.physical.min, primaryRanges.physical.max);
+        }
+
+        bool similarExceptIdleConfig(const Policy& updated) const {
+            using namespace fps_approx_ops;
+            return defaultMode == updated.defaultMode && primaryRanges == updated.primaryRanges &&
+                    appRequestRanges == updated.appRequestRanges &&
+                    allowGroupSwitching == updated.allowGroupSwitching;
+        }
+
         std::string toString() const;
     };
 
@@ -146,8 +154,10 @@ public:
                                  // ExactOrMultiple compatibility
         ExplicitExact,           // Specific refresh rate that was provided by the app with
                                  // Exact compatibility
+        ExplicitGte,             // Greater than or equal to frame rate provided by the app
+        ExplicitCategory,        // Specific frame rate category was provided by the app
 
-        ftl_last = ExplicitExact
+        ftl_last = ExplicitCategory
     };
 
     // Captures the layer requirements for a refresh rate. This will be used to determine the
@@ -163,6 +173,11 @@ public:
         Fps desiredRefreshRate;
         // If a seamless mode switch is required.
         Seamlessness seamlessness = Seamlessness::Default;
+        // Layer frame rate category.
+        FrameRateCategory frameRateCategory = FrameRateCategory::Default;
+        // Goes together with frame rate category vote. Allow refresh rate changes only
+        // if there would be no jank.
+        bool frameRateCategorySmoothSwitchOnly = false;
         // Layer's weight in the range of [0, 1]. The higher the weight the more impact this layer
         // would have on choosing the refresh rate.
         float weight = 0.0f;
@@ -173,11 +188,17 @@ public:
             return name == other.name && vote == other.vote &&
                     isApproxEqual(desiredRefreshRate, other.desiredRefreshRate) &&
                     seamlessness == other.seamlessness && weight == other.weight &&
-                    focused == other.focused;
+                    focused == other.focused && frameRateCategory == other.frameRateCategory;
         }
 
         bool operator!=(const LayerRequirement& other) const { return !(*this == other); }
+
+        bool isNoVote() const { return RefreshRateSelector::isNoVote(vote); }
     };
+
+    // Returns true if the layer explicitly instructs to not contribute to refresh rate selection.
+    // In other words, true if the layer should be ignored.
+    static bool isNoVote(LayerVoteType vote) { return vote == LayerVoteType::NoVote; }
 
     // Global state describing signals that affect refresh rate choice.
     struct GlobalSignals {
@@ -225,23 +246,27 @@ public:
     struct RankedFrameRates {
         FrameRateRanking ranking; // Ordered by descending score.
         GlobalSignals consideredSignals;
+        Fps pacesetterFps;
 
         bool operator==(const RankedFrameRates& other) const {
-            return ranking == other.ranking && consideredSignals == other.consideredSignals;
+            return ranking == other.ranking && consideredSignals == other.consideredSignals &&
+                    isApproxEqual(pacesetterFps, other.pacesetterFps);
         }
     };
 
-    RankedFrameRates getRankedFrameRates(const std::vector<LayerRequirement>&, GlobalSignals) const
-            EXCLUDES(mLock);
+    // If valid, `pacesetterFps` (used by follower displays) filters the ranking to modes matching
+    // that refresh rate.
+    RankedFrameRates getRankedFrameRates(const std::vector<LayerRequirement>&, GlobalSignals,
+                                         Fps pacesetterFps = {}) const EXCLUDES(mLock);
 
     FpsRange getSupportedRefreshRateRange() const EXCLUDES(mLock) {
         std::lock_guard lock(mLock);
-        return {mMinRefreshRateModeIt->second->getFps(), mMaxRefreshRateModeIt->second->getFps()};
+        return {mMinRefreshRateModeIt->second->getPeakFps(),
+                mMaxRefreshRateModeIt->second->getPeakFps()};
     }
 
-    ftl::Optional<FrameRateMode> onKernelTimerChanged(
-            std::optional<DisplayModeId> desiredActiveModeId, bool timerExpired) const
-            EXCLUDES(mLock);
+    ftl::Optional<FrameRateMode> onKernelTimerChanged(ftl::Optional<DisplayModeId> desiredModeIdOpt,
+                                                      bool timerExpired) const EXCLUDES(mLock);
 
     void setActiveMode(DisplayModeId, Fps renderFrameRate) EXCLUDES(mLock);
 
@@ -279,7 +304,7 @@ public:
         int frameRateMultipleThreshold = 0;
 
         // The Idle Timer timeout. 0 timeout means no idle timer.
-        std::chrono::milliseconds idleTimerTimeout = 0ms;
+        std::chrono::milliseconds legacyIdleTimerTimeout = 0ms;
 
         // The controller representing how the kernel idle timer will be configured
         // either on the HWC api or sysprop.
@@ -290,7 +315,7 @@ public:
             DisplayModes, DisplayModeId activeModeId,
             Config config = {.enableFrameRateOverride = Config::FrameRateOverride::Disabled,
                              .frameRateMultipleThreshold = 0,
-                             .idleTimerTimeout = 0ms,
+                             .legacyIdleTimerTimeout = 0ms,
                              .kernelIdleTimerController = {}});
 
     RefreshRateSelector(const RefreshRateSelector&) = delete;
@@ -343,6 +368,9 @@ public:
                                                  Fps displayFrameRate, GlobalSignals) const
             EXCLUDES(mLock);
 
+    // Gets the FpsRange that the FrameRateCategory represents.
+    static FpsRange getFrameRateCategoryRange(FrameRateCategory category);
+
     std::optional<KernelIdleTimerController> kernelIdleTimerController() {
         return mConfig.kernelIdleTimerController;
     }
@@ -355,6 +383,7 @@ public:
 
         Callbacks platform;
         Callbacks kernel;
+        Callbacks vrr;
     };
 
     void setIdleTimerCallbacks(IdleTimerCallbacks callbacks) EXCLUDES(mIdleTimerCallbacksMutex) {
@@ -368,12 +397,14 @@ public:
     }
 
     void startIdleTimer() {
+        mIdleTimerStarted = true;
         if (mIdleTimer) {
             mIdleTimer->start();
         }
     }
 
     void stopIdleTimer() {
+        mIdleTimerStarted = false;
         if (mIdleTimer) {
             mIdleTimer->stop();
         }
@@ -395,6 +426,8 @@ public:
 
     std::chrono::milliseconds getIdleTimerTimeout();
 
+    bool isVrrDevice() const;
+
 private:
     friend struct TestableRefreshRateSelector;
 
@@ -404,7 +437,8 @@ private:
     const FrameRateMode& getActiveModeLocked() const REQUIRES(mLock);
 
     RankedFrameRates getRankedFrameRatesLocked(const std::vector<LayerRequirement>& layers,
-                                               GlobalSignals signals) const REQUIRES(mLock);
+                                               GlobalSignals signals, Fps pacesetterFps) const
+            REQUIRES(mLock);
 
     // Returns number of display frames and remainder when dividing the layer refresh period by
     // display refresh period.
@@ -427,17 +461,26 @@ private:
         ftl_last = Descending
     };
 
-    // Only uses the primary range, not the app request range.
+    typedef std::function<bool(const FrameRateMode)> RankFrameRatesPredicate;
+
+    // Rank the frame rates.
+    // Only modes in the primary range for which `predicate` is `true` will be scored.
+    // Does not use the app requested range.
     FrameRateRanking rankFrameRates(
             std::optional<int> anchorGroupOpt, RefreshRateOrder refreshRateOrder,
-            std::optional<DisplayModeId> preferredDisplayModeOpt = std::nullopt) const
+            std::optional<DisplayModeId> preferredDisplayModeOpt = std::nullopt,
+            const RankFrameRatesPredicate& predicate = [](FrameRateMode) { return true; }) const
             REQUIRES(mLock);
 
     const Policy* getCurrentPolicyLocked() const REQUIRES(mLock);
     bool isPolicyValidLocked(const Policy& policy) const REQUIRES(mLock);
 
     // Returns the refresh rate score as a ratio to max refresh rate, which has a score of 1.
-    float calculateDistanceScoreFromMax(Fps refreshRate) const REQUIRES(mLock);
+    float calculateDistanceScoreFromMaxLocked(Fps refreshRate) const REQUIRES(mLock);
+
+    // Returns the refresh rate score based on its distance from the reference rate.
+    float calculateDistanceScoreLocked(Fps referenceRate, Fps refreshRate) const REQUIRES(mLock);
+
     // calculates a score for a layer. Used to determine the display refresh rate
     // and the frame rate override for certains applications.
     float calculateLayerScoreLocked(const LayerRequirement&, Fps refreshRate,
@@ -446,14 +489,22 @@ private:
     float calculateNonExactMatchingLayerScoreLocked(const LayerRequirement&, Fps refreshRate) const
             REQUIRES(mLock);
 
+    // Calculates the score for non-exact matching layer that has LayerVoteType::ExplicitDefault.
+    float calculateNonExactMatchingDefaultLayerScoreLocked(nsecs_t displayPeriod,
+                                                           nsecs_t layerPeriod) const
+            REQUIRES(mLock);
+
     void updateDisplayModes(DisplayModes, DisplayModeId activeModeId) EXCLUDES(mLock)
             REQUIRES(kMainThreadContext);
 
-    void initializeIdleTimer();
+    void initializeIdleTimer(std::chrono::milliseconds timeout);
 
     std::optional<IdleTimerCallbacks::Callbacks> getIdleTimerCallbacks() const
             REQUIRES(mIdleTimerCallbacksMutex) {
         if (!mIdleTimerCallbacks) return {};
+
+        if (mIsVrrDevice) return mIdleTimerCallbacks->vrr;
+
         return mConfig.kernelIdleTimerController.has_value() ? mIdleTimerCallbacks->kernel
                                                              : mIdleTimerCallbacks->platform;
     }
@@ -467,8 +518,8 @@ private:
     }
 
     std::vector<FrameRateMode> createFrameRateModes(
-            std::function<bool(const DisplayMode&)>&& filterModes, const FpsRange&) const
-            REQUIRES(mLock);
+            const Policy&, std::function<bool(const DisplayMode&)>&& filterModes,
+            const FpsRange&) const REQUIRES(mLock);
 
     // The display modes of the active display. The DisplayModeIterators below are pointers into
     // this container, so must be invalidated whenever the DisplayModes change. The Policy below
@@ -488,6 +539,9 @@ private:
     std::vector<FrameRateMode> mPrimaryFrameRates GUARDED_BY(mLock);
     std::vector<FrameRateMode> mAppRequestFrameRates GUARDED_BY(mLock);
 
+    // Caches whether the device is VRR-compatible based on the active display mode.
+    std::atomic_bool mIsVrrDevice = false;
+
     Policy mDisplayManagerPolicy GUARDED_BY(mLock);
     std::optional<Policy> mOverridePolicy GUARDED_BY(mLock);
 
@@ -500,11 +554,25 @@ private:
     const std::vector<Fps> mKnownFrameRates;
 
     const Config mConfig;
+
+    // A list of known frame rates that favors at least 60Hz if there is no exact match display
+    // refresh rate
+    const std::vector<Fps> mFrameRatesThatFavorsAtLeast60 = {23.976_Hz, 25_Hz, 29.97_Hz, 50_Hz,
+                                                             59.94_Hz};
+
     Config::FrameRateOverride mFrameRateOverrideConfig;
 
     struct GetRankedFrameRatesCache {
-        std::pair<std::vector<LayerRequirement>, GlobalSignals> arguments;
+        std::vector<LayerRequirement> layers;
+        GlobalSignals signals;
+        Fps pacesetterFps;
+
         RankedFrameRates result;
+
+        bool matches(const GetRankedFrameRatesCache& other) const {
+            return layers == other.layers && signals == other.signals &&
+                    isApproxEqual(pacesetterFps, other.pacesetterFps);
+        }
     };
     mutable std::optional<GetRankedFrameRatesCache> mGetRankedFrameRatesCache GUARDED_BY(mLock);
 
@@ -513,6 +581,7 @@ private:
     std::optional<IdleTimerCallbacks> mIdleTimerCallbacks GUARDED_BY(mIdleTimerCallbacksMutex);
     // Used to detect (lack of) frame activity.
     ftl::Optional<scheduler::OneShotTimer> mIdleTimer;
+    std::atomic<bool> mIdleTimerStarted = false;
 };
 
 } // namespace android::scheduler

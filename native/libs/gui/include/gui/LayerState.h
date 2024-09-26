@@ -30,6 +30,7 @@
 
 #include <android/gui/DropInputMode.h>
 #include <android/gui/FocusRequest.h>
+#include <android/gui/TrustedOverlay.h>
 
 #include <ftl/flags.h>
 #include <gui/DisplayCaptureArgs.h>
@@ -127,6 +128,8 @@ public:
 
     client_cache_t cachedBuffer;
 
+    nsecs_t dequeueTime;
+
     // Generates the release callback id based on the buffer id and frame number.
     // This is used as an identifier when release callbacks are invoked.
     ReleaseCallbackId generateReleaseCallbackId() const;
@@ -161,6 +164,9 @@ struct layer_state_t {
         // See SurfaceView scaling behavior for more details.
         eIgnoreDestinationFrame = 0x400,
         eLayerIsRefreshRateIndicator = 0x800, // REFRESH_RATE_INDICATOR
+        // Sets a property on this layer indicating that its visible region should be considered
+        // when computing TrustedPresentation Thresholds.
+        eCanOccludePresentation = 0x1000,
     };
 
     enum {
@@ -176,12 +182,11 @@ struct layer_state_t {
         eCachingHintChanged = 0x00000200,
         eDimmingEnabledChanged = 0x00000400,
         eShadowRadiusChanged = 0x00000800,
-        eRenderBorderChanged = 0x00001000,
         eBufferCropChanged = 0x00002000,
         eRelativeLayerChanged = 0x00004000,
         eReparent = 0x00008000,
         eColorChanged = 0x00010000,
-        /* unused = 0x00020000, */
+        eFrameRateCategoryChanged = 0x00020000,
         eBufferTransformChanged = 0x00040000,
         eTransformToDisplayInverseChanged = 0x00080000,
         eCropChanged = 0x00100000,
@@ -197,7 +202,7 @@ struct layer_state_t {
         eInputInfoChanged = 0x40000000,
         eCornerRadiusChanged = 0x80000000,
         eDestinationFrameChanged = 0x1'00000000,
-        /* unused = 0x2'00000000, */
+        eFrameRateSelectionStrategyChanged = 0x2'00000000,
         eBackgroundColorChanged = 0x4'00000000,
         eMetadataChanged = 0x8'00000000,
         eColorSpaceAgnosticChanged = 0x10'00000000,
@@ -206,14 +211,13 @@ struct layer_state_t {
         eBackgroundBlurRadiusChanged = 0x80'00000000,
         eProducerDisconnect = 0x100'00000000,
         eFixedTransformHintChanged = 0x200'00000000,
-        /* unused 0x400'00000000, */
+        eDesiredHdrHeadroomChanged = 0x400'00000000,
         eBlurRegionsChanged = 0x800'00000000,
         eAutoRefreshChanged = 0x1000'00000000,
         eStretchChanged = 0x2000'00000000,
         eTrustedOverlayChanged = 0x4000'00000000,
         eDropInputModeChanged = 0x8000'00000000,
         eExtendedRangeBrightnessChanged = 0x10000'00000000,
-
     };
 
     layer_state_t();
@@ -246,7 +250,8 @@ struct layer_state_t {
             layer_state_t::eSidebandStreamChanged | layer_state_t::eSurfaceDamageRegionChanged |
             layer_state_t::eTransformToDisplayInverseChanged |
             layer_state_t::eTransparentRegionChanged |
-            layer_state_t::eExtendedRangeBrightnessChanged;
+            layer_state_t::eExtendedRangeBrightnessChanged |
+            layer_state_t::eDesiredHdrHeadroomChanged;
 
     // Content updates.
     static constexpr uint64_t CONTENT_CHANGES = layer_state_t::BUFFER_CHANGES |
@@ -255,8 +260,8 @@ struct layer_state_t {
             layer_state_t::eBlurRegionsChanged | layer_state_t::eColorChanged |
             layer_state_t::eColorSpaceAgnosticChanged | layer_state_t::eColorTransformChanged |
             layer_state_t::eCornerRadiusChanged | layer_state_t::eDimmingEnabledChanged |
-            layer_state_t::eHdrMetadataChanged | layer_state_t::eRenderBorderChanged |
-            layer_state_t::eShadowRadiusChanged | layer_state_t::eStretchChanged;
+            layer_state_t::eHdrMetadataChanged | layer_state_t::eShadowRadiusChanged |
+            layer_state_t::eStretchChanged;
 
     // Changes which invalidates the layer's visible region in CE.
     static constexpr uint64_t CONTENT_DIRTY = layer_state_t::CONTENT_CHANGES |
@@ -265,18 +270,21 @@ struct layer_state_t {
     // Changes affecting child states.
     static constexpr uint64_t AFFECTS_CHILDREN = layer_state_t::GEOMETRY_CHANGES |
             layer_state_t::HIERARCHY_CHANGES | layer_state_t::eAlphaChanged |
+            layer_state_t::eBackgroundBlurRadiusChanged | layer_state_t::eBlurRegionsChanged |
             layer_state_t::eColorTransformChanged | layer_state_t::eCornerRadiusChanged |
             layer_state_t::eFlagsChanged | layer_state_t::eTrustedOverlayChanged |
-            layer_state_t::eFrameRateChanged | layer_state_t::eFixedTransformHintChanged;
+            layer_state_t::eFrameRateChanged | layer_state_t::eFrameRateCategoryChanged |
+            layer_state_t::eFrameRateSelectionStrategyChanged |
+            layer_state_t::eFrameRateSelectionPriority | layer_state_t::eFixedTransformHintChanged;
 
     // Changes affecting data sent to input.
-    static constexpr uint64_t INPUT_CHANGES = layer_state_t::GEOMETRY_CHANGES |
-            layer_state_t::HIERARCHY_CHANGES | layer_state_t::eInputInfoChanged |
-            layer_state_t::eDropInputModeChanged | layer_state_t::eTrustedOverlayChanged;
+    static constexpr uint64_t INPUT_CHANGES = layer_state_t::eAlphaChanged |
+            layer_state_t::eInputInfoChanged | layer_state_t::eDropInputModeChanged |
+            layer_state_t::eTrustedOverlayChanged | layer_state_t::eLayerStackChanged;
 
     // Changes that affect the visible region on a display.
-    static constexpr uint64_t VISIBLE_REGION_CHANGES =
-            layer_state_t::GEOMETRY_CHANGES | layer_state_t::HIERARCHY_CHANGES;
+    static constexpr uint64_t VISIBLE_REGION_CHANGES = layer_state_t::GEOMETRY_CHANGES |
+            layer_state_t::HIERARCHY_CHANGES | layer_state_t::eAlphaChanged;
 
     bool hasValidBuffer() const;
     void sanitize(int32_t permissions);
@@ -357,6 +365,13 @@ struct layer_state_t {
     // Default frame rate compatibility used to set the layer refresh rate votetype.
     int8_t defaultFrameRateCompatibility;
 
+    // Frame rate category to suggest what frame rate range a surface should run.
+    int8_t frameRateCategory;
+    bool frameRateCategorySmoothSwitchOnly;
+
+    // Strategy of the layer for frame rate selection.
+    int8_t frameRateSelectionStrategy;
+
     // Set by window manager indicating the layer and all its children are
     // in a different orientation than the display. The hint suggests that
     // the graphic producers should receive a transform hint as if the
@@ -373,12 +388,7 @@ struct layer_state_t {
 
     // An inherited state that indicates that this surface control and its children
     // should be trusted for input occlusion detection purposes
-    bool isTrustedOverlay;
-
-    // Flag to indicate if border needs to be enabled on the layer
-    bool borderEnabled;
-    float borderWidth;
-    half4 borderColor;
+    gui::TrustedOverlay trustedOverlay;
 
     // Stretch effect to be applied to this layer
     StretchEffect stretchEffect;
@@ -407,26 +417,36 @@ public:
 };
 
 struct DisplayState {
-    enum {
+    enum : uint32_t {
         eSurfaceChanged = 0x01,
         eLayerStackChanged = 0x02,
         eDisplayProjectionChanged = 0x04,
         eDisplaySizeChanged = 0x08,
-        eFlagsChanged = 0x10
+        eFlagsChanged = 0x10,
+
+        eAllChanged = ~0u
     };
 
+    // Not for direct use. Prefer constructor below for new displays.
     DisplayState();
+
+    DisplayState(sp<IBinder> token, ui::LayerStack layerStack)
+          : what(eAllChanged),
+            token(std::move(token)),
+            layerStack(layerStack),
+            layerStackSpaceRect(Rect::INVALID_RECT),
+            orientedDisplaySpaceRect(Rect::INVALID_RECT) {}
+
     void merge(const DisplayState& other);
     void sanitize(int32_t permissions);
 
     uint32_t what = 0;
     uint32_t flags = 0;
     sp<IBinder> token;
-    sp<IGraphicBufferProducer> surface;
 
     ui::LayerStack layerStack = ui::DEFAULT_LAYER_STACK;
 
-    // These states define how layers are projected onto the physical display.
+    // These states define how layers are projected onto the physical or virtual display.
     //
     // Layers are first clipped to `layerStackSpaceRect'.  They are then translated and
     // scaled from `layerStackSpaceRect' to `orientedDisplaySpaceRect'.  Finally, they are rotated
@@ -437,10 +457,17 @@ struct DisplayState {
     // will be scaled by a factor of 2 and translated by (20, 10). When orientation is 1, layers
     // will be additionally rotated by 90 degrees around the origin clockwise and translated by (W,
     // 0).
+    //
+    // Rect::INVALID_RECT sizes the space to the active resolution of the physical display, or the
+    // default dimensions of the virtual display surface.
+    //
     ui::Rotation orientation = ui::ROTATION_0;
     Rect layerStackSpaceRect = Rect::EMPTY_RECT;
     Rect orientedDisplaySpaceRect = Rect::EMPTY_RECT;
 
+    // Exclusive to virtual displays: The sink surface into which the virtual display is rendered,
+    // and an optional resolution that overrides its default dimensions.
+    sp<IGraphicBufferProducer> surface;
     uint32_t width = 0;
     uint32_t height = 0;
 
@@ -471,16 +498,6 @@ static inline int compare_type(const ComposerState& lhs, const ComposerState& rh
 static inline int compare_type(const DisplayState& lhs, const DisplayState& rhs) {
     return compare_type(lhs.token, rhs.token);
 }
-
-// Returns true if the frameRate is valid.
-//
-// @param frameRate the frame rate in Hz
-// @param compatibility a ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_*
-// @param changeFrameRateStrategy a ANATIVEWINDOW_CHANGE_FRAME_RATE_*
-// @param functionName calling function or nullptr. Used for logging
-// @param privileged whether caller has unscoped surfaceflinger access
-bool ValidateFrameRate(float frameRate, int8_t compatibility, int8_t changeFrameRateStrategy,
-                       const char* functionName, bool privileged = false);
 
 }; // namespace android
 

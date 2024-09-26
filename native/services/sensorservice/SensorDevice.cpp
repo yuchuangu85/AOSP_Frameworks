@@ -16,15 +16,9 @@
 
 #include "SensorDevice.h"
 
-#include "android/hardware/sensors/2.0/types.h"
-#include "android/hardware/sensors/2.1/types.h"
-#include "convertV2_1.h"
-
-#include "AidlSensorHalWrapper.h"
-#include "HidlSensorHalWrapper.h"
-
 #include <android-base/logging.h>
 #include <android/util/ProtoOutputStream.h>
+#include <com_android_frameworks_sensorservice_flags.h>
 #include <cutils/atomic.h>
 #include <frameworks/base/core/proto/android/service/sensor_service.proto.h>
 #include <hardware/sensors-base.h>
@@ -35,11 +29,20 @@
 
 #include <chrono>
 #include <cinttypes>
+#include <condition_variable>
 #include <cstddef>
+#include <mutex>
 #include <thread>
+
+#include "AidlSensorHalWrapper.h"
+#include "HidlSensorHalWrapper.h"
+#include "android/hardware/sensors/2.0/types.h"
+#include "android/hardware/sensors/2.1/types.h"
+#include "convertV2_1.h"
 
 using namespace android::hardware::sensors;
 using android::util::ProtoOutputStream;
+namespace sensorservice_flags = com::android::frameworks::sensorservice::flags;
 
 namespace android {
 // ---------------------------------------------------------------------------
@@ -65,7 +68,7 @@ enum DevicePrivateBase : int32_t {
 
 } // anonymous namespace
 
-SensorDevice::SensorDevice() {
+SensorDevice::SensorDevice() : mInHalBypassMode(false) {
     if (!connectHalService()) {
         return;
     }
@@ -164,6 +167,9 @@ void SensorDevice::reconnect() {
 
     mActivationCount.clear();
     mSensorList.clear();
+    if (sensorservice_flags::dynamic_sensor_hal_reconnect_handling()) {
+        mConnectedDynamicSensors.clear();
+    }
 
     if (mHalWrapper->connect(this)) {
         initializeSensorList();
@@ -298,7 +304,7 @@ std::string SensorDevice::dump() const {
         result.appendFormat("}, selected = %.2f ms\n", info.bestBatchParams.mTBatch / 1e6f);
     }
 
-    return result.string();
+    return result.c_str();
 }
 
 /**
@@ -338,6 +344,15 @@ void SensorDevice::dump(ProtoOutputStream* proto) const {
     }
 }
 
+std::vector<int32_t> SensorDevice::getDynamicSensorHandles() {
+    std::vector<int32_t> sensorHandles;
+    std::lock_guard<std::mutex> lock(mDynamicSensorsMutex);
+    for (auto& sensors : mConnectedDynamicSensors) {
+        sensorHandles.push_back(sensors.first);
+    }
+    return sensorHandles;
+}
+
 ssize_t SensorDevice::getSensorList(sensor_t const** list) {
     *list = &mSensorList[0];
 
@@ -352,13 +367,17 @@ ssize_t SensorDevice::poll(sensors_event_t* buffer, size_t count) {
     if (mHalWrapper == nullptr) return NO_INIT;
 
     ssize_t eventsRead = 0;
-    if (mHalWrapper->supportsMessageQueues()) {
-        eventsRead = mHalWrapper->pollFmq(buffer, count);
-    } else if (mHalWrapper->supportsPolling()) {
-        eventsRead = mHalWrapper->poll(buffer, count);
+    if (mInHalBypassMode) [[unlikely]] {
+        eventsRead = getHalBypassInjectedEvents(buffer, count);
     } else {
-        ALOGE("Must support polling or FMQ");
-        eventsRead = -1;
+        if (mHalWrapper->supportsMessageQueues()) {
+            eventsRead = mHalWrapper->pollFmq(buffer, count);
+        } else if (mHalWrapper->supportsPolling()) {
+            eventsRead = mHalWrapper->poll(buffer, count);
+        } else {
+            ALOGE("Must support polling or FMQ");
+            eventsRead = -1;
+        }
     }
 
     if (eventsRead > 0) {
@@ -410,8 +429,19 @@ void SensorDevice::onDynamicSensorsConnected(const std::vector<sensor_t>& dynami
 }
 
 void SensorDevice::onDynamicSensorsDisconnected(
-        const std::vector<int32_t>& /* dynamicSensorHandlesRemoved */) {
-    // TODO: Currently dynamic sensors do not seem to be removed
+        const std::vector<int32_t>& /*dynamicSensorHandlesRemoved*/) {
+    // This function is currently a no-op has removing data in mConnectedDynamicSensors here will
+    // cause a race condition between when this callback is invoked and when the dynamic sensor meta
+    // event is processed by polling. The clean up should only happen after processing the meta
+    // event. See the call stack of cleanupDisconnectedDynamicSensor.
+}
+
+void SensorDevice::cleanupDisconnectedDynamicSensor(int handle) {
+    std::lock_guard<std::mutex> lock(mDynamicSensorsMutex);
+    auto it = mConnectedDynamicSensors.find(handle);
+    if (it != mConnectedDynamicSensors.end()) {
+        mConnectedDynamicSensors.erase(it);
+    }
 }
 
 void SensorDevice::writeWakeLockHandled(uint32_t count) {
@@ -477,12 +507,16 @@ status_t SensorDevice::activateLocked(void* ident, int handle, int enabled) {
     } else {
         ALOGD_IF(DEBUG_CONNECTIONS, "disable index=%zd", info.batchParams.indexOfKey(ident));
 
-        // If a connected dynamic sensor is deactivated, remove it from the
-        // dictionary.
+        // TODO(b/316958439): Remove these line after
+        // sensor_device_on_dynamic_sensor_disconnected is ramped up. Bounded
+        // here since this function is coupled with
+        // dynamic_sensors_hal_disconnect_dynamic_sensor flag. If a connected
+        // dynamic sensor is deactivated, remove it from the dictionary.
         auto it = mConnectedDynamicSensors.find(handle);
         if (it != mConnectedDynamicSensors.end()) {
-            mConnectedDynamicSensors.erase(it);
+          mConnectedDynamicSensors.erase(it);
         }
+        // End of TODO(b/316958439)
 
         if (info.removeBatchParamsForIdent(ident) >= 0) {
             if (info.numActiveClients() == 0) {
@@ -762,11 +796,37 @@ status_t SensorDevice::injectSensorData(const sensors_event_t* injected_sensor_e
              injected_sensor_event->data[2], injected_sensor_event->data[3],
              injected_sensor_event->data[4], injected_sensor_event->data[5]);
 
+    if (mInHalBypassMode) {
+        std::lock_guard _l(mHalBypassLock);
+        mHalBypassInjectedEventQueue.push(*injected_sensor_event);
+        mHalBypassCV.notify_one();
+        return OK;
+    }
     return mHalWrapper->injectSensorData(injected_sensor_event);
 }
 
 status_t SensorDevice::setMode(uint32_t mode) {
     if (mHalWrapper == nullptr) return NO_INIT;
+    if (mode == SensorService::Mode::HAL_BYPASS_REPLAY_DATA_INJECTION) {
+        if (!mInHalBypassMode) {
+            std::lock_guard _l(mHalBypassLock);
+            while (!mHalBypassInjectedEventQueue.empty()) {
+                // flush any stale events from the injected event queue
+                mHalBypassInjectedEventQueue.pop();
+            }
+            mInHalBypassMode = true;
+        }
+    } else {
+        if (mInHalBypassMode) {
+            // We are transitioning out of HAL Bypass mode. We need to notify the reader thread
+            // (specifically getHalBypassInjectedEvents()) of this change in state so that it is not
+            // stuck waiting on more injected events to come and therefore preventing events coming
+            // from the HAL from being read.
+            std::lock_guard _l(mHalBypassLock);
+            mInHalBypassMode = false;
+            mHalBypassCV.notify_one();
+        }
+    }
     return mHalWrapper->setOperationMode(static_cast<SensorService::Mode>(mode));
 }
 
@@ -870,6 +930,25 @@ float SensorDevice::getResolutionForSensor(int sensorHandle) {
     }
 
     return 0;
+}
+
+ssize_t SensorDevice::getHalBypassInjectedEvents(sensors_event_t* buffer,
+                                                 size_t maxNumEventsToRead) {
+    std::unique_lock _l(mHalBypassLock);
+    if (mHalBypassInjectedEventQueue.empty()) {
+        // if the injected event queue is empty, block and wait till there are events to process
+        // or if we are no longer in HAL Bypass mode so that this method is not called in a tight
+        // loop. Otherwise, continue copying the injected events into the supplied buffer.
+        mHalBypassCV.wait(_l, [this] {
+            return (!mHalBypassInjectedEventQueue.empty() || !mInHalBypassMode);
+        });
+    }
+    size_t eventsToRead = std::min(mHalBypassInjectedEventQueue.size(), maxNumEventsToRead);
+    for (size_t i = 0; i < eventsToRead; i++) {
+        buffer[i] = mHalBypassInjectedEventQueue.front();
+        mHalBypassInjectedEventQueue.pop();
+    }
+    return eventsToRead;
 }
 
 // ---------------------------------------------------------------------------

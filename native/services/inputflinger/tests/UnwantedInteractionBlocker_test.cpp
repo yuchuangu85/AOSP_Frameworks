@@ -18,13 +18,12 @@
 #include <android-base/silent_death_test.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <gui/constants.h>
 #include <linux/input.h>
 #include <thread>
 #include "ui/events/ozone/evdev/touch_filter/neural_stylus_palm_detection_filter.h"
 
+#include "TestEventMatchers.h"
 #include "TestInputListener.h"
-#include "TestInputListenerMatchers.h"
 
 using ::testing::AllOf;
 
@@ -88,14 +87,14 @@ static NotifyMotionArgs generateMotionArgs(nsecs_t downTime, nsecs_t eventTime, 
     }
 
     // Define a valid motion event.
-    NotifyMotionArgs args(/* id */ 0, eventTime, /*readTime=*/0, DEVICE_ID,
-                          AINPUT_SOURCE_TOUCHSCREEN, /*displayId=*/0, POLICY_FLAG_PASS_TO_USER,
-                          action, /* actionButton */ 0,
-                          /* flags */ 0, AMETA_NONE, /* buttonState */ 0,
-                          MotionClassification::NONE, AMOTION_EVENT_EDGE_FLAG_NONE, pointerCount,
-                          pointerProperties, pointerCoords, /* xPrecision */ 0, /* yPrecision */ 0,
+    NotifyMotionArgs args(/*id=*/0, eventTime, /*readTime=*/0, DEVICE_ID, AINPUT_SOURCE_TOUCHSCREEN,
+                          ui::LogicalDisplayId::DEFAULT, POLICY_FLAG_PASS_TO_USER, action,
+                          /*actionButton=*/0,
+                          /*flags=*/0, AMETA_NONE, /*buttonState=*/0, MotionClassification::NONE,
+                          AMOTION_EVENT_EDGE_FLAG_NONE, pointerCount, pointerProperties,
+                          pointerCoords, /*xPrecision=*/0, /*yPrecision=*/0,
                           AMOTION_EVENT_INVALID_CURSOR_POSITION,
-                          AMOTION_EVENT_INVALID_CURSOR_POSITION, downTime, /* videoFrames */ {});
+                          AMOTION_EVENT_INVALID_CURSOR_POSITION, downTime, /*videoFrames=*/{});
 
     return args;
 }
@@ -104,15 +103,15 @@ static InputDeviceInfo generateTestDeviceInfo() {
     InputDeviceIdentifier identifier;
 
     auto info = InputDeviceInfo();
-    info.initialize(DEVICE_ID, /*generation*/ 1, /*controllerNumber*/ 1, identifier, "alias",
-                    /*isExternal*/ false, /*hasMic*/ false, ADISPLAY_ID_NONE);
+    info.initialize(DEVICE_ID, /*generation=*/1, /*controllerNumber=*/1, identifier, "alias",
+                    /*isExternal=*/false, /*hasMic=*/false, ui::LogicalDisplayId::INVALID);
     info.addSource(AINPUT_SOURCE_TOUCHSCREEN);
-    info.addMotionRange(AMOTION_EVENT_AXIS_X, AINPUT_SOURCE_TOUCHSCREEN, 0, 1599, /*flat*/ 0,
-                        /*fuzz*/ 0, X_RESOLUTION);
-    info.addMotionRange(AMOTION_EVENT_AXIS_Y, AINPUT_SOURCE_TOUCHSCREEN, 0, 2559, /*flat*/ 0,
-                        /*fuzz*/ 0, Y_RESOLUTION);
+    info.addMotionRange(AMOTION_EVENT_AXIS_X, AINPUT_SOURCE_TOUCHSCREEN, 0, 1599, /*flat=*/0,
+                        /*fuzz=*/0, X_RESOLUTION);
+    info.addMotionRange(AMOTION_EVENT_AXIS_Y, AINPUT_SOURCE_TOUCHSCREEN, 0, 2559, /*flat=*/0,
+                        /*fuzz=*/0, Y_RESOLUTION);
     info.addMotionRange(AMOTION_EVENT_AXIS_TOUCH_MAJOR, AINPUT_SOURCE_TOUCHSCREEN, 0, 255,
-                        /*flat*/ 0, /*fuzz*/ 0, MAJOR_RESOLUTION);
+                        /*flat=*/0, /*fuzz=*/0, MAJOR_RESOLUTION);
 
     return info;
 }
@@ -138,9 +137,10 @@ TEST(DeviceInfoConversionTest, TabletDeviceTest) {
 
 static void assertArgs(const NotifyMotionArgs& args, int32_t action,
                        const std::vector<std::pair<int32_t /*pointerId*/, PointerData>>& pointers) {
-    ASSERT_EQ(action, args.action);
-    ASSERT_EQ(pointers.size(), args.pointerCount);
-    for (size_t i = 0; i < args.pointerCount; i++) {
+    ASSERT_EQ(action, args.action)
+            << "Expected " << MotionEvent::actionToString(action) << " but got " << args.action;
+    ASSERT_EQ(pointers.size(), args.getPointerCount());
+    for (size_t i = 0; i < args.getPointerCount(); i++) {
         const auto& [pointerId, pointerData] = pointers[i];
         ASSERT_EQ(pointerId, args.pointerProperties[i].id);
         ASSERT_EQ(pointerData.x, args.pointerCoords[i].getX());
@@ -151,7 +151,7 @@ static void assertArgs(const NotifyMotionArgs& args, int32_t action,
 }
 
 TEST(RemovePointerIdsTest, RemoveOnePointer) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0,
                                                AMOTION_EVENT_ACTION_MOVE, {{1, 2, 3}, {4, 5, 6}});
 
     NotifyMotionArgs pointer1Only = removePointerIds(args, {0});
@@ -166,7 +166,7 @@ TEST(RemovePointerIdsTest, RemoveOnePointer) {
  */
 TEST(RemovePointerIdsTest, RemoveTwoPointers) {
     NotifyMotionArgs args =
-            generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, AMOTION_EVENT_ACTION_MOVE,
+            generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, AMOTION_EVENT_ACTION_MOVE,
                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 
     NotifyMotionArgs pointer1Only = removePointerIds(args, {0, 2});
@@ -178,7 +178,7 @@ TEST(RemovePointerIdsTest, RemoveTwoPointers) {
  * pointer during a POINTER_DOWN event.
  */
 TEST(RemovePointerIdsTest, ActionPointerDown) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_DOWN,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_DOWN,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 
     NotifyMotionArgs pointers0And2 = removePointerIds(args, {1});
@@ -192,11 +192,11 @@ TEST(RemovePointerIdsTest, ActionPointerDown) {
  * Remove all pointers during a MOVE event.
  */
 TEST(RemovePointerIdsTest, RemoveAllPointersDuringMove) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0,
                                                AMOTION_EVENT_ACTION_MOVE, {{1, 2, 3}, {4, 5, 6}});
 
     NotifyMotionArgs noPointers = removePointerIds(args, {0, 1});
-    ASSERT_EQ(0u, noPointers.pointerCount);
+    ASSERT_EQ(0u, noPointers.getPointerCount());
 }
 
 /**
@@ -204,7 +204,7 @@ TEST(RemovePointerIdsTest, RemoveAllPointersDuringMove) {
  * then we should just have ACTION_DOWN. Likewise, a POINTER_UP event should become an UP event.
  */
 TEST(RemovePointerIdsTest, PointerDownBecomesDown) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_DOWN,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_DOWN,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
 
     NotifyMotionArgs pointer1 = removePointerIds(args, {0, 2});
@@ -219,11 +219,11 @@ TEST(RemovePointerIdsTest, PointerDownBecomesDown) {
  * If a pointer that is now going down is canceled, then we can just drop the POINTER_DOWN event.
  */
 TEST(CancelSuppressedPointersTest, CanceledPointerDownIsDropped) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_DOWN,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_DOWN,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{1});
     ASSERT_TRUE(result.empty());
 }
 
@@ -231,11 +231,11 @@ TEST(CancelSuppressedPointersTest, CanceledPointerDownIsDropped) {
  * If a pointer is already suppressed, the POINTER_UP event for this pointer should be dropped
  */
 TEST(CancelSuppressedPointersTest, SuppressedPointerUpIsDropped) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_UP,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_UP,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {1},
-                                     /*newSuppressedPointerIds*/ {1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{1},
+                                     /*newSuppressedPointerIds=*/{1});
     ASSERT_TRUE(result.empty());
 }
 
@@ -243,11 +243,11 @@ TEST(CancelSuppressedPointersTest, SuppressedPointerUpIsDropped) {
  * If a pointer is already suppressed, it should be removed from a MOVE event.
  */
 TEST(CancelSuppressedPointersTest, SuppressedPointerIsRemovedDuringMove) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, MOVE,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, MOVE,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {1},
-                                     /*newSuppressedPointerIds*/ {1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{1},
+                                     /*newSuppressedPointerIds=*/{1});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], MOVE, {{0, {1, 2, 3}}, {2, {7, 8, 9}}});
 }
@@ -258,11 +258,11 @@ TEST(CancelSuppressedPointersTest, SuppressedPointerIsRemovedDuringMove) {
  * 2) A MOVE event without this pointer
  */
 TEST(CancelSuppressedPointersTest, NewlySuppressedPointerIsCanceled) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, MOVE,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, MOVE,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{1});
     ASSERT_EQ(2u, result.size());
     assertArgs(result[0], POINTER_1_UP, {{0, {1, 2, 3}}, {1, {4, 5, 6}}, {2, {7, 8, 9}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -274,10 +274,10 @@ TEST(CancelSuppressedPointersTest, NewlySuppressedPointerIsCanceled) {
  * should be canceled with ACTION_CANCEL.
  */
 TEST(CancelSuppressedPointersTest, SingleSuppressedPointerIsCanceled) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, MOVE, {{1, 2, 3}});
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, MOVE, {{1, 2, 3}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {0});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{0});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], CANCEL, {{0, {1, 2, 3}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -288,11 +288,11 @@ TEST(CancelSuppressedPointersTest, SingleSuppressedPointerIsCanceled) {
  * but this event should also have FLAG_CANCELED to indicate that this pointer was unintentional.
  */
 TEST(CancelSuppressedPointersTest, SuppressedPointer1GoingUpIsCanceled) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_UP,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_UP,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{1});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], POINTER_1_UP, {{0, {1, 2, 3}}, {1, {4, 5, 6}}, {2, {7, 8, 9}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -303,11 +303,11 @@ TEST(CancelSuppressedPointersTest, SuppressedPointer1GoingUpIsCanceled) {
  * errors with handling pointer index inside the action.
  */
 TEST(CancelSuppressedPointersTest, SuppressedPointer0GoingUpIsCanceled) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_0_UP,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_0_UP,
                                                {{1, 2, 3}, {4, 5, 6}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {0});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{0});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], POINTER_0_UP, {{0, {1, 2, 3}}, {1, {4, 5, 6}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -319,10 +319,10 @@ TEST(CancelSuppressedPointersTest, SuppressedPointer0GoingUpIsCanceled) {
  */
 TEST(CancelSuppressedPointersTest, TwoNewlySuppressedPointersAreBothCanceled) {
     NotifyMotionArgs args =
-            generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, MOVE, {{1, 2, 3}, {4, 5, 6}});
+            generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, MOVE, {{1, 2, 3}, {4, 5, 6}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {},
-                                     /*newSuppressedPointerIds*/ {0, 1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{},
+                                     /*newSuppressedPointerIds=*/{0, 1});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], CANCEL, {{0, {1, 2, 3}}, {1, {4, 5, 6}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -334,11 +334,11 @@ TEST(CancelSuppressedPointersTest, TwoNewlySuppressedPointersAreBothCanceled) {
  * would undo the entire gesture.
  */
 TEST(CancelSuppressedPointersTest, TwoPointersAreCanceledDuringPointerUp) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_1_UP,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_1_UP,
                                                {{1, 2, 3}, {4, 5, 6}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {1},
-                                     /*newSuppressedPointerIds*/ {0, 1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{1},
+                                     /*newSuppressedPointerIds=*/{0, 1});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], CANCEL, {{0, {1, 2, 3}}});
     ASSERT_EQ(FLAG_CANCELED, result[0].flags);
@@ -349,11 +349,11 @@ TEST(CancelSuppressedPointersTest, TwoPointersAreCanceledDuringPointerUp) {
  * this should become a regular DOWN event because it's the only pointer that will be valid now.
  */
 TEST(CancelSuppressedPointersTest, NewPointerDownBecomesDown) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, POINTER_2_DOWN,
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, POINTER_2_DOWN,
                                                {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}});
     std::vector<NotifyMotionArgs> result =
-            cancelSuppressedPointers(args, /*oldSuppressedPointerIds*/ {0, 1},
-                                     /*newSuppressedPointerIds*/ {0, 1});
+            cancelSuppressedPointers(args, /*oldSuppressedPointerIds=*/{0, 1},
+                                     /*newSuppressedPointerIds=*/{0, 1});
     ASSERT_EQ(1u, result.size());
     assertArgs(result[0], DOWN, {{2, {7, 8, 9}}});
     ASSERT_EQ(0, result[0].flags);
@@ -364,7 +364,7 @@ TEST(CancelSuppressedPointersTest, NewPointerDownBecomesDown) {
  * struct is populated as expected.
  */
 TEST(GetTouchesTest, ConvertDownEvent) {
-    NotifyMotionArgs args = generateMotionArgs(/*downTime*/ 0, /*eventTime*/ 0, DOWN, {{1, 2, 3}});
+    NotifyMotionArgs args = generateMotionArgs(/*downTime=*/0, /*eventTime=*/0, DOWN, {{1, 2, 3}});
     AndroidPalmFilterDeviceInfo deviceInfo = generatePalmFilterDeviceInfo();
     SlotState slotState;
     SlotState oldSlotState = slotState;
@@ -434,7 +434,7 @@ TEST_F(UnwantedInteractionBlockerTest, ConfigurationChangedIsPassedToNextListene
 TEST_F(UnwantedInteractionBlockerTest, KeyIsPassedToNextListener) {
     // Create a basic key event and send to blocker
     NotifyKeyArgs args(/*sequenceNum=*/1, /*eventTime=*/2, /*readTime=*/21, /*deviceId=*/3,
-                       AINPUT_SOURCE_KEYBOARD, ADISPLAY_ID_DEFAULT, /*policyFlags=*/0,
+                       AINPUT_SOURCE_KEYBOARD, ui::LogicalDisplayId::DEFAULT, /*policyFlags=*/0,
                        AKEY_EVENT_ACTION_DOWN, /*flags=*/4, AKEYCODE_HOME, /*scanCode=*/5,
                        AMETA_NONE, /*downTime=*/6);
 
@@ -771,7 +771,7 @@ TEST_F(PalmRejectorTest, TwoPointersAreCanceled) {
     ASSERT_EQ(POINTER_0_UP, argsList[0].action);
     ASSERT_EQ(FLAG_CANCELED, argsList[0].flags);
     ASSERT_EQ(MOVE, argsList[1].action);
-    ASSERT_EQ(1u, argsList[1].pointerCount);
+    ASSERT_EQ(1u, argsList[1].getPointerCount());
     ASSERT_EQ(0, argsList[1].flags);
 
     mPalmRejector->processMotion(
@@ -958,7 +958,7 @@ TEST_F(PalmRejectorFakeFilterTest, OneOfTwoPointersIsCanceled) {
                                {{1433.0, 751.0, 43.0}, {1072.0, 766.0, 13.0}}));
     ASSERT_EQ(1u, argsList.size());
     ASSERT_EQ(MOVE, argsList[0].action);
-    ASSERT_EQ(1u, argsList[0].pointerCount);
+    ASSERT_EQ(1u, argsList[0].getPointerCount());
     ASSERT_EQ(1433, argsList[0].pointerCoords[0].getX());
     ASSERT_EQ(751, argsList[0].pointerCoords[0].getY());
 }
@@ -986,7 +986,7 @@ TEST_F(PalmRejectorFakeFilterTest, NewDownEventAfterCancel) {
     ASSERT_EQ(1u, argsList.size());
     // Cancel all
     ASSERT_EQ(CANCEL, argsList[0].action);
-    ASSERT_EQ(2u, argsList[0].pointerCount);
+    ASSERT_EQ(2u, argsList[0].getPointerCount());
     ASSERT_EQ(FLAG_CANCELED, argsList[0].flags);
 
     // Future move events are ignored
@@ -1001,7 +1001,7 @@ TEST_F(PalmRejectorFakeFilterTest, NewDownEventAfterCancel) {
                                {{1433.0, 751.0, 43.0}, {1072.0, 766.0, 13.0}, {1000, 700, 10}}));
     ASSERT_EQ(1u, argsList.size());
     ASSERT_EQ(DOWN, argsList[0].action);
-    ASSERT_EQ(1u, argsList[0].pointerCount);
+    ASSERT_EQ(1u, argsList[0].getPointerCount());
     ASSERT_EQ(2, argsList[0].pointerProperties[0].id);
 }
 
@@ -1023,7 +1023,7 @@ TEST_F(PalmRejectorFakeFilterTest, TwoPointersCanceledWhenOnePointerGoesUp) {
     mPalmRejector->processMotion(
             generateMotionArgs(downTime, downTime, DOWN, {{1342.0, 613.0, 79.0}}));
     mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, POINTER_1_DOWN,
+            generateMotionArgs(downTime, /*eventTime=*/1, POINTER_1_DOWN,
                                {{1417.0, 685.0, 41.0}, {1062.0, 697.0, 10.0}}));
     // Suppress both pointers!!
     suppressPointerAtPosition(1414, 702);
@@ -1057,13 +1057,13 @@ TEST_F(PalmRejectorFakeFilterTest, CancelTwoPointers) {
     mPalmRejector->processMotion(
             generateMotionArgs(downTime, downTime, DOWN, {{1342.0, 613.0, 79.0}}));
     mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, POINTER_1_DOWN,
+            generateMotionArgs(downTime, /*eventTime=*/1, POINTER_1_DOWN,
                                {{1417.0, 685.0, 41.0}, {1062.0, 697.0, 10.0}}));
 
     // Suppress second pointer (pointer 1)
     suppressPointerAtPosition(1060, 700);
     argsList = mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, MOVE,
+            generateMotionArgs(downTime, /*eventTime=*/1, MOVE,
                                {{1417.0, 685.0, 41.0}, {1060, 700, 10.0}}));
     ASSERT_EQ(2u, argsList.size());
     ASSERT_EQ(POINTER_1_UP, argsList[0].action);
@@ -1075,20 +1075,20 @@ TEST_F(PalmRejectorFakeFilterTest, CancelTwoPointers) {
     // A new pointer goes down and gets suppressed right away. It should just be dropped
     suppressPointerAtPosition(1001, 601);
     argsList = mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, POINTER_2_DOWN,
+            generateMotionArgs(downTime, /*eventTime=*/1, POINTER_2_DOWN,
                                {{1417.0, 685.0, 41.0}, {1062.0, 697.0, 10.0}, {1001, 601, 5}}));
 
     ASSERT_EQ(0u, argsList.size());
     // Likewise, pointer that's already canceled should be ignored
     argsList = mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, POINTER_2_UP,
+            generateMotionArgs(downTime, /*eventTime=*/1, POINTER_2_UP,
                                {{1417.0, 685.0, 41.0}, {1062.0, 697.0, 10.0}, {1001, 601, 5}}));
     ASSERT_EQ(0u, argsList.size());
 
     // Cancel all pointers when pointer 1 goes up. Pointer 1 was already canceled earlier.
     suppressPointerAtPosition(1417, 685);
     argsList = mPalmRejector->processMotion(
-            generateMotionArgs(downTime, /*eventTime*/ 1, POINTER_1_UP,
+            generateMotionArgs(downTime, /*eventTime=*/1, POINTER_1_UP,
                                {{1417.0, 685.0, 41.0}, {1062.0, 697.0, 10.0}}));
     ASSERT_EQ(1u, argsList.size());
     ASSERT_EQ(CANCEL, argsList[0].action);

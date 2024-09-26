@@ -43,6 +43,7 @@
 
 #include <gui/AidlStatusUtil.h>
 #include <gui/BufferItem.h>
+
 #include <gui/IProducerListener.h>
 
 #include <gui/ISurfaceComposer.h>
@@ -50,8 +51,11 @@
 #include <private/gui/ComposerService.h>
 #include <private/gui/ComposerServiceAIDL.h>
 
+#include <com_android_graphics_libgui_flags.h>
+
 namespace android {
 
+using namespace com::android::graphics::libgui;
 using gui::aidl_utils::statusTFromBinderStatus;
 using ui::Dataspace;
 
@@ -338,12 +342,23 @@ status_t Surface::getFrameTimestamps(uint64_t frameNumber,
 
     getFrameTimestamp(outRequestedPresentTime, events->requestedPresentTime);
     getFrameTimestamp(outLatchTime, events->latchTime);
-    getFrameTimestamp(outFirstRefreshStartTime, events->firstRefreshStartTime);
+
+    nsecs_t firstRefreshStartTime = NATIVE_WINDOW_TIMESTAMP_INVALID;
+    getFrameTimestamp(&firstRefreshStartTime, events->firstRefreshStartTime);
+    if (outFirstRefreshStartTime) {
+        *outFirstRefreshStartTime = firstRefreshStartTime;
+    }
+
     getFrameTimestamp(outLastRefreshStartTime, events->lastRefreshStartTime);
     getFrameTimestamp(outDequeueReadyTime, events->dequeueReadyTime);
 
-    getFrameTimestampFence(outAcquireTime, events->acquireFence,
+    nsecs_t acquireTime = NATIVE_WINDOW_TIMESTAMP_INVALID;
+    getFrameTimestampFence(&acquireTime, events->acquireFence,
             events->hasAcquireInfo());
+    if (outAcquireTime != nullptr) {
+        *outAcquireTime = acquireTime;
+    }
+
     getFrameTimestampFence(outGpuCompositionDoneTime,
             events->gpuCompositionDoneFence,
             events->hasGpuCompositionDoneInfo());
@@ -351,6 +366,16 @@ status_t Surface::getFrameTimestamps(uint64_t frameNumber,
             events->hasDisplayPresentInfo());
     getFrameTimestampFence(outReleaseTime, events->releaseFence,
             events->hasReleaseInfo());
+
+    // Fix up the GPU completion fence at this layer -- eglGetFrameTimestampsANDROID() expects
+    // that EGL_FIRST_COMPOSITION_GPU_FINISHED_TIME_ANDROID > EGL_RENDERING_COMPLETE_TIME_ANDROID.
+    // This is typically true, but SurfaceFlinger may opt to cache prior GPU composition results,
+    // which breaks that assumption, so zero out GPU composition time.
+    if (outGpuCompositionDoneTime != nullptr
+            && *outGpuCompositionDoneTime > 0 && (acquireTime > 0 || firstRefreshStartTime > 0)
+            && *outGpuCompositionDoneTime <= std::max(acquireTime, firstRefreshStartTime)) {
+        *outGpuCompositionDoneTime = 0;
+    }
 
     return NO_ERROR;
 }
@@ -1450,6 +1475,9 @@ int Surface::perform(int operation, va_list args)
     case NATIVE_WINDOW_SET_FRAME_TIMELINE_INFO:
         res = dispatchSetFrameTimelineInfo(args);
         break;
+    case NATIVE_WINDOW_SET_BUFFERS_ADDITIONAL_OPTIONS:
+        res = dispatchSetAdditionalOptions(args);
+        break;
     default:
         res = NAME_NOT_FOUND;
         break;
@@ -1792,19 +1820,38 @@ int Surface::dispatchGetLastQueuedBuffer2(va_list args) {
 
 int Surface::dispatchSetFrameTimelineInfo(va_list args) {
     ATRACE_CALL();
-    auto frameNumber = static_cast<uint64_t>(va_arg(args, uint64_t));
-    auto frameTimelineVsyncId = static_cast<int64_t>(va_arg(args, int64_t));
-    auto inputEventId = static_cast<int32_t>(va_arg(args, int32_t));
-    auto startTimeNanos = static_cast<int64_t>(va_arg(args, int64_t));
-    auto useForRefreshRateSelection = static_cast<bool>(va_arg(args, int32_t));
-
     ALOGV("Surface::%s", __func__);
+
+    const auto nativeWindowFtlInfo = static_cast<ANativeWindowFrameTimelineInfo>(
+            va_arg(args, ANativeWindowFrameTimelineInfo));
+
     FrameTimelineInfo ftlInfo;
-    ftlInfo.vsyncId = frameTimelineVsyncId;
-    ftlInfo.inputEventId = inputEventId;
-    ftlInfo.startTimeNanos = startTimeNanos;
-    ftlInfo.useForRefreshRateSelection = useForRefreshRateSelection;
-    return setFrameTimelineInfo(frameNumber, ftlInfo);
+    ftlInfo.vsyncId = nativeWindowFtlInfo.frameTimelineVsyncId;
+    ftlInfo.inputEventId = nativeWindowFtlInfo.inputEventId;
+    ftlInfo.startTimeNanos = nativeWindowFtlInfo.startTimeNanos;
+    ftlInfo.useForRefreshRateSelection = nativeWindowFtlInfo.useForRefreshRateSelection;
+    ftlInfo.skippedFrameVsyncId = nativeWindowFtlInfo.skippedFrameVsyncId;
+    ftlInfo.skippedFrameStartTimeNanos = nativeWindowFtlInfo.skippedFrameStartTimeNanos;
+
+    return setFrameTimelineInfo(nativeWindowFtlInfo.frameNumber, ftlInfo);
+}
+
+int Surface::dispatchSetAdditionalOptions(va_list args) {
+    ATRACE_CALL();
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+    const AHardwareBufferLongOptions* opts = va_arg(args, const AHardwareBufferLongOptions*);
+    const size_t optsSize = va_arg(args, size_t);
+    std::vector<gui::AdditionalOptions> convertedOpts;
+    convertedOpts.reserve(optsSize);
+    for (size_t i = 0; i < optsSize; i++) {
+        convertedOpts.emplace_back(opts[i].name, opts[i].value);
+    }
+    return setAdditionalOptions(convertedOpts);
+#else
+    (void)args;
+    return INVALID_OPERATION;
+#endif
 }
 
 bool Surface::transformToDisplayInverse() const {
@@ -2564,8 +2611,22 @@ void Surface::ProducerListenerProxy::onBuffersDiscarded(const std::vector<int32_
     mSurfaceListener->onBuffersDiscarded(discardedBufs);
 }
 
-[[deprecated]] status_t Surface::setFrameRate(float /*frameRate*/, int8_t /*compatibility*/,
-                                              int8_t /*changeFrameRateStrategy*/) {
+status_t Surface::setFrameRate(float frameRate, int8_t compatibility,
+                               int8_t changeFrameRateStrategy) {
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_SETFRAMERATE)
+    if (flags::bq_setframerate()) {
+        status_t err = mGraphicBufferProducer->setFrameRate(frameRate, compatibility,
+                                                            changeFrameRateStrategy);
+        ALOGE_IF(err, "IGraphicBufferProducer::setFrameRate(%.2f) returned %s", frameRate,
+                 strerror(-err));
+        return err;
+    }
+#else
+    static_cast<void>(frameRate);
+    static_cast<void>(compatibility);
+    static_cast<void>(changeFrameRateStrategy);
+#endif
+
     ALOGI("Surface::setFrameRate is deprecated, setFrameRate hint is dropped as destination is not "
           "SurfaceFlinger");
     // ISurfaceComposer no longer supports setFrameRate, we will return NO_ERROR when the api is
@@ -2578,6 +2639,17 @@ status_t Surface::setFrameTimelineInfo(uint64_t /*frameNumber*/,
     // ISurfaceComposer no longer supports setFrameTimelineInfo
     return BAD_VALUE;
 }
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_EXTENDEDALLOCATE)
+status_t Surface::setAdditionalOptions(const std::vector<gui::AdditionalOptions>& options) {
+    if (!GraphicBufferAllocator::get().supportsAdditionalOptions()) {
+        return INVALID_OPERATION;
+    }
+
+    Mutex::Autolock lock(mMutex);
+    return mGraphicBufferProducer->setAdditionalOptions(options);
+}
+#endif
 
 sp<IBinder> Surface::getSurfaceControlHandle() const {
     Mutex::Autolock lock(mMutex);

@@ -25,6 +25,7 @@ import android.hardware.radio.ProgramList;
 import android.hardware.radio.ProgramSelector;
 import android.hardware.radio.RadioManager;
 import android.hardware.radio.RadioMetadata;
+import android.hardware.radio.UniqueProgramIdentifier;
 import android.os.RemoteException;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -111,13 +112,21 @@ final class AidlTestUtils {
             android.hardware.broadcastradio.ProgramSelector hwSel,
             ProgramIdentifier logicallyTunedTo, ProgramIdentifier physicallyTunedTo,
             int hwSignalQuality) {
+        return makeHalProgramInfo(hwSel, logicallyTunedTo, physicallyTunedTo, hwSignalQuality,
+                new ProgramIdentifier[]{}, new Metadata[]{});
+    }
+
+    static ProgramInfo makeHalProgramInfo(
+            android.hardware.broadcastradio.ProgramSelector hwSel,
+            ProgramIdentifier logicallyTunedTo, ProgramIdentifier physicallyTunedTo,
+            int hwSignalQuality, ProgramIdentifier[] relatedContent, Metadata[] metadata) {
         ProgramInfo hwInfo = new ProgramInfo();
         hwInfo.selector = hwSel;
         hwInfo.logicallyTunedTo = logicallyTunedTo;
         hwInfo.physicallyTunedTo = physicallyTunedTo;
         hwInfo.signalQuality = hwSignalQuality;
-        hwInfo.relatedContent = new ProgramIdentifier[]{};
-        hwInfo.metadata = new Metadata[]{};
+        hwInfo.relatedContent = relatedContent;
+        hwInfo.metadata = metadata;
         return hwInfo;
     }
 
@@ -149,12 +158,12 @@ final class AidlTestUtils {
 
     static ProgramList.Chunk makeChunk(boolean purge, boolean complete,
             List<RadioManager.ProgramInfo> modified,
-            List<ProgramSelector.Identifier> removed) throws RemoteException {
+            List<UniqueProgramIdentifier> removed) throws RemoteException {
         ArraySet<RadioManager.ProgramInfo> modifiedSet = new ArraySet<>();
         if (modified != null) {
             modifiedSet.addAll(modified);
         }
-        ArraySet<ProgramSelector.Identifier> removedSet = new ArraySet<>();
+        ArraySet<UniqueProgramIdentifier> removedSet = new ArraySet<>();
         if (removed != null) {
             removedSet.addAll(removed);
         }

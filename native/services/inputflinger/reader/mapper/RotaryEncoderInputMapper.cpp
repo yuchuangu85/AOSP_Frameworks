@@ -20,6 +20,7 @@
 
 #include "RotaryEncoderInputMapper.h"
 
+#include <utils/Timers.h>
 #include <optional>
 
 #include "CursorScrollAccumulator.h"
@@ -62,6 +63,7 @@ void RotaryEncoderInputMapper::dump(std::string& dump) {
     dump += INDENT2 "Rotary Encoder Input Mapper:\n";
     dump += StringPrintf(INDENT3 "HaveWheel: %s\n",
                          toString(mRotaryEncoderScrollAccumulator.haveRelativeVWheel()));
+    dump += StringPrintf(INDENT3 "HaveSlopController: %s\n", toString(mSlopController != nullptr));
 }
 
 std::list<NotifyArgs> RotaryEncoderInputMapper::reconfigure(nsecs_t when,
@@ -70,6 +72,16 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::reconfigure(nsecs_t when,
     std::list<NotifyArgs> out = InputMapper::reconfigure(when, config, changes);
     if (!changes.any()) {
         mRotaryEncoderScrollAccumulator.configure(getDeviceContext());
+
+        const PropertyMap& propertyMap = getDeviceContext().getConfiguration();
+        float slopThreshold = propertyMap.getInt("rotary_encoder.slop_threshold").value_or(0);
+        int32_t slopDurationNs = milliseconds_to_nanoseconds(
+                propertyMap.getInt("rotary_encoder.slop_duration_ms").value_or(0));
+        if (slopThreshold > 0 && slopDurationNs > 0) {
+            mSlopController = std::make_unique<SlopController>(slopThreshold, slopDurationNs);
+        } else {
+            mSlopController = nullptr;
+        }
     }
     if (!changes.any() || changes.test(InputReaderConfiguration::Change::DISPLAY_INFO)) {
         std::optional<DisplayViewport> internalViewport =
@@ -89,12 +101,12 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::reset(nsecs_t when) {
     return InputMapper::reset(when);
 }
 
-std::list<NotifyArgs> RotaryEncoderInputMapper::process(const RawEvent* rawEvent) {
+std::list<NotifyArgs> RotaryEncoderInputMapper::process(const RawEvent& rawEvent) {
     std::list<NotifyArgs> out;
     mRotaryEncoderScrollAccumulator.process(rawEvent);
 
-    if (rawEvent->type == EV_SYN && rawEvent->code == SYN_REPORT) {
-        out += sync(rawEvent->when, rawEvent->readTime);
+    if (rawEvent.type == EV_SYN && rawEvent.code == SYN_REPORT) {
+        out += sync(rawEvent.when, rawEvent.readTime);
     }
     return out;
 }
@@ -103,13 +115,17 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::sync(nsecs_t when, nsecs_t readT
     std::list<NotifyArgs> out;
 
     float scroll = mRotaryEncoderScrollAccumulator.getRelativeVWheel();
+    if (mSlopController) {
+        scroll = mSlopController->consumeEvent(when, scroll);
+    }
+
     bool scrolled = scroll != 0;
 
     // Send motion event.
     if (scrolled) {
         int32_t metaState = getContext()->getGlobalMetaState();
         // This is not a pointer, so it's not associated with a display.
-        int32_t displayId = ADISPLAY_ID_NONE;
+        ui::LogicalDisplayId displayId = ui::LogicalDisplayId::INVALID;
 
         if (mOrientation == ui::ROTATION_180) {
             scroll = -scroll;
@@ -132,10 +148,10 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::sync(nsecs_t when, nsecs_t readT
         out.push_back(
                 NotifyMotionArgs(getContext()->getNextId(), when, readTime, getDeviceId(), mSource,
                                  displayId, policyFlags, AMOTION_EVENT_ACTION_SCROLL, 0, 0,
-                                 metaState, /* buttonState */ 0, MotionClassification::NONE,
+                                 metaState, /*buttonState=*/0, MotionClassification::NONE,
                                  AMOTION_EVENT_EDGE_FLAG_NONE, 1, &pointerProperties,
                                  &pointerCoords, 0, 0, AMOTION_EVENT_INVALID_CURSOR_POSITION,
-                                 AMOTION_EVENT_INVALID_CURSOR_POSITION, 0, /* videoFrames */ {}));
+                                 AMOTION_EVENT_INVALID_CURSOR_POSITION, 0, /*videoFrames=*/{}));
     }
 
     mRotaryEncoderScrollAccumulator.finishSync();

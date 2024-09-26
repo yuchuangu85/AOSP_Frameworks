@@ -154,8 +154,6 @@ void LayerRenderTypeTransactionTest::setRelativeZBasicHelper(uint32_t layerType)
 
     switch (layerType) {
         case ISurfaceComposerClient::eFXSurfaceBufferQueue:
-            Transaction().setPosition(layerG, 16, 16).setRelativeLayer(layerG, layerR, 1).apply();
-            break;
         case ISurfaceComposerClient::eFXSurfaceBufferState:
             Transaction().setPosition(layerG, 16, 16).setRelativeLayer(layerG, layerR, 1).apply();
             break;
@@ -200,13 +198,6 @@ void LayerRenderTypeTransactionTest::setRelativeZGroupHelper(uint32_t layerType)
     // layerR = 0, layerG = layerR + 3, layerB = 2
     switch (layerType) {
         case ISurfaceComposerClient::eFXSurfaceBufferQueue:
-            Transaction()
-                    .setPosition(layerG, 8, 8)
-                    .setRelativeLayer(layerG, layerR, 3)
-                    .setPosition(layerB, 16, 16)
-                    .setLayer(layerB, mLayerZBase + 2)
-                    .apply();
-            break;
         case ISurfaceComposerClient::eFXSurfaceBufferState:
             Transaction()
                     .setPosition(layerG, 8, 8)
@@ -413,13 +404,6 @@ void LayerRenderTypeTransactionTest::setAlphaBasicHelper(uint32_t layerType) {
 
     switch (layerType) {
         case ISurfaceComposerClient::eFXSurfaceBufferQueue:
-            Transaction()
-                    .setAlpha(layer1, 0.25f)
-                    .setAlpha(layer2, 0.75f)
-                    .setPosition(layer2, 16, 0)
-                    .setLayer(layer2, mLayerZBase + 1)
-                    .apply();
-            break;
         case ISurfaceComposerClient::eFXSurfaceBufferState:
             Transaction()
                     .setAlpha(layer1, 0.25f)
@@ -1479,15 +1463,11 @@ TEST_P(LayerRenderTypeTransactionTest, SetColorTransformBasic) {
     matrix[2][2] = 0.11;
 
     // degamma before applying the matrix
-    if (mColorManagementUsed) {
-        ColorTransformHelper::DegammaColor(expected);
-    }
+    ColorTransformHelper::DegammaColor(expected);
 
     ColorTransformHelper::applyMatrix(expected, matrix);
 
-    if (mColorManagementUsed) {
-        ColorTransformHelper::GammaColor(expected);
-    }
+    ColorTransformHelper::GammaColor(expected);
 
     const Color expectedColor = {uint8_t(expected.r * 255), uint8_t(expected.g * 255),
                                  uint8_t(expected.b * 255), 255};
@@ -1537,15 +1517,11 @@ TEST_P(LayerRenderTypeTransactionTest, SetColorTransformOnParent) {
     matrix[2][2] = 0.11;
 
     // degamma before applying the matrix
-    if (mColorManagementUsed) {
-        ColorTransformHelper::DegammaColor(expected);
-    }
+    ColorTransformHelper::DegammaColor(expected);
 
     ColorTransformHelper::applyMatrix(expected, matrix);
 
-    if (mColorManagementUsed) {
-        ColorTransformHelper::GammaColor(expected);
-    }
+    ColorTransformHelper::GammaColor(expected);
 
     const Color expectedColor = {uint8_t(expected.r * 255), uint8_t(expected.g * 255),
                                  uint8_t(expected.b * 255), 255};
@@ -1608,16 +1584,12 @@ TEST_P(LayerRenderTypeTransactionTest, SetColorTransformOnChildAndParent) {
     matrixParent[2][2] = 0.10;
 
     // degamma before applying the matrix
-    if (mColorManagementUsed) {
-        ColorTransformHelper::DegammaColor(expected);
-    }
+    ColorTransformHelper::DegammaColor(expected);
 
     ColorTransformHelper::applyMatrix(expected, matrixChild);
     ColorTransformHelper::applyMatrix(expected, matrixParent);
 
-    if (mColorManagementUsed) {
-        ColorTransformHelper::GammaColor(expected);
-    }
+    ColorTransformHelper::GammaColor(expected);
 
     const Color expectedColor = {uint8_t(expected.r * 255), uint8_t(expected.g * 255),
                                  uint8_t(expected.b * 255), 255};

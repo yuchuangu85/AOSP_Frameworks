@@ -21,14 +21,17 @@
 #include "parcelables/SingleDataParcelable.h"
 #include "util.h"
 
-#include <android-base/hex.h>
 #include <android/os/IServiceManager.h>
 #include <binder/ParcelableHolder.h>
 #include <binder/PersistableBundle.h>
 #include <binder/Status.h>
+#include <utils/Flattenable.h>
 
+#include "../../Utils.h"
+
+using ::android::HexString;
 using ::android::status_t;
-using ::android::base::HexString;
+using ::android::binder::unique_fd;
 
 enum ByteEnum : int8_t {};
 enum IntEnum : int32_t {};
@@ -111,6 +114,14 @@ std::vector<ParcelRead<::android::Parcel>> BINDER_PARCEL_READ_FUNCTIONS {
         FUZZ_LOG() << "about to setDataPosition: " << pos;
         p.setDataPosition(pos);
         FUZZ_LOG() << "setDataPosition done";
+    },
+    [] (const ::android::Parcel& p, FuzzedDataProvider& provider) {
+        size_t len = provider.ConsumeIntegralInRange<size_t>(0, 1024);
+        std::vector<uint8_t> bytes = provider.ConsumeBytes<uint8_t>(len);
+        FUZZ_LOG() << "about to setData: " <<(bytes.data() ? HexString(bytes.data(), bytes.size()) : "null");
+        // TODO: allow all read and write operations
+        (*const_cast<::android::Parcel*>(&p)).setData(bytes.data(), bytes.size());
+        FUZZ_LOG() << "setData done";
     },
     PARCEL_READ_NO_STATUS(size_t, allowFds),
     PARCEL_READ_NO_STATUS(size_t, hasFileDescriptors),
@@ -305,11 +316,12 @@ std::vector<ParcelRead<::android::Parcel>> BINDER_PARCEL_READ_FUNCTIONS {
     },
     PARCEL_READ_NO_STATUS(int, readFileDescriptor),
     PARCEL_READ_NO_STATUS(int, readParcelFileDescriptor),
-    PARCEL_READ_WITH_STATUS(android::base::unique_fd, readUniqueFileDescriptor),
+    PARCEL_READ_WITH_STATUS(unique_fd, readUniqueFileDescriptor),
 
-    PARCEL_READ_WITH_STATUS(std::unique_ptr<std::vector<android::base::unique_fd>>, readUniqueFileDescriptorVector),
-    PARCEL_READ_WITH_STATUS(std::optional<std::vector<android::base::unique_fd>>, readUniqueFileDescriptorVector),
-    PARCEL_READ_WITH_STATUS(std::vector<android::base::unique_fd>, readUniqueFileDescriptorVector),
+    PARCEL_READ_WITH_STATUS(std::unique_ptr<std::vector<unique_fd>>,
+            readUniqueFileDescriptorVector),
+    PARCEL_READ_WITH_STATUS(std::optional<std::vector<unique_fd>>, readUniqueFileDescriptorVector),
+    PARCEL_READ_WITH_STATUS(std::vector<unique_fd>, readUniqueFileDescriptorVector),
 
     [] (const ::android::Parcel& p, FuzzedDataProvider& provider) {
         size_t len = provider.ConsumeIntegral<size_t>();
@@ -346,6 +358,20 @@ std::vector<ParcelRead<::android::Parcel>> BINDER_PARCEL_READ_FUNCTIONS {
         size_t length = p.readUint32();
         bool result;
         status_t status = p.hasFileDescriptorsInRange(offset, length, &result);
+        FUZZ_LOG() << " status: " << status  << " result: " << result;
+    },
+    [] (const ::android::Parcel& p, FuzzedDataProvider& /*provider*/) {
+        FUZZ_LOG() << "about to call hasBinders() with status";
+        bool result;
+        status_t status = p.hasBinders(&result);
+        FUZZ_LOG() << " status: " << status  << " result: " << result;
+    },
+    [] (const ::android::Parcel& p, FuzzedDataProvider& /*provider*/) {
+        FUZZ_LOG() << "about to call hasBindersInRange() with status";
+        size_t offset = p.readUint32();
+        size_t length = p.readUint32();
+        bool result;
+        status_t status = p.hasBindersInRange(offset, length, &result);
         FUZZ_LOG() << " status: " << status  << " result: " << result;
     },
     [] (const ::android::Parcel& p, FuzzedDataProvider& /*provider*/) {

@@ -19,34 +19,45 @@
 #include <InputReaderBase.h>
 #include <gtest/gtest.h>
 #include <ui/Rotation.h>
+#include <utils/Timers.h>
+
+#include "NotifyArgs.h"
 
 namespace android {
 
+using testing::_;
 using testing::Return;
 
-void InputMapperUnitTest::SetUp() {
-    mFakePointerController = std::make_shared<FakePointerController>();
-    mFakePointerController->setBounds(0, 0, 800 - 1, 480 - 1);
-    mFakePointerController->setPosition(400, 240);
+void InputMapperUnitTest::SetUpWithBus(int bus) {
+    mFakePolicy = sp<FakeInputReaderPolicy>::make();
 
-    EXPECT_CALL(mMockInputReaderContext, getPointerController(DEVICE_ID))
-            .WillRepeatedly(Return(mFakePointerController));
+    EXPECT_CALL(mMockInputReaderContext, getPolicy()).WillRepeatedly(Return(mFakePolicy.get()));
 
     EXPECT_CALL(mMockInputReaderContext, getEventHub()).WillRepeatedly(Return(&mMockEventHub));
-    InputDeviceIdentifier identifier;
-    identifier.name = "device";
-    identifier.location = "USB1";
-    identifier.bus = 0;
 
-    EXPECT_CALL(mMockEventHub, getDeviceIdentifier(EVENTHUB_ID)).WillRepeatedly(Return(identifier));
+    mIdentifier.name = "device";
+    mIdentifier.location = "USB1";
+    mIdentifier.bus = bus;
+    EXPECT_CALL(mMockEventHub, getDeviceIdentifier(EVENTHUB_ID))
+            .WillRepeatedly(Return(mIdentifier));
+    EXPECT_CALL(mMockEventHub, getConfiguration(EVENTHUB_ID)).WillRepeatedly([&](int32_t) {
+        return mPropertyMap;
+    });
+}
+
+void InputMapperUnitTest::createDevice() {
     mDevice = std::make_unique<InputDevice>(&mMockInputReaderContext, DEVICE_ID,
-                                            /*generation=*/2, identifier);
+                                            /*generation=*/2, mIdentifier);
+    mDevice->addEmptyEventHubDevice(EVENTHUB_ID);
     mDeviceContext = std::make_unique<InputDeviceContext>(*mDevice, EVENTHUB_ID);
+    std::list<NotifyArgs> args =
+            mDevice->configure(systemTime(), mReaderConfiguration, /*changes=*/{});
+    ASSERT_THAT(args, testing::ElementsAre(testing::VariantWith<NotifyDeviceResetArgs>(_)));
 }
 
 void InputMapperUnitTest::setupAxis(int axis, bool valid, int32_t min, int32_t max,
                                     int32_t resolution) {
-    EXPECT_CALL(mMockEventHub, getAbsoluteAxisInfo(EVENTHUB_ID, axis, testing::_))
+    EXPECT_CALL(mMockEventHub, getAbsoluteAxisInfo(EVENTHUB_ID, axis, _))
             .WillRepeatedly([=](int32_t, int32_t, RawAbsoluteAxisInfo* outAxisInfo) {
                 outAxisInfo->valid = valid;
                 outAxisInfo->minValue = min;
@@ -80,14 +91,20 @@ void InputMapperUnitTest::setKeyCodeState(KeyState state, std::set<int> keyCodes
 }
 
 std::list<NotifyArgs> InputMapperUnitTest::process(int32_t type, int32_t code, int32_t value) {
+    nsecs_t when = systemTime(SYSTEM_TIME_MONOTONIC);
+    return process(when, type, code, value);
+}
+
+std::list<NotifyArgs> InputMapperUnitTest::process(nsecs_t when, int32_t type, int32_t code,
+                                                   int32_t value) {
     RawEvent event;
-    event.when = systemTime(SYSTEM_TIME_MONOTONIC);
-    event.readTime = event.when;
+    event.when = when;
+    event.readTime = when;
     event.deviceId = mMapper->getDeviceContext().getEventHubId();
     event.type = type;
     event.code = code;
     event.value = value;
-    return mMapper->process(&event);
+    return mMapper->process(event);
 }
 
 const char* InputMapperTest::DEVICE_NAME = "device";
@@ -155,8 +172,8 @@ std::shared_ptr<InputDevice> InputMapperTest::newDevice(int32_t deviceId, const 
     return device;
 }
 
-void InputMapperTest::setDisplayInfoAndReconfigure(int32_t displayId, int32_t width, int32_t height,
-                                                   ui::Rotation orientation,
+void InputMapperTest::setDisplayInfoAndReconfigure(ui::LogicalDisplayId displayId, int32_t width,
+                                                   int32_t height, ui::Rotation orientation,
                                                    const std::string& uniqueId,
                                                    std::optional<uint8_t> physicalPort,
                                                    ViewportType viewportType) {
@@ -178,7 +195,7 @@ std::list<NotifyArgs> InputMapperTest::process(InputMapper& mapper, nsecs_t when
     event.type = type;
     event.code = code;
     event.value = value;
-    std::list<NotifyArgs> processArgList = mapper.process(&event);
+    std::list<NotifyArgs> processArgList = mapper.process(event);
     for (const NotifyArgs& args : processArgList) {
         mFakeListener->notify(args);
     }
@@ -206,8 +223,8 @@ std::list<NotifyArgs> InputMapperTest::handleTimeout(InputMapper& mapper, nsecs_
     return generatedArgs;
 }
 
-void InputMapperTest::assertMotionRange(const InputDeviceInfo& info, int32_t axis, uint32_t source,
-                                        float min, float max, float flat, float fuzz) {
+void assertMotionRange(const InputDeviceInfo& info, int32_t axis, uint32_t source, float min,
+                       float max, float flat, float fuzz) {
     const InputDeviceInfo::MotionRange* range = info.getMotionRange(axis, source);
     ASSERT_TRUE(range != nullptr) << "Axis: " << axis << " Source: " << source;
     ASSERT_EQ(axis, range->axis) << "Axis: " << axis << " Source: " << source;
@@ -218,11 +235,9 @@ void InputMapperTest::assertMotionRange(const InputDeviceInfo& info, int32_t axi
     ASSERT_NEAR(fuzz, range->fuzz, EPSILON) << "Axis: " << axis << " Source: " << source;
 }
 
-void InputMapperTest::assertPointerCoords(const PointerCoords& coords, float x, float y,
-                                          float pressure, float size, float touchMajor,
-                                          float touchMinor, float toolMajor, float toolMinor,
-                                          float orientation, float distance,
-                                          float scaledAxisEpsilon) {
+void assertPointerCoords(const PointerCoords& coords, float x, float y, float pressure, float size,
+                         float touchMajor, float touchMinor, float toolMajor, float toolMinor,
+                         float orientation, float distance, float scaledAxisEpsilon) {
     ASSERT_NEAR(x, coords.getAxisValue(AMOTION_EVENT_AXIS_X), scaledAxisEpsilon);
     ASSERT_NEAR(y, coords.getAxisValue(AMOTION_EVENT_AXIS_Y), scaledAxisEpsilon);
     ASSERT_NEAR(pressure, coords.getAxisValue(AMOTION_EVENT_AXIS_PRESSURE), EPSILON);

@@ -18,26 +18,31 @@
 
 #include <input/MotionPredictor.h>
 
+#include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include <android-base/logging.h>
 #include <android-base/strings.h>
 #include <android/input.h>
-#include <log/log.h>
+#include <com_android_input_flags.h>
 
 #include <attestation/HmacKeyManager.h>
 #include <ftl/enum.h>
 #include <input/TfLiteMotionPredictor.h>
 
+namespace input_flags = com::android::input::flags;
+
 namespace android {
 namespace {
-
-const int64_t PREDICTION_INTERVAL_NANOS =
-        12500000 / 3; // TODO(b/266747937): Get this from the model.
 
 /**
  * Log debug messages about predictions.
@@ -58,19 +63,86 @@ TfLiteMotionPredictorSample::Point convertPrediction(
     return {.x = axisTo.x + x_delta, .y = axisTo.y + y_delta};
 }
 
+float normalizeRange(float x, float min, float max) {
+    const float normalized = (x - min) / (max - min);
+    return std::min(1.0f, std::max(0.0f, normalized));
+}
+
 } // namespace
+
+// --- JerkTracker ---
+
+JerkTracker::JerkTracker(bool normalizedDt) : mNormalizedDt(normalizedDt) {}
+
+void JerkTracker::pushSample(int64_t timestamp, float xPos, float yPos) {
+    mTimestamps.pushBack(timestamp);
+    const int numSamples = mTimestamps.size();
+
+    std::array<float, 4> newXDerivatives;
+    std::array<float, 4> newYDerivatives;
+
+    /**
+     * Diagram showing the calculation of higher order derivatives of sample x3
+     * collected at time=t3.
+     * Terms in parentheses are not stored (and not needed for calculations)
+     *  t0 ----- t1  ----- t2 ----- t3
+     * (x0)-----(x1) ----- x2 ----- x3
+     * (x'0) --- x'1 ---  x'2
+     *  x''0  -  x''1
+     *  x'''0
+     *
+     * In this example:
+     * x'2 = (x3 - x2) / (t3 - t2)
+     * x''1 = (x'2 - x'1) / (t2 - t1)
+     * x'''0 = (x''1 - x''0) / (t1 - t0)
+     * Therefore, timestamp history is needed to calculate higher order derivatives,
+     * compared to just the last calculated derivative sample.
+     *
+     * If mNormalizedDt = true, then dt = 1 and the division is moot.
+     */
+    for (int i = 0; i < numSamples; ++i) {
+        if (i == 0) {
+            newXDerivatives[i] = xPos;
+            newYDerivatives[i] = yPos;
+        } else {
+            newXDerivatives[i] = newXDerivatives[i - 1] - mXDerivatives[i - 1];
+            newYDerivatives[i] = newYDerivatives[i - 1] - mYDerivatives[i - 1];
+            if (!mNormalizedDt) {
+                const float dt = mTimestamps[numSamples - i] - mTimestamps[numSamples - i - 1];
+                newXDerivatives[i] = newXDerivatives[i] / dt;
+                newYDerivatives[i] = newYDerivatives[i] / dt;
+            }
+        }
+    }
+
+    std::swap(newXDerivatives, mXDerivatives);
+    std::swap(newYDerivatives, mYDerivatives);
+}
+
+void JerkTracker::reset() {
+    mTimestamps.clear();
+}
+
+std::optional<float> JerkTracker::jerkMagnitude() const {
+    if (mTimestamps.size() == mTimestamps.capacity()) {
+        return std::hypot(mXDerivatives[3], mYDerivatives[3]);
+    }
+    return std::nullopt;
+}
 
 // --- MotionPredictor ---
 
 MotionPredictor::MotionPredictor(nsecs_t predictionTimestampOffsetNanos,
-                                 std::function<bool()> checkMotionPredictionEnabled)
+                                 std::function<bool()> checkMotionPredictionEnabled,
+                                 ReportAtomFunction reportAtomFunction)
       : mPredictionTimestampOffsetNanos(predictionTimestampOffsetNanos),
-        mCheckMotionPredictionEnabled(std::move(checkMotionPredictionEnabled)) {}
+        mCheckMotionPredictionEnabled(std::move(checkMotionPredictionEnabled)),
+        mReportAtomFunction(reportAtomFunction) {}
 
 android::base::Result<void> MotionPredictor::record(const MotionEvent& event) {
     if (mLastEvent && mLastEvent->getDeviceId() != event.getDeviceId()) {
         // We still have an active gesture for another device. The provided MotionEvent is not
-        // consistent the previous gesture.
+        // consistent with the previous gesture.
         LOG(ERROR) << "Inconsistent event stream: last event is " << *mLastEvent << ", but "
                    << __func__ << " is called with " << event;
         return android::base::Error()
@@ -86,16 +158,25 @@ android::base::Result<void> MotionPredictor::record(const MotionEvent& event) {
     // Initialise the model now that it's likely to be used.
     if (!mModel) {
         mModel = TfLiteMotionPredictorModel::create();
+        LOG_ALWAYS_FATAL_IF(!mModel);
     }
 
-    if (mBuffers == nullptr) {
+    if (!mBuffers) {
         mBuffers = std::make_unique<TfLiteMotionPredictorBuffers>(mModel->inputLength());
     }
+
+    // Pass input event to the MetricsManager.
+    if (!mMetricsManager) {
+        mMetricsManager.emplace(mModel->config().predictionInterval, mModel->outputLength(),
+                                mReportAtomFunction);
+    }
+    mMetricsManager->onRecord(event);
 
     const int32_t action = event.getActionMasked();
     if (action == AMOTION_EVENT_ACTION_UP || action == AMOTION_EVENT_ACTION_CANCEL) {
         ALOGD_IF(isDebug(), "End of event stream");
         mBuffers->reset();
+        mJerkTracker.reset();
         mLastEvent.reset();
         return {};
     } else if (action != AMOTION_EVENT_ACTION_DOWN && action != AMOTION_EVENT_ACTION_MOVE) {
@@ -130,12 +211,16 @@ android::base::Result<void> MotionPredictor::record(const MotionEvent& event) {
                                                                           0, i),
                                      .orientation = event.getHistoricalOrientation(0, i),
                              });
+        mJerkTracker.pushSample(event.getHistoricalEventTime(i),
+                                coords->getAxisValue(AMOTION_EVENT_AXIS_X),
+                                coords->getAxisValue(AMOTION_EVENT_AXIS_Y));
     }
 
     if (!mLastEvent) {
         mLastEvent = MotionEvent();
     }
     mLastEvent->copyFrom(&event, /*keepHistory=*/false);
+
     return {};
 }
 
@@ -176,20 +261,56 @@ std::unique_ptr<MotionEvent> MotionPredictor::predict(nsecs_t timestamp) {
     int64_t predictionTime = mBuffers->lastTimestamp();
     const int64_t futureTime = timestamp + mPredictionTimestampOffsetNanos;
 
-    for (int i = 0; i < predictedR.size() && predictionTime <= futureTime; ++i) {
-        const TfLiteMotionPredictorSample::Point point =
-                convertPrediction(axisFrom, axisTo, predictedR[i], predictedPhi[i]);
-        // TODO(b/266747654): Stop predictions if confidence is < some threshold.
+    const float jerkMagnitude = mJerkTracker.jerkMagnitude().value_or(0);
+    const float fractionKept =
+            1 - normalizeRange(jerkMagnitude, mModel->config().lowJerk, mModel->config().highJerk);
+    // float to ensure proper division below.
+    const float predictionTimeWindow = futureTime - predictionTime;
+    const int maxNumPredictions = static_cast<int>(
+            std::ceil(predictionTimeWindow / mModel->config().predictionInterval * fractionKept));
+    ALOGD_IF(isDebug(),
+             "jerk (d^3p/normalizedDt^3): %f, fraction of prediction window pruned: %f, max number "
+             "of predictions: %d",
+             jerkMagnitude, 1 - fractionKept, maxNumPredictions);
+    for (size_t i = 0; i < static_cast<size_t>(predictedR.size()) && predictionTime <= futureTime;
+         ++i) {
+        if (predictedR[i] < mModel->config().distanceNoiseFloor) {
+            // Stop predicting when the predicted output is below the model's noise floor.
+            //
+            // We assume that all subsequent predictions in the batch are unreliable because later
+            // predictions are conditional on earlier predictions, and a state of noise is not a
+            // good basis for prediction.
+            //
+            // The UX trade-off is that this potentially sacrifices some predictions when the input
+            // device starts to speed up, but avoids producing noisy predictions as it slows down.
+            break;
+        }
+        if (input_flags::enable_prediction_pruning_via_jerk_thresholding()) {
+            if (i >= static_cast<size_t>(maxNumPredictions)) {
+                break;
+            }
+        }
+        // TODO(b/266747654): Stop predictions if confidence is < some
+        // threshold. Currently predictions are pruned via jerk thresholding.
 
-        ALOGD_IF(isDebug(), "prediction %d: %f, %f", i, point.x, point.y);
+        const TfLiteMotionPredictorSample::Point predictedPoint =
+                convertPrediction(axisFrom, axisTo, predictedR[i], predictedPhi[i]);
+
+        ALOGD_IF(isDebug(), "prediction %zu: %f, %f", i, predictedPoint.x, predictedPoint.y);
         PointerCoords coords;
         coords.clear();
-        coords.setAxisValue(AMOTION_EVENT_AXIS_X, point.x);
-        coords.setAxisValue(AMOTION_EVENT_AXIS_Y, point.y);
-        // TODO(b/266747654): Stop predictions if predicted pressure is < some threshold.
+        coords.setAxisValue(AMOTION_EVENT_AXIS_X, predictedPoint.x);
+        coords.setAxisValue(AMOTION_EVENT_AXIS_Y, predictedPoint.y);
         coords.setAxisValue(AMOTION_EVENT_AXIS_PRESSURE, predictedPressure[i]);
+        // Copy forward tilt and orientation from the last event until they are predicted
+        // (b/291789258).
+        coords.setAxisValue(AMOTION_EVENT_AXIS_TILT,
+                            event.getAxisValue(AMOTION_EVENT_AXIS_TILT, 0));
+        coords.setAxisValue(AMOTION_EVENT_AXIS_ORIENTATION,
+                            event.getRawPointerCoords(0)->getAxisValue(
+                                    AMOTION_EVENT_AXIS_ORIENTATION));
 
-        predictionTime += PREDICTION_INTERVAL_NANOS;
+        predictionTime += mModel->config().predictionInterval;
         if (i == 0) {
             hasPredictions = true;
             prediction->initialize(InputEvent::nextId(), event.getDeviceId(), event.getSource(),
@@ -206,12 +327,17 @@ std::unique_ptr<MotionEvent> MotionPredictor::predict(nsecs_t timestamp) {
         }
 
         axisFrom = axisTo;
-        axisTo = point;
+        axisTo = predictedPoint;
     }
-    // TODO(b/266747511): Interpolate to futureTime?
+
     if (!hasPredictions) {
         return nullptr;
     }
+
+    // Pass predictions to the MetricsManager.
+    LOG_ALWAYS_FATAL_IF(!mMetricsManager);
+    mMetricsManager->onPredict(*prediction);
+
     return prediction;
 }
 

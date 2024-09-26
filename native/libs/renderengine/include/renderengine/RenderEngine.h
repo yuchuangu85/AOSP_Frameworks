@@ -22,8 +22,6 @@
 #include <math/mat4.h>
 #include <renderengine/DisplaySettings.h>
 #include <renderengine/ExternalTexture.h>
-#include <renderengine/Framebuffer.h>
-#include <renderengine/Image.h>
 #include <renderengine/LayerSettings.h>
 #include <stdint.h>
 #include <sys/types.h>
@@ -35,7 +33,7 @@
 #include <memory>
 
 /**
- * Allows to set RenderEngine backend to GLES (default) or SkiaGL (NOT yet supported).
+ * Allows to override the RenderEngine backend.
  */
 #define PROPERTY_DEBUG_RENDERENGINE_BACKEND "debug.renderengine.backend"
 
@@ -50,6 +48,11 @@
  * Set to the most recently saved file once the capture is finished.
  */
 #define PROPERTY_DEBUG_RENDERENGINE_CAPTURE_FILENAME "debug.renderengine.capture_filename"
+
+/**
+ * Switches the cross-window background blur algorithm.
+ */
+#define PROPERTY_DEBUG_RENDERENGINE_BLUR_ALGORITHM "debug.renderengine.blur_algorithm"
 
 /**
  * Allows recording of Skia drawing commands with systrace.
@@ -85,6 +88,21 @@ enum class Protection {
     PROTECTED = 2,
 };
 
+// Toggles for skipping or enabling priming of particular shaders.
+struct PrimeCacheConfig {
+    bool cacheHolePunchLayer = true;
+    bool cacheSolidLayers = true;
+    bool cacheSolidDimmedLayers = true;
+    bool cacheImageLayers = true;
+    bool cacheImageDimmedLayers = true;
+    bool cacheClippedLayers = true;
+    bool cacheShadowLayers = true;
+    bool cachePIPImageLayers = true;
+    bool cacheTransparentImageDimmedLayers = true;
+    bool cacheClippedDimmedImageLayers = true;
+    bool cacheUltraHDR = true;
+};
+
 class RenderEngine {
 public:
     enum class ContextPriority {
@@ -94,16 +112,47 @@ public:
         REALTIME = 4,
     };
 
-    enum class RenderEngineType {
-        GLES = 1,
-        THREADED = 2,
-        SKIA_GL = 3,
-        SKIA_GL_THREADED = 4,
-        SKIA_VK = 5,
-        SKIA_VK_THREADED = 6,
+    enum class Threaded {
+        NO,
+        YES,
+    };
+
+    enum class GraphicsApi {
+        GL,
+        VK,
+    };
+
+    enum class SkiaBackend {
+        GANESH,
+        GRAPHITE,
+    };
+
+    enum class BlurAlgorithm {
+        NONE,
+        GAUSSIAN,
+        KAWASE,
     };
 
     static std::unique_ptr<RenderEngine> create(const RenderEngineCreationArgs& args);
+
+    // Check if the device supports the given GraphicsApi.
+    //
+    // If called for GraphicsApi::VK then underlying (unprotected) VK resources will be preserved
+    // to optimize subsequent VK initialization, but teardown(GraphicsApi::VK) must be invoked if
+    // the caller subsequently decides to NOT use VK.
+    //
+    // The first call may require significant resource initialization, but subsequent checks are
+    // cached internally.
+    static bool canSupport(GraphicsApi graphicsApi);
+
+    // Teardown any GPU API resources that were previously initialized but are no longer needed.
+    //
+    // Must be called with GraphicsApi::VK if canSupport(GraphicsApi::VK) was previously invoked but
+    // the caller subsequently decided to not use VK.
+    //
+    // This is safe to call if there is nothing to teardown, but NOT safe to call if a RenderEngine
+    // instance exists. The RenderEngine destructor will handle its own teardown logic.
+    static void teardown(GraphicsApi graphicsApi);
 
     virtual ~RenderEngine() = 0;
 
@@ -111,13 +160,10 @@ public:
     // This interface, while still in use until a suitable replacement is built,
     // should be considered deprecated, minus some methods which still may be
     // used to support legacy behavior.
-    virtual std::future<void> primeCache() = 0;
+    virtual std::future<void> primeCache(PrimeCacheConfig config) = 0;
 
     // dump the extension strings. always call the base class.
     virtual void dump(std::string& result) = 0;
-
-    virtual void genTextures(size_t count, uint32_t* names) = 0;
-    virtual void deleteTextures(size_t count, uint32_t const* names) = 0;
 
     // queries that are required to be thread safe
     virtual size_t getMaxTextureSize() const = 0;
@@ -152,9 +198,6 @@ public:
     // @param layers The layers to draw onto the display, in Z-order.
     // @param buffer The buffer which will be drawn to. This buffer will be
     // ready once drawFence fires.
-    // @param useFramebufferCache True if the framebuffer cache should be used.
-    // If an implementation does not cache output framebuffers, then this
-    // parameter does nothing.
     // @param bufferFence Fence signalling that the buffer is ready to be drawn
     // to.
     // @return A future object of FenceResult indicating whether drawing was
@@ -162,7 +205,6 @@ public:
     virtual ftl::Future<FenceResult> drawLayers(const DisplaySettings& display,
                                                 const std::vector<LayerSettings>& layers,
                                                 const std::shared_ptr<ExternalTexture>& buffer,
-                                                const bool useFramebufferCache,
                                                 base::unique_fd&& bufferFence);
 
     // Clean-up method that should be called on the main thread after the
@@ -170,8 +212,6 @@ public:
     // resources used by the most recently drawn frame. If the frame is still
     // being drawn, then the implementation is free to silently ignore this call.
     virtual void cleanupPostRender() = 0;
-
-    virtual void cleanFramebufferCache() = 0;
 
     // Returns the priority this context was actually created with. Note: this
     // may not be the same as specified at context creation time, due to
@@ -189,10 +229,9 @@ public:
     // query is required to be thread safe.
     virtual bool supportsBackgroundBlur() = 0;
 
-    // Returns the current type of RenderEngine instance that was created.
     // TODO(b/180767535): This is only implemented to allow for backend-specific behavior, which
     // we should not allow in general, so remove this.
-    RenderEngineType getRenderEngineType() const { return mRenderEngineType; }
+    bool isThreaded() const { return mThreaded == Threaded::YES; }
 
     static void validateInputBufferUsage(const sp<GraphicBuffer>&);
     static void validateOutputBufferUsage(const sp<GraphicBuffer>&);
@@ -204,9 +243,9 @@ public:
     virtual void setEnableTracing(bool /*tracingEnabled*/) {}
 
 protected:
-    RenderEngine() : RenderEngine(RenderEngineType::GLES) {}
+    RenderEngine() : RenderEngine(Threaded::NO) {}
 
-    RenderEngine(RenderEngineType type) : mRenderEngineType(type) {}
+    RenderEngine(Threaded threaded) : mThreaded(threaded) {}
 
     // Maps GPU resources for this buffer.
     // Note that work may be deferred to an additional thread, i.e. this call
@@ -241,7 +280,7 @@ protected:
     friend class impl::ExternalTexture;
     friend class threaded::RenderEngineThreaded;
     friend class RenderEngineTest_cleanupPostRender_cleansUpOnce_Test;
-    const RenderEngineType mRenderEngineType;
+    const Threaded mThreaded;
 
     // Update protectedContext mode depending on whether or not any layer has a protected buffer.
     void updateProtectedContext(const std::vector<LayerSettings>&,
@@ -253,8 +292,7 @@ protected:
     virtual void drawLayersInternal(
             const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
             const DisplaySettings& display, const std::vector<LayerSettings>& layers,
-            const std::shared_ptr<ExternalTexture>& buffer, const bool useFramebufferCache,
-            base::unique_fd&& bufferFence) = 0;
+            const std::shared_ptr<ExternalTexture>& buffer, base::unique_fd&& bufferFence) = 0;
 };
 
 struct RenderEngineCreationArgs {
@@ -263,27 +301,32 @@ struct RenderEngineCreationArgs {
     bool useColorManagement;
     bool enableProtectedContext;
     bool precacheToneMapperShaderOnly;
-    bool supportsBackgroundBlur;
+    RenderEngine::BlurAlgorithm blurAlgorithm;
     RenderEngine::ContextPriority contextPriority;
-    RenderEngine::RenderEngineType renderEngineType;
+    RenderEngine::Threaded threaded;
+    RenderEngine::GraphicsApi graphicsApi;
+    RenderEngine::SkiaBackend skiaBackend;
 
     struct Builder;
 
 private:
     // must be created by Builder via constructor with full argument list
-    RenderEngineCreationArgs(int _pixelFormat, uint32_t _imageCacheSize, bool _useColorManagement,
+    RenderEngineCreationArgs(int _pixelFormat, uint32_t _imageCacheSize,
                              bool _enableProtectedContext, bool _precacheToneMapperShaderOnly,
-                             bool _supportsBackgroundBlur,
+                             RenderEngine::BlurAlgorithm _blurAlgorithm,
                              RenderEngine::ContextPriority _contextPriority,
-                             RenderEngine::RenderEngineType _renderEngineType)
+                             RenderEngine::Threaded _threaded,
+                             RenderEngine::GraphicsApi _graphicsApi,
+                             RenderEngine::SkiaBackend _skiaBackend)
           : pixelFormat(_pixelFormat),
             imageCacheSize(_imageCacheSize),
-            useColorManagement(_useColorManagement),
             enableProtectedContext(_enableProtectedContext),
             precacheToneMapperShaderOnly(_precacheToneMapperShaderOnly),
-            supportsBackgroundBlur(_supportsBackgroundBlur),
+            blurAlgorithm(_blurAlgorithm),
             contextPriority(_contextPriority),
-            renderEngineType(_renderEngineType) {}
+            threaded(_threaded),
+            graphicsApi(_graphicsApi),
+            skiaBackend(_skiaBackend) {}
     RenderEngineCreationArgs() = delete;
 };
 
@@ -298,10 +341,6 @@ struct RenderEngineCreationArgs::Builder {
         this->imageCacheSize = imageCacheSize;
         return *this;
     }
-    Builder& setUseColorManagerment(bool useColorManagement) {
-        this->useColorManagement = useColorManagement;
-        return *this;
-    }
     Builder& setEnableProtectedContext(bool enableProtectedContext) {
         this->enableProtectedContext = enableProtectedContext;
         return *this;
@@ -310,35 +349,43 @@ struct RenderEngineCreationArgs::Builder {
         this->precacheToneMapperShaderOnly = precacheToneMapperShaderOnly;
         return *this;
     }
-    Builder& setSupportsBackgroundBlur(bool supportsBackgroundBlur) {
-        this->supportsBackgroundBlur = supportsBackgroundBlur;
+    Builder& setBlurAlgorithm(RenderEngine::BlurAlgorithm blurAlgorithm) {
+        this->blurAlgorithm = blurAlgorithm;
         return *this;
     }
     Builder& setContextPriority(RenderEngine::ContextPriority contextPriority) {
         this->contextPriority = contextPriority;
         return *this;
     }
-    Builder& setRenderEngineType(RenderEngine::RenderEngineType renderEngineType) {
-        this->renderEngineType = renderEngineType;
+    Builder& setThreaded(RenderEngine::Threaded threaded) {
+        this->threaded = threaded;
+        return *this;
+    }
+    Builder& setGraphicsApi(RenderEngine::GraphicsApi graphicsApi) {
+        this->graphicsApi = graphicsApi;
+        return *this;
+    }
+    Builder& setSkiaBackend(RenderEngine::SkiaBackend skiaBackend) {
+        this->skiaBackend = skiaBackend;
         return *this;
     }
     RenderEngineCreationArgs build() const {
-        return RenderEngineCreationArgs(pixelFormat, imageCacheSize, useColorManagement,
-                                        enableProtectedContext, precacheToneMapperShaderOnly,
-                                        supportsBackgroundBlur, contextPriority, renderEngineType);
+        return RenderEngineCreationArgs(pixelFormat, imageCacheSize, enableProtectedContext,
+                                        precacheToneMapperShaderOnly, blurAlgorithm,
+                                        contextPriority, threaded, graphicsApi, skiaBackend);
     }
 
 private:
     // 1 means RGBA_8888
     int pixelFormat = 1;
     uint32_t imageCacheSize = 0;
-    bool useColorManagement = true;
     bool enableProtectedContext = false;
     bool precacheToneMapperShaderOnly = false;
-    bool supportsBackgroundBlur = false;
+    RenderEngine::BlurAlgorithm blurAlgorithm = RenderEngine::BlurAlgorithm::NONE;
     RenderEngine::ContextPriority contextPriority = RenderEngine::ContextPriority::MEDIUM;
-    RenderEngine::RenderEngineType renderEngineType =
-            RenderEngine::RenderEngineType::SKIA_GL_THREADED;
+    RenderEngine::Threaded threaded = RenderEngine::Threaded::YES;
+    RenderEngine::GraphicsApi graphicsApi = RenderEngine::GraphicsApi::GL;
+    RenderEngine::SkiaBackend skiaBackend = RenderEngine::SkiaBackend::GANESH;
 };
 
 } // namespace renderengine

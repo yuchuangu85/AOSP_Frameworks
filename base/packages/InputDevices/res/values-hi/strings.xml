@@ -28,7 +28,7 @@
     <string name="keyboard_layout_croatian" msgid="4172229471079281138">"क्रोएशियन"</string>
     <string name="keyboard_layout_czech" msgid="1349256901452975343">"चेक"</string>
     <string name="keyboard_layout_czech_qwerty" msgid="3331402534128515501">"चेक QWERTY स्टाइल"</string>
-    <string name="keyboard_layout_estonian" msgid="8775830985185665274">"एस्टोनियाई"</string>
+    <string name="keyboard_layout_estonian" msgid="8775830985185665274">"एस्टोनियन"</string>
     <string name="keyboard_layout_hungarian" msgid="4154963661406035109">"हंगेरियाई"</string>
     <string name="keyboard_layout_icelandic" msgid="5836645650912489642">"आइसलैंडिक"</string>
     <string name="keyboard_layout_brazilian" msgid="5117896443147781939">"ब्राज़ीलियाई"</string>
@@ -50,4 +50,10 @@
     <string name="keyboard_layout_belarusian" msgid="7619281752698687588">"बेलारूसी"</string>
     <string name="keyboard_layout_mongolian" msgid="7678483495823936626">"मंगोलियन"</string>
     <string name="keyboard_layout_georgian" msgid="4596185456863747454">"जॉर्जियन कीबोर्ड का लेआउट"</string>
+    <string name="keyboard_layout_thai_kedmanee" msgid="6637147314580760938">"थाई (केडमेनी)"</string>
+    <string name="keyboard_layout_thai_pattachote" msgid="2547992342794252205">"थाई (पटैचोटे)"</string>
+    <string name="keyboard_layout_serbian_latin" msgid="3128791759390046571">"सर्बियन (लैटिन)"</string>
+    <string name="keyboard_layout_montenegrin_latin" msgid="1467832503378949945">"मॉन्टेनीग्रिन (लैटिन)"</string>
+    <string name="keyboard_layout_serbian_cyrillic" msgid="7013541044323542196">"सर्बियन (सिरिलिक)"</string>
+    <string name="keyboard_layout_montenegrin_cyrillic" msgid="2391253952894077421">"मोंटेनेग्रिन (सिरिलिक)"</string>
 </resources>

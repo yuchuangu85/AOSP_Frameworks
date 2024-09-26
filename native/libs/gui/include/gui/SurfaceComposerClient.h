@@ -18,6 +18,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -201,7 +202,23 @@ public:
 
     // Sets the frame rate of a particular app (uid). This is currently called
     // by GameManager.
-    static status_t setOverrideFrameRate(uid_t uid, float frameRate);
+    static status_t setGameModeFrameRateOverride(uid_t uid, float frameRate);
+
+    // Sets the frame rate of a particular app (uid). This is currently called
+    // by GameManager and controlled by two sysprops:
+    // "ro.surface_flinger.game_default_frame_rate_override" holding the override value,
+    // "persisit.graphics.game_default_frame_rate.enabled" to determine if it's enabled.
+    static status_t setGameDefaultFrameRateOverride(uid_t uid, float frameRate);
+
+    // Update the small area detection whole appId-threshold mappings by same size appId and
+    // threshold vector.
+    // Ref:setSmallAreaDetectionThreshold.
+    static status_t updateSmallAreaDetection(std::vector<int32_t>& appIds,
+                                             std::vector<float>& thresholds);
+
+    // Sets the small area detection threshold to particular apps (appId). Passing value 0 means
+    // to disable small area detection to the app.
+    static status_t setSmallAreaDetectionThreshold(int32_t appId, float threshold);
 
     // Switches on/off Auto Low Latency Mode on the connected display. This should only be
     // called if the connected display supports Auto Low Latency Mode as reported by
@@ -358,18 +375,20 @@ public:
 
     sp<SurfaceControl> mirrorDisplay(DisplayId displayId);
 
-    //! Create a virtual display
-    static sp<IBinder> createDisplay(const String8& displayName, bool secure,
-                                     float requestedRefereshRate = 0);
+    static const std::string kEmpty;
+    static sp<IBinder> createVirtualDisplay(const std::string& displayName, bool isSecure,
+                                            const std::string& uniqueId = kEmpty,
+                                            float requestedRefreshRate = 0);
 
-    //! Destroy a virtual display
-    static void destroyDisplay(const sp<IBinder>& display);
+    static status_t destroyVirtualDisplay(const sp<IBinder>& displayToken);
 
-    //! Get stable IDs for connected physical displays
     static std::vector<PhysicalDisplayId> getPhysicalDisplayIds();
 
-    //! Get token for a physical display given its stable ID
     static sp<IBinder> getPhysicalDisplayToken(PhysicalDisplayId displayId);
+
+    // Returns StalledTransactionInfo if a transaction from the provided pid has not been applied
+    // due to an unsignaled fence.
+    static std::optional<gui::StalledTransactionInfo> getStalledTransactionInfo(pid_t pid);
 
     struct SCHash {
         std::size_t operator()(const sp<SurfaceControl>& sc) const {
@@ -408,9 +427,11 @@ public:
     class Transaction : public Parcelable {
     private:
         static sp<IBinder> sApplyToken;
+        static std::mutex sApplyTokenMutex;
         void releaseBufferIfOverwriting(const layer_state_t& state);
         static void mergeFrameTimelineInfo(FrameTimelineInfo& t, const FrameTimelineInfo& other);
-        static void clearFrameTimelineInfo(FrameTimelineInfo& t);
+        // Tracks registered callbacks
+        sp<TransactionCompletedListener> mTransactionCompletedListener = nullptr;
 
     protected:
         std::unordered_map<sp<IBinder>, ComposerState, IBinderHash> mComposerStates;
@@ -547,7 +568,8 @@ public:
         Transaction& setBuffer(const sp<SurfaceControl>& sc, const sp<GraphicBuffer>& buffer,
                                const std::optional<sp<Fence>>& fence = std::nullopt,
                                const std::optional<uint64_t>& frameNumber = std::nullopt,
-                               uint32_t producerId = 0, ReleaseBufferCallback callback = nullptr);
+                               uint32_t producerId = 0, ReleaseBufferCallback callback = nullptr,
+                               nsecs_t dequeueTime = -1);
         Transaction& unsetBuffer(const sp<SurfaceControl>& sc);
         std::shared_ptr<BufferData> getAndClearBuffer(const sp<SurfaceControl>& sc);
 
@@ -574,6 +596,7 @@ public:
         Transaction& setDataspace(const sp<SurfaceControl>& sc, ui::Dataspace dataspace);
         Transaction& setExtendedRangeBrightness(const sp<SurfaceControl>& sc,
                                                 float currentBufferRatio, float desiredRatio);
+        Transaction& setDesiredHdrHeadroom(const sp<SurfaceControl>& sc, float desiredRatio);
         Transaction& setCachingHint(const sp<SurfaceControl>& sc, gui::CachingHint cachingHint);
         Transaction& setHdrMetadata(const sp<SurfaceControl>& sc, const HdrMetadata& hdrMetadata);
         Transaction& setSurfaceDamageRegion(const sp<SurfaceControl>& sc,
@@ -672,6 +695,11 @@ public:
         Transaction& setDefaultFrameRateCompatibility(const sp<SurfaceControl>& sc,
                                                       int8_t compatibility);
 
+        Transaction& setFrameRateCategory(const sp<SurfaceControl>& sc, int8_t category,
+                                          bool smoothSwitchOnly);
+
+        Transaction& setFrameRateSelectionStrategy(const sp<SurfaceControl>& sc, int8_t strategy);
+
         // Set by window manager indicating the layer and all its children are
         // in a different orientation than the display. The hint suggests that
         // the graphic producers should receive a transform hint as if the
@@ -692,6 +720,8 @@ public:
 
         // Sets that this surface control and its children are trusted overlays for input
         Transaction& setTrustedOverlay(const sp<SurfaceControl>& sc, bool isTrustedOverlay);
+        Transaction& setTrustedOverlay(const sp<SurfaceControl>& sc,
+                                       gui::TrustedOverlay trustedOverlay);
 
         // Queues up transactions using this token in SurfaceFlinger.  By default, all transactions
         // from a client are placed on the same queue. This can be used to prevent multiple
@@ -717,9 +747,6 @@ public:
         Transaction& setDestinationFrame(const sp<SurfaceControl>& sc,
                                          const Rect& destinationFrame);
         Transaction& setDropInputMode(const sp<SurfaceControl>& sc, gui::DropInputMode mode);
-
-        Transaction& enableBorder(const sp<SurfaceControl>& sc, bool shouldEnable, float width,
-                                  const half4& color);
 
         status_t setDisplaySurface(const sp<IBinder>& token,
                 const sp<IGraphicBufferProducer>& bufferProducer);
@@ -800,6 +827,8 @@ public:
                     nullptr);
     status_t removeWindowInfosListener(const sp<gui::WindowInfosListener>& windowInfosListener);
 
+    static void notifyShutdown();
+
 protected:
     ReleaseCallbackThread mReleaseCallbackThread;
 
@@ -822,8 +851,15 @@ private:
 class ScreenshotClient {
 public:
     static status_t captureDisplay(const DisplayCaptureArgs&, const sp<IScreenCaptureListener>&);
-    static status_t captureDisplay(DisplayId, const sp<IScreenCaptureListener>&);
-    static status_t captureLayers(const LayerCaptureArgs&, const sp<IScreenCaptureListener>&);
+    static status_t captureDisplay(DisplayId, const gui::CaptureArgs&,
+                                   const sp<IScreenCaptureListener>&);
+    static status_t captureLayers(const LayerCaptureArgs&, const sp<IScreenCaptureListener>&,
+                                  bool sync);
+
+    [[deprecated]] static status_t captureDisplay(DisplayId id,
+                                                  const sp<IScreenCaptureListener>& listener) {
+        return captureDisplay(id, gui::CaptureArgs(), listener);
+    }
 };
 
 // ---------------------------------------------------------------------------

@@ -53,6 +53,9 @@ private:
                                VsyncEventData vsyncEventData) = 0;
     virtual void dispatchHotplug(nsecs_t timestamp, PhysicalDisplayId displayId,
                                  bool connected) = 0;
+
+    virtual void dispatchHotplugConnectionError(nsecs_t timestamp, int32_t connectionError) = 0;
+
     virtual void dispatchModeChanged(nsecs_t timestamp, PhysicalDisplayId displayId, int32_t modeId,
                                      nsecs_t vsyncPeriod) = 0;
     // AChoreographer-specific hook for processing null-events so that looper
@@ -61,6 +64,9 @@ private:
 
     virtual void dispatchFrameRateOverrides(nsecs_t timestamp, PhysicalDisplayId displayId,
                                             std::vector<FrameRateOverride> overrides) = 0;
+
+    virtual void dispatchHdcpLevelsChanged(PhysicalDisplayId displayId, int32_t connectedLevel,
+                                           int32_t maxLevel) = 0;
 
     bool processPendingEvents(nsecs_t* outTimestamp, PhysicalDisplayId* outDisplayId,
                               uint32_t* outCount, VsyncEventData* outVsyncEventData);

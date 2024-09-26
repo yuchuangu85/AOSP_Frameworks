@@ -68,15 +68,18 @@ public:
         int32_t mAbsMtToolType = 0;
 
         void clear() { *this = Slot(); }
+        void populateAxisValue(int32_t axisCode, int32_t value);
     };
 
     MultiTouchMotionAccumulator();
 
     void configure(const InputDeviceContext& deviceContext, size_t slotCount,
                    bool usingSlotsProtocol);
-    void process(const RawEvent* rawEvent);
+    void reset(const InputDeviceContext& deviceContext);
+    void process(const RawEvent& rawEvent);
     void finishSync();
 
+    size_t getActiveSlotsCount() const;
     inline size_t getSlotCount() const { return mSlots.size(); }
     inline const Slot& getSlot(size_t index) const {
         LOG_ALWAYS_FATAL_IF(index < 0 || index >= mSlots.size(), "Invalid index: %zu", index);
@@ -84,12 +87,14 @@ public:
     }
 
 private:
-    int32_t mCurrentSlot;
+    int32_t mCurrentSlot{-1};
     std::vector<Slot> mSlots;
     bool mUsingSlotsProtocol;
 
     void resetSlots();
+    void syncSlots(const InputDeviceContext& deviceContext);
     void warnIfNotInUse(const RawEvent& event, const Slot& slot);
+    void populateCurrentSlot(const android::InputDeviceContext& deviceContext);
 };
 
 } // namespace android

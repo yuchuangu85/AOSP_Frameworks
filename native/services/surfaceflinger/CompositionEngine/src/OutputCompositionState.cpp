@@ -52,7 +52,6 @@ void OutputCompositionState::dump(std::string& out) const {
     dumpVal(out, "colorMode", toString(colorMode), colorMode);
     dumpVal(out, "renderIntent", toString(renderIntent), renderIntent);
     dumpVal(out, "dataspace", toString(dataspace), dataspace);
-    dumpVal(out, "targetDataspace", toString(targetDataspace), targetDataspace);
 
     out.append("\n   ");
     dumpVal(out, "colorTransformMatrix", colorTransformMatrix);
@@ -67,12 +66,7 @@ void OutputCompositionState::dump(std::string& out) const {
     out.append("\n   ");
 
     out.append("\n   ");
-    dumpVal(out, "treate170mAsSrgb", treat170mAsSrgb);
-
-    out.append("\n");
-    for (const auto& borderRenderInfo : borderInfoList) {
-        dumpVal(out, "borderRegion", borderRenderInfo.combinedRegion);
-    }
+    dumpVal(out, "treat170mAsSrgb", treat170mAsSrgb);
     out.append("\n");
 }
 

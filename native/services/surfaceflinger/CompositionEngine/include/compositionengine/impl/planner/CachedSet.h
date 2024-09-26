@@ -143,11 +143,9 @@ public:
 
     compositionengine::OutputLayer* getBlurLayer() const;
 
-    bool hasUnsupportedDataspace() const;
+    bool hasKnownColorShift() const;
 
     bool hasProtectedLayers() const;
-
-    bool hasSolidColorLayers() const;
 
     // True if any layer in this cached set has CachingHint::Disabled
     bool cachingHintExcludesLayers() const;

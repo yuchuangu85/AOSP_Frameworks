@@ -36,40 +36,52 @@ import android.util.Log
 import android.view.ContextThemeWrapper
 import android.view.View
 import android.view.ViewGroup
+import androidx.annotation.VisibleForTesting
 import com.android.keyguard.KeyguardUpdateMonitor
+import com.android.keyguard.KeyguardUpdateMonitorCallback
 import com.android.settingslib.Utils
 import com.android.systemui.Dumpable
-import com.android.systemui.R
+import com.android.systemui.Flags.smartspaceLockscreenViewmodel
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.dump.DumpManager
 import com.android.systemui.flags.FeatureFlags
 import com.android.systemui.flags.Flags
+import com.android.systemui.keyguard.WakefulnessLifecycle
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.plugins.BcSmartspaceConfigPlugin
 import com.android.systemui.plugins.BcSmartspaceDataPlugin
 import com.android.systemui.plugins.BcSmartspaceDataPlugin.SmartspaceTargetListener
 import com.android.systemui.plugins.BcSmartspaceDataPlugin.SmartspaceView
+import com.android.systemui.plugins.BcSmartspaceDataPlugin.TimeChangedDelegate
 import com.android.systemui.plugins.FalsingManager
-import com.android.systemui.plugins.WeatherData
+import com.android.systemui.plugins.clocks.WeatherData
 import com.android.systemui.plugins.statusbar.StatusBarStateController
+import com.android.systemui.res.R
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.shared.regionsampling.RegionSampler
 import com.android.systemui.smartspace.dagger.SmartspaceModule.Companion.DATE_SMARTSPACE_DATA_PLUGIN
 import com.android.systemui.smartspace.dagger.SmartspaceModule.Companion.WEATHER_SMARTSPACE_DATA_PLUGIN
+import com.android.systemui.smartspace.ui.binder.SmartspaceViewBinder
+import com.android.systemui.smartspace.ui.viewmodel.SmartspaceViewModel
 import com.android.systemui.statusbar.phone.KeyguardBypassController
 import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.statusbar.policy.DeviceProvisionedController
+import com.android.systemui.util.asIndenting
 import com.android.systemui.util.concurrency.Execution
+import com.android.systemui.util.printCollection
 import com.android.systemui.util.settings.SecureSettings
 import com.android.systemui.util.time.SystemClock
 import java.io.PrintWriter
 import java.time.Instant
+import java.util.Deque
+import java.util.LinkedList
 import java.util.Optional
 import java.util.concurrent.Executor
 import javax.inject.Inject
 import javax.inject.Named
+
 
 /** Controller for managing the smartspace view on the lockscreen */
 @SysUISingleton
@@ -78,7 +90,7 @@ class LockscreenSmartspaceController
 constructor(
         private val context: Context,
         private val featureFlags: FeatureFlags,
-        private val smartspaceManager: SmartspaceManager,
+        private val smartspaceManager: SmartspaceManager?,
         private val activityStarter: ActivityStarter,
         private val falsingManager: FalsingManager,
         private val systemClock: SystemClock,
@@ -90,6 +102,8 @@ constructor(
         private val deviceProvisionedController: DeviceProvisionedController,
         private val bypassController: KeyguardBypassController,
         private val keyguardUpdateMonitor: KeyguardUpdateMonitor,
+        private val wakefulnessLifecycle: WakefulnessLifecycle,
+        private val smartspaceViewModelFactory: SmartspaceViewModel.Factory,
         private val dumpManager: DumpManager,
         private val execution: Execution,
         @Main private val uiExecutor: Executor,
@@ -104,6 +118,8 @@ constructor(
 ) : Dumpable {
     companion object {
         private const val TAG = "LockscreenSmartspaceController"
+
+        private const val MAX_RECENT_SMARTSPACE_DATA_FOR_DUMP = 5
     }
 
     private var session: SmartspaceSession? = null
@@ -112,8 +128,11 @@ constructor(
     private val plugin: BcSmartspaceDataPlugin? = optionalPlugin.orElse(null)
     private val configPlugin: BcSmartspaceConfigPlugin? = optionalConfigPlugin.orElse(null)
 
+    // This stores recently received Smartspace pushes to be included in dumpsys.
+    private val recentSmartspaceData: Deque<List<SmartspaceTarget>> = LinkedList()
+
     // Smartspace can be used on multiple displays, such as when the user casts their screen
-    private var smartspaceViews = mutableSetOf<SmartspaceView>()
+    @VisibleForTesting var smartspaceViews = mutableSetOf<SmartspaceView>()
     private var regionSamplers =
             mutableMapOf<SmartspaceView, RegionSampler>()
 
@@ -125,6 +144,12 @@ constructor(
     private var showSensitiveContentForManagedUser = false
     private var managedUserHandle: UserHandle? = null
     private var mSplitShadeEnabled = false
+
+    var suppressDisconnects = false
+        set(value) {
+            field = value
+            disconnect()
+        }
 
     // TODO(b/202758428): refactor so that we can test color updates via region samping, similar to
     //  how we test color updates when theme changes (See testThemeChangeUpdatesTextColor).
@@ -139,6 +164,19 @@ constructor(
 
             updateTextColorFromWallpaper()
             statusBarStateListener.onDozeAmountChanged(0f, statusBarStateController.dozeAmount)
+
+            if (regionSamplingEnabled && (!regionSamplers.containsKey(v))) {
+                var regionSampler = RegionSampler(
+                        v as View,
+                        uiExecutor,
+                        bgExecutor,
+                        regionSamplingEnabled,
+                        isLockscreen = true,
+                ) { updateTextColorFromRegionSampler() }
+                initializeTextColors(regionSampler)
+                regionSamplers[v] = regionSampler
+                regionSampler.startRegionSampler()
+            }
         }
 
         override fun onViewDetachedFromWindow(v: View) {
@@ -158,6 +196,7 @@ constructor(
 
         // The weather data plugin takes unfiltered targets and performs the filtering internally.
         weatherPlugin?.onTargetsAvailable(targets)
+
         val now = Instant.ofEpochMilli(systemClock.currentTimeMillis())
         val weatherTarget = targets.find { t ->
             t.featureType == SmartspaceTarget.FEATURE_WEATHER &&
@@ -165,31 +204,36 @@ constructor(
                     now.isBefore(Instant.ofEpochMilli(t.expiryTimeMillis))
         }
         if (weatherTarget != null) {
-            val weatherData = WeatherData.fromBundle(weatherTarget.baseAction.extras)
+            val clickIntent = weatherTarget.headerAction?.intent
+            val weatherData = weatherTarget.baseAction?.extras?.let { extras ->
+                WeatherData.fromBundle(
+                    extras,
+                ) { _ ->
+                    if (!falsingManager.isFalseTap(FalsingManager.LOW_PENALTY)) {
+                        activityStarter.startActivity(
+                            clickIntent,
+                            true, /* dismissShade */
+                            null,
+                            false)
+                    }
+                }
+            }
+
             if (weatherData != null) {
                 keyguardUpdateMonitor.sendWeatherData(weatherData)
             }
         }
 
         val filteredTargets = targets.filter(::filterSmartspaceTarget)
-        plugin?.onTargetsAvailable(filteredTargets)
-        if (!isRegionSamplersCreated) {
-            for (v in smartspaceViews) {
-                if (regionSamplingEnabled) {
-                    var regionSampler = RegionSampler(
-                        v as View,
-                        uiExecutor,
-                        bgExecutor,
-                        regionSamplingEnabled,
-                        isLockscreen = true,
-                    ) { updateTextColorFromRegionSampler() }
-                    initializeTextColors(regionSampler)
-                    regionSamplers[v] = regionSampler
-                    regionSampler.startRegionSampler()
-                }
+
+        synchronized(recentSmartspaceData) {
+            recentSmartspaceData.offerLast(filteredTargets)
+            if (recentSmartspaceData.size > MAX_RECENT_SMARTSPACE_DATA_FOR_DUMP) {
+                recentSmartspaceData.pollFirst()
             }
-            isRegionSamplersCreated = true
         }
+
+        plugin?.onTargetsAvailable(filteredTargets)
     }
 
     private val userTrackerCallback = object : UserTracker.Callback {
@@ -243,6 +287,18 @@ constructor(
             }
         }
 
+    // TODO(b/331451011): Refactor to viewmodel and use interactor pattern.
+    private val wakefulnessLifecycleObserver =
+        object : WakefulnessLifecycle.Observer {
+            override fun onStartedWakingUp() {
+                smartspaceViews.forEach { it.setScreenOn(true) }
+            }
+
+            override fun onFinishedGoingToSleep() {
+                smartspaceViews.forEach { it.setScreenOn(false) }
+            }
+        }
+
     init {
         deviceProvisionedController.addCallback(deviceProvisionedListener)
         dumpManager.registerDumpable(this)
@@ -257,17 +313,14 @@ constructor(
     fun isDateWeatherDecoupled(): Boolean {
         execution.assertIsMainThread()
 
-        return featureFlags.isEnabled(Flags.SMARTSPACE_DATE_WEATHER_DECOUPLED) &&
-                datePlugin != null && weatherPlugin != null
+        return datePlugin != null && weatherPlugin != null
     }
 
     fun isWeatherEnabled(): Boolean {
        execution.assertIsMainThread()
-       val defaultValue = context.getResources().getBoolean(
-               com.android.internal.R.bool.config_lockscreenWeatherEnabledByDefault)
        val showWeather = secureSettings.getIntForUser(
            LOCK_SCREEN_WEATHER_ENABLED,
-           if (defaultValue) 1 else 0,
+           1,
            userTracker.userId) == 1
        return showWeather
     }
@@ -290,7 +343,12 @@ constructor(
             throw RuntimeException("Cannot build date view when not decoupled")
         }
 
-        val view = buildView(parent, datePlugin)
+        val view =
+            buildView(
+                surfaceName = SmartspaceViewModel.SURFACE_DATE_VIEW,
+                parent = parent,
+                plugin = datePlugin
+            )
         connectSession()
 
         return view
@@ -309,7 +367,12 @@ constructor(
             throw RuntimeException("Cannot build weather view when not decoupled")
         }
 
-        val view = buildView(parent, weatherPlugin)
+        val view =
+            buildView(
+                surfaceName = SmartspaceViewModel.SURFACE_WEATHER_VIEW,
+                parent = parent,
+                plugin = weatherPlugin
+            )
         connectSession()
 
         return view
@@ -325,16 +388,23 @@ constructor(
             throw RuntimeException("Cannot build view when not enabled")
         }
 
-        val view = buildView(parent, plugin, configPlugin)
+        val view =
+            buildView(
+                surfaceName = SmartspaceViewModel.SURFACE_GENERAL_VIEW,
+                parent = parent,
+                plugin = plugin,
+                configPlugin = configPlugin
+            )
         connectSession()
 
         return view
     }
 
     private fun buildView(
-            parent: ViewGroup,
-            plugin: BcSmartspaceDataPlugin?,
-            configPlugin: BcSmartspaceConfigPlugin? = null
+        surfaceName: String,
+        parent: ViewGroup,
+        plugin: BcSmartspaceDataPlugin?,
+        configPlugin: BcSmartspaceConfigPlugin? = null
     ): View? {
         if (plugin == null) {
             return null
@@ -343,6 +413,7 @@ constructor(
         val ssView = plugin.getView(parent)
         configPlugin?.let { ssView.registerConfigProvider(it) }
         ssView.setUiSurface(BcSmartspaceDataPlugin.UI_SURFACE_LOCK_SCREEN_AOD)
+        ssView.setTimeChangedDelegate(SmartspaceTimeChangedDelegate(keyguardUpdateMonitor))
         ssView.registerDataProvider(plugin)
 
         ssView.setIntentStarter(object : BcSmartspaceDataPlugin.IntentStarter {
@@ -378,10 +449,22 @@ constructor(
         })
         ssView.setFalsingManager(falsingManager)
         ssView.setKeyguardBypassEnabled(bypassController.bypassEnabled)
-        return (ssView as View).apply { addOnAttachStateChangeListener(stateChangeListener) }
+        return (ssView as View).apply {
+            setTag(R.id.tag_smartspace_view, Any())
+            addOnAttachStateChangeListener(stateChangeListener)
+
+            if (smartspaceLockscreenViewmodel()) {
+                val viewModel = smartspaceViewModelFactory.create(surfaceName)
+                SmartspaceViewBinder.bind(
+                    smartspaceView = ssView,
+                    viewModel = viewModel,
+                )
+            }
+        }
     }
 
     private fun connectSession() {
+        if (smartspaceManager == null) return
         if (datePlugin == null && weatherPlugin == null && plugin == null) return
         if (session != null || smartspaceViews.isEmpty()) {
             return
@@ -419,6 +502,9 @@ constructor(
         configurationController.addCallback(configChangeListener)
         statusBarStateController.addCallback(statusBarStateListener)
         bypassController.registerOnBypassStateChangedListener(bypassStateChangedListener)
+        if (!smartspaceLockscreenViewmodel()) {
+            wakefulnessLifecycle.addObserver(wakefulnessLifecycleObserver)
+        }
 
         datePlugin?.registerSmartspaceEventNotifier { e -> session?.notifySmartspaceEvent(e) }
         weatherPlugin?.registerSmartspaceEventNotifier { e -> session?.notifySmartspaceEvent(e) }
@@ -445,6 +531,7 @@ constructor(
      */
     fun disconnect() {
         if (!smartspaceViews.isEmpty()) return
+        if (suppressDisconnects) return
 
         execution.assertIsMainThread()
 
@@ -461,6 +548,9 @@ constructor(
         configurationController.removeCallback(configChangeListener)
         statusBarStateController.removeCallback(statusBarStateListener)
         bypassController.unregisterOnBypassStateChangedListener(bypassStateChangedListener)
+        if (!smartspaceLockscreenViewmodel()) {
+            wakefulnessLifecycle.removeObserver(wakefulnessLifecycleObserver)
+        }
         session = null
 
         datePlugin?.registerSmartspaceEventNotifier(null)
@@ -485,8 +575,8 @@ constructor(
     }
 
     private fun filterSmartspaceTarget(t: SmartspaceTarget): Boolean {
-        if (isDateWeatherDecoupled()) {
-            return t.featureType != SmartspaceTarget.FEATURE_WEATHER
+        if (isDateWeatherDecoupled() && t.featureType == SmartspaceTarget.FEATURE_WEATHER) {
+            return false
         }
         if (!showNotifications) {
             return t.featureType == SmartspaceTarget.FEATURE_WEATHER
@@ -574,9 +664,49 @@ constructor(
     }
 
     override fun dump(pw: PrintWriter, args: Array<out String>) {
-        pw.println("Region Samplers: ${regionSamplers.size}")
-        regionSamplers.map { (_, sampler) ->
-            sampler.dump(pw)
+        pw.asIndenting().run {
+            printCollection("Region Samplers", regionSamplers.values) {
+                it.dump(this)
+            }
+        }
+
+        pw.println("Recent BC Smartspace Targets (most recent first)")
+        synchronized(recentSmartspaceData) {
+            if (recentSmartspaceData.size === 0) {
+                pw.println("   No data\n")
+                return
+            }
+            recentSmartspaceData.descendingIterator().forEachRemaining { smartspaceTargets ->
+                pw.println("   Number of targets: ${smartspaceTargets.size}")
+                for (target in smartspaceTargets) {
+                    pw.println("      $target")
+                }
+                pw.println()
+            }
+        }
+    }
+
+    private class SmartspaceTimeChangedDelegate(
+        private val keyguardUpdateMonitor: KeyguardUpdateMonitor
+    ) : TimeChangedDelegate {
+        private var keyguardUpdateMonitorCallback: KeyguardUpdateMonitorCallback? = null
+        override fun register(callback: Runnable) {
+            if (keyguardUpdateMonitorCallback != null) {
+                unregister()
+            }
+            keyguardUpdateMonitorCallback = object : KeyguardUpdateMonitorCallback() {
+                override fun onTimeChanged() {
+                    callback.run()
+                }
+            }
+            keyguardUpdateMonitor.registerCallback(keyguardUpdateMonitorCallback)
+            callback.run()
+        }
+
+        override fun unregister() {
+            keyguardUpdateMonitor.removeCallback(keyguardUpdateMonitorCallback)
+            keyguardUpdateMonitorCallback = null
         }
     }
 }
+

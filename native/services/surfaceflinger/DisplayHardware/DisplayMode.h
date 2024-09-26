@@ -21,16 +21,17 @@
 
 #include <android-base/stringprintf.h>
 #include <android/configuration.h>
+#include <ftl/mixins.h>
 #include <ftl/small_map.h>
 #include <ui/DisplayId.h>
 #include <ui/DisplayMode.h>
 #include <ui/Size.h>
 #include <utils/Timers.h>
 
+#include <common/FlagManager.h>
 #include <scheduler/Fps.h>
 
 #include "DisplayHardware/Hal.h"
-#include "Scheduler/StrongTyping.h"
 
 namespace android {
 
@@ -45,7 +46,12 @@ bool operator>(const DisplayModePtr&, const DisplayModePtr&) = delete;
 bool operator<=(const DisplayModePtr&, const DisplayModePtr&) = delete;
 bool operator>=(const DisplayModePtr&, const DisplayModePtr&) = delete;
 
-using DisplayModeId = StrongTyping<ui::DisplayModeId, struct DisplayModeIdTag, Compare>;
+struct DisplayModeId : ftl::DefaultConstructible<DisplayModeId, ui::DisplayModeId>,
+                       ftl::Incrementable<DisplayModeId>,
+                       ftl::Equatable<DisplayModeId>,
+                       ftl::Orderable<DisplayModeId> {
+    using DefaultConstructible::DefaultConstructible;
+};
 
 using DisplayModes = ftl::SmallMap<DisplayModeId, DisplayModePtr, 3>;
 using DisplayModeIterator = DisplayModes::const_iterator;
@@ -76,24 +82,29 @@ public:
         }
 
         Builder& setVsyncPeriod(nsecs_t vsyncPeriod) {
-            mDisplayMode->mFps = Fps::fromPeriodNsecs(vsyncPeriod);
+            mDisplayMode->mVsyncRate = Fps::fromPeriodNsecs(vsyncPeriod);
             return *this;
         }
 
-        Builder& setDpiX(int32_t dpiX) {
-            if (dpiX == -1) {
+        Builder& setVrrConfig(std::optional<hal::VrrConfig> vrrConfig) {
+            mDisplayMode->mVrrConfig = std::move(vrrConfig);
+            return *this;
+        }
+
+        Builder& setDpiX(float dpiX) {
+            if (dpiX == -1.f) {
                 mDisplayMode->mDpi.x = getDefaultDensity();
             } else {
-                mDisplayMode->mDpi.x = dpiX / 1000.f;
+                mDisplayMode->mDpi.x = dpiX;
             }
             return *this;
         }
 
-        Builder& setDpiY(int32_t dpiY) {
-            if (dpiY == -1) {
+        Builder& setDpiY(float dpiY) {
+            if (dpiY == -1.f) {
                 mDisplayMode->mDpi.y = getDefaultDensity();
             } else {
-                mDisplayMode->mDpi.y = dpiY / 1000.f;
+                mDisplayMode->mDpi.y = dpiY;
             }
             return *this;
         }
@@ -130,8 +141,17 @@ public:
     int32_t getWidth() const { return mResolution.getWidth(); }
     int32_t getHeight() const { return mResolution.getHeight(); }
 
-    Fps getFps() const { return mFps; }
-    nsecs_t getVsyncPeriod() const { return mFps.getPeriodNsecs(); }
+    // Peak refresh rate represents the highest refresh rate that can be used
+    // for the presentation.
+    Fps getPeakFps() const {
+        return FlagManager::getInstance().vrr_config() && mVrrConfig
+                ? Fps::fromPeriodNsecs(mVrrConfig->minFrameIntervalNs)
+                : mVsyncRate;
+    }
+
+    Fps getVsyncRate() const { return mVsyncRate; }
+
+    std::optional<hal::VrrConfig> getVrrConfig() const { return mVrrConfig; }
 
     struct Dpi {
         float x = -1;
@@ -155,23 +175,25 @@ private:
     PhysicalDisplayId mPhysicalDisplayId;
 
     ui::Size mResolution;
-    Fps mFps;
+    Fps mVsyncRate;
     Dpi mDpi;
     int32_t mGroup = -1;
+    std::optional<hal::VrrConfig> mVrrConfig;
 };
 
 inline bool equalsExceptDisplayModeId(const DisplayMode& lhs, const DisplayMode& rhs) {
     return lhs.getHwcId() == rhs.getHwcId() && lhs.getResolution() == rhs.getResolution() &&
-            lhs.getVsyncPeriod() == rhs.getVsyncPeriod() && lhs.getDpi() == rhs.getDpi() &&
-            lhs.getGroup() == rhs.getGroup();
+            lhs.getVsyncRate().getPeriodNsecs() == rhs.getVsyncRate().getPeriodNsecs() &&
+            lhs.getDpi() == rhs.getDpi() && lhs.getGroup() == rhs.getGroup();
 }
 
 inline std::string to_string(const DisplayMode& mode) {
-    return base::StringPrintf("{id=%d, hwcId=%d, resolution=%dx%d, refreshRate=%s, "
-                              "dpi=%.2fx%.2f, group=%d}",
-                              mode.getId().value(), mode.getHwcId(), mode.getWidth(),
-                              mode.getHeight(), to_string(mode.getFps()).c_str(), mode.getDpi().x,
-                              mode.getDpi().y, mode.getGroup());
+    return base::StringPrintf("{id=%d, hwcId=%d, resolution=%dx%d, vsyncRate=%s, "
+                              "dpi=%.2fx%.2f, group=%d, vrrConfig=%s}",
+                              ftl::to_underlying(mode.getId()), mode.getHwcId(), mode.getWidth(),
+                              mode.getHeight(), to_string(mode.getVsyncRate()).c_str(),
+                              mode.getDpi().x, mode.getDpi().y, mode.getGroup(),
+                              to_string(mode.getVrrConfig()).c_str());
 }
 
 template <typename... DisplayModePtrs>

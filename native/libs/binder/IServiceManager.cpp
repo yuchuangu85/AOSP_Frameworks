@@ -20,6 +20,7 @@
 
 #include <inttypes.h>
 #include <unistd.h>
+#include <condition_variable>
 
 #include <android-base/properties.h>
 #include <android/os/BnServiceCallback.h>
@@ -38,6 +39,11 @@
 #include <cutils/properties.h>
 #else
 #include "ServiceManagerHost.h"
+#endif
+
+#if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__) && !defined(__ANDROID_NATIVE_BRIDGE__)
+#include <android/apexsupport.h>
+#include <vndksupport/linker.h>
 #endif
 
 #include "Static.h"
@@ -200,7 +206,7 @@ bool checkCallingPermission(const String16& permission, int32_t* outPid, int32_t
 }
 
 bool checkPermission(const String16& permission, pid_t pid, uid_t uid, bool logPermissionFailure) {
-    static Mutex gPermissionControllerLock;
+    static std::mutex gPermissionControllerLock;
     static sp<IPermissionController> gPermissionController;
 
     sp<IPermissionController> pc;
@@ -216,8 +222,8 @@ bool checkPermission(const String16& permission, pid_t pid, uid_t uid, bool logP
             if (res) {
                 if (startTime != 0) {
                     ALOGI("Check passed after %d seconds for %s from uid=%d pid=%d",
-                            (int)((uptimeMillis()-startTime)/1000),
-                            String8(permission).string(), uid, pid);
+                          (int)((uptimeMillis() - startTime) / 1000), String8(permission).c_str(),
+                          uid, pid);
                 }
                 return res;
             }
@@ -225,7 +231,7 @@ bool checkPermission(const String16& permission, pid_t pid, uid_t uid, bool logP
             // Is this a permission failure, or did the controller go away?
             if (IInterface::asBinder(pc)->isBinderAlive()) {
                 if (logPermissionFailure) {
-                    ALOGW("Permission failure: %s from uid=%d pid=%d", String8(permission).string(),
+                    ALOGW("Permission failure: %s from uid=%d pid=%d", String8(permission).c_str(),
                           uid, pid);
                 }
                 return false;
@@ -246,7 +252,7 @@ bool checkPermission(const String16& permission, pid_t pid, uid_t uid, bool logP
             if (startTime == 0) {
                 startTime = uptimeMillis();
                 ALOGI("Waiting to check permission %s from uid=%d pid=%d",
-                        String8(permission).string(), uid, pid);
+                      String8(permission).c_str(), uid, pid);
             }
             sleep(1);
         } else {
@@ -257,6 +263,27 @@ bool checkPermission(const String16& permission, pid_t pid, uid_t uid, bool logP
             gPermissionControllerLock.unlock();
         }
     }
+}
+
+void* openDeclaredPassthroughHal(const String16& interface, const String16& instance, int flag) {
+#if defined(__ANDROID__) && !defined(__ANDROID_RECOVERY__) && !defined(__ANDROID_NATIVE_BRIDGE__)
+    sp<IServiceManager> sm = defaultServiceManager();
+    String16 name = interface + String16("/") + instance;
+    if (!sm->isDeclared(name)) {
+        return nullptr;
+    }
+    String16 libraryName = interface + String16(".") + instance + String16(".so");
+    if (auto updatableViaApex = sm->updatableViaApex(name); updatableViaApex.has_value()) {
+        return AApexSupport_loadLibrary(String8(libraryName).c_str(),
+                                        String8(*updatableViaApex).c_str(), flag);
+    }
+    return android_load_sphal_library(String8(libraryName).c_str(), flag);
+#else
+    (void)interface;
+    (void)instance;
+    (void)flag;
+    return nullptr;
+#endif
 }
 
 #endif //__ANDROID_VNDK__
@@ -295,7 +322,7 @@ sp<IBinder> ServiceManagerShim::getService(const String16& name) const
     // retry interval in millisecond; note that vendor services stay at 100ms
     const useconds_t sleepTime = gSystemBootCompleted ? 1000 : 100;
 
-    ALOGI("Waiting for service '%s' on '%s'...", String8(name).string(),
+    ALOGI("Waiting for service '%s' on '%s'...", String8(name).c_str(),
           ProcessState::self()->getDriverName().c_str());
 
     int n = 0;
@@ -306,12 +333,12 @@ sp<IBinder> ServiceManagerShim::getService(const String16& name) const
         sp<IBinder> svc = checkService(name);
         if (svc != nullptr) {
             ALOGI("Waiting for service '%s' on '%s' successful after waiting %" PRIi64 "ms",
-                  String8(name).string(), ProcessState::self()->getDriverName().c_str(),
+                  String8(name).c_str(), ProcessState::self()->getDriverName().c_str(),
                   uptimeMillis() - startTime);
             return svc;
         }
     }
-    ALOGW("Service %s didn't start. Returning NULL", String8(name).string());
+    ALOGW("Service %s didn't start. Returning NULL", String8(name).c_str());
     return nullptr;
 }
 
@@ -616,7 +643,7 @@ public:
 
 protected:
     // Override realGetService for ServiceManagerShim::waitForService.
-    Status realGetService(const std::string& name, sp<IBinder>* _aidl_return) {
+    Status realGetService(const std::string& name, sp<IBinder>* _aidl_return) override {
         *_aidl_return = getDeviceService({"-g", name}, mOptions);
         return Status::ok();
     }

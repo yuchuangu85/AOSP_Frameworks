@@ -26,6 +26,8 @@
 #include <gui/BufferQueueConsumer.h>
 #include <gui/BufferQueueCore.h>
 #include <gui/BufferQueueProducer.h>
+
+#include <gui/FrameRateUtils.h>
 #include <gui/GLConsumer.h>
 #include <gui/IProducerListener.h>
 #include <gui/Surface.h>
@@ -39,6 +41,9 @@
 #include <android-base/thread_annotations.h>
 #include <chrono>
 
+#include <com_android_graphics_libgui_flags.h>
+
+using namespace com::android::graphics::libgui;
 using namespace std::chrono_literals;
 
 namespace {
@@ -99,12 +104,11 @@ void BLASTBufferItemConsumer::addAndGetFrameTimestamps(const NewFrameEventsEntry
     }
 }
 
-void BLASTBufferItemConsumer::updateFrameTimestamps(uint64_t frameNumber, nsecs_t refreshStartTime,
-                                                    const sp<Fence>& glDoneFence,
-                                                    const sp<Fence>& presentFence,
-                                                    const sp<Fence>& prevReleaseFence,
-                                                    CompositorTiming compositorTiming,
-                                                    nsecs_t latchTime, nsecs_t dequeueReadyTime) {
+void BLASTBufferItemConsumer::updateFrameTimestamps(
+        uint64_t frameNumber, uint64_t previousFrameNumber, nsecs_t refreshStartTime,
+        const sp<Fence>& glDoneFence, const sp<Fence>& presentFence,
+        const sp<Fence>& prevReleaseFence, CompositorTiming compositorTiming, nsecs_t latchTime,
+        nsecs_t dequeueReadyTime) {
     Mutex::Autolock lock(mMutex);
 
     // if the producer is not connected, don't bother updating,
@@ -115,7 +119,15 @@ void BLASTBufferItemConsumer::updateFrameTimestamps(uint64_t frameNumber, nsecs_
     std::shared_ptr<FenceTime> releaseFenceTime = std::make_shared<FenceTime>(prevReleaseFence);
 
     mFrameEventHistory.addLatch(frameNumber, latchTime);
-    mFrameEventHistory.addRelease(frameNumber, dequeueReadyTime, std::move(releaseFenceTime));
+    if (flags::frametimestamps_previousrelease()) {
+        if (previousFrameNumber > 0) {
+            mFrameEventHistory.addRelease(previousFrameNumber, dequeueReadyTime,
+                                          std::move(releaseFenceTime));
+        }
+    } else {
+        mFrameEventHistory.addRelease(frameNumber, dequeueReadyTime, std::move(releaseFenceTime));
+    }
+
     mFrameEventHistory.addPreComposition(frameNumber, refreshStartTime);
     mFrameEventHistory.addPostComposition(frameNumber, glDoneFenceTime, presentFenceTime,
                                           compositorTiming);
@@ -138,6 +150,16 @@ void BLASTBufferItemConsumer::onSidebandStreamChanged() {
         bbq->setSidebandStream(stream);
     }
 }
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_SETFRAMERATE)
+void BLASTBufferItemConsumer::onSetFrameRate(float frameRate, int8_t compatibility,
+                                             int8_t changeFrameRateStrategy) {
+    sp<BLASTBufferQueue> bbq = mBLASTBufferQueue.promote();
+    if (bbq != nullptr) {
+        bbq->setFrameRate(frameRate, compatibility, changeFrameRateStrategy);
+    }
+}
+#endif
 
 void BLASTBufferItemConsumer::resizeFrameEventHistory(size_t newSize) {
     Mutex::Autolock lock(mMutex);
@@ -303,13 +325,8 @@ void BLASTBufferQueue::transactionCommittedCallback(nsecs_t /*latchTime*/,
                 // frame numbers that were in a sync. We remove the frame from mSyncedFrameNumbers
                 // set and then check if it's empty. If there are no more pending syncs, we can
                 // proceed with flushing the shadow queue.
-                // We also want to check if mSyncTransaction is null because it's possible another
-                // sync request came in while waiting, but it hasn't started processing yet. In that
-                // case, we don't actually want to flush the frames in between since they will get
-                // processed and merged with the sync transaction and released earlier than if they
-                // were sent to SF
                 mSyncedFrameNumbers.erase(currFrameNumber);
-                if (mSyncedFrameNumbers.empty() && mSyncTransaction == nullptr) {
+                if (mSyncedFrameNumbers.empty()) {
                     flushShadowQueue();
                 }
             } else {
@@ -356,6 +373,7 @@ void BLASTBufferQueue::transactionCallback(nsecs_t /*latchTime*/, const sp<Fence
                 if (stat.latchTime > 0) {
                     mBufferItemConsumer
                             ->updateFrameTimestamps(stat.frameEventStats.frameNumber,
+                                                    stat.frameEventStats.previousFrameNumber,
                                                     stat.frameEventStats.refreshStartTime,
                                                     stat.frameEventStats.gpuCompositionDoneFence,
                                                     stat.presentFence, stat.previousReleaseFence,
@@ -595,8 +613,19 @@ status_t BLASTBufferQueue::acquireNextBufferLocked(
             std::bind(releaseBufferCallbackThunk, wp<BLASTBufferQueue>(this) /* callbackContext */,
                       std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
     sp<Fence> fence = bufferItem.mFence ? new Fence(bufferItem.mFence->dup()) : Fence::NO_FENCE;
+
+    nsecs_t dequeueTime = -1;
+    {
+        std::lock_guard _lock{mTimestampMutex};
+        auto dequeueTimeIt = mDequeueTimestamps.find(buffer->getId());
+        if (dequeueTimeIt != mDequeueTimestamps.end()) {
+            dequeueTime = dequeueTimeIt->second;
+            mDequeueTimestamps.erase(dequeueTimeIt);
+        }
+    }
+
     t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId,
-                 releaseBufferCallback);
+                 releaseBufferCallback, dequeueTime);
     t->setDataspace(mSurfaceControl, static_cast<ui::Dataspace>(bufferItem.mDataSpace));
     t->setHdrMetadata(mSurfaceControl, bufferItem.mHdrMetadata);
     t->setSurfaceDamageRegion(mSurfaceControl, bufferItem.mSurfaceDamage);
@@ -638,17 +667,6 @@ status_t BLASTBufferQueue::acquireNextBufferLocked(
                               mPendingFrameTimelines.front().second.vsyncId);
         t->setFrameTimelineInfo(mPendingFrameTimelines.front().second);
         mPendingFrameTimelines.pop();
-    }
-
-    {
-        std::lock_guard _lock{mTimestampMutex};
-        auto dequeueTime = mDequeueTimestamps.find(buffer->getId());
-        if (dequeueTime != mDequeueTimestamps.end()) {
-            Parcel p;
-            p.writeInt64(dequeueTime->second);
-            t->setMetadata(mSurfaceControl, gui::METADATA_DEQUEUE_TIME, p);
-            mDequeueTimestamps.erase(dequeueTime);
-        }
     }
 
     mergePendingTransactions(t, bufferItem.mFrameNumber);
@@ -895,6 +913,10 @@ public:
 
     status_t setFrameRate(float frameRate, int8_t compatibility,
                           int8_t changeFrameRateStrategy) override {
+        if (flags::bq_setframerate()) {
+            return Surface::setFrameRate(frameRate, compatibility, changeFrameRateStrategy);
+        }
+
         std::lock_guard _lock{mMutex};
         if (mDestroyed) {
             return DEAD_OBJECT;

@@ -29,8 +29,11 @@ bool DelayedCallback::isExpired() const {
     return mExpiration <= std::chrono::steady_clock::now();
 }
 
-DelayedCallback::Timestamp DelayedCallback::getExpiration() const {
-    return mExpiration;
+std::chrono::milliseconds DelayedCallback::getWaitForExpirationDuration() const {
+    std::chrono::milliseconds delta = std::chrono::duration_cast<std::chrono::milliseconds>(
+            mExpiration - std::chrono::steady_clock::now());
+    // Return zero if this is already expired.
+    return delta > delta.zero() ? delta : delta.zero();
 }
 
 void DelayedCallback::run() const {
@@ -84,11 +87,13 @@ void CallbackScheduler::loop() {
             lock.lock();
         }
         if (mQueue.empty()) {
-            // Wait until a new callback is scheduled.
-            mCondition.wait(mMutex);
+            // Wait until a new callback is scheduled or destructor was called.
+            mCondition.wait(lock, [this] { return mFinished || !mQueue.empty(); });
         } else {
-            // Wait until next callback expires, or a new one is scheduled.
-            mCondition.wait_until(mMutex, mQueue.top().getExpiration());
+            // Wait until next callback expires or a new one is scheduled.
+            // Use the monotonic steady clock to wait for the measured delay interval via wait_for
+            // instead of using a wall clock via wait_until.
+            mCondition.wait_for(lock, mQueue.top().getWaitForExpirationDuration());
         }
     }
 }

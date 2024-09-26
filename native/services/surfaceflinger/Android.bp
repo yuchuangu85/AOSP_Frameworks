@@ -5,6 +5,22 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["frameworks_native_license"],
+    default_team: "trendy_team_android_core_graphics_stack",
+}
+
+aconfig_declarations {
+    name: "surfaceflinger_flags",
+    package: "com.android.graphics.surfaceflinger.flags",
+    container: "system",
+    srcs: [
+        "surfaceflinger_flags.aconfig",
+        "surfaceflinger_flags_new.aconfig",
+    ],
+}
+
+cc_aconfig_library {
+    name: "libsurfaceflingerflags",
+    aconfig_declarations: "surfaceflinger_flags",
 }
 
 cc_defaults {
@@ -26,7 +42,10 @@ cc_defaults {
     name: "libsurfaceflinger_defaults",
     defaults: [
         "android.hardware.graphics.composer3-ndk_shared",
+        "android.hardware.power-ndk_shared",
         "librenderengine_deps",
+        "libtimestats_deps",
+        "libsurfaceflinger_common_deps",
         "surfaceflinger_defaults",
     ],
     cflags: [
@@ -47,7 +66,6 @@ cc_defaults {
         "android.hardware.graphics.composer@2.2",
         "android.hardware.graphics.composer@2.3",
         "android.hardware.graphics.composer@2.4",
-        "android.hardware.power-V4-cpp",
         "libbase",
         "libbinder",
         "libbinder_ndk",
@@ -58,30 +76,31 @@ cc_defaults {
         "libGLESv2",
         "libgui",
         "libhidlbase",
-        "liblayers_proto",
         "liblog",
         "libnativewindow",
         "libpowermanager",
         "libprocessgroup",
         "libprotobuf-cpp-lite",
         "libsync",
-        "libtimestats",
         "libui",
-        "libinput",
         "libutils",
         "libSurfaceFlingerProp",
-        "server_configurable_flags",
+        "libaconfig_storage_read_api_cc"
     ],
     static_libs: [
+        "iinputflinger_aidl_lib_static",
         "libaidlcommonsupport",
         "libcompositionengine",
         "libframetimeline",
         "libgui_aidl_static",
+        "liblayers_proto",
         "libperfetto_client_experimental",
         "librenderengine",
         "libscheduler",
         "libserviceutils",
         "libshaders",
+        "libsurfaceflingerflags",
+        "libtimestats",
         "libtonemap",
     ],
     header_libs: [
@@ -95,6 +114,7 @@ cc_defaults {
         "libcompositionengine",
         "librenderengine",
         "libserviceutils",
+        "libtimestats",
     ],
     export_shared_lib_headers: [
         "android.hardware.graphics.allocator@2.0",
@@ -106,7 +126,6 @@ cc_defaults {
         "android.hardware.graphics.composer@2.4",
         "libpowermanager",
         "libhidlbase",
-        "libtimestats",
     ],
     // TODO (marissaw): this library is not used by surfaceflinger. This is here so
     // the library compiled in a way that is accessible to system partition when running
@@ -141,6 +160,7 @@ filegroup {
         "BackgroundExecutor.cpp",
         "Client.cpp",
         "ClientCache.cpp",
+        "Display/DisplayModeController.cpp",
         "Display/DisplaySnapshot.cpp",
         "DisplayDevice.cpp",
         "DisplayHardware/AidlComposerHal.cpp",
@@ -162,11 +182,11 @@ filegroup {
         "FrontEnd/LayerLifecycleManager.cpp",
         "FrontEnd/RequestedLayerState.cpp",
         "FrontEnd/TransactionHandler.cpp",
-        "FlagManager.cpp",
         "FpsReporter.cpp",
         "FrameTracer/FrameTracer.cpp",
         "FrameTracker.cpp",
         "HdrLayerInfoReporter.cpp",
+        "HdrSdrRatioOverlay.cpp",
         "WindowInfosListenerInvoker.cpp",
         "Layer.cpp",
         "LayerFE.cpp",
@@ -185,6 +205,7 @@ filegroup {
         "Scheduler/MessageQueue.cpp",
         "Scheduler/RefreshRateSelector.cpp",
         "Scheduler/Scheduler.cpp",
+        "Scheduler/SmallAreaDetectionAllowMappings.cpp",
         "Scheduler/VSyncDispatchTimerQueue.cpp",
         "Scheduler/VSyncPredictor.cpp",
         "Scheduler/VSyncReactor.cpp",
@@ -192,12 +213,14 @@ filegroup {
         "Scheduler/VsyncModulator.cpp",
         "Scheduler/VsyncSchedule.cpp",
         "ScreenCaptureOutput.cpp",
-        "StartPropertySetThread.cpp",
         "SurfaceFlinger.cpp",
         "SurfaceFlingerDefaultFactory.cpp",
+        "Tracing/LayerDataSource.cpp",
         "Tracing/LayerTracing.cpp",
+        "Tracing/TransactionDataSource.cpp",
         "Tracing/TransactionTracing.cpp",
         "Tracing/TransactionProtoParser.cpp",
+        "Tracing/tools/LayerTraceGenerator.cpp",
         "TransactionCallbackInvoker.cpp",
         "TunnelModeEnabledReporter.cpp",
     ],
@@ -213,14 +236,12 @@ cc_defaults {
         "-DLOG_TAG=\"SurfaceFlinger\"",
     ],
     shared_libs: [
-        "android.frameworks.displayservice@1.0",
         "android.hardware.configstore-utils",
         "android.hardware.configstore@1.0",
         "android.hardware.graphics.allocator@2.0",
         "android.hardware.graphics.allocator@3.0",
         "libbinder",
         "libcutils",
-        "libdisplayservicehidl",
         "libhidlbase",
         "liblog",
         "libprocessgroup",
@@ -228,6 +249,9 @@ cc_defaults {
         "libutils",
     ],
     static_libs: [
+        "android.frameworks.displayservice@1.0",
+        "libc++fs",
+        "libdisplayservicehidl",
         "libserviceutils",
     ],
 }

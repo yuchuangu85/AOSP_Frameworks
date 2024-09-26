@@ -143,6 +143,15 @@ enum DebugLevel {
 #define PROPERTY_CAPTURE_SKP_ENABLED "debug.hwui.capture_skp_enabled"
 
 /**
+ * Might split Skia's GPU resource utilization into separate tracing tracks (slow).
+ *
+ * Aggregate total and purgeable numbers will still be reported under a "misc" track when this is
+ * disabled, they just won't be split into distinct categories. Results may vary depending on GPU
+ * backend/API, and the category mappings defined in ATraceMemoryDump's hardcoded sResourceMap.
+ */
+#define PROPERTY_TRACE_GPU_RESOURCES "debug.hwui.trace_gpu_resources"
+
+/**
  * Allows broad recording of Skia drawing commands.
  *
  * If disabled, a very minimal set of trace events *may* be recorded.
@@ -220,6 +229,11 @@ enum DebugLevel {
 
 #define PROPERTY_8BIT_HDR_HEADROOM "debug.hwui.8bit_hdr_headroom"
 
+/**
+ * Whether to initialize GL even when HWUI is running Vulkan.
+ */
+#define PROPERTY_INITIALIZE_GL_ALWAYS "debug.hwui.initialize_gl_always"
+
 ///////////////////////////////////////////////////////////////////////////////
 // Misc
 ///////////////////////////////////////////////////////////////////////////////
@@ -233,7 +247,7 @@ enum class ProfileType { None, Console, Bars };
 
 enum class OverdrawColorSet { Default = 0, Deuteranomaly };
 
-enum class RenderPipelineType { SkiaGL, SkiaVulkan, NotInitialized = 128 };
+enum class RenderPipelineType { SkiaGL, SkiaVulkan, SkiaCpu, NotInitialized = 128 };
 
 enum class StretchEffectBehavior {
     ShaderHWUI,   // Stretch shader in HWUI only, matrix scale in SF
@@ -254,6 +268,7 @@ public:
 
     static bool debugLayersUpdates;
     static bool debugOverdraw;
+    static bool debugTraceGpuResourceCategories;
     static bool showDirtyRegions;
     // TODO: Remove after stabilization period
     static bool skipEmptyFrames;
@@ -325,6 +340,9 @@ public:
 
     static float maxHdrHeadroomOn8bit;
 
+    static bool clipSurfaceViews;
+    static bool hdr10bitPlus;
+
     static StretchEffectBehavior getStretchEffectBehavior() {
         return stretchEffectBehavior;
     }
@@ -354,6 +372,8 @@ public:
     static DrawingEnabled drawingEnabled;
     static bool isDrawingEnabled();
     static void setDrawingEnabled(bool enable);
+
+    static bool initializeGlAlways();
 
 private:
     static StretchEffectBehavior stretchEffectBehavior;

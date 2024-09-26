@@ -16,6 +16,7 @@
 
 #include "ScreenCaptureOutput.h"
 #include "ScreenCaptureRenderSurface.h"
+#include "ui/Rotation.h"
 
 #include <compositionengine/CompositionEngine.h>
 #include <compositionengine/DisplayColorProfileCreationArgs.h>
@@ -27,16 +28,17 @@ namespace android {
 std::shared_ptr<ScreenCaptureOutput> createScreenCaptureOutput(ScreenCaptureOutputArgs args) {
     std::shared_ptr<ScreenCaptureOutput> output = compositionengine::impl::createOutputTemplated<
             ScreenCaptureOutput, compositionengine::CompositionEngine, const RenderArea&,
-            const compositionengine::Output::ColorProfile&, bool>(args.compositionEngine,
-                                                                  args.renderArea,
-                                                                  args.colorProfile,
-                                                                  args.regionSampling);
+            const compositionengine::Output::ColorProfile&,
+            bool>(args.compositionEngine, args.renderArea, args.colorProfile, args.regionSampling,
+                  args.dimInGammaSpaceForEnhancedScreenshots, args.enableLocalTonemapping);
     output->editState().isSecure = args.renderArea.isSecure();
+    output->editState().isProtected = args.isProtected;
     output->setCompositionEnabled(true);
     output->setLayerFilter({args.layerStack});
     output->setRenderSurface(std::make_unique<ScreenCaptureRenderSurface>(std::move(args.buffer)));
     output->setDisplayBrightness(args.sdrWhitePointNits, args.displayBrightnessNits);
     output->editState().clientTargetBrightness = args.targetBrightness;
+    output->editState().treat170mAsSrgb = args.treat170mAsSrgb;
 
     output->setDisplayColorProfile(std::make_unique<compositionengine::impl::DisplayColorProfile>(
             compositionengine::DisplayColorProfileCreationArgsBuilder()
@@ -44,11 +46,10 @@ std::shared_ptr<ScreenCaptureOutput> createScreenCaptureOutput(ScreenCaptureOutp
                     .Build()));
 
     const Rect& sourceCrop = args.renderArea.getSourceCrop();
-    const ui::Rotation orientation = ui::Transform::toRotation(args.renderArea.getRotationFlags());
-    const Rect orientedDisplaySpaceRect{args.renderArea.getReqWidth(),
-                                        args.renderArea.getReqHeight()};
-    output->setProjection(orientation, sourceCrop, orientedDisplaySpaceRect);
+    const ui::Rotation orientation = ui::ROTATION_0;
     output->setDisplaySize({sourceCrop.getWidth(), sourceCrop.getHeight()});
+    output->setProjection(orientation, sourceCrop,
+                          {args.renderArea.getReqWidth(), args.renderArea.getReqHeight()});
 
     {
         std::string name = args.regionSampling ? "RegionSampling" : "ScreenCaptureOutput";
@@ -62,8 +63,13 @@ std::shared_ptr<ScreenCaptureOutput> createScreenCaptureOutput(ScreenCaptureOutp
 
 ScreenCaptureOutput::ScreenCaptureOutput(
         const RenderArea& renderArea, const compositionengine::Output::ColorProfile& colorProfile,
-        bool regionSampling)
-      : mRenderArea(renderArea), mColorProfile(colorProfile), mRegionSampling(regionSampling) {}
+        bool regionSampling, bool dimInGammaSpaceForEnhancedScreenshots,
+        bool enableLocalTonemapping)
+      : mRenderArea(renderArea),
+        mColorProfile(colorProfile),
+        mRegionSampling(regionSampling),
+        mDimInGammaSpaceForEnhancedScreenshots(dimInGammaSpaceForEnhancedScreenshots),
+        mEnableLocalTonemapping(enableLocalTonemapping) {}
 
 void ScreenCaptureOutput::updateColorProfile(const compositionengine::CompositionRefreshArgs&) {
     auto& outputState = editState();
@@ -71,11 +77,24 @@ void ScreenCaptureOutput::updateColorProfile(const compositionengine::Compositio
     outputState.renderIntent = mColorProfile.renderIntent;
 }
 
-renderengine::DisplaySettings ScreenCaptureOutput::generateClientCompositionDisplaySettings()
-        const {
+renderengine::DisplaySettings ScreenCaptureOutput::generateClientCompositionDisplaySettings(
+        const std::shared_ptr<renderengine::ExternalTexture>& buffer) const {
     auto clientCompositionDisplay =
-            compositionengine::impl::Output::generateClientCompositionDisplaySettings();
+            compositionengine::impl::Output::generateClientCompositionDisplaySettings(buffer);
     clientCompositionDisplay.clip = mRenderArea.getSourceCrop();
+
+    auto renderIntent = static_cast<ui::RenderIntent>(clientCompositionDisplay.renderIntent);
+    if (mDimInGammaSpaceForEnhancedScreenshots && renderIntent != ui::RenderIntent::COLORIMETRIC &&
+        renderIntent != ui::RenderIntent::TONE_MAP_COLORIMETRIC) {
+        clientCompositionDisplay.dimmingStage =
+                aidl::android::hardware::graphics::composer3::DimmingStage::GAMMA_OETF;
+    }
+
+    if (mEnableLocalTonemapping) {
+        clientCompositionDisplay.tonemapStrategy =
+                renderengine::DisplaySettings::TonemapStrategy::Local;
+    }
+
     return clientCompositionDisplay;
 }
 

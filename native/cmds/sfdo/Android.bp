@@ -1,0 +1,10 @@
+rust_binary {
+    name: "sfdo",
+    srcs: ["sfdo.rs"],
+
+    rustlibs: [
+        "android.gui-rust",
+        "libclap",
+    ],
+    edition: "2021",
+}

@@ -31,7 +31,6 @@ import android.app.ambientcontext.IAmbientContextManager;
 import android.app.ambientcontext.IAmbientContextObserver;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.pm.PackageManagerInternal;
 import android.os.RemoteCallback;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
@@ -43,12 +42,10 @@ import android.util.Slog;
 
 import com.android.internal.R;
 import com.android.internal.util.DumpUtils;
-import com.android.server.LocalServices;
 import com.android.server.SystemService;
 import com.android.server.ambientcontext.AmbientContextManagerPerUserService.ServiceType;
 import com.android.server.infra.AbstractMasterSystemService;
 import com.android.server.infra.FrameworkResourcesServiceNameResolver;
-import com.android.server.pm.KnownPackages;
 
 import com.google.android.collect.Sets;
 
@@ -129,7 +126,7 @@ public class AmbientContextManagerService extends
                 PACKAGE_UPDATE_POLICY_REFRESH_EAGER
                         | /*To avoid high latency*/ PACKAGE_RESTART_POLICY_REFRESH_EAGER);
         mContext = context;
-        mExistingClientRequests = new ArraySet<>();
+        mExistingClientRequests = ConcurrentHashMap.newKeySet();
     }
 
     @Override
@@ -158,18 +155,22 @@ public class AmbientContextManagerService extends
             String callingPackage, IAmbientContextObserver observer) {
         Slog.d(TAG, "New client added: " + callingPackage);
 
-        // Remove any existing ClientRequest for this user and package.
-        mExistingClientRequests.removeAll(
-                findExistingRequests(userId, callingPackage));
+        synchronized (mExistingClientRequests) {
+            // Remove any existing ClientRequest for this user and package.
+            mExistingClientRequests.removeAll(
+                    findExistingRequests(userId, callingPackage));
 
-        // Add to existing ClientRequests
-        mExistingClientRequests.add(
-                new ClientRequest(userId, request, callingPackage, observer));
+            // Add to existing ClientRequests
+            mExistingClientRequests.add(
+                    new ClientRequest(userId, request, callingPackage, observer));
+        }
     }
 
     void clientRemoved(int userId, String packageName) {
         Slog.d(TAG, "Remove client: " + packageName);
-        mExistingClientRequests.removeAll(findExistingRequests(userId, packageName));
+        synchronized (mExistingClientRequests) {
+            mExistingClientRequests.removeAll(findExistingRequests(userId, packageName));
+        }
     }
 
     private Set<ClientRequest> findExistingRequests(int userId, String packageName) {
@@ -184,9 +185,11 @@ public class AmbientContextManagerService extends
 
     @Nullable
     IAmbientContextObserver getClientRequestObserver(int userId, String packageName) {
-        for (ClientRequest clientRequest : mExistingClientRequests) {
-            if (clientRequest.hasUserIdAndPackageName(userId, packageName)) {
-                return clientRequest.getObserver();
+        synchronized (mExistingClientRequests) {
+            for (ClientRequest clientRequest : mExistingClientRequests) {
+                if (clientRequest.hasUserIdAndPackageName(userId, packageName)) {
+                    return clientRequest.getObserver();
+                }
             }
         }
         return null;
@@ -220,20 +223,28 @@ public class AmbientContextManagerService extends
 
         List<AmbientContextManagerPerUserService> serviceList =
                 new ArrayList<>(serviceNames.length);
-        if (serviceNames.length == 2) {
+        if (serviceNames.length == 2
+                && !isDefaultService(serviceNames[0])
+                && !isDefaultWearableService(serviceNames[1])) {
             Slog.i(TAG, "Not using default services, "
                     + "services provided for testing should be exactly two services.");
-            if (!isDefaultService(serviceNames[0]) && !isDefaultWearableService(serviceNames[1])) {
-                serviceList.add(new DefaultAmbientContextManagerPerUserService(
-                        this, mLock, resolvedUserId,
-                        AmbientContextManagerPerUserService.ServiceType.DEFAULT, serviceNames[0]));
-                serviceList.add(new WearableAmbientContextManagerPerUserService(
-                        this, mLock, resolvedUserId,
-                        AmbientContextManagerPerUserService.ServiceType.WEARABLE,
-                        serviceNames[1]));
-            }
+            serviceList.add(
+                    new DefaultAmbientContextManagerPerUserService(
+                            this,
+                            mLock,
+                            resolvedUserId,
+                            AmbientContextManagerPerUserService.ServiceType.DEFAULT,
+                            serviceNames[0]));
+            serviceList.add(
+                    new WearableAmbientContextManagerPerUserService(
+                            this,
+                            mLock,
+                            resolvedUserId,
+                            AmbientContextManagerPerUserService.ServiceType.WEARABLE,
+                            serviceNames[1]));
             return serviceList;
-        } else {
+        }
+        if (serviceNames.length > 2) {
             Slog.i(TAG, "Incorrect number of services provided for testing.");
         }
 
@@ -283,16 +294,6 @@ public class AmbientContextManagerService extends
     @Override
     protected int getMaximumTemporaryServiceDurationMs() {
         return MAX_TEMPORARY_SERVICE_DURATION_MS;
-    }
-
-    /** Returns {@code true} if the detection service is configured on this device. */
-    public static boolean isDetectionServiceConfigured() {
-        final PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
-        final String[] packageNames = pmi.getKnownPackageNames(
-                KnownPackages.PACKAGE_AMBIENT_CONTEXT_DETECTION, UserHandle.USER_SYSTEM);
-        boolean isServiceConfigured = (packageNames.length != 0);
-        Slog.i(TAG, "Detection service configured: " + isServiceConfigured);
-        return isServiceConfigured;
     }
 
     /**
@@ -588,10 +589,10 @@ public class AmbientContextManagerService extends
             }
         }
 
+        @android.annotation.EnforcePermission(android.Manifest.permission.ACCESS_AMBIENT_CONTEXT_EVENT)
         @Override
         public void unregisterObserver(String callingPackage) {
-            mContext.enforceCallingOrSelfPermission(
-                    Manifest.permission.ACCESS_AMBIENT_CONTEXT_EVENT, TAG);
+            unregisterObserver_enforcePermission();
             assertCalledByPackageOwner(callingPackage);
 
             synchronized (mLock) {

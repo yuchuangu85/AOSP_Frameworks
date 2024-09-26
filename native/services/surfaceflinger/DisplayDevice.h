@@ -17,14 +17,12 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <unordered_map>
 
 #include <android-base/thread_annotations.h>
 #include <android/native_window.h>
 #include <binder/IBinder.h>
-#include <ftl/concat.h>
 #include <gui/LayerState.h>
 #include <math/mat4.h>
 #include <renderengine/RenderEngine.h>
@@ -42,7 +40,6 @@
 #include <utils/RefBase.h>
 #include <utils/Timers.h>
 
-#include "Display/DisplayModeRequest.h"
 #include "DisplayHardware/DisplayMode.h"
 #include "DisplayHardware/Hal.h"
 #include "DisplayHardware/PowerAdvisor.h"
@@ -51,10 +48,12 @@
 #include "ThreadContext.h"
 #include "TracedOrdinal.h"
 #include "Utils/Dumper.h"
+
 namespace android {
 
 class Fence;
 class HWComposer;
+class HdrSdrRatioOverlay;
 class IGraphicBufferProducer;
 class Layer;
 class RefreshRateOverlay;
@@ -87,12 +86,13 @@ public:
         return mCompositionDisplay;
     }
 
-    bool isVirtual() const { return VirtualDisplayId::tryCast(getId()).has_value(); }
+    bool isVirtual() const { return getId().isVirtual(); }
     bool isPrimary() const { return mIsPrimary; }
 
     // isSecure indicates whether this display can be trusted to display
     // secure surfaces.
     bool isSecure() const;
+    void setSecure(bool secure);
 
     int getWidth() const;
     int getHeight() const;
@@ -170,8 +170,8 @@ public:
     /* ------------------------------------------------------------------------
      * Display power mode management.
      */
-    std::optional<hardware::graphics::composer::hal::PowerMode> getPowerMode() const;
-    void setPowerMode(hardware::graphics::composer::hal::PowerMode mode);
+    hardware::graphics::composer::hal::PowerMode getPowerMode() const;
+    void setPowerMode(hardware::graphics::composer::hal::PowerMode);
     bool isPoweredOn() const;
     void tracePowerMode();
 
@@ -179,54 +179,6 @@ public:
     void enableLayerCaching(bool enable);
 
     ui::Dataspace getCompositionDataSpace() const;
-
-    /* ------------------------------------------------------------------------
-     * Display mode management.
-     */
-
-    // TODO(b/241285876): Replace ActiveModeInfo and DisplayModeEvent with DisplayModeRequest.
-    struct ActiveModeInfo {
-        using Event = scheduler::DisplayModeEvent;
-
-        ActiveModeInfo() = default;
-        ActiveModeInfo(scheduler::FrameRateMode mode, Event event)
-              : modeOpt(std::move(mode)), event(event) {}
-
-        explicit ActiveModeInfo(display::DisplayModeRequest&& request)
-              : ActiveModeInfo(std::move(request.mode),
-                               request.emitEvent ? Event::Changed : Event::None) {}
-
-        ftl::Optional<scheduler::FrameRateMode> modeOpt;
-        Event event = Event::None;
-
-        bool operator!=(const ActiveModeInfo& other) const {
-            return modeOpt != other.modeOpt || event != other.event;
-        }
-    };
-
-    enum class DesiredActiveModeAction {
-        None,
-        InitiateDisplayModeSwitch,
-        InitiateRenderRateSwitch
-    };
-    DesiredActiveModeAction setDesiredActiveMode(const ActiveModeInfo&, bool force = false)
-            EXCLUDES(mActiveModeLock);
-    std::optional<ActiveModeInfo> getDesiredActiveMode() const EXCLUDES(mActiveModeLock);
-    void clearDesiredActiveModeState() EXCLUDES(mActiveModeLock);
-    ActiveModeInfo getUpcomingActiveMode() const REQUIRES(kMainThreadContext) {
-        return mUpcomingActiveMode;
-    }
-
-    scheduler::FrameRateMode getActiveMode() const REQUIRES(kMainThreadContext) {
-        return mRefreshRateSelector->getActiveMode();
-    }
-
-    void setActiveMode(DisplayModeId, Fps displayFps, Fps renderFps);
-
-    status_t initiateModeChange(const ActiveModeInfo&,
-                                const hal::VsyncPeriodChangeConstraints& constraints,
-                                hal::VsyncPeriodChangeTimeline* outTimeline)
-            REQUIRES(kMainThreadContext);
 
     scheduler::RefreshRateSelector& refreshRateSelector() const { return *mRefreshRateSelector; }
 
@@ -236,12 +188,20 @@ public:
     }
 
     // Enables an overlay to be displayed with the current refresh rate
-    void enableRefreshRateOverlay(bool enable, bool setByHwc, bool showSpinner, bool showRenderRate,
-                                  bool showInMiddle) REQUIRES(kMainThreadContext);
-    void updateRefreshRateOverlayRate(Fps displayFps, Fps renderFps, bool setByHwc = false);
+    // TODO(b/241285876): Move overlay to DisplayModeController.
+    void enableRefreshRateOverlay(bool enable, bool setByHwc, Fps refreshRate, Fps renderFps,
+                                  bool showSpinner, bool showRenderRate, bool showInMiddle)
+            REQUIRES(kMainThreadContext);
+    void updateRefreshRateOverlayRate(Fps refreshRate, Fps renderFps, bool setByHwc = false);
     bool isRefreshRateOverlayEnabled() const { return mRefreshRateOverlay != nullptr; }
+    void animateOverlay();
     bool onKernelTimerChanged(std::optional<DisplayModeId>, bool timerExpired);
-    void animateRefreshRateOverlay();
+    void onVrrIdle(bool idle);
+
+    // Enables an overlay to be display with the hdr/sdr ratio
+    void enableHdrSdrRatioOverlay(bool enable) REQUIRES(kMainThreadContext);
+    void updateHdrSdrRatioOverlayRatio(float currentHdrSdrRatio);
+    bool isHdrSdrRatioOverlayEnabled() const { return mHdrSdrRatioOverlay != nullptr; }
 
     nsecs_t getVsyncPeriodFromHWC() const;
 
@@ -265,16 +225,12 @@ private:
     const std::shared_ptr<compositionengine::Display> mCompositionDisplay;
 
     std::string mDisplayName;
-    std::string mActiveModeFPSTrace;
-    std::string mActiveModeFPSHwcTrace;
-    std::string mRenderFrameRateFPSTrace;
 
     const ui::Rotation mPhysicalOrientation;
     ui::Rotation mOrientation = ui::ROTATION_0;
+    bool mIsOrientationChanged = false;
 
-    // Allow nullopt as initial power mode.
-    using TracedPowerMode = TracedOrdinal<hardware::graphics::composer::hal::PowerMode>;
-    std::optional<TracedPowerMode> mPowerMode;
+    TracedOrdinal<hardware::graphics::composer::hal::PowerMode> mPowerMode;
 
     std::optional<float> mStagedBrightness;
     std::optional<float> mBrightness;
@@ -297,12 +253,9 @@ private:
 
     std::shared_ptr<scheduler::RefreshRateSelector> mRefreshRateSelector;
     std::unique_ptr<RefreshRateOverlay> mRefreshRateOverlay;
-
-    mutable std::mutex mActiveModeLock;
-    ActiveModeInfo mDesiredActiveMode GUARDED_BY(mActiveModeLock);
-    TracedOrdinal<bool> mDesiredActiveModeChanged GUARDED_BY(mActiveModeLock) =
-            {ftl::Concat("DesiredActiveModeChanged-", getId().value).c_str(), false};
-    ActiveModeInfo mUpcomingActiveMode GUARDED_BY(kMainThreadContext);
+    std::unique_ptr<HdrSdrRatioOverlay> mHdrSdrRatioOverlay;
+    // This parameter is only used for hdr/sdr ratio overlay
+    float mHdrSdrRatio = 1.0f;
 };
 
 struct DisplayDeviceState {
@@ -329,7 +282,9 @@ struct DisplayDeviceState {
     uint32_t width = 0;
     uint32_t height = 0;
     std::string displayName;
+    std::string uniqueId;
     bool isSecure = false;
+    bool isProtected = false;
     // Refer to DisplayDevice::mRequestedRefreshRate, for virtual display only
     Fps requestedRefreshRate;
 
@@ -351,6 +306,7 @@ struct DisplayDeviceCreationArgs {
 
     int32_t sequenceId{0};
     bool isSecure{false};
+    bool isProtected{false};
     sp<ANativeWindow> nativeWindow;
     sp<compositionengine::DisplaySurface> displaySurface;
     ui::Rotation physicalOrientation{ui::ROTATION_0};
@@ -358,9 +314,9 @@ struct DisplayDeviceCreationArgs {
     HdrCapabilities hdrCapabilities;
     int32_t supportedPerFrameMetadata{0};
     std::unordered_map<ui::ColorMode, std::vector<ui::RenderIntent>> hwcColorModes;
-    std::optional<hardware::graphics::composer::hal::PowerMode> initialPowerMode;
+    hardware::graphics::composer::hal::PowerMode initialPowerMode{
+            hardware::graphics::composer::hal::PowerMode::OFF};
     bool isPrimary{false};
-    DisplayModeId activeModeId;
     // Refer to DisplayDevice::mRequestedRefreshRate, for virtual display only
     Fps requestedRefreshRate;
 };

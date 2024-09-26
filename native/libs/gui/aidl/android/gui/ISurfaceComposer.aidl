@@ -16,6 +16,7 @@
 
 package android.gui;
 
+import android.gui.CaptureArgs;
 import android.gui.Color;
 import android.gui.CompositionPreference;
 import android.gui.ContentSamplingAttributes;
@@ -42,10 +43,12 @@ import android.gui.ITunnelModeEnabledListener;
 import android.gui.IWindowInfosListener;
 import android.gui.IWindowInfosPublisher;
 import android.gui.LayerCaptureArgs;
-import android.gui.LayerDebugInfo;
 import android.gui.OverlayProperties;
 import android.gui.PullAtomData;
+import android.gui.ScreenCaptureResults;
 import android.gui.ARect;
+import android.gui.SchedulingPolicy;
+import android.gui.StalledTransactionInfo;
 import android.gui.StaticDisplayInfo;
 import android.gui.WindowInfosListenerInfo;
 
@@ -69,7 +72,7 @@ interface ISurfaceComposer {
     void bootFinished();
 
     /**
-     * Create a display event connection
+     * Create a display event connection.
      *
      * layerHandle
      *     Optional binder handle representing a Layer in SF to associate the new
@@ -86,12 +89,14 @@ interface ISurfaceComposer {
     @nullable ISurfaceComposerClient createConnection();
 
     /**
-     * Create a virtual display
+     * Create a virtual display.
      *
      * displayName
-     *     The name of the virtual display
-     * secure
-     *     Whether this virtual display is secure
+     *     The name of the virtual display.
+     * isSecure
+     *     Whether this virtual display is secure.
+     * uniqueId
+     *     The unique ID for the display.
      * requestedRefreshRate
      *     The refresh rate, frames per second, to request on the virtual display.
      *     This is just a request, the actual rate may be adjusted to align well
@@ -100,14 +105,14 @@ interface ISurfaceComposer {
      *
      * requires ACCESS_SURFACE_FLINGER permission.
      */
-    @nullable IBinder createDisplay(@utf8InCpp String displayName, boolean secure,
-            float requestedRefreshRate);
+    @nullable IBinder createVirtualDisplay(@utf8InCpp String displayName, boolean isSecure,
+            @utf8InCpp String uniqueId, float requestedRefreshRate);
 
     /**
-     * Destroy a virtual display
+     * Destroy a virtual display.
      * requires ACCESS_SURFACE_FLINGER permission.
      */
-    void destroyDisplay(IBinder display);
+    void destroyVirtualDisplay(IBinder displayToken);
 
     /**
      * Get stable IDs for connected physical displays.
@@ -230,20 +235,31 @@ interface ISurfaceComposer {
      * The subregion can be optionally rotated.  It will also be scaled to
      * match the size of the output buffer.
      */
-    void captureDisplay(in DisplayCaptureArgs args, IScreenCaptureListener listener);
+    oneway void captureDisplay(in DisplayCaptureArgs args, IScreenCaptureListener listener);
 
     /**
      * Capture the specified screen. This requires the READ_FRAME_BUFFER
      * permission.
      */
-    void captureDisplayById(long displayId, IScreenCaptureListener listener);
+    oneway void captureDisplayById(long displayId, in CaptureArgs args,
+            IScreenCaptureListener listener);
+
+    /**
+     * Capture a subtree of the layer hierarchy, potentially ignoring the root node.
+     * This requires READ_FRAME_BUFFER permission. This function will fail if there
+     * is a secure window on screen. This is a blocking call and will return the
+     * ScreenCaptureResults, including the captured buffer. Because this is blocking, the
+     * caller doesn't care about the fence and the binder thread in SurfaceFlinger will wait
+     * on the fence to fire before returning the results.
+     */
+    ScreenCaptureResults captureLayersSync(in LayerCaptureArgs args);
 
     /**
      * Capture a subtree of the layer hierarchy, potentially ignoring the root node.
      * This requires READ_FRAME_BUFFER permission. This function will fail if there
      * is a secure window on screen
      */
-    void captureLayers(in LayerCaptureArgs args, IScreenCaptureListener listener);
+    oneway void captureLayers(in LayerCaptureArgs args, IScreenCaptureListener listener);
 
     /**
      * Clears the frame statistics for animations.
@@ -272,15 +288,6 @@ interface ISurfaceComposer {
      * Requires the calling uid be from system server.
      */
     PullAtomData onPullAtom(int atomId);
-
-    /**
-     * Gets the list of active layers in Z order for debugging purposes
-     *
-     * Requires the ACCESS_SURFACE_FLINGER permission.
-     */
-    List<LayerDebugInfo> getLayerDebugInfo();
-
-    boolean getColorManagement();
 
     /**
      * Gets the composition preference of the default data space and default pixel format,
@@ -475,10 +482,61 @@ interface ISurfaceComposer {
 
     /**
      * Set the override frame rate for a specified uid by GameManagerService.
+     * This override is controlled by game mode interventions.
+     * Passing the frame rate and uid to SurfaceFlinger to update the override mapping
+     * in the LayerHistory.
+     */
+    void setGameModeFrameRateOverride(int uid, float frameRate);
+
+    /**
+     * Set the override frame rate for a specified uid by GameManagerService.
+     * This override is controlled by game default frame rate sysprop:
+     * "ro.surface_flinger.game_default_frame_rate_override" holding the override value,
+     * "persisit.graphics.game_default_frame_rate.enabled" to determine if it's enabled.
      * Passing the frame rate and uid to SurfaceFlinger to update the override mapping
      * in the scheduler.
      */
-    void setOverrideFrameRate(int uid, float frameRate);
+    void setGameDefaultFrameRateOverride(int uid, float frameRate);
+
+    oneway void updateSmallAreaDetection(in int[] appIds, in float[] thresholds);
+
+    /**
+     * Set the small area detection threshold for a specified appId by SmallAreaDetectionController.
+     * Passing the threshold and appId to SurfaceFlinger to update the appId-threshold mapping
+     * in the scheduler.
+     */
+    oneway void setSmallAreaDetectionThreshold(int appId, float threshold);
+
+    /**
+     * Enables or disables the frame rate overlay in the top left corner.
+     * Requires root or android.permission.HARDWARE_TEST
+     */
+    void enableRefreshRateOverlay(boolean active);
+
+    /**
+     * Enables or disables the debug flash.
+     * Requires root or android.permission.HARDWARE_TEST
+     */
+    void setDebugFlash(int delay);
+
+    /**
+     * Force composite ahead of next VSYNC.
+     * Requires root or android.permission.HARDWARE_TEST
+     */
+    void scheduleComposite();
+
+    /**
+     * Force commit ahead of next VSYNC.
+     * Requires root or android.permission.HARDWARE_TEST
+     */
+    void scheduleCommit();
+
+    /**
+     * Force all window composition to the GPU (i.e. disable Hardware Overlays).
+     * This can help check if there is a bug in HW Composer.
+     * Requires root or android.permission.HARDWARE_TEST
+     */
+    void forceClientComposition(boolean enabled);
 
     /**
      * Gets priority of the RenderEngine in SurfaceFlinger.
@@ -507,4 +565,19 @@ interface ISurfaceComposer {
     void removeWindowInfosListener(IWindowInfosListener windowInfosListener);
 
     OverlayProperties getOverlaySupport();
+
+    /**
+     * Returns an instance of StalledTransaction if a transaction from the passed pid has not been
+     * applied in SurfaceFlinger due to an unsignaled fence. Otherwise, null is returned.
+     */
+    @nullable StalledTransactionInfo getStalledTransactionInfo(int pid);
+
+    SchedulingPolicy getSchedulingPolicy();
+
+    /**
+     * Notifies the SurfaceFlinger that the ShutdownThread is running. When it is called,
+     * transaction traces will be captured and writted into a file.
+     * This method should not block the ShutdownThread therefore it's handled asynchronously.
+     */
+    oneway void notifyShutdown();
 }

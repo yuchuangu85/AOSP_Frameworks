@@ -42,7 +42,6 @@ public:
     };
 
     Status status;
-    std::shared_ptr<InputChannel> inputChannel; // never null
     bool monitor;
     InputPublisher inputPublisher;
     InputState inputState;
@@ -53,20 +52,20 @@ public:
     bool responsive = true;
 
     // Queue of events that need to be published to the connection.
-    std::deque<DispatchEntry*> outboundQueue;
+    std::deque<std::unique_ptr<DispatchEntry>> outboundQueue;
 
     // Queue of events that have been published to the connection but that have not
     // yet received a "finished" response from the application.
-    std::deque<DispatchEntry*> waitQueue;
+    std::deque<std::unique_ptr<DispatchEntry>> waitQueue;
 
-    Connection(const std::shared_ptr<InputChannel>& inputChannel, bool monitor,
+    Connection(std::unique_ptr<InputChannel> inputChannel, bool monitor,
                const IdGenerator& idGenerator);
 
-    inline const std::string getInputChannelName() const { return inputChannel->getName(); }
+    inline const std::string getInputChannelName() const {
+        return inputPublisher.getChannel().getName();
+    }
 
-    const std::string getWindowName() const;
-
-    std::deque<DispatchEntry*>::iterator findWaitQueueEntry(uint32_t seq);
+    sp<IBinder> getToken() const;
 };
 
 } // namespace android::inputdispatcher

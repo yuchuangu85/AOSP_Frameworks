@@ -31,7 +31,7 @@
     <item msgid="7852381437933824454">"Ажыратуда…"</item>
     <item msgid="5046795712175415059">"Ажыратылған"</item>
     <item msgid="2473654476624070462">"Сәтсіз"</item>
-    <item msgid="9146847076036105115">"Бөгелген"</item>
+    <item msgid="9146847076036105115">"Блокталған"</item>
     <item msgid="4543924085816294893">"Нашар байланысты уақытша қолданбау"</item>
   </string-array>
   <string-array name="wifi_status_with_ssid">
@@ -45,7 +45,7 @@
     <item msgid="1175040558087735707">"<xliff:g id="NETWORK_NAME">%1$s</xliff:g> байланысынан ажыратылуда…"</item>
     <item msgid="699832486578171722">"Ажыратылған"</item>
     <item msgid="522383512264986901">"Сәтсіз"</item>
-    <item msgid="3602596701217484364">"Бөгелген"</item>
+    <item msgid="3602596701217484364">"Блокталған"</item>
     <item msgid="1999413958589971747">"Нашар байланысты уақытша қолданбау"</item>
   </string-array>
   <string-array name="hdcp_checking_titles">
@@ -281,5 +281,11 @@
     <item msgid="3825132913289380004">"RNDIS (USB Ethernet)"</item>
     <item msgid="8828567335701536560">"Аудио көзі"</item>
     <item msgid="8688681727755534982">"MIDI"</item>
+  </string-array>
+  <string-array name="grammatical_gender_values">
+    <item msgid="4976102487934077239">"0"</item>
+    <item msgid="2646486108212979598">"1"</item>
+    <item msgid="3753634915787796632">"2"</item>
+    <item msgid="4779928470672877922">"3"</item>
   </string-array>
 </resources>

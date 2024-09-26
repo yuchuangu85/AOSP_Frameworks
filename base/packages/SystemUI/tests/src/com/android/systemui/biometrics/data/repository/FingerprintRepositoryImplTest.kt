@@ -23,12 +23,14 @@ import android.hardware.fingerprint.FingerprintManager
 import android.hardware.fingerprint.FingerprintSensorProperties
 import android.hardware.fingerprint.FingerprintSensorPropertiesInternal
 import android.hardware.fingerprint.IFingerprintAuthenticatorsRegisteredCallback
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.biometrics.shared.model.FingerprintSensorType
 import com.android.systemui.biometrics.shared.model.SensorStrength
 import com.android.systemui.coroutines.collectLastValue
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -37,15 +39,15 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.JUnit4
 import org.mockito.ArgumentCaptor
 import org.mockito.Captor
 import org.mockito.Mock
 import org.mockito.Mockito.verify
 import org.mockito.junit.MockitoJUnit
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
-@RunWith(JUnit4::class)
+@RunWith(AndroidJUnit4::class)
 class FingerprintRepositoryImplTest : SysuiTestCase() {
 
     @JvmField @Rule var mockitoRule = MockitoJUnit.rule()
@@ -63,7 +65,11 @@ class FingerprintRepositoryImplTest : SysuiTestCase() {
         val dispatcher = StandardTestDispatcher()
         testScope = TestScope(dispatcher)
         repository =
-            FingerprintPropertyRepositoryImpl(testScope.backgroundScope, fingerprintManager)
+            FingerprintPropertyRepositoryImpl(
+                testScope.backgroundScope,
+                dispatcher,
+                fingerprintManager
+            )
         testScope.runCurrent()
 
         verify(fingerprintManager)
@@ -73,10 +79,15 @@ class FingerprintRepositoryImplTest : SysuiTestCase() {
     @Test
     fun initializeProperties() =
         testScope.runTest {
-            val isInitialized = collectLastValue(repository.isInitialized)
+            val sensorId by collectLastValue(repository.sensorId)
+            val strength by collectLastValue(repository.strength)
+            val sensorType by collectLastValue(repository.sensorType)
+            val sensorLocations by collectLastValue(repository.sensorLocations)
 
-            assertDefaultProperties()
-            assertThat(isInitialized()).isFalse()
+            // Assert non-initialized properties.
+            assertThat(sensorId).isEqualTo(-2)
+            assertThat(strength).isEqualTo(SensorStrength.CONVENIENCE)
+            assertThat(sensorType).isEqualTo(FingerprintSensorType.UNKNOWN)
 
             val fingerprintProps =
                 listOf(
@@ -115,31 +126,24 @@ class FingerprintRepositoryImplTest : SysuiTestCase() {
 
             fingerprintAuthenticatorsCaptor.value.onAllAuthenticatorsRegistered(fingerprintProps)
 
-            assertThat(repository.sensorId.value).isEqualTo(1)
-            assertThat(repository.strength.value).isEqualTo(SensorStrength.STRONG)
-            assertThat(repository.sensorType.value).isEqualTo(FingerprintSensorType.REAR)
+            assertThat(sensorId).isEqualTo(1)
+            assertThat(strength).isEqualTo(SensorStrength.STRONG)
+            assertThat(sensorType).isEqualTo(FingerprintSensorType.REAR)
 
-            assertThat(repository.sensorLocations.value.size).isEqualTo(2)
-            assertThat(repository.sensorLocations.value).containsKey("display_id_1")
-            with(repository.sensorLocations.value["display_id_1"]!!) {
+            assertThat(sensorLocations?.size).isEqualTo(2)
+            assertThat(sensorLocations).containsKey("display_id_1")
+            with(sensorLocations?.get("display_id_1")!!) {
                 assertThat(displayId).isEqualTo("display_id_1")
                 assertThat(sensorLocationX).isEqualTo(100)
                 assertThat(sensorLocationY).isEqualTo(300)
                 assertThat(sensorRadius).isEqualTo(20)
             }
-            assertThat(repository.sensorLocations.value).containsKey("")
-            with(repository.sensorLocations.value[""]!!) {
+            assertThat(sensorLocations).containsKey("")
+            with(sensorLocations?.get("")!!) {
                 assertThat(displayId).isEqualTo("")
                 assertThat(sensorLocationX).isEqualTo(540)
                 assertThat(sensorLocationY).isEqualTo(1636)
                 assertThat(sensorRadius).isEqualTo(130)
             }
-            assertThat(isInitialized()).isTrue()
         }
-
-    private fun assertDefaultProperties() {
-        assertThat(repository.sensorId.value).isEqualTo(-1)
-        assertThat(repository.strength.value).isEqualTo(SensorStrength.CONVENIENCE)
-        assertThat(repository.sensorType.value).isEqualTo(FingerprintSensorType.UNKNOWN)
-    }
 }

@@ -23,17 +23,26 @@
 namespace android::scheduler::mock {
 
 struct SchedulerCallback final : ISchedulerCallback {
-    MOCK_METHOD(void, setVsyncEnabled, (PhysicalDisplayId, bool), (override));
+    MOCK_METHOD(void, requestHardwareVsync, (PhysicalDisplayId, bool), (override));
     MOCK_METHOD(void, requestDisplayModes, (std::vector<display::DisplayModeRequest>), (override));
     MOCK_METHOD(void, kernelTimerChanged, (bool), (override));
     MOCK_METHOD(void, triggerOnFrameRateOverridesChanged, (), (override));
+    MOCK_METHOD(void, onChoreographerAttached, (), (override));
+    MOCK_METHOD(void, onExpectedPresentTimePosted, (TimePoint, ftl::NonNull<DisplayModePtr>, Fps),
+                (override));
+    MOCK_METHOD(void, onCommitNotComposited, (PhysicalDisplayId), (override));
+    MOCK_METHOD(void, vrrDisplayIdle, (bool), (override));
 };
 
 struct NoOpSchedulerCallback final : ISchedulerCallback {
-    void setVsyncEnabled(PhysicalDisplayId, bool) override {}
+    void requestHardwareVsync(PhysicalDisplayId, bool) override {}
     void requestDisplayModes(std::vector<display::DisplayModeRequest>) override {}
     void kernelTimerChanged(bool) override {}
     void triggerOnFrameRateOverridesChanged() override {}
+    void onChoreographerAttached() override {}
+    void onExpectedPresentTimePosted(TimePoint, ftl::NonNull<DisplayModePtr>, Fps) override {}
+    void onCommitNotComposited(PhysicalDisplayId) override {}
+    void vrrDisplayIdle(bool) override {}
 };
 
 } // namespace android::scheduler::mock

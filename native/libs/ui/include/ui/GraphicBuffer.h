@@ -26,6 +26,7 @@
 
 #include <android/hardware_buffer.h>
 #include <ui/ANativeObjectBase.h>
+#include <ui/GraphicBufferAllocator.h>
 #include <ui/GraphicBufferMapper.h>
 #include <ui/PixelFormat.h>
 #include <ui/Rect.h>
@@ -35,6 +36,15 @@
 #include <nativebase/nativebase.h>
 
 #include <hardware/gralloc.h>
+
+#if defined(__ANDROID_APEX__) || defined(__ANDROID_VNDK__)
+// TODO: Provide alternatives that aren't broken
+#define AHB_CONVERSION                                                                          \
+    [[deprecated("WARNING: VNDK casts beteween GraphicBuffer & AHardwareBuffer are UNSAFE and " \
+                 "will be removed in the future")]]
+#else
+#define AHB_CONVERSION
+#endif
 
 namespace android {
 
@@ -80,10 +90,10 @@ public:
 
     static sp<GraphicBuffer> from(ANativeWindowBuffer *);
 
-    static GraphicBuffer* fromAHardwareBuffer(AHardwareBuffer*);
-    static GraphicBuffer const* fromAHardwareBuffer(AHardwareBuffer const*);
-    AHardwareBuffer* toAHardwareBuffer();
-    AHardwareBuffer const* toAHardwareBuffer() const;
+    AHB_CONVERSION static GraphicBuffer* fromAHardwareBuffer(AHardwareBuffer*);
+    AHB_CONVERSION static GraphicBuffer const* fromAHardwareBuffer(AHardwareBuffer const*);
+    AHB_CONVERSION AHardwareBuffer* toAHardwareBuffer();
+    AHB_CONVERSION AHardwareBuffer const* toAHardwareBuffer() const;
 
     // Create a GraphicBuffer to be unflatten'ed into or be reallocated.
     GraphicBuffer();
@@ -93,6 +103,8 @@ public:
     GraphicBuffer(uint32_t inWidth, uint32_t inHeight, PixelFormat inFormat,
             uint32_t inLayerCount, uint64_t inUsage,
             std::string requestorName = "<Unknown>");
+
+    GraphicBuffer(const GraphicBufferAllocator::AllocationRequest&);
 
     // Create a GraphicBuffer from an existing handle.
     enum HandleWrapMethod : uint8_t {
@@ -159,6 +171,8 @@ public:
     void setGenerationNumber(uint32_t generation) {
         mGenerationNumber = generation;
     }
+
+    status_t getDataspace(ui::Dataspace* outDataspace) const;
 
     // This function is privileged.  It requires access to the allocator
     // device or service, which usually involves adding suitable selinux

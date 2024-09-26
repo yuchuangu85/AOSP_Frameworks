@@ -35,16 +35,12 @@ MultiTouchInputMapper::MultiTouchInputMapper(InputDeviceContext& deviceContext,
 MultiTouchInputMapper::~MultiTouchInputMapper() {}
 
 std::list<NotifyArgs> MultiTouchInputMapper::reset(nsecs_t when) {
-    // The evdev multi-touch protocol does not allow userspace applications to query the initial or
-    // current state of the pointers at any time. This means if we clear our accumulated state when
-    // resetting the input mapper, there's no way to rebuild the full initial state of the pointers.
-    // We can only wait for updates to all the pointers and axes. Rather than clearing the state and
-    // rebuilding the state from scratch, we work around this kernel API limitation by never
-    // fully clearing any state specific to the multi-touch protocol.
+    mPointerIdBits.clear();
+    mMultiTouchMotionAccumulator.reset(mDeviceContext);
     return TouchInputMapper::reset(when);
 }
 
-std::list<NotifyArgs> MultiTouchInputMapper::process(const RawEvent* rawEvent) {
+std::list<NotifyArgs> MultiTouchInputMapper::process(const RawEvent& rawEvent) {
     std::list<NotifyArgs> out = TouchInputMapper::process(rawEvent);
 
     mMultiTouchMotionAccumulator.process(rawEvent);
@@ -131,7 +127,7 @@ void MultiTouchInputMapper::syncTouch(nsecs_t when, RawState* outState) {
                 bumpGeneration();
             }
         }
-        if (shouldSimulateStylusWithTouch() && outPointer.toolType == ToolType::FINGER) {
+        if (mShouldSimulateStylusWithTouch && outPointer.toolType == ToolType::FINGER) {
             outPointer.toolType = ToolType::STYLUS;
         }
 
@@ -142,13 +138,14 @@ void MultiTouchInputMapper::syncTouch(nsecs_t when, RawState* outState) {
 
         // Assign pointer id using tracking id if available.
         if (mHavePointerIds) {
-            int32_t trackingId = inSlot.getTrackingId();
+            const int32_t trackingId = inSlot.getTrackingId();
             int32_t id = -1;
             if (trackingId >= 0) {
                 for (BitSet32 idBits(mPointerIdBits); !idBits.isEmpty();) {
                     uint32_t n = idBits.clearFirstMarkedBit();
                     if (mPointerTrackingIdMap[n] == trackingId) {
                         id = n;
+                        break;
                     }
                 }
 
@@ -175,6 +172,18 @@ void MultiTouchInputMapper::syncTouch(nsecs_t when, RawState* outState) {
     mPointerIdBits = newPointerIdBits;
 
     mMultiTouchMotionAccumulator.finishSync();
+}
+
+std::list<NotifyArgs> MultiTouchInputMapper::reconfigure(nsecs_t when,
+                                                         const InputReaderConfiguration& config,
+                                                         ConfigurationChanges changes) {
+    const bool simulateStylusWithTouch =
+            sysprop::InputProperties::simulate_stylus_with_touch().value_or(false);
+    if (simulateStylusWithTouch != mShouldSimulateStylusWithTouch) {
+        mShouldSimulateStylusWithTouch = simulateStylusWithTouch;
+        bumpGeneration();
+    }
+    return TouchInputMapper::reconfigure(when, config, changes);
 }
 
 void MultiTouchInputMapper::configureRawPointerAxes() {
@@ -211,14 +220,7 @@ void MultiTouchInputMapper::configureRawPointerAxes() {
 
 bool MultiTouchInputMapper::hasStylus() const {
     return mStylusMtToolSeen || mTouchButtonAccumulator.hasStylus() ||
-            shouldSimulateStylusWithTouch();
-}
-
-bool MultiTouchInputMapper::shouldSimulateStylusWithTouch() const {
-    static const bool SIMULATE_STYLUS_WITH_TOUCH =
-            sysprop::InputProperties::simulate_stylus_with_touch().value_or(false);
-    return SIMULATE_STYLUS_WITH_TOUCH &&
-            mParameters.deviceType == Parameters::DeviceType::TOUCH_SCREEN;
+            mShouldSimulateStylusWithTouch;
 }
 
 } // namespace android

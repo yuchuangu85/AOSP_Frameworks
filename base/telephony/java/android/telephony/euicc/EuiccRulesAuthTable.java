@@ -37,7 +37,11 @@ import java.util.List;
  */
 @SystemApi
 public final class EuiccRulesAuthTable implements Parcelable {
-    /** Profile policy rule flags */
+    /**
+     * Profile policy rule flags
+     *
+     * @removed mistakenly exposed previously
+     */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = true, prefix = { "POLICY_RULE_FLAG_" }, value = {
             POLICY_RULE_FLAG_CONSENT_REQUIRED
@@ -236,6 +240,16 @@ public final class EuiccRulesAuthTable implements Parcelable {
 
         return Arrays.equals(mPolicyRules, that.mPolicyRules)
                 && Arrays.equals(mPolicyRuleFlags, that.mPolicyRuleFlags);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = Arrays.hashCode(mPolicyRules);
+        result = 31 * result + Arrays.hashCode(mPolicyRuleFlags);
+        for (int i = 0; i < mCarrierIds.length; i++) {
+            result = 31 * result + Arrays.hashCode(mCarrierIds[i]);
+        }
+        return result;
     }
 
     private EuiccRulesAuthTable(Parcel source) {

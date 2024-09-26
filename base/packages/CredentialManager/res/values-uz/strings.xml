@@ -39,9 +39,9 @@
     <string name="seamless_transition_detail" msgid="4475509237171739843">"Parolsiz kelajak sari harakatlanar ekanmiz, parollar kalitlar bilan birga ishlatilishda davom etadi."</string>
     <string name="choose_provider_title" msgid="8870795677024868108">"Bu <xliff:g id="CREATETYPES">%1$s</xliff:g> qayerga saqlanishini tanlang"</string>
     <string name="choose_provider_body" msgid="4967074531845147434">"Maʼlumotlaringizni saqlash va keyingi safar tez kirish uchun parollar menejerini tanlang"</string>
-    <string name="choose_create_option_passkey_title" msgid="5220979185879006862">"<xliff:g id="APPNAME">%1$s</xliff:g> uchun kod yaratilsinmi?"</string>
-    <string name="choose_create_option_password_title" msgid="7097275038523578687">"<xliff:g id="APPNAME">%1$s</xliff:g> uchun parol saqlansinmi?"</string>
-    <string name="choose_create_option_sign_in_title" msgid="4124872317613421249">"<xliff:g id="APPNAME">%1$s</xliff:g> uchun kirish maʼlumoti saqlansinmi?"</string>
+    <string name="choose_create_option_passkey_title" msgid="8762295821604276511">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish uchun kirish kaliti yaratilsinmi?"</string>
+    <string name="choose_create_option_password_title" msgid="4481366993598649224">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish uchun parol saqlansinmi?"</string>
+    <string name="choose_create_option_sign_in_title" msgid="7092914088455358079">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun kirish maʼlumoti saqlansinmi?"</string>
     <string name="passkey" msgid="632353688396759522">"kalit"</string>
     <string name="password" msgid="6738570945182936667">"parol"</string>
     <string name="passkeys" msgid="5733880786866559847">"kalitlar"</string>
@@ -61,21 +61,22 @@
     <string name="more_options_usage_passwords" msgid="1632047277723187813">"<xliff:g id="PASSWORDSNUMBER">%1$s</xliff:g> ta parol"</string>
     <string name="more_options_usage_passkeys" msgid="5390320437243042237">"<xliff:g id="PASSKEYSNUMBER">%1$s</xliff:g> ta kalit"</string>
     <string name="more_options_usage_credentials" msgid="1785697001787193984">"<xliff:g id="TOTALCREDENTIALSNUMBER">%1$s</xliff:g> hisobi maʼlumotlari"</string>
-    <string name="passkey_before_subtitle" msgid="2448119456208647444">"Kod"</string>
+    <string name="passkey_before_subtitle" msgid="2448119456208647444">"Kirish kaliti"</string>
     <string name="another_device" msgid="5147276802037801217">"Boshqa qurilma"</string>
     <string name="other_password_manager" msgid="565790221427004141">"Boshqa parol menejerlari"</string>
     <string name="close_sheet" msgid="1393792015338908262">"Varaqni yopish"</string>
     <string name="accessibility_back_arrow_button" msgid="3233198183497842492">"Avvalgi sahifaga qaytish"</string>
     <string name="accessibility_close_button" msgid="1163435587545377687">"Yopish"</string>
     <string name="accessibility_snackbar_dismiss" msgid="3456598374801836120">"Yopish"</string>
-    <string name="get_dialog_title_use_passkey_for" msgid="6236608872708021767">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun saqlangan kalit ishlatilsinmi?"</string>
-    <string name="get_dialog_title_use_password_for" msgid="625828023234318484">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun saqlangan parol ishlatilsinmi?"</string>
-    <string name="get_dialog_title_use_sign_in_for" msgid="790049858275131785">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga bu maʼlumotlar bilan kirilsinmi?"</string>
-    <string name="get_dialog_title_unlock_options_for" msgid="7605568190597632433">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun kirish usullari ochilsinmi?"</string>
+    <string name="get_dialog_title_use_passkey_for" msgid="479261099705979148">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga saqlangan kalit orqali kiring"</string>
+    <string name="get_dialog_title_use_password_for" msgid="688557784207167647">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun saqlangan parol orqali kiring"</string>
+    <string name="get_dialog_title_use_sign_in_for" msgid="4233553937542583226">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga hisobingiz orqali kiring"</string>
+    <string name="get_dialog_description_single_tap" msgid="2797059565126030879">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga <xliff:g id="USERNAME">%2$s</xliff:g> bilan kirish uchun ekran qulfini ishlating"</string>
+    <string name="get_dialog_title_unlock_options_for" msgid="7096423827682163270">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish usulini tasdiqlang"</string>
     <string name="get_dialog_title_choose_passkey_for" msgid="9175997688078538490">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun saqlangan kalitni tanlang"</string>
     <string name="get_dialog_title_choose_password_for" msgid="1724435823820819221">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun saqlangan parolni tanlang"</string>
     <string name="get_dialog_title_choose_saved_sign_in_for" msgid="2420298653461652728">"<xliff:g id="APP_NAME">%1$s</xliff:g> uchun hisob maʼlumotlarini tanlang"</string>
-    <string name="get_dialog_title_choose_sign_in_for" msgid="3048870756117876514">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga qanday kirishni tanlang"</string>
+    <string name="get_dialog_title_choose_sign_in_for" msgid="645728947702442421">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish hisobini tanlang"</string>
     <string name="get_dialog_title_choose_option_for" msgid="4976380044745029107">"<xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish uchun maʼlumotlar tanlansinmi?"</string>
     <string name="get_dialog_title_use_info_on" msgid="8863708099535435146">"Bu axborotdan <xliff:g id="APP_NAME">%1$s</xliff:g> ilovasiga kirish uchun foydalanilsinmi?"</string>
     <string name="get_dialog_use_saved_passkey_for" msgid="4618100798664888512">"Boshqa usul orqali kirish"</string>
@@ -92,4 +93,6 @@
     <string name="get_dialog_heading_from_another_device" msgid="1166697017046724072">"Boshqa qurilmada"</string>
     <string name="get_dialog_option_headline_use_a_different_device" msgid="8201578814988047549">"Boshqa qurilmadan foydalanish"</string>
     <string name="request_cancelled_by" msgid="3735222326886267820">"Soʻrovni <xliff:g id="APP_NAME">%1$s</xliff:g> bekor qilgan"</string>
+    <string name="dropdown_presentation_more_sign_in_options_text" msgid="1693727354272417902">"Kirish variantlari"</string>
+    <string name="more_options_content_description" msgid="1323427365788198808">"Yana"</string>
 </resources>

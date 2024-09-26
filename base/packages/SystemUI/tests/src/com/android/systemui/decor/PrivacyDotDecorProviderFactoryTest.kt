@@ -17,10 +17,10 @@
 package com.android.systemui.decor
 
 import android.content.res.Resources
-import android.testing.AndroidTestingRunner
 import android.view.DisplayCutout
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.systemui.R
+import com.android.systemui.res.R
 import com.android.systemui.SysuiTestCase
 import org.junit.Assert
 import org.junit.Before
@@ -30,7 +30,7 @@ import org.mockito.Mock
 import org.mockito.Mockito.spy
 import org.mockito.Mockito.`when` as whenever
 
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @SmallTest
 class PrivacyDotDecorProviderFactoryTest : SysuiTestCase() {
     private lateinit var mPrivacyDotDecorProviderFactory: PrivacyDotDecorProviderFactory

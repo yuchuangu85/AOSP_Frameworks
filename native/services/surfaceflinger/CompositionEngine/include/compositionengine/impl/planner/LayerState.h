@@ -74,6 +74,7 @@ enum class LayerStateField : uint32_t {
     BlurRegions           = 1u << 18,
     HasProtectedContent   = 1u << 19,
     CachingHint           = 1u << 20,
+    DimmingEnabled        = 1u << 21,
 };
 // clang-format on
 
@@ -227,6 +228,7 @@ public:
     // Returns the bit-set of differing fields between this LayerState and another LayerState.
     // This bit-set is based on NonUniqueFields only, and excludes GraphicBuffers.
     ftl::Flags<LayerStateField> getDifferingFields(const LayerState& other) const;
+    bool isSourceCropSizeEqual(const LayerState& other) const;
 
     compositionengine::OutputLayer* getOutputLayer() const { return mOutputLayer; }
     int32_t getId() const { return mId.get(); }
@@ -247,6 +249,10 @@ public:
 
     ui::Dataspace getDataspace() const { return mOutputDataspace.get(); }
 
+    hardware::graphics::composer::hal::PixelFormat getPixelFormat() const {
+        return mPixelFormat.get();
+    }
+
     float getHdrSdrRatio() const {
         return getOutputLayer()->getLayerFE().getCompositionState()->currentHdrSdrRatio;
     };
@@ -257,10 +263,7 @@ public:
 
     gui::CachingHint getCachingHint() const { return mCachingHint.get(); }
 
-    bool hasSolidColorCompositionType() const {
-        return getOutputLayer()->getLayerFE().getCompositionState()->compositionType ==
-                aidl::android::hardware::graphics::composer3::Composition::SOLID_COLOR;
-    }
+    bool isDimmingEnabled() const { return mIsDimmingEnabled.get(); }
 
     float getFps() const { return getOutputLayer()->getLayerFE().getCompositionState()->fps; }
 
@@ -502,7 +505,10 @@ private:
                              return std::vector<std::string>{toString(cachingHint)};
                          }};
 
-    static const constexpr size_t kNumNonUniqueFields = 19;
+    OutputLayerState<bool, LayerStateField::DimmingEnabled> mIsDimmingEnabled{
+            [](auto layer) { return layer->getLayerFE().getCompositionState()->dimmingEnabled; }};
+
+    static const constexpr size_t kNumNonUniqueFields = 20;
 
     std::array<StateInterface*, kNumNonUniqueFields> getNonUniqueFields() {
         std::array<const StateInterface*, kNumNonUniqueFields> constFields =
@@ -520,7 +526,7 @@ private:
                 &mAlpha,        &mLayerMetadata,  &mVisibleRegion,        &mOutputDataspace,
                 &mPixelFormat,  &mColorTransform, &mCompositionType,      &mSidebandStream,
                 &mBuffer,       &mSolidColor,     &mBackgroundBlurRadius, &mBlurRegions,
-                &mFrameNumber,  &mIsProtected,    &mCachingHint};
+                &mFrameNumber,  &mIsProtected,    &mCachingHint,          &mIsDimmingEnabled};
     }
 };
 

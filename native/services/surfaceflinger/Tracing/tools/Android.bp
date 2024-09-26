@@ -19,6 +19,7 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["frameworks_native_license"],
+    default_team: "trendy_team_android_core_graphics_stack",
 }
 
 cc_binary {
@@ -31,7 +32,6 @@ cc_binary {
     srcs: [
         ":libsurfaceflinger_sources",
         ":libsurfaceflinger_mock_sources",
-        ":layertracegenerator_sources",
         "main.cpp",
     ],
     static_libs: [
@@ -40,16 +40,4 @@ cc_binary {
     header_libs: [
         "libsurfaceflinger_mocks_headers",
     ],
-}
-
-filegroup {
-    name: "layertracegenerator_sources",
-    srcs: [
-        "LayerTraceGenerator.cpp",
-    ],
-}
-
-cc_library_headers {
-    name: "layertracegenerator_headers",
-    export_include_dirs: ["."],
 }

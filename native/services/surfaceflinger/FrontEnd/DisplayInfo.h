@@ -19,6 +19,10 @@
 #include <sstream>
 
 #include <gui/DisplayInfo.h>
+#include <ui/DisplayMap.h>
+#include <ui/LayerStack.h>
+#include <ui/LogicalDisplayId.h>
+#include <ui/Transform.h>
 
 namespace android::surfaceflinger::frontend {
 
@@ -43,5 +47,7 @@ struct DisplayInfo {
         return debug.str();
     }
 };
+
+using DisplayInfos = ui::DisplayMap<ui::LayerStack, DisplayInfo>;
 
 } // namespace android::surfaceflinger::frontend

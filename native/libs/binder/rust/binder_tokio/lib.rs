@@ -34,6 +34,7 @@ use std::future::Future;
 
 /// Retrieve an existing service for a particular interface, sleeping for a few
 /// seconds if it doesn't yet exist.
+#[deprecated = "this polls 5s, use wait_for_interface or check_interface"]
 pub async fn get_interface<T: FromIBinder + ?Sized + 'static>(
     name: &str,
 ) -> Result<Strong<T>, StatusCode> {
@@ -44,6 +45,32 @@ pub async fn get_interface<T: FromIBinder + ?Sized + 'static>(
 
     let name = name.to_string();
     let res = tokio::task::spawn_blocking(move || binder::get_interface::<T>(&name)).await;
+
+    // The `is_panic` branch is not actually reachable in Android as we compile
+    // with `panic = abort`.
+    match res {
+        Ok(Ok(service)) => Ok(service),
+        Ok(Err(err)) => Err(err),
+        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Err(e) if e.is_cancelled() => Err(StatusCode::FAILED_TRANSACTION),
+        Err(_) => Err(StatusCode::UNKNOWN_ERROR),
+    }
+}
+
+/// Retrieve an existing service for a particular interface. Returns
+/// `Err(StatusCode::NAME_NOT_FOUND)` immediately if the service is not available.
+///
+/// NOTE: "immediately" above does not mean the future will complete the first time it is polled.
+pub async fn check_interface<T: FromIBinder + ?Sized + 'static>(
+    name: &str,
+) -> Result<Strong<T>, StatusCode> {
+    if binder::is_handling_transaction() {
+        // See comment in the BinderAsyncPool impl.
+        return binder::check_interface::<T>(name);
+    }
+
+    let name = name.to_string();
+    let res = tokio::task::spawn_blocking(move || binder::check_interface::<T>(&name)).await;
 
     // The `is_panic` branch is not actually reachable in Android as we compile
     // with `panic = abort`.
@@ -103,7 +130,12 @@ impl BinderAsyncPool for Tokio {
             //
             // This shouldn't cause issues with blocking the thread as only one task will run in a
             // call to `block_on`, so there aren't other tasks to block.
-            let result = spawn_me();
+            //
+            // If the `block_in_place` call fails, then you are driving a current-thread runtime on
+            // the binder threadpool. Instead, it is recommended to use `TokioRuntime<Handle>` when
+            // the runtime is a current-thread runtime, as the current-thread runtime can be driven
+            // only by `Runtime::block_on` calls and not by `Handle::block_on`.
+            let result = tokio::task::block_in_place(spawn_me);
             Box::pin(after_spawn(result))
         } else {
             let handle = tokio::task::spawn_blocking(spawn_me);

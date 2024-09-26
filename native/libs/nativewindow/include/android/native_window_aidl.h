@@ -34,6 +34,12 @@
 #include <android/native_window.h>
 #include <sys/cdefs.h>
 
+// Only required by the AIDL glue helper
+#ifdef __cplusplus
+#include <sstream>
+#include <string>
+#endif // __cplusplus
+
 __BEGIN_DECLS
 
 /**
@@ -80,7 +86,7 @@ namespace aidl::android::hardware {
  * Takes ownership of the ANativeWindow* given to it in reset() and will automatically
  * destroy it in the destructor, similar to a smart pointer container
  */
-class NativeWindow {
+class NativeWindow final {
 public:
     NativeWindow() noexcept {}
     explicit NativeWindow(ANativeWindow* _Nullable window) {
@@ -97,14 +103,22 @@ public:
 
     binder_status_t readFromParcel(const AParcel* _Nonnull parcel) {
         reset();
-        return ANativeWindow_readFromParcel(parcel, &mWindow);
+        if (__builtin_available(android __ANDROID_API_U__, *)) {
+            return ANativeWindow_readFromParcel(parcel, &mWindow);
+        } else {
+            return STATUS_INVALID_OPERATION;
+        }
     }
 
     binder_status_t writeToParcel(AParcel* _Nonnull parcel) const {
         if (!mWindow) {
             return STATUS_BAD_VALUE;
         }
-        return ANativeWindow_writeToParcel(mWindow, parcel);
+        if (__builtin_available(android __ANDROID_API_U__, *)) {
+            return ANativeWindow_writeToParcel(mWindow, parcel);
+        } else {
+            return STATUS_INVALID_OPERATION;
+        }
     }
 
     /**
@@ -123,13 +137,27 @@ public:
         }
         mWindow = window;
     }
-    inline ANativeWindow* _Nullable operator-> () const { return mWindow;  }
+
     inline ANativeWindow* _Nullable get() const { return mWindow; }
-    inline explicit operator bool () const { return mWindow != nullptr; }
 
     NativeWindow& operator=(NativeWindow&& other) noexcept {
         mWindow = other.release(); // steal ownership from r-value
         return *this;
+    }
+
+    inline ANativeWindow* _Nullable operator->() const { return mWindow; }
+    inline explicit operator bool() const { return mWindow != nullptr; }
+    inline bool operator==(const NativeWindow& rhs) const { return mWindow == rhs.mWindow; }
+    inline bool operator!=(const NativeWindow& rhs) const { return !(*this == rhs); }
+    inline bool operator<(const NativeWindow& rhs) const { return mWindow < rhs.mWindow; }
+    inline bool operator>(const NativeWindow& rhs) const { return rhs < *this; }
+    inline bool operator>=(const NativeWindow& rhs) const { return !(*this < rhs); }
+    inline bool operator<=(const NativeWindow& rhs) const { return !(*this > rhs); }
+
+    std::string toString() const {
+        std::ostringstream ss;
+        ss << "NativeWindow: " << mWindow;
+        return ss.str();
     }
 
     /**

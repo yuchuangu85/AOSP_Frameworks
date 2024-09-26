@@ -61,6 +61,7 @@ void GpuMem::initialize() {
             return;
         }
         // Retry until GPU driver loaded or timeout.
+        if (mStop.load()) return;
         sleep(1);
     }
 
@@ -77,7 +78,7 @@ void GpuMem::initialize() {
     mInitialized.store(true);
 }
 
-void GpuMem::setGpuMemTotalMap(bpf::BpfMap<uint64_t, uint64_t>& map) {
+void GpuMem::setGpuMemTotalMap(bpf::BpfMapRO<uint64_t, uint64_t>& map) {
     mGpuMemTotalMap = std::move(map);
 }
 

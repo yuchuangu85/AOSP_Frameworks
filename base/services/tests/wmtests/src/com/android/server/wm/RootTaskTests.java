@@ -140,7 +140,7 @@ public class RootTaskTests extends WindowTestsBase {
 
         final WindowContainer parent = activity1.getTask().getParent();
         assertEquals(SCREEN_ORIENTATION_PORTRAIT, parent.getOrientation());
-        mDisplayContent.mClosingApps.add(activity2);
+        activity2.setVisibleRequested(false);
         assertEquals(SCREEN_ORIENTATION_LANDSCAPE, parent.getOrientation());
     }
 
@@ -405,11 +405,12 @@ public class RootTaskTests extends WindowTestsBase {
 
         final RootWindowContainer.FindTaskResult result =
                 new RootWindowContainer.FindTaskResult();
-        result.init(r.getActivityType(), r.taskAffinity, r.intent, r.info);
+        result.init(r.getActivityType(), r.taskAffinity, r.intent, r.info, true);
         result.process(task);
 
-        assertEquals(r, task.getTopNonFinishingActivity(false /* includeOverlays */));
-        assertEquals(taskOverlay, task.getTopNonFinishingActivity(true /* includeOverlays */));
+        assertEquals(r, task.getTopNonFinishingActivity(false /* includeOverlays */, true));
+        assertEquals(
+                taskOverlay, task.getTopNonFinishingActivity(true /* includeOverlays */, true));
         assertNotNull(result.mIdealRecord);
     }
 
@@ -432,7 +433,7 @@ public class RootTaskTests extends WindowTestsBase {
         final ActivityRecord r1 = new ActivityBuilder(mAtm).setComponent(
                 target).setTargetActivity(targetActivity).build();
         RootWindowContainer.FindTaskResult result = new RootWindowContainer.FindTaskResult();
-        result.init(r1.getActivityType(), r1.taskAffinity, r1.intent, r1.info);
+        result.init(r1.getActivityType(), r1.taskAffinity, r1.intent, r1.info, true);
         result.process(parentTask);
         assertThat(result.mIdealRecord).isNotNull();
 
@@ -440,7 +441,7 @@ public class RootTaskTests extends WindowTestsBase {
         final ActivityRecord r2 = new ActivityBuilder(mAtm).setComponent(
                 alias).setTargetActivity(targetActivity).build();
         result = new RootWindowContainer.FindTaskResult();
-        result.init(r2.getActivityType(), r2.taskAffinity, r2.intent, r2.info);
+        result.init(r2.getActivityType(), r2.taskAffinity, r2.intent, r2.info, true);
         result.process(parentTask);
         assertThat(result.mIdealRecord).isNotNull();
     }
@@ -656,7 +657,7 @@ public class RootTaskTests extends WindowTestsBase {
                 topSplitPrimary.getVisibility(null /* starting */));
         // Make primary split root transient-hide.
         spyOn(splitPrimary.mTransitionController);
-        doReturn(true).when(splitPrimary.mTransitionController).isTransientHide(
+        doReturn(true).when(splitPrimary.mTransitionController).isTransientVisible(
                 organizer.mPrimary);
         // The split root and its top become visible.
         assertEquals(TASK_FRAGMENT_VISIBILITY_VISIBLE,
@@ -823,8 +824,7 @@ public class RootTaskTests extends WindowTestsBase {
                 .build();
 
         doReturn(false).when(secondActivity).occludesParent();
-        homeRootTask.ensureActivitiesVisible(null /* starting */, 0 /* configChanges */,
-                false /* preserveWindows */);
+        homeRootTask.ensureActivitiesVisible(null /* starting */);
 
         assertTrue(firstActivity.shouldBeVisible());
     }
@@ -1235,12 +1235,18 @@ public class RootTaskTests extends WindowTestsBase {
         assertEquals(STOPPING, activity2.getState());
         assertThat(mSupervisor.mStoppingActivities).contains(activity2);
 
+        registerTestTransitionPlayer();
+        final Transition transition = display.mTransitionController
+                .requestCloseTransitionIfNeeded(rootTask1);
+        transition.collectClose(rootTask1);
         // The display becomes empty. Since there is no next activity to be idle, the activity
         // should be destroyed immediately with updating configuration to restore original state.
         final ActivityRecord activity1 = finishTopActivity(rootTask1);
         assertEquals(DESTROYING, activity1.getState());
         verify(mRootWindowContainer).ensureVisibilityAndConfig(eq(null) /* starting */,
-                eq(display.mDisplayId), anyBoolean(), anyBoolean());
+                eq(display), anyBoolean());
+        assertTrue("Transition must be ready if there is no next running activity",
+                transition.allReady());
     }
 
     private ActivityRecord finishTopActivity(Task task) {
@@ -1419,8 +1425,7 @@ public class RootTaskTests extends WindowTestsBase {
 
         // Any common path that updates activity visibility should clear the unknown visibility
         // records that are no longer visible according to hierarchy.
-        task.ensureActivitiesVisible(null /* starting */, 0 /* configChanges */,
-                false /* preserveWindows */);
+        task.ensureActivitiesVisible(null /* starting */);
         // Assume the top activity relayouted, just remove it directly.
         unknownAppVisibilityController.appRemovedOrHidden(activities[1]);
         // All unresolved records should be removed.
@@ -1441,8 +1446,7 @@ public class RootTaskTests extends WindowTestsBase {
         doNothing().when(mSupervisor).startSpecificActivity(any(), anyBoolean(),
                 anyBoolean());
 
-        task.ensureActivitiesVisible(null /* starting */, 0 /* configChanges */,
-                false /* preserveWindows */);
+        task.ensureActivitiesVisible(null /* starting */);
         verify(mSupervisor).startSpecificActivity(any(), eq(false) /* andResume */,
                 anyBoolean());
     }

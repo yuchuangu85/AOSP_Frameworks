@@ -34,6 +34,18 @@ interface SettingsPageProvider {
     /** The page provider name, needs to be *unique* and *stable*. */
     val name: String
 
+    /** The category id which is the PageId at SettingsEnums.*/
+    val metricsCategory: Int
+        get() = 0
+
+    enum class NavType {
+        Page,
+        Dialog,
+    }
+
+    val navType: NavType
+        get() = NavType.Page
+
     /** The display name of this page provider, for better readability. */
     val displayName: String
         get() = name
@@ -71,6 +83,7 @@ fun SettingsPageProvider.createSettingsPage(arguments: Bundle? = null): Settings
     return SettingsPage(
         id = genPageId(name, parameter, arguments),
         sppName = name,
+        metricsCategory = metricsCategory,
         displayName = displayName + parameter.normalizeArgList(arguments, eraseRuntimeValues = true)
             .joinToString("") { arg -> "/$arg" },
         parameter = parameter,
@@ -78,7 +91,7 @@ fun SettingsPageProvider.createSettingsPage(arguments: Bundle? = null): Settings
     )
 }
 
-object NullPageProvider : SettingsPageProvider {
+internal object NullPageProvider : SettingsPageProvider {
     override val name = NULL_PAGE_NAME
 }
 

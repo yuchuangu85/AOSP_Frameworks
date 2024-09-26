@@ -16,23 +16,7 @@
 
 #define LOG_TAG "dumpstate_test"
 
-#include "DumpstateInternal.h"
-#include "DumpstateService.h"
-#include "android/os/BnDumpstate.h"
 #include "dumpstate.h"
-#include "DumpPool.h"
-
-#include <gmock/gmock.h>
-#include <gmock/gmock-matchers.h>
-#include <gtest/gtest.h>
-
-#include <fcntl.h>
-#include <libgen.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <filesystem>
-#include <thread>
 
 #include <aidl/android/hardware/dumpstate/IDumpstateDevice.h>
 #include <android-base/file.h>
@@ -41,9 +25,26 @@
 #include <android-base/strings.h>
 #include <android-base/unique_fd.h>
 #include <android/hardware/dumpstate/1.1/types.h>
+#include <android_tracing.h>
 #include <cutils/log.h>
 #include <cutils/properties.h>
+#include <fcntl.h>
+#include <gmock/gmock-matchers.h>
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include <libgen.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include <ziparchive/zip_archive.h>
+
+#include <filesystem>
+#include <thread>
+
+#include "DumpPool.h"
+#include "DumpstateInternal.h"
+#include "DumpstateService.h"
+#include "android/os/BnDumpstate.h"
 
 namespace android {
 namespace os {
@@ -238,7 +239,7 @@ TEST_F(DumpOptionsTest, InitializeAdbShellBugreport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeFullBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true, false);
     EXPECT_TRUE(options_.do_screenshot);
 
     // Other options retain default values
@@ -252,7 +253,7 @@ TEST_F(DumpOptionsTest, InitializeFullBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeInteractiveBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_INTERACTIVE, 0, fd, fd, true, false);
     EXPECT_TRUE(options_.do_progress_updates);
     EXPECT_TRUE(options_.do_screenshot);
 
@@ -266,7 +267,7 @@ TEST_F(DumpOptionsTest, InitializeInteractiveBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeRemoteBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_REMOTE, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_REMOTE, 0, fd, fd, false, false);
     EXPECT_TRUE(options_.is_remote_mode);
     EXPECT_FALSE(options_.do_vibrate);
     EXPECT_FALSE(options_.do_screenshot);
@@ -280,7 +281,7 @@ TEST_F(DumpOptionsTest, InitializeRemoteBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeWearBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WEAR, 0, fd, fd, true);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WEAR, 0, fd, fd, true, false);
     EXPECT_TRUE(options_.do_screenshot);
     EXPECT_TRUE(options_.do_progress_updates);
 
@@ -295,7 +296,7 @@ TEST_F(DumpOptionsTest, InitializeWearBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeTelephonyBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_TELEPHONY, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_TELEPHONY, 0, fd, fd, false, false);
     EXPECT_FALSE(options_.do_screenshot);
     EXPECT_TRUE(options_.telephony_only);
     EXPECT_TRUE(options_.do_progress_updates);
@@ -310,7 +311,7 @@ TEST_F(DumpOptionsTest, InitializeTelephonyBugReport) {
 }
 
 TEST_F(DumpOptionsTest, InitializeWifiBugReport) {
-    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WIFI, 0, fd, fd, false);
+    options_.Initialize(Dumpstate::BugreportMode::BUGREPORT_WIFI, 0, fd, fd, false, false);
     EXPECT_FALSE(options_.do_screenshot);
     EXPECT_TRUE(options_.wifi_only);
 
@@ -490,12 +491,12 @@ TEST_F(DumpOptionsTest, InitializeBugreportFlags) {
     int flags = Dumpstate::BugreportFlag::BUGREPORT_USE_PREDUMPED_UI_DATA |
                 Dumpstate::BugreportFlag::BUGREPORT_FLAG_DEFER_CONSENT;
     options_.Initialize(
-      Dumpstate::BugreportMode::BUGREPORT_FULL, flags, fd, fd, true);
+      Dumpstate::BugreportMode::BUGREPORT_FULL, flags, fd, fd, true, false);
     EXPECT_TRUE(options_.is_consent_deferred);
     EXPECT_TRUE(options_.use_predumped_ui_data);
 
     options_.Initialize(
-      Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true);
+      Dumpstate::BugreportMode::BUGREPORT_FULL, 0, fd, fd, true, false);
     EXPECT_FALSE(options_.is_consent_deferred);
     EXPECT_FALSE(options_.use_predumped_ui_data);
 }
@@ -999,11 +1000,13 @@ TEST_F(DumpstateTest, DumpPool_withParallelRunDisabled_isNull) {
 
 TEST_F(DumpstateTest, PreDumpUiData) {
     // These traces are always enabled, i.e. they are always pre-dumped
-    const std::vector<std::filesystem::path> uiTraces = {
-        std::filesystem::path{"/data/misc/wmtrace/transactions_trace.winscope"},
-        std::filesystem::path{"/data/misc/wmtrace/wm_transition_trace.winscope"},
-        std::filesystem::path{"/data/misc/wmtrace/shell_transition_trace.winscope"},
-    };
+    std::vector<std::filesystem::path> uiTraces;
+    if (!android_tracing_perfetto_transition_tracing()) {
+        uiTraces.push_back(
+            std::filesystem::path{"/data/misc/wmtrace/wm_transition_trace.winscope"});
+        uiTraces.push_back(
+            std::filesystem::path{"/data/misc/wmtrace/shell_transition_trace.winscope"});
+    }
 
     for (const auto traceFile : uiTraces) {
         std::system(("rm -f " + traceFile.string()).c_str());

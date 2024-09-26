@@ -26,10 +26,10 @@ import static org.mockito.Mockito.when;
 
 import android.app.PendingIntent;
 import android.content.Intent;
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.view.View;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.ActivityIntentHelper;
@@ -37,7 +37,7 @@ import com.android.systemui.SysuiTestCase;
 import com.android.systemui.complication.dagger.DreamMediaEntryComplicationComponent;
 import com.android.systemui.dreams.DreamOverlayStateController;
 import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.media.controls.ui.MediaCarouselController;
+import com.android.systemui.media.controls.ui.controller.MediaCarouselController;
 import com.android.systemui.media.dream.MediaDreamComplication;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
@@ -51,7 +51,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper
 public class DreamMediaEntryComplicationTest extends SysuiTestCase {
     @Mock

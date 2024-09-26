@@ -35,6 +35,9 @@
 #include <utils/Timers.h>
 
 #include <algorithm> //std::max std::min
+#include <condition_variable>
+#include <mutex>
+#include <queue>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -57,7 +60,17 @@ public:
 
     ssize_t getSensorList(sensor_t const** list);
 
+    std::vector<int32_t> getDynamicSensorHandles();
+
     void handleDynamicSensorConnection(int handle, bool connected);
+    /**
+     * Removes handle from connected dynamic sensor list. Note that this method must be called after
+     * SensorService has done using sensor data.
+     *
+     * @param handle of the disconnected dynamic sensor.
+     */
+    void cleanupDisconnectedDynamicSensor(int handle);
+
     status_t initCheck() const;
     int getHalDeviceVersion() const;
 
@@ -225,6 +238,12 @@ private:
     float getResolutionForSensor(int sensorHandle);
 
     bool mIsDirectReportSupported;
+
+    std::mutex mHalBypassLock;
+    std::condition_variable mHalBypassCV;
+    std::queue<sensors_event_t> mHalBypassInjectedEventQueue;
+    ssize_t getHalBypassInjectedEvents(sensors_event_t* buffer, size_t count);
+    bool mInHalBypassMode;
 };
 
 // ---------------------------------------------------------------------------

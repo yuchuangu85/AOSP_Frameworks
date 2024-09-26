@@ -16,10 +16,11 @@
 
 package com.android.server.inputmethod;
 
+import android.annotation.AnyThread;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.content.res.Resources;
 import android.os.LocaleList;
+import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Slog;
@@ -27,7 +28,6 @@ import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodSubtype;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,7 +53,7 @@ final class SubtypeUtils {
             "EnabledWhenDefaultIsNotAsciiCapable";
 
     // A temporary workaround for the performance concerns in
-    // #getImplicitlyApplicableSubtypesLocked(Resources, InputMethodInfo).
+    // #getImplicitlyApplicableSubtypes(Resources, InputMethodInfo).
     // TODO: Optimize all the critical paths including this one.
     // TODO(b/235661780): Make the cache supports multi-users.
     private static final Object sCacheLock = new Object();
@@ -86,8 +86,7 @@ final class SubtypeUtils {
                     continue;
                 }
             }
-            if (mode == SUBTYPE_MODE_ANY || TextUtils.isEmpty(mode)
-                    || mode.equalsIgnoreCase(subtype.getMode())) {
+            if (TextUtils.isEmpty(mode) || mode.equalsIgnoreCase(subtype.getMode())) {
                 return true;
             }
         }
@@ -103,7 +102,7 @@ final class SubtypeUtils {
         return subtypes;
     }
 
-    static boolean isValidSubtypeId(InputMethodInfo imi, int subtypeHashCode) {
+    static boolean isValidSubtypeHashCode(InputMethodInfo imi, int subtypeHashCode) {
         return getSubtypeIdFromHashCode(imi, subtypeHashCode) != NOT_A_SUBTYPE_ID;
     }
 
@@ -123,12 +122,9 @@ final class SubtypeUtils {
     private static final LocaleUtils.LocaleExtractor<InputMethodSubtype> sSubtypeToLocale =
             source -> source != null ? source.getLocaleObject() : null;
 
-    @VisibleForTesting
     @NonNull
-    static ArrayList<InputMethodSubtype> getImplicitlyApplicableSubtypesLocked(
-            Resources res, InputMethodInfo imi) {
-        final LocaleList systemLocales = res.getConfiguration().getLocales();
-
+    static ArrayList<InputMethodSubtype> getImplicitlyApplicableSubtypes(
+            @NonNull LocaleList systemLocales, InputMethodInfo imi) {
         synchronized (sCacheLock) {
             // We intentionally do not use InputMethodInfo#equals(InputMethodInfo) here because
             // it does not check if subtypes are also identical.
@@ -137,11 +133,11 @@ final class SubtypeUtils {
             }
         }
 
-        // Note: Only resource info in "res" is used in getImplicitlyApplicableSubtypesLockedImpl().
-        // TODO: Refactor getImplicitlyApplicableSubtypesLockedImpl() so that it can receive
+        // Note: Only resource info in "res" is used in getImplicitlyApplicableSubtypesImpl().
+        // TODO: Refactor getImplicitlyApplicableSubtypesImpl() so that it can receive
         // LocaleList rather than Resource.
         final ArrayList<InputMethodSubtype> result =
-                getImplicitlyApplicableSubtypesLockedImpl(res, imi);
+                getImplicitlyApplicableSubtypesImpl(systemLocales, imi);
         synchronized (sCacheLock) {
             // Both LocaleList and InputMethodInfo are immutable. No need to copy them here.
             sCachedSystemLocales = systemLocales;
@@ -151,10 +147,9 @@ final class SubtypeUtils {
         return result;
     }
 
-    private static ArrayList<InputMethodSubtype> getImplicitlyApplicableSubtypesLockedImpl(
-            Resources res, InputMethodInfo imi) {
+    private static ArrayList<InputMethodSubtype> getImplicitlyApplicableSubtypesImpl(
+            @NonNull LocaleList systemLocales, InputMethodInfo imi) {
         final List<InputMethodSubtype> subtypes = getSubtypes(imi);
-        final LocaleList systemLocales = res.getConfiguration().getLocales();
         final String systemLocale = systemLocales.get(0).toString();
         if (TextUtils.isEmpty(systemLocale)) return new ArrayList<>();
         final int numSubtypes = subtypes.size();
@@ -220,8 +215,8 @@ final class SubtypeUtils {
         }
 
         if (applicableSubtypes.isEmpty()) {
-            InputMethodSubtype lastResortKeyboardSubtype = findLastResortApplicableSubtypeLocked(
-                    res, subtypes, SUBTYPE_MODE_KEYBOARD, systemLocale, true);
+            InputMethodSubtype lastResortKeyboardSubtype = findLastResortApplicableSubtype(
+                    subtypes, SUBTYPE_MODE_KEYBOARD, systemLocale, true);
             if (lastResortKeyboardSubtype != null) {
                 applicableSubtypes.add(lastResortKeyboardSubtype);
             }
@@ -249,14 +244,11 @@ final class SubtypeUtils {
      *
      * @return the most applicable subtypeId
      */
-    static InputMethodSubtype findLastResortApplicableSubtypeLocked(
-            Resources res, List<InputMethodSubtype> subtypes, String mode, String locale,
+    static InputMethodSubtype findLastResortApplicableSubtype(
+            List<InputMethodSubtype> subtypes, String mode, @NonNull String locale,
             boolean canIgnoreLocaleAsLastResort) {
         if (subtypes == null || subtypes.isEmpty()) {
             return null;
-        }
-        if (TextUtils.isEmpty(locale)) {
-            locale = res.getConfiguration().locale.toString();
         }
         final String language = LocaleUtils.getLanguageFromLocaleString(locale);
         boolean partialMatchFound = false;
@@ -298,5 +290,55 @@ final class SubtypeUtils {
             }
         }
         return applicableSubtype;
+    }
+
+    /**
+     * Returns a {@link InputMethodSubtype} available in {@code imi} based on
+     * {@link Settings.Secure#SELECTED_INPUT_METHOD_SUBTYPE}.
+     *
+     * @param imi            {@link InputMethodInfo} to find out the current
+     *                       {@link InputMethodSubtype}
+     * @param settings       {@link InputMethodSettings} to be used to find out the current
+     *                       {@link InputMethodSubtype}
+     * @param currentSubtype the current value that will be used as fallback
+     * @return {@link InputMethodSubtype} to be used as the current {@link InputMethodSubtype}
+     */
+    @AnyThread
+    @Nullable
+    static InputMethodSubtype getCurrentInputMethodSubtype(
+            @NonNull InputMethodInfo imi, @NonNull InputMethodSettings settings,
+            @Nullable InputMethodSubtype currentSubtype) {
+        final int userId = settings.getUserId();
+        final int selectedSubtypeHashCode = SecureSettingsWrapper.getInt(
+                Settings.Secure.SELECTED_INPUT_METHOD_SUBTYPE, NOT_A_SUBTYPE_ID, userId);
+        if (selectedSubtypeHashCode != NOT_A_SUBTYPE_ID && currentSubtype != null
+                && isValidSubtypeHashCode(imi, currentSubtype.hashCode())) {
+            return currentSubtype;
+        }
+
+        final int subtypeId = settings.getSelectedInputMethodSubtypeId(imi.getId());
+        if (subtypeId != NOT_A_SUBTYPE_ID) {
+            return imi.getSubtypeAt(subtypeId);
+        }
+
+        // If there are no selected subtypes, the framework will try to find the most applicable
+        // subtype from explicitly or implicitly enabled subtypes.
+        final List<InputMethodSubtype> subtypes = settings.getEnabledInputMethodSubtypeList(imi,
+                true);
+        if (subtypes.isEmpty()) {
+            return currentSubtype;
+        }
+        // If there is only one explicitly or implicitly enabled subtype,
+        // just returns it.
+        if (subtypes.size() == 1) {
+            return subtypes.get(0);
+        }
+        final String locale = SystemLocaleWrapper.get(userId).get(0).toString();
+        final var subtype = findLastResortApplicableSubtype(subtypes, SUBTYPE_MODE_KEYBOARD, locale,
+                true);
+        if (subtype != null) {
+            return subtype;
+        }
+        return findLastResortApplicableSubtype(subtypes, null, locale, true);
     }
 }

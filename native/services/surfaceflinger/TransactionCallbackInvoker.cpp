@@ -25,10 +25,12 @@
 
 #include "TransactionCallbackInvoker.h"
 #include "BackgroundExecutor.h"
+#include "Utils/FenceUtils.h"
 
 #include <cinttypes>
 
 #include <binder/IInterface.h>
+#include <common/FlagManager.h>
 #include <utils/RefBase.h>
 
 namespace android {
@@ -128,37 +130,20 @@ status_t TransactionCallbackInvoker::addCallbackHandle(const sp<CallbackHandle>&
     if (surfaceControl) {
         sp<Fence> prevFence = nullptr;
 
-        for (const auto& future : handle->previousReleaseFences) {
-            sp<Fence> currentFence = future.get().value_or(Fence::NO_FENCE);
-            if (prevFence == nullptr && currentFence->getStatus() != Fence::Status::Invalid) {
-                prevFence = std::move(currentFence);
-            } else if (prevFence != nullptr) {
-                // If both fences are signaled or both are unsignaled, we need to merge
-                // them to get an accurate timestamp.
-                if (prevFence->getStatus() != Fence::Status::Invalid &&
-                    prevFence->getStatus() == currentFence->getStatus()) {
-                    char fenceName[32] = {};
-                    snprintf(fenceName, 32, "%.28s", handle->name.c_str());
-                    sp<Fence> mergedFence = Fence::merge(fenceName, prevFence, currentFence);
-                    if (mergedFence->isValid()) {
-                        prevFence = std::move(mergedFence);
-                    }
-                } else if (currentFence->getStatus() == Fence::Status::Unsignaled) {
-                    // If one fence has signaled and the other hasn't, the unsignaled
-                    // fence will approximately correspond with the correct timestamp.
-                    // There's a small race if both fences signal at about the same time
-                    // and their statuses are retrieved with unfortunate timing. However,
-                    // by this point, they will have both signaled and only the timestamp
-                    // will be slightly off; any dependencies after this point will
-                    // already have been met.
-                    prevFence = std::move(currentFence);
-                }
+        if (FlagManager::getInstance().ce_fence_promise()) {
+            for (auto& future : handle->previousReleaseFences) {
+                mergeFence(handle->name.c_str(), future.get().value_or(Fence::NO_FENCE), prevFence);
+            }
+        } else {
+            for (const auto& future : handle->previousSharedReleaseFences) {
+                mergeFence(handle->name.c_str(), future.get().value_or(Fence::NO_FENCE), prevFence);
             }
         }
+
         handle->previousReleaseFence = prevFence;
         handle->previousReleaseFences.clear();
 
-        FrameEventHistoryStats eventStats(handle->frameNumber,
+        FrameEventHistoryStats eventStats(handle->frameNumber, handle->previousFrameNumber,
                                           handle->gpuCompositionDoneFence->getSnapshot().fence,
                                           handle->compositorTiming, handle->refreshStartTime,
                                           handle->dequeueReadyTime);
