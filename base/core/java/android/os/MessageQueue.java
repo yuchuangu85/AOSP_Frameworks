@@ -84,6 +84,7 @@ public final class MessageQueue {
 
     MessageQueue(boolean quitAllowed) {
         mQuitAllowed = quitAllowed;
+        // 返回底层的MessageQueue对象的内存地址，如果为空返回0
         mPtr = nativeInit();
     }
 
@@ -332,17 +333,18 @@ public final class MessageQueue {
         // This can happen if the application tries to restart a looper after quit
         // which is not supported.
         final long ptr = mPtr;
-        if (ptr == 0) {
+        if (ptr == 0) { // 底层MessageQueue为空
             return null;
         }
 
         int pendingIdleHandlerCount = -1; // -1 only during first iteration
-        int nextPollTimeoutMillis = 0;
-        for (;;) {
+        int nextPollTimeoutMillis = 0; // 下一个消息要执行的时间，也就是下一个消息执行时间到现在的时间差
+        for (;;) { // 无限循环
             if (nextPollTimeoutMillis != 0) {
                 Binder.flushPendingCommands();
             }
 
+            // 进入阻塞状态，从而等待合适的时长nextPollTimeoutMillis，精确时间
             nativePollOnce(ptr, nextPollTimeoutMillis);
 
             synchronized (this) {
@@ -350,34 +352,41 @@ public final class MessageQueue {
                 final long now = SystemClock.uptimeMillis();
                 Message prevMsg = null;
                 Message msg = mMessages;
+                // target为空说明该消息是消息屏障，该消息是只能通过Looper的postSyncBarrier传入
+                // 这样的消息被称为：消息屏障，它就像一个卡子，卡在消息链表中的某个位置，当消息循环不断
+                // 从消息链表中摘取消息并进行处理时，一旦遇到这种“消息屏障”，那么即使在消息屏障之后还有若
+                // 干已经到时的普通Message，也不会摘取这些消息了。请注意，此时只是不会摘取“普通Message”了，
+                // 如果队列中还设置有“异步Message”，那么还是会摘取已到时的“异步Message”的。
+                // 如果没有消息屏障，那么普通消息和异步消息没有区别
                 if (msg != null && msg.target == null) {
                     // Stalled by a barrier.  Find the next asynchronous message in the queue.
+                    // 如果找到了消息屏障，就要查找队列中的异步消息
                     do {
                         prevMsg = msg;
                         msg = msg.next;
                     } while (msg != null && !msg.isAsynchronous());
                 }
                 if (msg != null) {
-                    if (now < msg.when) {
+                    if (now < msg.when) { // 下一个消息还没到执行时间
                         // Next message is not ready.  Set a timeout to wake up when it is ready.
                         nextPollTimeoutMillis = (int) Math.min(msg.when - now, Integer.MAX_VALUE);
                     } else {
                         // Got a message.
                         mBlocked = false;
-                        if (prevMsg != null) {
+                        if (prevMsg != null) { // 异步消息
                             prevMsg.next = msg.next;
                             if (prevMsg.next == null) {
                                 mLast = prevMsg;
                             }
-                        } else {
+                        } else { // 普通消息
                             mMessages = msg.next;
                             if (msg.next == null) {
                                 mLast = null;
                             }
                         }
-                        msg.next = null;
+                        msg.next = null; // 将取出的消息的next赋值为空
                         if (DEBUG) Log.v(TAG, "Returning message: " + msg);
-                        msg.markInUse();
+                        msg.markInUse(); // 标记正在使用
                         if (msg.isAsynchronous()) {
                             mAsyncMessageCount--;
                         }
@@ -415,6 +424,7 @@ public final class MessageQueue {
 
             // Run the idle handlers.
             // We only ever reach this code block during the first iteration.
+            //只有第一次循环时，会运行idle handlers，执行完成后，重置pendingIdleHandlerCount为0
             for (int i = 0; i < pendingIdleHandlerCount; i++) {
                 final IdleHandler idler = mPendingIdleHandlers[i];
                 mPendingIdleHandlers[i] = null; // release the reference to the handler
@@ -433,15 +443,18 @@ public final class MessageQueue {
                 }
             }
 
+            // 重置idle handler个数为0，以保证不会再次重复运行
             // Reset the idle handler count to 0 so we do not run them again.
             pendingIdleHandlerCount = 0;
 
             // While calling an idle handler, a new message could have been delivered
             // so go back and look again for a pending message without waiting.
+            // 当调用一个空闲handler时，一个新message能够被分发，因此无需等待可以直接查询pending message.
             nextPollTimeoutMillis = 0;
         }
     }
 
+    // 退出循环
     void quit(boolean safe) {
         if (!mQuitAllowed) {
             throw new IllegalStateException("Main thread not allowed to quit.");
@@ -586,8 +599,9 @@ public final class MessageQueue {
         }
     }
 
+    // 添加消息队列
     boolean enqueueMessage(Message msg, long when) {
-        if (msg.target == null) {
+        if (msg.target == null) { // 异步消息不同通过该方法添加
             throw new IllegalArgumentException("Message must have a target.");
         }
 
@@ -608,6 +622,8 @@ public final class MessageQueue {
             msg.when = when;
             Message p = mMessages;
             boolean needWake;
+            // 插入到消息队列前面：p为空说明消息队列为空，插入最前面；when==0表示要立即执行；最后一个是插入的
+            // 消息比当前消息执行时间早，因此插入到最前面
             if (p == null || when == 0 || when < p.when) {
                 // New head, wake up the event queue if blocked.
                 msg.next = p;
@@ -616,7 +632,9 @@ public final class MessageQueue {
                 if (p == null) {
                     mLast = mMessages;
                 }
-            } else {
+            } else { // 插入到中间或者后面
+                // 将消息按时间顺序插入到MessageQueue。一般地，不需要唤醒事件队列，除非
+                // 消息队头存在barrier，并且同时Message是队列中最早的异步消息。
                 // Message is to be inserted at tail or middle of queue. Usually we don't have to
                 // wake up the event queue unless there is a barrier at the head of the queue and
                 // the message is the earliest asynchronous message in the queue.
@@ -634,9 +652,10 @@ public final class MessageQueue {
                     } else {
                         // Inserted within the middle of the queue.
                         Message prev;
-                        for (;;) {
-                            prev = p;
-                            p = p.next;
+                        for (;;) { // 无限循环
+                            prev = p; // 缓存当前消息
+                            p = p.next; // 获取下一个消息
+                            // 如果下一个为空，则已经到达最后，如果插入消息比下一个早，则插入到前面，中断循环
                             if (p == null || when < p.when) {
                                 break;
                             }
@@ -648,7 +667,9 @@ public final class MessageQueue {
                             /* Inserting at tail of queue */
                             mLast = msg;
                         }
+                        // 将要插入消息的next指向下一个
                         msg.next = p; // invariant: p == prev.next
+                        // 前一个的next指向现在插入的，此时插入完成。
                         prev.next = msg;
                     }
                 } else {
@@ -774,6 +795,7 @@ public final class MessageQueue {
             Message p = mMessages;
 
             // Remove all messages at front.
+            // 从消息队列的头部开始，移除所有符合条件的消息
             while (p != null && p.target == h && p.what == what
                    && (object == null || p.obj == object)) {
                 Message n = p.next;
@@ -790,6 +812,7 @@ public final class MessageQueue {
             }
 
             // Remove all messages after front.
+            // 移除剩余的符合要求的消息
             while (p != null) {
                 Message n = p.next;
                 if (n != null) {
