@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+// #define LOG_NDEBUG 0
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
 #undef LOG_TAG
@@ -181,8 +182,8 @@ void LayerLifecycleManager::onHandlesDestroyed(
     }
 }
 
-void LayerLifecycleManager::applyTransactions(const std::vector<TransactionState>& transactions,
-                                              bool ignoreUnknownLayers) {
+void LayerLifecycleManager::applyTransactions(
+        const std::vector<QueuedTransactionState>& transactions, bool ignoreUnknownLayers) {
     for (const auto& transaction : transactions) {
         for (const auto& resolvedComposerState : transaction.states) {
             const auto& clientState = resolvedComposerState.state;

@@ -98,11 +98,25 @@ public:
      * is created in a detached state, and attachToContext must be called before
      * calls to updateTexImage.
      */
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+    SurfaceTexture(uint32_t tex, uint32_t textureTarget, bool useFenceSync, bool isControlledByApp);
+
+    SurfaceTexture(uint32_t textureTarget, bool useFenceSync, bool isControlledByApp);
+
+    SurfaceTexture(const sp<IGraphicBufferConsumer>& bq, uint32_t tex, uint32_t textureTarget,
+                   bool useFenceSync, bool isControlledByApp)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+
+    SurfaceTexture(const sp<IGraphicBufferConsumer>& bq, uint32_t textureTarget, bool useFenceSync,
+                   bool isControlledByApp)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+#else
     SurfaceTexture(const sp<IGraphicBufferConsumer>& bq, uint32_t tex, uint32_t textureTarget,
                    bool useFenceSync, bool isControlledByApp);
 
     SurfaceTexture(const sp<IGraphicBufferConsumer>& bq, uint32_t textureTarget, bool useFenceSync,
                    bool isControlledByApp);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
 
     /**
      * updateTexImage acquires the most recently queued buffer, and sets the
@@ -329,8 +343,13 @@ protected:
      * releaseBufferLocked overrides the ConsumerBase method to update the
      * mEglSlots array in addition to the ConsumerBase.
      */
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)
+    virtual status_t releaseBufferLocked(int slot, const sp<GraphicBuffer> graphicBuffer) override;
+#else
     virtual status_t releaseBufferLocked(int slot, const sp<GraphicBuffer> graphicBuffer,
-                                         EGLDisplay display, EGLSyncKHR eglFence) override;
+                                         EGLDisplay display = EGL_NO_DISPLAY,
+                                         EGLSyncKHR eglFence = EGL_NO_SYNC_KHR) override;
+#endif
 
     /**
      * freeBufferLocked frees up the given buffer slot. If the slot has been
@@ -499,6 +518,8 @@ protected:
     friend class EGLConsumer;
 
 private:
+    void initialize();
+
     // Proxy listener to avoid having SurfaceTexture directly implement FrameAvailableListener as it
     // is extending ConsumerBase which also implements FrameAvailableListener.
     class FrameAvailableListenerProxy : public ConsumerBase::FrameAvailableListener {

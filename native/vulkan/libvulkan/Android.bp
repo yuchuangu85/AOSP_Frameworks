@@ -22,24 +22,35 @@ package {
     default_applicable_licenses: ["frameworks_native_license"],
 }
 
+// Expose internal header files to test testing binary
+cc_library_headers {
+    name: "libvulkanprivate_headers-testing",
+    export_include_dirs: ["."],
+    visibility: ["//frameworks/native/vulkan/tests"],
+}
+
 ndk_library {
     name: "libvulkan",
     symbol_file: "libvulkan.map.txt",
     first_version: "24",
     unversioned_until: "current",
-    export_header_libs: [
-        "ndk_vulkan_headers",
-    ],
 }
 
-cc_library_shared {
-    name: "libvulkan",
-    llndk: {
-        symbol_file: "libvulkan.map.txt",
-        export_llndk_headers: [
-            "vulkan_headers",
-        ],
-    },
+aconfig_declarations {
+    name: "libvulkan_flags",
+    package: "com.android.graphics.libvulkan.flags",
+    container: "system",
+    srcs: ["libvulkan_flags.aconfig"],
+}
+
+cc_aconfig_library {
+    name: "libvulkanflags",
+    aconfig_declarations: "libvulkan_flags",
+}
+
+cc_defaults {
+    name: "libvulkan_defaults",
+
     sanitize: {
         misc_undefined: ["integer"],
     },
@@ -72,6 +83,34 @@ cc_library_shared {
         "-Wno-global-constructors",
         "-Wno-zero-length-array",
     ],
+}
+
+cc_library {
+    name: "libvulkanallocator",
+    defaults: ["libvulkan_defaults"],
+    cflags: [
+        // This code uses malloc_usable_size(),
+        // and thus can't be built with _FORTIFY_SOURCE=3.
+        "-U_FORTIFY_SOURCE",
+        "-D_FORTIFY_SOURCE=2",
+    ],
+    srcs: [
+        "allocator.cpp",
+    ],
+    header_libs: [
+        "vulkan_headers",
+    ],
+}
+
+cc_library_shared {
+    name: "libvulkan",
+    defaults: ["libvulkan_defaults"],
+    llndk: {
+        symbol_file: "libvulkan.map.txt",
+        export_llndk_headers: [
+            "vulkan_headers",
+        ],
+    },
 
     srcs: [
         "api.cpp",
@@ -113,5 +152,9 @@ cc_library_shared {
         "android.hardware.graphics.common@1.0",
         "libSurfaceFlingerProp",
     ],
-    static_libs: ["libgrallocusage"],
+    static_libs: [
+        "libgrallocusage",
+        "libvulkanallocator",
+        "libvulkanflags",
+    ],
 }

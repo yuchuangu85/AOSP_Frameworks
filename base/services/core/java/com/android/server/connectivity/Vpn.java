@@ -26,13 +26,13 @@ import static android.net.RouteInfo.RTN_UNREACHABLE;
 import static android.net.VpnManager.NOTIFICATION_CHANNEL_VPN;
 import static android.net.ipsec.ike.IkeSessionParams.ESP_ENCAP_TYPE_AUTO;
 import static android.net.ipsec.ike.IkeSessionParams.ESP_IP_VERSION_AUTO;
+import static android.net.vcn.util.PersistableBundleUtils.STRING_DESERIALIZER;
 import static android.os.PowerWhitelistManager.REASON_VPN;
 import static android.os.UserHandle.PER_USER_RANGE;
 import static android.telephony.CarrierConfigManager.KEY_MIN_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT;
 import static android.telephony.CarrierConfigManager.KEY_PREFERRED_IKE_PROTOCOL_INT;
 
 import static com.android.net.module.util.NetworkStackConstants.IPV6_MIN_MTU;
-import static com.android.server.vcn.util.PersistableBundleUtils.STRING_DESERIALIZER;
 
 import static java.util.Objects.requireNonNull;
 
@@ -103,6 +103,8 @@ import android.net.ipsec.ike.exceptions.IkeProtocolException;
 import android.net.ipsec.ike.exceptions.IkeTimeoutException;
 import android.net.vcn.VcnGatewayConnectionConfig;
 import android.net.vcn.VcnTransportInfo;
+import android.net.vcn.util.MtuUtils;
+import android.net.vcn.util.PersistableBundleUtils;
 import android.os.Binder;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
@@ -150,8 +152,6 @@ import com.android.net.module.util.NetworkStackConstants;
 import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
 import com.android.server.net.BaseNetworkObserver;
-import com.android.server.vcn.util.MtuUtils;
-import com.android.server.vcn.util.PersistableBundleUtils;
 
 import libcore.io.IoUtils;
 
@@ -344,7 +344,11 @@ public class Vpn {
     private final AppOpsManager mAppOpsManager;
     private final ConnectivityDiagnosticsManager mConnectivityDiagnosticsManager;
     private final TelephonyManager mTelephonyManager;
+
+    // null if FEATURE_TELEPHONY_SUBSCRIPTION is not declared
+    @Nullable
     private final CarrierConfigManager mCarrierConfigManager;
+
     private final SubscriptionManager mSubscriptionManager;
 
     // The context is for specific user which is created from mUserId
@@ -1109,7 +1113,11 @@ public class Vpn {
             }
             // Remove always-on VPN if it's not supported.
             if (!isAlwaysOnPackageSupported(alwaysOnPackage)) {
-                setAlwaysOnPackage(null, false, null);
+                // Do not remove the always-on setting due to the restricted ability in safe mode.
+                // The always-on VPN can then start after the device reboots to normal mode.
+                if (!mContext.getPackageManager().isSafeMode()) {
+                    setAlwaysOnPackage(null, false, null);
+                }
                 return false;
             }
             // Skip if the service is already established. This isn't bulletproof: it's not bound
@@ -1956,6 +1964,10 @@ public class Vpn {
     public void onUserAdded(int userId) {
         // If the user is restricted tie them to the parent user's VPN
         UserInfo user = mUserManager.getUserInfo(userId);
+        if (user == null) {
+            Log.e(TAG, "Can not retrieve UserInfo for userId=" + userId);
+            return;
+        }
         if (user.isRestricted() && user.restrictedProfileParentId == mUserId) {
             synchronized(Vpn.this) {
                 final Set<Range<Integer>> existingRanges = mNetworkCapabilities.getUids();
@@ -1985,6 +1997,14 @@ public class Vpn {
     public void onUserRemoved(int userId) {
         // clean up if restricted
         UserInfo user = mUserManager.getUserInfo(userId);
+        // TODO: Retrieving UserInfo upon receiving the USER_REMOVED intent is not guaranteed.
+        //  This could prevent the removal of associated ranges. To ensure proper range removal,
+        //  store the user info when adding ranges. This allows using the user ID in the
+        //  USER_REMOVED intent to handle the removal process.
+        if (user == null) {
+            Log.e(TAG, "Can not retrieve UserInfo for userId=" + userId);
+            return;
+        }
         if (user.isRestricted() && user.restrictedProfileParentId == mUserId) {
             synchronized(Vpn.this) {
                 final Set<Range<Integer>> existingRanges = mNetworkCapabilities.getUids();
@@ -2837,8 +2857,10 @@ public class Vpn {
                     createUserAndRestrictedProfilesRanges(mUserId,
                             mConfig.allowedApplications, mConfig.disallowedApplications));
 
-            mCarrierConfigManager.registerCarrierConfigChangeListener(mExecutor,
-                    mCarrierConfigChangeListener);
+            if (mCarrierConfigManager != null) {
+                mCarrierConfigManager.registerCarrierConfigChangeListener(mExecutor,
+                        mCarrierConfigChangeListener);
+            }
         }
 
         @Override
@@ -3343,6 +3365,10 @@ public class Vpn {
          */
         @Nullable
         private CarrierConfigInfo getCarrierConfigForUnderlyingNetwork() {
+            if (mCarrierConfigManager == null) {
+                return null;
+            }
+
             final int subId = getCellSubIdForNetworkCapabilities(mUnderlyingNetworkCapabilities);
             if (subId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
                 Log.d(TAG, "Underlying network is not a cellular network");
@@ -3962,8 +3988,10 @@ public class Vpn {
 
             resetIkeState();
 
-            mCarrierConfigManager.unregisterCarrierConfigChangeListener(
-                    mCarrierConfigChangeListener);
+            if (mCarrierConfigManager != null) {
+                mCarrierConfigManager.unregisterCarrierConfigChangeListener(
+                        mCarrierConfigChangeListener);
+            }
             mConnectivityManager.unregisterNetworkCallback(mNetworkCallback);
 
             mExecutor.shutdown();

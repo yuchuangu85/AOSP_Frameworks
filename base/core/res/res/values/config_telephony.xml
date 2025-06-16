@@ -64,6 +64,13 @@
     <integer name="auto_data_switch_performance_stability_time_threshold_millis">120000</integer>
     <java-symbol type="integer" name="auto_data_switch_performance_stability_time_threshold_millis" />
 
+    <!-- Define the bar for switching data back to the default SIM when both SIMs are out of service
+         in milliseconds. A value of 0 means an immediate switch, otherwise for a negative value,
+         the threshold defined by auto_data_switch_availability_stability_time_threshold_millis
+         will be used instead. -->
+    <integer name="auto_data_switch_availability_switchback_stability_time_threshold_millis">150000</integer>
+    <java-symbol type="integer" name="auto_data_switch_availability_switchback_stability_time_threshold_millis" />
+
     <!-- Define the maximum retry times when a validation for switching failed.-->
     <integer name="auto_data_switch_validation_max_retry">7</integer>
     <java-symbol type="integer" name="auto_data_switch_validation_max_retry" />
@@ -73,18 +80,13 @@
     <bool name="auto_data_switch_ping_test_before_switch">true</bool>
     <java-symbol type="bool" name="auto_data_switch_ping_test_before_switch" />
 
-    <!-- TODO: remove after V -->
-    <!-- Boolean indicating whether allow to use a roaming nonDDS if user enabled its roaming. -->
-    <bool name="auto_data_switch_allow_roaming">true</bool>
-    <java-symbol type="bool" name="auto_data_switch_allow_roaming" />
-
     <!-- Define the tolerated gap of score for auto data switch decision, larger than which the
          device will switch to the SIM with higher score. The score is used in conjunction with the
          score table defined in
          CarrierConfigManager#KEY_AUTO_DATA_SWITCH_RAT_SIGNAL_SCORE_STRING_ARRAY.
          If 0, the device always switch to the higher score SIM.
          If < 0, the network type and signal strength based auto switch is disabled. -->
-    <integer name="auto_data_switch_score_tolerance">-1</integer>
+    <integer name="auto_data_switch_score_tolerance">7000</integer>
     <java-symbol type="integer" name="auto_data_switch_score_tolerance" />
 
     <!-- Boolean indicating whether the Iwlan data service supports persistence of iwlan ipsec
@@ -237,6 +239,13 @@
     <integer name="config_emergency_call_wait_for_connection_timeout_millis">20000</integer>
     <java-symbol type="integer" name="config_emergency_call_wait_for_connection_timeout_millis" />
 
+    <!-- The time duration in millis after which Telephony will stop waiting for the OFF state
+         from cellular modem, consider the request to power off cellular modem as failed, and thus
+         treat the cellular modem state as ON.
+     -->
+    <integer name="config_satellite_wait_for_cellular_modem_off_timeout_millis">120000</integer>
+    <java-symbol type="integer" name="config_satellite_wait_for_cellular_modem_off_timeout_millis" />
+
     <!-- Indicates the data limit in bytes that can be used for bootstrap sim until factory reset.
          -1 means unlimited. -->
     <integer name="config_esim_bootstrap_data_limit_bytes">-1</integer>
@@ -252,7 +261,24 @@
          to identify providers that should be ignored if the carrier config
          carrier_supported_satellite_services_per_provider_bundle does not support them.
          -->
-    <string-array name="config_satellite_providers" translatable="false"></string-array>
+    <string-array name="config_satellite_providers" translatable="false">
+        <!-- T-Mobile - USA -->
+        <item>"310830"</item>
+        <!-- Entel Chile - Chile -->
+        <item>"73029"</item>
+        <!-- KDDI - Japan -->
+        <item>"44055"</item>
+        <!-- Kyivstar - Ukraine -->
+        <item>"255707"</item>
+        <!-- One NZ - New Zealand -->
+        <item>"53013"</item>
+        <!-- Optus - Australia -->
+        <item>"50559"</item>
+        <!-- Rogers - Canada -->
+        <item>"302723"</item>
+        <!-- Telstra - Australia -->
+        <item>"50511"</item>
+    </string-array>
     <java-symbol type="array" name="config_satellite_providers" />
 
     <!-- The identifier of the satellite's SIM profile. The identifier is composed of MCC and MNC
@@ -275,12 +301,27 @@
     <string name="config_satellite_emergency_handover_intent_action" translatable="false"></string>
     <java-symbol type="string" name="config_satellite_emergency_handover_intent_action" />
 
+    <!-- The action of the intent that hidden menu sends to the app to launch demo mode for sos
+     emergency messaging via satellite. -->
+    <string name="config_satellite_demo_mode_sos_intent_action" translatable="false"></string>
+    <java-symbol type="string" name="config_satellite_demo_mode_sos_intent_action" />
+
+    <!-- The action of the intent that hidden menu sends to the app to launch esp loopback test mode
+     for sos emergency messaging via satellite. -->
+    <string name="config_satellite_test_with_esp_replies_intent_action" translatable="false"></string>
+    <java-symbol type="string" name="config_satellite_test_with_esp_replies_intent_action" />
+
     <!-- Whether outgoing satellite datagrams should be sent to modem in demo mode. When satellite
          is enabled for demo mode, if this config is enabled, outgoing datagrams will be sent to
          modem; otherwise, success results will be returned. If demo mode is disabled, outgoing
          datagrams are always sent to modem. -->
     <bool name="config_send_satellite_datagram_to_modem_in_demo_mode">false</bool>
     <java-symbol type="bool" name="config_send_satellite_datagram_to_modem_in_demo_mode" />
+
+    <!-- Whether the device supports disabling satellite while satellite enabling is in progress.
+         -->
+    <bool name="config_support_disable_satellite_while_enable_in_progress">true</bool>
+    <java-symbol type="bool" name="config_support_disable_satellite_while_enable_in_progress" />
 
     <!-- List of country codes where oem-enabled satellite services are either allowed or disallowed
          by the device. Each country code is a lowercase 2 character ISO-3166-1 alpha-2.
@@ -300,6 +341,12 @@
          -->
     <bool name="config_oem_enabled_satellite_access_allow">true</bool>
     <java-symbol type="bool" name="config_oem_enabled_satellite_access_allow" />
+
+    <!-- Whether the satellite modem support concurrent TN scanning while device is in
+         NTN mode.
+         -->
+    <bool name="config_satellite_modem_support_concurrent_tn_scanning">true</bool>
+    <java-symbol type="bool" name="config_satellite_modem_support_concurrent_tn_scanning" />
 
     <!-- The time duration in seconds which is used to decide whether the Location returned from
          LocationManager#getLastKnownLocation is fresh.
@@ -393,12 +440,6 @@
     <bool name="config_wait_for_device_alignment_in_demo_datagram">false</bool>
     <java-symbol type="bool" name="config_wait_for_device_alignment_in_demo_datagram" />
 
-    <!-- Boolean indicating whether to enable MMS to be attempted on IWLAN if possible, even if
-     existing cellular networks already supports IWLAN.
-     -->
-    <bool name="force_iwlan_mms_feature_enabled">false</bool>
-    <java-symbol type="bool" name="force_iwlan_mms_feature_enabled" />
-
     <!-- The time duration in millis after which Telephony will abort the last message datagram
      sending requests. Telephony starts a timer when receiving a last message datagram sending
      request in either OFF, IDLE, or NOT_CONNECTED state. In NOT_CONNECTED, the duration of the
@@ -430,4 +471,79 @@
     <bool name="config_dropboxmanager_persistent_logging_enabled">false</bool>
     <java-symbol type="bool" name="config_dropboxmanager_persistent_logging_enabled" />
 
+    <!-- Telephony satellite gateway class name for handling carrier roaming to satellite is using ESOS messaging. -->
+    <string name="config_satellite_carrier_roaming_esos_provisioned_class" translatable="false"></string>
+    <java-symbol type="string" name="config_satellite_carrier_roaming_esos_provisioned_class" />
+
+    <!-- The time duration in minutes to wait before retry validating a possible change
+         in satellite allowed region. The default value is 10 minutes. -->
+    <integer name="config_satellite_delay_minutes_before_retry_validating_possible_change_in_allowed_region">10</integer>
+    <java-symbol type="integer" name="config_satellite_delay_minutes_before_retry_validating_possible_change_in_allowed_region" />
+
+    <!-- The maximum retry count to validate a possible change in satellite allowed region.
+         The default value is 3 minutes. -->
+    <integer name="config_satellite_max_retry_count_for_validating_possible_change_in_allowed_region">3</integer>
+    <java-symbol type="integer" name="config_satellite_max_retry_count_for_validating_possible_change_in_allowed_region" />
+
+    <!-- The time duration in minutes for location query throttle interval.
+         The default value is 10 minutes. -->
+    <integer name="config_satellite_location_query_throttle_interval_minutes">10</integer>
+    <java-symbol type="integer" name="config_satellite_location_query_throttle_interval_minutes" />
+
+    <!-- The file contains satellite access configuration like supported frequencies, bands,
+    satellite positions, and so on -->
+    <string name="satellite_access_config_file" translatable="false"></string>
+    <java-symbol type="string" name="satellite_access_config_file" />
+
+    <!-- A string defines the NIDD (Non-IP Data Delivery) APN to be used for satellite attachment. For more on NIDD,
+         see 3GPP TS 29.542. This config is used for an NTN-only subscription, which requires activation before being used.
+         -->
+    <string name="config_satellite_nidd_apn_name" translatable="false"></string>
+    <java-symbol type="string" name="config_satellite_nidd_apn_name" />
+
+    <!-- Boolean indicating whether to enable MT SMS polling for NB IOT NTN. -->
+    <bool name="config_enabled_mt_sms_polling">true</bool>
+    <java-symbol type="bool" name="config_enabled_mt_sms_polling" />
+
+    <!-- Text to be used for MT SMS polling in NB IOT NTN. -->
+    <string name="config_mt_sms_polling_text" translatable="false">DU\\\#MMYSM€S2BIG\\\#NORED\\\!</string>
+    <java-symbol type="string" name="config_mt_sms_polling_text" />
+
+    <!-- The time duration in millis after which Telephony can send another MT SMS polling for NB IOT NTN -->
+    <integer name="config_mt_sms_polling_throttle_millis">300000</integer>
+    <java-symbol type="integer" name="config_mt_sms_polling_throttle_millis" />
+
+    <!-- The receiver class of the intent that hidden menu sends to start satellite non-emergency mode -->
+    <string name="config_satellite_carrier_roaming_non_emergency_session_class" translatable="false"></string>
+    <java-symbol type="string" name="config_satellite_carrier_roaming_non_emergency_session_class" />
+
+    <!-- Whether to show the system notification to users whenever there is a change
+         in the satellite availability state at the current location. -->
+    <bool name="config_satellite_should_notify_availability">true</bool>
+    <java-symbol type="bool" name="config_satellite_should_notify_availability" />
+
+    <!-- Whether to allow check message datagrams to be sent even when the satellite modem is in
+         not connected state. -->
+    <bool name="config_satellite_allow_check_message_in_not_connected">false</bool>
+    <java-symbol type="bool" name="config_satellite_allow_check_message_in_not_connected" />
+
+    <!-- Whether to allow TN scanning during satellite session. -->
+    <bool name="config_satellite_allow_tn_scanning_during_satellite_session">true</bool>
+    <java-symbol type="bool" name="config_satellite_allow_tn_scanning_during_satellite_session" />
+
+    <!-- List of integer tag Ids representing VZW satellite coverage. -->
+    <integer-array name="config_verizon_satellite_enabled_tagids">
+    </integer-array>
+    <java-symbol type="array" name="config_verizon_satellite_enabled_tagids" />
+
+    <!-- Telephony config for un-supported network capabilities in string array
+         format. Refer to getNetworkCapabilityFromString() in DataUtils.java for available
+         capabilities. -->
+    <string-array name="config_unsupported_network_capabilities" translatable="false"></string-array>
+    <java-symbol type="array" name="config_unsupported_network_capabilities" />
+
+    <!-- Whether to enable APDU sender optimization i.e. a logical channel is opened and
+         kept open for multiple APDU commands within one session.-->
+    <bool name="euicc_optimize_apdu_sender">false</bool>
+    <java-symbol type="bool" name="euicc_optimize_apdu_sender" />
 </resources>

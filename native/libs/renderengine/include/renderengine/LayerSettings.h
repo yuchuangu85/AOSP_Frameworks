@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <android/gui/BorderSettings.h>
+#include <gui/DisplayLuts.h>
 #include <math/mat4.h>
 #include <math/vec3.h>
 #include <renderengine/ExternalTexture.h>
@@ -31,6 +33,7 @@
 #include <ui/ShadowSettings.h>
 #include <ui/StretchEffect.h>
 #include <ui/Transform.h>
+#include "ui/EdgeExtensionEffect.h"
 
 #include <iosfwd>
 
@@ -68,6 +71,10 @@ struct Buffer {
 struct Geometry {
     // Boundaries of the layer.
     FloatRect boundaries = FloatRect();
+
+    // Boundaries of the layer before transparent region hint is subtracted.
+    // Effects like shadows and outline ignore the transparent region hint.
+    FloatRect originalBounds = FloatRect();
 
     // Transform matrix to apply to mesh coordinates.
     mat4 positionTransform = mat4();
@@ -125,6 +132,8 @@ struct LayerSettings {
 
     ShadowSettings shadow;
 
+    gui::BorderSettings borderSettings;
+
     int backgroundBlurRadius = 0;
 
     std::vector<BlurRegion> blurRegions;
@@ -134,6 +143,7 @@ struct LayerSettings {
     mat4 blurRegionTransform = mat4();
 
     StretchEffect stretchEffect;
+    EdgeExtensionEffect edgeExtensionEffect;
 
     // Name associated with the layer for debugging purposes.
     std::string name;
@@ -143,6 +153,8 @@ struct LayerSettings {
     // If white point nits are unknown, then this layer is assumed to have the
     // same luminance as the brightest layer in the scene.
     float whitePointNits = -1.f;
+
+    std::shared_ptr<gui::DisplayLuts> luts;
 };
 
 // Keep in sync with custom comparison function in
@@ -183,7 +195,9 @@ static inline bool operator==(const LayerSettings& lhs, const LayerSettings& rhs
             lhs.skipContentDraw == rhs.skipContentDraw && lhs.shadow == rhs.shadow &&
             lhs.backgroundBlurRadius == rhs.backgroundBlurRadius &&
             lhs.blurRegionTransform == rhs.blurRegionTransform &&
-            lhs.stretchEffect == rhs.stretchEffect && lhs.whitePointNits == rhs.whitePointNits;
+            lhs.stretchEffect == rhs.stretchEffect &&
+            lhs.edgeExtensionEffect == rhs.edgeExtensionEffect &&
+            lhs.whitePointNits == rhs.whitePointNits && lhs.luts == rhs.luts;
 }
 
 static inline void PrintTo(const Buffer& settings, ::std::ostream* os) {
@@ -254,6 +268,10 @@ static inline void PrintTo(const StretchEffect& effect, ::std::ostream* os) {
     *os << "\n}";
 }
 
+static inline void PrintTo(const EdgeExtensionEffect& effect, ::std::ostream* os) {
+    *os << effect;
+}
+
 static inline void PrintTo(const LayerSettings& settings, ::std::ostream* os) {
     *os << "LayerSettings for '" << settings.name.c_str() << "' {";
     *os << "\n    .geometry = ";
@@ -285,7 +303,15 @@ static inline void PrintTo(const LayerSettings& settings, ::std::ostream* os) {
         *os << "\n    .stretchEffect = ";
         PrintTo(settings.stretchEffect, os);
     }
+
+    if (settings.edgeExtensionEffect.hasEffect()) {
+        *os << "\n    .edgeExtensionEffect = " << settings.edgeExtensionEffect;
+    }
     *os << "\n    .whitePointNits = " << settings.whitePointNits;
+    if (settings.luts) {
+        *os << "\n    .luts = ";
+        PrintTo(settings.luts, os);
+    }
     *os << "\n}";
 }
 

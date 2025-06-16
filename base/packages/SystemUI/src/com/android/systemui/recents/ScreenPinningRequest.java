@@ -57,8 +57,8 @@ import com.android.systemui.CoreStartable;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.navigationbar.NavigationBarController;
-import com.android.systemui.navigationbar.NavigationBarView;
 import com.android.systemui.navigationbar.NavigationModeController;
+import com.android.systemui.navigationbar.views.NavigationBarView;
 import com.android.systemui.res.R;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.shared.system.QuickStepContract;
@@ -106,13 +106,13 @@ public class ScreenPinningRequest implements
             NavigationModeController navigationModeController,
             Lazy<NavigationBarController> navigationBarControllerLazy,
             BroadcastDispatcher broadcastDispatcher,
-            UserTracker userTracker) {
+            UserTracker userTracker,
+            WindowManager windowManager) {
         mContext = context;
         mNavigationBarControllerLazy = navigationBarControllerLazy;
         mAccessibilityService = (AccessibilityManager)
                 mContext.getSystemService(Context.ACCESSIBILITY_SERVICE);
-        mWindowManager = (WindowManager)
-                mContext.getSystemService(Context.WINDOW_SERVICE);
+        mWindowManager = windowManager;
         mNavBarMode = navigationModeController.addListener(this);
         mBroadcastDispatcher = broadcastDispatcher;
         mUserTracker = userTracker;

@@ -24,6 +24,7 @@ import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.DisplayCutout;
 import android.view.View;
 import android.view.animation.Animation;
 import android.view.animation.OvershootInterpolator;
@@ -72,6 +73,7 @@ class MenuAnimationController {
     private final Handler mHandler;
     private boolean mIsFadeEffectEnabled;
     private Runnable mSpringAnimationsEndAction;
+    private PointF mAnimationEndPosition = new PointF();
 
     // Cache the animations state of {@link DynamicAnimation.TRANSLATION_X} and {@link
     // DynamicAnimation.TRANSLATION_Y} to be well controlled by the touch handler
@@ -104,10 +106,12 @@ class MenuAnimationController {
                     @Override
                     public void onRadiiAnimationStop() {}
                 });
+        mAnimationEndPosition = mMenuView.getMenuPosition();
     }
 
     void moveToPosition(PointF position) {
         moveToPosition(position, /* animateMovement = */ false);
+        mAnimationEndPosition = position;
     }
 
     /* Moves position without updating underlying percentage position. Can be animated. */
@@ -129,6 +133,7 @@ class MenuAnimationController {
         } else {
             DynamicAnimation.TRANSLATION_X.setValue(mMenuView, positionX);
         }
+        mAnimationEndPosition.x = positionX;
     }
 
     void moveToPositionY(float positionY) {
@@ -144,6 +149,7 @@ class MenuAnimationController {
         } else {
             DynamicAnimation.TRANSLATION_Y.setValue(mMenuView, positionY);
         }
+        mAnimationEndPosition.y = positionY;
     }
 
     void moveToPositionYIfNeeded(float positionY) {
@@ -192,7 +198,7 @@ class MenuAnimationController {
         constrainPositionAndUpdate(position, /* writeToPosition = */ true);
     }
 
-    void flingMenuThenSpringToEdge(float x, float velocityX, float velocityY) {
+    void flingMenuThenSpringToEdge(PointF position, float velocityX, float velocityY) {
         final boolean shouldMenuFlingLeft = isOnLeftSide()
                 ? velocityX < ESCAPE_VELOCITY
                 : velocityX < -ESCAPE_VELOCITY;
@@ -200,9 +206,17 @@ class MenuAnimationController {
         final Rect draggableBounds = mMenuView.getMenuDraggableBounds();
         final float finalPositionX = shouldMenuFlingLeft
                 ? draggableBounds.left : draggableBounds.right;
-
+        final DisplayCutout displayCutout = mMenuViewAppearance.getDisplayCutout();
+        final float finalPositionY =
+                (displayCutout == null) ? position.y
+                        : mMenuViewAppearance.avoidVerticalDisplayCutout(
+                                position.y, draggableBounds,
+                                shouldMenuFlingLeft
+                                        ? displayCutout.getBoundingRectLeft()
+                                        : displayCutout.getBoundingRectRight()
+                        );
         final float minimumVelocityToReachEdge =
-                (finalPositionX - x) * (FLING_FRICTION_SCALAR * DEFAULT_FRICTION);
+                (finalPositionX - position.x) * (FLING_FRICTION_SCALAR * DEFAULT_FRICTION);
 
         final float startXVelocity = shouldMenuFlingLeft
                 ? Math.min(minimumVelocityToReachEdge, velocityX)
@@ -214,11 +228,19 @@ class MenuAnimationController {
                 createSpringForce(),
                 finalPositionX);
 
-        flingThenSpringMenuWith(DynamicAnimation.TRANSLATION_Y,
-                velocityY,
-                FLING_FRICTION_SCALAR,
-                createSpringForce(),
-                /* finalPosition= */ null);
+        if (com.android.systemui.Flags.floatingMenuDisplayCutoutSupport()) {
+            flingThenSpringMenuWith(DynamicAnimation.TRANSLATION_Y,
+                    velocityY,
+                    FLING_FRICTION_SCALAR,
+                    createSpringForce(),
+                    (finalPositionY != position.y) ? finalPositionY : null);
+        } else {
+            flingThenSpringMenuWith(DynamicAnimation.TRANSLATION_Y,
+                    velocityY,
+                    FLING_FRICTION_SCALAR,
+                    createSpringForce(),
+                    /* finalPosition= */ null);
+        }
     }
 
     private void flingThenSpringMenuWith(DynamicAnimation.ViewProperty property, float velocity,
@@ -259,6 +281,9 @@ class MenuAnimationController {
 
         cancelAnimation(property);
         mPositionAnimations.put(property, flingAnimation);
+        if (finalPosition != null) {
+            setAnimationEndPosition(property, finalPosition);
+        }
         flingAnimation.start();
     }
 
@@ -292,6 +317,7 @@ class MenuAnimationController {
 
         cancelAnimation(property);
         mPositionAnimations.put(property, springAnimation);
+        setAnimationEndPosition(property, finalPosition);
         springAnimation.animateToFinalPosition(finalPosition);
     }
 
@@ -383,6 +409,21 @@ class MenuAnimationController {
         }
 
         mPositionAnimations.get(property).cancel();
+    }
+
+    private void setAnimationEndPosition(
+            DynamicAnimation.ViewProperty property, Float endPosition) {
+        if (property.equals(DynamicAnimation.TRANSLATION_X)) {
+            mAnimationEndPosition.x = endPosition;
+        }
+        if (property.equals(DynamicAnimation.TRANSLATION_Y)) {
+            mAnimationEndPosition.y = endPosition;
+        }
+    }
+
+    void skipAnimations() {
+        cancelAnimations();
+        moveToPosition(mAnimationEndPosition, false);
     }
 
     @VisibleForTesting

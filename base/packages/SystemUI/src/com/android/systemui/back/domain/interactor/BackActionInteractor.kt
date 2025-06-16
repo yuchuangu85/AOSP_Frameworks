@@ -21,6 +21,7 @@ import android.window.OnBackAnimationCallback
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.window.WindowOnBackInvokedDispatcher
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.CoreStartable
 import com.android.systemui.Flags.predictiveBackAnimateShade
 import com.android.systemui.dagger.SysUISingleton
@@ -35,7 +36,6 @@ import com.android.systemui.statusbar.StatusBarState
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 
 /** Handles requests to go back either from a button or gesture. */
 @SysUISingleton
@@ -47,7 +47,9 @@ constructor(
     private val statusBarKeyguardViewManager: StatusBarKeyguardViewManager,
     private val shadeController: ShadeController,
     private val notificationShadeWindowController: NotificationShadeWindowController,
-    private val windowRootViewVisibilityInteractor: WindowRootViewVisibilityInteractor
+    private val windowRootViewVisibilityInteractor: WindowRootViewVisibilityInteractor,
+    private val shadeBackActionInteractor: ShadeBackActionInteractor,
+    private val qsController: QuickSettingsController,
 ) : CoreStartable {
 
     private var isCallbackRegistered = false
@@ -76,14 +78,6 @@ constructor(
     private val onBackInvokedDispatcher: WindowOnBackInvokedDispatcher?
         get() =
             notificationShadeWindowController.windowRootView?.viewRootImpl?.onBackInvokedDispatcher
-
-    private lateinit var shadeBackActionInteractor: ShadeBackActionInteractor
-    private lateinit var qsController: QuickSettingsController
-
-    fun setup(qsController: QuickSettingsController, svController: ShadeBackActionInteractor) {
-        this.qsController = qsController
-        this.shadeBackActionInteractor = svController
-    }
 
     override fun start() {
         scope.launch {
@@ -117,9 +111,6 @@ constructor(
             shadeBackActionInteractor.animateCollapseQs(false)
             return true
         }
-        if (shadeBackActionInteractor.closeUserSwitcherIfOpen()) {
-            return true
-        }
         if (shouldBackBeHandled()) {
             if (shadeBackActionInteractor.canBeCollapsed()) {
                 // this is the Shade dismiss animation, so make sure QQS closes when it ends.
@@ -129,6 +120,10 @@ constructor(
             return true
         }
         return false
+    }
+
+    fun isBackCallbackRegistered(): Boolean {
+        return isCallbackRegistered
     }
 
     private fun registerBackCallback() {

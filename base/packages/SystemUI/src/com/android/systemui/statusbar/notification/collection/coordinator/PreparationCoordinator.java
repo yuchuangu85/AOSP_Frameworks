@@ -27,14 +27,17 @@ import android.os.Trace;
 import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.statusbar.IStatusBarService;
+import com.android.systemui.statusbar.notification.collection.BundleEntry;
 import com.android.systemui.statusbar.notification.collection.GroupEntry;
 import com.android.systemui.statusbar.notification.collection.ListEntry;
+import com.android.systemui.statusbar.notification.collection.PipelineEntry;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.ShadeListBuilder;
@@ -49,13 +52,19 @@ import com.android.systemui.statusbar.notification.collection.render.NotifViewBa
 import com.android.systemui.statusbar.notification.collection.render.NotifViewController;
 import com.android.systemui.statusbar.notification.row.NotifInflationErrorManager;
 import com.android.systemui.statusbar.notification.row.NotifInflationErrorManager.NotifInflationErrorListener;
+import com.android.systemui.statusbar.notification.row.icon.AppIconProvider;
+import com.android.systemui.statusbar.notification.row.icon.NotificationIconStyleProvider;
 import com.android.systemui.statusbar.notification.row.shared.AsyncGroupHeaderViewInflation;
 import com.android.systemui.statusbar.notification.row.shared.AsyncHybridViewInflation;
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import javax.inject.Inject;
 
@@ -104,6 +113,8 @@ public class PreparationCoordinator implements Coordinator {
     /** How long we can delay a group while waiting for all children to inflate */
     private final long mMaxGroupInflationDelay;
     private final BindEventManagerImpl mBindEventManager;
+    private final AppIconProvider mAppIconProvider;
+    private final NotificationIconStyleProvider mNotificationIconStyleProvider;
 
     @Inject
     public PreparationCoordinator(
@@ -113,7 +124,9 @@ public class PreparationCoordinator implements Coordinator {
             NotifViewBarn viewBarn,
             NotifUiAdjustmentProvider adjustmentProvider,
             IStatusBarService service,
-            BindEventManagerImpl bindEventManager) {
+            BindEventManagerImpl bindEventManager,
+            AppIconProvider appIconProvider,
+            NotificationIconStyleProvider notificationIconStyleProvider) {
         this(
                 logger,
                 notifInflater,
@@ -122,6 +135,8 @@ public class PreparationCoordinator implements Coordinator {
                 adjustmentProvider,
                 service,
                 bindEventManager,
+                appIconProvider,
+                notificationIconStyleProvider,
                 CHILD_BIND_CUTOFF,
                 MAX_GROUP_INFLATION_DELAY);
     }
@@ -135,6 +150,8 @@ public class PreparationCoordinator implements Coordinator {
             NotifUiAdjustmentProvider adjustmentProvider,
             IStatusBarService service,
             BindEventManagerImpl bindEventManager,
+            AppIconProvider appIconProvider,
+            NotificationIconStyleProvider notificationIconStyleProvider,
             int childBindCutoff,
             long maxGroupInflationDelay) {
         mLogger = logger;
@@ -146,6 +163,8 @@ public class PreparationCoordinator implements Coordinator {
         mChildBindCutoff = childBindCutoff;
         mMaxGroupInflationDelay = maxGroupInflationDelay;
         mBindEventManager = bindEventManager;
+        mAppIconProvider = appIconProvider;
+        mNotificationIconStyleProvider = notificationIconStyleProvider;
     }
 
     @Override
@@ -155,6 +174,9 @@ public class PreparationCoordinator implements Coordinator {
                 () -> mNotifInflatingFilter.invalidateList("adjustmentProviderChanged"));
 
         pipeline.addCollectionListener(mNotifCollectionListener);
+        if (android.app.Flags.notificationsRedesignAppIcons()) {
+            pipeline.addOnBeforeTransformGroupsListener(this::purgeCaches);
+        }
         // Inflate after grouping/sorting since that affects what views to inflate.
         pipeline.addOnBeforeFinalizeFilterListener(this::inflateAllRequiredViews);
         pipeline.addFinalizeFilter(mNotifInflationErrorFilter);
@@ -213,14 +235,14 @@ public class PreparationCoordinator implements Coordinator {
          */
         @Override
         public boolean shouldFilterOut(NotificationEntry entry, long now) {
-            final GroupEntry parent = requireNonNull(entry.getParent());
-            Boolean isMemberOfDelayedGroup = mIsDelayedGroupCache.get(parent);
-            if (isMemberOfDelayedGroup == null) {
+            final PipelineEntry pipelineEntryParent = requireNonNull(entry.getParent());
+            Boolean isMemberOfDelayedGroup = mIsDelayedGroupCache.get(pipelineEntryParent);
+            if (isMemberOfDelayedGroup == null && pipelineEntryParent instanceof GroupEntry) {
+                GroupEntry parent = (GroupEntry) pipelineEntryParent;
                 isMemberOfDelayedGroup = shouldWaitForGroupToInflate(parent, now);
                 mIsDelayedGroupCache.put(parent, isMemberOfDelayedGroup);
             }
-
-            return !isInflated(entry) || isMemberOfDelayedGroup;
+            return !isInflated(entry) || (isMemberOfDelayedGroup != null && isMemberOfDelayedGroup);
         }
 
         @Override
@@ -260,10 +282,42 @@ public class PreparationCoordinator implements Coordinator {
         }
     };
 
-    private void inflateAllRequiredViews(List<ListEntry> entries) {
+    private void purgeCaches(Collection<PipelineEntry> entries) {
+        Set<String> wantedPackages = getPackages(entries);
+        mAppIconProvider.purgeCache(wantedPackages);
+        mNotificationIconStyleProvider.purgeCache(wantedPackages);
+    }
+
+    /**
+     * Get all app packages present in {@param entries}.
+     */
+    private static @NonNull Set<String> getPackages(Collection<PipelineEntry> entries) {
+        Set<String> packages = new HashSet<>();
+        for (PipelineEntry entry : entries) {
+            NotificationEntry notificationEntry = entry.getRepresentativeEntry();
+            if (notificationEntry == null) {
+                Log.wtf(TAG, "notification entry " + entry.getKey()
+                        + " has no representative entry");
+                continue;
+            }
+            packages.add(notificationEntry.getSbn().getPackageName());
+        }
+        return packages;
+    }
+
+    private void inflateAllRequiredViews(List<PipelineEntry> entries) {
         for (int i = 0, size = entries.size(); i < size; i++) {
-            ListEntry entry = entries.get(i);
-            if (entry instanceof GroupEntry) {
+            PipelineEntry entry = entries.get(i);
+            if (NotificationBundleUi.isEnabled() && entry instanceof BundleEntry bundleEntry) {
+                for (ListEntry listEntry : bundleEntry.getChildren()) {
+                    if (listEntry instanceof GroupEntry groupEntry) {
+                        inflateRequiredGroupViews(groupEntry);
+                    } else {
+                        NotificationEntry notifEntry = (NotificationEntry) listEntry;
+                        inflateRequiredNotifViews(notifEntry);
+                    }
+                }
+            } else if (entry instanceof GroupEntry) {
                 GroupEntry groupEntry = (GroupEntry) entry;
                 inflateRequiredGroupViews(groupEntry);
             } else {
@@ -374,7 +428,7 @@ public class PreparationCoordinator implements Coordinator {
                 /* showSnooze = */ adjustment.isSnoozeEnabled(),
                 /* isChildInGroup = */ adjustment.isChildInGroup(),
                 /* isGroupSummary = */ adjustment.isGroupSummary(),
-                /* needsRedaction = */ adjustment.getNeedsRedaction()
+                /* needsRedaction = */ adjustment.getRedactionType()
         );
     }
 

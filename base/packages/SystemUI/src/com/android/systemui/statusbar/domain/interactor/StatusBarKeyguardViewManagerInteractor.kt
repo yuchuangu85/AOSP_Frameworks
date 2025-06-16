@@ -23,6 +23,7 @@ import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInterac
 import com.android.systemui.keyguard.domain.interactor.WindowManagerLockscreenVisibilityInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.power.domain.interactor.PowerInteractor
+import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.util.kotlin.sample
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
@@ -36,10 +37,7 @@ import kotlinx.coroutines.flow.merge
 /**
  * Whether to set the status bar keyguard view occluded or not, and whether to animate that change.
  */
-data class OccludedState(
-    val occluded: Boolean,
-    val animate: Boolean = false,
-)
+data class OccludedState(val occluded: Boolean, val animate: Boolean = false)
 
 /** Handles logic around calls to [StatusBarKeyguardViewManager] in legacy code. */
 @Deprecated("Will be removed once all of SBKVM's responsibilies are refactored.")
@@ -90,17 +88,22 @@ constructor(
 
     /** Occlusion state to apply whenever a keyguard transition is FINISHED. */
     private val occlusionStateFromFinishedStep =
-        keyguardTransitionInteractor.finishedKeyguardTransitionStep
-            .sample(keyguardOcclusionInteractor.isShowWhenLockedActivityOnTop, ::Pair)
-            .map { (finishedStep, showWhenLockedOnTop) ->
+        combine(
+                keyguardTransitionInteractor.isFinishedIn(
+                    content = Scenes.Gone,
+                    stateWithoutSceneContainer = KeyguardState.GONE,
+                ),
+                keyguardTransitionInteractor.isFinishedIn(KeyguardState.OCCLUDED),
+                keyguardOcclusionInteractor.isShowWhenLockedActivityOnTop,
+                ::Triple,
+            )
+            .map { (isOnGone, isOnOccluded, showWhenLockedOnTop) ->
                 // If we're FINISHED in OCCLUDED, we want to render as occluded. We also need to
                 // remain occluded if a SHOW_WHEN_LOCKED activity is on the top of the task stack,
                 // and we're in any state other than GONE. This is necessary, for example, when we
                 // transition from OCCLUDED to a bouncer state. Otherwise, we should not be
                 // occluded.
-                val occluded =
-                    finishedStep.to == KeyguardState.OCCLUDED ||
-                        (showWhenLockedOnTop && finishedStep.to != KeyguardState.GONE)
+                val occluded = isOnOccluded || (showWhenLockedOnTop && !isOnGone)
                 OccludedState(occluded = occluded, animate = false)
             }
 

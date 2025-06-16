@@ -17,8 +17,13 @@ package com.android.systemui.notetask
 
 import android.app.role.RoleManager
 import android.app.role.RoleManager.ROLE_NOTES
+import android.hardware.input.InputManager
+import android.hardware.input.KeyGestureEvent
 import android.os.UserHandle
 import android.os.UserManager
+import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
+import android.platform.test.flag.junit.SetFlagsRule
 import android.view.KeyEvent
 import android.view.KeyEvent.ACTION_DOWN
 import android.view.KeyEvent.ACTION_UP
@@ -28,11 +33,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.notetask.NoteTaskEntryPoint.KEYBOARD_SHORTCUT
+import com.android.systemui.notetask.NoteTaskEntryPoint.TAIL_BUTTON
 import com.android.systemui.settings.FakeUserTracker
 import com.android.systemui.statusbar.CommandQueue
 import com.android.systemui.util.concurrency.FakeExecutor
-import com.android.systemui.util.mockito.any
-import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.mockito.whenever
 import com.android.systemui.util.mockito.withArgCaptor
@@ -40,24 +45,30 @@ import com.android.systemui.util.time.FakeSystemClock
 import com.android.wm.shell.bubbles.Bubbles
 import com.google.common.truth.Truth.assertThat
 import java.util.Optional
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mock
+import org.mockito.Mockito.anyList
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyZeroInteractions
+import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.MockitoAnnotations.initMocks
+import org.mockito.kotlin.any
+import org.mockito.kotlin.eq
 
 /** atest SystemUITests:NoteTaskInitializerTest */
-@OptIn(ExperimentalCoroutinesApi::class, InternalNoteTaskApi::class)
+@OptIn(InternalNoteTaskApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 internal class NoteTaskInitializerTest : SysuiTestCase() {
 
+    @get:Rule val setFlagsRule = SetFlagsRule()
+
     @Mock lateinit var commandQueue: CommandQueue
+    @Mock lateinit var inputManager: InputManager
     @Mock lateinit var bubbles: Bubbles
     @Mock lateinit var controller: NoteTaskController
     @Mock lateinit var roleManager: RoleManager
@@ -74,10 +85,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
         whenever(keyguardMonitor.isUserUnlocked(userTracker.userId)).thenReturn(true)
     }
 
-    private fun createUnderTest(
-        isEnabled: Boolean,
-        bubbles: Bubbles?,
-    ): NoteTaskInitializer =
+    private fun createUnderTest(isEnabled: Boolean, bubbles: Bubbles?): NoteTaskInitializer =
         NoteTaskInitializer(
             controller = controller,
             commandQueue = commandQueue,
@@ -86,6 +94,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
             roleManager = roleManager,
             userTracker = userTracker,
             keyguardUpdateMonitor = keyguardMonitor,
+            inputManager = inputManager,
             backgroundExecutor = executor,
         )
 
@@ -94,7 +103,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
         code: Int,
         downTime: Long = 0L,
         eventTime: Long = 0L,
-        metaState: Int = 0
+        metaState: Int = 0,
     ): KeyEvent = KeyEvent(downTime, eventTime, action, code, 0 /*repeat*/, metaState)
 
     @Test
@@ -103,7 +112,6 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
 
         createUnderTest(isEnabled = true, bubbles = bubbles).initialize()
 
-        verify(commandQueue).addCallback(any())
         verify(roleManager).addOnRoleHoldersChangedListenerAsUser(any(), any(), any())
         verify(controller).updateNoteTaskForCurrentUserAndManagedProfiles()
         verify(keyguardMonitor).registerCallback(any())
@@ -115,7 +123,6 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
 
         createUnderTest(isEnabled = true, bubbles = bubbles).initialize()
 
-        verify(commandQueue).addCallback(any())
         verify(roleManager).addOnRoleHoldersChangedListenerAsUser(any(), any(), any())
         verify(controller, never()).setNoteTaskShortcutEnabled(any(), any())
         verify(keyguardMonitor).registerCallback(any())
@@ -128,7 +135,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
 
         underTest.initialize()
 
-        verifyZeroInteractions(
+        verifyNoMoreInteractions(
             commandQueue,
             bubbles,
             controller,
@@ -144,7 +151,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
 
         underTest.initialize()
 
-        verifyZeroInteractions(
+        verifyNoMoreInteractions(
             commandQueue,
             bubbles,
             controller,
@@ -155,12 +162,13 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
     }
 
     @Test
+    @DisableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
     fun initialize_handleSystemKey() {
         val expectedKeyEvent =
             createKeyEvent(
                 ACTION_DOWN,
                 KEYCODE_N,
-                metaState = KeyEvent.META_META_ON or KeyEvent.META_CTRL_ON
+                metaState = KeyEvent.META_META_ON or KeyEvent.META_CTRL_ON,
             )
         val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
         underTest.initialize()
@@ -169,6 +177,80 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
         callback.handleSystemKey(expectedKeyEvent)
 
         verify(controller).showNoteTask(any())
+    }
+
+    @Test
+    @EnableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
+    fun initialize_keyGestureTypeOpenNotes_isRegistered() {
+        val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
+        underTest.initialize()
+        verify(inputManager)
+            .registerKeyGestureEventHandler(
+                eq(listOf(KeyGestureEvent.KEY_GESTURE_TYPE_OPEN_NOTES)),
+                any(),
+            )
+    }
+
+    @Test
+    @EnableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
+    fun handlesShortcut_keyGestureTypeOpenNotes() {
+        val gestureEvent =
+            KeyGestureEvent.Builder()
+                .setKeyGestureType(KeyGestureEvent.KEY_GESTURE_TYPE_OPEN_NOTES)
+                .setAction(KeyGestureEvent.ACTION_GESTURE_COMPLETE)
+                .build()
+        val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
+        underTest.initialize()
+        val callback = withArgCaptor {
+            verify(inputManager).registerKeyGestureEventHandler(anyList(), capture())
+        }
+
+        callback.handleKeyGestureEvent(gestureEvent, null)
+        executor.runAllReady()
+
+        verify(controller).showNoteTask(eq(KEYBOARD_SHORTCUT))
+    }
+
+    @Test
+    @EnableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
+    fun handlesShortcut_stylusTailButton() {
+        val gestureEvent =
+            KeyGestureEvent.Builder()
+                .setKeycodes(intArrayOf(KEYCODE_STYLUS_BUTTON_TAIL))
+                .setKeyGestureType(KeyGestureEvent.KEY_GESTURE_TYPE_OPEN_NOTES)
+                .setAction(KeyGestureEvent.ACTION_GESTURE_COMPLETE)
+                .build()
+        val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
+        underTest.initialize()
+        val callback = withArgCaptor {
+            verify(inputManager).registerKeyGestureEventHandler(anyList(), capture())
+        }
+
+        callback.handleKeyGestureEvent(gestureEvent, null)
+        executor.runAllReady()
+
+        verify(controller).showNoteTask(eq(TAIL_BUTTON))
+    }
+
+    @Test
+    @EnableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
+    fun ignoresUnrelatedShortcuts() {
+        val gestureEvent =
+            KeyGestureEvent.Builder()
+                .setKeycodes(intArrayOf(KEYCODE_STYLUS_BUTTON_TAIL))
+                .setKeyGestureType(KeyGestureEvent.KEY_GESTURE_TYPE_HOME)
+                .setAction(KeyGestureEvent.ACTION_GESTURE_COMPLETE)
+                .build()
+        val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
+        underTest.initialize()
+        val callback = withArgCaptor {
+            verify(inputManager).registerKeyGestureEventHandler(anyList(), capture())
+        }
+
+        callback.handleKeyGestureEvent(gestureEvent, null)
+        executor.runAllReady()
+
+        verify(controller, never()).showNoteTask(any())
     }
 
     @Test
@@ -219,6 +301,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
     }
 
     @Test
+    @DisableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
     fun tailButtonGestureDetection_singlePress_shouldShowNoteTaskOnUp() {
         val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
         underTest.initialize()
@@ -237,6 +320,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
     }
 
     @Test
+    @DisableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
     fun tailButtonGestureDetection_doublePress_shouldNotShowNoteTaskTwice() {
         val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
         underTest.initialize()
@@ -259,6 +343,7 @@ internal class NoteTaskInitializerTest : SysuiTestCase() {
     }
 
     @Test
+    @DisableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER)
     fun tailButtonGestureDetection_longPress_shouldNotShowNoteTask() {
         val underTest = createUnderTest(isEnabled = true, bubbles = bubbles)
         underTest.initialize()

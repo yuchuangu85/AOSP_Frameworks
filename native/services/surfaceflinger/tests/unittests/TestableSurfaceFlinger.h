@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <variant>
@@ -43,26 +42,23 @@
 #include "FrontEnd/RequestedLayerState.h"
 #include "Layer.h"
 #include "NativeWindowSurface.h"
-#include "RenderArea.h"
-#include "Scheduler/MessageQueue.h"
 #include "Scheduler/RefreshRateSelector.h"
+#include "Scheduler/VSyncTracker.h"
+#include "Scheduler/VsyncController.h"
 #include "SurfaceFlinger.h"
 #include "TestableScheduler.h"
 #include "android/gui/ISurfaceComposerClient.h"
+
 #include "mock/DisplayHardware/MockComposer.h"
 #include "mock/DisplayHardware/MockDisplayMode.h"
-#include "mock/DisplayHardware/MockPowerAdvisor.h"
 #include "mock/MockEventThread.h"
 #include "mock/MockFrameTimeline.h"
 #include "mock/MockFrameTracer.h"
 #include "mock/MockSchedulerCallback.h"
-#include "mock/system/window/MockNativeWindow.h"
-
-#include "Scheduler/VSyncTracker.h"
-#include "Scheduler/VsyncController.h"
-#include "mock/MockVSyncDispatch.h"
 #include "mock/MockVSyncTracker.h"
 #include "mock/MockVsyncController.h"
+#include "mock/PowerAdvisor/MockPowerAdvisor.h"
+#include "mock/system/window/MockNativeWindow.h"
 
 namespace android {
 
@@ -88,9 +84,7 @@ class Factory final : public surfaceflinger::Factory {
 public:
     ~Factory() = default;
 
-    std::unique_ptr<HWComposer> createHWComposer(const std::string&) override {
-        return nullptr;
-    }
+    std::unique_ptr<HWComposer> createHWComposer(const std::string&) override { return nullptr; }
 
     std::unique_ptr<scheduler::VsyncConfiguration> createVsyncConfiguration(
             Fps /*currentRefreshRate*/) override {
@@ -189,13 +183,13 @@ public:
     }
 
     void setupComposer(std::unique_ptr<Hwc2::Composer> composer) {
-        mFlinger->mCompositionEngine->setHwComposer(
-                std::make_unique<impl::HWComposer>(std::move(composer)));
+        mFlinger->mHWComposer = std::make_unique<impl::HWComposer>(std::move(composer));
+        mFlinger->mCompositionEngine->setHwComposer(mFlinger->mHWComposer.get());
         mFlinger->mDisplayModeController.setHwComposer(
                 &mFlinger->mCompositionEngine->getHwComposer());
     }
 
-    void setupPowerAdvisor(std::unique_ptr<Hwc2::PowerAdvisor> powerAdvisor) {
+    void setupPowerAdvisor(std::unique_ptr<adpf::PowerAdvisor> powerAdvisor) {
         mFlinger->mPowerAdvisor = std::move(powerAdvisor);
     }
 
@@ -276,17 +270,6 @@ public:
 
         auto eventThread = makeMock<mock::EventThread>(options.useNiceMock);
         auto sfEventThread = makeMock<mock::EventThread>(options.useNiceMock);
-
-        EXPECT_CALL(*eventThread, registerDisplayEventConnection(_));
-        EXPECT_CALL(*eventThread, createEventConnection(_, _))
-                .WillOnce(Return(sp<EventThreadConnection>::make(eventThread.get(),
-                                                                 mock::EventThread::kCallingUid)));
-
-        EXPECT_CALL(*sfEventThread, registerDisplayEventConnection(_));
-        EXPECT_CALL(*sfEventThread, createEventConnection(_, _))
-                .WillOnce(Return(sp<EventThreadConnection>::make(sfEventThread.get(),
-                                                                 mock::EventThread::kCallingUid)));
-
         auto vsyncController = makeMock<mock::VsyncController>(options.useNiceMock);
         auto vsyncTracker = makeSharedMock<mock::VSyncTracker>(options.useNiceMock);
 
@@ -326,33 +309,23 @@ public:
 
     auto& mutableStateLock() { return mFlinger->mStateLock; }
 
-    static auto findOutputLayerForDisplay(const sp<Layer>& layer,
-                                          const sp<const DisplayDevice>& display) {
-        return layer->findOutputLayerForDisplay(display.get());
-    }
-
-    static void setLayerSidebandStream(const sp<Layer>& layer,
-                                       const sp<NativeHandle>& sidebandStream) {
-        layer->mDrawingState.sidebandStream = sidebandStream;
-        layer->mSidebandStream = sidebandStream;
-        layer->editLayerSnapshot()->sidebandStream = sidebandStream;
+    compositionengine::OutputLayer* findOutputLayerForDisplay(
+            uint32_t layerId, const sp<const DisplayDevice>& display) {
+        ftl::FakeGuard guard(kMainThreadContext);
+        if (mFlinger->mLegacyLayers.find(layerId) == mFlinger->mLegacyLayers.end()) {
+            return nullptr;
+        }
+        return mFlinger->mLegacyLayers[layerId]->findOutputLayerForDisplay(display.get());
     }
 
     void setLayerCompositionType(const sp<Layer>& layer,
                                  aidl::android::hardware::graphics::composer3::Composition type) {
-        auto outputLayer = findOutputLayerForDisplay(layer, mFlinger->getDefaultDisplayDevice());
+        auto outputLayer = findOutputLayerForDisplay(static_cast<uint32_t>(layer->sequence),
+                                                     mFlinger->getDefaultDisplayDevice());
         LOG_ALWAYS_FATAL_IF(!outputLayer);
         auto& state = outputLayer->editState();
         LOG_ALWAYS_FATAL_IF(!outputLayer->getState().hwc);
         (*state.hwc).hwcCompositionType = type;
-    }
-
-    static void setLayerPotentialCursor(const sp<Layer>& layer, bool potentialCursor) {
-        layer->mPotentialCursor = potentialCursor;
-    }
-
-    static void setLayerDrawingParent(const sp<Layer>& layer, const sp<Layer>& drawingParent) {
-        layer->mDrawingParent = drawingParent;
     }
 
     /* ------------------------------------------------------------------------
@@ -364,9 +337,9 @@ public:
         mFlinger->configure();
     }
 
-    void configureAndCommit() {
+    void configureAndCommit(bool modeset = false) {
         configure();
-        commitTransactionsLocked(eDisplayTransactionNeeded);
+        commitTransactionsLocked(eDisplayTransactionNeeded, modeset);
     }
 
     void commit(TimePoint frameTime, VsyncId vsyncId, TimePoint expectedVsyncTime,
@@ -395,7 +368,7 @@ public:
             targets.try_emplace(id, &frameTargeter.target());
             targeters.try_emplace(id, &frameTargeter);
         }
-
+        mFlinger->setTransactionFlags(eTransactionFlushNeeded);
         mFlinger->commit(displayId, targets);
 
         if (composite) {
@@ -426,12 +399,16 @@ public:
                               float requestedRefreshRate = 0.0f) {
         static const std::string kTestId =
                 "virtual:libsurfaceflinger_unittest:TestableSurfaceFlinger";
-        return mFlinger->createVirtualDisplay(displayName, isSecure, kTestId, requestedRefreshRate);
+        return mFlinger
+                ->createVirtualDisplay(displayName, isSecure,
+                                       gui::ISurfaceComposer::OptimizationPolicy::optimizeForPower,
+                                       kTestId, requestedRefreshRate);
     }
 
     auto createVirtualDisplay(const std::string& displayName, bool isSecure,
+                              gui::ISurfaceComposer::OptimizationPolicy optimizationPolicy,
                               const std::string& uniqueId, float requestedRefreshRate = 0.0f) {
-        return mFlinger->createVirtualDisplay(displayName, isSecure, uniqueId,
+        return mFlinger->createVirtualDisplay(displayName, isSecure, optimizationPolicy, uniqueId,
                                               requestedRefreshRate);
     }
 
@@ -456,11 +433,14 @@ public:
                                                        dispSurface, producer);
     }
 
-    void commitTransactionsLocked(uint32_t transactionFlags) {
+    void commitTransactionsLocked(uint32_t transactionFlags, bool modeset = false) {
         Mutex::Autolock lock(mFlinger->mStateLock);
         ftl::FakeGuard guard(kMainThreadContext);
         mFlinger->processDisplayChangesLocked();
         mFlinger->commitTransactionsLocked(transactionFlags);
+        if (modeset) {
+            mFlinger->initiateDisplayModeChanges();
+        }
     }
 
     void onComposerHalHotplugEvent(hal::HWDisplayId hwcDisplayId, DisplayHotplugEvent event) {
@@ -482,42 +462,55 @@ public:
     }
 
     // Allow reading display state without locking, as if called on the SF main thread.
-    auto setPowerModeInternal(const sp<DisplayDevice>& display,
-                              hal::PowerMode mode) NO_THREAD_SAFETY_ANALYSIS {
-        return mFlinger->setPowerModeInternal(display, mode);
+    auto setPhysicalDisplayPowerMode(const sp<DisplayDevice>& display,
+                                     hal::PowerMode mode) NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->setPhysicalDisplayPowerMode(display, mode);
     }
 
-    auto renderScreenImpl(const sp<DisplayDevice> display,
-                          std::unique_ptr<const RenderArea> renderArea,
+    auto renderScreenImpl(const sp<DisplayDevice> display, const Rect sourceCrop,
+                          ui::Dataspace dataspace,
                           SurfaceFlinger::GetLayerSnapshotsFunction getLayerSnapshotsFn,
                           const std::shared_ptr<renderengine::ExternalTexture>& buffer,
-                          bool regionSampling) {
+                          bool regionSampling, bool isSecure, bool seamlessTransition) {
         Mutex::Autolock lock(mFlinger->mStateLock);
         ftl::FakeGuard guard(kMainThreadContext);
 
         ScreenCaptureResults captureResults;
-        auto displayState = std::optional{display->getCompositionDisplay()->getState()};
+        const auto& state = display->getCompositionDisplay()->getState();
         auto layers = getLayerSnapshotsFn();
-        auto layerFEs = mFlinger->extractLayerFEs(layers);
 
-        return mFlinger->renderScreenImpl(std::move(renderArea), buffer, regionSampling,
+        SurfaceFlinger::ScreenshotArgs screenshotArgs;
+        screenshotArgs.captureTypeVariant = display;
+        screenshotArgs.displayIdVariant = std::nullopt;
+        screenshotArgs.sourceCrop = sourceCrop;
+        screenshotArgs.reqSize = sourceCrop.getSize();
+        screenshotArgs.dataspace = dataspace;
+        screenshotArgs.isSecure = isSecure;
+        screenshotArgs.seamlessTransition = seamlessTransition;
+        screenshotArgs.displayBrightnessNits = state.displayBrightnessNits;
+        screenshotArgs.sdrWhitePointNits = state.sdrWhitePointNits;
+        screenshotArgs.renderIntent = state.renderIntent;
+        screenshotArgs.colorMode = state.colorMode;
+
+        return mFlinger->renderScreenImpl(screenshotArgs, buffer, regionSampling,
                                           false /* grayscale */, false /* isProtected */,
-                                          captureResults, displayState, layers, layerFEs);
+                                          captureResults, layers);
     }
 
-    auto traverseLayersInLayerStack(ui::LayerStack layerStack, int32_t uid,
-                                    std::unordered_set<uint32_t> excludeLayerIds,
-                                    const LayerVector::Visitor& visitor) {
-        return mFlinger->traverseLayersInLayerStack(layerStack, uid, excludeLayerIds, visitor);
+    auto getLayerSnapshotsForScreenshotsFn(ui::LayerStack layerStack, uint32_t uid) {
+        return mFlinger->getLayerSnapshotsForScreenshots(layerStack, uid,
+                                                         std::unordered_set<uint32_t>{});
     }
 
     auto getDisplayNativePrimaries(const sp<IBinder>& displayToken,
-                                   ui::DisplayPrimaries &primaries) {
+                                   ui::DisplayPrimaries& primaries) {
         return mFlinger->SurfaceFlinger::getDisplayNativePrimaries(displayToken, primaries);
     }
 
-    auto& getTransactionQueue() { return mFlinger->mTransactionHandler.mLocklessTransactionQueue; }
-    auto& getPendingTransactionQueue() {
+    auto& getTransactionQueue() NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->mTransactionHandler.mLocklessTransactionQueue;
+    }
+    auto& getPendingTransactionQueue() NO_THREAD_SAFETY_ANALYSIS {
         ftl::FakeGuard guard(kMainThreadContext);
         return mFlinger->mTransactionHandler.mPendingTransactionQueues;
     }
@@ -526,28 +519,18 @@ public:
         return mFlinger->mTransactionHandler.mPendingTransactionCount.load();
     }
 
-    auto setTransactionState(
-            const FrameTimelineInfo& frameTimelineInfo, Vector<ComposerState>& states,
-            const Vector<DisplayState>& displays, uint32_t flags, const sp<IBinder>& applyToken,
-            const InputWindowCommands& inputWindowCommands, int64_t desiredPresentTime,
-            bool isAutoTimestamp, const std::vector<client_cache_t>& uncacheBuffers,
-            bool hasListenerCallbacks, std::vector<ListenerCallbacks>& listenerCallbacks,
-            uint64_t transactionId, const std::vector<uint64_t>& mergedTransactionIds) {
-        return mFlinger->setTransactionState(frameTimelineInfo, states, displays, flags, applyToken,
-                                             inputWindowCommands, desiredPresentTime,
-                                             isAutoTimestamp, uncacheBuffers, hasListenerCallbacks,
-                                             listenerCallbacks, transactionId,
-                                             mergedTransactionIds);
+    auto setTransactionState(TransactionState&& state) {
+        return mFlinger->setTransactionState(std::move(state));
     }
 
-    auto setTransactionStateInternal(TransactionState& transaction) {
+    auto setTransactionStateInternal(QueuedTransactionState& transaction) {
         return FTL_FAKE_GUARD(kMainThreadContext,
                               mFlinger->mTransactionHandler.queueTransaction(
                                       std::move(transaction)));
     }
 
     auto flushTransactionQueues() {
-        return FTL_FAKE_GUARD(kMainThreadContext, mFlinger->flushTransactionQueues(kVsyncId));
+        return FTL_FAKE_GUARD(kMainThreadContext, mFlinger->flushTransactionQueues());
     }
 
     auto onTransact(uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags) {
@@ -584,15 +567,13 @@ public:
         return mFlinger->mirrorLayer(args, mirrorFromHandle, outResult);
     }
 
-    void updateLayerMetadataSnapshot() { mFlinger->updateLayerMetadataSnapshot(); }
-
     void getDynamicDisplayInfoFromToken(const sp<IBinder>& displayToken,
                                         ui::DynamicDisplayInfo* dynamicDisplayInfo) {
         mFlinger->getDynamicDisplayInfoFromToken(displayToken, dynamicDisplayInfo);
     }
 
     sp<DisplayDevice> createVirtualDisplayDevice(const sp<IBinder> displayToken,
-                                                 VirtualDisplayId displayId,
+                                                 GpuVirtualDisplayId displayId,
                                                  float requestedRefreshRate) {
         constexpr ui::Size kResolution = {1080, 1920};
         auto compositionDisplay = compositionengine::impl::
@@ -620,6 +601,18 @@ public:
         mFlinger->mNewLayers.emplace_back(std::move(layer));
     }
 
+    // Used to add a layer before updateLayerSnapshots is called.
+    // Must have transactionsFlushed enabled for the new layer to be updated.
+    void addLayer(uint32_t layerId) {
+        std::scoped_lock<std::mutex> lock(mFlinger->mCreatedLayersLock);
+        LayerCreationArgs args(std::make_optional(layerId));
+        args.flinger = this->mFlinger.get();
+        auto layer = std::make_unique<frontend::RequestedLayerState>(args);
+        auto legacyLayer = sp<Layer>::make(args);
+        injectLegacyLayer(legacyLayer);
+        mFlinger->mNewLayers.emplace_back(std::move(layer));
+    }
+
     /* ------------------------------------------------------------------------
      * Read-only access to private data to assert post-conditions.
      */
@@ -637,11 +630,23 @@ public:
     void injectLegacyLayer(sp<Layer> layer) {
         FTL_FAKE_GUARD(kMainThreadContext,
                        mFlinger->mLegacyLayers[static_cast<uint32_t>(layer->sequence)] = layer);
-    };
+    }
 
     void releaseLegacyLayer(uint32_t sequence) {
         FTL_FAKE_GUARD(kMainThreadContext, mFlinger->mLegacyLayers.erase(sequence));
+    }
+
+    auto getLegacyLayer(uint32_t layerId) {
+        ftl::FakeGuard guard(kMainThreadContext);
+        return mFlinger->mLegacyLayers[layerId];
     };
+
+    void destroyAllLayerHandles() {
+        ftl::FakeGuard guard(kMainThreadContext);
+        for (auto [layerId, legacyLayer] : mFlinger->mLegacyLayers) {
+            mFlinger->onHandleDestroyed(legacyLayer, layerId);
+        }
+    }
 
     auto setLayerHistoryDisplayArea(uint32_t displayArea) {
         return mFlinger->mScheduler->onActiveDisplayAreaChanged(displayArea);
@@ -663,8 +668,10 @@ public:
      * post-conditions.
      */
 
-    const auto& displays() const { return mFlinger->mDisplays; }
-    const auto& physicalDisplays() const { return mFlinger->mPhysicalDisplays; }
+    const auto& displays() const NO_THREAD_SAFETY_ANALYSIS { return mFlinger->mDisplays; }
+    const auto& physicalDisplays() const NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->mPhysicalDisplays;
+    }
     const auto& currentState() const { return mFlinger->mCurrentState; }
     const auto& drawingState() const { return mFlinger->mDrawingState; }
     const auto& transactionFlags() const { return mFlinger->mTransactionFlags; }
@@ -677,13 +684,17 @@ public:
     auto& mutableDisplayModeController() { return mFlinger->mDisplayModeController; }
     auto& mutableCurrentState() { return mFlinger->mCurrentState; }
     auto& mutableDisplayColorSetting() { return mFlinger->mDisplayColorSetting; }
-    auto& mutableDisplays() { return mFlinger->mDisplays; }
-    auto& mutablePhysicalDisplays() { return mFlinger->mPhysicalDisplays; }
+    auto& mutableDisplays() NO_THREAD_SAFETY_ANALYSIS { return mFlinger->mDisplays; }
+    auto& mutablePhysicalDisplays() NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->mPhysicalDisplays;
+    }
     auto& mutableDrawingState() { return mFlinger->mDrawingState; }
     auto& mutableGeometryDirty() { return mFlinger->mGeometryDirty; }
     auto& mutableVisibleRegionsDirty() { return mFlinger->mVisibleRegionsDirty; }
     auto& mutableMainThreadId() { return mFlinger->mMainThreadId; }
-    auto& mutablePendingHotplugEvents() { return mFlinger->mPendingHotplugEvents; }
+    auto& mutablePendingHotplugEvents() NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->mPendingHotplugEvents;
+    }
     auto& mutableTransactionFlags() { return mFlinger->mTransactionFlags; }
     auto& mutableDebugDisableHWC() { return mFlinger->mDebugDisableHWC; }
     auto& mutableMaxRenderTargetSize() { return mFlinger->mMaxRenderTargetSize; }
@@ -691,7 +702,7 @@ public:
     auto& mutableHwcDisplayData() { return getHwComposer().mDisplayData; }
     auto& mutableHwcPhysicalDisplayIdMap() { return getHwComposer().mPhysicalDisplayIdMap; }
     auto& mutablePrimaryHwcDisplayId() { return getHwComposer().mPrimaryHwcDisplayId; }
-    auto& mutableActiveDisplayId() { return mFlinger->mActiveDisplayId; }
+    auto& mutableActiveDisplayId() NO_THREAD_SAFETY_ANALYSIS { return mFlinger->mActiveDisplayId; }
     auto& mutablePreviouslyComposedLayers() { return mFlinger->mPreviouslyComposedLayers; }
 
     auto& mutableActiveDisplayRotationFlags() {
@@ -699,8 +710,10 @@ public:
     }
 
     auto& mutableMinAcquiredBuffers() { return SurfaceFlinger::minAcquiredBuffers; }
-    auto& mutableLayersPendingRemoval() { return mFlinger->mLayersPendingRemoval; }
-    auto& mutableLayerSnapshotBuilder() { return mFlinger->mLayerSnapshotBuilder; };
+    auto& mutableMaxAcquiredBuffers() { return SurfaceFlinger::maxAcquiredBuffersOpt; }
+    auto& mutableLayerSnapshotBuilder() NO_THREAD_SAFETY_ANALYSIS {
+        return mFlinger->mLayerSnapshotBuilder;
+    }
 
     auto fromHandle(const sp<IBinder>& handle) { return LayerHandle::getLayer(handle); }
 
@@ -708,10 +721,6 @@ public:
         mFlinger->mTransactionTracing.emplace();
         return mFlinger->initTransactionTraceWriter();
     }
-
-    // Needed since mLayerLifecycleManagerEnabled is false by default and must
-    // be enabled for tests to go through the new front end path.
-    void enableLayerLifecycleManager() { mFlinger->mLayerLifecycleManagerEnabled = true; }
 
     void notifyExpectedPresentIfRequired(PhysicalDisplayId displayId, Period vsyncPeriod,
                                          TimePoint expectedPresentTime, Fps frameInterval,
@@ -771,9 +780,9 @@ public:
         mutableDisplays().clear();
         mutableCurrentState().displays.clear();
         mutableDrawingState().displays.clear();
-        mFlinger->mLayersPendingRemoval.clear();
         mFlinger->mScheduler.reset();
-        mFlinger->mCompositionEngine->setHwComposer(std::unique_ptr<HWComposer>());
+        mFlinger->mHWComposer = std::unique_ptr<HWComposer>();
+        mFlinger->mCompositionEngine->setHwComposer(mFlinger->mHWComposer.get());
         mFlinger->mRenderEngine = std::unique_ptr<renderengine::RenderEngine>();
         mFlinger->mCompositionEngine->setRenderEngine(mFlinger->mRenderEngine.get());
         mFlinger->mTransactionTracing.reset();
@@ -808,9 +817,11 @@ public:
         static constexpr int32_t DEFAULT_DPI = 320;
         static constexpr hal::HWConfigId DEFAULT_ACTIVE_CONFIG = 0;
 
-        FakeHwcDisplayInjector(HalDisplayId displayId, hal::DisplayType hwcDisplayType,
+        FakeHwcDisplayInjector(DisplayIdVariant displayIdVariant, hal::DisplayType hwcDisplayType,
                                bool isPrimary)
-              : mDisplayId(displayId), mHwcDisplayType(hwcDisplayType), mIsPrimary(isPrimary) {}
+              : mDisplayIdVariant(displayIdVariant),
+                mHwcDisplayType(hwcDisplayType),
+                mIsPrimary(isPrimary) {}
 
         auto& setHwcDisplayId(hal::HWDisplayId displayId) {
             mHwcDisplayId = displayId;
@@ -875,7 +886,9 @@ public:
 
             display->setPowerMode(mPowerMode);
 
-            flinger->mutableHwcDisplayData()[mDisplayId].hwcDisplay = std::move(display);
+            const auto halDisplayId = asHalDisplayId(mDisplayIdVariant);
+            ASSERT_TRUE(halDisplayId);
+            flinger->mutableHwcDisplayData()[*halDisplayId].hwcDisplay = std::move(display);
 
             EXPECT_CALL(*composer, getDisplayConfigs(mHwcDisplayId, _))
                     .WillRepeatedly(
@@ -913,9 +926,10 @@ public:
                             DoAll(SetArgPointee<3>(mConfigGroup), Return(hal::Error::NONE)));
 
             if (mHwcDisplayType == hal::DisplayType::PHYSICAL) {
-                const auto physicalId = PhysicalDisplayId::tryCast(mDisplayId);
-                LOG_ALWAYS_FATAL_IF(!physicalId);
-                flinger->mutableHwcPhysicalDisplayIdMap().emplace(mHwcDisplayId, *physicalId);
+                const auto physicalDisplayId = asPhysicalDisplayId(mDisplayIdVariant);
+                ASSERT_TRUE(physicalDisplayId);
+                flinger->mutableHwcPhysicalDisplayIdMap().emplace(mHwcDisplayId,
+                                                                  *physicalDisplayId);
                 if (mIsPrimary) {
                     flinger->mutablePrimaryHwcDisplayId() = mHwcDisplayId;
                 } else {
@@ -928,7 +942,7 @@ public:
         }
 
     private:
-        const HalDisplayId mDisplayId;
+        const DisplayIdVariant mDisplayIdVariant;
         const hal::DisplayType mHwcDisplayType;
         const bool mIsPrimary;
 
@@ -949,11 +963,13 @@ public:
         FakeDisplayDeviceInjector(TestableSurfaceFlinger& flinger,
                                   std::shared_ptr<compositionengine::Display> display,
                                   std::optional<ui::DisplayConnectionType> connectionType,
+                                  std::optional<uint8_t> port,
                                   std::optional<hal::HWDisplayId> hwcDisplayId, bool isPrimary)
               : mFlinger(flinger),
                 mCreationArgs(flinger.mFlinger, flinger.mFlinger->getHwComposer(), mDisplayToken,
                               display),
                 mConnectionType(connectionType),
+                mPort(port),
                 mHwcDisplayId(hwcDisplayId) {
             mCreationArgs.isPrimary = isPrimary;
             mCreationArgs.initialPowerMode = hal::PowerMode::ON;
@@ -962,8 +978,8 @@ public:
         sp<IBinder> token() const { return mDisplayToken; }
 
         auto physicalDisplay() const {
-            return ftl::Optional(mCreationArgs.compositionDisplay->getDisplayId())
-                    .and_then(&PhysicalDisplayId::tryCast)
+            return mCreationArgs.compositionDisplay->getDisplayIdVariant()
+                    .and_then(asPhysicalDisplayId)
                     .and_then(display::getPhysicalDisplay(mFlinger.physicalDisplays()));
         }
 
@@ -1061,7 +1077,9 @@ public:
             DisplayDeviceState state;
             state.isSecure = mCreationArgs.isSecure;
 
-            if (const auto physicalId = PhysicalDisplayId::tryCast(*displayId)) {
+            if (const auto physicalId =
+                        mCreationArgs.compositionDisplay->getDisplayIdVariant().and_then(
+                                asPhysicalDisplayId)) {
                 LOG_ALWAYS_FATAL_IF(!mConnectionType);
                 LOG_ALWAYS_FATAL_IF(!mHwcDisplayId);
 
@@ -1102,11 +1120,12 @@ public:
                                   .hwcDisplayId = *mHwcDisplayId,
                                   .activeMode = activeModeOpt->get()};
 
-                const auto it = mFlinger.mutablePhysicalDisplays()
-                                        .emplace_or_replace(*physicalId, mDisplayToken, *physicalId,
-                                                            *mConnectionType, std::move(modes),
-                                                            ui::ColorModes(), std::nullopt)
-                                        .first;
+                const auto it =
+                        mFlinger.mutablePhysicalDisplays()
+                                .emplace_or_replace(*physicalId, mDisplayToken, *physicalId, *mPort,
+                                                    *mConnectionType, std::move(modes),
+                                                    ui::ColorModes(), std::nullopt)
+                                .first;
 
                 mFlinger.mutableDisplayModeController()
                         .registerDisplay(*physicalId, it->second.snapshot(),
@@ -1140,6 +1159,7 @@ public:
         DisplayModeId mActiveModeId;
         bool mSchedulerRegistration = true;
         const std::optional<ui::DisplayConnectionType> mConnectionType;
+        const std::optional<uint8_t> mPort;
         const std::optional<hal::HWDisplayId> mHwcDisplayId;
     };
 
@@ -1162,7 +1182,7 @@ private:
     scheduler::mock::NoOpSchedulerCallback mNoOpSchedulerCallback;
     std::unique_ptr<frametimeline::impl::TokenManager> mTokenManager;
     scheduler::TestableScheduler* mScheduler = nullptr;
-    Hwc2::mock::PowerAdvisor mPowerAdvisor;
+    adpf::mock::PowerAdvisor mPowerAdvisor;
 };
 
 } // namespace android

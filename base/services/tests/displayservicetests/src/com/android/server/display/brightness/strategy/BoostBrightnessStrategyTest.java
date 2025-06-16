@@ -55,13 +55,13 @@ public class BoostBrightnessStrategyTest {
                 new DisplayBrightnessState.Builder()
                         .setBrightness(PowerManager.BRIGHTNESS_MAX)
                         .setBrightnessReason(brightnessReason)
-                        .setSdrBrightness(PowerManager.BRIGHTNESS_MAX)
                         .setDisplayBrightnessStrategyName(mBoostBrightnessStrategy.getName())
                         .build();
         DisplayBrightnessState updatedDisplayBrightnessState =
                 mBoostBrightnessStrategy.updateBrightness(
                         new StrategyExecutionRequest(displayPowerRequest, 0.2f,
-                                /* userSetBrightnessChanged= */ false));
+                                /* userSetBrightnessChanged= */ false,
+                                /* isStylusBeingUsed */ false));
         assertEquals(updatedDisplayBrightnessState, expectedDisplayBrightnessState);
     }
 

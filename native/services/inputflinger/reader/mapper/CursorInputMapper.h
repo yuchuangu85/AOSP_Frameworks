@@ -25,9 +25,6 @@
 
 namespace android {
 
-class CursorButtonAccumulator;
-class CursorScrollAccumulator;
-
 /* Keeps track of cursor movements. */
 class CursorMotionAccumulator {
 public:
@@ -66,7 +63,7 @@ public:
 
     virtual int32_t getScanCodeState(uint32_t sourceMask, int32_t scanCode) override;
 
-    virtual std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() override;
+    virtual std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() const override;
 
 private:
     // Amount that trackball needs to move in order to generate a key event.
@@ -107,8 +104,7 @@ private:
 
     // Velocity controls for mouse pointer and wheel movements.
     // The controls for X and Y wheel movements are separate to keep them decoupled.
-    SimpleVelocityControl mOldPointerVelocityControl;
-    CurvedVelocityControl mNewPointerVelocityControl;
+    CurvedVelocityControl mPointerVelocityControl;
     SimpleVelocityControl mWheelXVelocityControl;
     SimpleVelocityControl mWheelYVelocityControl;
 
@@ -119,11 +115,12 @@ private:
     ui::Rotation mOrientation{ui::ROTATION_0};
     FloatRect mBoundsInLogicalDisplay{};
 
+    // The button state as of the last sync.
     int32_t mButtonState;
     nsecs_t mDownTime;
     nsecs_t mLastEventTime;
 
-    const bool mEnableNewMousePointerBallistics;
+    bool mMouseReverseVerticalScrolling = false;
 
     explicit CursorInputMapper(InputDeviceContext& deviceContext,
                                const InputReaderConfiguration& readerConfig);
@@ -132,6 +129,7 @@ private:
     void configureOnPointerCapture(const InputReaderConfiguration& config);
     void configureOnChangePointerSpeed(const InputReaderConfiguration& config);
     void configureOnChangeDisplayInfo(const InputReaderConfiguration& config);
+    void configureOnChangeMouseSettings(const InputReaderConfiguration& config);
 
     [[nodiscard]] std::list<NotifyArgs> sync(nsecs_t when, nsecs_t readTime);
 

@@ -20,6 +20,7 @@
 #include <android-base/unique_fd.h>
 #include <android/os/BnIdmap2.h>
 #include <android/os/FabricatedOverlayInfo.h>
+#include <android/os/OverlayConstraint.h>
 #include <binder/BinderService.h>
 #include <idmap2/ResourceContainer.h>
 #include <idmap2/Result.h>
@@ -49,11 +50,13 @@ class Idmap2Service : public BinderService<Idmap2Service>, public BnIdmap2 {
   binder::Status verifyIdmap(const std::string& target_path, const std::string& overlay_path,
                              const std::string& overlay_name, int32_t fulfilled_policies,
                              bool enforce_overlayable, int32_t user_id,
+                             const std::vector<os::OverlayConstraint>& constraints,
                              bool* _aidl_return) override;
 
   binder::Status createIdmap(const std::string& target_path, const std::string& overlay_path,
                              const std::string& overlay_name, int32_t fulfilled_policies,
                              bool enforce_overlayable, int32_t user_id,
+                             const std::vector<os::OverlayConstraint>& constraints,
                              std::optional<std::string>* _aidl_return) override;
 
   binder::Status createFabricatedOverlay(
@@ -85,7 +88,7 @@ class Idmap2Service : public BinderService<Idmap2Service>, public BnIdmap2 {
     ino_t inode;
     int64_t size;
     struct timespec mtime;
-    std::unique_ptr<idmap2::TargetResourceContainer> apk;
+    std::shared_ptr<idmap2::TargetResourceContainer> apk;
   };
   std::unordered_map<std::string, CachedContainer> container_cache_;
   std::mutex container_cache_mutex_;
@@ -95,23 +98,14 @@ class Idmap2Service : public BinderService<Idmap2Service>, public BnIdmap2 {
   std::mutex frro_iter_mutex_;
 
   template <typename T>
-  using MaybeUniquePtr = std::variant<std::unique_ptr<T>, T*>;
+  using OwningPtr = std::variant<std::unique_ptr<T>, std::shared_ptr<T>>;
 
-  using TargetResourceContainerPtr = MaybeUniquePtr<idmap2::TargetResourceContainer>;
+  using TargetResourceContainerPtr = OwningPtr<idmap2::TargetResourceContainer>;
   idmap2::Result<TargetResourceContainerPtr> GetTargetContainer(const std::string& target_path);
 
   template <typename T>
-  WARN_UNUSED static const T* GetPointer(const MaybeUniquePtr<T>& ptr);
+  WARN_UNUSED static const T* GetPointer(const OwningPtr<T>& ptr);
 };
-
-template <typename T>
-const T* Idmap2Service::GetPointer(const MaybeUniquePtr<T>& ptr) {
-  auto u = std::get_if<T*>(&ptr);
-  if (u != nullptr) {
-    return *u;
-  }
-  return std::get<std::unique_ptr<T>>(ptr).get();
-}
 
 }  // namespace android::os
 

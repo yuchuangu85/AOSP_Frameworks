@@ -25,6 +25,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Slog;
+import android.view.inputmethod.ImeTracker;
 
 import com.android.internal.inputmethod.IInputMethodClient;
 import com.android.internal.inputmethod.InputBindResult;
@@ -57,23 +58,17 @@ final class IInputMethodClientInvoker {
     private final Handler mHandler;
 
     @AnyThread
-    @Nullable
-    static IInputMethodClientInvoker create(@Nullable IInputMethodClient inputMethodClient,
+    @NonNull
+    static IInputMethodClientInvoker create(@NonNull IInputMethodClient inputMethodClient,
             @NonNull Handler handler) {
-        if (inputMethodClient == null) {
-            return null;
-        }
         final boolean isProxy = Binder.isProxy(inputMethodClient);
         return new IInputMethodClientInvoker(inputMethodClient, isProxy, isProxy ? null : handler);
     }
 
     @AnyThread
-    @Nullable
-    static IInputMethodClientInvoker create$ravenwood(
-            @Nullable IInputMethodClient inputMethodClient, @NonNull Handler handler) {
-        if (inputMethodClient == null) {
-            return null;
-        }
+    @NonNull
+    static IInputMethodClientInvoker create$ravenwood(@NonNull IInputMethodClient inputMethodClient,
+            @NonNull Handler handler) {
         return new IInputMethodClientInvoker(inputMethodClient, true, null);
     }
 
@@ -250,20 +245,22 @@ final class IInputMethodClientInvoker {
     }
 
     @AnyThread
-    void setImeVisibility(boolean visible) {
+    void setImeVisibility(boolean visible, @Nullable ImeTracker.Token statsToken) {
         if (mIsProxy) {
-            setImeVisibilityInternal(visible);
+            setImeVisibilityInternal(visible, statsToken);
         } else {
-            mHandler.post(() -> setImeVisibilityInternal(visible));
+            mHandler.post(() -> setImeVisibilityInternal(visible, statsToken));
         }
     }
 
     @AnyThread
-    private void setImeVisibilityInternal(boolean visible) {
+    private void setImeVisibilityInternal(boolean visible, @Nullable ImeTracker.Token statsToken) {
         try {
-            mTarget.setImeVisibility(visible);
+            ImeTracker.forLogging().onProgress(statsToken, ImeTracker.PHASE_SERVER_CLIENT_INVOKER);
+            mTarget.setImeVisibility(visible, statsToken);
         } catch (RemoteException e) {
             logRemoteException(e);
+            ImeTracker.forLogging().onFailed(statsToken, ImeTracker.PHASE_SERVER_CLIENT_INVOKER);
         }
     }
 

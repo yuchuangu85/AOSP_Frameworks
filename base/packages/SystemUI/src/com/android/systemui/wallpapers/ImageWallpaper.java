@@ -21,6 +21,7 @@ import static android.app.WallpaperManager.FLAG_SYSTEM;
 import static android.app.WallpaperManager.SetWallpaperFlags;
 
 import static com.android.systemui.Flags.fixImageWallpaperCrashSurfaceAlreadyReleased;
+import static com.android.window.flags.Flags.multiCrop;
 import static com.android.window.flags.Flags.offloadColorExtraction;
 
 import android.annotation.Nullable;
@@ -41,7 +42,6 @@ import android.service.wallpaper.WallpaperService;
 import android.util.Log;
 import android.view.Surface;
 import android.view.SurfaceHolder;
-import android.view.WindowManager;
 
 import androidx.annotation.NonNull;
 
@@ -49,6 +49,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.dagger.qualifiers.LongRunning;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.util.concurrency.DelayableExecutor;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -70,6 +71,7 @@ public class ImageWallpaper extends WallpaperService {
     private boolean mPagesComputed = false;
 
     private final UserTracker mUserTracker;
+    private final WindowManagerProvider mWindowManagerProvider;
 
     // used to handle WallpaperService messages (e.g. DO_ATTACH, MSG_UPDATE_SURFACE)
     // and to receive WallpaperService callbacks (e.g. onCreateEngine, onSurfaceRedrawNeeded)
@@ -83,10 +85,12 @@ public class ImageWallpaper extends WallpaperService {
     private static final int DELAY_UNLOAD_BITMAP = 2000;
 
     @Inject
-    public ImageWallpaper(@LongRunning DelayableExecutor longExecutor, UserTracker userTracker) {
+    public ImageWallpaper(@LongRunning DelayableExecutor longExecutor, UserTracker userTracker,
+            WindowManagerProvider windowManagerProvider) {
         super();
         mLongExecutor = longExecutor;
         mUserTracker = userTracker;
+        mWindowManagerProvider = windowManagerProvider;
     }
 
     @Override
@@ -190,7 +194,10 @@ public class ImageWallpaper extends WallpaperService {
             }
             mWallpaperManager = getDisplayContext().getSystemService(WallpaperManager.class);
             mSurfaceHolder = surfaceHolder;
-            Rect dimensions = mWallpaperManager.peekBitmapDimensions(getSourceFlag(), true);
+            Rect dimensions = !multiCrop()
+                    ? mWallpaperManager.peekBitmapDimensions(getSourceFlag(), true)
+                    : mWallpaperManager.peekBitmapDimensionsAsUser(getSourceFlag(), true,
+                    mUserTracker.getUserId());
             int width = Math.max(MIN_SURFACE_WIDTH, dimensions.width());
             int height = Math.max(MIN_SURFACE_HEIGHT, dimensions.height());
             mSurfaceHolder.setFixedSize(width, height);
@@ -548,8 +555,7 @@ public class ImageWallpaper extends WallpaperService {
         }
 
         private void getDisplaySizeAndUpdateColorExtractor() {
-            Rect window = getDisplayContext()
-                    .getSystemService(WindowManager.class)
+            Rect window = mWindowManagerProvider.getWindowManager(getDisplayContext())
                     .getCurrentWindowMetrics()
                     .getBounds();
             mWallpaperLocalColorExtractor.setDisplayDimensions(window.width(), window.height());

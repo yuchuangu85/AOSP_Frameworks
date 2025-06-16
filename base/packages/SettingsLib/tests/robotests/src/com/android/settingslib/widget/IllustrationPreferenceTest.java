@@ -251,8 +251,8 @@ public class IllustrationPreferenceTest {
         mPreference.setMaxHeight(maxHeight);
         mPreference.onBindViewHolder(mViewHolder);
 
-        assertThat(mBackgroundView.getMaxHeight()).isEqualTo(restrictedHeight);
-        assertThat(mAnimationView.getMaxHeight()).isEqualTo(restrictedHeight);
+        assertThat(mBackgroundView.getMaxHeight()).isEqualTo(maxHeight);
+        assertThat(mAnimationView.getMaxHeight()).isEqualTo(maxHeight);
     }
 
     @Test
@@ -290,5 +290,13 @@ public class IllustrationPreferenceTest {
         mPreference.onBindViewHolder(mViewHolder);
 
         assertThat(mPreference.isApplyDynamicColor()).isTrue();
+    }
+
+    @Test
+    public void setContentDescription_getContentDescription_isEqual() {
+        final String contentDesc = "content desc";
+        mPreference.setContentDescription(contentDesc);
+
+        assertThat(mPreference.getContentDescription().toString()).isEqualTo(contentDesc);
     }
 }

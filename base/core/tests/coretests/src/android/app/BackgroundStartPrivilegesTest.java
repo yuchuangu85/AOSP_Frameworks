@@ -26,8 +26,10 @@ import static com.google.common.truth.Truth.assertThat;
 import android.os.Binder;
 import android.os.IBinder;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.google.common.testing.EqualsTester;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -118,5 +120,20 @@ public class BackgroundStartPrivilegesTest {
         assertThat(BackgroundStartPrivileges.merge(
                 Arrays.asList(BSP_ALLOW_A, BSP_ALLOW_A, BSP_ALLOW_A, BSP_ALLOW_A)))
                 .isEqualTo(BSP_ALLOW_A);
+    }
+
+    @Test
+    public void backgroundStartPrivilege_equals_works() {
+        Binder token = new Binder();
+        Binder anotherToken = new Binder();
+        new EqualsTester()
+                .addEqualityGroup(NONE)
+                .addEqualityGroup(ALLOW_BAL)
+                .addEqualityGroup(ALLOW_FGS)
+                .addEqualityGroup(BackgroundStartPrivileges.allowBackgroundActivityStarts(token),
+                        BackgroundStartPrivileges.allowBackgroundActivityStarts(token))
+                .addEqualityGroup(
+                        BackgroundStartPrivileges.allowBackgroundActivityStarts(anotherToken))
+                .testEquals();
     }
 }

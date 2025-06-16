@@ -18,6 +18,8 @@ package com.android.server.companion;
 
 import static android.companion.CompanionDeviceManager.MESSAGE_REQUEST_CONTEXT_SYNC;
 
+import static com.android.server.companion.association.DisassociationProcessor.REASON_SHELL;
+
 import android.companion.AssociationInfo;
 import android.companion.ContextSyncMessage;
 import android.companion.Flags;
@@ -103,10 +105,12 @@ class CompanionDeviceShellCommand extends ShellCommand {
                     String packageName = getNextArgRequired();
                     String address = getNextArgRequired();
                     String deviceProfile = getNextArg();
+                    boolean selfManaged = getNextBooleanArg();
                     final MacAddress macAddress = MacAddress.fromString(address);
                     mAssociationRequestsProcessor.createAssociation(userId, packageName, macAddress,
-                            deviceProfile, deviceProfile, /* associatedDevice */ null, false,
-                            /* callback */ null, /* resultReceiver */ null);
+                            deviceProfile, deviceProfile, /* associatedDevice= */ null, selfManaged,
+                            /* callback= */ null, /* resultReceiver= */ null,
+                            /* deviceIcon= */ null, /* skipRoleGrant= */ false);
                 }
                 break;
 
@@ -120,7 +124,7 @@ class CompanionDeviceShellCommand extends ShellCommand {
                     if (association == null) {
                         out.println("Association doesn't exist.");
                     } else {
-                        mDisassociationProcessor.disassociate(association.getId());
+                        mDisassociationProcessor.disassociate(association.getId(), REASON_SHELL);
                     }
                 }
                 break;
@@ -130,7 +134,7 @@ class CompanionDeviceShellCommand extends ShellCommand {
                     final List<AssociationInfo> userAssociations =
                             mAssociationStore.getAssociationsByUser(userId);
                     for (AssociationInfo association : userAssociations) {
-                        mDisassociationProcessor.disassociate(association.getId());
+                        mDisassociationProcessor.disassociate(association.getId(), REASON_SHELL);
                     }
                 }
                 break;
@@ -462,6 +466,17 @@ class CompanionDeviceShellCommand extends ShellCommand {
         }
     }
 
+    private boolean getNextBooleanArg() {
+        String arg = getNextArg();
+        if (arg == null || "false".equalsIgnoreCase(arg)) {
+            return false;
+        } else if ("true".equalsIgnoreCase(arg)) {
+            return Boolean.parseBoolean(arg);
+        } else {
+            throw new IllegalArgumentException("Expected a boolean argument but was: " + arg);
+        }
+    }
+
     @Override
     public void onHelp() {
         PrintWriter pw = getOutPrintWriter();
@@ -470,7 +485,7 @@ class CompanionDeviceShellCommand extends ShellCommand {
         pw.println("      Print this help text.");
         pw.println("  list USER_ID");
         pw.println("      List all Associations for a user.");
-        pw.println("  associate USER_ID PACKAGE MAC_ADDRESS [DEVICE_PROFILE]");
+        pw.println("  associate USER_ID PACKAGE MAC_ADDRESS [DEVICE_PROFILE] [SELF_MANAGED]");
         pw.println("      Create a new Association.");
         pw.println("  disassociate USER_ID PACKAGE MAC_ADDRESS");
         pw.println("      Remove an existing Association.");

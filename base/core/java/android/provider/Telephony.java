@@ -17,7 +17,6 @@
 package android.provider;
 
 import android.Manifest;
-import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.RequiresPermission;
@@ -50,7 +49,6 @@ import android.text.TextUtils;
 import android.util.Patterns;
 
 import com.android.internal.telephony.SmsApplication;
-import com.android.internal.telephony.flags.Flags;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -3196,7 +3194,6 @@ public final class Telephony {
          * See 3GPP TS 23.501 section 5.6.13
          * <P>Type: INTEGER</P>
          */
-        @FlaggedApi(Flags.FLAG_APN_SETTING_FIELD_SUPPORT_FLAG)
         public static final String ALWAYS_ON = "always_on";
 
         /**
@@ -3307,7 +3304,6 @@ public final class Telephony {
          * connected, in bytes.
          * <p>Type: INTEGER </p>
          */
-        @FlaggedApi(Flags.FLAG_APN_SETTING_FIELD_SUPPORT_FLAG)
         public static final String MTU_V4 = "mtu_v4";
 
         /**
@@ -3315,7 +3311,6 @@ public final class Telephony {
          * connected, in bytes.
          * <p>Type: INTEGER </p>
          */
-        @FlaggedApi(Flags.FLAG_APN_SETTING_FIELD_SUPPORT_FLAG)
         public static final String MTU_V6 = "mtu_v6";
 
         /**
@@ -3338,14 +3333,12 @@ public final class Telephony {
          * {@code true} if this APN visible to the user, {@code false} otherwise.
          * <p>Type: INTEGER (boolean)</p>
          */
-        @FlaggedApi(Flags.FLAG_APN_SETTING_FIELD_SUPPORT_FLAG)
         public static final String USER_VISIBLE = "user_visible";
 
         /**
          * {@code true} if the user allowed to edit this APN, {@code false} otherwise.
          * <p>Type: INTEGER (boolean)</p>
          */
-        @FlaggedApi(Flags.FLAG_APN_SETTING_FIELD_SUPPORT_FLAG)
         public static final String USER_EDITABLE = "user_editable";
 
         /**
@@ -4940,7 +4933,7 @@ public final class Telephony {
          *
          * @hide
          */
-        public static final String COLUMN_IS_NTN = "is_ntn";
+        public static final String COLUMN_IS_ONLY_NTN = "is_only_ntn";
 
         /**
          * TelephonyProvider column name for transferred status
@@ -4975,6 +4968,85 @@ public final class Telephony {
          */
         public static final String COLUMN_SATELLITE_ENTITLEMENT_PLMNS =
                 "satellite_entitlement_plmns";
+
+        /**
+         * TelephonyProvider column name to indicate the satellite ESOS supported. The value of this
+         * column is set based on {@link CarrierConfigManager#KEY_SATELLITE_ESOS_SUPPORTED_BOOL}.
+         * By default, it's disabled.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ESOS_SUPPORTED = "satellite_esos_supported";
+
+        /**
+         * TelephonyProvider column name for satellite provisioned status. The value of this
+         * column is set based on whether carrier roaming or OEM-enabled NB-IOT satellite service is
+         * provisioned or not. By default, it's disabled.
+         *
+         * @hide
+         */
+        public static final String COLUMN_IS_SATELLITE_PROVISIONED_FOR_NON_IP_DATAGRAM =
+                "is_satellite_provisioned_for_non_ip_datagram";
+
+        /**
+         * TelephonyProvider column name for satellite entitlement barred plmns list separated by
+         * comma [,]. The value of this column is set based on entitlement query result for
+         * satellite configuration. Ex : 31026,302820,40445
+         * By default, it's empty.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ENTITLEMENT_BARRED_PLMNS =
+                "satellite_entitlement_barred_plmns";
+
+
+        /**
+         * TelephonyProvider column name for satellite entitlement data plan for plmns which is
+         * built in Json format in Key:Value pair. The value  of this column is set based on
+         * entitlement query result for satellite configuration.
+         * Ex : {"302820":0,"31026":1, "40445":0}
+         * By default, it's empty.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ENTITLEMENT_DATA_PLAN_PLMNS =
+                "satellite_entitlement_data_plan_plmns";
+
+        /**
+         * TelephonyProvider column name for satellite entitlement service type map which is
+         * built in Json format in Key:Value pair. The value of this column is set based on
+         * entitlement query result for satellite configuration.
+         * Ex : {"302820":[1,3],"31026":[2,3],"40445":[1,3]}
+         * By default, it's empty.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ENTITLEMENT_SERVICE_TYPE_MAP =
+                "satellite_entitlement_service_type_map";
+
+        /**
+         * TelephonyProvider column name for satellite entitlement data service policy type map
+         * which is built in Json format in Key:Value pair. The value of this column is set based
+         * on entitlement query result for satellite configuration.
+         * Ex : {"302820":2, "31026":1}
+         * By default, it's empty.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ENTITLEMENT_DATA_SERVICE_POLICY =
+                "satellite_entitlement_data_service_policy";
+
+        /**
+         * TelephonyProvider column name for satellite entitlement voice service policy  type map
+         * which is built in Json format in Key:Value pair. The value of this column is set
+         * based on entitlement query result for satellite configuration.
+         * Ex : {"302820":2, "31026":1}.
+         * By default, it's empty.
+         *
+         * @hide
+         */
+        public static final String COLUMN_SATELLITE_ENTITLEMENT_VOICE_SERVICE_POLICY =
+                "satellite_entitlement_voice_service_policy";
 
         /** All columns in {@link SimInfo} table. */
         private static final List<String> ALL_COLUMNS = List.of(
@@ -5047,11 +5119,18 @@ public final class Telephony {
                 COLUMN_USER_HANDLE,
                 COLUMN_SATELLITE_ENABLED,
                 COLUMN_SATELLITE_ATTACH_ENABLED_FOR_CARRIER,
-                COLUMN_IS_NTN,
+                COLUMN_IS_ONLY_NTN,
                 COLUMN_SERVICE_CAPABILITIES,
                 COLUMN_TRANSFER_STATUS,
                 COLUMN_SATELLITE_ENTITLEMENT_STATUS,
-                COLUMN_SATELLITE_ENTITLEMENT_PLMNS
+                COLUMN_SATELLITE_ENTITLEMENT_PLMNS,
+                COLUMN_SATELLITE_ESOS_SUPPORTED,
+                COLUMN_IS_SATELLITE_PROVISIONED_FOR_NON_IP_DATAGRAM,
+                COLUMN_SATELLITE_ENTITLEMENT_BARRED_PLMNS,
+                COLUMN_SATELLITE_ENTITLEMENT_DATA_PLAN_PLMNS,
+                COLUMN_SATELLITE_ENTITLEMENT_SERVICE_TYPE_MAP,
+                COLUMN_SATELLITE_ENTITLEMENT_DATA_SERVICE_POLICY,
+                COLUMN_SATELLITE_ENTITLEMENT_VOICE_SERVICE_POLICY
         );
 
         /**

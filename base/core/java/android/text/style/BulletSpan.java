@@ -63,6 +63,7 @@ import android.text.TextUtils;
  * <img src="{@docRoot}reference/android/images/text/style/custombulletspan.png" />
  * <figcaption>Customized BulletSpan.</figcaption>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class BulletSpan implements LeadingMarginSpan, ParcelableSpan {
     // Bullet is slightly bigger to avoid aliasing artifacts on mdpi devices.
     private static final int STANDARD_BULLET_RADIUS = 4;
@@ -119,7 +120,10 @@ public class BulletSpan implements LeadingMarginSpan, ParcelableSpan {
         this(gapWidth, color, true, bulletRadius);
     }
 
-    private BulletSpan(int gapWidth, @ColorInt int color, boolean wantColor,
+    /**
+     * @hide
+     */
+    public BulletSpan(int gapWidth, @ColorInt int color, boolean wantColor,
             @IntRange(from = 0) int bulletRadius) {
         mGapWidth = gapWidth;
         mBulletRadius = bulletRadius;
@@ -197,6 +201,14 @@ public class BulletSpan implements LeadingMarginSpan, ParcelableSpan {
      */
     public int getColor() {
         return mColor;
+    }
+
+    /**
+     * @return true if the bullet should apply the color.
+     * @hide
+     */
+    public boolean getWantColor() {
+        return mWantColor;
     }
 
     @Override

@@ -18,6 +18,7 @@ package com.android.systemui.common.data.repository
 
 import android.content.pm.PackageInstaller
 import android.os.Handler
+import android.text.TextUtils
 import com.android.internal.annotations.GuardedBy
 import com.android.systemui.common.shared.model.PackageInstallSession
 import com.android.systemui.dagger.SysUISingleton
@@ -63,14 +64,14 @@ constructor(
                         synchronized(sessions) {
                             sessions.putAll(
                                 packageInstaller.allSessions
-                                    .map { session -> session.toModel() }
+                                    .mapNotNull { session -> session.toModel() }
                                     .associateBy { it.sessionId }
                             )
                             updateInstallerSessionsFlow()
                         }
                         packageInstaller.registerSessionCallback(
                             this@PackageInstallerMonitor,
-                            bgHandler
+                            bgHandler,
                         )
                     } else {
                         synchronized(sessions) {
@@ -128,7 +129,7 @@ constructor(
             if (session == null) {
                 sessions.remove(sessionId)
             } else {
-                sessions[sessionId] = session.toModel()
+                session.toModel()?.apply { sessions[sessionId] = this }
             }
             updateInstallerSessionsFlow()
         }
@@ -142,7 +143,11 @@ constructor(
     companion object {
         const val TAG = "PackageInstallerMonitor"
 
-        private fun PackageInstaller.SessionInfo.toModel(): PackageInstallSession {
+        private fun PackageInstaller.SessionInfo.toModel(): PackageInstallSession? {
+            if (TextUtils.isEmpty(this.appPackageName)) {
+                return null
+            }
+
             return PackageInstallSession(
                 sessionId = this.sessionId,
                 packageName = this.appPackageName,

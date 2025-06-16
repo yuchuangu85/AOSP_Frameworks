@@ -46,10 +46,10 @@ public class AssistDisclosure {
     private AssistDisclosureView mView;
     private boolean mViewAdded;
 
-    public AssistDisclosure(Context context, Handler handler) {
+    public AssistDisclosure(Context context, Handler handler, WindowManager windowManager) {
         mContext = context;
         mHandler = handler;
-        mWm = mContext.getSystemService(WindowManager.class);
+        mWm = windowManager;
     }
 
     public void postShow() {

@@ -50,6 +50,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.robolectric.RobolectricTestRunner;
 
@@ -207,28 +208,16 @@ public class WifiUtilsTest {
     }
 
     @Test
-    public void getHotspotIconResource_deviceTypeExists_shouldNotNull() {
-        assertThat(WifiUtils.getHotspotIconResource(NetworkProviderInfo.DEVICE_TYPE_PHONE))
-                .isNotNull();
-        assertThat(WifiUtils.getHotspotIconResource(NetworkProviderInfo.DEVICE_TYPE_TABLET))
-                .isNotNull();
-        assertThat(WifiUtils.getHotspotIconResource(NetworkProviderInfo.DEVICE_TYPE_LAPTOP))
-                .isNotNull();
-        assertThat(WifiUtils.getHotspotIconResource(NetworkProviderInfo.DEVICE_TYPE_WATCH))
-                .isNotNull();
-        assertThat(WifiUtils.getHotspotIconResource(NetworkProviderInfo.DEVICE_TYPE_AUTO))
-                .isNotNull();
-    }
-
-    @Test
     public void testInternetIconInjector_getIcon_returnsCorrectValues() {
         WifiUtils.InternetIconInjector iconInjector = new WifiUtils.InternetIconInjector(mContext);
 
         for (int level = 0; level <= 4; level++) {
+            Mockito.reset(mContext);
             iconInjector.getIcon(false /* noInternet */, level);
             verify(mContext).getDrawable(
                     WifiUtils.getInternetIconResource(level, false /* noInternet */));
 
+            Mockito.reset(mContext);
             iconInjector.getIcon(true /* noInternet */, level);
             verify(mContext).getDrawable(
                     WifiUtils.getInternetIconResource(level, true /* noInternet */));

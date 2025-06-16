@@ -34,11 +34,15 @@ import android.view.ViewParent;
 
 import androidx.annotation.Nullable;
 
+import com.android.compose.animation.scene.ObservableTransitionState;
 import com.android.systemui.ActivityIntentHelper;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.deviceentry.domain.interactor.DeviceUnlockedInteractor;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.scene.domain.interactor.SceneInteractor;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.shade.ShadeController;
 import com.android.systemui.statusbar.ActionClickLogger;
 import com.android.systemui.statusbar.CommandQueue;
@@ -50,8 +54,12 @@ import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.SysuiStatusBarStateController;
 import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi;
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.util.kotlin.JavaAdapter;
+
+import dagger.Lazy;
 
 import java.util.concurrent.Executor;
 
@@ -80,6 +88,8 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
     private final ActionClickLogger mActionClickLogger;
     private int mDisabled2;
     protected BroadcastReceiver mChallengeReceiver = new ChallengeReceiver();
+    private final Lazy<DeviceUnlockedInteractor> mDeviceUnlockedInteractorLazy;
+    private final Lazy<SceneInteractor> mSceneInteractorLazy;
 
     /**
      */
@@ -95,7 +105,10 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
             ShadeController shadeController,
             CommandQueue commandQueue,
             ActionClickLogger clickLogger,
-            @Main Executor executor) {
+            @Main Executor executor,
+            Lazy<DeviceUnlockedInteractor> deviceUnlockedInteractorLazy,
+            Lazy<SceneInteractor> sceneInteractorLazy,
+            JavaAdapter javaAdapter) {
         mContext = context;
         mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
         mShadeController = shadeController;
@@ -113,20 +126,28 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         mActionClickLogger = clickLogger;
         mActivityIntentHelper = new ActivityIntentHelper(mContext);
         mGroupExpansionManager = groupExpansionManager;
+        mDeviceUnlockedInteractorLazy = deviceUnlockedInteractorLazy;
+        mSceneInteractorLazy = sceneInteractorLazy;
+
+        if (SceneContainerFlag.isEnabled()) {
+            javaAdapter.alwaysCollectFlow(
+                    mDeviceUnlockedInteractorLazy.get().getDeviceUnlockStatus(),
+                    deviceUnlockStatus -> onStateChanged(mStatusBarStateController.getState()));
+            javaAdapter.alwaysCollectFlow(
+                    mSceneInteractorLazy.get().getTransitionState(),
+                    deviceUnlockStatus -> onStateChanged(mStatusBarStateController.getState()));
+        }
     }
 
     @Override
     public void onStateChanged(int state) {
-        boolean hasPendingRemoteInput = mPendingRemoteInputView != null;
-        if (state == StatusBarState.SHADE
-                && (mStatusBarStateController.leaveOpenOnKeyguardHide() || hasPendingRemoteInput)) {
-            if (!mStatusBarStateController.isKeyguardRequested()
-                    && mKeyguardStateController.isUnlocked()) {
-                if (hasPendingRemoteInput) {
-                    mExecutor.execute(mPendingRemoteInputView::callOnClick);
-                }
-                mPendingRemoteInputView = null;
-            }
+        if (mPendingRemoteInputView == null) {
+            return;
+        }
+
+        if (state == StatusBarState.SHADE && canRetryPendingRemoteInput()) {
+            mExecutor.execute(mPendingRemoteInputView::callOnClick);
+            mPendingRemoteInputView = null;
         }
     }
 
@@ -135,7 +156,8 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         if (!row.isPinned()) {
             mStatusBarStateController.setLeaveOpenOnKeyguardHide(true);
         }
-        mStatusBarKeyguardViewManager.showBouncer(true /* scrimmed */);
+        mStatusBarKeyguardViewManager.showBouncer(true /* scrimmed */,
+                "StatusBarRemoteInputCallback#onLockedRemoteInput");
         mPendingRemoteInputView = clicked;
     }
 
@@ -192,27 +214,59 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
         if (!deferBouncer && mKeyguardStateController.isShowing()) {
             onLockedRemoteInput(row, clickedView);
         } else {
-            if (row.isChildInGroup() && !row.areChildrenExpanded()) {
-                // The group isn't expanded, let's make sure it's visible!
-                mGroupExpansionManager.toggleGroupExpansion(row.getEntry());
-            }
+            if (ExpandHeadsUpOnInlineReply.isEnabled()) {
+                if (row.isChildInGroup() && !row.areChildrenExpanded()) {
+                    // The group isn't expanded, let's make sure it's visible!
+                    if (NotificationBundleUi.isEnabled()) {
+                        mGroupExpansionManager.toggleGroupExpansion(row.getEntryAdapter());
+                    } else {
+                        mGroupExpansionManager.toggleGroupExpansion(row.getEntryLegacy());
+                    }
+                } else if (!row.isChildInGroup()) {
+                    final boolean expandNotification;
+                    if (row.isPinned()) {
+                        expandNotification = !row.isPinnedAndExpanded();
+                    } else {
+                        expandNotification = !row.isExpanded();
+                    }
 
-            if (android.app.Flags.compactHeadsUpNotificationReply()
-                    && row.isCompactConversationHeadsUpOnScreen()) {
-                // Notification can be system expanded true and it is set user expanded in
-                // activateRemoteInput. notifyHeightChanged also doesn't work as visibleType doesn't
-                // change. To expand huning notification properly, we need set userExpanded false.
-                if (!row.isPinned() && row.isExpanded()) {
-                    row.setUserExpanded(false);
+                    if (expandNotification) {
+                        // notification isn't expanded, let's make sure it's expanded!
+                        row.toggleExpansionState();
+                        row.getPrivateLayout().setOnExpandedVisibleListener(runnable);
+                    }
                 }
-                // expand notification emits expanded information to HUN listener.
-                row.expandNotification();
             } else {
-                // Note: Since Normal HUN has remote input view in it, we don't expect to hit
-                // onMakeExpandedVisibleForRemoteInput from activateRemoteInput for Normal HUN.
-                row.setUserExpanded(true);
+                if (row.isChildInGroup() && !row.areChildrenExpanded()) {
+                    // The group isn't expanded, let's make sure it's visible!
+                    if (NotificationBundleUi.isEnabled()) {
+                        mGroupExpansionManager.toggleGroupExpansion(row.getEntryAdapter());
+                    } else {
+                        mGroupExpansionManager.toggleGroupExpansion(row.getEntryLegacy());
+                    }
+                }
+
+                if (android.app.Flags.compactHeadsUpNotificationReply()
+                        && row.isCompactConversationHeadsUpOnScreen()) {
+                    // Notification can be system expanded true and it is set user expanded in
+                    // activateRemoteInput. notifyHeightChanged also doesn't work as visibleType
+                    // doesn't change. To expand huning notification properly,
+                    // we need set userExpanded false.
+                    if (!row.isPinned() && row.isExpanded()) {
+                        row.setUserExpanded(false);
+                    }
+                    // expand notification emits expanded information to HUN listener.
+                    row.expandNotification();
+                } else {
+                    // TODO(b/346976443) Group and normal notification expansions are two different
+                    // concepts. We should never call setUserExpanded for expanding groups.
+
+                    // Note: Since Normal HUN has remote input view in it, we don't expect to hit
+                    // onMakeExpandedVisibleForRemoteInput from activateRemoteInput for Normal HUN.
+                    row.setUserExpanded(true);
+                }
+                row.getPrivateLayout().setOnExpandedVisibleListener(runnable);
             }
-            row.getPrivateLayout().setOnExpandedVisibleListener(runnable);
         }
     }
 
@@ -302,6 +356,23 @@ public class StatusBarRemoteInputCallback implements Callback, Callbacks,
     public void disable(int displayId, int state1, int state2, boolean animate) {
         if (displayId == mContext.getDisplayId()) {
             mDisabled2 = state2;
+        }
+    }
+
+    /**
+     * Returns {@code true} if it is safe to retry a pending remote input. The exact criteria for
+     * this vary depending whether the scene container is enabled.
+     */
+    private boolean canRetryPendingRemoteInput() {
+        if (SceneContainerFlag.isEnabled()) {
+            final boolean isUnlocked = mDeviceUnlockedInteractorLazy.get()
+                    .getDeviceUnlockStatus().getValue().isUnlocked();
+            final boolean isIdle = mSceneInteractorLazy.get()
+                    .getTransitionState().getValue() instanceof ObservableTransitionState.Idle;
+            return isUnlocked && isIdle;
+        } else {
+            return mKeyguardStateController.isUnlocked()
+                    && !mStatusBarStateController.isKeyguardRequested();
         }
     }
 

@@ -31,6 +31,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.graphics.drawable.VectorDrawable;
+import android.text.NoCopySpan;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.BackgroundColorSpan;
@@ -39,8 +40,6 @@ import android.text.style.ForegroundColorSpan;
 import android.text.style.TextAppearanceSpan;
 import android.util.Log;
 import android.util.Pair;
-
-import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.Arrays;
 import java.util.WeakHashMap;
@@ -188,6 +187,10 @@ public class ContrastColorUtil {
             Object[] spans = ss.getSpans(0, ss.length(), Object.class);
             SpannableStringBuilder builder = new SpannableStringBuilder(ss.toString());
             for (Object span : spans) {
+                if (span instanceof NoCopySpan) {
+                    // These spans can contain external references and should not be copied.
+                    continue;
+                }
                 Object resultSpan = span;
                 if (resultSpan instanceof CharacterStyle) {
                     resultSpan = ((CharacterStyle) span).getUnderlying();
@@ -254,6 +257,10 @@ public class ContrastColorUtil {
             Object[] spans = ss.getSpans(0, ss.length(), Object.class);
             SpannableStringBuilder builder = new SpannableStringBuilder(ss.toString());
             for (Object span : spans) {
+                if (span instanceof NoCopySpan) {
+                    // These spans can contain external references and should not be copied.
+                    continue;
+                }
                 Object resultSpan = span;
                 if (resultSpan instanceof CharacterStyle) {
                     resultSpan = ((CharacterStyle) span).getUnderlying();
@@ -300,6 +307,10 @@ public class ContrastColorUtil {
             Object[] spans = ss.getSpans(0, ss.length(), Object.class);
             SpannableStringBuilder builder = new SpannableStringBuilder(ss.toString());
             for (Object span : spans) {
+                if (span instanceof NoCopySpan) {
+                    // These spans can contain external references and should not be copied.
+                    continue;
+                }
                 Object resultSpan = span;
                 int spanStart = ss.getSpanStart(span);
                 int spanEnd = ss.getSpanEnd(span);
@@ -366,6 +377,13 @@ public class ContrastColorUtil {
     public static boolean isColorDark(int color) {
         // as per shouldUseDark(), this uses the color contrast midpoint.
         return calculateLuminance(color) <= 0.17912878474;
+    }
+
+    /** Like {@link #isColorDark(int)} but converts to LAB before checking the L component. */
+    public static boolean isColorDarkLab(int color) {
+        final double[] result = ColorUtilsFromCompat.getTempDouble3Array();
+        ColorUtilsFromCompat.colorToLAB(color, result);
+        return result[0] < 50;
     }
 
     private int processColor(int color) {

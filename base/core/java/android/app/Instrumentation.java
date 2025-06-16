@@ -48,6 +48,10 @@ import android.os.SystemProperties;
 import android.os.TestLooperManager;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.ravenwood.annotation.RavenwoodKeep;
+import android.ravenwood.annotation.RavenwoodKeepPartialClass;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodReplace;
 import android.util.AndroidRuntimeException;
 import android.util.Log;
 import android.view.Display;
@@ -56,7 +60,6 @@ import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
-import android.view.SurfaceControl;
 import android.view.ViewConfiguration;
 import android.view.Window;
 import android.view.WindowManagerGlobal;
@@ -80,7 +83,7 @@ import java.util.concurrent.TimeoutException;
  * implementation is described to the system through an AndroidManifest.xml's
  * &lt;instrumentation&gt; tag.
  */
-@android.ravenwood.annotation.RavenwoodKeepPartialClass
+@RavenwoodKeepPartialClass
 public class Instrumentation {
 
     /**
@@ -98,15 +101,23 @@ public class Instrumentation {
      */
     public static final String REPORT_KEY_STREAMRESULT = "stream";
 
-    private static final String TAG = "Instrumentation";
+    /**
+     * @hide
+     */
+    public static final String TAG = "Instrumentation";
 
     private static final long CONNECT_TIMEOUT_MILLIS = 60_000;
 
     private static final boolean VERBOSE = Log.isLoggable(TAG, Log.VERBOSE);
 
-    // If set, will print the stack trace for activity starts within the process
-    static final boolean DEBUG_START_ACTIVITY = Build.IS_DEBUGGABLE &&
+    /**
+     * If set, will print the stack trace for activity starts within the process
+     * @hide
+     */
+    public static final boolean DEBUG_START_ACTIVITY = Build.IS_DEBUGGABLE &&
             SystemProperties.getBoolean("persist.wm.debug.start_activity", false);
+    static final boolean DEBUG_FINISH_ACTIVITY = Build.IS_DEBUGGABLE &&
+            SystemProperties.getBoolean("persist.wm.debug.finish_activity", false);
 
     /**
      * @hide
@@ -132,9 +143,8 @@ public class Instrumentation {
     private PerformanceCollector mPerformanceCollector;
     private Bundle mPerfMetrics = new Bundle();
     private UiAutomation mUiAutomation;
-    private final Object mAnimationCompleteLock = new Object();
 
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     public Instrumentation() {
     }
 
@@ -145,7 +155,7 @@ public class Instrumentation {
      * reflection, but it will serve as noticeable discouragement from
      * doing such a thing.
      */
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     private void checkInstrumenting(String method) {
         // Check if we have an instrumentation context, as init should only get called by
         // the system in startup processes that are being instrumented.
@@ -160,7 +170,7 @@ public class Instrumentation {
      *
      * @hide
      */
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     public boolean isInstrumenting() {
         // Check if we have an instrumentation context, as init should only get called by
         // the system in startup processes that are being instrumented.
@@ -185,6 +195,7 @@ public class Instrumentation {
      * @param arguments Any additional arguments that were supplied when the 
      *                  instrumentation was started.
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public void onCreate(Bundle arguments) {
     }
 
@@ -324,7 +335,7 @@ public class Instrumentation {
      * 
      * @see #getTargetContext
      */
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     public Context getContext() {
         return mInstrContext;
     }
@@ -349,7 +360,7 @@ public class Instrumentation {
      * 
      * @see #getContext
      */
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     public Context getTargetContext() {
         return mAppContext;
     }
@@ -450,31 +461,6 @@ public class Instrumentation {
         idler.waitForIdle();
     }
 
-    private void waitForEnterAnimationComplete(Activity activity) {
-        synchronized (mAnimationCompleteLock) {
-            long timeout = 5000;
-            try {
-                // We need to check that this specified Activity completed the animation, not just
-                // any Activity. If it was another Activity, then decrease the timeout by how long
-                // it's already waited and wait for the thread to wakeup again.
-                while (timeout > 0 && !activity.mEnterAnimationComplete) {
-                    long startTime = System.currentTimeMillis();
-                    mAnimationCompleteLock.wait(timeout);
-                    long totalTime = System.currentTimeMillis() - startTime;
-                    timeout -= totalTime;
-                }
-            } catch (InterruptedException e) {
-            }
-        }
-    }
-
-    /** @hide */
-    public void onEnterAnimationComplete() {
-        synchronized (mAnimationCompleteLock) {
-            mAnimationCompleteLock.notifyAll();
-        }
-    }
-
     /**
      * Execute a call on the application's main thread, blocking until it is
      * complete.  Useful for doing things that are not thread-safe, such as
@@ -482,10 +468,18 @@ public class Instrumentation {
      * 
      * @param runner The code to run on the main thread.
      */
+    @RavenwoodReplace(blockedBy = ActivityThread.class)
     public void runOnMainSync(Runnable runner) {
         validateNotAppThread();
         SyncRunnable sr = new SyncRunnable(runner);
         mThread.getHandler().post(sr);
+        sr.waitForComplete();
+    }
+
+    private void runOnMainSync$ravenwood(Runnable runner) {
+        validateNotAppThread();
+        SyncRunnable sr = new SyncRunnable(runner);
+        mInstrContext.getMainExecutor().execute(sr);
         sr.waitForComplete();
     }
 
@@ -635,13 +629,14 @@ public class Instrumentation {
             activity = aw.activity;
         }
 
-        // Do not call this method within mSync, lest it could block the main thread.
-        waitForEnterAnimationComplete(activity);
-
-        // Apply an empty transaction to ensure SF has a chance to update before
-        // the Activity is ready (b/138263890).
-        try (SurfaceControl.Transaction t = new SurfaceControl.Transaction()) {
-            t.apply(true);
+        // Typically, callers expect that the launched activity can receive input events after this
+        // method returns, so wait until a stable state, i.e. animation is finished and input info
+        // is updated.
+        try {
+            WindowManagerGlobal.getWindowManagerService()
+                    .syncInputTransactions(true /* waitForAnimations */);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
         }
         return activity;
     }
@@ -2405,10 +2400,11 @@ public class Instrumentation {
      *
      * @hide
      */
-    @android.ravenwood.annotation.RavenwoodKeep
-    public final void basicInit(Context context) {
-        mInstrContext = context;
-        mAppContext = context;
+    @RavenwoodKeep
+    public final void basicInit(Context instrContext, Context appContext, UiAutomation ui) {
+        mInstrContext = instrContext;
+        mAppContext = appContext;
+        mUiAutomation = ui;
     }
 
     /** @hide */
@@ -2462,7 +2458,8 @@ public class Instrumentation {
         }
     }
 
-    private final void validateNotAppThread() {
+    @RavenwoodKeep
+    private void validateNotAppThread() {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             throw new RuntimeException(
                 "This method can not be called from the main application thread");
@@ -2499,6 +2496,7 @@ public class Instrumentation {
      *
      * @see UiAutomation
      */
+    @RavenwoodKeep
     public UiAutomation getUiAutomation() {
         return getUiAutomation(0);
     }
@@ -2537,6 +2535,7 @@ public class Instrumentation {
      *
      * @see UiAutomation
      */
+    @RavenwoodReplace
     public UiAutomation getUiAutomation(@UiAutomationFlags int flags) {
         boolean mustCreateNewAutomation = (mUiAutomation == null) || (mUiAutomation.isDestroyed());
 
@@ -2567,11 +2566,15 @@ public class Instrumentation {
         return null;
     }
 
+    private UiAutomation getUiAutomation$ravenwood(@UiAutomationFlags int flags) {
+        return mUiAutomation;
+    }
+
     /**
      * Takes control of the execution of messages on the specified looper until
      * {@link TestLooperManager#release} is called.
      */
-    @android.ravenwood.annotation.RavenwoodKeep
+    @RavenwoodKeep
     public TestLooperManager acquireLooperManager(Looper looper) {
         checkInstrumenting("acquireLooperManager");
         return new TestLooperManager(looper);
@@ -2600,6 +2603,7 @@ public class Instrumentation {
         }
     }
 
+    @RavenwoodKeepWholeClass
     private static final class SyncRunnable implements Runnable {
         private final Runnable mTarget;
         private boolean mComplete;

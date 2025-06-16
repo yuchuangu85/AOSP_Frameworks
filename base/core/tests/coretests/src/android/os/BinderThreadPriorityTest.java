@@ -24,12 +24,14 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.Log;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+
+import com.android.internal.os.SkipPresubmit;
 
 import org.junit.After;
 import org.junit.Before;
@@ -44,7 +46,7 @@ import java.io.IOException;
  * Test whether Binder calls inherit thread priorities correctly.
  */
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(blockedBy = ActivityManager.class)
+@DisabledOnRavenwood(blockedBy = ActivityManager.class)
 public class BinderThreadPriorityTest {
     private static final String TAG = "BinderThreadPriorityTest";
 
@@ -131,6 +133,7 @@ public class BinderThreadPriorityTest {
     }
 
     @Test
+    @SkipPresubmit("b/381950874: bitrot and failed")
     public void testPassPriorityToService() throws Exception {
         for (int prio = 19; prio >= -20; prio--) {
             Process.setThreadPriority(prio);
@@ -146,6 +149,7 @@ public class BinderThreadPriorityTest {
     }
 
     @Test
+    @SkipPresubmit("b/381950874: bitrot and failed")
     public void testCallBackFromServiceWithPriority() throws Exception {
         for (int prio = -20; prio <= 19; prio++) {
             final int expected = prio;

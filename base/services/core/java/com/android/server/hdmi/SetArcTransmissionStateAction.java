@@ -60,29 +60,20 @@ final class SetArcTransmissionStateAction extends HdmiCecFeatureAction {
     boolean start() {
         // Seq #37.
         if (mEnabled) {
-            // Request SADs before enabling ARC
-            RequestSadAction action = new RequestSadAction(
-                    localDevice(), Constants.ADDR_AUDIO_SYSTEM,
-                    new RequestSadAction.RequestSadCallback() {
-                        @Override
-                        public void onRequestSadDone(List<byte[]> supportedSads) {
-                            // Enable ARC status immediately before sending <Report Arc Initiated>.
-                            // If AVR responds with <Feature Abort>, disable ARC status again.
-                            // This is different from spec that says that turns ARC status to
-                            // "Enabled" if <Report ARC Initiated> is acknowledged and no
-                            // <Feature Abort> is received.
-                            // But implemented this way to save the time having to wait for
-                            // <Feature Abort>.
-                            Slog.i(TAG, "Enabling ARC");
-                            tv().enableArc(supportedSads);
-                            // If succeeds to send <Report ARC Initiated>, wait general timeout to
-                            // check whether there is no <Feature Abort> for <Report ARC Initiated>.
-                            mState = STATE_WAITING_TIMEOUT;
-                            addTimer(mState, HdmiConfig.TIMEOUT_MS);
-                            sendReportArcInitiated();
-                        }
-                    });
-            addAndStartAction(action);
+            // Enable ARC status immediately before sending <Report Arc Initiated>.
+            // If AVR responds with <Feature Abort>, disable ARC status again.
+            // This is different from spec that says that turns ARC status to
+            // "Enabled" if <Report ARC Initiated> is acknowledged and no
+            // <Feature Abort> is received.
+            // But implemented this way to save the time having to wait for
+            // <Feature Abort>.
+            Slog.i(TAG, "Enabling ARC");
+            tv().enableArc();
+            // If succeeds to send <Report ARC Initiated>, wait general timeout to
+            // check whether there is no <Feature Abort> for <Report ARC Initiated>.
+            mState = STATE_WAITING_TIMEOUT;
+            addTimer(mState, HdmiConfig.TIMEOUT_MS);
+            sendReportArcInitiated();
         } else {
             disableArc();
             finish();

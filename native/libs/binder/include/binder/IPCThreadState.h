@@ -64,7 +64,10 @@ public:
      * Returns the PID of the process which has made the current binder
      * call. If not in a binder call, this will return getpid.
      *
-     * Warning: oneway transactions do not receive PID. Even if you expect
+     * Warning do not use this as a security identifier! PID is unreliable
+     * as it may be re-used. This should mostly be used for debugging.
+     *
+     * oneway transactions do not receive PID. Even if you expect
      * a transaction to be synchronous, a misbehaving client could send it
      * as an asynchronous call and result in a 0 PID here. Additionally, if
      * there is a race and the calling process dies, the PID may still be
@@ -174,6 +177,8 @@ public:
     LIBBINDER_EXPORTED static void expungeHandle(int32_t handle, IBinder* binder);
     LIBBINDER_EXPORTED status_t requestDeathNotification(int32_t handle, BpBinder* proxy);
     LIBBINDER_EXPORTED status_t clearDeathNotification(int32_t handle, BpBinder* proxy);
+    [[nodiscard]] status_t addFrozenStateChangeCallback(int32_t handle, BpBinder* proxy);
+    [[nodiscard]] status_t removeFrozenStateChangeCallback(int32_t handle, BpBinder* proxy);
 
     LIBBINDER_EXPORTED static void shutdown();
 
@@ -210,13 +215,14 @@ private:
     IPCThreadState();
     ~IPCThreadState();
 
-    status_t sendReply(const Parcel& reply, uint32_t flags);
-    status_t waitForResponse(Parcel* reply, status_t* acquireResult = nullptr);
-    status_t talkWithDriver(bool doReceive = true);
-    status_t writeTransactionData(int32_t cmd, uint32_t binderFlags, int32_t handle, uint32_t code,
-                                  const Parcel& data, status_t* statusBuffer);
-    status_t getAndExecuteCommand();
-    status_t executeCommand(int32_t command);
+    [[nodiscard]] status_t sendReply(const Parcel& reply, uint32_t flags);
+    [[nodiscard]] status_t waitForResponse(Parcel* reply, status_t* acquireResult = nullptr);
+    [[nodiscard]] status_t talkWithDriver(bool doReceive = true);
+    [[nodiscard]] status_t writeTransactionData(int32_t cmd, uint32_t binderFlags, int32_t handle,
+                                                uint32_t code, const Parcel& data,
+                                                status_t* statusBuffer);
+    [[nodiscard]] status_t getAndExecuteCommand();
+    [[nodiscard]] status_t executeCommand(int32_t command);
     void processPendingDerefs();
     void processPostWriteDerefs();
 

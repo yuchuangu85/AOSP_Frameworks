@@ -66,7 +66,6 @@ import android.util.SparseArray;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.inputmethod.InputMethodInfo;
-import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputMethodSubtype;
 
 import com.android.internal.R;
@@ -111,6 +110,7 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
     private static final int MSG_UPDATE_EXISTING_DEVICES = 1;
     private static final int MSG_RELOAD_KEYBOARD_LAYOUTS = 2;
     private static final int MSG_UPDATE_KEYBOARD_LAYOUTS = 3;
+    private static final String GLOBAL_OVERRIDE_KEY = "GLOBAL_OVERRIDE_KEY";
 
     private final Context mContext;
     private final NativeInputManagerService mNative;
@@ -253,17 +253,6 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
         if (needToShowNotification) {
             maybeUpdateNotification();
         }
-    }
-
-    private static boolean isCompatibleLocale(Locale systemLocale, Locale keyboardLocale) {
-        // Different languages are never compatible
-        if (!systemLocale.getLanguage().equals(keyboardLocale.getLanguage())) {
-            return false;
-        }
-        // If both the system and the keyboard layout have a country specifier, they must be equal.
-        return TextUtils.isEmpty(systemLocale.getCountry())
-                || TextUtils.isEmpty(keyboardLocale.getCountry())
-                || systemLocale.getCountry().equals(keyboardLocale.getCountry());
     }
 
     @MainThread
@@ -517,26 +506,44 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
     }
 
     @AnyThread
-    public void setKeyboardLayoutForInputDevice(InputDeviceIdentifier identifier,
-            @UserIdInt int userId, @NonNull InputMethodInfo imeInfo,
-            @Nullable InputMethodSubtype imeSubtype,
+    public void setKeyboardLayoutOverrideForInputDevice(InputDeviceIdentifier identifier,
             String keyboardLayoutDescriptor) {
-        Objects.requireNonNull(keyboardLayoutDescriptor,
-                "keyboardLayoutDescriptor must not be null");
         InputDevice inputDevice = getInputDevice(identifier);
         if (inputDevice == null || inputDevice.isVirtual() || !inputDevice.isFullKeyboard()) {
             return;
         }
         KeyboardIdentifier keyboardIdentifier = new KeyboardIdentifier(inputDevice);
-        String layoutKey = new LayoutKey(keyboardIdentifier,
+        setKeyboardLayoutForInputDeviceInternal(keyboardIdentifier, GLOBAL_OVERRIDE_KEY,
+                keyboardLayoutDescriptor);
+    }
+
+    @AnyThread
+    public void setKeyboardLayoutForInputDevice(InputDeviceIdentifier identifier,
+            @UserIdInt int userId, @NonNull InputMethodInfo imeInfo,
+            @Nullable InputMethodSubtype imeSubtype,
+            String keyboardLayoutDescriptor) {
+        InputDevice inputDevice = getInputDevice(identifier);
+        if (inputDevice == null || inputDevice.isVirtual() || !inputDevice.isFullKeyboard()) {
+            return;
+        }
+        KeyboardIdentifier keyboardIdentifier = new KeyboardIdentifier(inputDevice);
+        final String datastoreKey = new LayoutKey(keyboardIdentifier,
                 new ImeInfo(userId, imeInfo, imeSubtype)).toString();
+        setKeyboardLayoutForInputDeviceInternal(keyboardIdentifier, datastoreKey,
+                keyboardLayoutDescriptor);
+    }
+
+    private void setKeyboardLayoutForInputDeviceInternal(KeyboardIdentifier identifier,
+            String datastoreKey, String keyboardLayoutDescriptor) {
+        Objects.requireNonNull(keyboardLayoutDescriptor,
+                "keyboardLayoutDescriptor must not be null");
         synchronized (mDataStore) {
             try {
-                if (mDataStore.setKeyboardLayout(keyboardIdentifier.toString(), layoutKey,
+                if (mDataStore.setKeyboardLayout(identifier.toString(), datastoreKey,
                         keyboardLayoutDescriptor)) {
                     if (DEBUG) {
                         Slog.d(TAG, "setKeyboardLayoutForInputDevice() " + identifier
-                                + " key: " + layoutKey
+                                + " key: " + datastoreKey
                                 + " keyboardLayoutDescriptor: " + keyboardLayoutDescriptor);
                     }
                     mHandler.sendEmptyMessage(MSG_RELOAD_KEYBOARD_LAYOUTS);
@@ -643,6 +650,12 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
             String layout = mDataStore.getKeyboardLayout(keyboardIdentifier.toString(), layoutKey);
             if (layout != null) {
                 return new KeyboardLayoutSelectionResult(layout, LAYOUT_SELECTION_CRITERIA_USER);
+            }
+
+            layout = mDataStore.getKeyboardLayout(keyboardIdentifier.toString(),
+                    GLOBAL_OVERRIDE_KEY);
+            if (layout != null) {
+                return new KeyboardLayoutSelectionResult(layout, LAYOUT_SELECTION_CRITERIA_DEVICE);
             }
         }
 
@@ -953,21 +966,33 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
             return;
         }
 
+        List<String> layoutNames = new ArrayList<>();
+        for (String layoutDesc : config.getConfiguredLayouts()) {
+            KeyboardLayout kl = getKeyboardLayout(layoutDesc);
+            if (kl == null) {
+                // b/349033234: Weird state with stale keyboard layout configured.
+                // Possibly due to race condition between KCM providing package being removed and
+                // corresponding layouts being removed from Datastore and cache.
+                // {@see updateKeyboardLayouts()}
+                //
+                // Ideally notification will be correctly shown after the keyboard layouts are
+                // configured again with the new package state.
+                return;
+            }
+            layoutNames.add(kl.getLabel());
+        }
         showKeyboardLayoutNotification(
                 r.getString(
                         R.string.keyboard_layout_notification_selected_title,
                         inputDevice.getName()),
-                createConfiguredNotificationText(mContext, config.getConfiguredLayouts()),
+                createConfiguredNotificationText(mContext, layoutNames),
                 inputDevice);
     }
 
     @MainThread
     private String createConfiguredNotificationText(@NonNull Context context,
-            @NonNull Set<String> selectedLayouts) {
+            @NonNull List<String> layoutNames) {
         final Resources r = context.getResources();
-        List<String> layoutNames = new ArrayList<>();
-        selectedLayouts.forEach(
-                (layoutDesc) -> layoutNames.add(getKeyboardLayout(layoutDesc).getLabel()));
         Collections.sort(layoutNames);
         switch (layoutNames.size()) {
             case 1:
@@ -1053,8 +1078,6 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
         List<ImeInfo> imeInfoList = new ArrayList<>();
         UserManager userManager = Objects.requireNonNull(
                 mContext.getSystemService(UserManager.class));
-        InputMethodManager inputMethodManager = Objects.requireNonNull(
-                mContext.getSystemService(InputMethodManager.class));
         // Need to use InputMethodManagerInternal to call getEnabledInputMethodListAsUser()
         // instead of using InputMethodManager which uses enforceCallingPermissions() that
         // breaks when we are calling the method for work profile user ID since it doesn't check
@@ -1065,9 +1088,11 @@ class KeyboardLayoutManager implements InputManager.InputDeviceListener {
             for (InputMethodInfo imeInfo :
                     inputMethodManagerInternal.getEnabledInputMethodListAsUser(
                             userId)) {
-                for (InputMethodSubtype imeSubtype :
-                        inputMethodManager.getEnabledInputMethodSubtypeList(
-                                imeInfo, true /* allowsImplicitlyEnabledSubtypes */)) {
+                final List<InputMethodSubtype> imeSubtypes =
+                        inputMethodManagerInternal.getEnabledInputMethodSubtypeListAsUser(
+                                imeInfo.getId(), true /* allowsImplicitlyEnabledSubtypes */,
+                                userId);
+                for (InputMethodSubtype imeSubtype : imeSubtypes) {
                     if (!imeSubtype.isSuitableForPhysicalKeyboardLayoutMapping()) {
                         continue;
                     }

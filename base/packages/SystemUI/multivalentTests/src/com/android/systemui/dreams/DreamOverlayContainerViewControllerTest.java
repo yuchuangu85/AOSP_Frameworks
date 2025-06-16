@@ -16,6 +16,8 @@
 
 package com.android.systemui.dreams;
 
+import static com.android.systemui.Flags.FLAG_BOUNCER_UI_REVAMP;
+
 import static kotlinx.coroutines.flow.FlowKt.emptyFlow;
 import static kotlinx.coroutines.flow.StateFlowKt.MutableStateFlow;
 
@@ -36,7 +38,6 @@ import android.platform.test.annotations.DisableFlags;
 import android.platform.test.annotations.EnableFlags;
 import android.testing.TestableLooper.RunWithLooper;
 import android.view.AttachedSurfaceControl;
-import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewRootImpl;
 import android.view.ViewTreeObserver;
@@ -46,7 +47,6 @@ import androidx.test.filters.SmallTest;
 
 import com.android.dream.lowlight.LowLightTransitionCoordinator;
 import com.android.keyguard.BouncerPanelExpansionCalculator;
-import com.android.systemui.Flags;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.ambient.statusbar.ui.AmbientStatusBarViewController;
 import com.android.systemui.ambient.touch.scrim.BouncerlessScrimController;
@@ -65,6 +65,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -99,9 +100,6 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
 
     @Mock
     ViewGroup mDreamOverlayContentView;
-
-    @Mock
-    View mHubGestureIndicatorView;
 
     @Mock
     Handler mHandler;
@@ -149,6 +147,8 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
         when(mDreamOverlayContainerView.getRootSurfaceControl())
                 .thenReturn(mAttachedSurfaceControl);
         when(mKeyguardTransitionInteractor.isFinishedInStateWhere(any())).thenReturn(emptyFlow());
+        when(mKeyguardTransitionInteractor.isFinishedIn(any(), any())).thenReturn(emptyFlow());
+        when(mKeyguardTransitionInteractor.isFinishedIn(any())).thenReturn(emptyFlow());
         when(mShadeInteractor.isAnyExpanded()).thenReturn(MutableStateFlow(false));
         when(mCommunalInteractor.isCommunalShowing()).thenReturn(MutableStateFlow(false));
 
@@ -156,7 +156,6 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
                 mDreamOverlayContainerView,
                 mComplicationHostViewController,
                 mDreamOverlayContentView,
-                mHubGestureIndicatorView,
                 mAmbientStatusBarViewController,
                 mLowLightTransitionCoordinator,
                 mTouchInsetSession,
@@ -175,18 +174,6 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
                 mShadeInteractor,
                 mCommunalInteractor,
                 mDreamManager);
-    }
-
-    @DisableFlags(Flags.FLAG_COMMUNAL_HUB)
-    @Test
-    public void testHubGestureIndicatorGoneWhenFlagOff() {
-        verify(mHubGestureIndicatorView, never()).setVisibility(View.VISIBLE);
-    }
-
-    @EnableFlags({Flags.FLAG_COMMUNAL_HUB, Flags.FLAG_GLANCEABLE_HUB_GESTURE_HANDLE})
-    @Test
-    public void testHubGestureIndicatorVisibleWhenFlagOn() {
-        verify(mHubGestureIndicatorView).setVisibility(View.VISIBLE);
     }
 
     @Test
@@ -247,6 +234,7 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
     }
 
     @Test
+    @DisableFlags(FLAG_BOUNCER_UI_REVAMP)
     public void testBouncerAnimation_updateBlur() {
         final ArgumentCaptor<PrimaryBouncerExpansionCallback> bouncerExpansionCaptor =
                 ArgumentCaptor.forClass(PrimaryBouncerExpansionCallback.class);
@@ -266,6 +254,26 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
         bouncerExpansionCaptor.getValue().onExpansionChanged(bouncerHideAmount);
         verify(mBlurUtils).blurRadiusOfRatio(1 - scaledFraction);
         verify(mBlurUtils).applyBlur(mViewRoot, (int) blurRadius, false);
+    }
+
+    @Test
+    @EnableFlags(FLAG_BOUNCER_UI_REVAMP)
+    public void testBouncerAnimation_doesNotBlur_whenBouncerRevampEnabled() {
+        final ArgumentCaptor<PrimaryBouncerExpansionCallback> bouncerExpansionCaptor =
+                ArgumentCaptor.forClass(PrimaryBouncerExpansionCallback.class);
+        mController.onViewAttached();
+        verify(mPrimaryBouncerCallbackInteractor).addBouncerExpansionCallback(
+                bouncerExpansionCaptor.capture());
+
+        final float blurRadius = 1337f;
+        when(mBlurUtils.blurRadiusOfRatio(anyFloat())).thenReturn(blurRadius);
+
+        bouncerExpansionCaptor.getValue().onStartingToShow();
+        final float bouncerHideAmount = 0.05f;
+
+        bouncerExpansionCaptor.getValue().onExpansionChanged(bouncerHideAmount);
+        verify(mBlurUtils, never()).blurRadiusOfRatio(anyFloat());
+        verify(mBlurUtils, never()).applyBlur(eq(mViewRoot), anyInt(), anyBoolean());
     }
 
     @Test
@@ -340,5 +348,14 @@ public class DreamOverlayContainerViewControllerTest extends SysuiTestCase {
         // This test will catch failures in presubmit when the dream_handles_being_obscured flag is
         // enabled.
         mController.onViewAttached();
+    }
+
+    @Test
+    public void destroy_cleansUpState() {
+        mController.destroy();
+        verify(mStateController).removeCallback(any());
+        verify(mAmbientStatusBarViewController).destroy();
+        verify(mComplicationHostViewController).destroy();
+        verify(mLowLightTransitionCoordinator).setLowLightEnterListener(ArgumentMatchers.isNull());
     }
 }

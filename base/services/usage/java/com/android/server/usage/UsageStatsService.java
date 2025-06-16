@@ -48,6 +48,7 @@ import android.app.IUidObserver;
 import android.app.PendingIntent;
 import android.app.UidObserver;
 import android.app.admin.DevicePolicyManagerInternal;
+import android.app.supervision.SupervisionManagerInternal;
 import android.app.usage.AppLaunchEstimateInfo;
 import android.app.usage.AppStandbyInfo;
 import android.app.usage.BroadcastResponseStatsList;
@@ -113,6 +114,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.IoThread;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.usage.AppStandbyInternal.AppIdleStateChangeListener;
 import com.android.server.utils.AlarmQueue;
 
@@ -229,6 +231,7 @@ public class UsageStatsService extends SystemService implements
     // Do not use directly. Call getDpmInternal() instead
     DevicePolicyManagerInternal mDpmInternal;
     // Do not use directly. Call getShortcutServiceInternal() instead
+    SupervisionManagerInternal mSupervisionManagerInternal;
     ShortcutServiceInternal mShortcutServiceInternal;
 
     private final SparseArray<UserUsageStatsService> mUserState = new SparseArray<>();
@@ -438,6 +441,9 @@ public class UsageStatsService extends SystemService implements
             // initialize mDpmInternal
             getDpmInternal();
             // initialize mShortcutServiceInternal
+            if (android.app.supervision.flags.Flags.deprecateDpmSupervisionApis()) {
+                getSupervisionManagerInternal();
+            }
             getShortcutServiceInternal();
             mResponseStatsTracker.onSystemServicesReady(getContext());
 
@@ -603,6 +609,15 @@ public class UsageStatsService extends SystemService implements
         return mDpmInternal;
     }
 
+    @Nullable
+    private SupervisionManagerInternal getSupervisionManagerInternal() {
+        if (mSupervisionManagerInternal == null) {
+            mSupervisionManagerInternal =
+                    LocalServices.getService(SupervisionManagerInternal.class);
+        }
+        return mSupervisionManagerInternal;
+    }
+
     private ShortcutServiceInternal getShortcutServiceInternal() {
         if (mShortcutServiceInternal == null) {
             mShortcutServiceInternal = LocalServices.getService(ShortcutServiceInternal.class);
@@ -750,6 +765,16 @@ public class UsageStatsService extends SystemService implements
         }
         return !(getContext().checkPermission(android.Manifest.permission.MANAGE_NOTIFICATIONS,
                 callingPid, callingUid) == PackageManager.PERMISSION_GRANTED);
+    }
+
+    private boolean isSupervisionEnabled(int callingUid) {
+        if (android.app.supervision.flags.Flags.deprecateDpmSupervisionApis()) {
+            SupervisionManagerInternal smInternal = getSupervisionManagerInternal();
+            return smInternal != null && smInternal.isActiveSupervisionApp(callingUid);
+        } else {
+            DevicePolicyManagerInternal dpmInternal = getDpmInternal();
+            return dpmInternal != null && dpmInternal.isActiveSupervisionApp(callingUid);
+        }
     }
 
     private static void deleteRecursively(final File path) {
@@ -1063,6 +1088,16 @@ public class UsageStatsService extends SystemService implements
         synchronized (mReportedEvents) {
             LinkedList<Event> events = mReportedEvents.get(userId);
             if (events == null) {
+                // Callers of this API should verify that the userId passed to this method exists.
+                // The logic below should only remain as a last-resort catch-all fix.
+                final UserManagerInternal umi = LocalServices.getService(UserManagerInternal.class);
+                if (umi == null || (umi != null && !umi.exists(userId))) {
+                    // The userId passed is a non-existent user so don't report the event.
+                    Slog.wtf(TAG, "Attempted to report event for non-existent user " + userId
+                            + " (" + event.mPackage + "/" + event.mClass
+                            + " eventType:" + event.mEventType + ")");
+                    return;
+                }
                 events = new LinkedList<>();
                 mReportedEvents.put(userId, events);
             }
@@ -1834,10 +1869,18 @@ public class UsageStatsService extends SystemService implements
     }
 
     private boolean shouldDeleteObsoleteData(UserHandle userHandle) {
-        final DevicePolicyManagerInternal dpmInternal = getDpmInternal();
-        // If a profile owner is not defined for the given user, obsolete data should be deleted
-        return dpmInternal == null
-                || dpmInternal.getProfileOwnerOrDeviceOwnerSupervisionComponent(userHandle) == null;
+        if (android.app.supervision.flags.Flags.deprecateDpmSupervisionApis()) {
+            final SupervisionManagerInternal smInternal = getSupervisionManagerInternal();
+            // If supervision is not enabled for the given user, obsolete data should be deleted.
+            return smInternal == null
+                    || !smInternal.isSupervisionEnabledForUser(userHandle.getIdentifier());
+        } else {
+            final DevicePolicyManagerInternal dpmInternal = getDpmInternal();
+            // If a profile owner is not defined for the given user, obsolete data should be deleted
+            return dpmInternal == null
+                    || dpmInternal.getProfileOwnerOrDeviceOwnerSupervisionComponent(userHandle)
+                            == null;
+        }
     }
 
     private String buildFullToken(String packageName, String token) {
@@ -2918,10 +2961,9 @@ public class UsageStatsService extends SystemService implements
                 long timeLimitMs, long timeUsedMs, PendingIntent callbackIntent,
                 String callingPackage) {
             final int callingUid = Binder.getCallingUid();
-            final DevicePolicyManagerInternal dpmInternal = getDpmInternal();
             if (!hasPermissions(
                     Manifest.permission.SUSPEND_APPS, Manifest.permission.OBSERVE_APP_USAGE)
-                    && (dpmInternal == null || !dpmInternal.isActiveSupervisionApp(callingUid))) {
+                    && !isSupervisionEnabled(callingUid)) {
                 throw new SecurityException("Caller must be the active supervision app or "
                         + "it must have both SUSPEND_APPS and OBSERVE_APP_USAGE permissions");
             }
@@ -2945,10 +2987,9 @@ public class UsageStatsService extends SystemService implements
         @Override
         public void unregisterAppUsageLimitObserver(int observerId, String callingPackage) {
             final int callingUid = Binder.getCallingUid();
-            final DevicePolicyManagerInternal dpmInternal = getDpmInternal();
             if (!hasPermissions(
                     Manifest.permission.SUSPEND_APPS, Manifest.permission.OBSERVE_APP_USAGE)
-                    && (dpmInternal == null || !dpmInternal.isActiveSupervisionApp(callingUid))) {
+                    && !isSupervisionEnabled(callingUid)) {
                 throw new SecurityException("Caller must be the active supervision app or "
                         + "it must have both SUSPEND_APPS and OBSERVE_APP_USAGE permissions");
             }
@@ -3223,6 +3264,18 @@ public class UsageStatsService extends SystemService implements
             Event event = new Event(eventType, SystemClock.elapsedRealtime());
             event.mPackage = packageName;
             reportEventOrAddToQueue(userId, event);
+        }
+
+        @Override
+        public void reportEventForAllUsers(String packageName, int eventType) {
+            if (packageName == null) {
+                Slog.w(TAG, "Event reported without a package name, eventType:" + eventType);
+                return;
+            }
+
+            Event event = new Event(eventType, SystemClock.elapsedRealtime());
+            event.mPackage = packageName;
+            reportEventToAllUserId(event);
         }
 
         @Override

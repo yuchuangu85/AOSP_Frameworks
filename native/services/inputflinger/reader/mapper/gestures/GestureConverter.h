@@ -55,6 +55,12 @@ public:
 
     void setBoundsInLogicalDisplay(FloatRect bounds) { mBoundsInLogicalDisplay = bounds; }
 
+    void setThreeFingerTapShortcutEnabled(bool enabled) {
+        mThreeFingerTapShortcutEnabled = enabled;
+    }
+
+    [[nodiscard]] std::list<NotifyArgs> setEnableSystemGestures(nsecs_t when, bool enable);
+
     void populateMotionRanges(InputDeviceInfo& info) const;
 
     [[nodiscard]] std::list<NotifyArgs> handleGesture(nsecs_t when, nsecs_t readTime,
@@ -86,6 +92,8 @@ private:
     [[nodiscard]] std::list<NotifyArgs> enterHover(nsecs_t when, nsecs_t readTime);
     [[nodiscard]] std::list<NotifyArgs> exitHover(nsecs_t when, nsecs_t readTime);
 
+    [[nodiscard]] std::list<NotifyArgs> prepareForFakeFingerGesture(nsecs_t when, nsecs_t readTime);
+
     NotifyMotionArgs makeHoverEvent(nsecs_t when, nsecs_t readTime, int32_t action);
 
     NotifyMotionArgs makeMotionArgs(nsecs_t when, nsecs_t readTime, int32_t action,
@@ -98,7 +106,10 @@ private:
 
     const int32_t mDeviceId;
     InputReaderContext& mReaderContext;
-    const bool mEnableFlingStop;
+    const bool mEnableNoFocusChange;
+    bool mEnableSystemGestures{true};
+
+    bool mThreeFingerTapShortcutEnabled{false};
 
     std::optional<ui::LogicalDisplayId> mDisplayId;
     FloatRect mBoundsInLogicalDisplay{};

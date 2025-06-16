@@ -20,13 +20,14 @@ import static com.google.common.truth.Truth.assertThat;
 
 import android.graphics.Color;
 import android.graphics.drawable.ShapeDrawable;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.ImageSpan;
 import android.text.style.UnderlineSpan;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -35,6 +36,7 @@ import org.junit.runner.RunWith;
 @Presubmit
 @SmallTest
 @RunWith(AndroidJUnit4.class)
+@DisabledOnRavenwood(blockedBy = ShapeDrawable.class)
 public class SpanColorsTest {
     private final TextPaint mWorkPaint = new TextPaint();
     private SpanColors mSpanColors;

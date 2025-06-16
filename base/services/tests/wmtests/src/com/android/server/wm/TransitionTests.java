@@ -34,7 +34,7 @@ import static android.view.WindowManager.TRANSIT_CHANGE;
 import static android.view.WindowManager.TRANSIT_CLOSE;
 import static android.view.WindowManager.TRANSIT_OPEN;
 import static android.view.WindowManager.TRANSIT_TO_BACK;
-import static android.window.TransitionInfo.FLAG_CONFIG_AT_END;
+import static android.window.TransitionInfo.FLAG_CROSS_PROFILE_OWNER_THUMBNAIL;
 import static android.window.TransitionInfo.FLAG_FILLS_TASK;
 import static android.window.TransitionInfo.FLAG_IN_TASK_WITH_EMBEDDED_ACTIVITY;
 import static android.window.TransitionInfo.FLAG_IS_BEHIND_STARTING_WINDOW;
@@ -50,7 +50,7 @@ import static com.android.dx.mockito.inline.extended.ExtendedMockito.doNothing;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
 import static com.android.server.wm.WindowContainer.POSITION_TOP;
-import static com.android.window.flags.Flags.explicitRefreshRateHints;
+import static com.android.server.wm.WindowManagerService.UPDATE_FOCUS_NORMAL;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -77,13 +77,12 @@ import static java.lang.Integer.MAX_VALUE;
 
 import android.app.ActivityManager;
 import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.IBinder;
-import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
-import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.view.SurfaceControl;
@@ -95,6 +94,7 @@ import android.window.ITaskOrganizer;
 import android.window.ITransitionPlayer;
 import android.window.RemoteTransition;
 import android.window.SystemPerformanceHinter;
+import android.window.TaskFragmentAnimationParams;
 import android.window.TaskFragmentOrganizer;
 import android.window.TransitionInfo;
 
@@ -102,9 +102,7 @@ import androidx.annotation.NonNull;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.graphics.ColorUtils;
-import com.android.window.flags.Flags;
 
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -120,16 +118,15 @@ import java.util.function.Function;
  * Build/Install/Run:
  *  atest WmTests:TransitionTests
  */
-@EnableFlags(Flags.FLAG_MOVE_ANIMATION_OPTIONS_TO_CHANGE)
 @SmallTest
 @Presubmit
 @RunWith(WindowTestRunner.class)
 public class TransitionTests extends WindowTestsBase {
     final SurfaceControl.Transaction mMockT = mock(SurfaceControl.Transaction.class);
     private BLASTSyncEngine mSyncEngine;
+    private Transition mTransition;
+    private TransitionInfo mInfo;
 
-    @Rule
-    public SetFlagsRule mRule = new SetFlagsRule();
     private Transition createTestTransition(int transitType, TransitionController controller) {
         final Transition transition = new Transition(transitType, 0 /* flags */, controller,
                 controller.mSyncEngine);
@@ -139,8 +136,7 @@ public class TransitionTests extends WindowTestsBase {
     }
 
     private Transition createTestTransition(int transitType) {
-        final TransitionController controller = new TestTransitionController(
-                mock(ActivityTaskManagerService.class));
+        final TransitionController controller = new TestTransitionController(mAtm);
 
         mSyncEngine = createTestBLASTSyncEngine();
         controller.setSyncEngine(mSyncEngine);
@@ -434,8 +430,8 @@ public class TransitionTests extends WindowTestsBase {
 
         final WallpaperWindowToken wallpaperWindowToken = spy(new WallpaperWindowToken(mWm,
                 mock(IBinder.class), true, mDisplayContent, true /* ownerCanManageAppTokens */));
-        final WindowState wallpaperWindow = createWindow(null, TYPE_WALLPAPER, wallpaperWindowToken,
-                "wallpaperWindow");
+        final WindowState wallpaperWindow = newWindowBuilder("wallpaperWindow",
+                TYPE_WALLPAPER).setWindowToken(wallpaperWindowToken).build();
         wallpaperWindowToken.setVisibleRequested(false);
         transition.collect(wallpaperWindowToken);
         wallpaperWindowToken.setVisibleRequested(true);
@@ -631,8 +627,8 @@ public class TransitionTests extends WindowTestsBase {
         // Make DA organized so we can check that they don't get included.
         WindowContainer parent = wallpaperWindowToken.getParent();
         makeDisplayAreaOrganized(parent, mDisplayContent);
-        final WindowState wallpaperWindow = createWindow(null, TYPE_WALLPAPER, wallpaperWindowToken,
-                "wallpaperWindow");
+        final WindowState wallpaperWindow = newWindowBuilder("wallpaperWindow",
+                TYPE_WALLPAPER).setWindowToken(wallpaperWindowToken).build();
         wallpaperWindowToken.setVisibleRequested(false);
         transition.collect(wallpaperWindowToken);
         wallpaperWindowToken.setVisibleRequested(true);
@@ -684,7 +680,7 @@ public class TransitionTests extends WindowTestsBase {
         app.onStartingWindowDrawn();
         // The task appeared event should be deferred until transition ready.
         assertFalse(task.taskAppearedReady());
-        testPlayer.onTransactionReady(app.getSyncTransaction());
+        testPlayer.onTransactionReady();
         assertTrue(task.taskAppearedReady());
         assertTrue(playerProc.isRunningRemoteTransition());
         assertTrue(controller.mRemotePlayer.reportRunning(delegateProc.getThread()));
@@ -1115,15 +1111,15 @@ public class TransitionTests extends WindowTestsBase {
         // Simulate gesture navigation (non-movable) so it is not seamless.
         doReturn(false).when(displayPolicy).navigationBarCanMove();
         final Task task = createActivityRecord(mDisplayContent).getTask();
-        final WindowState statusBar = createWindow(null, TYPE_STATUS_BAR, "statusBar");
-        final WindowState navBar = createWindow(null, TYPE_NAVIGATION_BAR, "navBar");
-        final WindowState ime = createWindow(null, TYPE_INPUT_METHOD, "ime");
+        final WindowState statusBar = newWindowBuilder("statusBar", TYPE_STATUS_BAR).build();
+        final WindowState navBar = newWindowBuilder("navBar", TYPE_NAVIGATION_BAR).build();
+        final WindowState ime = newWindowBuilder("ime", TYPE_INPUT_METHOD).build();
         final WindowToken decorToken = new WindowToken.Builder(mWm, mock(IBinder.class),
                 TYPE_NAVIGATION_BAR_PANEL).setDisplayContent(mDisplayContent)
                 .setRoundedCornerOverlay(true).build();
-        final WindowState screenDecor =
-                createWindow(null, decorToken.windowType, decorToken, "screenDecor");
-        final WindowState[] windows = { statusBar, navBar, ime, screenDecor };
+        final WindowState screenDecor = newWindowBuilder("screenDecor",
+                decorToken.windowType).setWindowToken(decorToken).build();
+        final WindowState[] windows = {statusBar, navBar, ime, screenDecor};
         makeWindowVisible(windows);
         mDisplayContent.getDisplayPolicy().addWindowLw(statusBar, statusBar.mAttrs);
         mDisplayContent.getDisplayPolicy().addWindowLw(navBar, navBar.mAttrs);
@@ -1163,7 +1159,8 @@ public class TransitionTests extends WindowTestsBase {
         screenDecor.updateSurfacePosition(mMockT);
         assertEquals(prevPos, screenDecor.mLastSurfacePosition);
 
-        final SurfaceControl.Transaction startTransaction = mock(SurfaceControl.Transaction.class);
+        final SurfaceControl.Transaction startTransaction = mTransaction;
+        clearInvocations(startTransaction);
         final SurfaceControl.TransactionCommittedListener transactionCommittedListener =
                 onRotationTransactionReady(player, startTransaction);
 
@@ -1192,7 +1189,7 @@ public class TransitionTests extends WindowTestsBase {
     }
 
     private void testShellRotationOpen(TestTransitionPlayer player) {
-        final WindowState statusBar = createWindow(null, TYPE_STATUS_BAR, "statusBar");
+        final WindowState statusBar = newWindowBuilder("statusBar", TYPE_STATUS_BAR).build();
         makeWindowVisible(statusBar);
         mDisplayContent.getDisplayPolicy().addWindowLw(statusBar, statusBar.mAttrs);
         final ActivityRecord app = createActivityRecord(mDisplayContent);
@@ -1214,7 +1211,8 @@ public class TransitionTests extends WindowTestsBase {
         assertFalse(statusBar.mToken.inTransition());
         assertTrue(app.getTask().inTransition());
 
-        final SurfaceControl.Transaction startTransaction = mock(SurfaceControl.Transaction.class);
+        final SurfaceControl.Transaction startTransaction = mTransaction;
+        clearInvocations(startTransaction);
         final SurfaceControl leash = statusBar.mToken.getAnimationLeash();
         doReturn(true).when(leash).isValid();
         final SurfaceControl.TransactionCommittedListener transactionCommittedListener =
@@ -1240,7 +1238,7 @@ public class TransitionTests extends WindowTestsBase {
     }
 
     private void testFixedRotationOpen(TestTransitionPlayer player) {
-        final WindowState statusBar = createWindow(null, TYPE_STATUS_BAR, "statusBar");
+        final WindowState statusBar = newWindowBuilder("statusBar", TYPE_STATUS_BAR).build();
         makeWindowVisible(statusBar);
         mDisplayContent.getDisplayPolicy().addWindowLw(statusBar, statusBar.mAttrs);
         final WindowState navBar = createNavBarWithProvidedInsets(mDisplayContent);
@@ -1250,7 +1248,7 @@ public class TransitionTests extends WindowTestsBase {
         final Transition transition = app.mTransitionController.createTransition(TRANSIT_OPEN);
         app.mTransitionController.requestStartTransition(transition, app.getTask(),
                 null /* remoteTransition */, null /* displayChange */);
-        app.mTransitionController.collectExistenceChange(app.getTask());
+        transition.collectExistenceChange(app.getTask());
         mDisplayContent.setFixedRotationLaunchingAppUnchecked(app);
         final AsyncRotationController asyncRotationController =
                 mDisplayContent.getAsyncRotationController();
@@ -1288,7 +1286,8 @@ public class TransitionTests extends WindowTestsBase {
         // Avoid DeviceStateController disturbing the test by triggering another rotation change.
         doReturn(false).when(mDisplayContent).updateRotationUnchecked();
 
-        onRotationTransactionReady(player, mWm.mTransactionFactory.get()).onTransactionCommitted();
+        clearInvocations(mTransaction);
+        onRotationTransactionReady(player, mTransaction).onTransactionCommitted();
         assertEquals(ROTATION_ANIMATION_SEAMLESS, player.mLastReady.getChange(
                 mDisplayContent.mRemoteToken.toWindowContainerToken()).getRotationAnimation());
         spyOn(navBarInsetsProvider);
@@ -1334,6 +1333,7 @@ public class TransitionTests extends WindowTestsBase {
 
     @Test
     public void testDeferRotationForTransientLaunch() {
+        mDisplayContent.setIgnoreOrientationRequest(false);
         final TestTransitionPlayer player = registerTestTransitionPlayer();
         assumeFalse(mDisplayContent.mTransitionController.useShellTransitionsRotation());
         final ActivityRecord app = new ActivityBuilder(mAtm).setCreateTask(true).build();
@@ -1350,7 +1350,7 @@ public class TransitionTests extends WindowTestsBase {
         mDisplayContent.setFixedRotationLaunchingAppUnchecked(home);
         doReturn(true).when(home).hasFixedRotationTransform(any());
         player.startTransition();
-        player.onTransactionReady(mDisplayContent.getSyncTransaction());
+        player.onTransactionReady();
 
         final DisplayRotation displayRotation = mDisplayContent.getDisplayRotation();
         final RemoteDisplayChangeController displayChangeController = mDisplayContent
@@ -1415,7 +1415,8 @@ public class TransitionTests extends WindowTestsBase {
         activity1.setVisibleRequested(false);
         activity2.setVisibleRequested(true);
 
-        openTransition.finishTransition();
+        final ActionChain chain = ActionChain.testFinish(null);
+        openTransition.finishTransition(chain);
 
         // We finished the openTransition. Even though activity1 is visibleRequested=false, since
         // the closeTransition animation hasn't played yet, make sure that we didn't commit
@@ -1428,7 +1429,7 @@ public class TransitionTests extends WindowTestsBase {
         // normally.
         mWm.mSyncEngine.abort(closeTransition.getSyncId());
 
-        closeTransition.finishTransition();
+        closeTransition.finishTransition(chain);
 
         assertFalse(activity1.isVisible());
         assertTrue(activity2.isVisible());
@@ -1448,7 +1449,7 @@ public class TransitionTests extends WindowTestsBase {
         activity1.setState(ActivityRecord.State.INITIALIZING, "test");
         activity1.mLaunchTaskBehind = true;
         mWm.mSyncEngine.abort(noChangeTransition.getSyncId());
-        noChangeTransition.finishTransition();
+        noChangeTransition.finishTransition(chain);
         assertTrue(activity1.mLaunchTaskBehind);
     }
 
@@ -1467,7 +1468,7 @@ public class TransitionTests extends WindowTestsBase {
         // We didn't call abort on the transition itself, so it will still run onTransactionReady
         // normally.
         mWm.mSyncEngine.abort(transition1.getSyncId());
-        transition1.finishTransition();
+        transition1.finishTransition(ActionChain.testFinish(transition1));
 
         verify(transitionEndedListener).run();
 
@@ -1529,7 +1530,7 @@ public class TransitionTests extends WindowTestsBase {
 
         verify(taskSnapshotController, times(1)).recordSnapshot(eq(task2));
 
-        controller.finishTransition(openTransition);
+        controller.finishTransition(ActionChain.testFinish(openTransition));
 
         // We are now going to simulate closing task1 to return back to (open) task2.
         final Transition closeTransition = createTestTransition(TRANSIT_CLOSE, controller);
@@ -1549,10 +1550,6 @@ public class TransitionTests extends WindowTestsBase {
 
         // An active transient launch overrides idle state to avoid clearing power mode before the
         // transition is finished.
-        spyOn(mRootWindowContainer.mTransitionController);
-        doAnswer(invocation -> controller.isTransientLaunch(invocation.getArgument(0))).when(
-                mRootWindowContainer.mTransitionController).isTransientLaunch(any());
-        activity2.getTask().setResumedActivity(activity2, "test");
         activity2.idle = true;
         assertFalse(mRootWindowContainer.allResumedActivitiesIdle());
 
@@ -1572,7 +1569,8 @@ public class TransitionTests extends WindowTestsBase {
         enteringAnimReports.clear();
         doCallRealMethod().when(mWm.mRoot).ensureActivitiesVisible(any(), anyBoolean());
         final boolean[] wasInFinishingTransition = { false };
-        controller.registerLegacyListener(new WindowManagerInternal.AppTransitionListener() {
+        controller.registerLegacyListener(new WindowManagerInternal.AppTransitionListener(
+                mDisplayContent.mDisplayId) {
             @Override
             public void onAppTransitionFinishedLocked(IBinder token) {
                 final ActivityRecord r = ActivityRecord.forToken(token);
@@ -1581,16 +1579,25 @@ public class TransitionTests extends WindowTestsBase {
                 }
             }
         });
+        final boolean[] calledListenerOnOtherDisplay = { false };
+        controller.registerLegacyListener(new WindowManagerInternal.AppTransitionListener(
+                mDisplayContent.mDisplayId + 1234) {
+            @Override
+            public void onAppTransitionFinishedLocked(IBinder token) {
+                calledListenerOnOtherDisplay[0] = true;
+            }
+        });
         assertTrue(activity1.isVisible());
         doReturn(false).when(task1).isTranslucent(null);
-        doReturn(false).when(task1).isTranslucentForTransition();
+        doReturn(false).when(task1).isTranslucentAndVisible();
         assertTrue(controller.canApplyDim(task1));
         doReturn(true).when(task1).isTranslucent(null);
-        doReturn(true).when(task1).isTranslucentForTransition();
+        doReturn(true).when(task1).isTranslucentAndVisible();
         assertFalse(controller.canApplyDim(task1));
 
-        controller.finishTransition(closeTransition);
+        controller.finishTransition(ActionChain.testFinish(closeTransition));
         assertTrue(wasInFinishingTransition[0]);
+        assertFalse(calledListenerOnOtherDisplay[0]);
         assertNull(controller.mFinishingTransition);
 
         assertTrue(activity2.isVisible());
@@ -1625,6 +1632,8 @@ public class TransitionTests extends WindowTestsBase {
         transition.collect(taskA);
         transition.setTransientLaunch(recent, taskA);
         taskRecent.moveToFront("move-recent-to-front");
+        recent.setVisibility(true);
+        recent.setState(ActivityRecord.State.RESUMED, "test");
 
         // During collecting and playing, the recent is on top so it is visible naturally.
         // While B needs isTransientVisible to keep visibility because it is occluded by recents.
@@ -1637,15 +1646,21 @@ public class TransitionTests extends WindowTestsBase {
 
         // Switch to another task. For example, use gesture navigation to switch tasks.
         taskB.moveToFront("move-b-to-front");
+        appB.setVisibility(true);
         // The previous app (taskA) should be paused first so it loses transient visible. Because
         // visually it is taskA -> taskB, the pause -> resume order should be the same.
         assertFalse(controller.isTransientVisible(taskA));
-        // Keep the recent visible so there won't be 2 activities pausing at the same time. It is
-        // to avoid the latency to resume the current top, i.e. appB.
-        assertTrue(controller.isTransientVisible(taskRecent));
-        // The recent is paused after the transient transition is finished.
-        controller.finishTransition(transition);
+        // The recent is occluded by appB.
         assertFalse(controller.isTransientVisible(taskRecent));
+        // Active transient launch won't be paused if the transition is not finished. It is to
+        // avoid the latency to resume the current top (appB) by waiting for both recent and appA
+        // to complete pause.
+        assertEquals(recent, taskRecent.getResumedActivity());
+        assertFalse(taskRecent.startPausing(false /* uiSleeping */, appB /* resuming */, "test"));
+        // ActivityRecord#makeInvisible will add the invisible recent to the stopping list.
+        // So when the transition finished, the recent can still be notified to pause and stop.
+        mDisplayContent.ensureActivitiesVisible(null /* starting */, true /* notifyClients */);
+        assertTrue(mSupervisor.mStoppingActivities.contains(recent));
     }
 
     @Test
@@ -1995,6 +2010,235 @@ public class TransitionTests extends WindowTestsBase {
     }
 
     @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_fromStyleAnimOptions() {
+        ActivityRecord r = initializeOverrideAnimationOptionsTest();
+        TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeCommonAnimOptions("testPackage");
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertNull("Task change's AnimationOptions must not be overridden.",
+                taskChange.getAnimationOptions());
+        assertNull("Embedded TF change's AnimationOptions must not be overridden.",
+                embeddedTfChange.getAnimationOptions());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+    }
+
+    @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_sceneAnimOptions() {
+        ActivityRecord r = initializeOverrideAnimationOptionsTest();
+        TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeSceneTransitionAnimOptions();
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertEquals("Task change's AnimationOptions must be overridden.",
+                options, taskChange.getAnimationOptions());
+        assertNull("Embedded TF change's AnimationOptions must not be overridden.",
+                embeddedTfChange.getAnimationOptions());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+    }
+
+    @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_crossProfileAnimOptions() {
+        ActivityRecord r = initializeOverrideAnimationOptionsTest();
+        TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeCrossProfileAnimOptions();
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+        activityChange.setMode(TRANSIT_OPEN);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertNull("Task change's AnimationOptions must not be overridden.",
+                taskChange.getAnimationOptions());
+        assertNull("Embedded TF change's AnimationOptions must not be overridden.",
+                embeddedTfChange.getAnimationOptions());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+        assertTrue(activityChange.hasFlags(FLAG_CROSS_PROFILE_OWNER_THUMBNAIL));
+    }
+
+    @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_customAnimOptions() {
+        final ActivityRecord r = initializeOverrideAnimationOptionsTest();
+        final TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeCustomAnimOptions("testPackage", Resources.ID_NULL,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        false /* overrideTaskTransition */);
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+        final int expectedBackgroundColor = Color.GREEN;
+        mTransition.setOverrideBackgroundColor(expectedBackgroundColor);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertNull("Task change's AnimationOptions must not be overridden.",
+                taskChange.getAnimationOptions());
+        assertEquals("Embedded TF change's AnimationOptions must be overridden.",
+                options, embeddedTfChange.getAnimationOptions());
+        assertEquals("Embedded TF change's background color must not be overridden.",
+                0, embeddedTfChange.getBackgroundColor());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+        assertEquals("Activity change's background color must be overridden.",
+                expectedBackgroundColor, activityChange.getBackgroundColor());
+
+    }
+
+    @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_haveTaskFragmentAnimParams() {
+        final ActivityRecord r = initializeOverrideAnimationOptionsTest();
+
+        final TaskFragment embeddedTf = mTransition.mTargets.get(2).mContainer.asTaskFragment();
+        embeddedTf.setAnimationParams(new TaskFragmentAnimationParams.Builder()
+                .setAnimationBackgroundColor(Color.RED)
+                .setOpenAnimationResId(0x12345678)
+                .build());
+
+        final TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeCustomAnimOptions("testPackage", Resources.ID_NULL,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        false /* overrideTaskTransition */);
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+        final int expectedBackgroundColor = Color.GREEN;
+        mTransition.setOverrideBackgroundColor(expectedBackgroundColor);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+
+        final int expectedColor = embeddedTf.getAnimationParams().getAnimationBackgroundColor();
+        embeddedTfChange.setBackgroundColor(expectedColor);
+        final TransitionInfo.AnimationOptions expectedOptions = TransitionInfo.AnimationOptions
+                .makeCustomAnimOptions("testPackage", 0x12345678,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        false /* overrideTaskTransition */);
+        embeddedTfChange.setAnimationOptions(expectedOptions);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertNull("Task change's AnimationOptions must not be overridden.",
+                taskChange.getAnimationOptions());
+        assertEquals("Embedded TF change's AnimationOptions must be overridden.",
+                expectedOptions, embeddedTfChange.getAnimationOptions());
+        assertEquals("Embedded TF change's background color must not be overridden.",
+                expectedColor, embeddedTfChange.getBackgroundColor());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+        assertEquals("Activity change's background color must be overridden.",
+                expectedBackgroundColor, activityChange.getBackgroundColor());
+    }
+
+    @Test
+    public void testOverrideAnimationOptionsToInfoIfNecessary_customAnimOptionsWithTaskOverride() {
+        final ActivityRecord r = initializeOverrideAnimationOptionsTest();
+        final TransitionInfo.AnimationOptions options = TransitionInfo.AnimationOptions
+                .makeCustomAnimOptions("testPackage", Resources.ID_NULL,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        TransitionInfo.AnimationOptions.DEFAULT_ANIMATION_RESOURCES_ID,
+                        true /* overrideTaskTransition */);
+        mTransition.setOverrideAnimation(options, r, null /* startCallback */,
+                null /* finishCallback */);
+        final int expectedBackgroundColor = Color.GREEN;
+        mTransition.setOverrideBackgroundColor(expectedBackgroundColor);
+
+        mTransition.overrideAnimationOptionsToInfoIfNecessary(mInfo);
+
+        final TransitionInfo.Change displayChange = mInfo.getChanges().get(0);
+        final TransitionInfo.Change taskChange = mInfo.getChanges().get(1);
+        final TransitionInfo.Change embeddedTfChange = mInfo.getChanges().get(2);
+        final TransitionInfo.Change activityChange = mInfo.getChanges().get(3);
+
+        assertNull("Display change's AnimationOptions must not be overridden.",
+                displayChange.getAnimationOptions());
+        assertEquals("Task change's AnimationOptions must be overridden.",
+                options, taskChange.getAnimationOptions());
+        assertEquals("Task change's background color must be overridden.",
+                expectedBackgroundColor, taskChange.getBackgroundColor());
+        assertEquals("Embedded TF change's AnimationOptions must be overridden.",
+                options, embeddedTfChange.getAnimationOptions());
+        assertEquals("Embedded TF change's background color must be overridden.",
+                0, embeddedTfChange.getBackgroundColor());
+        assertEquals("Activity change's AnimationOptions must be overridden.",
+                options, activityChange.getAnimationOptions());
+        assertEquals("Activity change's background color must be overridden.",
+                expectedBackgroundColor, activityChange.getBackgroundColor());
+    }
+
+    private ActivityRecord initializeOverrideAnimationOptionsTest() {
+        mTransition = createTestTransition(TRANSIT_OPEN);
+
+        // Test set AnimationOptions for Activity and Task.
+        final Task task = createTask(mDisplayContent);
+        // Create an embedded TaskFragment.
+        final TaskFragmentOrganizer organizer = new TaskFragmentOrganizer(Runnable::run);
+        registerTaskFragmentOrganizer(
+                ITaskFragmentOrganizer.Stub.asInterface(organizer.getOrganizerToken().asBinder()));
+        final TaskFragment embeddedTf = createTaskFragmentWithEmbeddedActivity(task, organizer);
+        final ActivityRecord nonEmbeddedActivity = createActivityRecord(task);
+        mWm.mCurrentUserId = nonEmbeddedActivity.mUserId;
+
+        mTransition.mTargets = new ArrayList<>();
+        mTransition.mTargets.add(new Transition.ChangeInfo(mDisplayContent));
+        mTransition.mTargets.add(new Transition.ChangeInfo(task));
+        mTransition.mTargets.add(new Transition.ChangeInfo(embeddedTf));
+        mTransition.mTargets.add(new Transition.ChangeInfo(nonEmbeddedActivity));
+
+        mInfo = new TransitionInfo(TRANSIT_OPEN, 0 /* flags */);
+        mInfo.addChange(new TransitionInfo.Change(mDisplayContent.mRemoteToken
+                .toWindowContainerToken(), mDisplayContent.getAnimationLeash()));
+        mInfo.addChange(new TransitionInfo.Change(task.mRemoteToken.toWindowContainerToken(),
+                task.getAnimationLeash()));
+        mInfo.addChange(new TransitionInfo.Change(embeddedTf.mRemoteToken.toWindowContainerToken(),
+                embeddedTf.getAnimationLeash()));
+        mInfo.addChange(new TransitionInfo.Change(null /* container */,
+                nonEmbeddedActivity.getAnimationLeash()));
+        return nonEmbeddedActivity;
+    }
+
+    @Test
     public void testTransitionVisibleChange() {
         registerTestTransitionPlayer();
         final ActivityRecord app = createActivityRecord(
@@ -2015,15 +2259,24 @@ public class TransitionTests extends WindowTestsBase {
             public void cleanUp(SurfaceControl.Transaction t) {
             }
         });
+        assertEquals(WindowAnimator.PENDING_STATE_NONE, mWm.mAnimator.mPendingState);
+        app.startAnimation(app.getPendingTransaction(), mock(AnimationAdapter.class),
+                false /* hidden */, SurfaceAnimator.ANIMATION_TYPE_WINDOW_ANIMATION);
+        assertEquals(WindowAnimator.PENDING_STATE_HAS_CHANGES, mWm.mAnimator.mPendingState);
+
         final Task task = app.getTask();
         transition.collect(task);
+        assertEquals(WindowAnimator.PENDING_STATE_NEED_APPLY, mWm.mAnimator.mPendingState);
         final Rect bounds = new Rect(task.getBounds());
         Configuration c = new Configuration(task.getRequestedOverrideConfiguration());
         bounds.inset(10, 10);
         c.windowConfiguration.setBounds(bounds);
         task.onRequestedOverrideConfigurationChanged(c);
         assertTrue(freezeCalls.contains(task));
-        transition.abort();
+
+        transition.start();
+        mWm.mSyncEngine.abort(transition.getSyncId());
+        assertEquals(WindowAnimator.PENDING_STATE_NONE, mWm.mAnimator.mPendingState);
     }
 
     @Test
@@ -2105,10 +2358,15 @@ public class TransitionTests extends WindowTestsBase {
         // ChangeInfo#mCommonAncestor should be set after reparent.
         final Transition.ChangeInfo change = transition.mChanges.get(activity);
         assertEquals(newParent.getDisplayArea(), change.mCommonAncestor);
+
+        // WindowContainer#onDisplayChanged should collect the moved task.
+        final DisplayContent newDisplay = createNewDisplay();
+        newParent.reparent(newDisplay.getDefaultTaskDisplayArea(), true /* onTop */);
+        assertTrue(transition.mParticipants.contains(newParent));
     }
 
     @Test
-    public void testMoveToTopWhileVisible() {
+    public void testMoveTaskToTopWhileVisible() {
         final Transition transition = createTestTransition(TRANSIT_OPEN);
         final ArrayMap<WindowContainer, Transition.ChangeInfo> changes = transition.mChanges;
         final ArraySet<WindowContainer> participants = transition.mParticipants;
@@ -2132,6 +2390,54 @@ public class TransitionTests extends WindowTestsBase {
         assertTrue(targets.isEmpty());
 
         // After collecting order changes, it should recognize that a task moved to top.
+        transition.collectOrderChanges(true);
+        targets = Transition.calculateTargets(participants, changes);
+        assertEquals(1, targets.size());
+
+        // Make sure the flag is set
+        final TransitionInfo info = Transition.calculateTransitionInfo(
+                transition.mType, 0 /* flags */, targets, mMockT);
+        assertTrue((info.getChanges().get(0).getFlags() & TransitionInfo.FLAG_MOVED_TO_TOP) != 0);
+        assertEquals(TRANSIT_CHANGE, info.getChanges().get(0).getMode());
+    }
+
+    @Test
+    public void testMoveDisplayToTop() {
+        // Set up two displays, each of which has a task.
+        DisplayContent otherDisplay = createNewDisplay();
+        final Consumer<DisplayContent> setUpTask = (DisplayContent dc) -> {
+            final Task task = createTask(dc);
+            final ActivityRecord act = createActivityRecord(task);
+            final TestWindowState win = createWindowState(
+                    new WindowManager.LayoutParams(TYPE_BASE_APPLICATION), act);
+            act.addWindow(win);
+            act.setVisibleRequested(true);
+        };
+        setUpTask.accept(mDisplayContent);
+        setUpTask.accept(otherDisplay);
+        mWm.updateFocusedWindowLocked(UPDATE_FOCUS_NORMAL, true /* updateImWindows */);
+
+        final Transition transition = createTestTransition(TRANSIT_OPEN);
+        final ArrayMap<WindowContainer, Transition.ChangeInfo> changes = transition.mChanges;
+        final ArraySet<WindowContainer> participants = transition.mParticipants;
+
+        // Emulate WindowManagerService#moveDisplayToTopInternal().
+        transition.recordTaskOrder(mDefaultDisplay);
+        mDefaultDisplay.getParent().positionChildAt(WindowContainer.POSITION_TOP,
+                mDefaultDisplay, true /* includingParents */);
+        mWm.updateFocusedWindowLocked(UPDATE_FOCUS_NORMAL, true /* updateImWindows */);
+        transition.setReady(mDefaultDisplay, true /* ready */);
+
+        // Test has order changes, a shallow check of order changes.
+        assertTrue(transition.hasOrderChanges());
+
+        // We just moved a display to top, so there shouldn't be any changes.
+        ArrayList<Transition.ChangeInfo> targets = Transition.calculateTargets(
+                participants, changes);
+        assertTrue(targets.isEmpty());
+
+        // After collecting order changes, the task on the newly focused display should be
+        // considered to get moved to top.
         transition.collectOrderChanges(true);
         targets = Transition.calculateTargets(participants, changes);
         assertEquals(1, targets.size());
@@ -2580,17 +2886,14 @@ public class TransitionTests extends WindowTestsBase {
 
     @Test
     public void testTransitionsTriggerPerformanceHints() {
-        final boolean explicitRefreshRateHints = explicitRefreshRateHints();
         final var session = new SystemPerformanceHinter.HighPerfSession[1];
-        if (explicitRefreshRateHints) {
-            final SystemPerformanceHinter perfHinter = mWm.mSystemPerformanceHinter;
-            spyOn(perfHinter);
-            doAnswer(invocation -> {
-                session[0] = (SystemPerformanceHinter.HighPerfSession) invocation.callRealMethod();
-                spyOn(session[0]);
-                return session[0];
-            }).when(perfHinter).createSession(anyInt(), anyInt(), anyString());
-        }
+        final SystemPerformanceHinter perfHinter = mWm.mSystemPerformanceHinter;
+        spyOn(perfHinter);
+        doAnswer(invocation -> {
+            session[0] = (SystemPerformanceHinter.HighPerfSession) invocation.callRealMethod();
+            spyOn(session[0]);
+            return session[0];
+        }).when(perfHinter).createSession(anyInt(), anyInt(), anyString());
         final TransitionController controller = mDisplayContent.mTransitionController;
         final TestTransitionPlayer player = registerTestTransitionPlayer();
         final ActivityRecord app = new ActivityBuilder(mAtm).setCreateTask(true).build();
@@ -2602,15 +2905,11 @@ public class TransitionTests extends WindowTestsBase {
         player.start();
 
         verify(mDisplayContent).enableHighPerfTransition(true);
-        if (explicitRefreshRateHints) {
-            verify(session[0]).start();
-        }
+        verify(session[0]).start();
 
         player.finish();
         verify(mDisplayContent).enableHighPerfTransition(false);
-        if (explicitRefreshRateHints) {
-            verify(session[0]).close();
-        }
+        verify(session[0]).close();
     }
 
     @Test
@@ -2635,10 +2934,12 @@ public class TransitionTests extends WindowTestsBase {
 
         controller.requestStartTransition(transit, task, null, null);
         player.start();
+        // always include config-at-end activity since it is considered "independent" due to
+        // changing at a different time.
+        assertTrue(player.mLastReady.getChanges().stream()
+                .anyMatch((change -> change.getActivityComponent() != null
+                        && (change.getFlags() & TransitionInfo.FLAG_CONFIG_AT_END) != 0)));
         assertTrue(activity.isConfigurationDispatchPaused());
-        // config-at-end flag must propagate up to task if activity was promoted.
-        assertTrue(player.mLastReady.getChange(
-                task.mRemoteToken.toWindowContainerToken()).hasFlags(FLAG_CONFIG_AT_END));
         player.finish();
         assertFalse(activity.isConfigurationDispatchPaused());
     }
@@ -2667,11 +2968,14 @@ public class TransitionTests extends WindowTestsBase {
 
         controller.requestStartTransition(transit, task, null, null);
         player.start();
-        // config-at-end flag must propagate up to task even when reparented (since config-at-end
-        // only cares about after-end state).
-        assertTrue(player.mLastReady.getChange(
-                task.mRemoteToken.toWindowContainerToken()).hasFlags(FLAG_CONFIG_AT_END));
+        // always include config-at-end activity since it is considered "independent" due to
+        // changing at a different time.
+        assertTrue(player.mLastReady.getChanges().stream()
+                .anyMatch((change -> change.getActivityComponent() != null
+                        && (change.getFlags() & TransitionInfo.FLAG_CONFIG_AT_END) != 0)));
+        assertTrue(activity.isConfigurationDispatchPaused());
         player.finish();
+        assertFalse(activity.isConfigurationDispatchPaused());
     }
 
     @Test
@@ -2753,8 +3057,11 @@ public class TransitionTests extends WindowTestsBase {
             TestTransitionPlayer player, SurfaceControl.Transaction startTransaction) {
         final ArgumentCaptor<SurfaceControl.TransactionCommittedListener> listenerCaptor =
                 ArgumentCaptor.forClass(SurfaceControl.TransactionCommittedListener.class);
-        player.onTransactionReady(startTransaction);
-        verify(startTransaction).addTransactionCommittedListener(any(), listenerCaptor.capture());
+        player.onTransactionReady();
+        // The startTransaction is from mWm.mTransactionFactory.get() in SyncGroup#finishNow.
+        // 2 times are from SyncGroup#finishNow and AsyncRotationController#setupStartTransaction.
+        verify(startTransaction, times(2)).addTransactionCommittedListener(
+                any(), listenerCaptor.capture());
         return listenerCaptor.getValue();
     }
 }

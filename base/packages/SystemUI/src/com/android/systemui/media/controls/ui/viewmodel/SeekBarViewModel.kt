@@ -16,11 +16,15 @@
 
 package com.android.systemui.media.controls.ui.viewmodel
 
+import android.icu.text.MeasureFormat
+import android.icu.util.Measure
+import android.icu.util.MeasureUnit
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.SystemClock
 import android.os.Trace
+import android.text.format.DateUtils
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
@@ -34,14 +38,17 @@ import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.android.systemui.classifier.Classifier.MEDIA_SEEKBAR
 import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.media.NotificationMediaManager
 import com.android.systemui.plugins.FalsingManager
-import com.android.systemui.statusbar.NotificationMediaManager
 import com.android.systemui.util.concurrency.RepeatableExecutor
+import java.util.Locale
 import javax.inject.Inject
 import kotlin.math.abs
 
-private const val POSITION_UPDATE_INTERVAL_MILLIS = 100L
+private const val POSITION_UPDATE_INTERVAL_MILLIS = 500L
 private const val MIN_FLING_VELOCITY_SCALE_FACTOR = 10
+private const val MIN_IN_SEC = 60
+private const val HOUR_IN_SEC = MIN_IN_SEC * 60
 
 private const val TRACE_POSITION_NAME = "SeekBarPollingPosition"
 
@@ -92,7 +99,7 @@ constructor(
             scrubbing = false,
             elapsedTime = null,
             duration = 0,
-            listening = false
+            listening = false,
         )
         set(value) {
             val enabledChanged = value.enabled != field.enabled
@@ -101,10 +108,22 @@ constructor(
                 enabledChangeListener?.onEnabledChanged(value.enabled)
             }
             _progress.postValue(value)
+
+            bgExecutor.execute {
+                val durationDescription = formatTimeContentDescription(value.duration)
+                val elapsedDescription =
+                    value.elapsedTime?.let { formatTimeContentDescription(it) } ?: ""
+                contentDescriptionListener?.onContentDescriptionChanged(
+                    elapsedDescription,
+                    durationDescription,
+                )
+            }
         }
+
     private val _progress = MutableLiveData<Progress>().apply { postValue(_data) }
     val progress: LiveData<Progress>
         get() = _progress
+
     private var controller: MediaController? = null
         set(value) {
             if (field?.sessionToken != value?.sessionToken) {
@@ -113,6 +132,7 @@ constructor(
                 field = value
             }
         }
+
     private var playbackState: PlaybackState? = null
     private var callback =
         object : MediaController.Callback() {
@@ -127,6 +147,13 @@ constructor(
 
             override fun onSessionDestroyed() {
                 clearController()
+            }
+
+            override fun onMetadataChanged(metadata: MediaMetadata?) {
+                val (enabled, duration) = getEnabledStateAndDuration(metadata)
+                if (_data.duration != duration) {
+                    _data = _data.copy(enabled = enabled, duration = duration)
+                }
             }
         }
     private var cancel: Runnable? = null
@@ -147,6 +174,7 @@ constructor(
 
     private var scrubbingChangeListener: ScrubbingChangeListener? = null
     private var enabledChangeListener: EnabledChangeListener? = null
+    private var contentDescriptionListener: ContentDescriptionListener? = null
 
     /** Set to true when the user is touching the seek bar to change the position. */
     private var scrubbing = false
@@ -233,24 +261,16 @@ constructor(
     fun updateController(mediaController: MediaController?) {
         controller = mediaController
         playbackState = controller?.playbackState
-        val mediaMetadata = controller?.metadata
+        val (enabled, duration) = getEnabledStateAndDuration(controller?.metadata)
         val seekAvailable = ((playbackState?.actions ?: 0L) and PlaybackState.ACTION_SEEK_TO) != 0L
         val position = playbackState?.position?.toInt()
-        val duration = mediaMetadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.toInt() ?: 0
         val playing =
             NotificationMediaManager.isPlayingState(
                 playbackState?.state ?: PlaybackState.STATE_NONE
             )
-        val enabled =
-            if (
-                playbackState == null ||
-                    playbackState?.getState() == PlaybackState.STATE_NONE ||
-                    (duration <= 0)
-            )
-                false
-            else true
         _data = Progress(enabled, seekAvailable, playing, scrubbing, position, duration, listening)
-        checkIfPollingNeeded()
+        // No need to update since we just set the progress info
+        checkIfPollingNeeded(requireUpdate = false)
     }
 
     /**
@@ -308,8 +328,13 @@ constructor(
         }
     }
 
+    /**
+     * Begin polling if needed given the current seekbar state
+     *
+     * @param requireUpdate If true, update the playback position without beginning polling
+     */
     @WorkerThread
-    private fun checkIfPollingNeeded() {
+    private fun checkIfPollingNeeded(requireUpdate: Boolean = true) {
         val needed = listening && !scrubbing && playbackState?.isInMotion() ?: false
         val traceCookie = controller?.sessionToken.hashCode()
         if (needed) {
@@ -319,14 +344,15 @@ constructor(
                     bgExecutor.executeRepeatedly(
                         this::checkPlaybackPosition,
                         0L,
-                        POSITION_UPDATE_INTERVAL_MILLIS
+                        POSITION_UPDATE_INTERVAL_MILLIS,
                     )
                 cancel = Runnable {
                     cancelPolling.run()
                     Trace.endAsyncSection(TRACE_POSITION_NAME, traceCookie)
                 }
             }
-        } else {
+        } else if (requireUpdate) {
+            checkPlaybackPosition()
             cancel?.run()
             cancel = null
         }
@@ -368,6 +394,26 @@ constructor(
         }
     }
 
+    fun setContentDescriptionListener(listener: ContentDescriptionListener) {
+        contentDescriptionListener = listener
+    }
+
+    fun removeContentDescriptionListener(listener: ContentDescriptionListener) {
+        if (listener == contentDescriptionListener) {
+            contentDescriptionListener = null
+        }
+    }
+
+    /** returns a pair of whether seekbar is enabled and the duration of media. */
+    private fun getEnabledStateAndDuration(metadata: MediaMetadata?): Pair<Boolean, Int> {
+        val duration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.toInt() ?: 0
+        val enabled =
+            !(playbackState == null ||
+                playbackState?.state == PlaybackState.STATE_NONE ||
+                (duration <= 0))
+        return Pair(enabled, duration)
+    }
+
     /**
      * This method specifies if user made a bad seekbar grab or not. If the vertical distance from
      * first touch on seekbar is more than the horizontal distance, this means that the seekbar grab
@@ -385,6 +431,43 @@ constructor(
             abs(firstMotionEvent!!.y - lastMotionEvent!!.y)
     }
 
+    /**
+     * Returns a time string suitable for content description, e.g. "12 minutes 34 seconds"
+     *
+     * Follows same logic as Chronometer#formatDuration
+     */
+    private fun formatTimeContentDescription(milliseconds: Int): CharSequence {
+        var seconds = milliseconds / DateUtils.SECOND_IN_MILLIS
+
+        val hours =
+            if (seconds >= HOUR_IN_SEC) {
+                seconds / HOUR_IN_SEC
+            } else {
+                0
+            }
+        seconds -= hours * HOUR_IN_SEC
+
+        val minutes =
+            if (seconds >= MIN_IN_SEC) {
+                seconds / MIN_IN_SEC
+            } else {
+                0
+            }
+        seconds -= minutes * MIN_IN_SEC
+
+        val measures = arrayListOf<Measure>()
+        if (hours > 0) {
+            measures.add(Measure(hours, MeasureUnit.HOUR))
+        }
+        if (minutes > 0) {
+            measures.add(Measure(minutes, MeasureUnit.MINUTE))
+        }
+        measures.add(Measure(seconds, MeasureUnit.SECOND))
+
+        return MeasureFormat.getInstance(Locale.getDefault(), MeasureFormat.FormatWidth.WIDE)
+            .formatMeasures(*measures.toTypedArray())
+    }
+
     /** Listener interface to be notified when the user starts or stops scrubbing. */
     interface ScrubbingChangeListener {
         fun onScrubbingChanged(scrubbing: Boolean)
@@ -393,6 +476,13 @@ constructor(
     /** Listener interface to be notified when the seekbar's enabled status changes. */
     interface EnabledChangeListener {
         fun onEnabledChanged(enabled: Boolean)
+    }
+
+    interface ContentDescriptionListener {
+        fun onContentDescriptionChanged(
+            elapsedTimeDescription: CharSequence,
+            durationDescription: CharSequence,
+        )
     }
 
     private class SeekBarChangeListener(
@@ -528,7 +618,7 @@ constructor(
             eventStart: MotionEvent?,
             event: MotionEvent,
             distanceX: Float,
-            distanceY: Float
+            distanceY: Float,
         ): Boolean {
             return shouldGoToSeekBar
         }
@@ -542,7 +632,7 @@ constructor(
             eventStart: MotionEvent?,
             event: MotionEvent,
             velocityX: Float,
-            velocityY: Float
+            velocityY: Float,
         ): Boolean {
             if (Math.abs(velocityX) > flingVelocity || Math.abs(velocityY) > flingVelocity) {
                 viewModel.onSeekFalse()

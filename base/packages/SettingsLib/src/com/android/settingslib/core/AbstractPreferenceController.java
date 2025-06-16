@@ -25,7 +25,6 @@ import android.util.Log;
 import androidx.annotation.EmptySuper;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
-import androidx.core.os.BuildCompat;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceGroup;
@@ -38,10 +37,10 @@ public abstract class AbstractPreferenceController {
 
     private static final String TAG = "AbstractPrefController";
 
-    protected final Context mContext;
+    protected final @NonNull Context mContext;
     private final DevicePolicyManager mDevicePolicyManager;
 
-    public AbstractPreferenceController(Context context) {
+    public AbstractPreferenceController(@NonNull Context context) {
         mContext = context;
         mDevicePolicyManager =
                 (DevicePolicyManager) mContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
@@ -141,7 +140,7 @@ public abstract class AbstractPreferenceController {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     protected void replaceEnterpriseStringTitle(PreferenceScreen screen,
             String preferenceKey, String overrideKey, int resource) {
-        if (!BuildCompat.isAtLeastT() || mDevicePolicyManager == null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || mDevicePolicyManager == null) {
             return;
         }
 
@@ -159,7 +158,7 @@ public abstract class AbstractPreferenceController {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     protected void replaceEnterpriseStringSummary(
             PreferenceScreen screen, String preferenceKey, String overrideKey, int resource) {
-        if (!BuildCompat.isAtLeastT() || mDevicePolicyManager == null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || mDevicePolicyManager == null) {
             return;
         }
 

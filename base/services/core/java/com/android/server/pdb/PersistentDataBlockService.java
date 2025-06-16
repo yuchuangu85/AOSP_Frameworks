@@ -34,6 +34,7 @@ import android.content.pm.PackageManagerInternal;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.ShellCallback;
@@ -170,7 +171,6 @@ public class PersistentDataBlockService extends SystemService {
     static final int MAX_DATA_BLOCK_SIZE = 1024 * 100;
 
     public static final int DIGEST_SIZE_BYTES = 32;
-    private static final String OEM_UNLOCK_PROP = "sys.oem_unlock_allowed";
     private static final String FLASH_LOCK_PROP = "ro.boot.flash.locked";
     private static final String FLASH_LOCK_LOCKED = "1";
     private static final String FLASH_LOCK_UNLOCKED = "0";
@@ -274,7 +274,6 @@ public class PersistentDataBlockService extends SystemService {
             enforceChecksumValidity();
             if (mFrpEnforced) {
                 automaticallyDeactivateFrpIfPossible();
-                setOemUnlockEnabledProperty(doGetOemUnlockEnabled());
                 setOldSettingForBackworkCompatibility(mFrpActive);
             } else {
                 formatIfOemUnlockEnabled();
@@ -300,10 +299,6 @@ public class PersistentDataBlockService extends SystemService {
         } finally {
             Binder.restoreCallingIdentity(callingId);
         }
-    }
-
-    private void setOemUnlockEnabledProperty(boolean oemUnlockEnabled) {
-        setProperty(OEM_UNLOCK_PROP, oemUnlockEnabled ? "1" : "0");
     }
 
     @Override
@@ -341,7 +336,6 @@ public class PersistentDataBlockService extends SystemService {
                 formatPartitionLocked(true);
             }
         }
-        setOemUnlockEnabledProperty(enabled);
     }
 
     private void enforceOemUnlockReadPermission() {
@@ -370,8 +364,13 @@ public class PersistentDataBlockService extends SystemService {
     }
 
     private void enforceUid(int callingUid) {
-        if (callingUid != mAllowedUid && callingUid != UserHandle.AID_ROOT) {
-            throw new SecurityException("uid " + callingUid + " not allowed to access PDB");
+        enforceUid(callingUid, /* allowShell= */ false);
+    }
+
+    private void enforceUid(int callingUid, boolean allowShell) {
+        if (callingUid != mAllowedUid && callingUid != UserHandle.AID_ROOT
+                && (callingUid != Process.SHELL_UID || !allowShell)) {
+            throw new SecurityException("Uid " + callingUid + " not allowed to access PDB");
         }
     }
 
@@ -808,15 +807,7 @@ public class PersistentDataBlockService extends SystemService {
             channel.force(true);
         } catch (IOException e) {
             Slog.e(TAG, "unable to access persistent partition", e);
-            return;
-        } finally {
-            setOemUnlockEnabledProperty(enabled);
         }
-    }
-
-    @VisibleForTesting
-    void setProperty(String name, String value) {
-        SystemProperties.set(name, value);
     }
 
     private boolean doGetOemUnlockEnabled() {
@@ -864,7 +855,8 @@ public class PersistentDataBlockService extends SystemService {
 
     private final IBinder mService = new IPersistentDataBlockService.Stub() {
         private int printFrpStatus(PrintWriter pw, boolean printSecrets) {
-            enforceUid(Binder.getCallingUid());
+            // Only allow SHELL_UID to print the status if printing the secrets is disabled
+            enforceUid(Binder.getCallingUid(), /* allowShell= */ !printSecrets);
 
             pw.println("FRP state");
             pw.println("=========");
@@ -872,8 +864,14 @@ public class PersistentDataBlockService extends SystemService {
             pw.println("FRP state: " + mFrpActive);
             printFrpDataFilesContents(pw, printSecrets);
             printFrpSecret(pw, printSecrets);
-            pw.println("OEM unlock state: " + getOemUnlockEnabled());
-            pw.println("Bootloader lock state: " + getFlashLockState());
+
+            // Do not print OEM unlock state and flash lock state if the caller is a non-root
+            // shell - it likely won't have permissions anyways.
+            if (Binder.getCallingUid() != Process.SHELL_UID) {
+                pw.println("OEM unlock state: " + getOemUnlockEnabled());
+                pw.println("Bootloader lock state: " + getFlashLockState());
+            }
+
             pw.println("Verified boot state: " + getVerifiedBootState());
             pw.println("Has FRP credential handle: " + hasFrpCredentialHandle());
             pw.println("FRP challenge block size: " + getDataBlockSize());

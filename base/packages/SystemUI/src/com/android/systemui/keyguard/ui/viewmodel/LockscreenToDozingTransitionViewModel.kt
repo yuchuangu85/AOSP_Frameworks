@@ -26,11 +26,9 @@ import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class LockscreenToDozingTransitionViewModel
 @Inject
@@ -45,13 +43,7 @@ constructor(
             edge = Edge.create(from = LOCKSCREEN, to = DOZING),
         )
 
-    val lockscreenAlpha: Flow<Float> =
-        transitionAnimation.sharedFlow(
-            duration = 250.milliseconds,
-            onStep = { 1 - it },
-            onFinish = { 1f },
-            onCancel = { 1f },
-        )
+    val lockscreenAlpha: Flow<Float> = transitionAnimation.immediatelyTransitionTo(1f)
 
     val shortcutsAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
@@ -62,17 +54,20 @@ constructor(
         )
 
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
-        transitionAnimation.immediatelyTransitionTo(0f)
+        transitionAnimation.sharedFlow(
+            duration = TO_DOZING_DURATION,
+            onStep = { null },
+            onFinish = { 0f },
+            onCancel = { 0f },
+        )
 
     override val deviceEntryParentViewAlpha: Flow<Float> =
         deviceEntryUdfpsInteractor.isUdfpsEnrolledAndEnabled.flatMapLatest {
             isUdfpsEnrolledAndEnabled ->
-            transitionAnimation.immediatelyTransitionTo(
-                if (isUdfpsEnrolledAndEnabled) {
-                    1f
-                } else {
-                    0f
-                }
-            )
+            if (isUdfpsEnrolledAndEnabled) {
+                transitionAnimation.immediatelyTransitionTo(1f)
+            } else {
+                transitionAnimation.sharedFlow(duration = 250.milliseconds, onStep = { 1f - it })
+            }
         }
 }

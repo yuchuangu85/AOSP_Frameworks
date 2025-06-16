@@ -24,12 +24,13 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.util.Assert
-import com.android.systemui.util.mockito.argumentCaptor
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.DisposableHandle
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.resetMain
@@ -47,8 +48,9 @@ import org.mockito.Mockito.any
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when` as whenever
 import org.mockito.junit.MockitoJUnit
+import org.mockito.kotlin.KArgumentCaptor
+import org.mockito.kotlin.argumentCaptor
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(JUnit4::class)
 class RepeatWhenAttachedTest : SysuiTestCase() {
@@ -96,6 +98,14 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
         }
 
     @Test(expected = IllegalStateException::class)
+    fun repeatWhenAttachedToWindow_enforcesMainThread() =
+        testScope.runTest {
+            Assert.setTestThread(null)
+
+            view.repeatWhenAttachedToWindow {}
+        }
+
+    @Test(expected = IllegalStateException::class)
     fun repeatWhenAttached_disposeEnforcesMainThread() =
         testScope.runTest {
             val disposableHandle = repeatWhenAttached()
@@ -117,6 +127,58 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
             runCurrent()
             assertThat(block.invocationCount).isEqualTo(1)
             assertThat(block.latestLifecycleState).isEqualTo(Lifecycle.State.CREATED)
+        }
+
+    @Test
+    fun repeatWhenAttachedToWindow_viewAlreadyAttached_immediatelyRunsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenAttachedToWindow { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenAttachedToWindow_viewStartsDetached_runsBlockWhenAttached() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(false)
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenAttachedToWindow { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
+
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            attachListeners.last().onViewAttachedToWindow(view)
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenAttachedToWindow_viewGetsDetached_cancelsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenAttachedToWindow { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+
+            whenever(view.isAttachedToWindow).thenReturn(false)
+            attachListeners.last().onViewDetachedFromWindow(view)
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
         }
 
     @Test
@@ -142,6 +204,65 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
             runCurrent()
             assertThat(block.invocationCount).isEqualTo(1)
             assertThat(block.latestLifecycleState).isEqualTo(Lifecycle.State.STARTED)
+        }
+
+    @Test
+    fun repeatWhenWindowIsVisible_startsAlreadyVisible_immediatelyRunsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowIsVisible { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenWindowIsVisible_startsInvisible_runsBlockWhenVisible() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.INVISIBLE)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowIsVisible { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
+
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+            argCaptor { verify(viewTreeObserver).addOnWindowVisibilityChangeListener(capture()) }
+                .forEach { it.onWindowVisibilityChanged(View.VISIBLE) }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenWindowIsVisible_becomesInvisible_cancelsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowIsVisible { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+
+            whenever(view.windowVisibility).thenReturn(View.INVISIBLE)
+            argCaptor { verify(viewTreeObserver).addOnWindowVisibilityChangeListener(capture()) }
+                .forEach { it.onWindowVisibilityChanged(View.INVISIBLE) }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
         }
 
     @Test
@@ -172,6 +293,69 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
         }
 
     @Test
+    fun repeatWhenWindowHasFocus_startsWithFocus_immediatelyRunsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+            whenever(view.hasWindowFocus()).thenReturn(true)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowHasFocus { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenWindowHasFocus_startsWithoutFocus_runsBlockWhenFocused() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+            whenever(view.hasWindowFocus()).thenReturn(false)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowHasFocus { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
+
+            whenever(view.hasWindowFocus()).thenReturn(true)
+
+            argCaptor { verify(viewTreeObserver).addOnWindowFocusChangeListener(capture()) }
+                .forEach { it.onWindowFocusChanged(true) }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+        }
+
+    @Test
+    fun repeatWhenWindowHasFocus_losesFocus_cancelsBlock() =
+        testScope.runTest {
+            whenever(view.isAttachedToWindow).thenReturn(true)
+            whenever(view.windowVisibility).thenReturn(View.VISIBLE)
+            whenever(view.hasWindowFocus()).thenReturn(true)
+
+            var innerJob: Job? = null
+            backgroundScope.launch {
+                view.repeatWhenWindowHasFocus { innerJob = launch { awaitCancellation() } }
+            }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isEqualTo(true)
+
+            whenever(view.hasWindowFocus()).thenReturn(false)
+            argCaptor { verify(viewTreeObserver).addOnWindowFocusChangeListener(capture()) }
+                .forEach { it.onWindowFocusChanged(false) }
+            runCurrent()
+
+            assertThat(innerJob?.isActive).isNotEqualTo(true)
+        }
+
+    @Test
     fun repeatWhenAttached_becomesVisibleWithoutFocus_STARTED() =
         testScope.runTest {
             whenever(view.isAttachedToWindow).thenReturn(true)
@@ -180,7 +364,7 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
             verify(viewTreeObserver).addOnWindowVisibilityChangeListener(listenerCaptor.capture())
 
             whenever(view.windowVisibility).thenReturn(View.VISIBLE)
-            listenerCaptor.value.onWindowVisibilityChanged(View.VISIBLE)
+            listenerCaptor.lastValue.onWindowVisibilityChanged(View.VISIBLE)
 
             runCurrent()
             assertThat(block.invocationCount).isEqualTo(1)
@@ -196,7 +380,7 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
             verify(viewTreeObserver).addOnWindowFocusChangeListener(listenerCaptor.capture())
 
             whenever(view.hasWindowFocus()).thenReturn(true)
-            listenerCaptor.value.onWindowFocusChanged(true)
+            listenerCaptor.lastValue.onWindowFocusChanged(true)
 
             runCurrent()
             assertThat(block.invocationCount).isEqualTo(1)
@@ -214,9 +398,9 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
             verify(viewTreeObserver).addOnWindowFocusChangeListener(focusCaptor.capture())
 
             whenever(view.windowVisibility).thenReturn(View.VISIBLE)
-            visibleCaptor.value.onWindowVisibilityChanged(View.VISIBLE)
+            visibleCaptor.lastValue.onWindowVisibilityChanged(View.VISIBLE)
             whenever(view.hasWindowFocus()).thenReturn(true)
-            focusCaptor.value.onWindowFocusChanged(true)
+            focusCaptor.lastValue.onWindowFocusChanged(true)
 
             runCurrent()
             assertThat(block.invocationCount).isEqualTo(1)
@@ -298,14 +482,12 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
     private fun CoroutineScope.repeatWhenAttached(): DisposableHandle {
         return view.repeatWhenAttached(
             coroutineContext = coroutineContext,
-            block = block,
+            block = { block.invoke(this) },
         )
     }
 
-    private class Block : suspend LifecycleOwner.(View) -> Unit {
-        data class Invocation(
-            val lifecycleOwner: LifecycleOwner,
-        ) {
+    private class Block {
+        data class Invocation(val lifecycleOwner: LifecycleOwner) {
             val lifecycleState: Lifecycle.State
                 get() = lifecycleOwner.lifecycle.currentState
         }
@@ -314,11 +496,18 @@ class RepeatWhenAttachedTest : SysuiTestCase() {
         val invocations: List<Invocation> = _invocations
         val invocationCount: Int
             get() = _invocations.size
+
         val latestLifecycleState: Lifecycle.State
             get() = _invocations.last().lifecycleState
 
-        override suspend fun invoke(lifecycleOwner: LifecycleOwner, view: View) {
+        fun invoke(lifecycleOwner: LifecycleOwner) {
             _invocations.add(Invocation(lifecycleOwner))
         }
     }
 }
+
+private inline fun <reified T : Any> argCaptor(block: KArgumentCaptor<T>.() -> Unit) =
+    argumentCaptor<T>().apply { block() }
+
+private inline fun <reified T : Any> KArgumentCaptor<T>.forEach(block: (T) -> Unit): Unit =
+    allValues.forEach(block)

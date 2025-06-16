@@ -28,6 +28,7 @@ import android.media.AudioDeviceAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.media.IDeviceVolumeBehaviorDispatcher;
+import android.os.IpcDataCache;
 import android.os.PermissionEnforcer;
 import android.os.test.TestLooper;
 import android.platform.test.annotations.Presubmit;
@@ -69,6 +70,7 @@ public class DeviceVolumeBehaviorTest {
 
     @Before
     public void setUp() throws Exception {
+        IpcDataCache.disableForTestMode();
         mTestLooper = new TestLooper();
         mContext = InstrumentationRegistry.getTargetContext();
         mAudioSystem = new NoOpAudioSystemAdapter();
@@ -78,7 +80,7 @@ public class DeviceVolumeBehaviorTest {
         mAudioService = new AudioService(mContext, mAudioSystem, mSystemServer,
                 mSettingsAdapter, mAudioVolumeGroupHelper, mAudioPolicyMock,
                 mTestLooper.getLooper(), mock(AppOpsManager.class), mock(PermissionEnforcer.class),
-                mock(AudioServerPermissionProvider.class));
+                mock(AudioServerPermissionProvider.class), r -> r.run());
         mTestLooper.dispatchAll();
     }
 

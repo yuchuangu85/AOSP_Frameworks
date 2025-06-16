@@ -17,18 +17,23 @@
 package com.android.systemui.keyguard.domain.interactor
 
 import android.content.applicationContext
+import android.os.powerManager
 import android.view.accessibility.accessibilityManagerWrapper
 import com.android.internal.logging.uiEventLogger
 import com.android.systemui.broadcast.broadcastDispatcher
+import com.android.systemui.deviceentry.domain.interactor.deviceEntryFaceAuthInteractor
 import com.android.systemui.flags.featureFlagsClassic
 import com.android.systemui.keyguard.data.repository.keyguardRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
+import com.android.systemui.shade.pulsingGestureListener
+import com.android.systemui.util.settings.data.repository.userAwareSecureSettingsRepository
+import com.android.systemui.util.time.fakeSystemClock
 
-val Kosmos.keyguardLongPressInteractor by
+val Kosmos.keyguardTouchHandlingInteractor by
     Kosmos.Fixture {
-        KeyguardLongPressInteractor(
-            appContext = applicationContext,
+        KeyguardTouchHandlingInteractor(
+            context = applicationContext,
             scope = applicationCoroutineScope,
             transitionInteractor = keyguardTransitionInteractor,
             repository = keyguardRepository,
@@ -36,5 +41,10 @@ val Kosmos.keyguardLongPressInteractor by
             featureFlags = featureFlagsClassic,
             broadcastDispatcher = broadcastDispatcher,
             accessibilityManager = accessibilityManagerWrapper,
+            pulsingGestureListener = pulsingGestureListener,
+            faceAuthInteractor = deviceEntryFaceAuthInteractor,
+            secureSettingsRepository = userAwareSecureSettingsRepository,
+            powerManager = powerManager,
+            systemClock = fakeSystemClock,
         )
     }

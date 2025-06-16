@@ -93,6 +93,7 @@ filegroup {
         "android/gui/StalledTransactionInfo.aidl",
         "android/**/TouchOcclusionMode.aidl",
         "android/gui/TrustedOverlay.aidl",
+        "android/gui/BorderSettings.aidl",
     ],
 }
 
@@ -255,6 +256,7 @@ filegroup {
         "BitTube.cpp",
         "BLASTBufferQueue.cpp",
         "BufferItemConsumer.cpp",
+        "BufferReleaseChannel.cpp",
         "Choreographer.cpp",
         "CompositorTiming.cpp",
         "ConsumerBase.cpp",
@@ -263,9 +265,8 @@ filegroup {
         "DisplayEventDispatcher.cpp",
         "DisplayEventReceiver.cpp",
         "FenceMonitor.cpp",
+        "Flags.cpp",
         "GLConsumer.cpp",
-        "IConsumerListener.cpp",
-        "IGraphicBufferConsumer.cpp",
         "IGraphicBufferProducer.cpp",
         "IProducerListener.cpp",
         "ISurfaceComposer.cpp",
@@ -273,6 +274,7 @@ filegroup {
         "LayerMetadata.cpp",
         "LayerStatePermissions.cpp",
         "LayerState.cpp",
+        "DisplayLuts.cpp",
         "OccupancyTracker.cpp",
         "StreamSplitter.cpp",
         "ScreenCaptureResults.cpp",
@@ -280,6 +282,7 @@ filegroup {
         "SurfaceControl.cpp",
         "SurfaceComposerClient.cpp",
         "SyncFeatures.cpp",
+        "TransactionState.cpp",
         "VsyncEventData.cpp",
         "view/Surface.cpp",
         "WindowInfosListenerReporter.cpp",
@@ -293,7 +296,6 @@ filegroup {
 cc_defaults {
     name: "libgui-defaults",
     defaults: ["libgui_bufferqueue-defaults"],
-    srcs: [":libgui-sources"],
     static_libs: [
         "libgui_aidl_static",
         "libgui_window_info_static",
@@ -317,6 +319,10 @@ cc_library_shared {
         "libgui-defaults",
     ],
 
+    srcs: [
+        ":libgui-sources",
+    ],
+
     export_static_lib_headers: [
         "libgui_aidl_static",
         "libgui_window_info_static",
@@ -337,9 +343,11 @@ cc_library_shared {
 
     header_libs: [
         "jni_headers",
-        "libdvr_headers",
         "libgui_aidl_headers",
-        "libpdx_headers",
+    ],
+
+    static_libs: [
+        "libsurfaceflingerflags",
     ],
 
     afdo: true,

@@ -28,9 +28,11 @@ import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
 import android.annotation.NonNull;
 import android.content.ClipData;
 import android.content.Context;
+import android.hardware.display.DisplayTopology;
 import android.hardware.input.InputManagerGlobal;
 import android.os.Binder;
 import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
@@ -50,12 +52,14 @@ import android.window.IUnhandledDragCallback;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wm.WindowManagerInternal.IDragDropCallback;
+import com.android.window.flags.Flags;
 
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Managing drag and drop operations initiated by View#startDragAndDrop.
@@ -83,6 +87,8 @@ class DragDropController {
 
     private WindowManagerService mService;
     private final Handler mHandler;
+    private final Consumer<DisplayTopology> mDisplayTopologyListener =
+            this::handleDisplayTopologyChange;
 
     // The global drag listener for handling cross-window drags
     private IGlobalDragListener mGlobalDragListener;
@@ -108,6 +114,10 @@ class DragDropController {
     DragDropController(WindowManagerService service, Looper looper) {
         mService = service;
         mHandler = new DragHandler(service, looper);
+        if (Flags.enableConnectedDisplaysDnd()) {
+            mService.mDisplayManager.registerTopologyListener(
+                    new HandlerExecutor(mService.mH), mDisplayTopologyListener);
+        }
     }
 
     @VisibleForTesting
@@ -156,7 +166,7 @@ class DragDropController {
             SurfaceControl surface, int touchSource, int touchDeviceId, int touchPointerId,
             float touchX, float touchY, float thumbCenterX, float thumbCenterY, ClipData data) {
         if (DEBUG_DRAG) {
-            Slog.d(TAG_WM, "perform drag: win=" + window + " surface=" + surface + " flags=" +
+            Slog.d(TAG_WM, "perform drag: win=" + window + " surface=" + surface + " flags=0x" +
                     Integer.toHexString(flags) + " data=" + data + " touch(" + touchX + ","
                     + touchY + ") thumb center(" + thumbCenterX + "," + thumbCenterY + ")");
         }
@@ -212,17 +222,23 @@ class DragDropController {
                     surface = null;
                     mDragState.mPid = callerPid;
                     mDragState.mUid = callerUid;
-                    mDragState.mOriginalAlpha = alpha;
+                    mDragState.mStartDragAlpha = alpha;
                     mDragState.mAnimatedScale = callingWin.mGlobalScale;
                     mDragState.mToken = dragToken;
-                    mDragState.mDisplayContent = displayContent;
+                    mDragState.mStartDragDisplayContent = displayContent;
+                    mDragState.mCurrentDisplayContent = displayContent;
                     mDragState.mData = data;
+                    mDragState.mCallingTaskIdToHide = shouldMoveCallingTaskToBack(callingWin,
+                            flags);
+                    if (DEBUG_DRAG) {
+                        Slog.d(TAG_WM, "Calling task to hide=" + mDragState.mCallingTaskIdToHide);
+                    }
 
                     if ((flags & View.DRAG_FLAG_ACCESSIBILITY_ACTION) == 0) {
                         final Display display = displayContent.getDisplay();
                         touchFocusTransferredFuture = mCallback.get().registerInputChannel(
                                 mDragState, display, mService.mInputManager,
-                                callingWin.mInputChannel);
+                                callingWin.mInputChannelToken);
                     } else {
                         // Skip surface logic for a drag triggered by an AccessibilityAction
                         mDragState.broadcastDragStartedLocked(touchX, touchY);
@@ -268,7 +284,7 @@ class DragDropController {
                     InputManagerGlobal.getInstance().setPointerIcon(
                             PointerIcon.getSystemIcon(
                                     mService.mContext, PointerIcon.TYPE_GRABBING),
-                            mDragState.mDisplayContent.getDisplayId(), touchDeviceId,
+                            mDragState.mCurrentDisplayContent.getDisplayId(), touchDeviceId,
                             touchPointerId, mDragState.getInputToken());
                 }
                 // remember the thumb offsets for later
@@ -281,10 +297,11 @@ class DragDropController {
                 }
 
                 final SurfaceControl.Transaction transaction = mDragState.mTransaction;
-                transaction.setAlpha(surfaceControl, mDragState.mOriginalAlpha);
+                transaction.setAlpha(surfaceControl, mDragState.mStartDragAlpha);
                 transaction.show(surfaceControl);
                 displayContent.reparentToOverlay(transaction, surfaceControl);
-                mDragState.updateDragSurfaceLocked(true, touchX, touchY);
+                mDragState.updateDragSurfaceLocked(true /* keepHandling */,
+                        displayContent.getDisplayId(), touchX, touchY);
                 if (SHOW_LIGHT_TRANSACTIONS) {
                     Slog.i(TAG_WM, "<<< CLOSE TRANSACTION performDrag");
                 }
@@ -361,6 +378,23 @@ class DragDropController {
         } finally {
             mCallback.get().postReportDropResult();
         }
+    }
+
+    /**
+     * If the calling window's task should be hidden for the duration of the drag, this returns the
+     * task id of the task (or -1 otherwise).
+     */
+    private int shouldMoveCallingTaskToBack(WindowState callingWin, int flags) {
+        if ((flags & View.DRAG_FLAG_HIDE_CALLING_TASK_ON_DRAG_START) == 0) {
+            // Not requested by the app
+            return -1;
+        }
+        final ActivityRecord callingActivity = callingWin.getActivityRecord();
+        if (callingActivity == null || callingActivity.getTask() == null) {
+            // Not an activity
+            return -1;
+        }
+        return callingActivity.getTask().mTaskId;
     }
 
     /**
@@ -457,14 +491,28 @@ class DragDropController {
         }
     }
 
+    @VisibleForTesting
+    void handleDisplayTopologyChange(DisplayTopology unused) {
+        synchronized (mService.mGlobalLock) {
+            if (mDragState == null) {
+                return;
+            }
+            if (DEBUG_DRAG) {
+                Slog.d(TAG_WM, "DisplayTopology changed, cancelling DragAndDrop");
+            }
+            cancelDragAndDrop(mDragState.mToken, true /* skipAnimation */);
+        }
+    }
+
     /**
      * Handles motion events.
      * @param keepHandling Whether if the drag operation is continuing or this is the last motion
      *          event.
+     * @param displayId id of the display the X,Y coordinate is n.
      * @param newX X coordinate value in dp in the screen coordinate
      * @param newY Y coordinate value in dp in the screen coordinate
      */
-    void handleMotionEvent(boolean keepHandling, float newX, float newY) {
+    void handleMotionEvent(boolean keepHandling, int displayId, float newX, float newY) {
         synchronized (mService.mGlobalLock) {
             if (!dragDropActiveLocked()) {
                 // The drag has ended but the clean-up message has not been processed by
@@ -473,7 +521,7 @@ class DragDropController {
                 return;
             }
 
-            mDragState.updateDragSurfaceLocked(keepHandling, newX, newY);
+            mDragState.updateDragSurfaceLocked(keepHandling, displayId, newX, newY);
         }
     }
 

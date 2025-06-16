@@ -16,17 +16,20 @@
 package com.android.systemui.deviceentry.domain.interactor
 
 import com.android.keyguard.logging.BiometricUnlockLogger
+import com.android.systemui.Flags
 import com.android.systemui.biometrics.data.repository.FingerprintPropertyRepository
 import com.android.systemui.biometrics.shared.model.FingerprintSensorType
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dump.DumpManager
 import com.android.systemui.keyevent.domain.interactor.KeyEventInteractor
 import com.android.systemui.keyguard.data.repository.BiometricSettingsRepository
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.power.shared.model.WakeSleepReason
+import com.android.systemui.util.kotlin.FlowDumperImpl
 import com.android.systemui.util.kotlin.sample
 import com.android.systemui.util.time.SystemClock
 import javax.inject.Inject
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.combineTransform
@@ -41,21 +44,22 @@ import kotlinx.coroutines.flow.onStart
  * particular, there are extra guards for whether device entry error and successes haptics should
  * play when the physical fingerprint sensor is located on the power button.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class DeviceEntryHapticsInteractor
 @Inject
 constructor(
-    deviceEntrySourceInteractor: DeviceEntrySourceInteractor,
-    deviceEntryFingerprintAuthInteractor: DeviceEntryFingerprintAuthInteractor,
-    deviceEntryBiometricAuthInteractor: DeviceEntryBiometricAuthInteractor,
-    fingerprintPropertyRepository: FingerprintPropertyRepository,
     biometricSettingsRepository: BiometricSettingsRepository,
+    deviceEntryBiometricAuthInteractor: DeviceEntryBiometricAuthInteractor,
+    deviceEntryFingerprintAuthInteractor: DeviceEntryFingerprintAuthInteractor,
+    deviceEntrySourceInteractor: DeviceEntrySourceInteractor,
+    fingerprintPropertyRepository: FingerprintPropertyRepository,
     keyEventInteractor: KeyEventInteractor,
-    powerInteractor: PowerInteractor,
-    private val systemClock: SystemClock,
     private val logger: BiometricUnlockLogger,
-) {
+    powerInteractor: PowerInteractor,
+    keyguardInteractor: KeyguardInteractor,
+    private val systemClock: SystemClock,
+    dumpManager: DumpManager,
+) : FlowDumperImpl(dumpManager) {
     private val powerButtonSideFpsEnrolled =
         combineTransform(
                 fingerprintPropertyRepository.sensorType,
@@ -79,14 +83,14 @@ constructor(
                 emit(recentPowerButtonPressThresholdMs * -1L - 1L)
             }
 
-    val playSuccessHaptic: Flow<Unit> =
+    private val playSuccessHapticOnDeviceEntryFromBiometricSource: Flow<Unit> =
         deviceEntrySourceInteractor.deviceEntryFromBiometricSource
             .sample(
                 combine(
                     powerButtonSideFpsEnrolled,
                     powerButtonDown,
                     lastPowerButtonWakeup,
-                    ::Triple
+                    ::Triple,
                 )
             )
             .filter { (sideFpsEnrolled, powerButtonDown, lastPowerButtonWakeup) ->
@@ -100,14 +104,43 @@ constructor(
                 }
                 allowHaptic
             }
-            .map {} // map to Unit
+            // map to Unit
+            .map {}
+
+    private val playSuccessHapticOnDeviceEntryFromDeviceEntryIcon: Flow<Unit> =
+        deviceEntrySourceInteractor.attemptEnterDeviceFromDeviceEntryIcon
+            .map { keyguardInteractor.isKeyguardDismissible.value }
+            .filter { it } // only play if the keyguard is dismissible
+            // map to Unit
+            .map {}
+
+    /**
+     * Indicates when success haptics should play when the device is entered. When entering via a
+     * biometric sources, this always occurs on successful fingerprint authentications. It also
+     * occurs on successful face authentication but only if the lockscreen is bypassed.
+     */
+    val playSuccessHapticOnDeviceEntry: Flow<Unit> =
+        if (Flags.msdlFeedback()) {
+            merge(
+                    playSuccessHapticOnDeviceEntryFromBiometricSource,
+                    playSuccessHapticOnDeviceEntryFromDeviceEntryIcon,
+                )
+                .dumpWhileCollecting("playSuccessHaptic")
+        } else {
+            playSuccessHapticOnDeviceEntryFromBiometricSource.dumpWhileCollecting(
+                "playSuccessHaptic"
+            )
+        }
 
     private val playErrorHapticForBiometricFailure: Flow<Unit> =
         merge(
                 deviceEntryFingerprintAuthInteractor.fingerprintFailure,
                 deviceEntryBiometricAuthInteractor.faceOnlyFaceFailure,
             )
-            .map {} // map to Unit
+            // map to Unit
+            .map {}
+            .dumpWhileCollecting("playErrorHapticForBiometricFailure")
+
     val playErrorHaptic: Flow<Unit> =
         playErrorHapticForBiometricFailure
             .sample(combine(powerButtonSideFpsEnrolled, powerButtonDown, ::Pair))
@@ -118,7 +151,9 @@ constructor(
                 }
                 allowHaptic
             }
-            .map {} // map to Unit
+            // map to Unit
+            .map {}
+            .dumpWhileCollecting("playErrorHaptic")
 
     private val recentPowerButtonPressThresholdMs = 400L
 }

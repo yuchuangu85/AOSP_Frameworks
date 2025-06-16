@@ -20,6 +20,7 @@
 #include <gui/SurfaceComposerClient.h>
 #include <cstdint>
 #include "Client.h"
+#include "Layer.h"
 
 #include <layerproto/LayerProtoHeader.h>
 #include "FrontEnd/LayerCreationArgs.h"
@@ -48,19 +49,19 @@ protected:
 
     void queueAndCommitTransaction(int64_t vsyncId) {
         frontend::Update update;
-        TransactionState transaction;
+        QueuedTransactionState transaction;
         transaction.id = static_cast<uint64_t>(vsyncId * 3);
         transaction.originUid = 1;
         transaction.originPid = 2;
         mTracing.addQueuedTransaction(transaction);
-        std::vector<TransactionState> transactions;
+        std::vector<QueuedTransactionState> transactions;
         update.transactions.emplace_back(transaction);
         mTracing.addCommittedTransactions(vsyncId, 0, update, {}, false);
         flush();
     }
 
     void verifyEntry(const perfetto::protos::TransactionTraceEntry& actualProto,
-                     const std::vector<TransactionState>& expectedTransactions,
+                     const std::vector<QueuedTransactionState>& expectedTransactions,
                      int64_t expectedVsyncId) {
         EXPECT_EQ(actualProto.vsync_id(), expectedVsyncId);
         ASSERT_EQ(actualProto.transactions().size(),
@@ -91,10 +92,10 @@ protected:
 };
 
 TEST_F(TransactionTracingTest, addTransactions) {
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.reserve(100);
     for (uint64_t i = 0; i < 100; i++) {
-        TransactionState transaction;
+        QueuedTransactionState transaction;
         transaction.id = i;
         transaction.originPid = static_cast<int32_t>(i);
         transaction.mergedTransactionIds = std::vector<uint64_t>{i + 100, i + 102};
@@ -107,13 +108,13 @@ TEST_F(TransactionTracingTest, addTransactions) {
     int64_t firstTransactionSetVsyncId = 42;
     frontend::Update firstUpdate;
     firstUpdate.transactions =
-            std::vector<TransactionState>(transactions.begin() + 50, transactions.end());
+            std::vector<QueuedTransactionState>(transactions.begin() + 50, transactions.end());
     mTracing.addCommittedTransactions(firstTransactionSetVsyncId, 0, firstUpdate, {}, false);
 
     int64_t secondTransactionSetVsyncId = 43;
     frontend::Update secondUpdate;
     secondUpdate.transactions =
-            std::vector<TransactionState>(transactions.begin(), transactions.begin() + 50);
+            std::vector<QueuedTransactionState>(transactions.begin(), transactions.begin() + 50);
     mTracing.addCommittedTransactions(secondTransactionSetVsyncId, 0, secondUpdate, {}, false);
     flush();
 
@@ -131,15 +132,15 @@ protected:
         // add layers and add some layer transaction
         {
             frontend::Update update;
-            update.layerCreationArgs.emplace_back(std::move(
+            update.layerCreationArgs.emplace_back(
                     getLayerCreationArgs(mParentLayerId, /*parentId=*/UNASSIGNED_LAYER_ID,
                                          /*layerIdToMirror=*/UNASSIGNED_LAYER_ID, /*flags=*/123,
-                                         /*addToRoot=*/true)));
-            update.layerCreationArgs.emplace_back(std::move(
+                                         /*addToRoot=*/true));
+            update.layerCreationArgs.emplace_back(
                     getLayerCreationArgs(mChildLayerId, mParentLayerId,
                                          /*layerIdToMirror=*/UNASSIGNED_LAYER_ID, /*flags=*/456,
-                                         /*addToRoot=*/true)));
-            TransactionState transaction;
+                                         /*addToRoot=*/true));
+            QueuedTransactionState transaction;
             transaction.id = 50;
             ResolvedComposerState layerState;
             layerState.layerId = mParentLayerId;
@@ -163,7 +164,7 @@ protected:
         // add transactions that modify the layer state further so we can test that layer state
         // gets merged
         {
-            TransactionState transaction;
+            QueuedTransactionState transaction;
             transaction.id = 51;
             ResolvedComposerState layerState;
             layerState.layerId = mParentLayerId;
@@ -277,7 +278,7 @@ protected:
                                          /*layerIdToMirror=*/mLayerId, /*flags=*/0,
                                          /*addToRoot=*/false));
 
-            TransactionState transaction;
+            QueuedTransactionState transaction;
             transaction.id = 50;
             ResolvedComposerState layerState;
             layerState.layerId = mLayerId;

@@ -16,6 +16,7 @@
 
 package com.android.systemui.keyguard.ui.composable.section
 
+import android.content.res.Resources
 import android.widget.FrameLayout
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -34,7 +35,7 @@ import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.android.compose.animation.scene.SceneScope
+import com.android.compose.animation.scene.ContentScope
 import com.android.compose.modifiers.padding
 import com.android.systemui.keyguard.KeyguardUnlockAnimationController
 import com.android.systemui.keyguard.ui.composable.blueprint.ClockElementKeys
@@ -43,7 +44,6 @@ import com.android.systemui.keyguard.ui.composable.modifier.onTopPlacementChange
 import com.android.systemui.keyguard.ui.viewmodel.AodBurnInViewModel
 import com.android.systemui.keyguard.ui.viewmodel.BurnInParameters
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardSmartspaceViewModel
-import com.android.systemui.keyguard.ui.viewmodel.LockscreenContentViewModel
 import com.android.systemui.res.R
 import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController
 import javax.inject.Inject
@@ -55,28 +55,28 @@ constructor(
     private val keyguardUnlockAnimationController: KeyguardUnlockAnimationController,
     private val keyguardSmartspaceViewModel: KeyguardSmartspaceViewModel,
     private val aodBurnInViewModel: AodBurnInViewModel,
-    private val lockscreenContentViewModel: LockscreenContentViewModel,
 ) {
     @Composable
-    fun SceneScope.SmartSpace(
+    fun ContentScope.SmartSpace(
         burnInParams: BurnInParameters,
         onTopChanged: (top: Float?) -> Unit,
+        smartSpacePaddingTop: (Resources) -> Int,
         modifier: Modifier = Modifier,
     ) {
         val resources = LocalContext.current.resources
 
-        MovableElement(key = ClockElementKeys.smartspaceElementKey, modifier = modifier) {
+        Element(key = ClockElementKeys.smartspaceElementKey, modifier = modifier) {
             Column(
                 modifier =
                     modifier
                         .onTopPlacementChanged(onTopChanged)
                         .padding(
-                            top = { lockscreenContentViewModel.getSmartSpacePaddingTop(resources) },
+                            top = { smartSpacePaddingTop(resources) },
                             bottom = {
                                 resources.getDimensionPixelSize(
                                     R.dimen.keyguard_status_view_bottom_margin
                                 )
-                            }
+                            },
                         )
             ) {
                 if (!keyguardSmartspaceViewModel.isSmartspaceEnabled) {
@@ -85,24 +85,24 @@ constructor(
 
                 val paddingBelowClockStart = dimensionResource(R.dimen.below_clock_padding_start)
                 val paddingBelowClockEnd = dimensionResource(R.dimen.below_clock_padding_end)
+                val paddingCardHorizontal = paddingBelowClockEnd
 
                 if (keyguardSmartspaceViewModel.isDateWeatherDecoupled) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier =
                             Modifier.fillMaxWidth()
-                                // All items will be constrained to be as tall as the shortest item.
+                                // All items will be constrained to be as tall as the shortest
+                                // item.
                                 .height(IntrinsicSize.Min)
-                                .padding(
-                                    start = paddingBelowClockStart,
-                                ),
+                                .padding(start = paddingBelowClockStart),
                     ) {
                         Date(
                             modifier =
                                 Modifier.burnInAware(
                                     viewModel = aodBurnInViewModel,
                                     params = burnInParams,
-                                ),
+                                )
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Weather(
@@ -110,7 +110,7 @@ constructor(
                                 Modifier.burnInAware(
                                     viewModel = aodBurnInViewModel,
                                     params = burnInParams,
-                                ),
+                                )
                         )
                     }
                 }
@@ -118,23 +118,15 @@ constructor(
                 Card(
                     modifier =
                         Modifier.fillMaxWidth()
-                            .padding(
-                                start = paddingBelowClockStart,
-                                end = paddingBelowClockEnd,
-                            )
-                            .burnInAware(
-                                viewModel = aodBurnInViewModel,
-                                params = burnInParams,
-                            ),
+                            .padding(start = paddingCardHorizontal, end = paddingCardHorizontal)
+                            .burnInAware(viewModel = aodBurnInViewModel, params = burnInParams)
                 )
             }
         }
     }
 
     @Composable
-    private fun Card(
-        modifier: Modifier = Modifier,
-    ) {
+    private fun Card(modifier: Modifier = Modifier) {
         AndroidView(
             factory = { context ->
                 FrameLayout(context).apply {
@@ -157,9 +149,7 @@ constructor(
     }
 
     @Composable
-    private fun Weather(
-        modifier: Modifier = Modifier,
-    ) {
+    private fun Weather(modifier: Modifier = Modifier) {
         val isVisible by keyguardSmartspaceViewModel.isWeatherVisible.collectAsStateWithLifecycle()
         if (!isVisible) {
             return
@@ -169,7 +159,7 @@ constructor(
             factory = { context ->
                 FrameLayout(context).apply {
                     addView(
-                        lockscreenSmartspaceController.buildAndConnectWeatherView(this).apply {
+                        lockscreenSmartspaceController.buildAndConnectWeatherView(this, false).apply {
                             layoutParams =
                                 FrameLayout.LayoutParams(
                                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -184,9 +174,7 @@ constructor(
     }
 
     @Composable
-    private fun Date(
-        modifier: Modifier = Modifier,
-    ) {
+    private fun Date(modifier: Modifier = Modifier) {
         val isVisible by keyguardSmartspaceViewModel.isDateVisible.collectAsStateWithLifecycle()
         if (!isVisible) {
             return
@@ -196,7 +184,7 @@ constructor(
             factory = { context ->
                 FrameLayout(context).apply {
                     addView(
-                        lockscreenSmartspaceController.buildAndConnectDateView(this).apply {
+                        lockscreenSmartspaceController.buildAndConnectDateView(this, false).apply {
                             layoutParams =
                                 FrameLayout.LayoutParams(
                                     FrameLayout.LayoutParams.WRAP_CONTENT,

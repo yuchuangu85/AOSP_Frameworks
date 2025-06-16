@@ -80,7 +80,7 @@ class VoteSummaryTest {
     }
 
     @Test
-    fun `filters modes for summary supportedRefreshRates`(
+    fun testFiltersModes_supportedRefreshRates(
             @TestParameter testCase: SupportedRefreshRatesTestCase
     ) {
         val summary = createSummary(testCase.supportedModesVoteEnabled)
@@ -142,9 +142,7 @@ class VoteSummaryTest {
     }
 
     @Test
-    fun `filters modes for summary supportedModes`(
-            @TestParameter testCase: SupportedModesTestCase
-    ) {
+    fun testFiltersModes_supportedModes(@TestParameter testCase: SupportedModesTestCase) {
         val summary = createSummary(testCase.supportedModesVoteEnabled)
         summary.supportedModeIds = testCase.summarySupportedModes
 
@@ -154,7 +152,7 @@ class VoteSummaryTest {
     }
 
     @Test
-    fun `summary invalid if has requestedRefreshRate less than minRenederRate`() {
+    fun testInvalidSummary_requestedRefreshRateLessThanMinRenderRate() {
         val summary = createSummary()
         summary.requestedRefreshRates = setOf(30f, 90f)
         summary.minRenderFrameRate = 60f
@@ -166,7 +164,7 @@ class VoteSummaryTest {
     }
 
     @Test
-    fun `summary invalid if has requestedRefreshRate more than maxRenderFrameRate`() {
+    fun testInvalidSummary_requestedRefreshRateMoreThanMaxRenderRate() {
         val summary = createSummary()
         summary.requestedRefreshRates = setOf(60f, 240f)
         summary.minRenderFrameRate = 60f
@@ -178,7 +176,7 @@ class VoteSummaryTest {
     }
 
     @Test
-    fun `summary valid if all requestedRefreshRates inside render rate limits`() {
+    fun testValidSummary_requestedRefreshRatesWithingRenderRateLimits() {
         val summary = createSummary()
         summary.requestedRefreshRates = setOf(60f, 90f)
         summary.minRenderFrameRate = 60f
@@ -187,6 +185,44 @@ class VoteSummaryTest {
         val result = summary.filterModes(arrayOf(createMode(1, 90f, 90f)))
 
         assertThat(result).hasSize(1)
+    }
+
+    enum class RejectedModesTestCase(
+            internal val summaryRejectedModes: Set<Int>?,
+            val modesToFilter: Array<Display.Mode>,
+            val expectedModeIds: Set<Int>
+    ) {
+        HAS_NO_MATCHING_VOTE(
+                setOf(4, 5),
+                arrayOf(createMode(1, 90f, 90f),
+                        createMode(2, 90f, 60f),
+                        createMode(3, 60f, 90f)),
+                setOf(1, 2, 3)
+        ),
+        HAS_SINGLE_MATCHING_VOTE(
+                setOf(1),
+                arrayOf(createMode(1, 90f, 90f),
+                        createMode(2, 90f, 60f),
+                        createMode(3, 60f, 90f)),
+                setOf(2, 3)
+        ),
+        HAS_MULTIPLE_MATCHING_VOTES(
+                setOf(1, 2),
+                arrayOf(createMode(1, 90f, 90f),
+                        createMode(2, 90f, 60f),
+                        createMode(3, 60f, 90f)),
+                setOf(3)
+        ),
+    }
+
+    @Test
+    fun testFilterModes_rejectedModes(@TestParameter testCase: RejectedModesTestCase) {
+        val summary = createSummary()
+        summary.rejectedModeIds = testCase.summaryRejectedModes
+
+        val result = summary.filterModes(testCase.modesToFilter)
+
+        assertThat(result.map {it.modeId}).containsExactlyElementsIn(testCase.expectedModeIds)
     }
 }
 

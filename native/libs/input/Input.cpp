@@ -284,6 +284,36 @@ bool isStylusEvent(uint32_t source, const std::vector<PointerProperties>& proper
     return false;
 }
 
+bool isStylusHoverEvent(uint32_t source, const std::vector<PointerProperties>& properties,
+                        int32_t action) {
+    return isStylusEvent(source, properties) && isHoverAction(action);
+}
+
+bool isFromMouse(uint32_t source, ToolType toolType) {
+    return isFromSource(source, AINPUT_SOURCE_MOUSE) && toolType == ToolType::MOUSE;
+}
+
+bool isFromTouchpad(uint32_t source, ToolType toolType) {
+    return isFromSource(source, AINPUT_SOURCE_MOUSE) && toolType == ToolType::FINGER;
+}
+
+bool isFromDrawingTablet(uint32_t source, ToolType toolType) {
+    return isFromSource(source, AINPUT_SOURCE_MOUSE | AINPUT_SOURCE_STYLUS) &&
+            isStylusToolType(toolType);
+}
+
+bool isHoverAction(int32_t action) {
+    return action == AMOTION_EVENT_ACTION_HOVER_ENTER ||
+            action == AMOTION_EVENT_ACTION_HOVER_MOVE || action == AMOTION_EVENT_ACTION_HOVER_EXIT;
+}
+
+bool isMouseOrTouchpad(uint32_t sources) {
+    // Check if this is a mouse or touchpad, but not a drawing tablet.
+    return isFromSource(sources, AINPUT_SOURCE_MOUSE_RELATIVE) ||
+            (isFromSource(sources, AINPUT_SOURCE_MOUSE) &&
+             !isFromSource(sources, AINPUT_SOURCE_STYLUS));
+}
+
 VerifiedKeyEvent verifiedKeyEventFromKeyEvent(const KeyEvent& event) {
     return {{VerifiedInputEvent::Type::KEY, event.getDeviceId(), event.getEventTime(),
              event.getSource(), event.getDisplayId()},
@@ -580,7 +610,7 @@ void MotionEvent::initialize(int32_t id, int32_t deviceId, uint32_t source,
                               &pointerProperties[pointerCount]);
     mSampleEventTimes.clear();
     mSamplePointerCoords.clear();
-    addSample(eventTime, pointerCoords);
+    addSample(eventTime, pointerCoords, mId);
 }
 
 void MotionEvent::copyFrom(const MotionEvent* other, bool keepHistory) {
@@ -640,9 +670,9 @@ void MotionEvent::splitFrom(const android::MotionEvent& other,
     mSampleEventTimes = other.mSampleEventTimes;
 }
 
-void MotionEvent::addSample(
-        int64_t eventTime,
-        const PointerCoords* pointerCoords) {
+void MotionEvent::addSample(int64_t eventTime, const PointerCoords* pointerCoords,
+                            int32_t eventId) {
+    mId = eventId;
     mSampleEventTimes.push_back(eventTime);
     mSamplePointerCoords.insert(mSamplePointerCoords.end(), &pointerCoords[0],
                                 &pointerCoords[getPointerCount()]);
@@ -685,11 +715,12 @@ void MotionEvent::setCursorPosition(float x, float y) {
 
 const PointerCoords* MotionEvent::getRawPointerCoords(size_t pointerIndex) const {
     if (CC_UNLIKELY(pointerIndex < 0 || pointerIndex >= getPointerCount())) {
-        LOG(FATAL) << __func__ << ": Invalid pointer index " << pointerIndex << " for " << *this;
+        LOG(FATAL) << __func__ << ": Invalid pointer index " << pointerIndex << " for "
+                   << safeDump();
     }
     const size_t position = getHistorySize() * getPointerCount() + pointerIndex;
     if (CC_UNLIKELY(position < 0 || position >= mSamplePointerCoords.size())) {
-        LOG(FATAL) << __func__ << ": Invalid array index " << position << " for " << *this;
+        LOG(FATAL) << __func__ << ": Invalid array index " << position << " for " << safeDump();
     }
     return &mSamplePointerCoords[position];
 }
@@ -705,15 +736,16 @@ float MotionEvent::getAxisValue(int32_t axis, size_t pointerIndex) const {
 const PointerCoords* MotionEvent::getHistoricalRawPointerCoords(
         size_t pointerIndex, size_t historicalIndex) const {
     if (CC_UNLIKELY(pointerIndex < 0 || pointerIndex >= getPointerCount())) {
-        LOG(FATAL) << __func__ << ": Invalid pointer index " << pointerIndex << " for " << *this;
+        LOG(FATAL) << __func__ << ": Invalid pointer index " << pointerIndex << " for "
+                   << safeDump();
     }
     if (CC_UNLIKELY(historicalIndex < 0 || historicalIndex > getHistorySize())) {
         LOG(FATAL) << __func__ << ": Invalid historical index " << historicalIndex << " for "
-                   << *this;
+                   << safeDump();
     }
     const size_t position = historicalIndex * getPointerCount() + pointerIndex;
     if (CC_UNLIKELY(position < 0 || position >= mSamplePointerCoords.size())) {
-        LOG(FATAL) << __func__ << ": Invalid array index " << position << " for " << *this;
+        LOG(FATAL) << __func__ << ": Invalid array index " << position << " for " << safeDump();
     }
     return &mSamplePointerCoords[position];
 }
@@ -1142,6 +1174,53 @@ bool MotionEvent::operator==(const android::MotionEvent& o) const {
             mSampleEventTimes == o.mSampleEventTimes &&
             mSamplePointerCoords == o.mSamplePointerCoords;
     // clang-format on
+}
+
+std::string MotionEvent::safeDump() const {
+    std::stringstream out;
+    // Field names have the m prefix here to make it easy to distinguish safeDump output from
+    // operator<< output in logs.
+    out << "MotionEvent { mAction=" << MotionEvent::actionToString(mAction);
+    if (mActionButton != 0) {
+        out << ", mActionButton=" << mActionButton;
+    }
+    if (mButtonState != 0) {
+        out << ", mButtonState=" << mButtonState;
+    }
+    if (mClassification != MotionClassification::NONE) {
+        out << ", mClassification=" << motionClassificationToString(mClassification);
+    }
+    if (mMetaState != 0) {
+        out << ", mMetaState=" << mMetaState;
+    }
+    if (mFlags != 0) {
+        out << ", mFlags=0x" << std::hex << mFlags << std::dec;
+    }
+    if (mEdgeFlags != 0) {
+        out << ", mEdgeFlags=" << mEdgeFlags;
+    }
+    out << ", mDownTime=" << mDownTime;
+    out << ", mDeviceId=" << mDeviceId;
+    out << ", mSource=" << inputEventSourceToString(mSource);
+    out << ", mDisplayId=" << mDisplayId;
+    out << ", mEventId=0x" << std::hex << mId << std::dec;
+    // Since we're not assuming the data is at all valid, we also limit the number of items that
+    // might be printed from vectors, in case the vector's size field is corrupted.
+    out << ", mPointerProperties=(" << mPointerProperties.size() << ")[";
+    for (size_t i = 0; i < mPointerProperties.size() && i < MAX_POINTERS; i++) {
+        out << (i > 0 ? ", " : "") << mPointerProperties.at(i);
+    }
+    out << "], mSampleEventTimes=(" << mSampleEventTimes.size() << ")[";
+    for (size_t i = 0; i < mSampleEventTimes.size() && i < 256; i++) {
+        out << (i > 0 ? ", " : "") << mSampleEventTimes.at(i);
+    }
+    out << "], mSamplePointerCoords=(" << mSamplePointerCoords.size() << ")[";
+    for (size_t i = 0; i < mSamplePointerCoords.size() && i < MAX_POINTERS; i++) {
+        const PointerCoords& coords = mSamplePointerCoords.at(i);
+        out << (i > 0 ? ", " : "") << "(" << coords.getX() << ", " << coords.getY() << ")";
+    }
+    out << "] }";
+    return out.str();
 }
 
 std::ostream& operator<<(std::ostream& out, const MotionEvent& event) {

@@ -27,15 +27,74 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 
 import androidx.annotation.GravityInt;
+import androidx.annotation.IntDef;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceViewHolder;
 
 import com.android.settingslib.widget.preference.button.R;
 
+import com.google.android.material.button.MaterialButton;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
 /**
  * A preference handled a button
  */
-public class ButtonPreference extends Preference {
+public class ButtonPreference extends Preference implements GroupSectionDividerMixin {
+
+    public static final int TYPE_FILLED = 0;
+    public static final int TYPE_TONAL = 1;
+    public static final int TYPE_OUTLINE = 2;
+
+    @IntDef({TYPE_FILLED, TYPE_TONAL, TYPE_OUTLINE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Type {
+    }
+
+    public static final int SIZE_NORMAL = 0;
+    public static final int SIZE_LARGE = 1;
+    public static final int SIZE_EXTRA_LARGE = 2;
+
+    @IntDef({SIZE_NORMAL, SIZE_LARGE, SIZE_EXTRA_LARGE})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Size {
+    }
+
+    enum ButtonStyle {
+        FILLED_NORMAL(TYPE_FILLED, SIZE_NORMAL, R.layout.settingslib_expressive_button_filled),
+        FILLED_LARGE(TYPE_FILLED, SIZE_LARGE, R.layout.settingslib_expressive_button_filled_large),
+        FILLED_EXTRA(TYPE_FILLED, SIZE_EXTRA_LARGE,
+                R.layout.settingslib_expressive_button_filled_extra),
+        TONAL_NORMAL(TYPE_TONAL, SIZE_NORMAL, R.layout.settingslib_expressive_button_tonal),
+        TONAL_LARGE(TYPE_TONAL, SIZE_LARGE, R.layout.settingslib_expressive_button_tonal_large),
+        TONAL_EXTRA(TYPE_TONAL, SIZE_EXTRA_LARGE,
+                R.layout.settingslib_expressive_button_tonal_extra),
+        OUTLINE_NORMAL(TYPE_OUTLINE, SIZE_NORMAL, R.layout.settingslib_expressive_button_outline),
+        OUTLINE_LARGE(TYPE_OUTLINE, SIZE_LARGE,
+                R.layout.settingslib_expressive_button_outline_large),
+        OUTLINE_EXTRA(TYPE_OUTLINE, SIZE_EXTRA_LARGE,
+                R.layout.settingslib_expressive_button_outline_extra);
+
+        private final int mType;
+        private final int mSize;
+        private final int mLayoutId;
+
+        ButtonStyle(int type, int size, int layoutId) {
+            this.mType = type;
+            this.mSize = size;
+            this.mLayoutId = layoutId;
+        }
+
+        static int getLayoutId(@Type int type, @Size int size) {
+            for (ButtonStyle style : values()) {
+                if (style.mType == type && style.mSize == size) {
+                    return style.mLayoutId;
+                }
+            }
+            throw new IllegalArgumentException();
+        }
+    }
 
     private static final int ICON_SIZE = 24;
 
@@ -86,7 +145,7 @@ public class ButtonPreference extends Preference {
     }
 
     private void init(Context context, AttributeSet attrs, int defStyleAttr) {
-        setLayoutResource(R.layout.settingslib_button_layout);
+        int resId = R.layout.settingslib_button_layout;
 
         if (attrs != null) {
             TypedArray a = context.obtainStyledAttributes(attrs,
@@ -102,8 +161,16 @@ public class ButtonPreference extends Preference {
                     R.styleable.ButtonPreference, defStyleAttr,
                     0 /*defStyleRes*/);
             mGravity = a.getInt(R.styleable.ButtonPreference_android_gravity, Gravity.START);
+
+            if (SettingsThemeHelper.isExpressiveTheme(context)) {
+                int type = a.getInt(R.styleable.ButtonPreference_buttonPreferenceType, 0);
+                int size = a.getInt(R.styleable.ButtonPreference_buttonPreferenceSize, 0);
+                resId = ButtonStyle.getLayoutId(type, size);
+            }
             a.recycle();
         }
+
+        setLayoutResource(resId);
     }
 
     @Override
@@ -144,14 +211,20 @@ public class ButtonPreference extends Preference {
         if (mButton == null || icon == null) {
             return;
         }
-        //get pixel from dp
-        int size = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, ICON_SIZE,
-                getContext().getResources().getDisplayMetrics());
-        icon.setBounds(0, 0, size, size);
 
-        //set drawableStart
-        mButton.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null/* top */, null/* end */,
-                null/* bottom */);
+        if (mButton instanceof MaterialButton) {
+            ((MaterialButton) mButton).setIcon(icon);
+        } else {
+            //get pixel from dp
+            int size = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, ICON_SIZE,
+                    getContext().getResources().getDisplayMetrics());
+            icon.setBounds(0, 0, size, size);
+
+            //set drawableStart
+            mButton.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null/* top */,
+                    null/* end */,
+                    null/* bottom */);
+        }
     }
 
     @Override
@@ -199,5 +272,29 @@ public class ButtonPreference extends Preference {
             lp.gravity = mGravity;
             mButton.setLayoutParams(lp);
         }
+    }
+
+    /**
+     * Sets the style of the button.
+     *
+     * @param type Specifies the button's type, which sets the attribute `buttonPreferenceType`.
+     *             Possible values are:
+     *             <ul>
+     *                 <li>0: filled</li>
+     *                 <li>1: tonal</li>
+     *                 <li>2: outline</li>
+     *             </ul>
+     * @param size Specifies the button's size, which sets the attribute `buttonPreferenceSize`.
+     *             Possible values are:
+     *             <ul>
+     *                 <li>0: normal</li>
+     *                 <li>1: large</li>
+     *                 <li>2: extra large</li>
+     *             </ul>
+     */
+    public void setButtonStyle(@Type int type, @Size int size) {
+        int layoutId = ButtonStyle.getLayoutId(type, size);
+        setLayoutResource(layoutId);
+        notifyChanged();
     }
 }

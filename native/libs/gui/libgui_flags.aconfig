@@ -2,12 +2,28 @@ package: "com.android.graphics.libgui.flags"
 container: "system"
 
 flag {
+  name: "apply_picture_profiles"
+  namespace: "tv_os_media"
+  description: "This flag controls sending picture profiles from BBQ to Composer HAL"
+  bug: "337330263"
+  is_fixed_read_only: true
+} # apply_picture_profiles
+
+flag {
   name: "bq_setframerate"
   namespace: "core_graphics"
   description: "This flag controls plumbing setFrameRate thru BufferQueue"
   bug: "281695725"
   is_fixed_read_only: true
 } # bq_setframerate
+
+flag {
+  name: "bq_consumer_attach_callback"
+  namespace: "core_graphics"
+  description: "Controls IProducerListener to have consumer side attach callback"
+  bug: "353202582"
+  is_fixed_read_only: true
+} # bq_consumer_attach_callback
 
 flag {
   name: "frametimestamps_previousrelease"
@@ -35,3 +51,113 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 } # trace_frame_rate_override
+
+flag {
+  name: "wb_consumer_base_owns_bq"
+  namespace: "core_graphics"
+  description: "ConsumerBase-based classes now own their own bufferqueue"
+  bug: "340933754"
+  is_fixed_read_only: true
+} # wb_consumer_base_owns_bq
+
+flag {
+  name: "wb_platform_api_improvements"
+  namespace: "core_graphics"
+  description: "Simple improvements to Surface and ConsumerBase classes"
+  bug: "340933794"
+  is_fixed_read_only: true
+} # wb_platform_api_improvements
+
+flag {
+    name: "wb_stream_splitter"
+    namespace: "core_graphics"
+    description: "Removes IGBP/IGBCs from Camera3StreamSplitter as part of BufferQueue refactors"
+    bug: "340933206"
+    is_fixed_read_only: true
+} # wb_stream_splitter
+
+flag {
+  name: "buffer_release_channel"
+  namespace: "window_surfaces"
+  description: "Enable BufferReleaseChannel to optimize buffer releases"
+  bug: "294133380"
+  is_fixed_read_only: true
+} # buffer_release_channel
+
+flag {
+  name: "wb_ring_buffer"
+  namespace: "core_graphics"
+  description: "Remove slot dependency in the Ring Buffer Consumer."
+  bug: "342197847"
+  is_fixed_read_only: true
+} # wb_ring_buffer
+
+flag {
+  name: "wb_camera3_and_processors"
+  namespace: "core_graphics"
+  description: "Remove usage of IGBPs in the *Processor and Camera3*"
+  bug: "342199002"
+  is_fixed_read_only: true
+} # wb_camera3_and_processors
+
+flag {
+  name: "wb_libcameraservice"
+  namespace: "core_graphics"
+  description: "Remove usage of IGBPs in the libcameraservice."
+  bug: "342197849"
+  is_fixed_read_only: true
+} # wb_libcameraservice
+
+flag {
+  name: "wb_unlimited_slots"
+  namespace: "core_graphics"
+  description: "Adds APIs and updates the implementation of bufferqueues to have a user-defined slot count."
+  bug: "341359814"
+  is_fixed_read_only: true
+} # wb_unlimited_slots
+
+flag {
+  name: "bq_producer_throttles_only_async_mode"
+  namespace: "core_graphics"
+  description: "BufferQueueProducer only CPU throttle on queueBuffer() in async mode."
+  bug: "359252619"
+  is_fixed_read_only: true
+} # bq_producer_throttles_only_async_mode
+
+flag {
+  name: "bq_gl_fence_cleanup"
+  namespace: "core_graphics"
+  description: "Remove BufferQueueProducer::dequeue's wait on this fence (or the fence entirely) to prevent deadlocks"
+  bug: "339705065"
+  is_fixed_read_only: true
+} # bq_gl_fence_cleanup
+
+flag {
+  name: "wb_media_migration"
+  namespace: "core_graphics"
+  description: "Main flag for the warren buffers media migration."
+  bug: "340934031"
+  is_fixed_read_only: true
+} # wb_media_migration
+
+flag {
+  name: "allocate_buffer_priority"
+  namespace: "wear_system_health"
+  description: "Boost priority for buffer allocation"
+  bug: "399701430"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+} # allocate_buffer_priority
+
+flag {
+  name: "bq_always_use_max_dequeued_buffer_count"
+  namespace: "core_graphics"
+  description: "BufferQueueProducer::dequeue's respects setMaxDequeuedBufferCount even before a buffer is dequeued."
+  bug: "399328309"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+  is_fixed_read_only: true
+} # bq_always_use_max_dequeued_buffer_count

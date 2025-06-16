@@ -19,7 +19,6 @@ import org.mockito.Mockito.intThat
 import org.mockito.Mockito.reset
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
-import org.mockito.Mockito.verifyZeroInteractions
 import org.mockito.Mockito.`when` as whenever
 import org.mockito.MockitoAnnotations
 
@@ -71,9 +70,9 @@ class SplitShadeLockScreenOverScrollerTest : SysuiTestCase() {
 
         setDragAmount(1000f)
 
-        verifyZeroInteractions(qS)
-        verifyZeroInteractions(scrimController)
-        verifyZeroInteractions(nsslController)
+        verifyNoMoreInteractions(qS)
+        verifyNoMoreInteractions(scrimController)
+        verifyNoMoreInteractions(nsslController)
     }
 
     @Test

@@ -18,10 +18,13 @@ package com.android.providers.settings;
 
 import static android.os.Process.FIRST_APPLICATION_UID;
 
+import static com.android.aconfig_new_storage.Flags.enableAconfigStorageDaemon;
+
 import android.aconfig.Aconfig.flag_permission;
 import android.aconfig.Aconfig.flag_state;
 import android.aconfig.Aconfig.parsed_flag;
 import android.aconfig.Aconfig.parsed_flags;
+import android.aconfigd.AconfigdFlagInfo;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -65,14 +68,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.InputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.attribute.PosixFileAttributes;
-import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -84,18 +83,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 
-// FOR ACONFIGD TEST MISSION AND ROLLOUT
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import android.util.proto.ProtoInputStream;
-import android.aconfigd.Aconfigd.StorageRequestMessage;
-import android.aconfigd.Aconfigd.StorageRequestMessages;
-import android.aconfigd.Aconfigd.StorageReturnMessage;
-import android.aconfigd.Aconfigd.StorageReturnMessages;
-import android.aconfigd.AconfigdClientSocket;
-import android.aconfigd.AconfigdFlagInfo;
-import android.aconfigd.AconfigdJavaUtils;
-import static com.android.aconfig_new_storage.Flags.enableAconfigStorageDaemon;
 /**
  * This class contains the state for one type of settings. It is responsible
  * for saving the state asynchronously to an XML file after a mutation and
@@ -107,7 +94,7 @@ import static com.android.aconfig_new_storage.Flags.enableAconfigStorageDaemon;
  * the same lock to grab the current state to write to disk.
  * </p>
  */
-final class SettingsState {
+public class SettingsState {
     private static final boolean DEBUG = false;
     private static final boolean DEBUG_PERSISTENCE = false;
 
@@ -178,11 +165,6 @@ final class SettingsState {
     private static final String APEX_DIR = "/apex";
     private static final String APEX_ACONFIG_PATH_SUFFIX = "/etc/aconfig_flags.pb";
 
-    private static final String STORAGE_MIGRATION_FLAG =
-            "core_experiments_team_internal/com.android.providers.settings.storage_test_mission_1";
-    private static final String STORAGE_MIGRATION_MARKER_FILE =
-            "/metadata/aconfig_test_missions/mission_1";
-
     /**
      * This tag is applied to all aconfig default value-loaded flags.
      */
@@ -202,6 +184,12 @@ final class SettingsState {
     private static final String ROOT_PACKAGE_NAME = "root";
 
     private static final String NULL_VALUE = "null";
+
+    // TOBO(b/312444587): remove after Test Mission 2.
+    // Bulk sync names
+    private static final String BULK_SYNC_MARKER = "aconfigd_marker/bulk_synced";
+    private static final String BULK_SYNC_TRIGGER_COUNTER =
+        "core_experiments_team_internal/BulkSyncTriggerCounterFlag__bulk_sync_trigger_counter";
 
     private static final ArraySet<String> sSystemPackages = new ArraySet<>();
 
@@ -393,88 +381,7 @@ final class SettingsState {
                     getAllAconfigFlagsFromSettings(mAconfigDefaultFlags);
                 }
             }
-
-            if (isConfigSettingsKey(mKey)) {
-                requests = handleBulkSyncToNewStorage(mAconfigDefaultFlags);
-            }
         }
-
-        if (enableAconfigStorageDaemon()) {
-            if (isConfigSettingsKey(mKey)){
-                AconfigdClientSocket localSocket = AconfigdJavaUtils.getAconfigdClientSocket();
-                if (requests != null) {
-                    InputStream res = localSocket.send(requests.getBytes());
-                    if (res == null) {
-                        Slog.w(LOG_TAG, "Bulk sync request to acongid failed.");
-                    }
-                }
-                // TOBO(b/312444587): remove the comparison logic after Test Mission 2.
-                if (mSettings.get("aconfigd_marker/bulk_synced").value.equals("true")
-                        && requests == null) {
-                    Map<String, AconfigdFlagInfo> aconfigdFlagMap =
-                            AconfigdJavaUtils.listFlagsValueInNewStorage(localSocket);
-                    compareFlagValueInNewStorage(
-                            mAconfigDefaultFlags,
-                            aconfigdFlagMap);
-                }
-            }
-        }
-    }
-
-    // TOBO(b/312444587): remove the comparison logic after Test Mission 2.
-    public int compareFlagValueInNewStorage(
-            Map<String, AconfigdFlagInfo> defaultFlagMap,
-            Map<String, AconfigdFlagInfo> aconfigdFlagMap) {
-
-        // Get all defaults from the default map. The mSettings may not contain
-        // all flags, since it only contains updated flags.
-        int diffNum = 0;
-        for (Map.Entry<String, AconfigdFlagInfo> entry : defaultFlagMap.entrySet()) {
-            String key = entry.getKey();
-            AconfigdFlagInfo flag = entry.getValue();
-
-            AconfigdFlagInfo aconfigdFlag = aconfigdFlagMap.get(key);
-            if (aconfigdFlag == null) {
-                Slog.w(LOG_TAG, String.format("Flag %s is missing from aconfigd", key));
-                diffNum++;
-                continue;
-            }
-            String diff = flag.dumpDiff(aconfigdFlag);
-            if (!diff.isEmpty()) {
-                Slog.w(
-                        LOG_TAG,
-                        String.format(
-                                "Flag %s is different in Settings and aconfig: %s", key, diff));
-                diffNum++;
-            }
-        }
-
-        for (String key : aconfigdFlagMap.keySet()) {
-            if (defaultFlagMap.containsKey(key)) continue;
-            Slog.w(LOG_TAG, String.format("Flag %s is missing from Settings", key));
-            diffNum++;
-        }
-
-        String compareMarkerName = "aconfigd_marker/compare_diff_num";
-        synchronized (mLock) {
-            Setting markerSetting = mSettings.get(compareMarkerName);
-            if (markerSetting == null) {
-                markerSetting =
-                        new Setting(
-                                compareMarkerName,
-                                String.valueOf(diffNum),
-                                false,
-                                "aconfig",
-                                "aconfig");
-                mSettings.put(compareMarkerName, markerSetting);
-            }
-            markerSetting.value = String.valueOf(diffNum);
-        }
-
-        if (diffNum == 0) {
-            Slog.w(LOG_TAG, "Settings and new storage have same flags.");
-        }
-        return diffNum;
     }
 
     @GuardedBy("mLock")
@@ -512,6 +419,7 @@ final class SettingsState {
         }
 
         String namespace = name.substring(0, slashIdx);
+        namespace = namespace.intern();  // Many configs have the same namespace.
         String fullFlagName = name.substring(slashIdx + 1);
         boolean isLocal = false;
 
@@ -534,7 +442,7 @@ final class SettingsState {
             return null;
         }
         AconfigdFlagInfo flag = flagInfoDefault.get(fullFlagName);
-        if (flag == null) {
+        if (flag == null || !namespace.equals(flag.getNamespace())) {
             return null;
         }
 
@@ -546,85 +454,19 @@ final class SettingsState {
         return flag;
     }
 
-
-    // TODO(b/341764371): migrate aconfig flag push to GMS core
-    @VisibleForTesting
-    @GuardedBy("mLock")
-    public ProtoOutputStream handleBulkSyncToNewStorage(
-            Map<String, AconfigdFlagInfo> aconfigFlagMap) {
-        // get marker or add marker if it does not exist
-        final String bulkSyncMarkerName = new String("aconfigd_marker/bulk_synced");
-        Setting markerSetting = mSettings.get(bulkSyncMarkerName);
-        if (markerSetting == null) {
-            markerSetting = new Setting(bulkSyncMarkerName, "false", false, "aconfig", "aconfig");
-            mSettings.put(bulkSyncMarkerName, markerSetting);
-        }
-
-        if (enableAconfigStorageDaemon()) {
-            if (markerSetting.value.equals("true")) {
-                // CASE 1, flag is on, bulk sync marker true, nothing to do
-                return null;
-            } else {
-                // CASE 2, flag is on, bulk sync marker false. Do following two tasks
-                // (1) Do bulk sync here.
-                // (2) After bulk sync, set marker to true.
-
-                // first add storage reset request
-                ProtoOutputStream requests = new ProtoOutputStream();
-                AconfigdJavaUtils.writeResetStorageRequest(requests);
-
-                // loop over all settings and add flag override requests
-                for (AconfigdFlagInfo flag : aconfigFlagMap.values()) {
-                    // don't sync read_only flags
-                    if (!flag.getIsReadWrite()) {
-                        continue;
-                    }
-
-                    if (flag.getHasServerOverride()) {
-                        AconfigdJavaUtils.writeFlagOverrideRequest(
-                                requests,
-                                flag.getPackageName(),
-                                flag.getFlagName(),
-                                flag.getServerFlagValue(),
-                                false);
-                    }
-
-                    if (flag.getHasLocalOverride()) {
-                        AconfigdJavaUtils.writeFlagOverrideRequest(
-                                requests,
-                                flag.getPackageName(),
-                                flag.getFlagName(),
-                                flag.getLocalFlagValue(),
-                                true);
-                    }
-                }
-
-                // mark sync has been done
-                markerSetting.value = "true";
-                scheduleWriteIfNeededLocked();
-                return requests;
-            }
-        } else {
-            if (markerSetting.value.equals("true")) {
-                // CASE 3, flag is off, bulk sync marker true, clear the marker
-                markerSetting.value = "false";
-                scheduleWriteIfNeededLocked();
-                return null;
-            } else {
-                // CASE 4, flag is off, bulk sync marker false, nothing to do
-                return null;
-            }
-        }
-    }
-
     @GuardedBy("mLock")
     private void loadAconfigDefaultValuesLocked(List<String> filePaths) {
         for (String fileName : filePaths) {
-            try (FileInputStream inputStream = new FileInputStream(fileName)) {
-                loadAconfigDefaultValues(
-                        inputStream.readAllBytes(), mNamespaceDefaults, mAconfigDefaultFlags);
-            } catch (IOException e) {
-                Slog.e(LOG_TAG, "failed to read protobuf", e);
+            File f = new File(fileName);
+            if (f.isFile() && f.canRead()) {
+                try (FileInputStream inputStream = new FileInputStream(fileName)) {
+                    loadAconfigDefaultValues(
+                            inputStream.readAllBytes(), mNamespaceDefaults, mAconfigDefaultFlags);
+                } catch (IOException e) {
+                    Slog.e(LOG_TAG, "failed to read protobuf", e);
+                }
+            } else {
+                Slog.d(LOG_TAG, "No protobuf file at " + fileName);
             }
         }
     }
@@ -692,6 +534,7 @@ final class SettingsState {
                                     .setFlagName(flag.getName())
                                     .setDefaultFlagValue(flagValue)
                                     .setIsReadWrite(isReadWrite)
+                                    .setNamespace(flag.getNamespace())
                                     .build());
                 }
             }
@@ -724,8 +567,6 @@ final class SettingsState {
     // The settings provider must hold its lock when calling here.
     @GuardedBy("mLock")
     public void removeSettingsForPackageLocked(String packageName) {
-        boolean removedSomething = false;
-
         final int settingCount = mSettings.size();
         for (int i = settingCount - 1; i >= 0; i--) {
             String name = mSettings.keyAt(i);
@@ -736,13 +577,8 @@ final class SettingsState {
             }
             Setting setting = mSettings.valueAt(i);
             if (packageName.equals(setting.packageName)) {
-                mSettings.removeAt(i);
-                removedSomething = true;
+                deleteSettingLocked(setting.name);
             }
-        }
-
-        if (removedSomething) {
-            scheduleWriteIfNeededLocked();
         }
     }
 
@@ -1354,7 +1190,10 @@ final class SettingsState {
                     }
 
                     try {
-                        if (writeSingleSetting(mVersion, serializer, setting.getId(),
+                        if (writeSingleSetting(
+                                mVersion,
+                                serializer,
+                                Long.toString(setting.getId()),
                                 setting.getName(),
                                 setting.getValue(), setting.getDefaultValue(),
                                 setting.getPackageName(),
@@ -1623,7 +1462,7 @@ final class SettingsState {
             TypedXmlPullParser parser = Xml.resolvePullParser(in);
             parseStateLocked(parser);
             return true;
-        } catch (XmlPullParserException | IOException e) {
+        } catch (XmlPullParserException | IOException | NumberFormatException e) {
             Slog.e(LOG_TAG, "parse settings xml failed", e);
             return false;
         } finally {
@@ -1643,7 +1482,7 @@ final class SettingsState {
     }
 
     private void parseStateLocked(TypedXmlPullParser parser)
-            throws IOException, XmlPullParserException {
+            throws IOException, XmlPullParserException, NumberFormatException {
         final int outerDepth = parser.getDepth();
         int type;
         while ((type = parser.next()) != XmlPullParser.END_DOCUMENT
@@ -1699,7 +1538,7 @@ final class SettingsState {
 
     @GuardedBy("mLock")
     private void parseSettingsLocked(TypedXmlPullParser parser)
-            throws IOException, XmlPullParserException {
+            throws IOException, XmlPullParserException, NumberFormatException {
 
         mVersion = parser.getAttributeInt(null, ATTR_VERSION);
 
@@ -1740,34 +1579,8 @@ final class SettingsState {
                     }
                 }
 
-                if (isConfigSettingsKey(mKey) && name != null
-                        && name.equals(STORAGE_MIGRATION_FLAG)) {
-                    if (value.equals("true")) {
-                        Path path = Paths.get(STORAGE_MIGRATION_MARKER_FILE);
-                        if (!Files.exists(path)) {
-                            Files.createFile(path);
-                        }
-
-                        Set<PosixFilePermission> perms =
-                                Files.readAttributes(path, PosixFileAttributes.class).permissions();
-                        perms.add(PosixFilePermission.OWNER_WRITE);
-                        perms.add(PosixFilePermission.OWNER_READ);
-                        perms.add(PosixFilePermission.GROUP_READ);
-                        perms.add(PosixFilePermission.OTHERS_READ);
-                        try {
-                            Files.setPosixFilePermissions(path, perms);
-                        } catch (Exception e) {
-                            Slog.e(LOG_TAG, "failed to set permissions on migration marker", e);
-                        }
-                    } else {
-                        java.nio.file.Path path = Paths.get(STORAGE_MIGRATION_MARKER_FILE);
-                        if (Files.exists(path)) {
-                            Files.delete(path);
-                        }
-                    }
-                }
                 mSettings.put(name, new Setting(name, value, defaultValue, packageName, tag,
-                        fromSystem, id, isPreservedInRestore));
+                        fromSystem, Long.valueOf(id), isPreservedInRestore));
 
                 if (DEBUG_PERSISTENCE) {
                     Slog.i(LOG_TAG, "[RESTORED] " + name + "=" + value);
@@ -1852,12 +1665,12 @@ final class SettingsState {
         }
     }
 
-    class Setting {
+    public class Setting {
         private String name;
         private String value;
         private String defaultValue;
         private String packageName;
-        private String id;
+        private long id;
         private String tag;
         // Whether the default is set by the system
         private boolean defaultFromSystem;
@@ -1889,30 +1702,27 @@ final class SettingsState {
         }
 
         public Setting(String name, String value, String defaultValue,
-                String packageName, String tag, boolean fromSystem, String id) {
+                String packageName, String tag, boolean fromSystem, long id) {
             this(name, value, defaultValue, packageName, tag, fromSystem, id,
                     /* isOverrideableByRestore */ false);
         }
 
         Setting(String name, String value, String defaultValue,
-                String packageName, String tag, boolean fromSystem, String id,
+                String packageName, String tag, boolean fromSystem, long id,
                 boolean isValuePreservedInRestore) {
-            mNextId = Math.max(mNextId, Long.parseLong(id) + 1);
-            if (NULL_VALUE.equals(value)) {
-                value = null;
-            }
+            mNextId = Math.max(mNextId, id + 1);
             init(name, value, tag, defaultValue, packageName, fromSystem, id,
                     isValuePreservedInRestore);
         }
 
         private void init(String name, String value, String tag, String defaultValue,
-                String packageName, boolean fromSystem, String id,
+                String packageName, boolean fromSystem, long id,
                 boolean isValuePreservedInRestore) {
             this.name = name;
-            this.value = value;
+            this.value = internValue(value);
             this.tag = tag;
-            this.defaultValue = defaultValue;
-            this.packageName = packageName;
+            this.defaultValue = internValue(defaultValue);
+            this.packageName = TextUtils.safeIntern(packageName);
             this.id = id;
             this.defaultFromSystem = fromSystem;
             this.isValuePreservedInRestore = isValuePreservedInRestore;
@@ -1950,7 +1760,7 @@ final class SettingsState {
             return isValuePreservedInRestore;
         }
 
-        public String getId() {
+        public long getId() {
             return id;
         }
 
@@ -1983,9 +1793,6 @@ final class SettingsState {
         private boolean update(String value, boolean setDefault, String packageName, String tag,
                 boolean forceNonSystemPackage, boolean overrideableByRestore,
                 boolean resetToDefault) {
-            if (NULL_VALUE.equals(value)) {
-                value = null;
-            }
             final boolean callerSystem = !forceNonSystemPackage &&
                     !isNull() && (isCalledFromSystem(packageName)
                     || isSystemPackage(mContext, packageName));
@@ -2030,7 +1837,7 @@ final class SettingsState {
             }
 
             init(name, value, tag, defaultValue, packageName, defaultFromSystem,
-                    String.valueOf(mNextId++), isPreserved);
+                    mNextId++, isPreserved);
 
             return true;
         }
@@ -2040,6 +1847,32 @@ final class SettingsState {
                     + (defaultValue != null ? " default=" + defaultValue : "")
                     + " packageName=" + packageName + " tag=" + tag
                     + " defaultFromSystem=" + defaultFromSystem + "}";
+        }
+
+        /**
+         * Interns a string if it's a common setting value.
+         * Otherwise returns the given string.
+         */
+        static String internValue(String str) {
+            if (str == null) {
+                return null;
+            }
+            switch (str) {
+                case "true":
+                    return "true";
+                case "false":
+                    return "false";
+                case "0":
+                    return "0";
+                case "1":
+                    return "1";
+                case "":
+                    return "";
+                case "null":
+                    return null;  // explicit null has special handling
+                default:
+                    return str;
+            }
         }
 
         private boolean shouldPreserveSetting(boolean overrideableByRestore,

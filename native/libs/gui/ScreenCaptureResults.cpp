@@ -18,6 +18,7 @@
 
 #include <private/gui/ParcelUtils.h>
 #include <ui/FenceResult.h>
+#include <ui/GraphicBuffer.h>
 
 namespace android::gui {
 
@@ -40,6 +41,13 @@ status_t ScreenCaptureResults::writeToParcel(android::Parcel* parcel) const {
     SAFE_PARCEL(parcel->writeBool, capturedSecureLayers);
     SAFE_PARCEL(parcel->writeBool, capturedHdrLayers);
     SAFE_PARCEL(parcel->writeUint32, static_cast<uint32_t>(capturedDataspace));
+    if (optionalGainMap != nullptr) {
+        SAFE_PARCEL(parcel->writeBool, true);
+        SAFE_PARCEL(parcel->write, *optionalGainMap);
+    } else {
+        SAFE_PARCEL(parcel->writeBool, false);
+    }
+    SAFE_PARCEL(parcel->writeFloat, hdrSdrRatio);
     return NO_ERROR;
 }
 
@@ -47,7 +55,7 @@ status_t ScreenCaptureResults::readFromParcel(const android::Parcel* parcel) {
     bool hasGraphicBuffer;
     SAFE_PARCEL(parcel->readBool, &hasGraphicBuffer);
     if (hasGraphicBuffer) {
-        buffer = new GraphicBuffer();
+        buffer = sp<GraphicBuffer>::make();
         SAFE_PARCEL(parcel->read, *buffer);
     }
 
@@ -68,6 +76,14 @@ status_t ScreenCaptureResults::readFromParcel(const android::Parcel* parcel) {
     uint32_t dataspace = 0;
     SAFE_PARCEL(parcel->readUint32, &dataspace);
     capturedDataspace = static_cast<ui::Dataspace>(dataspace);
+
+    bool hasGainmap;
+    SAFE_PARCEL(parcel->readBool, &hasGainmap);
+    if (hasGainmap) {
+        optionalGainMap = sp<GraphicBuffer>::make();
+        SAFE_PARCEL(parcel->read, *optionalGainMap);
+    }
+    SAFE_PARCEL(parcel->readFloat, &hdrSdrRatio);
     return NO_ERROR;
 }
 

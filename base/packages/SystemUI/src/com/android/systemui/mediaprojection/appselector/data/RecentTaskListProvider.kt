@@ -23,7 +23,7 @@ import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.util.kotlin.getOrNull
 import com.android.wm.shell.recents.RecentTasks
-import com.android.wm.shell.util.GroupedRecentTaskInfo
+import com.android.wm.shell.shared.GroupedTaskInfo
 import java.util.Optional
 import java.util.concurrent.Executor
 import javax.inject.Inject
@@ -51,12 +51,13 @@ constructor(
 
     override suspend fun loadRecentTasks(): List<RecentTask> =
         withContext(coroutineDispatcher) {
-            val groupedTasks: List<GroupedRecentTaskInfo> = recents?.getTasks() ?: emptyList()
+            val groupedTasks: List<GroupedTaskInfo> = recents?.getTasks() ?: emptyList()
             // Note: the returned task list is from the most-recent to least-recent order.
             // When opening the app selector in full screen, index 0 will be just the app selector
             // activity and a null second task, so the foreground task will be index 1, but when
             // opening the app selector in split screen mode, the foreground task will be the second
             // task in index 0.
+            // TODO(346588978): This needs to be updated for mixed groups
             val foregroundGroup =
                 if (groupedTasks.firstOrNull()?.splitBounds != null) groupedTasks.first()
                 else groupedTasks.elementAtOrNull(1)
@@ -69,7 +70,7 @@ constructor(
                         it.taskInfo1,
                         it.taskInfo1.taskId in foregroundTaskIds && it.taskInfo1.isVisible,
                         userManager.getUserInfo(it.taskInfo1.userId).toUserType(),
-                        it.splitBounds
+                        it.splitBounds,
                     )
 
                 val task2 =
@@ -78,7 +79,7 @@ constructor(
                             it.taskInfo2!!,
                             it.taskInfo2!!.taskId in foregroundTaskIds && it.taskInfo2!!.isVisible,
                             userManager.getUserInfo(it.taskInfo2!!.userId).toUserType(),
-                            it.splitBounds
+                            it.splitBounds,
                         )
                     } else null
 
@@ -86,13 +87,13 @@ constructor(
             }
         }
 
-    private suspend fun RecentTasks.getTasks(): List<GroupedRecentTaskInfo> =
+    private suspend fun RecentTasks.getTasks(): List<GroupedTaskInfo> =
         suspendCoroutine { continuation ->
             getRecentTasks(
                 Integer.MAX_VALUE,
                 RECENT_IGNORE_UNAVAILABLE,
                 userTracker.userId,
-                backgroundExecutor
+                backgroundExecutor,
             ) { tasks ->
                 continuation.resume(tasks)
             }

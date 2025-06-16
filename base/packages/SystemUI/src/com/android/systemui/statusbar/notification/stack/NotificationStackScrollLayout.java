@@ -16,16 +16,21 @@
 
 package com.android.systemui.statusbar.notification.stack;
 
+import static android.app.Flags.notificationsRedesignTemplates;
 import static android.os.Trace.TRACE_TAG_APP;
 import static android.view.MotionEvent.ACTION_CANCEL;
 import static android.view.MotionEvent.ACTION_UP;
 
+import static com.android.app.tracing.TrackGroupUtils.trackGroup;
 import static com.android.internal.jank.InteractionJankMonitor.CUJ_NOTIFICATION_SHADE_SCROLL_FLING;
 import static com.android.internal.jank.InteractionJankMonitor.CUJ_SHADE_CLEAR_ALL;
-import static com.android.systemui.Flags.newAodTransition;
+import static com.android.systemui.Flags.magneticNotificationSwipes;
 import static com.android.systemui.Flags.notificationOverExpansionClippingFix;
+import static com.android.systemui.Flags.physicalNotificationMovement;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_SILENT;
 import static com.android.systemui.statusbar.notification.stack.StackStateAnimator.ANIMATION_DURATION_SWIPE;
+import static com.android.systemui.statusbar.notification.stack.shared.model.AccessibilityScrollEvent.SCROLL_DOWN;
+import static com.android.systemui.statusbar.notification.stack.shared.model.AccessibilityScrollEvent.SCROLL_UP;
 import static com.android.systemui.util.DumpUtilsKt.println;
 import static com.android.systemui.util.DumpUtilsKt.visibilityString;
 
@@ -48,6 +53,9 @@ import android.graphics.Outline;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.graphics.RenderEffect;
+import android.graphics.RenderNode;
+import android.graphics.Shader;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.os.Trace;
@@ -56,11 +64,11 @@ import android.util.AttributeSet;
 import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.MathUtils;
-import android.util.Pair;
 import android.view.DisplayCutout;
 import android.view.InputDevice;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
+import android.view.NotificationHeaderView;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -82,52 +90,61 @@ import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.policy.SystemBarUtils;
 import com.android.keyguard.BouncerPanelExpansionCalculator;
 import com.android.keyguard.KeyguardSliceView;
-import com.android.settingslib.Utils;
 import com.android.systemui.Dependency;
 import com.android.systemui.Dumpable;
 import com.android.systemui.ExpandHelper;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.flags.Flags;
 import com.android.systemui.plugins.ActivityStarter;
-import com.android.systemui.plugins.statusbar.NotificationSwipeActionHelper;
+import com.android.systemui.qs.flags.QSComposeFragment;
 import com.android.systemui.res.R;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.shade.QSHeaderBoundsProvider;
 import com.android.systemui.shade.TouchLogger;
-import com.android.systemui.statusbar.EmptyShadeView;
 import com.android.systemui.statusbar.NotificationShelf;
 import com.android.systemui.statusbar.StatusBarState;
+import com.android.systemui.statusbar.chips.notification.shared.StatusBarNotifChips;
+import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior;
 import com.android.systemui.statusbar.notification.ColorUpdateLogger;
 import com.android.systemui.statusbar.notification.FakeShadowView;
 import com.android.systemui.statusbar.notification.LaunchAnimationParameters;
 import com.android.systemui.statusbar.notification.NotificationTransitionAnimatorController;
 import com.android.systemui.statusbar.notification.NotificationUtils;
+import com.android.systemui.statusbar.notification.PhysicsPropertyAnimator;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
 import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
-import com.android.systemui.statusbar.notification.footer.shared.FooterViewRefactor;
+import com.android.systemui.statusbar.notification.emptyshade.shared.ModesEmptyShadeFix;
+import com.android.systemui.statusbar.notification.emptyshade.ui.view.EmptyShadeView;
 import com.android.systemui.statusbar.notification.footer.ui.view.FooterView;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpAnimationEvent;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpAnimator;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpTouchHelper;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpUtil;
+import com.android.systemui.statusbar.notification.headsup.NotificationsHunSharedAnimationValues;
 import com.android.systemui.statusbar.notification.logging.NotificationLogger;
 import com.android.systemui.statusbar.notification.row.ActivatableNotificationView;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.ExpandableView;
 import com.android.systemui.statusbar.notification.row.StackScrollerDecorView;
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi;
+import com.android.systemui.statusbar.notification.shared.NotificationContentAlphaOptimization;
 import com.android.systemui.statusbar.notification.shared.NotificationHeadsUpCycling;
-import com.android.systemui.statusbar.notification.shared.NotificationsHeadsUpRefactor;
-import com.android.systemui.statusbar.notification.shared.NotificationsImprovedHunAnimation;
+import com.android.systemui.statusbar.notification.shared.NotificationThrottleHun;
 import com.android.systemui.statusbar.notification.shared.NotificationsLiveDataStoreRefactor;
+import com.android.systemui.statusbar.notification.stack.shared.model.AccessibilityScrollEvent;
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimBounds;
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimShape;
+import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrollState;
 import com.android.systemui.statusbar.notification.stack.ui.view.NotificationScrollView;
 import com.android.systemui.statusbar.phone.HeadsUpAppearanceController;
-import com.android.systemui.statusbar.phone.HeadsUpTouchHelper;
-import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
-import com.android.systemui.statusbar.policy.HeadsUpUtil;
 import com.android.systemui.statusbar.policy.ScrollAdapter;
 import com.android.systemui.statusbar.policy.SplitShadeStateController;
 import com.android.systemui.util.Assert;
 import com.android.systemui.util.ColorUtilKt;
 import com.android.systemui.util.DumpUtilsKt;
 import com.android.systemui.util.ListenerSet;
+import com.android.systemui.wallpapers.domain.interactor.WallpaperInteractor;
 
 import com.google.errorprone.annotations.CompileTimeConstant;
 
@@ -219,6 +236,8 @@ public class NotificationStackScrollLayout
     private String mLastInitViewDumpString;
     private long mLastInitViewElapsedRealtime;
 
+    @Nullable
+    private final HeadsUpAnimator mHeadsUpAnimator;
     /**
      * The algorithm which calculates the properties for our children
      */
@@ -256,7 +275,7 @@ public class NotificationStackScrollLayout
     private float mOverScrolledBottomPixels;
     private final ListenerSet<Runnable> mStackHeightChangedListeners = new ListenerSet<>();
     private final ListenerSet<Runnable> mHeadsUpHeightChangedListeners = new ListenerSet<>();
-    private NotificationLogger.OnChildLocationsChangedListener mListener;
+    private NotificationLogger.OnChildLocationsChangedListener mLegacyLocationsChangedListener;
     private OnNotificationLocationsChangedListener mLocationsChangedListener;
     private OnOverscrollTopChangedListener mOverscrollTopChangedListener;
     private ExpandableView.OnHeightChangedListener mOnHeightChangedListener;
@@ -275,11 +294,9 @@ public class NotificationStackScrollLayout
     private boolean mExpandedInThisMotion;
     private boolean mShouldShowShelfOnly;
     protected boolean mScrollingEnabled;
-    private boolean mIsCurrentUserSetup;
     protected FooterView mFooterView;
     protected EmptyShadeView mEmptyShadeView;
     private boolean mClearAllInProgress;
-    private FooterClearAllListener mFooterClearAllListener;
     private boolean mFlingAfterUpEvent;
     /**
      * Was the scroller scrolled to the top when the down motion was observed?
@@ -335,10 +352,11 @@ public class NotificationStackScrollLayout
     private final int[] mTempInt2 = new int[2];
     private final HashSet<Runnable> mAnimationFinishedRunnables = new HashSet<>();
     private final HashSet<ExpandableView> mClearTransientViewsWhenFinished = new HashSet<>();
-    private final HashSet<Pair<ExpandableNotificationRow, Boolean>> mHeadsUpChangeAnimations
-            = new HashSet<>();
+    private final Map<ExpandableNotificationRow, HeadsUpAnimationEvent> mHeadsUpChangeAnimations
+            = new HashMap<>();
     private boolean mForceNoOverlappingRendering;
-    private final ArrayList<Pair<ExpandableNotificationRow, Boolean>> mTmpList = new ArrayList<>();
+    private final ArrayList<ExpandableNotificationRow> mTmpHeadsUpChangeAnimations =
+            new ArrayList<>();
     private boolean mAnimationRunning;
     private final ViewTreeObserver.OnPreDrawListener mRunningAnimationUpdater
             = new ViewTreeObserver.OnPreDrawListener() {
@@ -351,6 +369,10 @@ public class NotificationStackScrollLayout
     private final NotificationSection[] mSections;
     private final ArrayList<ExpandableView> mTmpSortedChildren = new ArrayList<>();
     protected ViewGroup mQsHeader;
+
+    @Nullable
+    private QSHeaderBoundsProvider mQSHeaderBoundsProvider;
+
     // Rect of QsHeader. Kept as a field just to avoid creating a new one each time.
     private final Rect mQsHeaderBound = new Rect();
     private boolean mContinuousShadowUpdate;
@@ -456,7 +478,6 @@ public class NotificationStackScrollLayout
     boolean mHeadsUpAnimatingAway;
     private Consumer<Boolean> mHeadsUpAnimatingAwayListener;
     private int mStatusBarState;
-    private int mUpcomingStatusBarState;
     private boolean mHeadsUpGoingAwayAnimationsAllowed = true;
     private final Runnable mReflingAndAnimateScroll = this::animateScroll;
     private int mCornerRadius;
@@ -487,7 +508,6 @@ public class NotificationStackScrollLayout
     private float mLastSentExpandedHeight;
     private boolean mWillExpand;
     private int mGapHeight;
-    private boolean mIsRemoteInputActive;
 
     /**
      * The extra inset during the full shade transition
@@ -502,23 +522,34 @@ public class NotificationStackScrollLayout
      */
     private final Path mRoundedClipPath = new Path();
 
+    /** The clip path defining where we are NOT allowed to draw. */
+    private final Path mNegativeRoundedClipPath = new Path();
+
+    /** RenderNode to blur notifications which will be reused (redrawn) whenever NSSL is drawn. */
+    private final RenderNode mBlurNode = new RenderNode("BlurNode");
+
+    /** Radius of the blur effect applied to the content of the NSSL. */
+    private float mBlurRadius = 0f;
+    @Nullable private RenderEffect mBlurEffect = null;
+
     /**
      * The clip Path used to clip the launching notification. This may be different
      * from the normal path, as the views launch animation could start clipped.
      */
     private final Path mLaunchedNotificationClipPath = new Path();
 
-    /**
-     * Should we use rounded rect clipping right now
-     */
+    /** Should we use rounded rect clipping right now */
     private boolean mShouldUseRoundedRectClipping = false;
+
+    /** Should we set an out path for the drawing canvas */
+    private boolean mShouldUseNegativeRoundedRectClipping = false;
 
     private int mRoundedRectClippingLeft;
     private int mRoundedRectClippingTop;
     private int mRoundedRectClippingBottom;
     private int mRoundedRectClippingRight;
     private int mRoundedRectClippingYTranslation;
-    private final float[] mBgCornerRadii = new float[8];
+    private final float[] mRoundedClipCornerRadii = new float[8];
 
     /**
      * Whether stackY should be animated in case the view is getting shorter than the scroll
@@ -557,12 +588,12 @@ public class NotificationStackScrollLayout
     private boolean mDismissUsingRowTranslationX = true;
     private ExpandableNotificationRow mTopHeadsUpRow;
     private NotificationStackScrollLayoutController.TouchHandler mTouchHandler;
-    private final ScreenOffAnimationController mScreenOffAnimationController;
     private boolean mShouldUseSplitNotificationShade;
     private boolean mShouldSkipTopPaddingAnimationAfterFold = false;
-    private boolean mHasFilteredOutSeenNotifications;
     @Nullable private SplitShadeStateController mSplitShadeStateController = null;
     private boolean mIsSmallLandscapeLockscreenEnabled = false;
+    private boolean mSuppressHeightUpdates;
+    private boolean mIsOnLockscreen;
 
     /** Pass splitShadeStateController to view and update split shade */
     public void passSplitShadeStateController(SplitShadeStateController splitShadeStateController) {
@@ -601,15 +632,15 @@ public class NotificationStackScrollLayout
         @Override
         public boolean isScrolledToTop() {
             if (SceneContainerFlag.isEnabled()) {
-                return mScrollViewFields.isScrolledToTop();
+                return mScrollViewFields.getScrollState().isScrolledToTop();
             } else {
-                return mOwnScrollY == 0;
+                return getOwnScrollY() == 0;
             }
         }
 
         @Override
         public boolean isScrolledToBottom() {
-            return mOwnScrollY >= getScrollRange();
+            return getOwnScrollY() >= getScrollRange();
         }
 
         @Override
@@ -619,9 +650,7 @@ public class NotificationStackScrollLayout
     };
 
     @Nullable
-    private OnClickListener mManageButtonClickListener;
-    @Nullable
-    private OnNotificationRemovedListener mOnNotificationRemovedListener;
+    private WallpaperInteractor mWallpaperInteractor;
 
     public NotificationStackScrollLayout(Context context, AttributeSet attrs) {
         super(context, attrs, 0, 0);
@@ -632,8 +661,6 @@ public class NotificationStackScrollLayout
         mDebugLines = mFeatureFlags.isEnabled(Flags.NSSL_DEBUG_LINES);
         mDebugRemoveAnimation = mFeatureFlags.isEnabled(Flags.NSSL_DEBUG_REMOVE_ANIMATION);
         mSectionsManager = Dependency.get(NotificationSectionsManager.class);
-        mScreenOffAnimationController =
-                Dependency.get(ScreenOffAnimationController.class);
         mSectionsManager.initialize(this);
         mSections = mSectionsManager.createSectionsForBuckets();
 
@@ -647,8 +674,13 @@ public class NotificationStackScrollLayout
         mExpandHelper.setEventSource(this);
         mExpandHelper.setScrollAdapter(mScrollAdapter);
 
-        mStackScrollAlgorithm = createStackScrollAlgorithm(context);
-        mStateAnimator = new StackStateAnimator(context, this);
+        if (NotificationsHunSharedAnimationValues.isEnabled()) {
+            mHeadsUpAnimator = new HeadsUpAnimator(context, /* systemBarUtilsProxy= */ null);
+        } else {
+            mHeadsUpAnimator = null;
+        }
+        mStackScrollAlgorithm =  new StackScrollAlgorithm(context, this, mHeadsUpAnimator);
+        mStateAnimator = new StackStateAnimator(context, this, mHeadsUpAnimator);
         setOutlineProvider(mOutlineProvider);
 
         // We could set this whenever we 'requestChildUpdate' much like the viewTreeObserver, but
@@ -665,7 +697,9 @@ public class NotificationStackScrollLayout
         mGroupMembershipManager = Dependency.get(GroupMembershipManager.class);
         mGroupExpansionManager = Dependency.get(GroupExpansionManager.class);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
-        setWindowInsetsAnimationCallback(mInsetsCallback);
+        if (!SceneContainerFlag.isEnabled()) {
+            setWindowInsetsAnimationCallback(mInsetsCallback);
+        }
     }
 
     /**
@@ -684,9 +718,8 @@ public class NotificationStackScrollLayout
     protected void onFinishInflate() {
         super.onFinishInflate();
 
-        inflateEmptyShadeView();
-        if (!FooterViewRefactor.isEnabled()) {
-            inflateFooterView();
+        if (!ModesEmptyShadeFix.isEnabled()) {
+            inflateEmptyShadeView();
         }
     }
 
@@ -718,63 +751,24 @@ public class NotificationStackScrollLayout
     }
 
     public float getNotificationSquishinessFraction() {
+        SceneContainerFlag.assertInLegacyMode();
         return mStackScrollAlgorithm.getNotificationSquishinessFraction(mAmbientState);
     }
 
     void reinflateViews() {
-        if (!FooterViewRefactor.isEnabled()) {
-            inflateFooterView();
-            updateFooter();
+        if (!ModesEmptyShadeFix.isEnabled()) {
+            inflateEmptyShadeView();
         }
-        inflateEmptyShadeView();
         mSectionsManager.reinflateViews();
     }
 
-    public void setIsRemoteInputActive(boolean isActive) {
-        FooterViewRefactor.assertInLegacyMode();
-        mIsRemoteInputActive = isActive;
-        updateFooter();
-    }
-
-    /** Setter for filtered notifs, to be removed with the FooterViewRefactor flag. */
-    public void setHasFilteredOutSeenNotifications(boolean hasFilteredOutSeenNotifications) {
-        FooterViewRefactor.assertInLegacyMode();
-        mHasFilteredOutSeenNotifications = hasFilteredOutSeenNotifications;
-    }
-
-    @VisibleForTesting
-    public void updateFooter() {
-        FooterViewRefactor.assertInLegacyMode();
-        if (mFooterView == null || mController == null) {
-            return;
+    void sendRemoteInputRowBottomBound(Float bottom) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (bottom != null) {
+            bottom += getResources().getDimensionPixelSize(
+                    com.android.internal.R.dimen.notification_content_margin);
         }
-        final boolean showHistory = mController.isHistoryEnabled();
-        final boolean showDismissView = shouldShowDismissView();
-
-        updateFooterView(shouldShowFooterView(showDismissView)/* visible */,
-                showDismissView /* showDismissView */,
-                showHistory/* showHistory */);
-    }
-
-    private boolean shouldShowDismissView() {
-        FooterViewRefactor.assertInLegacyMode();
-        return mController.hasActiveClearableNotifications(ROWS_ALL);
-    }
-
-    private boolean shouldShowFooterView(boolean showDismissView) {
-        FooterViewRefactor.assertInLegacyMode();
-        return (showDismissView || mController.getVisibleNotificationCount() > 0)
-                && mIsCurrentUserSetup // see: b/193149550
-                && !onKeyguard()
-                && mUpcomingStatusBarState != StatusBarState.KEYGUARD
-                // quick settings don't affect notifications when not in full screen
-                && (mQsExpansionFraction != 1 || !mQsFullScreen)
-                && !mScreenOffAnimationController.shouldHideNotificationsFooter()
-                && !mIsRemoteInputActive;
-    }
-
-    public NotificationSwipeActionHelper getSwipeActionHelper() {
-        return mSwipeHelper;
+        mScrollViewFields.sendRemoteInputRowBottomBound(bottom);
     }
 
     void updateBgColor() {
@@ -789,7 +783,6 @@ public class NotificationStackScrollLayout
     private void onJustBeforeDraw() {
         if (SceneContainerFlag.isEnabled()) {
             if (mChildrenUpdateRequested) {
-                updateForcedScroll();
                 updateChildren();
                 mChildrenUpdateRequested = false;
             }
@@ -807,17 +800,17 @@ public class NotificationStackScrollLayout
     private void logHunSkippedForUnexpectedState(ExpandableNotificationRow enr,
                                                  boolean expected, boolean actual) {
         if (mLogger == null) return;
-        mLogger.hunSkippedForUnexpectedState(enr.getEntry(), expected, actual);
+        mLogger.hunSkippedForUnexpectedState(enr.getLoggingKey(), expected, actual);
     }
 
     private void logHunAnimationSkipped(ExpandableNotificationRow enr, String reason) {
         if (mLogger == null) return;
-        mLogger.hunAnimationSkipped(enr.getEntry(), reason);
+        mLogger.hunAnimationSkipped(enr.getLoggingKey(), reason);
     }
 
     private void logHunAnimationEventAdded(ExpandableNotificationRow enr, int type) {
         if (mLogger == null) return;
-        mLogger.hunAnimationEventAdded(enr.getEntry(), type);
+        mLogger.hunAnimationEventAdded(enr.getLoggingKey(), type);
     }
 
     private void onDrawDebug(Canvas canvas) {
@@ -834,23 +827,23 @@ public class NotificationStackScrollLayout
         drawDebugInfo(canvas, y, Color.RED, /* label= */ "y = " + y);
 
         if (SceneContainerFlag.isEnabled()) {
-            y = (int) mScrollViewFields.getStackTop();
+            y = (int) mAmbientState.getStackTop();
             drawDebugInfo(canvas, y, Color.RED, /* label= */ "getStackTop() = " + y);
 
-            y = (int) mScrollViewFields.getStackBottom();
-            drawDebugInfo(canvas, y, Color.MAGENTA, /* label= */ "getStackBottom() = " + y);
+            y = (int) mAmbientState.getStackCutoff();
+            drawDebugInfo(canvas, y, Color.MAGENTA, /* label= */ "getStackCutoff() = " + y);
 
-            y = (int) mScrollViewFields.getHeadsUpTop();
+            y = (int) mAmbientState.getHeadsUpTop();
             drawDebugInfo(canvas, y, Color.GREEN, /* label= */ "getHeadsUpTop() = " + y);
 
-            y += getTopHeadsUpHeight();
+            y = (int) (mAmbientState.getStackTop() + mScrollViewFields.getIntrinsicStackHeight());
             drawDebugInfo(canvas, y, Color.BLUE,
-                    /* label= */ "getHeadsUpTop() + getTopHeadsUpHeight() = " + y);
+                    /* label= */ "getStackTop() + getIntrinsicStackHeight() = " + y);
 
             return; // the rest of the fields are not important in Flexiglass
         }
 
-        y = getTopPadding();
+        y = mAmbientState.getTopPadding();
         drawDebugInfo(canvas, y, Color.RED, /* label= */ "getTopPadding() = " + y);
 
         y = getLayoutHeight();
@@ -867,22 +860,22 @@ public class NotificationStackScrollLayout
                     /* label= */ "getHeight() - mKeyguardBottomPadding = " + y);
         }
 
-        y = getHeight() - getEmptyBottomMargin();
+        y = getHeight() - getEmptyBottomMarginInternal();
         drawDebugInfo(canvas, y, Color.GREEN,
                 /* label= */ "getHeight() - getEmptyBottomMargin() = " + y);
 
         y = (int) (mAmbientState.getStackY());
         drawDebugInfo(canvas, y, Color.CYAN, /* label= */ "mAmbientState.getStackY() = " + y);
 
-        y = (int) (mAmbientState.getStackY() + mAmbientState.getStackHeight());
+        y = (int) (mAmbientState.getStackY() + mAmbientState.getInterpolatedStackHeight());
         drawDebugInfo(canvas, y, Color.LTGRAY,
                 /* label= */ "mAmbientState.getStackY() + mAmbientState.getStackHeight() = " + y);
 
-        y = (int) (mAmbientState.getStackY() + mIntrinsicContentHeight);
+        y = (int) (mAmbientState.getStackY() + getIntrinsicContentHeight());
         drawDebugInfo(canvas, y, Color.YELLOW,
                 /* label= */ "mAmbientState.getStackY() + mIntrinsicContentHeight = " + y);
 
-        y = mContentHeight;
+        y = getContentHeight();
         drawDebugInfo(canvas, y, Color.MAGENTA,
                 /* label= */ "mContentHeight = " + y);
 
@@ -927,6 +920,7 @@ public class NotificationStackScrollLayout
         mOverflingDistance = configuration.getScaledOverflingDistance();
 
         Resources res = context.getResources();
+        mSwipeHelper.updateResourceProperties(res);
         final boolean isSmallScreenLandscape = res.getBoolean(R.bool.is_small_screen_landscape);
         boolean useSmallLandscapeLockscreenResources = mIsSmallLandscapeLockscreenEnabled
                 && isSmallScreenLandscape;
@@ -1041,12 +1035,18 @@ public class NotificationStackScrollLayout
                         || !(view instanceof ExpandableNotificationRow row)) {
                     continue;
                 }
+                int bucket = NotificationBundleUi.isEnabled()
+                        ? row.getEntryAdapter().getSectionBucket()
+                        : row.getEntryLegacy().getBucket();
+                boolean isAmbient = NotificationBundleUi.isEnabled()
+                        ? row.getEntryAdapter().isAmbient()
+                        : row.getEntryLegacy().isAmbient();
                 currentIndex++;
                 boolean beforeSpeedBump;
                 if (mHighPriorityBeforeSpeedBump) {
-                    beforeSpeedBump = row.getEntry().getBucket() < BUCKET_SILENT;
+                    beforeSpeedBump = bucket < BUCKET_SILENT;
                 } else {
-                    beforeSpeedBump = !row.getEntry().isAmbient();
+                    beforeSpeedBump = !isAmbient;
                 }
                 if (beforeSpeedBump) {
                     speedBumpIndex = currentIndex;
@@ -1123,11 +1123,13 @@ public class NotificationStackScrollLayout
 
     @Override
     public void addStackHeightChangedListener(@NonNull Runnable runnable) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mStackHeightChangedListeners.addIfAbsent(runnable);
     }
 
     @Override
     public void removeStackHeightChangedListener(@NonNull Runnable runnable) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mStackHeightChangedListeners.remove(runnable);
     }
 
@@ -1145,11 +1147,13 @@ public class NotificationStackScrollLayout
 
     @Override
     public void addHeadsUpHeightChangedListener(@NonNull Runnable runnable) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mHeadsUpHeightChangedListeners.addIfAbsent(runnable);
     }
 
     @Override
     public void removeHeadsUpHeightChangedListener(@NonNull Runnable runnable) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mHeadsUpHeightChangedListeners.remove(runnable);
     }
 
@@ -1181,9 +1185,25 @@ public class NotificationStackScrollLayout
         updateAlgorithmLayoutMinHeight();
         updateOwnTranslationZ();
 
-        // Give The Algorithm information regarding the QS height so it can layout notifications
-        // properly. Needed for some devices that grows notifications down-to-top
-        mStackScrollAlgorithm.updateQSFrameTop(mQsHeader == null ? 0 : mQsHeader.getHeight());
+        if (!SceneContainerFlag.isEnabled()) {
+            // Give The Algorithm information regarding the QS height so it can layout notifications
+            // properly. Needed for some devices that grows notifications down-to-top
+            int height;
+            if (QSComposeFragment.isEnabled()) {
+                if (mQSHeaderBoundsProvider != null) {
+                    height = mQSHeaderBoundsProvider.getHeightProvider().invoke();
+                } else {
+                    height = 0;
+                }
+            } else {
+                if (mQsHeader != null) {
+                    height = mQsHeader.getHeight();
+                } else {
+                    height = 0;
+                }
+            }
+            mStackScrollAlgorithm.updateQSFrameTop(height);
+        }
 
         // Once the layout has finished, we don't need to animate any scrolling clampings anymore.
         mAnimateStackYForContentHeightChange = false;
@@ -1208,40 +1228,108 @@ public class NotificationStackScrollLayout
     }
 
     @Override
-    public void setScrolledToTop(boolean scrolledToTop) {
-        mScrollViewFields.setScrolledToTop(scrolledToTop);
+    public void setOccluded(boolean isOccluded) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) {
+            return;
+        }
+        this.setVisibility(isOccluded ? View.INVISIBLE : View.VISIBLE);
+    }
+
+    @Override
+    public void setScrollState(@NonNull ShadeScrollState scrollState) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) {
+            return;
+        }
+
+        boolean forwardScrollable =
+                scrollState.getScrollPosition() < scrollState.getMaxScrollPosition();
+        boolean backwardScrollable = scrollState.getScrollPosition() > 0;
+        mScrollable = forwardScrollable || backwardScrollable;
+        mForwardScrollable = forwardScrollable;
+        mBackwardScrollable = backwardScrollable;
+
+        boolean scrollPositionChanged = mScrollViewFields.getScrollState().getScrollPosition()
+                != scrollState.getScrollPosition();
+        mScrollViewFields.setScrollState(scrollState);
+
+        if (scrollPositionChanged) {
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SCROLLED);
+        }
     }
 
     @Override
     public void setStackTop(float stackTop) {
-        mScrollViewFields.setStackTop(stackTop);
-        // TODO(b/332574413): replace the following with using stackTop
-        updateTopPadding(stackTop, isAddOrRemoveAnimationPending());
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (mAmbientState.getStackTop() != stackTop) {
+            mAmbientState.setStackTop(stackTop);
+            onTopPaddingChanged(/* animate = */ isAddOrRemoveAnimationPending());
+        }
     }
 
     @Override
-    public void setStackBottom(float stackBottom) {
-        mScrollViewFields.setStackBottom(stackBottom);
+    public void setStackCutoff(float stackCutoff) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (mAmbientState.getStackCutoff() != stackCutoff) {
+            mAmbientState.setStackCutoff(stackCutoff);
+            updateStackEndHeightAndStackHeight(mAmbientState.getExpansionFraction());
+            requestChildrenUpdate();
+        }
     }
 
     @Override
     public void setHeadsUpTop(float headsUpTop) {
-        mScrollViewFields.setHeadsUpTop(headsUpTop);
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (mAmbientState.getHeadsUpTop() != headsUpTop) {
+            mAmbientState.setHeadsUpTop(headsUpTop);
+            requestChildrenUpdate();
+        }
+    }
+
+    @Override
+    public void setHeadsUpBottom(float headsUpBottom) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (NotificationsHunSharedAnimationValues.isEnabled()) {
+            mHeadsUpAnimator.setHeadsUpAppearHeightBottom(Math.round(headsUpBottom));
+        } else if (mAmbientState.getHeadsUpBottom() != headsUpBottom) {
+            mAmbientState.setHeadsUpBottom(headsUpBottom);
+            mStateAnimator.setHeadsUpAppearHeightBottom(Math.round(headsUpBottom));
+        }
+    }
+
+    @Override
+    public void closeGutsOnSceneTouch() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mController.closeControlsDueToOutsideTouch();
     }
 
     @Override
     public void setSyntheticScrollConsumer(@Nullable Consumer<Float> consumer) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mScrollViewFields.setSyntheticScrollConsumer(consumer);
     }
 
     @Override
+    public void setAccessibilityScrollEventConsumer(
+            @Nullable Consumer<AccessibilityScrollEvent> consumer) {
+        mScrollViewFields.setAccessibilityScrollEventConsumer(consumer);
+    }
+
+    @Override
     public void setCurrentGestureOverscrollConsumer(@Nullable Consumer<Boolean> consumer) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         mScrollViewFields.setCurrentGestureOverscrollConsumer(consumer);
     }
 
     @Override
-    public void setHeadsUpHeightConsumer(@Nullable Consumer<Float> consumer) {
-        mScrollViewFields.setHeadsUpHeightConsumer(consumer);
+    public void setCurrentGestureInGutsConsumer(@Nullable Consumer<Boolean> consumer) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mScrollViewFields.setCurrentGestureInGutsConsumer(consumer);
+    }
+
+    @Override
+    public void setRemoteInputRowBottomBoundConsumer(@Nullable Consumer<Float> consumer) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mScrollViewFields.setRemoteInputRowBottomBoundConsumer(consumer);
     }
 
     /**
@@ -1259,7 +1347,7 @@ public class NotificationStackScrollLayout
     public void setChildLocationsChangedListener(
             NotificationLogger.OnChildLocationsChangedListener listener) {
         NotificationsLiveDataStoreRefactor.assertInLegacyMode();
-        mListener = listener;
+        mLegacyLocationsChangedListener = listener;
     }
 
     private void setMaxLayoutHeight(int maxLayoutHeight) {
@@ -1274,13 +1362,15 @@ public class NotificationStackScrollLayout
     }
 
     private void updateAlgorithmLayoutMinHeight() {
-        mAmbientState.setLayoutMinHeight(mQsFullScreen || isHeadsUpTransition()
-                ? getLayoutMinHeight() : 0);
+        if (!SceneContainerFlag.isEnabled()) {
+            mAmbientState.setLayoutMinHeight(mQsFullScreen || isHeadsUpTransition()
+                    ? getLayoutMinHeightInternal() : 0);
+        }
     }
 
     /**
      * Updates the children views according to the stack scroll algorithm. Call this whenever
-     * modifications to {@link #mOwnScrollY} are performed to reflect it in the view layout.
+     * modifications to {@link #getOwnScrollY()} are performed to reflect it in the view layout.
      */
     private void updateChildren() {
         Trace.beginSection("NSSL#updateChildren");
@@ -1310,11 +1400,11 @@ public class NotificationStackScrollLayout
             if (mChildrenToAddAnimated.contains(child)) {
                 final int startingPosition = getPositionInLinearLayout(child);
                 final int childHeight = getIntrinsicHeight(child) + mPaddingBetweenElements;
-                if (startingPosition < mOwnScrollY) {
+                if (startingPosition < getOwnScrollY()) {
                     // This child starts off screen, so let's keep it offscreen to keep the
                     // others visible
 
-                    setOwnScrollY(mOwnScrollY + childHeight);
+                    setOwnScrollY(getOwnScrollY() + childHeight);
                 }
             }
         }
@@ -1334,7 +1424,7 @@ public class NotificationStackScrollLayout
             targetScroll = Math.max(0, Math.min(targetScroll, getScrollRange()));
             // Only apply the scroll if we're scrolling the view upwards, or the view is so
             // far up that it is not visible anymore.
-            if (mOwnScrollY < targetScroll || outOfViewScroll < mOwnScrollY) {
+            if (getOwnScrollY() < targetScroll || outOfViewScroll < getOwnScrollY()) {
                 setOwnScrollY(targetScroll);
             }
         }
@@ -1348,13 +1438,27 @@ public class NotificationStackScrollLayout
         }
     }
 
+    @Override
+    public void setAlpha(float alpha) {
+        super.setAlpha(alpha);
+        if (Trace.isEnabled()) {
+            Trace.setCounter(
+                    trackGroup(/* groupName= */ "shade", /* trackName= */ "NSSLResultingAlpha"),
+                    (int) (alpha * 100));
+        }
+    }
+
     private boolean isCurrentlyAnimating() {
         return mStateAnimator.isRunning();
     }
 
     private void clampScrollPosition() {
+        // NSSL doesn't control scrolling with SceneContainer enabled
+        if (SceneContainerFlag.isEnabled()) {
+            return;
+        }
         int scrollRange = getScrollRange();
-        if (scrollRange < mOwnScrollY && !mAmbientState.isClearAllInProgress()) {
+        if (scrollRange < getOwnScrollY() && !mAmbientState.isClearAllInProgress()) {
             // if the scroll boundary updates the position of the stack,
             boolean animateStackY = scrollRange < getScrollAmountToScrollBoundary()
                     && mAnimateStackYForContentHeightChange;
@@ -1363,28 +1467,26 @@ public class NotificationStackScrollLayout
     }
 
     public int getTopPadding() {
+        SceneContainerFlag.assertInLegacyMode();
         return mAmbientState.getTopPadding();
     }
 
-    private void setTopPadding(int topPadding, boolean animate) {
-        if (getTopPadding() != topPadding) {
-            mAmbientState.setTopPadding(topPadding);
-            boolean shouldAnimate = animate || mAnimateNextTopPaddingChange;
-            updateAlgorithmHeightAndPadding();
-            updateContentHeight();
-            if (mAmbientState.isOnKeyguard()
-                    && !mShouldUseSplitNotificationShade
-                    && mShouldSkipTopPaddingAnimationAfterFold) {
-                mShouldSkipTopPaddingAnimationAfterFold = false;
-            } else if (shouldAnimate && mAnimationsEnabled && mIsExpanded) {
-                mTopPaddingNeedsAnimation = true;
-                mNeedsAnimation = true;
-            }
-            updateStackPosition();
-            requestChildrenUpdate();
-            notifyHeightChangeListener(null, shouldAnimate);
-            mAnimateNextTopPaddingChange = false;
+    private void onTopPaddingChanged(boolean animate) {
+        boolean shouldAnimate = animate || mAnimateNextTopPaddingChange;
+        updateAlgorithmHeightAndPadding();
+        updateContentHeight();
+        if (mAmbientState.isOnKeyguard()
+                && !mShouldUseSplitNotificationShade
+                && mShouldSkipTopPaddingAnimationAfterFold) {
+            mShouldSkipTopPaddingAnimationAfterFold = false;
+        } else if (shouldAnimate && mAnimationsEnabled && mIsExpanded) {
+            mTopPaddingNeedsAnimation = true;
+            mNeedsAnimation = true;
         }
+        updateStackPosition();
+        requestChildrenUpdate();
+        notifyHeightChangeListener(null, shouldAnimate);
+        mAnimateNextTopPaddingChange = false;
     }
 
     /**
@@ -1401,9 +1503,13 @@ public class NotificationStackScrollLayout
      * 2) Swiping up on lockscreen or flinging down after swipe up
      */
     private boolean shouldSkipHeightUpdate() {
-        return mAmbientState.isOnKeyguard()
-                && (mAmbientState.isSwipingUp()
-                || mAmbientState.isFlingingAfterSwipeUpOnLockscreen());
+        if (SceneContainerFlag.isEnabled()) {
+            return mSuppressHeightUpdates;
+        } else {
+            return mAmbientState.isOnKeyguard()
+                    && (mAmbientState.isSwipingUp()
+                    || mAmbientState.isFlingingAfterSwipeUpOnLockscreen());
+        }
     }
 
     /**
@@ -1412,6 +1518,11 @@ public class NotificationStackScrollLayout
      * @param listenerNeedsAnimation does the listener need to animate?
      */
     private void updateStackPosition(boolean listenerNeedsAnimation) {
+        // When scene container is active, we only want to recalculate stack heights.
+        if (SceneContainerFlag.isEnabled()) {
+            updateStackEndHeightAndStackHeight(mAmbientState.getExpansionFraction());
+            return;
+        }
         float topOverscrollAmount = mShouldUseSplitNotificationShade
                 ? getCurrentOverScrollAmount(true /* top */) : 0f;
         final float endTopPosition = getTopPadding() + mExtraTopInsetForFullShadeTransition
@@ -1421,17 +1532,11 @@ public class NotificationStackScrollLayout
         float fraction = mAmbientState.getExpansionFraction();
         // If we are on quick settings, we need to quickly hide it to show the bouncer to avoid an
         // overlap. Otherwise, we maintain the normal fraction for smoothness.
-        if (mAmbientState.isBouncerInTransit() && mQsExpansionFraction > 0f) {
+        if (mAmbientState.isBouncerInTransit() && getQsExpansionFraction() > 0f) {
             fraction = BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(fraction);
         }
-        // TODO(b/322228881): Clean up scene container vs legacy behavior in NSSL
-        if (SceneContainerFlag.isEnabled()) {
-            // stackY should be driven by scene container, not NSSL
-            mAmbientState.setStackY(getTopPadding());
-        } else {
-            final float stackY = MathUtils.lerp(0, endTopPosition, fraction);
-            mAmbientState.setStackY(stackY);
-        }
+        final float stackY = MathUtils.lerp(0, endTopPosition, fraction);
+        mAmbientState.setStackY(stackY);
 
         if (mOnStackYChanged != null) {
             mOnStackYChanged.accept(listenerNeedsAnimation);
@@ -1441,28 +1546,53 @@ public class NotificationStackScrollLayout
 
     @VisibleForTesting
     public void updateStackEndHeightAndStackHeight(float fraction) {
-        final float oldStackHeight = mAmbientState.getStackHeight();
-        if (mQsExpansionFraction <= 0 && !shouldSkipHeightUpdate()) {
-            final float endHeight = updateStackEndHeight(
-                    getHeight(), getEmptyBottomMargin(), getTopPadding());
-            updateStackHeight(endHeight, fraction);
+        final float oldStackHeight = mAmbientState.getInterpolatedStackHeight();
+        if (SceneContainerFlag.isEnabled()) {
+            final float endHeight;
+            if (!shouldSkipHeightUpdate()) {
+                endHeight = updateStackEndHeight();
+            } else {
+                endHeight = mAmbientState.getStackEndHeight();
+            }
+            updateInterpolatedStackHeight(endHeight, fraction);
         } else {
-            // Always updateStackHeight to prevent jumps in the stack height when this fraction
-            // suddenly reapplies after a freeze.
-            final float endHeight = mAmbientState.getStackEndHeight();
-            updateStackHeight(endHeight, fraction);
+            if (getQsExpansionFraction() <= 0 && !shouldSkipHeightUpdate()) {
+                final float endHeight = updateStackEndHeight(
+                        getHeight(), getEmptyBottomMarginInternal(), getTopPadding());
+                updateInterpolatedStackHeight(endHeight, fraction);
+            } else {
+                // Always updateStackHeight to prevent jumps in the stack height when this fraction
+                // suddenly reapplies after a freeze.
+                final float endHeight = mAmbientState.getStackEndHeight();
+                updateInterpolatedStackHeight(endHeight, fraction);
+            }
         }
-        if (oldStackHeight != mAmbientState.getStackHeight()) {
+        if (oldStackHeight != mAmbientState.getInterpolatedStackHeight()) {
             requestChildrenUpdate();
         }
     }
 
+    private float updateStackEndHeight() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return 0f;
+        final float height;
+        if (mMaxDisplayedNotifications != -1) {
+            // The stack intrinsic height already contains the correct value when there is a limit
+            // in the max number of notifications (e.g. as in keyguard).
+            height = mScrollViewFields.getIntrinsicStackHeight();
+        } else {
+            height = Math.max(0f, mAmbientState.getStackCutoff() - mAmbientState.getStackTop());
+        }
+        mAmbientState.setStackEndHeight(height);
+        return height;
+    }
+
     private float updateStackEndHeight(float height, float bottomMargin, float topPadding) {
+        SceneContainerFlag.assertInLegacyMode();
         final float stackEndHeight;
         if (mMaxDisplayedNotifications != -1) {
             // The stack intrinsic height already contains the correct value when there is a limit
             // in the max number of notifications (e.g. as in keyguard).
-            stackEndHeight = mIntrinsicContentHeight;
+            stackEndHeight = getIntrinsicContentHeight();
         } else {
             stackEndHeight = Math.max(0f, height - bottomMargin - topPadding);
         }
@@ -1471,17 +1601,8 @@ public class NotificationStackScrollLayout
     }
 
     @VisibleForTesting
-    public void updateStackHeight(float endHeight, float fraction) {
-        if (!newAodTransition()) {
-            // During the (AOD<=>LS) transition where dozeAmount is changing,
-            // apply dozeAmount to stack height instead of expansionFraction
-            // to unfurl notifications on AOD=>LS wakeup (and furl up on LS=>AOD sleep)
-            final float dozeAmount = mAmbientState.getDozeAmount();
-            if (0f < dozeAmount && dozeAmount < 1f) {
-                fraction = 1f - dozeAmount;
-            }
-        }
-        mAmbientState.setStackHeight(
+    public void updateInterpolatedStackHeight(float endHeight, float fraction) {
+        mAmbientState.setInterpolatedStackHeight(
                 MathUtils.lerp(endHeight * StackScrollAlgorithm.START_FRACTION,
                         endHeight, fraction));
     }
@@ -1491,6 +1612,7 @@ public class NotificationStackScrollLayout
      * needed.
      */
     void setOnStackYChanged(Consumer<Boolean> onStackYChanged) {
+        SceneContainerFlag.assertInLegacyMode();
         mOnStackYChanged = onStackYChanged;
     }
 
@@ -1509,8 +1631,11 @@ public class NotificationStackScrollLayout
 
         // Update the expand progress between started/stopped events
         mAmbientState.setExpansionFraction(expandFraction);
-        // TODO(b/332577544): don't convert to height which then converts to the fraction again
-        setExpandedHeight(expandFraction * getHeight());
+
+        if (!shouldSkipHeightUpdate()) {
+            updateStackEndHeightAndStackHeight(expandFraction);
+            updateExpandedHeight(expandFraction);
+        }
 
         // expansion stopped event requires that the expandFraction has already been updated
         if (!nowExpanding && wasExpanding) {
@@ -1519,20 +1644,35 @@ public class NotificationStackScrollLayout
         }
     }
 
+    private void updateExpandedHeight(float expandFraction) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        float expandedHeight = expandFraction * getHeight();
+        setIsExpanded(expandedHeight > 0);
+
+        if (mExpandedHeight != expandedHeight) {
+            mExpandedHeight = expandedHeight;
+            updateAlgorithmHeightAndPadding();
+            requestChildrenUpdate();
+            notifyAppearChangedListeners();
+        }
+    }
+
+    @Override
+    public void setQsExpandFraction(float expandFraction) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mAmbientState.setQsExpansionFraction(expandFraction);
+    }
+
     /**
      * Update the height of the panel.
      *
      * @param height the expanded height of the panel
      */
     public void setExpandedHeight(float height) {
+        SceneContainerFlag.assertInLegacyMode();
         final boolean skipHeightUpdate = shouldSkipHeightUpdate();
 
-        // when scene framework is enabled and in single shade, updateStackPosition is already
-        // called by updateTopPadding every time the stack moves, so skip it here to avoid
-        // flickering.
-        if (!SceneContainerFlag.isEnabled() || mShouldUseSplitNotificationShade) {
-            updateStackPosition();
-        }
+        updateStackPosition();
 
         if (!skipHeightUpdate) {
             mExpandedHeight = height;
@@ -1553,14 +1693,14 @@ public class NotificationStackScrollLayout
         float translationY;
         float appearFraction = 1.0f;
         boolean appearing = calculateAppearFraction(height) < 1;
-        mAmbientState.setAppearing(appearing);
         if (!appearing) {
             translationY = 0;
             if (mShouldShowShelfOnly) {
                 stackHeight = getTopPadding() + mShelf.getIntrinsicHeight();
             } else if (mQsFullScreen) {
-                int stackStartPosition = mContentHeight - getTopPadding() + mIntrinsicPadding;
-                int stackEndPosition = mMaxTopPadding + mShelf.getIntrinsicHeight();
+                int stackStartPosition =
+                        getContentHeight() - getTopPadding() + getIntrinsicPadding();
+                int stackEndPosition = getMaxTopPadding() + mShelf.getIntrinsicHeight();
                 if (stackStartPosition <= stackEndPosition) {
                     stackHeight = stackEndPosition;
                 } else {
@@ -1569,7 +1709,7 @@ public class NotificationStackScrollLayout
                         stackHeight = (int) height;
                     } else {
                         stackHeight = (int) NotificationUtils.interpolate(stackStartPosition,
-                                stackEndPosition, mQsExpansionFraction);
+                                stackEndPosition, getQsExpansionFraction());
                     }
                 }
             } else {
@@ -1607,7 +1747,7 @@ public class NotificationStackScrollLayout
         float appear;
         float expandAmount;
         if (mKeyguardBypassEnabled && onKeyguard()) {
-            appear = calculateAppearFractionBypass();
+            appear = calculateAppearFractionBypassInternal();
             expandAmount = getPulseHeight();
         } else {
             appear = MathUtils.saturate(calculateAppearFraction(mExpandedHeight));
@@ -1626,13 +1766,6 @@ public class NotificationStackScrollLayout
     private void setRequestedClipBounds(Rect clipRect) {
         mRequestedClipBounds = clipRect;
         updateClipping();
-    }
-
-    /**
-     * Return the height of the content ignoring the footer.
-     */
-    public int getIntrinsicContentHeight() {
-        return (int) mIntrinsicContentHeight;
     }
 
     public void updateClipping() {
@@ -1661,6 +1794,7 @@ public class NotificationStackScrollLayout
      * Measured relative to the resting position.
      */
     private float getExpandTranslationStart() {
+        SceneContainerFlag.assertInLegacyMode();
         return -getTopPadding() + getMinExpansionHeight() - mShelf.getIntrinsicHeight();
     }
 
@@ -1669,6 +1803,7 @@ public class NotificationStackScrollLayout
      * Measured in absolute height.
      */
     private float getAppearStartPosition() {
+        SceneContainerFlag.assertInLegacyMode();
         if (isHeadsUpTransition()) {
             final NotificationSection firstVisibleSection = getFirstVisibleSection();
             final int pinnedHeight = firstVisibleSection != null
@@ -1688,17 +1823,36 @@ public class NotificationStackScrollLayout
         if (mTopHeadsUpRow == null) {
             return 0;
         }
-        ExpandableNotificationRow row = mTopHeadsUpRow;
-        if (row.isChildInGroup()) {
-            final NotificationEntry groupSummary =
-                    mGroupMembershipManager.getGroupSummary(row.getEntry());
-            if (groupSummary != null) {
-                row = groupSummary.getRow();
-            }
-        }
+        ExpandableNotificationRow row = getTopHeadsUpRow();
         return row.getPinnedHeadsUpHeight();
     }
 
+    private int getTopHeadsUpIntrinsicHeight() {
+        if (mTopHeadsUpRow == null) {
+            return 0;
+        }
+        ExpandableNotificationRow row = getTopHeadsUpRow();
+        return row.getIntrinsicHeight();
+    }
+
+    private ExpandableNotificationRow getTopHeadsUpRow() {
+        ExpandableNotificationRow row = mTopHeadsUpRow;
+        if (NotificationBundleUi.isEnabled()) {
+            if (mGroupMembershipManager.isChildInGroup(row.getEntryAdapter())
+                    && row.isChildInGroup()) {
+                row = row.getNotificationParent();
+            }
+        } else {
+            if (row.isChildInGroup()) {
+                final NotificationEntry groupSummary =
+                        mGroupMembershipManager.getGroupSummary(row.getEntryLegacy());
+                if (groupSummary != null) {
+                    row = groupSummary.getRow();
+                }
+            }
+        }
+        return row;
+    }
     /**
      * @return the position from where the appear transition ends when expanding.
      * Measured in absolute height.
@@ -1711,9 +1865,7 @@ public class NotificationStackScrollLayout
      *    have the shelf on its own)
      */
     private float getAppearEndPosition() {
-        if (FooterViewRefactor.isUnexpectedlyInLegacyMode()) {
-            return getAppearEndPositionLegacy();
-        }
+        SceneContainerFlag.assertInLegacyMode();
 
         int appearPosition = mAmbientState.getStackTopMargin();
         if (mEmptyShadeView.getVisibility() == GONE) {
@@ -1730,33 +1882,7 @@ public class NotificationStackScrollLayout
         } else {
             appearPosition = mEmptyShadeView.getHeight();
         }
-        return appearPosition + (onKeyguard() ? getTopPadding() : mIntrinsicPadding);
-    }
-
-    /**
-     * The version of {@code getAppearEndPosition} that uses the notif count. The view shouldn't
-     * need to know about that, so we want to phase this out with the footer view refactor.
-     */
-    private float getAppearEndPositionLegacy() {
-        FooterViewRefactor.assertInLegacyMode();
-
-        int appearPosition = mAmbientState.getStackTopMargin();
-        int visibleNotifCount = mController.getVisibleNotificationCount();
-        if (mEmptyShadeView.getVisibility() == GONE && visibleNotifCount > 0) {
-            if (isHeadsUpTransition()
-                    || (mInHeadsUpPinnedMode && !mAmbientState.isDozing())) {
-                if (mShelf.getVisibility() != GONE && visibleNotifCount > 1) {
-                    appearPosition += mShelf.getIntrinsicHeight() + mPaddingBetweenElements;
-                }
-                appearPosition += getTopHeadsUpPinnedHeight()
-                        + getPositionInLinearLayout(mAmbientState.getTrackedHeadsUpRow());
-            } else if (mShelf.getVisibility() != GONE) {
-                appearPosition += mShelf.getIntrinsicHeight();
-            }
-        } else {
-            appearPosition = mEmptyShadeView.getHeight();
-        }
-        return appearPosition + (onKeyguard() ? getTopPadding() : mIntrinsicPadding);
+        return appearPosition + (onKeyguard() ? getTopPadding() : getIntrinsicPadding());
     }
 
     private boolean isHeadsUpTransition() {
@@ -1771,15 +1897,14 @@ public class NotificationStackScrollLayout
      */
     @FloatRange(from = -1.0, to = 1.0)
     public float calculateAppearFraction(float height) {
-        if (isHeadsUpTransition()) {
+        if (isHeadsUpTransition() && !SceneContainerFlag.isEnabled()) {
             // HUN is a special case because fraction can go negative if swiping up. And for now
             // it must go negative as other pieces responsible for proper translation up assume
             // negative value for HUN going up.
             // This can't use expansion fraction as that goes only from 0 to 1. Also when
             // appear fraction for HUN is 0, expansion fraction will be already around 0.2-0.3
             // and that makes translation jump immediately.
-            float appearEndPosition = FooterViewRefactor.isEnabled() ? getAppearEndPosition()
-                    : getAppearEndPositionLegacy();
+            float appearEndPosition = getAppearEndPosition();
             float appearStartPosition = getAppearStartPosition();
             float hunAppearFraction = (height - appearStartPosition)
                     / (appearEndPosition - appearStartPosition);
@@ -1811,7 +1936,14 @@ public class NotificationStackScrollLayout
     }
 
     public void setQsHeader(ViewGroup qsHeader) {
+        QSComposeFragment.assertInLegacyMode();
         mQsHeader = qsHeader;
+    }
+
+    public void setQsHeaderBoundsProvider(QSHeaderBoundsProvider qsHeaderBoundsProvider) {
+        SceneContainerFlag.assertInLegacyMode();
+        QSComposeFragment.isUnexpectedlyInLegacyMode();
+        mQSHeaderBoundsProvider = qsHeaderBoundsProvider;
     }
 
     public static boolean isPinnedHeadsUp(View v) {
@@ -1866,11 +1998,20 @@ public class NotificationStackScrollLayout
             if ((bottom - top >= mMinInteractionHeight || !requireMinHeight)
                     && touchY >= top && touchY <= bottom && touchX >= left && touchX <= right) {
                 if (slidingChild instanceof ExpandableNotificationRow row) {
-                    NotificationEntry entry = row.getEntry();
+                    boolean isEntrySummaryForTopHun;
+                    if (NotificationBundleUi.isEnabled()) {
+                        isEntrySummaryForTopHun = Objects.equals(
+                                ((ExpandableNotificationRow) slidingChild).getNotificationParent(),
+                                mTopHeadsUpRow);
+                    } else {
+                        NotificationEntry entry = row.getEntryLegacy();
+                        isEntrySummaryForTopHun = mTopHeadsUpRow != null &&
+                                mGroupMembershipManager.getGroupSummary(
+                                        mTopHeadsUpRow.getEntryLegacy()) == entry;
+                    }
                     if (!mIsExpanded && row.isHeadsUp() && row.isPinned()
                             && mTopHeadsUpRow != row
-                            && mGroupMembershipManager.getGroupSummary(mTopHeadsUpRow.getEntry())
-                            != entry) {
+                            && !isEntrySummaryForTopHun) {
                         continue;
                     }
                     return row.getViewAtPosition(touchY - childTop);
@@ -1895,7 +2036,8 @@ public class NotificationStackScrollLayout
     }
 
     public void lockScrollTo(View v) {
-        if (mForcedScroll == v) {
+        // NSSL shouldn't handle scrolling with SceneContainer enabled.
+        if (mForcedScroll == v || SceneContainerFlag.isEnabled()) {
             return;
         }
         mForcedScroll = v;
@@ -1903,6 +2045,10 @@ public class NotificationStackScrollLayout
     }
 
     public boolean scrollTo(View v) {
+        // NSSL shouldn't handle scrolling with SceneContainer enabled.
+        if (SceneContainerFlag.isEnabled()) {
+            return false;
+        }
         ExpandableView expandableView = (ExpandableView) v;
         int positionInLinearLayout = getPositionInLinearLayout(v);
         int targetScroll = targetScrollForView(expandableView, positionInLinearLayout);
@@ -1910,8 +2056,8 @@ public class NotificationStackScrollLayout
 
         // Only apply the scroll if we're scrolling the view upwards, or the view is so far up
         // that it is not visible anymore.
-        if (mOwnScrollY < targetScroll || outOfViewScroll < mOwnScrollY) {
-            mScroller.startScroll(mScrollX, mOwnScrollY, 0, targetScroll - mOwnScrollY);
+        if (getOwnScrollY() < targetScroll || outOfViewScroll < getOwnScrollY()) {
+            mScroller.startScroll(mScrollX, getOwnScrollY(), 0, targetScroll - getOwnScrollY());
             mDontReportNextOverScroll = true;
             animateScroll();
             return true;
@@ -1924,12 +2070,14 @@ public class NotificationStackScrollLayout
      * the IME.
      */
     private int targetScrollForView(ExpandableView v, int positionInLinearLayout) {
+        SceneContainerFlag.assertInLegacyMode();
         return positionInLinearLayout + v.getIntrinsicHeight() +
                 getImeInset() - getHeight()
                 + ((!isExpanded() && isPinnedHeadsUp(v)) ? mHeadsUpInset : getTopPadding());
     }
 
     private void updateImeInset(WindowInsets windowInsets) {
+        SceneContainerFlag.assertInLegacyMode();
         mImeInset = windowInsets.getInsets(WindowInsets.Type.ime()).bottom;
 
         if (mFooterView != null && mFooterView.getViewState() != null) {
@@ -1944,7 +2092,7 @@ public class NotificationStackScrollLayout
         }
 
         int range = getScrollRange();
-        if (mOwnScrollY > range) {
+        if (getOwnScrollY() > range) {
             setOwnScrollY(range);
         }
     }
@@ -1956,23 +2104,12 @@ public class NotificationStackScrollLayout
         if (cutout != null) {
             mWaterfallTopInset = cutout.getWaterfallInsets().top;
         }
-        if (!mIsInsetAnimationRunning) {
+        if (!SceneContainerFlag.isEnabled() && !mIsInsetAnimationRunning) {
             // update bottom inset e.g. after rotation
             updateImeInset(insets);
         }
         return insets;
     }
-
-    private final Runnable mReclamp = new Runnable() {
-        @Override
-        public void run() {
-            int range = getScrollRange();
-            mScroller.startScroll(mScrollX, mOwnScrollY, 0, range - mOwnScrollY);
-            mDontReportNextOverScroll = true;
-            mDontClampNextScroll = true;
-            animateScroll();
-        }
-    };
 
     public void setExpandingEnabled(boolean enable) {
         mExpandHelper.setEnabled(enable);
@@ -1992,8 +2129,6 @@ public class NotificationStackScrollLayout
         Resources res = getResources();
         updateSplitNotificationShade();
         mStatusBarHeight = SystemBarUtils.getStatusBarHeight(mContext);
-        float densityScale = res.getDisplayMetrics().density;
-        mSwipeHelper.setDensityScale(densityScale);
         float pagingTouchSlop = ViewConfiguration.get(getContext()).getScaledPagingTouchSlop();
         mSwipeHelper.setPagingTouchSlop(pagingTouchSlop);
         reinitView();
@@ -2026,7 +2161,7 @@ public class NotificationStackScrollLayout
         }
     }
 
-    public ViewGroup getViewParentForNotification(NotificationEntry entry) {
+    public ViewGroup getViewParentForNotification() {
         return this;
     }
 
@@ -2048,7 +2183,7 @@ public class NotificationStackScrollLayout
         // Top overScroll might not grab all scrolling motion,
         // we have to scroll as well.
         float scrollAmount = newTopAmount < 0 ? -newTopAmount : 0.0f;
-        float newScrollY = mOwnScrollY + scrollAmount;
+        float newScrollY = getOwnScrollY() + scrollAmount;
         if (newScrollY > range) {
             if (!mExpandedInThisMotion) {
                 float currentBottomPixels = getCurrentOverScrolledPixels(false);
@@ -2081,7 +2216,7 @@ public class NotificationStackScrollLayout
         // Bottom overScroll might not grab all scrolling motion,
         // we have to scroll as well.
         float scrollAmount = newBottomAmount < 0 ? newBottomAmount : 0.0f;
-        float newScrollY = mOwnScrollY + scrollAmount;
+        float newScrollY = getOwnScrollY() + scrollAmount;
         if (newScrollY < 0) {
             float currentTopPixels = getCurrentOverScrolledPixels(true);
             // We overScroll on the top
@@ -2116,12 +2251,13 @@ public class NotificationStackScrollLayout
     }
 
     public void setFinishScrollingCallback(Runnable runnable) {
+        SceneContainerFlag.assertInLegacyMode();
         mFinishScrollingCallback = runnable;
     }
 
     private void animateScroll() {
         if (mScroller.computeScrollOffset()) {
-            int oldY = mOwnScrollY;
+            int oldY = getOwnScrollY();
             int y = mScroller.getCurrY();
 
             if (oldY != y) {
@@ -2244,6 +2380,7 @@ public class NotificationStackScrollLayout
 
     private void setOverScrollAmountInternal(float amount, boolean onTop, boolean animate,
                                              boolean isRubberbanded) {
+        SceneContainerFlag.assertInLegacyMode();
         amount = Math.max(0, amount);
         if (animate) {
             mStateAnimator.animateOverScrollToAmount(amount, onTop, isRubberbanded);
@@ -2271,6 +2408,7 @@ public class NotificationStackScrollLayout
 
     public void setOverscrollTopChangedListener(
             OnOverscrollTopChangedListener overscrollTopChangedListener) {
+        SceneContainerFlag.assertInLegacyMode();
         mOverscrollTopChangedListener = overscrollTopChangedListener;
     }
 
@@ -2306,8 +2444,8 @@ public class NotificationStackScrollLayout
                 springBack();
             } else {
                 float overScrollTop = getCurrentOverScrollAmount(true);
-                if (mOwnScrollY < 0) {
-                    notifyOverscrollTopListener(-mOwnScrollY, isRubberbanded(true));
+                if (getOwnScrollY() < 0) {
+                    notifyOverscrollTopListener(-getOwnScrollY(), isRubberbanded(true));
                 } else {
                     notifyOverscrollTopListener(overScrollTop, isRubberbanded(true));
                 }
@@ -2323,19 +2461,19 @@ public class NotificationStackScrollLayout
      */
     private void springBack() {
         int scrollRange = getScrollRange();
-        boolean overScrolledTop = mOwnScrollY <= 0;
-        boolean overScrolledBottom = mOwnScrollY >= scrollRange;
+        boolean overScrolledTop = getOwnScrollY() <= 0;
+        boolean overScrolledBottom = getOwnScrollY() >= scrollRange;
         if (overScrolledTop || overScrolledBottom) {
             boolean onTop;
             float newAmount;
             if (overScrolledTop) {
                 onTop = true;
-                newAmount = -mOwnScrollY;
+                newAmount = -getOwnScrollY();
                 setOwnScrollY(0);
                 mDontReportNextOverScroll = true;
             } else {
                 onTop = false;
-                newAmount = mOwnScrollY - scrollRange;
+                newAmount = getOwnScrollY() - scrollRange;
                 setOwnScrollY(scrollRange);
             }
             setOverScrollAmount(newAmount, onTop, false);
@@ -2345,9 +2483,14 @@ public class NotificationStackScrollLayout
     }
 
     private int getScrollRange() {
+        // TODO(b/360091533) Disable the usages of #getScrollRange() with SceneContainer enabled,
+        // because NSSL shouldn't control its own scrolling.
+        if (SceneContainerFlag.isEnabled()) {
+            return 0;
+        }
         // In current design, it only use the top HUN to treat all of HUNs
         // although there are more than one HUNs
-        int contentHeight = mContentHeight;
+        int contentHeight = getContentHeight();
         if (!isExpanded() && mInHeadsUpPinnedMode) {
             contentHeight = mHeadsUpInset + getTopHeadsUpPinnedHeight();
         }
@@ -2361,6 +2504,7 @@ public class NotificationStackScrollLayout
     }
 
     private int getImeInset() {
+        SceneContainerFlag.assertInLegacyMode();
         // The NotificationStackScrollLayout does not extend all the way to the bottom of the
         // display. Therefore, subtract that space from the mImeInset, in order to only include
         // the portion of the bottom inset that actually overlaps the NotificationStackScrollLayout.
@@ -2372,6 +2516,11 @@ public class NotificationStackScrollLayout
      * @return the first child which has visibility unequal to GONE
      */
     public ExpandableView getFirstChildNotGone() {
+        SceneContainerFlag.assertInLegacyMode();
+        return getFirstChildNotGoneInternal();
+    }
+
+    private ExpandableView getFirstChildNotGoneInternal() {
         int childCount = getChildCount();
         for (int i = 0; i < childCount; i++) {
             View child = getChildAt(i);
@@ -2427,21 +2576,11 @@ public class NotificationStackScrollLayout
         return null;
     }
 
-    private ExpandableNotificationRow getLastRowNotGone() {
-        int childCount = getChildCount();
-        for (int i = childCount - 1; i >= 0; i--) {
-            View child = getChildAt(i);
-            if (child instanceof ExpandableNotificationRow && child.getVisibility() != View.GONE) {
-                return (ExpandableNotificationRow) child;
-            }
-        }
-        return null;
-    }
-
     /**
      * @return the number of children which have visibility unequal to GONE
      */
     public int getNotGoneChildCount() {
+        SceneContainerFlag.assertInLegacyMode();
         int childCount = getChildCount();
         int count = 0;
         for (int i = 0; i < childCount; i++) {
@@ -2453,39 +2592,62 @@ public class NotificationStackScrollLayout
         return count;
     }
 
-    private void updateContentHeight() {
-        final float scrimTopPadding = mAmbientState.isOnKeyguard() ? 0 : mMinimumPaddings;
+    @VisibleForTesting
+    void updateIntrinsicStackHeight() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+
         final int shelfIntrinsicHeight = mShelf != null ? mShelf.getIntrinsicHeight() : 0;
-        final int footerIntrinsicHeight = mFooterView != null ? mFooterView.getIntrinsicHeight() : 0;
+        final int notificationsHeight = (int) mNotificationStackSizeCalculator.computeHeight(
+                /* notificationStackScrollLayout= */ this,
+                mMaxDisplayedNotifications,
+                shelfIntrinsicHeight
+        );
+        if (mScrollViewFields.getIntrinsicStackHeight() != notificationsHeight) {
+            mScrollViewFields.setIntrinsicStackHeight(notificationsHeight);
+            notifyStackHeightChangedListeners();
+        }
+    }
+
+    private void updateContentHeight() {
+        if (SceneContainerFlag.isEnabled()) {
+            updateIntrinsicStackHeight();
+            updateStackEndHeightAndStackHeight(mAmbientState.getExpansionFraction());
+            return;
+        }
+
+        final float scrimTopPadding = getScrimTopPaddingOrZero();
+        final int shelfIntrinsicHeight = mShelf != null ? mShelf.getIntrinsicHeight() : 0;
         final float height =
                 (int) scrimTopPadding + (int) mNotificationStackSizeCalculator.computeHeight(
                         /* notificationStackScrollLayout= */ this, mMaxDisplayedNotifications,
                         shelfIntrinsicHeight);
-        mIntrinsicContentHeight = height;
+        setIntrinsicContentHeight(height);
 
         // The topPadding can be bigger than the regular padding when qs is expanded, in that
         // state the maxPanelHeight and the contentHeight should be bigger
-        mContentHeight =
-                (int) (height + Math.max(mIntrinsicPadding, getTopPadding()) + mBottomPadding);
-        mScrollViewFields.setIntrinsicStackHeight(
-                (int) (mIntrinsicPadding + mIntrinsicContentHeight + footerIntrinsicHeight
-                        + mBottomPadding));
+        setContentHeight(
+                (int) (height + Math.max(getIntrinsicPadding(), getTopPadding()) + mBottomPadding));
         updateScrollability();
         clampScrollPosition();
         updateStackPosition();
-        mAmbientState.setContentHeight(mContentHeight);
-
-        notifyStackHeightChangedListeners();
+        mAmbientState.setContentHeight(getContentHeight());
     }
 
     @Override
     public int getIntrinsicStackHeight() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return 0;
         return mScrollViewFields.getIntrinsicStackHeight();
     }
 
     @Override
     public int getTopHeadsUpHeight() {
-        return getTopHeadsUpPinnedHeight();
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return 0;
+        return getTopHeadsUpIntrinsicHeight();
+    }
+
+    @Override
+    public int getStackBottomInset() {
+        return mPaddingBetweenElements + mShelf.getIntrinsicHeight();
     }
 
     /**
@@ -2510,6 +2672,9 @@ public class NotificationStackScrollLayout
     }
 
     private void updateScrollability() {
+        if (SceneContainerFlag.isEnabled()) {
+            return;
+        }
         boolean scrollable = !mQsFullScreen && getScrollRange() > 0;
         if (scrollable != mScrollable) {
             mScrollable = scrollable;
@@ -2519,6 +2684,7 @@ public class NotificationStackScrollLayout
     }
 
     private void updateForwardAndBackwardScrollability() {
+        SceneContainerFlag.assertInLegacyMode();
         boolean forwardScrollable = mScrollable && !mScrollAdapter.isScrolledToBottom();
         boolean backwardsScrollable = mScrollable && !mScrollAdapter.isScrolledToTop();
         boolean changed = forwardScrollable != mForwardScrollable
@@ -2596,11 +2762,13 @@ public class NotificationStackScrollLayout
      *                  which means we want to scroll towards the top.
      */
     protected void fling(int velocityY) {
+        // Scrolls and flings are handled by the Composables with SceneContainer enabled
+        SceneContainerFlag.assertInLegacyMode();
         if (getChildCount() > 0) {
             float topAmount = getCurrentOverScrollAmount(true);
             float bottomAmount = getCurrentOverScrollAmount(false);
             if (velocityY < 0 && topAmount > 0) {
-                setOwnScrollY(mOwnScrollY - (int) topAmount);
+                setOwnScrollY(getOwnScrollY() - (int) topAmount);
                 if (!mShouldUseSplitNotificationShade) {
                     mDontReportNextOverScroll = true;
                     setOverScrollAmount(0, true, false);
@@ -2608,7 +2776,7 @@ public class NotificationStackScrollLayout
                 mMaxOverScroll = Math.abs(velocityY) / 1000f * getRubberBandFactor(true /* onTop */)
                         * mOverflingDistance + topAmount;
             } else if (velocityY > 0 && bottomAmount > 0) {
-                setOwnScrollY((int) (mOwnScrollY + bottomAmount));
+                setOwnScrollY((int) (getOwnScrollY() + bottomAmount));
                 setOverScrollAmount(0, false, false);
                 mMaxOverScroll = Math.abs(velocityY) / 1000f
                         * getRubberBandFactor(false /* onTop */) * mOverflingDistance
@@ -2622,8 +2790,8 @@ public class NotificationStackScrollLayout
             if (mExpandedInThisMotion) {
                 minScrollY = Math.min(minScrollY, mMaxScrollAfterExpand);
             }
-            mScroller.fling(mScrollX, mOwnScrollY, 1, velocityY, 0, 0, 0, minScrollY, 0,
-                    mExpandedInThisMotion && mOwnScrollY >= 0 ? 0 : Integer.MAX_VALUE / 2);
+            mScroller.fling(mScrollX, getOwnScrollY(), 1, velocityY, 0, 0, 0, minScrollY, 0,
+                    mExpandedInThisMotion && getOwnScrollY() >= 0 ? 0 : Integer.MAX_VALUE / 2);
 
             animateScroll();
         }
@@ -2650,22 +2818,28 @@ public class NotificationStackScrollLayout
      * @param animate  whether to animate the change
      */
     public void updateTopPadding(float qsHeight, boolean animate) {
+        SceneContainerFlag.assertInLegacyMode();
         int topPadding = (int) qsHeight;
-        int minStackHeight = getLayoutMinHeight();
+        int minStackHeight = getLayoutMinHeightInternal();
         if (topPadding + minStackHeight > getHeight()) {
             mTopPaddingOverflow = topPadding + minStackHeight - getHeight();
         } else {
             mTopPaddingOverflow = 0;
         }
-        setTopPadding(topPadding, animate && !mKeyguardBypassEnabled);
+        if (mAmbientState.getTopPadding() != topPadding) {
+            mAmbientState.setTopPadding(topPadding);
+            onTopPaddingChanged(/* animate = */ animate && !mKeyguardBypassEnabled);
+        }
         setExpandedHeight(mExpandedHeight);
     }
 
-    public void setMaxTopPadding(int maxTopPadding) {
-        mMaxTopPadding = maxTopPadding;
+    public int getLayoutMinHeight() {
+        SceneContainerFlag.assertInLegacyMode();
+        return getLayoutMinHeightInternal();
     }
 
-    public int getLayoutMinHeight() {
+    private int getLayoutMinHeightInternal() {
+        SceneContainerFlag.assertInLegacyMode();
         if (isHeadsUpTransition()) {
             ExpandableNotificationRow trackedHeadsUpRow = mAmbientState.getTrackedHeadsUpRow();
             if (trackedHeadsUpRow.isAboveShelf()) {
@@ -2682,11 +2856,8 @@ public class NotificationStackScrollLayout
     }
 
     public float getTopPaddingOverflow() {
+        SceneContainerFlag.assertInLegacyMode();
         return mTopPaddingOverflow;
-    }
-
-    private int clampPadding(int desiredPadding) {
-        return Math.max(desiredPadding, mIntrinsicPadding);
     }
 
     private float getRubberBandFactor(boolean onTop) {
@@ -2748,7 +2919,9 @@ public class NotificationStackScrollLayout
             NotificationEntry entry = ((ExpandableNotificationRow) child).getEntry();
             entry.removeOnSensitivityChangedListener(mOnChildSensitivityChangedListener);
         }
-        updateScrollStateForRemovedChild(child);
+        if (!SceneContainerFlag.isEnabled()) {
+            updateScrollStateForRemovedChild(child);
+        }
         boolean animationGenerated = container != null && generateRemoveAnimation(child);
         if (animationGenerated) {
             if (!mSwipedOutViews.contains(child) || !isFullySwipedOut(child)) {
@@ -2774,17 +2947,17 @@ public class NotificationStackScrollLayout
         if (child instanceof ExpandableNotificationRow) {
             if (container instanceof NotificationChildrenContainer) {
                 mLogger.addTransientChildNotificationToChildContainer(
-                        ((ExpandableNotificationRow) child).getEntry(),
+                        ((ExpandableNotificationRow) child).getLoggingKey(),
                         ((NotificationChildrenContainer) container)
-                                .getContainingNotification().getEntry()
+                                .getContainingNotification().getLoggingKey()
                 );
             } else if (container instanceof NotificationStackScrollLayout) {
                 mLogger.addTransientChildNotificationToNssl(
-                        ((ExpandableNotificationRow) child).getEntry()
+                        ((ExpandableNotificationRow) child).getLoggingKey()
                 );
             } else {
                 mLogger.addTransientChildNotificationToViewGroup(
-                        ((ExpandableNotificationRow) child).getEntry(),
+                        ((ExpandableNotificationRow) child).getLoggingKey(),
                         container
                 );
             }
@@ -2794,7 +2967,7 @@ public class NotificationStackScrollLayout
     @Override
     public void addTransientView(View view, int index) {
         if (mLogger != null && view instanceof ExpandableNotificationRow) {
-            mLogger.addTransientRow(((ExpandableNotificationRow) view).getEntry(), index);
+            mLogger.addTransientRow(((ExpandableNotificationRow) view).getLoggingKey(), index);
         }
         super.addTransientView(view, index);
     }
@@ -2802,7 +2975,7 @@ public class NotificationStackScrollLayout
     @Override
     public void removeTransientView(View view) {
         if (mLogger != null && view instanceof ExpandableNotificationRow) {
-            mLogger.removeTransientRow(((ExpandableNotificationRow) view).getEntry());
+            mLogger.removeTransientRow(((ExpandableNotificationRow) view).getLoggingKey());
         }
         super.removeTransientView(view);
     }
@@ -2833,9 +3006,13 @@ public class NotificationStackScrollLayout
     }
 
     private boolean isChildInGroup(View child) {
-        return child instanceof ExpandableNotificationRow
-                && mGroupMembershipManager.isChildInGroup(
-                ((ExpandableNotificationRow) child).getEntry());
+        if (child instanceof ExpandableNotificationRow) {
+            ExpandableNotificationRow childRow = (ExpandableNotificationRow) child;
+            return NotificationBundleUi.isEnabled()
+                    ? mGroupMembershipManager.isChildInGroup(childRow.getEntryAdapter())
+                    : mGroupMembershipManager.isChildInGroup(childRow.getEntryLegacy());
+        }
+        return false;
     }
 
     /**
@@ -2849,7 +3026,7 @@ public class NotificationStackScrollLayout
         String key = "";
         if (mDebugRemoveAnimation) {
             if (child instanceof ExpandableNotificationRow) {
-                key = ((ExpandableNotificationRow) child).getEntry().getKey();
+                key = ((ExpandableNotificationRow) child).getKey();
             }
             Log.d(TAG, "generateRemoveAnimation " + key);
         }
@@ -2904,20 +3081,20 @@ public class NotificationStackScrollLayout
      */
     private boolean removeRemovedChildFromHeadsUpChangeAnimations(View child) {
         boolean hasAddEvent = false;
-        for (Pair<ExpandableNotificationRow, Boolean> eventPair : mHeadsUpChangeAnimations) {
-            ExpandableNotificationRow row = eventPair.first;
-            boolean isHeadsUp = eventPair.second;
+        for (HeadsUpAnimationEvent event : mHeadsUpChangeAnimations.values()) {
+            ExpandableNotificationRow row = event.getRow();
+            boolean isHeadsUp = event.isHeadsUpAppearance();
             if (child == row) {
-                mTmpList.add(eventPair);
+                mTmpHeadsUpChangeAnimations.add(event.getRow());
                 hasAddEvent |= isHeadsUp;
             }
         }
         if (hasAddEvent) {
             // This child was just added lets remove all events.
-            mHeadsUpChangeAnimations.removeAll(mTmpList);
+            mTmpHeadsUpChangeAnimations.forEach((row) -> mHeadsUpChangeAnimations.remove(row));
             ((ExpandableNotificationRow) child).setHeadsUpAnimatingAway(false);
         }
-        mTmpList.clear();
+        mTmpHeadsUpChangeAnimations.clear();
         return hasAddEvent && mAddedHeadsUpChildren.contains(child);
     }
 
@@ -2927,17 +3104,18 @@ public class NotificationStackScrollLayout
      * @param removedChild the removed child
      */
     private void updateScrollStateForRemovedChild(ExpandableView removedChild) {
+        SceneContainerFlag.assertInLegacyMode();
         final int startingPosition = getPositionInLinearLayout(removedChild);
         final int childHeight = getIntrinsicHeight(removedChild) + mPaddingBetweenElements;
         final int endPosition = startingPosition + childHeight;
         final int scrollBoundaryStart = getScrollAmountToScrollBoundary();
         mAnimateStackYForContentHeightChange = true;
         // This is reset onLayout
-        if (endPosition <= mOwnScrollY - scrollBoundaryStart) {
+        if (endPosition <= getOwnScrollY() - scrollBoundaryStart) {
             // This child is fully scrolled of the top, so we have to deduct its height from the
             // scrollPosition
-            setOwnScrollY(mOwnScrollY - childHeight);
-        } else if (startingPosition < mOwnScrollY - scrollBoundaryStart) {
+            setOwnScrollY(getOwnScrollY() - childHeight);
+        } else if (startingPosition < getOwnScrollY() - scrollBoundaryStart) {
             // This child is currently being scrolled into, set the scroll position to the
             // start of this child
             setOwnScrollY(startingPosition + scrollBoundaryStart);
@@ -2948,6 +3126,7 @@ public class NotificationStackScrollLayout
      * @return the amount of scrolling needed to start clipping notifications.
      */
     private int getScrollAmountToScrollBoundary() {
+        SceneContainerFlag.assertInLegacyMode();
         if (mShouldUseSplitNotificationShade) {
             return mSidePaddings;
         }
@@ -2961,7 +3140,7 @@ public class NotificationStackScrollLayout
         return view.getHeight();
     }
 
-    public int getPositionInLinearLayout(View requestedView) {
+    private int getPositionInLinearLayout(View requestedView) {
         ExpandableNotificationRow childInGroup = null;
         ExpandableNotificationRow requestedRow = null;
         if (isChildInGroup(requestedView)) {
@@ -2970,7 +3149,7 @@ public class NotificationStackScrollLayout
             childInGroup = (ExpandableNotificationRow) requestedView;
             requestedView = requestedRow = childInGroup.getNotificationParent();
         }
-        final float scrimTopPadding = mAmbientState.isOnKeyguard() ? 0 : mMinimumPaddings;
+        final float scrimTopPadding = getScrimTopPaddingOrZero();
         int position = (int) scrimTopPadding;
         int visibleIndex = -1;
         ExpandableView lastVisibleChild = null;
@@ -3000,6 +3179,17 @@ public class NotificationStackScrollLayout
         return 0;
     }
 
+    /**
+     * Returns the top scrim padding, or zero if the SceneContainer flag is enabled.
+     */
+    private int getScrimTopPaddingOrZero() {
+        if (SceneContainerFlag.isEnabled()) {
+            // the scrim padding is set on the notification placeholder
+            return 0;
+        }
+        return mAmbientState.isOnKeyguard() ? 0 : mMinimumPaddings;
+    }
+
     @Override
     public void onViewAdded(View child) {
         super.onViewAdded(child);
@@ -3020,16 +3210,18 @@ public class NotificationStackScrollLayout
     private void onViewAddedInternal(ExpandableView child) {
         updateHideSensitiveForChild(child);
         child.setOnHeightChangedListener(mOnChildHeightChangedListener);
-        if (child instanceof ExpandableNotificationRow) {
+        if (child instanceof ExpandableNotificationRow row) {
             NotificationEntry entry = ((ExpandableNotificationRow) child).getEntry();
             entry.addOnSensitivityChangedListener(mOnChildSensitivityChangedListener);
+            if (SceneContainerFlag.isEnabled()) {
+                row.setOnKeyguard(mIsOnLockscreen);
+            }
         }
         generateAddAnimation(child, false /* fromMoreCard */);
         updateAnimationState(child);
         updateChronometerForChild(child);
         if (child instanceof ExpandableNotificationRow row) {
-            row.setDismissUsingRowTranslationX(mDismissUsingRowTranslationX);
-
+            row.setDismissUsingRowTranslationX(mDismissUsingRowTranslationX, /* force= */ true);
         }
     }
 
@@ -3187,9 +3379,9 @@ public class NotificationStackScrollLayout
     }
 
     private void generateHeadsUpAnimationEvents() {
-        for (Pair<ExpandableNotificationRow, Boolean> eventPair : mHeadsUpChangeAnimations) {
-            ExpandableNotificationRow row = eventPair.first;
-            boolean isHeadsUp = eventPair.second;
+        for (HeadsUpAnimationEvent headsUpEvent : mHeadsUpChangeAnimations.values()) {
+            ExpandableNotificationRow row = headsUpEvent.getRow();
+            boolean isHeadsUp = headsUpEvent.isHeadsUpAppearance();
             if (isHeadsUp != row.isHeadsUp()) {
                 // For cases where we have a heads up showing and appearing again we shouldn't
                 // do the animations at all.
@@ -3247,18 +3439,19 @@ public class NotificationStackScrollLayout
             }
             AnimationEvent event = new AnimationEvent(row, type);
             event.headsUpFromBottom = onBottom;
-            if (NotificationsImprovedHunAnimation.isEnabled()) {
-                // TODO(b/283084712) remove this with the flag and update the HUN filters at
-                //  creation
-                event.filter.animateHeight = false;
-            }
+
+            boolean hasStatusBarChip =
+                    StatusBarNotifChips.isEnabled() && headsUpEvent.getHasStatusBarChip();
+            event.headsUpHasStatusBarChip = hasStatusBarChip;
+            // TODO(b/283084712) remove this and update the HUN filters at creation
+            event.filter.animateHeight = false;
             mAnimationEvents.add(event);
             if (SPEW) {
                 Log.v(TAG, "Generating HUN animation event: "
                         + " isHeadsUp=" + isHeadsUp
                         + " type=" + type
                         + " onBottom=" + onBottom
-                        + " row=" + row.getEntry().getKey());
+                        + " row=" + row.getKey());
             }
             logHunAnimationEventAdded(row, type);
         }
@@ -3333,7 +3526,7 @@ public class NotificationStackScrollLayout
             if (mDebugRemoveAnimation) {
                 String key = "";
                 if (child instanceof ExpandableNotificationRow) {
-                    key = ((ExpandableNotificationRow) child).getEntry().getKey();
+                    key = ((ExpandableNotificationRow) child).getKey();
                 }
                 Log.d(TAG, "created Remove Event - SwipedOut: " + childWasSwipedOut + " " + key);
             }
@@ -3422,15 +3615,15 @@ public class NotificationStackScrollLayout
         mGoToFullShadeNeedsAnimation = false;
     }
 
-    protected StackScrollAlgorithm createStackScrollAlgorithm(Context context) {
-        return new StackScrollAlgorithm(context, this);
-    }
-
     /**
      * @return Whether a y coordinate is inside the content.
      */
     public boolean isInContentBounds(float y) {
-        return y < getHeight() - getEmptyBottomMargin();
+        if (SceneContainerFlag.isEnabled()) {
+            return y < mAmbientState.getStackCutoff();
+        } else {
+            return y < getHeight() - getEmptyBottomMarginInternal();
+        }
     }
 
     private float getTouchSlop(MotionEvent event) {
@@ -3465,33 +3658,44 @@ public class NotificationStackScrollLayout
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
-        if (SceneContainerFlag.isEnabled() && mIsBeingDragged) {
+        if (SceneContainerFlag.isEnabled()) {
             int action = ev.getActionMasked();
-            boolean isUpOrCancel = action == ACTION_UP || action == ACTION_CANCEL;
-            if (mSendingTouchesToSceneFramework) {
-                MotionEvent adjustedEvent = MotionEvent.obtain(ev);
-                adjustedEvent.setLocation(ev.getRawX(), ev.getRawY());
-                mController.sendTouchToSceneFramework(adjustedEvent);
-                mScrollViewFields.sendCurrentGestureOverscroll(
-                        getExpandedInThisMotion() && !isUpOrCancel);
-                adjustedEvent.recycle();
-            } else if (!isUpOrCancel) {
-                // if this is the first touch being sent to the scene framework,
-                // convert it into a synthetic DOWN event.
-                mSendingTouchesToSceneFramework = true;
-                MotionEvent downEvent = MotionEvent.obtain(ev);
-                downEvent.setAction(MotionEvent.ACTION_DOWN);
-                downEvent.setLocation(ev.getRawX(), ev.getRawY());
-                mController.sendTouchToSceneFramework(downEvent);
-                mScrollViewFields.sendCurrentGestureOverscroll(getExpandedInThisMotion());
-                downEvent.recycle();
+            boolean isTouchInGuts = mController.isTouchInGutsView(ev);
+            if (action == MotionEvent.ACTION_DOWN && !isTouchInGuts) {
+                mController.closeControlsDueToOutsideTouch();
             }
+            if (mIsBeingDragged) {
+                boolean isUpOrCancel = action == ACTION_UP || action == ACTION_CANCEL;
+                if (mSendingTouchesToSceneFramework) {
+                    MotionEvent adjustedEvent = MotionEvent.obtain(ev);
+                    adjustedEvent.setLocation(ev.getRawX(), ev.getRawY());
+                    mScrollViewFields.sendCurrentGestureOverscroll(
+                            getExpandedInThisMotion() && !isUpOrCancel);
+                    mController.sendTouchToSceneFramework(adjustedEvent);
+                    adjustedEvent.recycle();
+                } else if (!isUpOrCancel) {
+                    // if this is the first touch being sent to the scene framework,
+                    // convert it into a synthetic DOWN event.
+                    mSendingTouchesToSceneFramework = true;
+                    MotionEvent downEvent = MotionEvent.obtain(ev);
+                    downEvent.setAction(MotionEvent.ACTION_DOWN);
+                    downEvent.setLocation(ev.getRawX(), ev.getRawY());
+                    mScrollViewFields.sendCurrentGestureInGuts(isTouchInGuts);
+                    mScrollViewFields.sendCurrentGestureOverscroll(getExpandedInThisMotion());
+                    mController.sendTouchToSceneFramework(downEvent);
+                    downEvent.recycle();
+                }
 
-            if (isUpOrCancel) {
-                mScrollViewFields.sendCurrentGestureOverscroll(false);
-                setIsBeingDragged(false);
+                if (isUpOrCancel) {
+                    mScrollViewFields.sendCurrentGestureInGuts(false);
+                    mScrollViewFields.sendCurrentGestureOverscroll(false);
+                    setIsBeingDragged(false);
+                    // dispatch to touchHandlers, so they can still finalize a previously started
+                    // motion, while the shade is being dragged
+                    return super.dispatchTouchEvent(ev);
+                }
+                return false;
             }
-            return false;
         }
         return TouchLogger.logDispatchTouch(TAG, ev, super.dispatchTouchEvent(ev));
     }
@@ -3505,9 +3709,8 @@ public class NotificationStackScrollLayout
 
     // Only when scene container is enabled, mark that we are being dragged so that we start
     // dispatching the rest of the gesture to scene container.
-    void startOverscrollAfterExpanding() {
-        SceneContainerFlag.isUnexpectedlyInLegacyMode();
-        getExpandHelper().finishExpanding();
+    void startDraggingOnHun() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
         setIsBeingDragged(true);
     }
 
@@ -3523,12 +3726,16 @@ public class NotificationStackScrollLayout
         if ((event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0) {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_SCROLL: {
+                    // If scene container is active, NSSL should not control its own scrolling.
+                    if (SceneContainerFlag.isEnabled()) {
+                        return false;
+                    }
                     if (!mIsBeingDragged) {
                         final float vscroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
                         if (vscroll != 0) {
                             final int delta = (int) (vscroll * getVerticalScrollFactor());
                             final int range = getScrollRange();
-                            int oldScrollY = mOwnScrollY;
+                            int oldScrollY = getOwnScrollY();
                             int newScrollY = oldScrollY - delta;
                             if (newScrollY < 0) {
                                 newScrollY = 0;
@@ -3551,7 +3758,7 @@ public class NotificationStackScrollLayout
         if (!isScrollingEnabled()) {
             return false;
         }
-        if (isInsideQsHeader(ev) && !mIsBeingDragged) {
+        if (!isInScrollableRegion(ev) && !mIsBeingDragged) {
             return false;
         }
         mForcedScroll = null;
@@ -3645,15 +3852,16 @@ public class NotificationStackScrollLayout
                     if (scrollAmount != 0.0f) {
                         // The scrolling motion could not be compensated with the
                         // existing overScroll, we have to scroll the view
-                        customOverScrollBy((int) scrollAmount, mOwnScrollY,
+                        customOverScrollBy((int) scrollAmount, getOwnScrollY(),
                                 range, getHeight() / 2);
-                        // If we're scrolling, leavebehinds should be dismissed
-                        mController.checkSnoozeLeavebehind();
                     }
                 }
                 break;
             case ACTION_UP:
-                if (mIsBeingDragged) {
+                if (SceneContainerFlag.isEnabled() && mIsBeingDragged) {
+                    mActivePointerId = INVALID_POINTER;
+                    endDrag();
+                } else if (mIsBeingDragged) {
                     final VelocityTracker velocityTracker = mVelocityTracker;
                     velocityTracker.computeCurrentVelocity(1000, mMaximumVelocity);
                     int initialVelocity = (int) velocityTracker.getYVelocity(mActivePointerId);
@@ -3677,7 +3885,7 @@ public class NotificationStackScrollLayout
                                     onOverScrollFling(false, initialVelocity);
                                 }
                             } else {
-                                if (mScroller.springBack(mScrollX, mOwnScrollY, 0, 0, 0,
+                                if (mScroller.springBack(mScrollX, getOwnScrollY(), 0, 0, 0,
                                         getScrollRange())) {
                                     animateScroll();
                                 }
@@ -3691,7 +3899,7 @@ public class NotificationStackScrollLayout
                 break;
             case ACTION_CANCEL:
                 if (mIsBeingDragged && getChildCount() > 0) {
-                    if (mScroller.springBack(mScrollX, mOwnScrollY, 0, 0, 0,
+                    if (mScroller.springBack(mScrollX, getOwnScrollY(), 0, 0, 0,
                             getScrollRange())) {
                         animateScroll();
                     }
@@ -3716,15 +3924,44 @@ public class NotificationStackScrollLayout
     }
 
     boolean isFlingAfterUpEvent() {
+        SceneContainerFlag.assertInLegacyMode();
         return mFlingAfterUpEvent;
     }
 
-    protected boolean isInsideQsHeader(MotionEvent ev) {
-        if (SceneContainerFlag.isEnabled()) {
-            return ev.getY() < mScrollViewFields.getStackTop();
+    /** Is this touch event inside the scrollable region? */
+    @VisibleForTesting
+    boolean isInScrollableRegion(MotionEvent ev) {
+        if (!SceneContainerFlag.isEnabled()) {
+            return !isInsideQsHeader(ev);
+        }
+        ShadeScrimShape shape = mScrollViewFields.getClippingShape();
+        if (shape == null) {
+            return true; // When there is no scrim, consider this event scrollable.
         }
 
-        mQsHeader.getBoundsOnScreen(mQsHeaderBound);
+        ShadeScrimBounds bounds = shape.getBounds();
+        return ev.getX() >= bounds.getLeft()
+                && ev.getX() <= bounds.getRight()
+                && ev.getY() >= bounds.getTop()
+                && ev.getY() <= bounds.getBottom();
+    }
+
+    protected boolean isInsideQsHeader(MotionEvent ev) {
+        SceneContainerFlag.assertInLegacyMode();
+        if (QSComposeFragment.isEnabled()) {
+            if (mQSHeaderBoundsProvider == null) {
+                return false;
+            } else {
+                mQSHeaderBoundsProvider.getBoundsOnScreenProvider().invoke(mQsHeaderBound);
+            }
+        } else {
+            if (mQsHeader == null) {
+                return false;
+            } else {
+                mQsHeader.getBoundsOnScreen(mQsHeaderBound);
+            }
+        }
+
         /**
          * One-handed mode defines a feature FEATURE_ONE_HANDED of DisplayArea {@link DisplayArea}
          * that will translate down the Y-coordinate whole window screen type except for
@@ -3734,7 +3971,10 @@ public class NotificationStackScrollLayout
          * of DisplayArea into relative coordinates for all windows, we need to correct the
          * QS Head bounds here.
          */
-        final int xOffset = Math.round(ev.getRawX() - ev.getX() + mQsHeader.getLeft());
+        int left =
+                QSComposeFragment.isEnabled() ? mQSHeaderBoundsProvider.getLeftProvider().invoke()
+                        : mQsHeader.getLeft();
+        final int xOffset = Math.round(ev.getRawX() - ev.getX() + left);
         final int yOffset = Math.round(ev.getRawY() - ev.getY());
         mQsHeaderBound.offsetTo(xOffset, yOffset);
         return mQsHeaderBound.contains((int) ev.getRawX(), (int) ev.getRawY());
@@ -3788,6 +4028,7 @@ public class NotificationStackScrollLayout
     }
 
     void handleEmptySpaceClick(MotionEvent ev) {
+        if (SceneContainerFlag.isEnabled()) return;
         logEmptySpaceClick(ev, isBelowLastNotification(mInitialTouchX, mInitialTouchY),
                 mStatusBarState, mTouchIsClick);
         switch (ev.getActionMasked()) {
@@ -3945,7 +4186,7 @@ public class NotificationStackScrollLayout
                 setIsBeingDragged(false);
                 mActivePointerId = INVALID_POINTER;
                 recycleVelocityTracker();
-                if (mScroller.springBack(mScrollX, mOwnScrollY, 0, 0, 0, getScrollRange())) {
+                if (mScroller.springBack(mScrollX, getOwnScrollY(), 0, 0, 0, getScrollRange())) {
                     animateScroll();
                 }
                 break;
@@ -3999,6 +4240,7 @@ public class NotificationStackScrollLayout
     }
 
     public void setOnEmptySpaceClickListener(OnEmptySpaceClickListener listener) {
+        SceneContainerFlag.assertInLegacyMode();
         mOnEmptySpaceClickListener = listener;
     }
 
@@ -4013,6 +4255,21 @@ public class NotificationStackScrollLayout
         if (!isEnabled()) {
             return false;
         }
+
+        if (SceneContainerFlag.isEnabled()) {
+            switch (action) {
+                case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD:
+                case android.R.id.accessibilityActionScrollDown:
+                    mScrollViewFields.sendAccessibilityScrollEvent(SCROLL_DOWN);
+                    return true;
+                case AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD:
+                case android.R.id.accessibilityActionScrollUp:
+                    mScrollViewFields.sendAccessibilityScrollEvent(SCROLL_UP);
+                    return true;
+            }
+            return false;
+        }
+
         int direction = -1;
         switch (action) {
             case AccessibilityNodeInfo.ACTION_SCROLL_FORWARD:
@@ -4027,10 +4284,10 @@ public class NotificationStackScrollLayout
                         getHeight() - mPaddingBottom - getTopPadding() - mPaddingTop
                                 - mShelf.getIntrinsicHeight();
                 final int targetScrollY = Math.max(0,
-                        Math.min(mOwnScrollY + direction * viewportHeight, getScrollRange()));
-                if (targetScrollY != mOwnScrollY) {
-                    mScroller.startScroll(mScrollX, mOwnScrollY, 0,
-                            targetScrollY - mOwnScrollY);
+                        Math.min(getOwnScrollY() + direction * viewportHeight, getScrollRange()));
+                if (targetScrollY != getOwnScrollY()) {
+                    mScroller.startScroll(mScrollX, getOwnScrollY(), 0,
+                            targetScrollY - getOwnScrollY());
                     animateScroll();
                     return true;
                 }
@@ -4056,19 +4313,25 @@ public class NotificationStackScrollLayout
     }
 
     boolean isScrolledToBottom() {
+        SceneContainerFlag.assertInLegacyMode();
         return mScrollAdapter.isScrolledToBottom();
     }
 
     int getEmptyBottomMargin() {
+        SceneContainerFlag.assertInLegacyMode();
+        return getEmptyBottomMarginInternal();
+    }
+
+    private int getEmptyBottomMarginInternal() {
         int contentHeight;
         if (mShouldUseSplitNotificationShade) {
             // When in split shade and there are no notifications, the height can be too low, as
             // it is based on notifications bottom, which is lower on split shade.
             // Here we prefer to use at least a minimum height defined for split shade.
             // Otherwise the expansion motion is too fast.
-            contentHeight = Math.max(mSplitShadeMinContentHeight, mContentHeight);
+            contentHeight = Math.max(mSplitShadeMinContentHeight, getContentHeight());
         } else {
-            contentHeight = mContentHeight;
+            contentHeight = getContentHeight();
         }
         return Math.max(mMaxLayoutHeight - contentHeight, 0);
     }
@@ -4132,6 +4395,16 @@ public class NotificationStackScrollLayout
         }
     }
 
+    private void resetChildAlpha() {
+        for (int i = 0; i < getChildCount(); i++) {
+            ExpandableView child = getChildAtIndex(i);
+            if (child instanceof ExpandableNotificationRow row) {
+                if (row.isExpandAnimationRunning()) continue;
+                row.resetAllContentAlphas();
+            }
+        }
+    }
+
     private void logTransientNotificationRowTraversalCleaned(
             ExpandableNotificationRow transientView,
             String reason
@@ -4139,7 +4412,7 @@ public class NotificationStackScrollLayout
         if (mLogger == null) {
             return;
         }
-        mLogger.transientNotificationRowTraversalCleaned(transientView.getEntry(), reason);
+        mLogger.transientNotificationRowTraversalCleaned(transientView.getLoggingKey(), reason);
     }
 
     void onPanelTrackingStarted() {
@@ -4172,8 +4445,11 @@ public class NotificationStackScrollLayout
                 // Resetting headsUpAnimatingAway on Shade expansion avoids delays caused by
                 // waiting for all child animations to finish.
                 // TODO(b/328390331) Do we need to reset this on QS expanded as well?
-                if (NotificationsHeadsUpRefactor.isEnabled()) {
+                if (SceneContainerFlag.isEnabled()) {
                     setHeadsUpAnimatingAway(false);
+                }
+                if (NotificationContentAlphaOptimization.isEnabled()) {
+                    resetChildAlpha();
                 }
             } else {
                 mGroupExpansionManager.collapseGroups();
@@ -4242,7 +4518,7 @@ public class NotificationStackScrollLayout
     private void updateScrollPositionOnExpandInBottom(ExpandableView view) {
         if (view instanceof ExpandableNotificationRow row && !onKeyguard()) {
             // TODO: once we're recycling this will need to check the adapter position of the child
-            if (row.isUserLocked() && row != getFirstChildNotGone()) {
+            if (row.isUserLocked() && row != getFirstChildNotGoneInternal()) {
                 if (row.isSummaryWithChildren()) {
                     return;
                 }
@@ -4265,7 +4541,7 @@ public class NotificationStackScrollLayout
                         float diff = endPosition - layoutEnd;
                         mScrollViewFields.sendSyntheticScroll(diff);
                     }
-                    setOwnScrollY((int) (mOwnScrollY + endPosition - layoutEnd));
+                    setOwnScrollY((int) (getOwnScrollY() + endPosition - layoutEnd));
                     mDisallowScrollingInThisMotion = true;
                 }
             }
@@ -4283,7 +4559,7 @@ public class NotificationStackScrollLayout
 
     void onChildAnimationFinished() {
         setAnimationRunning(false);
-        if (NotificationsHeadsUpRefactor.isEnabled()) {
+        if (SceneContainerFlag.isEnabled()) {
             setHeadsUpAnimatingAway(false);
         }
         requestChildrenUpdate();
@@ -4362,8 +4638,8 @@ public class NotificationStackScrollLayout
                 mLocationsChangedListener.onChildLocationsChanged(collectVisibleLocationsCallable);
             }
         } else {
-            if (mListener != null) {
-                mListener.onChildLocationsChanged();
+            if (mLegacyLocationsChangedListener != null) {
+                mLegacyLocationsChangedListener.onChildLocationsChanged();
             }
         }
 
@@ -4431,10 +4707,10 @@ public class NotificationStackScrollLayout
      * Update colors of section headers, shade footer, and empty shade views.
      */
     void updateDecorViews() {
-        final @ColorInt int onSurface = Utils.getColorAttrDefaultColor(
-                mContext, com.android.internal.R.attr.materialColorOnSurface);
-        final @ColorInt int onSurfaceVariant = Utils.getColorAttrDefaultColor(
-                mContext, com.android.internal.R.attr.materialColorOnSurfaceVariant);
+        final @ColorInt int onSurface = mContext.getColor(
+                com.android.internal.R.color.materialColorOnSurface);
+        final @ColorInt int onSurfaceVariant = mContext.getColor(
+                com.android.internal.R.color.materialColorOnSurfaceVariant);
 
         ColorUpdateLogger colorUpdateLogger = ColorUpdateLogger.getInstance();
         if (colorUpdateLogger != null) {
@@ -4454,7 +4730,11 @@ public class NotificationStackScrollLayout
         }
     }
 
-    void goToFullShade(long delay) {
+    /**
+     * Requests an animation for the next stack height update, to animate from the constrained stack
+     * displayed on the lock screen, to the scrollable stack displayed in the expanded shade.
+     */
+    public void animateGoToFullShade(long delay) {
         mGoToFullShadeNeedsAnimation = true;
         mGoToFullShadeDelay = delay;
         mNeedsAnimation = true;
@@ -4466,10 +4746,20 @@ public class NotificationStackScrollLayout
     }
 
     void setIntrinsicPadding(int intrinsicPadding) {
+        SceneContainerFlag.assertInLegacyMode();
         mIntrinsicPadding = intrinsicPadding;
     }
 
+    /**
+     * Distance from the top of the screen in, where notifications should start when fully expanded
+     * or in the LS.
+     *
+     * Always 0 with SceneContainer enabled.
+     */
     int getIntrinsicPadding() {
+        if (SceneContainerFlag.isEnabled()) {
+            return 0;
+        }
         return mIntrinsicPadding;
     }
 
@@ -4528,7 +4818,7 @@ public class NotificationStackScrollLayout
         // clipped when pulsing
         float ownTranslationZ = 0;
         if (mKeyguardBypassEnabled && mAmbientState.isHiddenAtAll()) {
-            ExpandableView firstChildNotGone = getFirstChildNotGone();
+            ExpandableView firstChildNotGone = getFirstChildNotGoneInternal();
             if (firstChildNotGone != null && firstChildNotGone.showingPulsing()) {
                 ownTranslationZ = firstChildNotGone.getTranslationZ();
             }
@@ -4551,15 +4841,6 @@ public class NotificationStackScrollLayout
         }
     }
 
-    /**
-     * Returns whether or not a History button is shown in the footer. If there is no footer, then
-     * this will return false.
-     **/
-    public boolean isHistoryShown() {
-        FooterViewRefactor.assertInLegacyMode();
-        return mFooterView != null && mFooterView.isHistoryShown();
-    }
-
     /** Bind the {@link FooterView} to the NSSL. */
     public void setFooterView(@NonNull FooterView footerView) {
         int index = -1;
@@ -4569,18 +4850,6 @@ public class NotificationStackScrollLayout
         }
         mFooterView = footerView;
         addView(mFooterView, index);
-        if (!FooterViewRefactor.isEnabled()) {
-            if (mManageButtonClickListener != null) {
-                mFooterView.setManageButtonClickListener(mManageButtonClickListener);
-            }
-            mFooterView.setClearAllButtonClickListener(v -> {
-                if (mFooterClearAllListener != null) {
-                    mFooterClearAllListener.onClearAll();
-                }
-                clearNotifications(ROWS_ALL, true /* closeShade */);
-                footerView.setClearAllButtonVisible(false /* visible */, true /* animate */);
-            });
-        }
     }
 
     public void setEmptyShadeView(EmptyShadeView emptyShadeView) {
@@ -4593,16 +4862,11 @@ public class NotificationStackScrollLayout
         addView(mEmptyShadeView, index);
     }
 
-    /** Legacy version, should be removed with the footer refactor flag. */
-    public void updateEmptyShadeView(boolean visible, boolean areNotificationsHiddenInShade) {
-        FooterViewRefactor.assertInLegacyMode();
-        updateEmptyShadeView(visible, areNotificationsHiddenInShade,
-                mHasFilteredOutSeenNotifications);
-    }
-
     /** Trigger an update for the empty shade resources and visibility. */
     public void updateEmptyShadeView(boolean visible, boolean areNotificationsHiddenInShade,
             boolean hasFilteredOutSeenNotifications) {
+        ModesEmptyShadeFix.assertInLegacyMode();
+
         mEmptyShadeView.setVisible(visible, mIsExpanded && mAnimationsEnabled);
 
         if (areNotificationsHiddenInShade) {
@@ -4621,6 +4885,8 @@ public class NotificationStackScrollLayout
             @StringRes int newTextRes,
             @StringRes int newFooterTextRes,
             @DrawableRes int newFooterIconRes) {
+        ModesEmptyShadeFix.assertInLegacyMode();
+
         int oldTextRes = mEmptyShadeView.getTextResource();
         if (oldTextRes != newTextRes) {
             mEmptyShadeView.setText(newTextRes);
@@ -4641,19 +4907,11 @@ public class NotificationStackScrollLayout
     }
 
     public boolean isEmptyShadeViewVisible() {
-        return mEmptyShadeView.isVisible();
-    }
-
-    public void updateFooterView(boolean visible, boolean showDismissView, boolean showHistory) {
-        FooterViewRefactor.assertInLegacyMode();
-        if (mFooterView == null || mNotificationStackSizeCalculator == null) {
-            return;
+        SceneContainerFlag.assertInLegacyMode();
+        if (mEmptyShadeView == null) {
+            return false;
         }
-        boolean animate = mIsExpanded && mAnimationsEnabled;
-        mFooterView.setVisible(visible, animate);
-        mFooterView.showHistory(showHistory);
-        mFooterView.setClearAllButtonVisible(showDismissView, animate);
-        mFooterView.setFooterLabelVisible(mHasFilteredOutSeenNotifications);
+        return mEmptyShadeView.isVisible();
     }
 
     @VisibleForTesting
@@ -4675,10 +4933,12 @@ public class NotificationStackScrollLayout
     }
 
     public int getEmptyShadeViewHeight() {
+        SceneContainerFlag.assertInLegacyMode();
         return mEmptyShadeView.getHeight();
     }
 
     public float getBottomMostNotificationBottom() {
+        SceneContainerFlag.assertInLegacyMode();
         final int count = getChildCount();
         float max = 0;
         for (int childIdx = 0; childIdx < count; childIdx++) {
@@ -4712,6 +4972,7 @@ public class NotificationStackScrollLayout
     }
 
     public boolean isBelowLastNotification(float touchX, float touchY) {
+        SceneContainerFlag.assertInLegacyMode();
         int childCount = getChildCount();
         for (int i = childCount - 1; i >= 0; i--) {
             ExpandableView child = getChildAtIndex(i);
@@ -4749,8 +5010,14 @@ public class NotificationStackScrollLayout
         super.onInitializeAccessibilityEventInternal(event);
         event.setScrollable(mScrollable);
         event.setMaxScrollX(mScrollX);
-        event.setScrollY(mOwnScrollY);
-        event.setMaxScrollY(getScrollRange());
+
+        if (SceneContainerFlag.isEnabled()) {
+            event.setScrollY(mScrollViewFields.getScrollState().getScrollPosition());
+            event.setMaxScrollY(mScrollViewFields.getScrollState().getMaxScrollPosition());
+        } else {
+            event.setScrollY(getOwnScrollY());
+            event.setMaxScrollY(getScrollRange());
+        }
     }
 
     @Override
@@ -4813,10 +5080,11 @@ public class NotificationStackScrollLayout
         mAnimationFinishedRunnables.add(runnable);
     }
 
-    public void generateHeadsUpAnimation(NotificationEntry entry, boolean isHeadsUp) {
-        NotificationsHeadsUpRefactor.assertInLegacyMode();
+    public void generateHeadsUpAnimation(
+            NotificationEntry entry, boolean isHeadsUp, boolean hasStatusBarChip) {
+        SceneContainerFlag.assertInLegacyMode();
         ExpandableNotificationRow row = entry.getHeadsUpAnimationView();
-        generateHeadsUpAnimation(row, isHeadsUp);
+        generateHeadsUpAnimation(row, isHeadsUp, hasStatusBarChip);
     }
 
     /**
@@ -4825,32 +5093,54 @@ public class NotificationStackScrollLayout
      *
      * @param row to animate
      * @param isHeadsUp true for appear, false for disappear animations
+     * @param hasStatusBarChip true if the status bar is currently displaying a chip for the given
+     *                         notification
      */
-    public void generateHeadsUpAnimation(ExpandableNotificationRow row, boolean isHeadsUp) {
-        final boolean add = mAnimationsEnabled && (isHeadsUp || mHeadsUpGoingAwayAnimationsAllowed);
+    public void generateHeadsUpAnimation(
+            ExpandableNotificationRow row, boolean isHeadsUp, boolean hasStatusBarChip) {
+        boolean addAnimation =
+                mAnimationsEnabled && (isHeadsUp || mHeadsUpGoingAwayAnimationsAllowed);
+        if (NotificationThrottleHun.isEnabled()) {
+            final boolean closedAndSeenInShade = !mIsExpanded && row.getEntry() != null
+                    && row.getEntry().isSeenInShade();
+            addAnimation = addAnimation && !closedAndSeenInShade;
+        }
         if (SPEW) {
             Log.v(TAG, "generateHeadsUpAnimation:"
-                    + " willAdd=" + add
+                    + " addAnimation=" + addAnimation
+                    + (row.getEntry() == null ? " entry NULL "
+                            : " isSeenInShade=" + row.getEntry().isSeenInShade()
+                                    + " row=" + row.getKey())
+                    + " mIsExpanded=" + mIsExpanded
                     + " isHeadsUp=" + isHeadsUp
-                    + " row=" + row.getEntry().getKey());
+                    + " hasStatusBarChip=" + hasStatusBarChip);
         }
-        if (add) {
+
+        if (addAnimation) {
             // If we're hiding a HUN we just started showing THIS FRAME, then remove that event,
             // and do not add the disappear event either.
-            if (!isHeadsUp && mHeadsUpChangeAnimations.remove(new Pair<>(row, true))) {
+            boolean showingHunThisFrame =
+                    mHeadsUpChangeAnimations.containsKey(row)
+                            && mHeadsUpChangeAnimations.get(row).isHeadsUpAppearance();
+            if (!isHeadsUp && showingHunThisFrame) {
+                mHeadsUpChangeAnimations.remove(row);
                 if (SPEW) {
                     Log.v(TAG, "generateHeadsUpAnimation: previous hun appear animation cancelled");
                 }
                 logHunAnimationSkipped(row, "previous hun appear animation cancelled");
                 return;
             }
-            mHeadsUpChangeAnimations.add(new Pair<>(row, isHeadsUp));
+            mHeadsUpChangeAnimations.put(
+                    row, new HeadsUpAnimationEvent(row, isHeadsUp, hasStatusBarChip));
             mNeedsAnimation = true;
             if (!mIsExpanded && !mWillExpand && !isHeadsUp) {
                 row.setHeadsUpAnimatingAway(true);
-                if (NotificationsHeadsUpRefactor.isEnabled()) {
+                if (SceneContainerFlag.isEnabled()) {
                     setHeadsUpAnimatingAway(true);
                 }
+            }
+            if (StatusBarNotifChips.isEnabled()) {
+                row.setHasStatusBarChipDuringHeadsUpAnimation(hasStatusBarChip);
             }
             requestChildrenUpdate();
         }
@@ -4864,10 +5154,18 @@ public class NotificationStackScrollLayout
      * @param bottomBarHeight the height of the bar on the bottom
      */
     public void setHeadsUpBoundaries(int height, int bottomBarHeight) {
+        SceneContainerFlag.assertInLegacyMode();
         mAmbientState.setMaxHeadsUpTranslation(height - bottomBarHeight);
-        mStackScrollAlgorithm.setHeadsUpAppearHeightBottom(height);
-        mStateAnimator.setHeadsUpAppearHeightBottom(height);
-        mStateAnimator.setStackTopMargin(mAmbientState.getStackTopMargin());
+
+        if (NotificationsHunSharedAnimationValues.isEnabled()) {
+            mHeadsUpAnimator.setHeadsUpAppearHeightBottom(height);
+            mHeadsUpAnimator.setStackTopMargin(mAmbientState.getStackTopMargin());
+        } else {
+            mStackScrollAlgorithm.setHeadsUpAppearHeightBottom(height);
+            mStateAnimator.setHeadsUpAppearHeightBottom(height);
+            mStateAnimator.setStackTopMargin(mAmbientState.getStackTopMargin());
+        }
+
         requestChildrenUpdate();
     }
 
@@ -4919,10 +5217,9 @@ public class NotificationStackScrollLayout
     }
 
     public void setQsFullScreen(boolean qsFullScreen) {
-        if (FooterViewRefactor.isEnabled()) {
-            if (qsFullScreen == mQsFullScreen) {
-                return;  // no change
-            }
+        SceneContainerFlag.assertInLegacyMode();
+        if (qsFullScreen == mQsFullScreen) {
+            return;  // no change
         }
         mQsFullScreen = qsFullScreen;
         updateAlgorithmLayoutMinHeight();
@@ -4930,22 +5227,33 @@ public class NotificationStackScrollLayout
     }
 
     boolean isQsFullScreen() {
+        SceneContainerFlag.assertInLegacyMode();
         return mQsFullScreen;
     }
 
+    private float getQsExpansionFraction() {
+        SceneContainerFlag.assertInLegacyMode();
+        return mQsExpansionFraction;
+    }
+
     public void setQsExpansionFraction(float qsExpansionFraction) {
-        boolean footerAffected = mQsExpansionFraction != qsExpansionFraction
-                && (mQsExpansionFraction == 1 || qsExpansionFraction == 1);
+        SceneContainerFlag.assertInLegacyMode();
         mQsExpansionFraction = qsExpansionFraction;
         updateUseRoundedRectClipping();
 
         // If notifications are scrolled,
         // clear out scrollY by the time we push notifications offscreen
-        if (mOwnScrollY > 0) {
-            setOwnScrollY((int) MathUtils.lerp(mOwnScrollY, 0, mQsExpansionFraction));
+        if (getOwnScrollY() > 0) {
+            setOwnScrollY((int) MathUtils.lerp(getOwnScrollY(), 0, getQsExpansionFraction()));
         }
-        if (!FooterViewRefactor.isEnabled() && footerAffected) {
-            updateFooter();
+    }
+
+    @VisibleForTesting
+    int getOwnScrollY() {
+        if (SceneContainerFlag.isEnabled()) {
+            return 0;
+        } else {
+            return mOwnScrollY;
         }
     }
 
@@ -4966,19 +5274,20 @@ public class NotificationStackScrollLayout
             return;
         }
 
-        if (ownScrollY != mOwnScrollY) {
+        if (ownScrollY != getOwnScrollY()) {
             // We still want to call the normal scrolled changed for accessibility reasons
-            onScrollChanged(mScrollX, ownScrollY, mScrollX, mOwnScrollY);
+            onScrollChanged(mScrollX, ownScrollY, mScrollX, getOwnScrollY());
             mOwnScrollY = ownScrollY;
-            mAmbientState.setScrollY(mOwnScrollY);
+            mAmbientState.setScrollY(getOwnScrollY());
             updateOnScrollChange();
             updateStackPosition(animateStackYChangeListener);
         }
     }
 
     private void updateOnScrollChange() {
+        SceneContainerFlag.assertInLegacyMode();
         if (mScrollListener != null) {
-            mScrollListener.accept(mOwnScrollY);
+            mScrollListener.accept(getOwnScrollY());
         }
         updateForwardAndBackwardScrollability();
         requestChildrenUpdate();
@@ -5002,10 +5311,41 @@ public class NotificationStackScrollLayout
         shelf.bind(mAmbientState, this, mController.getNotificationRoundnessManager());
     }
 
+    /**
+     * Whether the notifications are displayed over the unoccluded lockscreen. Returns false on the
+     * locked shade.
+     */
+    public boolean isOnLockscreen() {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return false;
+        return mIsOnLockscreen;
+    }
+
+    /** @see #isOnLockscreen() */
+    public void setOnLockscreen(boolean isOnLockscreen) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (mIsOnLockscreen != isOnLockscreen) {
+            mIsOnLockscreen = isOnLockscreen;
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i);
+                if (child instanceof ExpandableNotificationRow childRow) {
+                    childRow.setOnKeyguard(isOnLockscreen);
+                }
+            }
+        }
+    }
+
     public void setMaxDisplayedNotifications(int maxDisplayedNotifications) {
         if (mMaxDisplayedNotifications != maxDisplayedNotifications) {
             mMaxDisplayedNotifications = maxDisplayedNotifications;
-            updateContentHeight();
+            if (SceneContainerFlag.isEnabled()) {
+                updateIntrinsicStackHeight();
+                updateStackEndHeightAndStackHeight(mAmbientState.getExpansionFraction());
+                if (maxDisplayedNotifications == -1) {
+                    animateGoToFullShade(0);
+                }
+            } else {
+                updateContentHeight();
+            }
             notifyHeightChangeListener(mShelf);
         }
     }
@@ -5040,7 +5380,7 @@ public class NotificationStackScrollLayout
         updateClipping();
     }
 
-    /** TODO(b/328390331) make this private, when {@link NotificationsHeadsUpRefactor} is removed */
+    /** TODO(b/328390331) make this private, when {@link SceneContainerFlag} is removed */
     public void setHeadsUpAnimatingAway(boolean headsUpAnimatingAway) {
         if (mHeadsUpAnimatingAway != headsUpAnimatingAway) {
             mHeadsUpAnimatingAway = headsUpAnimatingAway;
@@ -5070,40 +5410,43 @@ public class NotificationStackScrollLayout
         updateDismissBehavior();
     }
 
-    void setUpcomingStatusBarState(int upcomingStatusBarState) {
-        FooterViewRefactor.assertInLegacyMode();
-        mUpcomingStatusBarState = upcomingStatusBarState;
-        if (mUpcomingStatusBarState != mStatusBarState) {
-            updateFooter();
-        }
+    @Override
+    public void setShowingStackOnLockscreen(boolean showingStackOnLockscreen) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mAmbientState.setShowingStackOnLockscreen(showingStackOnLockscreen);
+    }
+
+    @Override
+    public void setAlphaForLockscreenFadeIn(float alphaForLockscreenFadeIn) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mAmbientState.setLockscreenStackFadeInProgress(alphaForLockscreenFadeIn);
+        requestChildrenUpdate();
     }
 
     void onStatePostChange(boolean fromShadeLocked) {
         boolean onKeyguard = onKeyguard();
 
-        if (mHeadsUpAppearanceController != null) {
+        if (mHeadsUpAppearanceController != null && !StatusBarNoHunBehavior.isEnabled()) {
             mHeadsUpAppearanceController.onStateChanged();
         }
 
         setExpandingEnabled(!onKeyguard);
-        if (!FooterViewRefactor.isEnabled()) {
-            updateFooter();
-        }
         requestChildrenUpdate();
         onUpdateRowStates();
         updateVisibility();
     }
 
     public void setExpandingVelocity(float expandingVelocity) {
+        SceneContainerFlag.assertInLegacyMode();
         mAmbientState.setExpandingVelocity(expandingVelocity);
     }
 
     public float getOpeningHeight() {
-        if (mEmptyShadeView.getVisibility() == GONE) {
+        SceneContainerFlag.assertInLegacyMode();
+        if (mEmptyShadeView == null || mEmptyShadeView.getVisibility() == GONE) {
             return getMinExpansionHeight();
         } else {
-            return FooterViewRefactor.isEnabled() ? getAppearEndPosition()
-                    : getAppearEndPositionLegacy();
+            return getAppearEndPosition();
         }
     }
 
@@ -5112,11 +5455,18 @@ public class NotificationStackScrollLayout
     }
 
     public void setPanelFlinging(boolean flinging) {
+        SceneContainerFlag.assertInLegacyMode();
         mAmbientState.setFlinging(flinging);
         if (!flinging) {
             // re-calculate the stack height which was frozen while flinging
             updateStackPosition();
         }
+    }
+
+    @Override
+    public void suppressHeightUpdates(boolean suppress) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        mSuppressHeightUpdates = suppress;
     }
 
     public void setHeadsUpGoingAwayAnimationsAllowed(boolean headsUpGoingAwayAnimationsAllowed) {
@@ -5131,23 +5481,18 @@ public class NotificationStackScrollLayout
             println(pw, "pulsing", mPulsing);
             println(pw, "expanded", mIsExpanded);
             println(pw, "headsUpPinned", mInHeadsUpPinnedMode);
-            println(pw, "qsClipping", mShouldUseRoundedRectClipping);
+            println(pw, "roundedRectClipping", mShouldUseRoundedRectClipping);
+            println(pw, "negativeRoundedRectClipping", mShouldUseNegativeRoundedRectClipping);
             println(pw, "qsClipDismiss", mDismissUsingRowTranslationX);
             println(pw, "visibility", visibilityString(getVisibility()));
             println(pw, "alpha", getAlpha());
             println(pw, "suppressChildrenMeasureLayout", mSuppressChildrenMeasureAndLayout);
             println(pw, "scrollY", mAmbientState.getScrollY());
-            println(pw, "maxTopPadding", mMaxTopPadding);
             println(pw, "showShelfOnly", mShouldShowShelfOnly);
-            println(pw, "qsExpandFraction", mQsExpansionFraction);
-            println(pw, "isCurrentUserSetup", mIsCurrentUserSetup);
             println(pw, "hideAmount", mAmbientState.getHideAmount());
             println(pw, "ambientStateSwipingUp", mAmbientState.isSwipingUp());
             println(pw, "maxDisplayedNotifications", mMaxDisplayedNotifications);
-            println(pw, "intrinsicContentHeight", mIntrinsicContentHeight);
-            println(pw, "contentHeight", mContentHeight);
             println(pw, "intrinsicPadding", mIntrinsicPadding);
-            println(pw, "topPadding", getTopPadding());
             println(pw, "bottomPadding", mBottomPadding);
             dumpRoundedRectClipping(pw);
             println(pw, "requestedClipBounds", mRequestedClipBounds);
@@ -5172,6 +5517,14 @@ public class NotificationStackScrollLayout
             println(pw, "isSmallLandscapeLockscreenEnabled", mIsSmallLandscapeLockscreenEnabled);
             mNotificationStackSizeCalculator.dump(pw, args);
             mScrollViewFields.dump(pw);
+            if (!SceneContainerFlag.isEnabled()) {
+                // fields which will be removed with SceneContainer
+                println(pw, "intrinsicContentHeight", getIntrinsicContentHeight());
+                println(pw, "contentHeight", getContentHeight());
+                println(pw, "topPadding", getTopPadding());
+                println(pw, "maxTopPadding", getMaxTopPadding());
+                println(pw, "qsExpandFraction", getQsExpansionFraction());
+            }
         });
         pw.println();
         pw.println("Contents:");
@@ -5185,12 +5538,6 @@ public class NotificationStackScrollLayout
                     for (int i = 0; i < childCount; i++) {
                         ExpandableView child = getChildAtIndex(i);
                         child.dump(pw, args);
-                        if (!FooterViewRefactor.isEnabled()) {
-                            if (child instanceof FooterView) {
-                                DumpUtilsKt.withIncreasedIndent(pw,
-                                        () -> dumpFooterViewVisibility(pw));
-                            }
-                        }
                         pw.println();
                     }
                     int transientViewCount = getTransientViewCount();
@@ -5213,45 +5560,8 @@ public class NotificationStackScrollLayout
         pw.append(" r=").print(mRoundedRectClippingRight);
         pw.append(" b=").print(mRoundedRectClippingBottom);
         pw.append(" +y=").print(mRoundedRectClippingYTranslation);
-        pw.append("} topRadius=").print(mBgCornerRadii[0]);
-        pw.append(" bottomRadius=").println(mBgCornerRadii[4]);
-    }
-
-    private void dumpFooterViewVisibility(IndentingPrintWriter pw) {
-        FooterViewRefactor.assertInLegacyMode();
-        final boolean showDismissView = shouldShowDismissView();
-
-        pw.println("showFooterView: " + shouldShowFooterView(showDismissView));
-        DumpUtilsKt.withIncreasedIndent(
-                pw,
-                () -> {
-                    pw.println("showDismissView: " + showDismissView);
-                    DumpUtilsKt.withIncreasedIndent(
-                            pw,
-                            () -> {
-                                pw.println(
-                                        "hasActiveClearableNotifications: "
-                                                + mController.hasActiveClearableNotifications(
-                                                        ROWS_ALL));
-                            });
-                    pw.println();
-                    pw.println("showHistory: " + mController.isHistoryEnabled());
-                    pw.println();
-                    pw.println(
-                            "visibleNotificationCount: "
-                                    + mController.getVisibleNotificationCount());
-                    pw.println("mIsCurrentUserSetup: " + mIsCurrentUserSetup);
-                    pw.println("onKeyguard: " + onKeyguard());
-                    pw.println("mUpcomingStatusBarState: " + mUpcomingStatusBarState);
-                    pw.println("mQsExpansionFraction: " + mQsExpansionFraction);
-                    pw.println("mQsFullScreen: " + mQsFullScreen);
-                    pw.println(
-                            "mScreenOffAnimationController"
-                                    + ".shouldHideNotificationsFooter: "
-                                    + mScreenOffAnimationController
-                                            .shouldHideNotificationsFooter());
-                    pw.println("mIsRemoteInputActive: " + mIsRemoteInputActive);
-                });
+        pw.append("} topRadius=").print(mRoundedClipCornerRadii[0]);
+        pw.append(" bottomRadius=").println(mRoundedClipCornerRadii[4]);
     }
 
     public boolean isFullyHidden() {
@@ -5364,14 +5674,6 @@ public class NotificationStackScrollLayout
         clearNotifications(ROWS_GENTLE, closeShade, hideSilentSection);
     }
 
-    /** Legacy version of clearNotifications below. Uses the old data source for notif stats. */
-    void clearNotifications(@SelectedRows int selection, boolean closeShade) {
-        FooterViewRefactor.assertInLegacyMode();
-        final boolean hideSilentSection = !mController.hasNotifications(
-                ROWS_GENTLE, false /* clearable */);
-        clearNotifications(selection, closeShade, hideSilentSection);
-    }
-
     /**
      * Collects a list of visible rows, and animates them away in a staggered fashion as if they
      * were dismissed. Notifications are dismissed in the backend via onClearAllAnimationsEnd.
@@ -5426,26 +5728,9 @@ public class NotificationStackScrollLayout
         return canChildBeCleared(row) && matchesSelection(row, selection);
     }
 
-    /**
-     * Register a {@link View.OnClickListener} to be invoked when the Manage button is clicked.
-     */
-    public void setManageButtonClickListener(@Nullable OnClickListener listener) {
-        FooterViewRefactor.assertInLegacyMode();
-        mManageButtonClickListener = listener;
-        if (mFooterView != null) {
-            mFooterView.setManageButtonClickListener(mManageButtonClickListener);
-        }
-    }
-
-    @VisibleForTesting
-    protected void inflateFooterView() {
-        FooterViewRefactor.assertInLegacyMode();
-        FooterView footerView = (FooterView) LayoutInflater.from(mContext).inflate(
-                R.layout.status_bar_notification_footer, this, false);
-        setFooterView(footerView);
-    }
-
     private void inflateEmptyShadeView() {
+        ModesEmptyShadeFix.assertInLegacyMode();
+
         EmptyShadeView oldView = mEmptyShadeView;
         EmptyShadeView view = (EmptyShadeView) LayoutInflater.from(mContext).inflate(
                 R.layout.status_bar_no_notifications, this, false);
@@ -5545,7 +5830,12 @@ public class NotificationStackScrollLayout
                             + view.getActualHeight() - mShelf.getIntrinsicHeight();
                 }
             } else if (!firstVisibleView) {
-                view.setTranslationY(wakeUplocation);
+                if (physicalNotificationMovement()) {
+                    PhysicsPropertyAnimator.setProperty(view, PhysicsPropertyAnimator.Y_TRANSLATION,
+                            wakeUplocation);
+                } else {
+                    view.setTranslationY(wakeUplocation);
+                }
             }
         }
     }
@@ -5555,6 +5845,11 @@ public class NotificationStackScrollLayout
     }
 
     public float calculateAppearFractionBypass() {
+        SceneContainerFlag.assertInLegacyMode();
+        return calculateAppearFractionBypassInternal();
+    }
+
+    private float calculateAppearFractionBypassInternal() {
         float pulseHeight = getPulseHeight();
         // The total distance required to fully reveal the header
         float totalDistance = getIntrinsicPadding();
@@ -5565,6 +5860,10 @@ public class NotificationStackScrollLayout
             NotificationStackScrollLayoutController notificationStackScrollLayoutController) {
         mController = notificationStackScrollLayoutController;
         mController.getNotificationRoundnessManager().setAnimatedChildren(mChildrenToAddAnimated);
+    }
+
+    public void setWallpaperInteractor(WallpaperInteractor wallpaperInteractor) {
+        mWallpaperInteractor = wallpaperInteractor;
     }
 
     void addSwipedOutView(View v) {
@@ -5580,17 +5879,22 @@ public class NotificationStackScrollLayout
                 getChildrenWithBackground()
         );
 
-        RoundableTargets targets = mController.getNotificationTargetsHelper().findRoundableTargets(
-                (ExpandableNotificationRow) viewSwiped,
-                this,
-                mSectionsManager
-        );
+        if (!magneticNotificationSwipes()) {
+            RoundableTargets targets = mController
+                    .getNotificationTargetsHelper()
+                    .findRoundableTargets(
+                            (ExpandableNotificationRow) viewSwiped,
+                            this,
+                            mSectionsManager);
 
-        mController.getNotificationRoundnessManager()
-                .setViewsAffectedBySwipe(
-                        targets.getBefore(),
-                        targets.getSwiped(),
-                        targets.getAfter());
+            mController.getNotificationRoundnessManager()
+                    .setViewsAffectedBySwipe(
+                            targets.getBefore(),
+                            targets.getSwiped(),
+                            targets.getAfter());
+            mController.getNotificationRoundnessManager()
+                    .setRoundnessForAffectedViews(/* roundness */ 1f);
+        }
 
         updateFirstAndLastBackgroundViews();
         requestDisallowInterceptTouchEvent(true);
@@ -5600,8 +5904,10 @@ public class NotificationStackScrollLayout
 
     void onSwipeEnd() {
         updateFirstAndLastBackgroundViews();
-        mController.getNotificationRoundnessManager()
-                .setViewsAffectedBySwipe(null, null, null);
+        if (!magneticNotificationSwipes()) {
+            mController.getNotificationRoundnessManager()
+                    .setViewsAffectedBySwipe(null, null, null);
+        }
         // Round bottom corners for notification right before shelf.
         mShelf.updateAppearance();
     }
@@ -5639,7 +5945,7 @@ public class NotificationStackScrollLayout
         return mDisallowScrollingInThisMotion;
     }
 
-    boolean isBeingDragged() {
+    public boolean isBeingDragged() {
         return mIsBeingDragged;
     }
 
@@ -5680,11 +5986,6 @@ public class NotificationStackScrollLayout
         mHighPriorityBeforeSpeedBump = highPriorityBeforeSpeedBump;
     }
 
-    void setFooterClearAllListener(FooterClearAllListener listener) {
-        FooterViewRefactor.assertInLegacyMode();
-        mFooterClearAllListener = listener;
-    }
-
     void setClearAllFinishedWhilePanelExpandedRunnable(Runnable runnable) {
         mClearAllFinishedWhilePanelExpandedRunnable = runnable;
     }
@@ -5715,17 +6016,16 @@ public class NotificationStackScrollLayout
      * Set a listener to when scrolling changes.
      */
     public void setOnScrollListener(Consumer<Integer> listener) {
+        SceneContainerFlag.assertInLegacyMode();
         mScrollListener = listener;
     }
 
-    /**
-     * Set rounded rect clipping bounds on this view.
-     */
+    /** Sets rounded rect where the view is allowed to draw. */
     @Override
-    public void setScrimClippingShape(@Nullable ShadeScrimShape shape) {
+    public void setClippingShape(@Nullable ShadeScrimShape shape) {
         if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
-        if (Objects.equals(mScrollViewFields.getScrimClippingShape(), shape)) return;
-        mScrollViewFields.setScrimClippingShape(shape);
+        if (Objects.equals(mScrollViewFields.getClippingShape(), shape)) return;
+        mScrollViewFields.setClippingShape(shape);
         mShouldUseRoundedRectClipping = shape != null;
         mRoundedClipPath.reset();
         if (shape != null) {
@@ -5734,19 +6034,58 @@ public class NotificationStackScrollLayout
             mRoundedRectClippingTop = (int) bounds.getTop();
             mRoundedRectClippingRight = (int) bounds.getRight();
             mRoundedRectClippingBottom = (int) bounds.getBottom();
-            mBgCornerRadii[0] = shape.getTopRadius();
-            mBgCornerRadii[1] = shape.getTopRadius();
-            mBgCornerRadii[2] = shape.getTopRadius();
-            mBgCornerRadii[3] = shape.getTopRadius();
-            mBgCornerRadii[4] = shape.getBottomRadius();
-            mBgCornerRadii[5] = shape.getBottomRadius();
-            mBgCornerRadii[6] = shape.getBottomRadius();
-            mBgCornerRadii[7] = shape.getBottomRadius();
+            mRoundedClipCornerRadii[0] = shape.getTopRadius();
+            mRoundedClipCornerRadii[1] = shape.getTopRadius();
+            mRoundedClipCornerRadii[2] = shape.getTopRadius();
+            mRoundedClipCornerRadii[3] = shape.getTopRadius();
+            mRoundedClipCornerRadii[4] = shape.getBottomRadius();
+            mRoundedClipCornerRadii[5] = shape.getBottomRadius();
+            mRoundedClipCornerRadii[6] = shape.getBottomRadius();
+            mRoundedClipCornerRadii[7] = shape.getBottomRadius();
             mRoundedClipPath.addRoundRect(
                     bounds.getLeft(), bounds.getTop(), bounds.getRight(), bounds.getBottom(),
-                    mBgCornerRadii, Path.Direction.CW);
+                    mRoundedClipCornerRadii, Path.Direction.CW);
         }
         invalidate();
+    }
+
+    @Override
+    public void setNegativeClippingShape(@Nullable ShadeScrimShape shape) {
+        if (SceneContainerFlag.isUnexpectedlyInLegacyMode()) return;
+        if (Objects.equals(mScrollViewFields.getNegativeClippingShape(), shape)) return;
+
+        mScrollViewFields.setNegativeClippingShape(shape);
+        mShouldUseNegativeRoundedRectClipping = shape != null;
+        mNegativeRoundedClipPath.reset();
+        if (shape != null) {
+            ShadeScrimBounds bounds = shape.getBounds();
+            float bottomRadius = shape.getBottomRadius();
+            mNegativeRoundedClipPath.addRoundRect(
+                    bounds.getLeft(), bounds.getTop(), bounds.getRight(), bounds.getBottom(),
+                    new float[]{0, 0, 0, 0, bottomRadius, bottomRadius, bottomRadius, bottomRadius},
+                    Path.Direction.CW);
+        }
+        invalidate();
+    }
+
+    @Override
+    public void setBlurRadius(float blurRadius) {
+        if (mBlurRadius != blurRadius) {
+            mBlurRadius = blurRadius;
+            updateBlurEffect();
+            invalidate();
+        }
+    }
+
+    private void updateBlurEffect() {
+        if (mBlurRadius > 0) {
+            mBlurEffect =
+                    RenderEffect.createBlurEffect(mBlurRadius, mBlurRadius, Shader.TileMode.CLAMP);
+            spewLog("Setting up blur RenderEffect for NotificationStackScrollLayout");
+        } else {
+            spewLog("Clearing the blur RenderEffect setup for NotificationStackScrollLayout");
+            mBlurEffect = null;
+        }
     }
 
     /**
@@ -5757,21 +6096,22 @@ public class NotificationStackScrollLayout
         SceneContainerFlag.assertInLegacyMode();
         if (mRoundedRectClippingLeft == left && mRoundedRectClippingRight == right
                 && mRoundedRectClippingBottom == bottom && mRoundedRectClippingTop == top
-                && mBgCornerRadii[0] == topRadius && mBgCornerRadii[5] == bottomRadius) {
+                && mRoundedClipCornerRadii[0] == topRadius
+                && mRoundedClipCornerRadii[5] == bottomRadius) {
             return;
         }
         mRoundedRectClippingLeft = left;
         mRoundedRectClippingTop = top;
         mRoundedRectClippingBottom = bottom;
         mRoundedRectClippingRight = right;
-        mBgCornerRadii[0] = topRadius;
-        mBgCornerRadii[1] = topRadius;
-        mBgCornerRadii[2] = topRadius;
-        mBgCornerRadii[3] = topRadius;
-        mBgCornerRadii[4] = bottomRadius;
-        mBgCornerRadii[5] = bottomRadius;
-        mBgCornerRadii[6] = bottomRadius;
-        mBgCornerRadii[7] = bottomRadius;
+        mRoundedClipCornerRadii[0] = topRadius;
+        mRoundedClipCornerRadii[1] = topRadius;
+        mRoundedClipCornerRadii[2] = topRadius;
+        mRoundedClipCornerRadii[3] = topRadius;
+        mRoundedClipCornerRadii[4] = bottomRadius;
+        mRoundedClipCornerRadii[5] = bottomRadius;
+        mRoundedClipCornerRadii[6] = bottomRadius;
+        mRoundedClipCornerRadii[7] = bottomRadius;
         updateRoundedClipPath();
     }
 
@@ -5793,7 +6133,7 @@ public class NotificationStackScrollLayout
                 mRoundedRectClippingTop + mRoundedRectClippingYTranslation,
                 mRoundedRectClippingRight,
                 mRoundedRectClippingBottom + mRoundedRectClippingYTranslation,
-                mBgCornerRadii, Path.Direction.CW);
+                mRoundedClipCornerRadii, Path.Direction.CW);
         if (mShouldUseRoundedRectClipping) {
             invalidate();
         }
@@ -5823,7 +6163,7 @@ public class NotificationStackScrollLayout
                 View child = getChildAt(i);
                 if (child instanceof ExpandableNotificationRow) {
                     ((ExpandableNotificationRow) child).setDismissUsingRowTranslationX(
-                            dismissUsingRowTranslationX);
+                            dismissUsingRowTranslationX, /* force= */ false);
                 }
             }
         }
@@ -5855,7 +6195,8 @@ public class NotificationStackScrollLayout
         if (SceneContainerFlag.isEnabled()) return;
         // We don't want to clip notifications when QS is expanded, because incoming heads up on
         // the bottom would be clipped otherwise
-        boolean qsAllowsClipping = mQsExpansionFraction < 0.5f || mShouldUseSplitNotificationShade;
+        boolean qsAllowsClipping =
+                getQsExpansionFraction() < 0.5f || mShouldUseSplitNotificationShade;
         boolean clip = mIsExpanded && qsAllowsClipping;
         if (clip != mShouldUseRoundedRectClipping) {
             mShouldUseRoundedRectClipping = clip;
@@ -5916,40 +6257,101 @@ public class NotificationStackScrollLayout
     }
 
     @Override
-    protected void dispatchDraw(Canvas canvas) {
-        if (mShouldUseRoundedRectClipping && !mLaunchingNotification) {
-            // When launching notifications, we're clipping the children individually instead of in
-            // dispatchDraw
-            // Let's clip rounded.
+    protected void dispatchDraw(@NonNull Canvas canvas) {
+        if (mBlurEffect != null) {
+            spewLog("Applying blur RenderEffect to NotificationStackScrollLayout");
+            // reuse the cached RenderNode to blur
+            mBlurNode.setPosition(0, 0, canvas.getWidth(), canvas.getHeight());
+            mBlurNode.setRenderEffect(mBlurEffect);
+            Canvas blurCanvas = mBlurNode.beginRecording();
+            // draw all the children (except HUNs) on the blurred canvas
+            super.dispatchDraw(blurCanvas);
+            mBlurNode.endRecording();
+            // apply clipping to the canvas
+            int saveCount = canvas.save();
+            applyClipToCanvas(canvas);
+            // draw the blurred content to the clipped canvas
+            canvas.drawRenderNode(mBlurNode);
+            // restore the canvas, so it doesn't clip anymore
+            canvas.restoreToCount(saveCount);
+            // draw the children that were left out during the dispatchDraw phase
+            for (int i = 0; i < getChildCount(); i++) {
+                // TODO(b/388469101) draw these children in z-order
+                ExpandableView child = getChildAtIndex(i);
+                if (shouldSkipBlurForChild(child)) {
+                    super.drawChild(canvas, child, getDrawingTime());
+                }
+            }
+        } else {
+            if (!mLaunchingNotification) {
+                // When launching notifications, we're clipping the children individually instead
+                //  of in dispatchDraw
+                applyClipToCanvas(canvas);
+            }
+            super.dispatchDraw(canvas);
+        }
+    }
+
+    private void applyClipToCanvas(Canvas canvas) {
+        if (mShouldUseRoundedRectClipping) {
+            // clip by the positive path if it is defined
             canvas.clipPath(mRoundedClipPath);
         }
-        super.dispatchDraw(canvas);
+        if (mShouldUseNegativeRoundedRectClipping) {
+            // subtract the negative path if it is defined
+            canvas.clipOutPath(mNegativeRoundedClipPath);
+        }
     }
 
     @Override
     protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
-        if (mShouldUseRoundedRectClipping && mLaunchingNotification) {
+        boolean shouldUseClipping =
+                mShouldUseRoundedRectClipping || mShouldUseNegativeRoundedRectClipping;
+        if (mBlurEffect != null) {
+            if (shouldSkipBlurForChild(child)) {
+                // skip drawing this child during the regular dispatchDraw pass
+                return false;
+            } else {
+                // draw the child as if nothing happened, non-blurred elements shouldn't be
+                // affected by clipping either
+                return super.drawChild(canvas, child, drawingTime);
+            }
+        } else if (mLaunchingNotification && shouldUseClipping) {
             // Let's clip children individually during notification launch
             canvas.save();
             ExpandableView expandableView = (ExpandableView) child;
             Path clipPath;
+            Path clipOutPath;
             if (expandableView.isExpandAnimationRunning()
                     || ((ExpandableView) child).hasExpandingChild()) {
                 // When launching the notification, it is not clipped by this layout, but by the
                 // view itself. This is because the view is Translating in Z, where this clipPath
                 // wouldn't apply.
                 clipPath = null;
+                clipOutPath = null;
             } else {
                 clipPath = mRoundedClipPath;
+                clipOutPath = mNegativeRoundedClipPath;
             }
-            if (clipPath != null) {
+            if (mShouldUseRoundedRectClipping && clipPath != null) {
                 canvas.clipPath(clipPath);
+            }
+            if (mShouldUseNegativeRoundedRectClipping && clipOutPath != null) {
+                canvas.clipOutPath(clipOutPath);
             }
             boolean result = super.drawChild(canvas, child, drawingTime);
             canvas.restore();
             return result;
         } else {
             return super.drawChild(canvas, child, drawingTime);
+        }
+    }
+
+    private boolean shouldSkipBlurForChild(View child) {
+        if (child instanceof ExpandableView row) {
+            return row.isHeadsUpState();
+        } else {
+            return false;
         }
     }
 
@@ -5978,17 +6380,6 @@ public class NotificationStackScrollLayout
      */
     public void animateNextTopPaddingChange() {
         mAnimateNextTopPaddingChange = true;
-    }
-
-    /**
-     * Sets whether the current user is set up, which is required to show the footer (b/193149550)
-     */
-    public void setCurrentUserSetup(boolean isCurrentUserSetup) {
-        FooterViewRefactor.assertInLegacyMode();
-        if (mIsCurrentUserSetup != isCurrentUserSetup) {
-            mIsCurrentUserSetup = isCurrentUserSetup;
-            updateFooter();
-        }
     }
 
     /**
@@ -6087,13 +6478,16 @@ public class NotificationStackScrollLayout
     static boolean matchesSelection(
             ExpandableNotificationRow row,
             @SelectedRows int selection) {
+        int bucket = NotificationBundleUi.isEnabled()
+                ? row.getEntryAdapter().getSectionBucket()
+                : row.getEntryLegacy().getBucket();
         switch (selection) {
             case ROWS_ALL:
                 return true;
             case ROWS_HIGH_PRIORITY:
-                return row.getEntry().getBucket() < BUCKET_SILENT;
+                return bucket < BUCKET_SILENT;
             case ROWS_GENTLE:
-                return row.getEntry().getBucket() == BUCKET_SILENT;
+                return bucket == BUCKET_SILENT;
             default:
                 throw new IllegalArgumentException("Unknown selection: " + selection);
         }
@@ -6104,30 +6498,50 @@ public class NotificationStackScrollLayout
         static AnimationFilter[] FILTERS = new AnimationFilter[]{
 
                 // ANIMATION_TYPE_ADD
-                new AnimationFilter()
-                        .animateAlpha()
-                        .animateHeight()
-                        .animateTopInset()
-                        .animateY()
-                        .animateZ()
-                        .hasDelays(),
+                physicalNotificationMovement()
+                        ? new AnimationFilter()
+                                .animateAlpha()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                        : new AnimationFilter()
+                                .animateAlpha()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                                .hasDelays(),
 
                 // ANIMATION_TYPE_REMOVE
-                new AnimationFilter()
-                        .animateAlpha()
-                        .animateHeight()
-                        .animateTopInset()
-                        .animateY()
-                        .animateZ()
-                        .hasDelays(),
+                physicalNotificationMovement()
+                        ? new AnimationFilter()
+                                .animateAlpha()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                        : new AnimationFilter()
+                                .animateAlpha()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                                .hasDelays(),
 
                 // ANIMATION_TYPE_REMOVE_SWIPED_OUT
-                new AnimationFilter()
-                        .animateHeight()
-                        .animateTopInset()
-                        .animateY()
-                        .animateZ()
-                        .hasDelays(),
+                physicalNotificationMovement()
+                        ? new AnimationFilter()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                        : new AnimationFilter()
+                                .animateHeight()
+                                .animateTopInset()
+                                .animateY()
+                                .animateZ()
+                                .hasDelays(),
 
                 // ANIMATION_TYPE_TOP_PADDING_CHANGED
                 new AnimationFilter()
@@ -6317,6 +6731,7 @@ public class NotificationStackScrollLayout
         final long length;
         View viewAfterChangingView;
         boolean headsUpFromBottom;
+        boolean headsUpHasStatusBarChip;
 
         AnimationEvent(ExpandableView view, int type) {
             this(view, type, LENGTHS[type]);
@@ -6361,17 +6776,14 @@ public class NotificationStackScrollLayout
 
     static boolean canChildBeDismissed(View v) {
         if (v instanceof ExpandableNotificationRow row) {
-            if (row.areGutsExposed() || !row.getEntry().hasFinishedInitialization()) {
-                return false;
-            }
-            return row.canViewBeDismissed();
+            return row.canExpandableViewBeDismissed();
         }
         return false;
     }
 
     static boolean canChildBeCleared(View v) {
         if (v instanceof ExpandableNotificationRow row) {
-            if (row.areGutsExposed() || !row.getEntry().hasFinishedInitialization()) {
+            if (row.areGutsExposed() || !row.hasFinishedInitialization()) {
                 return false;
             }
             return row.canViewBeCleared();
@@ -6432,15 +6844,42 @@ public class NotificationStackScrollLayout
             mExpandedGroupView = changedRow;
             mNeedsAnimation = true;
         }
-        changedRow.setChildrenExpanded(expanded, animated);
-        onChildHeightChanged(changedRow, false /* needsAnimation */);
 
-        runAfterAnimationFinished(new Runnable() {
-            @Override
-            public void run() {
-                changedRow.onFinishedExpansionChange();
-            }
-        });
+        changedRow.setChildrenExpanded(expanded);
+        onChildHeightChanged(changedRow, false /* needsAnimation */);
+        updateGroupHeaderAlignment(changedRow, expanded);
+
+        runAfterAnimationFinished(changedRow::onFinishedExpansionChange);
+    }
+
+    private void updateGroupHeaderAlignment(ExpandableNotificationRow row, boolean expanded) {
+        if (!notificationsRedesignTemplates()) {
+            return;
+        }
+
+        NotificationChildrenContainer childrenContainer = row.getChildrenContainer();
+        if (childrenContainer == null) {
+            Log.wtf(TAG, "Tried to update group header alignment for something that's "
+                    + "not a group; key = " + row.getKey());
+            return;
+        }
+        NotificationHeaderView header = childrenContainer.getGroupHeader();
+        if (header != null) {
+            resetYTranslation(header.getTopLineView());
+            resetYTranslation(header.getExpandButton());
+            header.centerTopLine(expanded);
+        }
+    }
+
+    /**
+     * Reset the y translation of the {@code view} via the {@link ViewState}, to ensure that the
+     * animation state is updated correctly.
+     */
+    private static void resetYTranslation(View view) {
+        ViewState viewState = new ViewState();
+        viewState.initFrom(view);
+        viewState.setYTranslation(0);
+        viewState.applyToView(view);
     }
 
     private final ExpandHelper.Callback mExpandHelperCallback = new ExpandHelper.Callback() {
@@ -6504,7 +6943,7 @@ public class NotificationStackScrollLayout
         public void expansionStateChanged(boolean isExpanding) {
             mExpandingNotification = isExpanding;
             if (!mExpandedInThisMotion) {
-                mMaxScrollAfterExpand = mOwnScrollY;
+                mMaxScrollAfterExpand = getOwnScrollY();
                 mExpandedInThisMotion = true;
             }
         }
@@ -6552,24 +6991,52 @@ public class NotificationStackScrollLayout
         void onClearAll(@SelectedRows int selectedRows);
     }
 
-    interface FooterClearAllListener {
-        void onClearAll();
-    }
-
     interface ClearAllAnimationListener {
         void onAnimationEnd(
                 List<ExpandableNotificationRow> viewsToRemove, @SelectedRows int selectedRows);
     }
 
+    // -------------------- Getters / Setters for the SceneContainer refactor ----------------------
+
+    /** Use {@link ScrollViewFields#intrinsicStackHeight}, when SceneContainerFlag is enabled. */
+    private int getContentHeight() {
+        SceneContainerFlag.assertInLegacyMode();
+        return mContentHeight;
+    }
+
+    private void setContentHeight(int contentHeight) {
+        SceneContainerFlag.assertInLegacyMode();
+        mContentHeight = contentHeight;
+    }
+
     /**
-     *
+     * Use {@link ScrollViewFields#intrinsicStackHeight}, when SceneContainerFlag is enabled.
+     * @return the height of the content ignoring the footer.
      */
-    public interface OnNotificationRemovedListener {
-        /**
-         *
-         * @param child
-         * @param isTransferInProgress
-         */
-        void onNotificationRemoved(ExpandableView child, boolean isTransferInProgress);
+    public float getIntrinsicContentHeight() {
+        SceneContainerFlag.assertInLegacyMode();
+        return mIntrinsicContentHeight;
+    }
+
+    private void setIntrinsicContentHeight(float intrinsicContentHeight) {
+        SceneContainerFlag.assertInLegacyMode();
+        mIntrinsicContentHeight = intrinsicContentHeight;
+    }
+
+    private int getMaxTopPadding() {
+        SceneContainerFlag.assertInLegacyMode();
+        return mMaxTopPadding;
+    }
+
+    /** Not used with SceneContainerFlag, because we rely on the placeholder for placement. */
+    public void setMaxTopPadding(int maxTopPadding) {
+        SceneContainerFlag.assertInLegacyMode();
+        mMaxTopPadding = maxTopPadding;
+    }
+
+    private void spewLog(String logMsg) {
+        if (SPEW) {
+            Log.v(TAG, logMsg);
+        }
     }
 }

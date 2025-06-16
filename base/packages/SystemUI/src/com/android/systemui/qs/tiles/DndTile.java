@@ -42,13 +42,14 @@ import androidx.annotation.Nullable;
 import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
-import com.android.settingslib.notification.EnableZenModeDialog;
+import com.android.settingslib.notification.modes.EnableDndDialogFactory;
 import com.android.systemui.Prefs;
 import com.android.systemui.animation.DialogCuj;
 import com.android.systemui.animation.DialogTransitionAnimator;
 import com.android.systemui.animation.Expandable;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.modes.shared.ModesUi;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
@@ -58,7 +59,7 @@ import com.android.systemui.qs.QsEventLogger;
 import com.android.systemui.qs.UserSettingObserver;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
-import com.android.systemui.qs.tiles.dialog.QSZenModeDialogMetricsLogger;
+import com.android.systemui.qs.tiles.dialog.QSEnableDndDialogMetricsLogger;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
 import com.android.systemui.statusbar.policy.ZenModeController;
@@ -83,7 +84,7 @@ public class DndTile extends QSTileImpl<BooleanState> {
     private final SharedPreferences mSharedPreferences;
     private final UserSettingObserver mSettingZenDuration;
     private final DialogTransitionAnimator mDialogTransitionAnimator;
-    private final QSZenModeDialogMetricsLogger mQSZenDialogMetricsLogger;
+    private final QSEnableDndDialogMetricsLogger mQSDndDurationDialogLogger;
 
     private boolean mListening;
 
@@ -105,6 +106,10 @@ public class DndTile extends QSTileImpl<BooleanState> {
     ) {
         super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
                 statusBarStateController, activityStarter, qsLogger);
+
+        // If the flag is on, this shouldn't run at all since the modes tile replaces the DND tile.
+        ModesUi.assertInLegacyMode();
+
         mController = zenModeController;
         mSharedPreferences = sharedPreferences;
         mController.observe(getLifecycle(), mZenCallback);
@@ -116,7 +121,7 @@ public class DndTile extends QSTileImpl<BooleanState> {
                 refreshState();
             }
         };
-        mQSZenDialogMetricsLogger = new QSZenModeDialogMetricsLogger(mContext);
+        mQSDndDurationDialogLogger = new QSEnableDndDialogMetricsLogger(mContext);
     }
 
     public static void setVisible(Context context, boolean visible) {
@@ -164,57 +169,41 @@ public class DndTile extends QSTileImpl<BooleanState> {
 
     private void enableZenMode(@Nullable Expandable expandable) {
         int zenDuration = mSettingZenDuration.getValue();
-        boolean showOnboarding = Settings.Secure.getInt(mContext.getContentResolver(),
-                Settings.Secure.SHOW_ZEN_UPGRADE_NOTIFICATION, 0) != 0
-                && Settings.Secure.getInt(mContext.getContentResolver(),
-                Settings.Secure.ZEN_SETTINGS_UPDATED, 0) != 1;
-        if (showOnboarding) {
-            // don't show on-boarding again or notification ever
-            Settings.Secure.putInt(mContext.getContentResolver(),
-                    Settings.Secure.SHOW_ZEN_UPGRADE_NOTIFICATION, 0);
-            // turn on DND
-            mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS, null, TAG);
-            // show on-boarding screen
-            Intent intent = new Intent(Settings.ZEN_MODE_ONBOARDING);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-            mActivityStarter.postStartActivityDismissingKeyguard(intent, 0);
-        } else {
-            switch (zenDuration) {
-                case Settings.Secure.ZEN_DURATION_PROMPT:
-                    mUiHandler.post(() -> {
-                        Dialog dialog = makeZenModeDialog();
-                        if (expandable != null) {
-                            DialogTransitionAnimator.Controller controller =
-                                    expandable.dialogTransitionController(new DialogCuj(
-                                            InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN,
-                                            INTERACTION_JANK_TAG));
-                            if (controller != null) {
-                                mDialogTransitionAnimator.show(dialog,
-                                        controller, /* animateBackgroundBoundsChange= */ false);
-                            } else {
-                                dialog.show();
-                            }
+        switch (zenDuration) {
+            case Settings.Secure.ZEN_DURATION_PROMPT:
+                mUiHandler.post(() -> {
+                    Dialog dialog = makeZenModeDialog();
+                    if (expandable != null) {
+                        DialogTransitionAnimator.Controller controller =
+                                expandable.dialogTransitionController(new DialogCuj(
+                                        InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN,
+                                        INTERACTION_JANK_TAG));
+                        if (controller != null) {
+                            mDialogTransitionAnimator.show(dialog,
+                                    controller, /* animateBackgroundBoundsChange= */ false);
                         } else {
                             dialog.show();
                         }
-                    });
-                    break;
-                case Settings.Secure.ZEN_DURATION_FOREVER:
-                    mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS, null, TAG);
-                    break;
-                default:
-                    Uri conditionId = ZenModeConfig.toTimeCondition(mContext, zenDuration,
-                            mHost.getUserId(), true).id;
-                    mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS,
-                            conditionId, TAG);
-            }
+                    } else {
+                        dialog.show();
+                    }
+                });
+                break;
+            case Settings.Secure.ZEN_DURATION_FOREVER:
+                mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS, null, TAG);
+                break;
+            default:
+                Uri conditionId = ZenModeConfig.toTimeCondition(mContext, zenDuration,
+                        mHost.getUserId(), true).id;
+                mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS,
+                        conditionId, TAG);
         }
     }
 
     private Dialog makeZenModeDialog() {
-        AlertDialog dialog = new EnableZenModeDialog(mContext, R.style.Theme_SystemUI_Dialog,
+        AlertDialog dialog = new EnableDndDialogFactory(mContext, R.style.Theme_SystemUI_Dialog,
                 true /* cancelIsNeutral */,
-                mQSZenDialogMetricsLogger).createDialog();
+                mQSDndDurationDialogLogger).createDialog();
         SystemUIDialog.applyFlags(dialog);
         SystemUIDialog.setShowForAllUsers(dialog, true);
         SystemUIDialog.registerDismissListener(dialog);
@@ -240,7 +229,7 @@ public class DndTile extends QSTileImpl<BooleanState> {
         state.dualTarget = true;
         state.value = newValue;
         state.state = state.value ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
-        state.icon = ResourceIcon.get(state.value
+        state.icon = maybeLoadResourceIcon(state.value
                 ? R.drawable.qs_dnd_icon_on
                 : R.drawable.qs_dnd_icon_off);
         state.label = getTileLabel();
@@ -253,18 +242,20 @@ public class DndTile extends QSTileImpl<BooleanState> {
             case Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS:
                 state.contentDescription =
                         mContext.getString(R.string.accessibility_quick_settings_dnd) + ", "
-                        + state.secondaryLabel;
+                                + state.secondaryLabel;
                 break;
             case Global.ZEN_MODE_NO_INTERRUPTIONS:
                 state.contentDescription =
                         mContext.getString(R.string.accessibility_quick_settings_dnd) + ", " +
-                        mContext.getString(R.string.accessibility_quick_settings_dnd_none_on)
+                                mContext.getString(
+                                        R.string.accessibility_quick_settings_dnd_none_on)
                                 + ", " + state.secondaryLabel;
                 break;
             case ZEN_MODE_ALARMS:
                 state.contentDescription =
                         mContext.getString(R.string.accessibility_quick_settings_dnd) + ", " +
-                        mContext.getString(R.string.accessibility_quick_settings_dnd_alarms_on)
+                                mContext.getString(
+                                        R.string.accessibility_quick_settings_dnd_alarms_on)
                                 + ", " + state.secondaryLabel;
                 break;
             default:

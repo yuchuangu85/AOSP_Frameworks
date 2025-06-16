@@ -32,6 +32,7 @@ import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.fragments.FragmentService;
+import com.android.systemui.media.NotificationMediaManager;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.navigationbar.NavigationBarController;
 import com.android.systemui.navigationbar.NavigationModeController;
@@ -39,22 +40,19 @@ import com.android.systemui.plugins.DarkIconDispatcher;
 import com.android.systemui.plugins.PluginManager;
 import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
-import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.recents.LauncherProxyService;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.CommandQueue;
-import com.android.systemui.statusbar.NotificationMediaManager;
 import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
 import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
 import com.android.systemui.statusbar.notification.stack.AmbientState;
 import com.android.systemui.statusbar.notification.stack.NotificationSectionsManager;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
-import com.android.systemui.statusbar.phone.StatusBarContentInsetsProvider;
 import com.android.systemui.statusbar.phone.SystemUIDialogManager;
 import com.android.systemui.statusbar.policy.BluetoothController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
-import com.android.systemui.statusbar.window.StatusBarWindowController;
-import com.android.systemui.tuner.TunablePadding.TunablePaddingService;
+import com.android.systemui.statusbar.window.StatusBarWindowControllerStore;
 import com.android.systemui.tuner.TunerService;
 
 import dagger.Lazy;
@@ -129,10 +127,9 @@ public class Dependency {
     @Nullable
     @Inject Lazy<VolumeDialogController> mVolumeDialogController;
     @Inject Lazy<MetricsLogger> mMetricsLogger;
-    @Inject Lazy<TunablePaddingService> mTunablePaddingService;
     @Inject Lazy<UiOffloadThread> mUiOffloadThread;
     @Inject Lazy<LightBarController> mLightBarController;
-    @Inject Lazy<OverviewProxyService> mOverviewProxyService;
+    @Inject Lazy<LauncherProxyService> mLauncherProxyService;
     @Inject Lazy<NavigationModeController> mNavBarModeController;
     @Inject Lazy<NavigationBarController> mNavigationBarController;
     @Inject Lazy<StatusBarStateController> mStatusBarStateController;
@@ -142,7 +139,6 @@ public class Dependency {
     @Inject Lazy<SysUiState> mSysUiStateFlagsContainer;
     @Inject Lazy<CommandQueue> mCommandQueue;
     @Inject Lazy<UiEventLogger> mUiEventLogger;
-    @Inject Lazy<StatusBarContentInsetsProvider> mContentInsetsProviderLazy;
     @Inject Lazy<FeatureFlags> mFeatureFlagsLazy;
     @Inject Lazy<NotificationSectionsManager> mNotificationSectionsManagerLazy;
     @Inject Lazy<ScreenOffAnimationController> mScreenOffAnimationController;
@@ -152,7 +148,7 @@ public class Dependency {
     @Inject Lazy<SystemUIDialogManager> mSystemUIDialogManagerLazy;
     @Inject Lazy<DialogTransitionAnimator> mDialogTransitionAnimatorLazy;
     @Inject Lazy<UserTracker> mUserTrackerLazy;
-    @Inject Lazy<StatusBarWindowController> mStatusBarWindowControllerLazy;
+    @Inject Lazy<StatusBarWindowControllerStore> mStatusBarWindowControllerStoreLazy;
 
     @Inject
     public Dependency() {
@@ -177,10 +173,9 @@ public class Dependency {
         mProviders.put(FragmentService.class, mFragmentService::get);
         mProviders.put(VolumeDialogController.class, mVolumeDialogController::get);
         mProviders.put(MetricsLogger.class, mMetricsLogger::get);
-        mProviders.put(TunablePaddingService.class, mTunablePaddingService::get);
         mProviders.put(UiOffloadThread.class, mUiOffloadThread::get);
         mProviders.put(LightBarController.class, mLightBarController::get);
-        mProviders.put(OverviewProxyService.class, mOverviewProxyService::get);
+        mProviders.put(LauncherProxyService.class, mLauncherProxyService::get);
         mProviders.put(NavigationModeController.class, mNavBarModeController::get);
         mProviders.put(NavigationBarController.class, mNavigationBarController::get);
         mProviders.put(StatusBarStateController.class, mStatusBarStateController::get);
@@ -189,7 +184,6 @@ public class Dependency {
         mProviders.put(CommandQueue.class, mCommandQueue::get);
         mProviders.put(UiEventLogger.class, mUiEventLogger::get);
         mProviders.put(FeatureFlags.class, mFeatureFlagsLazy::get);
-        mProviders.put(StatusBarContentInsetsProvider.class, mContentInsetsProviderLazy::get);
         mProviders.put(NotificationSectionsManager.class, mNotificationSectionsManagerLazy::get);
         mProviders.put(ScreenOffAnimationController.class, mScreenOffAnimationController::get);
         mProviders.put(AmbientState.class, mAmbientStateLazy::get);
@@ -198,7 +192,8 @@ public class Dependency {
         mProviders.put(SystemUIDialogManager.class, mSystemUIDialogManagerLazy::get);
         mProviders.put(DialogTransitionAnimator.class, mDialogTransitionAnimatorLazy::get);
         mProviders.put(UserTracker.class, mUserTrackerLazy::get);
-        mProviders.put(StatusBarWindowController.class, mStatusBarWindowControllerLazy::get);
+        mProviders.put(
+                StatusBarWindowControllerStore.class, mStatusBarWindowControllerStoreLazy::get);
 
         Dependency.setInstance(this);
     }

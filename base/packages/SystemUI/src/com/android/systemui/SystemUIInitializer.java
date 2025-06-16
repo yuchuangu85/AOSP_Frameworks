@@ -24,9 +24,9 @@ import android.util.Log;
 
 import com.android.systemui.dagger.GlobalRootComponent;
 import com.android.systemui.dagger.SysUIComponent;
-import com.android.systemui.dagger.WMComponent;
 import com.android.systemui.res.R;
 import com.android.systemui.util.InitializationChecker;
+import com.android.wm.shell.dagger.WMComponent;
 import com.android.wm.shell.dagger.WMShellConcurrencyModule;
 import com.android.wm.shell.keyguard.KeyguardTransitions;
 import com.android.wm.shell.shared.ShellTransitions;
@@ -100,7 +100,8 @@ public abstract class SystemUIInitializer {
                     .setDisplayAreaHelper(mWMComponent.getDisplayAreaHelper())
                     .setRecentTasks(mWMComponent.getRecentTasks())
                     .setBackAnimation(mWMComponent.getBackAnimation())
-                    .setDesktopMode(mWMComponent.getDesktopMode());
+                    .setDesktopMode(mWMComponent.getDesktopMode())
+                    .setAppZoomOut(mWMComponent.getAppZoomOut());
 
             // Only initialize when not starting from tests since this currently initializes some
             // components that shouldn't be run in the test environment
@@ -121,7 +122,8 @@ public abstract class SystemUIInitializer {
                     .setStartingSurface(Optional.ofNullable(null))
                     .setRecentTasks(Optional.ofNullable(null))
                     .setBackAnimation(Optional.ofNullable(null))
-                    .setDesktopMode(Optional.ofNullable(null));
+                    .setDesktopMode(Optional.ofNullable(null))
+                    .setAppZoomOut(Optional.ofNullable(null));
         }
         mSysUIComponent = builder.build();
 

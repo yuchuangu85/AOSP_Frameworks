@@ -23,13 +23,13 @@ import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 import android.os.FileUtils;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.SparseArray;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.os.KernelCpuUidTimeReader.KernelCpuUidUserSysTimeReader;
 
@@ -52,7 +52,7 @@ import java.util.Random;
  */
 @SmallTest
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(reason = "Needs kernel support")
+@DisabledOnRavenwood(reason = "Needs kernel support")
 public class KernelCpuUidUserSysTimeReaderTest {
     @Rule
     public final RavenwoodRule mRavenwood = new RavenwoodRule();

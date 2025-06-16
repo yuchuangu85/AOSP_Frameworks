@@ -41,9 +41,10 @@ import com.android.systemui.Dumpable;
 import com.android.systemui.animation.ActivityTransitionAnimator;
 import com.android.systemui.animation.RemoteAnimationRunnerCompat;
 import com.android.systemui.display.data.repository.DisplayMetricsRepository;
-import com.android.systemui.navigationbar.NavigationBarView;
+import com.android.systemui.navigationbar.views.NavigationBarView;
 import com.android.systemui.plugins.ActivityStarter.OnDismissAction;
 import com.android.systemui.qs.QSPanelController;
+import com.android.systemui.shared.statusbar.phone.BarTransitions;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.util.Compile;
 
@@ -62,7 +63,7 @@ public interface CentralSurfaces extends Dumpable, LifecycleOwner, CoreStartable
     boolean SPEW = false;
     boolean DEBUG_GESTURES = false;
     boolean DEBUG_MEDIA_FAKE_ARTWORK = false;
-    boolean DEBUG_CAMERA_LIFT = false;
+    boolean DEBUG_POWER_BUTTON_GESTURE = false;
     boolean DEBUG_WINDOW_STATE = false;
     boolean DEBUG_WAKEUP_DELAY = Compile.IS_DEBUG;
     boolean SHOW_LOCKSCREEN_MEDIA_ARTWORK = true;
@@ -260,8 +261,6 @@ public interface CentralSurfaces extends Dumpable, LifecycleOwner, CoreStartable
 
     boolean isScreenFullyOff();
 
-    boolean isCameraAllowedByAdmin();
-
     boolean isGoingToSleep();
 
     void notifyBiometricAuthModeChanged();
@@ -313,6 +312,15 @@ public interface CentralSurfaces extends Dumpable, LifecycleOwner, CoreStartable
     void setLaunchCameraOnFinishedGoingToSleep(boolean launch);
 
     void setLaunchCameraOnFinishedWaking(boolean launch);
+    /**
+     * Notifies SysUI to launch wallet when device finishes sleeping.
+     */
+    void setLaunchWalletOnFinishedGoingToSleep(boolean launch);
+
+    /**
+     * Notifies SysUI to launch wallet when device finishes waking.
+     */
+    void setLaunchWalletOnFinishedWaking(boolean launch);
 
     void setLaunchEmergencyActionOnFinishedGoingToSleep(boolean launch);
 

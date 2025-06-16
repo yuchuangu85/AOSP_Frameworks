@@ -24,18 +24,16 @@
 #include "GaneshVkRenderEngine.h"
 #include "compat/SkiaGpuContext.h"
 
-#include <GrBackendSemaphore.h>
-#include <GrContextOptions.h>
-#include <GrDirectContext.h>
+#include <include/gpu/ganesh/GrBackendSemaphore.h>
+#include <include/gpu/ganesh/GrContextOptions.h>
+#include <include/gpu/ganesh/GrDirectContext.h>
 #include <include/gpu/ganesh/vk/GrVkBackendSemaphore.h>
 #include <include/gpu/ganesh/vk/GrVkDirectContext.h>
-#include <vk/GrVkExtensions.h>
-#include <vk/GrVkTypes.h>
+#include <include/gpu/ganesh/vk/GrVkTypes.h>
 
 #include <android-base/stringprintf.h>
-#include <gui/TraceUtils.h>
+#include <common/trace.h>
 #include <sync/sync.h>
-#include <utils/Trace.h>
 
 #include <memory>
 #include <string>
@@ -171,24 +169,26 @@ int SkiaVkRenderEngine::getContextPriority() {
 }
 
 void SkiaVkRenderEngine::appendBackendSpecificInfoToDump(std::string& result) {
-    StringAppendF(&result, "\n ------------RE Vulkan----------\n");
-    StringAppendF(&result, "\n Vulkan device initialized: %d\n", sVulkanInterface.isInitialized());
-    StringAppendF(&result, "\n Vulkan protected device initialized: %d\n",
+    // Subclasses will prepend a backend-specific name / section header
+    StringAppendF(&result, "Vulkan device initialized: %d\n", sVulkanInterface.isInitialized());
+    StringAppendF(&result, "Vulkan protected device initialized: %d\n",
                   sProtectedContentVulkanInterface.isInitialized());
 
     if (!sVulkanInterface.isInitialized()) {
         return;
     }
 
-    StringAppendF(&result, "\n Instance extensions:\n");
+    StringAppendF(&result, "Instance extensions: [\n");
     for (const auto& name : sVulkanInterface.getInstanceExtensionNames()) {
-        StringAppendF(&result, "\n %s\n", name.c_str());
+        StringAppendF(&result, "  %s\n", name.c_str());
     }
+    StringAppendF(&result, "]\n");
 
-    StringAppendF(&result, "\n Device extensions:\n");
+    StringAppendF(&result, "Device extensions: [\n");
     for (const auto& name : sVulkanInterface.getDeviceExtensionNames()) {
-        StringAppendF(&result, "\n %s\n", name.c_str());
+        StringAppendF(&result, "  %s\n", name.c_str());
     }
+    StringAppendF(&result, "]\n");
 }
 
 } // namespace skia

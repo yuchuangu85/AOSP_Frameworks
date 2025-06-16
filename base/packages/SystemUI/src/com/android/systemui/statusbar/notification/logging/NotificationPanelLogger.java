@@ -20,15 +20,20 @@ import static com.android.systemui.statusbar.notification.stack.NotificationPrio
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_FOREGROUND_SERVICE;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_HEADS_UP;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_MEDIA_CONTROLS;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_NEWS;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PEOPLE;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PRIORITY_PEOPLE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PROMO;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_RECS;
 import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_SILENT;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_SOCIAL;
 
 import android.annotation.Nullable;
 import android.service.notification.StatusBarNotification;
 
 import com.android.internal.logging.UiEvent;
 import com.android.internal.logging.UiEventLogger;
+import com.android.systemui.statusbar.notification.collection.EntryAdapter;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.logging.nano.Notifications;
 import com.android.systemui.statusbar.notification.stack.PriorityBucket;
@@ -59,6 +64,8 @@ public interface NotificationPanelLogger {
      * @param draggedNotification the notification that is being dragged
      */
     void logNotificationDrag(NotificationEntry draggedNotification);
+
+    void logNotificationDrag(EntryAdapter draggedNotification);
 
     enum NotificationPanelEvent implements UiEventLogger.UiEventEnum {
         @UiEvent(doc = "Notification panel shown from status bar.")
@@ -119,6 +126,42 @@ public interface NotificationPanelLogger {
     }
 
     /**
+     * Composes a NotificationsList proto from the list of visible notifications.
+     * @param visibleNotifications as provided by NotificationEntryManager.getVisibleNotifications()
+     * @return NotificationList proto suitable for SysUiStatsLog.write(NOTIFICATION_PANEL_REPORTED)
+     */
+    static Notifications.NotificationList adapterToNotificationProto(
+            @Nullable List<EntryAdapter> visibleNotifications) {
+        Notifications.NotificationList notificationList = new Notifications.NotificationList();
+        if (visibleNotifications == null) {
+            return notificationList;
+        }
+        final Notifications.Notification[] proto_array =
+                new Notifications.Notification[visibleNotifications.size()];
+        int i = 0;
+        for (EntryAdapter ne : visibleNotifications) {
+            final StatusBarNotification n = ne.getSbn();
+            if (n != null) {
+                final Notifications.Notification proto = new Notifications.Notification();
+                proto.uid = n.getUid();
+                proto.packageName = n.getPackageName();
+                if (n.getInstanceId() != null) {
+                    proto.instanceId = n.getInstanceId().getId();
+                }
+                // TODO set np.groupInstanceId
+                if (n.getNotification() != null) {
+                    proto.isGroupSummary = n.getNotification().isGroupSummary();
+                }
+                proto.section = toNotificationSection(ne.getSectionBucket());
+                proto_array[i] = proto;
+            }
+            ++i;
+        }
+        notificationList.notifications = proto_array;
+        return notificationList;
+    }
+
+    /**
      * Maps PriorityBucket enum to Notification.SECTION constant. The two lists should generally
      * use matching names, but the values may differ, because PriorityBucket order changes from
      * time to time, while logs need to have stable meanings.
@@ -135,6 +178,10 @@ public interface NotificationPanelLogger {
                 return Notifications.Notification.SECTION_PEOPLE;
             case BUCKET_ALERTING: return Notifications.Notification.SECTION_ALERTING;
             case BUCKET_SILENT: return Notifications.Notification.SECTION_SILENT;
+            case BUCKET_NEWS: return Notifications.Notification.SECTION_NEWS;
+            case BUCKET_SOCIAL: return Notifications.Notification.SECTION_SOCIAL;
+            case BUCKET_RECS: return Notifications.Notification.SECTION_RECS;
+            case BUCKET_PROMO: return Notifications.Notification.SECTION_PROMO;
         }
         return Notifications.Notification.SECTION_UNKNOWN;
     }

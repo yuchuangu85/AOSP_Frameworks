@@ -16,9 +16,12 @@
 
 package com.android.systemui.keyguard.domain.interactor
 
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.keyguard.logging.KeyguardLogger
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.deviceentry.domain.interactor.DeviceEntryInteractor
+import com.android.systemui.keyguard.ui.viewmodel.AodBurnInViewModel
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardRootViewModel
 import com.android.systemui.log.core.LogLevel.VERBOSE
 import com.android.systemui.power.domain.interactor.PowerInteractor
@@ -27,8 +30,8 @@ import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import com.android.systemui.statusbar.notification.stack.ui.viewmodel.SharedNotificationContainerViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.launch
 
 private val TAG = KeyguardTransitionAuditLogger::class.simpleName!!
 
@@ -44,10 +47,13 @@ constructor(
     private val powerInteractor: PowerInteractor,
     private val sharedNotificationContainerViewModel: SharedNotificationContainerViewModel,
     private val keyguardRootViewModel: KeyguardRootViewModel,
+    private val aodBurnInViewModel: AodBurnInViewModel,
     private val shadeInteractor: ShadeInteractor,
     private val keyguardOcclusionInteractor: KeyguardOcclusionInteractor,
+    private val deviceEntryInteractor: DeviceEntryInteractor,
 ) {
 
+    @OptIn(FlowPreview::class)
     fun start() {
         scope.launch {
             powerInteractor.detailedWakefulness.collect {
@@ -82,6 +88,18 @@ constructor(
         }
 
         scope.launch {
+            deviceEntryInteractor.isUnlocked.collect {
+                logger.log(TAG, VERBOSE, "DeviceEntry isUnlocked", it)
+            }
+        }
+
+        scope.launch {
+            deviceEntryInteractor.isLockscreenEnabled.collect {
+                logger.log(TAG, VERBOSE, "DeviceEntry isLockscreenEnabled", it)
+            }
+        }
+
+        scope.launch {
             keyguardInteractor.primaryBouncerShowing.collect {
                 logger.log(TAG, VERBOSE, "Primary bouncer showing", it)
             }
@@ -95,6 +113,16 @@ constructor(
 
         scope.launch {
             keyguardInteractor.isDozing.collect { logger.log(TAG, VERBOSE, "isDozing", it) }
+        }
+
+        scope.launch {
+            keyguardInteractor.isDreaming.collect { logger.log(TAG, VERBOSE, "isDreaming", it) }
+        }
+
+        scope.launch {
+            keyguardInteractor.isDreamingWithOverlay.collect {
+                logger.log(TAG, VERBOSE, "isDreamingWithOverlay", it)
+            }
         }
 
         scope.launch {
@@ -122,7 +150,7 @@ constructor(
         }
 
         scope.launch {
-            keyguardRootViewModel.burnInModel.debounce(20L).collect {
+            aodBurnInViewModel.movement.debounce(20L).collect {
                 logger.log(TAG, VERBOSE, "BurnInModel (debounced)", it)
             }
         }

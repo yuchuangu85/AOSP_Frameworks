@@ -17,36 +17,32 @@
 package com.android.systemui.statusbar.policy;
 
 import android.app.NotificationManager;
-import android.content.ComponentName;
 import android.net.Uri;
-import android.service.notification.Condition;
 import android.service.notification.ZenModeConfig;
-import android.service.notification.ZenModeConfig.ZenRule;
 
 import com.android.systemui.statusbar.policy.ZenModeController.Callback;
+import com.android.systemui.statusbar.policy.domain.interactor.ZenModeInteractor;
 
+/**
+ * Callback-based controller for listening to (or making) zen mode changes. Please prefer using the
+ * Flow-based {@link ZenModeInteractor} for new code instead of this.
+ *
+ * TODO(b/308591859): This should eventually be replaced by ZenModeInteractor/ZenModeRepository.
+ */
 public interface ZenModeController extends CallbackController<Callback> {
     void setZen(int zen, Uri conditionId, String reason);
     int getZen();
-    ZenRule getManualRule();
     ZenModeConfig getConfig();
     /** Gets consolidated zen policy that will apply when DND is on in priority only mode */
     NotificationManager.Policy getConsolidatedPolicy();
     long getNextAlarm();
     boolean isZenAvailable();
-    ComponentName getEffectsSuppressor();
-    boolean isCountdownConditionSupported();
     int getCurrentUser();
-    boolean isVolumeRestricted();
-    boolean areNotificationsHiddenInShade();
 
     public static interface Callback {
         default void onZenChanged(int zen) {}
-        default void onConditionsChanged(Condition[] conditions) {}
         default void onNextAlarmChanged() {}
         default void onZenAvailableChanged(boolean available) {}
-        default void onEffectsSupressorChanged() {}
-        default void onManualRuleChanged(ZenRule rule) {}
         default void onConfigChanged(ZenModeConfig config) {}
         /** Called when the consolidated zen policy changes */
         default void onConsolidatedPolicyChanged(NotificationManager.Policy policy) {}

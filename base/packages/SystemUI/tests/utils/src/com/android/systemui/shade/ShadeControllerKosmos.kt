@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.shade
 
 import com.android.systemui.assist.AssistManager
@@ -37,9 +35,8 @@ import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
 import com.android.systemui.statusbar.phone.statusBarKeyguardViewManager
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.statusbar.policy.deviceProvisionedController
-import com.android.systemui.statusbar.window.StatusBarWindowController
+import com.android.systemui.statusbar.window.StatusBarWindowControllerStore
 import com.android.systemui.util.mockito.mock
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 val Kosmos.shadeControllerSceneImpl by
     Kosmos.Fixture {
@@ -67,10 +64,11 @@ val Kosmos.shadeControllerImpl by
             mock<KeyguardStateController>(),
             statusBarStateController,
             statusBarKeyguardViewManager,
-            mock<StatusBarWindowController>(),
+            mock<StatusBarWindowControllerStore>(),
             deviceProvisionedController,
             mock<NotificationShadeWindowController>(),
             0,
+            { mock<NotificationShadeWindowViewController>() },
             { mock<NotificationPanelViewController>() },
             { mock<AssistManager>() },
             { mock<NotificationGutsManager>() },

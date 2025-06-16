@@ -144,10 +144,6 @@ public:
         mInfo.setInputConfig(InputConfig::PAUSE_DISPATCHING, paused);
     }
 
-    inline void setPreventSplitting(bool preventSplitting) {
-        mInfo.setInputConfig(InputConfig::PREVENT_SPLITTING, preventSplitting);
-    }
-
     inline void setSlippery(bool slippery) {
         mInfo.setInputConfig(InputConfig::SLIPPERY, slippery);
     }
@@ -302,6 +298,13 @@ public:
         consumeMotionEvent(testing::AllOf(WithMotionAction(action),
                                           WithDisplayId(expectedDisplayId),
                                           WithFlags(expectedFlags)));
+    }
+
+    inline void consumeMotionPointerDown(int32_t pointerIdx,
+                                         const ::testing::Matcher<MotionEvent>& matcher) {
+        const int32_t action = AMOTION_EVENT_ACTION_POINTER_DOWN |
+                (pointerIdx << AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT);
+        consumeMotionEvent(testing::AllOf(WithMotionAction(action), matcher));
     }
 
     inline void consumeMotionPointerUp(int32_t pointerIdx,

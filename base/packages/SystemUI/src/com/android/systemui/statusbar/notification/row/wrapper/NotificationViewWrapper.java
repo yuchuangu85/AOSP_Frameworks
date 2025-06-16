@@ -38,13 +38,13 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.graphics.ColorUtils;
 import com.android.internal.util.ContrastColorUtil;
 import com.android.internal.widget.CachingIconView;
-import com.android.settingslib.Utils;
 import com.android.systemui.statusbar.CrossFadeHelper;
 import com.android.systemui.statusbar.TransformableView;
 import com.android.systemui.statusbar.notification.FeedbackIcon;
 import com.android.systemui.statusbar.notification.NotificationFadeAware;
 import com.android.systemui.statusbar.notification.TransformState;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi;
 
 /**
  * Wraps the actual notification content view; used to implement behaviors which are different for
@@ -76,9 +76,14 @@ public abstract class NotificationViewWrapper implements TransformableView {
                 return new NotificationCompactHeadsUpTemplateViewWrapper(ctx, v, row);
             } else if ("compactMessagingHUN".equals((v.getTag()))) {
                 return new NotificationCompactMessagingTemplateViewWrapper(ctx, v, row);
+            } else if ("progress".equals(v.getTag())) {
+                return new NotificationProgressTemplateViewWrapper(ctx, v, row);
             }
 
-            if (row.getEntry().getSbn().getNotification().isStyle(
+            if (NotificationBundleUi.isEnabled()
+                    ? row.getEntryAdapter().getSbn().getNotification().isStyle(
+                    Notification.DecoratedCustomViewStyle.class)
+                    : row.getEntryLegacy().getSbn().getNotification().isStyle(
                     Notification.DecoratedCustomViewStyle.class)) {
                 return new NotificationDecoratedCustomViewWrapper(ctx, v, row);
             }
@@ -134,7 +139,10 @@ public abstract class NotificationViewWrapper implements TransformableView {
         }
 
         // Apps targeting Q should fix their dark mode bugs.
-        if (mRow.getEntry().targetSdk >= Build.VERSION_CODES.Q) {
+        int targetSdk = NotificationBundleUi.isEnabled()
+                ? mRow.getEntryAdapter().getTargetSdk()
+                : mRow.getEntryLegacy().targetSdk;
+        if (targetSdk >= Build.VERSION_CODES.Q) {
             return false;
         }
 
@@ -342,9 +350,8 @@ public abstract class NotificationViewWrapper implements TransformableView {
         if (customBackgroundColor != 0) {
             return customBackgroundColor;
         }
-        return Utils.getColorAttr(mView.getContext(),
-                        com.android.internal.R.attr.materialColorSurfaceContainerHigh)
-                .getDefaultColor();
+        return mView.getContext().getColor(
+                com.android.internal.R.color.materialColorSurfaceContainerHigh);
     }
 
     public void setLegacy(boolean legacy) {

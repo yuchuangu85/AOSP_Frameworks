@@ -70,6 +70,9 @@ void LayerFECompositionState::dump(std::string& out) const {
     out.append("      ");
     dumpVal(out, "shadowLength", shadowSettings.length);
 
+    out.append("      ");
+    dumpVal(out, "borderSettings", borderSettings.toString());
+
     out.append("\n      ");
     dumpVal(out, "blend", toString(blendMode), blendMode);
     dumpVal(out, "alpha", alpha);
@@ -127,6 +130,9 @@ void LayerFECompositionState::dump(std::string& out) const {
     }
     dumpVal(out, "colorTransform", colorTransform);
     dumpVal(out, "caching hint", toString(cachingHint));
+    if (pictureProfileHandle) {
+        dumpVal(out, "pictureProfile", toString(pictureProfileHandle));
+    }
 
     out.append("\n");
 }

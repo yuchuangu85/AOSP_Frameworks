@@ -17,32 +17,36 @@
 package com.android.systemui.navigationbar;
 
 import static android.app.ActivityManager.LOCK_TASK_MODE_PINNED;
-import static android.app.StatusBarManager.NAVIGATION_HINT_BACK_ALT;
-import static android.app.StatusBarManager.NAVIGATION_HINT_IME_SWITCHER_SHOWN;
+import static android.app.StatusBarManager.NAVBAR_BACK_DISMISS_IME;
+import static android.app.StatusBarManager.NAVBAR_IME_SWITCHER_BUTTON_VISIBLE;
+import static android.app.StatusBarManager.NAVBAR_IME_VISIBLE;
 import static android.app.StatusBarManager.WINDOW_STATE_SHOWING;
 import static android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 
 import static com.android.systemui.navigationbar.NavBarHelper.transitionMode;
+import static com.android.systemui.shared.statusbar.phone.BarTransitions.TransitionMode;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_A11Y_BUTTON_CLICKABLE;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_A11Y_BUTTON_LONG_CLICKABLE;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_BACK_DISABLED;
+import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_BACK_DISMISS_IME;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_HOME_DISABLED;
-import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_IME_SHOWING;
-import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_IME_SWITCHER_SHOWING;
+import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE;
+import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_IME_VISIBLE;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_NAV_BAR_HIDDEN;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_OVERVIEW_DISABLED;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_SCREEN_PINNING;
-import static com.android.systemui.statusbar.phone.BarTransitions.TransitionMode;
 
 import android.app.StatusBarManager;
+import android.app.StatusBarManager.NavbarFlags;
 import android.app.StatusBarManager.WindowVisibleState;
 import android.content.Context;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
-import android.inputmethodservice.InputMethodService;
-import android.os.IBinder;
+import android.inputmethodservice.InputMethodService.BackDispositionMode;
+import android.inputmethodservice.InputMethodService.ImeWindowVisibility;
+import android.os.Handler;
 import android.os.RemoteException;
 import android.os.Trace;
 import android.util.Log;
@@ -60,16 +64,21 @@ import com.android.internal.statusbar.LetterboxDetails;
 import com.android.internal.view.AppearanceRegion;
 import com.android.systemui.Dumpable;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler;
-import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.recents.LauncherProxyService;
+import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.shared.recents.utilities.Utilities;
+import com.android.systemui.shared.statusbar.phone.BarTransitions;
 import com.android.systemui.shared.system.QuickStepContract;
 import com.android.systemui.shared.system.TaskStackChangeListener;
 import com.android.systemui.shared.system.TaskStackChangeListeners;
 import com.android.systemui.statusbar.AutoHideUiElement;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.phone.AutoHideController;
 import com.android.systemui.statusbar.phone.LightBarController;
 import com.android.systemui.statusbar.phone.LightBarTransitionsController;
@@ -86,7 +95,7 @@ import javax.inject.Inject;
 /** */
 @SysUISingleton
 public class TaskbarDelegate implements CommandQueue.Callbacks,
-        OverviewProxyService.OverviewProxyListener, NavigationModeController.ModeChangedListener,
+        LauncherProxyService.LauncherProxyListener, NavigationModeController.ModeChangedListener,
         Dumpable {
     private static final String TAG = TaskbarDelegate.class.getSimpleName();
 
@@ -94,7 +103,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private final LightBarTransitionsController.Factory mLightBarTransitionsControllerFactory;
     private boolean mInitialized;
     private CommandQueue mCommandQueue;
-    private OverviewProxyService mOverviewProxyService;
+    private LauncherProxyService mLauncherProxyService;
     private NavBarHelper mNavBarHelper;
     private NavigationModeController mNavigationModeController;
     private SysUiState mSysUiState;
@@ -103,8 +112,9 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private LightBarTransitionsController mLightBarTransitionsController;
     private TaskStackChangeListeners mTaskStackChangeListeners;
     private Optional<Pip> mPipOptional;
-    private int mDisplayId;
-    private int mNavigationIconHints;
+    private int mDefaultDisplayId;
+    @NavbarFlags
+    private int mNavbarFlags;
     private final NavBarHelper.NavbarTaskbarStateUpdater mNavbarTaskbarStateUpdater =
             new NavBarHelper.NavbarTaskbarStateUpdater() {
                 @Override
@@ -116,6 +126,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 public void updateAssistantAvailable(boolean available,
                         boolean longPressHomeEnabled) {
                     updateAssistantAvailability(available, longPressHomeEnabled);
+                }
+
+                @Override
+                public void updateWallpaperVisibility(boolean visible, int displayId) {
+                    updateWallpaperVisible(displayId, visible);
                 }
             };
     private int mDisabledFlags;
@@ -132,7 +147,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         @Override
         public void onLockTaskModeChanged(int mode) {
             mSysUiState.setFlag(SYSUI_STATE_SCREEN_PINNING, mode == LOCK_TASK_MODE_PINNED)
-                    .commitUpdate(mDisplayId);
+                    .commitUpdate(mDefaultDisplayId);
         }
     };
 
@@ -150,6 +165,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private final AutoHideUiElement mAutoHideUiElement = new AutoHideUiElement() {
         @Override
         public void synchronizeState() {
+            Display[] displays = mDisplayTracker.getAllDisplays();
+            for (Display display : displays) {
+                checkNavBarModes(display.getDisplayId());
+            }
         }
 
         @Override
@@ -165,24 +184,32 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     private BackAnimation mBackAnimation;
 
-    private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
+    private final StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
+    private final StatusBarStateController mStatusBarStateController;
+    private DisplayTracker mDisplayTracker;
+    private final Handler mBgHandler;
+
     @Inject
     public TaskbarDelegate(Context context,
             LightBarTransitionsController.Factory lightBarTransitionsControllerFactory,
-            StatusBarKeyguardViewManager statusBarKeyguardViewManager) {
+            StatusBarKeyguardViewManager statusBarKeyguardViewManager,
+            StatusBarStateController statusBarStateController,
+            @Background Handler bgHandler) {
         mLightBarTransitionsControllerFactory = lightBarTransitionsControllerFactory;
 
         mContext = context;
+        mBgHandler = bgHandler;
         mDisplayManager = mContext.getSystemService(DisplayManager.class);
         mPipListener = (bounds) -> {
             mEdgeBackGestureHandler.setPipStashExclusionBounds(bounds);
         };
         mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
         mStatusBarKeyguardViewManager.setTaskbarDelegate(this);
+        mStatusBarStateController = statusBarStateController;
     }
 
     public void setDependencies(CommandQueue commandQueue,
-            OverviewProxyService overviewProxyService,
+            LauncherProxyService launcherProxyService,
             NavBarHelper navBarHelper,
             NavigationModeController navigationModeController,
             SysUiState sysUiState, DumpManager dumpManager,
@@ -190,10 +217,11 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             LightBarController lightBarController,
             Optional<Pip> pipOptional,
             BackAnimation backAnimation,
-            TaskStackChangeListeners taskStackChangeListeners) {
+            TaskStackChangeListeners taskStackChangeListeners,
+            DisplayTracker displayTracker) {
         // TODO: adding this in the ctor results in a dagger dependency cycle :(
         mCommandQueue = commandQueue;
-        mOverviewProxyService = overviewProxyService;
+        mLauncherProxyService = launcherProxyService;
         mNavBarHelper = navBarHelper;
         mNavigationModeController = navigationModeController;
         mSysUiState = sysUiState;
@@ -205,6 +233,52 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
         mLightBarTransitionsController = createLightBarTransitionsController();
         mTaskStackChangeListeners = taskStackChangeListeners;
         mEdgeBackGestureHandler = navBarHelper.getEdgeBackGestureHandler();
+        mDisplayTracker = displayTracker;
+    }
+
+    @Override
+    public void onDisplayAddSystemDecorations(int displayId) {
+        CommandQueue.Callbacks.super.onDisplayAddSystemDecorations(displayId);
+        mEdgeBackGestureHandler.onDisplayAddSystemDecorations(displayId);
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().onDisplayAddSystemDecorations(displayId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "onDisplayAddSystemDecorations() failed", e);
+        }
+    }
+
+    @Override
+    public void onDisplayRemoved(int displayId) {
+        CommandQueue.Callbacks.super.onDisplayRemoved(displayId);
+        mEdgeBackGestureHandler.onDisplayRemoveSystemDecorations(displayId);
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().onDisplayRemoved(displayId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "onDisplayRemoved() failed", e);
+        }
+    }
+
+    @Override
+    public void onDisplayRemoveSystemDecorations(int displayId) {
+        CommandQueue.Callbacks.super.onDisplayRemoveSystemDecorations(displayId);
+        mEdgeBackGestureHandler.onDisplayRemoveSystemDecorations(displayId);
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().onDisplayRemoveSystemDecorations(displayId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "onDisplaySystemDecorationsRemoved() failed", e);
+        }
     }
 
     // Separated into a method to keep setDependencies() clean/readable.
@@ -214,7 +288,9 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 new LightBarTransitionsController.DarkIntensityApplier() {
                     @Override
                     public void applyDarkIntensity(float darkIntensity) {
-                        mOverviewProxyService.onNavButtonsDarkIntensityChanged(darkIntensity);
+                        mBgHandler.post(() -> {
+                            mLauncherProxyService.onNavButtonsDarkIntensityChanged(darkIntensity);
+                        });
                     }
 
                     @Override
@@ -232,10 +308,10 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             if (mInitialized) {
                 return;
             }
-            mDisplayId = displayId;
+            mDefaultDisplayId = displayId;
             parseCurrentSysuiState();
             mCommandQueue.addCallback(this);
-            mOverviewProxyService.addCallback(this);
+            mLauncherProxyService.addCallback(this);
             onNavigationModeChanged(mNavigationModeController.addListener(this));
             mNavBarHelper.registerNavTaskStateUpdater(mNavbarTaskbarStateUpdater);
             // Initialize component callback
@@ -260,7 +336,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             return;
         }
         mCommandQueue.removeCallback(this);
-        mOverviewProxyService.removeCallback(this);
+        mLauncherProxyService.removeCallback(this);
         mNavigationModeController.removeListener(this);
         mNavBarHelper.removeNavTaskStateUpdater(mNavbarTaskbarStateUpdater);
         mScreenPinningNotify = null;
@@ -292,7 +368,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     private void parseCurrentSysuiState() {
         NavBarHelper.CurrentSysuiState state = mNavBarHelper.getCurrentSysuiState();
-        if (state.mWindowStateDisplayId == mDisplayId) {
+        if (state.mWindowStateDisplayId == mDefaultDisplayId) {
             mTaskBarWindowState = state.mWindowState;
         }
     }
@@ -304,10 +380,12 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
         mSysUiState.setFlag(SYSUI_STATE_A11Y_BUTTON_CLICKABLE, clickable)
                 .setFlag(SYSUI_STATE_A11Y_BUTTON_LONG_CLICKABLE, longClickable)
-                .setFlag(SYSUI_STATE_IME_SHOWING,
-                        (mNavigationIconHints & NAVIGATION_HINT_BACK_ALT) != 0)
-                .setFlag(SYSUI_STATE_IME_SWITCHER_SHOWING,
-                        (mNavigationIconHints & NAVIGATION_HINT_IME_SWITCHER_SHOWN) != 0)
+                .setFlag(SYSUI_STATE_IME_VISIBLE,
+                        (mNavbarFlags & NAVBAR_IME_VISIBLE) != 0)
+                .setFlag(SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE,
+                        (mNavbarFlags & NAVBAR_IME_SWITCHER_BUTTON_VISIBLE) != 0)
+                .setFlag(SYSUI_STATE_BACK_DISMISS_IME,
+                        (mNavbarFlags & NAVBAR_BACK_DISMISS_IME) != 0)
                 .setFlag(SYSUI_STATE_OVERVIEW_DISABLED,
                         (mDisabledFlags & View.STATUS_BAR_DISABLE_RECENT) != 0)
                 .setFlag(SYSUI_STATE_HOME_DISABLED,
@@ -317,47 +395,130 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
                 .setFlag(SYSUI_STATE_NAV_BAR_HIDDEN, !isWindowVisible())
                 .setFlag(SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY,
                         allowSystemGestureIgnoringBarVisibility())
-                .commitUpdate(mDisplayId);
+                .commitUpdate(mDefaultDisplayId);
     }
 
     boolean isOverviewEnabled() {
         return (mSysUiState.getFlags() & View.STATUS_BAR_DISABLE_RECENT) == 0;
     }
 
-    private void updateAssistantAvailability(boolean assistantAvailable,
-            boolean longPressHomeEnabled) {
-        if (mOverviewProxyService.getProxy() == null) {
+    void onTransitionModeUpdated(int barMode, boolean checkBarModes) {
+        if (mLauncherProxyService.getProxy() == null) {
             return;
         }
 
         try {
-            mOverviewProxyService.getProxy().onAssistantAvailable(assistantAvailable,
+            mLauncherProxyService.getProxy().onTransitionModeUpdated(barMode, checkBarModes);
+        } catch (RemoteException e) {
+            Log.e(TAG, "onTransitionModeUpdated() failed, barMode: " + barMode, e);
+        }
+    }
+
+    void checkNavBarModes(int displayId) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().checkNavBarModes(displayId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "checkNavBarModes() failed", e);
+        }
+    }
+
+    void finishBarAnimations(int displayId) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().finishBarAnimations(displayId);
+        } catch (RemoteException e) {
+            Log.e(TAG, "finishBarAnimations() failed", e);
+        }
+    }
+
+    void touchAutoDim(int displayId) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            int state = mStatusBarStateController.getState();
+            boolean shouldReset =
+                    state != StatusBarState.KEYGUARD && state != StatusBarState.SHADE_LOCKED;
+            mLauncherProxyService.getProxy().touchAutoDim(displayId, shouldReset);
+        } catch (RemoteException e) {
+            Log.e(TAG, "touchAutoDim() failed", e);
+        }
+    }
+
+    void transitionTo(int displayId, @BarTransitions.TransitionMode int barMode, boolean animate) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().transitionTo(displayId, barMode, animate);
+        } catch (RemoteException e) {
+            Log.e(TAG, "transitionTo() failed, barMode: " + barMode, e);
+        }
+    }
+    private void updateAssistantAvailability(boolean assistantAvailable,
+            boolean longPressHomeEnabled) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().onAssistantAvailable(assistantAvailable,
                     longPressHomeEnabled);
         } catch (RemoteException e) {
             Log.e(TAG, "onAssistantAvailable() failed, available: " + assistantAvailable, e);
         }
     }
 
-    @Override
-    public void setImeWindowStatus(int displayId, IBinder token, int vis, int backDisposition,
-            boolean showImeSwitcher) {
-        boolean imeShown = mNavBarHelper.isImeShown(vis);
-        if (!imeShown) {
-            // Count imperceptible changes as visible so we transition taskbar out quickly.
-            imeShown = (vis & InputMethodService.IME_VISIBLE_IMPERCEPTIBLE) != 0;
+    private void updateWallpaperVisible(int displayId, boolean visible) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
         }
-        showImeSwitcher = imeShown && showImeSwitcher;
-        int hints = Utilities.calculateBackDispositionHints(mNavigationIconHints, backDisposition,
-                imeShown, showImeSwitcher);
-        if (hints != mNavigationIconHints) {
-            mNavigationIconHints = hints;
-            updateSysuiFlags();
+
+        try {
+            mLauncherProxyService.getProxy().updateWallpaperVisibility(displayId, visible);
+        } catch (RemoteException e) {
+            Log.e(TAG, "updateWallpaperVisibility() failed, visible: " + visible, e);
+        }
+    }
+
+    private void appTransitionPending(boolean pending) {
+        if (mLauncherProxyService.getProxy() == null) {
+            return;
+        }
+
+        try {
+            mLauncherProxyService.getProxy().appTransitionPending(pending);
+        } catch (RemoteException e) {
+            Log.e(TAG, "appTransitionPending() failed, pending: " + pending, e);
         }
     }
 
     @Override
+    public void setImeWindowStatus(int displayId, @ImeWindowVisibility int vis,
+            @BackDispositionMode int backDisposition, boolean showImeSwitcher) {
+        final boolean isImeVisible = mNavBarHelper.isImeVisible(vis);
+        final int flags = Utilities.updateNavbarFlagsFromIme(mNavbarFlags, backDisposition,
+                isImeVisible, showImeSwitcher);
+        if (flags == mNavbarFlags) {
+            return;
+        }
+
+        mNavbarFlags = flags;
+        updateSysuiFlags();
+    }
+
+    @Override
     public void setWindowState(int displayId, int window, int state) {
-        if (displayId == mDisplayId
+        if (displayId == mDefaultDisplayId
                 && window == StatusBarManager.WINDOW_NAVIGATION_BAR
                 && mTaskBarWindowState != state) {
             mTaskBarWindowState = state;
@@ -367,14 +528,14 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void onRotationProposal(int rotation, boolean isValid) {
-        mOverviewProxyService.onRotationProposal(rotation, isValid);
+        mLauncherProxyService.onRotationProposal(rotation, isValid);
     }
 
     @Override
     public void disable(int displayId, int state1, int state2, boolean animate) {
         mDisabledFlags = state1;
         updateSysuiFlags();
-        mOverviewProxyService.disable(displayId, state1, state2, animate);
+        mLauncherProxyService.disable(displayId, state1, state2, animate);
     }
 
     @Override
@@ -382,14 +543,14 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
             AppearanceRegion[] appearanceRegions, boolean navbarColorManagedByIme, int behavior,
             @InsetsType int requestedVisibleTypes, String packageName,
             LetterboxDetails[] letterboxDetails) {
-        mOverviewProxyService.onSystemBarAttributesChanged(displayId, behavior);
+        mLauncherProxyService.onSystemBarAttributesChanged(displayId, behavior);
         boolean nbModeChanged = false;
         if (mAppearance != appearance) {
             mAppearance = appearance;
             nbModeChanged = updateTransitionMode(
                     transitionMode(mTaskbarTransientShowing, appearance));
         }
-        if (displayId == mDisplayId) {
+        if (displayId == mDefaultDisplayId) {
             mLightBarController.onNavigationBarAppearanceChanged(appearance, nbModeChanged,
                     mTransitionMode, navbarColorManagedByIme);
         }
@@ -401,7 +562,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void showTransient(int displayId, @InsetsType int types, boolean isGestureOnSystemBar) {
-        if (displayId != mDisplayId) {
+        if (displayId != mDefaultDisplayId) {
             return;
         }
         if ((types & WindowInsets.Type.navigationBars()) == 0) {
@@ -415,7 +576,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void abortTransient(int displayId, @InsetsType int types) {
-        if (displayId != mDisplayId) {
+        if (displayId != mDefaultDisplayId) {
             return;
         }
         if ((types & WindowInsets.Type.navigationBars()) == 0) {
@@ -435,15 +596,36 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void toggleTaskbar() {
-        if (mOverviewProxyService.getProxy() == null) {
+        if (mLauncherProxyService.getProxy() == null) {
             return;
         }
 
         try {
-            mOverviewProxyService.getProxy().onTaskbarToggled();
+            mLauncherProxyService.getProxy().onTaskbarToggled();
         } catch (RemoteException e) {
             Log.e(TAG, "onTaskbarToggled() failed", e);
         }
+    }
+
+    @Override
+    public void appTransitionPending(int displayId, boolean forced) {
+        appTransitionPending(true);
+    }
+
+    @Override
+    public void appTransitionStarting(int displayId, long startTime, long duration,
+            boolean forced) {
+        appTransitionPending(false);
+    }
+
+    @Override
+    public void appTransitionCancelled(int displayId) {
+        appTransitionPending(false);
+    }
+
+    @Override
+    public void appTransitionFinished(int displayId) {
+        appTransitionPending(false);
     }
 
     private void clearTransient() {
@@ -465,16 +647,14 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
     private boolean updateTransitionMode(int barMode) {
         if (mTransitionMode != barMode) {
             mTransitionMode = barMode;
+            onTransitionModeUpdated(barMode, true);
             if (mAutoHideController != null) {
                 mAutoHideController.touchAutoHide();
             }
+
             return true;
         }
         return false;
-    }
-
-    @Override
-    public void onRecentsAnimationStateChanged(boolean running) {
     }
 
     @Override
@@ -493,7 +673,7 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void setNavigationBarLumaSamplingEnabled(int displayId, boolean enable) {
-        mOverviewProxyService.onNavigationBarLumaSamplingEnabled(displayId, enable);
+        mLauncherProxyService.onNavigationBarLumaSamplingEnabled(displayId, enable);
     }
 
     @Override
@@ -526,8 +706,8 @@ public class TaskbarDelegate implements CommandQueue.Callbacks,
 
     @Override
     public void dump(@NonNull PrintWriter pw, @NonNull String[] args) {
-        pw.println("TaskbarDelegate (displayId=" + mDisplayId + "):");
-        pw.println("  mNavigationIconHints=" + mNavigationIconHints);
+        pw.println("TaskbarDelegate (mDefaultDisplayId=" + mDefaultDisplayId + "):");
+        pw.println("  mNavbarFlags=" + mNavbarFlags);
         pw.println("  mNavigationMode=" + mNavigationMode);
         pw.println("  mDisabledFlags=" + mDisabledFlags);
         pw.println("  mTaskBarWindowState=" + mTaskBarWindowState);

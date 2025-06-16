@@ -31,6 +31,7 @@ import android.util.Printer;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.os.BackgroundThread;
 
 import dalvik.annotation.optimization.NeverCompile;
 import dalvik.system.CloseGuard;
@@ -95,6 +96,10 @@ public final class SQLiteConnectionPool implements Closeable {
     private int mMaxConnectionPoolSize;
     private boolean mIsOpen;
     private int mNextConnectionId;
+
+    // Record the caller that explicitly closed the database.
+    @GuardedBy("mLock")
+    private Throwable mClosedBy;
 
     private ConnectionWaiter mConnectionWaiterPool;
     private ConnectionWaiter mConnectionWaiterQueue;
@@ -183,7 +188,8 @@ public final class SQLiteConnectionPool implements Closeable {
         // In case of MAX_VALUE - idle connections are never closed
         if (mConfiguration.idleConnectionTimeoutMs != Long.MAX_VALUE) {
             setupIdleConnectionHandler(
-                    Looper.getMainLooper(), mConfiguration.idleConnectionTimeoutMs, null);
+                BackgroundThread.getHandler().getLooper(),
+                mConfiguration.idleConnectionTimeoutMs, null);
         }
     }
 
@@ -265,6 +271,7 @@ public final class SQLiteConnectionPool implements Closeable {
                 throwIfClosedLocked();
 
                 mIsOpen = false;
+                mClosedBy = new Exception("SQLiteConnectionPool.close()").fillInStackTrace();
 
                 closeAvailableConnectionsAndLogExceptionsLocked();
 
@@ -1101,7 +1108,7 @@ public final class SQLiteConnectionPool implements Closeable {
     private void throwIfClosedLocked() {
         if (!mIsOpen) {
             throw new IllegalStateException("Cannot perform this operation "
-                    + "because the connection pool has been closed.");
+                    + "because the connection pool has been closed.", mClosedBy);
         }
     }
 
@@ -1175,7 +1182,7 @@ public final class SQLiteConnectionPool implements Closeable {
                     + ", isLegacyCompatibilityWalEnabled=" + isCompatibilityWalEnabled
                     + ", journalMode=" + TextUtils.emptyIfNull(mConfiguration.resolveJournalMode())
                     + ", syncMode=" + TextUtils.emptyIfNull(mConfiguration.resolveSyncMode()));
-            printer.println("  IsReadOnlyDatabase=" + mConfiguration.isReadOnlyDatabase());
+            printer.println("  IsReadOnlyDatabase: " + mConfiguration.isReadOnlyDatabase());
 
             if (isCompatibilityWalEnabled) {
                 printer.println("  Compatibility WAL enabled: wal_syncmode="

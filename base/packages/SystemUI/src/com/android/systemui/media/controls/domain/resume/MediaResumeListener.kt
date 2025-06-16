@@ -16,6 +16,7 @@
 
 package com.android.systemui.media.controls.domain.resume
 
+import android.annotation.WorkerThread
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -37,10 +38,10 @@ import com.android.systemui.dump.DumpManager
 import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.domain.pipeline.RESUME_MEDIA_TIMEOUT
 import com.android.systemui.media.controls.shared.model.MediaData
-import com.android.systemui.media.controls.util.MediaFlags
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.tuner.TunerService
 import com.android.systemui.util.Utils
+import com.android.systemui.util.kotlin.logD
 import com.android.systemui.util.time.SystemClock
 import java.io.PrintWriter
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -65,7 +66,6 @@ constructor(
     private val mediaBrowserFactory: ResumeMediaBrowserFactory,
     dumpManager: DumpManager,
     private val systemClock: SystemClock,
-    private val mediaFlags: MediaFlags,
 ) : MediaDataManager.Listener, Dumpable {
 
     private var useMediaResumption: Boolean = Utils.useMediaResumption(context)
@@ -80,11 +80,13 @@ constructor(
             field?.disconnect()
             field = value
         }
+
     private var currentUserId: Int = context.userId
 
     @VisibleForTesting
     val userUnlockReceiver =
         object : BroadcastReceiver() {
+            @WorkerThread
             override fun onReceive(context: Context, intent: Intent) {
                 if (Intent.ACTION_USER_UNLOCKED == intent.action) {
                     val userId = intent.getIntExtra(Intent.EXTRA_USER_HANDLE, -1)
@@ -108,7 +110,7 @@ constructor(
             override fun addTrack(
                 desc: MediaDescription,
                 component: ComponentName,
-                browser: ResumeMediaBrowser
+                browser: ResumeMediaBrowser,
             ) {
                 val token = browser.token
                 val appIntent = browser.appIntent
@@ -122,7 +124,7 @@ constructor(
                     Log.e(TAG, "Error getting package information", e)
                 }
 
-                Log.d(TAG, "Adding resume controls for ${browser.userId}: $desc")
+                logD(TAG) { "Adding resume controls for ${browser.userId}: $desc" }
                 mediaDataManager.addResumptionControls(
                     browser.userId,
                     desc,
@@ -130,21 +132,21 @@ constructor(
                     token,
                     appName.toString(),
                     appIntent,
-                    component.packageName
+                    component.packageName,
                 )
             }
         }
 
     init {
         if (useMediaResumption) {
-            dumpManager.registerDumpable(TAG, this)
+            dumpManager.registerNormalDumpable(TAG, this)
             val unlockFilter = IntentFilter()
             unlockFilter.addAction(Intent.ACTION_USER_UNLOCKED)
             broadcastDispatcher.registerReceiver(
                 userUnlockReceiver,
                 unlockFilter,
-                null,
-                UserHandle.ALL
+                backgroundExecutor,
+                UserHandle.ALL,
             )
             userTracker.addCallback(userTrackerCallback, mainExecutor)
             loadSavedComponents()
@@ -162,7 +164,7 @@ constructor(
                     mediaDataManager.setMediaResumptionEnabled(useMediaResumption)
                 }
             },
-            Settings.Secure.MEDIA_CONTROLS_RESUME
+            Settings.Secure.MEDIA_CONTROLS_RESUME,
         )
     }
 
@@ -196,11 +198,11 @@ constructor(
                 }
             resumeComponents.add(component to lastPlayed)
         }
-        Log.d(
-            TAG,
+
+        logD(TAG) {
             "loaded resume components for $currentUserId: " +
-                "${resumeComponents.toArray().contentToString()}"
-        )
+                resumeComponents.toArray().contentToString()
+        }
 
         if (needsUpdate) {
             // Save any missing times that we had to fill in
@@ -227,7 +229,7 @@ constructor(
                         mediaBrowserFactory.create(mediaBrowserCallback, it.first, currentUserId)
                     browser.findRecentMedia()
                 } else {
-                    Log.d(TAG, "User $currentUserId does not have component ${it.first}")
+                    logD(TAG) { "User $currentUserId does not have component ${it.first}" }
                 }
             }
         }
@@ -239,7 +241,7 @@ constructor(
         data: MediaData,
         immediately: Boolean,
         receivedSmartspaceCardLatency: Int,
-        isSsReactivated: Boolean
+        isSsReactivated: Boolean,
     ) {
         if (useMediaResumption) {
             // If this had been started from a resume state, disconnect now that it's live
@@ -247,22 +249,19 @@ constructor(
                 mediaBrowser = null
             }
             // If we don't have a resume action, check if we haven't already
-            val isEligibleForResume =
-                data.isLocalSession() ||
-                    (mediaFlags.isRemoteResumeAllowed() &&
-                        data.playbackLocation != MediaData.PLAYBACK_CAST_REMOTE)
+            val isEligibleForResume = data.isLocalSession()
             if (data.resumeAction == null && !data.hasCheckedForResume && isEligibleForResume) {
                 // TODO also check for a media button receiver intended for restarting (b/154127084)
                 // Set null action to prevent additional attempts to connect
-                mediaDataManager.setResumeAction(key, null)
-                Log.d(TAG, "Checking for service component for " + data.packageName)
-                val pm = context.packageManager
-                val serviceIntent = Intent(MediaBrowserService.SERVICE_INTERFACE)
-                val resumeInfo = pm.queryIntentServicesAsUser(serviceIntent, 0, currentUserId)
+                backgroundExecutor.execute {
+                    mediaDataManager.setResumeAction(key, null)
+                    Log.d(TAG, "Checking for service component for " + data.packageName)
+                    val pm = context.packageManager
+                    val serviceIntent = Intent(MediaBrowserService.SERVICE_INTERFACE)
+                    val resumeInfo = pm.queryIntentServicesAsUser(serviceIntent, 0, currentUserId)
 
-                val inf = resumeInfo?.filter { it.serviceInfo.packageName == data.packageName }
-                if (inf != null && inf.size > 0) {
-                    backgroundExecutor.execute {
+                    val inf = resumeInfo?.filter { it.serviceInfo.packageName == data.packageName }
+                    if (inf != null && inf.size > 0) {
                         tryUpdateResumptionList(key, inf!!.get(0).componentInfo.componentName)
                     }
                 }
@@ -280,7 +279,7 @@ constructor(
             mediaBrowserFactory.create(
                 object : ResumeMediaBrowser.Callback() {
                     override fun onConnected() {
-                        Log.d(TAG, "Connected to $componentName")
+                        logD(TAG) { "Connected to $componentName" }
                     }
 
                     override fun onError() {
@@ -291,20 +290,20 @@ constructor(
                     override fun addTrack(
                         desc: MediaDescription,
                         component: ComponentName,
-                        browser: ResumeMediaBrowser
+                        browser: ResumeMediaBrowser,
                     ) {
                         // Since this is a test, just save the component for later
-                        Log.d(
-                            TAG,
+                        logD(TAG) {
                             "Can get resumable media for ${browser.userId} from $componentName"
-                        )
+                        }
+
                         mediaDataManager.setResumeAction(key, getResumeAction(componentName))
                         updateResumptionList(componentName)
                         mediaBrowser = null
                     }
                 },
                 componentName,
-                currentUserId
+                currentUserId,
             )
         mediaBrowser?.testConnection()
     }

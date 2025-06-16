@@ -23,7 +23,6 @@ import static com.android.server.wm.BackgroundActivityStartControllerTests.setVi
 import static com.google.common.truth.Truth.assertThat;
 
 import android.app.ActivityOptions;
-import android.app.BackgroundStartPrivileges;
 import android.content.Intent;
 import android.platform.test.annotations.Presubmit;
 
@@ -68,12 +67,16 @@ public class BackgroundActivityStartControllerLogTests {
     @Mock
     PendingIntentRecord mPendingIntentRecord;
     MirrorActiveUids mActiveUids = new MirrorActiveUids();
+    @Mock
+    VisibleActivityProcessTracker mVisibleActivityProcessTracker;
     BackgroundActivityStartController mController;
     BackgroundActivityStartController.BalState mState;
 
     @Before
     public void setup() {
         setViaReflection(mService, "mActiveUids", mActiveUids);
+        setViaReflection(mService, "mVisibleActivityProcessTracker",
+                mVisibleActivityProcessTracker);
         mController = new BackgroundActivityStartController(mService,
                 mSupervisor);
     }
@@ -89,7 +92,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void intent_visible_noLog() {
         useIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "visible");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "visible");
         mState.setResultForCaller(finalVerdict);
         mState.setResultForRealCaller(BalVerdict.BLOCK);
         assertThat(mController.shouldLogStats(finalVerdict, mState)).isFalse();
@@ -98,7 +101,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void intent_saw_log() {
         useIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false, "SAW");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, "SAW");
         mState.setResultForCaller(finalVerdict);
         mState.setResultForRealCaller(BalVerdict.BLOCK);
         assertThat(mController.shouldLogStats(finalVerdict, mState)).isTrue();
@@ -108,7 +111,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void pendingIntent_callerOnly_saw_log() {
         usePendingIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false, "SAW");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, "SAW");
         mState.setResultForCaller(finalVerdict);
         mState.setResultForRealCaller(BalVerdict.BLOCK);
         assertThat(mController.shouldLogStats(finalVerdict, mState)).isTrue();
@@ -118,7 +121,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void pendingIntent_realCallerOnly_saw_log() {
         usePendingIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false, "SAW")
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, "SAW")
                 .setBasedOnRealCaller();
         mState.setResultForCaller(BalVerdict.BLOCK);
         mState.setResultForRealCaller(finalVerdict);
@@ -128,7 +131,7 @@ public class BackgroundActivityStartControllerLogTests {
 
     @Test
     public void intent_shouldLogIntentActivity() {
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false, "SAW");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, "SAW");
         useIntent(APP1_UID);
         assertThat(mController.shouldLogIntentActivity(finalVerdict, mState)).isFalse();
         useIntent(SYSTEM_UID);
@@ -137,7 +140,7 @@ public class BackgroundActivityStartControllerLogTests {
 
     @Test
     public void pendingIntent_shouldLogIntentActivityForCaller() {
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false, "SAW");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, "SAW");
         usePendingIntent(APP1_UID, APP2_UID);
         assertThat(mController.shouldLogIntentActivity(finalVerdict, mState)).isFalse();
         usePendingIntent(SYSTEM_UID, SYSTEM_UID);
@@ -150,7 +153,7 @@ public class BackgroundActivityStartControllerLogTests {
 
     @Test
     public void pendingIntent_shouldLogIntentActivityForRealCaller() {
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION, false,
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_SAW_PERMISSION,
                 "SAW").setBasedOnRealCaller();
         usePendingIntent(APP1_UID, APP2_UID);
         assertThat(mController.shouldLogIntentActivity(finalVerdict, mState)).isFalse();
@@ -165,7 +168,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void pendingIntent_realCallerOnly_visible_noLog() {
         usePendingIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false,
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW,
                 "visible").setBasedOnRealCaller();
         mState.setResultForCaller(BalVerdict.BLOCK);
         mState.setResultForRealCaller(finalVerdict);
@@ -175,7 +178,7 @@ public class BackgroundActivityStartControllerLogTests {
     @Test
     public void pendingIntent_callerOnly_visible_noLog() {
         usePendingIntent();
-        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "visible");
+        BalVerdict finalVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "visible");
         mState.setResultForCaller(finalVerdict);
         mState.setResultForRealCaller(BalVerdict.BLOCK);
         assertThat(mController.shouldLogStats(finalVerdict, mState)).isTrue();
@@ -189,7 +192,7 @@ public class BackgroundActivityStartControllerLogTests {
     private void useIntent(int uid) {
         mState = mController.new BalState(uid, APP1_PID,
                 "calling.package", uid, APP1_PID, null,
-                null, BackgroundStartPrivileges.NONE, null, new Intent(),
+                null, false, null, new Intent(),
                 ActivityOptions.makeBasic());
     }
 
@@ -200,7 +203,7 @@ public class BackgroundActivityStartControllerLogTests {
     private void usePendingIntent(int callerUid, int realCallerUid) {
         mState = mController.new BalState(callerUid, APP1_PID,
                 "calling.package", realCallerUid, APP2_PID, null,
-                mPendingIntentRecord, BackgroundStartPrivileges.NONE, null, new Intent(),
+                mPendingIntentRecord, false, null, new Intent(),
                 ActivityOptions.makeBasic());
     }
 }

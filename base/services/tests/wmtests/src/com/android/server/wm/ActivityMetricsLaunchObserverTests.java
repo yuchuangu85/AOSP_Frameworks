@@ -104,7 +104,6 @@ public class ActivityMetricsLaunchObserverTests extends WindowTestsBase {
                 .setTask(mTrampolineActivity.getTask())
                 .setComponent(createRelative(DEFAULT_COMPONENT_PACKAGE_NAME, "TopActivity"))
                 .build();
-        mTopActivity.mDisplayContent.mOpeningApps.add(mTopActivity);
         mTransition = new Transition(TRANSIT_OPEN, 0 /* flags */,
                 mTopActivity.mTransitionController, createTestBLASTSyncEngine());
         mTransition.mParticipants.add(mTopActivity);
@@ -485,7 +484,6 @@ public class ActivityMetricsLaunchObserverTests extends WindowTestsBase {
 
     @Test
     public void testActivityDrawnWithoutTransition() {
-        mTopActivity.mDisplayContent.mOpeningApps.remove(mTopActivity);
         mTransition.mParticipants.remove(mTopActivity);
         onIntentStarted(mTopActivity.intent);
         notifyAndVerifyActivityLaunched(mTopActivity);
@@ -538,7 +536,7 @@ public class ActivityMetricsLaunchObserverTests extends WindowTestsBase {
     public void testConsecutiveLaunchNewTask() {
         final IBinder launchCookie = mock(IBinder.class);
         final WindowContainerToken launchRootTask = mock(WindowContainerToken.class);
-        mTrampolineActivity.noDisplay = true;
+        mTrampolineActivity.setIsNoDisplay(true);
         mTrampolineActivity.mLaunchCookie = launchCookie;
         mTrampolineActivity.mLaunchRootTask = launchRootTask;
         onActivityLaunched(mTrampolineActivity);

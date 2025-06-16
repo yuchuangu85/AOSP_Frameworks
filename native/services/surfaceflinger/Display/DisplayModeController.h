@@ -46,7 +46,7 @@ class DisplayModeController {
 public:
     using ActiveModeListener = ftl::Function<void(PhysicalDisplayId, Fps vsyncRate, Fps renderFps)>;
 
-    DisplayModeController() = default;
+    DisplayModeController();
 
     void setHwComposer(HWComposer* composerPtr) { mComposerPtr = composerPtr; }
     void setActiveModeListener(const ActiveModeListener& listener) {
@@ -70,6 +70,7 @@ public:
     RefreshRateSelectorPtr selectorPtrFor(PhysicalDisplayId) const EXCLUDES(mDisplayLock);
 
     enum class DesiredModeAction { None, InitiateDisplayModeSwitch, InitiateRenderRateSwitch };
+    enum class ModeChangeResult { Changed, Rejected, Aborted };
 
     DesiredModeAction setDesiredMode(PhysicalDisplayId, DisplayModeRequest&&)
             EXCLUDES(mDisplayLock);
@@ -86,9 +87,9 @@ public:
 
     scheduler::FrameRateMode getActiveMode(PhysicalDisplayId) const EXCLUDES(mDisplayLock);
 
-    bool initiateModeChange(PhysicalDisplayId, DisplayModeRequest&&,
-                            const hal::VsyncPeriodChangeConstraints&,
-                            hal::VsyncPeriodChangeTimeline& outTimeline)
+    ModeChangeResult initiateModeChange(PhysicalDisplayId, DisplayModeRequest&&,
+                                        const hal::VsyncPeriodChangeConstraints&,
+                                        hal::VsyncPeriodChangeTimeline& outTimeline)
             REQUIRES(kMainThreadContext) EXCLUDES(mDisplayLock);
 
     void finalizeModeChange(PhysicalDisplayId, DisplayModeId, Fps vsyncRate, Fps renderFps)
@@ -97,7 +98,27 @@ public:
     void setActiveMode(PhysicalDisplayId, DisplayModeId, Fps vsyncRate, Fps renderFps)
             EXCLUDES(mDisplayLock);
 
+    void updateKernelIdleTimer(PhysicalDisplayId) REQUIRES(kMainThreadContext)
+            EXCLUDES(mDisplayLock);
+
+    struct KernelIdleTimerState {
+        std::optional<DisplayModeId> desiredModeIdOpt = std::nullopt;
+        bool isEnabled = false;
+    };
+
+    KernelIdleTimerState getKernelIdleTimerState(PhysicalDisplayId) const
+            REQUIRES(kMainThreadContext) EXCLUDES(mDisplayLock);
+
+    void setSecure(PhysicalDisplayId displayId, bool secure) REQUIRES(kMainThreadContext)
+            EXCLUDES(mDisplayLock);
+
+    bool supportsHdcp() const;
+
+    void startHdcpNegotiation(PhysicalDisplayId displayId) REQUIRES(kMainThreadContext);
+
 private:
+    enum class HdcpState { Undesired, Desired, Enabled };
+
     struct Display {
         template <size_t N>
         std::string concatId(const char (&)[N]) const;
@@ -108,6 +129,11 @@ private:
               : Display(snapshot,
                         std::make_shared<scheduler::RefreshRateSelector>(std::move(modes),
                                                                          activeModeId, config)) {}
+
+        void setSecure(bool secure) {
+            hdcpState = secure ? HdcpState::Undesired : HdcpState::Desired;
+        }
+
         const DisplaySnapshotRef snapshot;
         const RefreshRateSelectorPtr selectorPtr;
 
@@ -121,12 +147,20 @@ private:
 
         DisplayModeRequestOpt pendingModeOpt GUARDED_BY(kMainThreadContext);
         bool isModeSetPending GUARDED_BY(kMainThreadContext) = false;
+
+        bool isKernelIdleTimerEnabled GUARDED_BY(kMainThreadContext) = false;
+
+        HdcpState hdcpState = HdcpState::Desired;
     };
 
     using DisplayPtr = std::unique_ptr<Display>;
 
     void setActiveModeLocked(PhysicalDisplayId, DisplayModeId, Fps vsyncRate, Fps renderFps)
             REQUIRES(mDisplayLock);
+
+    using KernelIdleTimerController = scheduler::RefreshRateSelector::KernelIdleTimerController;
+    void updateKernelIdleTimer(PhysicalDisplayId, std::chrono::milliseconds timeout,
+                               KernelIdleTimerController) REQUIRES(mDisplayLock);
 
     // Set once when initializing the DisplayModeController, which the HWComposer must outlive.
     HWComposer* mComposerPtr = nullptr;
@@ -135,6 +169,8 @@ private:
 
     mutable std::mutex mDisplayLock;
     ui::PhysicalDisplayMap<PhysicalDisplayId, DisplayPtr> mDisplays GUARDED_BY(mDisplayLock);
+
+    bool mSupportsHdcp = false;
 };
 
 } // namespace android::display

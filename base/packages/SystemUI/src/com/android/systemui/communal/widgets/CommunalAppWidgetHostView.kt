@@ -17,28 +17,37 @@
 package com.android.systemui.communal.widgets
 
 import android.appwidget.AppWidgetHostView
+import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.Context
+import android.content.pm.LauncherActivityInfo
+import android.content.pm.LauncherApps
 import android.graphics.Outline
 import android.graphics.Rect
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.widget.RemoteViews
+import android.widget.RemoteViews.RemoteResponse
+import androidx.core.view.doOnLayout
 import com.android.systemui.animation.LaunchableView
 import com.android.systemui.animation.LaunchableViewDelegate
 
 /** AppWidgetHostView that displays in communal hub with support for rounded corners. */
-class CommunalAppWidgetHostView(context: Context) : AppWidgetHostView(context), LaunchableView {
+class CommunalAppWidgetHostView(
+    context: Context,
+    private val interactionHandler: RemoteViews.InteractionHandler,
+) : AppWidgetHostView(context, interactionHandler), LaunchableView {
     private val launchableViewDelegate =
-        LaunchableViewDelegate(
-            this,
-            superSetVisibility = { super.setVisibility(it) },
-        )
+        LaunchableViewDelegate(this, superSetVisibility = { super.setVisibility(it) })
 
     // Mutable corner radius.
     var enforcedCornerRadius: Float
 
     // Mutable `Rect`. The size will be mutated when the widget is reapplied.
     var enforcedRectangle: Rect
+
+    private var pendingUpdate: Boolean = false
+    private var pendingRemoteViews: RemoteViews? = null
 
     init {
         enforcedCornerRadius = RoundedCornerEnforcement.computeEnforcedRadius(context)
@@ -67,6 +76,23 @@ class CommunalAppWidgetHostView(context: Context) : AppWidgetHostView(context), 
             }
         }
 
+    override fun updateAppWidget(remoteViews: RemoteViews?) {
+        // Workaround for Jetpack Compose bug which fails to render the widget if we add the
+        // RemoteViews before this parent view has been laid out. Therefore we wait for layout
+        // before calling the super.updateAppWidget() to actually render the widget.
+        // See b/387938328
+        pendingRemoteViews = remoteViews
+
+        if (!pendingUpdate) {
+            pendingUpdate = true
+            doOnLayout {
+                super.updateAppWidget(pendingRemoteViews)
+                pendingRemoteViews = null
+                pendingUpdate = false
+            }
+        }
+    }
+
     private fun enforceRoundedCorners() {
         if (enforcedCornerRadius <= 0) {
             resetRoundedCorners()
@@ -92,4 +118,26 @@ class CommunalAppWidgetHostView(context: Context) : AppWidgetHostView(context), 
         launchableViewDelegate.setShouldBlockVisibilityChanges(block)
 
     override fun setVisibility(visibility: Int) = launchableViewDelegate.setVisibility(visibility)
+
+    override fun onDefaultViewClicked(view: View) {
+        AppWidgetManager.getInstance(context)?.noteAppWidgetTapped(appWidgetId)
+        if (appWidgetInfo == null) {
+            return
+        }
+        val launcherApps = context.getSystemService(LauncherApps::class.java)
+        val activityInfo: LauncherActivityInfo =
+            launcherApps
+                .getActivityList(appWidgetInfo.provider.packageName, appWidgetInfo.profile)
+                ?.getOrNull(0) ?: return
+
+        val intent =
+            launcherApps.getMainActivityLaunchIntent(
+                activityInfo.componentName,
+                null,
+                activityInfo.user,
+            )
+        if (intent != null) {
+            interactionHandler.onInteraction(view, intent, RemoteResponse.fromPendingIntent(intent))
+        }
+    }
 }

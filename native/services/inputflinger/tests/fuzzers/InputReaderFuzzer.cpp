@@ -75,6 +75,8 @@ public:
 
     void toggleCapsLockState(int32_t deviceId) { reader->toggleCapsLockState(deviceId); }
 
+    void resetLockedModifierState() { reader->resetLockedModifierState(); }
+
     bool hasKeys(int32_t deviceId, uint32_t sourceMask, const std::vector<int32_t>& keyCodes,
                  uint8_t* outFlags) {
         return reader->hasKeys(deviceId, sourceMask, keyCodes, outFlags);
@@ -117,6 +119,10 @@ public:
         return reader->getSensors(deviceId);
     }
 
+    std::optional<HardwareProperties> getTouchpadHardwareProperties(int32_t deviceId) {
+        return reader->getTouchpadHardwareProperties(deviceId);
+    }
+
     bool canDispatchToDisplay(int32_t deviceId, ui::LogicalDisplayId displayId) {
         return reader->canDispatchToDisplay(deviceId, displayId);
     }
@@ -151,10 +157,6 @@ public:
         return reader->getLightPlayerId(deviceId, lightId);
     }
 
-    void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode, int32_t toKeyCode) const {
-        reader->addKeyRemapping(deviceId, fromKeyCode, toKeyCode);
-    }
-
     int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const {
         return reader->getKeyCodeForKeyLocation(deviceId, locationKeyCode);
     }
@@ -163,11 +165,21 @@ public:
         return reader->getBluetoothAddress(deviceId);
     }
 
+    std::filesystem::path getSysfsRootPath(int32_t deviceId) const {
+        return reader->getSysfsRootPath(deviceId);
+    }
+
     void sysfsNodeChanged(const std::string& sysfsNodePath) {
         reader->sysfsNodeChanged(sysfsNodePath);
     }
 
     DeviceId getLastUsedInputDeviceId() override { return reader->getLastUsedInputDeviceId(); }
+
+    void notifyMouseCursorFadedOnTyping() override { reader->notifyMouseCursorFadedOnTyping(); }
+
+    bool setKernelWakeEnabled(int32_t deviceId, bool enabled) override {
+        return reader->setKernelWakeEnabled(deviceId, enabled);
+    }
 
 private:
     std::unique_ptr<InputReaderInterface> reader;
@@ -220,6 +232,7 @@ extern "C" int LLVMFuzzerTestOneInput(uint8_t* data, size_t size) {
                                            fdp->ConsumeIntegral<int32_t>());
                 },
                 [&]() -> void { reader->toggleCapsLockState(fdp->ConsumeIntegral<int32_t>()); },
+                [&]() -> void { reader->resetLockedModifierState(); },
                 [&]() -> void {
                     size_t count = fdp->ConsumeIntegralInRange<size_t>(1, 1024);
                     std::vector<uint8_t> outFlags(count);
@@ -288,6 +301,7 @@ extern "C" int LLVMFuzzerTestOneInput(uint8_t* data, size_t size) {
                                          std::chrono::microseconds(fdp->ConsumeIntegral<size_t>()));
                 },
                 [&]() -> void { reader->getBluetoothAddress(fdp->ConsumeIntegral<int32_t>()); },
+                [&]() -> void { reader->getSysfsRootPath(fdp->ConsumeIntegral<int32_t>()); },
         })();
     }
 

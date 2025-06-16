@@ -16,6 +16,7 @@
 
 package com.android.systemui.keyguard.ui.viewmodel
 
+import android.util.MathUtils
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.FromAlternateBouncerTransitionInteractor
@@ -25,7 +26,6 @@ import com.android.systemui.keyguard.shared.model.KeyguardState.AOD
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import javax.inject.Inject
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
 
@@ -33,7 +33,6 @@ import kotlinx.coroutines.flow.flatMapLatest
  * Breaks down ALTERNATE BOUNCER->AOD transition into discrete steps for corresponding views to
  * consume.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class AlternateBouncerToAodTransitionViewModel
 @Inject
@@ -47,10 +46,20 @@ constructor(
             edge = Edge.create(from = ALTERNATE_BOUNCER, to = AOD),
         )
 
+    fun lockscreenAlpha(viewState: ViewStateAccessor): Flow<Float> {
+        var startAlpha = 1f
+        return transitionAnimation.sharedFlow(
+            duration = FromAlternateBouncerTransitionInteractor.TO_AOD_DURATION,
+            onStart = { startAlpha = viewState.alpha() },
+            onStep = { MathUtils.lerp(startAlpha, 1f, it) },
+        )
+    }
+
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
             duration = FromAlternateBouncerTransitionInteractor.TO_AOD_DURATION,
             onStep = { 1 - it },
+            onCancel = { 0f },
             onFinish = { 0f },
         )
 

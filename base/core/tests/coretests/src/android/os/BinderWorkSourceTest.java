@@ -24,18 +24,17 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.Suppress;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -46,7 +45,7 @@ import org.junit.runner.RunWith;
 @LargeTest
 @Presubmit
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(blockedBy = ActivityManager.class)
+@DisabledOnRavenwood(blockedBy = ActivityManager.class)
 public class BinderWorkSourceTest {
     private static Context sContext;
     private static final int UID = 100;

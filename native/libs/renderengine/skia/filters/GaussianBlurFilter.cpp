@@ -19,18 +19,18 @@
 #include "GaussianBlurFilter.h"
 #include <SkBlendMode.h>
 #include <SkCanvas.h>
+#include <SkImageFilters.h>
 #include <SkPaint.h>
 #include <SkRRect.h>
 #include <SkRuntimeEffect.h>
-#include <SkImageFilters.h>
 #include <SkSize.h>
 #include <SkString.h>
 #include <SkSurface.h>
 #include <SkTileMode.h>
+#include <common/trace.h>
 #include <include/gpu/ganesh/SkSurfaceGanesh.h>
-#include "include/gpu/GpuTypes.h" // from Skia
 #include <log/log.h>
-#include <utils/Trace.h>
+#include "include/gpu/GpuTypes.h" // from Skia
 
 namespace android {
 namespace renderengine {
@@ -64,7 +64,7 @@ sk_sp<SkImage> GaussianBlurFilter::generate(SkiaGpuContext* context, const uint3
             SkSamplingOptions{SkFilterMode::kLinear, SkMipmapMode::kNone},
             &paint,
             SkCanvas::SrcRectConstraint::kFast_SrcRectConstraint);
-    return surface->makeImageSnapshot();
+    return surface->makeTemporaryImage();
 }
 
 } // namespace skia

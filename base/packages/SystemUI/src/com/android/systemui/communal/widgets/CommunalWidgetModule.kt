@@ -20,7 +20,7 @@ package com.android.systemui.communal.widgets
 import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.res.Resources
-import android.os.Looper
+import com.android.systemui.communal.shared.model.GlanceableHubMultiUserHelper
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
@@ -43,26 +43,18 @@ interface CommunalWidgetModule {
 
         @SysUISingleton
         @Provides
-        fun provideAppWidgetManager(@Application context: Context): Optional<AppWidgetManager> {
-            return Optional.ofNullable(AppWidgetManager.getInstance(context))
-        }
-
-        @SysUISingleton
-        @Provides
         fun provideCommunalAppWidgetHost(
             @Application context: Context,
             @Background backgroundScope: CoroutineScope,
-            interactionHandler: WidgetInteractionHandler,
-            @Main looper: Looper,
             @CommunalLog logBuffer: LogBuffer,
+            glanceableHubMultiUserHelper: GlanceableHubMultiUserHelper,
         ): CommunalAppWidgetHost {
             return CommunalAppWidgetHost(
                 context,
                 backgroundScope,
                 APP_WIDGET_HOST_ID,
-                interactionHandler,
-                looper,
                 logBuffer,
+                glanceableHubMultiUserHelper,
             )
         }
 
@@ -74,6 +66,7 @@ interface CommunalWidgetModule {
             appWidgetHost: CommunalAppWidgetHost,
             selectedUserInteractor: SelectedUserInteractor,
             @CommunalLog logBuffer: LogBuffer,
+            glanceableHubMultiUserHelper: GlanceableHubMultiUserHelper,
         ): CommunalWidgetHost {
             return CommunalWidgetHost(
                 applicationScope,
@@ -81,6 +74,7 @@ interface CommunalWidgetModule {
                 appWidgetHost,
                 selectedUserInteractor,
                 logBuffer,
+                glanceableHubMultiUserHelper,
             )
         }
 

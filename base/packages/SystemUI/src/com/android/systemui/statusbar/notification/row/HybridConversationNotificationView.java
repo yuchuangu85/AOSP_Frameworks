@@ -18,6 +18,7 @@ package com.android.systemui.statusbar.notification.row;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.Flags;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Icon;
@@ -46,10 +47,11 @@ import com.android.systemui.statusbar.notification.row.ui.viewmodel.SingleIcon;
 import java.util.Objects;
 
 /**
- * A hybrid view which may contain information about one ore more conversations.
+ * A hybrid view which may contain information about one or more conversations.
  */
 public class HybridConversationNotificationView extends HybridNotificationView {
 
+    private static final int MAX_SUMMARIZATION_LINES = 1;
     private ImageView mConversationIconView;
     private TextView mConversationSenderName;
     private ViewStub mConversationFacePileStub;
@@ -93,12 +95,22 @@ public class HybridConversationNotificationView extends HybridNotificationView {
         }
         mConversationSenderName = requireViewById(R.id.conversation_notification_sender);
         applyTextColor(mConversationSenderName, mSecondaryTextColor);
-        mFacePileSize = getResources()
-                .getDimensionPixelSize(R.dimen.conversation_single_line_face_pile_size);
-        mFacePileAvatarSize = getResources()
-                .getDimensionPixelSize(R.dimen.conversation_single_line_face_pile_avatar_size);
-        mSingleAvatarSize = getResources()
-                .getDimensionPixelSize(R.dimen.conversation_single_line_avatar_size);
+        if (Flags.notificationsRedesignTemplates()) {
+            mFacePileSize = getResources()
+                    .getDimensionPixelSize(R.dimen.notification_2025_single_line_face_pile_size);
+            mFacePileAvatarSize = getResources()
+                    .getDimensionPixelSize(
+                            R.dimen.notification_2025_single_line_face_pile_avatar_size);
+            mSingleAvatarSize = getResources()
+                    .getDimensionPixelSize(R.dimen.notification_2025_single_line_avatar_size);
+        } else {
+            mFacePileSize = getResources()
+                    .getDimensionPixelSize(R.dimen.conversation_single_line_face_pile_size);
+            mFacePileAvatarSize = getResources()
+                    .getDimensionPixelSize(R.dimen.conversation_single_line_face_pile_avatar_size);
+            mSingleAvatarSize = getResources()
+                    .getDimensionPixelSize(R.dimen.conversation_single_line_avatar_size);
+        }
         mFacePileProtectionWidth = getResources().getDimensionPixelSize(
                 R.dimen.conversation_single_line_face_pile_protection_width);
         mTransformationHelper.setCustomTransformation(
@@ -277,18 +289,26 @@ public class HybridConversationNotificationView extends HybridNotificationView {
     public void setText(
             CharSequence titleText,
             CharSequence contentText,
-            CharSequence conversationSenderName
+            CharSequence conversationSenderName,
+            @Nullable CharSequence summarization
     ) {
         if (AsyncHybridViewInflation.isUnexpectedlyInLegacyMode()) return;
-        if (conversationSenderName == null) {
+        if (!TextUtils.isEmpty(summarization)) {
             mConversationSenderName.setVisibility(GONE);
+            contentText = summarization;
+            mTextView.setSingleLine(false);
+            mTextView.setMaxLines(MAX_SUMMARIZATION_LINES);
         } else {
-            mConversationSenderName.setVisibility(VISIBLE);
-            mConversationSenderName.setText(conversationSenderName);
+            mTextView.setSingleLine(true);
+            if (conversationSenderName == null) {
+                mConversationSenderName.setVisibility(GONE);
+            } else {
+                mConversationSenderName.setVisibility(VISIBLE);
+                mConversationSenderName.setText(conversationSenderName);
+            }
         }
-        // TODO (b/217799515): super.bind() doesn't use contentView, remove the contentView
-        //  argument when the flag is removed
-        super.bind(/* title = */ titleText, /* text = */ contentText, /* contentView = */ null);
+        super.bind(/* title = */ titleText, /* text = */ contentText,
+                /* stripSpans = */ TextUtils.isEmpty(summarization));
     }
 
     private static void setSize(View view, int size) {

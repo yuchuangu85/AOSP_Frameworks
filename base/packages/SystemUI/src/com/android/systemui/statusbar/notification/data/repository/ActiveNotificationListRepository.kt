@@ -16,7 +16,7 @@
 package com.android.systemui.statusbar.notification.data.repository
 
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.statusbar.notification.collection.render.NotifStats
+import com.android.systemui.statusbar.notification.data.model.NotifStats
 import com.android.systemui.statusbar.notification.data.repository.ActiveNotificationsStore.Key
 import com.android.systemui.statusbar.notification.shared.ActiveNotificationEntryModel
 import com.android.systemui.statusbar.notification.shared.ActiveNotificationGroupModel
@@ -66,7 +66,7 @@ data class ActiveNotificationsStore(
      * Map of notification key to rank, where rank is the 0-based index of the notification on the
      * system server, meaning that in the unfiltered flattened list of notification entries.
      */
-    val rankingsMap: Map<String, Int> = emptyMap()
+    val rankingsMap: Map<String, Int> = emptyMap(),
 ) {
     operator fun get(key: Key): ActiveNotificationEntryModel? {
         return when (key) {

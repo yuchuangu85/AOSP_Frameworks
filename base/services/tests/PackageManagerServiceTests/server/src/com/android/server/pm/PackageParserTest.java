@@ -20,6 +20,7 @@ import static android.content.UriRelativeFilter.QUERY;
 import static android.content.UriRelativeFilter.FRAGMENT;
 import static android.content.UriRelativeFilterGroup.ACTION_ALLOW;
 import static android.content.UriRelativeFilterGroup.ACTION_BLOCK;
+import static android.content.pm.ApplicationInfo.PRIVATE_FLAG_EXT_ALLOWLISTED_FOR_HIDDEN_APIS;
 import static android.os.PatternMatcher.PATTERN_ADVANCED_GLOB;
 import static android.os.PatternMatcher.PATTERN_LITERAL;
 import static android.os.PatternMatcher.PATTERN_PREFIX;
@@ -64,10 +65,13 @@ import android.content.pm.SigningDetails;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.ArraySet;
 
 import androidx.annotation.Nullable;
@@ -111,6 +115,8 @@ import com.android.server.pm.parsing.pkg.AndroidPackageUtils;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageUserStateInternal;
 
+import com.google.android.collect.Sets;
+
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -146,6 +152,9 @@ public class PackageParserTest {
 
     @Rule
     public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     private File mTmpDir;
     private static final File FRAMEWORK = new File("/system/framework/framework-res.apk");
@@ -209,6 +218,30 @@ public class PackageParserTest {
 
         pkg = pp.parsePackage(FRAMEWORK, 0 /* parseFlags */, false /* useCaches */);
         assertEquals("android", pkg.getPackageName());
+    }
+
+    @Test
+    public void testParse_withCache_hiddenApiAllowlist() throws Exception {
+        CachePackageNameParser pp = new CachePackageNameParser(null);
+
+        pp.setCacheDir(mTmpDir);
+        // The first parse will write this package to the cache.
+        pp.parsePackage(FRAMEWORK, 0 /* parseFlags */, true /* useCaches */);
+
+        // Now attempt to parse the package again, should return the
+        // cached result.
+        ParsedPackage pkg = pp.parsePackage(FRAMEWORK, 0 /* parseFlags */,
+                true /* useCaches */);
+        assertEquals("cache_android", pkg.getPackageName());
+
+        // Create application info
+        pkg.hideAsFinal();
+        ApplicationInfo aInfo = PackageInfoUtils.generateApplicationInfo(pkg, 0,
+                PackageUserStateInternal.DEFAULT, 0, mockPkgSetting(pkg));
+
+        // verify ext flag for hidden APIs allowlist
+        assertEquals(PRIVATE_FLAG_EXT_ALLOWLISTED_FOR_HIDDEN_APIS,
+                aInfo.privateFlagsExt & PRIVATE_FLAG_EXT_ALLOWLISTED_FOR_HIDDEN_APIS);
     }
 
     @Test
@@ -819,7 +852,42 @@ public class PackageParserTest {
 
     @Test
     @RequiresFlagsEnabled(android.content.res.Flags.FLAG_MANIFEST_FLAGGING)
-    public void testParseWithFeatureFlagAttributes() throws Exception {
+    @DisableFlags(android.content.res.Flags.FLAG_USE_NEW_ACONFIG_STORAGE)
+    public void testParseWithFeatureFlagAttributes_oldStorage() throws Exception {
+        final File testFile = extractFile(TEST_APP8_APK);
+        try (PackageParser2 parser = new TestPackageParser2()) {
+            Map<String, Boolean> flagValues = new HashMap<>();
+            flagValues.put("my.flag1", true);
+            flagValues.put("my.flag2", false);
+            flagValues.put("my.flag3", false);
+            flagValues.put("my.flag4", true);
+            ParsingPackageUtils.getAconfigFlags().addFlagValuesForTesting(flagValues);
+
+            // The manifest has:
+            //    <permission android:name="PERM1" android:featureFlag="my.flag1 " />
+            //    <permission android:name="PERM2" android:featureFlag=" !my.flag2" />
+            //    <permission android:name="PERM3" android:featureFlag="my.flag3" />
+            //    <permission android:name="PERM4" android:featureFlag="!my.flag4" />
+            //    <permission android:name="PERM5" android:featureFlag="unknown.flag" />
+            // Therefore with the above flag values, only PERM1 and PERM2 should be present.
+
+            final ParsedPackage pkg = parser.parsePackage(testFile, 0, false);
+            List<String> permissionNames =
+                    pkg.getPermissions().stream().map(ParsedComponent::getName).toList();
+            assertThat(permissionNames).contains(PACKAGE_NAME + ".PERM1");
+            assertThat(permissionNames).contains(PACKAGE_NAME + ".PERM2");
+            assertThat(permissionNames).doesNotContain(PACKAGE_NAME + ".PERM3");
+            assertThat(permissionNames).doesNotContain(PACKAGE_NAME + ".PERM4");
+            assertThat(permissionNames).doesNotContain(PACKAGE_NAME + ".PERM5");
+        } finally {
+            testFile.delete();
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.content.res.Flags.FLAG_MANIFEST_FLAGGING)
+    @EnableFlags(android.content.res.Flags.FLAG_USE_NEW_ACONFIG_STORAGE)
+    public void testParseWithFeatureFlagAttributes_newStorage() throws Exception {
         final File testFile = extractFile(TEST_APP8_APK);
         try (PackageParser2 parser = new TestPackageParser2()) {
             Map<String, Boolean> flagValues = new HashMap<>();
@@ -856,35 +924,37 @@ public class PackageParserTest {
      */
     public static class CachePackageNameParser extends PackageParser2 {
 
+        private static final Callback CALLBACK = new Callback() {
+            @Override
+            public boolean isChangeEnabled(long changeId, @NonNull ApplicationInfo appInfo) {
+                return true;
+            }
+
+            @Override
+            public boolean hasFeature(String feature) {
+                return false;
+            }
+
+            @Override
+            public Set<String> getHiddenApiWhitelistedApps() {
+                return Sets.newArraySet("cache_android");
+            }
+
+            @Override
+            public Set<String> getInstallConstraintsAllowlist() {
+                return new ArraySet<>();
+            }
+        };
+
         CachePackageNameParser(@Nullable File cacheDir) {
-            super(null, null, null, new Callback() {
-                @Override
-                public boolean isChangeEnabled(long changeId, @NonNull ApplicationInfo appInfo) {
-                    return true;
-                }
-
-                @Override
-                public boolean hasFeature(String feature) {
-                    return false;
-                }
-
-                @Override
-                public Set<String> getHiddenApiWhitelistedApps() {
-                    return new ArraySet<>();
-                }
-
-                @Override
-                public Set<String> getInstallConstraintsAllowlist() {
-                    return new ArraySet<>();
-                }
-            });
+            super(null, null, null, CALLBACK);
             if (cacheDir != null) {
                 setCacheDir(cacheDir);
             }
         }
 
         void setCacheDir(@NonNull File cacheDir) {
-            this.mCacher = new PackageCacher(cacheDir) {
+            this.mCacher = new PackageCacher(cacheDir, CALLBACK) {
                 @Override
                 public ParsedPackage fromCacheEntry(byte[] cacheEntry) {
                     ParsedPackage parsed = super.fromCacheEntry(cacheEntry);

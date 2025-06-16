@@ -17,16 +17,37 @@
 
 package com.android.systemui.communal.data.repository
 
+import android.content.pm.UserInfo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 
 /** Fake implementation of [CommunalPrefsRepository] */
 class FakeCommunalPrefsRepository : CommunalPrefsRepository {
-    private val _isCtaDismissed = MutableStateFlow(false)
-    override val isCtaDismissed: Flow<Boolean> = _isCtaDismissed.asStateFlow()
+    private val _isCtaDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
+    private val _isHubOnboardingDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
+    private val _isDreamButtonTooltipDismissed = MutableStateFlow<Set<UserInfo>>(emptySet())
 
-    override suspend fun setCtaDismissedForCurrentUser() {
-        _isCtaDismissed.value = true
+    override fun isCtaDismissed(user: UserInfo): Flow<Boolean> =
+        _isCtaDismissed.map { it.contains(user) }
+
+    override suspend fun setCtaDismissed(user: UserInfo) {
+        _isCtaDismissed.value = _isCtaDismissed.value.toMutableSet().apply { add(user) }
+    }
+
+    override fun isHubOnboardingDismissed(user: UserInfo): Flow<Boolean> =
+        _isHubOnboardingDismissed.map { it.contains(user) }
+
+    override suspend fun setHubOnboardingDismissed(user: UserInfo) {
+        _isHubOnboardingDismissed.value =
+            _isHubOnboardingDismissed.value.toMutableSet().apply { add(user) }
+    }
+
+    override fun isDreamButtonTooltipDismissed(user: UserInfo): Flow<Boolean> =
+        _isDreamButtonTooltipDismissed.map { it.contains(user) }
+
+    override suspend fun setDreamButtonTooltipDismissed(user: UserInfo) {
+        _isDreamButtonTooltipDismissed.value =
+            _isDreamButtonTooltipDismissed.value.toMutableSet().apply { add(user) }
     }
 }

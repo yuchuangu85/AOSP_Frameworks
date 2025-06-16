@@ -51,9 +51,9 @@ public class NoOpAudioSystemAdapter extends AudioSystemAdapter {
     // Overrides of AudioSystemAdapter
     @Override
     public int setDeviceConnectionState(AudioDeviceAttributes attributes, int state,
-            int codecFormat) {
-        Log.i(TAG, String.format("setDeviceConnectionState(0x%s, %d, 0x%s",
-                attributes.toString(), state, Integer.toHexString(codecFormat)));
+            int codecFormat, boolean deviceSwitch) {
+        Log.i(TAG, String.format("setDeviceConnectionState(0x%s, %d, 0x%s %b",
+                attributes.toString(), state, Integer.toHexString(codecFormat), deviceSwitch));
         return AudioSystem.AUDIO_STATUS_OK;
     }
 
@@ -132,12 +132,13 @@ public class NoOpAudioSystemAdapter extends AudioSystemAdapter {
     }
 
     @Override
-    public int setStreamVolumeIndexAS(int stream, int index, int device) {
+    public int setStreamVolumeIndexAS(int stream, int index, boolean muted, int device) {
         return AudioSystem.AUDIO_STATUS_OK;
     }
 
     @Override
-    public int setVolumeIndexForAttributes(AudioAttributes attributes, int index, int device) {
+    public int setVolumeIndexForAttributes(AudioAttributes attributes, int index, boolean muted,
+            int device) {
         return AudioSystem.AUDIO_STATUS_OK;
     }
 

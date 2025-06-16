@@ -21,6 +21,7 @@ package com.android.systemui.shade.ui.composable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -35,68 +36,67 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsIgnoringVisibility
 import androidx.compose.foundation.layout.waterfall
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.overscroll
 import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.dimensionResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.android.compose.animation.scene.ContentScope
 import com.android.compose.animation.scene.ElementKey
-import com.android.compose.animation.scene.LowestZIndexScenePicker
-import com.android.compose.animation.scene.SceneScope
+import com.android.compose.animation.scene.LowestZIndexContentPicker
 import com.android.compose.windowsizeclass.LocalWindowSizeClass
-import com.android.systemui.keyguard.ui.composable.LockscreenContent
-import com.android.systemui.scene.shared.model.Scenes
-import com.android.systemui.shade.ui.viewmodel.OverlayShadeViewModel
-import com.android.systemui.util.kotlin.getOrNull
-import dagger.Lazy
-import java.util.Optional
+import com.android.mechanics.behavior.VerticalExpandContainerSpec
+import com.android.mechanics.behavior.verticalExpandContainerBackground
+import com.android.systemui.Flags
+import com.android.systemui.res.R
+import com.android.systemui.shade.ui.ShadeColors.notificationScrim
+import com.android.systemui.shade.ui.ShadeColors.shadePanel
+import com.android.systemui.shade.ui.composable.OverlayShade.rememberShadeExpansionMotion
 
-/** The overlay shade renders a lightweight shade UI container on top of a background scene. */
+/** Renders a lightweight shade UI container, as an overlay. */
 @Composable
-fun SceneScope.OverlayShade(
-    viewModel: OverlayShadeViewModel,
-    panelAlignment: Alignment,
-    lockscreenContent: Lazy<Optional<LockscreenContent>>,
+fun ContentScope.OverlayShade(
+    panelElement: ElementKey,
+    alignmentOnWideScreens: Alignment,
+    onScrimClicked: () -> Unit,
     modifier: Modifier = Modifier,
+    header: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val backgroundScene by viewModel.backgroundScene.collectAsStateWithLifecycle()
-
+    val isFullWidth = isFullWidthShade()
     Box(modifier) {
-        if (backgroundScene == Scenes.Lockscreen) {
-            // Lockscreen content is optionally injected, because variants of System UI without a
-            // lockscreen cannot provide it.
-            val lockscreenContentOrNull = lockscreenContent.get().getOrNull()
-            lockscreenContentOrNull?.apply { Content(Modifier.fillMaxSize()) }
-        }
-
-        Scrim(onClicked = viewModel::onScrimClicked)
+        Scrim(onClicked = onScrimClicked)
 
         Box(
-            modifier = Modifier.fillMaxSize().panelPadding(),
-            contentAlignment = panelAlignment,
+            modifier = Modifier.fillMaxSize().panelContainerPadding(isFullWidth),
+            contentAlignment = if (isFullWidth) Alignment.TopCenter else alignmentOnWideScreens,
         ) {
             Panel(
-                modifier = Modifier.element(OverlayShade.Elements.Panel).panelSize(),
-                content = content
+                modifier =
+                    Modifier.overscroll(verticalOverscrollEffect)
+                        .element(panelElement)
+                        .panelWidth(isFullWidth),
+                header = header.takeIf { isFullWidth },
+                content = content,
             )
+        }
+
+        if (!isFullWidth) {
+            header()
         }
     }
 }
 
 @Composable
-private fun SceneScope.Scrim(
-    onClicked: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
+private fun ContentScope.Scrim(onClicked: () -> Unit, modifier: Modifier = Modifier) {
     Spacer(
         modifier =
             modifier
@@ -108,100 +108,113 @@ private fun SceneScope.Scrim(
 }
 
 @Composable
-private fun SceneScope.Panel(
+private fun ContentScope.Panel(
     modifier: Modifier = Modifier,
+    header: (@Composable () -> Unit)?,
     content: @Composable () -> Unit,
 ) {
-    Box(modifier = modifier.clip(OverlayShade.Shapes.RoundedCornerPanel)) {
-        Spacer(
-            modifier =
-                Modifier.element(OverlayShade.Elements.PanelBackground)
-                    .matchParentSize()
-                    .background(
-                        color = OverlayShade.Colors.PanelBackground,
-                        shape = OverlayShade.Shapes.RoundedCornerPanel,
-                    ),
-        )
-
-        // This content is intentionally rendered as a separate element from the background in order
-        // to allow for more flexibility when defining transitions.
-        content()
+    Box(
+        modifier =
+            modifier
+                .disableSwipesWhenScrolling()
+                .verticalExpandContainerBackground(
+                    backgroundColor = OverlayShade.Colors.PanelBackground,
+                    spec = rememberShadeExpansionMotion(isFullWidthShade()),
+                )
+    ) {
+        Column {
+            header?.invoke()
+            content()
+        }
     }
 }
 
 @Composable
-private fun Modifier.panelSize(): Modifier {
-    val widthSizeClass = LocalWindowSizeClass.current.widthSizeClass
-
-    return this.then(
-        when (widthSizeClass) {
-            WindowWidthSizeClass.Compact -> Modifier.fillMaxWidth()
-            WindowWidthSizeClass.Medium -> Modifier.width(OverlayShade.Dimensions.PanelWidthMedium)
-            WindowWidthSizeClass.Expanded -> Modifier.width(OverlayShade.Dimensions.PanelWidthLarge)
-            else -> error("Unsupported WindowWidthSizeClass \"$widthSizeClass\"")
-        }
-    )
+private fun Modifier.panelWidth(isFullWidthPanel: Boolean): Modifier {
+    return if (isFullWidthPanel) {
+        fillMaxWidth()
+    } else {
+        width(dimensionResource(id = R.dimen.shade_panel_width))
+    }
 }
 
 @Composable
-private fun Modifier.panelPadding(): Modifier {
-    val widthSizeClass = LocalWindowSizeClass.current.widthSizeClass
+@ReadOnlyComposable
+internal fun isFullWidthShade(): Boolean {
+    return LocalWindowSizeClass.current.widthSizeClass == WindowWidthSizeClass.Compact
+}
+
+@Composable
+private fun Modifier.panelContainerPadding(isFullWidthPanel: Boolean): Modifier {
+    if (isFullWidthPanel) {
+        return this
+    }
     val systemBars = WindowInsets.systemBarsIgnoringVisibility
     val displayCutout = WindowInsets.displayCutout
     val waterfall = WindowInsets.waterfall
-    val contentPadding = PaddingValues(all = OverlayShade.Dimensions.ScrimContentPadding)
-
-    val combinedPadding =
+    val horizontalPadding =
+        PaddingValues(horizontal = dimensionResource(id = R.dimen.shade_panel_margin_horizontal))
+    return padding(
         combinePaddings(
             systemBars.asPaddingValues(),
             displayCutout.asPaddingValues(),
             waterfall.asPaddingValues(),
-            contentPadding
+            horizontalPadding,
         )
-
-    return if (widthSizeClass == WindowWidthSizeClass.Compact) {
-        padding(bottom = combinedPadding.calculateBottomPadding())
-    } else {
-        padding(combinedPadding)
-    }
+    )
 }
 
 /** Creates a union of [paddingValues] by using the max padding of each edge. */
 @Composable
 private fun combinePaddings(vararg paddingValues: PaddingValues): PaddingValues {
-    val layoutDirection = LocalLayoutDirection.current
-
-    return PaddingValues(
-        start = paddingValues.maxOfOrNull { it.calculateStartPadding(layoutDirection) } ?: 0.dp,
-        top = paddingValues.maxOfOrNull { it.calculateTopPadding() } ?: 0.dp,
-        end = paddingValues.maxOfOrNull { it.calculateEndPadding(layoutDirection) } ?: 0.dp,
-        bottom = paddingValues.maxOfOrNull { it.calculateBottomPadding() } ?: 0.dp
-    )
+    return if (paddingValues.isEmpty()) {
+        PaddingValues(0.dp)
+    } else {
+        val layoutDirection = LocalLayoutDirection.current
+        PaddingValues(
+            start = paddingValues.maxOf { it.calculateStartPadding(layoutDirection) },
+            top = paddingValues.maxOf { it.calculateTopPadding() },
+            end = paddingValues.maxOf { it.calculateEndPadding(layoutDirection) },
+            bottom = paddingValues.maxOf { it.calculateBottomPadding() },
+        )
+    }
 }
 
 object OverlayShade {
     object Elements {
-        val Scrim = ElementKey("OverlayShadeScrim", scenePicker = LowestZIndexScenePicker)
-        val Panel = ElementKey("OverlayShadePanel", scenePicker = LowestZIndexScenePicker)
-        val PanelBackground =
-            ElementKey("OverlayShadePanelBackground", scenePicker = LowestZIndexScenePicker)
+        val Scrim = ElementKey("OverlayShadeScrim", contentPicker = LowestZIndexContentPicker)
+        val Panel =
+            ElementKey(
+                "OverlayShadePanel",
+                contentPicker = LowestZIndexContentPicker,
+                placeAllCopies = true,
+            )
     }
 
     object Colors {
-        val ScrimBackground = Color(0, 0, 0, alpha = 255 / 3)
+        val ScrimBackground: Color
+            @Composable
+            @ReadOnlyComposable
+            get() = Color(LocalResources.current.notificationScrim(Flags.notificationShadeBlur()))
+
         val PanelBackground: Color
-            @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.surfaceContainer
+            @Composable
+            @ReadOnlyComposable
+            get() = Color(LocalResources.current.shadePanel(Flags.notificationShadeBlur()))
     }
 
     object Dimensions {
-        val ScrimContentPadding = 16.dp
-        val PanelCornerRadius = 46.dp
-        val PanelWidthMedium = 390.dp
-        val PanelWidthLarge = 474.dp
-        val OverscrollLimit = 32.dp
+        val PanelCornerRadius: Dp
+            @Composable
+            @ReadOnlyComposable
+            get() = dimensionResource(R.dimen.overlay_shade_panel_shape_radius)
     }
 
-    object Shapes {
-        val RoundedCornerPanel = RoundedCornerShape(Dimensions.PanelCornerRadius)
+    @Composable
+    fun rememberShadeExpansionMotion(isFullWidth: Boolean): VerticalExpandContainerSpec {
+        val radius = Dimensions.PanelCornerRadius
+        return remember(radius, isFullWidth) {
+            VerticalExpandContainerSpec(isFloating = !isFullWidth, radius = radius)
+        }
     }
 }

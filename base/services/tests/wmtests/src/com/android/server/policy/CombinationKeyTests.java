@@ -22,10 +22,12 @@ import static android.view.KeyEvent.KEYCODE_VOLUME_UP;
 import static com.android.server.policy.PhoneWindowManager.POWER_VOLUME_UP_BEHAVIOR_GLOBAL_ACTIONS;
 import static com.android.server.policy.PhoneWindowManager.POWER_VOLUME_UP_BEHAVIOR_MUTE;
 
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.Presubmit;
 import android.view.ViewConfiguration;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.MediumTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -37,14 +39,17 @@ import org.junit.runner.RunWith;
  * Build/Install/Run:
  *  atest WmTests:CombinationKeyTests
  */
+@Presubmit
 @MediumTest
 @RunWith(AndroidJUnit4.class)
+@DisableFlags(com.android.hardware.input.Flags.FLAG_USE_KEY_GESTURE_EVENT_HANDLER_MULTI_KEY_GESTURES)
 public class CombinationKeyTests extends ShortcutKeyTestBase {
     private static final long A11Y_KEY_HOLD_MILLIS = 3500;
 
     @Before
     public void setUp() {
         setUpPhoneWindowManager();
+        mPhoneWindowManager.overrideStatusBarManagerInternal();
     }
 
     /**

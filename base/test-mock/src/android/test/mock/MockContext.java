@@ -53,6 +53,7 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 /**
@@ -479,6 +480,15 @@ public class MockContext extends Context {
         throw new UnsupportedOperationException();
     }
 
+    /** @hide */
+    @Override
+    public void sendOrderedBroadcastAsUserMultiplePermissions(Intent intent, UserHandle user,
+            String[] receiverPermissions, int appOp, Bundle options,
+            BroadcastReceiver resultReceiver, Handler scheduler, int initialCode,
+            String initialData, Bundle initialExtras) {
+        throw new UnsupportedOperationException();
+    }
+
     @Override
     public void sendOrderedBroadcast(Intent intent, String receiverPermission,
             String receiverAppOp, BroadcastReceiver resultReceiver, Handler scheduler,
@@ -595,6 +605,12 @@ public class MockContext extends Context {
 
     @Override
     public void unregisterReceiver(BroadcastReceiver receiver) {
+        throw new UnsupportedOperationException();
+    }
+
+    /** @hide */
+    @Override
+    public List<IntentFilter> getRegisteredIntentFilters(BroadcastReceiver receiver) {
         throw new UnsupportedOperationException();
     }
 

@@ -31,6 +31,7 @@ import static android.app.ActivityManagerInternal.ALLOW_FULL_ONLY;
 import static android.app.ActivityManagerInternal.ALLOW_NON_FULL;
 import static android.app.ActivityManagerInternal.ALLOW_NON_FULL_IN_PROFILE;
 import static android.app.ActivityManagerInternal.ALLOW_PROFILES_OR_NON_FULL;
+import static android.app.KeyguardManager.LOCK_ON_USER_SWITCH_CALLBACK;
 import static android.os.PowerWhitelistManager.REASON_BOOT_COMPLETED;
 import static android.os.PowerWhitelistManager.REASON_LOCKED_BOOT_COMPLETED;
 import static android.os.PowerWhitelistManager.TEMPORARY_ALLOWLIST_TYPE_FOREGROUND_SERVICE_ALLOWED;
@@ -125,12 +126,12 @@ import android.view.Display;
 import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.ObjectUtils;
 import com.android.internal.util.Preconditions;
 import com.android.internal.widget.LockPatternUtils;
+import com.android.server.AlarmManagerInternal;
 import com.android.server.FactoryResetter;
 import com.android.server.FgThread;
 import com.android.server.LocalServices;
@@ -155,8 +156,11 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 
 /**
  * Helper class for {@link ActivityManagerService} responsible for multi-user functionality.
@@ -199,6 +203,7 @@ class UserController implements Handler.Callback {
     static final int COMPLETE_USER_SWITCH_MSG = 130;
     static final int USER_COMPLETED_EVENT_MSG = 140;
     static final int SCHEDULED_STOP_BACKGROUND_USER_MSG = 150;
+    static final int USER_SWITCHING_DIALOG_ANIMATION_TIMEOUT_MSG = 160;
 
     private static final int NO_ARG2 = 0;
 
@@ -222,29 +227,18 @@ class UserController implements Handler.Callback {
     private static final int USER_SWITCH_CALLBACKS_TIMEOUT_MS = 5 * 1000;
 
     /**
-     * Amount of time waited for
-     * {@link ActivityTaskManagerInternal.ScreenObserver#onKeyguardStateChanged} callbacks to be
-     * called after calling {@link WindowManagerService#lockDeviceNow}.
-     * Otherwise, we should throw a {@link RuntimeException} and never dismiss the
-     * {@link UserSwitchingDialog}.
-     */
-    static final int SHOW_KEYGUARD_TIMEOUT_MS = 20 * 1000;
-
-    /**
-     * Amount of time waited for {@link WindowManagerService#dismissKeyguard} callbacks to be
-     * called after dismissing the keyguard.
-     * Otherwise, we should move on to dismiss the dialog {@link #dismissUserSwitchDialog}}
-     * and report user switch is complete {@link #REPORT_USER_SWITCH_COMPLETE_MSG}.
-     */
-    private static final int DISMISS_KEYGUARD_TIMEOUT_MS = 2 * 1000;
-
-    /**
      * Time after last scheduleOnUserCompletedEvent() call at which USER_COMPLETED_EVENT_MSG will be
      * scheduled (although it may fire sooner instead).
      * When it fires, {@link #reportOnUserCompletedEvent} will be processed.
      */
     // TODO(b/197344658): Increase to 10s or 15s once we have a switch-UX-is-done invocation too.
     private static final int USER_COMPLETED_EVENT_DELAY_MS = 5 * 1000;
+
+    /**
+     * If a user has an alarm in the next this many milliseconds, avoid stopping it due to
+     * scheduled background stopping.
+     */
+    private static final long TIME_BEFORE_USERS_ALARM_TO_AVOID_STOPPING_MS = 60 * 60_000; // 60 mins
 
     /**
      * Maximum number of users we allow to be running at a time, including system user.
@@ -347,16 +341,16 @@ class UserController implements Handler.Callback {
     private volatile ArraySet<String> mCurWaitingUserSwitchCallbacks;
 
     /**
-     * Messages for switching from {@link android.os.UserHandle#SYSTEM}.
+     * Message shown when switching from a user.
      */
     @GuardedBy("mLock")
-    private String mSwitchingFromSystemUserMessage;
+    private final SparseArray<String> mSwitchingFromUserMessage = new SparseArray<>();
 
     /**
-     * Messages for switching to {@link android.os.UserHandle#SYSTEM}.
+     * Message shown when switching to a user.
      */
     @GuardedBy("mLock")
-    private String mSwitchingToSystemUserMessage;
+    private final SparseArray<String> mSwitchingToUserMessage = new SparseArray<>();
 
     /**
      * Callbacks that are still active after {@link #getUserSwitchTimeoutMs}
@@ -439,15 +433,19 @@ class UserController implements Handler.Callback {
     @GuardedBy("mLock")
     private final List<PendingUserStart> mPendingUserStarts = new ArrayList<>();
 
+    /**
+     * Contains users which cannot abort the shutdown process.
+     *
+     * <p> For example, we don't abort shutdown for users whose processes have already been stopped
+     * due to {@link #isEarlyPackageKillEnabledForUserSwitch(int, int)}.
+     */
+    @GuardedBy("mLock")
+    private final ArraySet<Integer> mDoNotAbortShutdownUserIds = new ArraySet<>();
+
     private final UserLifecycleListener mUserLifecycleListener = new UserLifecycleListener() {
         @Override
         public void onUserCreated(UserInfo user, Object token) {
             onUserAdded(user);
-        }
-
-        @Override
-        public void onUserRemoved(UserInfo user) {
-            UserController.this.onUserRemoved(user.id);
         }
     };
 
@@ -509,16 +507,36 @@ class UserController implements Handler.Callback {
         }
     }
 
-    private boolean shouldStopUserOnSwitch() {
+    private boolean isStopUserOnSwitchEnabled() {
         synchronized (mLock) {
             if (mStopUserOnSwitch != STOP_USER_ON_SWITCH_DEFAULT) {
                 final boolean value = mStopUserOnSwitch == STOP_USER_ON_SWITCH_TRUE;
-                Slogf.i(TAG, "shouldStopUserOnSwitch(): returning overridden value (%b)", value);
+                Slogf.i(TAG, "isStopUserOnSwitchEnabled(): returning overridden value (%b)", value);
                 return value;
             }
         }
         final int property = SystemProperties.getInt("fw.stop_bg_users_on_switch", -1);
         return property == -1 ? mDelayUserDataLocking : property == 1;
+    }
+
+    /**
+     * Get whether or not the previous user's packages will be killed before the user is
+     * stopped during a user switch.
+     *
+     * <p> The primary use case of this method is for {@link com.android.server.SystemService}
+     * classes to call this API in their
+     * {@link com.android.server.SystemService#onUserSwitching} method implementation to prevent
+     * restarting any of the previous user's processes that will be killed during the user switch.
+     */
+    boolean isEarlyPackageKillEnabledForUserSwitch(int fromUserId, int toUserId) {
+        // NOTE: The logic in this method could be extended to cover other cases where
+        // the previous user is also stopped like: guest users, ephemeral users,
+        // and users with DISALLOW_RUN_IN_BACKGROUND. Currently, this is not done
+        // because early killing is not enabled for these cases by default.
+        if (fromUserId == UserHandle.USER_SYSTEM) {
+            return false;
+        }
+        return isStopUserOnSwitchEnabled();
     }
 
     void finishUserSwitch(UserState uss) {
@@ -1247,6 +1265,7 @@ class UserController implements Handler.Callback {
                 return;
             }
             uss.setState(UserState.STATE_SHUTDOWN);
+            mDoNotAbortShutdownUserIds.remove(userId);
         }
         TimingsTraceAndSlog t = new TimingsTraceAndSlog();
         t.traceBegin("setUserState-STATE_SHUTDOWN-" + userId + "-[stopUser]");
@@ -1555,7 +1574,8 @@ class UserController implements Handler.Callback {
 
     private void stopPackagesOfStoppedUser(@UserIdInt int userId, String reason) {
         if (DEBUG_MU) Slogf.i(TAG, "stopPackagesOfStoppedUser(%d): %s", userId, reason);
-        mInjector.activityManagerForceStopPackage(userId, reason);
+        mInjector.activityManagerForceStopUserPackages(userId, reason,
+                /* evenImportantServices= */ true);
         if (mInjector.getUserManager().isPreCreated(userId)) {
             // Don't fire intent for precreated.
             return;
@@ -1606,6 +1626,21 @@ class UserController implements Handler.Callback {
                 stopUsersLU(oldUserId, /* allowDelayedLocking= */ false, null, null);
             }
         }
+    }
+
+    private void stopPreviousUserPackagesIfEnabled(int fromUserId, int toUserId) {
+        if (!android.multiuser.Flags.stopPreviousUserApps()
+                || !isEarlyPackageKillEnabledForUserSwitch(fromUserId, toUserId)) {
+            return;
+        }
+        // Stop the previous user's packages early to reduce resource usage
+        // during user switching. Only do this when the previous user will
+        // be stopped regardless.
+        synchronized (mLock) {
+            mDoNotAbortShutdownUserIds.add(fromUserId);
+        }
+        mInjector.activityManagerForceStopUserPackages(fromUserId,
+                "early stop user packages", /* evenImportantServices= */ false);
     }
 
     void scheduleStartProfiles() {
@@ -1873,170 +1908,195 @@ class UserController implements Handler.Callback {
                 return false;
             }
 
-            boolean needStart = false;
-            boolean updateUmState = false;
-            UserState uss;
-
-            // If the user we are switching to is not currently started, then
-            // we need to start it now.
-            t.traceBegin("updateStartedUserArrayStarting");
-            synchronized (mLock) {
-                uss = mStartedUsers.get(userId);
-                if (uss == null) {
-                    uss = new UserState(UserHandle.of(userId));
-                    uss.mUnlockProgress.addListener(new UserProgressListener());
-                    mStartedUsers.put(userId, uss);
-                    updateStartedUserArrayLU();
-                    needStart = true;
-                    updateUmState = true;
-                } else if (uss.state == UserState.STATE_SHUTDOWN) {
-                    Slogf.i(TAG, "User #" + userId
-                            + " is shutting down - will start after full shutdown");
-                    mPendingUserStarts.add(new PendingUserStart(userId, userStartMode,
-                            unlockListener));
-                    t.traceEnd(); // updateStartedUserArrayStarting
-                    return true;
-                }
-            }
-
-            // No matter what, the fact that we're requested to start the user (even if it is
-            // already running) puts it towards the end of the mUserLru list.
-            addUserToUserLru(userId);
-            if (android.multiuser.Flags.scheduleStopOfBackgroundUser()) {
-                mHandler.removeEqualMessages(SCHEDULED_STOP_BACKGROUND_USER_MSG,
-                        Integer.valueOf(userId));
-            }
-
-            if (unlockListener != null) {
-                uss.mUnlockProgress.addListener(unlockListener);
-            }
-            t.traceEnd(); // updateStartedUserArrayStarting
-
-            if (updateUmState) {
-                t.traceBegin("setUserState");
-                mInjector.getUserManagerInternal().setUserState(userId, uss.state);
-                t.traceEnd();
-            }
-            t.traceBegin("updateConfigurationAndProfileIds");
+            final Runnable continueStartUserInternal = () -> continueStartUserInternal(userInfo,
+                    oldUserId, userStartMode, unlockListener, callingUid, callingPid);
             if (foreground) {
-                // Make sure the old user is no longer considering the display to be on.
-                mInjector.reportGlobalUsageEvent(UsageEvents.Event.SCREEN_NON_INTERACTIVE);
-                boolean userSwitchUiEnabled;
-                synchronized (mLock) {
-                    mCurrentUserId = userId;
-                    userSwitchUiEnabled = mUserSwitchUiEnabled;
-                }
-                mInjector.updateUserConfiguration();
-                // NOTE: updateProfileRelatedCaches() is called on both if and else parts, ideally
-                // it should be moved outside, but for now it's not as there are many calls to
-                // external components here afterwards
-                updateProfileRelatedCaches();
-                mInjector.getWindowManager().setCurrentUser(userId);
-                mInjector.reportCurWakefulnessUsageEvent();
-                if (userSwitchUiEnabled) {
-                    mInjector.getWindowManager().setSwitchingUser(true);
-                }
-
+                mHandler.post(() -> dispatchOnBeforeUserSwitching(userId, () ->
+                        mHandler.post(continueStartUserInternal)));
             } else {
-                updateProfileRelatedCaches();
-                // We are starting a non-foreground user. They have already been added to the end
-                // of mUserLru, so we need to ensure that the foreground user isn't displaced.
-                addUserToUserLru(mCurrentUserId);
-            }
-            if (userStartMode == USER_START_MODE_BACKGROUND && !userInfo.isProfile()) {
-                scheduleStopOfBackgroundUser(userId);
-            }
-            t.traceEnd();
-
-            // Make sure user is in the started state.  If it is currently
-            // stopping, we need to knock that off.
-            if (uss.state == UserState.STATE_STOPPING) {
-                t.traceBegin("updateStateStopping");
-                // If we are stopping, we haven't sent ACTION_SHUTDOWN,
-                // so we can just fairly silently bring the user back from
-                // the almost-dead.
-                uss.setState(uss.lastState);
-                mInjector.getUserManagerInternal().setUserState(userId, uss.state);
-                synchronized (mLock) {
-                    updateStartedUserArrayLU();
-                }
-                needStart = true;
-                t.traceEnd();
-            } else if (uss.state == UserState.STATE_SHUTDOWN) {
-                t.traceBegin("updateStateShutdown");
-                // This means ACTION_SHUTDOWN has been sent, so we will
-                // need to treat this as a new boot of the user.
-                uss.setState(UserState.STATE_BOOTING);
-                mInjector.getUserManagerInternal().setUserState(userId, uss.state);
-                synchronized (mLock) {
-                    updateStartedUserArrayLU();
-                }
-                needStart = true;
-                t.traceEnd();
-            }
-
-            if (uss.state == UserState.STATE_BOOTING) {
-                t.traceBegin("updateStateBooting");
-                // Give user manager a chance to propagate user restrictions
-                // to other services and prepare app storage
-                mInjector.getUserManager().onBeforeStartUser(userId);
-
-                // Booting up a new user, need to tell system services about it.
-                // Note that this is on the same handler as scheduling of broadcasts,
-                // which is important because it needs to go first.
-                mHandler.sendMessage(mHandler.obtainMessage(USER_START_MSG, userId, NO_ARG2));
-                t.traceEnd();
-            }
-
-            t.traceBegin("sendMessages");
-            if (foreground) {
-                mHandler.sendMessage(mHandler.obtainMessage(USER_CURRENT_MSG, userId, oldUserId));
-                mHandler.removeMessages(REPORT_USER_SWITCH_MSG);
-                mHandler.removeMessages(USER_SWITCH_TIMEOUT_MSG);
-                mHandler.sendMessage(mHandler.obtainMessage(REPORT_USER_SWITCH_MSG,
-                        oldUserId, userId, uss));
-                mHandler.sendMessageDelayed(mHandler.obtainMessage(USER_SWITCH_TIMEOUT_MSG,
-                        oldUserId, userId, uss), getUserSwitchTimeoutMs());
-            }
-
-            if (userInfo.preCreated) {
-                needStart = false;
-            }
-
-            // In most cases, broadcast for the system user starting/started is sent by
-            // ActivityManagerService#systemReady(). However on some HSUM devices (e.g. tablets)
-            // the user switches from the system user to a secondary user while running
-            // ActivityManagerService#systemReady(), thus broadcast is not sent for the system user.
-            // Therefore we send the broadcast for the system user here as well in HSUM.
-            // TODO(b/266158156): Improve/refactor the way broadcasts are sent for the system user
-            // in HSUM. Ideally it'd be best to have one single place that sends this notification.
-            final boolean isSystemUserInHeadlessMode = (userId == UserHandle.USER_SYSTEM)
-                    && mInjector.isHeadlessSystemUserMode();
-            if (needStart || isSystemUserInHeadlessMode) {
-                sendUserStartedBroadcast(userId, callingUid, callingPid);
-            }
-            t.traceEnd();
-
-            if (foreground) {
-                t.traceBegin("moveUserToForeground");
-                moveUserToForeground(uss, userId);
-                t.traceEnd();
-            } else {
-                t.traceBegin("finishUserBoot");
-                finishUserBoot(uss);
-                t.traceEnd();
-            }
-
-            if (needStart || isSystemUserInHeadlessMode) {
-                t.traceBegin("sendRestartBroadcast");
-                sendUserStartingBroadcast(userId, callingUid, callingPid);
-                t.traceEnd();
+                continueStartUserInternal.run();
             }
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
 
         return true;
+    }
+
+    private void continueStartUserInternal(UserInfo userInfo, int oldUserId, int userStartMode,
+            IProgressListener unlockListener, int callingUid, int callingPid) {
+        final TimingsTraceAndSlog t = new TimingsTraceAndSlog();
+        final boolean foreground = userStartMode == USER_START_MODE_FOREGROUND;
+        final int userId = userInfo.id;
+
+        boolean needStart = false;
+        boolean updateUmState = false;
+        UserState uss;
+
+        // If the user we are switching to is not currently started, then
+        // we need to start it now.
+        t.traceBegin("updateStartedUserArrayStarting");
+        synchronized (mLock) {
+            uss = mStartedUsers.get(userId);
+            if (uss == null) {
+                uss = new UserState(UserHandle.of(userId));
+                uss.mUnlockProgress.addListener(new UserProgressListener());
+                mStartedUsers.put(userId, uss);
+                updateStartedUserArrayLU();
+                needStart = true;
+                updateUmState = true;
+            } else if (uss.state == UserState.STATE_SHUTDOWN
+                    || mDoNotAbortShutdownUserIds.contains(userId)) {
+                Slogf.i(TAG, "User #" + userId
+                        + " is shutting down - will start after full shutdown");
+                mPendingUserStarts.add(new PendingUserStart(userId, userStartMode,
+                        unlockListener));
+                t.traceEnd(); // updateStartedUserArrayStarting
+                return;
+            }
+        }
+
+        // No matter what, the fact that we're requested to start the user (even if it is
+        // already running) puts it towards the end of the mUserLru list.
+        addUserToUserLru(userId);
+        if (android.multiuser.Flags.scheduleStopOfBackgroundUser()) {
+            mHandler.removeEqualMessages(SCHEDULED_STOP_BACKGROUND_USER_MSG,
+                    Integer.valueOf(userId));
+        }
+
+        if (unlockListener != null) {
+            uss.mUnlockProgress.addListener(unlockListener);
+        }
+        t.traceEnd(); // updateStartedUserArrayStarting
+
+        if (updateUmState) {
+            t.traceBegin("setUserState");
+            mInjector.getUserManagerInternal().setUserState(userId, uss.state);
+            t.traceEnd();
+        }
+        t.traceBegin("updateConfigurationAndProfileIds");
+        if (foreground) {
+            // Make sure the old user is no longer considering the display to be on.
+            mInjector.reportGlobalUsageEvent(UsageEvents.Event.SCREEN_NON_INTERACTIVE);
+            boolean userSwitchUiEnabled;
+            synchronized (mLock) {
+                mCurrentUserId = userId;
+                ActivityManager.invalidateGetCurrentUserIdCache();
+                userSwitchUiEnabled = mUserSwitchUiEnabled;
+            }
+            mInjector.updateUserConfiguration();
+            // NOTE: updateProfileRelatedCaches() is called on both if and else parts, ideally
+            // it should be moved outside, but for now it's not as there are many calls to
+            // external components here afterwards
+            updateProfileRelatedCaches();
+            mInjector.getWindowManager().setCurrentUser(userId);
+            mInjector.reportCurWakefulnessUsageEvent();
+            // Once the internal notion of the active user has switched, we lock the device
+            // with the option to show the user switcher on the keyguard.
+            if (userSwitchUiEnabled) {
+                mInjector.getWindowManager().setSwitchingUser(true);
+                // Only lock if the user has a secure keyguard PIN/Pattern/Pwd
+                if (mInjector.getKeyguardManager().isDeviceSecure(userId)) {
+                    Slogf.d(TAG, "Locking the device before moving on with the user switch");
+                    mInjector.lockDeviceNowAndWaitForKeyguardShown();
+                }
+            }
+
+        } else {
+            updateProfileRelatedCaches();
+            // We are starting a non-foreground user. They have already been added to the end
+            // of mUserLru, so we need to ensure that the foreground user isn't displaced.
+            addUserToUserLru(mCurrentUserId);
+        }
+        if (userStartMode == USER_START_MODE_BACKGROUND && !userInfo.isProfile()) {
+            scheduleStopOfBackgroundUser(userId);
+        }
+        t.traceEnd();
+
+        // Make sure user is in the started state.  If it is currently
+        // stopping, we need to knock that off.
+        if (uss.state == UserState.STATE_STOPPING) {
+            t.traceBegin("updateStateStopping");
+            // If we are stopping, we haven't sent ACTION_SHUTDOWN,
+            // so we can just fairly silently bring the user back from
+            // the almost-dead.
+            uss.setState(uss.lastState);
+            mInjector.getUserManagerInternal().setUserState(userId, uss.state);
+            synchronized (mLock) {
+                updateStartedUserArrayLU();
+            }
+            needStart = true;
+            t.traceEnd();
+        } else if (uss.state == UserState.STATE_SHUTDOWN) {
+            t.traceBegin("updateStateShutdown");
+            // This means ACTION_SHUTDOWN has been sent, so we will
+            // need to treat this as a new boot of the user.
+            uss.setState(UserState.STATE_BOOTING);
+            mInjector.getUserManagerInternal().setUserState(userId, uss.state);
+            synchronized (mLock) {
+                updateStartedUserArrayLU();
+            }
+            needStart = true;
+            t.traceEnd();
+        }
+
+        if (uss.state == UserState.STATE_BOOTING) {
+            t.traceBegin("updateStateBooting");
+            // Give user manager a chance to propagate user restrictions
+            // to other services and prepare app storage
+            mInjector.getUserManager().onBeforeStartUser(userId);
+
+            // Booting up a new user, need to tell system services about it.
+            // Note that this is on the same handler as scheduling of broadcasts,
+            // which is important because it needs to go first.
+            mHandler.sendMessage(mHandler.obtainMessage(USER_START_MSG, userId, NO_ARG2));
+            t.traceEnd();
+        }
+
+        t.traceBegin("sendMessages");
+        if (foreground) {
+            mHandler.sendMessage(mHandler.obtainMessage(USER_CURRENT_MSG, userId, oldUserId));
+            mHandler.removeMessages(REPORT_USER_SWITCH_MSG);
+            mHandler.removeMessages(USER_SWITCH_TIMEOUT_MSG);
+            mHandler.sendMessage(mHandler.obtainMessage(REPORT_USER_SWITCH_MSG,
+                    oldUserId, userId, uss));
+            mHandler.sendMessageDelayed(mHandler.obtainMessage(USER_SWITCH_TIMEOUT_MSG,
+                    oldUserId, userId, uss), getUserSwitchTimeoutMs());
+        }
+
+        if (userInfo.preCreated) {
+            needStart = false;
+        }
+
+        // In most cases, broadcast for the system user starting/started is sent by
+        // ActivityManagerService#systemReady(). However on some HSUM devices (e.g. tablets)
+        // the user switches from the system user to a secondary user while running
+        // ActivityManagerService#systemReady(), thus broadcast is not sent for the system user.
+        // Therefore we send the broadcast for the system user here as well in HSUM.
+        // TODO(b/266158156): Improve/refactor the way broadcasts are sent for the system user
+        // in HSUM. Ideally it'd be best to have one single place that sends this notification.
+        final boolean isSystemUserInHeadlessMode = (userId == UserHandle.USER_SYSTEM)
+                && mInjector.isHeadlessSystemUserMode();
+        if (needStart || isSystemUserInHeadlessMode) {
+            sendUserStartedBroadcast(userId, callingUid, callingPid);
+        }
+        t.traceEnd();
+
+        if (foreground) {
+            t.traceBegin("moveUserToForeground");
+            moveUserToForeground(uss, userId);
+            t.traceEnd();
+        } else {
+            t.traceBegin("finishUserBoot");
+            finishUserBoot(uss);
+            t.traceEnd();
+        }
+
+        if (needStart || isSystemUserInHeadlessMode) {
+            t.traceBegin("sendRestartBroadcast");
+            sendUserStartingBroadcast(userId, callingUid, callingPid);
+            t.traceEnd();
+        }
     }
 
     /**
@@ -2185,6 +2245,7 @@ class UserController implements Handler.Callback {
                 return true;
             }
             mTargetUserId = targetUserId;
+            ActivityManager.invalidateGetCurrentUserIdCache();
             userSwitchUiEnabled = mUserSwitchUiEnabled;
         }
         if (userSwitchUiEnabled) {
@@ -2211,8 +2272,8 @@ class UserController implements Handler.Callback {
     private void showUserSwitchDialog(Pair<UserInfo, UserInfo> fromToUserPair) {
         // The dialog will show and then initiate the user switch by calling startUserInForeground
         mInjector.showUserSwitchingDialog(fromToUserPair.first, fromToUserPair.second,
-                getSwitchingFromSystemUserMessageUnchecked(),
-                getSwitchingToSystemUserMessageUnchecked(),
+                getSwitchingFromUserMessageUnchecked(fromToUserPair.first.id),
+                getSwitchingToUserMessageUnchecked(fromToUserPair.second.id),
                 /* onShown= */ () -> sendStartUserSwitchFgMessage(fromToUserPair.second.id));
     }
 
@@ -2227,6 +2288,42 @@ class UserController implements Handler.Callback {
         }
         mUserSwitchObservers.finishBroadcast();
     }
+
+    private void dispatchOnBeforeUserSwitching(@UserIdInt int newUserId, Runnable onComplete) {
+        final TimingsTraceAndSlog t = new TimingsTraceAndSlog();
+        t.traceBegin("dispatchOnBeforeUserSwitching-" + newUserId);
+        final AtomicBoolean isFirst = new AtomicBoolean(true);
+        startTimeoutForOnBeforeUserSwitching(isFirst, onComplete);
+        informUserSwitchObservers((observer, callback) -> {
+            try {
+                observer.onBeforeUserSwitching(newUserId, callback);
+            } catch (RemoteException e) {
+                // ignore
+            }
+        }, () -> {
+            if (isFirst.getAndSet(false)) {
+                onComplete.run();
+            }
+        }, "onBeforeUserSwitching");
+        t.traceEnd();
+    }
+
+    private void startTimeoutForOnBeforeUserSwitching(AtomicBoolean isFirst,
+            Runnable onComplete) {
+        final long timeout = getUserSwitchTimeoutMs();
+        mHandler.postDelayed(() -> {
+            if (isFirst.getAndSet(false)) {
+                String unresponsiveObservers;
+                synchronized (mLock) {
+                    unresponsiveObservers = String.join(", ", mCurWaitingUserSwitchCallbacks);
+                }
+                Slogf.e(TAG, "Timeout on dispatchOnBeforeUserSwitching. These UserSwitchObservers "
+                        + "did not respond in " + timeout + "ms: " + unresponsiveObservers + ".");
+                onComplete.run();
+            }
+        }, timeout);
+    }
+
 
     /** Called on handler thread */
     @VisibleForTesting
@@ -2262,6 +2359,7 @@ class UserController implements Handler.Callback {
         synchronized (mLock) {
             nextUserId = ObjectUtils.getOrElse(mPendingTargetUserIds.poll(), UserHandle.USER_NULL);
             mTargetUserId = UserHandle.USER_NULL;
+            ActivityManager.invalidateGetCurrentUserIdCache();
         }
         if (nextUserId != UserHandle.USER_NULL) {
             switchUser(nextUserId);
@@ -2293,9 +2391,9 @@ class UserController implements Handler.Callback {
                 hasUserRestriction(UserManager.DISALLOW_RUN_IN_BACKGROUND, oldUserId);
         synchronized (mLock) {
             // If running in background is disabled or mStopUserOnSwitch mode, stop the user.
-            if (hasRestriction || shouldStopUserOnSwitch()) {
+            if (hasRestriction || isStopUserOnSwitchEnabled()) {
                 Slogf.i(TAG, "Stopping user %d and its profiles on user switch", oldUserId);
-                stopUsersLU(oldUserId, /* allowDelayedLocking= */ false, null, null);
+                stopUsersLU(oldUserId, /* allowDelayedLocking= */ !hasRestriction, null, null);
                 return;
             }
         }
@@ -2335,6 +2433,14 @@ class UserController implements Handler.Callback {
             // Never stop system user
             return;
         }
+        synchronized(mLock) {
+            final UserState uss = mStartedUsers.get(oldUserId);
+            if (uss == null || uss.state == UserState.STATE_STOPPING
+                    || uss.state == UserState.STATE_SHUTDOWN) {
+                // We've stopped (or are stopping) the user anyway, so don't bother scheduling.
+                return;
+            }
+        }
         if (oldUserId == mInjector.getUserManagerInternal().getMainUserId()) {
             // MainUser is currently special for things like Docking, so we'll exempt it for now.
             Slogf.i(TAG, "Exempting user %d from being stopped due to inactivity by virtue "
@@ -2363,6 +2469,12 @@ class UserController implements Handler.Callback {
     void processScheduledStopOfBackgroundUser(Integer userIdInteger) {
         final int userId = userIdInteger;
         Slogf.d(TAG, "Considering stopping background user %d due to inactivity", userId);
+
+        if (avoidStoppingUserDueToUpcomingAlarm(userId)) {
+            // We want this user running soon for alarm-purposes, so don't stop it now. Reschedule.
+            scheduleStopOfBackgroundUser(userId);
+            return;
+        }
         synchronized (mLock) {
             if (getCurrentOrTargetUserIdLU() == userId) {
                 return;
@@ -2371,9 +2483,27 @@ class UserController implements Handler.Callback {
                 // We'll soon want to switch to this user, so don't kill it now.
                 return;
             }
+            final UserInfo currentOrTargetUser = getCurrentUserLU();
+            if (currentOrTargetUser != null && currentOrTargetUser.isGuest()) {
+                // Don't kill any background users for the sake of a Guest. Just reschedule instead.
+                scheduleStopOfBackgroundUser(userId);
+                return;
+            }
             Slogf.i(TAG, "Stopping background user %d due to inactivity", userId);
             stopUsersLU(userId, /* allowDelayedLocking= */ true, null, null);
         }
+    }
+
+    /**
+     * Returns whether we should avoid stopping the user now due to it having an alarm set to fire
+     * soon.
+     */
+    private boolean avoidStoppingUserDueToUpcomingAlarm(@UserIdInt int userId) {
+        final long alarmWallclockMs
+                = mInjector.getAlarmManagerInternal().getNextAlarmTriggerTimeForUser(userId);
+        return System.currentTimeMillis() <  alarmWallclockMs
+                && (alarmWallclockMs
+                    < System.currentTimeMillis() + TIME_BEFORE_USERS_ALARM_TO_AVOID_STOPPING_MS);
     }
 
     private void timeoutUserSwitch(UserState uss, int oldUserId, int newUserId) {
@@ -2407,81 +2537,76 @@ class UserController implements Handler.Callback {
         t.traceBegin("dispatchUserSwitch-" + oldUserId + "-to-" + newUserId);
 
         EventLog.writeEvent(EventLogTags.UC_DISPATCH_USER_SWITCH, oldUserId, newUserId);
-
-        final int observerCount = mUserSwitchObservers.beginBroadcast();
-        if (observerCount > 0) {
-            for (int i = 0; i < observerCount; i++) {
-                final String name = "#" + i + " " + mUserSwitchObservers.getBroadcastCookie(i);
-                t.traceBegin("onBeforeUserSwitching-" + name);
-                try {
-                    mUserSwitchObservers.getBroadcastItem(i).onBeforeUserSwitching(newUserId);
-                } catch (RemoteException e) {
-                    // Ignore
-                } finally {
-                    t.traceEnd();
-                }
+        uss.switching = true;
+        informUserSwitchObservers((observer, callback) -> {
+            try {
+                observer.onUserSwitching(newUserId, callback);
+            } catch (RemoteException e) {
+                // ignore
             }
-            final ArraySet<String> curWaitingUserSwitchCallbacks = new ArraySet<>();
-            synchronized (mLock) {
-                uss.switching = true;
-                mCurWaitingUserSwitchCallbacks = curWaitingUserSwitchCallbacks;
-            }
-            final AtomicInteger waitingCallbacksCount = new AtomicInteger(observerCount);
-            final long userSwitchTimeoutMs = getUserSwitchTimeoutMs();
-            final long dispatchStartedTime = SystemClock.elapsedRealtime();
-            for (int i = 0; i < observerCount; i++) {
-                final long dispatchStartedTimeForObserver = SystemClock.elapsedRealtime();
-                try {
-                    // Prepend with unique prefix to guarantee that keys are unique
-                    final String name = "#" + i + " " + mUserSwitchObservers.getBroadcastCookie(i);
-                    synchronized (mLock) {
-                        curWaitingUserSwitchCallbacks.add(name);
-                    }
-                    final IRemoteCallback callback = new IRemoteCallback.Stub() {
-                        @Override
-                        public void sendResult(Bundle data) throws RemoteException {
-                            asyncTraceEnd("onUserSwitching-" + name, newUserId);
-                            synchronized (mLock) {
-                                long delayForObserver = SystemClock.elapsedRealtime()
-                                        - dispatchStartedTimeForObserver;
-                                if (delayForObserver > LONG_USER_SWITCH_OBSERVER_WARNING_TIME_MS) {
-                                    Slogf.w(TAG, "User switch slowed down by observer " + name
-                                            + ": result took " + delayForObserver
-                                            + " ms to process.");
-                                }
-
-                                long totalDelay = SystemClock.elapsedRealtime()
-                                        - dispatchStartedTime;
-                                if (totalDelay > userSwitchTimeoutMs) {
-                                    Slogf.e(TAG, "User switch timeout: observer " + name
-                                            + "'s result was received " + totalDelay
-                                            + " ms after dispatchUserSwitch.");
-                                }
-
-                                curWaitingUserSwitchCallbacks.remove(name);
-                                // Continue switching if all callbacks have been notified and
-                                // user switching session is still valid
-                                if (waitingCallbacksCount.decrementAndGet() == 0
-                                        && (curWaitingUserSwitchCallbacks
-                                        == mCurWaitingUserSwitchCallbacks)) {
-                                    sendContinueUserSwitchLU(uss, oldUserId, newUserId);
-                                }
-                            }
-                        }
-                    };
-                    asyncTraceBegin("onUserSwitching-" + name, newUserId);
-                    mUserSwitchObservers.getBroadcastItem(i).onUserSwitching(newUserId, callback);
-                } catch (RemoteException e) {
-                    // Ignore
-                }
-            }
-        } else {
+        }, () -> {
             synchronized (mLock) {
                 sendContinueUserSwitchLU(uss, oldUserId, newUserId);
             }
+        }, "onUserSwitching");
+        t.traceEnd();
+    }
+
+    void informUserSwitchObservers(BiConsumer<IUserSwitchObserver, IRemoteCallback> consumer,
+            final Runnable onComplete, String trace) {
+        final int observerCount = mUserSwitchObservers.beginBroadcast();
+        if (observerCount == 0) {
+            onComplete.run();
+            mUserSwitchObservers.finishBroadcast();
+            return;
+        }
+        final ArraySet<String> curWaitingUserSwitchCallbacks = new ArraySet<>();
+        synchronized (mLock) {
+            mCurWaitingUserSwitchCallbacks = curWaitingUserSwitchCallbacks;
+        }
+        final AtomicInteger waitingCallbacksCount = new AtomicInteger(observerCount);
+        final long userSwitchTimeoutMs = getUserSwitchTimeoutMs();
+        final long dispatchStartedTime = SystemClock.elapsedRealtime();
+        for (int i = 0; i < observerCount; i++) {
+            final long dispatchStartedTimeForObserver = SystemClock.elapsedRealtime();
+            // Prepend with unique prefix to guarantee that keys are unique
+            final String name = "#" + i + " " + mUserSwitchObservers.getBroadcastCookie(i);
+            synchronized (mLock) {
+                curWaitingUserSwitchCallbacks.add(name);
+            }
+            final IRemoteCallback callback = new IRemoteCallback.Stub() {
+                @Override
+                public void sendResult(Bundle data) throws RemoteException {
+                    asyncTraceEnd(trace + "-" + name, 0);
+                    synchronized (mLock) {
+                        long delayForObserver = SystemClock.elapsedRealtime()
+                                - dispatchStartedTimeForObserver;
+                        if (delayForObserver > LONG_USER_SWITCH_OBSERVER_WARNING_TIME_MS) {
+                            Slogf.w(TAG, "User switch slowed down by observer " + name
+                                    + ": result took " + delayForObserver
+                                    + " ms to process. " + trace);
+                        }
+                        long totalDelay = SystemClock.elapsedRealtime() - dispatchStartedTime;
+                        if (totalDelay > userSwitchTimeoutMs) {
+                            Slogf.e(TAG, "User switch timeout: observer " + name
+                                    + "'s result was received " + totalDelay
+                                    + " ms after dispatchUserSwitch. " + trace);
+                        }
+                        curWaitingUserSwitchCallbacks.remove(name);
+                        // Continue switching if all callbacks have been notified and
+                        // user switching session is still valid
+                        if (waitingCallbacksCount.decrementAndGet() == 0
+                                && (curWaitingUserSwitchCallbacks
+                                == mCurWaitingUserSwitchCallbacks)) {
+                            onComplete.run();
+                        }
+                    }
+                }
+            };
+            asyncTraceBegin(trace + "-" + name, 0);
+            consumer.accept(mUserSwitchObservers.getBroadcastItem(i), callback);
         }
         mUserSwitchObservers.finishBroadcast();
-        t.traceEnd(); // end dispatchUserSwitch-
     }
 
     @GuardedBy("mLock")
@@ -2502,7 +2627,7 @@ class UserController implements Handler.Callback {
 
         EventLog.writeEvent(EventLogTags.UC_CONTINUE_USER_SWITCH, oldUserId, newUserId);
 
-        // Do the keyguard dismiss and dismiss the user switching dialog later
+        // Dismiss the user switching dialog and complete the user switch
         mHandler.removeMessages(COMPLETE_USER_SWITCH_MSG);
         mHandler.sendMessage(mHandler.obtainMessage(
                 COMPLETE_USER_SWITCH_MSG, oldUserId, newUserId));
@@ -2517,54 +2642,18 @@ class UserController implements Handler.Callback {
 
     @VisibleForTesting
     void completeUserSwitch(int oldUserId, int newUserId) {
-        final Runnable sendUserSwitchCompleteMessage = () -> {
+        final Runnable runnable = () -> {
+            // Send REPORT_USER_SWITCH_COMPLETE_MSG to broadcast ACTION_USER_SWITCHED and call
+            // onUserSwitchComplete on UserSwitchObservers.
             mHandler.removeMessages(REPORT_USER_SWITCH_COMPLETE_MSG);
             mHandler.sendMessage(mHandler.obtainMessage(
                     REPORT_USER_SWITCH_COMPLETE_MSG, oldUserId, newUserId));
         };
         if (isUserSwitchUiEnabled()) {
-            if (mInjector.getKeyguardManager().isDeviceSecure(newUserId)) {
-                this.showKeyguard(() -> dismissUserSwitchDialog(sendUserSwitchCompleteMessage));
-            } else {
-                this.dismissKeyguard(() -> dismissUserSwitchDialog(sendUserSwitchCompleteMessage));
-            }
+            dismissUserSwitchDialog(runnable);
         } else {
-            sendUserSwitchCompleteMessage.run();
+            runnable.run();
         }
-    }
-
-    protected void showKeyguard(Runnable runnable) {
-        runWithTimeout(mInjector::showKeyguard, SHOW_KEYGUARD_TIMEOUT_MS, runnable, () -> {
-            throw new RuntimeException(
-                    "Keyguard is not shown in " + SHOW_KEYGUARD_TIMEOUT_MS + " ms.");
-        }, "showKeyguard");
-    }
-
-    protected void dismissKeyguard(Runnable runnable) {
-        runWithTimeout(mInjector::dismissKeyguard, DISMISS_KEYGUARD_TIMEOUT_MS, runnable, runnable,
-                "dismissKeyguard");
-    }
-
-    private void runWithTimeout(Consumer<Runnable> task, int timeoutMs, Runnable onSuccess,
-            Runnable onTimeout, String traceMsg) {
-        final AtomicInteger state = new AtomicInteger(0); // state = 0 (RUNNING)
-
-        asyncTraceBegin(traceMsg, 0);
-
-        mHandler.postDelayed(() -> {
-            if (state.compareAndSet(0, 1)) { // state = 1 (TIMEOUT)
-                asyncTraceEnd(traceMsg, 0);
-                Slogf.w(TAG, "Timeout: %s did not finish in %d ms", traceMsg, timeoutMs);
-                onTimeout.run();
-            }
-        }, timeoutMs);
-
-        task.accept(() -> {
-            if (state.compareAndSet(0, 2)) { // state = 2 (SUCCESS)
-                asyncTraceEnd(traceMsg, 0);
-                onSuccess.run();
-            }
-        });
     }
 
     private void moveUserToForeground(UserState uss, int newUserId) {
@@ -2935,6 +3024,9 @@ class UserController implements Handler.Callback {
         mInjector.getUserManagerInternal().addUserLifecycleListener(mUserLifecycleListener);
         updateProfileRelatedCaches();
         mInjector.reportCurWakefulnessUsageEvent();
+
+        // IpcDataCache must be invalidated before it starts caching.
+        ActivityManager.invalidateGetCurrentUserIdCache();
     }
 
     // TODO(b/266158156): remove this method if initial system user boot logic is refactored?
@@ -3098,6 +3190,9 @@ class UserController implements Handler.Callback {
 
     @GuardedBy("mLock")
     private int getCurrentOrTargetUserIdLU() {
+        // Note: this result is currently cached by ActivityManager.getCurrentUser() - changes to
+        // the logic here may require updating how the cache is invalidated.
+        // See ActivityManager.invalidateGetCurrentUserIdCache() for more details.
         return mTargetUserId != UserHandle.USER_NULL ? mTargetUserId : mCurrentUserId;
     }
 
@@ -3259,10 +3354,12 @@ class UserController implements Handler.Callback {
                 if (mUserProfileGroupIds.keyAt(i) == userId
                         || mUserProfileGroupIds.valueAt(i) == userId) {
                     mUserProfileGroupIds.removeAt(i);
-
                 }
             }
             mCurrentProfileIds = ArrayUtils.removeInt(mCurrentProfileIds, userId);
+            mUserLru.remove((Integer) userId);
+            mStartedUsers.remove(userId);
+            updateStartedUserArrayLU();
         }
     }
 
@@ -3292,41 +3389,45 @@ class UserController implements Handler.Callback {
         return mLockPatternUtils.isLockScreenDisabled(userId);
     }
 
-    void setSwitchingFromSystemUserMessage(String switchingFromSystemUserMessage) {
+    void setSwitchingFromUserMessage(@UserIdInt int user, @Nullable String message) {
         synchronized (mLock) {
-            mSwitchingFromSystemUserMessage = switchingFromSystemUserMessage;
+            mSwitchingFromUserMessage.put(user, message);
         }
     }
 
-    void setSwitchingToSystemUserMessage(String switchingToSystemUserMessage) {
+    void setSwitchingToUserMessage(@UserIdInt int user, @Nullable String message) {
         synchronized (mLock) {
-            mSwitchingToSystemUserMessage = switchingToSystemUserMessage;
+            mSwitchingToUserMessage.put(user, message);
         }
     }
 
     // Called by AMS, must check permission
-    String getSwitchingFromSystemUserMessage() {
-        checkHasManageUsersPermission("getSwitchingFromSystemUserMessage()");
+    @Nullable
+    String getSwitchingFromUserMessage(@UserIdInt int userId) {
+        checkHasManageUsersPermission("getSwitchingFromUserMessage()");
 
-        return getSwitchingFromSystemUserMessageUnchecked();
+        return getSwitchingFromUserMessageUnchecked(userId);
     }
 
     // Called by AMS, must check permission
-    String getSwitchingToSystemUserMessage() {
-        checkHasManageUsersPermission("getSwitchingToSystemUserMessage()");
+    @Nullable
+    String getSwitchingToUserMessage(@UserIdInt int userId) {
+        checkHasManageUsersPermission("getSwitchingToUserMessage()");
 
-        return getSwitchingToSystemUserMessageUnchecked();
+        return getSwitchingToUserMessageUnchecked(userId);
     }
 
-    private String getSwitchingFromSystemUserMessageUnchecked() {
+    @Nullable
+    private String getSwitchingFromUserMessageUnchecked(@UserIdInt int userId) {
         synchronized (mLock) {
-            return mSwitchingFromSystemUserMessage;
+            return mSwitchingFromUserMessage.get(userId);
         }
     }
 
-    private String getSwitchingToSystemUserMessageUnchecked() {
+    @Nullable
+    private String getSwitchingToUserMessageUnchecked(@UserIdInt int userId) {
         synchronized (mLock) {
-            return mSwitchingToSystemUserMessage;
+            return mSwitchingToUserMessage.get(userId);
         }
     }
 
@@ -3411,7 +3512,7 @@ class UserController implements Handler.Callback {
             pw.println("  mLastActiveUsersForDelayedLocking:" + mLastActiveUsersForDelayedLocking);
             pw.println("  mDelayUserDataLocking:" + mDelayUserDataLocking);
             pw.println("  mAllowUserUnlocking:" + mAllowUserUnlocking);
-            pw.println("  shouldStopUserOnSwitch():" + shouldStopUserOnSwitch());
+            pw.println("  isStopUserOnSwitchEnabled():" + isStopUserOnSwitchEnabled());
             pw.println("  mStopUserOnSwitch:" + mStopUserOnSwitch);
             pw.println("  mMaxRunningUsers:" + mMaxRunningUsers);
             pw.println("  mBackgroundUserScheduledStopTimeSecs:"
@@ -3422,12 +3523,8 @@ class UserController implements Handler.Callback {
                     + mIsBroadcastSentForSystemUserStarted);
             pw.println("  mIsBroadcastSentForSystemUserStarting:"
                     + mIsBroadcastSentForSystemUserStarting);
-            if (mSwitchingFromSystemUserMessage != null) {
-                pw.println("  mSwitchingFromSystemUserMessage: " + mSwitchingFromSystemUserMessage);
-            }
-            if (mSwitchingToSystemUserMessage != null) {
-                pw.println("  mSwitchingToSystemUserMessage: " + mSwitchingToSystemUserMessage);
-            }
+            pw.println("  mSwitchingFromUserMessage:" + mSwitchingFromUserMessage);
+            pw.println("  mSwitchingToUserMessage:" + mSwitchingToUserMessage);
             pw.println("  mLastUserUnlockingUptime: " + mLastUserUnlockingUptime);
         }
     }
@@ -3508,6 +3605,7 @@ class UserController implements Handler.Callback {
                         Integer.toString(msg.arg1), msg.arg1);
 
                 mInjector.getSystemServiceManager().onUserSwitching(msg.arg2, msg.arg1);
+                stopPreviousUserPackagesIfEnabled(msg.arg2, msg.arg1);
                 scheduleOnUserCompletedEvent(msg.arg1,
                         UserCompletedEventType.EVENT_TYPE_USER_SWITCHING,
                         USER_COMPLETED_EVENT_DELAY_MS);
@@ -3808,10 +3906,6 @@ class UserController implements Handler.Callback {
             return mService.mWindowManager;
         }
 
-        ActivityTaskManagerInternal getActivityTaskManagerInternal() {
-            return mService.mAtmInternal;
-        }
-
         void activityManagerOnUserStopped(@UserIdInt int userId) {
             LocalServices.getService(ActivityTaskManagerInternal.class).onUserStopped(userId);
         }
@@ -3844,6 +3938,10 @@ class UserController implements Handler.Callback {
                 mPowerManagerInternal = LocalServices.getService(PowerManagerInternal.class);
             }
             return mPowerManagerInternal;
+        }
+
+        AlarmManagerInternal getAlarmManagerInternal() {
+            return LocalServices.getService(AlarmManagerInternal.class);
         }
 
         KeyguardManager getKeyguardManager() {
@@ -3882,10 +3980,10 @@ class UserController implements Handler.Callback {
             }.sendNext();
         }
 
-        void activityManagerForceStopPackage(@UserIdInt int userId, String reason) {
+        void activityManagerForceStopUserPackages(@UserIdInt int userId, String reason,
+                boolean evenImportantServices) {
             synchronized (mService) {
-                mService.forceStopPackageLocked(null, -1, false, false, true, false, false, false,
-                        userId, reason);
+                mService.forceStopUserPackagesLocked(userId, reason, evenImportantServices);
             }
         };
 
@@ -3949,7 +4047,7 @@ class UserController implements Handler.Callback {
         }
 
         void showUserSwitchingDialog(UserInfo fromUser, UserInfo toUser,
-                String switchingFromSystemUserMessage, String switchingToSystemUserMessage,
+                @Nullable String switchingFromUserMessage, @Nullable String switchingToUserMessage,
                 @NonNull Runnable onShown) {
             if (mService.mContext.getPackageManager()
                     .hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) {
@@ -3962,8 +4060,7 @@ class UserController implements Handler.Callback {
             synchronized (mUserSwitchingDialogLock) {
                 dismissUserSwitchingDialog(null);
                 mUserSwitchingDialog = new UserSwitchingDialog(mService.mContext, fromUser, toUser,
-                        switchingFromSystemUserMessage, switchingToSystemUserMessage,
-                        getWindowManager());
+                        mHandler, switchingFromUserMessage, switchingToUserMessage);
                 mUserSwitchingDialog.show(onShown);
             }
         }
@@ -4000,49 +4097,6 @@ class UserController implements Handler.Callback {
             return IStorageManager.Stub.asInterface(ServiceManager.getService("mount"));
         }
 
-        protected void showKeyguard(Runnable runnable) {
-            if (getWindowManager().isKeyguardLocked()) {
-                runnable.run();
-                return;
-            }
-            getActivityTaskManagerInternal().registerScreenObserver(
-                    new ActivityTaskManagerInternal.ScreenObserver() {
-                        @Override
-                        public void onAwakeStateChanged(boolean isAwake) {
-
-                        }
-
-                        @Override
-                        public void onKeyguardStateChanged(boolean isShowing) {
-                            if (isShowing) {
-                                getActivityTaskManagerInternal().unregisterScreenObserver(this);
-                                runnable.run();
-                            }
-                        }
-                    }
-            );
-            getWindowManager().lockDeviceNow();
-        }
-
-        protected void dismissKeyguard(Runnable runnable) {
-            getWindowManager().dismissKeyguard(new IKeyguardDismissCallback.Stub() {
-                @Override
-                public void onDismissError() throws RemoteException {
-                    runnable.run();
-                }
-
-                @Override
-                public void onDismissSucceeded() throws RemoteException {
-                    runnable.run();
-                }
-
-                @Override
-                public void onDismissCancelled() throws RemoteException {
-                    runnable.run();
-                }
-            }, /* message= */ null);
-        }
-
         boolean isHeadlessSystemUserMode() {
             return UserManager.isHeadlessSystemUserMode();
         }
@@ -4063,6 +4117,30 @@ class UserController implements Handler.Callback {
 
         void onSystemUserVisibilityChanged(boolean visible) {
             getUserManagerInternal().onSystemUserVisibilityChanged(visible);
+        }
+
+        void lockDeviceNowAndWaitForKeyguardShown() {
+            final TimingsTraceAndSlog t = new TimingsTraceAndSlog();
+            t.traceBegin("lockDeviceNowAndWaitForKeyguardShown");
+
+            final CountDownLatch latch = new CountDownLatch(1);
+            Bundle bundle = new Bundle();
+            bundle.putBinder(LOCK_ON_USER_SWITCH_CALLBACK, new IRemoteCallback.Stub() {
+                public void sendResult(Bundle data) {
+                    latch.countDown();
+                }
+            });
+            getWindowManager().lockNow(bundle);
+            try {
+                if (!latch.await(20, TimeUnit.SECONDS)) {
+                    throw new RuntimeException("User controller expected a callback while waiting "
+                            + "to show the keyguard. Timed out after 20 seconds.");
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                t.traceEnd();
+            }
         }
     }
 }

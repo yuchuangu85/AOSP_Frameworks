@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <sys/types.h>
+#include <optional>
 
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
@@ -28,6 +29,7 @@
 #include <ui/BufferQueueDefs.h>
 #include <ui/Fence.h>
 #include <ui/GraphicBuffer.h>
+#include <ui/PictureProfileHandle.h>
 #include <ui/Rect.h>
 #include <ui/Region.h>
 
@@ -70,6 +72,14 @@ using HGraphicBufferProducerV2_0 =
  * dequeueBuffer() to get an empty buffer, fills it with data, then
  * calls queueBuffer() to make it available to the consumer.
  *
+ * BufferQueues have a size, which we'll refer to in other comments as
+ * SLOT_COUNT. Its default is 64 (NUM_BUFFER_SLOTS). It can be adjusted by
+ * the IGraphicBufferConsumer::setMaxBufferCount, or when
+ * IGraphicBufferConsumer::allowUnlimitedSlots is set to true, by
+ * IGraphicBufferProducer::extendSlotCount. The actual number of buffers in use
+ * is a function of various configurations, including whether we're in single
+ * buffer mode, the maximum dequeuable/aquirable buffers, and SLOT_COUNT.
+ *
  * This class was previously called ISurfaceTexture.
  */
 #ifndef NO_BINDER
@@ -104,7 +114,7 @@ public:
     // slot->buffer mapping so that it's not necessary to transfer a
     // GraphicBuffer for every dequeue operation.
     //
-    // The slot must be in the range of [0, NUM_BUFFER_SLOTS).
+    // The slot must be in the range of [0, SLOT_COUNT).
     //
     // Return of a value other than NO_ERROR means an error has occurred:
     // * NO_INIT - the buffer queue has been abandoned or the producer is not
@@ -113,6 +123,30 @@ public:
     //              * slot was out of range (see above)
     //              * buffer specified by the slot is not dequeued
     virtual status_t requestBuffer(int slot, sp<GraphicBuffer>* buf) = 0;
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_UNLIMITED_SLOTS)
+    // extendSlotCount sets the maximum slot count (SLOT_COUNT) to the given
+    //  size. This feature must be enabled by the consumer to function via
+    // IGraphicBufferConsumer::allowUnlimitedSlots. This must be called before
+    // the producer connects.
+    //
+    // After calling this, any slot can be returned in the [0, size) range.
+    // Callers are responsible for the allocation of the appropriate slots
+    // array for their own buffer cache.
+    //
+    // On success, the consumer is notified (so that it can increase its own
+    // slot cache).
+    //
+    // Return of a value other than NO_ERROR means that an error has occurred:
+    // * NO_INIT - the buffer queue has been abandoned
+    // * INVALID_OPERATION - one of the following conditions has occurred:
+    //                     *  The producer is connected already
+    //                     *  The consumer didn't call allowUnlimitedSlots
+    // * BAD_VALUE - The value is smaller than the previous max size
+    //               (initialized to 64, then whatever the last call to this
+    //               was)
+    virtual status_t extendSlotCount(int size);
+#endif
 
     // setMaxDequeuedBufferCount sets the maximum number of buffers that can be
     // dequeued by the producer at one time. If this method succeeds, any new
@@ -127,7 +161,7 @@ public:
     // will result in a BAD_VALUE error.
     //
     // The buffer count should be at least 1 (inclusive), but at most
-    // (NUM_BUFFER_SLOTS - the minimum undequeued buffer count) (exclusive). The
+    // (SLOT_COUNT - the minimum undequeued buffer count) (exclusive). The
     // minimum undequeued buffer count can be obtained by calling
     // query(NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS).
     //
@@ -237,8 +271,8 @@ public:
     // * NO_INIT - the buffer queue has been abandoned or the producer is not
     //             connected.
     // * BAD_VALUE - the given slot number is invalid, either because it is
-    //               out of the range [0, NUM_BUFFER_SLOTS), or because the slot
-    //               it refers to is not currently dequeued and requested.
+    //               out of the range [0, SLOT_COUNT), or because the slot it
+    //               refers to is not currently dequeued and requested.
     virtual status_t detachBuffer(int slot) = 0;
 
     // detachNextBuffer is equivalent to calling dequeueBuffer, requestBuffer,
@@ -365,6 +399,14 @@ public:
         const HdrMetadata& getHdrMetadata() const { return hdrMetadata; }
         void setHdrMetadata(const HdrMetadata& metadata) { hdrMetadata = metadata; }
 
+        const std::optional<PictureProfileHandle>& getPictureProfileHandle() const {
+            return pictureProfileHandle;
+        }
+        void setPictureProfileHandle(const PictureProfileHandle& profile) {
+            pictureProfileHandle = profile;
+        }
+        void clearPictureProfileHandle() { pictureProfileHandle = std::nullopt; }
+
         int64_t timestamp{0};
         int isAutoTimestamp{0};
         android_dataspace dataSpace{HAL_DATASPACE_UNKNOWN};
@@ -377,6 +419,7 @@ public:
         bool getFrameTimestamps{false};
         int slot{-1};
         HdrMetadata hdrMetadata;
+        std::optional<PictureProfileHandle> pictureProfileHandle;
     };
 
     struct QueueBufferOutput : public Flattenable<QueueBufferOutput> {
@@ -403,7 +446,8 @@ public:
         uint64_t nextFrameNumber{0};
         FrameEventHistoryDelta frameTimestamps;
         bool bufferReplaced{false};
-        int maxBufferCount{0};
+        int maxBufferCount{BufferQueueDefs::NUM_BUFFER_SLOTS};
+        bool isSlotExpansionAllowed{false};
         status_t result{NO_ERROR};
     };
 
@@ -419,7 +463,7 @@ public:
     // below). Any other properties (zero point, etc)
     // are client-dependent, and should be documented by the client.
     //
-    // The slot must be in the range of [0, NUM_BUFFER_SLOTS).
+    // The slot must be in the range of [0, SLOT_COUNT).
     //
     // Upon success, the output will be filled with meaningful values
     // (refer to the documentation below).
@@ -449,7 +493,7 @@ public:
     //
     // The buffer is not queued for use by the consumer.
     //
-    // The slot must be in the range of [0, NUM_BUFFER_SLOTS).
+    // The slot must be in the range of [0, SLOT_COUNT).
     //
     // The buffer will not be overwritten until the fence signals.  The fence
     // will usually be the one obtained from dequeueBuffer.
@@ -867,6 +911,6 @@ class BnGraphicBufferProducer : public IGraphicBufferProducer {
 #endif
 
 // ----------------------------------------------------------------------------
-}; // namespace android
+} // namespace android
 
 #endif // ANDROID_GUI_IGRAPHICBUFFERPRODUCER_H

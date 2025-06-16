@@ -18,10 +18,12 @@ package androidx.window.extensions.embedding;
 
 import static android.app.ActivityManager.START_SUCCESS;
 import static android.app.ActivityOptions.KEY_LAUNCH_TASK_FRAGMENT_TOKEN;
+import static android.app.ActivityTaskManager.INVALID_TASK_ID;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.view.Display.DEFAULT_DISPLAY;
 import static android.view.WindowManager.TRANSIT_CLOSE;
+import static android.window.ActivityWindowInfo.getActivityWindowInfo;
 import static android.window.TaskFragmentOperation.OP_TYPE_REPARENT_ACTIVITY_TO_TASK_FRAGMENT;
 import static android.window.TaskFragmentOperation.OP_TYPE_START_ACTIVITY_IN_TASK_FRAGMENT;
 import static android.window.TaskFragmentOrganizer.KEY_ERROR_CALLBACK_OP_TYPE;
@@ -52,23 +54,31 @@ import static androidx.window.extensions.embedding.SplitPresenter.sanitizeBounds
 import static androidx.window.extensions.embedding.SplitPresenter.shouldShowSplit;
 import static androidx.window.extensions.embedding.TaskFragmentContainer.OverlayContainerRestoreParams;
 
+import static com.android.window.flags.Flags.activityEmbeddingDelayTaskFragmentFinishForActivityLaunch;
+
 import android.annotation.CallbackExecutor;
 import android.app.Activity;
 import android.app.ActivityClient;
+import android.app.ActivityManager;
 import android.app.ActivityOptions;
 import android.app.ActivityThread;
+import android.app.AppGlobals;
 import android.app.Application;
 import android.app.Instrumentation;
 import android.app.servertransaction.ClientTransactionListenerController;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.OperationCanceledException;
+import android.os.RemoteException;
+import android.os.SystemProperties;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -80,6 +90,7 @@ import android.window.ActivityWindowInfo;
 import android.window.TaskFragmentAnimationParams;
 import android.window.TaskFragmentInfo;
 import android.window.TaskFragmentOperation;
+import android.window.TaskFragmentOrganizer;
 import android.window.TaskFragmentParentInfo;
 import android.window.TaskFragmentTransaction;
 import android.window.WindowContainerTransaction;
@@ -87,9 +98,9 @@ import android.window.WindowContainerTransaction;
 import androidx.annotation.GuardedBy;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.window.common.CommonFoldingFeature;
 import androidx.window.common.DeviceStateManagerFoldingFeatureProducer;
 import androidx.window.common.EmptyLifecycleCallbacksAdapter;
+import androidx.window.common.layout.CommonFoldingFeature;
 import androidx.window.extensions.WindowExtensions;
 import androidx.window.extensions.core.util.function.Consumer;
 import androidx.window.extensions.core.util.function.Function;
@@ -98,7 +109,6 @@ import androidx.window.extensions.embedding.TransactionManager.TransactionRecord
 import androidx.window.extensions.layout.WindowLayoutComponentImpl;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.window.flags.Flags;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -114,11 +124,12 @@ import java.util.function.BiConsumer;
 public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmentCallback,
         ActivityEmbeddingComponent, DividerPresenter.DragEventCallback {
     static final String TAG = "SplitController";
-    static final boolean ENABLE_SHELL_TRANSITIONS = true;
+    static final boolean ENABLE_SHELL_TRANSITIONS = getShellTransitEnabled();
 
     // TODO(b/243518738): Move to WM Extensions if we have requirement of overlay without
     //  association. It's not set in WM Extensions nor Wm Jetpack library currently.
-    private static final String KEY_OVERLAY_ASSOCIATE_WITH_LAUNCHING_ACTIVITY =
+    @VisibleForTesting
+    static final String KEY_OVERLAY_ASSOCIATE_WITH_LAUNCHING_ACTIVITY =
             "androidx.window.extensions.embedding.shouldAssociateWithLaunchingActivity";
 
     @VisibleForTesting
@@ -205,11 +216,9 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
     /** Listener registered to {@link ClientTransactionListenerController}. */
     @GuardedBy("mLock")
-    @Nullable
+    @NonNull
     private final BiConsumer<IBinder, ActivityWindowInfo> mActivityWindowInfoListener =
-            Flags.activityWindowInfoFlag()
-                    ? this::onActivityWindowInfoChanged
-                    : null;
+            this::onActivityWindowInfoChanged;
 
     private final Handler mHandler;
     private final MainThreadExecutor mExecutor;
@@ -233,6 +242,11 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         mActivityStartMonitor = new ActivityStartMonitor();
         instrumentation.addMonitor(mActivityStartMonitor);
         foldingFeatureProducer.addDataChangedCallback(new FoldingFeatureListener());
+
+        synchronized (mLock) {
+            // Abort the restoration if any and the application already has running activities.
+            abortRebuildingTaskContainersIfNeeded(null /* launchingActivity */);
+        }
     }
 
     private class FoldingFeatureListener
@@ -274,6 +288,30 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
             Log.i(TAG, "Setting embedding rules. Size: " + rules.size());
             mSplitRules.clear();
             mSplitRules.addAll(rules);
+
+            if (!mPresenter.isWaitingToRebuildTaskContainers()) {
+                return;
+            }
+
+            if (abortRebuildingTaskContainersIfNeeded(null /* launchingActivity */)) {
+                return;
+            }
+
+            try {
+                final TransactionRecord transactionRecord =
+                        mTransactionManager.startNewTransaction();
+                final WindowContainerTransaction wct = transactionRecord.getTransaction();
+                if (mPresenter.rebuildTaskContainers(wct, rules)) {
+                    transactionRecord.apply(false /* shouldApplyIndependently */);
+                    updateCallbackIfNecessary();
+                } else {
+                    transactionRecord.abort();
+                }
+            } catch (IllegalStateException ex) {
+                Log.e(TAG, "Having an existing transaction while running restoration with"
+                        + "new rules!! It is likely too late to perform the restoration "
+                        + "already!?", ex);
+            }
         }
     }
 
@@ -384,9 +422,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     public void setActivityStackAttributesCalculator(
             @NonNull Function<ActivityStackAttributesCalculatorParams, ActivityStackAttributes>
                     calculator) {
-        if (!Flags.activityEmbeddingOverlayPresentationFlag()) {
-            return;
-        }
         synchronized (mLock) {
             mActivityStackAttributesCalculator = calculator;
         }
@@ -394,9 +429,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
     @Override
     public void clearActivityStackAttributesCalculator() {
-        if (!Flags.activityEmbeddingOverlayPresentationFlag()) {
-            return;
-        }
         synchronized (mLock) {
             mActivityStackAttributesCalculator = null;
         }
@@ -586,9 +618,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @Override
     public void updateActivityStackAttributes(@NonNull ActivityStack.Token activityStackToken,
                                               @NonNull ActivityStackAttributes attributes) {
-        if (!Flags.activityEmbeddingOverlayPresentationFlag()) {
-            return;
-        }
         Objects.requireNonNull(activityStackToken);
         Objects.requireNonNull(attributes);
 
@@ -615,9 +644,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @Nullable
     public ParentContainerInfo getParentContainerInfo(
             @NonNull ActivityStack.Token activityStackToken) {
-        if (!Flags.activityEmbeddingOverlayPresentationFlag()) {
-            return null;
-        }
         Objects.requireNonNull(activityStackToken);
         synchronized (mLock) {
             final TaskFragmentContainer container = getContainer(activityStackToken.getRawToken());
@@ -633,9 +659,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @Override
     @Nullable
     public ActivityStack.Token getActivityStackToken(@NonNull String tag) {
-        if (!Flags.activityEmbeddingOverlayPresentationFlag()) {
-            return null;
-        }
         Objects.requireNonNull(tag);
         synchronized (mLock) {
             final TaskFragmentContainer taskFragmentContainer =
@@ -673,7 +696,7 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                         break;
                     case TYPE_TASK_FRAGMENT_VANISHED:
                         mPresenter.removeTaskFragmentInfo(info);
-                        onTaskFragmentVanished(wct, info);
+                        onTaskFragmentVanished(wct, info, taskId);
                         break;
                     case TYPE_TASK_FRAGMENT_PARENT_INFO_CHANGED:
                         onTaskFragmentParentInfoChanged(wct, taskId,
@@ -695,12 +718,8 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                         break;
                     case TYPE_ACTIVITY_REPARENTED_TO_TASK:
                         final IBinder candidateAssociatedActToken, lastOverlayToken;
-                        if (Flags.fixPipRestoreToOverlay()) {
-                            candidateAssociatedActToken = change.getOtherActivityToken();
-                            lastOverlayToken = change.getTaskFragmentToken();
-                        } else {
-                            candidateAssociatedActToken = lastOverlayToken = null;
-                        }
+                        candidateAssociatedActToken = change.getOtherActivityToken();
+                        lastOverlayToken = change.getTaskFragmentToken();
                         onActivityReparentedToTask(
                                 wct,
                                 taskId,
@@ -798,11 +817,17 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                         .setOriginType(TASK_FRAGMENT_TRANSIT_CLOSE);
                 mPresenter.cleanupContainer(wct, container, false /* shouldFinishDependent */);
             } else if (!container.isWaitingActivityAppear()) {
-                // Do not finish the container before the expected activity appear until
-                // timeout.
-                mTransactionManager.getCurrentTransactionRecord()
-                        .setOriginType(TASK_FRAGMENT_TRANSIT_CLOSE);
-                mPresenter.cleanupContainer(wct, container, true /* shouldFinishDependent */);
+                if (activityEmbeddingDelayTaskFragmentFinishForActivityLaunch()
+                        && container.hasActivityLaunchHint()) {
+                    // If we have recently attempted to launch a new activity into this
+                    // TaskFragment, we schedule delayed cleanup. If the new activity appears in
+                    // this TaskFragment, we no longer need to finish the TaskFragment.
+                    container.scheduleDelayedTaskFragmentCleanup();
+                } else {
+                    mTransactionManager.getCurrentTransactionRecord()
+                            .setOriginType(TASK_FRAGMENT_TRANSIT_CLOSE);
+                    mPresenter.cleanupContainer(wct, container, true /* shouldFinishDependent */);
+                }
             }
         } else if (wasInPip && isInPip) {
             // No update until exit PIP.
@@ -834,7 +859,7 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @VisibleForTesting
     @GuardedBy("mLock")
     void onTaskFragmentVanished(@NonNull WindowContainerTransaction wct,
-            @NonNull TaskFragmentInfo taskFragmentInfo) {
+            @NonNull TaskFragmentInfo taskFragmentInfo, int taskId) {
         final TaskFragmentContainer container = getContainer(taskFragmentInfo.getFragmentToken());
         if (container != null) {
             // Cleanup if the TaskFragment vanished is not requested by the organizer.
@@ -843,6 +868,11 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
             updateContainersInTaskIfVisible(wct, container.getTaskId());
         }
         cleanupTaskFragment(taskFragmentInfo.getFragmentToken());
+        final TaskContainer taskContainer = getTaskContainer(taskId);
+        if (taskContainer != null) {
+            // Update the divider to clean up any decor surfaces.
+            updateDivider(wct, taskContainer, true /* isTaskFragmentVanished */);
+        }
     }
 
     /**
@@ -884,7 +914,7 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         // The divider need to be updated even if shouldUpdateContainer is false, because the decor
         // surface may change in TaskFragmentParentInfo, which requires divider update but not
         // container update.
-        updateDivider(wct, taskContainer);
+        updateDivider(wct, taskContainer, false /* isTaskFragmentVanished */);
 
         // If the last direct activity of the host task is dismissed and there's an always-on-top
         // overlay container in the task, the overlay container should also be dismissed.
@@ -897,6 +927,12 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     }
 
     @GuardedBy("mLock")
+    void onTaskFragmentParentRestored(@NonNull WindowContainerTransaction wct, int taskId,
+            @NonNull TaskFragmentParentInfo parentInfo) {
+        onTaskFragmentParentInfoChanged(wct, taskId, parentInfo);
+    }
+
+    @GuardedBy("mLock")
     void updateContainersInTaskIfVisible(@NonNull WindowContainerTransaction wct, int taskId) {
         final TaskContainer taskContainer = getTaskContainer(taskId);
         if (taskContainer == null) {
@@ -905,7 +941,7 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
         if (taskContainer.isVisible()) {
             updateContainersInTask(wct, taskContainer);
-        } else if (Flags.fixNoContainerUpdateWithoutResize()) {
+        } else {
             // the TaskFragmentContainers need to be updated when the task becomes visible
             taskContainer.mTaskFragmentContainersNeedsUpdate = true;
         }
@@ -918,7 +954,8 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
         // Update all TaskFragments in the Task. Make a copy of the list since some may be
         // removed on updating.
-        final List<TaskFragmentContainer> containers = taskContainer.getTaskFragmentContainers();
+        final List<TaskFragmentContainer> containers
+                = new ArrayList<>(taskContainer.getTaskFragmentContainers());
         for (int i = containers.size() - 1; i >= 0; i--) {
             final TaskFragmentContainer container = containers.get(i);
             // Wait until onTaskFragmentAppeared to update new container.
@@ -1018,10 +1055,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @Nullable
     OverlayContainerRestoreParams getOverlayContainerRestoreParams(
             @Nullable IBinder associatedActivityToken, @Nullable IBinder overlayToken) {
-        if (!Flags.fixPipRestoreToOverlay()) {
-            return null;
-        }
-
         if (associatedActivityToken == null || overlayToken == null) {
             return null;
         }
@@ -1067,7 +1100,12 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     void onTaskFragmentError(@NonNull WindowContainerTransaction wct,
             @Nullable IBinder errorCallbackToken, @Nullable TaskFragmentInfo taskFragmentInfo,
             @TaskFragmentOperation.OperationType int opType, @NonNull Throwable exception) {
-        Log.e(TAG, "onTaskFragmentError=" + exception.getMessage());
+        if (exception instanceof OperationCanceledException) {
+            // This is a non-fatal error and the operation just canceled.
+            Log.i(TAG, "operation canceled:" + exception.getMessage());
+        } else {
+            Log.e(TAG, "onTaskFragmentError=" + exception.getMessage(), exception);
+        }
         switch (opType) {
             case OP_TYPE_START_ACTIVITY_IN_TASK_FRAGMENT:
             case OP_TYPE_REPARENT_ACTIVITY_TO_TASK_FRAGMENT: {
@@ -1329,13 +1367,24 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         if (shouldContainerBeExpanded(container)) {
             // Make sure that the existing container is expanded.
             mPresenter.expandTaskFragment(wct, container);
-        } else {
-            // Put activity into a new expanded container.
-            final TaskFragmentContainer newContainer =
-                    new TaskFragmentContainer.Builder(this, getTaskId(activity), activity)
-                            .setPendingAppearedActivity(activity).build();
-            mPresenter.expandActivity(wct, newContainer.getTaskFragmentToken(), activity);
+            return;
         }
+
+        final SplitContainer splitContainer = getActiveSplitForContainer(container);
+        if (splitContainer instanceof SplitPinContainer
+                && !container.isPinned() && container.getRunningActivityCount() == 1) {
+            // This is already the expected state when the pinned container is shown with an
+            // expanded activity in a standalone container on the side. Moving the activity into
+            // another new expanded container again is not necessary and could result in
+            // recursively creating new TaskFragmentContainers if the activity somehow relaunched.
+            return;
+        }
+
+        // Put activity into a new expanded container.
+        final TaskFragmentContainer newContainer =
+                new TaskFragmentContainer.Builder(this, getTaskId(activity), activity)
+                        .setPendingAppearedActivity(activity).build();
+        mPresenter.expandActivity(wct, newContainer.getTaskFragmentToken(), activity);
     }
 
     /**
@@ -2264,15 +2313,12 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @GuardedBy("mLock")
     @Nullable
     Bundle getPlaceholderOptions(@NonNull Activity primaryActivity, boolean isOnCreated) {
-        // Setting avoid move to front will also skip the animation. We only want to do that when
-        // the Task is currently in background.
         // Check if the primary is resumed or if this is called when the primary is onCreated
         // (not resumed yet).
         if (isOnCreated || primaryActivity.isResumed()) {
             // Only set trigger type if the launch happens in foreground.
             mTransactionManager.getCurrentTransactionRecord()
                     .setOriginType(TASK_FRAGMENT_TRANSIT_OPEN);
-            return null;
         }
         final ActivityOptions options = ActivityOptions.makeBasic();
         options.setAvoidMoveToFront();
@@ -2528,6 +2574,21 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         return mTaskContainers.get(taskId);
     }
 
+    @NonNull
+    @GuardedBy("mLock")
+    List<TaskContainer> getTaskContainers() {
+        final ArrayList<TaskContainer> taskContainers = new ArrayList<>();
+        for (int i = mTaskContainers.size() - 1; i >= 0; i--) {
+            taskContainers.add(mTaskContainers.valueAt(i));
+        }
+        return taskContainers;
+    }
+
+    @GuardedBy("mLock")
+    void setSavedState(@NonNull Bundle savedState) {
+        mPresenter.setSavedState(savedState);
+    }
+
     @GuardedBy("mLock")
     void addTaskContainer(int taskId, TaskContainer taskContainer) {
         mTaskContainers.put(taskId, taskContainer);
@@ -2551,9 +2612,9 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         return ActivityThread.currentActivityThread().getActivity(activityToken);
     }
 
-    @VisibleForTesting
     @Nullable
-    ActivityThread.ActivityClientRecord getActivityClientRecord(@NonNull Activity activity) {
+    private ActivityThread.ActivityClientRecord getActivityClientRecord(
+            @NonNull Activity activity) {
         return ActivityThread.currentActivityThread()
                 .getActivityClient(activity.getActivityToken());
     }
@@ -2709,15 +2770,19 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     TaskFragmentContainer createOrUpdateOverlayTaskFragmentIfNeeded(
             @NonNull WindowContainerTransaction wct, @NonNull Bundle options,
             @NonNull Intent intent, @NonNull Activity launchActivity) {
+        final String overlayTag = Objects.requireNonNull(options.getString(KEY_OVERLAY_TAG));
         if (isActivityFromSplit(launchActivity)) {
             // We restrict to launch the overlay from split. Fallback to treat it as normal
             // launch.
+            Log.w(TAG, "It's not allowed to launch overlay container with tag=" + overlayTag
+                    + " from activity in Activity Embedding split."
+                    + " Launching activity=" + launchActivity
+                    + " Fallback to launch the activity as normal launch.");
             return null;
         }
 
         final List<TaskFragmentContainer> overlayContainers =
                 getAllNonFinishingOverlayContainers();
-        final String overlayTag = Objects.requireNonNull(options.getString(KEY_OVERLAY_TAG));
         final boolean associateLaunchingActivity = options
                 .getBoolean(KEY_OVERLAY_ASSOCIATE_WITH_LAUNCHING_ACTIVITY, true);
 
@@ -2738,89 +2803,70 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         }
 
         final int taskId = getTaskId(launchActivity);
-        if (!overlayContainers.isEmpty()) {
-            for (final TaskFragmentContainer overlayContainer : overlayContainers) {
-                final boolean isTopNonFinishingOverlay = overlayContainer.equals(
-                        overlayContainer.getTaskContainer().getTopNonFinishingTaskFragmentContainer(
-                                true /* includePin */, true /* includeOverlay */));
-                if (taskId != overlayContainer.getTaskId()) {
-                    // If there's an overlay container with same tag in a different task,
-                    // dismiss the overlay container since the tag must be unique per process.
-                    if (overlayTag.equals(overlayContainer.getOverlayTag())) {
-                        Log.w(TAG, "The overlay container with tag:"
-                                + overlayContainer.getOverlayTag() + " is dismissed because"
-                                + " there's an existing overlay container with the same tag but"
-                                + " different task ID:" + overlayContainer.getTaskId() + ". "
-                                + "The new associated activity is " + launchActivity);
-                        mPresenter.cleanupContainer(wct, overlayContainer,
-                                false /* shouldFinishDependant */);
-                    }
-                    continue;
-                }
-                if (!overlayTag.equals(overlayContainer.getOverlayTag())) {
-                    // If there's an overlay container with different tag on top in the same
-                    // task, dismiss the existing overlay container.
-                    if (isTopNonFinishingOverlay) {
-                        mPresenter.cleanupContainer(wct, overlayContainer,
-                                false /* shouldFinishDependant */);
-                    }
-                    continue;
-                }
-                // The overlay container has the same tag and task ID with the new launching
-                // overlay container.
-                if (!isTopNonFinishingOverlay) {
-                    // Dismiss the invisible overlay container regardless of activity
-                    // association if it collides the tag of new launched overlay container .
-                    Log.w(TAG, "The invisible overlay container with tag:"
-                            + overlayContainer.getOverlayTag() + " is dismissed because"
-                            + " there's a launching overlay container with the same tag."
-                            + " The new associated activity is " + launchActivity);
-                    mPresenter.cleanupContainer(wct, overlayContainer,
-                            false /* shouldFinishDependant */);
-                    continue;
-                }
-                // Requesting an always-on-top overlay.
-                if (!associateLaunchingActivity) {
-                    if (overlayContainer.isOverlayWithActivityAssociation()) {
-                        // Dismiss the overlay container since it has associated with an activity.
-                        Log.w(TAG, "The overlay container with tag:"
-                                + overlayContainer.getOverlayTag() + " is dismissed because"
-                                + " there's an existing overlay container with the same tag but"
-                                + " different associated launching activity. The overlay container"
-                                + " doesn't associate with any activity.");
-                        mPresenter.cleanupContainer(wct, overlayContainer,
-                                false /* shouldFinishDependant */);
-                        continue;
-                    } else {
-                        // The existing overlay container doesn't associate an activity as well.
-                        // Just update the overlay and return.
-                        // Note that going to this condition means the tag, task ID matches a
-                        // visible always-on-top overlay, and won't dismiss any overlay any more.
-                        mPresenter.applyActivityStackAttributes(wct, overlayContainer, attrs,
-                                getMinDimensions(intent));
-                        return overlayContainer;
-                    }
-                }
-                if (launchActivity.getActivityToken()
-                        != overlayContainer.getAssociatedActivityToken()) {
-                    Log.w(TAG, "The overlay container with tag:"
-                            + overlayContainer.getOverlayTag() + " is dismissed because"
-                            + " there's an existing overlay container with the same tag but"
-                            + " different associated launching activity. The new associated"
-                            + " activity is " + launchActivity);
-                    // The associated activity must be the same, or it will be dismissed.
-                    mPresenter.cleanupContainer(wct, overlayContainer,
-                            false /* shouldFinishDependant */);
-                    continue;
-                }
-                // Reaching here means the launching activity launch an overlay container with the
-                // same task ID, tag, while there's a previously launching visible overlay
-                // container. We'll regard it as updating the existing overlay container.
+        // Overlay container policy:
+        // 1. Overlay tag must be unique per process.
+        //   a. For associated overlay, if a new launched overlay container has the same tag as
+        //      an existing one, the existing overlay will be dismissed regardless of its task
+        //      and window hierarchy.
+        //   b. For always-on-top overlay, if there's an overlay container has the same tag in the
+        //      launched task, the overlay container will be re-used, which means the
+        //      ActivityStackAttributes will be applied and the launched activity will be positioned
+        //      on top of the overlay container.
+        // 2. There must be at most one overlay that partially occludes a visible activity per task.
+        //   a. For associated overlay, only the top visible overlay container in the launched task
+        //      will be dismissed.
+        //   b. Always-on-top overlay is always visible. If there's an overlay with different tags
+        //      in the same task, the overlay will be dismissed in case an activity above
+        //      the overlay is dismissed and the overlay is shown unexpectedly.
+        for (final TaskFragmentContainer overlayContainer : overlayContainers) {
+            final boolean isTopNonFinishingOverlay = overlayContainer.isTopNonFinishingChild();
+            final boolean areInSameTask = taskId == overlayContainer.getTaskId();
+            final boolean haveSameTag = overlayTag.equals(overlayContainer.getOverlayTag());
+            if (!associateLaunchingActivity && overlayContainer.isAlwaysOnTopOverlay()
+                    && haveSameTag && areInSameTask) {
+                // Just launch the activity and update the existing always-on-top overlay
+                // if the requested overlay is an always-on-top overlay with the same tag
+                // as the existing one.
                 mPresenter.applyActivityStackAttributes(wct, overlayContainer, attrs,
                         getMinDimensions(intent));
                 return overlayContainer;
-
             }
+            if (haveSameTag) {
+                // For other tag match, we should clean up the existing overlay since the overlay
+                // tag must be unique per process.
+                Log.w(TAG, "The overlay container with tag:"
+                        + overlayContainer.getOverlayTag() + " is dismissed with "
+                        + " the launching activity=" + launchActivity
+                        + " because there's an existing overlay container with the same tag.");
+                mPresenter.cleanupContainer(wct, overlayContainer,
+                        false /* shouldFinishDependant */);
+            }
+            if (!areInSameTask) {
+                // Early return here because we won't clean-up or update overlay from different
+                // tasks except tag collision.
+                continue;
+            }
+            if (associateLaunchingActivity) {
+                // For associated overlay, we only dismiss the overlay if it's the top non-finishing
+                // child of its parent container.
+                if (isTopNonFinishingOverlay) {
+                    Log.w(TAG, "The on-top overlay container with tag:"
+                            + overlayContainer.getOverlayTag() + " is dismissed with "
+                            + " the launching activity=" + launchActivity
+                            + "because we only allow one overlay on top.");
+                    mPresenter.cleanupContainer(wct, overlayContainer,
+                            false /* shouldFinishDependant */);
+                }
+                continue;
+            }
+            // Otherwise, we should clean up the overlay in the task because we only allow one
+            // overlay when an always-on-top overlay is launched.
+            Log.w(TAG, "The overlay container with tag:"
+                    + overlayContainer.getOverlayTag() + " is dismissed with "
+                    + " the launching activity=" + launchActivity
+                    + "because an always-on-top overlay is launched.");
+            mPresenter.cleanupContainer(wct, overlayContainer,
+                    false /* shouldFinishDependant */);
         }
         // Launch the overlay container to the task with taskId.
         return createEmptyContainer(wct, intent, taskId, attrs, launchActivity, overlayTag,
@@ -2836,6 +2882,67 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
         return getActiveSplitForContainer(container) != null;
     }
 
+
+    @Override
+    public void setAutoSaveEmbeddingState(boolean saveEmbeddingState) {
+        synchronized (mLock) {
+            mPresenter.setAutoSaveEmbeddingState(saveEmbeddingState);
+        }
+    }
+
+    void scheduleBackup() {
+        synchronized (mLock) {
+            mPresenter.scheduleBackup();
+        }
+    }
+
+    @GuardedBy("mLock")
+    private boolean abortRebuildingTaskContainersIfNeeded(@Nullable Activity launchingActivity) {
+        if (mPresenter == null || !mPresenter.isWaitingToRebuildTaskContainers()) {
+            return false;
+        }
+
+        final ActivityThread activityThread = ActivityThread.currentActivityThread();
+        if (activityThread == null) {
+            return false;
+        }
+
+        final Activity lastCreatedActivity = activityThread.getLastCreatedActivity();
+        final Activity activity =
+                launchingActivity != null ? launchingActivity : lastCreatedActivity;
+        if (activity == null) {
+            return false;
+        }
+
+        Log.w(TAG, "Rebuilding aborted, clean up.");
+
+        // Retrieve the Task intent.
+        final int taskId = getTaskId(activity);
+
+        // Clean up and abort the restoration
+        // TODO(b/369488857): also to remove the non-organized activities in the Task?
+        final TransactionRecord transactionRecord =
+                mTransactionManager.startNewTransaction();
+        final WindowContainerTransaction wct = transactionRecord.getTransaction();
+        mPresenter.abortTaskContainerRebuilding(wct);
+        transactionRecord.apply(false /* shouldApplyIndependently */);
+
+        // Start the Task root activity if the task is now empty.
+        ActivityManager.RecentTaskInfo taskInfo = null;
+        final ActivityManager am = activity.getSystemService(ActivityManager.class);
+        final List<ActivityManager.AppTask> appTasks = am.getAppTasks();
+        for (ActivityManager.AppTask appTask : appTasks) {
+            if (appTask.getTaskInfo().taskId == taskId) {
+                taskInfo = appTask.getTaskInfo();
+                break;
+            }
+        }
+        if (taskInfo != null && !taskInfo.isRunning) {
+            activity.startActivity(taskInfo.baseIntent.cloneFilter());
+        }
+        return true;
+    }
+
     private final class LifecycleCallbacks extends EmptyLifecycleCallbacksAdapter {
 
         @Override
@@ -2847,6 +2954,10 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                 return;
             }
             synchronized (mLock) {
+                if (abortRebuildingTaskContainersIfNeeded(activity)) {
+                    return;
+                }
+
                 final IBinder activityToken = activity.getActivityToken();
                 final IBinder initialTaskFragmentToken =
                         getTaskFragmentTokenFromActivityClientRecord(activity);
@@ -3032,15 +3143,21 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                 final WindowContainerTransaction wct = transactionRecord.getTransaction();
                 final TaskFragmentContainer launchedInTaskFragment;
                 if (launchingActivity != null) {
-                    final int taskId = getTaskId(launchingActivity);
                     final String overlayTag = options.getString(KEY_OVERLAY_TAG);
-                    if (Flags.activityEmbeddingOverlayPresentationFlag()
-                            && overlayTag != null) {
+                    if (overlayTag != null) {
                         launchedInTaskFragment = createOrUpdateOverlayTaskFragmentIfNeeded(wct,
                                 options, intent, launchingActivity);
                     } else {
-                        launchedInTaskFragment = resolveStartActivityIntent(wct, taskId, intent,
-                                launchingActivity);
+                        final int taskId = getTaskId(launchingActivity);
+                        if (taskId != INVALID_TASK_ID) {
+                            launchedInTaskFragment = resolveStartActivityIntent(wct, taskId, intent,
+                                    launchingActivity);
+                        } else {
+                            // We cannot get a valid task id of launchingActivity so we fall back to
+                            // treat it as a non-Activity context.
+                            launchedInTaskFragment =
+                                    resolveStartActivityIntentFromNonActivityContext(wct, intent);
+                        }
                     }
                 } else {
                     launchedInTaskFragment = resolveStartActivityIntentFromNonActivityContext(wct,
@@ -3055,6 +3172,9 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                     // TODO(b/229680885): skip override launching TaskFragment token by split-rule
                     options.putBinder(KEY_LAUNCH_TASK_FRAGMENT_TOKEN,
                             launchedInTaskFragment.getTaskFragmentToken());
+                    if (activityEmbeddingDelayTaskFragmentFinishForActivityLaunch()) {
+                        launchedInTaskFragment.setActivityLaunchHint();
+                    }
                     mCurrentIntent = intent;
                 } else {
                     transactionRecord.abort();
@@ -3090,22 +3210,14 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
      */
     @Override
     public boolean isActivityEmbedded(@NonNull Activity activity) {
-        Objects.requireNonNull(activity);
         synchronized (mLock) {
-            if (Flags.activityWindowInfoFlag()) {
-                final ActivityWindowInfo activityWindowInfo = getActivityWindowInfo(activity);
-                return activityWindowInfo != null && activityWindowInfo.isEmbedded();
-            }
-            return mPresenter.isActivityEmbedded(activity.getActivityToken());
+            return TaskFragmentOrganizer.isActivityEmbedded(activity);
         }
     }
 
     @Override
     public void setEmbeddedActivityWindowInfoCallback(@NonNull Executor executor,
             @NonNull Consumer<EmbeddedActivityWindowInfo> callback) {
-        if (!Flags.activityWindowInfoFlag()) {
-            return;
-        }
         Objects.requireNonNull(executor);
         Objects.requireNonNull(callback);
         synchronized (mLock) {
@@ -3119,9 +3231,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
     @Override
     public void clearEmbeddedActivityWindowInfoCallback() {
-        if (!Flags.activityWindowInfoFlag()) {
-            return;
-        }
         synchronized (mLock) {
             if (mEmbeddedActivityWindowInfoCallback == null) {
                 return;
@@ -3142,9 +3251,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     @Nullable
     @Override
     public EmbeddedActivityWindowInfo getEmbeddedActivityWindowInfo(@NonNull Activity activity) {
-        if (!Flags.activityWindowInfoFlag()) {
-            return null;
-        }
         synchronized (mLock) {
             final ActivityWindowInfo activityWindowInfo = getActivityWindowInfo(activity);
             return activityWindowInfo != null
@@ -3173,15 +3279,6 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
 
             executor.execute(() -> callback.accept(info));
         }
-    }
-
-    @Nullable
-    private ActivityWindowInfo getActivityWindowInfo(@NonNull Activity activity) {
-        if (activity.isFinishing()) {
-            return null;
-        }
-        final ActivityThread.ActivityClientRecord record = getActivityClientRecord(activity);
-        return record != null ? record.getActivityWindowInfo() : null;
     }
 
     @NonNull
@@ -3266,12 +3363,15 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
     }
 
     @GuardedBy("mLock")
-    void updateDivider(
-            @NonNull WindowContainerTransaction wct, @NonNull TaskContainer taskContainer) {
+    void updateDivider(@NonNull WindowContainerTransaction wct,
+            @NonNull TaskContainer taskContainer, boolean isTaskFragmentVanished) {
         final DividerPresenter dividerPresenter = mDividerPresenters.get(taskContainer.getTaskId());
         final TaskFragmentParentInfo parentInfo = taskContainer.getTaskFragmentParentInfo();
-        dividerPresenter.updateDivider(
-                wct, parentInfo, taskContainer.getTopNonFinishingSplitContainer());
+        final SplitContainer topSplitContainer = taskContainer.getTopNonFinishingSplitContainer();
+        if (dividerPresenter != null) {
+            dividerPresenter.updateDivider(
+                    wct, parentInfo, topSplitContainer, isTaskFragmentVanished);
+        }
     }
 
     @Override
@@ -3301,6 +3401,9 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
                 final List<TaskFragmentContainer> containersToFinish = new ArrayList<>();
                 taskContainer.updateTopSplitContainerForDivider(
                         dividerPresenter, containersToFinish);
+                if (!containersToFinish.isEmpty()) {
+                    dividerPresenter.setHasContainersToFinish(true);
+                }
                 for (final TaskFragmentContainer container : containersToFinish) {
                     mPresenter.cleanupContainer(wct, container, false /* shouldFinishDependent */);
                 }
@@ -3309,5 +3412,18 @@ public class SplitController implements JetpackTaskFragmentOrganizer.TaskFragmen
             action.accept(wct);
             transactionRecord.apply(false /* shouldApplyIndependently */);
         }
+    }
+
+    // TODO(b/207070762): cleanup with legacy app transition
+    private static boolean getShellTransitEnabled() {
+        try {
+            if (AppGlobals.getPackageManager().hasSystemFeature(
+                    PackageManager.FEATURE_AUTOMOTIVE, 0)) {
+                return SystemProperties.getBoolean("persist.wm.debug.shell_transit", true);
+            }
+        } catch (RemoteException re) {
+            Log.w(TAG, "Error getting system features");
+        }
+        return true;
     }
 }

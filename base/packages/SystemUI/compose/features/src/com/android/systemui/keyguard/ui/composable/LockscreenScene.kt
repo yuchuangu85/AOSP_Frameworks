@@ -19,49 +19,57 @@ package com.android.systemui.keyguard.ui.composable
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import com.android.compose.animation.scene.SceneScope
+import androidx.compose.ui.platform.testTag
+import com.android.compose.animation.scene.ContentScope
 import com.android.compose.animation.scene.UserAction
 import com.android.compose.animation.scene.UserActionResult
-import com.android.compose.animation.scene.animateSceneFloatAsState
+import com.android.compose.animation.scene.animateContentFloatAsState
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.keyguard.ui.viewmodel.LockscreenSceneViewModel
+import com.android.systemui.keyguard.ui.viewmodel.LockscreenUserActionsViewModel
+import com.android.systemui.lifecycle.ExclusiveActivatable
 import com.android.systemui.qs.ui.composable.QuickSettings
 import com.android.systemui.scene.shared.model.Scenes
-import com.android.systemui.scene.ui.composable.ComposableScene
+import com.android.systemui.scene.ui.composable.Scene
 import dagger.Lazy
 import javax.inject.Inject
-import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.Flow
 
 /** The lock screen scene shows when the device is locked. */
 @SysUISingleton
 class LockscreenScene
 @Inject
 constructor(
-    viewModel: LockscreenSceneViewModel,
+    actionsViewModelFactory: LockscreenUserActionsViewModel.Factory,
     private val lockscreenContent: Lazy<LockscreenContent>,
-) : ComposableScene {
+) : ExclusiveActivatable(), Scene {
     override val key = Scenes.Lockscreen
 
-    override val destinationScenes: StateFlow<Map<UserAction, UserActionResult>> =
-        viewModel.destinationScenes
+    private val actionsViewModel: LockscreenUserActionsViewModel by lazy {
+        actionsViewModelFactory.create()
+    }
+
+    override val userActions: Flow<Map<UserAction, UserActionResult>> = actionsViewModel.actions
+
+    override suspend fun onActivated(): Nothing {
+        actionsViewModel.activate()
+    }
 
     @Composable
-    override fun SceneScope.Content(
-        modifier: Modifier,
-    ) {
+    override fun ContentScope.Content(modifier: Modifier) {
         LockscreenScene(
             lockscreenContent = lockscreenContent,
-            modifier = modifier,
+            // TODO(b/393516240): Use the same sysuiResTag() as views instead.
+            modifier = modifier.testTag(key.rootElementKey.testTag),
         )
     }
 }
 
 @Composable
-private fun SceneScope.LockscreenScene(
+private fun ContentScope.LockscreenScene(
     lockscreenContent: Lazy<LockscreenContent>,
     modifier: Modifier = Modifier,
 ) {
-    animateSceneFloatAsState(
+    animateContentFloatAsState(
         value = QuickSettings.SharedValues.SquishinessValues.LockscreenSceneStarting,
         key = QuickSettings.SharedValues.TilesSquishiness,
     )

@@ -24,13 +24,20 @@ import static com.android.systemui.statusbar.phone.StatusBarIconHolder.TYPE_WIFI
 import android.annotation.Nullable;
 import android.content.Context;
 import android.os.Bundle;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 
-import androidx.annotation.VisibleForTesting;
+import androidx.annotation.OptIn;
+import androidx.collection.MutableIntObjectMap;
 
 import com.android.internal.statusbar.StatusBarIcon;
+import com.android.internal.statusbar.StatusBarIcon.Shape;
+import com.android.systemui.Flags;
 import com.android.systemui.demomode.DemoModeCommandReceiver;
+import com.android.systemui.kairos.ExperimentalKairosApi;
+import com.android.systemui.kairos.KairosNetwork;
+import com.android.systemui.modes.shared.ModesUiIcons;
 import com.android.systemui.statusbar.BaseStatusBarFrameLayout;
 import com.android.systemui.statusbar.StatusBarIconView;
 import com.android.systemui.statusbar.StatusIconDisplayable;
@@ -40,6 +47,7 @@ import com.android.systemui.statusbar.phone.StatusBarIconHolder;
 import com.android.systemui.statusbar.phone.StatusBarIconHolder.BindableIconHolder;
 import com.android.systemui.statusbar.phone.StatusBarLocation;
 import com.android.systemui.statusbar.pipeline.mobile.ui.MobileUiAdapter;
+import com.android.systemui.statusbar.pipeline.mobile.ui.MobileUiAdapterKairos;
 import com.android.systemui.statusbar.pipeline.mobile.ui.binder.MobileIconsBinder;
 import com.android.systemui.statusbar.pipeline.mobile.ui.view.ModernStatusBarMobileView;
 import com.android.systemui.statusbar.pipeline.mobile.ui.viewmodel.MobileIconsViewModel;
@@ -49,19 +57,33 @@ import com.android.systemui.statusbar.pipeline.wifi.ui.view.ModernStatusBarWifiV
 import com.android.systemui.statusbar.pipeline.wifi.ui.viewmodel.LocationBasedWifiViewModel;
 import com.android.systemui.util.Assert;
 
+import dagger.Lazy;
+
+import kotlin.Pair;
+
+import kotlinx.coroutines.CoroutineScope;
+import kotlinx.coroutines.Job;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 
 /**
  * Turns info from StatusBarIconController into ImageViews in a ViewGroup.
  */
+@OptIn(markerClass = ExperimentalKairosApi.class)
 public class IconManager implements DemoModeCommandReceiver {
     protected final ViewGroup mGroup;
     private final MobileContextProvider mMobileContextProvider;
     private final LocationBasedWifiViewModel mWifiViewModel;
     private final MobileIconsViewModel mMobileIconsViewModel;
+
+    private final Lazy<MobileUiAdapterKairos> mMobileUiAdapterKairos;
+    private final KairosNetwork mKairosNetwork;
+    private final CoroutineScope mAppScope;
+    private final MutableIntObjectMap<Job> mBindingJobs = new MutableIntObjectMap<>();
 
     /**
      * Stores the list of bindable icons that have been added, keyed on slot name. This ensures
@@ -87,12 +109,17 @@ public class IconManager implements DemoModeCommandReceiver {
             StatusBarLocation location,
             WifiUiAdapter wifiUiAdapter,
             MobileUiAdapter mobileUiAdapter,
-            MobileContextProvider mobileContextProvider
+            Lazy<MobileUiAdapterKairos> mobileUiAdapterKairos,
+            MobileContextProvider mobileContextProvider,
+            KairosNetwork kairosNetwork,
+            CoroutineScope appScope
     ) {
         mGroup = group;
         mMobileContextProvider = mobileContextProvider;
         mContext = group.getContext();
         mLocation = location;
+        mKairosNetwork = kairosNetwork;
+        mAppScope = appScope;
 
         reloadDimens();
 
@@ -100,6 +127,9 @@ public class IconManager implements DemoModeCommandReceiver {
         // {@link #setNewMobileIconIds}
         mMobileIconsViewModel = mobileUiAdapter.getMobileIconsViewModel();
         MobileIconsBinder.bind(mGroup, mMobileIconsViewModel);
+
+
+        mMobileUiAdapterKairos = mobileUiAdapterKairos;
 
         mWifiViewModel = wifiUiAdapter.bindGroup(mGroup, mLocation);
     }
@@ -150,17 +180,16 @@ public class IconManager implements DemoModeCommandReceiver {
             case TYPE_MOBILE_NEW -> addNewMobileIcon(index, slot, holder.getTag());
             case TYPE_BINDABLE ->
                 // Safe cast, since only BindableIconHolders can set this tag on themselves
-                addBindableIcon((BindableIconHolder) holder, index);
+                    addBindableIcon((BindableIconHolder) holder, index);
             default -> null;
         };
     }
 
-    @VisibleForTesting
     protected StatusBarIconView addIcon(int index, String slot, boolean blocked,
             StatusBarIcon icon) {
         StatusBarIconView view = onCreateStatusBarIconView(slot, blocked);
         view.set(icon);
-        mGroup.addView(view, index, onCreateLayoutParams());
+        mGroup.addView(view, index, onCreateLayoutParams(icon.shape));
         return view;
     }
 
@@ -174,7 +203,7 @@ public class IconManager implements DemoModeCommandReceiver {
             int index) {
         mBindableIcons.put(holder.getSlot(), holder);
         ModernStatusBarView view = holder.getInitializer().createAndBind(mContext);
-        mGroup.addView(view, index, onCreateLayoutParams());
+        mGroup.addView(view, index, onCreateLayoutParams(Shape.WRAP_CONTENT));
         if (mIsInDemoMode) {
             mDemoStatusIcons.addBindableIcon(holder);
         }
@@ -183,7 +212,7 @@ public class IconManager implements DemoModeCommandReceiver {
 
     protected StatusIconDisplayable addNewWifiIcon(int index, String slot) {
         ModernStatusBarWifiView view = onCreateModernStatusBarWifiView(slot);
-        mGroup.addView(view, index, onCreateLayoutParams());
+        mGroup.addView(view, index, onCreateLayoutParams(Shape.WRAP_CONTENT));
 
         if (mIsInDemoMode) {
             mDemoStatusIcons.addModernWifiView(mWifiViewModel);
@@ -199,7 +228,7 @@ public class IconManager implements DemoModeCommandReceiver {
             int subId
     ) {
         BaseStatusBarFrameLayout view = onCreateModernStatusBarMobileView(slot, subId);
-        mGroup.addView(view, index, onCreateLayoutParams());
+        mGroup.addView(view, index, onCreateLayoutParams(Shape.WRAP_CONTENT));
 
         if (mIsInDemoMode) {
             Context mobileContext = mMobileContextProvider
@@ -224,17 +253,38 @@ public class IconManager implements DemoModeCommandReceiver {
     private ModernStatusBarMobileView onCreateModernStatusBarMobileView(
             String slot, int subId) {
         Context mobileContext = mMobileContextProvider.getMobileContextForSub(subId, mContext);
-        return ModernStatusBarMobileView
-                .constructAndBind(
-                        mobileContext,
-                        mMobileIconsViewModel.getLogger(),
-                        slot,
-                        mMobileIconsViewModel.viewModelForSub(subId, mLocation)
-                );
+        if (Flags.statusBarMobileIconKairos()) {
+            Pair<ModernStatusBarMobileView, Job> viewAndJob =
+                    ModernStatusBarMobileView.constructAndBind(
+                            mobileContext,
+                            mMobileUiAdapterKairos.get().getMobileIconsViewModel().getLogger(),
+                            slot,
+                            mMobileUiAdapterKairos.get().getMobileIconsViewModel()
+                                    .viewModelForSub(subId, mLocation),
+                            mAppScope,
+                            subId,
+                            mLocation,
+                            mKairosNetwork
+                    );
+            mBindingJobs.put(subId, viewAndJob.getSecond());
+            return viewAndJob.getFirst();
+        } else {
+            return ModernStatusBarMobileView
+                    .constructAndBind(
+                            mobileContext,
+                            mMobileIconsViewModel.getLogger(),
+                            slot,
+                            mMobileIconsViewModel.viewModelForSub(subId, mLocation)
+                    );
+        }
     }
 
-    protected LinearLayout.LayoutParams onCreateLayoutParams() {
-        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, mIconSize);
+    protected LinearLayout.LayoutParams onCreateLayoutParams(Shape shape) {
+        int width = ModesUiIcons.isEnabled() && shape == StatusBarIcon.Shape.FIXED_SPACE
+                ? mIconSize
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
+
+        return new LinearLayout.LayoutParams(width, mIconSize);
     }
 
     protected void destroy() {
@@ -250,12 +300,28 @@ public class IconManager implements DemoModeCommandReceiver {
         if (mIsInDemoMode) {
             mDemoStatusIcons.onRemoveIcon((StatusIconDisplayable) mGroup.getChildAt(viewIndex));
         }
+        if (Flags.statusBarMobileIconKairos()) {
+            View view = mGroup.getChildAt(viewIndex);
+            if (view instanceof ModernStatusBarMobileView) {
+                Job bindingJob = mBindingJobs.remove(((ModernStatusBarMobileView) view).getSubId());
+                if (bindingJob != null) {
+                    bindingJob.cancel(new CancellationException());
+                }
+            }
+        }
         mGroup.removeViewAt(viewIndex);
     }
 
     /** Called once an icon has been set. */
     public void onSetIcon(int viewIndex, StatusBarIcon icon) {
         StatusBarIconView view = (StatusBarIconView) mGroup.getChildAt(viewIndex);
+        if (ModesUiIcons.isEnabled()) {
+            ViewGroup.LayoutParams current = view.getLayoutParams();
+            ViewGroup.LayoutParams desired = onCreateLayoutParams(icon.shape);
+            if (desired.width != current.width || desired.height != current.height) {
+                view.setLayoutParams(desired);
+            }
+        }
         view.set(icon);
     }
 
@@ -316,7 +382,10 @@ public class IconManager implements DemoModeCommandReceiver {
                 (LinearLayout) mGroup,
                 mMobileIconsViewModel,
                 mLocation,
-                mIconSize
+                mIconSize,
+                mMobileUiAdapterKairos,
+                mKairosNetwork,
+                mAppScope
         );
     }
 }

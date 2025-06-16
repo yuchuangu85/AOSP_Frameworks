@@ -16,6 +16,7 @@
 
 package com.android.server.wm;
 
+import static android.view.Display.REMOVE_MODE_DESTROY_CONTENT;
 import static android.view.WindowManager.DISPLAY_IME_POLICY_FALLBACK_DISPLAY;
 import static android.view.WindowManager.DISPLAY_IME_POLICY_LOCAL;
 import static android.view.WindowManager.REMOVE_CONTENT_MODE_DESTROY;
@@ -35,6 +36,7 @@ import android.view.IWindowManager;
 import android.view.Surface;
 import android.view.WindowManager;
 import android.view.WindowManager.DisplayImePolicy;
+import android.window.DesktopExperienceFlags;
 
 import com.android.server.policy.WindowManagerPolicy;
 import com.android.server.wm.DisplayContent.ForceScalingMode;
@@ -68,6 +70,7 @@ class DisplayWindowSettings {
         mSettingsProvider.updateOverrideSettings(displayInfo, overrideSettings);
     }
 
+    /** Stores the size override settings. If the width or height is zero, it means to clear. */
     void setForcedSize(@NonNull DisplayContent displayContent, int width, int height) {
         if (displayContent.isDefaultDisplay) {
             final String sizeString = (width == 0 || height == 0) ? "" : (width + "," + height);
@@ -96,6 +99,13 @@ class DisplayWindowSettings {
         mSettingsProvider.updateOverrideSettings(info, overrideSettings);
     }
 
+    void setForcedDensityRatio(@NonNull DisplayInfo info, float ratio) {
+        final SettingsProvider.SettingsEntry overrideSettings =
+                mSettingsProvider.getOverrideSettings(info);
+        overrideSettings.mForcedDensityRatio = ratio;
+        mSettingsProvider.updateOverrideSettings(info, overrideSettings);
+    }
+
     void setForcedScalingMode(@NonNull DisplayContent displayContent, @ForceScalingMode int mode) {
         if (displayContent.isDefaultDisplay) {
             Settings.Global.putInt(mService.mContext.getContentResolver(),
@@ -118,7 +128,7 @@ class DisplayWindowSettings {
     }
 
     void setIgnoreOrientationRequest(@NonNull DisplayContent displayContent,
-            boolean ignoreOrientationRequest) {
+            @Nullable Boolean ignoreOrientationRequest) {
         final DisplayInfo displayInfo = displayContent.getDisplayInfo();
         final SettingsProvider.SettingsEntry overrideSettings =
                 mSettingsProvider.getOverrideSettings(displayInfo);
@@ -129,21 +139,33 @@ class DisplayWindowSettings {
     @WindowConfiguration.WindowingMode
     private int getWindowingModeLocked(@NonNull SettingsProvider.SettingsEntry settings,
             @NonNull DisplayContent dc) {
-        int windowingMode = settings.mWindowingMode;
+        final int windowingModeFromDisplaySettings = settings.mWindowingMode;
         // This display used to be in freeform, but we don't support freeform anymore, so fall
         // back to fullscreen.
-        if (windowingMode == WindowConfiguration.WINDOWING_MODE_FREEFORM
+        if (windowingModeFromDisplaySettings == WindowConfiguration.WINDOWING_MODE_FREEFORM
                 && !mService.mAtmService.mSupportsFreeformWindowManagement) {
             return WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
         }
-        // No record is present so use default windowing mode policy.
-        if (windowingMode == WindowConfiguration.WINDOWING_MODE_UNDEFINED) {
-            windowingMode = mService.mAtmService.mSupportsFreeformWindowManagement
-                    && (mService.mIsPc || dc.forceDesktopMode())
-                    ? WindowConfiguration.WINDOWING_MODE_FREEFORM
-                    : WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+        if (windowingModeFromDisplaySettings != WindowConfiguration.WINDOWING_MODE_UNDEFINED) {
+            return windowingModeFromDisplaySettings;
         }
-        return windowingMode;
+        // No record is present so use default windowing mode policy.
+        final boolean forceFreeForm = mService.mAtmService.mSupportsFreeformWindowManagement
+                && (mService.mIsPc || dc.isPublicSecondaryDisplayWithDesktopModeForceEnabled());
+        if (forceFreeForm) {
+            return WindowConfiguration.WINDOWING_MODE_FREEFORM;
+        }
+        final int currentWindowingMode = dc.getDefaultTaskDisplayArea().getWindowingMode();
+        if (currentWindowingMode == WindowConfiguration.WINDOWING_MODE_UNDEFINED) {
+            // No record preset in settings + no mode set via the display area policy.
+            // Move to fullscreen as a fallback.
+            return WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+        }
+        if (currentWindowingMode == WindowConfiguration.WINDOWING_MODE_FREEFORM) {
+            // Freeform was enabled before but disabled now, the TDA should now move to fullscreen.
+            return WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+        }
+        return currentWindowingMode;
     }
 
     @WindowConfiguration.WindowingMode
@@ -171,7 +193,7 @@ class DisplayWindowSettings {
         final DisplayInfo displayInfo = dc.getDisplayInfo();
         final SettingsProvider.SettingsEntry settings = mSettingsProvider.getSettings(displayInfo);
         if (settings.mRemoveContentMode == REMOVE_CONTENT_MODE_UNDEFINED) {
-            if (dc.isPrivate()) {
+            if (dc.isPrivate() || dc.getDisplay().getRemoveMode() == REMOVE_MODE_DESTROY_CONTENT) {
                 // For private displays by default content is destroyed on removal.
                 return REMOVE_CONTENT_MODE_DESTROY;
             }
@@ -218,6 +240,11 @@ class DisplayWindowSettings {
         mSettingsProvider.updateOverrideSettings(displayInfo, overrideSettings);
     }
 
+    /**
+     * Returns {@code true} if either the display is the default display, or the display is allowed
+     * to dynamically add/remove system decorations and the system decorations should be shown on it
+     * currently.
+     */
     boolean shouldShowSystemDecorsLocked(@NonNull DisplayContent dc) {
         if (dc.getDisplayId() == Display.DEFAULT_DISPLAY) {
             // Default display should show system decors.
@@ -230,6 +257,26 @@ class DisplayWindowSettings {
     }
 
     void setShouldShowSystemDecorsLocked(@NonNull DisplayContent dc, boolean shouldShow) {
+        final boolean changed = (shouldShow != shouldShowSystemDecorsLocked(dc));
+        setShouldShowSystemDecorsInternalLocked(dc, shouldShow);
+
+        if (DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT.isTrue()) {
+            if (dc.isDefaultDisplay || dc.isPrivate() || !changed) {
+                return;
+            }
+
+            dc.getDisplayPolicy().updateHasNavigationBarIfNeeded();
+
+            if (shouldShow) {
+                mService.mRoot.startSystemDecorations(dc, "setShouldShowSystemDecorsLocked");
+            } else {
+                dc.getDisplayPolicy().notifyDisplayRemoveSystemDecorations();
+            }
+        }
+    }
+
+     void setShouldShowSystemDecorsInternalLocked(@NonNull DisplayContent dc,
+            boolean shouldShow) {
         final DisplayInfo displayInfo = dc.getDisplayInfo();
         final SettingsProvider.SettingsEntry overrideSettings =
                 mSettingsProvider.getOverrideSettings(displayInfo);
@@ -258,6 +305,24 @@ class DisplayWindowSettings {
         final SettingsProvider.SettingsEntry overrideSettings =
                 mSettingsProvider.getOverrideSettings(displayInfo);
         overrideSettings.mIsHomeSupported = supported;
+        mSettingsProvider.updateOverrideSettings(displayInfo, overrideSettings);
+    }
+
+    boolean isIgnoreActivitySizeRestrictionsLocked(@NonNull DisplayContent dc) {
+        final DisplayInfo displayInfo = dc.getDisplayInfo();
+        final SettingsProvider.SettingsEntry settings = mSettingsProvider.getSettings(displayInfo);
+        return settings.mIgnoreActivitySizeRestrictions != null
+                && settings.mIgnoreActivitySizeRestrictions;
+    }
+
+    void setIgnoreActivitySizeRestrictionsOnDisplayLocked(@NonNull String displayUniqueId,
+            int displayType, boolean enabled) {
+        final DisplayInfo displayInfo = new DisplayInfo();
+        displayInfo.uniqueId = displayUniqueId;
+        displayInfo.type = displayType;
+        final SettingsProvider.SettingsEntry overrideSettings =
+                mSettingsProvider.getOverrideSettings(displayInfo);
+        overrideSettings.mIgnoreActivitySizeRestrictions = enabled;
         mSettingsProvider.updateOverrideSettings(displayInfo, overrideSettings);
     }
 
@@ -313,6 +378,7 @@ class DisplayWindowSettings {
                 mFixedToUserRotation);
 
         final boolean hasDensityOverride = settings.mForcedDensity != 0;
+        final boolean hasDensityOverrideRatio = settings.mForcedDensityRatio != 0.0f;
         final boolean hasSizeOverride = settings.mForcedWidth != 0 && settings.mForcedHeight != 0;
         dc.mIsDensityForced = hasDensityOverride;
         dc.mIsSizeForced = hasSizeOverride;
@@ -324,6 +390,10 @@ class DisplayWindowSettings {
         final int height = hasSizeOverride ? settings.mForcedHeight : dc.mInitialDisplayHeight;
         final int density = hasDensityOverride ? settings.mForcedDensity
                 : dc.getInitialDisplayDensity();
+        if (hasDensityOverrideRatio) {
+            dc.mForcedDisplayDensityRatio = settings.mForcedDensityRatio;
+        }
+
         dc.updateBaseDisplayMetrics(width, height, density, dc.mBaseDisplayPhysicalXDpi,
                 dc.mBaseDisplayPhysicalYDpi);
 
@@ -342,9 +412,12 @@ class DisplayWindowSettings {
         final DisplayInfo displayInfo = dc.getDisplayInfo();
         final SettingsProvider.SettingsEntry settings = mSettingsProvider.getSettings(displayInfo);
 
-        final boolean ignoreOrientationRequest = settings.mIgnoreOrientationRequest != null
-                ? settings.mIgnoreOrientationRequest : false;
-        dc.setIgnoreOrientationRequest(ignoreOrientationRequest);
+        if (settings.mIgnoreOrientationRequest != null) {
+            dc.setIgnoreOrientationRequest(settings.mIgnoreOrientationRequest);
+        } else if (dc.mHasSetIgnoreOrientationRequest) {
+            // Null entry is default behavior, i.e. do not ignore.
+            dc.setIgnoreOrientationRequest(false);
+        }
 
         dc.getDisplayRotation().resetAllowAllRotations();
     }
@@ -439,6 +512,13 @@ class DisplayWindowSettings {
             int mForcedWidth;
             int mForcedHeight;
             int mForcedDensity;
+            /**
+             * The ratio of the forced density to the initial density of the display. This is only
+             * saved for external displays, and used to make sure ratio between forced density and
+             * initial density persist when a resolution change happens. Ratio is updated when
+             * mForcedDensity is changed.
+             */
+            float mForcedDensityRatio;
             @Nullable
             @ForceScalingMode
             Integer mForcedScalingMode;
@@ -460,6 +540,8 @@ class DisplayWindowSettings {
             Boolean mIgnoreDisplayCutout;
             @Nullable
             Boolean mDontMoveToTop;
+            @Nullable
+            Boolean mIgnoreActivitySizeRestrictions;
 
             SettingsEntry() {}
 
@@ -500,6 +582,10 @@ class DisplayWindowSettings {
                 }
                 if (other.mForcedDensity != mForcedDensity) {
                     mForcedDensity = other.mForcedDensity;
+                    changed = true;
+                }
+                if (other.mForcedDensityRatio != mForcedDensityRatio) {
+                    mForcedDensityRatio = other.mForcedDensityRatio;
                     changed = true;
                 }
                 if (!Objects.equals(other.mForcedScalingMode, mForcedScalingMode)) {
@@ -543,6 +629,11 @@ class DisplayWindowSettings {
                     mDontMoveToTop = other.mDontMoveToTop;
                     changed = true;
                 }
+                if (!Objects.equals(other.mIgnoreActivitySizeRestrictions,
+                        mIgnoreActivitySizeRestrictions)) {
+                    mIgnoreActivitySizeRestrictions = other.mIgnoreActivitySizeRestrictions;
+                    changed = true;
+                }
                 return changed;
             }
 
@@ -583,6 +674,11 @@ class DisplayWindowSettings {
                 }
                 if (delta.mForcedDensity != 0 && delta.mForcedDensity != mForcedDensity) {
                     mForcedDensity = delta.mForcedDensity;
+                    changed = true;
+                }
+                if (delta.mForcedDensityRatio != 0
+                        && delta.mForcedDensityRatio != mForcedDensityRatio) {
+                    mForcedDensityRatio = delta.mForcedDensityRatio;
                     changed = true;
                 }
                 if (delta.mForcedScalingMode != null
@@ -635,6 +731,11 @@ class DisplayWindowSettings {
                     mDontMoveToTop = delta.mDontMoveToTop;
                     changed = true;
                 }
+                if (delta.mIgnoreActivitySizeRestrictions != null && !Objects.equals(
+                        delta.mIgnoreActivitySizeRestrictions, mIgnoreActivitySizeRestrictions)) {
+                    mIgnoreActivitySizeRestrictions = delta.mIgnoreActivitySizeRestrictions;
+                    changed = true;
+                }
                 return changed;
             }
 
@@ -644,6 +745,7 @@ class DisplayWindowSettings {
                         && mUserRotationMode == null
                         && mUserRotation == null
                         && mForcedWidth == 0 && mForcedHeight == 0 && mForcedDensity == 0
+                        && mForcedDensityRatio == 0.0f
                         && mForcedScalingMode == null
                         && mRemoveContentMode == REMOVE_CONTENT_MODE_UNDEFINED
                         && mShouldShowWithInsecureKeyguard == null
@@ -653,7 +755,8 @@ class DisplayWindowSettings {
                         && mFixedToUserRotation == null
                         && mIgnoreOrientationRequest == null
                         && mIgnoreDisplayCutout == null
-                        && mDontMoveToTop == null;
+                        && mDontMoveToTop == null
+                        && mIgnoreActivitySizeRestrictions == null;
             }
 
             @Override
@@ -666,6 +769,7 @@ class DisplayWindowSettings {
                         && mForcedHeight == that.mForcedHeight
                         && mForcedDensity == that.mForcedDensity
                         && mRemoveContentMode == that.mRemoveContentMode
+                        && mForcedDensityRatio == that.mForcedDensityRatio
                         && Objects.equals(mUserRotationMode, that.mUserRotationMode)
                         && Objects.equals(mUserRotation, that.mUserRotation)
                         && Objects.equals(mForcedScalingMode, that.mForcedScalingMode)
@@ -677,16 +781,19 @@ class DisplayWindowSettings {
                         && Objects.equals(mFixedToUserRotation, that.mFixedToUserRotation)
                         && Objects.equals(mIgnoreOrientationRequest, that.mIgnoreOrientationRequest)
                         && Objects.equals(mIgnoreDisplayCutout, that.mIgnoreDisplayCutout)
-                        && Objects.equals(mDontMoveToTop, that.mDontMoveToTop);
+                        && Objects.equals(mDontMoveToTop, that.mDontMoveToTop)
+                        && Objects.equals(mIgnoreActivitySizeRestrictions,
+                                that.mIgnoreActivitySizeRestrictions);
             }
 
             @Override
             public int hashCode() {
                 return Objects.hash(mWindowingMode, mUserRotationMode, mUserRotation, mForcedWidth,
-                        mForcedHeight, mForcedDensity, mForcedScalingMode, mRemoveContentMode,
-                        mShouldShowWithInsecureKeyguard, mShouldShowSystemDecors, mIsHomeSupported,
-                        mImePolicy, mFixedToUserRotation, mIgnoreOrientationRequest,
-                        mIgnoreDisplayCutout, mDontMoveToTop);
+                        mForcedHeight, mForcedDensity, mForcedDensityRatio, mForcedScalingMode,
+                        mRemoveContentMode, mShouldShowWithInsecureKeyguard,
+                        mShouldShowSystemDecors, mIsHomeSupported, mImePolicy, mFixedToUserRotation,
+                        mIgnoreOrientationRequest, mIgnoreDisplayCutout, mDontMoveToTop,
+                        mIgnoreActivitySizeRestrictions);
             }
 
             @Override
@@ -698,6 +805,7 @@ class DisplayWindowSettings {
                         + ", mForcedWidth=" + mForcedWidth
                         + ", mForcedHeight=" + mForcedHeight
                         + ", mForcedDensity=" + mForcedDensity
+                        + ", mForcedDensityRatio=" + mForcedDensityRatio
                         + ", mForcedScalingMode=" + mForcedScalingMode
                         + ", mRemoveContentMode=" + mRemoveContentMode
                         + ", mShouldShowWithInsecureKeyguard=" + mShouldShowWithInsecureKeyguard
@@ -708,6 +816,7 @@ class DisplayWindowSettings {
                         + ", mIgnoreOrientationRequest=" + mIgnoreOrientationRequest
                         + ", mIgnoreDisplayCutout=" + mIgnoreDisplayCutout
                         + ", mDontMoveToTop=" + mDontMoveToTop
+                        + ", mForceAppsUniversalResizable=" + mIgnoreActivitySizeRestrictions
                         + '}';
             }
         }

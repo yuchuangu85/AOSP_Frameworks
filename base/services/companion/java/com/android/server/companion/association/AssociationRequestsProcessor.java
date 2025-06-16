@@ -19,8 +19,8 @@ package com.android.server.companion.association;
 import static android.app.PendingIntent.FLAG_CANCEL_CURRENT;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.app.PendingIntent.FLAG_ONE_SHOT;
-import static android.companion.CompanionDeviceManager.REASON_INTERNAL_ERROR;
 import static android.companion.CompanionDeviceManager.RESULT_INTERNAL_ERROR;
+import static android.companion.CompanionDeviceManager.RESULT_SECURITY_ERROR;
 import static android.content.ComponentName.createRelative;
 import static android.content.pm.PackageManager.FEATURE_WATCH;
 
@@ -28,6 +28,7 @@ import static com.android.server.companion.utils.PackageUtils.enforceUsesCompani
 import static com.android.server.companion.utils.PermissionsUtils.enforcePermissionForCreatingAssociation;
 import static com.android.server.companion.utils.RolesUtils.addRoleHolderForAssociation;
 import static com.android.server.companion.utils.RolesUtils.isRoleHolder;
+import static com.android.server.companion.utils.RolesUtils.isRolelessProfile;
 import static com.android.server.companion.utils.Utils.prepareForIpc;
 
 import static java.util.Objects.requireNonNull;
@@ -41,12 +42,15 @@ import android.app.PendingIntent;
 import android.companion.AssociatedDevice;
 import android.companion.AssociationInfo;
 import android.companion.AssociationRequest;
+import android.companion.DeviceId;
+import android.companion.Flags;
 import android.companion.IAssociationRequestCallback;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManagerInternal;
+import android.graphics.drawable.Icon;
 import android.net.MacAddress;
 import android.os.Binder;
 import android.os.Bundle;
@@ -54,13 +58,16 @@ import android.os.Handler;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.UserHandle;
+import android.util.ArraySet;
 import android.util.Slog;
 
 import com.android.internal.R;
 import com.android.server.companion.CompanionDeviceManagerService;
 import com.android.server.companion.utils.PackageUtils;
 
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Class responsible for handling incoming {@link AssociationRequest}s.
@@ -126,6 +133,12 @@ public class AssociationRequestsProcessor {
     private static final int ASSOCIATE_WITHOUT_PROMPT_MAX_PER_TIME_WINDOW = 5;
     private static final long ASSOCIATE_WITHOUT_PROMPT_WINDOW_MS = 60 * 60 * 1000; // 60 min;
 
+    // Set of profiles for which the association dialog cannot be skipped.
+    private static final Set<String> DEVICE_PROFILES_WITH_REQUIRED_CONFIRMATION = new ArraySet<>(
+            Arrays.asList(
+                    AssociationRequest.DEVICE_PROFILE_APP_STREAMING,
+                    AssociationRequest.DEVICE_PROFILE_NEARBY_DEVICE_STREAMING));
+
     private final @NonNull Context mContext;
     private final @NonNull PackageManagerInternal mPackageManagerInternal;
     private final @NonNull AssociationStore mAssociationStore;
@@ -170,6 +183,7 @@ public class AssociationRequestsProcessor {
         // 2a. Check if association can be created without launching UI (i.e. CDM needs NEITHER
         // to perform discovery NOR to collect user consent).
         if (request.isSelfManaged() && !request.isForceConfirmation()
+                && !DEVICE_PROFILES_WITH_REQUIRED_CONFIRMATION.contains(request.getDeviceProfile())
                 && !willAddRoleHolder(request, packageName, userId)) {
             // 2a.1. Create association right away.
             createAssociationAndNotifyApplication(request, packageName, userId,
@@ -183,7 +197,11 @@ public class AssociationRequestsProcessor {
             String errorMessage = "3p apps are not allowed to create associations on watch.";
             Slog.e(TAG, errorMessage);
             try {
-                callback.onFailure(errorMessage);
+                if (Flags.associationFailureCode()) {
+                    callback.onFailure(RESULT_SECURITY_ERROR, errorMessage);
+                } else {
+                    callback.onFailure(RESULT_INTERNAL_ERROR, errorMessage);
+                }
             } catch (RemoteException e) {
                 // ignored
             }
@@ -253,7 +271,11 @@ public class AssociationRequestsProcessor {
             // Since, at this point the caller is our own UI, we need to catch the exception on
             // forward it back to the application via the callback.
             try {
-                callback.onFailure(e.getMessage());
+                if (Flags.associationFailureCode()) {
+                    callback.onFailure(RESULT_SECURITY_ERROR, e.getMessage());
+                } else {
+                    callback.onFailure(RESULT_INTERNAL_ERROR, e.getMessage());
+                }
             } catch (RemoteException ignore) {
             }
             return;
@@ -271,8 +293,8 @@ public class AssociationRequestsProcessor {
         Binder.withCleanCallingIdentity(() -> {
             createAssociation(userId, packageName, macAddress, request.getDisplayName(),
                     request.getDeviceProfile(), request.getAssociatedDevice(),
-                    request.isSelfManaged(),
-                    callback, resultReceiver);
+                    request.isSelfManaged(), callback, resultReceiver, request.getDeviceIcon(),
+                    /* skipRoleGrant= */ false);
         });
     }
 
@@ -283,17 +305,27 @@ public class AssociationRequestsProcessor {
             @Nullable MacAddress macAddress, @Nullable CharSequence displayName,
             @Nullable String deviceProfile, @Nullable AssociatedDevice associatedDevice,
             boolean selfManaged, @Nullable IAssociationRequestCallback callback,
-            @Nullable ResultReceiver resultReceiver) {
+            @Nullable ResultReceiver resultReceiver, @Nullable Icon deviceIcon,
+            boolean skipRoleGrant) {
         final int id = mAssociationStore.getNextId();
         final long timestamp = System.currentTimeMillis();
 
         final AssociationInfo association = new AssociationInfo(id, userId, packageName,
-                /* tag */ null, macAddress, displayName, deviceProfile, associatedDevice,
+                 macAddress, displayName, deviceProfile, associatedDevice,
                 selfManaged, /* notifyOnDeviceNearby */ false, /* revoked */ false,
-                /* pending */ false, timestamp, Long.MAX_VALUE, /* systemDataSyncFlags */ 0);
+                /* pending */ false, timestamp, Long.MAX_VALUE, /* systemDataSyncFlags */ 0,
+                deviceIcon, /* deviceId */ null);
 
-        // Add role holder for association (if specified) and add new association to store.
-        maybeGrantRoleAndStoreAssociation(association, callback, resultReceiver);
+        if (skipRoleGrant) {
+            Slog.i(TAG, "Created association for " + association.getDeviceProfile() + " and userId="
+                    + association.getUserId() + ", packageName="
+                    + association.getPackageName() + " without granting role");
+            mAssociationStore.addAssociation(association);
+            sendCallbackAndFinish(association, callback, resultReceiver);
+        } else {
+            // Add role holder for association (if specified) and add new association to store.
+            maybeGrantRoleAndStoreAssociation(association, callback, resultReceiver);
+        }
     }
 
     /**
@@ -302,12 +334,20 @@ public class AssociationRequestsProcessor {
     public void maybeGrantRoleAndStoreAssociation(@NonNull AssociationInfo association,
             @Nullable IAssociationRequestCallback callback,
             @Nullable ResultReceiver resultReceiver) {
-        // If the "Device Profile" is specified, make the companion application a holder of the
-        // corresponding role.
-        // If it is null, then the operation will succeed without granting any role.
+        final String deviceProfile = association.getDeviceProfile();
+
+        // If device profile is not specified or role-less, skip role grant and store association.
+        if (deviceProfile == null || isRolelessProfile(deviceProfile)) {
+            mAssociationStore.addAssociation(association);
+            sendCallbackAndFinish(association, callback, resultReceiver);
+            return;
+        }
+
+        // If the "Device Profile" is specified and it is associated with a role, then make the
+        // companion application a holder of the corresponding role.
         addRoleHolderForAssociation(mContext, association, success -> {
             if (success) {
-                Slog.i(TAG, "Added " + association.getDeviceProfile() + " role to userId="
+                Slog.i(TAG, "Added " + deviceProfile + " role to userId="
                         + association.getUserId() + ", packageName="
                         + association.getPackageName());
                 mAssociationStore.addAssociation(association);
@@ -315,7 +355,7 @@ public class AssociationRequestsProcessor {
             } else {
                 Slog.e(TAG, "Failed to add u" + association.getUserId()
                         + "\\" + association.getPackageName()
-                        + " to the list of " + association.getDeviceProfile() + " holders.");
+                        + " to the list of " + deviceProfile + " holders.");
                 sendCallbackAndFinish(null, callback, resultReceiver);
             }
         });
@@ -344,14 +384,14 @@ public class AssociationRequestsProcessor {
     }
 
     /**
-     * Set association tag.
+     * Set Device id for the association.
      */
-    public void setAssociationTag(int associationId, String tag) {
-        Slog.i(TAG, "Setting association tag=[" + tag + "] to id=[" + associationId + "]...");
+    public void setDeviceId(int associationId, DeviceId deviceId) {
+        Slog.i(TAG, "Setting DeviceId=[" + deviceId + "] to id=[" + associationId + "]...");
 
         AssociationInfo association = mAssociationStore.getAssociationWithCallerChecks(
                 associationId);
-        association = (new AssociationInfo.Builder(association)).setTag(tag).build();
+        association = (new AssociationInfo.Builder(association)).setDeviceId(deviceId).build();
         mAssociationStore.updateAssociation(association);
     }
 
@@ -378,7 +418,7 @@ public class AssociationRequestsProcessor {
             // Send the association back via the app's callback
             if (callback != null) {
                 try {
-                    callback.onFailure(REASON_INTERNAL_ERROR);
+                    callback.onFailure(RESULT_INTERNAL_ERROR, "Association doesn't exist.");
                 } catch (RemoteException ignore) {
                 }
             }
@@ -395,7 +435,7 @@ public class AssociationRequestsProcessor {
     private boolean willAddRoleHolder(@NonNull AssociationRequest request,
             @NonNull String packageName, @UserIdInt int userId) {
         final String deviceProfile = request.getDeviceProfile();
-        if (deviceProfile == null) return false;
+        if (deviceProfile == null || isRolelessProfile(deviceProfile)) return false;
 
         final boolean isRoleHolder = Binder.withCleanCallingIdentity(
                 () -> isRoleHolder(mContext, userId, packageName, deviceProfile));

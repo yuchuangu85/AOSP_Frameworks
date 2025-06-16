@@ -25,30 +25,28 @@
 #include <android/binder_ibinder_platform.h>
 #include <android/binder_manager.h>
 #include <common/FlagManager.h>
-#include <gui/TraceUtils.h>
+#include <common/trace.h>
+#include <fmt/core.h>
 #include <log/log.h>
-#include <utils/Trace.h>
 
 #include <aidl/android/hardware/graphics/composer3/BnComposerCallback.h>
 
 #include <algorithm>
 #include <cinttypes>
+#include <string>
+#include <string_view>
 
 #include "HWC2.h"
 
 namespace android {
 
-using hardware::hidl_handle;
-using hardware::hidl_vec;
-using hardware::Return;
-
 using aidl::android::hardware::graphics::composer3::BnComposerCallback;
 using aidl::android::hardware::graphics::composer3::Capability;
 using aidl::android::hardware::graphics::composer3::ClientTargetPropertyWithBrightness;
+using aidl::android::hardware::graphics::composer3::CommandResultPayload;
+using aidl::android::hardware::graphics::composer3::Luts;
 using aidl::android::hardware::graphics::composer3::PowerMode;
 using aidl::android::hardware::graphics::composer3::VirtualDisplay;
-
-using aidl::android::hardware::graphics::composer3::CommandResultPayload;
 
 using AidlColorMode = aidl::android::hardware::graphics::composer3::ColorMode;
 using AidlContentType = aidl::android::hardware::graphics::composer3::ContentType;
@@ -60,6 +58,7 @@ using AidlDisplayCapability = aidl::android::hardware::graphics::composer3::Disp
 using AidlHdrCapabilities = aidl::android::hardware::graphics::composer3::HdrCapabilities;
 using AidlHdrConversionCapability =
         aidl::android::hardware::graphics::common::HdrConversionCapability;
+using AidlHdcpLevels = aidl::android::hardware::drm::HdcpLevels;
 using AidlHdrConversionStrategy = aidl::android::hardware::graphics::common::HdrConversionStrategy;
 using AidlOverlayProperties = aidl::android::hardware::graphics::composer3::OverlayProperties;
 using AidlPerFrameMetadata = aidl::android::hardware::graphics::composer3::PerFrameMetadata;
@@ -223,29 +222,42 @@ public:
         return ::ndk::ScopedAStatus::ok();
     }
 
+    ::ndk::ScopedAStatus onHdcpLevelsChanged(int64_t in_display,
+                                             const AidlHdcpLevels& levels) override {
+        mCallback.onComposerHalHdcpLevelsChanged(translate<Display>(in_display), levels);
+        return ::ndk::ScopedAStatus::ok();
+    }
+
 private:
     HWC2::ComposerCallback& mCallback;
 };
 
-std::string AidlComposer::instance(const std::string& serviceName) {
-    return std::string(AidlIComposer::descriptor) + "/" + serviceName;
+std::string AidlComposer::ensureFullyQualifiedName(std::string_view serviceName) {
+    if (!serviceName.starts_with(AidlIComposer::descriptor)) {
+        return fmt::format("{}/{}", AidlIComposer::descriptor, serviceName);
+    } else {
+        return std::string{serviceName};
+    }
 }
 
-bool AidlComposer::isDeclared(const std::string& serviceName) {
-    return AServiceManager_isDeclared(instance(serviceName).c_str());
+bool AidlComposer::namesAnAidlComposerService(std::string_view serviceName) {
+    if (!serviceName.starts_with(AidlIComposer::descriptor)) {
+        return AServiceManager_isDeclared(ensureFullyQualifiedName(serviceName).c_str());
+    }
+    return true;
 }
 
 AidlComposer::AidlComposer(const std::string& serviceName) {
     // This only waits if the service is actually declared
-    mAidlComposer = AidlIComposer::fromBinder(
-            ndk::SpAIBinder(AServiceManager_waitForService(instance(serviceName).c_str())));
+    mAidlComposer = AidlIComposer::fromBinder(ndk::SpAIBinder(
+            AServiceManager_waitForService(ensureFullyQualifiedName(serviceName).c_str())));
     if (!mAidlComposer) {
         LOG_ALWAYS_FATAL("Failed to get AIDL composer service");
         return;
     }
 
     if (!mAidlComposer->createClient(&mAidlComposerClient).isOk()) {
-        LOG_ALWAYS_FATAL("Can't create AidlComposerClient, fallback to HIDL");
+        LOG_ALWAYS_FATAL("Can't create AidlComposerClient");
         return;
     }
 
@@ -316,9 +328,7 @@ std::string AidlComposer::dumpDebugInfo() {
     std::string str;
     // Use other thread to read pipe to prevent
     // pipe is full, making HWC be blocked in writing.
-    std::thread t([&]() {
-        base::ReadFdToString(pipefds[0], &str);
-    });
+    std::thread t([&]() { base::ReadFdToString(pipefds[0], &str); });
     const auto status = mAidlComposer->dump(pipefds[1], /*args*/ nullptr, /*numArgs*/ 0);
     // Close the write-end of the pipe to make sure that when reading from the
     // read-end we will get eof instead of blocking forever
@@ -345,7 +355,9 @@ void AidlComposer::registerCallback(HWC2::ComposerCallback& callback) {
     mAidlComposerCallback = ndk::SharedRefBase::make<AidlIComposerCallbackWrapper>(callback);
 
     ndk::SpAIBinder binder = mAidlComposerCallback->asBinder();
-    AIBinder_setMinSchedulerPolicy(binder.get(), SCHED_FIFO, 2);
+    if (!FlagManager::getInstance().disable_sched_fifo_composer_callback()) {
+        AIBinder_setMinSchedulerPolicy(binder.get(), SCHED_FIFO, 2);
+    }
 
     const auto status = mAidlComposerClient->registerCallback(mAidlComposerCallback);
     if (!status.isOk()) {
@@ -518,11 +530,15 @@ Error AidlComposer::getColorModes(Display display, std::vector<ColorMode>* outMo
 
 Error AidlComposer::getDisplayAttribute(Display display, Config config,
                                         IComposerClient::Attribute attribute, int32_t* outValue) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     const auto status =
             mAidlComposerClient->getDisplayAttribute(translate<int64_t>(display),
                                                      translate<int32_t>(config),
                                                      static_cast<AidlDisplayAttribute>(attribute),
                                                      outValue);
+#pragma clang diagnostic pop
+
     if (!status.isOk()) {
         ALOGE("getDisplayAttribute failed %s", status.getDescription().c_str());
         return static_cast<Error>(status.getServiceSpecificError());
@@ -532,8 +548,13 @@ Error AidlComposer::getDisplayAttribute(Display display, Config config,
 
 Error AidlComposer::getDisplayConfigs(Display display, std::vector<Config>* outConfigs) {
     std::vector<int32_t> configs;
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     const auto status =
             mAidlComposerClient->getDisplayConfigs(translate<int64_t>(display), &configs);
+#pragma clang diagnostic pop
+
     if (!status.isOk()) {
         ALOGE("getDisplayConfigs failed %s", status.getDescription().c_str());
         return static_cast<Error>(status.getServiceSpecificError());
@@ -675,9 +696,39 @@ Error AidlComposer::getReleaseFences(Display display, std::vector<Layer>* outLay
     return error;
 }
 
+Error AidlComposer::getLayerPresentFences(Display display, std::vector<Layer>* outLayers,
+                                          std::vector<int>* outFences,
+                                          std::vector<int64_t>* outLatenciesNanos) {
+    Error error = Error::NONE;
+    std::vector<PresentFence::LayerPresentFence> fences;
+    {
+        mMutex.lock_shared();
+        if (auto reader = getReader(display)) {
+            fences = reader->get().takeLayerPresentFences(translate<int64_t>(display));
+        } else {
+            error = Error::BAD_DISPLAY;
+        }
+        mMutex.unlock_shared();
+    }
+
+    outLayers->reserve(fences.size());
+    outFences->reserve(fences.size());
+    outLatenciesNanos->reserve(fences.size());
+
+    for (auto& fence : fences) {
+        outLayers->emplace_back(translate<Layer>(fence.layer));
+        // take ownership
+        const int fenceOwner = fence.bufferFence.get();
+        *fence.bufferFence.getR() = -1;
+        outFences->emplace_back(fenceOwner);
+        outLatenciesNanos->emplace_back(fence.bufferLatencyNanos);
+    }
+    return error;
+}
+
 Error AidlComposer::presentDisplay(Display display, int* outPresentFence) {
     const auto displayId = translate<int64_t>(display);
-    ATRACE_FORMAT("HwcPresentDisplay %" PRId64, displayId);
+    SFTRACE_FORMAT("HwcPresentDisplay %" PRId64, displayId);
 
     Error error = Error::NONE;
     mMutex.lock_shared();
@@ -810,7 +861,7 @@ Error AidlComposer::validateDisplay(Display display, nsecs_t expectedPresentTime
                                     int32_t frameIntervalNs, uint32_t* outNumTypes,
                                     uint32_t* outNumRequests) {
     const auto displayId = translate<int64_t>(display);
-    ATRACE_FORMAT("HwcValidateDisplay %" PRId64, displayId);
+    SFTRACE_FORMAT("HwcValidateDisplay %" PRId64, displayId);
 
     Error error = Error::NONE;
     mMutex.lock_shared();
@@ -840,7 +891,7 @@ Error AidlComposer::presentOrValidateDisplay(Display display, nsecs_t expectedPr
                                              uint32_t* outNumRequests, int* outPresentFence,
                                              uint32_t* state) {
     const auto displayId = translate<int64_t>(display);
-    ATRACE_FORMAT("HwcPresentOrValidateDisplay %" PRId64, displayId);
+    SFTRACE_FORMAT("HwcPresentOrValidateDisplay %" PRId64, displayId);
 
     Error error = Error::NONE;
     mMutex.lock_shared();
@@ -1378,7 +1429,7 @@ V2_4::Error AidlComposer::getDisplayVsyncPeriod(Display display, VsyncPeriodNano
     return V2_4::Error::NONE;
 }
 
-V2_4::Error AidlComposer::setActiveConfigWithConstraints(
+Error AidlComposer::setActiveConfigWithConstraints(
         Display display, Config config,
         const IComposerClient::VsyncPeriodChangeConstraints& vsyncPeriodChangeConstraints,
         VsyncPeriodChangeTimeline* outTimeline) {
@@ -1392,10 +1443,10 @@ V2_4::Error AidlComposer::setActiveConfigWithConstraints(
                                                      &timeline);
     if (!status.isOk()) {
         ALOGE("setActiveConfigWithConstraints failed %s", status.getDescription().c_str());
-        return static_cast<V2_4::Error>(status.getServiceSpecificError());
+        return static_cast<Error>(status.getServiceSpecificError());
     }
     *outTimeline = translate<VsyncPeriodChangeTimeline>(timeline);
-    return V2_4::Error::NONE;
+    return Error::NONE;
 }
 
 V2_4::Error AidlComposer::setAutoLowLatencyMode(Display display, bool on) {
@@ -1540,6 +1591,36 @@ Error AidlComposer::getClientTargetProperty(
     return error;
 }
 
+Error AidlComposer::getRequestedLuts(Display display, std::vector<Layer>* outLayers,
+                                     std::vector<DisplayLuts::LayerLut>* outLuts) {
+    Error error = Error::NONE;
+    mMutex.lock_shared();
+    if (auto reader = getReader(display)) {
+        *outLuts = reader->get().takeDisplayLuts(translate<int64_t>(display));
+    } else {
+        error = Error::BAD_DISPLAY;
+    }
+    mMutex.unlock_shared();
+
+    outLayers->reserve(outLuts->size());
+    for (const auto& layerLut : *outLuts) {
+        outLayers->emplace_back(translate<Layer>(layerLut.layer));
+    }
+    return error;
+}
+
+Error AidlComposer::setLayerLuts(Display display, Layer layer, Luts& luts) {
+    Error error = Error::NONE;
+    mMutex.lock_shared();
+    if (auto writer = getWriter(display)) {
+        writer->get().setLayerLuts(translate<int64_t>(display), translate<int64_t>(layer), luts);
+    } else {
+        error = Error::BAD_DISPLAY;
+    }
+    mMutex.unlock_shared();
+    return error;
+}
+
 Error AidlComposer::setLayerBrightness(Display display, Layer layer, float brightness) {
     Error error = Error::NONE;
     mMutex.lock_shared();
@@ -1602,6 +1683,76 @@ Error AidlComposer::getPhysicalDisplayOrientation(Display displayId,
     return Error::NONE;
 }
 
+Error AidlComposer::getMaxLayerPictureProfiles(Display display, int32_t* outMaxProfiles) {
+    const auto status = mAidlComposerClient->getMaxLayerPictureProfiles(translate<int64_t>(display),
+                                                                        outMaxProfiles);
+    if (!status.isOk()) {
+        ALOGE("getMaxLayerPictureProfiles failed %s", status.getDescription().c_str());
+        return static_cast<Error>(status.getServiceSpecificError());
+    }
+    return Error::NONE;
+}
+
+Error AidlComposer::setDisplayPictureProfileId(Display display, PictureProfileId id) {
+    Error error = Error::NONE;
+    mMutex.lock_shared();
+    if (auto writer = getWriter(display)) {
+        writer->get().setDisplayPictureProfileId(translate<int64_t>(display), id);
+    } else {
+        error = Error::BAD_DISPLAY;
+    }
+    mMutex.unlock_shared();
+    return error;
+}
+
+Error AidlComposer::setLayerPictureProfileId(Display display, Layer layer, PictureProfileId id) {
+    Error error = Error::NONE;
+    mMutex.lock_shared();
+    if (auto writer = getWriter(display)) {
+        writer->get().setLayerPictureProfileId(translate<int64_t>(display),
+                                               translate<int64_t>(layer), id);
+    } else {
+        error = Error::BAD_DISPLAY;
+    }
+    mMutex.unlock_shared();
+    return error;
+}
+
+Error AidlComposer::startHdcpNegotiation(Display display,
+                                         const aidl::android::hardware::drm::HdcpLevels& levels) {
+    const auto status =
+            mAidlComposerClient->startHdcpNegotiation(translate<int64_t>(display), levels);
+    if (!status.isOk()) {
+        ALOGE("startHdcpNegotiation failed %s", status.getDescription().c_str());
+        return static_cast<Error>(status.getServiceSpecificError());
+    }
+
+    return Error::NONE;
+}
+
+Error AidlComposer::getLuts(Display display, const std::vector<sp<GraphicBuffer>>& buffers,
+                            std::vector<aidl::android::hardware::graphics::composer3::Luts>* luts) {
+    std::vector<aidl::android::hardware::graphics::composer3::Buffer> aidlBuffers;
+    aidlBuffers.reserve(buffers.size());
+
+    for (auto& buffer : buffers) {
+        if (buffer.get()) {
+            aidl::android::hardware::graphics::composer3::Buffer aidlBuffer;
+            aidlBuffer.handle.emplace(::android::dupToAidl(buffer->getNativeBuffer()->handle));
+            aidlBuffers.emplace_back(std::move(aidlBuffer));
+        }
+    }
+
+    const auto status =
+            mAidlComposerClient->getLuts(translate<int64_t>(display), aidlBuffers, luts);
+    if (!status.isOk()) {
+        ALOGE("getLuts failed %s", status.getDescription().c_str());
+        return static_cast<Error>(status.getServiceSpecificError());
+    }
+
+    return Error::NONE;
+}
+
 ftl::Optional<std::reference_wrapper<ComposerClientWriter>> AidlComposer::getWriter(Display display)
         REQUIRES_SHARED(mMutex) {
     return mWriters.get(display);
@@ -1632,7 +1783,6 @@ void AidlComposer::onHotplugDisconnect(Display display) {
 }
 
 bool AidlComposer::hasMultiThreadedPresentSupport(Display display) {
-    if (!FlagManager::getInstance().multithreaded_present()) return false;
     const auto displayId = translate<int64_t>(display);
     std::vector<AidlDisplayCapability> capabilities;
     const auto status = mAidlComposerClient->getDisplayCapabilities(displayId, &capabilities);

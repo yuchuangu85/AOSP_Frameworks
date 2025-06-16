@@ -16,9 +16,10 @@
 
 package com.android.systemui.bouncer.ui.viewmodel
 
+import android.platform.test.annotations.EnableFlags
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.compose.animation.scene.SceneKey
+import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.authentication.data.repository.FakeAuthenticationRepository
 import com.android.systemui.authentication.data.repository.authenticationRepository
@@ -26,16 +27,19 @@ import com.android.systemui.authentication.data.repository.fakeAuthenticationRep
 import com.android.systemui.authentication.domain.interactor.authenticationInteractor
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel
 import com.android.systemui.authentication.shared.model.AuthenticationPatternCoordinate as Point
-import com.android.systemui.bouncer.domain.interactor.bouncerInteractor
 import com.android.systemui.coroutines.collectLastValue
+import com.android.systemui.haptics.msdl.FakeMSDLPlayer
+import com.android.systemui.haptics.msdl.bouncerHapticPlayer
+import com.android.systemui.haptics.msdl.fakeMSDLPlayer
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.lifecycle.activateIn
 import com.android.systemui.res.R
 import com.android.systemui.scene.domain.interactor.sceneInteractor
-import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.scene.shared.model.Overlays
 import com.android.systemui.testKosmos
+import com.google.android.msdl.data.model.MSDLToken
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -45,7 +49,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class PatternBouncerViewModelTest : SysuiTestCase() {
@@ -54,17 +57,15 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     private val testScope = kosmos.testScope
     private val authenticationInteractor by lazy { kosmos.authenticationInteractor }
     private val sceneInteractor by lazy { kosmos.sceneInteractor }
-    private val bouncerInteractor by lazy { kosmos.bouncerInteractor }
-    private val bouncerViewModel by lazy { kosmos.bouncerViewModel }
-    private val underTest by lazy {
-        PatternBouncerViewModel(
-            applicationContext = context,
-            viewModelScope = testScope.backgroundScope,
-            interactor = bouncerInteractor,
+    private val bouncerViewModel by lazy { kosmos.bouncerOverlayContentViewModel }
+    private val msdlPlayer: FakeMSDLPlayer = kosmos.fakeMSDLPlayer
+    private val bouncerHapticHelper = kosmos.bouncerHapticPlayer
+    private val underTest =
+        kosmos.patternBouncerViewModelFactory.create(
             isInputEnabled = MutableStateFlow(true).asStateFlow(),
             onIntentionalUserInput = {},
+            bouncerHapticPlayer = bouncerHapticHelper,
         )
-    }
 
     private val containerSize = 90 // px
     private val dotSize = 30 // px
@@ -73,26 +74,27 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     fun setUp() {
         overrideResource(R.string.keyguard_enter_your_pattern, ENTER_YOUR_PATTERN)
         overrideResource(R.string.kg_wrong_pattern, WRONG_PATTERN)
+        underTest.activateIn(testScope)
     }
 
     @Test
     fun onShown() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.currentScene)
+            val currentOverlays by collectLastValue(sceneInteractor.currentOverlays)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
 
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
+            assertThat(currentOverlays).contains(Overlays.Bouncer)
             assertThat(underTest.authenticationMethod).isEqualTo(AuthenticationMethodModel.Pattern)
         }
 
     @Test
     fun onDragStart() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.currentScene)
+            val currentOverlays by collectLastValue(sceneInteractor.currentOverlays)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
@@ -101,7 +103,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
 
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
+            assertThat(currentOverlays).contains(Overlays.Bouncer)
         }
 
     @Test
@@ -119,10 +121,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     .that(selectedDots)
                     .isEqualTo(
                         CORRECT_PATTERN.subList(0, index + 1).map {
-                            PatternDotViewModel(
-                                x = it.x,
-                                y = it.y,
-                            )
+                            PatternDotViewModel(x = it.x, y = it.y)
                         }
                     )
                 assertWithMessage("Wrong current dot for index $index")
@@ -143,7 +142,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     @Test
     fun onDragEnd_whenWrong() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.currentScene)
+            val currentOverlays by collectLastValue(sceneInteractor.currentOverlays)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
@@ -154,7 +153,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
 
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
+            assertThat(currentOverlays).contains(Overlays.Bouncer)
         }
 
     @Test
@@ -178,7 +177,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(0, 0),
                         PatternDotViewModel(1, 0),
-                        PatternDotViewModel(2, 0)
+                        PatternDotViewModel(2, 0),
                     )
                 )
         }
@@ -204,7 +203,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(1, 0),
                         PatternDotViewModel(1, 1),
-                        PatternDotViewModel(1, 2)
+                        PatternDotViewModel(1, 2),
                     )
                 )
         }
@@ -232,7 +231,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(2, 0),
                         PatternDotViewModel(1, 1),
-                        PatternDotViewModel(0, 2)
+                        PatternDotViewModel(0, 2),
                     )
                 )
         }
@@ -304,10 +303,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
             val attempts = FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT + 1
             repeat(attempts) { attempt ->
                 underTest.onDragStart()
-                CORRECT_PATTERN.subList(
-                        0,
-                        kosmos.authenticationRepository.minPatternLength - 1,
-                    )
+                CORRECT_PATTERN.subList(0, kosmos.authenticationRepository.minPatternLength - 1)
                     .forEach { coordinate ->
                         underTest.onDrag(
                             xPx = 30f * coordinate.x + 15,
@@ -345,6 +341,16 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
             assertThat(authResult).isTrue()
         }
 
+    @Test
+    @EnableFlags(Flags.FLAG_MSDL_FEEDBACK)
+    fun performDotFeedback_deliversDragToken() =
+        testScope.runTest {
+            underTest.performDotFeedback(null)
+
+            assertThat(msdlPlayer.latestTokenPlayed).isEqualTo(MSDLToken.DRAG_INDICATOR_DISCRETE)
+            assertThat(msdlPlayer.latestPropertiesPlayed).isNull()
+        }
+
     private fun dragOverCoordinates(vararg coordinatesDragged: Point) {
         underTest.onDragStart()
         coordinatesDragged.forEach(::dragToCoordinate)
@@ -358,21 +364,16 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
         )
     }
 
-    private fun TestScope.switchToScene(toScene: SceneKey) {
-        val currentScene by collectLastValue(sceneInteractor.currentScene)
-        val bouncerHidden = currentScene == Scenes.Bouncer && toScene != Scenes.Bouncer
-        sceneInteractor.changeScene(toScene, "reason")
-        if (bouncerHidden) underTest.onHidden()
-        runCurrent()
-
-        assertThat(currentScene).isEqualTo(toScene)
-    }
-
     private fun TestScope.lockDeviceAndOpenPatternBouncer() {
+        val currentOverlays by collectLastValue(sceneInteractor.currentOverlays)
         kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
             AuthenticationMethodModel.Pattern
         )
-        switchToScene(Scenes.Bouncer)
+
+        sceneInteractor.showOverlay(Overlays.Bouncer, "reason")
+        runCurrent()
+
+        assertThat(currentOverlays).contains(Overlays.Bouncer)
     }
 
     companion object {

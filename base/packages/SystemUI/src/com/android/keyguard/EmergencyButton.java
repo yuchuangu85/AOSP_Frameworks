@@ -17,6 +17,8 @@
 package com.android.keyguard;
 
 import android.content.Context;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
@@ -25,6 +27,9 @@ import android.view.ViewConfiguration;
 import android.widget.Button;
 
 import com.android.internal.util.EmergencyAffordanceManager;
+import com.android.systemui.Flags;
+import com.android.systemui.FontStyles;
+import com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants;
 
 /**
  * This class implements a smart emergency button that updates itself based
@@ -68,6 +73,17 @@ public class EmergencyButton extends Button {
                 }
                 return false;
             });
+        }
+        if (Flags.bouncerUiRevamp2()) {
+            setTypeface(Typeface.create(FontStyles.GSF_TITLE_MEDIUM, Typeface.NORMAL));
+            Drawable background = getBackground();
+            int bgColor = mContext.getColor(KeyguardBouncerConstants.Color.actionButtonBg);
+            if (background != null) {
+                background.setTint(bgColor);
+            } else {
+                setBackgroundColor(bgColor);
+            }
+            setTextColor(mContext.getColor(KeyguardBouncerConstants.Color.actionButtonText));
         }
     }
 

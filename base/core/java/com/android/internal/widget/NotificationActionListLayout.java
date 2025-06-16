@@ -16,10 +16,12 @@
 
 package com.android.internal.widget;
 
+import static android.app.Flags.notificationsRedesignTemplates;
 import static android.app.Notification.CallStyle.DEBUG_NEW_ACTION_LAYOUT;
 import static android.app.Flags.evenlyDividedCallStyleActionLayout;
 
 import android.annotation.DimenRes;
+import android.app.Flags;
 import android.app.Notification;
 import android.content.Context;
 import android.content.res.TypedArray;
@@ -58,7 +60,7 @@ public class NotificationActionListLayout extends LinearLayout {
     private int mEmphasizedPaddingBottom;
     private int mEmphasizedHeight;
     private int mRegularHeight;
-    @DimenRes private int mCollapsibleIndentDimen = R.dimen.notification_actions_padding_start;
+    @DimenRes private int mCollapsibleIndentDimen;
     int mNumNotGoneChildren;
     int mNumPriorityChildren;
 
@@ -72,6 +74,10 @@ public class NotificationActionListLayout extends LinearLayout {
 
     public NotificationActionListLayout(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         super(context, attrs, defStyleAttr, defStyleRes);
+
+        mCollapsibleIndentDimen = Flags.notificationsRedesignTemplates()
+                ? R.dimen.notification_2025_actions_margin_start
+                : R.dimen.notification_actions_padding_start;
 
         int[] attrIds = { android.R.attr.gravity };
         TypedArray ta = context.obtainStyledAttributes(attrs, attrIds, defStyleAttr, defStyleRes);
@@ -363,12 +369,17 @@ public class NotificationActionListLayout extends LinearLayout {
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
-        mDefaultPaddingBottom = getPaddingBottom();
-        mDefaultPaddingTop = getPaddingTop();
-        updateHeights();
+        if (!notificationsRedesignTemplates()) {
+            mDefaultPaddingBottom = getPaddingBottom();
+            mDefaultPaddingTop = getPaddingTop();
+            updateHeights();
+        }
     }
 
     private void updateHeights() {
+        if (notificationsRedesignTemplates()) {
+            return;
+        }
         int inset = getResources().getDimensionPixelSize(
                 com.android.internal.R.dimen.button_inset_vertical_material);
         mEmphasizedPaddingTop = getResources().getDimensionPixelSize(
@@ -435,6 +446,9 @@ public class NotificationActionListLayout extends LinearLayout {
      */
     @RemotableViewMethod
     public void setEmphasizedMode(boolean emphasizedMode) {
+        if (notificationsRedesignTemplates()) {
+            return;
+        }
         mEmphasizedMode = emphasizedMode;
         int height;
         if (emphasizedMode) {
@@ -457,7 +471,9 @@ public class NotificationActionListLayout extends LinearLayout {
     }
 
     public int getExtraMeasureHeight() {
-        if (mEmphasizedMode) {
+        // Note: the emphasized height is no longer different from the regular height when the
+        // notificationsRedesignTemplates flag is on.
+        if (!notificationsRedesignTemplates() && mEmphasizedMode) {
             return mEmphasizedHeight - mRegularHeight;
         }
         return 0;

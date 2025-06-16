@@ -34,6 +34,9 @@ import com.android.systemui.qs.customize.QSCustomizerController;
 import com.android.systemui.qs.dagger.QSScope;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.res.R;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.shade.ShadeDisplayAware;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.SplitShadeStateController;
 import com.android.systemui.util.leak.RotationUtils;
 
@@ -65,11 +68,12 @@ public class QuickQSPanelController extends QSPanelControllerBase<QuickQSPanel> 
             MetricsLogger metricsLogger, UiEventLogger uiEventLogger, QSLogger qsLogger,
             DumpManager dumpManager, SplitShadeStateController splitShadeStateController,
             Provider<QSLongPressEffect> longPressEffectProvider,
-            MediaCarouselInteractor mediaCarouselInteractor
+            MediaCarouselInteractor mediaCarouselInteractor,
+            @ShadeDisplayAware ConfigurationController configurationController
     ) {
         super(view, qsHost, qsCustomizerController, usingMediaPlayer, mediaHost, metricsLogger,
                 uiEventLogger, qsLogger, dumpManager, splitShadeStateController,
-                longPressEffectProvider);
+                longPressEffectProvider, configurationController);
         mUsingCollapsedLandscapeMediaProvider = usingCollapsedLandscapeMediaProvider;
         mMediaCarouselInteractor = mediaCarouselInteractor;
     }
@@ -77,9 +81,11 @@ public class QuickQSPanelController extends QSPanelControllerBase<QuickQSPanel> 
     @Override
     protected void onInit() {
         super.onInit();
-        updateMediaExpansion();
-        mMediaHost.setShowsOnlyActiveMedia(true);
-        mMediaHost.init(MediaHierarchyManager.LOCATION_QQS);
+        if (!SceneContainerFlag.isEnabled()) {
+            updateMediaExpansion();
+            mMediaHost.setShowsOnlyActiveMedia(true);
+            mMediaHost.init(MediaHierarchyManager.LOCATION_QQS);
+        }
     }
 
     @Override
@@ -125,7 +131,9 @@ public class QuickQSPanelController extends QSPanelControllerBase<QuickQSPanel> 
         if (newMaxTiles != mView.getNumQuickTiles()) {
             setMaxTiles(newMaxTiles);
         }
-        updateMediaExpansion();
+        if (!SceneContainerFlag.isEnabled()) {
+            updateMediaExpansion();
+        }
     }
 
     @Override

@@ -20,30 +20,32 @@ import android.content.Context
 import android.media.AudioManager
 import android.view.KeyEvent
 import com.android.systemui.back.domain.interactor.BackActionInteractor
+import com.android.systemui.bouncer.shared.flag.ComposeBouncerFlags
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.keyevent.domain.interactor.SysUIKeyEventHandler.Companion.handleAction
 import com.android.systemui.media.controls.util.MediaSessionLegacyHelperWrapper
+import com.android.systemui.plugins.ActivityStarter.OnDismissAction
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.shade.ShadeController
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.StatusBarState
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
 import javax.inject.Inject
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 /** Handles key events arriving when the keyguard is showing or device is dozing. */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class KeyguardKeyEventInteractor
 @Inject
 constructor(
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val statusBarStateController: StatusBarStateController,
     private val statusBarKeyguardViewManager: StatusBarKeyguardViewManager,
     private val shadeController: ShadeController,
     private val mediaSessionLegacyHelperWrapper: MediaSessionLegacyHelperWrapper,
     private val backActionInteractor: BackActionInteractor,
     private val powerInteractor: PowerInteractor,
+    private val keyguardMediaKeyInteractor: KeyguardMediaKeyInteractor,
 ) {
 
     fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -95,8 +97,15 @@ constructor(
     }
 
     fun interceptMediaKey(event: KeyEvent): Boolean {
-        return statusBarStateController.state == StatusBarState.KEYGUARD &&
-            statusBarKeyguardViewManager.interceptMediaKey(event)
+        return when (statusBarStateController.state) {
+            StatusBarState.KEYGUARD ->
+                if (ComposeBouncerFlags.isEnabled) {
+                    keyguardMediaKeyInteractor.processMediaKeyEvent(event)
+                } else {
+                    statusBarKeyguardViewManager.interceptMediaKey(event)
+                }
+            else -> false
+        }
     }
 
     private fun dispatchMenuKeyEvent(): Boolean {
@@ -105,7 +114,15 @@ constructor(
                 (statusBarStateController.state != StatusBarState.SHADE) &&
                 statusBarKeyguardViewManager.shouldDismissOnMenuPressed()
         if (shouldUnlockOnMenuPressed) {
-            shadeController.animateCollapseShadeForced()
+            statusBarKeyguardViewManager.dismissWithAction(
+                object : OnDismissAction {
+                    override fun onDismiss(): Boolean {
+                        return false
+                    }
+                },
+                null,
+                false,
+            )
             return true
         }
         return false
@@ -119,7 +136,10 @@ constructor(
                 return true
             }
             StatusBarState.KEYGUARD -> {
-                statusBarKeyguardViewManager.showPrimaryBouncer(true)
+                statusBarKeyguardViewManager.showPrimaryBouncer(
+                    true,
+                    "KeyguardKeyEventInteractor#collapseShadeLockedOrShowPrimaryBouncer",
+                )
                 return true
             }
         }

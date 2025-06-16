@@ -40,6 +40,7 @@ import android.service.vr.IVrStateCallbacks;
 import android.text.format.DateUtils;
 import android.util.Log;
 import android.util.Slog;
+import android.view.WindowManager;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -115,6 +116,7 @@ public class PowerUI implements
     private IThermalEventListener mSkinThermalEventListener;
     private IThermalEventListener mUsbThermalEventListener;
     private final Context mContext;
+    private final WindowManager mWindowManager;
     private final BroadcastDispatcher mBroadcastDispatcher;
     private final CommandQueue mCommandQueue;
     @Nullable
@@ -157,7 +159,8 @@ public class PowerUI implements
             EnhancedEstimates enhancedEstimates,
             WakefulnessLifecycle wakefulnessLifecycle,
             PowerManager powerManager,
-            UserTracker userTracker) {
+            UserTracker userTracker,
+            WindowManager windowManager) {
         mContext = context;
         mBroadcastDispatcher = broadcastDispatcher;
         mCommandQueue = commandQueue;
@@ -167,6 +170,7 @@ public class PowerUI implements
         mPowerManager = powerManager;
         mWakefulnessLifecycle = wakefulnessLifecycle;
         mUserTracker = userTracker;
+        mWindowManager = windowManager;
     }
 
     public void start() {
@@ -641,7 +645,7 @@ public class PowerUI implements
     @Override
     public void showInattentiveSleepWarning() {
         if (mOverlayView == null) {
-            mOverlayView = new InattentiveSleepWarningView(mContext);
+            mOverlayView = new InattentiveSleepWarningView(mContext, mWindowManager);
         }
 
         mOverlayView.show();

@@ -19,6 +19,8 @@ package com.android.systemui.qs.pipeline.data.repository
 import com.android.systemui.qs.pipeline.data.model.RestoreData
 import com.android.systemui.qs.pipeline.data.repository.TileSpecRepository.Companion.POSITION_AT_END
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.qs.pipeline.shared.TilesUpgradePath
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,7 +65,7 @@ class FakeTileSpecRepository(
 
     override suspend fun reconcileRestore(
         restoreData: RestoreData,
-        currentAutoAdded: Set<TileSpec>
+        currentAutoAdded: Set<TileSpec>,
     ) {
         with(getFlow(restoreData.userId)) {
             value = UserTileSpecRepository.reconcileTiles(value, currentAutoAdded, restoreData)
@@ -72,5 +74,15 @@ class FakeTileSpecRepository(
 
     override suspend fun prependDefault(userId: Int) {
         with(getFlow(userId)) { value = defaultTilesRepository.defaultTiles + value }
+    }
+
+    override suspend fun resetToDefault(userId: Int) {
+        with(getFlow(userId)) { value = defaultTilesRepository.defaultTiles }
+    }
+
+    override val tilesUpgradePath: Channel<Pair<TilesUpgradePath, Int>> = Channel(capacity = 10)
+
+    suspend fun sendTilesFromUpgradePath(upgradePath: TilesUpgradePath, userId: Int) {
+        tilesUpgradePath.send(upgradePath to userId)
     }
 }

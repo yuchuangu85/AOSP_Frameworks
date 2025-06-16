@@ -19,11 +19,12 @@ package com.android.systemui.brightness.data.repository
 import android.annotation.SuppressLint
 import android.hardware.display.BrightnessInfo
 import android.hardware.display.DisplayManager
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.brightness.shared.model.BrightnessLog
 import com.android.systemui.brightness.shared.model.LinearBrightness
 import com.android.systemui.brightness.shared.model.formatBrightness
 import com.android.systemui.brightness.shared.model.logDiffForTable
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
@@ -46,7 +47,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -63,6 +63,9 @@ interface ScreenBrightnessRepository {
 
     /** Current maximum value for the brightness */
     val maxLinearBrightness: Flow<LinearBrightness>
+
+    /** Whether the current brightness value is overridden by the application window */
+    val isBrightnessOverriddenByWindow: StateFlow<Boolean>
 
     /** Gets the current values for min and max brightness */
     suspend fun getMinMaxLinearBrightness(): Pair<LinearBrightness, LinearBrightness>
@@ -90,13 +93,10 @@ constructor(
     @Background private val backgroundContext: CoroutineContext,
 ) : ScreenBrightnessRepository {
 
-    private val apiQueue =
-        Channel<SetBrightnessMethod>(
-            capacity = UNLIMITED,
-        )
+    private val apiQueue = Channel<SetBrightnessMethod>(capacity = UNLIMITED)
 
     init {
-        applicationScope.launch(backgroundContext) {
+        applicationScope.launch(context = backgroundContext) {
             for (call in apiQueue) {
                 val bounds = getMinMaxLinearBrightness()
                 val value = call.value.clamp(bounds.first, bounds.second).floatValue
@@ -132,7 +132,8 @@ constructor(
                 displayManager.registerDisplayListener(
                     listener,
                     null,
-                    DisplayManager.EVENT_FLAG_DISPLAY_BRIGHTNESS,
+                    /* eventFlags */ 0,
+                    DisplayManager.PRIVATE_EVENT_TYPE_DISPLAY_BRIGHTNESS,
                 )
 
                 awaitClose { displayManager.unregisterDisplayListener(listener) }
@@ -180,6 +181,12 @@ constructor(
             .logDiffForTable(tableBuffer, TABLE_PREFIX_LINEAR, TABLE_COLUMN_BRIGHTNESS, null)
             .stateIn(applicationScope, SharingStarted.WhileSubscribed(), LinearBrightness(0f))
 
+    override val isBrightnessOverriddenByWindow =
+        brightnessInfo
+            .filterNotNull()
+            .map { it.isBrightnessOverrideByWindow }
+            .stateIn(applicationScope, SharingStarted.WhileSubscribed(), false)
+
     override fun setTemporaryBrightness(value: LinearBrightness) {
         apiQueue.trySend(SetBrightnessMethod.Temporary(value))
     }
@@ -190,8 +197,10 @@ constructor(
 
     private sealed interface SetBrightnessMethod {
         val value: LinearBrightness
+
         @JvmInline
         value class Temporary(override val value: LinearBrightness) : SetBrightnessMethod
+
         @JvmInline
         value class Permanent(override val value: LinearBrightness) : SetBrightnessMethod
     }
@@ -201,7 +210,7 @@ constructor(
             LOG_BUFFER_BRIGHTNESS_CHANGE_TAG,
             if (permanent) LogLevel.DEBUG else LogLevel.VERBOSE,
             { str1 = value.formatBrightness() },
-            { "Change requested: $str1" }
+            { "Change requested: $str1" },
         )
     }
 

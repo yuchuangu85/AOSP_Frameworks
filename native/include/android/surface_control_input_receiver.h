@@ -39,11 +39,11 @@ __BEGIN_DECLS
  *
  * \param motionEvent The motion event. This must be released with AInputEvent_release.
  *
+ * \return true if the event is handled by the client, false otherwise.
  * Available since API level 35.
  */
 typedef bool (*AInputReceiver_onMotionEvent)(void *_Null_unspecified context,
-                                             AInputEvent *_Nonnull motionEvent)
-                                            __INTRODUCED_IN(__ANDROID_API_V__);
+                                             AInputEvent *_Nonnull motionEvent);
 /**
  * The AInputReceiver_onKeyEvent callback is invoked when the registered input channel receives
  * a key event.
@@ -53,23 +53,20 @@ typedef bool (*AInputReceiver_onMotionEvent)(void *_Null_unspecified context,
  *
  * \param keyEvent The key event. This must be released with AInputEvent_release.
  *
+ * \return true if the event is handled by the client, false otherwise. System may generate
+ * a fallback key event if the event is not handled.
  * Available since API level 35.
  */
 typedef bool (*AInputReceiver_onKeyEvent)(void *_Null_unspecified context,
-                                          AInputEvent *_Nonnull keyEvent)
-                                          __INTRODUCED_IN(__ANDROID_API_V__);
+                                          AInputEvent *_Nonnull keyEvent);
 
-struct AInputReceiverCallbacks;
-
-struct AInputReceiver;
+typedef struct AInputReceiverCallbacks AInputReceiverCallbacks;
 
 /**
  * The InputReceiver that holds the reference to the registered input channel. This must be released
  * using AInputReceiver_release
- *
- * Available since API level 35.
  */
-typedef struct AInputReceiver AInputReceiver __INTRODUCED_IN(__ANDROID_API_V__);
+typedef struct AInputReceiver AInputReceiver;
 
 /**
  * Registers an input receiver for an ASurfaceControl that will receive batched input event. For

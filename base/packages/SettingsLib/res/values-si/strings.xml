@@ -110,15 +110,26 @@
     <string name="bluetooth_hearing_aid_left_active" msgid="8330226430756799572">"සක්‍රිය (වම පමණි)"</string>
     <string name="bluetooth_hearing_aid_right_active" msgid="2244728507170385397">"සක්‍රිය (දකුණ පමණි)"</string>
     <string name="bluetooth_hearing_aid_left_and_right_active" msgid="4294571497939983181">"සක්‍රිය (වම සහ දකුණ)"</string>
+    <string name="bluetooth_hearing_device_ambient_error" msgid="6035857289108813878">"වටපිටාව යාවත්කාලීන කළ නොහැකි විය"</string>
     <string name="bluetooth_active_media_only_battery_level" msgid="7772517511061834073">"ක්‍රියාත්මකයි (මාධ්‍ය පමණයි). බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
     <string name="bluetooth_active_media_only_battery_level_untethered" msgid="7444753133664620926">"ක්‍රියාත්මකයි (මාධ්‍ය පමණයි), බැටරිය ව: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ද: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>."</string>
+    <string name="bluetooth_guest_battery_level" msgid="2820003593899467676">"ආගන්තුක උපාංගය. බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
+    <string name="bluetooth_guest_battery_level_untethered" msgid="5404013822067644960">"ආගන්තුක උපාංගය. බැටරිය ව: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ද: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>."</string>
+    <string name="bluetooth_guest_media_only_battery_level" msgid="7928347900623812299">"ආගන්තුක උපාංගය (මාධ්‍ය පමණි). බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
+    <string name="bluetooth_guest_media_only_battery_level_untethered" msgid="4458143141394300892">"ආගන්තුක උපාංගය (මාධ්‍ය පමණි). බැටරිය ව: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ද: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>."</string>
     <string name="bluetooth_battery_level_lea_support" msgid="5968584103507988820">"සම්බන්‍ධයි (ශ්‍රව්‍ය බෙදා ගැනීමට සහය දක්වයි). බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
     <string name="bluetooth_battery_level_untethered_lea_support" msgid="803110681688633362">"සම්බන්‍ධයි (ශ්‍රව්‍ය බෙදා ගැනීමට සහය දක්වයි). බැටරිය ව: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ද: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>."</string>
     <string name="bluetooth_battery_level_untethered_left_lea_support" msgid="7707464334346454950">"සම්බන්‍ධයි (ශ්‍රව්‍ය බෙදා ගැනීමට සහය දක්වයි). වම: බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
     <string name="bluetooth_battery_level_untethered_right_lea_support" msgid="8941549024377771038">"සම්බන්‍ධයි (ශ්‍රව්‍ය බෙදා ගැනීමට සහය දක්වයි). දකුණ: බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
     <string name="bluetooth_no_battery_level_lea_support" msgid="5721725041048434075">"සම්බන්‍ධයි (ශ්‍රව්‍ය බෙදා ගැනීමට සහය දක්වයි)"</string>
+    <string name="bluetooth_guest_battery_level_lea_support" msgid="8098327939585013928">"ආගන්තුක උපාංගය (ශ්‍රව්‍ය බෙදා ගැනීම සඳහා සහය දක්වයි). බැටරිය <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>."</string>
+    <string name="bluetooth_guest_battery_level_untethered_lea_support" msgid="3701035025565668360">"ආගන්තුක උපාංගය (ශ්‍රව්‍ය බෙදා ගැනීම සඳහා සහය දක්වයි). බැටරිය ව: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ද: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>."</string>
+    <string name="bluetooth_guest_no_battery_level_lea_support" msgid="2977038548753103470">"ආගන්තුක උපාංගය (ශ්‍රව්‍ය බෙදා ගැනීම සඳහා සහය දක්වයි)"</string>
     <string name="bluetooth_active_media_only_no_battery_level" msgid="71106861912593126">"සක්‍රිය (මාධ්‍ය පමණි)"</string>
+    <string name="bluetooth_guest_no_battery_level" msgid="9122974160381136920">"ආගන්තුක උපාංගය"</string>
+    <string name="bluetooth_guest_media_only_no_battery_level" msgid="7666347601796705721">"ආගන්තුක උපාංගය (මාධ්‍ය පමණි)"</string>
     <string name="bluetooth_saved_device_lea_support" msgid="7231323139968285768">"ශ්‍රව්‍ය බෙදා ගැනීම සහය දක්වයි"</string>
+    <string name="bluetooth_guest_saved_device_lea_support" msgid="5621291599518569876">"ආගන්තුක උපාංගය. ශ්‍රව්‍ය බෙදා ගැනීම සහය දක්වයි"</string>
     <string name="bluetooth_hearing_aid_media_only_left_active" msgid="1632152540901488645">"සක්‍රිය (මාධ්‍ය පමණි), වම පමණි"</string>
     <string name="bluetooth_hearing_aid_media_only_right_active" msgid="3854140683042617230">"සක්‍රිය (මාධ්‍ය පමණි), දකුණ පමණි"</string>
     <string name="bluetooth_hearing_aid_media_only_left_and_right_active" msgid="1299913413062528417">"සක්‍රිය (මාධ්‍ය පමණි), වම සහ දකුණ"</string>
@@ -237,7 +248,7 @@
     <string name="choose_profile" msgid="343803890897657450">"පැතිකඩ තෝරන්න"</string>
     <string name="category_personal" msgid="6236798763159385225">"පෞද්ගලික"</string>
     <string name="category_work" msgid="4014193632325996115">"කාර්යාලය"</string>
-    <string name="category_private" msgid="4244892185452788977">"පෞද්ගලික"</string>
+    <string name="category_private" msgid="4244892185452788977">"රහසිගත"</string>
     <string name="category_clone" msgid="1554511758987195974">"ක්ලෝන කරන්න"</string>
     <string name="development_settings_title" msgid="140296922921597393">"වර්ධක විකල්ප"</string>
     <string name="development_settings_enable" msgid="4285094651288242183">"සංවර්ධක විකල්ප සබල කිරීම"</string>
@@ -357,6 +368,9 @@
     <string name="enhanced_connectivity_summary" msgid="1576414159820676330">"වැඩිදියුණු කළ සබැඳුම් හැකියා විශේෂාංගය සබල කරයි."</string>
     <string name="enable_terminal_title" msgid="3834790541986303654">"අභ්‍යන්තර අන්තය"</string>
     <string name="enable_terminal_summary" msgid="2481074834856064500">"දේශීය ෂෙල් ප්‍රවේශනය පිරිනමන ටර්මිනල් යෙදුම සබල කරන්න"</string>
+    <string name="enable_linux_terminal_title" msgid="5076044866895670637">"Linux සංවර්ධන පරිසරය"</string>
+    <string name="enable_linux_terminal_summary" msgid="2029479880888108902">"(පර්යේෂණාත්මක) Android මත Linux ටර්මිනලය ධාවනය කරන්න"</string>
+    <string name="disable_linux_terminal_disclaimer" msgid="3054320531778388231">"ඔබ අබල කරන්නේ නම්, Linux ටර්මිනල් දත්ත හිස් වනු ඇත"</string>
     <string name="hdcp_checking_title" msgid="3155692785074095986">"HDCP පරික්ෂාව"</string>
     <string name="hdcp_checking_dialog_title" msgid="7691060297616217781">"HDCP පරික්ෂා හැසිරීම සකසන්න"</string>
     <string name="debug_debugging_category" msgid="535341063709248842">"නිදොස්කරණය"</string>
@@ -372,6 +386,7 @@
     <string name="debug_hw_drawing_category" msgid="5830815169336975162">"දෘඩාංග වේගය වැඩි කළ පිරිනැමීම"</string>
     <string name="media_category" msgid="8122076702526144053">"මාධ්‍ය"</string>
     <string name="debug_monitoring_category" msgid="1597387133765424994">"නිරීක්ෂණය"</string>
+    <string name="window_management_category" msgid="2015535427098365170">"කවුළු කළමනාකරණය"</string>
     <string name="strict_mode" msgid="889864762140862437">"තදබල ආකාරය සබල කිරීම"</string>
     <string name="strict_mode_summary" msgid="1838248687233554654">"මූලික පොටේ යෙදුම්, දිගු මෙහෙයුම් කරන විට තිරය ෆ්ලෑෂ් කරන්න"</string>
     <string name="pointer_location" msgid="7516929526199520173">"සූචක පිහිටීම"</string>
@@ -380,6 +395,8 @@
     <string name="show_touches_summary" msgid="3692861665994502193">"තට්ටු කිරීම් සඳහා දෘශ්‍ය ප්‍රතිපෝෂණ පෙන්වන්න"</string>
     <string name="show_key_presses" msgid="6360141722735900214">"යතුරු එබීම් පෙන්වන්න"</string>
     <string name="show_key_presses_summary" msgid="725387457373015024">"භෞතික යතුරු එබීම සඳහා දෘශ්‍ය ප්‍රතිපෝෂණය පෙන්වන්න"</string>
+    <string name="touchpad_visualizer" msgid="3707916068870825115">"ස්පර්ශ පුවරු ආදානය පෙන්වන්න"</string>
+    <string name="touchpad_visualizer_summary" msgid="4056080018119847449">"ස්පර්ශ පුවරු ආදාන දත්ත සහ හඳුනාගත් අභිනයන් පෙන්වන තිර උඩැතිරිය"</string>
     <string name="show_screen_updates" msgid="2078782895825535494">"පෘෂ්ඨ යාවත්කාලීන පෙන්වන්න"</string>
     <string name="show_screen_updates_summary" msgid="2126932969682087406">"යාවත්කාලින වනවිට මුළු කවුළු තලයම දැල්වෙන්න"</string>
     <string name="show_hw_screen_updates" msgid="2021286231267747506">"නැරඹීම් යාවත්කාලීන පෙන්වන්න"</string>
@@ -408,10 +425,17 @@
     <string name="enable_gpu_debug_layers_summary" msgid="4921521407377170481">"නිදොසීමේ යෙදුම්වලට GPU නිදොසීමේ ස්තර පූරණයට ඉඩ දෙ."</string>
     <string name="enable_verbose_vendor_logging" msgid="1196698788267682072">"verbose vendor පිරීම සබල කරන්න"</string>
     <string name="enable_verbose_vendor_logging_summary" msgid="5426292185780393708">"පුද්ගලික තොරතුරු අන්තර්ගත විය හැකි, වැඩි බැටරි බලයක් භාවිත කිරීමට සහ/හෝ වැඩි ගබඩා ඉඩක් භාවිත කිරීමට හැකි අමතර උපාංග නිශ්චිත විකුණුම්කරු ලොග, දෝෂ වාර්තාවල අඩංගු වේ."</string>
+    <string name="enable_verbose_vendor_logging_checkbox" msgid="3864578373293835530">"එක දිනකට පසු අබල කරන්න"</string>
+    <string name="verbose_vendor_logging_notification_title" msgid="6811217272559843592">"වචන බහුලකමේ විකුණුම්කරු ලොග් කිරීම නිමා වී ඇත"</string>
+    <string name="verbose_vendor_logging_notification_summary" msgid="5226524769774370942">"එක් දිනක් සඳහා සබල කර ඇත"</string>
+    <string name="verbose_vendor_logging_notification_action" msgid="1190831050259046071">"තවත් එක් දිනක් සඳහා සබල කරන්න"</string>
+    <string name="verbose_vendor_logging_preference_summary_will_disable" msgid="6175431593394522553">"දිනකට පසු අබල කරයි"</string>
+    <string name="verbose_vendor_logging_preference_summary_on" msgid="9017757242481762036">"දින නියමයක් නොමැතිව සබල කර ඇත"</string>
     <string name="window_animation_scale_title" msgid="5236381298376812508">"කවුළු සජීවිකරණ පරිමාණය"</string>
     <string name="transition_animation_scale_title" msgid="1278477690695439337">"සංක්‍රමණ සජීවන පරිමාණය"</string>
     <string name="animator_duration_scale_title" msgid="7082913931326085176">"සජීවක කාල පරාස පරිමාණය"</string>
     <string name="overlay_display_devices_title" msgid="5411894622334469607">"ද්විතියික දර්ශනය අඟවන්න"</string>
+    <string name="shade_display_awareness_title" msgid="8000009404669495876">"සෙවන සංදර්ශක ස්ථානය"</string>
     <string name="debug_applications_category" msgid="5394089406638954196">"යෙදුම්"</string>
     <string name="immediately_destroy_activities" msgid="1826287490705167403">"ක්‍රියාකාරකම් තබාගන්න එපා"</string>
     <string name="immediately_destroy_activities_summary" msgid="6289590341144557614">"පරිශීලකයා ඉවත් වුන විගසම සෑම ක්‍රියාකාරකමක්ම විනාශ කරන්න"</string>
@@ -425,7 +449,6 @@
     <string name="force_resizable_activities" msgid="7143612144399959606">"ක්‍රියාකාරකම් ප්‍රතිප්‍රමාණ කළ හැකි බවට බල කරන්න"</string>
     <string name="force_resizable_activities_summary" msgid="2490382056981583062">"මැනිෆෙස්ට් අගයන් නොසලකා, සියලු ක්‍රියාකාරකම් බහු-කවුළුව සඳහා ප්‍රතිප්‍රමාණ කළ හැකි බවට පත් කරන්න."</string>
     <string name="enable_freeform_support" msgid="7599125687603914253">"අනියම් හැඩැති කවුළු සබල කරන්න"</string>
-    <string name="enable_freeform_support_summary" msgid="1822862728719276331">"පරීක්ෂණාත්මක අනියම් හැඩැති කවුළු සඳහා සහාය සබල කරන්න."</string>
     <string name="local_backup_password_title" msgid="4631017948933578709">"ඩෙස්ක්ටොප් උපස්ථ මුරපදය"</string>
     <string name="local_backup_password_summary_none" msgid="7646898032616361714">"ඩෙස්ක්ටොප් සම්පූර්ණ උපස්ථ දැනට ආරක්ෂා කර නොමැත"</string>
     <string name="local_backup_password_summary_change" msgid="1707357670383995567">"ඩෙස්ක්ටොප් සම්පූර්ණ උපස්ථ සඳහා මුරපදය වෙනස් කිරීමට හෝ ඉවත් කිරීමට තට්ටු කරන්න"</string>
@@ -458,6 +481,9 @@
     <string name="select_webview_provider_title" msgid="3917815648099445503">"WebView ක්‍රියාත්මක කිරීම"</string>
     <string name="select_webview_provider_dialog_title" msgid="2444261109877277714">"WebView ක්‍රියාත්මක කිරීම සකසන්න"</string>
     <string name="select_webview_provider_toast_text" msgid="8512254949169359848">"මෙම තෝරා ගැනීම තව දුරටත් වලංගු නැත. නැවත උත්සාහ කරන්න."</string>
+    <string name="webview_launch_devtools_title" msgid="8009687433555367112">"WebView DevTools"</string>
+    <string name="webview_launch_devtools_no_package" msgid="3182544553665113721">"WebView පැකේජය හමු නොවුණි."</string>
+    <string name="webview_launch_devtools_no_activity" msgid="4066006313619617140">"DevTools දියත් කිරීමට නොහැකි විය."</string>
     <string name="picture_color_mode" msgid="1013807330552931903">"පින්තූර වර්ණ ප්‍රකාරය"</string>
     <string name="picture_color_mode_desc" msgid="151780973768136200">"sRGB භාවිතා කරන්න"</string>
     <string name="daltonizer_mode_disabled" msgid="403424372812399228">"අබලයි"</string>
@@ -490,7 +516,7 @@
     <string name="power_charging" msgid="6727132649743436802">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATE">%2$s</xliff:g>"</string>
     <string name="power_remaining_charging_duration_only" msgid="8085099012811384899">"සම්පූර්ණ වීමට <xliff:g id="TIME">%1$s</xliff:g>ක් ඉතිරියි"</string>
     <string name="power_charging_duration" msgid="6127154952524919719">"<xliff:g id="LEVEL">%1$s</xliff:g> - සම්පූර්ණ වීමට <xliff:g id="TIME">%2$s</xliff:g>ක් ඉතිරියි"</string>
-    <string name="power_charging_limited" msgid="8202147604844938236">"<xliff:g id="LEVEL">%1$s</xliff:g> - ආරෝපණය ප්‍රශස්ත කර ඇත"</string>
+    <string name="power_charging_limited" msgid="4144004473976005214">"<xliff:g id="LEVEL">%1$s</xliff:g> - බැටරිය ආරක්ෂා කිරීම සඳහා ආරෝපණය රඳවා තබා ඇත"</string>
     <string name="power_charging_future_paused" msgid="1809543660923642799">"<xliff:g id="LEVEL">%1$s</xliff:g> - ආරෝපණය වේ"</string>
     <string name="power_fast_charging_duration_v2" msgid="3797735998640359490">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATUS">%2$s</xliff:g> - <xliff:g id="TIME">%3$s</xliff:g> හට පෙර සම්පූර්ණයි"</string>
     <string name="power_charging_duration_v2" msgid="2938998284074003248">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="TIME">%2$s</xliff:g> හට පෙර සම්පූර්ණයෙන් ආරෝපණ වෙයි"</string>
@@ -511,7 +537,9 @@
     <string name="battery_info_status_charging_fast_v2" msgid="1825439848151256589">"වේගවත් ආරෝපණය"</string>
     <string name="disabled_by_admin_summary_text" msgid="5343911767402923057">"පරිපාලක විසින් පාලනය කරන ලදී"</string>
     <string name="disabled_by_app_ops_text" msgid="8373595926549098012">"සීමා කළ සැකසීම මගින් පාලනය වේ"</string>
+    <string name="disabled_in_phone_call_text" msgid="6568931334337318320">"ඇමතුම් අතරතුර නොපවතී"</string>
     <string name="disabled" msgid="8017887509554714950">"අබල කර ඇත"</string>
+    <string name="enabled" msgid="3997122818554810678">"සබලයි"</string>
     <string name="external_source_trusted" msgid="1146522036773132905">"ඉඩ දුන්"</string>
     <string name="external_source_untrusted" msgid="5037891688911672227">"ඉඩ නොදෙන"</string>
     <string name="install_other_apps" msgid="3232595082023199454">"නොදන්නා යෙදුම් ස්ථාපනය"</string>
@@ -557,6 +585,8 @@
     <string name="alarms_and_reminders_title" msgid="8819933264635406032">"එලාම සහ සිහිකැඳවීම්"</string>
     <string name="alarms_and_reminders_footer_title" msgid="6302587438389079695">"එලාම සැකසීමට සහ කාල සංවේදී ක්‍රියා කාලසටහන්ගත කිරීමට මෙම යෙදුමට ඉඩ දෙන්න. මෙය පසුබිමේ ධාවනය වීමට යෙදුමට ඉඩ දෙයි, එය වැඩි බැටරිය වැඩියෙන් භාවිත කළ හැකිය.\n\nමෙම අවසරය ක්‍රියාවිරහිත නම්, මෙම යෙදුම මඟින් සැලසුම් කර ඇති තිබෙන එලාම සහ වේලාව පදනම් කර ගත් සිදුවීම් ක්‍රියා නොකරනු ඇත."</string>
     <string name="keywords_alarms_and_reminders" msgid="6633360095891110611">"කාල සටහන, එලාමය, සිහිකැඳවීම, ඔරලෝසුව"</string>
+    <string name="zen_mode_do_not_disturb_name" msgid="6798711401734798283">"බාධා නොකිරීම"</string>
+    <string name="zen_mode_settings_title" msgid="7374070457626419755">"බාධා නොකරන්න"</string>
     <string name="zen_mode_enable_dialog_turn_on" msgid="6418297231575050426">"ක්‍රියාත්මක කරන්න"</string>
     <string name="zen_mode_settings_turn_on_dialog_title" msgid="2760567063190790696">"බාධා නොකරන්න ක්‍රියාත්මක කරන්න"</string>
     <string name="zen_mode_settings_summary_off" msgid="3832876036123504076">"කිසි විටක නැත"</string>
@@ -569,15 +599,19 @@
     <string name="zen_mode_duration_settings_title" msgid="1553451650289651489">"කාල සීමාව"</string>
     <string name="zen_mode_duration_always_prompt_title" msgid="3212996860498119555">"සෑම විටම ඉල්ලන්න"</string>
     <string name="zen_mode_forever" msgid="3339224497605461291">"ඔබ ක්‍රියාවිරහිත කරන තුරු"</string>
+    <string name="zen_mode_starred_contacts_empty_name" msgid="933552939706125937">"(නමක් නොමැත)"</string>
     <string name="time_unit_just_now" msgid="3006134267292728099">"මේ දැන්"</string>
     <string name="media_transfer_this_device_name" msgid="2357329267148436433">"මෙම දුරකථනය"</string>
     <string name="media_transfer_this_device_name_tablet" msgid="2975593806278422086">"මෙම ටැබ්ලටය"</string>
-    <!-- no translation found for media_transfer_this_device_name_tv (5285685336836896535) -->
-    <skip />
+    <string name="media_transfer_this_device_name_desktop" msgid="7912386128141470452">"මෙම පරිගණකය (අභ්‍යන්තර)"</string>
+    <string name="media_transfer_this_device_name_tv" msgid="8508713779441163887">"මෙම රූපවාහිනිය"</string>
     <string name="media_transfer_dock_speaker_device_name" msgid="2856219597113881950">"ඩොක් ස්පීකරය"</string>
     <string name="media_transfer_external_device_name" msgid="2588672258721846418">"බාහිර උපාංගය"</string>
     <string name="media_transfer_default_device_name" msgid="4315604017399871828">"සම්බන්ධ කළ උපාංගය"</string>
     <string name="media_transfer_this_phone" msgid="7194341457812151531">"මෙම දුරකථනය"</string>
+    <string name="media_transfer_digital_line_name" msgid="312091711951124301">"S/PDIF"</string>
+    <string name="media_transfer_analog_line_name" msgid="1841163866716302104">"ප්‍රතිසමය"</string>
+    <string name="media_transfer_aux_line_name" msgid="894135835967856689">"AUX"</string>
     <string name="media_output_status_unknown_error" msgid="5098565887497902222">"මෙම උපාංගය මත ධාවනය කළ නොහැක"</string>
     <string name="media_output_status_require_premium" msgid="8411255800047014822">"මාරු වීමට ගිණුම උත්ශ්‍රේණි කරන්න"</string>
     <string name="media_output_status_not_support_downloads" msgid="4523828729240373315">"මෙහි බාගැනීම් වාදනය කළ නොහැක"</string>
@@ -590,10 +624,10 @@
     <string name="tv_media_transfer_earc_fallback_title" msgid="3098685494578519940">"HDMI eARC"</string>
     <string name="tv_media_transfer_arc_subtitle" msgid="1040017851325069082">"ARC හරහා සම්බන්ධ කර ඇත"</string>
     <string name="tv_media_transfer_earc_subtitle" msgid="645191413103303077">"eARC හරහා සම්බන්ධ කර ඇත"</string>
-    <string name="tv_media_transfer_default" msgid="5403053145185843843">"රූපවාහිනී පෙරනිමිය"</string>
-    <string name="tv_media_transfer_hdmi" msgid="692569220956829921">"HDMI ප්‍රතිදානය"</string>
-    <string name="tv_media_transfer_internal_speakers" msgid="8181494402866565865">"අභ්‍යන්තර ස්පීකර්"</string>
+    <string name="tv_media_transfer_internal_speakers" msgid="4662765121700213785">"එකට තැනූ ශබ්දවාහිනීය"</string>
+    <string name="tv_media_transfer_hdmi_title" msgid="6715658310934507444">"රූපවාහිනී ශ්‍රව්‍ය"</string>
     <string name="profile_connect_timeout_subtext" msgid="4043408193005851761">"සම්බන්ධ කිරීමේ ගැටලුවකි උපාංගය ක්‍රියාවිරහිත කර &amp; ආපසු ක්‍රියාත්මක කරන්න"</string>
+    <string name="bluetooth_key_missing_subtext" msgid="1003639333895028298">"සම්බන්ධ විය නොහැක"</string>
     <string name="media_transfer_wired_device_name" msgid="4447880899964056007">"රැහැන්ගත කළ ඕඩියෝ උපාංගය"</string>
     <string name="help_label" msgid="3528360748637781274">"උදවු &amp; ප්‍රතිපෝෂණ"</string>
     <string name="storage_category" msgid="2287342585424631813">"ගබඩාව"</string>
@@ -674,7 +708,12 @@
     <string name="cached_apps_freezer_disabled" msgid="4816382260660472042">"අබල කළා"</string>
     <string name="cached_apps_freezer_enabled" msgid="8866703500183051546">"සබලයි"</string>
     <string name="cached_apps_freezer_reboot_dialog_text" msgid="695330563489230096">"මෙම වෙනස යෙදීමට ඔබේ උපාංගය නැවත පණ ගැන්විය යුතුය. දැන් නැවත පණ ගන්වන්න හෝ අවලංගු කරන්න."</string>
-    <string name="media_transfer_wired_usb_device_name" msgid="7699141088423210903">"රැහැන්ගත කළ හෙඩ්ෆෝන්"</string>
+    <string name="media_transfer_wired_headphone_name" msgid="8698668536022665254">"රැහැන්ගත හෙඩ්ෆෝන්"</string>
+    <string name="media_transfer_headphone_name" msgid="1157798825650178478">"රැහැන්ගත ශ්‍රව්‍ය"</string>
+    <string name="media_transfer_usb_audio_name" msgid="1789292056757821355">"USB ශ්‍රව්‍ය"</string>
+    <string name="media_transfer_wired_device_mic_name" msgid="7115192790725088698">"රැහැන්ගත මයික්‍රෆෝනය"</string>
+    <string name="media_transfer_usb_device_mic_name" msgid="7171789543226269822">"USB මයික්‍රෆෝනය"</string>
+    <string name="media_transfer_bt_device_mic_name" msgid="1870669402238687618">"BT මයික්‍රෆෝනය"</string>
     <string name="wifi_hotspot_switch_on_text" msgid="9212273118217786155">"ක්‍රියාත්මකයි"</string>
     <string name="wifi_hotspot_switch_off_text" msgid="7245567251496959764">"ක්‍රියාවිරහිතයි"</string>
     <string name="carrier_network_change_mode" msgid="4257621815706644026">"වාහක ජාලය වෙනස් වෙමින්"</string>

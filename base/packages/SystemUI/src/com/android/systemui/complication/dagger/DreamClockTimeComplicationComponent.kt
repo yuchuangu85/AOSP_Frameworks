@@ -18,12 +18,12 @@
 package com.android.systemui.complication.dagger
 
 import android.view.LayoutInflater
-import android.view.View
 import android.widget.TextClock
 import com.android.internal.util.Preconditions
-import com.android.systemui.res.R
+import com.android.systemui.Flags
 import com.android.systemui.complication.DreamClockTimeComplication
 import com.android.systemui.complication.DreamClockTimeComplication.DreamClockTimeViewHolder
+import com.android.systemui.res.R
 import dagger.Module
 import dagger.Provides
 import dagger.Subcomponent
@@ -63,7 +63,7 @@ interface DreamClockTimeComplicationComponent {
             @Provides
             @DreamClockTimeComplicationScope
             @Named(DREAM_CLOCK_TIME_COMPLICATION_VIEW)
-            fun provideComplicationView(layoutInflater: LayoutInflater): View {
+            fun provideComplicationView(layoutInflater: LayoutInflater): TextClock {
                 val view =
                     Preconditions.checkNotNull(
                         layoutInflater.inflate(
@@ -71,9 +71,13 @@ interface DreamClockTimeComplicationComponent {
                             /* root = */ null,
                             /* attachToRoot = */ false,
                         ) as TextClock,
-                        "R.layout.dream_overlay_complication_clock_time did not properly inflate"
+                        "R.layout.dream_overlay_complication_clock_time did not properly inflate",
                     )
-                view.setFontVariationSettings(TAG_WEIGHT + WEIGHT)
+                if (Flags.dreamOverlayUpdatedFont()) {
+                    view.setFontVariationSettings("'wght' 600, 'opsz' 96")
+                } else {
+                    view.setFontVariationSettings(TAG_WEIGHT + WEIGHT)
+                }
                 return view
             }
         }

@@ -57,6 +57,7 @@
 #include <log/log_read.h>
 #include <math.h>
 #include <openssl/sha.h>
+#include <perfetto_flags.h>
 #include <poll.h>
 #include <private/android_filesystem_config.h>
 #include <private/android_logger.h>
@@ -128,6 +129,9 @@ using android::os::dumpstate::PropertiesHelper;
 using android::os::dumpstate::TaskQueue;
 using android::os::dumpstate::WaitForTask;
 
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// Do not add more complicated variables here, prefer to execute only. Don't link more code here.
+
 // Keep in sync with
 // frameworks/base/services/core/java/com/android/server/am/ActivityManagerService.java
 static const int TRACE_DUMP_TIMEOUT_MS = 10000; // 10 seconds
@@ -170,6 +174,7 @@ void add_mountinfo();
 #define ALT_PSTORE_LAST_KMSG "/sys/fs/pstore/console-ramoops-0"
 #define BLK_DEV_SYS_DIR "/sys/block"
 
+#define AFLAGS "/system/bin/aflags"
 #define RECOVERY_DIR "/cache/recovery"
 #define RECOVERY_DATA_DIR "/data/misc/recovery"
 #define UPDATE_ENGINE_LOG_DIR "/data/misc/update_engine_log"
@@ -186,11 +191,10 @@ void add_mountinfo();
 #define SNAPSHOTCTL_LOG_DIR "/data/misc/snapshotctl_log"
 #define LINKERCONFIG_DIR "/linkerconfig"
 #define PACKAGE_DEX_USE_LIST "/data/system/package-dex-usage.list"
-#define SYSTEM_TRACE_SNAPSHOT "/data/misc/perfetto-traces/bugreport/systrace.pftrace"
+#define SYSTEM_TRACE_DIR "/data/misc/perfetto-traces/bugreport"
 #define CGROUPFS_DIR "/sys/fs/cgroup"
 #define SDK_EXT_INFO "/apex/com.android.sdkext/bin/derive_sdk"
 #define DROPBOX_DIR "/data/system/dropbox"
-#define PRINT_FLAGS "/system/bin/printflags"
 #define UWB_LOG_DIR "/data/misc/apexdata/com.android.uwb/log"
 
 // TODO(narayan): Since this information has to be kept in sync
@@ -204,6 +208,9 @@ static const std::string ANR_FILE_PREFIX = "anr_";
 static const std::string ANR_TRACE_FILE_PREFIX = "trace_";
 static const std::string SHUTDOWN_CHECKPOINTS_DIR = "/data/system/shutdown-checkpoints/";
 static const std::string SHUTDOWN_CHECKPOINTS_FILE_PREFIX = "checkpoints-";
+
+// File path to default screenshot image, that used when failed to capture the real screenshot.
+static const std::string DEFAULT_SCREENSHOT_PATH = "/system/etc/default_screenshot.png";
 
 // TODO: temporary variables and functions used during C++ refactoring
 
@@ -351,6 +358,31 @@ static bool CopyFileToFile(const std::string& input_file, const std::string& out
     MYLOGD("Going to copy bugreport file (%s) to %s\n", input_file.c_str(), output_file.c_str());
     android::base::unique_fd out_fd(OpenForWrite(output_file));
     return CopyFileToFd(input_file, out_fd.get());
+}
+
+template <typename Func>
+size_t ForEachTrace(Func func) {
+    std::unique_ptr<DIR, decltype(&closedir)> traces_dir(opendir(SYSTEM_TRACE_DIR), closedir);
+
+    if (traces_dir == nullptr) {
+        MYLOGW("Unable to open directory %s: %s\n", SYSTEM_TRACE_DIR, strerror(errno));
+        return 0;
+    }
+
+    size_t traces_found = 0;
+    struct dirent* entry = nullptr;
+    while ((entry = readdir(traces_dir.get()))) {
+        if (entry->d_type != DT_REG) {
+            continue;
+        }
+        std::string trace_path = std::string(SYSTEM_TRACE_DIR) + "/" + entry->d_name;
+        if (access(trace_path.c_str(), F_OK) != 0) {
+            continue;
+        }
+        ++traces_found;
+        func(trace_path);
+    }
+    return traces_found;
 }
 
 }  // namespace
@@ -764,10 +796,14 @@ android::binder::Status Dumpstate::ConsentCallback::onReportApproved() {
 
     bool copy_succeeded = android::os::CopyFileToFd(ds.screenshot_path_,
                                                     ds.options_->screenshot_fd.get());
-    ds.options_->is_screenshot_copied = copy_succeeded;
     if (copy_succeeded) {
         android::os::UnlinkAndLogOnError(ds.screenshot_path_);
+    } else {
+        MYLOGE("Failed to copy screenshot to a permanent file.\n");
+        copy_succeeded = android::os::CopyFileToFd(DEFAULT_SCREENSHOT_PATH,
+                                                           ds.options_->screenshot_fd.get());
     }
+    ds.options_->is_screenshot_copied = copy_succeeded;
     return android::binder::Status::ok();
 }
 
@@ -1091,20 +1127,16 @@ static void MaybeAddSystemTraceToZip() {
     // This function copies into the .zip the system trace that was snapshotted
     // by the early call to MaybeSnapshotSystemTraceAsync(), if any background
     // tracing was happening.
-    bool system_trace_exists = access(SYSTEM_TRACE_SNAPSHOT, F_OK) == 0;
-    if (!system_trace_exists) {
-        // No background trace was happening at the time MaybeSnapshotSystemTraceAsync() was invoked
-        if (!PropertiesHelper::IsUserBuild()) {
-            MYLOGI(
-                "No system traces found. Check for previously uploaded traces by looking for "
-                "go/trace-uuid in logcat")
-        }
-        return;
+    size_t traces_found = android::os::ForEachTrace([&](const std::string& trace_path) {
+        ds.AddZipEntry(ZIP_ROOT_DIR + trace_path, trace_path);
+        android::os::UnlinkAndLogOnError(trace_path);
+    });
+
+    if (traces_found == 0 && !PropertiesHelper::IsUserBuild()) {
+        MYLOGI(
+            "No system traces found. Check for previously uploaded traces by looking for "
+            "go/trace-uuid in logcat")
     }
-    ds.AddZipEntry(
-            ZIP_ROOT_DIR + SYSTEM_TRACE_SNAPSHOT,
-            SYSTEM_TRACE_SNAPSHOT);
-    android::os::UnlinkAndLogOnError(SYSTEM_TRACE_SNAPSHOT);
 }
 
 static void DumpVisibleWindowViews() {
@@ -1256,6 +1288,17 @@ static void DumpIpAddrAndRules() {
     RunCommand("IP RULES v6", {"ip", "-6", "rule", "show"});
 }
 
+static void DumpKernelMemoryAllocations() {
+    if (!access("/proc/allocinfo", F_OK)) {
+        // Print the top 100 biggest memory allocations of at least one byte.
+        // The output is sorted by size, descending.
+        RunCommand("KERNEL MEMORY ALLOCATIONS",
+                   {"alloctop", "--once", "--sort", "s", "--min", "1", "--lines", "100"});
+    }
+}
+
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// This should all be moved into a separate binary rather than have complex logic here.
 static Dumpstate::RunStatus RunDumpsysTextByPriority(const std::string& title, int priority,
                                                      std::chrono::milliseconds timeout,
                                                      std::chrono::milliseconds service_timeout) {
@@ -1336,6 +1379,8 @@ static Dumpstate::RunStatus RunDumpsysTextNormalPriority(const std::string& titl
                                     service_timeout);
 }
 
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// This should all be moved into a separate binary rather than have complex logic here.
 static Dumpstate::RunStatus RunDumpsysProto(const std::string& title, int priority,
                                             std::chrono::milliseconds timeout,
                                             std::chrono::milliseconds service_timeout) {
@@ -1417,6 +1462,8 @@ static Dumpstate::RunStatus RunDumpsysNormal() {
  * Dumpstate can pick up later and output to the bugreport. Using STDOUT_FILENO
  * if it's not running in the parallel task.
  */
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// This should all be moved into a separate binary rather than have complex logic here.
 static void DumpHals(int out_fd = STDOUT_FILENO) {
     RunCommand("HARDWARE HALS", {"lshal", "--all", "--types=all"},
                CommandOptions::WithTimeout(10).AsRootIfAvailable().Build(),
@@ -1473,6 +1520,9 @@ static void DumpHals(int out_fd = STDOUT_FILENO) {
     }
 }
 
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// This should all be moved into a separate binary rather than have complex logic here.
+//
 // Dump all of the files that make up the vendor interface.
 // See the files listed in dumpFileList() for the latest list of files.
 static void DumpVintf() {
@@ -1502,6 +1552,8 @@ static void DumpExternalFragmentationInfo() {
     printf("------ EXTERNAL FRAGMENTATION INFO ------\n");
     std::ifstream ifs("/proc/buddyinfo");
     auto unusable_index_regex = std::regex{"Node\\s+([0-9]+),\\s+zone\\s+(\\S+)\\s+(.*)"};
+    // BAD - See README.md: "Dumpstate philosophy: exec not link"
+    // This should all be moved into a separate binary rather than have complex logic here.
     for (std::string line; std::getline(ifs, line);) {
         std::smatch match_results;
         if (std::regex_match(line, match_results, unusable_index_regex)) {
@@ -1557,6 +1609,13 @@ static void DumpstateLimitedOnly() {
                CommandOptions::WithTimeout(90).Build(), SEC_TO_MSEC(10));
     RunDumpsys("DUMPSYS CONNECTIVITY REQUESTS", {"connectivity", "requests"},
                CommandOptions::WithTimeout(90).Build(), SEC_TO_MSEC(10));
+
+    printf("========================================================\n");
+    printf("== Networking Policy\n");
+    printf("========================================================\n");
+
+    RunDumpsys("DUMPSYS NETWORK POLICY", {"netpolicy"}, CommandOptions::WithTimeout(90).Build(),
+               SEC_TO_MSEC(10));
 
     printf("========================================================\n");
     printf("== Dropbox crashes\n");
@@ -1758,6 +1817,8 @@ Dumpstate::RunStatus Dumpstate::dumpstate() {
 
     DoKmsg();
 
+    DumpKernelMemoryAllocations();
+
     DumpShutdownCheckpoints();
 
     DumpIpAddrAndRules();
@@ -1783,8 +1844,8 @@ Dumpstate::RunStatus Dumpstate::dumpstate() {
     DumpFile("PRODUCT BUILD-TIME RELEASE FLAGS", "/product/etc/build_flags.json");
     DumpFile("VENDOR BUILD-TIME RELEASE FLAGS", "/vendor/etc/build_flags.json");
 
-    RunCommand("ACONFIG FLAGS", {PRINT_FLAGS},
-               CommandOptions::WithTimeout(10).Always().DropRoot().Build());
+    RunCommand("ACONFIG FLAGS DUMP", {AFLAGS, "list"},
+               CommandOptions::WithTimeout(10).Always().AsRootIfAvailable().Build());
 
     RunCommand("STORAGED IO INFO", {"storaged", "-u", "-p"});
 
@@ -1821,6 +1882,11 @@ Dumpstate::RunStatus Dumpstate::dumpstate() {
         }
         RunCommand("DUMP VENDOR RIL LOGS", {"vril-dump"}, options.Build());
     }
+
+    /* Dump USB information */
+    RunCommand("typec_connector_class", {"typec_connector_class"},
+               CommandOptions::WithTimeout(10).AsRootIfAvailable().Build());
+    RunCommand("lsusb", {"lsusb"}, CommandOptions::WithTimeout(10).AsRootIfAvailable().Build());
 
     printf("========================================================\n");
     printf("== Android Framework Services\n");
@@ -1862,7 +1928,7 @@ Dumpstate::RunStatus Dumpstate::dumpstate() {
     // Add linker configuration directory
     ds.AddDir(LINKERCONFIG_DIR, true);
 
-    /* Dump frozen cgroupfs */
+    DumpFile("Cgroups", "/proc/cgroups");
     dump_frozen_cgroupfs();
 
     if (ds.dump_pool_) {
@@ -2429,6 +2495,8 @@ static dumpstate_hal_aidl::IDumpstateDevice::DumpstateMode GetDumpstateHalModeAi
     return dumpstate_hal_aidl::IDumpstateDevice::DumpstateMode::DEFAULT;
 }
 
+// BAD - See README.md: "Dumpstate philosophy: exec not link"
+// This should all be moved into a separate binary rather than have complex logic here.
 static void DoDumpstateBoardHidl(
     const sp<dumpstate_hal_hidl_1_0::IDumpstateDevice> dumpstate_hal_1_0,
     const std::vector<::ndk::ScopedFileDescriptor>& dumpstate_fds,
@@ -3366,8 +3434,8 @@ Dumpstate::RunStatus Dumpstate::RunInternal(int32_t calling_uid,
     // duration is logged into MYLOG instead.
     PrintHeader();
 
-    bool system_trace_exists = access(SYSTEM_TRACE_SNAPSHOT, F_OK) == 0;
-    if (options_->use_predumped_ui_data && !system_trace_exists) {
+    size_t trace_count = android::os::ForEachTrace([](const std::string&) {});
+    if (options_->use_predumped_ui_data && trace_count == 0) {
         MYLOGW("Ignoring 'use predumped data' flag because no predumped data is available");
         options_->use_predumped_ui_data = false;
     }
@@ -3430,7 +3498,9 @@ Dumpstate::RunStatus Dumpstate::RunInternal(int32_t calling_uid,
             // Do an early return if there were errors. We make an exception for consent
             // timing out because it's possible the user got distracted. In this case the
             // bugreport is not shared but made available for manual retrieval.
-            MYLOGI("User denied consent. Returning\n");
+            MYLOGI("Bug report generation failed, this could have been due to"
+                   " several reasons such as BR copy failed, user consent was"
+                   " not grated etc. Returning\n");
             return status;
         }
         if (status == Dumpstate::RunStatus::USER_CONSENT_TIMED_OUT) {
@@ -3512,21 +3582,25 @@ std::future<std::string> Dumpstate::MaybeSnapshotSystemTraceAsync() {
     }
 
     // If a stale file exists already, remove it.
-    unlink(SYSTEM_TRACE_SNAPSHOT);
+    android::os::ForEachTrace([&](const std::string& trace_path) { unlink(trace_path.c_str()); });
 
     MYLOGI("Launching async '%s'", SERIALIZE_PERFETTO_TRACE_TASK.c_str())
+
     return std::async(
         std::launch::async, [this, outPath = std::move(outPath), outFd = std::move(outFd)] {
-            // If a background system trace is happening and is marked as "suitable for
-            // bugreport" (i.e. bugreport_score > 0 in the trace config), this command
-            // will stop it and serialize into SYSTEM_TRACE_SNAPSHOT. In the (likely)
-            // case that no trace is ongoing, this command is a no-op.
+            // If one or more background system traces are happening and are marked as
+            // "suitable for bugreport" (bugreport_score > 0 in the trace config), this command
+            // will snapshot them into SYSTEM_TRACE_DIR.
+            // In the (likely) case that no trace is ongoing, this command is a no-op.
             // Note: this should not be enqueued as we need to freeze the trace before
             // dumpstate starts. Otherwise the trace ring buffers will contain mostly
             // the dumpstate's own activity which is irrelevant.
+            const char* cmd_arg = perfetto::flags::save_all_traces_in_bugreport()
+                                      ? "--save-all-for-bugreport"
+                                      : "--save-for-bugreport";
             RunCommand(
-                SERIALIZE_PERFETTO_TRACE_TASK, {"perfetto", "--save-for-bugreport"},
-                CommandOptions::WithTimeout(10).DropRoot().CloseAllFileDescriptorsOnExec().Build(),
+                SERIALIZE_PERFETTO_TRACE_TASK, {"perfetto", cmd_arg},
+                CommandOptions::WithTimeout(30).DropRoot().CloseAllFileDescriptorsOnExec().Build(),
                 false, outFd);
             // MaybeAddSystemTraceToZip() will take care of copying the trace in the zip
             // file in the later stages.
@@ -3717,12 +3791,16 @@ Dumpstate::RunStatus Dumpstate::CopyBugreportIfUserConsented(int32_t calling_uid
             if (options_->do_screenshot &&
                 options_->screenshot_fd.get() != -1 &&
                 !options_->is_screenshot_copied) {
-                copy_succeeded = android::os::CopyFileToFd(screenshot_path_,
+                bool is_screenshot_copied = android::os::CopyFileToFd(screenshot_path_,
                                                            options_->screenshot_fd.get());
-                options_->is_screenshot_copied = copy_succeeded;
-                if (copy_succeeded) {
+                if (is_screenshot_copied) {
                     android::os::UnlinkAndLogOnError(screenshot_path_);
+                } else {
+                    MYLOGE("Failed to copy screenshot to a permanent file.\n");
+                    is_screenshot_copied = android::os::CopyFileToFd(DEFAULT_SCREENSHOT_PATH,
+                                                           options_->screenshot_fd.get());
                 }
+                options_->is_screenshot_copied = is_screenshot_copied;
             }
         }
         return copy_succeeded ? Dumpstate::RunStatus::OK : Dumpstate::RunStatus::ERROR;
@@ -3813,7 +3891,7 @@ DurationReporter::DurationReporter(const std::string& title, bool logcat_only, b
 DurationReporter::~DurationReporter() {
     if (!title_.empty()) {
         float elapsed = (float)(Nanotime() - started_) / NANOS_PER_SEC;
-        if (elapsed >= .5f || verbose_) {
+        if (elapsed >= 1.0f || verbose_) {
             MYLOGD("Duration of '%s': %.2fs\n", title_.c_str(), elapsed);
         }
         if (!logcat_only_) {
@@ -4626,7 +4704,7 @@ void Dumpstate::UpdateProgress(int32_t delta_sec) {
 void Dumpstate::TakeScreenshot(const std::string& path) {
     const std::string& real_path = path.empty() ? screenshot_path_ : path;
     int status =
-        RunCommand("", {"/system/bin/screencap", "-p", real_path},
+        RunCommand("", {"screencap", "-p", real_path},
                    CommandOptions::WithTimeout(10).Always().DropRoot().RedirectStderr().Build());
     if (status == 0) {
         MYLOGD("Screenshot saved on %s\n", real_path.c_str());

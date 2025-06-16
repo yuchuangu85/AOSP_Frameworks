@@ -18,12 +18,17 @@
 package com.android.systemui.statusbar.notification.stack.domain.interactor
 
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.shade.domain.interactor.ShadeInteractor
+import com.android.systemui.scene.domain.interactor.SceneInteractor
+import com.android.systemui.shade.domain.interactor.ShadeModeInteractor
 import com.android.systemui.shade.shared.model.ShadeMode
 import com.android.systemui.statusbar.notification.stack.data.repository.NotificationPlaceholderRepository
 import com.android.systemui.statusbar.notification.stack.data.repository.NotificationViewHeightRepository
+import com.android.systemui.statusbar.notification.stack.shared.model.AccessibilityScrollEvent
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimBounds
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimRounding
+import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimShape
+import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrollState
+import java.util.function.Consumer
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,11 +44,12 @@ class NotificationStackAppearanceInteractor
 constructor(
     private val viewHeightRepository: NotificationViewHeightRepository,
     private val placeholderRepository: NotificationPlaceholderRepository,
-    shadeInteractor: ShadeInteractor,
+    sceneInteractor: SceneInteractor,
+    shadeModeInteractor: ShadeModeInteractor,
 ) {
     /** The bounds of the notification stack in the current scene. */
-    val shadeScrimBounds: StateFlow<ShadeScrimBounds?> =
-        placeholderRepository.shadeScrimBounds.asStateFlow()
+    val notificationShadeScrimBounds: StateFlow<ShadeScrimBounds?> =
+        placeholderRepository.notificationShadeScrimBounds.asStateFlow()
 
     /**
      * Whether the stack is expanding from GONE-with-HUN to SHADE
@@ -54,10 +60,9 @@ constructor(
 
     /** The rounding of the notification stack. */
     val shadeScrimRounding: Flow<ShadeScrimRounding> =
-        combine(
-                shadeInteractor.shadeMode,
-                isExpandingFromHeadsUp,
-            ) { shadeMode, isExpandingFromHeadsUp ->
+        combine(shadeModeInteractor.shadeMode, isExpandingFromHeadsUp) {
+                shadeMode,
+                isExpandingFromHeadsUp ->
                 ShadeScrimRounding(
                     isTopRounded = !(shadeMode == ShadeMode.Split && isExpandingFromHeadsUp),
                     isBottomRounded = shadeMode != ShadeMode.Single,
@@ -69,15 +74,17 @@ constructor(
     val alphaForBrightnessMirror: StateFlow<Float> =
         placeholderRepository.alphaForBrightnessMirror.asStateFlow()
 
+    /** The alpha of the Notification Stack for lockscreen fade-in */
+    val alphaForLockscreenFadeIn: StateFlow<Float> =
+        placeholderRepository.alphaForLockscreenFadeIn.asStateFlow()
+
     /** The height of the keyguard's available space bounds */
     val constrainedAvailableSpace: StateFlow<Int> =
         placeholderRepository.constrainedAvailableSpace.asStateFlow()
 
-    /**
-     * Whether the notification stack is scrolled to the top; i.e., it cannot be scrolled down any
-     * further.
-     */
-    val scrolledToTop: StateFlow<Boolean> = placeholderRepository.scrolledToTop.asStateFlow()
+    /** Scroll state of the notification shade. */
+    val shadeScrollState: StateFlow<ShadeScrollState> =
+        placeholderRepository.shadeScrollState.asStateFlow()
 
     /**
      * The amount in px that the notification stack should scroll due to internal expansion. This
@@ -93,20 +100,52 @@ constructor(
     val isCurrentGestureOverscroll: Flow<Boolean> =
         viewHeightRepository.isCurrentGestureOverscroll.asStateFlow()
 
+    /** Whether we should close any notification guts that are currently open. */
+    val shouldCloseGuts: Flow<Boolean> =
+        combine(
+            sceneInteractor.isSceneContainerUserInputOngoing,
+            viewHeightRepository.isCurrentGestureInGuts,
+        ) { isUserInputOngoing, isCurrentGestureInGuts ->
+            isUserInputOngoing && !isCurrentGestureInGuts
+        }
+
     /** Sets the alpha to apply to the NSSL for the brightness mirror */
     fun setAlphaForBrightnessMirror(alpha: Float) {
         placeholderRepository.alphaForBrightnessMirror.value = alpha
     }
 
-    /** Sets the position of the notification stack in the current scene. */
-    fun setShadeScrimBounds(bounds: ShadeScrimBounds?) {
-        check(bounds == null || bounds.top <= bounds.bottom) { "Invalid bounds: $bounds" }
-        placeholderRepository.shadeScrimBounds.value = bounds
+    /** Sets the alpha to apply to the NSSL for fade-in on lockscreen */
+    fun setAlphaForLockscreenFadeIn(alpha: Float) {
+        placeholderRepository.alphaForLockscreenFadeIn.value = alpha
     }
 
-    /** Sets whether the notification stack is scrolled to the top. */
-    fun setScrolledToTop(scrolledToTop: Boolean) {
-        placeholderRepository.scrolledToTop.value = scrolledToTop
+    /** Sets the position of the notification stack in the current scene. */
+    fun setNotificationShadeScrimBounds(bounds: ShadeScrimBounds?) {
+        checkValidBounds(bounds)
+        placeholderRepository.notificationShadeScrimBounds.value = bounds
+    }
+
+    /**
+     * Sends the bounds of the QuickSettings panel to the consumer set by [setQsPanelShapeConsumer].
+     *
+     * Used to clip Notification content when the QuickSettings Overlay panel covers it. Sending
+     * `null` resets the negative shape clipping of the Notification Stack.
+     */
+    fun sendQsPanelShape(shape: ShadeScrimShape?) {
+        checkValidBounds(shape?.bounds)
+        placeholderRepository.qsPanelShapeConsumer?.invoke(shape)
+    }
+
+    /**
+     * Sets a consumer to be notified when the QuickSettings Overlay panel changes size or position.
+     */
+    fun setQsPanelShapeConsumer(consumer: ((ShadeScrimShape?) -> Unit)?) {
+        placeholderRepository.qsPanelShapeConsumer = consumer
+    }
+
+    /** Updates the current scroll state of the notification shade. */
+    fun setScrollState(shadeScrollState: ShadeScrollState) {
+        placeholderRepository.shadeScrollState.value = shadeScrollState
     }
 
     /** Sets the amount (px) that the notification stack should scroll due to internal expansion. */
@@ -114,12 +153,30 @@ constructor(
         viewHeightRepository.syntheticScroll.value = delta
     }
 
+    /** Sends an [AccessibilityScrollEvent] to scroll the stack up or down. */
+    fun sendAccessibilityScrollEvent(accessibilityScrollEvent: AccessibilityScrollEvent) {
+        placeholderRepository.accessibilityScrollEventConsumer?.accept(accessibilityScrollEvent)
+    }
+
+    /** Set a consumer for the [AccessibilityScrollEvent]s to be handled by the placeholder. */
+    fun setAccessibilityScrollEventConsumer(consumer: Consumer<AccessibilityScrollEvent>?) {
+        placeholderRepository.accessibilityScrollEventConsumer = consumer
+    }
+
     /** Sets whether the current touch gesture is overscroll. */
     fun setCurrentGestureOverscroll(isOverscroll: Boolean) {
         viewHeightRepository.isCurrentGestureOverscroll.value = isOverscroll
     }
 
+    fun setCurrentGestureInGuts(isInGuts: Boolean) {
+        viewHeightRepository.isCurrentGestureInGuts.value = isInGuts
+    }
+
     fun setConstrainedAvailableSpace(height: Int) {
         placeholderRepository.constrainedAvailableSpace.value = height
+    }
+
+    private fun checkValidBounds(bounds: ShadeScrimBounds?) {
+        check(bounds == null || bounds.top <= bounds.bottom) { "Invalid bounds: $bounds" }
     }
 }

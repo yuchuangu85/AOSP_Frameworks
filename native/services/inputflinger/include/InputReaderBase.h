@@ -34,7 +34,9 @@
 #include <vector>
 
 #include "PointerControllerInterface.h"
+#include "TouchpadHardwareState.h"
 #include "VibrationElement.h"
+#include "include/gestures.h"
 
 // Maximum supported size of a vibration pattern.
 // Must be at least 2.
@@ -91,6 +93,13 @@ struct InputReaderConfiguration {
         // The touchpad settings changed.
         TOUCHPAD_SETTINGS = 1u << 13,
 
+        // The key remapping has changed.
+        KEY_REMAPPING = 1u << 14,
+
+        // The mouse settings changed, this includes mouse reverse vertical scrolling and swap
+        // primary button.
+        MOUSE_SETTINGS = 1u << 15,
+
         // All devices must be reopened.
         MUST_REOPEN = 1u << 31,
     };
@@ -128,19 +137,31 @@ struct InputReaderConfiguration {
     ui::LogicalDisplayId defaultPointerDisplayId;
 
     // The mouse pointer speed, as a number from -7 (slowest) to 7 (fastest).
-    //
-    // Currently only used when the enable_new_mouse_pointer_ballistics flag is enabled.
     int32_t mousePointerSpeed;
 
-    // Displays on which an acceleration curve shouldn't be applied for pointer movements from mice.
-    //
-    // Currently only used when the enable_new_mouse_pointer_ballistics flag is enabled.
-    std::set<ui::LogicalDisplayId> displaysWithMousePointerAccelerationDisabled;
+    // Displays on which all pointer scaling, including linear scaling based on the
+    // user's pointer speed setting, should be disabled for mice. This differs from
+    // disabling acceleration via the 'mousePointerAccelerationEnabled' setting, where
+    // the pointer speed setting still influences the scaling factor.
+    std::set<ui::LogicalDisplayId> displaysWithMouseScalingDisabled;
 
-    // Velocity control parameters for mouse pointer movements.
+    // True if the connected mouse should exhibit pointer acceleration. If false,
+    // a flat acceleration curve (linear scaling) is used, but the user's pointer
+    // speed setting still affects the scaling factor.
+    bool mousePointerAccelerationEnabled;
+
+    // True if the touchpad should exhibit pointer acceleration. If false,
+    // a flat acceleration curve (linear scaling) is used, but the user's pointer
+    // speed setting still affects the scaling factor.
+    bool touchpadAccelerationEnabled;
+
+    // Velocity control parameters for touchpad pointer movements on the old touchpad stack (based
+    // on TouchInputMapper).
     //
-    // If the enable_new_mouse_pointer_ballistics flag is enabled, these are ignored and the values
-    // of mousePointerSpeed and mousePointerAccelerationEnabled used instead.
+    // For mice, these are ignored and the values of mousePointerSpeed and
+    // mousePointerAccelerationEnabled used instead.
+    //
+    // TODO(b/281840344): remove this.
     VelocityControlParameters pointerVelocityControlParameters;
 
     // Velocity control parameters for mouse wheel movements.
@@ -227,9 +248,18 @@ struct InputReaderConfiguration {
     // True to enable tap dragging on touchpads.
     bool touchpadTapDraggingEnabled;
 
+    // True if hardware state update notifications should be sent to the policy.
+    bool shouldNotifyTouchpadHardwareState;
+
     // True to enable a zone on the right-hand side of touchpads where clicks will be turned into
     // context (a.k.a. "right") clicks.
     bool touchpadRightClickZoneEnabled;
+
+    // True to use three-finger tap as a customizable shortcut; false to use it as a middle-click.
+    bool touchpadThreeFingerTapShortcutEnabled;
+
+    // True to enable system gestures (three- and four-finger swipes) on touchpads.
+    bool touchpadSystemGesturesEnabled;
 
     // The set of currently disabled input devices.
     std::set<int32_t> disabledDevices;
@@ -241,16 +271,33 @@ struct InputReaderConfiguration {
     // True if a pointer icon should be shown for direct stylus pointers.
     bool stylusPointerIconEnabled;
 
+    // Keycodes to be remapped.
+    std::map<int32_t /* fromKeyCode */, int32_t /* toKeyCode */> keyRemapping;
+
+    // True if the external mouse should have its vertical scrolling reversed, so that rotating the
+    // wheel downwards scrolls the content upwards.
+    bool mouseReverseVerticalScrollingEnabled;
+
+    // True if the connected mouse should have its primary button (default: left click) swapped,
+    // so that the right click will be the primary action button and the left click will be the
+    // secondary action.
+    bool mouseSwapPrimaryButtonEnabled;
+
     InputReaderConfiguration()
           : virtualKeyQuietTime(0),
             defaultPointerDisplayId(ui::LogicalDisplayId::DEFAULT),
             mousePointerSpeed(0),
-            displaysWithMousePointerAccelerationDisabled(),
+            displaysWithMouseScalingDisabled(),
+            mousePointerAccelerationEnabled(true),
+            touchpadAccelerationEnabled(true),
             pointerVelocityControlParameters(1.0f, 500.0f, 3000.0f,
                                              static_cast<float>(
                                                      android::os::IInputConstants::
                                                              DEFAULT_POINTER_ACCELERATION)),
-            wheelVelocityControlParameters(1.0f, 15.0f, 50.0f, 4.0f),
+            wheelVelocityControlParameters(1.0f, 15.0f, 50.0f,
+                                           static_cast<float>(
+                                                   android::os::IInputConstants::
+                                                           DEFAULT_MOUSE_WHEEL_ACCELERATION)),
             pointerGesturesEnabled(true),
             pointerGestureQuietInterval(100 * 1000000LL),            // 100 ms
             pointerGestureDragMinSwitchSpeed(50),                    // 50 pixels per second
@@ -268,9 +315,14 @@ struct InputReaderConfiguration {
             touchpadNaturalScrollingEnabled(true),
             touchpadTapToClickEnabled(true),
             touchpadTapDraggingEnabled(false),
+            shouldNotifyTouchpadHardwareState(false),
             touchpadRightClickZoneEnabled(false),
+            touchpadThreeFingerTapShortcutEnabled(false),
+            touchpadSystemGesturesEnabled(true),
             stylusButtonMotionEventsEnabled(true),
-            stylusPointerIconEnabled(false) {}
+            stylusPointerIconEnabled(false),
+            mouseReverseVerticalScrollingEnabled(false),
+            mouseSwapPrimaryButtonEnabled(false) {}
 
     std::optional<DisplayViewport> getDisplayViewportByType(ViewportType type) const;
     std::optional<DisplayViewport> getDisplayViewportByUniqueId(const std::string& uniqueDisplayId)
@@ -327,13 +379,13 @@ public:
     virtual int32_t getKeyCodeState(int32_t deviceId, uint32_t sourceMask, int32_t keyCode) = 0;
     virtual int32_t getSwitchState(int32_t deviceId, uint32_t sourceMask, int32_t sw) = 0;
 
-    virtual void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode,
-                                 int32_t toKeyCode) const = 0;
-
     virtual int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const = 0;
 
     /* Toggle Caps Lock */
     virtual void toggleCapsLockState(int32_t deviceId) = 0;
+
+    /* Resets locked modifier state */
+    virtual void resetLockedModifierState() = 0;
 
     /* Determine whether physical keys exist for the given framework-domain key codes. */
     virtual bool hasKeys(int32_t deviceId, uint32_t sourceMask,
@@ -363,6 +415,8 @@ public:
 
     virtual std::vector<InputDeviceSensorInfo> getSensors(int32_t deviceId) = 0;
 
+    virtual std::optional<HardwareProperties> getTouchpadHardwareProperties(int32_t deviceId) = 0;
+
     /* Return true if the device can send input events to the specified display. */
     virtual bool canDispatchToDisplay(int32_t deviceId, ui::LogicalDisplayId displayId) = 0;
 
@@ -389,6 +443,9 @@ public:
     /* Get the Bluetooth address of an input device, if known. */
     virtual std::optional<std::string> getBluetoothAddress(int32_t deviceId) const = 0;
 
+    /* Gets the sysfs root path for this device. Returns an empty path if there is none. */
+    virtual std::filesystem::path getSysfsRootPath(int32_t deviceId) const = 0;
+
     /* Sysfs node change reported. Recreate device if required to incorporate the new sysfs nodes */
     virtual void sysfsNodeChanged(const std::string& sysfsNodePath) = 0;
 
@@ -397,6 +454,19 @@ public:
      * Returns ReservedInputDeviceId::INVALID_INPUT_DEVICE_ID if no device has been used since boot.
      */
     virtual DeviceId getLastUsedInputDeviceId() = 0;
+
+    /* Notifies that mouse cursor faded due to typing. */
+    virtual void notifyMouseCursorFadedOnTyping() = 0;
+
+    /* Set whether the given input device can wake up the kernel from sleep
+     * when it generates input events. By default, usually only internal (built-in)
+     * input devices can wake the kernel from sleep. For an external input device
+     * that supports remote wakeup to be able to wake the kernel, this must be called
+     * after each time the device is connected/added.
+     *
+     * Returns true if setting power wakeup was successful.
+     */
+    virtual bool setKernelWakeEnabled(int32_t deviceId, bool enabled) = 0;
 };
 
 // --- TouchAffineTransformation ---
@@ -450,6 +520,16 @@ public:
      * and provides information about all current input devices.
      */
     virtual void notifyInputDevicesChanged(const std::vector<InputDeviceInfo>& inputDevices) = 0;
+
+    /* Sends the hardware state of a connected touchpad */
+    virtual void notifyTouchpadHardwareState(const SelfContainedHardwareState& schs,
+                                             int32_t deviceId) = 0;
+
+    /* Sends the Info of gestures that happen on the touchpad. */
+    virtual void notifyTouchpadGestureInfo(GestureType type, int32_t deviceId) = 0;
+
+    /* Notifies the policy that the user has performed a three-finger touchpad tap. */
+    virtual void notifyTouchpadThreeFingerTap() = 0;
 
     /* Gets the keyboard layout for a particular input device. */
     virtual std::shared_ptr<KeyCharacterMap> getKeyboardLayoutOverlay(

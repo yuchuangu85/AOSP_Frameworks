@@ -26,10 +26,12 @@ import android.os.UserHandle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
-import com.android.systemui.coroutines.collectLastValue
-import com.android.systemui.coroutines.collectValues
+import com.android.systemui.communal.shared.model.fakeGlanceableHubMultiUserHelper
 import com.android.systemui.kosmos.applicationCoroutineScope
-import com.android.systemui.kosmos.testScope
+import com.android.systemui.kosmos.collectLastValue
+import com.android.systemui.kosmos.collectValues
+import com.android.systemui.kosmos.runTest
+import com.android.systemui.kosmos.useUnconfinedTestDispatcher
 import com.android.systemui.log.logcatLogBuffer
 import com.android.systemui.testKosmos
 import com.android.systemui.user.data.model.SelectedUserModel
@@ -42,10 +44,6 @@ import com.android.systemui.util.mockito.whenever
 import com.android.systemui.util.mockito.withArgCaptor
 import com.google.common.truth.Truth.assertThat
 import java.util.Optional
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.runCurrent
-import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -57,11 +55,9 @@ import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
 @SmallTest
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class CommunalWidgetHostTest : SysuiTestCase() {
-    private val kosmos = testKosmos()
-    private val testScope = kosmos.testScope
+    private val kosmos = testKosmos().useUnconfinedTestDispatcher()
 
     @Mock private lateinit var appWidgetManager: AppWidgetManager
     @Mock private lateinit var appWidgetHost: CommunalAppWidgetHost
@@ -84,7 +80,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                     any<Int>(),
                     any<UserHandle>(),
                     any<ComponentName>(),
-                    any<Bundle>()
+                    any<Bundle>(),
                 )
             )
             .thenReturn(true)
@@ -96,17 +92,17 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                 appWidgetHost,
                 selectedUserInteractor,
                 logcatLogBuffer("CommunalWidgetHostTest"),
+                glanceableHubMultiUserHelper = kosmos.fakeGlanceableHubMultiUserHelper,
             )
     }
 
     @Test
     fun allocateIdAndBindWidget_withCurrentUser() =
-        testScope.runTest {
+        kosmos.runTest {
             val provider = ComponentName("pkg_name", "cls_name")
             val widgetId = 1
             val userId by collectLastValue(selectedUserInteractor.selectedUser)
             selectUser()
-            runCurrent()
 
             val user = UserHandle(checkNotNull(userId))
             whenever(appWidgetHost.allocateAppWidgetId()).thenReturn(widgetId)
@@ -127,7 +123,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun allocateIdAndBindWidget_onSuccess() =
-        testScope.runTest {
+        kosmos.runTest {
             val provider = ComponentName("pkg_name", "cls_name")
             val widgetId = 1
             val user = UserHandle(0)
@@ -150,7 +146,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun allocateIdAndBindWidget_onFailure() =
-        testScope.runTest {
+        kosmos.runTest {
             val provider = ComponentName("pkg_name", "cls_name")
             val widgetId = 1
             val user = UserHandle(0)
@@ -162,7 +158,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                         any<Int>(),
                         any<UserHandle>(),
                         any<ComponentName>(),
-                        any<Bundle>()
+                        any<Bundle>(),
                     )
                 )
                 .thenReturn(false)
@@ -177,12 +173,11 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun listener_exactlyOneListenerRegisteredForEachWidgetWhenHostStartListening() =
-        testScope.runTest {
+        kosmos.runTest {
             // 3 widgets registered with the host
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2, 3))
 
             underTest.startObservingHost()
-            runCurrent()
 
             // Make sure no listener is set before host starts listening
             verify(appWidgetHost, never()).setListener(any(), any())
@@ -193,7 +188,6 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                     verify(appWidgetHost).addObserver(capture())
                 }
             observer.onHostStartListening()
-            runCurrent()
 
             // Verify a listener is set for each widget
             verify(appWidgetHost, times(3)).setListener(any(), any())
@@ -204,12 +198,11 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun listener_listenersRemovedWhenHostStopListening() =
-        testScope.runTest {
+        kosmos.runTest {
             // 3 widgets registered with the host
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2, 3))
 
             underTest.startObservingHost()
-            runCurrent()
 
             // Host starts listening
             val observer =
@@ -217,7 +210,6 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                     verify(appWidgetHost).addObserver(capture())
                 }
             observer.onHostStartListening()
-            runCurrent()
 
             // Verify none of the listener is removed before host stop listening
             verify(appWidgetHost, never()).removeListener(any())
@@ -233,7 +225,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun listener_addNewListenerWhenNewIdAllocated() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf())
             val observer = start()
 
@@ -249,7 +241,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun listener_removeListenerWhenWidgetDeleted() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1))
             val observer = start()
 
@@ -265,7 +257,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun providerInfo_populatesWhenStartListening() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2))
             whenever(appWidgetManager.getAppWidgetInfo(1)).thenReturn(providerInfo1)
             whenever(appWidgetManager.getAppWidgetInfo(2)).thenReturn(providerInfo2)
@@ -277,39 +269,27 @@ class CommunalWidgetHostTest : SysuiTestCase() {
             assertThat(providerInfoValues[0]).isEmpty()
 
             start()
-            runCurrent()
 
             // Assert that the provider info map is populated after host started listening, and that
             // all providers are emitted at once
             assertThat(providerInfoValues).hasSize(2)
             assertThat(providerInfoValues[1])
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2)))
         }
 
     @Test
     fun providerInfo_clearsWhenStopListening() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2))
             whenever(appWidgetManager.getAppWidgetInfo(1)).thenReturn(providerInfo1)
             whenever(appWidgetManager.getAppWidgetInfo(2)).thenReturn(providerInfo2)
 
             val observer = start()
-            runCurrent()
 
             // Assert that the provider info map is populated
             val providerInfo by collectLastValue(underTest.appWidgetProviders)
             assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2)))
 
             // Host stop listening
             observer.onHostStopListening()
@@ -320,7 +300,7 @@ class CommunalWidgetHostTest : SysuiTestCase() {
 
     @Test
     fun providerInfo_onUpdate() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2))
             whenever(appWidgetManager.getAppWidgetInfo(1)).thenReturn(providerInfo1)
             whenever(appWidgetManager.getAppWidgetInfo(2)).thenReturn(providerInfo2)
@@ -328,16 +308,10 @@ class CommunalWidgetHostTest : SysuiTestCase() {
             val providerInfo by collectLastValue(underTest.appWidgetProviders)
 
             start()
-            runCurrent()
 
             // Assert that the provider info map is populated
             assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2)))
 
             // Provider info for widget 1 updated
             val listener =
@@ -345,21 +319,15 @@ class CommunalWidgetHostTest : SysuiTestCase() {
                     verify(appWidgetHost).setListener(eq(1), capture())
                 }
             listener.onUpdateProviderInfo(providerInfo3)
-            runCurrent()
 
             // Assert that the update is reflected in the flow
             assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo3),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo3), Pair(2, providerInfo2)))
         }
 
     @Test
     fun providerInfo_updateWhenANewWidgetIsBound() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2))
             whenever(appWidgetManager.getAppWidgetInfo(1)).thenReturn(providerInfo1)
             whenever(appWidgetManager.getAppWidgetInfo(2)).thenReturn(providerInfo2)
@@ -367,38 +335,27 @@ class CommunalWidgetHostTest : SysuiTestCase() {
             val providerInfo by collectLastValue(underTest.appWidgetProviders)
 
             start()
-            runCurrent()
 
             // Assert that the provider info map is populated
             assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2)))
 
             // Bind a new widget
             whenever(appWidgetHost.allocateAppWidgetId()).thenReturn(3)
             whenever(appWidgetManager.getAppWidgetInfo(3)).thenReturn(providerInfo3)
             val newWidgetComponentName = ComponentName.unflattenFromString("pkg_new/cls_new")!!
             underTest.allocateIdAndBindWidget(newWidgetComponentName)
-            runCurrent()
 
             // Assert that the new provider is reflected in the flow
             assertThat(providerInfo)
                 .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                        Pair(3, providerInfo3),
-                    )
+                    mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2), Pair(3, providerInfo3))
                 )
         }
 
     @Test
     fun providerInfo_updateWhenWidgetRemoved() =
-        testScope.runTest {
+        kosmos.runTest {
             whenever(appWidgetHost.appWidgetIds).thenReturn(intArrayOf(1, 2))
             whenever(appWidgetManager.getAppWidgetInfo(1)).thenReturn(providerInfo1)
             whenever(appWidgetManager.getAppWidgetInfo(2)).thenReturn(providerInfo2)
@@ -406,41 +363,28 @@ class CommunalWidgetHostTest : SysuiTestCase() {
             val providerInfo by collectLastValue(underTest.appWidgetProviders)
 
             val observer = start()
-            runCurrent()
 
             // Assert that the provider info map is populated
             assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(1, providerInfo1),
-                        Pair(2, providerInfo2),
-                    )
-                )
+                .containsExactlyEntriesIn(mapOf(Pair(1, providerInfo1), Pair(2, providerInfo2)))
 
             // Remove widget 1
             observer.onDeleteAppWidgetId(1)
-            runCurrent()
 
             // Assert that provider info for widget 1 is removed
-            assertThat(providerInfo)
-                .containsExactlyEntriesIn(
-                    mapOf(
-                        Pair(2, providerInfo2),
-                    )
-                )
+            assertThat(providerInfo).containsExactlyEntriesIn(mapOf(Pair(2, providerInfo2)))
         }
 
     private fun selectUser() {
         kosmos.fakeUserRepository.selectedUser.value =
             SelectedUserModel(
                 userInfo = UserInfo(0, "Current user", 0),
-                selectionStatus = SelectionStatus.SELECTION_COMPLETE
+                selectionStatus = SelectionStatus.SELECTION_COMPLETE,
             )
     }
 
-    private fun TestScope.start(): CommunalAppWidgetHost.Observer {
+    private fun start(): CommunalAppWidgetHost.Observer {
         underTest.startObservingHost()
-        runCurrent()
 
         val observer =
             withArgCaptor<CommunalAppWidgetHost.Observer> {

@@ -17,6 +17,7 @@
 package com.android.server.am;
 
 import static android.app.ActivityManagerInternal.OOM_ADJ_REASON_ACTIVITY;
+import static android.app.ActivityManagerInternal.OOM_ADJ_REASON_UI_VISIBILITY;
 
 import static com.android.internal.util.Preconditions.checkArgument;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
@@ -69,6 +70,7 @@ import com.android.server.wm.WindowProcessController;
 import com.android.server.wm.WindowProcessListener;
 
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.Arrays;
 import java.util.List;
 import java.util.function.Consumer;
@@ -151,7 +153,7 @@ class ProcessRecord implements WindowProcessListener {
      * (in which case we are in the process of launching the app).
      */
     @CompositeRWLock({"mService", "mProcLock"})
-    private IApplicationThread mThread;
+    private ApplicationThreadDeferred mThread;
 
     /**
      * Instance of {@link #mThread} that will always meet the {@code oneway}
@@ -350,7 +352,8 @@ class ProcessRecord implements WindowProcessListener {
     private String[] mIsolatedEntryPointArgs;
 
     /**
-     * Process is currently hosting a backup agent for backup or restore.
+     * Process is currently hosting a backup agent for backup or restore. Note that this is only set
+     * when the process is put into restricted backup mode.
      */
     @GuardedBy("mService")
     private boolean mInFullBackup;
@@ -737,15 +740,15 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @GuardedBy({"mService", "mProcLock"})
-    public void makeActive(IApplicationThread thread, ProcessStatsService tracker) {
+    public void makeActive(ApplicationThreadDeferred thread, ProcessStatsService tracker) {
         mProfile.onProcessActive(thread, tracker);
         mThread = thread;
         if (mPid == Process.myPid()) {
-            mOnewayThread = new SameProcessApplicationThread(thread, FgThread.getHandler());
+            mOnewayThread = new SameProcessApplicationThread(mThread, FgThread.getHandler());
         } else {
-            mOnewayThread = thread;
+            mOnewayThread = mThread;
         }
-        mWindowProcessController.setThread(thread);
+        mWindowProcessController.setThread(mThread);
         if (mWindowProcessController.useFifoUiScheduling()) {
             mService.mSpecifiedFifoProcesses.add(this);
         }
@@ -1003,6 +1006,11 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @GuardedBy(anyOf = {"mService", "mProcLock"})
+    boolean hasActiveInstrumentation() {
+        return mInstr != null;
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
     boolean isKilledByAm() {
         return mKilledByAm;
     }
@@ -1192,7 +1200,7 @@ class ProcessRecord implements WindowProcessListener {
         setWaitingToKill(null);
 
         mState.onCleanupApplicationRecordLSP();
-        mServices.onCleanupApplicationRecordLocked();
+        mService.mProcessStateController.onCleanupApplicationRecord(mServices);
         mReceivers.onCleanupApplicationRecordLocked();
         mService.mOomAdjuster.onProcessEndLocked(this);
 
@@ -1407,6 +1415,16 @@ class ProcessRecord implements WindowProcessListener {
         return mStringName = sb.toString();
     }
 
+    String toDetailedString() {
+        final StringBuilder sb = new StringBuilder();
+        sb.append(this);
+        final StringWriter sw = new StringWriter();
+        final PrintWriter pw = new PrintWriter(sw);
+        dump(pw, "  ");
+        sb.append(sw);
+        return sb.toString();
+    }
+
     /*
      *  Return true if package has been added false if not
      */
@@ -1436,14 +1454,32 @@ class ProcessRecord implements WindowProcessListener {
 
     void onProcessFrozen() {
         mProfile.onProcessFrozen();
+        final ApplicationThreadDeferred t;
+        synchronized (mService) {
+            t = mThread;
+        }
+        // Release the lock before calling the notifier, in case that calls back into AM.
+        if (t != null) t.onProcessPaused();
     }
 
     void onProcessUnfrozen() {
+        final ApplicationThreadDeferred t;
+        synchronized (mService) {
+            t = mThread;
+        }
+        // Release the lock before calling the notifier, in case that calls back into AM.
+        if (t != null) t.onProcessUnpaused();
         mProfile.onProcessUnfrozen();
         mServices.onProcessUnfrozen();
     }
 
     void onProcessFrozenCancelled() {
+        final ApplicationThreadDeferred t;
+        synchronized (mService) {
+            t = mThread;
+        }
+        // Release the lock before calling the notifier, in case that calls back into AM.
+        if (t != null) t.onProcessPausedCancelled();
         mServices.onProcessFrozenCancelled();
     }
 
@@ -1635,7 +1671,7 @@ class ProcessRecord implements WindowProcessListener {
             updateProcessInfo(false /* updateServiceConnectionActivities */,
                     true /* activityChange */, true /* updateOomAdj */);
             setPendingUiClean(true);
-            mState.setHasShownUi(true);
+            mService.mProcessStateController.setHasShownUi(this, true);
             mState.forceProcessStateUpTo(topProcessState);
         }
     }
@@ -1654,7 +1690,10 @@ class ProcessRecord implements WindowProcessListener {
             return;
         }
         synchronized (mService) {
-            mState.setRunningRemoteAnimation(runningRemoteAnimation);
+            if (mService.mProcessStateController.setRunningRemoteAnimation(this,
+                    runningRemoteAnimation)) {
+                mService.mProcessStateController.runUpdate(this, OOM_ADJ_REASON_UI_VISIBILITY);
+            }
         }
     }
 
@@ -1691,7 +1730,7 @@ class ProcessRecord implements WindowProcessListener {
         return mService.mOomAdjuster.mCachedAppOptimizer.useFreezer()
                 && !mOptRecord.isFreezeExempt()
                 && !mOptRecord.shouldNotFreeze()
-                && mState.getCurAdj() >= ProcessList.FREEZER_CUTOFF_ADJ;
+                && mState.getCurAdj() >= mService.mConstants.FREEZER_CUTOFF_ADJ;
     }
 
     public void forEachConnectionHost(Consumer<ProcessRecord> consumer) {

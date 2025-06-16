@@ -25,13 +25,11 @@ import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 
 /**
  * Breaks down DOZING->LOCKSCREEN transition into discrete steps for corresponding views to consume.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class DozingToLockscreenTransitionViewModel
 @Inject
@@ -51,7 +49,8 @@ constructor(
             onCancel = { 0f },
         )
 
-    val lockscreenAlpha: Flow<Float> = shortcutsAlpha
+    // Show immediately to avoid what can appear to be a flicker on device wakeup
+    val lockscreenAlpha: Flow<Float> = transitionAnimation.immediatelyTransitionTo(1f)
 
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
         transitionAnimation.immediatelyTransitionTo(1f)

@@ -21,10 +21,12 @@
 #include <utils/Mutex.h>
 
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "EventHub.h"
+#include "InputDevice.h"
 #include "InputListener.h"
 #include "InputReaderBase.h"
 #include "InputReaderContext.h"
@@ -65,11 +67,11 @@ public:
     int32_t getKeyCodeState(int32_t deviceId, uint32_t sourceMask, int32_t keyCode) override;
     int32_t getSwitchState(int32_t deviceId, uint32_t sourceMask, int32_t sw) override;
 
-    void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode, int32_t toKeyCode) const override;
-
     int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const override;
 
     void toggleCapsLockState(int32_t deviceId) override;
+
+    void resetLockedModifierState() override;
 
     bool hasKeys(int32_t deviceId, uint32_t sourceMask, const std::vector<int32_t>& keyCodes,
                  uint8_t* outFlags) override;
@@ -104,6 +106,8 @@ public:
 
     std::vector<InputDeviceSensorInfo> getSensors(int32_t deviceId) override;
 
+    std::optional<HardwareProperties> getTouchpadHardwareProperties(int32_t deviceId) override;
+
     bool setLightColor(int32_t deviceId, int32_t lightId, int32_t color) override;
 
     bool setLightPlayerId(int32_t deviceId, int32_t lightId, int32_t playerId) override;
@@ -114,14 +118,21 @@ public:
 
     std::optional<std::string> getBluetoothAddress(int32_t deviceId) const override;
 
+    std::filesystem::path getSysfsRootPath(int32_t deviceId) const override;
+
     void sysfsNodeChanged(const std::string& sysfsNodePath) override;
 
     DeviceId getLastUsedInputDeviceId() override;
 
+    void notifyMouseCursorFadedOnTyping() override;
+
+    bool setKernelWakeEnabled(int32_t deviceId, bool enabled) override;
+
 protected:
     // These members are protected so they can be instrumented by test cases.
     virtual std::shared_ptr<InputDevice> createDeviceLocked(nsecs_t when, int32_t deviceId,
-                                                            const InputDeviceIdentifier& identifier)
+                                                            const InputDeviceIdentifier& identifier,
+                                                            ftl::Flags<InputDeviceClass> classes)
             REQUIRES(mLock);
 
     // With each iteration of the loop, InputReader reads and processes one incoming message from
@@ -134,6 +145,7 @@ protected:
 
     public:
         explicit ContextImpl(InputReader* reader);
+        std::string dump() REQUIRES(mReader->mLock) override;
         // lock is already held by the input loop
         void updateGlobalMetaState() NO_THREAD_SAFETY_ANALYSIS override;
         int32_t getGlobalMetaState() NO_THREAD_SAFETY_ANALYSIS override;
@@ -148,7 +160,7 @@ protected:
                 REQUIRES(mReader->mLock) override;
         InputReaderPolicyInterface* getPolicy() REQUIRES(mReader->mLock) override;
         EventHubInterface* getEventHub() REQUIRES(mReader->mLock) override;
-        int32_t getNextId() NO_THREAD_SAFETY_ANALYSIS override;
+        int32_t getNextId() const NO_THREAD_SAFETY_ANALYSIS override;
         void updateLedMetaState(int32_t metaState) REQUIRES(mReader->mLock) override;
         int32_t getLedMetaState() REQUIRES(mReader->mLock) REQUIRES(mLock) override;
         void setPreventingTouchpadTaps(bool prevent) REQUIRES(mReader->mLock)
@@ -199,7 +211,7 @@ private:
     std::unordered_map<std::shared_ptr<InputDevice>, std::vector<int32_t> /*eventHubId*/>
             mDeviceToEventHubIdsMap GUARDED_BY(mLock);
 
-    // true if tap-to-click on touchpad currently disabled
+    // true if tap-to-click on touchpad is currently disabled
     bool mPreventingTouchpadTaps GUARDED_BY(mLock){false};
 
     // records timestamp of the last key press on the physical keyboard
@@ -207,6 +219,8 @@ private:
 
     // The input device that produced a new gesture most recently.
     DeviceId mLastUsedDeviceId GUARDED_BY(mLock){ReservedInputDeviceId::INVALID_INPUT_DEVICE_ID};
+
+    void dumpLocked(std::string& dump) REQUIRES(mLock);
 
     // low-level input event decoding and device management
     [[nodiscard]] std::list<NotifyArgs> processEventsLocked(const RawEvent* rawEvents, size_t count)
@@ -218,8 +232,6 @@ private:
                                                                      const RawEvent* rawEvents,
                                                                      size_t count) REQUIRES(mLock);
     [[nodiscard]] std::list<NotifyArgs> timeoutExpiredLocked(nsecs_t when) REQUIRES(mLock);
-
-    void handleConfigurationChangedLocked(nsecs_t when) REQUIRES(mLock);
 
     int32_t mGlobalMetaState GUARDED_BY(mLock);
     void updateGlobalMetaStateLocked() REQUIRES(mLock);

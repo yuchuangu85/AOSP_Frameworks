@@ -16,13 +16,11 @@
 
 package com.android.systemui.statusbar.chips.mediaprojection.ui.view
 
-import android.annotation.StringRes
 import android.app.ActivityManager
-import android.content.Context
+import android.content.DialogInterface
 import android.content.pm.PackageManager
-import android.text.Html
-import android.text.Html.FROM_HTML_MODE_LEGACY
-import android.text.TextUtils
+import android.util.Log
+import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.mediaprojection.data.model.MediaProjectionState
 import com.android.systemui.statusbar.phone.SystemUIDialog
@@ -34,64 +32,67 @@ class EndMediaProjectionDialogHelper
 @Inject
 constructor(
     private val dialogFactory: SystemUIDialog.Factory,
+    private val dialogTransitionAnimator: DialogTransitionAnimator,
     private val packageManager: PackageManager,
-    private val context: Context
 ) {
     /** Creates a new [SystemUIDialog] using the given delegate. */
     fun createDialog(delegate: SystemUIDialog.Delegate): SystemUIDialog {
         return dialogFactory.create(delegate)
     }
 
-    /** See other [getDialogMessage]. */
-    fun getDialogMessage(
-        state: MediaProjectionState.Projecting,
-        @StringRes genericMessageResId: Int,
-        @StringRes specificAppMessageResId: Int,
-    ): CharSequence {
+    /**
+     * Returns the click listener that should be invoked if a user clicks "Stop" on the end media
+     * projection dialog.
+     *
+     * The click listener will invoke [stopAction] and also do some UI manipulation.
+     *
+     * @param stopAction an action that, when invoked, should notify system API(s) that the media
+     *   projection should be stopped.
+     */
+    fun wrapStopAction(stopAction: () -> Unit): DialogInterface.OnClickListener {
+        return DialogInterface.OnClickListener { _, _ ->
+            // If the projection is stopped, then the chip will disappear, so we don't want the
+            // dialog to animate back into the chip just for the chip to disappear in a few frames.
+            dialogTransitionAnimator.disableAllCurrentDialogsExitAnimations()
+            stopAction.invoke()
+        }
+    }
+
+    fun getAppName(state: MediaProjectionState.Projecting): CharSequence? {
         val specificTaskInfo =
             if (state is MediaProjectionState.Projecting.SingleTask) {
                 state.task
             } else {
                 null
             }
-        return getDialogMessage(specificTaskInfo, genericMessageResId, specificAppMessageResId)
+        return getAppName(specificTaskInfo)
+    }
+
+    fun getAppName(specificTaskInfo: ActivityManager.RunningTaskInfo?): CharSequence? {
+        val packageName = specificTaskInfo?.baseIntent?.component?.packageName ?: return null
+        return getAppName(packageName)
     }
 
     /**
-     * Returns the message to show in the dialog based on the specific media projection state.
-     *
-     * @param genericMessageResId a res ID for a more generic "end projection" message
-     * @param specificAppMessageResId a res ID for an "end projection" message that also lets us
-     *   specify which app is currently being projected.
+     * Returns the human-readable application name for the given package, or null if it couldn't be
+     * found for any reason.
      */
-    fun getDialogMessage(
-        specificTaskInfo: ActivityManager.RunningTaskInfo?,
-        @StringRes genericMessageResId: Int,
-        @StringRes specificAppMessageResId: Int,
-    ): CharSequence {
-        if (specificTaskInfo == null) {
-            return context.getString(genericMessageResId)
-        }
-        val packageName =
-            specificTaskInfo.baseIntent.component?.packageName
-                ?: return context.getString(genericMessageResId)
+    fun getAppName(packageName: String): CharSequence? {
         return try {
             val appInfo = packageManager.getApplicationInfo(packageName, 0)
-            val appName = appInfo.loadLabel(packageManager)
-            getSpecificAppMessageText(specificAppMessageResId, appName)
+            appInfo.loadLabel(packageManager)
         } catch (e: PackageManager.NameNotFoundException) {
-            // TODO(b/332662551): Log this error.
-            context.getString(genericMessageResId)
+            Log.w(
+                TAG,
+                "Failed to find application info for package: $packageName when creating " +
+                    "end media projection dialog",
+                e,
+            )
+            null
         }
     }
 
-    private fun getSpecificAppMessageText(
-        @StringRes specificAppMessageResId: Int,
-        appName: CharSequence,
-    ): CharSequence {
-        // https://developer.android.com/guide/topics/resources/string-resource#StylingWithHTML
-        val escapedAppName = TextUtils.htmlEncode(appName.toString())
-        val text = context.getString(specificAppMessageResId, escapedAppName)
-        return Html.fromHtml(text, FROM_HTML_MODE_LEGACY)
+    companion object {
+        private const val TAG = "EndMediaProjectionDialogHelper"
     }
 }

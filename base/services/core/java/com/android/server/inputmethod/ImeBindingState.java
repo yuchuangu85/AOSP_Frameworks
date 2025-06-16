@@ -20,6 +20,7 @@ import static android.server.inputmethod.InputMethodManagerServiceProto.CUR_FOCU
 import static android.server.inputmethod.InputMethodManagerServiceProto.CUR_FOCUSED_WINDOW_SOFT_INPUT_MODE;
 import static android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.os.IBinder;
@@ -42,9 +43,9 @@ final class ImeBindingState {
     final int mUserId;
 
     /**
-     * The last window token that we confirmed to be focused.  This is always updated upon
-     * reports from the input method client. If the window state is already changed before the
-     * report is handled, this field just keeps the last value.
+     * The last window token that we confirmed to be focused. This is always updated upon reports
+     * from the input method client. If the window state is already changed before the report is
+     * handled, this field just keeps the last value.
      */
     @Nullable
     final IBinder mFocusedWindow;
@@ -58,11 +59,9 @@ final class ImeBindingState {
     final int mFocusedWindowSoftInputMode;
 
     /**
-     * The client by which {@link #mFocusedWindow} was reported. This gets updated whenever
-     * an
-     * IME-focusable window gained focus (without necessarily starting an input connection),
-     * while {@link InputMethodManagerService#mClient} only gets updated when we actually start an
-     * input connection.
+     * The client by which {@link #mFocusedWindow} was reported. This gets updated whenever an
+     * IME-focusable window gained focus (without necessarily starting an input connection), while
+     * {@link UserData#mCurClient} only gets updated when we actually start an input connection.
      *
      * @see #mFocusedWindow
      */
@@ -71,40 +70,37 @@ final class ImeBindingState {
 
     /**
      * The editor info by which {@link #mFocusedWindow} was reported. This differs from
-     * {@link InputMethodManagerService#mCurEditorInfo} the same way {@link #mFocusedWindowClient}
-     * differs from {@link InputMethodManagerService#mCurClient}.
+     * {@link UserData#mCurEditorInfo} the same way {@link #mFocusedWindowClient} differs from
+     * {@link UserData#mCurClient}.
      *
      * @see #mFocusedWindow
      */
     @Nullable
     final EditorInfo mFocusedWindowEditorInfo;
 
-    void dumpDebug(ProtoOutputStream proto, WindowManagerInternal windowManagerInternal) {
+    void dumpDebug(@NonNull ProtoOutputStream proto,
+            @NonNull WindowManagerInternal windowManagerInternal) {
         proto.write(CUR_FOCUSED_WINDOW_NAME,
                 windowManagerInternal.getWindowName(mFocusedWindow));
         proto.write(CUR_FOCUSED_WINDOW_SOFT_INPUT_MODE,
                 InputMethodDebug.softInputModeToString(mFocusedWindowSoftInputMode));
     }
 
-    void dump(String prefix, Printer p) {
-        p.println(prefix + "mFocusedWindow()=" + mFocusedWindow);
-        p.println(prefix + "softInputMode=" + InputMethodDebug.softInputModeToString(
-                mFocusedWindowSoftInputMode));
+    void dump(@NonNull Printer p, @NonNull String prefix) {
+        p.println(prefix + "mFocusedWindow=" + mFocusedWindow);
+        p.println(prefix + "mFocusedWindowSoftInputMode="
+                + InputMethodDebug.softInputModeToString(mFocusedWindowSoftInputMode));
         p.println(prefix + "mFocusedWindowClient=" + mFocusedWindowClient);
     }
 
+    @NonNull
     static ImeBindingState newEmptyState() {
-        return new ImeBindingState(
-                /*userId=*/ UserHandle.USER_NULL,
-                /*focusedWindow=*/ null,
-                /*focusedWindowSoftInputMode=*/ SOFT_INPUT_STATE_UNSPECIFIED,
-                /*focusedWindowClient=*/ null,
-                /*focusedWindowEditorInfo=*/ null
-        );
+        return new ImeBindingState(UserHandle.USER_NULL /* userId */, null /* focusedWindow */,
+                SOFT_INPUT_STATE_UNSPECIFIED /* focusedWindowSoftInputMode */,
+                null /* focusedWindowClient */, null /* focusedWindowEditorInfo */);
     }
 
-    ImeBindingState(@UserIdInt int userId,
-            @Nullable IBinder focusedWindow,
+    ImeBindingState(@UserIdInt int userId, @Nullable IBinder focusedWindow,
             @SoftInputModeFlags int focusedWindowSoftInputMode,
             @Nullable ClientState focusedWindowClient,
             @Nullable EditorInfo focusedWindowEditorInfo) {

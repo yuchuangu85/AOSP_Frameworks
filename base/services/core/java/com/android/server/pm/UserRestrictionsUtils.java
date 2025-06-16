@@ -309,7 +309,8 @@ public class UserRestrictionsUtils {
      * in settings. So it is handled separately.
      */
     private static final Set<String> DEFAULT_ENABLED_FOR_MANAGED_PROFILES = Sets.newArraySet(
-            UserManager.DISALLOW_BLUETOOTH_SHARING
+            UserManager.DISALLOW_BLUETOOTH_SHARING,
+            UserManager.DISALLOW_DEBUGGING_FEATURES
     );
 
     /**
@@ -503,26 +504,21 @@ public class UserRestrictionsUtils {
             String restriction,
             boolean isMainUser,
             boolean isProfileOwnerOnOrgOwnedDevice) {
-        if (android.app.admin.flags.Flags.esimManagementEnabled()) {
-            if (IMMUTABLE_BY_OWNERS.contains(restriction)) {
-                return false;
-            }
-            if (DEVICE_OWNER_ONLY_RESTRICTIONS.contains(restriction)) {
-                return false;
-            }
-            if (!isMainUser && MAIN_USER_ONLY_RESTRICTIONS.contains(restriction)) {
-                return false;
-            }
-            if (!isProfileOwnerOnOrgOwnedDevice
-                    && PROFILE_OWNER_ORGANIZATION_OWNED_PROFILE_RESTRICTIONS.contains(
-                            restriction)) {
-                return false;
-            }
-            return true;
+        if (IMMUTABLE_BY_OWNERS.contains(restriction)) {
+            return false;
         }
-        return !IMMUTABLE_BY_OWNERS.contains(restriction)
-                && !DEVICE_OWNER_ONLY_RESTRICTIONS.contains(restriction)
-                && !(!isMainUser && MAIN_USER_ONLY_RESTRICTIONS.contains(restriction));
+        if (DEVICE_OWNER_ONLY_RESTRICTIONS.contains(restriction)) {
+            return false;
+        }
+        if (!isMainUser && MAIN_USER_ONLY_RESTRICTIONS.contains(restriction)) {
+            return false;
+        }
+        if (!isProfileOwnerOnOrgOwnedDevice
+                && PROFILE_OWNER_ORGANIZATION_OWNED_PROFILE_RESTRICTIONS.contains(
+                restriction)) {
+            return false;
+        }
+        return true;
     }
 
     /**

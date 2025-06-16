@@ -21,14 +21,19 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.database.ContentObserver
+import android.os.Handler
+import android.provider.Settings.Secure.USER_SETUP_COMPLETE
 import com.android.systemui.CoreStartable
 import com.android.systemui.broadcast.BroadcastDispatcher
 import com.android.systemui.communal.domain.interactor.CommunalInteractor
 import com.android.systemui.communal.widgets.CommunalWidgetModule
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.core.Logger
 import com.android.systemui.log.dagger.CommunalLog
+import com.android.systemui.util.settings.SecureSettings
 import javax.inject.Inject
 
 @SysUISingleton
@@ -38,9 +43,14 @@ constructor(
     private val broadcastDispatcher: BroadcastDispatcher,
     private val communalInteractor: CommunalInteractor,
     @CommunalLog logBuffer: LogBuffer,
+    private val secureSettings: SecureSettings,
+    @Main handler: Handler,
 ) : CoreStartable, BroadcastReceiver() {
 
     private val logger = Logger(logBuffer, TAG)
+
+    private var oldToNewWidgetIdMap = emptyMap<Int, Int>()
+    private var userSetupComplete = false
 
     override fun start() {
         broadcastDispatcher.registerReceiver(
@@ -73,8 +83,53 @@ constructor(
             return
         }
 
-        val oldToNewWidgetIdMap = oldIds.zip(newIds).toMap()
-        communalInteractor.restoreWidgets(oldToNewWidgetIdMap)
+        oldToNewWidgetIdMap = oldIds.zip(newIds).toMap()
+
+        logger.i({ "On old to new widget ids mapping updated: $str1" }) {
+            str1 = oldToNewWidgetIdMap.toString()
+        }
+
+        maybeRestoreWidgets()
+
+        // Start observing if user setup is not complete
+        if (!userSetupComplete) {
+            startObservingUserSetupComplete()
+        }
+    }
+
+    private val userSetupObserver =
+        object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                maybeRestoreWidgets()
+
+                // Stop observing once user setup is complete
+                if (userSetupComplete) {
+                    stopObservingUserSetupComplete()
+                }
+            }
+        }
+
+    private fun maybeRestoreWidgets() {
+        val newValue = secureSettings.getInt(USER_SETUP_COMPLETE) > 0
+
+        if (userSetupComplete != newValue) {
+            userSetupComplete = newValue
+            logger.i({ "User setup complete: $bool1" }) { bool1 = userSetupComplete }
+        }
+
+        if (userSetupComplete && oldToNewWidgetIdMap.isNotEmpty()) {
+            logger.i("Starting to restore widgets")
+            communalInteractor.restoreWidgets(oldToNewWidgetIdMap.toMap())
+            oldToNewWidgetIdMap = emptyMap()
+        }
+    }
+
+    private fun startObservingUserSetupComplete() {
+        secureSettings.registerContentObserverSync(USER_SETUP_COMPLETE, userSetupObserver)
+    }
+
+    private fun stopObservingUserSetupComplete() {
+        secureSettings.unregisterContentObserverSync(userSetupObserver)
     }
 
     companion object {

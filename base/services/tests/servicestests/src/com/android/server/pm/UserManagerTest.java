@@ -34,6 +34,7 @@ import android.content.pm.UserProperties;
 import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
+import android.os.IpcDataCache;
 import android.os.PersistableBundle;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -100,6 +101,9 @@ public final class UserManagerTest {
 
     @Before
     public void setUp() throws Exception {
+        // Disable binder caches in this process.
+        IpcDataCache.disableForTestMode();
+
         mOriginalCurrentUserId = ActivityManager.getCurrentUser();
         mUserManager = UserManager.get(mContext);
         mActivityManager = mContext.getSystemService(ActivityManager.class);
@@ -121,6 +125,9 @@ public final class UserManagerTest {
         // Making a copy of mUsersToRemove to avoid ConcurrentModificationException
         mUsersToRemove.stream().toList().forEach(this::removeUser);
         mUserRemovalWaiter.close();
+
+        mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                mContext.getUser());
     }
 
     private void removeExistingUsers() {
@@ -382,6 +389,44 @@ public final class UserManagerTest {
     }
 
     @Test
+    public void testSupervisingProfile() throws Exception {
+        assumeTrue("Device doesn't support supervising profiles ",
+                mUserManager.isUserTypeEnabled(UserManager.USER_TYPE_PROFILE_SUPERVISING));
+
+        final UserTypeDetails userTypeDetails =
+                UserTypeFactory.getUserTypes().get(UserManager.USER_TYPE_PROFILE_SUPERVISING);
+        assertWithMessage("No supervising user type on device").that(userTypeDetails).isNotNull();
+
+
+        // Create supervising profile if it doesn't exist
+        UserInfo supervisingUser = getSupervisingProfile();
+        if (supervisingUser == null) {
+            supervisingUser = createUser("Supervising",
+                    UserManager.USER_TYPE_PROFILE_SUPERVISING, /*flags*/ 0);
+        }
+        assertWithMessage("Couldn't create supervising profile").that(supervisingUser).isNotNull();
+        UserHandle supervisingHandle = supervisingUser.getUserHandle();
+
+        // Test that only one supervising profile can be created
+        final UserInfo secondSupervisingProfile =
+                createUser("Supervising", UserManager.USER_TYPE_PROFILE_SUPERVISING,
+                        /*flags*/ 0);
+        assertThat(secondSupervisingProfile).isNull();
+
+        // Verify that the supervising profile doesn't have a parent
+        assertThat(mUserManager.getProfileParent(supervisingHandle.getIdentifier())).isNull();
+
+        // Make sure that the supervising profile can be started in the background, and that it
+        // is visible
+        final boolean isStarted = mActivityManager.startProfile(supervisingHandle);
+        assertWithMessage("Unable to start supervising profile").that(isStarted).isTrue();
+        final UserManager umSupervising = (UserManager) mContext.createPackageContextAsUser(
+                "android", 0, supervisingHandle).getSystemService(Context.USER_SERVICE);
+        assertWithMessage("Supervising profile not visible").that(
+                umSupervising.isUserVisible()).isTrue();
+    }
+
+    @Test
     public void testGetProfileAccessibilityString_throwsExceptionForNonProfileUser() {
         UserInfo user1 = createUser("Guest 1", UserInfo.FLAG_GUEST);
         assertThat(user1).isNotNull();
@@ -528,6 +573,79 @@ public final class UserManagerTest {
 
         // Now we can remove the user
         removeUser(testUser.id);
+    }
+
+    @MediumTest
+    @Test
+    public void testRemoveUser_shouldRemovePrivateUser() {
+        UserInfo privateProfileUser =
+                createProfileForUser(
+                        "Private profile",
+                        UserManager.USER_TYPE_PROFILE_PRIVATE,
+                        mUserManager.getMainUser().getIdentifier());
+        assertThat(privateProfileUser).isNotNull();
+        assertThat(hasUser(privateProfileUser.id)).isTrue();
+
+        removeUser(privateProfileUser.id);
+
+        assertThat(hasUser(privateProfileUser.id)).isFalse();
+    }
+
+    @MediumTest
+    @Test
+    @RequiresFlagsEnabled(
+            android.multiuser.Flags.FLAG_IGNORE_RESTRICTIONS_WHEN_DELETING_PRIVATE_PROFILE)
+    public void testRemoveUser_shouldRemovePrivateUser_withDisallowRemoveUserRestriction() {
+        UserHandle mainUser = mUserManager.getMainUser();
+        mUserManager.setUserRestriction(
+                UserManager.DISALLOW_REMOVE_USER, /* value= */ true, mainUser);
+        try {
+            UserInfo privateProfileUser =
+                    createProfileForUser(
+                            "Private profile",
+                            UserManager.USER_TYPE_PROFILE_PRIVATE,
+                            mainUser.getIdentifier());
+            assertThat(privateProfileUser).isNotNull();
+            assertThat(hasUser(privateProfileUser.id)).isTrue();
+            removeUser(privateProfileUser.id);
+
+            assertThat(hasUser(privateProfileUser.id)).isFalse();
+        } finally {
+            mUserManager.setUserRestriction(
+                    UserManager.DISALLOW_REMOVE_USER, /* value= */ false, mainUser);
+        }
+    }
+
+    @MediumTest
+    @Test
+    public void testRemoveUser_withDisallowRemoveUserRestrictionAndMultipleUsersPresent() {
+        UserInfo privateProfileUser =
+                createProfileForUser(
+                        "Private profile",
+                        UserManager.USER_TYPE_PROFILE_PRIVATE,
+                        mUserManager.getMainUser().getIdentifier());
+        assertThat(privateProfileUser).isNotNull();
+        assertThat(hasUser(privateProfileUser.id)).isTrue();
+        UserInfo testUser = createUser("TestUser", /* flags= */ 0);
+        assertThat(testUser).isNotNull();
+        assertThat(hasUser(testUser.id)).isTrue();
+        UserHandle mainUser = mUserManager.getMainUser();
+        mUserManager.setUserRestriction(
+                UserManager.DISALLOW_REMOVE_USER, /* value= */ true, mainUser);
+        try {
+            assertThat(
+                    mUserManager.removeUserWhenPossible(
+                            testUser.getUserHandle(), /* overrideDevicePolicy= */ false))
+                    .isEqualTo(UserManager.REMOVE_RESULT_ERROR_USER_RESTRICTION);
+
+            // Non private profile users should be prevented from being removed.
+            assertThat(mUserManager.removeUser(testUser.id)).isEqualTo(false);
+
+            assertThat(hasUser(testUser.id)).isTrue();
+        } finally {
+            mUserManager.setUserRestriction(
+                    UserManager.DISALLOW_REMOVE_USER, /* value= */ false, mainUser);
+        }
     }
 
     @MediumTest
@@ -935,6 +1053,35 @@ public final class UserManagerTest {
 
     @MediumTest
     @Test
+    @RequiresFlagsEnabled(android.multiuser.Flags.FLAG_UNICORN_MODE_REFACTORING_FOR_HSUM_READ_ONLY)
+    public void testSetUserAdminThrowsSecurityException() throws Exception {
+        UserInfo targetUser = createUser("SecondaryUser", /*flags=*/ 0);
+        assertThat(targetUser.isAdmin()).isFalse();
+
+        try {
+            // 1. Target User Restriction
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, true,
+                    targetUser.getUserHandle());
+            assertThrows(SecurityException.class, () -> mUserManager.setUserAdmin(targetUser.id));
+
+            // 2. Current User Restriction
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    targetUser.getUserHandle());
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, true,
+                    mContext.getUser());
+            assertThrows(SecurityException.class, () -> mUserManager.setUserAdmin(targetUser.id));
+
+        } finally {
+            // Ensure restriction is removed even if test fails
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    targetUser.getUserHandle());
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    mContext.getUser());
+        }
+    }
+
+    @MediumTest
+    @Test
     public void testRevokeUserAdmin() throws Exception {
         UserInfo userInfo = createUser("Admin", /*flags=*/ UserInfo.FLAG_ADMIN);
         assertThat(userInfo.isAdmin()).isTrue();
@@ -955,6 +1102,37 @@ public final class UserManagerTest {
 
         userInfo = mUserManager.getUserInfo(userInfo.id);
         assertThat(userInfo.isAdmin()).isFalse();
+    }
+
+    @MediumTest
+    @Test
+    @RequiresFlagsEnabled(android.multiuser.Flags.FLAG_UNICORN_MODE_REFACTORING_FOR_HSUM_READ_ONLY)
+    public void testRevokeUserAdminThrowsSecurityException() throws Exception {
+        UserInfo targetUser = createUser("SecondaryUser", /*flags=*/ 0);
+        assertThat(targetUser.isAdmin()).isFalse();
+
+        try {
+            // 1. Target User Restriction
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, true,
+                    targetUser.getUserHandle());
+            assertThrows(SecurityException.class, () -> mUserManager
+                    .revokeUserAdmin(targetUser.id));
+
+            // 2. Current User Restriction
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    targetUser.getUserHandle());
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, true,
+                    mContext.getUser());
+            assertThrows(SecurityException.class, () -> mUserManager
+                    .revokeUserAdmin(targetUser.id));
+
+        } finally {
+            // Ensure restriction is removed even if test fails
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    targetUser.getUserHandle());
+            mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, false,
+                    mContext.getUser());
+        }
     }
 
     @MediumTest
@@ -1060,6 +1238,23 @@ public final class UserManagerTest {
         assertThrows(SecurityException.class, userProps::getAlwaysVisible);
     }
 
+    /**
+     * Test that UserManager.getUserProperties throws the IllegalArgumentException for unsupported
+     * arguments such as UserHandle.NULL, UserHandle.CURRENT or UserHandle.ALL.
+     **/
+    @MediumTest
+    @Test
+    public void testThrowUserPropertiesForUnsupportedUserHandles() throws Exception {
+        assertThrows(IllegalArgumentException.class, () ->
+            mUserManager.getUserProperties(UserHandle.of(UserHandle.USER_NULL)));
+        assertThrows(IllegalArgumentException.class, () ->
+            mUserManager.getUserProperties(UserHandle.CURRENT));
+        assertThrows(IllegalArgumentException.class, () ->
+            mUserManager.getUserProperties(UserHandle.CURRENT_OR_SELF));
+        assertThrows(IllegalArgumentException.class, () ->
+            mUserManager.getUserProperties(UserHandle.ALL));
+    }
+
     // Make sure only max managed profiles can be created
     @MediumTest
     @Test
@@ -1161,6 +1356,23 @@ public final class UserManagerTest {
         try {
             UserInfo createadInfo = createUser("SecondaryUser", /*flags=*/ 0);
             assertThat(createadInfo).isNull();
+        } finally {
+            mUserManager.setUserRestriction(UserManager.DISALLOW_ADD_USER, false,
+                    creatorHandle);
+        }
+    }
+
+    // Make sure createUser for ADMIN would fail if we have DISALLOW_GRANT_ADMIN.
+    @MediumTest
+    @Test
+    @RequiresFlagsEnabled(android.multiuser.Flags.FLAG_UNICORN_MODE_REFACTORING_FOR_HSUM_READ_ONLY)
+    public void testCreateAdminUser_disallowGrantAdmin() throws Exception {
+        final int creatorId = ActivityManager.getCurrentUser();
+        final UserHandle creatorHandle = asHandle(creatorId);
+        mUserManager.setUserRestriction(UserManager.DISALLOW_GRANT_ADMIN, true, creatorHandle);
+        try {
+            UserInfo createdInfo = createUser("SecondaryUser", /*flags=*/ UserInfo.FLAG_ADMIN);
+            assertThat(createdInfo).isNull();
         } finally {
             mUserManager.setUserRestriction(UserManager.DISALLOW_ADD_USER, false,
                     creatorHandle);
@@ -1421,6 +1633,39 @@ public final class UserManagerTest {
         assertThat(serialNumbersOfUsers).asList().containsAtLeast(
                 (long) user1.serialNumber, (long) user2.serialNumber);
     }
+
+    @MediumTest
+    @Test
+    public void testSerialNumberAfterUserRemoval() {
+        final UserInfo user = mUserManager.createUser("Test User", 0);
+        assertThat(user).isNotNull();
+
+        final int userId = user.id;
+        assertThat(mUserManager.getUserSerialNumber(userId))
+            .isEqualTo(user.serialNumber);
+        mUsersToRemove.add(userId);
+        removeUser(userId);
+        int serialNumber = mUserManager.getUserSerialNumber(userId);
+        int timeout = REMOVE_USER_TIMEOUT_SECONDS * 5; // called every 200ms
+
+        // Wait for the user to be removed from memory
+        while(serialNumber > 0 && timeout > 0){
+          sleep(200);
+          timeout--;
+          serialNumber = mUserManager.getUserSerialNumber(userId);
+        }
+        assertThat(serialNumber).isEqualTo(-1);
+    }
+
+
+    private void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
 
     @MediumTest
     @Test
@@ -1812,6 +2057,25 @@ public final class UserManagerTest {
         assertThat(profilesExcludingHidden).asList().doesNotContain(profile.id);
     }
 
+    /**
+     * Test that UserManager.isQuietModeEnabled return false for unsupported
+     * arguments such as UserHandle.NULL, UserHandle.CURRENT or UserHandle.ALL.
+     **/
+    @MediumTest
+    @Test
+    public void testQuietModeEnabledForUnsupportedUserHandles() throws Exception {
+        assumeManagedUsersSupported();
+        final int mainUserId = mUserManager.getMainUser().getIdentifier();
+        UserInfo userInfo = createProfileForUser("Profile",
+                UserManager.USER_TYPE_PROFILE_MANAGED, mainUserId);
+        mUserManager.requestQuietModeEnabled(true, userInfo.getUserHandle());
+        assertThat(mUserManager.isQuietModeEnabled(userInfo.getUserHandle())).isTrue();
+        assertThat(mUserManager.isQuietModeEnabled(UserHandle.of(UserHandle.USER_NULL))).isFalse();
+        assertThat(mUserManager.isQuietModeEnabled(UserHandle.CURRENT)).isFalse();
+        assertThat(mUserManager.isQuietModeEnabled(UserHandle.CURRENT_OR_SELF)).isFalse();
+        assertThat(mUserManager.isQuietModeEnabled(UserHandle.ALL)).isFalse();
+    }
+
     private String generateLongString() {
         String partialString = "Test Name Test Name Test Name Test Name Test Name Test Name Test "
                 + "Name Test Name Test Name Test Name "; //String of length 100
@@ -1972,4 +2236,13 @@ public final class UserManagerTest {
         assertEquals(actual.getLevel(), expected.getLevel());
     }
 
+    @Nullable
+    private UserInfo getSupervisingProfile() {
+        for (UserInfo user : mUserManager.getUsers()) {
+            if (user.userType.equals(UserManager.USER_TYPE_PROFILE_SUPERVISING)) {
+                return user;
+            }
+        }
+        return null;
+    }
 }

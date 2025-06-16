@@ -28,8 +28,10 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.Manifest;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.media.AudioDeviceAttributes;
 import android.media.AudioDeviceInfo;
@@ -38,6 +40,7 @@ import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.media.IAudioDeviceVolumeDispatcher;
 import android.media.VolumeInfo;
+import android.os.IpcDataCache;
 import android.os.PermissionEnforcer;
 import android.os.RemoteException;
 import android.os.test.TestLooper;
@@ -83,6 +86,7 @@ public class AbsoluteVolumeBehaviorTest {
 
     @Before
     public void setUp() throws Exception {
+        IpcDataCache.disableForTestMode();
         mTestLooper = new TestLooper();
 
         mContext = spy(ApplicationProvider.getApplicationContext());
@@ -93,6 +97,10 @@ public class AbsoluteVolumeBehaviorTest {
         when(mResources.getBoolean(com.android.internal.R.bool.config_useFixedVolume))
                 .thenReturn(false);
 
+        when(mContext.checkCallingOrSelfPermission(
+                 Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED))
+                 .thenReturn(PackageManager.PERMISSION_GRANTED);
+
         mSpyAudioSystem = spy(new NoOpAudioSystemAdapter());
         mSystemServer = new NoOpSystemServerAdapter();
         mSettingsAdapter = new NoOpSettingsAdapter();
@@ -101,7 +109,7 @@ public class AbsoluteVolumeBehaviorTest {
         mAudioService = new AudioService(mContext, mSpyAudioSystem, mSystemServer,
                 mSettingsAdapter, mAudioVolumeGroupHelper, mMockAudioPolicy,
                 mTestLooper.getLooper(), mock(AppOpsManager.class), mock(PermissionEnforcer.class),
-                mock(AudioServerPermissionProvider.class)) {
+                mock(AudioServerPermissionProvider.class), r -> r.run()) {
             @Override
             public int getDeviceForStream(int stream) {
                 return AudioSystem.DEVICE_OUT_SPEAKER;

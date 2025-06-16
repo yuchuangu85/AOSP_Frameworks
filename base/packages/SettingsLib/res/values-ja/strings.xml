@@ -110,19 +110,30 @@
     <string name="bluetooth_hearing_aid_left_active" msgid="8330226430756799572">"アクティブ（左のみ）"</string>
     <string name="bluetooth_hearing_aid_right_active" msgid="2244728507170385397">"アクティブ（右のみ）"</string>
     <string name="bluetooth_hearing_aid_left_and_right_active" msgid="4294571497939983181">"アクティブ（左と右）"</string>
+    <string name="bluetooth_hearing_device_ambient_error" msgid="6035857289108813878">"周囲の音を更新できませんでした"</string>
     <string name="bluetooth_active_media_only_battery_level" msgid="7772517511061834073">"有効（メディアのみ）。バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
     <string name="bluetooth_active_media_only_battery_level_untethered" msgid="7444753133664620926">"有効（メディアのみ）。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>、右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_battery_level" msgid="2820003593899467676">"ゲストデバイス。バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_battery_level_untethered" msgid="5404013822067644960">"ゲストデバイス。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>、右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_media_only_battery_level" msgid="7928347900623812299">"ゲストデバイス（メディアのみ）。バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_media_only_battery_level_untethered" msgid="4458143141394300892">"ゲストデバイス（メディアのみ）。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>、右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>。"</string>
     <string name="bluetooth_battery_level_lea_support" msgid="5968584103507988820">"接続済み（音声の共有をサポート）。バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
     <string name="bluetooth_battery_level_untethered_lea_support" msgid="803110681688633362">"接続済み（音声の共有をサポート）。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>、右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>。"</string>
     <string name="bluetooth_battery_level_untethered_left_lea_support" msgid="7707464334346454950">"接続済み（音声の共有をサポート）。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
     <string name="bluetooth_battery_level_untethered_right_lea_support" msgid="8941549024377771038">"接続済み（音声の共有をサポート）。右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
     <string name="bluetooth_no_battery_level_lea_support" msgid="5721725041048434075">"接続済み（音声の共有をサポート）"</string>
+    <string name="bluetooth_guest_battery_level_lea_support" msgid="8098327939585013928">"ゲストデバイス（音声の共有をサポート）。バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_battery_level_untethered_lea_support" msgid="3701035025565668360">"ゲストデバイス（音声の共有をサポート）。左: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>、右: バッテリー残量 <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g>。"</string>
+    <string name="bluetooth_guest_no_battery_level_lea_support" msgid="2977038548753103470">"ゲストデバイス（音声の共有をサポート）"</string>
     <string name="bluetooth_active_media_only_no_battery_level" msgid="71106861912593126">"有効（メディアのみ）"</string>
+    <string name="bluetooth_guest_no_battery_level" msgid="9122974160381136920">"ゲストデバイス"</string>
+    <string name="bluetooth_guest_media_only_no_battery_level" msgid="7666347601796705721">"ゲストデバイス（メディアのみ）"</string>
     <string name="bluetooth_saved_device_lea_support" msgid="7231323139968285768">"音声の共有をサポートしています"</string>
+    <string name="bluetooth_guest_saved_device_lea_support" msgid="5621291599518569876">"ゲストデバイス。音声の共有をサポートしています"</string>
     <string name="bluetooth_hearing_aid_media_only_left_active" msgid="1632152540901488645">"有効（メディアのみ）、左のみ"</string>
     <string name="bluetooth_hearing_aid_media_only_right_active" msgid="3854140683042617230">"有効（メディアのみ）、右のみ"</string>
     <string name="bluetooth_hearing_aid_media_only_left_and_right_active" msgid="1299913413062528417">"有効（メディアのみ）、左右"</string>
-    <string name="bluetooth_profile_a2dp" msgid="4632426382762851724">"メディアの音声"</string>
+    <string name="bluetooth_profile_a2dp" msgid="4632426382762851724">"メディアのオーディオ"</string>
     <string name="bluetooth_profile_headset" msgid="5395952236133499331">"電話"</string>
     <string name="bluetooth_profile_opp" msgid="6692618568149493430">"ファイル転送"</string>
     <string name="bluetooth_profile_hid" msgid="2969922922664315866">"入力デバイス"</string>
@@ -357,6 +368,9 @@
     <string name="enhanced_connectivity_summary" msgid="1576414159820676330">"接続強化機能を有効にします。"</string>
     <string name="enable_terminal_title" msgid="3834790541986303654">"ローカルターミナル"</string>
     <string name="enable_terminal_summary" msgid="2481074834856064500">"ローカルシェルアクセスを提供するターミナルアプリを有効にします"</string>
+    <string name="enable_linux_terminal_title" msgid="5076044866895670637">"Linux 開発環境"</string>
+    <string name="enable_linux_terminal_summary" msgid="2029479880888108902">"（試験運用版）Android で Linux ターミナルを実行する"</string>
+    <string name="disable_linux_terminal_disclaimer" msgid="3054320531778388231">"無効にすると、Linux ターミナルのデータが消去されます"</string>
     <string name="hdcp_checking_title" msgid="3155692785074095986">"HDCP チェック"</string>
     <string name="hdcp_checking_dialog_title" msgid="7691060297616217781">"HDCP チェック動作を設定"</string>
     <string name="debug_debugging_category" msgid="535341063709248842">"デバッグ"</string>
@@ -372,6 +386,7 @@
     <string name="debug_hw_drawing_category" msgid="5830815169336975162">"ハードウェアアクセラレーテッドレンダリング"</string>
     <string name="media_category" msgid="8122076702526144053">"メディア"</string>
     <string name="debug_monitoring_category" msgid="1597387133765424994">"モニタリング"</string>
+    <string name="window_management_category" msgid="2015535427098365170">"ウィンドウ管理"</string>
     <string name="strict_mode" msgid="889864762140862437">"厳格モードを有効にする"</string>
     <string name="strict_mode_summary" msgid="1838248687233554654">"メインスレッドの処理が長引く場合は画面を点滅させる"</string>
     <string name="pointer_location" msgid="7516929526199520173">"ポインタの位置"</string>
@@ -380,6 +395,8 @@
     <string name="show_touches_summary" msgid="3692861665994502193">"タップを視覚表示する"</string>
     <string name="show_key_presses" msgid="6360141722735900214">"キーの押下を表示"</string>
     <string name="show_key_presses_summary" msgid="725387457373015024">"物理キーが押下されたことを視覚的に表示"</string>
+    <string name="touchpad_visualizer" msgid="3707916068870825115">"タッチパッド入力を表示する"</string>
+    <string name="touchpad_visualizer_summary" msgid="4056080018119847449">"タッチパッドの入力データと認識されたデータを画面オーバーレイで表示する"</string>
     <string name="show_screen_updates" msgid="2078782895825535494">"表示面の更新を通知"</string>
     <string name="show_screen_updates_summary" msgid="2126932969682087406">"更新時にウィンドウの表示面全体を点滅させる"</string>
     <string name="show_hw_screen_updates" msgid="2021286231267747506">"画面の更新を表示"</string>
@@ -408,10 +425,17 @@
     <string name="enable_gpu_debug_layers_summary" msgid="4921521407377170481">"デバッグアプリに GPU デバッグレイヤの読み込みを許可"</string>
     <string name="enable_verbose_vendor_logging" msgid="1196698788267682072">"ベンダーの詳細なロギングを有効にする"</string>
     <string name="enable_verbose_vendor_logging_summary" msgid="5426292185780393708">"バグレポートには、その他のデバイス固有のベンダーログが含まれます。これには、非公開の情報が含まれることがあります。また、バッテリーやストレージの使用量が増えることもあります。"</string>
+    <string name="enable_verbose_vendor_logging_checkbox" msgid="3864578373293835530">"1 日後に無効にする"</string>
+    <string name="verbose_vendor_logging_notification_title" msgid="6811217272559843592">"ベンダーの詳細なロギングが終了しました"</string>
+    <string name="verbose_vendor_logging_notification_summary" msgid="5226524769774370942">"1 日間有効にしました"</string>
+    <string name="verbose_vendor_logging_notification_action" msgid="1190831050259046071">"あと 1 日有効にする"</string>
+    <string name="verbose_vendor_logging_preference_summary_will_disable" msgid="6175431593394522553">"1 日後に無効にします"</string>
+    <string name="verbose_vendor_logging_preference_summary_on" msgid="9017757242481762036">"期限なしで有効にしました"</string>
     <string name="window_animation_scale_title" msgid="5236381298376812508">"ウィンドウ アニメ スケール"</string>
     <string name="transition_animation_scale_title" msgid="1278477690695439337">"トランジション アニメ スケール"</string>
     <string name="animator_duration_scale_title" msgid="7082913931326085176">"Animator 再生時間スケール"</string>
     <string name="overlay_display_devices_title" msgid="5411894622334469607">"第2画面のシミュレーション"</string>
+    <string name="shade_display_awareness_title" msgid="8000009404669495876">"シェードの表示位置"</string>
     <string name="debug_applications_category" msgid="5394089406638954196">"アプリ"</string>
     <string name="immediately_destroy_activities" msgid="1826287490705167403">"アクティビティを保持しない"</string>
     <string name="immediately_destroy_activities_summary" msgid="6289590341144557614">"ユーザーが離れたアクティビティを直ちに破棄する"</string>
@@ -425,7 +449,6 @@
     <string name="force_resizable_activities" msgid="7143612144399959606">"アクティビティをサイズ変更可能にする"</string>
     <string name="force_resizable_activities_summary" msgid="2490382056981583062">"マニフェストの値に関係なく、マルチウィンドウですべてのアクティビティのサイズを変更できるようにします。"</string>
     <string name="enable_freeform_support" msgid="7599125687603914253">"フリーフォーム ウィンドウを有効にする"</string>
-    <string name="enable_freeform_support_summary" msgid="1822862728719276331">"試験運用機能のフリーフォーム ウィンドウのサポートを有効にします。"</string>
     <string name="local_backup_password_title" msgid="4631017948933578709">"PC バックアップ パスワード"</string>
     <string name="local_backup_password_summary_none" msgid="7646898032616361714">"デスクトップのフルバックアップは現在保護されていません"</string>
     <string name="local_backup_password_summary_change" msgid="1707357670383995567">"デスクトップのフルバックアップ用のパスワードを変更または削除する場合にタップします"</string>
@@ -458,6 +481,9 @@
     <string name="select_webview_provider_title" msgid="3917815648099445503">"WebView の実装"</string>
     <string name="select_webview_provider_dialog_title" msgid="2444261109877277714">"WebView の実装の設定"</string>
     <string name="select_webview_provider_toast_text" msgid="8512254949169359848">"この選択は無効になりました。もう一度お試しください。"</string>
+    <string name="webview_launch_devtools_title" msgid="8009687433555367112">"WebView の DevTools"</string>
+    <string name="webview_launch_devtools_no_package" msgid="3182544553665113721">"WebView パッケージが見つかりません。"</string>
+    <string name="webview_launch_devtools_no_activity" msgid="4066006313619617140">"DevTools を起動できませんでした。"</string>
     <string name="picture_color_mode" msgid="1013807330552931903">"画像の色モード"</string>
     <string name="picture_color_mode_desc" msgid="151780973768136200">"sRGBを使用"</string>
     <string name="daltonizer_mode_disabled" msgid="403424372812399228">"無効"</string>
@@ -470,7 +496,7 @@
     <string name="daltonizer_type_overridden" msgid="4509604753672535721">"<xliff:g id="TITLE">%1$s</xliff:g>によって上書き済み"</string>
     <string name="power_remaining_settings_home_page" msgid="4885165789445462557">"<xliff:g id="PERCENTAGE">%1$s</xliff:g> - <xliff:g id="TIME_STRING">%2$s</xliff:g>"</string>
     <string name="power_charging_on_hold_settings_home_page" msgid="7690464049464805856">"<xliff:g id="LEVEL">%1$s</xliff:g> - バッテリーを保護するため、充電を一時停止しています"</string>
-    <string name="power_incompatible_charging_settings_home_page" msgid="1322050766135126880">"<xliff:g id="LEVEL">%1$s</xliff:g> - 充電用アクセサリを確認してください"</string>
+    <string name="power_incompatible_charging_settings_home_page" msgid="1322050766135126880">"<xliff:g id="LEVEL">%1$s</xliff:g> - 充電用アクセサリーを確認してください"</string>
     <string name="power_remaining_duration_only" msgid="8264199158671531431">"残り時間: 約 <xliff:g id="TIME_REMAINING">%1$s</xliff:g>"</string>
     <string name="power_discharging_duration" msgid="1076561255466053220">"残り時間: 約 <xliff:g id="TIME_REMAINING">%1$s</xliff:g>（<xliff:g id="LEVEL">%2$s</xliff:g>）"</string>
     <string name="power_remaining_duration_only_enhanced" msgid="2527842780666073218">"残り時間: 約 <xliff:g id="TIME_REMAINING">%1$s</xliff:g>（使用状況に基づく）"</string>
@@ -490,7 +516,7 @@
     <string name="power_charging" msgid="6727132649743436802">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATE">%2$s</xliff:g>"</string>
     <string name="power_remaining_charging_duration_only" msgid="8085099012811384899">"完了まであと <xliff:g id="TIME">%1$s</xliff:g>"</string>
     <string name="power_charging_duration" msgid="6127154952524919719">"<xliff:g id="LEVEL">%1$s</xliff:g> - 完了まであと <xliff:g id="TIME">%2$s</xliff:g>"</string>
-    <string name="power_charging_limited" msgid="8202147604844938236">"<xliff:g id="LEVEL">%1$s</xliff:g> - 充電が最適化されています"</string>
+    <string name="power_charging_limited" msgid="4144004473976005214">"<xliff:g id="LEVEL">%1$s</xliff:g> - バッテリーを保護するため、充電を一時停止しています"</string>
     <string name="power_charging_future_paused" msgid="1809543660923642799">"<xliff:g id="LEVEL">%1$s</xliff:g> - 充電中"</string>
     <string name="power_fast_charging_duration_v2" msgid="3797735998640359490">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATUS">%2$s</xliff:g> - <xliff:g id="TIME">%3$s</xliff:g>までに完了"</string>
     <string name="power_charging_duration_v2" msgid="2938998284074003248">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="TIME">%2$s</xliff:g>までに充電完了"</string>
@@ -511,7 +537,9 @@
     <string name="battery_info_status_charging_fast_v2" msgid="1825439848151256589">"急速充電中"</string>
     <string name="disabled_by_admin_summary_text" msgid="5343911767402923057">"管理者により管理されています"</string>
     <string name="disabled_by_app_ops_text" msgid="8373595926549098012">"制限付き設定によって管理されています"</string>
+    <string name="disabled_in_phone_call_text" msgid="6568931334337318320">"通話中は利用できません"</string>
     <string name="disabled" msgid="8017887509554714950">"無効"</string>
+    <string name="enabled" msgid="3997122818554810678">"有効"</string>
     <string name="external_source_trusted" msgid="1146522036773132905">"許可"</string>
     <string name="external_source_untrusted" msgid="5037891688911672227">"許可しない"</string>
     <string name="install_other_apps" msgid="3232595082023199454">"不明なアプリのインストール"</string>
@@ -557,6 +585,8 @@
     <string name="alarms_and_reminders_title" msgid="8819933264635406032">"アラームとリマインダー"</string>
     <string name="alarms_and_reminders_footer_title" msgid="6302587438389079695">"アラームの設定や時間ベースのアクション設定を、このアプリに許可します。これによりアプリがバックグラウンドで実行できるようになるため、バッテリーの使用量が増えることがあります。\n\nこの権限が OFF の場合、このアプリで設定された既存のアラームと時間ベースのイベントは機能しなくなります。"</string>
     <string name="keywords_alarms_and_reminders" msgid="6633360095891110611">"スケジュール, アラーム, リマインダー, 時計"</string>
+    <string name="zen_mode_do_not_disturb_name" msgid="6798711401734798283">"サイレント モード"</string>
+    <string name="zen_mode_settings_title" msgid="7374070457626419755">"サイレント モード"</string>
     <string name="zen_mode_enable_dialog_turn_on" msgid="6418297231575050426">"ON にする"</string>
     <string name="zen_mode_settings_turn_on_dialog_title" msgid="2760567063190790696">"サイレント モードを ON にする"</string>
     <string name="zen_mode_settings_summary_off" msgid="3832876036123504076">"なし"</string>
@@ -569,15 +599,19 @@
     <string name="zen_mode_duration_settings_title" msgid="1553451650289651489">"時間"</string>
     <string name="zen_mode_duration_always_prompt_title" msgid="3212996860498119555">"毎回確認"</string>
     <string name="zen_mode_forever" msgid="3339224497605461291">"OFF にするまで"</string>
+    <string name="zen_mode_starred_contacts_empty_name" msgid="933552939706125937">"（名前なし）"</string>
     <string name="time_unit_just_now" msgid="3006134267292728099">"たった今"</string>
     <string name="media_transfer_this_device_name" msgid="2357329267148436433">"このデバイス"</string>
     <string name="media_transfer_this_device_name_tablet" msgid="2975593806278422086">"このタブレット"</string>
-    <!-- no translation found for media_transfer_this_device_name_tv (5285685336836896535) -->
-    <skip />
+    <string name="media_transfer_this_device_name_desktop" msgid="7912386128141470452">"このパソコン（内蔵）"</string>
+    <string name="media_transfer_this_device_name_tv" msgid="8508713779441163887">"このテレビ"</string>
     <string name="media_transfer_dock_speaker_device_name" msgid="2856219597113881950">"ホルダー スピーカー"</string>
     <string name="media_transfer_external_device_name" msgid="2588672258721846418">"外部デバイス"</string>
     <string name="media_transfer_default_device_name" msgid="4315604017399871828">"接続済みのデバイス"</string>
     <string name="media_transfer_this_phone" msgid="7194341457812151531">"このデバイス"</string>
+    <string name="media_transfer_digital_line_name" msgid="312091711951124301">"S/PDIF"</string>
+    <string name="media_transfer_analog_line_name" msgid="1841163866716302104">"アナログ"</string>
+    <string name="media_transfer_aux_line_name" msgid="894135835967856689">"AUX"</string>
     <string name="media_output_status_unknown_error" msgid="5098565887497902222">"このデバイスでは再生できません"</string>
     <string name="media_output_status_require_premium" msgid="8411255800047014822">"アカウントを更新して切り替えてください"</string>
     <string name="media_output_status_not_support_downloads" msgid="4523828729240373315">"再生不可: ダウンロードしたコンテンツ"</string>
@@ -590,10 +624,10 @@
     <string name="tv_media_transfer_earc_fallback_title" msgid="3098685494578519940">"HDMI eARC"</string>
     <string name="tv_media_transfer_arc_subtitle" msgid="1040017851325069082">"ARC 経由で接続済み"</string>
     <string name="tv_media_transfer_earc_subtitle" msgid="645191413103303077">"eARC 経由で接続済み"</string>
-    <string name="tv_media_transfer_default" msgid="5403053145185843843">"テレビのデフォルト"</string>
-    <string name="tv_media_transfer_hdmi" msgid="692569220956829921">"HDMI 出力"</string>
-    <string name="tv_media_transfer_internal_speakers" msgid="8181494402866565865">"内蔵スピーカー"</string>
+    <string name="tv_media_transfer_internal_speakers" msgid="4662765121700213785">"内蔵スピーカー"</string>
+    <string name="tv_media_transfer_hdmi_title" msgid="6715658310934507444">"TV オーディオ"</string>
     <string name="profile_connect_timeout_subtext" msgid="4043408193005851761">"接続エラーです。デバイスを OFF にしてから ON に戻してください"</string>
+    <string name="bluetooth_key_missing_subtext" msgid="1003639333895028298">"接続できません"</string>
     <string name="media_transfer_wired_device_name" msgid="4447880899964056007">"有線オーディオ デバイス"</string>
     <string name="help_label" msgid="3528360748637781274">"ヘルプとフィードバック"</string>
     <string name="storage_category" msgid="2287342585424631813">"ストレージ"</string>
@@ -649,7 +683,7 @@
     <string name="guest_remove_guest_confirm_button" msgid="7858123434954143879">"削除"</string>
     <string name="guest_resetting" msgid="7822120170191509566">"ゲストをリセットしています…"</string>
     <string name="guest_reset_and_restart_dialog_title" msgid="3396657008451616041">"ゲスト セッションをリセットしますか？"</string>
-    <string name="guest_reset_and_restart_dialog_message" msgid="2764425635305200790">"新しいゲスト セッションが開始し、現在のセッションのすべてのアプリとデータが削除されます"</string>
+    <string name="guest_reset_and_restart_dialog_message" msgid="2764425635305200790">"新しいゲスト セッションが開始され、現在のセッションのすべてのアプリとデータが削除されます"</string>
     <string name="guest_exit_dialog_title" msgid="1846494656849381804">"ゲストモードを終了しますか？"</string>
     <string name="guest_exit_dialog_message" msgid="1743218864242719783">"現在のゲスト セッションからすべてのアプリとデータが削除されます"</string>
     <string name="grant_admin" msgid="4323199171790522574">"はい、管理者にします"</string>
@@ -674,7 +708,12 @@
     <string name="cached_apps_freezer_disabled" msgid="4816382260660472042">"無効"</string>
     <string name="cached_apps_freezer_enabled" msgid="8866703500183051546">"有効"</string>
     <string name="cached_apps_freezer_reboot_dialog_text" msgid="695330563489230096">"この変更を適用するには、デバイスの再起動が必要です。今すぐ再起動するか、キャンセルしてください。"</string>
-    <string name="media_transfer_wired_usb_device_name" msgid="7699141088423210903">"有線ヘッドフォン"</string>
+    <string name="media_transfer_wired_headphone_name" msgid="8698668536022665254">"有線ヘッドフォン"</string>
+    <string name="media_transfer_headphone_name" msgid="1157798825650178478">"有線オーディオ"</string>
+    <string name="media_transfer_usb_audio_name" msgid="1789292056757821355">"USB オーディオ"</string>
+    <string name="media_transfer_wired_device_mic_name" msgid="7115192790725088698">"有線マイク"</string>
+    <string name="media_transfer_usb_device_mic_name" msgid="7171789543226269822">"USB マイク"</string>
+    <string name="media_transfer_bt_device_mic_name" msgid="1870669402238687618">"BT マイク"</string>
     <string name="wifi_hotspot_switch_on_text" msgid="9212273118217786155">"ON"</string>
     <string name="wifi_hotspot_switch_off_text" msgid="7245567251496959764">"OFF"</string>
     <string name="carrier_network_change_mode" msgid="4257621815706644026">"携帯通信会社のネットワークを変更します"</string>

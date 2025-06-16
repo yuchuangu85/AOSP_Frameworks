@@ -32,7 +32,6 @@ import android.os.BatteryStats;
 import android.os.BatteryUsageStatsQuery;
 import android.os.Process;
 import android.os.UidBatteryConsumer;
-import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.SparseArray;
 
 import androidx.test.filters.SmallTest;
@@ -56,11 +55,6 @@ import org.mockito.MockitoAnnotations;
 @SmallTest
 @SuppressWarnings("GuardedBy")
 public class CpuPowerCalculatorTest {
-    @Rule(order = 0)
-    public final RavenwoodRule mRavenwood = new RavenwoodRule.Builder()
-            .setProvideMainThread(true)
-            .build();
-
     private static final double PRECISION = 0.00001;
 
     private static final int APP_UID1 = Process.FIRST_APPLICATION_UID + 42;
@@ -68,7 +62,7 @@ public class CpuPowerCalculatorTest {
 
     private static final int NUM_CPU_FREQS = 2 + 2;  // 2 clusters * 2 freqs each
 
-    @Rule(order = 1)
+    @Rule(order = 0)
     public final BatteryUsageStatsRule mStatsRule = new BatteryUsageStatsRule()
             .setAveragePower(PowerProfile.POWER_CPU_ACTIVE, 720)
             .setCpuScalingPolicy(0, new int[]{0, 1}, new int[]{100, 200})
@@ -192,8 +186,6 @@ public class CpuPowerCalculatorTest {
                 .isEqualTo(3333);
         assertThat(uidConsumer1.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(1.031677);
-        assertThat(uidConsumer1.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
         assertThat(uidConsumer1.getPackageWithHighestDrain()).isEqualTo("bar");
 
         UidBatteryConsumer uidConsumer2 = mStatsRule.getUidBatteryConsumer(APP_UID2);
@@ -201,21 +193,15 @@ public class CpuPowerCalculatorTest {
                 .isEqualTo(7777);
         assertThat(uidConsumer2.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(2.489544);
-        assertThat(uidConsumer2.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
         assertThat(uidConsumer2.getPackageWithHighestDrain()).isNull();
 
         final BatteryConsumer deviceBatteryConsumer = mStatsRule.getDeviceBatteryConsumer();
         assertThat(deviceBatteryConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(3.52122);
-        assertThat(deviceBatteryConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
 
         final BatteryConsumer appsBatteryConsumer = mStatsRule.getAppsBatteryConsumer();
         assertThat(appsBatteryConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(3.52122);
-        assertThat(appsBatteryConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
     }
 
     @Test
@@ -264,8 +250,6 @@ public class CpuPowerCalculatorTest {
                 .isEqualTo(3333);
         assertThat(uidConsumer1.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(3.18877);
-        assertThat(uidConsumer1.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
         assertThat(uidConsumer1.getPackageWithHighestDrain()).isEqualTo("bar");
 
         UidBatteryConsumer uidConsumer2 = mStatsRule.getUidBatteryConsumer(APP_UID2);
@@ -273,21 +257,15 @@ public class CpuPowerCalculatorTest {
                 .isEqualTo(7777);
         assertThat(uidConsumer2.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(7.44072);
-        assertThat(uidConsumer2.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
         assertThat(uidConsumer2.getPackageWithHighestDrain()).isNull();
 
         final BatteryConsumer deviceBatteryConsumer = mStatsRule.getDeviceBatteryConsumer();
         assertThat(deviceBatteryConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(10.62949);
-        assertThat(deviceBatteryConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
 
         final BatteryConsumer appsBatteryConsumer = mStatsRule.getDeviceBatteryConsumer();
         assertThat(appsBatteryConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_CPU))
                 .isWithin(PRECISION).of(10.62949);
-        assertThat(appsBatteryConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_CPU))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
     }
 
     @Test
@@ -394,10 +372,7 @@ public class CpuPowerCalculatorTest {
         doAnswer(invocation -> {
             LongArrayMultiStateCounter counter = invocation.getArgument(1);
             long timestampMs = invocation.getArgument(2);
-            LongArrayMultiStateCounter.LongArrayContainer container =
-                    new LongArrayMultiStateCounter.LongArrayContainer(NUM_CPU_FREQS);
-            container.setValues(cpuTimes);
-            counter.updateValues(container, timestampMs);
+            counter.updateValues(cpuTimes, timestampMs);
             return null;
         }).when(mMockKernelSingleUidTimeReader).addDelta(eq(uid),
                 any(LongArrayMultiStateCounter.class), anyLong());

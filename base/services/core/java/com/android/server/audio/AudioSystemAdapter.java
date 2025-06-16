@@ -23,6 +23,7 @@ import android.media.AudioDeviceAttributes;
 import android.media.AudioMixerAttributes;
 import android.media.AudioSystem;
 import android.media.IDevicesForAttributesCallback;
+import android.media.INativeAudioVolumeGroupCallback;
 import android.media.ISoundDose;
 import android.media.ISoundDoseCallback;
 import android.media.audiopolicy.AudioMix;
@@ -367,9 +368,9 @@ public class AudioSystemAdapter implements AudioSystem.RoutingUpdateCallback,
      * @return
      */
     public int setDeviceConnectionState(AudioDeviceAttributes attributes, int state,
-            int codecFormat) {
+            int codecFormat, boolean deviceSwitch) {
         invalidateRoutingCache();
-        return AudioSystem.setDeviceConnectionState(attributes, state, codecFormat);
+        return AudioSystem.setDeviceConnectionState(attributes, state, codecFormat, deviceSwitch);
     }
 
     /**
@@ -547,13 +548,14 @@ public class AudioSystemAdapter implements AudioSystem.RoutingUpdateCallback,
      * @param device
      * @return
      */
-    public int setStreamVolumeIndexAS(int stream, int index, int device) {
-        return AudioSystem.setStreamVolumeIndexAS(stream, index, device);
+    public int setStreamVolumeIndexAS(int stream, int index, boolean muted, int device) {
+        return AudioSystem.setStreamVolumeIndexAS(stream, index, muted, device);
     }
 
     /** Same as {@link AudioSystem#setVolumeIndexForAttributes(AudioAttributes, int, int)} */
-    public int setVolumeIndexForAttributes(AudioAttributes attributes, int index, int device) {
-        return AudioSystem.setVolumeIndexForAttributes(attributes, index, device);
+    public int setVolumeIndexForAttributes(AudioAttributes attributes, int index, boolean muted,
+            int device) {
+        return AudioSystem.setVolumeIndexForAttributes(attributes, index, muted, device);
     }
 
     /**
@@ -746,6 +748,37 @@ public class AudioSystemAdapter implements AudioSystem.RoutingUpdateCallback,
      */
     public int setMasterMute(boolean mute) {
         return AudioSystem.setMasterMute(mute);
+    }
+
+    public long listenForSystemPropertyChange(String systemPropertyName, Runnable callback) {
+        return AudioSystem.listenForSystemPropertyChange(systemPropertyName, callback);
+    }
+
+    public void triggerSystemPropertyUpdate(long handle) {
+        AudioSystem.triggerSystemPropertyUpdate(handle);
+    }
+
+    /**
+     * Same as {@link AudioSystem#registerAudioVolumeGroupCallback(INativeAudioVolumeGroupCallback)}
+     * @param callback to register
+     * @return {@link #SUCCESS} if successfully registered.
+     *
+     * @hide
+     */
+    public int registerAudioVolumeGroupCallback(INativeAudioVolumeGroupCallback callback) {
+        return AudioSystem.registerAudioVolumeGroupCallback(callback);
+    }
+
+    /**
+     * Same as
+     * {@link AudioSystem#unregisterAudioVolumeGroupCallback(INativeAudioVolumeGroupCallback)}.
+     * @param callback to register
+     * @return {@link #SUCCESS} if successfully registered.
+     *
+     * @hide
+     */
+    public int unregisterAudioVolumeGroupCallback(INativeAudioVolumeGroupCallback callback) {
+        return AudioSystem.unregisterAudioVolumeGroupCallback(callback);
     }
 
     /**

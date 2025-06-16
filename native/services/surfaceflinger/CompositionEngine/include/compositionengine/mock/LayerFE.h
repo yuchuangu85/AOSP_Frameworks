@@ -50,17 +50,20 @@ public:
                        std::optional<compositionengine::LayerFE::LayerSettings>(
                                compositionengine::LayerFE::ClientCompositionTargetSettings&));
 
-    MOCK_METHOD(void, onLayerDisplayed, (ftl::SharedFuture<FenceResult>, ui::LayerStack),
-                (override));
-
     MOCK_METHOD0(createReleaseFenceFuture, ftl::Future<FenceResult>());
     MOCK_METHOD1(setReleaseFence, void(const FenceResult&));
+    MOCK_METHOD1(setReleasedBuffer, void(sp<GraphicBuffer>));
     MOCK_METHOD0(getReleaseFencePromiseStatus, LayerFE::ReleaseFencePromiseStatus());
     MOCK_CONST_METHOD0(getDebugName, const char*());
     MOCK_CONST_METHOD0(getSequence, int32_t());
     MOCK_CONST_METHOD0(hasRoundedCorners, bool());
     MOCK_CONST_METHOD0(getMetadata, gui::LayerMetadata*());
     MOCK_CONST_METHOD0(getRelativeMetadata, gui::LayerMetadata*());
+    MOCK_METHOD0(onPictureProfileCommitted, void());
+    MOCK_METHOD(void, setLastHwcState,
+                (const HwcLayerDebugState&), (override));
+    MOCK_METHOD(const HwcLayerDebugState&, getLastHwcState,
+                (), (const, override));
 };
 
 } // namespace android::compositionengine::mock

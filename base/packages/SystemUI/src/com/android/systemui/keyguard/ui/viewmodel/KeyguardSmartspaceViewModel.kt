@@ -17,10 +17,14 @@
 package com.android.systemui.keyguard.ui.viewmodel
 
 import android.content.Context
+import android.content.res.Configuration
+import android.util.Log
+import com.android.systemui.customization.R as customR
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.domain.interactor.KeyguardSmartspaceInteractor
 import com.android.systemui.res.R
+import com.android.systemui.shade.domain.interactor.ShadeModeInteractor
 import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -38,14 +42,15 @@ constructor(
     smartspaceController: LockscreenSmartspaceController,
     keyguardClockViewModel: KeyguardClockViewModel,
     smartspaceInteractor: KeyguardSmartspaceInteractor,
+    shadeModeInteractor: ShadeModeInteractor,
 ) {
     /** Whether the smartspace section is available in the build. */
-    val isSmartspaceEnabled: Boolean = smartspaceController.isEnabled()
+    val isSmartspaceEnabled: Boolean = smartspaceController.isEnabled
     /** Whether the weather area is available in the build. */
     private val isWeatherEnabled: StateFlow<Boolean> = smartspaceInteractor.isWeatherEnabled
 
     /** Whether the data and weather areas are decoupled in the build. */
-    val isDateWeatherDecoupled: Boolean = smartspaceController.isDateWeatherDecoupled()
+    val isDateWeatherDecoupled: Boolean = smartspaceController.isDateWeatherDecoupled
 
     /** Whether the date area should be visible. */
     val isDateVisible: StateFlow<Boolean> =
@@ -59,10 +64,9 @@ constructor(
 
     /** Whether the weather area should be visible. */
     val isWeatherVisible: StateFlow<Boolean> =
-        combine(
+        combine(isWeatherEnabled, keyguardClockViewModel.hasCustomWeatherDataDisplay) {
                 isWeatherEnabled,
-                keyguardClockViewModel.hasCustomWeatherDataDisplay,
-            ) { isWeatherEnabled, clockIncludesCustomWeatherDisplay ->
+                clockIncludesCustomWeatherDisplay ->
                 isWeatherVisible(
                     clockIncludesCustomWeatherDisplay = clockIncludesCustomWeatherDisplay,
                     isWeatherEnabled = isWeatherEnabled,
@@ -75,8 +79,8 @@ constructor(
                     isWeatherVisible(
                         clockIncludesCustomWeatherDisplay =
                             keyguardClockViewModel.hasCustomWeatherDataDisplay.value,
-                        isWeatherEnabled = smartspaceInteractor.isWeatherEnabled.value,
-                    )
+                        isWeatherEnabled = isWeatherEnabled.value,
+                    ),
             )
 
     private fun isWeatherVisible(
@@ -89,15 +93,59 @@ constructor(
     /* trigger clock and smartspace constraints change when smartspace appears */
     val bcSmartspaceVisibility: StateFlow<Int> = smartspaceInteractor.bcSmartspaceVisibility
 
+    val isShadeLayoutWide: StateFlow<Boolean> = shadeModeInteractor.isShadeLayoutWide
+
     companion object {
-        fun getSmartspaceStartMargin(context: Context): Int {
-            return context.resources.getDimensionPixelSize(R.dimen.below_clock_padding_start) +
-                context.resources.getDimensionPixelSize(R.dimen.status_view_margin_horizontal)
+        private const val TAG = "KeyguardSmartspaceVM"
+
+        fun dateWeatherBelowSmallClock(
+            configuration: Configuration,
+            customDateWeather: Boolean = false,
+        ): Boolean {
+            return if (
+                com.android.systemui.shared.Flags.clockReactiveSmartspaceLayout() &&
+                    !customDateWeather
+            ) {
+                // font size to display size
+                // These values come from changing the font size and display size on a non-foldable.
+                // Visually looked at which configs cause the date/weather to push off of the screen
+                val breakingPairs =
+                    listOf(
+                        0.85f to 320, // tiny font size but large display size
+                        1f to 346,
+                        1.15f to 346,
+                        1.5f to 376,
+                        1.8f to 411, // large font size but tiny display size
+                    )
+                val screenWidthDp = configuration.screenWidthDp
+                val fontScale = configuration.fontScale
+                var fallBelow = false
+                for ((font, width) in breakingPairs) {
+                    if (fontScale >= font && screenWidthDp <= width) {
+                        fallBelow = true
+                        break
+                    }
+                }
+                Log.d(TAG, "Width: $screenWidthDp, Font: $fontScale, BelowClock: $fallBelow")
+                return fallBelow
+            } else {
+                true
+            }
         }
 
-        fun getSmartspaceEndMargin(context: Context): Int {
+        fun getDateWeatherStartMargin(context: Context): Int {
+            return context.resources.getDimensionPixelSize(R.dimen.below_clock_padding_start) +
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
+        }
+
+        fun getDateWeatherEndMargin(context: Context): Int {
             return context.resources.getDimensionPixelSize(R.dimen.below_clock_padding_end) +
-                context.resources.getDimensionPixelSize(R.dimen.status_view_margin_horizontal)
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
+        }
+
+        fun getSmartspaceHorizontalMargin(context: Context): Int {
+            return context.resources.getDimensionPixelSize(R.dimen.smartspace_padding_horizontal) +
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
         }
     }
 }

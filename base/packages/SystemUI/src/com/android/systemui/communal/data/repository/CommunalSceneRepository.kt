@@ -16,27 +16,26 @@
 
 package com.android.systemui.communal.data.repository
 
+import android.content.res.Configuration
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.compose.animation.scene.ObservableTransitionState
 import com.android.compose.animation.scene.SceneKey
 import com.android.compose.animation.scene.TransitionKey
 import com.android.systemui.communal.dagger.Communal
 import com.android.systemui.communal.shared.model.CommunalScenes
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.scene.shared.model.SceneDataSource
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 /** Encapsulates the state of communal mode. */
 interface CommunalSceneRepository {
@@ -48,11 +47,14 @@ interface CommunalSceneRepository {
     /** Exposes the transition state of the communal [SceneTransitionLayout]. */
     val transitionState: StateFlow<ObservableTransitionState>
 
+    /** Current orientation of the communal container. */
+    val communalContainerOrientation: StateFlow<Int>
+
     /** Updates the requested scene. */
     fun changeScene(toScene: SceneKey, transitionKey: TransitionKey? = null)
 
     /** Immediately snaps to the desired scene. */
-    fun snapToScene(toScene: SceneKey, delayMillis: Long = 0)
+    fun snapToScene(toScene: SceneKey)
 
     /**
      * Updates the transition state of the hub [SceneTransitionLayout].
@@ -60,14 +62,15 @@ interface CommunalSceneRepository {
      * Note that you must call is with `null` when the UI is done or risk a memory leak.
      */
     fun setTransitionState(transitionState: Flow<ObservableTransitionState>?)
+
+    /** Set the current orientation of the communal container. */
+    fun setCommunalContainerOrientation(orientation: Int)
 }
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class CommunalSceneRepositoryImpl
 @Inject
 constructor(
-    @Application private val applicationScope: CoroutineScope,
     @Background backgroundScope: CoroutineScope,
     @Communal private val sceneDataSource: SceneDataSource,
 ) : CommunalSceneRepository {
@@ -85,21 +88,21 @@ constructor(
                 initialValue = defaultTransitionState,
             )
 
+    private val _communalContainerOrientation =
+        MutableStateFlow(Configuration.ORIENTATION_UNDEFINED)
+    override val communalContainerOrientation: StateFlow<Int> =
+        _communalContainerOrientation.asStateFlow()
+
     override fun changeScene(toScene: SceneKey, transitionKey: TransitionKey?) {
-        applicationScope.launch {
-            // SceneTransitionLayout state updates must be triggered on the thread the STL was
-            // created on.
-            sceneDataSource.changeScene(toScene, transitionKey)
-        }
+        sceneDataSource.changeScene(toScene, transitionKey)
     }
 
-    override fun snapToScene(toScene: SceneKey, delayMillis: Long) {
-        applicationScope.launch {
-            // SceneTransitionLayout state updates must be triggered on the thread the STL was
-            // created on.
-            delay(delayMillis)
-            sceneDataSource.snapToScene(toScene)
-        }
+    override fun snapToScene(toScene: SceneKey) {
+        sceneDataSource.snapToScene(toScene)
+    }
+
+    override fun setCommunalContainerOrientation(orientation: Int) {
+        _communalContainerOrientation.value = orientation
     }
 
     /**

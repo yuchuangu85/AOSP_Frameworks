@@ -35,6 +35,7 @@ import static android.content.PermissionChecker.checkCallingOrSelfPermissionForP
 import static android.content.pm.LauncherApps.FLAG_CACHE_BUBBLE_SHORTCUTS;
 import static android.content.pm.LauncherApps.FLAG_CACHE_NOTIFICATION_SHORTCUTS;
 import static android.content.pm.LauncherApps.FLAG_CACHE_PEOPLE_TILE_SHORTCUTS;
+import static android.view.WindowManager.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI;
 
 import static com.android.server.pm.PackageArchiver.isArchivingEnabled;
 
@@ -88,6 +89,7 @@ import android.content.pm.ShortcutServiceInternal;
 import android.content.pm.ShortcutServiceInternal.ShortcutChangeListener;
 import android.content.pm.UserInfo;
 import android.content.pm.UserProperties;
+import android.database.ContentObserver;
 import android.graphics.Rect;
 import android.multiuser.Flags;
 import android.net.Uri;
@@ -117,7 +119,6 @@ import android.window.IDumpCallback;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.content.PackageMonitor;
-import com.android.internal.infra.AndroidFuture;
 import com.android.internal.os.BackgroundThread;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.CollectionUtils;
@@ -249,6 +250,7 @@ public class LauncherAppsService extends SystemService {
         private PackageInstallerService mPackageInstallerService;
 
         final LauncherAppsServiceInternal mInternal;
+        private SecureSettingsObserver mSecureSettingsObserver;
 
         @NonNull
         private final RemoteCallbackList<IDumpCallback> mDumpCallbacks =
@@ -278,6 +280,7 @@ public class LauncherAppsService extends SystemService {
             mCallbackHandler = BackgroundThread.getHandler();
             mDpm = (DevicePolicyManager) mContext.getSystemService(Context.DEVICE_POLICY_SERVICE);
             mInternal = new LocalService();
+            registerSettingsObserver();
         }
 
         @VisibleForTesting
@@ -376,9 +379,10 @@ public class LauncherAppsService extends SystemService {
         public List<UserHandle> getUserProfiles() {
             int[] userIds;
             if (!canAccessHiddenProfile(getCallingUid(), getCallingPid())) {
-                userIds = mUm.getProfileIdsExcludingHidden(getCallingUserId(), /* enabled= */ true);
+                userIds = mUserManagerInternal.getProfileIdsExcludingHidden(getCallingUserId(),
+                        /* enabled= */ true);
             } else {
-                userIds = mUm.getEnabledProfileIds(getCallingUserId());
+                userIds = mUserManagerInternal.getProfileIds(getCallingUserId(), true);
             }
             final List<UserHandle> result = new ArrayList<>(userIds.length);
             for (int userId : userIds) {
@@ -395,9 +399,10 @@ public class LauncherAppsService extends SystemService {
 
             int[] userIds;
             if (!canAccessHiddenProfile(callingUid, Binder.getCallingPid())) {
-                userIds = mUm.getProfileIdsExcludingHidden(getCallingUserId(), /* enabled= */ true);
+                userIds = mUserManagerInternal.getProfileIdsExcludingHidden(getCallingUserId(),
+                        /* enabled= */ true);
             } else {
-                userIds = mUm.getEnabledProfileIds(getCallingUserId());
+                userIds = mUserManagerInternal.getProfileIds(getCallingUserId(), true);
             }
 
             final long token = Binder.clearCallingIdentity();
@@ -500,16 +505,11 @@ public class LauncherAppsService extends SystemService {
                 return true;
             }
 
-            long ident = injectClearCallingIdentity();
-            try {
-                final UserInfo callingUserInfo = mUm.getUserInfo(callingUserId);
-                if (callingUserInfo != null && callingUserInfo.isProfile()) {
-                    Slog.w(TAG, message + " for another profile "
-                            + targetUserId + " from " + callingUserId + " not allowed");
-                    return false;
-                }
-            } finally {
-                injectRestoreCallingIdentity(ident);
+            final UserInfo callingUserInfo = mUserManagerInternal.getUserInfo(callingUserId);
+            if (callingUserInfo != null && callingUserInfo.isProfile()) {
+                Slog.w(TAG, message + " for another profile "
+                        + targetUserId + " from " + callingUserId + " not allowed");
+                return false;
             }
 
             if (isHiddenProfile(UserHandle.of(targetUserId))
@@ -526,9 +526,9 @@ public class LauncherAppsService extends SystemService {
                 return false;
             }
 
-            long identity = injectClearCallingIdentity();
             try {
-                UserProperties properties = mUm.getUserProperties(targetUser);
+                UserProperties properties = mUserManagerInternal
+                        .getUserProperties(targetUser.getIdentifier());
                 if (properties == null) {
                     return false;
                 }
@@ -537,8 +537,6 @@ public class LauncherAppsService extends SystemService {
                         == UserProperties.PROFILE_API_VISIBILITY_HIDDEN;
             } catch (IllegalArgumentException e) {
                 return false;
-            } finally {
-                injectRestoreCallingIdentity(identity);
             }
         }
 
@@ -683,7 +681,7 @@ public class LauncherAppsService extends SystemService {
             final int callingUid = injectBinderCallingUid();
             final long ident = injectClearCallingIdentity();
             try {
-                if (mUm.getUserInfo(user.getIdentifier()).isManagedProfile()) {
+                if (mUserManagerInternal.getUserInfo(user.getIdentifier()).isManagedProfile()) {
                     // Managed profile should not show hidden apps
                     return launcherActivities;
                 }
@@ -847,7 +845,9 @@ public class LauncherAppsService extends SystemService {
                     // package does not exist; should not happen
                     return null;
                 }
-                return new LauncherActivityInfoInternal(activityInfo, incrementalStatesInfo, user);
+                return new LauncherActivityInfoInternal(activityInfo, incrementalStatesInfo, user,
+                        supportsMultiInstance(mIPM, activityInfo.getComponentName(),
+                                user.getIdentifier()));
             } finally {
                 Binder.restoreCallingIdentity(ident);
             }
@@ -938,7 +938,7 @@ public class LauncherAppsService extends SystemService {
                         archiveState.getActivityInfos();
                 for (int j = 0; j < archiveActivityInfoList.size(); j++) {
                     launcherActivityList.add(
-                            constructLauncherActivityInfoForArchivedApp(
+                            constructLauncherActivityInfoForArchivedApp(mIPM,
                                     user, applicationInfo, archiveActivityInfoList.get(j)));
                 }
             }
@@ -946,6 +946,7 @@ public class LauncherAppsService extends SystemService {
         }
 
         private static LauncherActivityInfoInternal constructLauncherActivityInfoForArchivedApp(
+                IPackageManager pm,
                 UserHandle user,
                 ApplicationInfo applicationInfo,
                 ArchiveState.ArchiveActivityInfo archiveActivityInfo) {
@@ -961,7 +962,9 @@ public class LauncherAppsService extends SystemService {
                     activityInfo,
                     new IncrementalStatesInfo(
                             false /* isLoading */, 0 /* progress */, 0 /* loadingCompletedTime */),
-                    user);
+                    user,
+                    supportsMultiInstance(pm, activityInfo.getComponentName(),
+                            user.getIdentifier()));
         }
 
         @NonNull
@@ -1022,7 +1025,9 @@ public class LauncherAppsService extends SystemService {
                     continue;
                 }
                 results.add(new LauncherActivityInfoInternal(ri.activityInfo,
-                        incrementalStatesInfo, user));
+                        incrementalStatesInfo, user,
+                        supportsMultiInstance(mIPM, ri.activityInfo.getComponentName(),
+                                user.getIdentifier())));
             }
             return results;
         }
@@ -1084,16 +1089,10 @@ public class LauncherAppsService extends SystemService {
                 return null;
             }
 
-            final AndroidFuture<Intent[]> ret = new AndroidFuture<>();
-            Intent[] intents;
-            mShortcutServiceInternal.createShortcutIntentsAsync(getCallingUserId(),
-                    callingPackage, packageName, shortcutId, user.getIdentifier(),
-                    injectBinderCallingPid(), injectBinderCallingUid(), ret);
-            try {
-                intents = ret.get();
-            } catch (InterruptedException | ExecutionException e) {
-                return null;
-            }
+            Intent[] intents = mShortcutServiceInternal.createShortcutIntents(
+                    getCallingUserId(), callingPackage, packageName, shortcutId,
+                    user.getIdentifier(), injectBinderCallingPid(),
+                    injectBinderCallingUid());
             if (intents == null || intents.length == 0) {
                 return null;
             }
@@ -1272,40 +1271,6 @@ public class LauncherAppsService extends SystemService {
         }
 
         @Override
-        public void getShortcutsAsync(@NonNull final String callingPackage,
-                @NonNull final ShortcutQueryWrapper query, @NonNull final UserHandle targetUser,
-                @NonNull final AndroidFuture<List<ShortcutInfo>> cb) {
-            ensureShortcutPermission(callingPackage);
-            if (!canAccessProfile(targetUser.getIdentifier(), "Cannot get shortcuts")) {
-                cb.complete(Collections.EMPTY_LIST);
-                return;
-            }
-
-            final long changedSince = query.getChangedSince();
-            final String packageName = query.getPackage();
-            final List<String> shortcutIds = query.getShortcutIds();
-            final List<LocusId> locusIds = query.getLocusIds();
-            final ComponentName componentName = query.getActivity();
-            final int flags = query.getQueryFlags();
-            if (shortcutIds != null && packageName == null) {
-                throw new IllegalArgumentException(
-                        "To query by shortcut ID, package name must also be set");
-            }
-            if (locusIds != null && packageName == null) {
-                throw new IllegalArgumentException(
-                        "To query by locus ID, package name must also be set");
-            }
-            if ((query.getQueryFlags() & ShortcutQuery.FLAG_GET_PERSONS_DATA) != 0) {
-                ensureStrictAccessShortcutsPermission(callingPackage);
-            }
-
-            mShortcutServiceInternal.getShortcutsAsync(getCallingUserId(),
-                    callingPackage, changedSince, packageName, shortcutIds, locusIds,
-                    componentName, flags, targetUser.getIdentifier(),
-                    injectBinderCallingPid(), injectBinderCallingUid(), cb);
-        }
-
-        @Override
         public void registerShortcutChangeCallback(@NonNull final String callingPackage,
                 @NonNull final ShortcutQueryWrapper query,
                 @NonNull final IShortcutChangeCallback callback) {
@@ -1403,15 +1368,8 @@ public class LauncherAppsService extends SystemService {
             if (!canAccessProfile(targetUserId, "Cannot access shortcuts")) {
                 return null;
             }
-
-            final AndroidFuture<ParcelFileDescriptor> ret = new AndroidFuture<>();
-            mShortcutServiceInternal.getShortcutIconFdAsync(getCallingUserId(),
-                    callingPackage, packageName, id, targetUserId, ret);
-            try {
-                return ret.get();
-            } catch (InterruptedException | ExecutionException e) {
-                throw new RuntimeException(e);
-            }
+            return mShortcutServiceInternal.getShortcutIconFd(getCallingUserId(),
+                    callingPackage, packageName, id, targetUserId);
         }
 
         @Override
@@ -1421,15 +1379,9 @@ public class LauncherAppsService extends SystemService {
             if (!canAccessProfile(userId, "Cannot access shortcuts")) {
                 return null;
             }
-
-            final AndroidFuture<String> ret = new AndroidFuture<>();
-            mShortcutServiceInternal.getShortcutIconUriAsync(getCallingUserId(), callingPackage,
-                    packageName, shortcutId, userId, ret);
-            try {
-                return ret.get();
-            } catch (InterruptedException | ExecutionException e) {
-                throw new RuntimeException(e);
-            }
+            return mShortcutServiceInternal.getShortcutIconUri(
+                    getCallingUserId(), callingPackage,
+                    packageName, shortcutId, userId);
         }
 
         @Override
@@ -1512,16 +1464,9 @@ public class LauncherAppsService extends SystemService {
                 ensureShortcutPermission(callerUid, callerPid, callingPackage);
             }
 
-            final AndroidFuture<Intent[]> ret = new AndroidFuture<>();
-            Intent[] intents;
-            mShortcutServiceInternal.createShortcutIntentsAsync(getCallingUserId(), callingPackage,
-                    packageName, shortcutId, targetUserId,
-                    injectBinderCallingPid(), injectBinderCallingUid(), ret);
-            try {
-                intents = ret.get();
-            } catch (InterruptedException | ExecutionException e) {
-                return false;
-            }
+            Intent[] intents = mShortcutServiceInternal.createShortcutIntents(
+                    getCallingUserId(), callingPackage, packageName, shortcutId,
+                    targetUserId, injectBinderCallingPid(), injectBinderCallingUid());
             if (intents == null || intents.length == 0) {
                 return false;
             }
@@ -1674,18 +1619,32 @@ public class LauncherAppsService extends SystemService {
         @Override
         public PendingIntent getActivityLaunchIntent(String callingPackage, ComponentName component,
                 UserHandle user) {
+            try {
+                Log.d(TAG,
+                        "getActivityLaunchIntent callingPackage=" + callingPackage + " component="
+                                + component + " user=" + user);
+            } catch (Exception e) {
+                Log.e(TAG, "getActivityLaunchIntent is called and error occurred when"
+                        + " printing the logs", e);
+            }
             if (mContext.checkPermission(android.Manifest.permission.START_TASKS_FROM_RECENTS,
                     injectBinderCallingPid(), injectBinderCallingUid())
                             != PackageManager.PERMISSION_GRANTED) {
+                Log.d(TAG, "getActivityLaunchIntent no permission callingPid="
+                        + injectBinderCallingPid() + " callingUid=" + injectBinderCallingUid());
                 throw new SecurityException("Permission START_TASKS_FROM_RECENTS required");
             }
             if (!canAccessProfile(user.getIdentifier(), "Cannot start activity")) {
+                Log.d(TAG, "getActivityLaunchIntent cannot access profile user="
+                        + user.getIdentifier());
                 throw new ActivityNotFoundException("Activity could not be found");
             }
 
             final Intent launchIntent = getMainActivityLaunchIntent(component, user,
                     false /* includeArchivedApps */);
             if (launchIntent == null) {
+                Log.d(TAG, "getActivityLaunchIntent cannot access profile user="
+                        + user.getIdentifier() + " component=" + component);
                 throw new SecurityException("Attempt to launch activity without "
                         + " category Intent.CATEGORY_LAUNCHER " + component);
             }
@@ -1700,6 +1659,29 @@ public class LauncherAppsService extends SystemService {
                         FLAG_MUTABLE, null /* opts */, user);
             } finally {
                 Binder.restoreCallingIdentity(ident);
+            }
+        }
+
+        /**
+         * Returns whether the specified activity info has the multi-instance property declared.
+         */
+        @VisibleForTesting
+        static boolean supportsMultiInstance(@NonNull IPackageManager pm,
+                @NonNull ComponentName component, int userId) {
+            try {
+                // Try to get the property for the component
+                return pm.getPropertyAsUser(
+                        PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI, component.getPackageName(),
+                        component.getClassName(), userId).getBoolean();
+            } catch (Exception e) {
+                try {
+                    // Fallback to the property for the app
+                    return pm.getPropertyAsUser(
+                            PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI, component.getPackageName(),
+                            null, userId).getBoolean();
+                } catch (Exception e2) {
+                    return false;
+                }
             }
         }
 
@@ -1726,7 +1708,7 @@ public class LauncherAppsService extends SystemService {
             }
             final long identity = Binder.clearCallingIdentity();
             try {
-                String userType = mUm.getUserInfo(user.getIdentifier()).userType;
+                String userType = mUserManagerInternal.getUserInfo(user.getIdentifier()).userType;
                 Set<String> preInstalledPackages = mUm.getPreInstallableSystemPackages(userType);
                 if (preInstalledPackages == null) {
                     return new ArrayList<>();
@@ -1965,6 +1947,17 @@ public class LauncherAppsService extends SystemService {
                     canLaunch = true;
                 }
                 if (!canLaunch) {
+                    try {
+                        Log.w(TAG, "getMainActivityLaunchIntent return null because it can't launch"
+                                + " component=" + component + " user=" + user + " appsSize=" + size
+                                + " includeArchivedApps=" + includeArchivedApps
+                                + " isArchivingEnabled=" + isArchivingEnabled()
+                                + " matchingArchivedAppActivityInfo="
+                                + getMatchingArchivedAppActivityInfo(component, user));
+                    } catch (Exception e) {
+                        Log.e(TAG, "getMainActivityLaunchIntent return null and error occurred when"
+                                + " printing the logs", e);
+                    }
                     return null;
                 }
             } finally {
@@ -2287,6 +2280,13 @@ public class LauncherAppsService extends SystemService {
             }
         }
 
+        void registerSettingsObserver() {
+            if (Flags.addLauncherUserConfig()) {
+                mSecureSettingsObserver = new SecureSettingsObserver();
+                mSecureSettingsObserver.register();
+            }
+        }
+
         public static class ShortcutChangeHandler implements LauncherApps.ShortcutChangeCallback {
             private final UserManagerInternal mUserManagerInternal;
 
@@ -2407,7 +2407,7 @@ public class LauncherAppsService extends SystemService {
                 final int callbackUserId = callbackUser.getIdentifier();
                 final int shortcutUserId = shortcutUser.getIdentifier();
 
-                if (shortcutUser == callbackUser) return true;
+                if ((shortcutUser.equals(callbackUser))) return true;
                 return mUserManagerInternal.isProfileAccessible(callbackUserId, shortcutUserId,
                         null, false);
             }
@@ -2441,16 +2441,28 @@ public class LauncherAppsService extends SystemService {
                                 final BroadcastCookie cookie =
                                         (BroadcastCookie) mListeners.getBroadcastCookie(i);
                                 if (!isEnabledProfileOf(cookie, user, "onPackageRemoved")) {
+                                    // b/350144057
+                                    Slog.d(TAG, "onPackageRemoved: Skipping - profile not enabled"
+                                            + " or not accessible for user=" + user
+                                            + ", packageName=" + packageName);
                                     continue;
                                 }
                                 if (!isCallingAppIdAllowed(appIdAllowList, UserHandle.getAppId(
                                         cookie.callingUid))) {
+                                    // b/350144057
+                                    Slog.d(TAG, "onPackageRemoved: Skipping - appId not allowed"
+                                            + " for user=" + user
+                                            + ", packageName=" + packageName);
                                     continue;
                                 }
                                 try {
+                                    // b/350144057
+                                    Slog.d(TAG, "onPackageRemoved: triggering onPackageRemoved"
+                                            + " for user=" + user
+                                            + ", packageName=" + packageName);
                                     listener.onPackageRemoved(user, packageName);
                                 } catch (RemoteException re) {
-                                    Slog.d(TAG, "Callback failed ", re);
+                                    Slog.d(TAG, "onPackageRemoved: Callback failed ", re);
                                 }
                             }
                         } finally {
@@ -2480,15 +2492,27 @@ public class LauncherAppsService extends SystemService {
                         IOnAppsChangedListener listener = mListeners.getBroadcastItem(i);
                         BroadcastCookie cookie = (BroadcastCookie) mListeners.getBroadcastCookie(i);
                         if (!isEnabledProfileOf(cookie, user, "onPackageAdded")) {
+                            // b/350144057
+                            Slog.d(TAG, "onPackageAdded: Skipping - profile not enabled"
+                                    + " or not accessible for user=" + user
+                                    + ", packageName=" + packageName);
                             continue;
                         }
                         if (!isPackageVisibleToListener(packageName, cookie, user)) {
+                            // b/350144057
+                            Slog.d(TAG, "onPackageAdded: Skipping - package filtered"
+                                    + " for user=" + user
+                                    + ", packageName=" + packageName);
                             continue;
                         }
                         try {
+                            // b/350144057
+                            Slog.d(TAG, "onPackageAdded: triggering onPackageAdded"
+                                    + " for user=" + user
+                                    + ", packageName=" + packageName);
                             listener.onPackageAdded(user, packageName);
                         } catch (RemoteException re) {
-                            Slog.d(TAG, "Callback failed ", re);
+                            Slog.d(TAG, "onPackageAdded: Callback failed ", re);
                         }
                     }
                 } finally {
@@ -2522,7 +2546,7 @@ public class LauncherAppsService extends SystemService {
                         try {
                             listener.onPackageChanged(user, packageName);
                         } catch (RemoteException re) {
-                            Slog.d(TAG, "Callback failed ", re);
+                            Slog.d(TAG, "onPackageChanged: Callback failed ", re);
                         }
                     }
                 } finally {
@@ -2607,6 +2631,7 @@ public class LauncherAppsService extends SystemService {
                 }
                 final String[] packagesNullExtras = packagesWithoutExtras.toArray(
                         new String[packagesWithoutExtras.size()]);
+
                 final int n = mListeners.beginBroadcast();
                 try {
                     for (int i = 0; i < n; i++) {
@@ -2786,6 +2811,82 @@ public class LauncherAppsService extends SystemService {
                 return LauncherAppsImpl.this.startShortcutInner(callerUid, callerPid,
                         UserHandle.getUserId(callerUid), callingPackage, packageName, featureId,
                         shortcutId, sourceBounds, startActivityOptions, targetUserId);
+            }
+        }
+
+        class SecureSettingsObserver extends ContentObserver {
+
+            SecureSettingsObserver() {
+                super(mCallbackHandler);
+            }
+
+            @Override
+            public void onChange(boolean selfChange, Uri uri) {
+                super.onChange(selfChange, uri);
+                if (uri.equals(
+                        Settings.Secure.getUriFor(Settings.Secure.HIDE_PRIVATESPACE_ENTRY_POINT))) {
+
+                    // This setting key only apply to private profile at the moment
+                    UserHandle privateProfile = getPrivateProfile();
+                    if (privateProfile.getIdentifier() == UserHandle.USER_NULL) {
+                        return;
+                    }
+                    final int n = mListeners.beginBroadcast();
+                    try {
+                        for (int i = 0; i < n; i++) {
+                            final IOnAppsChangedListener listener = mListeners.getBroadcastItem(i);
+                            final BroadcastCookie cookie =
+                                    (BroadcastCookie) mListeners.getBroadcastCookie(i);
+                            if (!isEnabledProfileOf(cookie, privateProfile,
+                                    "onSecureSettingsChange")) {
+                                Log.d(TAG, "onSecureSettingsChange: Skipping - profile not enabled"
+                                        + " or not accessible for package=" + cookie.packageName
+                                        + ", packageUid=" + cookie.callingUid);
+                                continue;
+                            }
+                            try {
+                                Log.d(TAG, "onUserConfigChanged: triggering onUserConfigChanged");
+                                listener.onUserConfigChanged(
+                                        mUserManagerInternal.getLauncherUserInfo(
+                                                privateProfile.getIdentifier()));
+                            } catch (RemoteException re) {
+                                Slog.d(TAG, "onUserConfigChanged: Callback failed ", re);
+                            }
+                        }
+
+                    } finally {
+                        mListeners.finishBroadcast();
+                    }
+                }
+            }
+
+            public void register() {
+                UserHandle privateProfile = getPrivateProfile();
+                int parentUserId;
+                if (privateProfile.getIdentifier() == UserHandle.USER_NULL) {
+                    // No private space available, register the observer for the current user
+                    parentUserId = mContext.getUserId();
+                } else {
+                    parentUserId = mUserManagerInternal.getProfileParentId(
+                            privateProfile.getIdentifier());
+                }
+                mContext.getContentResolver().registerContentObserver(
+                        Settings.Secure.getUriFor(Settings.Secure.HIDE_PRIVATESPACE_ENTRY_POINT),
+                        true, this, parentUserId);
+            }
+
+            public void unregister() {
+                mContext.getContentResolver().unregisterContentObserver(this);
+            }
+
+            private UserHandle getPrivateProfile() {
+                UserInfo[] userInfos = mUserManagerInternal.getUserInfos();
+                for (UserInfo u : userInfos) {
+                    if (u.isPrivateProfile()) {
+                        return UserHandle.of(u.id);
+                    }
+                }
+                return UserHandle.of(UserHandle.USER_NULL);
             }
         }
     }

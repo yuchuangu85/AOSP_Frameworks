@@ -19,6 +19,12 @@ package android.view;
 import static android.Manifest.permission.CONFIGURE_DISPLAY_COLOR_MODE;
 import static android.Manifest.permission.CONTROL_DISPLAY_BRIGHTNESS;
 import static android.hardware.flags.Flags.FLAG_OVERLAYPROPERTIES_CLASS_API;
+import static android.util.TypedValue.COMPLEX_UNIT_DIP;
+
+import static com.android.server.display.feature.flags.Flags.FLAG_ENABLE_GET_SUPPORTED_REFRESH_RATES;
+import static com.android.server.display.feature.flags.Flags.FLAG_HIGHEST_HDR_SDR_RATIO_API;
+import static com.android.server.display.feature.flags.Flags.FLAG_ENABLE_HAS_ARR_SUPPORT;
+import static com.android.server.display.feature.flags.Flags.FLAG_ENABLE_GET_SUGGESTED_FRAME_RATE;
 
 import android.Manifest;
 import android.annotation.FlaggedApi;
@@ -53,12 +59,14 @@ import android.os.SystemClock;
 import android.util.ArraySet;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.util.TypedValue;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
@@ -100,6 +108,7 @@ public final class Display {
     private final String mOwnerPackageName;
     private final Resources mResources;
     private DisplayAdjustments mDisplayAdjustments;
+    private boolean mRefreshRateChangesRegistered;
 
     @UnsupportedAppUsage
     private DisplayInfo mDisplayInfo; // never null
@@ -277,7 +286,7 @@ public final class Display {
     /**
      * Display flag: Indicates that the display should show system decorations.
      * <p>
-     * This flag identifies secondary displays that should show system decorations, such as
+     * This flag identifies secondary displays that should always show system decorations, such as
      * navigation bar, home activity or wallpaper.
      * </p>
      * <p>Note that this flag doesn't work without {@link #FLAG_TRUSTED}</p>
@@ -314,6 +323,8 @@ public final class Display {
      * @hide
      * @see #getFlags()
      */
+    @SuppressLint("UnflaggedApi") // Promotion to TestApi
+    @TestApi
     public static final int FLAG_ALWAYS_UNLOCKED = 1 << 9;
 
     /**
@@ -323,6 +334,8 @@ public final class Display {
      * @hide
      * @see #getFlags()
      */
+    @SuppressLint("UnflaggedApi") // Promotion to TestApi
+    @TestApi
     public static final int FLAG_TOUCH_FEEDBACK_DISABLED = 1 << 10;
 
     /**
@@ -336,6 +349,8 @@ public final class Display {
      * @see #FLAG_TRUSTED
      * @hide
      */
+    @SuppressLint("UnflaggedApi") // Promotion to TestApi
+    @TestApi
     public static final int FLAG_OWN_FOCUS = 1 << 11;
 
     /**
@@ -384,6 +399,18 @@ public final class Display {
      * @hide
      */
     public static final int FLAG_ROTATES_WITH_CONTENT = 1 << 14;
+
+    /**
+     * Display flag: Indicates that the display is allowed to switch the content mode between
+     * projected/extended and mirroring. This allows the display to dynamically add or remove the
+     * home and system decorations.
+     *
+     * Note that this flag shouldn't be enabled with {@link #FLAG_PRIVATE} or
+     * {@link #FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS} at the same time; otherwise it will be ignored.
+     *
+     * @hide
+     */
+    public static final int FLAG_ALLOWS_CONTENT_MODE_SWITCH = 1 << 15;
 
     /**
      * Display flag: Indicates that the contents of the display should not be scaled
@@ -439,6 +466,13 @@ public final class Display {
     @UnsupportedAppUsage
     @TestApi
     public static final int TYPE_VIRTUAL = 5;
+
+    /**
+     * The maximum display type value.
+     * Helpful to get all possible display values.
+     * @hide
+     */
+    public static final int TYPE_MAX = TYPE_VIRTUAL;
 
     /**
      * Display state: The display state is unknown.
@@ -642,6 +676,8 @@ public final class Display {
      * @hide
      */
     // TODO (b/114338689): Remove the flag and use WindowManager#REMOVE_CONTENT_MODE_DESTROY
+    @SuppressLint("UnflaggedApi") // Promotion to TestApi
+    @TestApi
     public static final int REMOVE_MODE_DESTROY_CONTENT = 1;
 
     /** @hide */
@@ -1027,6 +1063,19 @@ public final class Display {
     }
 
     /**
+     * Returns the smallest size of the display in dp
+     * @hide
+     */
+    public float getMinSizeDimensionDp() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            mDisplayInfo.getAppMetrics(mTempMetrics);
+            return TypedValue.deriveDimension(COMPLEX_UNIT_DIP,
+                    Math.min(mDisplayInfo.logicalWidth, mDisplayInfo.logicalHeight), mTempMetrics);
+        }
+    }
+
+    /**
      * @deprecated Use {@link WindowMetrics#getBounds#width()} instead.
      */
     @Deprecated
@@ -1181,6 +1230,10 @@ public final class Display {
      */
     public float getRefreshRate() {
         synchronized (mLock) {
+            if (!mRefreshRateChangesRegistered) {
+                DisplayManagerGlobal.getInstance().registerForRefreshRateChanges();
+                mRefreshRateChangesRegistered = true;
+            }
             updateDisplayInfoLocked();
             return mDisplayInfo.getRefreshRate();
         }
@@ -1188,17 +1241,36 @@ public final class Display {
 
     /**
      * Get the supported refresh rates of this display in frames per second.
-     * <p>
-     * This method only returns refresh rates for the display's default modes. For more options, use
-     * {@link #getSupportedModes()}.
      *
-     * @deprecated use {@link #getSupportedModes()} instead
+     * <ul>
+     * <li> Android version {@link Build.VERSION_CODES#BAKLAVA} and above:
+     * returns display supported render rates.
+     * <li> Android version {@link Build.VERSION_CODES#VANILLA_ICE_CREAM} and below:
+     * This method only returns refresh rates for the display's default modes. For more options,
+     * use {@link #getSupportedModes()}.
+     * </ul>
      */
-    @Deprecated
-    public float[] getSupportedRefreshRates() {
+    @FlaggedApi(FLAG_ENABLE_GET_SUPPORTED_REFRESH_RATES)
+    public @NonNull float[] getSupportedRefreshRates() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            return mDisplayInfo.getDefaultRefreshRates();
+            final float[] refreshRates = mDisplayInfo.getDefaultRefreshRates();
+            Objects.requireNonNull(refreshRates);
+            return refreshRates;
+        }
+    }
+
+    /**
+     * @hide
+     */
+    @TestApi
+    @SuppressLint({"UnflaggedApi"}) // Usage in the CTS to test backward compatibility.
+    public @NonNull float[] getSupportedRefreshRatesLegacy() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            final float[] refreshRates = mDisplayInfo.getDefaultRefreshRatesLegacy();
+            Objects.requireNonNull(refreshRates);
+            return refreshRates;
         }
     }
 
@@ -1245,6 +1317,84 @@ public final class Display {
             updateDisplayInfoLocked();
             final Display.Mode[] modes = mDisplayInfo.supportedModes;
             return Arrays.copyOf(modes, modes.length);
+        }
+    }
+
+    /**
+     * Returns whether display supports adaptive refresh rate or not.
+     */
+    // TODO(b/372526856) Add a link to the documentation for ARR.
+    @FlaggedApi(FLAG_ENABLE_HAS_ARR_SUPPORT)
+    public boolean hasArrSupport() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return mDisplayInfo.hasArrSupport;
+        }
+    }
+
+    /**
+     * Normal category determines the framework's recommended normal frame rate.
+     * Opt for this normal rate unless a higher frame rate significantly enhances
+     * the user experience.
+     *
+     * @see #getSuggestedFrameRate(int)
+     * @see #FRAME_RATE_CATEGORY_HIGH
+     */
+    @FlaggedApi(FLAG_ENABLE_GET_SUGGESTED_FRAME_RATE)
+    public static final int FRAME_RATE_CATEGORY_NORMAL = 0;
+
+    /**
+     * High category determines the framework's recommended high frame rate.
+     * Opt for this high rate when a higher frame rate significantly enhances
+     * the user experience.
+     *
+     * @see #getSuggestedFrameRate(int)
+     * @see #FRAME_RATE_CATEGORY_NORMAL
+     */
+    @FlaggedApi(FLAG_ENABLE_GET_SUGGESTED_FRAME_RATE)
+    public static final int FRAME_RATE_CATEGORY_HIGH = 1;
+
+    /**
+     * @hide
+     */
+    @IntDef(prefix = {"FRAME_RATE_CATEGORY_"},
+            value = {
+                FRAME_RATE_CATEGORY_NORMAL,
+                FRAME_RATE_CATEGORY_HIGH
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface FrameRateCategory {}
+
+    /**
+     * <p> Gets the display-defined frame rate given a descriptive frame rate category. </p>
+     *
+     * <p> For example, an animation that does not require fast render rates can use
+     * the {@link #FRAME_RATE_CATEGORY_NORMAL} to get the suggested frame rate.
+     *
+     * <pre>{@code
+     *  float desiredMinRate = display.getSuggestedFrameRate(FRAME_RATE_CATEGORY_NORMAL);
+     *  surface.setFrameRate(desiredMinRate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+     * }</pre>
+     * </p>
+     *
+     * @param category either {@link #FRAME_RATE_CATEGORY_NORMAL}
+     *                 or {@link #FRAME_RATE_CATEGORY_HIGH}
+     *
+     * @see Surface#setFrameRate(float, int)
+     * @throws IllegalArgumentException when category is not {@link #FRAME_RATE_CATEGORY_NORMAL}
+     * or {@link #FRAME_RATE_CATEGORY_HIGH}
+     */
+    @FlaggedApi(FLAG_ENABLE_GET_SUGGESTED_FRAME_RATE)
+    public float getSuggestedFrameRate(@FrameRateCategory int category) {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            if (category == FRAME_RATE_CATEGORY_HIGH) {
+                return mDisplayInfo.frameRateCategoryRate.getHigh();
+            } else if (category == FRAME_RATE_CATEGORY_NORMAL) {
+                return mDisplayInfo.frameRateCategoryRate.getNormal();
+            } else {
+                throw new IllegalArgumentException("Invalid FrameRateCategory provided");
+            }
         }
     }
 
@@ -1331,7 +1481,7 @@ public final class Display {
     public HdrCapabilities getHdrCapabilities() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            if (mDisplayInfo.hdrCapabilities == null) {
+            if (mDisplayInfo.hdrCapabilities == null || mDisplayInfo.isForceSdr) {
                 return null;
             }
             int[] supportedHdrTypes;
@@ -1353,6 +1503,7 @@ public final class Display {
                     supportedHdrTypes[index++] = enabledType;
                 }
             }
+
             return new HdrCapabilities(supportedHdrTypes,
                     mDisplayInfo.hdrCapabilities.mMaxLuminance,
                     mDisplayInfo.hdrCapabilities.mMaxAverageLuminance,
@@ -1463,9 +1614,11 @@ public final class Display {
             // Although we only care about the HDR/SDR ratio changing, that can also come in the
             // form of the larger DISPLAY_CHANGED event
             mGlobal.registerDisplayListener(toRegister, executor,
-                    DisplayManager.EVENT_FLAG_HDR_SDR_RATIO_CHANGED
-                            | DisplayManagerGlobal.EVENT_DISPLAY_CHANGED,
-                    ActivityThread.currentPackageName());
+                    DisplayManagerGlobal
+                                    .INTERNAL_EVENT_FLAG_DISPLAY_BASIC_CHANGED
+                            | DisplayManagerGlobal
+                                    .INTERNAL_EVENT_FLAG_DISPLAY_HDR_SDR_RATIO_CHANGED,
+                    ActivityThread.currentPackageName(), /* isEventFilterImplicit */ true);
         }
 
     }
@@ -1488,6 +1641,15 @@ public final class Display {
         if (toRemove != null) {
             mGlobal.unregisterDisplayListener(toRemove);
         }
+    }
+
+    /**
+     * @return The highest possible HDR/SDR ratio. If {@link #isHdrSdrRatioAvailable()} returns
+     * false, this method returns 1.
+     */
+    @FlaggedApi(FLAG_HIGHEST_HDR_SDR_RATIO_API)
+    public float getHighestHdrSdrRatio() {
+        return mGlobal.getHighestHdrSdrRatio(mDisplayId);
     }
 
     /**
@@ -1690,7 +1852,12 @@ public final class Display {
      *         {@code getWindowManager()} or {@code getSystemService(Context.WINDOW_SERVICE)}), the
      *         returned metrics provide the size of the current app window. As a result, in
      *         multi-window mode, the returned size can be smaller than the size of the device
-     *         screen.
+     *         screen. System decoration handling may vary depending on API level:
+     *         <ul>
+     *             <li>API level 35 and above, the window size will be returned.
+     *             <li>API level 34 and below, the window size minus system decoration areas and
+     *                 display cutout is returned.
+     *         </ul>
      *     <li>If metrics are requested from a non-activity context (for example, the application
      *         context, where the WindowManager is accessed by
      *         {@code getApplicationContext().getSystemService(Context.WINDOW_SERVICE)}), the
@@ -1907,6 +2074,22 @@ public final class Display {
     }
 
     /**
+     * Returns whether the display is eligible for hosting tasks.
+     *
+     * For example, if the display is used for mirroring, this will return {@code false}.
+     *
+     * TODO (b/383666349): Rename this later once there is a better option.
+     *
+     * @hide
+     */
+    public boolean canHostTasks() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return mIsValid && mDisplayInfo.canHostTasks;
+        }
+    }
+
+    /**
      * Returns true if the specified UID has access to this display.
      * @hide
      */
@@ -2068,6 +2251,7 @@ public final class Display {
     /**
      * @hide
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static String stateToString(int state) {
         switch (state) {
             case STATE_UNKNOWN:
@@ -2090,6 +2274,7 @@ public final class Display {
     }
 
     /** @hide */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static String stateReasonToString(@StateReason int reason) {
         switch (reason) {
             case STATE_REASON_UNKNOWN:
@@ -2335,6 +2520,8 @@ public final class Display {
          * constrained by the system.
          * @hide
          */
+        @SuppressWarnings("UnflaggedApi") // For testing only
+        @TestApi
         public float getVsyncRate() {
             return mVsyncRate;
         }
@@ -2344,6 +2531,8 @@ public final class Display {
          * SurfaceControl.DisplayMode
          * @hide
          */
+        @SuppressWarnings("UnflaggedApi") // For testing only
+        @TestApi
         public boolean isSynthetic() {
             return mIsSynthetic;
         }

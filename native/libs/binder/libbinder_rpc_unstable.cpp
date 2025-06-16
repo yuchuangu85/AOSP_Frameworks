@@ -23,11 +23,8 @@
 
 #ifndef __TRUSTY__
 #include <cutils/sockets.h>
-#endif
-
-#ifdef __linux__
-#include <linux/vm_sockets.h>
-#endif // __linux__
+#include "vm_sockets.h"
+#endif  // !__TRUSTY__
 
 using android::OK;
 using android::RpcServer;
@@ -81,7 +78,8 @@ RpcSession::FileDescriptorTransportMode toTransportMode(
 extern "C" {
 
 #ifndef __TRUSTY__
-ARpcServer* ARpcServer_newVsock(AIBinder* service, unsigned int cid, unsigned int port) {
+ARpcServer* ARpcServer_newVsock(AIBinder* service, unsigned int cid, unsigned int port,
+                                unsigned int* assignedPort) {
     auto server = RpcServer::make();
 
     unsigned int bindCid = VMADDR_CID_ANY; // bind to the remote interface
@@ -90,7 +88,7 @@ ARpcServer* ARpcServer_newVsock(AIBinder* service, unsigned int cid, unsigned in
         cid = VMADDR_CID_ANY;       // no need for a connection filter
     }
 
-    if (status_t status = server->setupVsockServer(bindCid, port); status != OK) {
+    if (status_t status = server->setupVsockServer(bindCid, port, assignedPort); status != OK) {
         ALOGE("Failed to set up vsock server with port %u error: %s", port,
               statusToString(status).c_str());
         return nullptr;
@@ -250,9 +248,18 @@ AIBinder* ARpcSession_setupInet(ARpcSession* handle, const char* address, unsign
 #endif // __TRUSTY__
 
 AIBinder* ARpcSession_setupPreconnectedClient(ARpcSession* handle, int (*requestFd)(void* param),
-                                              void* param) {
+                                              void* param, void (*paramDeleteFd)(void* param)) {
     auto session = handleToStrongPointer<RpcSession>(handle);
-    auto request = [=] { return unique_fd{requestFd(param)}; };
+    auto deleter = [=](void* param) {
+        if (paramDeleteFd) {
+            paramDeleteFd(param);
+        }
+    };
+    // TODO: use unique_ptr once setupPreconnectedClient uses std::move_only_function.
+    std::shared_ptr<void> sharedParam(param, deleter);
+    auto request = [=, sharedParam = std::move(sharedParam)] {
+        return unique_fd{requestFd(sharedParam.get())};
+    };
     if (status_t status = session->setupPreconnectedClient(unique_fd{}, request); status != OK) {
         ALOGE("Failed to set up preconnected client. error: %s", statusToString(status).c_str());
         return nullptr;

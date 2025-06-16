@@ -17,30 +17,51 @@
 package com.android.compose.animation.scene
 
 import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.ScrollWheel
+import androidx.compose.ui.test.TouchInjectionScope
 import androidx.compose.ui.test.assertPositionInRootIsEqualTo
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performMouseInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.test.swipeWithVelocity
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.android.compose.animation.scene.TestOverlays.OverlayA
+import com.android.compose.animation.scene.TestOverlays.OverlayB
 import com.android.compose.animation.scene.TestScenes.SceneA
 import com.android.compose.animation.scene.TestScenes.SceneB
+import com.android.compose.animation.scene.TestScenes.SceneC
+import com.android.compose.animation.scene.TestScenes.SceneD
 import com.android.compose.animation.scene.subjects.assertThat
 import com.google.common.truth.Truth.assertThat
 import org.junit.Rule
@@ -72,7 +93,9 @@ class SwipeToSceneTest {
         initialScene: SceneKey = SceneA,
         transitions: SceneTransitions = EmptyTestTransitions,
     ): MutableSceneTransitionLayoutState {
-        return rule.runOnUiThread { MutableSceneTransitionLayoutState(initialScene, transitions) }
+        return rule.runOnUiThread {
+            MutableSceneTransitionLayoutStateForTests(initialScene, transitions)
+        }
     }
 
     /** The content under test. */
@@ -86,35 +109,38 @@ class SwipeToSceneTest {
             modifier = Modifier.size(LayoutWidth, LayoutHeight).testTag(TestElements.Foo.debugName),
         ) {
             scene(
-                SceneA,
+                key = SceneA,
                 userActions =
                     if (swipesEnabled())
-                        mapOf(
-                            Swipe.Left to SceneB,
-                            Swipe.Down to TestScenes.SceneC,
-                            Swipe.Up to SceneB,
-                        )
+                        mapOf(Swipe.Left to SceneB, Swipe.Down to SceneC, Swipe.Up to SceneB)
                     else emptyMap(),
             ) {
                 Box(Modifier.fillMaxSize())
             }
             scene(
-                SceneB,
+                key = SceneB,
                 userActions = if (swipesEnabled()) mapOf(Swipe.Right to SceneA) else emptyMap(),
             ) {
                 Box(Modifier.fillMaxSize())
             }
             scene(
-                TestScenes.SceneC,
+                key = SceneC,
                 userActions =
                     if (swipesEnabled())
                         mapOf(
                             Swipe.Down to SceneA,
-                            Swipe(SwipeDirection.Down, pointerCount = 2) to SceneB,
-                            Swipe(SwipeDirection.Right, fromSource = Edge.Left) to SceneB,
-                            Swipe(SwipeDirection.Down, fromSource = Edge.Top) to SceneB,
+                            Swipe.Down(pointerCount = 2) to SceneB,
+                            Swipe.Down(pointerType = PointerType.Mouse) to SceneD,
+                            Swipe.Down(fromSource = Edge.Top) to SceneB,
+                            Swipe.Right(fromSource = Edge.Left) to SceneB,
                         )
                     else emptyMap(),
+            ) {
+                Box(Modifier.fillMaxSize())
+            }
+            scene(
+                key = SceneD,
+                userActions = if (swipesEnabled()) mapOf(Swipe.Up to SceneC) else emptyMap(),
             ) {
                 Box(Modifier.fillMaxSize())
             }
@@ -148,7 +174,7 @@ class SwipeToSceneTest {
 
         // We should be at a progress = 55dp / LayoutWidth given that we use the layout size in
         // the gesture axis as swipe distance.
-        var transition = assertThat(layoutState.transitionState).isTransition()
+        var transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
         assertThat(transition).hasToScene(SceneB)
         assertThat(transition).hasCurrentScene(SceneA)
@@ -158,7 +184,7 @@ class SwipeToSceneTest {
         // Release the finger. We should now be animating back to A (currentScene = SceneA) given
         // that 55dp < positional threshold.
         rule.onRoot().performTouchInput { up() }
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
         assertThat(transition).hasToScene(SceneB)
         assertThat(transition).hasCurrentScene(SceneA)
@@ -178,9 +204,9 @@ class SwipeToSceneTest {
         }
 
         // Drag is in progress, so currentScene = SceneA and progress = 56dp / LayoutHeight
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
-        assertThat(transition).hasToScene(TestScenes.SceneC)
+        assertThat(transition).hasToScene(SceneC)
         assertThat(transition).hasCurrentScene(SceneA)
         assertThat(transition).hasProgress(56.dp / LayoutHeight)
         assertThat(transition).isInitiatedByUserInput()
@@ -188,17 +214,17 @@ class SwipeToSceneTest {
         // Release the finger. We should now be animating to C (currentScene = SceneC) given
         // that 56dp >= positional threshold.
         rule.onRoot().performTouchInput { up() }
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
-        assertThat(transition).hasToScene(TestScenes.SceneC)
-        assertThat(transition).hasCurrentScene(TestScenes.SceneC)
+        assertThat(transition).hasToScene(SceneC)
+        assertThat(transition).hasCurrentScene(SceneC)
         assertThat(transition).hasProgress(56.dp / LayoutHeight)
         assertThat(transition).isInitiatedByUserInput()
 
         // Wait for the animation to finish. We should now be in scene C.
         rule.waitForIdle()
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
     }
 
     @Test
@@ -229,7 +255,7 @@ class SwipeToSceneTest {
 
         // We should be animating back to A (currentScene = SceneA) given that 124 dp/s < velocity
         // threshold.
-        var transition = assertThat(layoutState.transitionState).isTransition()
+        var transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
         assertThat(transition).hasToScene(SceneB)
         assertThat(transition).hasCurrentScene(SceneA)
@@ -253,22 +279,22 @@ class SwipeToSceneTest {
         }
 
         // We should be animating to C (currentScene = SceneC).
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
-        assertThat(transition).hasToScene(TestScenes.SceneC)
-        assertThat(transition).hasCurrentScene(TestScenes.SceneC)
+        assertThat(transition).hasToScene(SceneC)
+        assertThat(transition).hasCurrentScene(SceneC)
         assertThat(transition).hasProgress(55.dp / LayoutHeight)
 
         // Wait for the animation to finish. We should now be in scene C.
         rule.waitForIdle()
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
     }
 
     @Test
     fun multiPointerSwipe() {
         // Start at scene C.
-        val layoutState = layoutState(TestScenes.SceneC)
+        val layoutState = layoutState(SceneC)
 
         // The draggable touch slop, i.e. the min px distance a touch pointer must move before it is
         // detected as a drag event.
@@ -279,7 +305,7 @@ class SwipeToSceneTest {
         }
 
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
 
         // Swipe down with two fingers.
         rule.onRoot().performTouchInput {
@@ -290,8 +316,8 @@ class SwipeToSceneTest {
         }
 
         // We are transitioning to B because we used 2 fingers.
-        val transition = assertThat(layoutState.transitionState).isTransition()
-        assertThat(transition).hasFromScene(TestScenes.SceneC)
+        val transition = assertThat(layoutState.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneC)
         assertThat(transition).hasToScene(SceneB)
 
         // Release the fingers and wait for the animation to end. We are back to C because we only
@@ -299,13 +325,13 @@ class SwipeToSceneTest {
         rule.onRoot().performTouchInput { repeat(2) { i -> up(pointerId = i) } }
         rule.waitForIdle()
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
     }
 
     @Test
     fun defaultEdgeSwipe() {
         // Start at scene C.
-        val layoutState = layoutState(TestScenes.SceneC)
+        val layoutState = layoutState(SceneC)
 
         // The draggable touch slop, i.e. the min px distance a touch pointer must move before it is
         // detected as a drag event.
@@ -316,7 +342,7 @@ class SwipeToSceneTest {
         }
 
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
 
         // Swipe down from the top edge.
         rule.onRoot().performTouchInput {
@@ -325,8 +351,8 @@ class SwipeToSceneTest {
         }
 
         // We are transitioning to B (and not A) because we started from the top edge.
-        var transition = assertThat(layoutState.transitionState).isTransition()
-        assertThat(transition).hasFromScene(TestScenes.SceneC)
+        var transition = assertThat(layoutState.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneC)
         assertThat(transition).hasToScene(SceneB)
 
         // Release the fingers and wait for the animation to end. We are back to C because we only
@@ -334,7 +360,7 @@ class SwipeToSceneTest {
         rule.onRoot().performTouchInput { up() }
         rule.waitForIdle()
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
 
         // Swipe right from the left edge.
         rule.onRoot().performTouchInput {
@@ -343,8 +369,8 @@ class SwipeToSceneTest {
         }
 
         // We are transitioning to B (and not A) because we started from the left edge.
-        transition = assertThat(layoutState.transitionState).isTransition()
-        assertThat(transition).hasFromScene(TestScenes.SceneC)
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneC)
         assertThat(transition).hasToScene(SceneB)
 
         // Release the fingers and wait for the animation to end. We are back to C because we only
@@ -352,7 +378,7 @@ class SwipeToSceneTest {
         rule.onRoot().performTouchInput { up() }
         rule.waitForIdle()
         assertThat(layoutState.transitionState).isIdle()
-        assertThat(layoutState.transitionState).hasCurrentScene(TestScenes.SceneC)
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
     }
 
     @Test
@@ -378,12 +404,9 @@ class SwipeToSceneTest {
 
             SceneTransitionLayout(
                 state = layoutState,
-                modifier = Modifier.size(LayoutWidth, LayoutHeight)
+                modifier = Modifier.size(LayoutWidth, LayoutHeight),
             ) {
-                scene(
-                    SceneA,
-                    userActions = mapOf(Swipe.Down to SceneB),
-                ) {
+                scene(SceneA, userActions = mapOf(Swipe.Down to SceneB)) {
                     Spacer(Modifier.fillMaxSize())
                 }
                 scene(SceneB) { Spacer(Modifier.fillMaxSize()) }
@@ -399,7 +422,7 @@ class SwipeToSceneTest {
         }
 
         // We should be at 50%
-        val transition = assertThat(layoutState.transitionState).isTransition()
+        val transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).isNotNull()
         assertThat(transition).hasProgress(0.5f)
     }
@@ -420,8 +443,8 @@ class SwipeToSceneTest {
         }
 
         // We should still correctly compute that we are swiping down to scene C.
-        var transition = assertThat(layoutState.transitionState).isTransition()
-        assertThat(transition).hasToScene(TestScenes.SceneC)
+        var transition = assertThat(layoutState.transitionState).isSceneTransition()
+        assertThat(transition).hasToScene(SceneC)
 
         // Release the finger, animating back to scene A.
         rule.onRoot().performTouchInput { up() }
@@ -436,7 +459,7 @@ class SwipeToSceneTest {
         }
 
         // We should still correctly compute that we are swiping up to scene B.
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasToScene(SceneB)
 
         // Release the finger, animating back to scene A.
@@ -452,7 +475,7 @@ class SwipeToSceneTest {
         }
 
         // We should still correctly compute that we are swiping down to scene B.
-        transition = assertThat(layoutState.transitionState).isTransition()
+        transition = assertThat(layoutState.transitionState).isSceneTransition()
         assertThat(transition).hasToScene(SceneB)
     }
 
@@ -489,6 +512,128 @@ class SwipeToSceneTest {
     }
 
     @Test
+    fun mousePointerSwipe() {
+        // Start at scene C.
+        val layoutState = layoutState(SceneC)
+
+        // The draggable touch slop, i.e. the min px distance a touch pointer must move before it is
+        // detected as a drag event.
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            TestContent(layoutState)
+        }
+
+        assertThat(layoutState.transitionState).isIdle()
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
+
+        rule.onRoot().performMouseInput {
+            enter(middle)
+            press()
+            moveBy(Offset(0f, touchSlop + 10.dp.toPx()), 1_000)
+        }
+
+        // We are transitioning to D because we are moving the mouse while the primary button is
+        // pressed.
+        val transition = assertThat(layoutState.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneC)
+        assertThat(transition).hasToScene(SceneD)
+
+        rule.onRoot().performMouseInput {
+            release()
+            exit(middle)
+        }
+        // Release the mouse primary button and wait for the animation to end. We are back to C
+        // because we only swiped 10dp.
+        rule.waitForIdle()
+        assertThat(layoutState.transitionState).isIdle()
+        assertThat(layoutState.transitionState).hasCurrentScene(SceneC)
+    }
+
+    @Test
+    fun mouseWheel_pointerInputApi_ignoredByStl() {
+        val layoutState = layoutState()
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            TestContent(layoutState)
+        }
+
+        rule.onRoot().performMouseInput {
+            enter(middle)
+            scroll(touchSlop, ScrollWheel.Vertical)
+        }
+
+        // Mouse wheel scroll are ignored
+        assertThat(layoutState.currentTransition).isNull()
+    }
+
+    @Test
+    fun mouseWheel_scrollableCannotScroll_ignoredByStl() {
+        val layoutState = layoutState()
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(layoutState, Modifier.size(LayoutWidth, LayoutHeight)) {
+                scene(SceneA, userActions = mapOf(Swipe.Up to SceneB, Swipe.Down to SceneB)) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            // A scrollable that does not consume the scroll gesture
+                            .scrollable(rememberScrollableState { 0f }, Orientation.Vertical)
+                    )
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        rule.onRoot().performMouseInput {
+            enter(middle)
+            scroll(touchSlop, ScrollWheel.Vertical)
+        }
+
+        // Mouse wheel scroll are ignored
+        assertThat(layoutState.currentTransition).isNull()
+    }
+
+    @Test
+    fun mouseWheel_scrollableConsume_ignoredByStl() {
+        val layoutState = layoutState()
+        var touchSlop = 0f
+        var lastScroll = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(layoutState, Modifier.size(LayoutWidth, LayoutHeight)) {
+                scene(SceneA, userActions = mapOf(Swipe.Down to SceneB)) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            // A scrollable that consumes the scroll gesture
+                            .scrollable(
+                                rememberScrollableState {
+                                    lastScroll = it
+                                    it
+                                },
+                                Orientation.Vertical,
+                            )
+                    )
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        rule.onRoot().performMouseInput {
+            enter(middle)
+            scroll(touchSlop * 10, ScrollWheel.Vertical)
+        }
+
+        // Mouse wheel scroll are ignored
+        assertThat(layoutState.currentTransition).isNull()
+
+        // Mouse wheel scroll can still be consumed by the scrollable
+        assertThat(lastScroll).isNotEqualTo(0f)
+        assertThat(touchSlop).isNotEqualTo(0f)
+    }
+
+    @Test
     fun transitionKey() {
         val transitionkey = TransitionKey(debugName = "foo")
         val state =
@@ -500,7 +645,7 @@ class SwipeToSceneTest {
                         fade(TestElements.Foo)
                         fade(TestElements.Bar)
                     }
-                }
+                },
             )
 
         var touchSlop = 0f
@@ -512,8 +657,8 @@ class SwipeToSceneTest {
                     userActions =
                         mapOf(
                             Swipe.Down to SceneB,
-                            Swipe.Up to UserActionResult(SceneB, transitionKey = transitionkey)
-                        )
+                            Swipe.Up to UserActionResult(SceneB, transitionKey = transitionkey),
+                        ),
                 ) {
                     Box(Modifier.fillMaxSize())
                 }
@@ -521,19 +666,13 @@ class SwipeToSceneTest {
             }
         }
 
-        // Swipe down for the default transition from A to B.
-        rule.onRoot().performTouchInput {
-            down(middle)
-            moveBy(Offset(0f, touchSlop), delayMillis = 1_000)
-        }
-
-        assertThat(state.isTransitioning(from = SceneA, to = SceneB)).isTrue()
-        assertThat(state.currentTransition?.transformationSpec?.transformations).hasSize(1)
-
         // Move the pointer up to swipe to scene B using the new transition.
-        rule.onRoot().performTouchInput { moveBy(Offset(0f, -1.dp.toPx()), delayMillis = 1_000) }
+        rule.onRoot().performTouchInput {
+            down(center)
+            moveBy(Offset(0f, -touchSlop - 1.dp.toPx()), delayMillis = 1_000)
+        }
         assertThat(state.isTransitioning(from = SceneA, to = SceneB)).isTrue()
-        assertThat(state.currentTransition?.transformationSpec?.transformations).hasSize(2)
+        assertThat(state.currentTransition?.transformationSpec?.transformationMatchers).hasSize(2)
     }
 
     @Test
@@ -541,7 +680,8 @@ class SwipeToSceneTest {
         val swipeDistance =
             object : UserActionDistance {
                 override fun UserActionDistanceScope.absoluteDistance(
-                    fromSceneSize: IntSize,
+                    fromContent: ContentKey,
+                    toContent: ContentKey,
                     orientation: Orientation,
                 ): Float {
                     // Foo is going to have a vertical offset of 50dp. Let's make the swipe distance
@@ -558,7 +698,7 @@ class SwipeToSceneTest {
         val state =
             layoutState(
                 SceneA,
-                transitions { from(SceneA, to = SceneB) { distance = swipeDistance } }
+                transitions { from(SceneA, to = SceneB) { distance = swipeDistance } },
             )
 
         val layoutSize = 200.dp
@@ -590,48 +730,418 @@ class SwipeToSceneTest {
         }
 
         rule.waitForIdle()
-        val transition = assertThat(state.transitionState).isTransition()
+        val transition = assertThat(state.transitionState).isSceneTransition()
         assertThat(transition).hasFromScene(SceneA)
         assertThat(transition).hasToScene(SceneB)
         assertThat(transition).hasProgress(0.5f, tolerance = 0.01f)
     }
 
     @Test
-    fun overscrollScopeExtendsDensity() {
-        val swipeDistance = 100.dp
+    fun startEnd_ltrLayout() {
         val state =
             rule.runOnUiThread {
-                MutableSceneTransitionLayoutState(
-                    SceneA,
-                    transitions {
-                        from(SceneA, to = SceneB) { distance = FixedDistance(swipeDistance) }
+                MutableSceneTransitionLayoutStateForTests(
+                    initialScene = SceneA,
+                    transitions =
+                        transitions {
+                            from(SceneA, to = SceneB) {
+                                // We go to B by swiping to the start (left in LTR), so we make
+                                // scene B appear from the end (right) edge.
+                                translate(SceneB.rootElementKey, Edge.End)
+                            }
 
-                        overscroll(SceneB, Orientation.Vertical) {
-                            translate(TestElements.Foo, x = { 20.dp.toPx() }, y = { 30.dp.toPx() })
-                        }
-                    }
+                            from(SceneA, to = SceneC) {
+                                // We go to C by swiping to the end (right in LTR), so we make
+                                // scene C appear from the start (left) edge.
+                                translate(SceneC.rootElementKey, Edge.Start)
+                            }
+                        },
                 )
             }
+
         val layoutSize = 200.dp
         var touchSlop = 0f
         rule.setContent {
             touchSlop = LocalViewConfiguration.current.touchSlop
-            SceneTransitionLayout(state, Modifier.size(layoutSize)) {
-                scene(SceneA, userActions = mapOf(Swipe.Down to SceneB)) {
+            SceneTransitionLayoutForTesting(state, Modifier.size(layoutSize)) {
+                scene(SceneA, userActions = mapOf(Swipe.Start to SceneB, Swipe.End to SceneC)) {
                     Box(Modifier.fillMaxSize())
                 }
-                scene(SceneB) { Box(Modifier.element(TestElements.Foo).fillMaxSize()) }
+                scene(SceneB) { Box(Modifier.element(SceneB.rootElementKey).fillMaxSize()) }
+                scene(SceneC) { Box(Modifier.element(SceneC.rootElementKey).fillMaxSize()) }
             }
         }
 
-        // Swipe down by twice the swipe distance so that we are at 100% overscrolling on scene B.
+        // Swipe to the left (start).
         rule.onRoot().performTouchInput {
             val middle = (layoutSize / 2).toPx()
             down(Offset(middle, middle))
-            moveBy(Offset(0f, touchSlop + (swipeDistance * 2).toPx()), delayMillis = 1_000)
+            moveBy(Offset(-touchSlop, 0f), delayMillis = 1_000)
         }
 
-        // Foo should be translated by (20dp, 30dp).
-        rule.onNode(isElement(TestElements.Foo)).assertPositionInRootIsEqualTo(20.dp, 30.dp)
+        // Scene B should come from the right (end) edge.
+        var transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneB)
+        rule
+            .onNode(isElement(SceneB.rootElementKey))
+            .assertPositionInRootIsEqualTo(layoutSize, 0.dp)
+
+        // Release to go back to A.
+        rule.onRoot().performTouchInput { up() }
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneA)
+
+        // Swipe to the right (end).
+        rule.onRoot().performTouchInput {
+            val middle = (layoutSize / 2).toPx()
+            down(Offset(middle, middle))
+            moveBy(Offset(touchSlop, 0f), delayMillis = 1_000)
+        }
+
+        // Scene C should come from the left (start) edge.
+        transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneC)
+        rule
+            .onNode(isElement(SceneC.rootElementKey))
+            .assertPositionInRootIsEqualTo(-layoutSize, 0.dp)
+    }
+
+    @Test
+    fun startEnd_rtlLayout() {
+        val state =
+            rule.runOnUiThread {
+                MutableSceneTransitionLayoutStateForTests(
+                    initialScene = SceneA,
+                    transitions =
+                        transitions {
+                            from(SceneA, to = SceneB) {
+                                // We go to B by swiping to the start (right in RTL), so we make
+                                // scene B appear from the end (left) edge.
+                                translate(SceneB.rootElementKey, Edge.End)
+                            }
+
+                            from(SceneA, to = SceneC) {
+                                // We go to C by swiping to the end (left in RTL), so we make
+                                // scene C appear from the start (right) edge.
+                                translate(SceneC.rootElementKey, Edge.Start)
+                            }
+                        },
+                )
+            }
+
+        val layoutSize = 200.dp
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                SceneTransitionLayoutForTesting(state, Modifier.size(layoutSize)) {
+                    scene(SceneA, userActions = mapOf(Swipe.Start to SceneB, Swipe.End to SceneC)) {
+                        Box(Modifier.fillMaxSize())
+                    }
+                    scene(SceneB) { Box(Modifier.element(SceneB.rootElementKey).fillMaxSize()) }
+                    scene(SceneC) { Box(Modifier.element(SceneC.rootElementKey).fillMaxSize()) }
+                }
+            }
+        }
+
+        // Swipe to the left (end).
+        rule.onRoot().performTouchInput {
+            val middle = (layoutSize / 2).toPx()
+            down(Offset(middle, middle))
+            moveBy(Offset(-touchSlop, 0f), delayMillis = 1_000)
+        }
+
+        // Scene C should come from the right (start) edge.
+        var transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneC)
+        rule
+            .onNode(isElement(SceneC.rootElementKey))
+            .assertPositionInRootIsEqualTo(layoutSize, 0.dp)
+
+        // Release to go back to A.
+        rule.onRoot().performTouchInput { up() }
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneA)
+
+        // Swipe to the right (start).
+        rule.onRoot().performTouchInput {
+            val middle = (layoutSize / 2).toPx()
+            down(Offset(middle, middle))
+            moveBy(Offset(touchSlop, 0f), delayMillis = 1_000)
+        }
+
+        // Scene C should come from the left (end) edge.
+        transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneB)
+        rule
+            .onNode(isElement(SceneB.rootElementKey))
+            .assertPositionInRootIsEqualTo(-layoutSize, 0.dp)
+    }
+
+    @Test
+    fun sceneWithoutSwipesDoesNotConsumeGestures() {
+        val buttonTag = "button"
+
+        rule.setContent {
+            Box {
+                var count by remember { mutableStateOf(0) }
+                Button(onClick = { count++ }, Modifier.testTag(buttonTag).align(Alignment.Center)) {
+                    Text("Count: $count")
+                }
+
+                SceneTransitionLayout(
+                    remember { MutableSceneTransitionLayoutStateForTests(SceneA) }
+                ) {
+                    scene(SceneA) { Box(Modifier.fillMaxSize()) }
+                }
+            }
+        }
+
+        rule.onNodeWithTag(buttonTag).assertTextEquals("Count: 0")
+
+        // Click on the root at its center, where the button is located. Clicks should go through
+        // the STL and reach the button given that there is no swipes for the current scene.
+        repeat(3) { rule.onRoot().performClick() }
+        rule.onNodeWithTag(buttonTag).assertTextEquals("Count: 3")
+    }
+
+    @Test
+    fun swipeToSceneSupportsUpdates() {
+        val state = rule.runOnUiThread { MutableSceneTransitionLayoutStateForTests(SceneA) }
+
+        rule.setContent {
+            SceneTransitionLayout(state) {
+                // SceneA only has vertical actions, so only one vertical Modifier.swipeToScene()
+                // is composed.
+                scene(SceneA, mapOf(Swipe.Up to SceneB)) { Box(Modifier.fillMaxSize()) }
+
+                // SceneB only has horizontal actions, so only one vertical Modifier.swipeToScene()
+                // is composed, which will be force update it with a new draggableHandler.
+                scene(SceneB, mapOf(Swipe.Right to SceneC)) { Box(Modifier.fillMaxSize()) }
+                scene(SceneC) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneA)
+
+        // Swipe up to scene B.
+        rule.onRoot().performTouchInput { swipeUp() }
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneB)
+
+        // Swipe right to scene C.
+        rule.onRoot().performTouchInput { swipeRight() }
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneC)
+    }
+
+    @Test
+    fun swipeToSceneNodeIsKeptWhenDisabled() {
+        var hasHorizontalActions by mutableStateOf(false)
+        val state = rule.runOnUiThread { MutableSceneTransitionLayoutStateForTests(SceneA) }
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(state) {
+                scene(
+                    SceneA,
+                    userActions =
+                        buildList {
+                                add(Swipe.Down to SceneB)
+
+                                if (hasHorizontalActions) {
+                                    add(Swipe.Left to SceneC)
+                                }
+                            }
+                            .toMap(),
+                ) {
+                    Box(Modifier.fillMaxSize())
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        // Swipe down to start a transition to B.
+        rule.onRoot().performTouchInput {
+            down(middle)
+            moveBy(Offset(0f, touchSlop))
+        }
+
+        assertThat(state.transitionState).isSceneTransition()
+
+        // Add new horizontal user actions. This should not stop the current transition, even if a
+        // new horizontal Modifier.swipeToScene() handler is introduced where the vertical one was.
+        hasHorizontalActions = true
+        rule.waitForIdle()
+        assertThat(state.transitionState).isSceneTransition()
+    }
+
+    @Test
+    fun nestedScroll_useFromSourceInfo() {
+        val state = rule.runOnUiThread { MutableSceneTransitionLayoutStateForTests(SceneA) }
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(state) {
+                scene(
+                    SceneA,
+                    userActions =
+                        mapOf(Swipe.Down to SceneB, Swipe.Down(fromSource = Edge.Top) to SceneC),
+                ) {
+                    // Use a fullscreen nested scrollable to use the nested scroll connection.
+                    Box(
+                        Modifier.fillMaxSize()
+                            .scrollable(rememberScrollableState { 0f }, Orientation.Vertical)
+                    )
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+                scene(SceneC) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        // Swiping down from the middle of the screen leads to B.
+        rule.onRoot().performTouchInput {
+            down(center)
+            moveBy(Offset(0f, touchSlop + 1f))
+        }
+
+        var transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneB)
+
+        // Release finger and wait to settle back to A.
+        rule.onRoot().performTouchInput { up() }
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneA)
+
+        // Swiping down from the top of the screen leads to B.
+        rule.onRoot().performTouchInput {
+            down(center.copy(y = 0f))
+            moveBy(Offset(0f, touchSlop + 1f))
+        }
+
+        transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasFromScene(SceneA)
+        assertThat(transition).hasToScene(SceneC)
+    }
+
+    @Test
+    fun nestedScroll_ignoreMouseWheel() {
+        val state = rule.runOnUiThread { MutableSceneTransitionLayoutStateForTests(SceneA) }
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(state) {
+                scene(SceneA, userActions = mapOf(Swipe.Down to SceneB)) {
+                    // Use a fullscreen nested scrollable to use the nested scroll connection.
+                    Box(
+                        Modifier.fillMaxSize()
+                            .scrollable(rememberScrollableState { 0f }, Orientation.Vertical)
+                    )
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        rule.onRoot().performMouseInput {
+            scroll(-touchSlop - 1f, scrollWheel = ScrollWheel.Vertical)
+        }
+        assertThat(state.transitionState).isIdle()
+    }
+
+    @Test
+    fun nestedScroll_keepPriorityEvenIfWeCanNoLongerScrollOnThatDirection() {
+        val state = rule.runOnUiThread { MutableSceneTransitionLayoutStateForTests(SceneA) }
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(state) {
+                scene(SceneA, userActions = mapOf(Swipe.Down to SceneB)) {
+                    // Use a fullscreen nested scrollable to use the nested scroll connection.
+                    Box(
+                        Modifier.fillMaxSize()
+                            .scrollable(rememberScrollableState { 0f }, Orientation.Vertical)
+                    )
+                }
+                scene(SceneB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        fun TouchInjectionScope.height() = bottom
+        fun TouchInjectionScope.halfHeight() = height() / 2f
+
+        rule.onRoot().performTouchInput {
+            down(center.copy(y = 0f))
+            moveBy(Offset(0f, touchSlop + halfHeight()))
+        }
+        val transition = assertThat(state.transitionState).isSceneTransition()
+        assertThat(transition).hasProgress(0.5f, tolerance = 0.01f)
+
+        // The progress should never go above 100%.
+        rule.onRoot().performTouchInput { moveBy(Offset(0f, height())) }
+        assertThat(transition).hasProgress(1f, tolerance = 0.01f)
+
+        // Because the overscroll effect of scene B is not attached, swiping in the opposite
+        // direction will directly decrease the progress.
+        rule.onRoot().performTouchInput { moveBy(Offset(0f, -halfHeight())) }
+        assertThat(transition).hasProgress(0.5f, tolerance = 0.01f)
+    }
+
+    @Test
+    fun nestedScroll_replaceOverlay() {
+        val state =
+            rule.runOnUiThread {
+                MutableSceneTransitionLayoutStateForTests(SceneA, initialOverlays = setOf(OverlayA))
+            }
+        var touchSlop = 0f
+        rule.setContent {
+            touchSlop = LocalViewConfiguration.current.touchSlop
+            SceneTransitionLayout(state) {
+                scene(SceneA) { Box(Modifier.fillMaxSize()) }
+                overlay(
+                    OverlayA,
+                    mapOf(Swipe.Down to UserActionResult.ReplaceByOverlay(OverlayB)),
+                ) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .scrollable(rememberScrollableState { 0f }, Orientation.Vertical)
+                    )
+                }
+                overlay(OverlayB) { Box(Modifier.fillMaxSize()) }
+            }
+        }
+
+        // Swipe down 100% to replace A by B.
+        rule.onRoot().performTouchInput {
+            down(center.copy(y = 0f))
+            moveBy(Offset(0f, touchSlop + bottom))
+        }
+
+        val transition = assertThat(state.transitionState).isReplaceOverlayTransition()
+        assertThat(transition).hasCurrentScene(SceneA)
+        assertThat(transition).hasFromOverlay(OverlayA)
+        assertThat(transition).hasToOverlay(OverlayB)
+        assertThat(transition).hasCurrentOverlays(OverlayA)
+        assertThat(transition).hasProgress(1f, tolerance = 0.01f)
+
+        // Commit the gesture. The overlays are instantly swapped in the set of current overlays.
+        rule.onRoot().performTouchInput { up() }
+        assertThat(transition).hasCurrentScene(SceneA)
+        assertThat(transition).hasCurrentOverlays(OverlayB)
+
+        rule.waitForIdle()
+        assertThat(state.transitionState).isIdle()
+        assertThat(state.transitionState).hasCurrentScene(SceneA)
+        assertThat(state.transitionState).hasCurrentOverlays(OverlayB)
     }
 }

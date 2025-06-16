@@ -1696,6 +1696,7 @@ class SettingsProtoDumpUtil {
             proto.write(SettingProto.DEFAULT_VALUE, setting.getDefaultValue());
             proto.write(SettingProto.DEFAULT_FROM_SYSTEM, setting.isDefaultFromSystem());
         }
+        proto.write(SettingProto.PRESERVED_IN_RESTORE, setting.isValuePreservedInRestore());
         proto.end(settingsToken);
     }
 
@@ -1715,11 +1716,22 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
                 SecureSettingsProto.Accessibility.ENABLED_ACCESSIBILITY_SERVICES);
         dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_AUTOCLICK_CURSOR_AREA_SIZE,
+                SecureSettingsProto.Accessibility.AUTOCLICK_CURSOR_AREA_SIZE);
+        dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_AUTOCLICK_IGNORE_MINOR_CURSOR_MOVEMENT,
+                SecureSettingsProto.Accessibility.AUTOCLICK_IGNORE_MINOR_CURSOR_MOVEMENT);
+        dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_AUTOCLICK_REVERT_TO_LEFT_CLICK,
+                SecureSettingsProto.Accessibility.AUTOCLICK_REVERT_TO_LEFT_CLICK);
+        dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_AUTOCLICK_ENABLED,
                 SecureSettingsProto.Accessibility.AUTOCLICK_ENABLED);
         dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_AUTOCLICK_DELAY,
                 SecureSettingsProto.Accessibility.AUTOCLICK_DELAY);
+        dumpSetting(s, p, Settings.Secure.ACCESSIBILITY_AUTOCLICK_PANEL_POSITION,
+                SecureSettingsProto.Accessibility.AUTOCLICK_PANEL_POSITION);
         dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_BUTTON_TARGET_COMPONENT,
                 SecureSettingsProto.Accessibility.BUTTON_TARGET_COMPONENT);
@@ -1778,6 +1790,9 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ACCESSIBILITY_HIGH_TEXT_CONTRAST_ENABLED,
                 SecureSettingsProto.Accessibility.HIGH_TEXT_CONTRAST_ENABLED);
         dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_HCT_RECT_PROMPT_STATUS,
+                SecureSettingsProto.Accessibility.HCT_RECT_PROMPT_STATUS);
+        dumpSetting(s, p,
                 Settings.Secure.CONTRAST_LEVEL,
                 SecureSettingsProto.Accessibility.CONTRAST_LEVEL);
         dumpSetting(s, p,
@@ -1823,6 +1838,9 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ACCESSIBILITY_QS_TARGETS,
                 SecureSettingsProto.Accessibility.QS_TARGETS);
         dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_KEY_GESTURE_TARGETS,
+                SecureSettingsProto.Accessibility.ACCESSIBILITY_KEY_GESTURE_TARGETS);
+        dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_CAPABILITY,
                 SecureSettingsProto.Accessibility.ACCESSIBILITY_MAGNIFICATION_CAPABILITY);
         dumpSetting(s, p,
@@ -1862,6 +1880,10 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_JOYSTICK_ENABLED,
                 SecureSettingsProto.Accessibility
                         .ACCESSIBILITY_MAGNIFICATION_JOYSTICK_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE,
+                SecureSettingsProto.Accessibility
+                        .ACCESSIBILITY_MAGNIFICATION_CURSOR_FOLLOWING_MODE);
         dumpSetting(s, p,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_TWO_FINGER_TRIPLE_TAP_ENABLED,
                 SecureSettingsProto.Accessibility
@@ -2089,6 +2111,12 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.Secure.ADAPTIVE_CONNECTIVITY_ENABLED,
                 SecureSettingsProto.ADAPTIVE_CONNECTIVITY_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.ADAPTIVE_CONNECTIVITY_WIFI_ENABLED,
+                SecureSettingsProto.ADAPTIVE_CONNECTIVITY_WIFI_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.ADAPTIVE_CONNECTIVITY_MOBILE_NETWORK_ENABLED,
+                SecureSettingsProto.ADAPTIVE_CONNECTIVITY_MOBILE_NETWORK_ENABLED);
 
         final long controlsToken = p.start(SecureSettingsProto.CONTROLS);
         dumpSetting(s, p,
@@ -2120,6 +2148,15 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.SCREEN_RESOLUTION_MODE,
                 SecureSettingsProto.Display.SCREEN_RESOLUTION_MODE);
         p.end(displayToken);
+
+        final long doubleTapPowerButtonToken = p.start(SecureSettingsProto.DOUBLE_TAP_POWER_BUTTON);
+        dumpSetting(s, p,
+                Settings.Secure.DOUBLE_TAP_POWER_BUTTON_GESTURE_ENABLED,
+                SecureSettingsProto.DoubleTapPowerButton.GESTURE_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.DOUBLE_TAP_POWER_BUTTON_GESTURE,
+                SecureSettingsProto.DoubleTapPowerButton.GESTURE);
+        p.end(doubleTapPowerButtonToken);
 
         final long dozeToken = p.start(SecureSettingsProto.DOZE);
         dumpSetting(s, p,
@@ -2162,14 +2199,9 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ENHANCED_VOICE_PRIVACY_ENABLED,
                 SecureSettingsProto.ENHANCED_VOICE_PRIVACY_ENABLED);
 
-        final long evenDimmerToken = p.start(SecureSettingsProto.EVEN_DIMMER);
         dumpSetting(s, p,
-                Settings.Secure.EVEN_DIMMER_ACTIVATED,
-                SecureSettingsProto.EvenDimmer.EVEN_DIMMER_ACTIVATED);
-        dumpSetting(s, p,
-                Settings.Secure.EVEN_DIMMER_MIN_NITS,
-                SecureSettingsProto.EvenDimmer.EVEN_DIMMER_MIN_NITS);
-        p.end(evenDimmerToken);
+                Settings.Secure.EM_VALUE,
+                SecureSettingsProto.Accessibility.EM_VALUE);
 
         final long gestureToken = p.start(SecureSettingsProto.GESTURE);
         dumpSetting(s, p,
@@ -2505,6 +2537,13 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.RTT_CALLING_MODE,
                 SecureSettingsProto.RTT_CALLING_MODE);
 
+        final long screenoffudfpsenabledToken = p.start(
+                SecureSettingsProto.SCREEN_OFF_UDFPS_ENABLED);
+        dumpSetting(s, p,
+                Settings.Secure.SCREEN_OFF_UNLOCK_UDFPS_ENABLED,
+                SecureSettingsProto.SCREEN_OFF_UDFPS_ENABLED);
+        p.end(screenoffudfpsenabledToken);
+
         final long screensaverToken = p.start(SecureSettingsProto.SCREENSAVER);
         dumpSetting(s, p,
                 Settings.Secure.SCREENSAVER_ENABLED,
@@ -2521,6 +2560,9 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.Secure.SCREENSAVER_DEFAULT_COMPONENT,
                 SecureSettingsProto.Screensaver.DEFAULT_COMPONENT);
+        dumpSetting(s, p,
+                Settings.Secure.SCREENSAVER_ACTIVATE_ON_POSTURED,
+                SecureSettingsProto.Screensaver.ACTIVATE_ON_POSTURED);
         p.end(screensaverToken);
 
         final long searchToken = p.start(SecureSettingsProto.SEARCH);
@@ -2734,18 +2776,6 @@ class SettingsProtoDumpUtil {
                 Settings.Secure.ZEN_DURATION,
                 SecureSettingsProto.Zen.DURATION);
         dumpSetting(s, p,
-                Settings.Secure.SHOW_ZEN_UPGRADE_NOTIFICATION,
-                SecureSettingsProto.Zen.SHOW_ZEN_UPGRADE_NOTIFICATION);
-        dumpSetting(s, p,
-                Settings.Secure.SHOW_ZEN_SETTINGS_SUGGESTION,
-                SecureSettingsProto.Zen.SHOW_ZEN_SETTINGS_SUGGESTION);
-        dumpSetting(s, p,
-                Settings.Secure.ZEN_SETTINGS_UPDATED,
-                SecureSettingsProto.Zen.SETTINGS_UPDATED);
-        dumpSetting(s, p,
-                Settings.Secure.ZEN_SETTINGS_SUGGESTION_VIEWED,
-                SecureSettingsProto.Zen.SETTINGS_SUGGESTION_VIEWED);
-        dumpSetting(s, p,
                 Settings.Secure.CHARGE_OPTIMIZATION_MODE,
                 SecureSettingsProto.CHARGE_OPTIMIZATION_MODE);
         p.end(zenToken);
@@ -2831,6 +2861,9 @@ class SettingsProtoDumpUtil {
                 Settings.System.SHOW_KEY_PRESSES,
                 SystemSettingsProto.DevOptions.SHOW_KEY_PRESSES);
         dumpSetting(s, p,
+                Settings.System.TOUCHPAD_VISUALIZER,
+                SystemSettingsProto.DevOptions.TOUCHPAD_VISUALIZER);
+        dumpSetting(s, p,
                 Settings.System.POINTER_LOCATION,
                 SystemSettingsProto.DevOptions.POINTER_LOCATION);
         dumpSetting(s, p,
@@ -2915,6 +2948,9 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.System.POINTER_FILL_STYLE,
                 SystemSettingsProto.Pointer.POINTER_FILL_STYLE);
+        dumpSetting(s, p,
+                Settings.System.POINTER_STROKE_STYLE,
+                SystemSettingsProto.Pointer.POINTER_STROKE_STYLE);
         dumpSetting(s, p,
                 Settings.System.POINTER_SCALE,
                 SystemSettingsProto.Pointer.POINTER_SCALE);
@@ -3040,6 +3076,12 @@ class SettingsProtoDumpUtil {
         dumpSetting(s, p,
                 Settings.System.TOUCHPAD_TAP_DRAGGING,
                 SystemSettingsProto.Touchpad.TAP_DRAGGING);
+        dumpSetting(s, p,
+                Settings.System.TOUCHPAD_THREE_FINGER_TAP_CUSTOMIZATION,
+                SystemSettingsProto.Touchpad.THREE_FINGER_TAP_CUSTOMIZATION);
+        dumpSetting(s, p,
+                Settings.System.TOUCHPAD_SYSTEM_GESTURES,
+                SystemSettingsProto.Touchpad.SYSTEM_GESTURES);
         p.end(touchpadToken);
 
         dumpSetting(s, p,
@@ -3114,6 +3156,12 @@ class SettingsProtoDumpUtil {
                 Settings.System.MASTER_BALANCE,
                 SystemSettingsProto.Volume.MASTER_BALANCE);
         p.end(volumeToken);
+
+        final long systemDisplayToken = p.start(SystemSettingsProto.DISPLAY);
+        dumpSetting(s, p,
+                Settings.System.CV_ENABLED,
+                SystemSettingsProto.Display.CV_ENABLED);
+        p.end(systemDisplayToken);
 
         dumpSetting(s, p,
                 Settings.System.WHEN_TO_MAKE_WIFI_CALLS,

@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.keyguard.ui.viewmodel
 
 import com.android.systemui.common.ui.domain.interactor.configurationInteractor
@@ -24,15 +22,17 @@ import com.android.systemui.keyguard.domain.interactor.keyguardInteractor
 import com.android.systemui.keyguard.domain.interactor.keyguardTransitionInteractor
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.Kosmos.Fixture
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.android.systemui.kosmos.applicationCoroutineScope
 
 var Kosmos.aodBurnInViewModel by Fixture {
     AodBurnInViewModel(
+        applicationScope = applicationCoroutineScope,
         burnInInteractor = burnInInteractor,
         configurationInteractor = configurationInteractor,
         keyguardInteractor = keyguardInteractor,
         keyguardTransitionInteractor = keyguardTransitionInteractor,
         goneToAodTransitionViewModel = goneToAodTransitionViewModel,
+        lockscreenToAodTransitionViewModel = lockscreenToAodTransitionViewModel,
         aodToLockscreenTransitionViewModel = aodToLockscreenTransitionViewModel,
         occludedToLockscreenTransitionViewModel = occludedToLockscreenTransitionViewModel,
         keyguardClockViewModel = keyguardClockViewModel,

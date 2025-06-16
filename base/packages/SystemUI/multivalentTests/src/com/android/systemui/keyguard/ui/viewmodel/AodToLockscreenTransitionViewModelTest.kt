@@ -28,10 +28,10 @@ import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.keyguard.shared.model.TransitionState
 import com.android.systemui.keyguard.shared.model.TransitionStep
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.shade.shadeTestUtil
 import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -40,7 +40,6 @@ import org.junit.runner.RunWith
 import platform.test.runner.parameterized.ParameterizedAndroidJunit4
 import platform.test.runner.parameterized.Parameters
 
-@ExperimentalCoroutinesApi
 @SmallTest
 @RunWith(ParameterizedAndroidJunit4::class)
 class AodToLockscreenTransitionViewModelTest(flags: FlagsParameterization) : SysuiTestCase() {
@@ -156,16 +155,55 @@ class AodToLockscreenTransitionViewModelTest(flags: FlagsParameterization) : Sys
             assertThat(deviceEntryBackgroundViewAlpha).isEqualTo(1f)
         }
 
+    @Test
+    fun deviceEntryBackgroundView_onCancel() =
+        testScope.runTest {
+            fingerprintPropertyRepository.supportsUdfps()
+            val deviceEntryBackgroundViewAlpha by
+                collectLastValue(underTest.deviceEntryBackgroundViewAlpha)
+            runCurrent()
+
+            // GIVEN transition START
+            repository.sendTransitionStep(step(0f, TransitionState.STARTED))
+            assertThat(deviceEntryBackgroundViewAlpha).isEqualTo(0f)
+
+            // WHEN transition is cancelled
+            repository.sendTransitionStep(step(.1f, TransitionState.CANCELED))
+
+            // THEN alpha updates according to whether the scene framework is enabled (CANCELED is
+            // ignored when the scene framework is enabled).
+            assertThat(deviceEntryBackgroundViewAlpha)
+                .isEqualTo(if (SceneContainerFlag.isEnabled) 0f else 1f)
+        }
+
+    @Test
+    fun deviceEntryParentViewAlpha_onCancel() =
+        testScope.runTest {
+            fingerprintPropertyRepository.supportsUdfps()
+            val deviceEntryBackgroundViewAlpha by
+                collectLastValue(underTest.deviceEntryParentViewAlpha)
+            runCurrent()
+
+            // GIVEN transition START
+            repository.sendTransitionStep(step(0f, TransitionState.STARTED))
+
+            // WHEN transition is cancelled
+            repository.sendTransitionStep(step(.1f, TransitionState.CANCELED))
+
+            // THEN alpha is immediately set to 1f (expected lockscreen alpha state)
+            assertThat(deviceEntryBackgroundViewAlpha).isEqualTo(1f)
+        }
+
     private fun step(
         value: Float,
-        state: TransitionState = TransitionState.RUNNING
+        state: TransitionState = TransitionState.RUNNING,
     ): TransitionStep {
         return TransitionStep(
             from = KeyguardState.AOD,
             to = KeyguardState.LOCKSCREEN,
             value = value,
             transitionState = state,
-            ownerName = "AodToLockscreenTransitionViewModelTest"
+            ownerName = "AodToLockscreenTransitionViewModelTest",
         )
     }
 }

@@ -16,10 +16,12 @@
 
 package com.android.systemui.volume.panel.component.volume.domain.interactor
 
-import android.media.AudioDeviceInfo
 import android.media.AudioManager
-import com.android.settingslib.volume.data.repository.AudioRepository
+import com.android.settingslib.volume.data.repository.AudioSystemRepository
+import com.android.settingslib.volume.domain.interactor.AudioModeInteractor
 import com.android.settingslib.volume.shared.model.AudioStream
+import com.android.systemui.Flags
+import com.android.systemui.volume.domain.interactor.AudioSharingInteractor
 import com.android.systemui.volume.panel.component.mediaoutput.domain.interactor.MediaOutputInteractor
 import com.android.systemui.volume.panel.component.mediaoutput.shared.model.MediaDeviceSession
 import com.android.systemui.volume.panel.component.mediaoutput.shared.model.isTheSameSession
@@ -41,30 +43,42 @@ class AudioSlidersInteractor
 constructor(
     @VolumePanelScope scope: CoroutineScope,
     mediaOutputInteractor: MediaOutputInteractor,
-    audioRepository: AudioRepository,
+    audioModeInteractor: AudioModeInteractor,
+    private val audioSystemRepository: AudioSystemRepository,
+    audioSharingInteractor: AudioSharingInteractor,
 ) {
 
     val volumePanelSliders: StateFlow<List<SliderType>> =
         combineTransform(
                 mediaOutputInteractor.activeMediaDeviceSessions,
                 mediaOutputInteractor.defaultActiveMediaSession.filterData(),
-                audioRepository.communicationDevice,
-            ) { activeSessions, defaultSession, communicationDevice ->
+                audioModeInteractor.isOngoingCall,
+                audioSharingInteractor.volume,
+            ) { activeSessions, defaultSession, isOngoingCall, audioSharingVolume ->
                 coroutineScope {
                     val viewModels = buildList {
+                        if (isOngoingCall) {
+                            addStream(AudioManager.STREAM_VOICE_CALL)
+                        }
+
                         if (defaultSession?.isTheSameSession(activeSessions.remote) == true) {
                             addSession(activeSessions.remote)
                             addStream(AudioManager.STREAM_MUSIC)
+                            if (Flags.showAudioSharingSliderInVolumePanel()) {
+                                audioSharingVolume?.let { addAudioSharingStream() }
+                            }
                         } else {
                             addStream(AudioManager.STREAM_MUSIC)
+                            if (Flags.showAudioSharingSliderInVolumePanel()) {
+                                audioSharingVolume?.let { addAudioSharingStream() }
+                            }
                             addSession(activeSessions.remote)
                         }
 
-                        if (communicationDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                            addStream(AudioManager.STREAM_BLUETOOTH_SCO)
-                        } else {
+                        if (!isOngoingCall) {
                             addStream(AudioManager.STREAM_VOICE_CALL)
                         }
+
                         addStream(AudioManager.STREAM_RING)
                         addStream(AudioManager.STREAM_NOTIFICATION)
                         addStream(AudioManager.STREAM_ALARM)
@@ -81,6 +95,21 @@ constructor(
     }
 
     private fun MutableList<SliderType>.addStream(stream: Int) {
+        // Hide other streams except STREAM_MUSIC if the isSingleVolume mode is on. This makes sure
+        // the volume slider in volume panel is consistent with the volume slider inside system
+        // settings app.
+        if (
+            Flags.onlyShowMediaStreamSliderInSingleVolumeMode() &&
+                audioSystemRepository.isSingleVolume &&
+                stream != AudioManager.STREAM_MUSIC
+        ) {
+            return
+        }
+
         add(SliderType.Stream(AudioStream(stream)))
+    }
+
+    private fun MutableList<SliderType>.addAudioSharingStream() {
+        add(SliderType.AudioSharingStream)
     }
 }

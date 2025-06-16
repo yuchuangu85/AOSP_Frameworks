@@ -17,6 +17,7 @@
 package android.window;
 
 import static com.android.internal.annotations.VisibleForTesting.Visibility.PACKAGE;
+import static com.android.window.flags.Flags.predictiveBackTimestampApi;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -27,10 +28,12 @@ import android.os.Parcelable;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.util.Log;
+import android.util.Pair;
 import android.view.ViewRootImpl;
 
 import com.android.internal.annotations.VisibleForTesting;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.function.Consumer;
 
@@ -58,7 +61,7 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
     // The handler to run callbacks on. This should be on the same thread
     // the ViewRootImpl holding IME's WindowOnBackInvokedDispatcher is created on.
     private Handler mHandler;
-
+    private final ArrayDeque<Pair<Integer, Bundle>> mQueuedReceive = new ArrayDeque<>();
     public ImeOnBackInvokedDispatcher(Handler handler) {
         mResultReceiver = new ResultReceiver(handler) {
             @Override
@@ -66,10 +69,21 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
                 WindowOnBackInvokedDispatcher dispatcher = getReceivingDispatcher();
                 if (dispatcher != null) {
                     receive(resultCode, resultData, dispatcher);
+                } else {
+                    mQueuedReceive.add(new Pair<>(resultCode, resultData));
                 }
             }
         };
     }
+
+    /** Set receiving dispatcher to consume queued receiving events. */
+    public void updateReceivingDispatcher(@NonNull WindowOnBackInvokedDispatcher dispatcher) {
+        while (!mQueuedReceive.isEmpty()) {
+            final Pair<Integer, Bundle> queuedMessage = mQueuedReceive.poll();
+            receive(queuedMessage.first, queuedMessage.second, dispatcher);
+        }
+    }
+
 
     void setHandler(@NonNull Handler handler) {
         mHandler = handler;
@@ -189,6 +203,34 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
         mImeCallbacks.remove(callback);
     }
 
+    /**
+     * Unregisters all callbacks on the receiving dispatcher but keeps a reference of the callbacks
+     * in case the clearance is reverted in
+     * {@link ImeOnBackInvokedDispatcher#undoPreliminaryClear()}.
+     */
+    public void preliminaryClear() {
+        // Unregister previously registered callbacks if there's any.
+        if (getReceivingDispatcher() != null) {
+            for (ImeOnBackInvokedCallback callback : mImeCallbacks) {
+                getReceivingDispatcher().unregisterOnBackInvokedCallback(callback);
+            }
+        }
+    }
+
+    /**
+     * Reregisters all callbacks on the receiving dispatcher that have previously been cleared by
+     * calling {@link ImeOnBackInvokedDispatcher#preliminaryClear()}. This can happen if an IME hide
+     * animation is interrupted causing the IME to reappear.
+     */
+    public void undoPreliminaryClear() {
+        if (getReceivingDispatcher() != null) {
+            for (ImeOnBackInvokedCallback callback : mImeCallbacks) {
+                getReceivingDispatcher().registerOnBackInvokedCallbackUnchecked(callback,
+                        callback.mPriority);
+            }
+        }
+    }
+
     /** Clears all registered callbacks on the instance. */
     public void clear() {
         // Unregister previously registered callbacks if there's any.
@@ -198,6 +240,7 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
             }
         }
         mImeCallbacks.clear();
+        mQueuedReceive.clear();
     }
 
     @VisibleForTesting(visibility = PACKAGE)
@@ -221,9 +264,13 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
         @Override
         public void onBackStarted(@NonNull BackEvent backEvent) {
             try {
+                long frameTime = 0;
+                if (predictiveBackTimestampApi()) {
+                    frameTime = backEvent.getFrameTimeMillis();
+                }
                 mIOnBackInvokedCallback.onBackStarted(
-                        new BackMotionEvent(backEvent.getTouchX(), backEvent.getTouchY(),
-                                backEvent.getProgress(), 0f, 0f, false, backEvent.getSwipeEdge(),
+                        new BackMotionEvent(backEvent.getTouchX(), backEvent.getTouchY(), frameTime,
+                                backEvent.getProgress(), false, backEvent.getSwipeEdge(),
                                 null));
             } catch (RemoteException e) {
                 Log.e(TAG, "Exception when invoking forwarded callback. e: ", e);
@@ -233,9 +280,13 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
         @Override
         public void onBackProgressed(@NonNull BackEvent backEvent) {
             try {
+                long frameTime = 0;
+                if (predictiveBackTimestampApi()) {
+                    frameTime = backEvent.getFrameTimeMillis();
+                }
                 mIOnBackInvokedCallback.onBackProgressed(
-                        new BackMotionEvent(backEvent.getTouchX(), backEvent.getTouchY(),
-                                backEvent.getProgress(), 0f, 0f, false, backEvent.getSwipeEdge(),
+                        new BackMotionEvent(backEvent.getTouchX(), backEvent.getTouchY(), frameTime,
+                                backEvent.getProgress(), false, backEvent.getSwipeEdge(),
                                 null));
             } catch (RemoteException e) {
                 Log.e(TAG, "Exception when invoking forwarded callback. e: ", e);
@@ -338,6 +389,11 @@ public class ImeOnBackInvokedDispatcher implements OnBackInvokedDispatcher, Parc
 
         @Override
         public void setTriggerBack(boolean triggerBack) {
+            // no-op
+        }
+
+        @Override
+        public void setHandoffHandler(IBackAnimationHandoffHandler handoffHandler) {
             // no-op
         }
 

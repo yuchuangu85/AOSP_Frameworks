@@ -16,7 +16,9 @@
 
 package com.android.systemui.scene.shared.model
 
+import com.android.compose.animation.scene.OverlayKey
 import com.android.compose.animation.scene.SceneKey
+import com.android.systemui.scene.ui.composable.SceneContainerTransitionsBuilder
 
 /** Models the configuration of the scene container. */
 data class SceneContainerConfig(
@@ -38,6 +40,13 @@ data class SceneContainerConfig(
     val initialSceneKey: SceneKey,
 
     /**
+     * The keys to all overlays in the container, sorted by z-order such that the last one renders
+     * on top of all previous ones. Overlay keys within the same container must not repeat but it's
+     * okay to have the same overlay keys in different containers.
+     */
+    val overlayKeys: List<OverlayKey> = emptyList(),
+
+    /**
      * Navigation distance of each scene.
      *
      * The navigation distance is a measure of how many non-back user action "steps" away from the
@@ -53,7 +62,13 @@ data class SceneContainerConfig(
      * Note that this is not the z-order of rendering; that's determined by the order of declaration
      * of scenes in the [sceneKeys] list.
      */
-    val navigationDistances: Map<SceneKey, Int>
+    val navigationDistances: Map<SceneKey, Int>,
+
+    /**
+     * Builds the comprehensive definition of all transitions between scenes and overlays in the
+     * scene container.
+     */
+    val transitionsBuilder: SceneContainerTransitionsBuilder,
 ) {
     init {
         check(sceneKeys.isNotEmpty()) { "A container must have at least one scene key." }

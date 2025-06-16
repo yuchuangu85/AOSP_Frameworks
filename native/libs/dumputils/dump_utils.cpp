@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include <set>
+#include <utility>
 
 #include <android-base/file.h>
 #include <android-base/parseint.h>
@@ -49,7 +50,6 @@ static const char* native_processes_to_dump[] = {
 
 // Native processes to dump on debuggable builds.
 static const char* debuggable_native_processes_to_dump[] = {
-        "/system/bin/keystore2",
         "/system/bin/vold",
         NULL,
 };
@@ -100,7 +100,7 @@ static const std::vector<std::string> aidl_interfaces_to_dump {
         "android.hardware.automotive.remoteaccess.IRemoteAccess",
         "android.hardware.automotive.vehicle.IVehicle",
         "android.hardware.biometrics.face.IBiometricsFace",
-        "android.hardware.biometrics.fingerprint.IBiometricsFingerprint",
+        "android.hardware.biometrics.fingerprint.IFingerprint",
         "android.hardware.camera.provider.ICameraProvider",
         "android.hardware.drm.IDrmFactory",
         "android.hardware.graphics.allocator.IAllocator",
@@ -115,7 +115,7 @@ static const std::vector<std::string> aidl_interfaces_to_dump {
 
 /* list of extra hal interfaces to dump containing process during native dumps */
 // This is filled when dumpstate is called.
-static std::set<const std::string> extra_hal_interfaces_to_dump;
+static std::set<std::string> extra_hal_interfaces_to_dump;
 
 static void read_extra_hals_to_dump_from_property() {
     // extra hals to dump are already filled
@@ -129,7 +129,7 @@ static void read_extra_hals_to_dump_from_property() {
         if (trimmed_token.length() == 0) {
             continue;
         }
-        extra_hal_interfaces_to_dump.insert(trimmed_token);
+        extra_hal_interfaces_to_dump.insert(std::move(trimmed_token));
     }
 }
 

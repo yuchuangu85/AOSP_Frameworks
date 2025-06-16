@@ -29,10 +29,10 @@ import com.android.systemui.keyguard.shared.model.KeyguardState.OCCLUDED
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.util.kotlin.pairwise
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flatMapLatest
@@ -43,13 +43,12 @@ import kotlinx.coroutines.flow.merge
  * Breaks down OCCLUDED->LOCKSCREEN transition into discrete steps for corresponding views to
  * consume.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class OccludedToLockscreenTransitionViewModel
 @Inject
 constructor(
     deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
-    configurationInteractor: ConfigurationInteractor,
+    @ShadeDisplayAware configurationInteractor: ConfigurationInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
     keyguardInteractor: KeyguardInteractor,
     keyguardTransitionInteractor: KeyguardTransitionInteractor,
@@ -104,11 +103,17 @@ constructor(
                         !isOccluded &&
                         keyguardTransitionInteractor.getCurrentState() == OCCLUDED
                 }
-                .map { 0f }
+                .map { 0f },
         )
 
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
         transitionAnimation.immediatelyTransitionTo(1f)
 
-    override val deviceEntryParentViewAlpha: Flow<Float> = lockscreenAlpha
+    override val deviceEntryParentViewAlpha: Flow<Float> =
+        transitionAnimation.sharedFlow(
+            startTime = 233.milliseconds,
+            duration = 250.milliseconds,
+            onStep = { it },
+            onCancel = { 1f },
+        )
 }

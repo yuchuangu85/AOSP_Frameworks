@@ -43,6 +43,7 @@ import android.text.TextUtils;
 import android.util.EventLog;
 import android.view.View;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.internal.jank.InteractionJankMonitor;
@@ -56,13 +57,15 @@ import com.android.systemui.animation.ActivityTransitionAnimator;
 import com.android.systemui.assist.AssistManager;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
-import com.android.systemui.dagger.qualifiers.DisplayId;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.power.domain.interactor.PowerInteractor;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.shade.ShadeController;
+import com.android.systemui.shade.ShadeDisplayAware;
 import com.android.systemui.shade.domain.interactor.PanelExpansionInteractor;
 import com.android.systemui.shade.domain.interactor.ShadeAnimationInteractor;
+import com.android.systemui.shade.domain.interactor.ShadeDialogContextInteractor;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.NotificationClickNotifier;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
@@ -74,11 +77,12 @@ import com.android.systemui.statusbar.notification.NotificationLaunchAnimatorCon
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.provider.LaunchFullScreenIntentProvider;
 import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
+import com.android.systemui.statusbar.notification.emptyshade.shared.ModesEmptyShadeFix;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpUtil;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRowDragController;
 import com.android.systemui.statusbar.notification.row.OnUserInteractionCallback;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
-import com.android.systemui.statusbar.policy.HeadsUpUtil;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.wmshell.BubblesManager;
 
@@ -110,8 +114,10 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                 boolean showOverTheLockScreen);
     }
 
+    private final static String TAG = "StatusBarNotificationActivityStarter";
+
     private final Context mContext;
-    private final int mDisplayId;
+    private final ShadeDialogContextInteractor mContextInteractor;
 
     private final Handler mMainThreadHandler;
     private final Executor mUiBgExecutor;
@@ -151,9 +157,9 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
 
     @Inject
     StatusBarNotificationActivityStarter(
-            Context context,
-            @DisplayId int displayId,
-            Handler mainThreadHandler,
+            @ShadeDisplayAware Context context,
+            ShadeDialogContextInteractor contextInteractor,
+            @Main Handler mainThreadHandler,
             @Background Executor uiBgExecutor,
             NotificationVisibilityProvider visibilityProvider,
             HeadsUpManager headsUpManager,
@@ -185,7 +191,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
             PowerInteractor powerInteractor,
             UserTracker userTracker) {
         mContext = context;
-        mDisplayId = displayId;
+        mContextInteractor = contextInteractor;
         mMainThreadHandler = mainThreadHandler;
         mUiBgExecutor = uiBgExecutor;
         mVisibilityProvider = visibilityProvider;
@@ -226,11 +232,12 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
      * @param entry notification that bubble icon was clicked
      */
     @Override
-    public void onNotificationBubbleIconClicked(NotificationEntry entry) {
+    public void onNotificationBubbleIconClicked(@NonNull NotificationEntry entry) {
         Runnable action = () -> {
             mBubblesManagerOptional.ifPresent(bubblesManager ->
                     bubblesManager.onUserChangedBubble(entry, !entry.isBubble()));
-            mHeadsUpManager.removeNotification(entry.getKey(), /* releaseImmediately= */ true);
+            mHeadsUpManager.removeNotification(entry.getKey(), /* releaseImmediately= */ true,
+                    /* reason= */ "onNotificationBubbleIconClicked");
         };
         if (entry.isBubble()) {
             // entry is being un-bubbled, no need to unlock
@@ -248,10 +255,11 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
      * Called when a notification is clicked.
      *
      * @param entry notification that was clicked
-     * @param row row for that notification
+     * @param row   row for that notification
      */
     @Override
-    public void onNotificationClicked(NotificationEntry entry, ExpandableNotificationRow row) {
+    public void onNotificationClicked(@NonNull NotificationEntry entry,
+            @NonNull ExpandableNotificationRow row) {
         mLogger.logStartingActivityFromClick(entry, row.isHeadsUpState(),
                 mKeyguardStateController.isVisible(),
                 mNotificationShadeWindowController.getPanelExpanded());
@@ -433,7 +441,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
      * @param entry notification entry that is dropped.
      */
     @Override
-    public void onDragSuccess(NotificationEntry entry) {
+    public void onDragSuccess(@NonNull NotificationEntry entry) {
         // this method is not responsible for intent sending.
         // will focus follow operation only after drag-and-drop that notification.
         final NotificationVisibility nv = mVisibilityProvider.obtain(entry, true);
@@ -487,6 +495,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
             boolean animate,
             boolean isActivityIntent) {
         mLogger.logStartNotificationIntent(entry);
+        final int displayId = mContextInteractor.getContext().getDisplayId();
         try {
             ActivityTransitionAnimator.Controller animationController =
                     new StatusBarTransitionAnimatorController(
@@ -495,7 +504,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                             mShadeController,
                             mNotificationShadeWindowController,
                             mCommandQueue,
-                            mDisplayId,
+                            displayId,
                             isActivityIntent);
             mActivityTransitionAnimator.startPendingIntentWithAnimation(
                     animationController,
@@ -505,11 +514,11 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                         long eventTime = row.getAndResetLastActionUpTime();
                         Bundle options = eventTime > 0
                                 ? getActivityOptions(
-                                mDisplayId,
+                                displayId,
                                 adapter,
                                 mKeyguardStateController.isShowing(),
                                 eventTime)
-                                : getActivityOptions(mDisplayId, adapter);
+                                : getActivityOptions(displayId, adapter);
                         int result = intent.sendAndReturnResult(mContext, 0, fillInIntent, null,
                                 null, null, options);
                         mLogger.logSendPendingIntent(entry, intent, result);
@@ -524,9 +533,10 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
     }
 
     @Override
-    public void startNotificationGutsIntent(final Intent intent, final int appUid,
-            ExpandableNotificationRow row) {
+    public void startNotificationGutsIntent(@NonNull final Intent intent, final int appUid,
+            @NonNull ExpandableNotificationRow row) {
         boolean animate = mActivityStarter.shouldAnimateLaunch(true /* isActivityIntent */);
+        final int displayId = mContextInteractor.getContext().getDisplayId();
         ActivityStarter.OnDismissAction onDismissAction = new ActivityStarter.OnDismissAction() {
             @Override
             public boolean onDismiss() {
@@ -538,7 +548,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                                     mShadeController,
                                     mNotificationShadeWindowController,
                                     mCommandQueue,
-                                    mDisplayId,
+                                    displayId,
                                     true /* isActivityIntent */);
 
                     mActivityTransitionAnimator.startIntentWithAnimation(
@@ -546,8 +556,8 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                             (adapter) -> TaskStackBuilder.create(mContext)
                                     .addNextIntentWithParentStack(intent)
                                     .startActivities(getActivityOptions(
-                                            mDisplayId,
-                                            adapter),
+                                                    displayId,
+                                                    adapter),
                                             new UserHandle(UserHandle.getUserId(appUid))));
                 });
                 return true;
@@ -564,6 +574,8 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
 
     @Override
     public void startHistoryIntent(View view, boolean showHistory) {
+        ModesEmptyShadeFix.assertInLegacyMode();
+        final int displayId = mContextInteractor.getContext().getDisplayId();
         boolean animate = mActivityStarter.shouldAnimateLaunch(true /* isActivityIntent */);
         ActivityStarter.OnDismissAction onDismissAction = new ActivityStarter.OnDismissAction() {
             @Override
@@ -584,19 +596,65 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
                             );
                     ActivityTransitionAnimator.Controller animationController =
                             viewController == null ? null
-                                : new StatusBarTransitionAnimatorController(
-                                        viewController,
-                                        mShadeAnimationInteractor,
-                                        mShadeController,
-                                        mNotificationShadeWindowController,
-                                        mCommandQueue,
-                                        mDisplayId,
-                                        true /* isActivityIntent */);
+                                    : new StatusBarTransitionAnimatorController(
+                                            viewController,
+                                            mShadeAnimationInteractor,
+                                            mShadeController,
+                                            mNotificationShadeWindowController,
+                                            mCommandQueue,
+                                            displayId,
+                                            true /* isActivityIntent */);
 
                     mActivityTransitionAnimator.startIntentWithAnimation(
                             animationController, animate, intent.getPackage(),
                             (adapter) -> tsb.startActivities(
-                                    getActivityOptions(mDisplayId, adapter),
+                                    getActivityOptions(displayId, adapter),
+                                    mUserTracker.getUserHandle()));
+                });
+                return true;
+            }
+
+            @Override
+            public boolean willRunAnimationOnKeyguard() {
+                return animate;
+            }
+        };
+        mActivityStarter.dismissKeyguardThenExecute(onDismissAction, null,
+                false /* afterKeyguardGone */);
+    }
+
+    @Override
+    public void startSettingsIntent(@NonNull View view, @NonNull SettingsIntent intentInfo) {
+        final int displayId = mContextInteractor.getContext().getDisplayId();
+        boolean animate = mActivityStarter.shouldAnimateLaunch(true /* isActivityIntent */);
+        ActivityStarter.OnDismissAction onDismissAction = new ActivityStarter.OnDismissAction() {
+            @Override
+            public boolean onDismiss() {
+                AsyncTask.execute(() -> {
+                    TaskStackBuilder tsb = TaskStackBuilder.create(mContext);
+                    for (Intent intent : intentInfo.getBackStack()) {
+                        tsb.addNextIntent(intent);
+                    }
+                    tsb.addNextIntent(intentInfo.getTargetIntent());
+
+                    ActivityTransitionAnimator.Controller viewController =
+                            ActivityTransitionAnimator.Controller.fromView(view,
+                                    intentInfo.getCujType());
+                    ActivityTransitionAnimator.Controller animationController =
+                            viewController == null ? null
+                                    : new StatusBarTransitionAnimatorController(
+                                            viewController,
+                                            mShadeAnimationInteractor,
+                                            mShadeController,
+                                            mNotificationShadeWindowController,
+                                            mCommandQueue,
+                                            displayId,
+                                            true /* isActivityIntent */);
+
+                    mActivityTransitionAnimator.startIntentWithAnimation(
+                            animationController, animate, intentInfo.getTargetIntent().getPackage(),
+                            (adapter) -> tsb.startActivities(
+                                    getActivityOptions(displayId, adapter),
                                     mUserTracker.getUserHandle()));
                 });
                 return true;
@@ -612,7 +670,7 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
     }
 
     private void removeHunAfterClick(ExpandableNotificationRow row) {
-        String key = row.getEntry().getSbn().getKey();
+        String key = row.getKey();
         if (mHeadsUpManager != null && mHeadsUpManager.isHeadsUpEntry(key)) {
             // Release the HUN notification to the shade.
             if (mPresenter.isPresenterFullyCollapsed()) {
@@ -621,7 +679,8 @@ public class StatusBarNotificationActivityStarter implements NotificationActivit
 
             // In most cases, when FLAG_AUTO_CANCEL is set, the notification will
             // become canceled shortly by NoMan, but we can't assume that.
-            mHeadsUpManager.removeNotification(key, true /* releaseImmediately */);
+            mHeadsUpManager.removeNotification(key, /* releaseImmediately= */ true,
+                    "removeHunAfterClick");
         }
     }
 

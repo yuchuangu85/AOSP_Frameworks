@@ -47,6 +47,8 @@ import android.os.Build;
 import android.os.LocaleList;
 import android.os.ParcelFileDescriptor;
 import android.os.Trace;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -82,6 +84,7 @@ import java.util.Locale;
  *
  * @hide
  */
+@RavenwoodKeepWholeClass
 public class ResourcesImpl {
     static final String TAG = "Resources";
 
@@ -200,9 +203,25 @@ public class ResourcesImpl {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
             @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments) {
-        mAssets = assets;
-        mAppliedSharedLibsHash =
-                ResourcesManager.getInstance().updateResourceImplWithRegisteredLibs(this);
+        // Don't reuse assets by default as we have no control over whether they're already
+        // inside some other ResourcesImpl.
+        this(assets, metrics, config, displayAdjustments, false);
+    }
+
+    public ResourcesImpl(@NonNull ResourcesImpl orig) {
+        // We know for sure that the other assets are in use, so can't reuse the object here.
+        this(orig.getAssets(), orig.getMetrics(), orig.getConfiguration(),
+                orig.getDisplayAdjustments(), false);
+    }
+
+    public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
+            @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments,
+            boolean reuseAssets) {
+        final var assetsAndHash =
+                ResourcesManager.getInstance().updateResourceImplAssetsWithRegisteredLibs(assets,
+                        reuseAssets);
+        mAssets = assetsAndHash.first;
+        mAppliedSharedLibsHash = assetsAndHash.second;
         mMetrics.setToDefaults();
         mDisplayAdjustments = displayAdjustments;
         mConfiguration.setToDefaults();
@@ -257,7 +276,8 @@ public class ResourcesImpl {
     }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    void getValue(@AnyRes int id, TypedValue outValue, boolean resolveRefs)
+    @VisibleForTesting
+    public void getValue(@AnyRes int id, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
         boolean found = mAssets.getResourceValue(id, 0, outValue, resolveRefs);
         if (found) {
@@ -472,6 +492,9 @@ public class ResourcesImpl {
                             }
                             defaultLocale =
                                     adjustLanguageTag(lc.getDefaultLocale().toLanguageTag());
+                            Slog.v(TAG, "Updating configuration, with default locale "
+                                    + defaultLocale + " and selected locales "
+                                    + Arrays.toString(selectedLocales));
                         } else {
                             String[] availableLocales;
                             // The LocaleList has changed. We must query the AssetManager's
@@ -507,6 +530,7 @@ public class ResourcesImpl {
                         for (int i = 0; i < locales.size(); i++) {
                             selectedLocales[i] = adjustLanguageTag(locales.get(i).toLanguageTag());
                         }
+                        defaultLocale = adjustLanguageTag(lc.getDefaultLocale().toLanguageTag());
                     } else {
                         selectedLocales = new String[]{
                                 adjustLanguageTag(locales.get(0).toLanguageTag())};
@@ -689,6 +713,7 @@ public class ResourcesImpl {
     }
 
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     Drawable loadDrawable(@NonNull Resources wrapper, @NonNull TypedValue value, int id,
             int density, @Nullable Resources.Theme theme)
             throws NotFoundException {
@@ -972,15 +997,24 @@ public class ResourcesImpl {
                     } else {
                         dr = loadXmlDrawable(wrapper, value, id, density, file);
                     }
-                } else if (file.startsWith("frro://")) {
+                } else if (file.startsWith("frro:/")) {
                     Uri uri = Uri.parse(file);
+                    long offset = Long.parseLong(uri.getQueryParameter("offset"));
+                    long size = Long.parseLong(uri.getQueryParameter("size"));
+                    if (offset < 0 || size <= 0) {
+                        throw new NotFoundException("invalid frro parameters");
+                    }
                     File f = new File('/' + uri.getHost() + uri.getPath());
+                    if (!f.getCanonicalPath().startsWith(ResourcesManager.RESOURCE_CACHE_DIR)
+                            || !f.getCanonicalPath().endsWith(".frro") || !f.canRead()) {
+                        throw new NotFoundException("invalid frro path");
+                    }
                     ParcelFileDescriptor pfd = ParcelFileDescriptor.open(f,
                             ParcelFileDescriptor.MODE_READ_ONLY);
                     AssetFileDescriptor afd = new AssetFileDescriptor(
                             pfd,
-                            Long.parseLong(uri.getQueryParameter("offset")),
-                            Long.parseLong(uri.getQueryParameter("size")));
+                            offset,
+                            size);
                     FileInputStream is = afd.createInputStream();
                     dr = decodeImageDrawable(is, wrapper);
                 } else {
@@ -1024,8 +1058,8 @@ public class ResourcesImpl {
             int id, int density, String file)
             throws IOException, XmlPullParserException {
         try (
-                XmlResourceParser rp =
-                        loadXmlResourceParser(file, id, value.assetCookie, "drawable")
+                XmlResourceParser rp = loadXmlResourceParser(
+                        file, id, value.assetCookie, "drawable", value.usesFeatureFlags)
         ) {
             return Drawable.createFromXmlForDensity(wrapper, rp, density, null);
         }
@@ -1059,7 +1093,7 @@ public class ResourcesImpl {
         try {
             if (file.endsWith("xml")) {
                 final XmlResourceParser rp = loadXmlResourceParser(
-                        file, id, value.assetCookie, "font");
+                        file, id, value.assetCookie, "font", value.usesFeatureFlags);
                 final FontResourcesParser.FamilyResourceEntry familyEntry =
                         FontResourcesParser.parse(rp, wrapper);
                 if (familyEntry == null) {
@@ -1253,7 +1287,7 @@ public class ResourcesImpl {
         if (file.endsWith(".xml")) {
             try {
                 final XmlResourceParser parser = loadXmlResourceParser(
-                        file, id, value.assetCookie, "ComplexColor");
+                        file, id, value.assetCookie, "ComplexColor", value.usesFeatureFlags);
 
                 final AttributeSet attrs = Xml.asAttributeSet(parser);
                 int type;
@@ -1298,12 +1332,13 @@ public class ResourcesImpl {
      * @param id the resource identifier for the file
      * @param assetCookie the asset cookie for the file
      * @param type the type of resource (used for logging)
+     * @param usesFeatureFlags whether the xml has read/write feature flags
      * @return a parser for the specified XML file
      * @throws NotFoundException if the file could not be loaded
      */
     @NonNull
     XmlResourceParser loadXmlResourceParser(@NonNull String file, @AnyRes int id, int assetCookie,
-            @NonNull String type)
+            @NonNull String type, boolean usesFeatureFlags)
             throws NotFoundException {
         if (id != 0) {
             try {
@@ -1322,7 +1357,8 @@ public class ResourcesImpl {
 
                     // Not in the cache, create a new block and put it at
                     // the next slot in the cache.
-                    final XmlBlock block = mAssets.openXmlBlockAsset(assetCookie, file);
+                    final XmlBlock block =
+                            mAssets.openXmlBlockAsset(assetCookie, file, usesFeatureFlags);
                     if (block != null) {
                         final int pos = (mLastCachedXmlBlockIndex + 1) % num;
                         mLastCachedXmlBlockIndex = pos;

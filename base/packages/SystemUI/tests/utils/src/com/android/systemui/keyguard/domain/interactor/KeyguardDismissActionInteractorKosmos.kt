@@ -16,13 +16,16 @@
 
 package com.android.systemui.keyguard.domain.interactor
 
+import com.android.keyguard.logging.KeyguardLogger
+import com.android.systemui.bouncer.domain.interactor.primaryBouncerInteractor
+import com.android.systemui.deviceentry.domain.interactor.deviceUnlockedInteractor
 import com.android.systemui.keyguard.data.repository.keyguardRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.log.logcatLogBuffer
 import com.android.systemui.scene.domain.interactor.sceneInteractor
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.android.systemui.shade.domain.interactor.shadeInteractor
 
-@ExperimentalCoroutinesApi
 val Kosmos.keyguardDismissActionInteractor by
     Kosmos.Fixture {
         KeyguardDismissActionInteractor(
@@ -30,6 +33,11 @@ val Kosmos.keyguardDismissActionInteractor by
             transitionInteractor = keyguardTransitionInteractor,
             dismissInteractor = keyguardDismissInteractor,
             applicationScope = testScope.backgroundScope,
-            sceneInteractor = sceneInteractor,
+            deviceUnlockedInteractor = { deviceUnlockedInteractor },
+            shadeInteractor = { shadeInteractor },
+            keyguardInteractor = { keyguardInteractor },
+            sceneInteractor = { sceneInteractor },
+            keyguardLogger = KeyguardLogger(logcatLogBuffer("keyguard-logger-for-test")),
+            primaryBouncerInteractor = primaryBouncerInteractor,
         )
     }

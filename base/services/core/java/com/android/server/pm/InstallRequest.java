@@ -16,7 +16,6 @@
 
 package com.android.server.pm;
 
-import static android.content.pm.Flags.improveInstallFreeze;
 import static android.content.pm.PackageInstaller.SessionParams.USER_ACTION_UNSPECIFIED;
 import static android.content.pm.PackageManager.INSTALL_REASON_UNKNOWN;
 import static android.content.pm.PackageManager.INSTALL_SCENARIO_DEFAULT;
@@ -58,6 +57,7 @@ import com.android.server.art.model.DexoptResult;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 import com.android.server.pm.pkg.PackageStateInternal;
+import com.android.server.pm.pkg.PackageUserStateInternal;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -169,6 +169,10 @@ final class InstallRequest {
 
     private final boolean mHasAppMetadataFileFromInstaller;
 
+    private boolean mKeepArtProfile = false;
+    private final boolean mDependencyInstallerEnabled;
+    private final int mMissingSharedLibraryCount;
+
     // New install
     InstallRequest(InstallingSession params) {
         mUserId = params.getUser().getIdentifier();
@@ -188,6 +192,8 @@ final class InstallRequest {
         mRequireUserAction = params.mRequireUserAction;
         mPreVerifiedDomains = params.mPreVerifiedDomains;
         mHasAppMetadataFileFromInstaller = params.mHasAppMetadataFile;
+        mDependencyInstallerEnabled = params.mDependencyInstallerEnabled;
+        mMissingSharedLibraryCount = params.mMissingSharedLibraryCount;
     }
 
     // Install existing package as user
@@ -207,6 +213,8 @@ final class InstallRequest {
         mInstallerUidForInstallExisting = installerUid;
         mSystem = isSystem;
         mHasAppMetadataFileFromInstaller = false;
+        mDependencyInstallerEnabled = false;
+        mMissingSharedLibraryCount = 0;
     }
 
     // addForInit
@@ -229,6 +237,8 @@ final class InstallRequest {
         mRequireUserAction = USER_ACTION_UNSPECIFIED;
         mDisabledPs = disabledPs;
         mHasAppMetadataFileFromInstaller = false;
+        mDependencyInstallerEnabled = false;
+        mMissingSharedLibraryCount = 0;
     }
 
     @Nullable
@@ -614,24 +624,24 @@ final class InstallRequest {
         return mScanResult.mDynamicSharedLibraryInfos;
     }
 
+    public void updateAllCodePaths(List<String> paths) {
+        if (mScanResult.mSdkSharedLibraryInfo != null) {
+            mScanResult.mSdkSharedLibraryInfo.setAllCodePaths(paths);
+        }
+        if (mScanResult.mStaticSharedLibraryInfo != null) {
+            mScanResult.mStaticSharedLibraryInfo.setAllCodePaths(paths);
+        }
+        if (mScanResult.mDynamicSharedLibraryInfos != null) {
+            for (SharedLibraryInfo info : mScanResult.mDynamicSharedLibraryInfos) {
+                info.setAllCodePaths(paths);
+            }
+        }
+    }
+
     @Nullable
     public PackageSetting getScannedPackageSetting() {
         assertScanResultExists();
         return mScanResult.mPkgSetting;
-    }
-
-    @Nullable
-    public PackageSetting getRealPackageSetting() {
-        // TODO: Fix this to have 1 mutable PackageSetting for scan/install. If the previous
-        //  setting needs to be passed to have a comparison, hide it behind an immutable
-        //  interface. There's no good reason to have 3 different ways to access the real
-        //  PackageSetting object, only one of which is actually correct.
-        PackageSetting realPkgSetting = isExistingSettingCopied()
-                ? getScanRequestPackageSetting() : getScannedPackageSetting();
-        if (realPkgSetting == null) {
-            realPkgSetting = getScannedPackageSetting();
-        }
-        return realPkgSetting;
     }
 
     public boolean isExistingSettingCopied() {
@@ -859,12 +869,23 @@ final class InstallRequest {
     public void setScannedPackageSettingFirstInstallTimeFromReplaced(
             @Nullable PackageStateInternal replacedPkgSetting, int[] userId) {
         assertScanResultExists();
+        if (replacedPkgSetting == null) {
+            return;
+        }
         mScanResult.mPkgSetting.setFirstInstallTimeFromReplaced(replacedPkgSetting, userId);
     }
 
     public void setScannedPackageSettingLastUpdateTime(long lastUpdateTim) {
         assertScanResultExists();
         mScanResult.mPkgSetting.setLastUpdateTime(lastUpdateTim);
+    }
+
+    public void setScannedPackageSettingFirstInstallTime(long firstInstallTime) {
+        assertScanResultExists();
+        PackageUserStateInternal userState = mScanResult.mPkgSetting.getUserStates().get(mUserId);
+        if (userState != null && userState.getFirstInstallTimeMillis() == 0) {
+            mScanResult.mPkgSetting.setFirstInstallTime(firstInstallTime, mUserId);
+        }
     }
 
     public void setRemovedAppId(int appId) {
@@ -984,6 +1005,30 @@ final class InstallRequest {
         }
     }
 
+    public void onRestoreStarted() {
+        if (mPackageMetrics != null) {
+            mPackageMetrics.onStepStarted(PackageMetrics.STEP_RESTORE);
+        }
+    }
+
+    public void onRestoreFinished() {
+        if (mPackageMetrics != null) {
+            mPackageMetrics.onStepFinished(PackageMetrics.STEP_RESTORE);
+        }
+    }
+
+    public void onWaitDexoptStarted() {
+        if (mPackageMetrics != null) {
+            mPackageMetrics.onStepStarted(PackageMetrics.STEP_WAIT_DEXOPT);
+        }
+    }
+
+    public void onWaitDexoptFinished() {
+        if (mPackageMetrics != null) {
+            mPackageMetrics.onStepFinished(PackageMetrics.STEP_WAIT_DEXOPT);
+        }
+    }
+
     public void onDexoptFinished(DexoptResult dexoptResult) {
         // Only report external profile warnings when installing from adb. The goal is to warn app
         // developers if they have provided bad external profiles, so it's not beneficial to report
@@ -1027,14 +1072,30 @@ final class InstallRequest {
     }
 
     public void onFreezeStarted() {
-        if (mPackageMetrics != null && improveInstallFreeze()) {
+        if (mPackageMetrics != null) {
             mPackageMetrics.onStepStarted(PackageMetrics.STEP_FREEZE_INSTALL);
         }
     }
 
     public void onFreezeCompleted() {
-        if (mPackageMetrics != null && improveInstallFreeze()) {
+        if (mPackageMetrics != null) {
             mPackageMetrics.onStepFinished(PackageMetrics.STEP_FREEZE_INSTALL);
         }
+    }
+
+    void setKeepArtProfile(boolean keepArtProfile) {
+        mKeepArtProfile = keepArtProfile;
+    }
+
+    boolean isKeepArtProfile() {
+        return mKeepArtProfile;
+    }
+
+    int getMissingSharedLibraryCount() {
+        return mMissingSharedLibraryCount;
+    }
+
+    boolean isDependencyInstallerEnabled() {
+        return mDependencyInstallerEnabled;
     }
 }

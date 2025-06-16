@@ -18,10 +18,8 @@ package com.android.systemui.clipboardoverlay;
 
 import android.annotation.MainThread;
 import android.annotation.NonNull;
-import android.app.ICompatCameraControlCallback;
 import android.content.Context;
 import android.content.res.Configuration;
-import android.util.Log;
 import android.view.View;
 import android.view.ViewRootImpl;
 import android.view.ViewTreeObserver;
@@ -54,7 +52,8 @@ public class ClipboardOverlayWindow extends PhoneWindow
     private Runnable mOnOrientationChangeListener;
 
     @Inject
-    ClipboardOverlayWindow(@OverlayWindowContext Context context) {
+    ClipboardOverlayWindow(@OverlayWindowContext Context context,
+            @OverlayWindowContext WindowManager windowManager) {
         super(context);
         mContext = context;
         mOrientation = mContext.getResources().getConfiguration().orientation;
@@ -63,7 +62,7 @@ public class ClipboardOverlayWindow extends PhoneWindow
         requestFeature(Window.FEATURE_NO_TITLE);
         requestFeature(Window.FEATURE_ACTIVITY_TRANSITIONS);
         setBackgroundDrawableResource(android.R.color.transparent);
-        mWindowManager = mContext.getSystemService(WindowManager.class);
+        mWindowManager = windowManager;
         mWindowLayoutParams = FloatingWindowUtil.getFloatingWindowParams();
         mWindowLayoutParams.setTitle("ClipboardOverlay");
         setWindowManager(mWindowManager, null, null);
@@ -102,12 +101,6 @@ public class ClipboardOverlayWindow extends PhoneWindow
         if (mContext.getResources().getConfiguration().orientation != mOrientation) {
             mOnOrientationChangeListener.run();
         }
-    }
-
-    @Override // ViewRootImpl.ActivityConfigCallback
-    public void requestCompatCameraControl(boolean showControl, boolean transformationApplied,
-            ICompatCameraControlCallback callback) {
-        Log.w(TAG, "unexpected requestCompatCameraControl call");
     }
 
     void remove() {

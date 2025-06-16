@@ -54,6 +54,7 @@ import java.lang.annotation.RetentionPolicy;
  * <a href="{@docRoot}guide/topics/graphics/2d-graphics.html">
  * Canvas and Drawables</a> developer guide.</p></div>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class Canvas extends BaseCanvas {
     private static int sCompatibilityVersion = 0;
     private static boolean sCompatibilityRestore = false;
@@ -155,7 +156,7 @@ public class Canvas extends BaseCanvas {
     /**
      * Indicates whether this Canvas is drawing high contrast text.
      *
-     * @see android.view.accessibility.AccessibilityManager#isHighTextContrastEnabled()
+     * @see android.view.accessibility.AccessibilityManager#isHighContrastTextEnabled()
      * @return True if high contrast text is enabled, false otherwise.
      *
      * @hide

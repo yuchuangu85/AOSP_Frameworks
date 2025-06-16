@@ -15,7 +15,7 @@
  */
 package libcore.util;
 
-import com.android.ravenwood.common.RavenwoodRuntimeNative;
+import com.android.ravenwood.RavenwoodRuntimeNative;
 
 import java.lang.ref.Cleaner;
 import java.lang.ref.Reference;
@@ -32,46 +32,97 @@ public class NativeAllocationRegistry {
 
     public static NativeAllocationRegistry createNonmalloced(
             ClassLoader classLoader, long freeFunction, long size) {
-        return new NativeAllocationRegistry(classLoader, freeFunction, size, false);
+        return new NativeAllocationRegistry(classLoader, freeFunction, size);
+    }
+
+    public static NativeAllocationRegistry createNonmalloced(
+            Class clazz, long freeFunction, long size) {
+        return new NativeAllocationRegistry(clazz.getClassLoader(), freeFunction, size);
     }
 
     public static NativeAllocationRegistry createMalloced(
             ClassLoader classLoader, long freeFunction, long size) {
-        return new NativeAllocationRegistry(classLoader, freeFunction, size, true);
+        return new NativeAllocationRegistry(classLoader, freeFunction, size);
     }
 
     public static NativeAllocationRegistry createMalloced(
             ClassLoader classLoader, long freeFunction) {
-        return new NativeAllocationRegistry(classLoader, freeFunction, 0, true);
+        return new NativeAllocationRegistry(classLoader, freeFunction, 0);
+    }
+
+    public static NativeAllocationRegistry createMalloced(
+            Class clazz, long freeFunction, long size) {
+        return new NativeAllocationRegistry(clazz.getClassLoader(), freeFunction, size);
     }
 
     public NativeAllocationRegistry(ClassLoader classLoader, long freeFunction, long size) {
-        this(classLoader, freeFunction, size, size == 0);
-    }
-
-    private NativeAllocationRegistry(ClassLoader classLoader, long freeFunction, long size,
-            boolean mallocAllocation) {
         if (size < 0) {
             throw new IllegalArgumentException("Invalid native allocation size: " + size);
         }
         mFreeFunction = freeFunction;
     }
 
+    private class CleanerThunk implements Runnable {
+        private long nativePtr;
+
+        public CleanerThunk() {
+            nativePtr = 0;
+        }
+
+        public void setNativePtr(long ptr) {
+            nativePtr = ptr;
+        }
+
+        @Override
+        public void run() {
+            if (nativePtr != 0) {
+                applyFreeFunction(mFreeFunction, nativePtr);
+            }
+        }
+    }
+
+    private static class CleanableRunner implements Runnable {
+        private final Cleaner.Cleanable mCleanable;
+
+        public CleanableRunner(Cleaner.Cleanable cleanable) {
+            mCleanable = cleanable;
+        }
+
+        public void run() {
+            mCleanable.clean();
+        }
+    }
+
     public Runnable registerNativeAllocation(Object referent, long nativePtr) {
         if (referent == null) {
             throw new IllegalArgumentException("referent is null");
+        }
+        if (mFreeFunction == 0) {
+            return () -> {}; // do nothing
         }
         if (nativePtr == 0) {
             throw new IllegalArgumentException("nativePtr is null");
         }
 
-        final Runnable releaser = () -> {
-            RavenwoodRuntimeNative.applyFreeFunction(mFreeFunction, nativePtr);
-        };
-        sCleaner.register(referent, releaser);
+        final CleanerThunk thunk;
+        final CleanableRunner result;
+        try {
+            thunk = new CleanerThunk();
+            final var cleanable = sCleaner.register(referent, thunk);
+            result = new CleanableRunner(cleanable);
+        } catch (VirtualMachineError vme /* probably OutOfMemoryError */) {
+            applyFreeFunction(mFreeFunction, nativePtr);
+            throw vme;
+        }
 
+        // Enable the cleaner only after we can no longer throw anything, including OOME.
+        thunk.setNativePtr(nativePtr);
         // Ensure that cleaner doesn't get invoked before we enable it.
         Reference.reachabilityFence(referent);
-        return releaser;
+        return result;
+    }
+
+    public static void applyFreeFunction(long freeFunction, long nativePtr) {
+        RavenwoodRuntimeNative.applyFreeFunction(freeFunction, nativePtr);
     }
 }

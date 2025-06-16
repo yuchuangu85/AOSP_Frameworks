@@ -18,7 +18,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wconversion"
 
-//#define LOG_NDEBUG 0
+// #define LOG_NDEBUG 0
 #undef LOG_TAG
 #define LOG_TAG "TransactionCallbackInvoker"
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
@@ -27,10 +27,9 @@
 #include "BackgroundExecutor.h"
 #include "Utils/FenceUtils.h"
 
-#include <cinttypes>
-
 #include <binder/IInterface.h>
 #include <common/FlagManager.h>
+#include <common/trace.h>
 #include <utils/RefBase.h>
 
 namespace android {
@@ -64,13 +63,12 @@ status_t TransactionCallbackInvoker::addOnCommitCallbackHandles(
     if (handles.empty()) {
         return NO_ERROR;
     }
-    const std::vector<JankData>& jankData = std::vector<JankData>();
     for (const auto& handle : handles) {
         if (!containsOnCommitCallbacks(handle->callbackIds)) {
             outRemainingHandles.push_back(handle);
             continue;
         }
-        status_t err = addCallbackHandle(handle, jankData);
+        status_t err = addCallbackHandle(handle);
         if (err != NO_ERROR) {
             return err;
         }
@@ -80,12 +78,12 @@ status_t TransactionCallbackInvoker::addOnCommitCallbackHandles(
 }
 
 status_t TransactionCallbackInvoker::addCallbackHandles(
-        const std::deque<sp<CallbackHandle>>& handles, const std::vector<JankData>& jankData) {
+        const std::deque<sp<CallbackHandle>>& handles) {
     if (handles.empty()) {
         return NO_ERROR;
     }
     for (const auto& handle : handles) {
-        status_t err = addCallbackHandle(handle, jankData);
+        status_t err = addCallbackHandle(handle);
         if (err != NO_ERROR) {
             return err;
         }
@@ -111,8 +109,7 @@ status_t TransactionCallbackInvoker::findOrCreateTransactionStats(
     return NO_ERROR;
 }
 
-status_t TransactionCallbackInvoker::addCallbackHandle(const sp<CallbackHandle>& handle,
-        const std::vector<JankData>& jankData) {
+status_t TransactionCallbackInvoker::addCallbackHandle(const sp<CallbackHandle>& handle) {
     // If we can't find the transaction stats something has gone wrong. The client should call
     // startRegistration before trying to add a callback handle.
     TransactionStats* transactionStats;
@@ -130,14 +127,8 @@ status_t TransactionCallbackInvoker::addCallbackHandle(const sp<CallbackHandle>&
     if (surfaceControl) {
         sp<Fence> prevFence = nullptr;
 
-        if (FlagManager::getInstance().ce_fence_promise()) {
-            for (auto& future : handle->previousReleaseFences) {
-                mergeFence(handle->name.c_str(), future.get().value_or(Fence::NO_FENCE), prevFence);
-            }
-        } else {
-            for (const auto& future : handle->previousSharedReleaseFences) {
-                mergeFence(handle->name.c_str(), future.get().value_or(Fence::NO_FENCE), prevFence);
-            }
+        for (auto& future : handle->previousReleaseFences) {
+            mergeFence(handle->name.c_str(), future.get().value_or(Fence::NO_FENCE), prevFence);
         }
 
         handle->previousReleaseFence = prevFence;
@@ -151,8 +142,23 @@ status_t TransactionCallbackInvoker::addCallbackHandle(const sp<CallbackHandle>&
                                                     handle->previousReleaseFence,
                                                     handle->transformHint,
                                                     handle->currentMaxAcquiredBufferCount,
-                                                    eventStats, jankData,
-                                                    handle->previousReleaseCallbackId);
+                                                    eventStats, handle->previousReleaseCallbackId);
+
+        if (handle->bufferReleaseChannel &&
+            handle->previousReleaseCallbackId != ReleaseCallbackId::INVALID_ID) {
+            if (FlagManager::getInstance().monitor_buffer_fences()) {
+                if (auto previousBuffer = handle->previousBuffer.lock()) {
+                    previousBuffer->getBuffer()
+                            ->getDependencyMonitor()
+                            .addEgress(FenceTime::makeValid(handle->previousReleaseFence),
+                                       "Txn release");
+                }
+            }
+            mBufferReleases.emplace_back(handle->name, handle->bufferReleaseChannel,
+                                         handle->previousReleaseCallbackId,
+                                         handle->previousReleaseFence,
+                                         handle->currentMaxAcquiredBufferCount);
+        }
     }
     return NO_ERROR;
 }
@@ -162,9 +168,20 @@ void TransactionCallbackInvoker::addPresentFence(sp<Fence> presentFence) {
 }
 
 void TransactionCallbackInvoker::sendCallbacks(bool onCommitOnly) {
+    for (const auto& bufferRelease : mBufferReleases) {
+        status_t status = bufferRelease.channel
+                                  ->writeReleaseFence(bufferRelease.callbackId, bufferRelease.fence,
+                                                      bufferRelease.currentMaxAcquiredBufferCount);
+        if (status != OK) {
+            ALOGE("[%s] writeReleaseFence failed. error %d (%s)", bufferRelease.layerName.c_str(),
+                  -status, strerror(-status));
+        }
+    }
+    mBufferReleases.clear();
+
     // For each listener
     auto completedTransactionsItr = mCompletedTransactions.begin();
-    BackgroundExecutor::Callbacks callbacks;
+    ftl::SmallVector<ListenerStats, 10> listenerStatsToSend;
     while (completedTransactionsItr != mCompletedTransactions.end()) {
         auto& [listener, transactionStatsDeque] = *completedTransactionsItr;
         ListenerStats listenerStats;
@@ -199,10 +216,7 @@ void TransactionCallbackInvoker::sendCallbacks(bool onCommitOnly) {
                 // keep it as an IBinder due to consistency reasons: if we
                 // interface_cast at the IPC boundary when reading a Parcel,
                 // we get pointers that compare unequal in the SF process.
-                callbacks.emplace_back([stats = std::move(listenerStats)]() {
-                    interface_cast<ITransactionCompletedListener>(stats.listener)
-                            ->onTransactionCompleted(stats);
-                });
+                listenerStatsToSend.emplace_back(std::move(listenerStats));
             }
         }
         completedTransactionsItr++;
@@ -212,7 +226,14 @@ void TransactionCallbackInvoker::sendCallbacks(bool onCommitOnly) {
         mPresentFence.clear();
     }
 
-    BackgroundExecutor::getInstance().sendCallbacks(std::move(callbacks));
+    BackgroundExecutor::getInstance().sendCallbacks(
+            {[listenerStatsToSend = std::move(listenerStatsToSend)]() {
+                SFTRACE_NAME("TransactionCallbackInvoker::sendCallbacks");
+                for (auto& stats : listenerStatsToSend) {
+                    interface_cast<ITransactionCompletedListener>(stats.listener)
+                            ->onTransactionCompleted(stats);
+                }
+            }});
 }
 
 // -----------------------------------------------------------------------

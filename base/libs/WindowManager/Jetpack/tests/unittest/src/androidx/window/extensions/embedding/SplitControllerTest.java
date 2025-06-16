@@ -103,8 +103,6 @@ import androidx.window.common.DeviceStateManagerFoldingFeatureProducer;
 import androidx.window.extensions.layout.WindowLayoutComponentImpl;
 import androidx.window.extensions.layout.WindowLayoutInfo;
 
-import com.android.window.flags.Flags;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -167,6 +165,9 @@ public class SplitControllerTest {
     private Consumer<List<SplitInfo>> mEmbeddingCallback;
     private List<SplitInfo> mSplitInfos;
     private TransactionManager mTransactionManager;
+    private ActivityThread mCurrentActivityThread;
+    private final ArgumentCaptor<Bundle> mBundleArgumentCaptor =
+            ArgumentCaptor.forClass(Bundle.class);
 
     @Before
     public void setUp() {
@@ -183,10 +184,12 @@ public class SplitControllerTest {
         };
         mSplitController.setSplitInfoCallback(mEmbeddingCallback);
         mTransactionManager = mSplitController.mTransactionManager;
+        mCurrentActivityThread = ActivityThread.currentActivityThread();
         spyOn(mSplitController);
         spyOn(mSplitPresenter);
         spyOn(mEmbeddingCallback);
         spyOn(mTransactionManager);
+        spyOn(mCurrentActivityThread);
         doNothing().when(mSplitPresenter).applyTransaction(any(), anyInt(), anyBoolean());
         final Configuration activityConfig = new Configuration();
         activityConfig.windowConfiguration.setBounds(TASK_BOUNDS);
@@ -200,12 +203,14 @@ public class SplitControllerTest {
     public void testOnTaskFragmentVanished() {
         final TaskFragmentContainer tf = createTfContainer(mSplitController, mActivity);
         doReturn(tf.getTaskFragmentToken()).when(mInfo).getFragmentToken();
+        doReturn(createTestTaskContainer()).when(mSplitController).getTaskContainer(TASK_ID);
 
         // The TaskFragment has been removed in the server, we only need to cleanup the reference.
-        mSplitController.onTaskFragmentVanished(mTransaction, mInfo);
+        mSplitController.onTaskFragmentVanished(mTransaction, mInfo, TASK_ID);
 
         verify(mSplitPresenter, never()).deleteTaskFragment(any(), any());
         verify(mSplitController).removeContainer(tf);
+        verify(mSplitController).updateDivider(any(), any(), anyBoolean());
         verify(mTransaction, never()).finishActivity(any());
     }
 
@@ -682,9 +687,13 @@ public class SplitControllerTest {
                 false /* isOnReparent */);
 
         assertTrue(result);
-        verify(mSplitPresenter).startActivityToSide(mTransaction, mActivity, PLACEHOLDER_INTENT,
-                mSplitController.getPlaceholderOptions(mActivity, true /* isOnCreated */),
-                placeholderRule, SPLIT_ATTRIBUTES, true /* isPlaceholder */);
+        verify(mSplitPresenter).startActivityToSide(eq(mTransaction), eq(mActivity),
+                eq(PLACEHOLDER_INTENT), mBundleArgumentCaptor.capture(),
+                eq(placeholderRule), eq(SPLIT_ATTRIBUTES), eq(true) /* isPlaceholder */);
+
+        final ActivityOptions activityOptions =
+                new ActivityOptions(mBundleArgumentCaptor.getValue());
+        assertTrue(activityOptions.getAvoidMoveToFront());
     }
 
     @Test
@@ -717,9 +726,13 @@ public class SplitControllerTest {
                 false /* isOnReparent */);
 
         assertTrue(result);
-        verify(mSplitPresenter).startActivityToSide(mTransaction, mActivity, PLACEHOLDER_INTENT,
-                mSplitController.getPlaceholderOptions(mActivity, true /* isOnCreated */),
-                placeholderRule, SPLIT_ATTRIBUTES, true /* isPlaceholder */);
+        verify(mSplitPresenter).startActivityToSide(eq(mTransaction), eq(mActivity),
+                eq(PLACEHOLDER_INTENT), mBundleArgumentCaptor.capture(),
+                eq(placeholderRule), eq(SPLIT_ATTRIBUTES), eq(true) /* isPlaceholder */);
+
+        final ActivityOptions activityOptions =
+                new ActivityOptions(mBundleArgumentCaptor.getValue());
+        assertTrue(activityOptions.getAvoidMoveToFront());
     }
 
     @Test
@@ -752,9 +765,13 @@ public class SplitControllerTest {
                 false /* isOnReparent */);
 
         assertTrue(result);
-        verify(mSplitPresenter).startActivityToSide(mTransaction, mActivity, PLACEHOLDER_INTENT,
-                mSplitController.getPlaceholderOptions(mActivity, true /* isOnCreated */),
-                placeholderRule, SPLIT_ATTRIBUTES, true /* isPlaceholder */);
+        verify(mSplitPresenter).startActivityToSide(eq(mTransaction), eq(mActivity),
+                eq(PLACEHOLDER_INTENT), mBundleArgumentCaptor.capture(),
+                eq(placeholderRule), eq(SPLIT_ATTRIBUTES), eq(true) /* isPlaceholder */);
+
+        final ActivityOptions activityOptions =
+                new ActivityOptions(mBundleArgumentCaptor.getValue());
+        assertTrue(activityOptions.getAvoidMoveToFront());
     }
 
     @Test
@@ -1062,16 +1079,8 @@ public class SplitControllerTest {
     public void testGetPlaceholderOptions() {
         // Setup to make sure a transaction record is started.
         mTransactionManager.startNewTransaction();
-        doReturn(true).when(mActivity).isResumed();
 
-        assertNull(mSplitController.getPlaceholderOptions(mActivity, false /* isOnCreated */));
-
-        doReturn(false).when(mActivity).isResumed();
-
-        assertNull(mSplitController.getPlaceholderOptions(mActivity, true /* isOnCreated */));
-
-        // Launch placeholder without moving the Task to front if the Task is now in background (not
-        // resumed or onCreated).
+        // Launch placeholder without moving the Task to front
         final Bundle options = mSplitController.getPlaceholderOptions(mActivity,
                 false /* isOnCreated */);
 
@@ -1152,7 +1161,7 @@ public class SplitControllerTest {
                 .setTaskFragmentInfo(info));
         mSplitController.onTransactionReady(transaction);
 
-        verify(mSplitController).onTaskFragmentVanished(any(), eq(info));
+        verify(mSplitController).onTaskFragmentVanished(any(), eq(info), anyInt());
         verify(mSplitPresenter).onTransactionHandled(eq(transaction.getTransactionToken()), any(),
                 anyInt(), anyBoolean());
     }
@@ -1161,7 +1170,7 @@ public class SplitControllerTest {
     public void testOnTransactionReady_taskFragmentParentInfoChanged() {
         final TaskFragmentTransaction transaction = new TaskFragmentTransaction();
         final TaskFragmentParentInfo parentInfo = new TaskFragmentParentInfo(Configuration.EMPTY,
-                DEFAULT_DISPLAY, true /* visible */, false /* hasDirectActivity */,
+                DEFAULT_DISPLAY, TASK_ID, true /* visible */, false /* hasDirectActivity */,
                 null /* decorSurface */);
         transaction.addChange(new TaskFragmentTransaction.Change(
                 TYPE_TASK_FRAGMENT_PARENT_INFO_CHANGED)
@@ -1555,8 +1564,6 @@ public class SplitControllerTest {
 
     @Test
     public void testIsActivityEmbedded() {
-        mSetFlagRule.enableFlags(Flags.FLAG_ACTIVITY_WINDOW_INFO_FLAG);
-
         assertFalse(mSplitController.isActivityEmbedded(mActivity));
 
         doReturn(true).when(mActivityWindowInfo).isEmbedded();
@@ -1566,8 +1573,6 @@ public class SplitControllerTest {
 
     @Test
     public void testGetEmbeddedActivityWindowInfo() {
-        mSetFlagRule.enableFlags(Flags.FLAG_ACTIVITY_WINDOW_INFO_FLAG);
-
         final boolean isEmbedded = true;
         final Rect taskBounds = new Rect(0, 0, 1000, 2000);
         final Rect activityStackBounds = new Rect(0, 0, 500, 2000);
@@ -1582,8 +1587,6 @@ public class SplitControllerTest {
 
     @Test
     public void testSetEmbeddedActivityWindowInfoCallback() {
-        mSetFlagRule.enableFlags(Flags.FLAG_ACTIVITY_WINDOW_INFO_FLAG);
-
         final ClientTransactionListenerController controller = ClientTransactionListenerController
                 .getInstance();
         spyOn(controller);
@@ -1628,7 +1631,7 @@ public class SplitControllerTest {
         final TaskContainer taskContainer = mSplitController.getTaskContainer(TASK_ID);
         final Configuration configuration = new Configuration();
         final TaskFragmentParentInfo originalInfo = new TaskFragmentParentInfo(configuration,
-                DEFAULT_DISPLAY, true /* visible */, false /* hasDirectActivity */,
+                DEFAULT_DISPLAY, TASK_ID, true /* visible */, false /* hasDirectActivity */,
                 null /* decorSurface */);
         mSplitController.onTaskFragmentParentInfoChanged(mock(WindowContainerTransaction.class),
                 TASK_ID, originalInfo);
@@ -1637,7 +1640,7 @@ public class SplitControllerTest {
         // Making a public configuration change while the Task is invisible.
         configuration.densityDpi += 100;
         final TaskFragmentParentInfo invisibleInfo = new TaskFragmentParentInfo(configuration,
-                DEFAULT_DISPLAY, false /* visible */, false /* hasDirectActivity */,
+                DEFAULT_DISPLAY, TASK_ID, false /* visible */, false /* hasDirectActivity */,
                 null /* decorSurface */);
         mSplitController.onTaskFragmentParentInfoChanged(mock(WindowContainerTransaction.class),
                 TASK_ID, invisibleInfo);
@@ -1649,7 +1652,7 @@ public class SplitControllerTest {
 
         // Updates when Task to become visible
         final TaskFragmentParentInfo visibleInfo = new TaskFragmentParentInfo(configuration,
-                DEFAULT_DISPLAY, true /* visible */, false /* hasDirectActivity */,
+                DEFAULT_DISPLAY, TASK_ID, true /* visible */, false /* hasDirectActivity */,
                 null /* decorSurface */);
         mSplitController.onTaskFragmentParentInfoChanged(mock(WindowContainerTransaction.class),
                 TASK_ID, visibleInfo);
@@ -1674,7 +1677,8 @@ public class SplitControllerTest {
         final IBinder activityToken = new Binder();
         doReturn(activityToken).when(activity).getActivityToken();
         doReturn(activity).when(mSplitController).getActivity(activityToken);
-        doReturn(activityClientRecord).when(mSplitController).getActivityClientRecord(activity);
+        doReturn(activityClientRecord).when(mCurrentActivityThread).getActivityClient(
+                activityToken);
         doReturn(taskId).when(activity).getTaskId();
         doReturn(new ActivityInfo()).when(activity).getActivityInfo();
         doReturn(DEFAULT_DISPLAY).when(activity).getDisplayId();

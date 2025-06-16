@@ -25,17 +25,16 @@ import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow.FlowBuilder
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 
 /**
  * Breaks down LOCKSCREEN->GONE transition into discrete steps for corresponding views to consume.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class LockscreenToGoneTransitionViewModel
 @Inject
@@ -50,9 +49,7 @@ constructor(
                 duration = FromLockscreenTransitionInteractor.TO_GONE_DURATION,
                 edge = Edge.create(from = LOCKSCREEN, to = Scenes.Gone),
             )
-            .setupWithoutSceneContainer(
-                edge = Edge.create(from = LOCKSCREEN, to = GONE),
-            )
+            .setupWithoutSceneContainer(edge = Edge.create(from = LOCKSCREEN, to = GONE))
 
     val shortcutsAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
@@ -65,9 +62,13 @@ constructor(
     fun notificationAlpha(viewState: ViewStateAccessor): Flow<Float> {
         var startAlpha = 1f
         var leaveShadeOpen = false
+        val endAction: (() -> Float)? =
+            if (SceneContainerFlag.isEnabled) {
+                { 1f }
+            } else null
 
         return transitionAnimation.sharedFlow(
-            duration = 200.milliseconds,
+            duration = 80.milliseconds,
             onStart = {
                 leaveShadeOpen = statusBarStateController.leaveOpenOnKeyguardHide()
                 startAlpha = viewState.alpha()
@@ -79,6 +80,8 @@ constructor(
                     MathUtils.lerp(startAlpha, 0f, it)
                 }
             },
+            onFinish = endAction,
+            onCancel = endAction,
         )
     }
 

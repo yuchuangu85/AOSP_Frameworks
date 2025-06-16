@@ -21,7 +21,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.hardware.display.DisplayManagerInternal;
 
@@ -64,6 +64,8 @@ public final class WakelockControllerTest {
                 "[" + DISPLAY_ID + "]prox negative");
         assertEquals(mWakelockController.getSuspendBlockerProxDebounceId(),
                 "[" + DISPLAY_ID + "]prox debounce");
+        assertEquals(mWakelockController.getSuspendBlockerOverrideDozeScreenState(),
+                "[" + DISPLAY_ID + "]override doze screen state");
     }
 
     @Test
@@ -162,6 +164,28 @@ public final class WakelockControllerTest {
     }
 
     @Test
+    public void acquireOverrideDozeScreenStateSuspendBlocker() throws Exception {
+        // Acquire the suspend blocker
+        verifyWakelockAcquisitionAndReaquisition(WakelockController
+                        .WAKE_LOCK_OVERRIDE_DOZE_SCREEN_STATE,
+                () -> mWakelockController.isOverrideDozeScreenStateAcquired());
+
+        // Verify acquire happened only once
+        verify(mDisplayPowerCallbacks, times(1))
+                .acquireSuspendBlocker(mWakelockController
+                        .getSuspendBlockerOverrideDozeScreenState());
+
+        // Release the suspend blocker
+        verifyWakelockReleaseAndRerelease(WakelockController.WAKE_LOCK_OVERRIDE_DOZE_SCREEN_STATE,
+                () -> mWakelockController.isOverrideDozeScreenStateAcquired());
+
+        // Verify suspend blocker was released only once
+        verify(mDisplayPowerCallbacks, times(1))
+                .releaseSuspendBlocker(mWakelockController
+                        .getSuspendBlockerOverrideDozeScreenState());
+    }
+
+    @Test
     public void proximityPositiveRunnableWorksAsExpected() {
         // Acquire the suspend blocker twice
         assertTrue(mWakelockController.acquireWakelock(
@@ -186,7 +210,7 @@ public final class WakelockControllerTest {
 
         // Validate one suspend blocker was released
         assertFalse(mWakelockController.isProximityPositiveAcquired());
-        verifyZeroInteractions(mDisplayPowerCallbacks);
+        verifyNoMoreInteractions(mDisplayPowerCallbacks);
     }
 
     @Test
@@ -214,7 +238,7 @@ public final class WakelockControllerTest {
 
         // Validate one suspend blocker was released
         assertFalse(mWakelockController.isProximityNegativeAcquired());
-        verifyZeroInteractions(mDisplayPowerCallbacks);
+        verifyNoMoreInteractions(mDisplayPowerCallbacks);
     }
 
     @Test
@@ -241,7 +265,7 @@ public final class WakelockControllerTest {
 
         // Validate one suspend blocker was released
         assertFalse(mWakelockController.isOnStateChangedPending());
-        verifyZeroInteractions(mDisplayPowerCallbacks);
+        verifyNoMoreInteractions(mDisplayPowerCallbacks);
     }
 
     @Test

@@ -16,6 +16,8 @@
 
 package com.android.settingslib.widget;
 
+import static android.view.View.IMPORTANT_FOR_ACCESSIBILITY_YES;
+
 import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
@@ -30,9 +32,12 @@ import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewGroup.LayoutParams;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+import androidx.annotation.Nullable;
 import androidx.annotation.RawRes;
 import androidx.annotation.StringRes;
 import androidx.preference.Preference;
@@ -52,7 +57,7 @@ import java.io.InputStream;
 /**
  * IllustrationPreference is a preference that can play lottie format animation
  */
-public class IllustrationPreference extends Preference {
+public class IllustrationPreference extends Preference implements GroupSectionDividerMixin {
 
     private static final String TAG = "IllustrationPreference";
 
@@ -69,6 +74,9 @@ public class IllustrationPreference extends Preference {
     private OnBindListener mOnBindListener;
     private boolean mLottieDynamicColor;
     private CharSequence mContentDescription;
+    private boolean mIsTablet;
+    private boolean mIsAnimatable;
+    private boolean mIsAnimationPaused;
 
     /**
      * Interface to listen in on when {@link #onBindViewHolder(PreferenceViewHolder)} occurs.
@@ -76,6 +84,7 @@ public class IllustrationPreference extends Preference {
     public interface OnBindListener {
         /**
          * Called when when {@link #onBindViewHolder(PreferenceViewHolder)} occurs.
+         *
          * @param animationView the animation view for this preference.
          */
         void onBind(LottieAnimationView animationView);
@@ -122,35 +131,51 @@ public class IllustrationPreference extends Preference {
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
 
-        final ImageView backgroundView =
+        final FrameLayout illustrationFrame = (FrameLayout) holder.findViewById(
+                R.id.illustration_frame);
+        ImageView backgroundView =
                 (ImageView) holder.findViewById(R.id.background_view);
+        ImageView backgroundViewTablet =
+                (ImageView) holder.findViewById(R.id.background_view_tablet);
+
+        if (backgroundView != null) {
+            backgroundView.setVisibility(mIsTablet ? View.GONE : View.VISIBLE);
+        }
+        if (backgroundViewTablet != null) {
+            backgroundViewTablet.setVisibility(mIsTablet ? View.VISIBLE : View.GONE);
+        }
+        if (mIsTablet) {
+            backgroundView = backgroundViewTablet;
+        }
+
         final FrameLayout middleGroundLayout =
                 (FrameLayout) holder.findViewById(R.id.middleground_layout);
         final LottieAnimationView illustrationView =
                 (LottieAnimationView) holder.findViewById(R.id.lottie_view);
         if (illustrationView != null && !TextUtils.isEmpty(mContentDescription)) {
             illustrationView.setContentDescription(mContentDescription);
-            illustrationView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+            illustrationView.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
+            final View illustrationContainer = (View) illustrationFrame.getParent();
+            illustrationContainer.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         }
         // To solve the problem of non-compliant illustrations, we set the frame height
         // to 300dp and set the length of the short side of the screen to
         // the width of the frame.
         final int screenWidth = getContext().getResources().getDisplayMetrics().widthPixels;
         final int screenHeight = getContext().getResources().getDisplayMetrics().heightPixels;
-        final FrameLayout illustrationFrame = (FrameLayout) holder.findViewById(
-                R.id.illustration_frame);
         final LayoutParams lp = (LayoutParams) illustrationFrame.getLayoutParams();
         lp.width = screenWidth < screenHeight ? screenWidth : screenHeight;
         illustrationFrame.setLayoutParams(lp);
 
         illustrationView.setCacheComposition(mCacheComposition);
         handleImageWithAnimation(illustrationView, illustrationFrame);
+        handleAnimationControl(illustrationView, illustrationFrame);
         handleImageFrameMaxHeight(backgroundView, illustrationView);
 
         if (mIsAutoScale) {
             illustrationView.setScaleType(mIsAutoScale
-                            ? ImageView.ScaleType.CENTER_CROP
-                            : ImageView.ScaleType.CENTER_INSIDE);
+                    ? ImageView.ScaleType.CENTER_CROP
+                    : ImageView.ScaleType.CENTER_INSIDE);
         }
 
         handleMiddleGroundView(middleGroundLayout);
@@ -161,6 +186,9 @@ public class IllustrationPreference extends Preference {
 
         if (mLottieDynamicColor) {
             LottieColorUtils.applyDynamicColors(getContext(), illustrationView);
+        }
+        if (SettingsThemeHelper.isExpressiveTheme(getContext())) {
+            LottieColorUtils.applyMaterialColor(getContext(), illustrationView);
         }
 
         if (mOnBindListener != null) {
@@ -236,6 +264,14 @@ public class IllustrationPreference extends Preference {
      */
     public void setContentDescription(@StringRes int contentDescriptionResId) {
         setContentDescription(getContext().getText(contentDescriptionResId));
+    }
+
+    /**
+     * Gets the content description set by {@link #setContentDescription}.
+     */
+    @Nullable
+    public CharSequence getContentDescription() {
+        return mContentDescription;
     }
 
     /**
@@ -342,6 +378,7 @@ public class IllustrationPreference extends Preference {
             final Drawable drawable = illustrationView.getDrawable();
             if (drawable != null) {
                 startAnimation(drawable);
+                mIsAnimatable = false;
             }
         }
 
@@ -351,10 +388,12 @@ public class IllustrationPreference extends Preference {
             final Drawable drawable = illustrationView.getDrawable();
             if (drawable != null) {
                 startAnimation(drawable);
+                mIsAnimatable = false;
             } else {
                 // The lottie image from the raw folder also returns null because the ImageView
                 // couldn't handle it now.
                 startLottieAnimationWith(illustrationView, mImageUri);
+                mIsAnimatable = true;
             }
         }
 
@@ -383,10 +422,12 @@ public class IllustrationPreference extends Preference {
             final Drawable drawable = illustrationView.getDrawable();
             if (drawable != null) {
                 startAnimation(drawable);
+                mIsAnimatable = false;
             } else {
                 // The lottie image from the raw folder also returns null because the ImageView
                 // couldn't handle it now.
                 startLottieAnimationWith(illustrationView, mImageResId);
+                mIsAnimatable = true;
             }
         }
     }
@@ -399,13 +440,17 @@ public class IllustrationPreference extends Preference {
         final Resources res = backgroundView.getResources();
         final int frameWidth = res.getDimensionPixelSize(R.dimen.settingslib_illustration_width);
         final int frameHeight = res.getDimensionPixelSize(R.dimen.settingslib_illustration_height);
-        final int restrictedMaxHeight = Math.min(mMaxHeight, frameHeight);
+        final int restrictedMaxHeight = mMaxHeight;
         backgroundView.setMaxHeight(restrictedMaxHeight);
         illustrationView.setMaxHeight(restrictedMaxHeight);
 
         // Ensures the illustration view size is smaller than or equal to the background view size.
         final float aspectRatio = (float) frameWidth / frameHeight;
         illustrationView.setMaxWidth((int) (restrictedMaxHeight * aspectRatio));
+    }
+
+    public boolean isAnimatable() {
+        return mIsAnimatable;
     }
 
     private void startAnimation(Drawable drawable) {
@@ -422,6 +467,54 @@ public class IllustrationPreference extends Preference {
         }
 
         ((Animatable) drawable).start();
+    }
+
+    private void handleAnimationControl(LottieAnimationView illustrationView,
+            ViewGroup container) {
+        if (mIsAnimatable) {
+            // TODO(b/397340540): list out pages having illustration without a content description.
+            if (TextUtils.isEmpty(mContentDescription)) {
+                // Default content description will be attached if there's no content description.
+                illustrationView.setContentDescription(
+                        getContext().getString(
+                                R.string.settingslib_illustration_content_description));
+                Log.w(TAG, "Illustration should have a content description. preference key = "
+                        + getKey());
+            }
+            // Enable pause and resume abilities to animation only
+            container.setOnClickListener(v -> {
+                mIsAnimationPaused = !mIsAnimationPaused;
+                if (mIsAnimationPaused) {
+                    illustrationView.pauseAnimation();
+                } else {
+                    illustrationView.resumeAnimation();
+                }
+                updateAccessibilityAction(container);
+            });
+
+            updateAccessibilityAction(container);
+        }
+    }
+
+    private void updateAccessibilityAction(ViewGroup container) {
+        container.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override
+            public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                final AccessibilityAction clickAction = new AccessibilityAction(
+                        AccessibilityNodeInfo.ACTION_CLICK,
+                        getActionLabelForAnimation());
+                info.addAction(clickAction);
+            }
+        });
+    }
+
+    private String getActionLabelForAnimation() {
+        if (mIsAnimationPaused) {
+            return getContext().getString(R.string.settingslib_action_label_resume);
+        } else {
+            return getContext().getString(R.string.settingslib_action_label_pause);
+        }
     }
 
     private static void startLottieAnimationWith(LottieAnimationView illustrationView,
@@ -479,17 +572,28 @@ public class IllustrationPreference extends Preference {
         mIsAutoScale = false;
         if (attrs != null) {
             TypedArray a = context.obtainStyledAttributes(attrs,
-                    com.airbnb.lottie.R.styleable.LottieAnimationView, 0 /*defStyleAttr*/, 0 /*defStyleRes*/);
-            mImageResId = a.getResourceId(com.airbnb.lottie.R.styleable.LottieAnimationView_lottie_rawRes, 0);
+                    com.airbnb.lottie.R.styleable.LottieAnimationView, /* defStyleAttr= */ 0,
+                    /* defStyleRes= */ 0);
+            mImageResId = a.getResourceId(
+                    com.airbnb.lottie.R.styleable.LottieAnimationView_lottie_rawRes,
+                    /* defValue= */ 0);
             mCacheComposition = a.getBoolean(
-                    com.airbnb.lottie.R.styleable.LottieAnimationView_lottie_cacheComposition, true);
+                    com.airbnb.lottie.R.styleable.LottieAnimationView_lottie_cacheComposition,
+                    /* defValue= */ true);
 
             a = context.obtainStyledAttributes(attrs,
-                    R.styleable.IllustrationPreference, 0 /*defStyleAttr*/, 0 /*defStyleRes*/);
+                    R.styleable.IllustrationPreference, /* defStyleAttr= */ 0,
+                    /* defStyleRes= */ 0);
             mLottieDynamicColor = a.getBoolean(R.styleable.IllustrationPreference_dynamicColor,
-                    false);
+                    /* defValue= */ false);
 
             a.recycle();
+        }
+        mIsTablet = SettingsThemeHelper.isExpressiveTheme(context)
+                && SettingsThemeHelper.isTablet(context);
+        if (mIsTablet) {
+            setMaxHeight(context.getResources().getDimensionPixelSize(
+                    R.dimen.settingslib_illustration_height_tablet));
         }
     }
 }

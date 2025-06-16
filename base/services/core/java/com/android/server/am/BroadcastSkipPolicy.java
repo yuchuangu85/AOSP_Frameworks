@@ -19,7 +19,6 @@ package com.android.server.am;
 import static com.android.server.am.ActivityManagerDebugConfig.DEBUG_PERMISSIONS_REVIEW;
 import static com.android.server.am.ActivityManagerService.checkComponentPermission;
 import static com.android.server.am.BroadcastQueue.TAG;
-import static com.android.server.am.Flags.usePermissionManagerForBroadcastDeliveryCheck;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -72,10 +71,20 @@ public class BroadcastSkipPolicy {
      *         {@code null} if it can proceed.
      */
     public @Nullable String shouldSkipMessage(@NonNull BroadcastRecord r, @NonNull Object target) {
+        return shouldSkipMessage(r, target, false /* preflight */);
+    }
+
+    public @Nullable String shouldSkipAtEnqueueMessage(@NonNull BroadcastRecord r,
+            @NonNull Object target) {
+        return shouldSkipMessage(r, target, true /* preflight */);
+    }
+
+    private @Nullable String shouldSkipMessage(@NonNull BroadcastRecord r, @NonNull Object target,
+            boolean preflight) {
         if (target instanceof BroadcastFilter) {
-            return shouldSkipMessage(r, (BroadcastFilter) target);
+            return shouldSkipMessage(r, (BroadcastFilter) target, preflight);
         } else {
-            return shouldSkipMessage(r, (ResolveInfo) target);
+            return shouldSkipMessage(r, (ResolveInfo) target, preflight);
         }
     }
 
@@ -87,7 +96,7 @@ public class BroadcastSkipPolicy {
      *         {@code null} if it can proceed.
      */
     private @Nullable String shouldSkipMessage(@NonNull BroadcastRecord r,
-            @NonNull ResolveInfo info) {
+            @NonNull ResolveInfo info, boolean preflight) {
         final BroadcastOptions brOptions = r.options;
         final ComponentName component = new ComponentName(
                 info.activityInfo.applicationInfo.packageName,
@@ -135,15 +144,23 @@ public class BroadcastSkipPolicy {
                         + " requires " + info.activityInfo.permission;
             }
         } else if (info.activityInfo.permission != null) {
-            final int opCode = AppOpsManager.permissionToOpCode(info.activityInfo.permission);
-            if (opCode != AppOpsManager.OP_NONE && mService.getAppOpsManager().noteOpNoThrow(opCode,
-                    r.callingUid, r.callerPackage, r.callerFeatureId,
-                    "Broadcast delivered to " + info.activityInfo.name)
-                    != AppOpsManager.MODE_ALLOWED) {
-                return "Appop Denial: broadcasting "
-                        + broadcastDescription(r, component)
-                        + " requires appop " + AppOpsManager.permissionToOp(
-                                info.activityInfo.permission);
+            final String op = AppOpsManager.permissionToOp(info.activityInfo.permission);
+            if (op != null) {
+                final int mode;
+                if (preflight) {
+                    mode = mService.getAppOpsManager().checkOpNoThrow(op,
+                            r.callingUid, r.callerPackage, r.callerFeatureId);
+                } else {
+                    mode = mService.getAppOpsManager().noteOpNoThrow(op,
+                            r.callingUid, r.callerPackage, r.callerFeatureId,
+                            "Broadcast delivered to " + info.activityInfo.name);
+                }
+                if (mode != AppOpsManager.MODE_ALLOWED) {
+                    return "Appop Denial: broadcasting "
+                            + broadcastDescription(r, component)
+                            + " requires appop " + AppOpsManager.permissionToOp(
+                                    info.activityInfo.permission);
+                }
             }
         }
 
@@ -251,8 +268,8 @@ public class BroadcastSkipPolicy {
                     perm = PackageManager.PERMISSION_DENIED;
                 }
 
-                int appOp = AppOpsManager.permissionToOpCode(excludedPermission);
-                if (appOp != AppOpsManager.OP_NONE) {
+                final String appOp = AppOpsManager.permissionToOp(excludedPermission);
+                if (appOp != null) {
                     // When there is an app op associated with the permission,
                     // skip when both the permission and the app op are
                     // granted.
@@ -260,7 +277,7 @@ public class BroadcastSkipPolicy {
                                 mService.getAppOpsManager().checkOpNoThrow(appOp,
                                 info.activityInfo.applicationInfo.uid,
                                 info.activityInfo.packageName)
-                            == AppOpsManager.MODE_ALLOWED)) {
+                                        == AppOpsManager.MODE_ALLOWED)) {
                         return "Skipping delivery to " + info.activityInfo.packageName
                                 + " due to excluded permission " + excludedPermission;
                     }
@@ -289,33 +306,17 @@ public class BroadcastSkipPolicy {
 
         if (info.activityInfo.applicationInfo.uid != Process.SYSTEM_UID &&
                 r.requiredPermissions != null && r.requiredPermissions.length > 0) {
-            final AttributionSource[] attributionSources;
-            if (usePermissionManagerForBroadcastDeliveryCheck()) {
-                attributionSources = createAttributionSourcesForResolveInfo(info);
-            } else {
-                attributionSources = null;
-            }
+            final AttributionSource[] attributionSources =
+                    createAttributionSourcesForResolveInfo(info);
             for (int i = 0; i < r.requiredPermissions.length; i++) {
                 String requiredPermission = r.requiredPermissions[i];
-                try {
-                    if (usePermissionManagerForBroadcastDeliveryCheck()) {
-                        perm = hasPermissionForDataDelivery(
-                                requiredPermission,
-                                "Broadcast delivered to " + info.activityInfo.name,
-                                attributionSources)
-                                        ? PackageManager.PERMISSION_GRANTED
-                                        : PackageManager.PERMISSION_DENIED;
-                    } else {
-                        perm = AppGlobals.getPackageManager()
-                                .checkPermission(
-                                        requiredPermission,
-                                        info.activityInfo.applicationInfo.packageName,
-                                        UserHandle
-                                                .getUserId(info.activityInfo.applicationInfo.uid));
-                    }
-                } catch (RemoteException e) {
-                    perm = PackageManager.PERMISSION_DENIED;
-                }
+                perm = hasPermission(
+                        requiredPermission,
+                        "Broadcast delivered to " + info.activityInfo.name,
+                        preflight,
+                        attributionSources)
+                                ? PackageManager.PERMISSION_GRANTED
+                                : PackageManager.PERMISSION_DENIED;
                 if (perm != PackageManager.PERMISSION_GRANTED) {
                     return "Permission Denial: receiving "
                             + r.intent + " to "
@@ -324,21 +325,16 @@ public class BroadcastSkipPolicy {
                             + " due to sender " + r.callerPackage
                             + " (uid " + r.callingUid + ")";
                 }
-                if (!usePermissionManagerForBroadcastDeliveryCheck()) {
-                    int appOp = AppOpsManager.permissionToOpCode(requiredPermission);
-                    if (appOp != AppOpsManager.OP_NONE && appOp != r.appOp) {
-                        if (!noteOpForManifestReceiver(appOp, r, info, component)) {
-                            return "Skipping delivery to " + info.activityInfo.packageName
-                                    + " due to required appop " + appOp;
-                        }
-                    }
-                }
             }
         }
-        if (r.appOp != AppOpsManager.OP_NONE) {
-            if (!noteOpForManifestReceiver(r.appOp, r, info, component)) {
+        if (r.appOp != AppOpsManager.OP_NONE && AppOpsManager.isValidOp(r.appOp)) {
+            final String op = AppOpsManager.opToPublicName(r.appOp);
+            final boolean appOpAllowed = preflight
+                    ? checkOpForManifestReceiver(r.appOp, op, r, info, component)
+                    : noteOpForManifestReceiver(r.appOp, op, r, info, component);
+            if (!appOpAllowed) {
                 return "Skipping delivery to " + info.activityInfo.packageName
-                        + " due to required appop " + r.appOp;
+                        + " due to required appop " + AppOpsManager.opToName(r.appOp);
             }
         }
 
@@ -365,7 +361,7 @@ public class BroadcastSkipPolicy {
      *         {@code null} if it can proceed.
      */
     private @Nullable String shouldSkipMessage(@NonNull BroadcastRecord r,
-            @NonNull BroadcastFilter filter) {
+            @NonNull BroadcastFilter filter, boolean preflight) {
         if (r.options != null && !r.options.testRequireCompatChange(filter.owningUid)) {
             return "Compat change filtered: broadcasting " + r.intent.toString()
                     + " to uid " + filter.owningUid + " due to compat change "
@@ -399,18 +395,25 @@ public class BroadcastSkipPolicy {
                         + " requires " + filter.requiredPermission
                         + " due to registered receiver " + filter;
             } else {
-                final int opCode = AppOpsManager.permissionToOpCode(filter.requiredPermission);
-                if (opCode != AppOpsManager.OP_NONE
-                        && mService.getAppOpsManager().noteOpNoThrow(opCode, r.callingUid,
-                        r.callerPackage, r.callerFeatureId, "Broadcast sent to protected receiver")
-                        != AppOpsManager.MODE_ALLOWED) {
-                    return "Appop Denial: broadcasting "
-                            + r.intent.toString()
-                            + " from " + r.callerPackage + " (pid="
-                            + r.callingPid + ", uid=" + r.callingUid + ")"
-                            + " requires appop " + AppOpsManager.permissionToOp(
-                                    filter.requiredPermission)
-                            + " due to registered receiver " + filter;
+                final String op = AppOpsManager.permissionToOp(filter.requiredPermission);
+                if (op != null) {
+                    final int mode;
+                    if (preflight) {
+                        mode = mService.getAppOpsManager().checkOpNoThrow(op,
+                                r.callingUid, r.callerPackage, r.callerFeatureId);
+                    } else {
+                        mode = mService.getAppOpsManager().noteOpNoThrow(op, r.callingUid,
+                                r.callerPackage, r.callerFeatureId,
+                                "Broadcast sent to protected receiver");
+                    }
+                    if (mode != AppOpsManager.MODE_ALLOWED) {
+                        return "Appop Denial: broadcasting "
+                                + r.intent
+                                + " from " + r.callerPackage + " (pid="
+                                + r.callingPid + ", uid=" + r.callingUid + ")"
+                                + " requires appop " + op
+                                + " due to registered receiver " + filter;
+                    }
                 }
             }
         }
@@ -452,35 +455,21 @@ public class BroadcastSkipPolicy {
 
         // Check that the receiver has the required permission(s) to receive this broadcast.
         if (r.requiredPermissions != null && r.requiredPermissions.length > 0) {
-            final AttributionSource attributionSource;
-            if (usePermissionManagerForBroadcastDeliveryCheck()) {
-                attributionSource =
-                        new AttributionSource.Builder(filter.receiverList.uid)
-                                .setPid(filter.receiverList.pid)
-                                .setPackageName(filter.packageName)
-                                .setAttributionTag(filter.featureId)
-                                .build();
-            } else {
-                attributionSource = null;
-            }
+            final AttributionSource attributionSource =
+                    new AttributionSource.Builder(filter.receiverList.uid)
+                            .setPid(filter.receiverList.pid)
+                            .setPackageName(filter.packageName)
+                            .setAttributionTag(filter.featureId)
+                            .build();
             for (int i = 0; i < r.requiredPermissions.length; i++) {
                 String requiredPermission = r.requiredPermissions[i];
-                final int perm;
-                if (usePermissionManagerForBroadcastDeliveryCheck()) {
-                    perm = hasPermissionForDataDelivery(
-                            requiredPermission,
-                            "Broadcast delivered to registered receiver " + filter.receiverId,
-                            attributionSource)
-                                    ? PackageManager.PERMISSION_GRANTED
-                                    : PackageManager.PERMISSION_DENIED;
-                } else {
-                    perm = checkComponentPermission(
-                            requiredPermission,
-                            filter.receiverList.pid,
-                            filter.receiverList.uid,
-                            -1 /* owningUid */,
-                            true /* exported */);
-                }
+                final int perm = hasPermission(
+                        requiredPermission,
+                        "Broadcast delivered to registered receiver " + filter.receiverId,
+                        preflight,
+                        attributionSource)
+                                ? PackageManager.PERMISSION_GRANTED
+                                : PackageManager.PERMISSION_DENIED;
                 if (perm != PackageManager.PERMISSION_GRANTED) {
                     return "Permission Denial: receiving "
                             + r.intent.toString()
@@ -490,24 +479,6 @@ public class BroadcastSkipPolicy {
                             + " requires " + requiredPermission
                             + " due to sender " + r.callerPackage
                             + " (uid " + r.callingUid + ")";
-                }
-                if (!usePermissionManagerForBroadcastDeliveryCheck()) {
-                    int appOp = AppOpsManager.permissionToOpCode(requiredPermission);
-                    if (appOp != AppOpsManager.OP_NONE && appOp != r.appOp
-                            && mService.getAppOpsManager().noteOpNoThrow(appOp,
-                            filter.receiverList.uid, filter.packageName, filter.featureId,
-                            "Broadcast delivered to registered receiver " + filter.receiverId)
-                            != AppOpsManager.MODE_ALLOWED) {
-                        return "Appop Denial: receiving "
-                                + r.intent.toString()
-                                + " to " + filter.receiverList.app
-                                + " (pid=" + filter.receiverList.pid
-                                + ", uid=" + filter.receiverList.uid + ")"
-                                + " requires appop " + AppOpsManager.permissionToOp(
-                                requiredPermission)
-                                + " due to sender " + r.callerPackage
-                                + " (uid " + r.callingUid + ")";
-                    }
                 }
             }
         }
@@ -531,8 +502,8 @@ public class BroadcastSkipPolicy {
                 final int perm = checkComponentPermission(excludedPermission,
                         filter.receiverList.pid, filter.receiverList.uid, -1, true);
 
-                int appOp = AppOpsManager.permissionToOpCode(excludedPermission);
-                if (appOp != AppOpsManager.OP_NONE) {
+                final String appOp = AppOpsManager.permissionToOp(excludedPermission);
+                if (appOp != null) {
                     // When there is an app op associated with the permission,
                     // skip when both the permission and the app op are
                     // granted.
@@ -540,14 +511,13 @@ public class BroadcastSkipPolicy {
                             mService.getAppOpsManager().checkOpNoThrow(appOp,
                                     filter.receiverList.uid,
                                     filter.packageName)
-                                    == AppOpsManager.MODE_ALLOWED)) {
+                                        == AppOpsManager.MODE_ALLOWED)) {
                         return "Appop Denial: receiving "
-                                + r.intent.toString()
+                                + r.intent
                                 + " to " + filter.receiverList.app
                                 + " (pid=" + filter.receiverList.pid
                                 + ", uid=" + filter.receiverList.uid + ")"
-                                + " excludes appop " + AppOpsManager.permissionToOp(
-                                excludedPermission)
+                                + " excludes appop " + appOp
                                 + " due to sender " + r.callerPackage
                                 + " (uid " + r.callingUid + ")";
                     }
@@ -556,7 +526,7 @@ public class BroadcastSkipPolicy {
                     // skip when permission is granted.
                     if (perm == PackageManager.PERMISSION_GRANTED) {
                         return "Permission Denial: receiving "
-                                + r.intent.toString()
+                                + r.intent
                                 + " to " + filter.receiverList.app
                                 + " (pid=" + filter.receiverList.pid
                                 + ", uid=" + filter.receiverList.uid + ")"
@@ -583,19 +553,27 @@ public class BroadcastSkipPolicy {
         }
 
         // If the broadcast also requires an app op check that as well.
-        if (r.appOp != AppOpsManager.OP_NONE
-                && mService.getAppOpsManager().noteOpNoThrow(r.appOp,
-                filter.receiverList.uid, filter.packageName, filter.featureId,
-                "Broadcast delivered to registered receiver " + filter.receiverId)
-                != AppOpsManager.MODE_ALLOWED) {
-            return "Appop Denial: receiving "
-                    + r.intent.toString()
-                    + " to " + filter.receiverList.app
-                    + " (pid=" + filter.receiverList.pid
-                    + ", uid=" + filter.receiverList.uid + ")"
-                    + " requires appop " + AppOpsManager.opToName(r.appOp)
-                    + " due to sender " + r.callerPackage
-                    + " (uid " + r.callingUid + ")";
+        if (r.appOp != AppOpsManager.OP_NONE && AppOpsManager.isValidOp(r.appOp)) {
+            final String op = AppOpsManager.opToPublicName(r.appOp);
+            final int mode;
+            if (preflight) {
+                mode = mService.getAppOpsManager().checkOpNoThrow(op,
+                        filter.receiverList.uid, filter.packageName, filter.featureId);
+            } else {
+                mode = mService.getAppOpsManager().noteOpNoThrow(op,
+                        filter.receiverList.uid, filter.packageName, filter.featureId,
+                        "Broadcast delivered to registered receiver " + filter.receiverId);
+            }
+            if (mode != AppOpsManager.MODE_ALLOWED) {
+                return "Appop Denial: receiving "
+                        + r.intent
+                        + " to " + filter.receiverList.app
+                        + " (pid=" + filter.receiverList.pid
+                        + ", uid=" + filter.receiverList.uid + ")"
+                        + " requires appop " + AppOpsManager.opToName(r.appOp)
+                        + " due to sender " + r.callerPackage
+                        + " (uid " + r.callingUid + ")";
+            }
         }
 
         // Ensure that broadcasts are only sent to other apps if they are explicitly marked as
@@ -632,14 +610,14 @@ public class BroadcastSkipPolicy {
                 + ", uid=" + r.callingUid + ") to " + component.flattenToShortString();
     }
 
-    private boolean noteOpForManifestReceiver(int appOp, BroadcastRecord r, ResolveInfo info,
-            ComponentName component) {
+    private boolean noteOpForManifestReceiver(int opCode, String appOp, BroadcastRecord r,
+            ResolveInfo info, ComponentName component) {
         if (ArrayUtils.isEmpty(info.activityInfo.attributionTags)) {
-            return noteOpForManifestReceiverInner(appOp, r, info, component, null);
+            return noteOpForManifestReceiverInner(opCode, appOp, r, info, component, null);
         } else {
             // Attribution tags provided, noteOp each tag
             for (String tag : info.activityInfo.attributionTags) {
-                if (!noteOpForManifestReceiverInner(appOp, r, info, component, tag)) {
+                if (!noteOpForManifestReceiverInner(opCode, appOp, r, info, component, tag)) {
                     return false;
                 }
             }
@@ -647,8 +625,8 @@ public class BroadcastSkipPolicy {
         }
     }
 
-    private boolean noteOpForManifestReceiverInner(int appOp, BroadcastRecord r, ResolveInfo info,
-            ComponentName component, String tag) {
+    private boolean noteOpForManifestReceiverInner(int opCode, String appOp, BroadcastRecord r,
+            ResolveInfo info, ComponentName component, String tag) {
         if (mService.getAppOpsManager().noteOpNoThrow(appOp,
                     info.activityInfo.applicationInfo.uid,
                     info.activityInfo.packageName,
@@ -658,7 +636,37 @@ public class BroadcastSkipPolicy {
             Slog.w(TAG, "Appop Denial: receiving "
                     + r.intent + " to "
                     + component.flattenToShortString()
-                    + " requires appop " + AppOpsManager.opToName(appOp)
+                    + " requires appop " + AppOpsManager.opToName(opCode)
+                    + " due to sender " + r.callerPackage
+                    + " (uid " + r.callingUid + ")");
+            return false;
+        }
+        return true;
+    }
+
+    private boolean checkOpForManifestReceiver(int opCode, String appOp, BroadcastRecord r,
+            ResolveInfo info, ComponentName component) {
+        if (ArrayUtils.isEmpty(info.activityInfo.attributionTags)) {
+            return checkOpForManifestReceiverInner(opCode, appOp, r, info, component, null);
+        } else {
+            // Attribution tags provided, noteOp each tag
+            for (String tag : info.activityInfo.attributionTags) {
+                if (!checkOpForManifestReceiverInner(opCode, appOp, r, info, component, tag)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private boolean checkOpForManifestReceiverInner(int opCode, String appOp, BroadcastRecord r,
+            ResolveInfo info, ComponentName component, String tag) {
+        if (mService.getAppOpsManager().checkOpNoThrow(appOp, info.activityInfo.applicationInfo.uid,
+                info.activityInfo.packageName, tag) != AppOpsManager.MODE_ALLOWED) {
+            Slog.w(TAG, "Appop Denial: receiving "
+                    + r.intent + " to "
+                    + component.flattenToShortString()
+                    + " requires appop " + AppOpsManager.opToName(opCode)
                     + " due to sender " + r.callerPackage
                     + " (uid " + r.callingUid + ")");
             return false;
@@ -754,9 +762,10 @@ public class BroadcastSkipPolicy {
         return mPermissionManager;
     }
 
-    private boolean hasPermissionForDataDelivery(
+    private boolean hasPermission(
             @NonNull String permission,
             @NonNull String message,
+            boolean preflight,
             @NonNull AttributionSource... attributionSources) {
         final PermissionManager permissionManager = getPermissionManager();
         if (permissionManager == null) {
@@ -764,9 +773,14 @@ public class BroadcastSkipPolicy {
         }
 
         for (AttributionSource attributionSource : attributionSources) {
-            final int permissionCheckResult =
-                    permissionManager.checkPermissionForDataDelivery(
-                            permission, attributionSource, message);
+            final int permissionCheckResult;
+            if (preflight) {
+                permissionCheckResult = permissionManager.checkPermissionForPreflight(
+                        permission, attributionSource);
+            } else {
+                permissionCheckResult = permissionManager.checkPermissionForDataDelivery(
+                        permission, attributionSource, message);
+            }
             if (permissionCheckResult != PackageManager.PERMISSION_GRANTED) {
                 return false;
             }

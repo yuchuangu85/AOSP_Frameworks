@@ -27,7 +27,8 @@
 #include "LayerHierarchyTest.h"
 #include "ui/GraphicTypes.h"
 
-#include <com_android_graphics_surfaceflinger_flags.h>
+#include <com_android_graphics_libgui_flags.h>
+#include <cmath>
 
 #define UPDATE_AND_VERIFY(BUILDER, ...)                                    \
     ({                                                                     \
@@ -56,6 +57,17 @@ using namespace com::android::graphics::surfaceflinger;
 
 class LayerSnapshotTest : public LayerSnapshotTestBase {
 protected:
+    const Layer::FrameRate FRAME_RATE_VOTE1 =
+            Layer::FrameRate(67_Hz, scheduler::FrameRateCompatibility::Default);
+    const Layer::FrameRate FRAME_RATE_VOTE2 =
+            Layer::FrameRate(14_Hz, scheduler::FrameRateCompatibility::Default);
+    const Layer::FrameRate FRAME_RATE_VOTE3 =
+            Layer::FrameRate(99_Hz, scheduler::FrameRateCompatibility::Default);
+    const Layer::FrameRate FRAME_RATE_TREE =
+            Layer::FrameRate(Fps(), scheduler::FrameRateCompatibility::NoVote);
+    const Layer::FrameRate FRAME_RATE_NO_VOTE =
+            Layer::FrameRate(Fps(), scheduler::FrameRateCompatibility::Default);
+
     LayerSnapshotTest() : LayerSnapshotTestBase() {
         UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
     }
@@ -150,12 +162,12 @@ TEST_F(LayerSnapshotTest, croppedByParent) {
     info.info.logicalHeight = 100;
     info.info.logicalWidth = 200;
     mFrontEndDisplayInfos.emplace_or_replace(ui::LayerStack::fromValue(1), info);
-    Rect layerCrop(0, 0, 10, 20);
+    FloatRect layerCrop(0, 0, 10, 20);
     setCrop(11, layerCrop);
     EXPECT_TRUE(mLifecycleManager.getGlobalChanges().test(RequestedLayerState::Changes::Geometry));
     UPDATE_AND_VERIFY_WITH_DISPLAY_CHANGES(mSnapshotBuilder, STARTING_ZORDER);
     EXPECT_EQ(getSnapshot(11)->geomCrop, layerCrop);
-    EXPECT_EQ(getSnapshot(111)->geomLayerBounds, layerCrop.toFloatRect());
+    EXPECT_EQ(getSnapshot(111)->geomLayerBounds, layerCrop);
     float maxHeight = static_cast<float>(info.info.logicalHeight * 10);
     float maxWidth = static_cast<float>(info.info.logicalWidth * 10);
 
@@ -249,6 +261,40 @@ TEST_F(LayerSnapshotTest, AlphaInheritedByChildren) {
     EXPECT_EQ(getSnapshot(1221)->alpha, 0.25f);
 }
 
+TEST_F(LayerSnapshotTest, AlphaInheritedByChildWhenParentIsHiddenByInvalidTransform) {
+    setMatrix(1, 0, 0, 0, 0);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    setAlpha(1, 0.5);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    setMatrix(1, 1, 0, 0, 1);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    EXPECT_EQ(getSnapshot(1)->alpha, 0.5f);
+    EXPECT_EQ(getSnapshot(11)->alpha, 0.5f);
+}
+
+TEST_F(LayerSnapshotTest, AlphaInheritedByChildWhenParentIsHidden) {
+    hideLayer(1);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    setAlpha(1, 0.5);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    showLayer(1);
+    update(mSnapshotBuilder);
+    mLifecycleManager.commitChanges();
+
+    EXPECT_EQ(getSnapshot(1)->alpha, 0.5f);
+    EXPECT_EQ(getSnapshot(11)->alpha, 0.5f);
+}
+
 // Change states
 TEST_F(LayerSnapshotTest, UpdateClearsPreviousChangeStates) {
     setCrop(1, Rect(1, 2, 3, 4));
@@ -281,21 +327,132 @@ TEST_F(LayerSnapshotTest, FastPathSetsChangeFlagToContent) {
     EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::eColorChanged);
 }
 
-TEST_F(LayerSnapshotTest, GameMode) {
-    std::vector<TransactionState> transactions;
+TEST_F(LayerSnapshotTest, ChildrenInheritGameMode) {
+    setGameMode(1, gui::GameMode::Performance);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(),
+              RequestedLayerState::Changes::GameMode | RequestedLayerState::Changes::Metadata);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::eMetadataChanged);
+    EXPECT_EQ(getSnapshot(1)->gameMode, gui::GameMode::Performance);
+    EXPECT_EQ(getSnapshot(11)->gameMode, gui::GameMode::Performance);
+}
+
+TEST_F(LayerSnapshotTest, ChildrenCanOverrideGameMode) {
+    setGameMode(1, gui::GameMode::Performance);
+    setGameMode(11, gui::GameMode::Battery);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(),
+              RequestedLayerState::Changes::GameMode | RequestedLayerState::Changes::Metadata);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::eMetadataChanged);
+    EXPECT_EQ(getSnapshot(1)->gameMode, gui::GameMode::Performance);
+    EXPECT_EQ(getSnapshot(11)->gameMode, gui::GameMode::Battery);
+}
+
+TEST_F(LayerSnapshotTest, ReparentingUpdatesGameMode) {
+    setGameMode(1, gui::GameMode::Performance);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(),
+              RequestedLayerState::Changes::GameMode | RequestedLayerState::Changes::Metadata);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::eMetadataChanged);
+    EXPECT_EQ(getSnapshot(1)->gameMode, gui::GameMode::Performance);
+    EXPECT_EQ(getSnapshot(2)->gameMode, gui::GameMode::Unsupported);
+
+    reparentLayer(2, 1);
+    setZ(2, 2);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot(2)->gameMode, gui::GameMode::Performance);
+}
+
+TEST_F(LayerSnapshotTest, UpdateMetadata) {
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.what = layer_state_t::eMetadataChanged;
+    // This test focuses on metadata used by ARC++ to ensure LayerMetadata is updated correctly,
+    // and not using stale data.
     transactions.back().states.front().state.metadata = LayerMetadata();
-    transactions.back().states.front().state.metadata.setInt32(METADATA_GAME_MODE, 42);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_OWNER_UID, 123);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_WINDOW_TYPE, 234);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_TASK_ID, 345);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_MOUSE_CURSOR, 456);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_ACCESSIBILITY_ID, 567);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_OWNER_PID, 678);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_CALLING_UID, 789);
+
     transactions.back().states.front().layerId = 1;
     transactions.back().states.front().state.layerId = static_cast<int32_t>(1);
+
     mLifecycleManager.applyTransactions(transactions);
-    EXPECT_EQ(mLifecycleManager.getGlobalChanges(), RequestedLayerState::Changes::GameMode);
-    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(), RequestedLayerState::Changes::Metadata);
+
+    // Setting includeMetadata=true to ensure metadata update is applied to LayerSnapshot
+    LayerSnapshotBuilder::Args args{.root = mHierarchyBuilder.getHierarchy(),
+                                    .layerLifecycleManager = mLifecycleManager,
+                                    .includeMetadata = true,
+                                    .displays = mFrontEndDisplayInfos,
+                                    .globalShadowSettings = globalShadowSettings,
+                                    .supportsBlur = true,
+                                    .supportedLayerGenericMetadata = {},
+                                    .genericLayerMetadataKeyMap = {}};
+    update(mSnapshotBuilder, args);
+
     EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::eMetadataChanged);
-    EXPECT_EQ(static_cast<int32_t>(getSnapshot(1)->gameMode), 42);
-    EXPECT_EQ(static_cast<int32_t>(getSnapshot(11)->gameMode), 42);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_OWNER_UID, -1), 123);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_WINDOW_TYPE, -1), 234);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_TASK_ID, -1), 345);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_MOUSE_CURSOR, -1), 456);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_ACCESSIBILITY_ID, -1), 567);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_OWNER_PID, -1), 678);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_CALLING_UID, -1), 789);
+}
+
+TEST_F(LayerSnapshotTest, UpdateMetadataOfHiddenLayers) {
+    hideLayer(1);
+
+    std::vector<QueuedTransactionState> transactions;
+    transactions.emplace_back();
+    transactions.back().states.push_back({});
+    transactions.back().states.front().state.what = layer_state_t::eMetadataChanged;
+    // This test focuses on metadata used by ARC++ to ensure LayerMetadata is updated correctly,
+    // and not using stale data.
+    transactions.back().states.front().state.metadata = LayerMetadata();
+    transactions.back().states.front().state.metadata.setInt32(METADATA_OWNER_UID, 123);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_WINDOW_TYPE, 234);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_TASK_ID, 345);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_MOUSE_CURSOR, 456);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_ACCESSIBILITY_ID, 567);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_OWNER_PID, 678);
+    transactions.back().states.front().state.metadata.setInt32(METADATA_CALLING_UID, 789);
+
+    transactions.back().states.front().layerId = 1;
+    transactions.back().states.front().state.layerId = static_cast<int32_t>(1);
+
+    mLifecycleManager.applyTransactions(transactions);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(),
+              RequestedLayerState::Changes::Metadata | RequestedLayerState::Changes::Visibility |
+                      RequestedLayerState::Changes::VisibleRegion |
+                      RequestedLayerState::Changes::AffectsChildren);
+
+    // Setting includeMetadata=true to ensure metadata update is applied to LayerSnapshot
+    LayerSnapshotBuilder::Args args{.root = mHierarchyBuilder.getHierarchy(),
+                                    .layerLifecycleManager = mLifecycleManager,
+                                    .includeMetadata = true,
+                                    .displays = mFrontEndDisplayInfos,
+                                    .globalShadowSettings = globalShadowSettings,
+                                    .supportsBlur = true,
+                                    .supportedLayerGenericMetadata = {},
+                                    .genericLayerMetadataKeyMap = {}};
+    update(mSnapshotBuilder, args);
+
+    EXPECT_EQ(static_cast<int64_t>(getSnapshot(1)->clientChanges),
+              layer_state_t::eMetadataChanged | layer_state_t::eFlagsChanged);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_OWNER_UID, -1), 123);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_WINDOW_TYPE, -1), 234);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_TASK_ID, -1), 345);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_MOUSE_CURSOR, -1), 456);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_ACCESSIBILITY_ID, -1), 567);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_OWNER_PID, -1), 678);
+    EXPECT_EQ(getSnapshot(1)->layerMetadata.getInt32(METADATA_CALLING_UID, -1), 789);
 }
 
 TEST_F(LayerSnapshotTest, NoLayerVoteForParentWithChildVotes) {
@@ -676,6 +833,155 @@ TEST_F(LayerSnapshotTest, framerate) {
               scheduler::FrameRateCompatibility::Default);
 }
 
+TEST_F(LayerSnapshotTest, frameRateSetAndGet) {
+    setFrameRate(1, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    // verify parent is gets no vote
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetParent) {
+    setFrameRate(111, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(111, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetParentAllVote) {
+    setFrameRate(1, FRAME_RATE_VOTE3.vote.rate.getValue(), 0, 0);
+    setFrameRate(11, FRAME_RATE_VOTE2.vote.rate.getValue(), 0, 0);
+    setFrameRate(111, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE3);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE2);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(111, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE3);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE2);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE2);
+
+    setFrameRate(11, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE3);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE3);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE3);
+
+    setFrameRate(1, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetChild) {
+    setFrameRate(1, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(1, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetChildAllVote) {
+    setFrameRate(1, FRAME_RATE_VOTE3.vote.rate.getValue(), 0, 0);
+    setFrameRate(11, FRAME_RATE_VOTE2.vote.rate.getValue(), 0, 0);
+    setFrameRate(111, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE3);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE2);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(1, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE2);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(11, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(111, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetChildAddAfterVote) {
+    setFrameRate(1, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    reparentLayer(111, 2);
+    std::vector<uint32_t> traversalOrder = {1, 11, 12, 121, 122, 1221, 13, 2, 111};
+    UPDATE_AND_VERIFY(mSnapshotBuilder, traversalOrder);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+
+    reparentLayer(111, 11);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    setFrameRate(1, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateSetAndGetChildRemoveAfterVote) {
+    setFrameRate(1, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_VOTE1);
+
+    reparentLayer(111, 2);
+    std::vector<uint32_t> traversalOrder = {1, 11, 12, 121, 122, 1221, 13, 2, 111};
+    UPDATE_AND_VERIFY(mSnapshotBuilder, traversalOrder);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+
+    setFrameRate(1, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, traversalOrder);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 111})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
+TEST_F(LayerSnapshotTest, frameRateAddChildForParentWithTreeVote) {
+    setFrameRate(11, FRAME_RATE_VOTE1.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_TREE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_VOTE1);
+    EXPECT_EQ(getSnapshot({.id = 12})->frameRate, FRAME_RATE_NO_VOTE);
+
+    setFrameRate(11, FRAME_RATE_NO_VOTE.vote.rate.getValue(), 0, 0);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 11})->frameRate, FRAME_RATE_NO_VOTE);
+    EXPECT_EQ(getSnapshot({.id = 12})->frameRate, FRAME_RATE_NO_VOTE);
+}
+
 TEST_F(LayerSnapshotTest, translateDataspace) {
     setDataspace(1, ui::Dataspace::UNKNOWN);
     UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
@@ -854,7 +1160,7 @@ TEST_F(LayerSnapshotTest, frameRateSelectionStrategy) {
     EXPECT_FALSE(getSnapshot({.id = 1})->frameRate.vote.rate.isValid());
     EXPECT_EQ(getSnapshot({.id = 1})->frameRate.vote.type,
               scheduler::FrameRateCompatibility::NoVote);
-    EXPECT_FALSE(getSnapshot({.id = 1})->changes.test(RequestedLayerState::Changes::FrameRate));
+    EXPECT_TRUE(getSnapshot({.id = 1})->changes.test(RequestedLayerState::Changes::FrameRate));
 
     // verify layer 12 and all descendants (121, 122, 1221) get the requested vote
     EXPECT_FALSE(getSnapshot({.id = 12})->frameRate.vote.rate.isValid());
@@ -945,7 +1251,7 @@ TEST_F(LayerSnapshotTest, frameRateSelectionStrategyWithCategory) {
     EXPECT_EQ(getSnapshot({.id = 1})->frameRate.vote.type,
               scheduler::FrameRateCompatibility::NoVote);
     EXPECT_EQ(getSnapshot({.id = 1})->frameRate.category, FrameRateCategory::Default);
-    EXPECT_FALSE(getSnapshot({.id = 1})->changes.test(RequestedLayerState::Changes::FrameRate));
+    EXPECT_TRUE(getSnapshot({.id = 1})->changes.test(RequestedLayerState::Changes::FrameRate));
 
     // verify layer 12 and all descendants (121, 122, 1221) get the requested vote
     EXPECT_FALSE(getSnapshot({.id = 12})->frameRate.vote.rate.isValid());
@@ -1154,11 +1460,98 @@ TEST_F(LayerSnapshotTest, setBufferCrop) {
     EXPECT_EQ(getSnapshot(1)->geomContentCrop, Rect(0, 0, 100, 100));
 }
 
+TEST_F(LayerSnapshotTest, setCornerRadius) {
+    static constexpr float RADIUS = 123.f;
+    setRoundedCorners(1, RADIUS);
+    setCrop(1, Rect{1000, 1000});
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->roundedCorner.radius.x, RADIUS);
+}
+
+TEST_F(LayerSnapshotTest, ignoreCornerRadius) {
+    static constexpr float RADIUS = 123.f;
+    setClientDrawnCornerRadius(1, RADIUS);
+    setRoundedCorners(1, RADIUS);
+    setCrop(1, Rect{1000, 1000});
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot({.id = 1})->roundedCorner.hasClientDrawnRadius());
+    EXPECT_EQ(getSnapshot({.id = 1})->roundedCorner.radius.x, 0.f);
+}
+
+TEST_F(LayerSnapshotTest, childInheritsParentScaledSettings) {
+    // ROOT
+    // ├── 1 (crop rect set to contain child layer)
+    // │   ├── 11
+    static constexpr float RADIUS = 123.f;
+
+    setRoundedCorners(1, RADIUS);
+    FloatRect parentCropRect(1, 1, 999, 999);
+    setCrop(1, parentCropRect);
+    // Rotate surface by 90
+    setMatrix(11, 0.f, -1.f, 1.f, 0.f);
+
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    ui::Transform t = getSnapshot({.id = 11})->localTransform.inverse();
+
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.cropRect, t.transform(parentCropRect));
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.radius.x, RADIUS * t.getScaleX());
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.radius.y, RADIUS * t.getScaleY());
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.requestedRadius.x, RADIUS * t.getScaleX());
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.requestedRadius.y, RADIUS * t.getScaleY());
+}
+
+TEST_F(LayerSnapshotTest, childInheritsParentClientDrawnCornerRadius) {
+    // ROOT
+    // ├── 1 (crop rect set to contain child layers )
+    // │   ├── 11
+    // │   │   └── 111
+
+    static constexpr float RADIUS = 123.f;
+
+    setClientDrawnCornerRadius(1, RADIUS);
+    setRoundedCorners(1, RADIUS);
+    setCrop(1, Rect(1, 1, 999, 999));
+
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot({.id = 1})->roundedCorner.hasClientDrawnRadius());
+    EXPECT_TRUE(getSnapshot({.id = 11})->roundedCorner.hasRoundedCorners());
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.radius.x, RADIUS);
+}
+
+TEST_F(LayerSnapshotTest, childIgnoreCornerRadiusOverridesParent) {
+    // ROOT
+    // ├── 1 (crop rect set to contain child layers )
+    // │   ├── 11
+    // │   │   └── 111
+
+    static constexpr float RADIUS = 123.f;
+
+    setRoundedCorners(1, RADIUS);
+    setCrop(1, Rect(1, 1, 999, 999));
+
+    setClientDrawnCornerRadius(11, RADIUS);
+
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1})->roundedCorner.radius.x, RADIUS);
+    EXPECT_EQ(getSnapshot({.id = 11})->roundedCorner.radius.x, 0.f);
+    EXPECT_EQ(getSnapshot({.id = 111})->roundedCorner.radius.x, RADIUS);
+}
+
 TEST_F(LayerSnapshotTest, setShadowRadius) {
     static constexpr float SHADOW_RADIUS = 123.f;
     setShadowRadius(1, SHADOW_RADIUS);
     UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
     EXPECT_EQ(getSnapshot(1)->shadowSettings.length, SHADOW_RADIUS);
+}
+
+TEST_F(LayerSnapshotTest, setBorderSettings) {
+    gui::BorderSettings settings;
+    settings.strokeWidth = 5;
+    setBorderSettings(1, settings);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot(1)->borderSettings.strokeWidth, settings.strokeWidth);
 }
 
 TEST_F(LayerSnapshotTest, setTrustedOverlayForNonVisibleInput) {
@@ -1279,17 +1672,20 @@ TEST_F(LayerSnapshotTest, propagateDropInputMode) {
 }
 
 TEST_F(LayerSnapshotTest, NonVisibleLayerWithInput) {
+    SET_FLAG_FOR_TEST(com::android::graphics::surfaceflinger::flags::
+                              skip_invisible_windows_in_input,
+                      false);
     LayerHierarchyTestBase::createRootLayer(3);
     setColor(3, {-1._hf, -1._hf, -1._hf});
     UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
 
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.what = layer_state_t::eInputInfoChanged;
     transactions.back().states.front().layerId = 3;
-    transactions.back().states.front().state.windowInfoHandle = sp<gui::WindowInfoHandle>::make();
-    auto inputInfo = transactions.back().states.front().state.windowInfoHandle->editInfo();
+    auto inputInfo = transactions.back().states.front().state.editWindowInfo();
+    *inputInfo = {};
     inputInfo->token = sp<BBinder>::make();
     mLifecycleManager.applyTransactions(transactions);
 
@@ -1302,6 +1698,50 @@ TEST_F(LayerSnapshotTest, NonVisibleLayerWithInput) {
         }
     });
     EXPECT_TRUE(foundInputLayer);
+}
+
+TEST_F(LayerSnapshotTest, NonVisibleLayerWithInputShouldNotBeIncluded) {
+    SET_FLAG_FOR_TEST(com::android::graphics::surfaceflinger::flags::
+                              skip_invisible_windows_in_input,
+                      true);
+    LayerHierarchyTestBase::createRootLayer(3);
+    setColor(3, {-1._hf, -1._hf, -1._hf});
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    std::vector<QueuedTransactionState> transactions;
+    transactions.emplace_back();
+    transactions.back().states.push_back({});
+    transactions.back().states.front().state.what = layer_state_t::eInputInfoChanged;
+    transactions.back().states.front().layerId = 3;
+    auto inputInfo = transactions.back().states.front().state.editWindowInfo();
+    *inputInfo = {};
+    inputInfo->token = sp<BBinder>::make();
+    hideLayer(3);
+    mLifecycleManager.applyTransactions(transactions);
+
+    update(mSnapshotBuilder);
+
+    bool foundInputLayer = false;
+    mSnapshotBuilder.forEachInputSnapshot([&](const frontend::LayerSnapshot& snapshot) {
+        if (snapshot.uniqueSequence == 3) {
+            EXPECT_TRUE(
+                    snapshot.inputInfo.inputConfig.test(gui::WindowInfo::InputConfig::NOT_VISIBLE));
+            EXPECT_FALSE(snapshot.isVisible);
+            foundInputLayer = true;
+        }
+    });
+    EXPECT_FALSE(foundInputLayer);
+}
+
+TEST_F(LayerSnapshotTest, ForEachSnapshotsWithPredicate) {
+    std::vector<uint32_t> visitedUniqueSequences;
+    mSnapshotBuilder.forEachSnapshot(
+            [&](const std::unique_ptr<frontend::LayerSnapshot>& snapshot) {
+                visitedUniqueSequences.push_back(snapshot->uniqueSequence);
+            },
+            [](const frontend::LayerSnapshot& snapshot) { return snapshot.uniqueSequence == 111; });
+    EXPECT_EQ(visitedUniqueSequences.size(), 1u);
+    EXPECT_EQ(visitedUniqueSequences[0], 111u);
 }
 
 TEST_F(LayerSnapshotTest, canOccludePresentation) {
@@ -1433,6 +1873,320 @@ TEST_F(LayerSnapshotTest, doNotOverrideParentTrustedOverlayState) {
             gui::WindowInfo::InputConfig::TRUSTED_OVERLAY));
     EXPECT_TRUE(getSnapshot(111)->inputInfo.inputConfig.test(
             gui::WindowInfo::InputConfig::TRUSTED_OVERLAY));
+}
+
+static constexpr const FloatRect LARGE_FLOAT_RECT{std::numeric_limits<float>::min(),
+                                                  std::numeric_limits<float>::min(),
+                                                  std::numeric_limits<float>::max(),
+                                                  std::numeric_limits<float>::max()};
+TEST_F(LayerSnapshotTest, layerVisibleByDefault) {
+    DisplayInfo info;
+    info.info.logicalHeight = 1000000;
+    info.info.logicalWidth = 1000000;
+    mFrontEndDisplayInfos.emplace_or_replace(ui::LayerStack::fromValue(1), info);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_FALSE(getSnapshot(1)->isHiddenByPolicy());
+}
+
+TEST_F(LayerSnapshotTest, hideLayerWithZeroMatrix) {
+    DisplayInfo info;
+    info.info.logicalHeight = 1000000;
+    info.info.logicalWidth = 1000000;
+    mFrontEndDisplayInfos.emplace_or_replace(ui::LayerStack::fromValue(1), info);
+    setMatrix(1, 0.f, 0.f, 0.f, 0.f);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, {2});
+    EXPECT_TRUE(getSnapshot(1)->isHiddenByPolicy());
+}
+
+TEST_F(LayerSnapshotTest, hideLayerWithInfMatrix) {
+    DisplayInfo info;
+    info.info.logicalHeight = 1000000;
+    info.info.logicalWidth = 1000000;
+    mFrontEndDisplayInfos.emplace_or_replace(ui::LayerStack::fromValue(1), info);
+    setMatrix(1, std::numeric_limits<float>::infinity(), 0.f, 0.f,
+              std::numeric_limits<float>::infinity());
+    UPDATE_AND_VERIFY(mSnapshotBuilder, {2});
+    EXPECT_TRUE(getSnapshot(1)->isHiddenByPolicy());
+}
+
+TEST_F(LayerSnapshotTest, hideLayerWithNanMatrix) {
+    DisplayInfo info;
+    info.info.logicalHeight = 1000000;
+    info.info.logicalWidth = 1000000;
+    mFrontEndDisplayInfos.emplace_or_replace(ui::LayerStack::fromValue(1), info);
+    setMatrix(1, std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f,
+              std::numeric_limits<float>::quiet_NaN());
+    UPDATE_AND_VERIFY(mSnapshotBuilder, {2});
+    EXPECT_TRUE(getSnapshot(1)->isHiddenByPolicy());
+}
+
+TEST_F(LayerSnapshotTest, edgeExtensionPropagatesInHierarchy) {
+    setCrop(1, Rect(0, 0, 20, 20));
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(20 /* width */,
+                                                                        20 /* height */,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    setEdgeExtensionEffect(12, LEFT);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_TRUE(getSnapshot({.id = 12})->edgeExtensionEffect.extendsEdge(LEFT));
+    EXPECT_TRUE(getSnapshot({.id = 121})->edgeExtensionEffect.extendsEdge(LEFT));
+    EXPECT_TRUE(getSnapshot({.id = 1221})->edgeExtensionEffect.extendsEdge(LEFT));
+
+    setEdgeExtensionEffect(12, RIGHT);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_TRUE(getSnapshot({.id = 12})->edgeExtensionEffect.extendsEdge(RIGHT));
+    EXPECT_TRUE(getSnapshot({.id = 121})->edgeExtensionEffect.extendsEdge(RIGHT));
+    EXPECT_TRUE(getSnapshot({.id = 1221})->edgeExtensionEffect.extendsEdge(RIGHT));
+
+    setEdgeExtensionEffect(12, TOP);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_TRUE(getSnapshot({.id = 12})->edgeExtensionEffect.extendsEdge(TOP));
+    EXPECT_TRUE(getSnapshot({.id = 121})->edgeExtensionEffect.extendsEdge(TOP));
+    EXPECT_TRUE(getSnapshot({.id = 1221})->edgeExtensionEffect.extendsEdge(TOP));
+
+    setEdgeExtensionEffect(12, BOTTOM);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_TRUE(getSnapshot({.id = 12})->edgeExtensionEffect.extendsEdge(BOTTOM));
+    EXPECT_TRUE(getSnapshot({.id = 121})->edgeExtensionEffect.extendsEdge(BOTTOM));
+    EXPECT_TRUE(getSnapshot({.id = 1221})->edgeExtensionEffect.extendsEdge(BOTTOM));
+}
+
+TEST_F(LayerSnapshotTest, leftEdgeExtensionIncreaseBoundSizeWithinCrop) {
+    // The left bound is extended when shifting to the right
+    setCrop(1, Rect(0, 0, 20, 20));
+    const int texSize = 10;
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(texSize /* width */,
+                                                                        texSize /* height*/,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    const float translation = 5.0;
+    setPosition(12, translation, 0);
+    setEdgeExtensionEffect(12, LEFT);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1221})->transformedBounds.right, texSize + translation);
+    EXPECT_LT(getSnapshot({.id = 1221})->transformedBounds.left, translation);
+    EXPECT_GE(getSnapshot({.id = 1221})->transformedBounds.left, 0.0);
+}
+
+TEST_F(LayerSnapshotTest, rightEdgeExtensionIncreaseBoundSizeWithinCrop) {
+    // The right bound is extended when shifting to the left
+    const int crop = 20;
+    setCrop(1, Rect(0, 0, crop, crop));
+    const int texSize = 10;
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(texSize /* width */,
+                                                                        texSize /* height*/,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    const float translation = -5.0;
+    setPosition(12, translation, 0);
+    setEdgeExtensionEffect(12, RIGHT);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1221})->transformedBounds.left, 0);
+    EXPECT_GT(getSnapshot({.id = 1221})->transformedBounds.right, texSize + translation);
+    EXPECT_LE(getSnapshot({.id = 1221})->transformedBounds.right, (float)crop);
+}
+
+TEST_F(LayerSnapshotTest, topEdgeExtensionIncreaseBoundSizeWithinCrop) {
+    // The top bound is extended when shifting to the bottom
+    setCrop(1, Rect(0, 0, 20, 20));
+    const int texSize = 10;
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(texSize /* width */,
+                                                                        texSize /* height*/,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    const float translation = 5.0;
+    setPosition(12, 0, translation);
+    setEdgeExtensionEffect(12, TOP);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1221})->transformedBounds.bottom, texSize + translation);
+    EXPECT_LT(getSnapshot({.id = 1221})->transformedBounds.top, translation);
+    EXPECT_GE(getSnapshot({.id = 1221})->transformedBounds.top, 0.0);
+}
+
+TEST_F(LayerSnapshotTest, bottomEdgeExtensionIncreaseBoundSizeWithinCrop) {
+    // The bottom bound is extended when shifting to the top
+    const int crop = 20;
+    setCrop(1, Rect(0, 0, crop, crop));
+    const int texSize = 10;
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(texSize /* width */,
+                                                                        texSize /* height*/,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    const float translation = -5.0;
+    setPosition(12, 0, translation);
+    setEdgeExtensionEffect(12, BOTTOM);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_EQ(getSnapshot({.id = 1221})->transformedBounds.top, 0);
+    EXPECT_GT(getSnapshot({.id = 1221})->transformedBounds.bottom, texSize - translation);
+    EXPECT_LE(getSnapshot({.id = 1221})->transformedBounds.bottom, (float)crop);
+}
+
+TEST_F(LayerSnapshotTest, multipleEdgeExtensionIncreaseBoundSizeWithinCrop) {
+    // The left bound is extended when shifting to the right
+    const int crop = 20;
+    setCrop(1, Rect(0, 0, crop, crop));
+    const int texSize = 10;
+    setBuffer(1221,
+              std::make_shared<renderengine::mock::FakeExternalTexture>(texSize /* width */,
+                                                                        texSize /* height*/,
+                                                                        42ULL /* bufferId */,
+                                                                        HAL_PIXEL_FORMAT_RGBA_8888,
+                                                                        0 /*usage*/));
+    const float translation = 5.0;
+    setPosition(12, translation, translation);
+    setEdgeExtensionEffect(12, LEFT | RIGHT | TOP | BOTTOM);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_GT(getSnapshot({.id = 1221})->transformedBounds.right, texSize + translation);
+    EXPECT_LE(getSnapshot({.id = 1221})->transformedBounds.right, (float)crop);
+    EXPECT_LT(getSnapshot({.id = 1221})->transformedBounds.left, translation);
+    EXPECT_GE(getSnapshot({.id = 1221})->transformedBounds.left, 0.0);
+    EXPECT_GT(getSnapshot({.id = 1221})->transformedBounds.bottom, texSize + translation);
+    EXPECT_LE(getSnapshot({.id = 1221})->transformedBounds.bottom, (float)crop);
+    EXPECT_LT(getSnapshot({.id = 1221})->transformedBounds.top, translation);
+    EXPECT_GE(getSnapshot({.id = 1221})->transformedBounds.top, 0);
+}
+
+TEST_F(LayerSnapshotTest, shouldUpdateInputWhenNoInputInfo) {
+    // If a layer has no buffer or no color, it doesn't have an input info
+    setColor(111, {-1._hf, -1._hf, -1._hf});
+    UPDATE_AND_VERIFY(mSnapshotBuilder, {1, 11, 12, 121, 122, 1221, 13, 2});
+    EXPECT_FALSE(getSnapshot(111)->hasInputInfo());
+
+    setBuffer(111);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+
+    EXPECT_TRUE(getSnapshot(111)->hasInputInfo());
+    EXPECT_TRUE(getSnapshot(111)->inputInfo.inputConfig.test(
+            gui::WindowInfo::InputConfig::NO_INPUT_CHANNEL));
+}
+
+// content dirty test
+TEST_F(LayerSnapshotTest, contentDirtyWhenParentAlphaChanges) {
+    setAlpha(1, 0.5);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot(1)->contentDirty);
+    EXPECT_TRUE(getSnapshot(11)->contentDirty);
+    EXPECT_TRUE(getSnapshot(111)->contentDirty);
+
+    // subsequent updates clear the dirty bit
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_FALSE(getSnapshot(1)->contentDirty);
+    EXPECT_FALSE(getSnapshot(11)->contentDirty);
+    EXPECT_FALSE(getSnapshot(111)->contentDirty);
+}
+
+TEST_F(LayerSnapshotTest, contentDirtyWhenAutoRefresh) {
+    setAutoRefresh(1, true);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot(1)->contentDirty);
+
+    // subsequent updates don't clear the dirty bit
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot(1)->contentDirty);
+
+    // second update after removing auto refresh will clear content dirty
+    setAutoRefresh(1, false);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_FALSE(getSnapshot(1)->contentDirty);
+}
+
+TEST_F(LayerSnapshotTest, contentDirtyWhenColorChanges) {
+    setColor(1, {1, 2, 3});
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot(1)->contentDirty);
+
+    // subsequent updates clear the dirty bit
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_FALSE(getSnapshot(1)->contentDirty);
+}
+
+TEST_F(LayerSnapshotTest, contentDirtyWhenParentGeometryChanges) {
+    setPosition(1, 2, 3);
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_TRUE(getSnapshot(1)->contentDirty);
+
+    // subsequent updates clear the dirty bit
+    UPDATE_AND_VERIFY(mSnapshotBuilder, STARTING_ZORDER);
+    EXPECT_FALSE(getSnapshot(1)->contentDirty);
+}
+TEST_F(LayerSnapshotTest, shouldUpdatePictureProfileHandle) {
+    std::vector<QueuedTransactionState> transactions;
+    transactions.emplace_back();
+    transactions.back().states.push_back({});
+    transactions.back().states.back().layerId = 1;
+    transactions.back().states.back().state.layerId = 1;
+    transactions.back().states.back().state.what = layer_state_t::ePictureProfileHandleChanged;
+    transactions.back().states.back().state.pictureProfileHandle = PictureProfileHandle(3);
+
+    mLifecycleManager.applyTransactions(transactions);
+    EXPECT_EQ(mLifecycleManager.getGlobalChanges(), RequestedLayerState::Changes::Content);
+
+    update(mSnapshotBuilder);
+
+    EXPECT_EQ(getSnapshot(1)->clientChanges, layer_state_t::ePictureProfileHandleChanged);
+    EXPECT_EQ(getSnapshot(1)->pictureProfileHandle, PictureProfileHandle(3));
+}
+
+TEST_F(LayerSnapshotTest, shouldUpdatePictureProfilePriorityFromAppContentPriority) {
+    {
+        std::vector<QueuedTransactionState> transactions;
+        transactions.emplace_back();
+        transactions.back().states.push_back({});
+        transactions.back().states.back().layerId = 1;
+        transactions.back().states.back().state.layerId = 1;
+        transactions.back().states.back().state.what = layer_state_t::eAppContentPriorityChanged;
+        transactions.back().states.back().state.appContentPriority = 1;
+        transactions.back().states.push_back({});
+        transactions.back().states.back().layerId = 2;
+        transactions.back().states.back().state.layerId = 2;
+        transactions.back().states.back().state.what = layer_state_t::eAppContentPriorityChanged;
+        transactions.back().states.back().state.appContentPriority = -1;
+
+        mLifecycleManager.applyTransactions(transactions);
+        EXPECT_EQ(mLifecycleManager.getGlobalChanges(), RequestedLayerState::Changes::Content);
+
+        update(mSnapshotBuilder);
+
+        EXPECT_GT(getSnapshot(1)->pictureProfilePriority, getSnapshot(2)->pictureProfilePriority);
+        EXPECT_EQ(getSnapshot(1)->pictureProfilePriority - getSnapshot(2)->pictureProfilePriority,
+                  2);
+    }
+    {
+        std::vector<QueuedTransactionState> transactions;
+        transactions.emplace_back();
+        transactions.back().states.push_back({});
+        transactions.back().states.back().layerId = 1;
+        transactions.back().states.back().state.layerId = 1;
+        transactions.back().states.back().state.what = layer_state_t::eAppContentPriorityChanged;
+        transactions.back().states.back().state.appContentPriority = INT_MIN;
+        transactions.back().states.push_back({});
+        transactions.back().states.back().layerId = 2;
+        transactions.back().states.back().state.layerId = 2;
+        transactions.back().states.back().state.what = layer_state_t::eAppContentPriorityChanged;
+        transactions.back().states.back().state.appContentPriority = INT_MAX;
+
+        mLifecycleManager.applyTransactions(transactions);
+        EXPECT_EQ(mLifecycleManager.getGlobalChanges(), RequestedLayerState::Changes::Content);
+
+        update(mSnapshotBuilder);
+
+        EXPECT_GT(getSnapshot(2)->pictureProfilePriority, getSnapshot(1)->pictureProfilePriority);
+    }
 }
 
 } // namespace android::surfaceflinger::frontend

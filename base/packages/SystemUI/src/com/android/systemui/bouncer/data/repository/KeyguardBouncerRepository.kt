@@ -16,6 +16,7 @@
 
 package com.android.systemui.bouncer.data.repository
 
+import android.annotation.SuppressLint
 import android.os.Build
 import android.util.Log
 import com.android.keyguard.KeyguardSecurityModel
@@ -24,7 +25,6 @@ import com.android.systemui.bouncer.shared.model.BouncerDismissActionModel
 import com.android.systemui.bouncer.shared.model.BouncerShowMessageModel
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
 import com.android.systemui.log.dagger.BouncerTableLog
 import com.android.systemui.log.table.TableLogBuffer
 import com.android.systemui.log.table.logDiffsForTable
@@ -52,7 +52,11 @@ interface KeyguardBouncerRepository {
     val primaryBouncerShow: StateFlow<Boolean>
     val primaryBouncerShowingSoon: StateFlow<Boolean>
     val primaryBouncerStartingToHide: StateFlow<Boolean>
-    val primaryBouncerStartingDisappearAnimation: StateFlow<Runnable?>
+    val primaryBouncerStartingDisappearAnimation: MutableSharedFlow<Runnable?>
+
+    fun isPrimaryBouncerStartingDisappearAnimation(): Boolean
+
+    fun isDebuggable(): Boolean
 
     /** Determines if we want to instantaneously show the primary bouncer instead of translating. */
     val primaryBouncerScrimmed: StateFlow<Boolean>
@@ -88,7 +92,6 @@ interface KeyguardBouncerRepository {
     val showMessage: StateFlow<BouncerShowMessageModel?>
     val resourceUpdateRequests: StateFlow<Boolean>
     val alternateBouncerVisible: StateFlow<Boolean>
-    val alternateBouncerUIAvailable: StateFlow<Boolean>
 
     /** Last shown security mode of the primary bouncer (ie: pin/pattern/password/SIM) */
     val lastShownSecurityMode: StateFlow<KeyguardSecurityModel.SecurityMode>
@@ -126,13 +129,11 @@ interface KeyguardBouncerRepository {
 
     fun setAlternateVisible(isVisible: Boolean)
 
-    fun setAlternateBouncerUIAvailable(isAvailable: Boolean)
-
     fun setLastShownSecurityMode(securityMode: KeyguardSecurityModel.SecurityMode)
 }
 
 @SysUISingleton
-class KeyguardBouncerRepositoryImpl
+open class KeyguardBouncerRepositoryImpl
 @Inject
 constructor(
     private val clock: SystemClock,
@@ -148,9 +149,19 @@ constructor(
     override val primaryBouncerShowingSoon = _primaryBouncerShowingSoon.asStateFlow()
     private val _primaryBouncerStartingToHide = MutableStateFlow(false)
     override val primaryBouncerStartingToHide = _primaryBouncerStartingToHide.asStateFlow()
-    private val _primaryBouncerDisappearAnimation = MutableStateFlow<Runnable?>(null)
+
+    @SuppressLint("SharedFlowCreation")
     override val primaryBouncerStartingDisappearAnimation =
-        _primaryBouncerDisappearAnimation.asStateFlow()
+        MutableSharedFlow<Runnable?>(extraBufferCapacity = 2, replay = 1)
+
+    override fun isPrimaryBouncerStartingDisappearAnimation(): Boolean {
+        val replayCache = primaryBouncerStartingDisappearAnimation.replayCache
+        return if (!replayCache.isEmpty()) {
+            replayCache.last() != null
+        } else {
+            false
+        }
+    }
 
     /** Determines if we want to instantaneously show the primary bouncer instead of translating. */
     private val _primaryBouncerScrimmed = MutableStateFlow(false)
@@ -181,6 +192,7 @@ constructor(
         _keyguardAuthenticatedPrimaryAuth.asSharedFlow()
 
     /** Whether the user requested to show the bouncer when device is already authenticated */
+    @SuppressLint("SharedFlowCreation")
     private val _userRequestedBouncerWhenAlreadyAuthenticated = MutableSharedFlow<Int>()
     override val userRequestedBouncerWhenAlreadyAuthenticated: Flow<Int> =
         _userRequestedBouncerWhenAlreadyAuthenticated.asSharedFlow()
@@ -199,9 +211,6 @@ constructor(
     private val _alternateBouncerVisible = MutableStateFlow(false)
     override val alternateBouncerVisible = _alternateBouncerVisible.asStateFlow()
     override var lastAlternateBouncerVisibleTime: Long = NOT_VISIBLE
-    private val _alternateBouncerUIAvailable = MutableStateFlow(false)
-    override val alternateBouncerUIAvailable: StateFlow<Boolean> =
-        _alternateBouncerUIAvailable.asStateFlow()
 
     init {
         setUpLogging()
@@ -220,11 +229,6 @@ constructor(
         _alternateBouncerVisible.value = isVisible
     }
 
-    override fun setAlternateBouncerUIAvailable(isAvailable: Boolean) {
-        DeviceEntryUdfpsRefactor.assertInLegacyMode()
-        _alternateBouncerUIAvailable.value = isAvailable
-    }
-
     override fun setPrimaryShow(isShowing: Boolean) {
         _primaryBouncerShow.value = isShowing
     }
@@ -238,7 +242,7 @@ constructor(
     }
 
     override fun setPrimaryStartDisappearAnimation(runnable: Runnable?) {
-        _primaryBouncerDisappearAnimation.value = runnable
+        primaryBouncerStartingDisappearAnimation.tryEmit(runnable)
     }
 
     override fun setPanelExpansion(panelExpansion: Float) {
@@ -277,9 +281,11 @@ constructor(
         _lastShownSecurityMode.value = securityMode
     }
 
+    override fun isDebuggable() = Build.IS_DEBUGGABLE
+
     /** Sets up logs for state flows. */
     private fun setUpLogging() {
-        if (!Build.IS_DEBUGGABLE) {
+        if (!isDebuggable()) {
             return
         }
 
@@ -319,9 +325,6 @@ constructor(
             .launchIn(applicationScope)
         resourceUpdateRequests
             .logDiffsForTable(buffer, "", "ResourceUpdateRequests", false)
-            .launchIn(applicationScope)
-        alternateBouncerUIAvailable
-            .logDiffsForTable(buffer, "", "IsAlternateBouncerUIAvailable", false)
             .launchIn(applicationScope)
         alternateBouncerVisible
             .logDiffsForTable(buffer, "", "AlternateBouncerVisible", false)

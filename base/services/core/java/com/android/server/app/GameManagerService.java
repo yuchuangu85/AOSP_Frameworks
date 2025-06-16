@@ -100,6 +100,7 @@ import com.android.server.LocalServices;
 import com.android.server.ServiceThread;
 import com.android.server.SystemService;
 import com.android.server.SystemService.TargetUser;
+import com.android.server.utils.LazyJniRegistrar;
 import com.android.server.wm.ActivityTaskManagerInternal;
 import com.android.server.wm.CompatScaleProvider;
 
@@ -157,6 +158,10 @@ public final class GameManagerService extends IGameManagerService.Stub {
     private static final String USER_ID_MSG_KEY = "userId";
     private static final String GAME_MODE_INTERVENTION_LIST_FILE_NAME =
             "game_mode_intervention.list";
+
+    static {
+        LazyJniRegistrar.registerGameManagerService();
+    }
 
     private final Context mContext;
     private final Object mLock = new Object();
@@ -269,7 +274,8 @@ public final class GameManagerService extends IGameManagerService.Stub {
     @Override
     public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
             String[] args, ShellCallback callback, ResultReceiver result) {
-        new GameManagerShellCommand().exec(this, in, out, err, args, callback, result);
+        new GameManagerShellCommand(mPackageManager).exec(this, in, out, err, args, callback,
+                result);
     }
 
     @Override
@@ -355,6 +361,14 @@ public final class GameManagerService extends IGameManagerService.Stub {
                 case POPULATE_GAME_MODE_SETTINGS: {
                     removeEqualMessages(POPULATE_GAME_MODE_SETTINGS, msg.obj);
                     final int userId = (int) msg.obj;
+                    synchronized (mLock) {
+                        if (!mSettings.containsKey(userId)) {
+                            GameManagerSettings userSettings = new GameManagerSettings(
+                                    Environment.getDataSystemDeDirectory(userId));
+                            mSettings.put(userId, userSettings);
+                            userSettings.readPersistentDataLocked();
+                        }
+                    }
                     final String[] packageNames = getInstalledGamePackageNames(userId);
                     updateConfigsForUser(userId, false /*checkGamePackage*/, packageNames);
                     break;
@@ -984,8 +998,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
         @Override
         public void onUserStarting(@NonNull TargetUser user) {
             Slog.d(TAG, "Starting user " + user.getUserIdentifier());
-            mService.onUserStarting(user,
-                    Environment.getDataSystemDeDirectory(user.getUserIdentifier()));
+            mService.onUserStarting(user, /*settingDataDirOverride*/ null);
         }
 
         @Override
@@ -1417,10 +1430,10 @@ public final class GameManagerService extends IGameManagerService.Stub {
             }
             final GameManagerSettings settings = mSettings.get(userId);
             // look for the existing GamePackageConfiguration override
-            configOverride = settings.getConfigOverride(packageName);
+            configOverride = settings.getConfigOverrideLocked(packageName);
             if (configOverride == null) {
                 configOverride = new GamePackageConfiguration(packageName);
-                settings.setConfigOverride(packageName, configOverride);
+                settings.setConfigOverrideLocked(packageName, configOverride);
             }
         }
         GamePackageConfiguration.GameModeConfiguration internalConfig =
@@ -1590,13 +1603,16 @@ public final class GameManagerService extends IGameManagerService.Stub {
         }
     }
 
-    void onUserStarting(@NonNull TargetUser user, File settingDataDir) {
+    void onUserStarting(@NonNull TargetUser user, File settingDataDirOverride) {
         final int userId = user.getUserIdentifier();
-        synchronized (mLock) {
-            if (!mSettings.containsKey(userId)) {
-                GameManagerSettings userSettings = new GameManagerSettings(settingDataDir);
-                mSettings.put(userId, userSettings);
-                userSettings.readPersistentDataLocked();
+        if (settingDataDirOverride != null) {
+            synchronized (mLock) {
+                if (!mSettings.containsKey(userId)) {
+                    GameManagerSettings userSettings = new GameManagerSettings(
+                            settingDataDirOverride);
+                    mSettings.put(userId, userSettings);
+                    userSettings.readPersistentDataLocked();
+                }
             }
         }
         sendUserMessage(userId, POPULATE_GAME_MODE_SETTINGS, EVENT_ON_USER_STARTING,
@@ -1753,10 +1769,10 @@ public final class GameManagerService extends IGameManagerService.Stub {
             }
             final GameManagerSettings settings = mSettings.get(userId);
             // look for the existing GamePackageConfiguration override
-            configOverride = settings.getConfigOverride(packageName);
+            configOverride = settings.getConfigOverrideLocked(packageName);
             if (configOverride == null) {
                 configOverride = new GamePackageConfiguration(packageName);
-                settings.setConfigOverride(packageName, configOverride);
+                settings.setConfigOverrideLocked(packageName, configOverride);
             }
         }
         // modify GameModeConfiguration intervention settings
@@ -1795,7 +1811,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
             }
             final GameManagerSettings settings = mSettings.get(userId);
             if (gameModeToReset != -1) {
-                final GamePackageConfiguration configOverride = settings.getConfigOverride(
+                final GamePackageConfiguration configOverride = settings.getConfigOverrideLocked(
                         packageName);
                 if (configOverride == null) {
                     return;
@@ -1806,10 +1822,10 @@ public final class GameManagerService extends IGameManagerService.Stub {
                 }
                 configOverride.removeModeConfig(gameModeToReset);
                 if (!configOverride.hasActiveGameModeConfig()) {
-                    settings.removeConfigOverride(packageName);
+                    settings.removeConfigOverrideLocked(packageName);
                 }
             } else {
-                settings.removeConfigOverride(packageName);
+                settings.removeConfigOverrideLocked(packageName);
             }
         }
 
@@ -2024,7 +2040,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
 
         synchronized (mLock) {
             if (mSettings.containsKey(userId)) {
-                overrideConfig = mSettings.get(userId).getConfigOverride(packageName);
+                overrideConfig = mSettings.get(userId).getConfigOverrideLocked(packageName);
             }
         }
         if (overrideConfig == null || config == null) {
@@ -2069,7 +2085,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
                                 }
                                 synchronized (mLock) {
                                     if (mSettings.containsKey(userId)) {
-                                        mSettings.get(userId).removeGame(packageName);
+                                        mSettings.get(userId).removeGameLocked(packageName);
                                     }
                                     sendUserMessage(userId, WRITE_SETTINGS,
                                             Intent.ACTION_PACKAGE_REMOVED, WRITE_DELAY_MILLIS);
@@ -2306,7 +2322,7 @@ public final class GameManagerService extends IGameManagerService.Stub {
                 return;
             }
 
-            final int userId = mContext.getUserId();
+            final int userId = ActivityManager.getCurrentUser();
             final boolean isNotGame = Arrays.stream(packages).noneMatch(
                     p -> isPackageGame(p, userId));
             synchronized (mUidObserverLock) {

@@ -22,7 +22,6 @@ import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.content.res.Resources;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -57,8 +56,6 @@ public final class RoutingSessionInfo implements Parcelable {
                 }
             };
 
-    private static final String TAG = "RoutingSessionInfo";
-
     private static final String KEY_GROUP_ROUTE = "androidx.mediarouter.media.KEY_GROUP_ROUTE";
     private static final String KEY_VOLUME_HANDLING = "volumeHandling";
 
@@ -88,8 +85,7 @@ public final class RoutingSessionInfo implements Parcelable {
     @Retention(RetentionPolicy.SOURCE)
     public @interface TransferReason {}
 
-    @NonNull
-    final String mId;
+    @NonNull final String mOriginalId;
     @Nullable
     final CharSequence mName;
     @Nullable
@@ -123,7 +119,7 @@ public final class RoutingSessionInfo implements Parcelable {
     RoutingSessionInfo(@NonNull Builder builder) {
         Objects.requireNonNull(builder, "builder must not be null.");
 
-        mId = builder.mId;
+        mOriginalId = builder.mOriginalId;
         mName = builder.mName;
         mOwnerPackageName = builder.mOwnerPackageName;
         mClientPackageName = builder.mClientPackageName;
@@ -142,15 +138,7 @@ public final class RoutingSessionInfo implements Parcelable {
         mVolume = builder.mVolume;
 
         mIsSystemSession = builder.mIsSystemSession;
-
-        boolean volumeAdjustmentForRemoteGroupSessions = Resources.getSystem().getBoolean(
-                com.android.internal.R.bool.config_volumeAdjustmentForRemoteGroupSessions);
-        mVolumeHandling =
-                defineVolumeHandling(
-                        mIsSystemSession,
-                        builder.mVolumeHandling,
-                        mSelectedRoutes,
-                        volumeAdjustmentForRemoteGroupSessions);
+        mVolumeHandling = builder.mVolumeHandling;
 
         mControlHints = updateVolumeHandlingInHints(builder.mControlHints, mVolumeHandling);
         mTransferReason = builder.mTransferReason;
@@ -159,8 +147,8 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     RoutingSessionInfo(@NonNull Parcel src) {
-        mId = src.readString();
-        Preconditions.checkArgument(!TextUtils.isEmpty(mId));
+        mOriginalId = src.readString();
+        Preconditions.checkArgument(!TextUtils.isEmpty(mOriginalId));
 
         mName = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(src);
         mOwnerPackageName = src.readString();
@@ -207,20 +195,6 @@ public final class RoutingSessionInfo implements Parcelable {
         return controlHints;
     }
 
-    @MediaRoute2Info.PlaybackVolume
-    private static int defineVolumeHandling(
-            boolean isSystemSession,
-            @MediaRoute2Info.PlaybackVolume int volumeHandling,
-            List<String> selectedRoutes,
-            boolean volumeAdjustmentForRemoteGroupSessions) {
-        if (!isSystemSession
-                && !volumeAdjustmentForRemoteGroupSessions
-                && selectedRoutes.size() > 1) {
-            return MediaRoute2Info.PLAYBACK_VOLUME_FIXED;
-        }
-        return volumeHandling;
-    }
-
     @NonNull
     private static String ensureString(@Nullable String str) {
         return str != null ? str : "";
@@ -246,9 +220,9 @@ public final class RoutingSessionInfo implements Parcelable {
     @NonNull
     public String getId() {
         if (!TextUtils.isEmpty(mProviderId)) {
-            return MediaRouter2Utils.toUniqueId(mProviderId, mId);
+            return MediaRouter2Utils.toUniqueId(mProviderId, mOriginalId);
         } else {
-            return mId;
+            return mOriginalId;
         }
     }
 
@@ -261,12 +235,16 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     /**
-     * Gets the original id set by {@link Builder#Builder(String, String)}.
+     * Gets the original id as assigned by the {@link MediaRoute2ProviderService route provider}.
+     *
+     * <p>This may be different from {@link #getId()}, which may convert this original id into a
+     * unique one by adding information about the provider that created this session info.
+     *
      * @hide
      */
     @NonNull
     public String getOriginalId() {
-        return mId;
+        return mOriginalId;
     }
 
     /**
@@ -287,7 +265,8 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     /**
-     * Gets the provider id of the session.
+     * Gets the provider ID of the session.
+     *
      * @hide
      */
     @Nullable
@@ -296,7 +275,15 @@ public final class RoutingSessionInfo implements Parcelable {
     }
 
     /**
-     * Gets the list of IDs of selected routes for the session. It shouldn't be empty.
+     * Gets the list of IDs of selected routes for the session.
+     *
+     * <p>Selected routes are the routes that this session is actively routing media to.
+     *
+     * <p>The behavior of a routing session with multiple selected routes is ultimately defined by
+     * the {@link MediaRoute2ProviderService} implementation. However, typically, it's expected that
+     * all the selected routes of a routing session are playing the same media in sync.
+     *
+     * @return A non-empty list of selected route ids.
      */
     @NonNull
     public List<String> getSelectedRoutes() {
@@ -305,6 +292,16 @@ public final class RoutingSessionInfo implements Parcelable {
 
     /**
      * Gets the list of IDs of selectable routes for the session.
+     *
+     * <p>Selectable routes can be added to a routing session (via {@link
+     * MediaRouter2.RoutingController#selectRoute}) in order to add them to the {@link
+     * #getSelectedRoutes() selected routes}, so that media plays on the newly selected route along
+     * with the other selected routes.
+     *
+     * <p>Not to be confused with {@link #getTransferableRoutes() transferable routes}. Transferring
+     * to a route makes it the sole selected route.
+     *
+     * @return A possibly empty list of selectable route ids.
      */
     @NonNull
     public List<String> getSelectableRoutes() {
@@ -313,6 +310,17 @@ public final class RoutingSessionInfo implements Parcelable {
 
     /**
      * Gets the list of IDs of deselectable routes for the session.
+     *
+     * <p>Deselectable routes can be removed from the {@link #getSelectedRoutes() selected routes},
+     * so that the routing session stops routing to the newly deselected route, but continues on any
+     * remaining selected routes.
+     *
+     * <p>Deselectable routes should be a subset of the {@link #getSelectedRoutes() selected
+     * routes}, meaning not all of the selected routes might be deselectable. For example, one of
+     * the selected routes may be a leader device coordinating group playback, which must always
+     * remain selected while the session is active.
+     *
+     * @return A possibly empty list of deselectable route ids.
      */
     @NonNull
     public List<String> getDeselectableRoutes() {
@@ -321,6 +329,24 @@ public final class RoutingSessionInfo implements Parcelable {
 
     /**
      * Gets the list of IDs of transferable routes for the session.
+     *
+     * <p>Transferring to a route (for example, using {@link MediaRouter2#transferTo}) replaces the
+     * list of {@link #getSelectedRoutes() selected routes} with the target route, causing playback
+     * to move from one route to another.
+     *
+     * <p>Note that this is different from {@link #getSelectableRoutes() selectable routes}, because
+     * selecting a route makes it part of the selected routes, while transferring to a route makes
+     * it the selected route. A route can be both transferable and selectable.
+     *
+     * <p>Note that playback may transfer across routes without the target route being in the list
+     * of transferable routes. This can happen by creating a new routing session to the target
+     * route, and releasing the routing session being transferred from. The difference is that a
+     * transfer to a route in the transferable list can happen with no intervention from the app,
+     * with the route provider taking care of the entire operation. A transfer to a route that is
+     * not in the list of transferable routes (by creating a new session) requires the app to move
+     * the playback state from one device to the other.
+     *
+     * @return A possibly empty list of transferable route ids.
      */
     @NonNull
     public List<String> getTransferableRoutes() {
@@ -400,7 +426,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
     @Override
     public void writeToParcel(@NonNull Parcel dest, int flags) {
-        dest.writeString(mId);
+        dest.writeString(mOriginalId);
         dest.writeCharSequence(mName);
         dest.writeString(mOwnerPackageName);
         dest.writeString(mClientPackageName);
@@ -431,7 +457,7 @@ public final class RoutingSessionInfo implements Parcelable {
 
         String indent = prefix + "  ";
 
-        pw.println(indent + "mId=" + mId);
+        pw.println(indent + "mOriginalId=" + mOriginalId);
         pw.println(indent + "mName=" + mName);
         pw.println(indent + "mOwnerPackageName=" + mOwnerPackageName);
         pw.println(indent + "mClientPackageName=" + mClientPackageName);
@@ -462,7 +488,7 @@ public final class RoutingSessionInfo implements Parcelable {
         }
 
         RoutingSessionInfo other = (RoutingSessionInfo) obj;
-        return Objects.equals(mId, other.mId)
+        return Objects.equals(mOriginalId, other.mOriginalId)
                 && Objects.equals(mName, other.mName)
                 && Objects.equals(mOwnerPackageName, other.mOwnerPackageName)
                 && Objects.equals(mClientPackageName, other.mClientPackageName)
@@ -477,13 +503,13 @@ public final class RoutingSessionInfo implements Parcelable {
                 && (mTransferReason == other.mTransferReason)
                 && Objects.equals(mTransferInitiatorUserHandle, other.mTransferInitiatorUserHandle)
                 && Objects.equals(
-                mTransferInitiatorPackageName, other.mTransferInitiatorPackageName);
+                        mTransferInitiatorPackageName, other.mTransferInitiatorPackageName);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                mId,
+                mOriginalId,
                 mName,
                 mOwnerPackageName,
                 mClientPackageName,
@@ -562,8 +588,7 @@ public final class RoutingSessionInfo implements Parcelable {
      * Builder class for {@link RoutingSessionInfo}.
      */
     public static final class Builder {
-        @NonNull
-        private final String mId;
+        @NonNull private final String mOriginalId;
         @Nullable
         private CharSequence mName;
         @Nullable
@@ -593,23 +618,22 @@ public final class RoutingSessionInfo implements Parcelable {
 
         /**
          * Constructor for builder to create {@link RoutingSessionInfo}.
-         * <p>
-         * In order to ensure ID uniqueness in {@link MediaRouter2} side, the value of
-         * {@link RoutingSessionInfo#getId()} can be different from what was set in
-         * {@link MediaRoute2ProviderService}.
-         * </p>
          *
-         * @param id ID of the session. Must not be empty.
-         * @param clientPackageName package name of the client app which uses this session.
-         *                          If is is unknown, then just use an empty string.
+         * <p>In order to ensure ID uniqueness in {@link MediaRouter2} side, the value of {@link
+         * RoutingSessionInfo#getId()} can be different from what was set in {@link
+         * MediaRoute2ProviderService}.
+         *
+         * @param originalId ID of the session. Must not be empty.
+         * @param clientPackageName package name of the client app which uses this session. If is is
+         *     unknown, then just use an empty string.
          * @see MediaRoute2Info#getId()
          */
-        public Builder(@NonNull String id, @NonNull String clientPackageName) {
-            if (TextUtils.isEmpty(id)) {
+        public Builder(@NonNull String originalId, @NonNull String clientPackageName) {
+            if (TextUtils.isEmpty(originalId)) {
                 throw new IllegalArgumentException("id must not be empty");
             }
 
-            mId = id;
+            mOriginalId = originalId;
             mClientPackageName =
                     Objects.requireNonNull(clientPackageName, "clientPackageName must not be null");
             mSelectedRoutes = new ArrayList<>();
@@ -625,9 +649,19 @@ public final class RoutingSessionInfo implements Parcelable {
          * @param sessionInfo the existing instance to copy data from.
          */
         public Builder(@NonNull RoutingSessionInfo sessionInfo) {
+            this(sessionInfo, sessionInfo.getOriginalId());
+        }
+
+        /**
+         * Builds upon the given {@code sessionInfo}, using the given {@link #getOriginalId()} for
+         * the id.
+         *
+         * @hide
+         */
+        public Builder(@NonNull RoutingSessionInfo sessionInfo, String originalId) {
             Objects.requireNonNull(sessionInfo, "sessionInfo must not be null");
 
-            mId = sessionInfo.mId;
+            mOriginalId = originalId;
             mName = sessionInfo.mName;
             mClientPackageName = sessionInfo.mClientPackageName;
             mProviderId = sessionInfo.mProviderId;

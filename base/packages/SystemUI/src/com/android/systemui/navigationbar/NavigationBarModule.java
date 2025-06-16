@@ -21,10 +21,15 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
 
+import com.android.app.displaylib.PerDisplayRepository;
 import com.android.systemui.dagger.qualifiers.DisplayId;
+import com.android.systemui.model.SysUiState;
 import com.android.systemui.navigationbar.NavigationBarComponent.NavigationBarScope;
-import com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler;
+import com.android.systemui.navigationbar.views.NavigationBarFrame;
+import com.android.systemui.navigationbar.views.NavigationBarView;
 import com.android.systemui.res.R;
+import com.android.systemui.shade.shared.flag.ShadeWindowGoesAround;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
 
 import dagger.Module;
 import dagger.Provides;
@@ -56,19 +61,26 @@ public interface NavigationBarModule {
         return barView.findViewById(R.id.navigation_bar_view);
     }
 
-    /** */
-    @Provides
-    @NavigationBarScope
-    static EdgeBackGestureHandler provideEdgeBackGestureHandler(
-            EdgeBackGestureHandler.Factory factory, @DisplayId Context context) {
-        return factory.create(context);
-    }
-
     /** A WindowManager specific to the display's context. */
     @Provides
     @NavigationBarScope
     @DisplayId
-    static WindowManager provideWindowManager(@DisplayId Context context) {
-        return context.getSystemService(WindowManager.class);
+    static WindowManager provideWindowManager(@DisplayId Context context,
+            WindowManagerProvider windowManagerProvider) {
+        return windowManagerProvider.getWindowManager(context);
+    }
+
+    /** A SysUiState for the navigation bar display. */
+    @Provides
+    @NavigationBarScope
+    @DisplayId
+    static SysUiState provideSysUiState(@DisplayId Context context,
+            SysUiState defaultState,
+            PerDisplayRepository<SysUiState> repository) {
+        if (ShadeWindowGoesAround.isEnabled()) {
+            return repository.get(context.getDisplayId());
+        } else {
+            return defaultState;
+        }
     }
 }

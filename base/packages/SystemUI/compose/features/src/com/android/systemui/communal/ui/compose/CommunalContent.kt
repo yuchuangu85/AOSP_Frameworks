@@ -16,22 +16,37 @@
 
 package com.android.systemui.communal.ui.compose
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntRect
-import com.android.compose.animation.scene.SceneScope
-import com.android.compose.theme.LocalAndroidColorScheme
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
+import com.android.compose.animation.scene.ContentScope
+import com.android.systemui.Flags
+import com.android.systemui.communal.domain.interactor.CommunalSettingsInteractor
 import com.android.systemui.communal.smartspace.SmartspaceInteractionHandler
 import com.android.systemui.communal.ui.compose.section.AmbientStatusBarSection
+import com.android.systemui.communal.ui.compose.section.CommunalLockSection
+import com.android.systemui.communal.ui.compose.section.CommunalPopupSection
+import com.android.systemui.communal.ui.compose.section.HubOnboardingSection
+import com.android.systemui.communal.ui.view.layout.sections.CommunalAppWidgetSection
 import com.android.systemui.communal.ui.viewmodel.CommunalViewModel
 import com.android.systemui.keyguard.ui.composable.blueprint.BlueprintAlignmentLines
+import com.android.systemui.keyguard.ui.composable.section.BottomAreaSection
 import com.android.systemui.keyguard.ui.composable.section.LockSection
 import com.android.systemui.statusbar.phone.SystemUIDialogFactory
 import javax.inject.Inject
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /** Renders the content of the glanceable hub. */
 class CommunalContent
@@ -39,67 +54,142 @@ class CommunalContent
 constructor(
     private val viewModel: CommunalViewModel,
     private val interactionHandler: SmartspaceInteractionHandler,
+    private val communalSettingsInteractor: CommunalSettingsInteractor,
     private val dialogFactory: SystemUIDialogFactory,
     private val lockSection: LockSection,
+    private val communalLockSection: CommunalLockSection,
+    private val bottomAreaSection: BottomAreaSection,
     private val ambientStatusBarSection: AmbientStatusBarSection,
+    private val communalPopupSection: CommunalPopupSection,
+    private val widgetSection: CommunalAppWidgetSection,
+    private val hubOnboardingSection: HubOnboardingSection,
 ) {
+
     @Composable
-    fun SceneScope.Content(modifier: Modifier = Modifier) {
-        Layout(
-            modifier = modifier.fillMaxSize(),
-            content = {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    with(ambientStatusBarSection) {
-                        AmbientStatusBar(modifier = Modifier.fillMaxWidth())
+    fun ContentScope.Content(modifier: Modifier = Modifier) {
+        CommunalTouchableSurface(viewModel = viewModel, modifier = modifier) {
+            val orientation = LocalConfiguration.current.orientation
+            Layout(
+                modifier = Modifier.fillMaxSize(),
+                content = {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        with(communalPopupSection) { Popup() }
+                        if (!Flags.glanceableHubV2()) {
+                            with(ambientStatusBarSection) {
+                                AmbientStatusBar(modifier = Modifier.fillMaxWidth().zIndex(1f))
+                            }
+                        }
+                        CommunalHub(
+                            viewModel = viewModel,
+                            interactionHandler = interactionHandler,
+                            dialogFactory = dialogFactory,
+                            widgetSection = widgetSection,
+                            modifier = Modifier.element(Communal.Elements.Grid),
+                            contentScope = this@Content,
+                        )
+                        with(hubOnboardingSection) { BottomSheet() }
                     }
-                    CommunalHub(
-                        viewModel = viewModel,
-                        interactionHandler = interactionHandler,
-                        dialogFactory = dialogFactory,
-                        modifier = Modifier.element(Communal.Elements.Grid)
-                    )
+                    if (communalSettingsInteractor.isV2FlagEnabled()) {
+                        with(communalLockSection) {
+                            LockIcon(modifier = Modifier.element(Communal.Elements.LockIcon))
+                        }
+                    } else {
+                        with(lockSection) {
+                            LockIcon(
+                                overrideColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.element(Communal.Elements.LockIcon),
+                            )
+                        }
+                    }
+                    with(bottomAreaSection) {
+                        IndicationArea(
+                            Modifier.element(Communal.Elements.IndicationArea).fillMaxWidth()
+                        )
+                    }
+                },
+            ) { measurables, constraints ->
+                val communalGridMeasurable = measurables[0]
+                val lockIconMeasurable = measurables[1]
+                val bottomAreaMeasurable = measurables[2]
+
+                val noMinConstraints = constraints.copy(minWidth = 0, minHeight = 0)
+
+                val lockIconPlaceable =
+                    if (communalSettingsInteractor.isV2FlagEnabled()) {
+                        val lockIconSizeInt = lockIconSize.roundToPx()
+                        lockIconMeasurable.measure(
+                            Constraints.fixed(width = lockIconSizeInt, height = lockIconSizeInt)
+                        )
+                    } else {
+                        lockIconMeasurable.measure(noMinConstraints)
+                    }
+                val lockIconBounds =
+                    if (communalSettingsInteractor.isV2FlagEnabled()) {
+                        val lockIconDistanceFromBottom =
+                            min(
+                                (constraints.maxHeight * lockIconPercentDistanceFromBottom)
+                                    .roundToInt(),
+                                lockIconMinDistanceFromBottom.roundToPx(),
+                            )
+                        val x = constraints.maxWidth / 2 - lockIconPlaceable.width / 2
+                        val y =
+                            constraints.maxHeight -
+                                lockIconDistanceFromBottom -
+                                lockIconPlaceable.height
+                        IntRect(
+                            left = x,
+                            top = y,
+                            right = x + lockIconPlaceable.width,
+                            bottom = y + lockIconPlaceable.height,
+                        )
+                    } else {
+                        IntRect(
+                            left = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Left],
+                            top = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Top],
+                            right = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Right],
+                            bottom = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Bottom],
+                        )
+                    }
+
+                val bottomAreaPlaceable = bottomAreaMeasurable.measure(noMinConstraints)
+
+                val communalGridMaxHeight: Int
+                val communalGridPositionY: Int
+                if (Flags.communalResponsiveGrid()) {
+                    val communalGridVerticalMargin = constraints.maxHeight - lockIconBounds.top
+                    // Bias the widgets up by a small offset for visual balance in landscape
+                    // orientation
+                    val verticalOffset =
+                        (if (orientation == Configuration.ORIENTATION_LANDSCAPE) (-3).dp else 0.dp)
+                            .roundToPx()
+                    // Use even top and bottom margin for grid to be centered in maxHeight (window)
+                    communalGridMaxHeight = constraints.maxHeight - communalGridVerticalMargin * 2
+                    communalGridPositionY = communalGridVerticalMargin + verticalOffset
+                } else {
+                    communalGridMaxHeight = lockIconBounds.top
+                    communalGridPositionY = 0
                 }
-                with(lockSection) {
-                    LockIcon(
-                        overrideColor = LocalAndroidColorScheme.current.onPrimaryContainer,
-                        modifier = Modifier.element(Communal.Elements.LockIcon)
+                val communalGridPlaceable =
+                    communalGridMeasurable.measure(
+                        noMinConstraints.copy(maxHeight = communalGridMaxHeight)
                     )
+
+                layout(constraints.maxWidth, constraints.maxHeight) {
+                    communalGridPlaceable.place(x = 0, y = communalGridPositionY)
+                    lockIconPlaceable.place(x = lockIconBounds.left, y = lockIconBounds.top)
+
+                    val bottomAreaTop = constraints.maxHeight - bottomAreaPlaceable.height
+                    bottomAreaPlaceable.place(x = 0, y = bottomAreaTop)
                 }
-            }
-        ) { measurables, constraints ->
-            val communalGridMeasurable = measurables[0]
-            val lockIconMeasurable = measurables[1]
-
-            val noMinConstraints =
-                constraints.copy(
-                    minWidth = 0,
-                    minHeight = 0,
-                )
-
-            val lockIconPlaceable = lockIconMeasurable.measure(noMinConstraints)
-            val lockIconBounds =
-                IntRect(
-                    left = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Left],
-                    top = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Top],
-                    right = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Right],
-                    bottom = lockIconPlaceable[BlueprintAlignmentLines.LockIcon.Bottom],
-                )
-
-            val communalGridPlaceable =
-                communalGridMeasurable.measure(
-                    noMinConstraints.copy(maxHeight = lockIconBounds.top)
-                )
-
-            layout(constraints.maxWidth, constraints.maxHeight) {
-                communalGridPlaceable.place(
-                    x = 0,
-                    y = 0,
-                )
-                lockIconPlaceable.place(
-                    x = lockIconBounds.left,
-                    y = lockIconBounds.top,
-                )
             }
         }
+    }
+
+    companion object {
+        // TODO(b/382739998): Remove these hardcoded values once lock icon size and bottom area
+        // position are sorted.
+        private val lockIconSize: Dp = 54.dp
+        private val lockIconPercentDistanceFromBottom = 0.1f
+        private val lockIconMinDistanceFromBottom = 70.dp
     }
 }

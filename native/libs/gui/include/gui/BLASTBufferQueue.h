@@ -17,9 +17,13 @@
 #ifndef ANDROID_GUI_BLAST_BUFFER_QUEUE_H
 #define ANDROID_GUI_BLAST_BUFFER_QUEUE_H
 
+#include <optional>
+#include <queue>
+
+#include <ftl/small_map.h>
 #include <gui/BufferItem.h>
 #include <gui/BufferItemConsumer.h>
-
+#include <gui/IGraphicBufferConsumer.h>
 #include <gui/IGraphicBufferProducer.h>
 #include <gui/SurfaceComposerClient.h>
 
@@ -28,25 +32,20 @@
 #include <utils/RefBase.h>
 
 #include <system/window.h>
-#include <thread>
-#include <queue>
 
 #include <com_android_graphics_libgui_flags.h>
 
 namespace android {
+
+// Sizes determined empirically to avoid allocations during common activity.
+constexpr size_t kSubmittedBuffersMapSizeHint = 8;
+constexpr size_t kDequeueTimestampsMapSizeHint = 32;
 
 class BLASTBufferQueue;
 class BufferItemConsumer;
 
 class BLASTBufferItemConsumer : public BufferItemConsumer {
 public:
-    BLASTBufferItemConsumer(const sp<IGraphicBufferConsumer>& consumer, uint64_t consumerUsage,
-                            int bufferCount, bool controlledByApp, wp<BLASTBufferQueue> bbq)
-          : BufferItemConsumer(consumer, consumerUsage, bufferCount, controlledByApp),
-            mBLASTBufferQueue(std::move(bbq)),
-            mCurrentlyConnected(false),
-            mPreviouslyConnected(false) {}
-
     void onDisconnect() override EXCLUDES(mMutex);
     void addAndGetFrameTimestamps(const NewFrameEventsEntry* newTimestamps,
                                   FrameEventHistoryDelta* outDelta) override EXCLUDES(mMutex);
@@ -67,6 +66,23 @@ protected:
 #endif
 
 private:
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+    BLASTBufferItemConsumer(const sp<IGraphicBufferProducer>& producer,
+                            const sp<IGraphicBufferConsumer>& consumer, uint64_t consumerUsage,
+                            int bufferCount, bool controlledByApp, wp<BLASTBufferQueue> bbq)
+          : BufferItemConsumer(producer, consumer, consumerUsage, bufferCount, controlledByApp),
+#else
+    BLASTBufferItemConsumer(const sp<IGraphicBufferConsumer>& consumer, uint64_t consumerUsage,
+                            int bufferCount, bool controlledByApp, wp<BLASTBufferQueue> bbq)
+          : BufferItemConsumer(consumer, consumerUsage, bufferCount, controlledByApp),
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+            mBLASTBufferQueue(std::move(bbq)),
+            mCurrentlyConnected(false),
+            mPreviouslyConnected(false) {
+    }
+
+    friend class sp<BLASTBufferItemConsumer>;
+
     const wp<BLASTBufferQueue> mBLASTBufferQueue;
 
     uint64_t mCurrentFrameNumber GUARDED_BY(mMutex) = 0;
@@ -80,10 +96,6 @@ private:
 
 class BLASTBufferQueue : public ConsumerBase::FrameAvailableListener {
 public:
-    BLASTBufferQueue(const std::string& name, bool updateDestinationFrame = true);
-    BLASTBufferQueue(const std::string& name, const sp<SurfaceControl>& surface, int width,
-                     int height, int32_t format);
-
     sp<IGraphicBufferProducer> getIGraphicBufferProducer() const {
         return mProducer;
     }
@@ -95,15 +107,21 @@ public:
     void onFrameDequeued(const uint64_t) override;
     void onFrameCancelled(const uint64_t) override;
 
+    TransactionCompletedCallbackTakesContext makeTransactionCommittedCallbackThunk();
     void transactionCommittedCallback(nsecs_t latchTime, const sp<Fence>& presentFence,
                                       const std::vector<SurfaceControlStats>& stats);
+
+    TransactionCompletedCallbackTakesContext makeTransactionCallbackThunk();
     virtual void transactionCallback(nsecs_t latchTime, const sp<Fence>& presentFence,
                                      const std::vector<SurfaceControlStats>& stats);
+
+    ReleaseBufferCallback makeReleaseBufferCallbackThunk();
     void releaseBufferCallback(const ReleaseCallbackId& id, const sp<Fence>& releaseFence,
                                std::optional<uint32_t> currentMaxAcquiredBufferCount);
     void releaseBufferCallbackLocked(const ReleaseCallbackId& id, const sp<Fence>& releaseFence,
                                      std::optional<uint32_t> currentMaxAcquiredBufferCount,
                                      bool fakeRelease) REQUIRES(mMutex);
+
     bool syncNextTransaction(std::function<void(SurfaceComposerClient::Transaction*)> callback,
                              bool acquireSingleBuffer = true);
     void stopContinuousSyncTransaction();
@@ -128,12 +146,28 @@ public:
      * indicates the reason for the hang.
      */
     void setTransactionHangCallback(std::function<void(const std::string&)> callback);
+    void setApplyToken(sp<IBinder>);
+
+    void setWaitForBufferReleaseCallback(std::function<void(const nsecs_t)> callback)
+            EXCLUDES(mWaitForBufferReleaseMutex);
+    std::function<void(const nsecs_t)> getWaitForBufferReleaseCallback() const
+            EXCLUDES(mWaitForBufferReleaseMutex);
 
     virtual ~BLASTBufferQueue();
 
+    void onFirstRef() override;
+
 private:
+    // Not public to ensure construction via sp<>::make().
+    BLASTBufferQueue(const std::string& name, bool updateDestinationFrame = true);
+
+    friend class sp<BLASTBufferQueue>;
     friend class BLASTBufferQueueHelper;
     friend class BBQBufferQueueProducer;
+    friend class TestBLASTBufferQueue;
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BUFFER_RELEASE_CHANNEL)
+    friend class BBQBufferQueueCore;
+#endif
 
     // can't be copied
     BLASTBufferQueue& operator = (const BLASTBufferQueue& rhs);
@@ -166,12 +200,12 @@ private:
     sp<SurfaceControl> mSurfaceControl GUARDED_BY(mMutex);
 
     mutable std::mutex mMutex;
+    mutable std::mutex mWaitForBufferReleaseMutex;
     std::condition_variable mCallbackCV;
 
     // BufferQueue internally allows 1 more than
     // the max to be acquired
-    int32_t mMaxAcquiredBuffers = 1;
-
+    int32_t mMaxAcquiredBuffers GUARDED_BY(mMutex) = 1;
     int32_t mNumFrameAvailable GUARDED_BY(mMutex) = 0;
     int32_t mNumAcquired GUARDED_BY(mMutex) = 0;
 
@@ -182,7 +216,7 @@ private:
 
     // Keep a reference to the submitted buffers so we can release when surfaceflinger drops the
     // buffer or the buffer has been presented and a new buffer is ready to be presented.
-    std::unordered_map<ReleaseCallbackId, BufferItem, ReleaseBufferCallbackIdHash> mSubmitted
+    ftl::SmallMap<ReleaseCallbackId, BufferItem, kSubmittedBuffersMapSizeHint> mSubmitted
             GUARDED_BY(mMutex);
 
     // Keep a queue of the released buffers instead of immediately releasing
@@ -203,6 +237,10 @@ private:
     ui::Size mSize GUARDED_BY(mMutex);
     ui::Size mRequestedSize GUARDED_BY(mMutex);
     int32_t mFormat GUARDED_BY(mMutex);
+
+    // Keep a copy of the current picture profile handle, so it can be moved to a new
+    // SurfaceControl when BBQ migrates via ::update.
+    std::optional<PictureProfileHandle> mPictureProfileHandle;
 
     struct BufferInfo {
         bool hasBuffer = false;
@@ -246,7 +284,7 @@ private:
     std::function<void(SurfaceComposerClient::Transaction*)> mTransactionReadyCallback
             GUARDED_BY(mMutex);
     SurfaceComposerClient::Transaction* mSyncTransaction GUARDED_BY(mMutex);
-    std::vector<std::tuple<uint64_t /* framenumber */, SurfaceComposerClient::Transaction>>
+    std::vector<std::pair<uint64_t /* framenumber */, SurfaceComposerClient::Transaction>>
             mPendingTransactions GUARDED_BY(mMutex);
 
     std::queue<std::pair<uint64_t, FrameTimelineInfo>> mPendingFrameTimelines GUARDED_BY(mMutex);
@@ -256,15 +294,15 @@ private:
 
     // Queues up transactions using this token in SurfaceFlinger. This prevents queued up
     // transactions from other parts of the client from blocking this transaction.
-    const sp<IBinder> mApplyToken GUARDED_BY(mMutex) = sp<BBinder>::make();
+    sp<IBinder> mApplyToken GUARDED_BY(mMutex) = sp<BBinder>::make();
 
     // Guards access to mDequeueTimestamps since we cannot hold to mMutex in onFrameDequeued or
     // we will deadlock.
     std::mutex mTimestampMutex;
     // Tracks buffer dequeue times by the client. This info is sent to SurfaceFlinger which uses
     // it for debugging purposes.
-    std::unordered_map<uint64_t /* bufferId */, nsecs_t> mDequeueTimestamps
-            GUARDED_BY(mTimestampMutex);
+    ftl::SmallMap<uint64_t /* bufferId */, nsecs_t, kDequeueTimestampsMapSizeHint>
+            mDequeueTimestamps GUARDED_BY(mTimestampMutex);
 
     // Keep track of SurfaceControls that have submitted a transaction and BBQ is waiting on a
     // callback for them.
@@ -300,6 +338,52 @@ private:
     std::function<void(const std::string&)> mTransactionHangCallback;
 
     std::unordered_set<uint64_t> mSyncedFrameNumbers GUARDED_BY(mMutex);
+
+    std::function<void(const nsecs_t)> mWaitForBufferReleaseCallback
+            GUARDED_BY(mWaitForBufferReleaseMutex);
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BUFFER_RELEASE_CHANNEL)
+    // BufferReleaseChannel is used to communicate buffer releases from SurfaceFlinger to the
+    // client.
+    std::unique_ptr<gui::BufferReleaseChannel::ConsumerEndpoint> mBufferReleaseConsumer;
+    std::shared_ptr<gui::BufferReleaseChannel::ProducerEndpoint> mBufferReleaseProducer;
+
+    void updateBufferReleaseProducer() REQUIRES(mMutex);
+    void drainBufferReleaseConsumer();
+
+    // BufferReleaseReader is used to do blocking but interruptible reads from the buffer
+    // release channel. To implement this, BufferReleaseReader owns an epoll file descriptor that
+    // is configured to wake up when either the BufferReleaseReader::ConsumerEndpoint or an eventfd
+    // becomes readable. Interrupts are necessary because a free buffer may become available for
+    // reasons other than a buffer release from the producer.
+    class BufferReleaseReader {
+    public:
+        explicit BufferReleaseReader(BLASTBufferQueue&);
+
+        BufferReleaseReader(const BufferReleaseReader&) = delete;
+        BufferReleaseReader& operator=(const BufferReleaseReader&) = delete;
+
+        // Block until we can read a buffer release message.
+        //
+        // Returns:
+        // * OK if a ReleaseCallbackId and Fence were successfully read.
+        // * WOULD_BLOCK if the blocking read was interrupted by interruptBlockingRead.
+        // * TIMED_OUT if the blocking read timed out.
+        // * UNKNOWN_ERROR if something went wrong.
+        status_t readBlocking(ReleaseCallbackId& outId, sp<Fence>& outReleaseFence,
+                              uint32_t& outMaxAcquiredBufferCount, nsecs_t timeout);
+
+        void interruptBlockingRead();
+        void clearInterrupts();
+
+    private:
+        BLASTBufferQueue& mBbq;
+
+        android::base::unique_fd mEpollFd;
+        android::base::unique_fd mEventFd;
+    };
+
+    std::optional<BufferReleaseReader> mBufferReleaseReader;
+#endif
 };
 
 } // namespace android

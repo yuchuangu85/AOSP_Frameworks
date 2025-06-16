@@ -79,7 +79,7 @@ data class SmartspaceMediaData(
         Log.w(
             TAG,
             "Package $packageName does not have a main launcher activity. " +
-                "Fallback to full app name"
+                "Fallback to full app name",
         )
         return try {
             val applicationInfo = packageManager.getApplicationInfo(packageName, /* flags= */ 0)

@@ -221,7 +221,8 @@ public final class AuthSession implements IBinder.DeathRecipient {
         mFingerprintSensorProperties = fingerprintSensorProperties;
         mCancelled = false;
         mBiometricFrameworkStatsLogger = logger;
-        mOperationContext = new OperationContextExt(true /* isBP */);
+        mOperationContext = new OperationContextExt(true /* isBP */,
+                preAuthInfo.getIsMandatoryBiometricsAuthentication() /* isMandatoryBiometrics */);
         mBiometricManager = mContext.getSystemService(BiometricManager.class);
 
         mSfpsSensorIds = mFingerprintSensorProperties.stream().filter(
@@ -285,7 +286,8 @@ public final class AuthSession implements IBinder.DeathRecipient {
             sensor.goToStateWaitingForCookie(requireConfirmation, mToken, mOperationId,
                     mUserId, mSensorReceiver, mOpPackageName, mRequestId, cookie,
                     mPromptInfo.isAllowBackgroundAuthentication(),
-                    mPromptInfo.isForLegacyFingerprintManager());
+                    mPromptInfo.isForLegacyFingerprintManager(),
+                    mOperationContext.getIsMandatoryBiometrics());
         }
     }
 
@@ -303,7 +305,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     mSensors /* sensorIds */,
                     true /* credentialAllowed */,
                     false /* requireConfirmation */,
-                    mUserId,
+                    mPreAuthInfo.callingUserId,
                     mOperationId,
                     mOpPackageName,
                     mRequestId);
@@ -355,7 +357,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                             mSensors,
                             mPreAuthInfo.shouldShowCredential(),
                             requireConfirmation,
-                            mUserId,
+                            mPreAuthInfo.callingUserId,
                             mOperationId,
                             mOpPackageName,
                             mRequestId);
@@ -489,7 +491,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                             mSensors /* sensorIds */,
                             true /* credentialAllowed */,
                             false /* requireConfirmation */,
-                            mUserId,
+                            mPreAuthInfo.callingUserId,
                             mOperationId,
                             mOpPackageName,
                             mRequestId);
@@ -801,6 +803,9 @@ public final class AuthSession implements IBinder.DeathRecipient {
                 case BiometricPrompt.DISMISSED_REASON_USER_CANCEL:
                     error = BiometricConstants.BIOMETRIC_ERROR_USER_CANCELED;
                     break;
+                case BiometricPrompt.DISMISSED_REASON_CONTENT_VIEW_MORE_OPTIONS:
+                    error = BiometricConstants.BIOMETRIC_ERROR_CONTENT_VIEW_MORE_OPTIONS_BUTTON;
+                    break;
                 default:
             }
 
@@ -874,6 +879,14 @@ public final class AuthSession implements IBinder.DeathRecipient {
                             getEligibleModalities(),
                             mErrorEscrow,
                             mVendorCodeEscrow
+                    );
+                    break;
+
+                case BiometricPrompt.DISMISSED_REASON_ERROR_NO_WM:
+                    mClientReceiver.onError(
+                            getEligibleModalities(),
+                            BiometricConstants.BIOMETRIC_ERROR_HW_UNAVAILABLE,
+                            0 /* vendorCode */
                     );
                     break;
 

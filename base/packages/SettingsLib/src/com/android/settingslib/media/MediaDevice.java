@@ -15,6 +15,7 @@
  */
 package com.android.settingslib.media;
 
+import static android.media.MediaRoute2Info.TYPE_AUX_LINE;
 import static android.media.MediaRoute2Info.TYPE_BLE_HEADSET;
 import static android.media.MediaRoute2Info.TYPE_BLUETOOTH_A2DP;
 import static android.media.MediaRoute2Info.TYPE_BUILTIN_SPEAKER;
@@ -24,6 +25,8 @@ import static android.media.MediaRoute2Info.TYPE_HDMI;
 import static android.media.MediaRoute2Info.TYPE_HDMI_ARC;
 import static android.media.MediaRoute2Info.TYPE_HDMI_EARC;
 import static android.media.MediaRoute2Info.TYPE_HEARING_AID;
+import static android.media.MediaRoute2Info.TYPE_LINE_ANALOG;
+import static android.media.MediaRoute2Info.TYPE_LINE_DIGITAL;
 import static android.media.MediaRoute2Info.TYPE_REMOTE_AUDIO_VIDEO_RECEIVER;
 import static android.media.MediaRoute2Info.TYPE_REMOTE_SPEAKER;
 import static android.media.MediaRoute2Info.TYPE_REMOTE_TV;
@@ -150,6 +153,9 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
                 break;
             case TYPE_WIRED_HEADSET:
             case TYPE_WIRED_HEADPHONES:
+            case TYPE_LINE_DIGITAL:
+            case TYPE_LINE_ANALOG:
+            case TYPE_AUX_LINE:
                 mType = MediaDeviceType.TYPE_3POINT5_MM_AUDIO_DEVICE;
                 break;
             case TYPE_USB_DEVICE:
@@ -237,6 +243,11 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
      * @return unique id of MediaDevice
      */
     public abstract String getId();
+
+    /** Returns {@code true} if the device has a non-null {@link RouteListingPreference.Item}. */
+    public boolean hasRouteListingPreferenceItem() {
+        return mItem != null;
+    }
 
     /**
      * Get selection behavior of device
@@ -381,6 +392,16 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
      */
     public int getDeviceType() {
         return mType;
+    }
+
+    /**
+     * Get the {@link MediaRoute2Info.Type} of the device.
+     */
+    public int getRouteType() {
+        if (mRouteInfo == null) {
+            return TYPE_UNKNOWN;
+        }
+        return mRouteInfo.getType();
     }
 
     /**

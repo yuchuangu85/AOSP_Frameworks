@@ -18,6 +18,7 @@
 
 #include <android/gui/CachingHint.h>
 #include <android/gui/DisplayBrightness.h>
+#include <android/gui/DisplayCaptureArgs.h>
 #include <android/gui/FrameTimelineInfo.h>
 #include <android/gui/IDisplayEventConnection.h>
 #include <android/gui/IFpsListener.h>
@@ -27,6 +28,7 @@
 #include <android/gui/ITunnelModeEnabledListener.h>
 #include <android/gui/IWindowInfosListener.h>
 #include <android/gui/IWindowInfosPublisher.h>
+#include <android/gui/LayerCaptureArgs.h>
 #include <binder/IBinder.h>
 #include <binder/IInterface.h>
 #include <gui/ITransactionCompletedListener.h>
@@ -63,19 +65,13 @@ struct DisplayState;
 struct InputWindowCommands;
 class HdrCapabilities;
 class Rect;
+class TransactionState;
 
 using gui::FrameTimelineInfo;
 using gui::IDisplayEventConnection;
 using gui::IRegionSamplingListener;
 using gui::IScreenCaptureListener;
 using gui::SpHash;
-
-namespace gui {
-
-struct DisplayCaptureArgs;
-struct LayerCaptureArgs;
-
-} // namespace gui
 
 namespace ui {
 
@@ -110,13 +106,7 @@ public:
     };
 
     /* open/close transactions. requires ACCESS_SURFACE_FLINGER permission */
-    virtual status_t setTransactionState(
-            const FrameTimelineInfo& frameTimelineInfo, Vector<ComposerState>& state,
-            const Vector<DisplayState>& displays, uint32_t flags, const sp<IBinder>& applyToken,
-            InputWindowCommands inputWindowCommands, int64_t desiredPresentTime,
-            bool isAutoTimestamp, const std::vector<client_cache_t>& uncacheBuffer,
-            bool hasListenerCallbacks, const std::vector<ListenerCallbacks>& listenerCallbacks,
-            uint64_t transactionId, const std::vector<uint64_t>& mergedTransactionIds) = 0;
+    virtual status_t setTransactionState(TransactionState&& state) = 0;
 };
 
 // ----------------------------------------------------------------------------

@@ -110,21 +110,26 @@ class EnsureActivitiesVisibleHelper {
 
                 if (adjacentTaskFragments != null && adjacentTaskFragments.contains(
                         childTaskFragment)) {
-                    if (!childTaskFragment.isTranslucent(starting)
-                            && !childTaskFragment.getAdjacentTaskFragment().isTranslucent(
-                                    starting)) {
+                    final boolean isTranslucent = childTaskFragment.isTranslucent(starting)
+                            || childTaskFragment.forOtherAdjacentTaskFragments(
+                                    adjacentTaskFragment -> {
+                                        return adjacentTaskFragment.isTranslucent(starting);
+                                    });
+                    if (!isTranslucent) {
                         // Everything behind two adjacent TaskFragments are occluded.
                         mBehindFullyOccludedContainer = true;
                     }
                     continue;
                 }
 
-                final TaskFragment adjacentTaskFrag = childTaskFragment.getAdjacentTaskFragment();
-                if (adjacentTaskFrag != null) {
+                if (childTaskFragment.hasAdjacentTaskFragment()) {
                     if (adjacentTaskFragments == null) {
                         adjacentTaskFragments = new ArrayList<>();
                     }
-                    adjacentTaskFragments.add(adjacentTaskFrag);
+                    final ArrayList<TaskFragment> adjacentTfs = adjacentTaskFragments;
+                    childTaskFragment.forOtherAdjacentTaskFragments(adjacentTf -> {
+                        adjacentTfs.add(adjacentTf);
+                    });
                 }
             } else if (child.asActivityRecord() != null) {
                 setActivityVisibilityState(child.asActivityRecord(), starting, resumeTopActivity);
@@ -174,6 +179,9 @@ class EnsureActivitiesVisibleHelper {
             // First: if this is not the current activity being started, make
             // sure it matches the current configuration.
             if (r != mStarting && mNotifyClients) {
+                if (!isTop) {
+                    r.mDisplayContent.applyFixedRotationForNonTopVisibleActivityIfNeeded(r);
+                }
                 r.ensureActivityConfiguration(true /* ignoreVisibility */);
             }
 
@@ -237,7 +245,7 @@ class EnsureActivitiesVisibleHelper {
             }
             r.setVisibility(true);
         }
-        if (r != starting) {
+        if (r != starting && mNotifyClients) {
             mTaskFragment.mTaskSupervisor.startSpecificActivity(r, andResume,
                     true /* checkConfig */);
         }

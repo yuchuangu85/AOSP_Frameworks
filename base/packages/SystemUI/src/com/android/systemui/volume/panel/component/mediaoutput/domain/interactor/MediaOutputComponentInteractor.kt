@@ -16,8 +16,12 @@
 
 package com.android.systemui.volume.panel.component.mediaoutput.domain.interactor
 
+import com.android.settingslib.media.PhoneMediaDevice.inputRoutingEnabledAndIsDesktop
+import android.content.Context
 import com.android.settingslib.volume.domain.interactor.AudioModeInteractor
+import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.volume.domain.interactor.AudioOutputInteractor
+import com.android.systemui.volume.domain.interactor.AudioSharingInteractor
 import com.android.systemui.volume.domain.model.AudioOutputDevice
 import com.android.systemui.volume.panel.component.mediaoutput.domain.model.MediaOutputComponentModel
 import com.android.systemui.volume.panel.component.mediaoutput.shared.model.SessionWithPlaybackState
@@ -27,7 +31,6 @@ import com.android.systemui.volume.panel.shared.model.filterData
 import com.android.systemui.volume.panel.shared.model.wrapInResult
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -40,20 +43,21 @@ import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.stateIn
 
 /** Gathers together a domain state for the Media Output Volume Panel component. */
-@OptIn(ExperimentalCoroutinesApi::class)
 @VolumePanelScope
 class MediaOutputComponentInteractor
 @Inject
 constructor(
+    @Application private val context: Context,
     @VolumePanelScope private val coroutineScope: CoroutineScope,
     private val mediaDeviceSessionInteractor: MediaDeviceSessionInteractor,
     audioOutputInteractor: AudioOutputInteractor,
     audioModeInteractor: AudioModeInteractor,
-    interactor: MediaOutputInteractor,
+    mediaOutputInteractor: MediaOutputInteractor,
+    audioSharingInteractor: AudioSharingInteractor,
 ) {
 
     private val sessionWithPlaybackState: StateFlow<Result<SessionWithPlaybackState?>> =
-        interactor.defaultActiveMediaSession
+        mediaOutputInteractor.defaultActiveMediaSession
             .filterData()
             .flatMapLatest { session ->
                 if (session == null) {
@@ -72,34 +76,52 @@ constructor(
             )
 
     private val currentAudioDevice: Flow<AudioOutputDevice> =
-        audioOutputInteractor.currentAudioDevice.filter { it !is AudioOutputDevice.Unknown }
+        audioOutputInteractor.currentAudioDevice.filter { it !is AudioOutputDevice.Unavailable }
 
+    /**
+     * Model for the Media Output component in the Volume Panel. It's guaranteed to have an
+     * available device if it's loaded.
+     */
     val mediaOutputModel: StateFlow<Result<MediaOutputComponentModel>> =
-        audioModeInteractor.isOngoingCall
-            .flatMapLatest { isOngoingCall ->
-                audioOutputInteractor.isInAudioSharing.flatMapLatest { isInAudioSharing ->
-                    if (isOngoingCall) {
-                        currentAudioDevice.map {
-                            MediaOutputComponentModel.Calling(it, isInAudioSharing)
-                        }
-                    } else {
-                        combine(sessionWithPlaybackState.filterData(), currentAudioDevice) {
-                            sessionWithPlaybackState,
-                            currentAudioDevice ->
-                            if (sessionWithPlaybackState == null) {
-                                MediaOutputComponentModel.Idle(currentAudioDevice, isInAudioSharing)
-                            } else {
-                                MediaOutputComponentModel.MediaSession(
-                                    sessionWithPlaybackState.session,
-                                    sessionWithPlaybackState.isPlaybackActive,
-                                    currentAudioDevice,
-                                    isInAudioSharing,
-                                )
-                            }
+        combine(
+                audioSharingInteractor.isInAudioSharing,
+                audioModeInteractor.isOngoingCall,
+                currentAudioDevice,
+            ) { isInAudioSharing, isOngoingCall, currentAudioDevice ->
+                if (isOngoingCall) {
+                    flowOf(
+                        MediaOutputComponentModel.Calling(
+                            device = currentAudioDevice,
+                            isInAudioSharing = isInAudioSharing,
+                            /* allow open switcher when input routing is enabled in desktop */
+                            canOpenAudioSwitcher = inputRoutingEnabledAndIsDesktop(context),
+                        )
+                    )
+                } else {
+                    sessionWithPlaybackState.filterData().map { sessionWithPlaybackState ->
+                        if (sessionWithPlaybackState == null) {
+                            MediaOutputComponentModel.Idle(
+                                device = currentAudioDevice,
+                                isInAudioSharing = isInAudioSharing,
+                                canOpenAudioSwitcher =
+                                    !isInAudioSharing &&
+                                        currentAudioDevice !is AudioOutputDevice.Unknown,
+                            )
+                        } else {
+                            MediaOutputComponentModel.MediaSession(
+                                session = sessionWithPlaybackState.session,
+                                isPlaybackActive = sessionWithPlaybackState.isPlaybackActive,
+                                device = currentAudioDevice,
+                                isInAudioSharing = isInAudioSharing,
+                                canOpenAudioSwitcher =
+                                    !isInAudioSharing &&
+                                        currentAudioDevice !is AudioOutputDevice.Unknown,
+                            )
                         }
                     }
                 }
             }
+            .flatMapLatest { it }
             .wrapInResult()
             .stateIn(coroutineScope, SharingStarted.Eagerly, Result.Loading())
 }

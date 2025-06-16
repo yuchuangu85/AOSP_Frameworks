@@ -16,6 +16,16 @@ flag {
 }
 
 flag {
+   name: "multiuser_wifi_picker_tracker_support"
+   namespace: "systemui"
+   description: "Adds WifiPickerTracker support for multiple users to support when HSUM is enabled."
+   bug: "371586248"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
    name: "udfps_view_performance"
    namespace: "systemui"
    description: "Decrease screen off blocking calls by waiting until the device is finished going to sleep before adding the udfps view."
@@ -26,6 +36,23 @@ flag {
 }
 
 flag {
+   name: "user_encrypted_source"
+   namespace: "systemui"
+   description: "Get rid of the local cache and rely on UserManager.isUserUnlocked directly to determine whether user CE storage is encrypted."
+   bug: "333656491"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "modes_ui_dialog_paging"
+   namespace: "systemui"
+   description: "Add pagination to the Modes dialog in quick settings."
+   bug: "376450983"
+}
+
+flag {
    name: "priority_people_section"
    namespace: "systemui"
    description: "Add a new section for priority people (aka important conversations)."
@@ -33,20 +60,24 @@ flag {
 }
 
 flag {
+  name: "notifications_redesign_footer_view"
+  namespace: "systemui"
+  description: "Notifications Redesign: Update the look of the notifications footer."
+  bug: "375010573"
+}
+
+flag {
+  name: "notifications_redesign_guts"
+  namespace: "systemui"
+  description: "Notifications Redesign: Update the look of the notification guts (that appear on long press). This includes using the new cache for app icons."
+  bug: "394822197"
+}
+
+flag {
    name: "notification_row_content_binder_refactor"
    namespace: "systemui"
    description: "Convert the NotificationContentInflater to Kotlin and restructure it to support modern views"
    bug: "343942780"
-}
-
-flag {
-   name: "notification_minimalism_prototype"
-   namespace: "systemui"
-   description: "Prototype of notification minimalism; the new 'Intermediate' lockscreen customization proposal."
-   bug: "330387368"
-   metadata {
-        purpose: PURPOSE_BUGFIX
-   }
 }
 
 flag {
@@ -60,13 +91,31 @@ flag {
 }
 
 flag {
+   name: "notification_ambient_suppression_after_inflation"
+   namespace: "systemui"
+   description: "Move the DND visual effects filter to the finalize stage of the pipeline when it is doze-dependent, but keep it in the pre-group stage when it is doze-independent."
+   bug: "373411431"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
    name: "notification_over_expansion_clipping_fix"
    namespace: "systemui"
-   description: "fix NSSL clipping when over-expanding; fixes split shade bug."
+   description: "Fix NSSL clipping when over-expanding; fixes split shade bug."
    bug: "288553572"
    metadata {
         purpose: PURPOSE_BUGFIX
    }
+}
+
+flag {
+    name: "notification_add_x_on_hover_to_dismiss"
+    namespace: "systemui"
+    description: "Adds an x to notifications which shows up on mouse hover, allowing the user to "
+        "dismiss a notification with mouse."
+    bug: "376297472"
 }
 
 flag {
@@ -91,11 +140,13 @@ flag {
 }
 
 flag {
-    name: "notifications_footer_view_refactor"
+    name: "notifications_footer_visibility_fix"
     namespace: "systemui"
-    description: "Enables the refactored version of the footer view in the notification shade "
-        "(containing the \"Clear all\" button). Should not bring any behavior changes"
-    bug: "293167744"
+    description: "Fixes a bug where the footer would briefly appear when dismissing a HUN"
+    bug: "356552869"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 
 flag {
@@ -111,13 +162,6 @@ flag {
     namespace: "systemui"
     description: "Temporary hides notifications when folding/unfolding to reduce unfold latency"
     bug: "293824309"
-}
-
-flag {
-    name: "notifications_improved_hun_animation"
-    namespace: "systemui"
-    description: "Adds a translateY animation, and other improvements to match the motion specs of the HUN Intro + Outro animations."
-    bug: "243302608"
 }
 
 flag {
@@ -139,21 +183,33 @@ flag {
 }
 
 flag {
-    name: "notifications_heads_up_refactor"
-    namespace: "systemui"
-    description: "Use HeadsUpInteractor to feed HUN updates to the NSSL."
-    bug: "325936094"
-}
-
-flag {
-   name: "pss_app_selector_abrupt_exit_fix"
+   name: "notification_transparent_header_fix"
    namespace: "systemui"
-   description: "Fixes the app selector abruptly disappearing without an animation, when the"
-        "selected task is the foreground task."
-   bug: "314385883"
+   description: "fix the transparent group header issue for async header inflation."
+   bug: "340161724"
    metadata {
         purpose: PURPOSE_BUGFIX
    }
+}
+
+flag {
+    name: "notifications_pinned_hun_in_shade"
+    namespace: "systemui"
+    description: "Fixes displaying pinned HUNs in the Shade, making sure that their y and z positions are correct."
+    bug: "385041854"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "notifications_hun_shared_animation_values"
+    namespace: "systemui"
+    description: "Adds a shared class for fetching HUN animation values."
+    bug: "393369891"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 
 flag {
@@ -198,6 +254,13 @@ flag {
 }
 
 flag {
+  name: "notification_bundle_ui"
+  namespace: "systemui"
+  description: "Three-level group UI for notification bundles"
+  bug: "367996732"
+}
+
+flag {
     name: "notification_background_tint_optimization"
     namespace: "systemui"
     description: "Re-enable the codepath that removed tinting of notifications when the"
@@ -217,25 +280,30 @@ flag {
 }
 
 flag {
+  name: "notification_row_accessibility_expanded"
+  namespace: "systemui"
+  description: "Prepare ExpandableNotificationRow for new A11y expansion APIs."
+  bug: "380027122"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+    name: "notification_skip_silent_updates"
+    namespace: "systemui"
+    description: "Do not notify HeadsUpManager for silent updates."
+    bug: "401068530"
+    metadata {
+       purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
     name: "scene_container"
     namespace: "systemui"
     description: "Enables the scene container framework go/flexiglass."
     bug: "283121968"
-}
-
-flag {
-    name: "dual_shade"
-    namespace: "systemui"
-    description: "Enables the BC25 Dual Shade (go/bc25-dual-shade-design)."
-    bug: "337259436"
-}
-
-flag {
-    name: "keyguard_bottom_area_refactor"
-    namespace: "systemui"
-    description: "Bottom area of keyguard refactor move into KeyguardRootView. Includes "
-        "lock icon and others."
-    bug: "290652751"
 }
 
 flag {
@@ -252,13 +320,6 @@ flag {
     description: "Enables the refactored version of the code to decide when notifications "
         "HUN, bubble, pulse, or FSI."
     bug: "261728888"
-}
-
-flag {
-    name: "haptic_brightness_slider"
-    namespace: "systemui"
-    description: "Adds haptic feedback to the brightness slider."
-    bug: "296467915"
 }
 
 flag {
@@ -282,13 +343,6 @@ flag {
 }
 
 flag {
-    name: "qs_new_pipeline"
-    namespace: "systemui"
-    description: "Use the new pipeline for Quick Settings. Should have no behavior changes."
-    bug: "241772429"
-}
-
-flag {
    name: "qs_new_tiles"
    namespace: "systemui"
    description: "Use the new tiles in the Quick Settings. Should have no behavior changes."
@@ -300,6 +354,16 @@ flag {
    namespace: "systemui"
    description: "Use the new tiles in the Quick Settings that are still under development. This flag will not be used to gate release but to prevent tiles under development from reaching teamfood."
    bug: "311147395"
+}
+
+flag {
+  name: "qs_quick_rebind_active_tiles"
+  namespace: "systemui"
+  description: "Rebind active custom tiles quickly."
+  bug: "362526228"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
 }
 
 flag {
@@ -320,17 +384,26 @@ flag {
 }
 
 flag {
+    name: "status_bar_ui_thread"
+    namespace: "systemui"
+    description: "Move the StatusBar window to a new UI thread, which is separate from the main "
+        "thread."
+    bug: "374159193"
+}
+
+flag {
+    name: "notification_shade_ui_thread"
+    namespace: "systemui"
+    description: "Move the NotificationShade window to a new UI thread, which is separate from "
+        "the main thread."
+    bug: "374159657"
+}
+
+flag {
     name: "new_aod_transition"
     namespace: "systemui"
     description: "New LOCKSCREEN <=> AOD transition"
     bug: "301915812"
-}
-
-flag {
-    name: "light_reveal_migration"
-    namespace: "systemui"
-    description: "Move LightRevealScrim to recommended architecture"
-    bug: "281655028"
 }
 
 flag {
@@ -342,14 +415,10 @@ flag {
 }
 
 flag {
-    name: "truncated_status_bar_icons_fix"
+    name: "status_bar_mobile_icon_kairos"
     namespace: "systemui"
-    description: "Fixes the status bar icons being trunacted due to the status bar window height "
-        "not being updated after certain rotations"
-    bug: "323299264"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
+    description: "Refactors the mobile connection icon in the status bar to use the Kairos library"
+    bug: "383172066"
 }
 
 flag {
@@ -363,11 +432,140 @@ flag {
 }
 
 flag {
-    name: "status_bar_screen_sharing_chips"
+    name: "status_bar_show_audio_only_projection_chip"
     namespace: "systemui"
-    description: "Show chips on the left side of the status bar when a user is screen sharing, "
-        "recording, or casting"
-    bug: "332662551"
+    description: "Show chip on the left side of the status bar when a user is only sharing *audio* "
+        "during a media projection"
+    bug: "373308507"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "status_bar_auto_start_screen_record_chip"
+    namespace: "systemui"
+    description: "When screen recording, use the specified start time to update the screen record "
+        "chip state instead of waiting for an official 'recording started' signal"
+    bug: "366448907"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+
+flag {
+    name: "status_bar_chips_modernization"
+    namespace: "systemui"
+    description: "Deprecate OngoingCallController and implement OngoingActivityChips"
+    "in compose"
+    bug: "372657935"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "status_bar_signal_policy_refactor"
+   namespace: "systemui"
+   description: "Use a settings observer for airplane mode and make StatusBarSignalPolicy startable"
+   bug: "264539100"
+}
+
+flag {
+   name: "status_bar_signal_policy_refactor_ethernet"
+   namespace: "systemui"
+   description: "Use recommended architecture for ethernet icon in status bar"
+   bug: "291321279"
+}
+
+flag {
+    name: "status_bar_swipe_over_chip"
+    namespace: "systemui"
+    description: "Allow users to swipe over the status bar chip to open the shade"
+    bug: "185897191"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "status_bar_always_check_underlying_networks"
+    namespace: "systemui"
+    description: "For status bar connectivity UI, always check underlying networks for wifi and "
+        "carrier merged information, regardless of the sepcified transport type"
+    bug: "352162710"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "status_bar_stop_updating_window_height"
+    namespace: "systemui"
+    description: "Don't have PhoneStatusBarView manually trigger an update of the height in "
+        "StatusBarWindowController"
+    bug: "360115167"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "status_bar_popup_chips"
+    namespace: "systemui"
+    description: "Show rich ongoing processes as chips in the status bar"
+    bug: "372964148"
+}
+
+flag {
+    name: "status_bar_no_hun_behavior"
+    namespace: "systemui"
+    description: "When there's a HUN, don't show the HUN text or icon in the status bar. Instead, "
+       "continue showing the usual status bar."
+    bug: "385740230"
+}
+
+flag {
+  name: "status_bar_font_updates"
+  namespace: "systemui"
+  description: "Read only flag for using a new font in the status bar"
+  bug: "393609116"
+  is_fixed_read_only: true
+}
+
+flag {
+    name: "status_bar_window_no_custom_touch"
+    namespace: "systemui"
+    description: "Don't have any custom touch handling in StatusBarWindowView"
+    bug: "391894499"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "icon_refresh_2025"
+    namespace: "systemui"
+    description: "Build time flag for 2025 icon refresh"
+    bug: "391605373"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "promote_notifications_automatically"
+    namespace: "systemui"
+    description: "Flag to automatically turn certain notifications into promoted notifications so "
+        " we can test promoted notifications with teamfooders. This flag should *never* be released "
+        "to trunkfood or nextfood."
+    bug: "367705002"
+}
+
+flag {
+    name: "debug_live_updates_promote_all"
+    namespace: "systemui"
+    description: "Promote all notifications to Live Updates (RONs). (For testing/debugging only, do not promote/release!)"
+    bug: "404838239"
 }
 
 flag {
@@ -392,6 +590,36 @@ flag {
 }
 
 flag {
+   name: "face_scanning_animation_npe_fix"
+   namespace: "systemui"
+   description: "Fix for the face scanning animation NPE"
+   bug: "392032258"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "avalanche_replace_hun_when_critical"
+   namespace: "systemui"
+   description: "Fix for replacing a sticky HUN when a critical HUN posted"
+   bug: "403301297"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+    name: "indication_text_a11y_fix"
+    namespace: "systemui"
+    description: "add double shadow to the indication text at the bottom of the lock screen"
+    bug: "349297241"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
    name: "rest_to_unlock"
    namespace: "systemui"
    description: "Require prolonged touch for fingerprint authentication"
@@ -406,25 +634,13 @@ flag {
 }
 
 flag {
-   name: "migrate_clocks_to_blueprint"
-   namespace: "systemui"
-   description: "Move clock related views from KeyguardStatusView to KeyguardRootView, "
-        "and use modern architecture for lockscreen clocks"
-   bug: "301502635"
-}
-
-flag {
-   name: "clock_reactive_variants"
-   namespace: "systemui"
-   description: "Add reactive variant fonts to some clocks"
-   bug: "343495953"
-}
-
-flag {
-   name: "fast_unlock_transition"
+   name: "faster_unlock_transition"
    namespace: "systemui"
    description: "Faster wallpaper unlock transition"
    bug: "298186160"
+   metadata {
+     purpose: PURPOSE_BUGFIX
+   }
 }
 
 flag {
@@ -455,29 +671,10 @@ flag {
 }
 
 flag {
-   name: "centralized_status_bar_height_fix"
-   namespace: "systemui"
-   description: "Refactors shade header and keyguard status bar to read status bar dimens from a"
-        " central place, instead of reading resources directly. This is to take into account display"
-        " cutouts and other special cases. "
-   bug: "317016114"
-   metadata {
-        purpose: PURPOSE_BUGFIX
-   }
-}
-
-flag {
   name: "enable_layout_tracing"
   namespace: "systemui"
   description: "Enables detailed traversal slices during measure and layout in perfetto traces"
   bug: "315274804"
-}
-
-flag {
-   name: "quick_settings_visual_haptics_longpress"
-   namespace: "systemui"
-   description: "Enable special visual and haptic effects for quick settings tiles with long-press actions"
-   bug: "229856884"
 }
 
 flag {
@@ -496,10 +693,20 @@ flag {
 }
 
 flag {
-    name: "haptic_volume_slider"
+    name: "status_bar_switch_to_spn_from_data_spn"
     namespace: "systemui"
-    description: "Adds haptic feedback to the volume slider."
-    bug: "316953430"
+    description: "Fix usage of the SPN broadcast extras"
+    bug: "350812372"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "status_bar_root_modernization"
+    namespace: "systemui"
+    description: "Feature flag for replacing the status bar fragment with a compose root"
+    bug: "364360986"
 }
 
 flag {
@@ -507,6 +714,63 @@ flag {
     namespace: "systemui"
     description: "Switches to the new volume panel (without Slices)."
     bug: "202262476"
+}
+
+flag {
+    name: "use_volume_controller"
+    namespace: "systemui"
+    description: "Adds Volume Controller signals to the AudioRepository to update volume"
+    bug: "349348461"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "volume_redesign"
+    namespace: "systemui"
+    description: "Enables Volume visuals update"
+    bug: "368308908"
+}
+
+flag {
+    name: "clipboard_overlay_multiuser"
+    namespace: "systemui"
+    description: "Fix clipboard overlay for secondary users"
+    bug: "217922018"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "clipboard_shared_transitions"
+    namespace: "systemui"
+    description: "Show shared transitions from clipboard"
+    bug: "360843770"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "clipboard_image_timeout"
+    namespace: "systemui"
+    description: "Wait for clipboard image to load before showing UI"
+    bug: "359864629"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "clipboard_use_description_mimetype"
+    namespace: "systemui"
+    description: "Read item mimetype from description rather than checking URI"
+    bug: "357197236"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 
 flag {
@@ -537,30 +801,24 @@ flag {
 }
 
 flag {
-    name: "screenshot_private_profile_accessibility_announcement_fix"
+    name: "screenshot_ui_controller_refactor"
     namespace: "systemui"
-    description: "Modified a11y announcement for private space screenshots"
-    bug: "326941376"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
+    description: "Simplify and refactor ScreenshotController"
+    bug: "354711957"
 }
 
 flag {
-    name: "screenshot_private_profile_behavior_fix"
+    name: "screenshot_multidisplay_focus_change"
     namespace: "systemui"
-    description: "Private profile support for screenshots"
-    bug: "327613051"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
+    description: "Only capture a single display when screenshotting"
+    bug: "362720389"
 }
 
 flag {
-    name: "screenshot_shelf_ui2"
+    name: "screenshot_policy_split_and_desktop_mode"
     namespace: "systemui"
-    description: "Use new shelf UI flow for screenshots"
-    bug: "329659738"
+    description: "Improves screenshot policy handling for split screen and desktop mode."
+    bug: "365597999"
 }
 
 flag {
@@ -578,10 +836,13 @@ flag {
 }
 
 flag {
-   name: "smartspace_remoteviews_rendering"
+   name: "smartspace_remoteviews_rendering_fix"
    namespace: "systemui"
    description: "Indicate Smartspace RemoteViews rendering"
    bug: "326292691"
+   metadata {
+     purpose: PURPOSE_BUGFIX
+   }
 }
 
 flag {
@@ -589,6 +850,23 @@ flag {
    namespace: "systemui"
    description: "Indicate Smartspace lockscreen viewmodel"
    bug: "331451011"
+}
+
+flag {
+    name: "smartspace_viewpager2"
+    namespace: "systemui"
+    description: "Use viewpager2 in Smartspace"
+    bug: "259566300"
+}
+
+flag {
+    name: "smartspace_swipe_event_logging_fix"
+    namespace: "systemui"
+    description: "Log card swipe events in smartspace"
+    bug: "374150422"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+   }
 }
 
 flag {
@@ -603,13 +881,6 @@ flag {
     namespace: "systemui"
     description: "Enables refactored logic for SysUI+WM unlock/occlusion code paths"
     bug: "278086361"
-}
-
-flag {
-   name: "compose_lockscreen"
-   namespace: "systemui"
-   description: "Enables the compose version of lockscreen that runs standalone, outside of Flexiglass."
-   bug: "301968149"
 }
 
 flag {
@@ -730,30 +1001,10 @@ flag {
 }
 
 flag {
-    name: "register_zen_mode_content_observer_background"
-    namespace: "systemui"
-    description: "Decide whether to register zen mode content observers in the background thread."
-    bug: "324515627"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
     name: "clipboard_noninteractive_on_lockscreen"
     namespace: "systemui"
     description: "Prevents the interactive clipboard UI from appearing when device is locked"
     bug: "317048495"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    name: "dedicated_notif_inflation_thread"
-    namespace: "systemui"
-    description: "Create a separate background thread for inflating notifications"
-    bug: "308967184"
     metadata {
         purpose: PURPOSE_BUGFIX
     }
@@ -770,10 +1021,20 @@ flag {
 }
 
 flag {
-    name: "delayed_wakelock_release_on_background_thread"
+    name: "use_notif_inflation_thread_for_footer"
     namespace: "systemui"
-    description: "Released delayed wakelocks on background threads to avoid janking screen transitions."
-    bug: "316128516"
+    description: "use the @NotifInflation thread for FooterView and EmptyShadeView inflation"
+    bug: "375320642"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "use_notif_inflation_thread_for_row"
+    namespace: "systemui"
+    description: "use the @NotifInflation thread for ExpandableNotificationRow inflation"
+    bug: "375320642"
     metadata {
         purpose: PURPOSE_BUGFIX
     }
@@ -787,13 +1048,6 @@ flag {
     metadata {
         purpose: PURPOSE_BUGFIX
     }
-}
-
-flag {
-    name: "media_controls_refactor"
-    namespace: "systemui"
-    description: "Refactors media code to follow the recommended architecture"
-    bug: "326408371"
 }
 
 flag {
@@ -840,6 +1094,13 @@ flag {
 }
 
 flag {
+    name: "qs_ui_refactor_compose_fragment"
+    namespace: "systemui"
+    description: "Uses a different QS fragment in NPVC that uses the new compose UI and recommended architecture. This flag depends on qs_ui_refactor flag."
+    bug: "325099249"
+}
+
+flag {
   name: "remove_dream_overlay_hide_on_touch"
   namespace: "systemui"
   description: "Removes logic to hide the dream overlay on user interaction, as it conflicts with various transitions"
@@ -864,6 +1125,23 @@ flag {
 }
 
 flag {
+    name: "keyboard_touchpad_contextual_education"
+    namespace: "systemui"
+    description: "Allow showing education for physical keyboard and touchpad"
+    bug: "317496783"
+}
+
+flag {
+    name: "shortcut_helper_key_glyph"
+    namespace: "systemui"
+    description: "Allow showing key glyph in shortcut helper"
+    bug: "353902478"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
   name: "dream_overlay_bouncer_swipe_direction_filtering"
   namespace: "systemui"
   description: "do not initiate bouncer swipe when the direction is opposite of the expansion"
@@ -878,16 +1156,6 @@ flag {
     namespace: "systemui"
     description: "Pilfer at most once per input session"
     bug: "333596426"
-    metadata {
-      purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    name: "shade_collapse_activity_launch_fix"
-    namespace: "systemui"
-    description: "Avoid collapsing the shade on activity launch if it is already collapsed, as this causes a flicker."
-    bug: "331591373"
     metadata {
       purpose: PURPOSE_BUGFIX
     }
@@ -954,6 +1222,116 @@ flag {
 }
 
 flag {
+  name: "communal_scene_ktf_refactor"
+  namespace: "systemui"
+  description: "refactors the syncing mechanism between communal STL and KTF state."
+  bug: "327225415"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "communal_timer_flicker_fix"
+  namespace: "systemui"
+  description: "fixes timers on the hub flickering when pausing"
+  bug: "353801573"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "communal_widget_trampoline_fix"
+  namespace: "systemui"
+  description: "fixes activity starts caused by non-activity trampolines from widgets."
+  bug: "350468769"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "communal_edit_widgets_activity_finish_fix"
+  namespace: "systemui"
+  description: "finish edit widgets activity when stopping"
+  bug: "354725145"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "glanceable_hub_blurred_background"
+  namespace: "systemui"
+  description: "Allow blurred background on glanceable hub"
+  bug: "389788272"
+}
+
+flag {
+  name: "communal_widget_resizing"
+  namespace: "systemui"
+  description: "Allow resizing of widgets on glanceable hub"
+  bug: "368053818"
+}
+
+flag {
+  name: "communal_hub_use_thread_pool_for_widgets"
+  namespace: "systemui"
+  description: "Use a dedicated thread pool executor for loading widgets on glanceable hub"
+  bug: "369412569"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "communal_responsive_grid"
+  namespace: "systemui"
+  description: "Enables responsive grid on glanceable hub"
+  bug: "378171351"
+}
+
+flag {
+  name: "low_light_clock_dream"
+  namespace: "systemui"
+  description: "Enables low light clock dream experience on mobile phones"
+  bug: "378174125"
+}
+
+flag {
+  name: "communal_standalone_support"
+  namespace: "systemui"
+  description: "Support communal features without a dock"
+  bug: "352301247"
+}
+
+flag {
+  name: "glanceable_hub_v2"
+  namespace: "systemui"
+  description: "Gates the refreshed glanceable hub experience that also brings the glanceable hub to mobile phones"
+  bug: "375689917"
+}
+
+flag {
+  name: "glanceable_hub_v2_resources"
+  namespace: "systemui"
+  description: "Read only flag for rolling out glanceable hub v2 resource values"
+  bug: "375689917"
+  is_fixed_read_only: true
+}
+
+flag {
+    name: "dream_overlay_updated_font"
+    namespace: "systemui"
+    description: "Flag to enable updated font settings for dream overlay"
+    bug: "349656117"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
   name: "app_clips_backlinks"
   namespace: "systemui"
   description: "Enables Backlinks improvement feature in App Clips"
@@ -991,6 +1369,74 @@ flag {
 }
 
 flag {
+  name: "media_controls_button_media3"
+  namespace: "systemui"
+  description: "Enable media action buttons updates using media3"
+  bug: "360196209"
+}
+
+flag {
+  name: "media_controls_button_media3_placement"
+  namespace: "systemui"
+  description: "Use media3 API for action button placement preferences"
+  bug: "360196209"
+}
+
+flag {
+  name: "media_controls_drawables_reuse_bugfix"
+  namespace: "systemui"
+  description: "Re-use created media drawables for media controls"
+  bug: "358402034"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "media_controls_umo_inflation_in_background"
+  namespace: "systemui"
+  description: "Inflate UMO in background thread"
+  bug: "368514198"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "media_controls_ui_update"
+  namespace: "systemui"
+  description: "Enables media visuals update"
+  bug: "379044958"
+}
+
+flag {
+    name: "media_controls_a11y_colors"
+    namespace: "systemui"
+    description: "Color scheme updates for improved a11y"
+    bug: "378848399"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "media_controls_device_manager_background_execution"
+    namespace: "systemui"
+    description: "Sends some instances creation to background thread"
+    bug: "400200474"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+  name: "output_switcher_redesign"
+  namespace: "systemui"
+  description: "Enables visual update for Media Output Switcher"
+  bug: "388296370"
+}
+
+flag {
   namespace: "systemui"
   name: "enable_view_capture_tracing"
   description: "Enables view capture tracing in System UI."
@@ -1001,59 +1447,10 @@ flag {
 }
 
 flag {
-  namespace: "systemui"
-  name: "privacy_dot_unfold_wrong_corner_fix"
-  description: "Fixes an issue where the privacy dot is at the wrong corner after unfolding/folding."
-  bug: "339335643"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
-}
-
-flag {
-  name: "validate_keyboard_shortcut_helper_icon_uri"
-  namespace: "systemui"
-  description: "Adds a check that the caller can access the content URI of an icon in the shortcut helper."
-  bug: "331180422"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
-}
-
-flag {
-  name: "glanceable_hub_fullscreen_swipe"
-  namespace: "systemui"
-  description: "Increase swipe area for gestures to bring in glanceable hub"
-  bug: "339665673"
-}
-
-flag {
-  name: "glanceable_hub_shortcut_button"
-  namespace: "systemui"
-  description: "Shows a button over the dream and lock screen to open the glanceable hub"
-  bug: "339667383"
-}
-
-flag {
-  name: "glanceable_hub_gesture_handle"
-  namespace: "systemui"
-  description: "Shows a vertical bar at the right edge to indicate the user can swipe to open the glanceable hub"
-  bug: "339667383"
-}
-
-flag {
   name: "glanceable_hub_allow_keyguard_when_dreaming"
   namespace: "systemui"
   description: "Allows users to exit dream to keyguard with glanceable hub enabled"
   bug: "343505271"
-}
-
-
-flag {
-  name: "new_touchpad_gestures_tutorial"
-  namespace: "systemui"
-  description: "Enables new interactive tutorial for learning touchpad gestures"
-  bug: "309928033"
 }
 
 flag {
@@ -1077,30 +1474,20 @@ flag {
 }
 
 flag {
-  name: "notification_media_manager_background_execution"
-  namespace: "systemui"
-  description: "Decide whether to execute binder calls in background thread"
-  bug: "336612071"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
+    name: "media_lockscreen_launch_animation"
+    namespace : "systemui"
+    description : "Enable the origin launch animation for UMO when opening on top of lockscreen."
+    bug : "346865769"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
 
 flag {
-  name: "dozeui_scheduling_alarms_background_execution"
+  name: "expand_heads_up_on_inline_reply"
   namespace: "systemui"
-  description: "Decide whether to execute binder calls to schedule alarms in background thread"
-  bug: "330492575"
-  metadata {
-    purpose: PURPOSE_BUGFIX
-  }
-}
-
-flag {
-  name: "notification_pulsing_fix"
-  namespace: "systemui"
-  description: "Allow showing new pulsing notifications when the device is already pulsing."
-  bug: "335560575"
+  description: "Expands heads up notification when users clicks reply button and activate inline reply"
+  bug: "346976443"
   metadata {
     purpose: PURPOSE_BUGFIX
   }
@@ -1114,4 +1501,719 @@ flag {
   metadata {
     purpose: PURPOSE_BUGFIX
   }
+}
+
+flag {
+   namespace: "systemui"
+   name: "fetch_bookmarks_xml_keyboard_shortcuts"
+   description: "Fetches application launch keyboard shortcuts from system server rather than building a hardcoded list."
+   bug: "312452252"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  namespace: "systemui"
+  name: "qs_register_setting_observer_on_bg_thread"
+  description: "Registers Quick Settings content providers on background thread"
+  bug: "351766769"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "sounddose_customization"
+  namespace: "systemui"
+  description: "Enables custom actions for sounddose notifications"
+  bug: "345227709"
+}
+
+flag {
+  namespace: "systemui"
+  name: "register_content_observers_async"
+  description: "Use new Async API to register content observers"
+  bug: "316922634"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "msdl_feedback"
+  namespace: "systemui"
+  description: "Enables MSDL feedback in SysUI surfaces."
+  bug: "352600066"
+}
+
+flag {
+  name: "hubmode_fullscreen_vertical_swipe"
+  namespace: "systemui"
+  description: "Enables fullscreen vertical swiping in hub mode to bring up and down the bouncer and shade"
+  bug: "340177049"
+  metadata {
+      purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "hubmode_fullscreen_vertical_swipe_fix"
+  namespace: "systemui"
+  description: "Bug fix that enables fullscreen vertical swiping in hub mode to bring up and down the bouncer and shade"
+  bug: "340177049"
+  metadata {
+      purpose: PURPOSE_BUGFIX
+  }
+}
+
+
+flag {
+   namespace: "systemui"
+   name: "remove_update_listener_in_qs_icon_view_impl"
+   description: "Remove update listeners in QsIconViewImpl class to avoid memory leak."
+   bug: "327078684"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "sim_pin_race_condition_on_restart"
+   namespace: "systemui"
+   description: "The SIM PIN screen may be shown incorrectly on reboot"
+   bug: "351426938"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "sim_pin_bouncer_reset"
+   namespace: "systemui"
+   description: "The SIM PIN bouncer does not close after unlocking"
+   bug: "297461589"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "sim_pin_use_slot_id"
+   namespace: "systemui"
+   description: "Reorient SIM data processing around slotId instead of subId"
+   bug: "376173142"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "use_transitions_for_keyguard_occluded"
+   namespace: "systemui"
+   description: "Use Keyguard Transitions to set Notification Shade occlusion state"
+   bug: "344716537"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "relock_with_power_button_immediately"
+   namespace: "systemui"
+   description: "UDFPS unlock followed by immediate power button push should relock"
+   bug: "343327511"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "classic_flags_multi_user"
+   namespace: "systemui"
+   description: "Make the classic feature flag loading multi user aware."
+   bug: "345443431"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "haptics_for_compose_sliders"
+   namespace: "systemui"
+   description: "Adding haptic component infrastructure to sliders in Compose."
+   bug: "341968766"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  namespace: "systemui"
+  name: "settings_ext_register_content_observer_on_bg_thread"
+  description: "Register content observer in callback flow APIs on background thread in SettingsProxyExt."
+  bug: "355389014"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  namespace: "systemui"
+  name: "user_aware_settings_repositories"
+  description: "Provide user-aware versions of SecureSettingsRepository and SystemSettingsRepository in SystemUI modules (see doc linked from b/356099784)."
+  bug: "356099784"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+    name: "notify_password_text_view_user_activity_in_background"
+    namespace: "systemui"
+    description: "Decide whether to notify the user activity in password text view, to power manager in the background thread."
+    bug: "346882515"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "face_message_defer_update"
+    namespace: "systemui"
+    description: "Only analyze the last n frames when determining whether to defer a face auth help message like low light"
+    bug: "351863611"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "media_load_metadata_via_media_data_loader"
+    namespace: "systemui"
+    description: "Use MediaDataLoader for loading media metadata with better threading"
+    bug: "358350077"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "non_touchscreen_devices_bypass_falsing"
+   namespace: "systemui"
+   description: "Allow non-touchscreen devices to bypass falsing"
+   bug: "319809270"
+}
+
+flag {
+   name: "override_suppress_overlay_condition"
+   namespace: "systemui"
+   description: "Allow override the conditions to suppress the clipboard overlay"
+   bug: "358473717"
+}
+
+flag {
+   name: "show_clipboard_indication"
+   namespace: "systemui"
+   description: "Show indication text under the clipboard overlay when copied something"
+   bug: "361199935"
+}
+
+flag {
+   name: "media_projection_dialog_behind_lockscreen"
+   namespace: "systemui"
+   description: "Ensure MediaProjection Dialog appears behind the lockscreen"
+   bug: "351409536"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "check_lockscreen_gone_transition"
+   namespace: "systemui"
+   description: "Run notification pipeline when the lockscreen is not in gone transition for avoiding janky frames during unlocking animation"
+   bug: "358301118"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "notes_role_qs_tile"
+  namespace: "systemui"
+  description: "Enables notes role qs tile which opens default notes role app in app bubbles"
+  bug: "357863750"
+}
+
+flag {
+  name: "ignore_touches_next_to_notification_shelf"
+  namespace: "systemui"
+  description: "The shelf can vertically overlap the unlock icon. Ignore touches if so."
+  bug: "358424256"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "shade_window_goes_around"
+  namespace: "systemui"
+  description: "Enables the shade window to move between displays"
+  bug: "362719719"
+}
+
+flag {
+  name: "transition_race_condition"
+  namespace: "systemui"
+  description: "Thread-safe keyguard transitions"
+  bug: "358533338"
+  metadata {
+       purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+   name: "media_projection_request_attribution_fix"
+   namespace: "systemui"
+   description: "Ensure MediaProjection consent requests are properly attributed"
+   bug: "373581993"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "secondary_user_widget_host"
+  namespace: "systemui"
+  description: "Host communal widgets in the current secondary user on HSUM."
+  bug: "373874416"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+   name: "show_toast_when_app_control_brightness"
+   namespace: "systemui"
+   description: "Showing the warning toast if the current running app window has controlled the brightness value."
+   bug: "363225340"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "home_controls_dream_hsum"
+  namespace: "systemui"
+  description: "Enables the home controls dream in HSUM"
+  bug: "370691405"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+   name: "only_show_media_stream_slider_in_single_volume_mode"
+   namespace: "systemui"
+   description: "When the device is in single volume mode, only show media stream slider and hide all other stream (e.g. call, notification, alarm, etc) sliders in volume panel"
+   bug: "373729625"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+   name: "hide_ringer_button_in_single_volume_mode"
+   namespace: "systemui"
+   description: "When the device is in single volume mode, hide the ringer button because it doesn't work"
+   bug: "374870615"
+   metadata {
+       purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+    name: "qs_tile_detailed_view"
+    namespace: "systemui"
+    description: "Enables the tile detailed view UI."
+    bug: "374173773"
+}
+
+flag {
+    name: "bouncer_ui_revamp"
+    namespace: "systemui"
+    description: "Updates to background (blur) for bouncer"
+    bug: "370555003"
+}
+
+flag {
+    name: "bouncer_ui_revamp_2"
+    namespace: "systemui"
+    description: "Updates to button animations and font changes for bouncer, bouncer_ui_revamp will cover only the blur changes."
+    bug: "376491880"
+}
+
+flag {
+  name: "disable_blurred_shade_visible"
+  namespace: "systemui"
+  description: "Removes the check for a blur radius when determining shade window visibility"
+  bug: "394977231"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+    name: "notification_shade_blur"
+    namespace: "systemui"
+    description: "Enables the new blur effect on the Notification Shade."
+    bug: "370555223"
+}
+
+flag {
+    name: "notification_row_transparency"
+    namespace: "systemui"
+    description: "Enables transparency on the Notification Shade."
+    bug: "392187268"
+}
+
+flag {
+  name: "shade_expands_on_status_bar_long_press"
+  namespace: "systemui"
+  description: "Expands the shade on long press of any status bar"
+  bug: "371224114"
+}
+
+flag {
+  name: "shade_header_font_update"
+  namespace: "systemui"
+  description: "Updates the fonts of the shade header"
+  bug: "393609960"
+  is_fixed_read_only: true
+}
+
+flag {
+    name: "keyboard_shortcut_helper_shortcut_customizer"
+    namespace: "systemui"
+    description: "An implementation of shortcut customizations through shortcut helper."
+    bug: "365064144"
+}
+
+flag {
+    name: "notification_reentrant_dismiss"
+    namespace: "systemui"
+    description: "Posts to avoid a crashing reentrant pipeline run"
+    bug: "328328054"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+      }
+}
+
+flag {
+    name: "stoppable_fgs_system_app"
+    namespace: "systemui"
+    description: "System app with foreground service can opt in to be stoppable."
+    bug: "376564917"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "keyguard_transition_force_finish_on_screen_off"
+    namespace: "systemui"
+    description: "Forces KTF transitions to finish if the screen turns all the way off."
+    bug: "331636736"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "double_tap_to_sleep"
+    namespace: "systemui"
+    description: "Enable Double Tap to Sleep"
+    bug: "385194612"
+}
+
+flag {
+    name: "spatial_model_app_pushback"
+    namespace: "systemui"
+    description: "Implement the depth push scaling effect on the current app when users pull down shade."
+    bug: "370560660"
+}
+
+flag {
+    name: "expanded_privacy_indicators_on_large_screen"
+    namespace: "systemui"
+    description: "Larger privacy indicators on large screen"
+    bug: "381864715"
+}
+
+flag {
+    name: "desktop_effects_qs_tile"
+    namespace: "systemui"
+    description: "Enables the QS tile for desktop effects"
+    bug: "376797327"
+}
+
+flag {
+   name: "hub_edit_mode_touch_adjustments"
+   namespace: "systemui"
+   description: "Makes selected widget toggleable in edit mode and modifier buttons mutually exclusive."
+   bug: "383160667"
+}
+
+flag {
+   name: "physical_notification_movement"
+   namespace: "systemui"
+   description: "Make notifications use physics based animations for movement"
+   bug: "393581344"
+}
+
+flag {
+   name: "glanceable_hub_direct_edit_mode"
+   namespace: "systemui"
+   description: "Invokes edit mode directly from long press in glanceable hub"
+   bug: "382531177"
+}
+
+flag {
+   name: "notification_appear_nonlinear"
+   namespace: "systemui"
+   description: "Fix linear usage of notification appear"
+   bug: "397658189"
+   metadata {
+     purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "disable_shade_trackpad_two_finger_swipe"
+  namespace: "systemui"
+  description: "Disables expansion of the shade via two finger swipe on a trackpad"
+  bug: "356804470"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+   name: "notification_animated_actions_treatment"
+   namespace: "systemui"
+   description: "Special UI treatment for animated actions and replys"
+   bug: "383567383"
+}
+
+flag {
+    name: "show_audio_sharing_slider_in_volume_panel"
+    namespace: "cross_device_experiences"
+    description: "Show two sliders in volume panel when audio sharing."
+    bug: "336183611"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "magnetic_notification_swipes"
+   namespace: "systemui"
+   description: "Add support for magnetic behavior on horizontal notification swipes."
+   bug: "390179908"
+}
+
+flag {
+    name: "unfold_latency_tracking_fix"
+    namespace: "systemui"
+    description: "New implementation to track unfold latency that excludes broken cases"
+    bug: "390649568"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "permission_helper_ui_rich_ongoing"
+  namespace: "systemui"
+  description: "[RONs] Guards inline permission helper for demoting RONs [Guts/card version]"
+  bug: "379186372"
+}
+
+flag {
+  name: "permission_helper_inline_ui_rich_ongoing"
+  namespace: "systemui"
+  description: "[RONs] Guards inline permission helper for demoting RONs [Inline version]"
+  bug: "379186372"
+}
+
+flag {
+    name: "stabilize_heads_up_group_v2"
+    namespace: "systemui"
+    description: "Stabilize heads up groups in VisualStabilityCoordinator"
+    bug: "357753857"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "hardware_color_styles"
+    namespace: "systemui"
+    description: "Enables loading initial colors based ion hardware color"
+    bug: "347286986"
+    metadata {
+      purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "shade_launch_accessibility"
+   namespace: "systemui"
+   description: "Intercept accessibility focus events for the Shade during launch animations to avoid stray TalkBack events."
+   bug: "379222226"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+  name: "expand_collapse_privacy_dialog"
+  namespace: "systemui"
+  description: "Add expand and collapse actions to accessibility, to allow announcement in TalkBack when state changes."
+  bug: "380161221"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+    name: "show_locked_by_your_watch_keyguard_indicator"
+    namespace: "systemui"
+    description: "Show a Locked by your watch indicator on the keyguard when the device is locked by the watch."
+    bug: "387322459"
+}
+
+flag {
+    name: "decouple_view_controller_in_animlib"
+    namespace: "systemui"
+    description: "Decouple view and controller in AnimLib."
+    bug: "393241010"
+}
+
+flag {
+    name: "clock_fidget_animation"
+    namespace: "systemui"
+    description: "Enables the clock fidget animation"
+    bug: "364664389"
+}
+
+flag {
+    name: "notifications_launch_radius"
+    namespace: "systemui"
+    description: "Fixes a discrepancy in corner radius between expanding notification and opening window during launch animations."
+    bug: "396054791"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "skip_hide_sensitive_notif_animation"
+    namespace: "systemui"
+    description: "Skip hide sensitive notification animation when the showing layout is not changed."
+    bug: "390624334"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+    name: "lockscreen_font"
+    namespace: "systemui"
+    description: "Read-only flag for lockscreen font"
+    bug: "393610165"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "always_compose_qs_ui_fragment"
+    namespace: "systemui"
+    description: "Have QQS and QS scenes in the Compose fragment always composed, not just when it should be visible."
+    bug: "389985793"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "move_transition_animation_layer"
+    namespace: "systemui"
+    description: "Enables moving the launching window on top of the origin window in the Animation library."
+    bug: "390422470"
+}
+
+flag {
+    name: "status_bar_chips_return_animations"
+    namespace: "systemui"
+    description: "Enables return animations for status bar chips"
+    bug: "202516970"
+}
+
+flag {
+    name: "media_projection_grey_error_text"
+    namespace: "systemui"
+    description: "Set the error text color to grey when app sharing is hidden by the requesting app"
+    bug: "400877402"
+    metadata {
+       purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "keyguard_wm_reorder_atms_calls"
+   namespace: "systemui"
+   description: "Calls ATMS#setLockScreenShown before default display callbacks in case they're slow"
+   bug: "399693427"
+   metadata {
+        purpose: PURPOSE_BUGFIX
+   }
+}
+
+flag {
+    name: "extended_apps_shortcut_category"
+    namespace: "systemui"
+    description: "Allow users to add shortcuts to open apps that are not present in the apps category in shortcut helper by default"
+    bug: "394290928"
+}
+
+flag {
+    name: "use_aad_prox_sensor"
+    namespace: "systemui"
+    description: "Use AAD proximity sensor if flag is enabled and sensor is present"
+    bug: "402534470"
+}
+
+flag {
+    name: "enable_underlay"
+    namespace: "ailabs"
+    description: "Enable the underlay additional layer"
+    bug: "403422950"
+}
+
+flag {
+    name: "tv_global_actions_focus"
+    namespace: "systemui"
+    description: "Enables global actions focus on TV."
+    bug: "402759931"
+}
+
+flag {
+    name: "app_shortcut_removal_fix"
+    namespace: "systemui"
+    description: "During custom app shortcut removal, use custom shortcut command as key to find the right InputGestureData to be deleted"
+    bug: "405058325"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }

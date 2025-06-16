@@ -261,6 +261,7 @@ public class SyncManager {
     private final SyncLogger mLogger;
 
     private final AppCloningDeviceConfigHelper mAppCloningDeviceConfigHelper;
+    private final PackageMonitorImpl mPackageMonitor;
 
     private boolean isJobIdInUseLockedH(int jobId, List<JobInfo> pendingJobs) {
         for (int i = 0, size = pendingJobs.size(); i < size; i++) {
@@ -725,8 +726,8 @@ public class SyncManager {
                 mUserIntentReceiver, UserHandle.ALL, intentFilter, null, null);
 
 
-        final PackageMonitor packageMonitor = new PackageMonitorImpl();
-        packageMonitor.register(mContext, null /* thread */, UserHandle.ALL,
+        mPackageMonitor = new PackageMonitorImpl();
+        mPackageMonitor.register(mContext, null /* thread */, UserHandle.ALL,
                 false /* externalStorage */);
 
         intentFilter = new IntentFilter(Intent.ACTION_TIME_CHANGED);
@@ -2158,8 +2159,12 @@ public class SyncManager {
             }
             if (mBound) {
                 mBound = false;
-                mLogger.log("unbindService for ", this);
-                mContext.unbindService(this);
+                try {
+                    mLogger.log("unbindService for ", this);
+                    mContext.unbindService(this);
+                } catch (NoSuchElementException e) {
+                    Slog.wtf(TAG, "Failed to unlink active sync adapter on close()", e);
+                }
                 try {
                     mBatteryStats.noteSyncFinish(mEventName, mSyncAdapterUid);
                 } catch (RemoteException e) {

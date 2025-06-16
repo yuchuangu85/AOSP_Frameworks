@@ -63,7 +63,7 @@ class MediaControlInteractorTest : SysuiTestCase() {
     private val kosmos = testKosmos()
     private val testScope = kosmos.testScope
 
-    private val mediaDataFilter: MediaDataFilterImpl = kosmos.mediaDataFilter
+    private val mediaDataFilter: MediaDataFilterImpl = with(kosmos) { mediaDataFilter }
     private val activityStarter = kosmos.activityStarter
     private val keyguardStateController = kosmos.keyguardStateController
     private val instanceId: InstanceId = kosmos.mediaInstanceId
@@ -99,7 +99,7 @@ class MediaControlInteractorTest : SysuiTestCase() {
                 MediaData(
                     userId = USER_ID,
                     instanceId = InstanceId.fakeInstanceId(2),
-                    artist = ARTIST
+                    artist = ARTIST,
                 )
 
             mediaDataFilter.onMediaDataLoaded(KEY, KEY, mediaData)
@@ -123,14 +123,23 @@ class MediaControlInteractorTest : SysuiTestCase() {
 
         val clickIntent = mock<PendingIntent> { whenever(it.isActivity).thenReturn(true) }
         val expandable = mock<Expandable>()
+        val activityController = mock<ActivityTransitionAnimator.Controller>()
+        whenever(expandable.activityTransitionController(any())).thenReturn(activityController)
 
         underTest.startClickIntent(expandable, clickIntent)
 
-        verify(clickIntent).send(any<Bundle>())
+        verify(activityStarter)
+            .startPendingIntentMaybeDismissingKeyguard(
+                eq(clickIntent),
+                eq(null),
+                eq(activityController),
+            )
     }
 
     @Test
     fun startClickIntent_hideOverLockscreen() {
+        whenever(notificationLockscreenUserManager.isCurrentProfile(USER_ID)).thenReturn(true)
+        whenever(notificationLockscreenUserManager.isProfileAvailable(USER_ID)).thenReturn(true)
         whenever(keyguardStateController.isShowing).thenReturn(false)
 
         val clickIntent = mock<PendingIntent> { whenever(it.isActivity).thenReturn(true) }
@@ -138,6 +147,8 @@ class MediaControlInteractorTest : SysuiTestCase() {
         val activityController = mock<ActivityTransitionAnimator.Controller>()
         whenever(expandable.activityTransitionController(any())).thenReturn(activityController)
 
+        val mediaData = MediaData(userId = USER_ID, instanceId = instanceId, artist = ARTIST)
+        mediaDataFilter.onMediaDataLoaded(KEY, null, mediaData)
         underTest.startClickIntent(expandable, clickIntent)
 
         verify(activityStarter)
@@ -196,7 +207,7 @@ class MediaControlInteractorTest : SysuiTestCase() {
                 eq(true),
                 eq(dialogTransitionController),
                 eq(null),
-                eq(null)
+                eq(null),
             )
     }
 
@@ -212,17 +223,20 @@ class MediaControlInteractorTest : SysuiTestCase() {
             .createBroadcastDialogWithController(
                 eq(APP_NAME),
                 eq(PACKAGE_NAME),
-                eq(dialogTransitionController)
+                eq(dialogTransitionController),
             )
     }
 
     @Test
     fun removeMediaControl() {
+        whenever(notificationLockscreenUserManager.isCurrentProfile(USER_ID)).thenReturn(true)
+        whenever(notificationLockscreenUserManager.isProfileAvailable(USER_ID)).thenReturn(true)
         val listener = mock<MediaDataProcessor.Listener>()
         kosmos.mediaDataProcessor.addInternalListener(listener)
 
-        var mediaData = MediaData(userId = USER_ID, instanceId = instanceId, artist = ARTIST)
+        val mediaData = MediaData(userId = USER_ID, instanceId = instanceId, artist = ARTIST)
         kosmos.mediaDataRepository.addMediaEntry(KEY, mediaData)
+        kosmos.mediaDataFilter.onMediaDataLoaded(KEY, null, mediaData)
 
         underTest.removeMediaControl(null, instanceId, 0L)
         kosmos.fakeExecutor.advanceClockToNext()

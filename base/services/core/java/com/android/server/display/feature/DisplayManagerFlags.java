@@ -16,10 +16,12 @@
 
 package com.android.server.display.feature;
 
+import android.content.Context;
 import android.os.Build;
 import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.util.Slog;
+import android.window.DesktopExperienceFlags;
 
 import com.android.server.display.feature.flags.Flags;
 import com.android.server.display.utils.DebugUtils;
@@ -41,18 +43,6 @@ public class DisplayManagerFlags {
             Flags.FLAG_ENABLE_PORT_IN_DISPLAY_LAYOUT,
             Flags::enablePortInDisplayLayout);
 
-    private final FlagState mConnectedDisplayManagementFlagState = new FlagState(
-            Flags.FLAG_ENABLE_CONNECTED_DISPLAY_MANAGEMENT,
-            Flags::enableConnectedDisplayManagement);
-
-    private final FlagState mNbmControllerFlagState = new FlagState(
-            Flags.FLAG_ENABLE_NBM_CONTROLLER,
-            Flags::enableNbmController);
-
-    private final FlagState mHdrClamperFlagState = new FlagState(
-            Flags.FLAG_ENABLE_HDR_CLAMPER,
-            Flags::enableHdrClamper);
-
     private final FlagState mAdaptiveToneImprovements1 = new FlagState(
             Flags.FLAG_ENABLE_ADAPTIVE_TONE_IMPROVEMENTS_1,
             Flags::enableAdaptiveToneImprovements1);
@@ -68,6 +58,10 @@ public class DisplayManagerFlags {
     private final FlagState mExternalDisplayLimitModeState = new FlagState(
             Flags.FLAG_ENABLE_MODE_LIMIT_FOR_EXTERNAL_DISPLAY,
             Flags::enableModeLimitForExternalDisplay);
+
+    private final FlagState mDisplayTopology = new FlagState(
+            Flags.FLAG_DISPLAY_TOPOLOGY,
+            DesktopExperienceFlags.DISPLAY_TOPOLOGY::isTrue);
 
     private final FlagState mConnectedDisplayErrorHandlingFlagState = new FlagState(
             Flags.FLAG_ENABLE_CONNECTED_DISPLAY_ERROR_HANDLING,
@@ -87,6 +81,15 @@ public class DisplayManagerFlags {
     private final FlagState mSmallAreaDetectionFlagState = new FlagState(
             com.android.graphics.surfaceflinger.flags.Flags.FLAG_ENABLE_SMALL_AREA_DETECTION,
             com.android.graphics.surfaceflinger.flags.Flags::enableSmallAreaDetection);
+
+    private final FlagState mDisplayConfigErrorHalFlagState = new FlagState(
+            com.android.graphics.surfaceflinger.flags.Flags.FLAG_DISPLAY_CONFIG_ERROR_HAL,
+            com.android.graphics.surfaceflinger.flags.Flags::displayConfigErrorHal);
+
+    private final FlagState mSyncedResolutionSwitch = new FlagState(
+            com.android.graphics.surfaceflinger.flags.Flags.FLAG_SYNCED_RESOLUTION_SWITCH,
+            com.android.graphics.surfaceflinger.flags.Flags::syncedResolutionSwitch
+    );
 
     private final FlagState mBrightnessIntRangeUserPerceptionFlagState = new FlagState(
             Flags.FLAG_BRIGHTNESS_INT_RANGE_USER_PERCEPTION,
@@ -124,11 +127,6 @@ public class DisplayManagerFlags {
             Flags.FLAG_ALWAYS_ROTATE_DISPLAY_DEVICE,
             Flags::alwaysRotateDisplayDevice);
 
-    private final FlagState mRefreshRateVotingTelemetry = new FlagState(
-            Flags.FLAG_REFRESH_RATE_VOTING_TELEMETRY,
-            Flags::refreshRateVotingTelemetry
-    );
-
     private final FlagState mPixelAnisotropyCorrectionEnabled = new FlagState(
             Flags.FLAG_ENABLE_PIXEL_ANISOTROPY_CORRECTION,
             Flags::enablePixelAnisotropyCorrection
@@ -154,10 +152,9 @@ public class DisplayManagerFlags {
             Flags::useFusionProxSensor
     );
 
-    private final FlagState mOffloadControlsDozeAutoBrightness = new FlagState(
-            Flags.FLAG_OFFLOAD_CONTROLS_DOZE_AUTO_BRIGHTNESS,
-            Flags::offloadControlsDozeAutoBrightness
-    );
+    private final FlagState mDozeBrightnessFloat = new FlagState(
+            Flags.FLAG_DOZE_BRIGHTNESS_FLOAT,
+            Flags::dozeBrightnessFloat);
 
     private final FlagState mPeakRefreshRatePhysicalLimit = new FlagState(
             Flags.FLAG_ENABLE_PEAK_REFRESH_RATE_PHYSICAL_LIMIT,
@@ -179,26 +176,125 @@ public class DisplayManagerFlags {
             Flags::offloadDozeOverrideHoldsWakelock
     );
 
+    private final FlagState mOffloadSessionCancelBlockScreenOn = new FlagState(
+            Flags.FLAG_OFFLOAD_SESSION_CANCEL_BLOCK_SCREEN_ON,
+            Flags::offloadSessionCancelBlockScreenOn);
+
+    private final FlagState mNewHdrBrightnessModifier = new FlagState(
+            Flags.FLAG_NEW_HDR_BRIGHTNESS_MODIFIER,
+            Flags::newHdrBrightnessModifier);
+
+    private final FlagState mIdleScreenConfigInSubscribingLightSensor = new FlagState(
+            Flags.FLAG_IDLE_SCREEN_CONFIG_IN_SUBSCRIBING_LIGHT_SENSOR,
+            Flags::idleScreenConfigInSubscribingLightSensor);
+
+    private final FlagState mVirtualDisplayLimit =
+            new FlagState(
+                    Flags.FLAG_VIRTUAL_DISPLAY_LIMIT,
+                    Flags::virtualDisplayLimit);
+
+    private final FlagState mNormalBrightnessForDozeParameter = new FlagState(
+            Flags.FLAG_NORMAL_BRIGHTNESS_FOR_DOZE_PARAMETER,
+            Flags::normalBrightnessForDozeParameter
+    );
+    private final FlagState mBlockAutobrightnessChangesOnStylusUsage = new FlagState(
+            Flags.FLAG_BLOCK_AUTOBRIGHTNESS_CHANGES_ON_STYLUS_USAGE,
+            Flags::blockAutobrightnessChangesOnStylusUsage
+    );
+    private final FlagState mIsUserRefreshRateForExternalDisplayEnabled = new FlagState(
+            Flags.FLAG_ENABLE_USER_REFRESH_RATE_FOR_EXTERNAL_DISPLAY,
+            Flags::enableUserRefreshRateForExternalDisplay
+    );
+
+    private final FlagState mEnableWaitingConfirmationBeforeMirroring = new FlagState(
+            Flags.FLAG_ENABLE_WAITING_CONFIRMATION_BEFORE_MIRRORING,
+            Flags::enableWaitingConfirmationBeforeMirroring
+    );
+
+    private final FlagState mEnableApplyDisplayChangedDuringDisplayAdded = new FlagState(
+            Flags.FLAG_ENABLE_APPLY_DISPLAY_CHANGED_DURING_DISPLAY_ADDED,
+            Flags::enableApplyDisplayChangedDuringDisplayAdded
+    );
+
+    private final FlagState mEnableBatteryStatsForAllDisplays = new FlagState(
+            Flags.FLAG_ENABLE_BATTERY_STATS_FOR_ALL_DISPLAYS,
+            Flags::enableBatteryStatsForAllDisplays
+    );
+
+    private final FlagState mHasArrSupport = new FlagState(
+            Flags.FLAG_ENABLE_HAS_ARR_SUPPORT,
+            Flags::enableHasArrSupport
+    );
+
+    private final FlagState mAutoBrightnessModeBedtimeWearFlagState = new FlagState(
+            Flags.FLAG_AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+            Flags::autoBrightnessModeBedtimeWear
+    );
+
+    private final FlagState mGetSupportedRefreshRatesFlagState = new FlagState(
+            Flags.FLAG_ENABLE_GET_SUPPORTED_REFRESH_RATES,
+            Flags::enableGetSupportedRefreshRates
+    );
+
+    private final FlagState mEnablePluginManagerFlagState = new FlagState(
+            Flags.FLAG_ENABLE_PLUGIN_MANAGER,
+            Flags::enablePluginManager
+    );
+
+    private final FlagState mEnableHdrOverridePluginTypeFlagState = new FlagState(
+            Flags.FLAG_ENABLE_HDR_OVERRIDE_PLUGIN_TYPE,
+            Flags::enableHdrOverridePluginType
+    );
+
+    private final FlagState mDisplayListenerPerformanceImprovementsFlagState = new FlagState(
+            Flags.FLAG_DISPLAY_LISTENER_PERFORMANCE_IMPROVEMENTS,
+            Flags::displayListenerPerformanceImprovements
+    );
+    private final FlagState mEnableDisplayContentModeManagementFlagState = new FlagState(
+            Flags.FLAG_ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT,
+            DesktopExperienceFlags.ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT::isTrue
+    );
+
+    private final FlagState mSubscribeGranularDisplayEvents = new FlagState(
+            Flags.FLAG_SUBSCRIBE_GRANULAR_DISPLAY_EVENTS,
+            Flags::subscribeGranularDisplayEvents
+    );
+
+    private final FlagState mBaseDensityForExternalDisplays = new FlagState(
+            Flags.FLAG_BASE_DENSITY_FOR_EXTERNAL_DISPLAYS,
+            DesktopExperienceFlags.BASE_DENSITY_FOR_EXTERNAL_DISPLAYS::isTrue
+    );
+
+    private final FlagState mFramerateOverrideTriggersRrCallbacks = new FlagState(
+            Flags.FLAG_FRAMERATE_OVERRIDE_TRIGGERS_RR_CALLBACKS,
+            Flags::framerateOverrideTriggersRrCallbacks
+    );
+
+    private final FlagState mRefreshRateEventForForegroundApps = new FlagState(
+            Flags.FLAG_REFRESH_RATE_EVENT_FOR_FOREGROUND_APPS,
+            Flags::refreshRateEventForForegroundApps
+    );
+
+    private final FlagState mCommittedStateSeparateEvent = new FlagState(
+            Flags.FLAG_COMMITTED_STATE_SEPARATE_EVENT,
+            Flags::committedStateSeparateEvent
+    );
+
+    private final FlagState mSeparateTimeouts = new FlagState(
+            Flags.FLAG_SEPARATE_TIMEOUTS,
+            Flags::separateTimeouts
+    );
+
+    private final FlagState mDelayImplicitRrRegistrationUntilRrAccessed = new FlagState(
+            Flags.FLAG_DELAY_IMPLICIT_RR_REGISTRATION_UNTIL_RR_ACCESSED,
+            Flags::delayImplicitRrRegistrationUntilRrAccessed
+    );
+
     /**
      * @return {@code true} if 'port' is allowed in display layout configuration file.
      */
     public boolean isPortInDisplayLayoutEnabled() {
         return mPortInDisplayLayoutFlagState.isEnabled();
-    }
-
-    /** Returns whether connected display management is enabled or not. */
-    public boolean isConnectedDisplayManagementEnabled() {
-        return mConnectedDisplayManagementFlagState.isEnabled();
-    }
-
-    /** Returns whether NBM Controller is enabled or not. */
-    public boolean isNbmControllerEnabled() {
-        return mNbmControllerFlagState.isEnabled();
-    }
-
-    /** Returns whether hdr clamper is enabled on not. */
-    public boolean isHdrClamperEnabled() {
-        return mHdrClamperFlagState.isEnabled();
     }
 
     /** Returns whether power throttling clamper is enabled on not. */
@@ -240,6 +336,10 @@ public class DisplayManagerFlags {
         return mExternalDisplayLimitModeState.isEnabled();
     }
 
+    public boolean isDisplayTopologyEnabled() {
+        return mDisplayTopology.isEnabled();
+    }
+
     /**
      * @return Whether displays refresh rate synchronization is enabled.
      */
@@ -268,6 +368,14 @@ public class DisplayManagerFlags {
 
     public boolean isSmallAreaDetectionEnabled() {
         return mSmallAreaDetectionFlagState.isEnabled();
+    }
+
+    public boolean isDisplayConfigErrorHalEnabled() {
+        return mDisplayConfigErrorHalFlagState.isEnabled();
+    }
+
+    public boolean isSyncedResolutionSwitchEnabled() {
+        return mSyncedResolutionSwitch.isEnabled();
     }
 
     public boolean isBrightnessIntRangeUserPerceptionEnabled() {
@@ -309,10 +417,6 @@ public class DisplayManagerFlags {
         return mAlwaysRotateDisplayDevice.isEnabled();
     }
 
-    public boolean isRefreshRateVotingTelemetryEnabled() {
-        return mRefreshRateVotingTelemetry.isEnabled();
-    }
-
     public boolean isPixelAnisotropyCorrectionInLogicalDisplayEnabled() {
         return mPixelAnisotropyCorrectionEnabled.isEnabled();
     }
@@ -337,11 +441,8 @@ public class DisplayManagerFlags {
         return mUseFusionProxSensor.getName();
     }
 
-    /**
-     * @return Whether DisplayOffload should control auto-brightness in doze
-     */
-    public boolean offloadControlsDozeAutoBrightness() {
-        return mOffloadControlsDozeAutoBrightness.isEnabled();
+    public boolean isDozeBrightnessFloatEnabled() {
+        return mDozeBrightnessFloat.isEnabled();
     }
 
     public boolean isPeakRefreshRatePhysicalLimitEnabled() {
@@ -350,6 +451,10 @@ public class DisplayManagerFlags {
 
     public boolean isOffloadDozeOverrideHoldsWakelockEnabled() {
         return mOffloadDozeOverrideHoldsWakelock.isEnabled();
+    }
+
+    public boolean isOffloadSessionCancelBlockScreenOnEnabled() {
+        return mOffloadSessionCancelBlockScreenOn.isEnabled();
     }
 
     /**
@@ -364,41 +469,223 @@ public class DisplayManagerFlags {
     }
 
     /**
+     * @return Whether to use new HDR brightness modifier or not
+     */
+    public boolean useNewHdrBrightnessModifier() {
+        return mNewHdrBrightnessModifier.isEnabled();
+    }
+
+    public boolean isVirtualDisplayLimitEnabled() {
+        return mVirtualDisplayLimit.isEnabled();
+    }
+
+    /**
+     * @return Whether the useDozeBrightness parameter should be used
+     */
+    public boolean isNormalBrightnessForDozeParameterEnabled(Context context) {
+        return mNormalBrightnessForDozeParameter.isEnabled() && context.getResources().getBoolean(
+                com.android.internal.R.bool.config_allowNormalBrightnessForDozePolicy);
+    }
+
+     /**
+      * @return {@code true} if idle timer refresh rate config is accounted for while subscribing to
+      * the light sensor
+      */
+    public boolean isIdleScreenConfigInSubscribingLightSensorEnabled() {
+        return mIdleScreenConfigInSubscribingLightSensor.isEnabled();
+    }
+
+    /**
+      * @return {@code true} if mirroring won't be enabled until boot completes and the user enables
+      * the display.
+      */
+    public boolean isWaitingConfirmationBeforeMirroringEnabled() {
+        return mEnableWaitingConfirmationBeforeMirroring.isEnabled();
+    }
+
+    /**
+      * @return {@code true} if battery stats is enabled for all displays, not just the primary
+      * display.
+      */
+    public boolean isBatteryStatsEnabledForAllDisplays() {
+        return mEnableBatteryStatsForAllDisplays.isEnabled();
+    }
+
+    /**
+      * @return {@code true} if need to apply display changes during display added event.
+      */
+    public boolean isApplyDisplayChangedDuringDisplayAddedEnabled() {
+        return mEnableApplyDisplayChangedDuringDisplayAdded.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if autobrightness is to be blocked when stylus is being used
+     */
+    public boolean isBlockAutobrightnessChangesOnStylusUsage() {
+        return mBlockAutobrightnessChangesOnStylusUsage.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if need to use user refresh rate settings for
+     * external displays.
+     */
+    public boolean isUserRefreshRateForExternalDisplayEnabled() {
+        return mIsUserRefreshRateForExternalDisplayEnabled.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if hasArrSupport API is enabled.
+     */
+    public boolean hasArrSupportFlag() {
+        return mHasArrSupport.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if bedtime mode specific auto-brightness curve should be loaded and be
+     * applied when bedtime mode is enabled.
+     */
+    public boolean isAutoBrightnessModeBedtimeWearEnabled() {
+        return mAutoBrightnessModeBedtimeWearFlagState.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if supported refresh rate api is enabled.
+     */
+    public boolean enableGetSupportedRefreshRates() {
+        return mGetSupportedRefreshRatesFlagState.isEnabled();
+    }
+
+    public boolean isPluginManagerEnabled() {
+        return mEnablePluginManagerFlagState.isEnabled();
+    }
+
+    public boolean isHdrOverrideEnabled() {
+        return mEnableHdrOverridePluginTypeFlagState.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for display listener performance improvements is enabled
+     */
+    public boolean isDisplayListenerPerformanceImprovementsEnabled() {
+        return mDisplayListenerPerformanceImprovementsFlagState.isEnabled();
+    }
+
+    public boolean isDisplayContentModeManagementEnabled() {
+        return mEnableDisplayContentModeManagementFlagState.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for subscribing to granular display events is enabled
+     */
+    public boolean isSubscribeGranularDisplayEventsEnabled() {
+        return mSubscribeGranularDisplayEvents.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for base density for external displays is enabled
+     */
+    public boolean isBaseDensityForExternalDisplaysEnabled() {
+        return mBaseDensityForExternalDisplays.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag triggering refresh rate callbacks when framerate is
+     * overridden is enabled
+     */
+    public boolean isFramerateOverrideTriggersRrCallbacksEnabled() {
+        return mFramerateOverrideTriggersRrCallbacks.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for sending refresh rate events only for the apps in
+     * foreground is enabled
+     */
+    public boolean isRefreshRateEventForForegroundAppsEnabled() {
+        return mRefreshRateEventForForegroundApps.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for having a separate event for display's committed state
+     * is enabled
+     */
+    public boolean isCommittedStateSeparateEventEnabled() {
+        return mCommittedStateSeparateEvent.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for having a separate timeouts for power groups
+     * is enabled
+     */
+    public boolean isSeparateTimeoutsEnabled() {
+        return mSeparateTimeouts.isEnabled();
+    }
+
+    /**
+     * @return {@code true} if the flag for only explicit subscription for RR changes is enabled
+     */
+    public boolean isDelayImplicitRrRegistrationUntilRrAccessedEnabled() {
+        return mDelayImplicitRrRegistrationUntilRrAccessed.isEnabled();
+    }
+
+    /**
      * dumps all flagstates
      * @param pw printWriter
      */
     public void dump(PrintWriter pw) {
         pw.println("DisplayManagerFlags:");
+        pw.println("--------------------");
         pw.println(" " + mAdaptiveToneImprovements1);
         pw.println(" " + mAdaptiveToneImprovements2);
         pw.println(" " + mBackUpSmoothDisplayAndForcePeakRefreshRateFlagState);
         pw.println(" " + mConnectedDisplayErrorHandlingFlagState);
-        pw.println(" " + mConnectedDisplayManagementFlagState);
         pw.println(" " + mDisplayOffloadFlagState);
         pw.println(" " + mExternalDisplayLimitModeState);
-        pw.println(" " + mHdrClamperFlagState);
-        pw.println(" " + mNbmControllerFlagState);
+        pw.println(" " + mDisplayTopology);
         pw.println(" " + mPowerThrottlingClamperFlagState);
         pw.println(" " + mEvenDimmerFlagState);
         pw.println(" " + mSmallAreaDetectionFlagState);
+        pw.println(" " + mDisplayConfigErrorHalFlagState);
+        pw.println(" " + mSyncedResolutionSwitch);
         pw.println(" " + mBrightnessIntRangeUserPerceptionFlagState);
         pw.println(" " + mRestrictDisplayModes);
         pw.println(" " + mBrightnessWearBedtimeModeClamperFlagState);
         pw.println(" " + mAutoBrightnessModesFlagState);
         pw.println(" " + mFastHdrTransitions);
         pw.println(" " + mAlwaysRotateDisplayDevice);
-        pw.println(" " + mRefreshRateVotingTelemetry);
         pw.println(" " + mPixelAnisotropyCorrectionEnabled);
         pw.println(" " + mSensorBasedBrightnessThrottling);
         pw.println(" " + mIdleScreenRefreshRateTimeout);
         pw.println(" " + mRefactorDisplayPowerController);
         pw.println(" " + mResolutionBackupRestore);
         pw.println(" " + mUseFusionProxSensor);
-        pw.println(" " + mOffloadControlsDozeAutoBrightness);
+        pw.println(" " + mDozeBrightnessFloat);
         pw.println(" " + mPeakRefreshRatePhysicalLimit);
         pw.println(" " + mIgnoreAppPreferredRefreshRate);
         pw.println(" " + mSynthetic60hzModes);
         pw.println(" " + mOffloadDozeOverrideHoldsWakelock);
+        pw.println(" " + mOffloadSessionCancelBlockScreenOn);
+        pw.println(" " + mNewHdrBrightnessModifier);
+        pw.println(" " + mVirtualDisplayLimit);
+        pw.println(" " + mNormalBrightnessForDozeParameter);
+        pw.println(" " + mIdleScreenConfigInSubscribingLightSensor);
+        pw.println(" " + mEnableWaitingConfirmationBeforeMirroring);
+        pw.println(" " + mEnableBatteryStatsForAllDisplays);
+        pw.println(" " + mEnableApplyDisplayChangedDuringDisplayAdded);
+        pw.println(" " + mBlockAutobrightnessChangesOnStylusUsage);
+        pw.println(" " + mIsUserRefreshRateForExternalDisplayEnabled);
+        pw.println(" " + mHasArrSupport);
+        pw.println(" " + mAutoBrightnessModeBedtimeWearFlagState);
+        pw.println(" " + mGetSupportedRefreshRatesFlagState);
+        pw.println(" " + mEnablePluginManagerFlagState);
+        pw.println(" " + mDisplayListenerPerformanceImprovementsFlagState);
+        pw.println(" " + mSubscribeGranularDisplayEvents);
+        pw.println(" " + mEnableDisplayContentModeManagementFlagState);
+        pw.println(" " + mBaseDensityForExternalDisplays);
+        pw.println(" " + mFramerateOverrideTriggersRrCallbacks);
+        pw.println(" " + mRefreshRateEventForForegroundApps);
+        pw.println(" " + mCommittedStateSeparateEvent);
+        pw.println(" " + mSeparateTimeouts);
+        pw.println(" " + mDelayImplicitRrRegistrationUntilRrAccessed);
     }
 
     private static class FlagState {

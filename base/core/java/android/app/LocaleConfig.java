@@ -28,6 +28,8 @@ import android.content.res.XmlResourceParser;
 import android.os.LocaleList;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.AttributeSet;
 import android.util.Slog;
 import android.util.Xml;
@@ -64,6 +66,7 @@ import java.util.Set;
 // Add following to last Note: when guide is written:
 // For more information about the LocaleConfig overridden by the application, see TODO(b/261528306):
 // add link to guide
+@RavenwoodKeepWholeClass
 public class LocaleConfig implements Parcelable {
     private static final String TAG = "LocaleConfig";
     public static final String TAG_LOCALE_CONFIG = "locale-config";
@@ -104,6 +107,7 @@ public class LocaleConfig implements Parcelable {
      *
      * @see Context#createPackageContext(String, int).
      */
+    @RavenwoodThrow(blockedBy = LocaleManager.class)
     public LocaleConfig(@NonNull Context context) {
         this(context, true);
     }
@@ -117,10 +121,12 @@ public class LocaleConfig implements Parcelable {
      * @see Context#createPackageContext(String, int).
      */
     @NonNull
+    @RavenwoodThrow(blockedBy = LocaleManager.class)
     public static LocaleConfig fromContextIgnoringOverride(@NonNull Context context) {
         return new LocaleConfig(context, false);
     }
 
+    @RavenwoodThrow(blockedBy = LocaleManager.class)
     private LocaleConfig(@NonNull Context context, boolean allowOverride) {
         if (allowOverride) {
             LocaleManager localeManager = context.getSystemService(LocaleManager.class);
@@ -138,15 +144,12 @@ public class LocaleConfig implements Parcelable {
             }
         }
         Resources res = context.getResources();
-        //Get the resource id
         int resId = context.getApplicationInfo().getLocaleConfigRes();
         if (resId == 0) {
             mStatus = STATUS_NOT_SPECIFIED;
             return;
         }
-        try {
-            //Get the parser to read XML data
-            XmlResourceParser parser = res.getXml(resId);
+        try (XmlResourceParser parser = res.getXml(resId)) {
             parseLocaleConfig(parser, res);
         } catch (Resources.NotFoundException e) {
             Slog.w(TAG, "The resource file pointed to by the given resource ID isn't found.");
@@ -202,22 +205,22 @@ public class LocaleConfig implements Parcelable {
         String defaultLocale = null;
         if (android.content.res.Flags.defaultLocale()) {
             // Read the defaultLocale attribute of the LocaleConfig element
-            TypedArray att = res.obtainAttributes(
-                    attrs, com.android.internal.R.styleable.LocaleConfig);
-            defaultLocale = att.getString(
-                    R.styleable.LocaleConfig_defaultLocale);
-            att.recycle();
+            try (TypedArray att = res.obtainAttributes(
+                    attrs, com.android.internal.R.styleable.LocaleConfig)) {
+                defaultLocale = att.getString(
+                        R.styleable.LocaleConfig_defaultLocale);
+            }
         }
 
         Set<String> localeNames = new HashSet<>();
         while (XmlUtils.nextElementWithin(parser, outerDepth)) {
             if (TAG_LOCALE.equals(parser.getName())) {
-                final TypedArray attributes = res.obtainAttributes(
-                        attrs, com.android.internal.R.styleable.LocaleConfig_Locale);
-                String nameAttr = attributes.getString(
-                        com.android.internal.R.styleable.LocaleConfig_Locale_name);
-                localeNames.add(nameAttr);
-                attributes.recycle();
+                try (TypedArray attributes = res.obtainAttributes(
+                        attrs, com.android.internal.R.styleable.LocaleConfig_Locale)) {
+                    String nameAttr = attributes.getString(
+                            com.android.internal.R.styleable.LocaleConfig_Locale_name);
+                    localeNames.add(nameAttr);
+                }
             } else {
                 XmlUtils.skipCurrentTag(parser);
             }

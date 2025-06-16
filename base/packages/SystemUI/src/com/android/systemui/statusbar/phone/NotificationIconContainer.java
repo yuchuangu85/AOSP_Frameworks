@@ -26,7 +26,6 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.Icon;
 import android.util.AttributeSet;
-import android.util.MathUtils;
 import android.util.Property;
 import android.view.ContextThemeWrapper;
 import android.view.View;
@@ -42,7 +41,7 @@ import com.android.internal.statusbar.StatusBarIcon;
 import com.android.settingslib.Utils;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.StatusBarIconView;
-import com.android.systemui.statusbar.notification.shared.NotificationIconContainerRefactor;
+import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior;
 import com.android.systemui.statusbar.notification.stack.AnimationFilter;
 import com.android.systemui.statusbar.notification.stack.AnimationProperties;
 import com.android.systemui.statusbar.notification.stack.ViewState;
@@ -145,6 +144,7 @@ public class NotificationIconContainer extends ViewGroup {
 
     private int mMaxIcons = Integer.MAX_VALUE;
     private boolean mOverrideIconColor;
+    private boolean mUseInverseOverrideIconColor;
     private boolean mIsStaticLayout = true;
     private final HashMap<View, IconState> mIconStates = new HashMap<>();
     private int mDotPadding;
@@ -165,12 +165,13 @@ public class NotificationIconContainer extends ViewGroup {
     private IconState mFirstVisibleIconState;
     private float mVisualOverflowStart;
     private boolean mIsShowingOverflowDot;
-    private StatusBarIconView mIsolatedIcon;
-    private Rect mIsolatedIconLocation;
+    @Nullable private StatusBarIconView mIsolatedIcon;
+    @Nullable private Rect mIsolatedIconLocation;
     private final int[] mAbsolutePosition = new int[2];
-    private View mIsolatedIconForAnimation;
+    @Nullable private View mIsolatedIconForAnimation;
     private int mThemedTextColorPrimary;
-    private Runnable mIsolatedIconAnimationEndRunnable;
+    private int mThemedTextColorPrimaryInverse;
+    @Nullable private Runnable mIsolatedIconAnimationEndRunnable;
     private boolean mUseIncreasedIconScale;
 
     public NotificationIconContainer(Context context, AttributeSet attrs) {
@@ -192,6 +193,8 @@ public class NotificationIconContainer extends ViewGroup {
                 com.android.internal.R.style.Theme_DeviceDefault_DayNight);
         mThemedTextColorPrimary = Utils.getColorAttr(themedContext,
                 com.android.internal.R.attr.textColorPrimary).getDefaultColor();
+        mThemedTextColorPrimaryInverse = Utils.getColorAttr(themedContext,
+                com.android.internal.R.attr.textColorPrimaryInverse).getDefaultColor();
     }
 
     @Override
@@ -200,7 +203,7 @@ public class NotificationIconContainer extends ViewGroup {
         Paint paint = new Paint();
         paint.setColor(Color.RED);
         paint.setStyle(Paint.Style.STROKE);
-        canvas.drawRect(getActualPaddingStart(), 0, getLayoutEnd(), getHeight(), paint);
+        canvas.drawRect(getActualPaddingStart(), 0, getRightBound(), getHeight(), paint);
 
         if (DEBUG_OVERFLOW) {
             if (mLastVisibleIconState == null) {
@@ -243,7 +246,7 @@ public class NotificationIconContainer extends ViewGroup {
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         final int childCount = getChildCount();
-        final int maxVisibleIcons = getMaxVisibleIcons(childCount);
+        final int maxVisibleIcons = mMaxIcons;
         final int width = MeasureSpec.getSize(widthMeasureSpec);
         final int childWidthSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.UNSPECIFIED);
         int totalWidth = (int) (getActualPaddingStart() + getActualPaddingEnd());
@@ -284,22 +287,13 @@ public class NotificationIconContainer extends ViewGroup {
 
     @Override
     public String toString() {
-        if (NotificationIconContainerRefactor.isEnabled()) {
-            return super.toString()
-                    + " {"
-                    + " overrideIconColor=" + mOverrideIconColor
-                    + ", maxIcons=" + mMaxIcons
-                    + ", isStaticLayout=" + mIsStaticLayout
-                    + ", themedTextColorPrimary=#" + Integer.toHexString(mThemedTextColorPrimary)
-                    + " }";
-        } else {
-            return "NotificationIconContainer("
-                    + "dozing=" + mDozing + " onLockScreen=" + mOnLockScreen
-                    + " overrideIconColor=" + mOverrideIconColor
-                    + " speedBumpIndex=" + mSpeedBumpIndex
-                    + " themedTextColorPrimary=#" + Integer.toHexString(mThemedTextColorPrimary)
-                    + ')';
-        }
+        return super.toString()
+                + " {"
+                + " overrideIconColor=" + mOverrideIconColor
+                + ", maxIcons=" + mMaxIcons
+                + ", isStaticLayout=" + mIsStaticLayout
+                + ", themedTextColorPrimary=#" + Integer.toHexString(mThemedTextColorPrimary)
+                + " }";
     }
 
     @VisibleForTesting
@@ -349,13 +343,8 @@ public class NotificationIconContainer extends ViewGroup {
             }
         }
         if (child instanceof StatusBarIconView) {
-            if (NotificationIconContainerRefactor.isEnabled()) {
-                if (!mChangingViewPositions) {
-                    ((StatusBarIconView) child).updateIconDimens();
-                }
-            } else {
+            if (!mChangingViewPositions) {
                 ((StatusBarIconView) child).updateIconDimens();
-                ((StatusBarIconView) child).setDozing(mDozing, false, 0);
             }
         }
     }
@@ -367,23 +356,11 @@ public class NotificationIconContainer extends ViewGroup {
         StatusBarIconView iconView = (StatusBarIconView) child;
         Icon sourceIcon = iconView.getSourceIcon();
         String groupKey = iconView.getNotification().getGroupKey();
-        if (NotificationIconContainerRefactor.isEnabled()) {
-            if (mReplacingIcons == null) {
-                return false;
-            }
-            StatusBarIcon replacedIcon = mReplacingIcons.get(groupKey);
-            return replacedIcon != null && sourceIcon.sameAs(replacedIcon.icon);
-        } else {
-            if (mReplacingIconsLegacy == null) {
-                return false;
-            }
-            ArrayList<StatusBarIcon> statusBarIcons = mReplacingIconsLegacy.get(groupKey);
-            if (statusBarIcons != null) {
-                StatusBarIcon replacedIcon = statusBarIcons.get(0);
-                return sourceIcon.sameAs(replacedIcon.icon);
-            }
+        if (mReplacingIcons == null) {
             return false;
         }
+        StatusBarIcon replacedIcon = mReplacingIcons.get(groupKey);
+        return replacedIcon != null && sourceIcon.sameAs(replacedIcon.icon);
     }
 
     @Override
@@ -407,6 +384,9 @@ public class NotificationIconContainer extends ViewGroup {
                 if (areAnimationsEnabled(icon) && !isReplacingIcon) {
                     addTransientView(icon, 0);
                     boolean isIsolatedIcon = child == mIsolatedIcon;
+                    if (StatusBarNoHunBehavior.isEnabled()) {
+                        isIsolatedIcon = false;
+                    }
                     icon.setVisibleState(StatusBarIconView.STATE_HIDDEN, true /* animate */,
                             () -> removeTransientView(icon),
                             isIsolatedIcon ? CONTENT_FADE_DURATION : 0);
@@ -468,24 +448,14 @@ public class NotificationIconContainer extends ViewGroup {
         if (numIcons == 0) {
             return 0f;
         }
-        final float contentWidth;
-        if (NotificationIconContainerRefactor.isEnabled()) {
-            contentWidth = mIconSize * numIcons;
-        } else {
-            contentWidth = mIconSize * MathUtils.min(numIcons, mMaxIconsOnLockscreen + 1);
-        }
+        final float contentWidth = mIconSize * numIcons;
         return getActualPaddingStart() + contentWidth + getActualPaddingEnd();
     }
 
     @VisibleForTesting
     boolean shouldForceOverflow(int i, int speedBumpIndex, float iconAppearAmount,
             int maxVisibleIcons) {
-        if (NotificationIconContainerRefactor.isEnabled()) {
-            return i >= maxVisibleIcons && iconAppearAmount > 0.0f;
-        } else {
-            return speedBumpIndex != -1 && i >= speedBumpIndex
-                    && iconAppearAmount > 0.0f || i >= maxVisibleIcons;
-        }
+        return i >= maxVisibleIcons && iconAppearAmount > 0.0f;
     }
 
     @VisibleForTesting
@@ -507,11 +477,11 @@ public class NotificationIconContainer extends ViewGroup {
      * If this is not a whole number, the fraction means by how much the icon is appearing.
      */
     public void calculateIconXTranslations() {
-        float translationX = getActualPaddingStart();
+        float translationX = getLeftBound();
         int firstOverflowIndex = -1;
         int childCount = getChildCount();
-        int maxVisibleIcons = getMaxVisibleIcons(childCount);
-        float layoutEnd = getLayoutEnd();
+        int maxVisibleIcons = mMaxIcons;
+        float layoutRight = getRightBound();
         mVisualOverflowStart = 0;
         mFirstVisibleIconState = null;
         for (int i = 0; i < childCount; i++) {
@@ -533,7 +503,7 @@ public class NotificationIconContainer extends ViewGroup {
             final boolean forceOverflow = shouldForceOverflow(i, mSpeedBumpIndex,
                     iconState.iconAppearAmount, maxVisibleIcons);
             final boolean isOverflowing = forceOverflow || isOverflowing(
-                    /* isLastChild= */ i == childCount - 1, translationX, layoutEnd, mIconSize);
+                    /* isLastChild= */ i == childCount - 1, translationX, layoutRight, mIconSize);
 
             // First icon to overflow.
             if (firstOverflowIndex == -1 && isOverflowing) {
@@ -574,11 +544,10 @@ public class NotificationIconContainer extends ViewGroup {
             for (int i = 0; i < childCount; i++) {
                 View view = getChildAt(i);
                 IconState iconState = mIconStates.get(view);
-                iconState.setXTranslation(
-                        getWidth() - iconState.getXTranslation() - view.getWidth());
+                iconState.setXTranslation(getRtlIconTranslationX(iconState, view));
             }
         }
-        if (mIsolatedIcon != null) {
+        if (!StatusBarNoHunBehavior.isEnabled() && mIsolatedIcon != null) {
             IconState iconState = mIconStates.get(mIsolatedIcon);
             if (iconState != null) {
                 // Most of the time the icon isn't yet added when this is called but only happening
@@ -591,33 +560,36 @@ public class NotificationIconContainer extends ViewGroup {
         }
     }
 
+    /** We need this to keep icons ordered from right to left when RTL. */
+    protected float getRtlIconTranslationX(IconState iconState, View iconView) {
+        return getWidth() - iconState.getXTranslation() - iconView.getWidth();
+    }
+
     private float getDrawingScale(View view) {
-        final boolean useIncreasedScale = NotificationIconContainerRefactor.isEnabled()
-                ? mUseIncreasedIconScale
-                : mOnLockScreen;
-        return useIncreasedScale && view instanceof StatusBarIconView
+        return mUseIncreasedIconScale && view instanceof StatusBarIconView
                 ? ((StatusBarIconView) view).getIconScaleIncreased()
                 : 1f;
     }
 
     public void setUseIncreasedIconScale(boolean useIncreasedIconScale) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
         mUseIncreasedIconScale = useIncreasedIconScale;
     }
 
-    private int getMaxVisibleIcons(int childCount) {
-        if (NotificationIconContainerRefactor.isEnabled()) {
-            return mMaxIcons;
-        } else {
-            return mOnLockScreen ? mMaxIconsOnAod : mIsStaticLayout ? mMaxStaticIcons : childCount;
-        }
-    }
-
-    private float getLayoutEnd() {
+    /**
+     * @return The right boundary (not the RTL compatible end) of the area that icons can be added.
+     */
+    protected float getRightBound() {
         return getActualWidth() - getActualPaddingEnd();
     }
 
-    private float getActualPaddingEnd() {
+    /**
+     * @return The left boundary (not the RTL compatible start) of the area that icons can be added.
+     */
+    protected float getLeftBound() {
+        return getActualPaddingStart();
+    }
+
+    protected float getActualPaddingEnd() {
         if (mActualPaddingEnd == NO_VALUE) {
             return getPaddingEnd();
         }
@@ -689,50 +661,11 @@ public class NotificationIconContainer extends ViewGroup {
         mChangingViewPositions = changingViewPositions;
     }
 
-    public void setDozing(boolean dozing, boolean animate, long delay) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        setDozing(dozing, animate, delay, /* endRunnable= */ null);
-    }
-
-    private void setDozing(boolean dozing, boolean animate, long delay,
-            @Nullable Runnable endRunnable) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        mDozing = dozing;
-        mDisallowNextAnimation |= !animate;
-        final int childCount = getChildCount();
-        // Track all the child invocations of setDozing, invoking the top-level endRunnable once
-        // they have all completed.
-        final Runnable onChildCompleted = endRunnable == null ? null : new Runnable() {
-            private int mPendingCallbacks = childCount;
-
-            @Override
-            public void run() {
-                if (--mPendingCallbacks == 0) {
-                    endRunnable.run();
-                }
-            }
-        };
-        for (int i = 0; i < childCount; i++) {
-            View view = getChildAt(i);
-            if (view instanceof StatusBarIconView) {
-                ((StatusBarIconView) view).setDozing(dozing, animate, delay, onChildCompleted);
-            } else if (onChildCompleted != null) {
-                onChildCompleted.run();
-            }
-        }
-    }
-
     public IconState getIconState(StatusBarIconView icon) {
         return mIconStates.get(icon);
     }
 
-    public void setSpeedBumpIndex(int speedBumpIndex) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        mSpeedBumpIndex = speedBumpIndex;
-    }
-
     public void setMaxIconsAmount(int maxIcons) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
         mMaxIcons = maxIcons;
     }
 
@@ -754,65 +687,38 @@ public class NotificationIconContainer extends ViewGroup {
         mAnimationsEnabled = enabled;
     }
 
-    public void setReplacingIconsLegacy(ArrayMap<String, ArrayList<StatusBarIcon>> replacingIcons) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        mReplacingIconsLegacy = replacingIcons;
-    }
-
     public void setReplacingIcons(ArrayMap<String, StatusBarIcon> replacingIcons) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
         mReplacingIcons = replacingIcons;
-    }
-
-    @Deprecated
-    public void showIconIsolatedLegacy(StatusBarIconView icon, boolean animated) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        if (animated) {
-            mIsolatedIconForAnimation = icon != null ? icon : mIsolatedIcon;
-        }
-        mIsolatedIcon = icon;
-        updateState();
     }
 
     public void showIconIsolatedAnimated(StatusBarIconView icon,
             @Nullable Runnable onAnimationEnd) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
+        StatusBarNoHunBehavior.assertInLegacyMode();
         mIsolatedIconForAnimation = icon != null ? icon : mIsolatedIcon;
         mIsolatedIconAnimationEndRunnable = onAnimationEnd;
         showIconIsolated(icon);
     }
 
     public void showIconIsolated(StatusBarIconView icon) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
+        StatusBarNoHunBehavior.assertInLegacyMode();
         mIsolatedIcon = icon;
         updateState();
     }
 
     public void setIsolatedIconLocation(Rect isolatedIconLocation, boolean requireUpdate) {
+        StatusBarNoHunBehavior.assertInLegacyMode();
         mIsolatedIconLocation = isolatedIconLocation;
         if (requireUpdate) {
             updateState();
         }
     }
 
-    /**
-     * Set whether the device is on the lockscreen and which lockscreen mode the device is
-     * configured to. Depending on these values, the layout of the AOD icons change.
-     */
-    public void setOnLockScreen(boolean onLockScreen) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        mOnLockScreen = onLockScreen;
-    }
-
-    @Deprecated
-    public void setInNotificationIconShelf(boolean inShelf) {
-        NotificationIconContainerRefactor.assertInLegacyMode();
-        mOverrideIconColor = inShelf;
-    }
-
     public void setOverrideIconColor(boolean override) {
-        if (NotificationIconContainerRefactor.isUnexpectedlyInLegacyMode()) return;
         mOverrideIconColor = override;
+    }
+
+    public void setUseInverseOverrideIconColor(boolean override) {
+        mUseInverseOverrideIconColor = override;
     }
 
     public class IconState extends ViewState {
@@ -829,6 +735,7 @@ public class NotificationIconContainer extends ViewGroup {
         private final Consumer<Property> mCannedAnimationEndListener;
 
         public IconState(View child) {
+            super(false /* usePhysicsForMovement */);
             mView = child;
             mCannedAnimationEndListener = (property) -> {
                 // If we finished animating out of the shelf
@@ -903,7 +810,7 @@ public class NotificationIconContainer extends ViewGroup {
                         animationProperties.setDuration(CANNED_ANIMATION_DURATION);
                         animate = true;
                     }
-                    if (mIsolatedIconForAnimation != null) {
+                    if (!StatusBarNoHunBehavior.isEnabled() && mIsolatedIconForAnimation != null) {
                         if (view == mIsolatedIconForAnimation) {
                             animationProperties = UNISOLATION_PROPERTY;
                             animationProperties.setDelay(
@@ -922,14 +829,11 @@ public class NotificationIconContainer extends ViewGroup {
                     }
                 }
                 icon.setVisibleState(visibleState, animationsAllowed);
-                if (NotificationIconContainerRefactor.isEnabled()) {
-                    if (mOverrideIconColor) {
-                        icon.setIconColor(mThemedTextColorPrimary,
-                                /* animate= */ needsCannedAnimation && animationsAllowed);
-                    }
-                } else {
-                    icon.setIconColor(mOverrideIconColor ? mThemedTextColorPrimary : iconColor,
-                            needsCannedAnimation && animationsAllowed);
+                if (mOverrideIconColor) {
+                    int overrideIconColor = mUseInverseOverrideIconColor
+                            ? mThemedTextColorPrimaryInverse : mThemedTextColorPrimary;
+                    icon.setIconColor(overrideIconColor,
+                            /* animate= */ needsCannedAnimation && animationsAllowed);
                 }
                 if (animate) {
                     animateTo(icon, animationProperties);
@@ -957,6 +861,7 @@ public class NotificationIconContainer extends ViewGroup {
 
         @Nullable
         private Consumer<Property> getEndAction() {
+            if (StatusBarNoHunBehavior.isEnabled()) return null;
             if (mIsolatedIconAnimationEndRunnable == null) return null;
             final Runnable endRunnable = mIsolatedIconAnimationEndRunnable;
             return prop -> {

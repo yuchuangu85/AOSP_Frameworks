@@ -23,6 +23,9 @@ package {
 
 cc_library_shared {
     name: "libjnigraphics",
+    defaults: [
+        "bug_24465209_workaround",
+    ],
 
     cflags: [
         "-Wall",
@@ -42,18 +45,15 @@ cc_library_shared {
 
     header_libs: [
         "jni_headers",
+        "native_headers",
         "libhwui_internal_headers",
     ],
+    export_header_lib_headers: ["native_headers"],
 
-    static_libs: ["libarect"],
+    static_libs: [
+        "libarect",
+    ],
 
-    arch: {
-        arm: {
-            // TODO: This is to work around b/24465209. Remove after root cause is fixed
-            pack_relocations: false,
-            ldflags: ["-Wl,--hash-style=both"],
-        },
-    },
     host_supported: true,
     target: {
         android: {
@@ -63,6 +63,11 @@ cc_library_shared {
             ],
             shared_libs: [
                 "libandroid",
+            ],
+            static_libs: [
+                "libstatslog_hwui",
+                "libstatspull_lazy",
+                "libstatssocket_lazy",
             ],
             version_script: "libjnigraphics.map.txt",
         },
@@ -97,8 +102,13 @@ cc_defaults {
     static_libs: ["libarect"],
     fuzz_config: {
         cc: [
+            // Alphabetical order -- assign to skia-android-triage@google.com
+            "danieldilan@google.com",
             "dichenzhang@google.com",
-            "scroggo@google.com",
+            "fmalita@google.com",
+            "jreck@google.com",
+            "nscobie@google.com",
+            "skia-android-triage@google.com",
         ],
         asan_options: [
             "detect_odr_violation=1",
@@ -129,5 +139,32 @@ cc_fuzz {
     ],
     cflags: [
         "-DPNG_MUTATOR_DEFINE_LIBFUZZER_CUSTOM_MUTATOR",
+    ],
+}
+
+cc_fuzz {
+    name: "imagedecoder_heif_fuzzer",
+    defaults: ["imagedecoder_fuzzer_defaults"],
+    team: "trendy_team_android_core_graphics_stack",
+    shared_libs: [
+        "libfakeservicemanager",
+    ],
+    target: {
+        android: {
+            shared_libs: [
+                "libmediaplayerservice",
+                "libmediaextractorservice",
+            ],
+        },
+        host: {
+            static_libs: [
+                "libbinder_random_parcel",
+                "libcutils",
+            ],
+        },
+    },
+    include_dirs: ["frameworks/av/services/mediaextractor"],
+    cflags: [
+        "-DFUZZ_HEIF_FORMAT",
     ],
 }

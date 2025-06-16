@@ -20,8 +20,7 @@ import android.media.AudioManager
 import android.provider.Settings
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.settingslib.statusbar.notification.data.model.ZenMode
-import com.android.settingslib.statusbar.notification.data.repository.updateNotificationPolicy
+import com.android.settingslib.notification.data.repository.updateNotificationPolicy
 import com.android.settingslib.volume.domain.interactor.AudioVolumeInteractor
 import com.android.settingslib.volume.shared.model.AudioStream
 import com.android.settingslib.volume.shared.model.RingerMode
@@ -29,18 +28,16 @@ import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.statusbar.notification.domain.interactor.notificationsSoundPolicyInteractor
-import com.android.systemui.statusbar.notification.domain.interactor.notificationsSoundPolicyRepository
+import com.android.systemui.statusbar.policy.data.repository.zenModeRepository
 import com.android.systemui.testKosmos
 import com.android.systemui.volume.data.repository.audioRepository
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 @SmallTest
 class AudioVolumeInteractorTest : SysuiTestCase() {
@@ -119,10 +116,8 @@ class AudioVolumeInteractorTest : SysuiTestCase() {
     fun zenMuted_cantChange() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy()
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Settings.Global.ZEN_MODE_NO_INTERRUPTIONS)
-                )
+                zenModeRepository.updateNotificationPolicy()
+                zenModeRepository.updateZenMode(Settings.Global.ZEN_MODE_NO_INTERRUPTIONS)
 
                 val canChangeVolume by
                     collectLastValue(
@@ -156,9 +151,7 @@ class AudioVolumeInteractorTest : SysuiTestCase() {
         with(kosmos) {
             testScope.runTest {
                 audioRepository.setLastAudibleVolume(audioStream, 30)
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Settings.Global.ZEN_MODE_NO_INTERRUPTIONS)
-                )
+                zenModeRepository.updateZenMode(Settings.Global.ZEN_MODE_NO_INTERRUPTIONS)
 
                 val model by collectLastValue(underTest.getAudioStream(audioStream))
                 runCurrent()

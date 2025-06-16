@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <com_android_input_flags.h>
+
 #include "HidUsageAccumulator.h"
 #include "InputMapper.h"
 
@@ -45,8 +47,7 @@ public:
     int32_t getKeyCodeForKeyLocation(int32_t locationKeyCode) const override;
 
     int32_t getMetaState() override;
-    bool updateMetaState(int32_t keyCode) override;
-    std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() override;
+    std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() const override;
     void updateLedState(bool reset) override;
 
 private:
@@ -60,7 +61,10 @@ private:
         int32_t flags{};
     };
 
-    uint32_t mSource{};
+    // The keyboard source for this mapper. Events generated should use the source shared
+    // by all KeyboardInputMappers for this input device.
+    uint32_t mMapperSource{};
+
     std::optional<KeyboardLayoutInfo> mKeyboardLayoutInfo;
 
     std::vector<KeyDown> mKeyDowns{}; // keys that are down
@@ -83,13 +87,17 @@ private:
         bool doNotWakeByDefault{};
     } mParameters{};
 
+    // Store the value of enable wake for alphanumeric keyboard flag.
+    const bool mEnableAlphabeticKeyboardWakeFlag =
+            com::android::input::flags::enable_alphabetic_keyboard_wake();
+
     KeyboardInputMapper(InputDeviceContext& deviceContext,
                         const InputReaderConfiguration& readerConfig, uint32_t source);
     void configureParameters();
     void dumpParameters(std::string& dump) const;
 
-    ui::Rotation getOrientation();
-    ui::LogicalDisplayId getDisplayId();
+    ui::Rotation getOrientation() const;
+    ui::LogicalDisplayId getDisplayId() const;
 
     [[nodiscard]] std::list<NotifyArgs> processKey(nsecs_t when, nsecs_t readTime, bool down,
                                                    int32_t scanCode, int32_t usageCode);
@@ -106,6 +114,9 @@ private:
     std::optional<DisplayViewport> findViewport(const InputReaderConfiguration& readerConfig);
     [[nodiscard]] std::list<NotifyArgs> cancelAllDownKeys(nsecs_t when);
     void onKeyDownProcessed(nsecs_t downTime);
+    uint32_t getEventSource() const;
+
+    bool wakeOnAlphabeticKeyboard(const KeyboardType keyboardType) const;
 };
 
 } // namespace android

@@ -17,23 +17,29 @@
 package com.android.systemui.communal.data.model
 
 import android.appwidget.AppWidgetProviderInfo
-import com.android.settingslib.flags.Flags.allowAllWidgetsOnLockscreenByDefault
 
 /**
  * The widget categories to display on communal hub (where categories is a bitfield with values that
  * match those in {@link AppWidgetProviderInfo}).
  */
-@JvmInline
-value class CommunalWidgetCategories(val categories: Int = defaultCategories) {
-    fun contains(category: Int) = (categories and category) == category
+object CommunalWidgetCategories {
+    /**
+     * Categories that are allowed on communal hub.
+     * - Use "or" operator for including multiple categories.
+     */
+    val includedCategories: Int
+        get() {
+            return AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN or
+                AppWidgetProviderInfo.WIDGET_CATEGORY_KEYGUARD
+        }
 
-    companion object {
-        val defaultCategories: Int
-            get() {
-                return AppWidgetProviderInfo.WIDGET_CATEGORY_KEYGUARD or
-                    if (allowAllWidgetsOnLockscreenByDefault())
-                        AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN
-                    else 0
-            }
-    }
+    /**
+     * Categories to further filter included widgets by excluding certain opt-out categories.
+     * - WIDGET_CATEGORY_NOT_KEYGUARD: widgets opted out of displaying on keyguard like surfaces.
+     * - Use "and" operator for excluding multiple opt-out categories.
+     */
+    val excludedCategories: Int
+        get() {
+            return AppWidgetProviderInfo.WIDGET_CATEGORY_NOT_KEYGUARD.inv()
+        }
 }

@@ -10,19 +10,19 @@ package {
 android_library {
     name: "SettingsLib",
     defaults: [
-        "SettingsLintDefaults",
         "SettingsLibAvatarPickerDefaults",
+        "SettingsLintDefaults",
     ],
 
     static_libs: [
         "androidx.localbroadcastmanager_localbroadcastmanager",
         "androidx.room_room-runtime",
         "androidx.sqlite_sqlite",
-        "zxing-core",
         "guava",
+        "zxing-core",
 
-        "WifiTrackerLibRes",
         "//frameworks/libs/systemui:iconloader",
+        "WifiTrackerLibRes",
         "setupdesign",
 
         "SettingsLibActionBarShadow",
@@ -31,32 +31,45 @@ android_library {
         "SettingsLibAppPreference",
         "SettingsLibBannerMessagePreference",
         "SettingsLibBarChartPreference",
+        "SettingsLibBulletPreference",
         "SettingsLibButtonPreference",
+        "SettingsLibCardPreference",
         "SettingsLibCollapsingToolbarBaseActivity",
         "SettingsLibDeviceStateRotationLock",
         "SettingsLibDisplayUtils",
         "SettingsLibEmergencyNumber",
         "SettingsLibEntityHeaderWidgets",
+        "SettingsLibExpandablePreference",
         "SettingsLibFooterPreference",
         "SettingsLibHelpUtils",
         "SettingsLibIllustrationPreference",
+        "SettingsLibIntroPreference",
         "SettingsLibLayoutPreference",
         "SettingsLibMainSwitchPreference",
+        "SettingsLibMetadata",
+        "SettingsLibPreference",
         "SettingsLibProfileSelector",
         "SettingsLibProgressBar",
         "SettingsLibRestrictedLockUtils",
         "SettingsLibSearchWidget",
+        "SettingsLibSegmentedButtonPreference",
         "SettingsLibSelectorWithWidgetPreference",
         "SettingsLibSettingsSpinner",
         "SettingsLibSettingsTransition",
+        "SettingsLibSliderPreference",
+        "SettingsLibStatusBannerPreference",
         "SettingsLibTopIntroPreference",
         "SettingsLibTwoTargetPreference",
         "SettingsLibUsageProgressBarPreference",
         "SettingsLibUtils",
+        "SettingsLibZeroStatePreference",
         "settingslib_media_flags_lib",
-        "settingslib_flags_lib",
     ],
-
+    libs: [
+        // This flag library has been added in frameworks jar
+        "aconfig_settingslib_flags_java_lib",
+        "wifi_framework_aconfig_flags_lib",
+    ],
     plugins: ["androidx.room_room-compiler-plugin"],
     use_resource_processor: true,
     resource_dirs: ["res"],
@@ -64,7 +77,9 @@ android_library {
     srcs: [
         "src/**/*.java",
         "src/**/*.kt",
+        "src/**/I*.aidl",
     ],
+    kotlincflags: ["-Xjvm-default=all"],
 }
 
 // defaults for lint option
@@ -99,20 +114,6 @@ java_aconfig_library {
     aconfig_declarations: "settingslib_media_flags",
 }
 
-aconfig_declarations {
-    name: "settingslib_flags",
-    package: "com.android.settingslib.flags",
-    container: "system",
-    srcs: [
-        "aconfig/settingslib.aconfig",
-    ],
-}
-
-java_aconfig_library {
-    name: "settingslib_flags_lib",
-    aconfig_declarations: "settingslib_flags",
-}
-
 soong_config_module_type {
     name: "avatar_picker_java_defaults",
     module_type: "java_defaults",
@@ -121,8 +122,8 @@ soong_config_module_type {
         "legacy_avatar_picker_app_enabled",
     ],
     properties: [
-        "static_libs",
         "manifest",
+        "static_libs",
     ],
 }
 

@@ -18,12 +18,14 @@ rust_defaults {
     srcs: ["lib.rs"],
     host_supported: true,
     rustlibs: [
+        "inputconstants-rust",
         "libbitflags",
         "libcxx",
         "libinput_bindgen",
-        "liblogger",
         "liblog_rust",
-        "inputconstants-rust",
+        "liblogger",
+        "libserde",
+        "libserde_json",
     ],
     whole_static_libs: [
         "libinput_from_rust_to_cpp",

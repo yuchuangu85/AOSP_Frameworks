@@ -16,12 +16,9 @@
 
 package com.android.systemui.bouncer.domain.interactor
 
-import android.platform.test.annotations.DisableFlags
-import android.platform.test.annotations.EnableFlags
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.keyguard.keyguardUpdateMonitor
-import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.authentication.data.repository.FakeAuthenticationRepository
 import com.android.systemui.authentication.domain.interactor.authenticationInteractor
@@ -29,7 +26,6 @@ import com.android.systemui.biometrics.data.repository.fingerprintPropertyReposi
 import com.android.systemui.bouncer.data.repository.keyguardBouncerRepository
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.deviceentry.domain.interactor.deviceUnlockedInteractor
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
 import com.android.systemui.flags.DisableSceneContainer
 import com.android.systemui.flags.EnableSceneContainer
 import com.android.systemui.keyguard.data.repository.biometricSettingsRepository
@@ -60,12 +56,6 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
     @Before
     fun setup() {
         underTest = kosmos.alternateBouncerInteractor
-    }
-
-    @Test(expected = IllegalStateException::class)
-    @EnableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
-    fun enableUdfpsRefactor_deprecatedShowMethod_throwsIllegalStateException() {
-        underTest.show()
     }
 
     @Test
@@ -102,21 +92,6 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
         }
 
     @Test
-    @DisableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
-    fun canShowAlternateBouncerForFingerprint_givenCanShow() {
-        givenCanShowAlternateBouncer()
-        assertTrue(underTest.canShowAlternateBouncerForFingerprint())
-    }
-
-    @Test
-    fun canShowAlternateBouncerForFingerprint_alternateBouncerUIUnavailable() {
-        givenCanShowAlternateBouncer()
-        kosmos.keyguardBouncerRepository.setAlternateBouncerUIAvailable(false)
-
-        assertFalse(underTest.canShowAlternateBouncerForFingerprint())
-    }
-
-    @Test
     fun canShowAlternateBouncerForFingerprint_ifFingerprintIsNotUsuallyAllowed() {
         givenCanShowAlternateBouncer()
         kosmos.biometricSettingsRepository.setIsFingerprintAuthEnrolledAndEnabled(false)
@@ -141,15 +116,6 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
     }
 
     @Test
-    @DisableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
-    fun show_whenCanShow() {
-        givenCanShowAlternateBouncer()
-
-        assertTrue(underTest.show())
-        assertTrue(kosmos.keyguardBouncerRepository.alternateBouncerVisible.value)
-    }
-
-    @Test
     fun canShowAlternateBouncerForFingerprint_butCanDismissLockScreen() {
         givenCanShowAlternateBouncer()
         whenever(kosmos.keyguardStateController.isUnlocked).thenReturn(true)
@@ -163,15 +129,6 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
         kosmos.keyguardBouncerRepository.setPrimaryShow(true)
 
         assertFalse(underTest.canShowAlternateBouncerForFingerprint())
-    }
-
-    @Test
-    @DisableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
-    fun show_whenCannotShow() {
-        givenCannotShowAlternateBouncer()
-
-        assertFalse(underTest.show())
-        assertFalse(kosmos.keyguardBouncerRepository.alternateBouncerVisible.value)
     }
 
     @Test
@@ -191,7 +148,6 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
     fun canShowAlternateBouncerForFingerprint_rearFps() {
         givenCanShowAlternateBouncer()
         kosmos.fingerprintPropertyRepository.supportsRearFps() // does not support alternate bouncer
@@ -199,47 +155,11 @@ class AlternateBouncerInteractorTest : SysuiTestCase() {
         assertFalse(underTest.canShowAlternateBouncerForFingerprint())
     }
 
-    @Test
-    @DisableFlags(Flags.FLAG_DEVICE_ENTRY_UDFPS_REFACTOR)
-    fun alternateBouncerUiAvailable_fromMultipleSources() {
-        assertFalse(kosmos.keyguardBouncerRepository.alternateBouncerUIAvailable.value)
-
-        // GIVEN there are two different sources indicating the alternate bouncer is available
-        underTest.setAlternateBouncerUIAvailable(true, "source1")
-        underTest.setAlternateBouncerUIAvailable(true, "source2")
-        assertTrue(kosmos.keyguardBouncerRepository.alternateBouncerUIAvailable.value)
-
-        // WHEN one of the sources no longer says the UI is available
-        underTest.setAlternateBouncerUIAvailable(false, "source1")
-
-        // THEN alternate bouncer UI is still available (from the other source)
-        assertTrue(kosmos.keyguardBouncerRepository.alternateBouncerUIAvailable.value)
-
-        // WHEN all sources say the UI is not available
-        underTest.setAlternateBouncerUIAvailable(false, "source2")
-
-        // THEN alternate boucer UI is not available
-        assertFalse(kosmos.keyguardBouncerRepository.alternateBouncerUIAvailable.value)
-    }
-
     private fun givenAlternateBouncerSupported() {
-        if (DeviceEntryUdfpsRefactor.isEnabled) {
-            kosmos.fingerprintPropertyRepository.supportsUdfps()
-        } else {
-            kosmos.keyguardBouncerRepository.setAlternateBouncerUIAvailable(true)
-        }
+        kosmos.givenAlternateBouncerSupported()
     }
 
     private fun givenCanShowAlternateBouncer() {
-        givenAlternateBouncerSupported()
-        kosmos.keyguardBouncerRepository.setPrimaryShow(false)
-        kosmos.biometricSettingsRepository.setIsFingerprintAuthEnrolledAndEnabled(true)
-        kosmos.biometricSettingsRepository.setIsFingerprintAuthCurrentlyAllowed(true)
-        whenever(kosmos.keyguardUpdateMonitor.isFingerprintLockedOut).thenReturn(false)
-        whenever(kosmos.keyguardStateController.isUnlocked).thenReturn(false)
-    }
-
-    private fun givenCannotShowAlternateBouncer() {
-        kosmos.biometricSettingsRepository.setIsFingerprintAuthEnrolledAndEnabled(false)
+        kosmos.givenCanShowAlternateBouncer()
     }
 }

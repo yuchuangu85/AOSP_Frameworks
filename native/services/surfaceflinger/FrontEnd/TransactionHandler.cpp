@@ -19,19 +19,19 @@
 #define LOG_TAG "SurfaceFlinger"
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
 
+#include <common/trace.h>
 #include <cutils/trace.h>
 #include <utils/Log.h>
-#include <utils/Trace.h>
 #include "FrontEnd/LayerLog.h"
 
 #include "TransactionHandler.h"
 
 namespace android::surfaceflinger::frontend {
 
-void TransactionHandler::queueTransaction(TransactionState&& state) {
+void TransactionHandler::queueTransaction(QueuedTransactionState&& state) {
     mLocklessTransactionQueue.push(std::move(state));
     mPendingTransactionCount.fetch_add(1);
-    ATRACE_INT("TransactionQueue", static_cast<int>(mPendingTransactionCount.load()));
+    SFTRACE_INT("TransactionQueue", static_cast<int>(mPendingTransactionCount.load()));
 }
 
 void TransactionHandler::collectTransactions() {
@@ -45,9 +45,9 @@ void TransactionHandler::collectTransactions() {
     }
 }
 
-std::vector<TransactionState> TransactionHandler::flushTransactions() {
+std::vector<QueuedTransactionState> TransactionHandler::flushTransactions() {
     // Collect transaction that are ready to be applied.
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     TransactionFlushState flushState;
     flushState.queueProcessTime = systemTime();
     // Transactions with a buffer pending on a barrier may be on a different applyToken
@@ -71,19 +71,19 @@ std::vector<TransactionState> TransactionHandler::flushTransactions() {
     applyUnsignaledBufferTransaction(transactions, flushState);
 
     mPendingTransactionCount.fetch_sub(transactions.size());
-    ATRACE_INT("TransactionQueue", static_cast<int>(mPendingTransactionCount.load()));
+    SFTRACE_INT("TransactionQueue", static_cast<int>(mPendingTransactionCount.load()));
     return transactions;
 }
 
 void TransactionHandler::applyUnsignaledBufferTransaction(
-        std::vector<TransactionState>& transactions, TransactionFlushState& flushState) {
+        std::vector<QueuedTransactionState>& transactions, TransactionFlushState& flushState) {
     if (!flushState.queueWithUnsignaledBuffer) {
         return;
     }
 
     // only apply an unsignaled buffer transaction if it's the first one
     if (!transactions.empty()) {
-        ATRACE_NAME("fence unsignaled");
+        SFTRACE_NAME("fence unsignaled");
         return;
     }
 
@@ -98,9 +98,9 @@ void TransactionHandler::applyUnsignaledBufferTransaction(
     }
 }
 
-void TransactionHandler::popTransactionFromPending(std::vector<TransactionState>& transactions,
-                                                   TransactionFlushState& flushState,
-                                                   std::queue<TransactionState>& queue) {
+void TransactionHandler::popTransactionFromPending(
+        std::vector<QueuedTransactionState>& transactions, TransactionFlushState& flushState,
+        std::queue<QueuedTransactionState>& queue) {
     auto& transaction = queue.front();
     // Transaction is ready move it from the pending queue.
     flushState.firstTransaction = false;
@@ -146,8 +146,8 @@ TransactionHandler::TransactionReadiness TransactionHandler::applyFilters(
     return ready;
 }
 
-int TransactionHandler::flushPendingTransactionQueues(std::vector<TransactionState>& transactions,
-                                                      TransactionFlushState& flushState) {
+int TransactionHandler::flushPendingTransactionQueues(
+        std::vector<QueuedTransactionState>& transactions, TransactionFlushState& flushState) {
     int transactionsPendingBarrier = 0;
     auto it = mPendingTransactionQueues.begin();
     while (it != mPendingTransactionQueues.end()) {

@@ -18,6 +18,7 @@ package com.android.server.autofill;
 
 import static android.Manifest.permission.MANAGE_AUTO_FILL;
 import static android.content.Context.AUTOFILL_MANAGER_SERVICE;
+import static android.service.autofill.Flags.fixGetAutofillComponent;
 import static android.view.autofill.AutofillManager.MAX_TEMP_AUGMENTED_SERVICE_DURATION_MS;
 import static android.view.autofill.AutofillManager.getSmartSuggestionModeToString;
 
@@ -423,27 +424,22 @@ public final class AutofillManagerService
     @Nullable
     private AutofillManagerServiceImpl getServiceForUserWithLocalBinderIdentityLocked(int userId) {
         final long token = Binder.clearCallingIdentity();
-        AutofillManagerServiceImpl managerService = null;
         try {
-            managerService = getServiceForUserLocked(userId);
+            return getServiceForUserLocked(userId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
-        return managerService;
     }
 
     @GuardedBy("mLock")
     @Nullable
     private AutofillManagerServiceImpl peekServiceForUserWithLocalBinderIdentityLocked(int userId) {
         final long token = Binder.clearCallingIdentity();
-        AutofillManagerServiceImpl managerService = null;
         try {
-            managerService = peekServiceForUserLocked(userId);
+            return peekServiceForUserLocked(userId);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
-
-        return managerService;
     }
 
     @Override // from AbstractMasterSystemService
@@ -1925,8 +1921,12 @@ public final class AutofillManagerService
 
             try {
                 synchronized (mLock) {
-                    final AutofillManagerServiceImpl service =
-                            peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                    final AutofillManagerServiceImpl service;
+                    if (fixGetAutofillComponent()) {
+                        service = getServiceForUserWithLocalBinderIdentityLocked(userId);
+                    } else {
+                        service = peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                    }
                     if (service != null) {
                         componentName = service.getServiceComponentName();
                     } else if (sVerbose) {
@@ -1985,12 +1985,13 @@ public final class AutofillManagerService
         }
 
         @Override
-        public void setAutofillFailure(int sessionId, @NonNull List<AutofillId> ids, int userId) {
+        public void setAutofillFailure(
+                int sessionId, @NonNull List<AutofillId> ids, boolean isRefill, int userId) {
             synchronized (mLock) {
                 final AutofillManagerServiceImpl service =
                         peekServiceForUserWithLocalBinderIdentityLocked(userId);
                 if (service != null) {
-                    service.setAutofillFailureLocked(sessionId, getCallingUid(), ids);
+                    service.setAutofillFailureLocked(sessionId, getCallingUid(), ids, isRefill);
                 } else if (sVerbose) {
                     Slog.v(TAG, "setAutofillFailure(): no service for " + userId);
                 }
@@ -2006,6 +2007,46 @@ public final class AutofillManagerService
                     service.setViewAutofilledLocked(sessionId, getCallingUid(), id);
                 } else if (sVerbose) {
                     Slog.v(TAG, "setAutofillFailure(): no service for " + userId);
+                }
+            }
+        }
+
+        @Override
+        public void notifyNotExpiringResponseDuringAuth(int sessionId, int userId) {
+            synchronized (mLock) {
+                final AutofillManagerServiceImpl service =
+                        peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                if (service != null) {
+                    service.notifyNotExpiringResponseDuringAuth(sessionId, getCallingUid());
+                } else if (sVerbose) {
+                    Slog.v(TAG, "notifyNotExpiringResponseDuringAuth(): no service for " + userId);
+                }
+            }
+        }
+
+        @Override
+        public void notifyViewEnteredIgnoredDuringAuthCount(int sessionId, int userId) {
+            synchronized (mLock) {
+                final AutofillManagerServiceImpl service =
+                        peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                if (service != null) {
+                    service.notifyViewEnteredIgnoredDuringAuthCount(sessionId, getCallingUid());
+                } else if (sVerbose) {
+                    Slog.v(TAG, "notifyNotExpiringResponseDuringAuth(): no service for " + userId);
+                }
+            }
+        }
+
+        @Override
+        public void setAutofillIdsAttemptedForRefill(
+                int sessionId, @NonNull List<AutofillId> ids, int userId) {
+            synchronized (mLock) {
+                final AutofillManagerServiceImpl service =
+                        peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                if (service != null) {
+                    service.setAutofillIdsAttemptedForRefill(sessionId, ids, getCallingUid());
+                } else if (sVerbose) {
+                    Slog.v(TAG, "setAutofillIdsAttemptedForRefill(): no service for " + userId);
                 }
             }
         }
@@ -2098,6 +2139,32 @@ public final class AutofillManagerService
                             UserHandle.getCallingUserId());
                 if (service != null) {
                     service.onPendingSaveUi(operation, token);
+                }
+            }
+        }
+
+        @Override
+        public void notifyImeAnimationStart(int sessionId, long startTimeMs, int userId) {
+            synchronized (mLock) {
+                final AutofillManagerServiceImpl service =
+                        peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                if (service != null) {
+                    service.notifyImeAnimationStart(sessionId, startTimeMs, getCallingUid());
+                } else if (sVerbose) {
+                    Slog.v(TAG, "notifyImeAnimationStart(): no service for " + userId);
+                }
+            }
+        }
+
+        @Override
+        public void notifyImeAnimationEnd(int sessionId, long endTimeMs, int userId) {
+            synchronized (mLock) {
+                final AutofillManagerServiceImpl service =
+                        peekServiceForUserWithLocalBinderIdentityLocked(userId);
+                if (service != null) {
+                    service.notifyImeAnimationEnd(sessionId, endTimeMs, getCallingUid());
+                } else if (sVerbose) {
+                    Slog.v(TAG, "notifyImeAnimationEnd(): no service for " + userId);
                 }
             }
         }

@@ -21,8 +21,8 @@ import android.testing.TestableLooper.RunWithLooper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.communal.shared.model.fakeGlanceableHubMultiUserHelper
 import com.android.systemui.communal.widgets.CommunalAppWidgetHost
-import com.android.systemui.communal.widgets.CommunalAppWidgetHostView
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testScope
@@ -32,7 +32,6 @@ import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.mock
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -42,7 +41,6 @@ import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWithLooper(setAsMainLooper = true)
 @RunWith(AndroidJUnit4::class)
@@ -61,26 +59,9 @@ class CommunalAppWidgetHostTest : SysuiTestCase() {
                 context = context,
                 backgroundScope = kosmos.applicationCoroutineScope,
                 hostId = 116,
-                interactionHandler = mock(),
-                looper = testableLooper.looper,
                 logBuffer = logcatLogBuffer("CommunalAppWidgetHostTest"),
+                glanceableHubMultiUserHelper = kosmos.fakeGlanceableHubMultiUserHelper,
             )
-    }
-
-    @Test
-    fun createViewForCommunal_returnCommunalAppWidgetView() {
-        val appWidgetId = 789
-        val view =
-            underTest.createViewForCommunal(
-                context = context,
-                appWidgetId = appWidgetId,
-                appWidget = null
-            )
-        testableLooper.processAllMessages()
-
-        assertThat(view).isInstanceOf(CommunalAppWidgetHostView::class.java)
-        assertThat(view).isNotNull()
-        assertThat(view.appWidgetId).isEqualTo(appWidgetId)
     }
 
     @Test

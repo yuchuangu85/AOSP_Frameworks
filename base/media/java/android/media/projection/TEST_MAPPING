@@ -1,15 +1,7 @@
 {
-  "presubmit": [
+  "imports": [
     {
-      "name": "MediaProjectionTests",
-      "options": [
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        },
-        {
-          "exclude-annotation": "org.junit.Ignore"
-        }
-      ]
+      "path": "frameworks/base/services/core/java/com/android/server/media/projection"
     }
   ]
 }

@@ -18,17 +18,26 @@
 package com.android.systemui.power.domain.interactor
 
 import android.os.PowerManager
+import com.android.systemui.camera.CameraGestureHelper
 import com.android.systemui.classifier.FalsingCollector
 import com.android.systemui.classifier.FalsingCollectorActual
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.log.table.TableLogBuffer
+import com.android.systemui.log.table.logDiffsForTable
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.power.data.repository.PowerRepository
+import com.android.systemui.power.shared.model.DozeScreenStateModel
 import com.android.systemui.power.shared.model.ScreenPowerState
 import com.android.systemui.power.shared.model.WakeSleepReason
+import com.android.systemui.power.shared.model.WakefulnessModel
 import com.android.systemui.power.shared.model.WakefulnessState
 import com.android.systemui.statusbar.phone.ScreenOffAnimationController
 import javax.inject.Inject
+import javax.inject.Provider
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
@@ -41,6 +50,7 @@ constructor(
     @FalsingCollectorActual private val falsingCollector: FalsingCollector,
     private val screenOffAnimationController: ScreenOffAnimationController,
     private val statusBarStateController: StatusBarStateController,
+    private val cameraGestureHelper: Provider<CameraGestureHelper?>,
 ) {
     /** Whether the screen is on or off. */
     val isInteractive: Flow<Boolean> = repository.isInteractive
@@ -53,7 +63,7 @@ constructor(
      * Unless you need to respond differently to different [WakeSleepReason]s, you should use
      * [isAwake].
      */
-    val detailedWakefulness = repository.wakefulness
+    val detailedWakefulness: StateFlow<WakefulnessModel> = repository.wakefulness
 
     /**
      * Whether we're awake (screen is on and responding to user touch) or asleep (screen is off, or
@@ -67,7 +77,11 @@ constructor(
     /** Helper flow in case "isAsleep" reads better than "!isAwake". */
     val isAsleep = isAwake.map { !it }
 
-    val screenPowerState = repository.screenPowerState
+    /** The physical on/off state of the display. */
+    val screenPowerState: StateFlow<ScreenPowerState> = repository.screenPowerState
+
+    /** The screen state, related to power and controlled by [DozeScreenState] */
+    val dozeScreenState: StateFlow<DozeScreenStateModel> = repository.dozeScreenState.asStateFlow()
 
     /**
      * Notifies the power interactor that a user touch happened.
@@ -140,8 +154,9 @@ constructor(
         // or onFinishedGoingToSleep(), carry that state forward. It will be reset by the next
         // onStartedGoingToSleep.
         val powerButtonLaunchGestureTriggered =
-            powerButtonLaunchGestureTriggeredOnWakeUp ||
-                repository.wakefulness.value.powerButtonLaunchGestureTriggered
+            !isPowerButtonGestureSuppressed() &&
+                (powerButtonLaunchGestureTriggeredOnWakeUp ||
+                    repository.wakefulness.value.powerButtonLaunchGestureTriggered)
 
         repository.updateWakefulness(
             rawState = WakefulnessState.STARTING_TO_WAKE,
@@ -186,14 +201,13 @@ constructor(
      * In tests, you should be able to use [setAsleepForTest] rather than calling this method
      * directly.
      */
-    fun onFinishedGoingToSleep(
-        powerButtonLaunchGestureTriggeredDuringSleep: Boolean,
-    ) {
+    fun onFinishedGoingToSleep(powerButtonLaunchGestureTriggeredDuringSleep: Boolean) {
         // If the launch gesture was previously detected via onCameraLaunchGestureDetected, carry
         // that state forward. It will be reset by the next onStartedGoingToSleep.
         val powerButtonLaunchGestureTriggered =
-            powerButtonLaunchGestureTriggeredDuringSleep ||
-                repository.wakefulness.value.powerButtonLaunchGestureTriggered
+            !isPowerButtonGestureSuppressed() &&
+                (powerButtonLaunchGestureTriggeredDuringSleep ||
+                    repository.wakefulness.value.powerButtonLaunchGestureTriggered)
 
         repository.updateWakefulness(
             rawState = WakefulnessState.ASLEEP,
@@ -206,7 +220,32 @@ constructor(
     }
 
     fun onCameraLaunchGestureDetected() {
+        if (!isPowerButtonGestureSuppressed()) {
+            repository.updateWakefulness(powerButtonLaunchGestureTriggered = true)
+        }
+    }
+
+    fun onWalletLaunchGestureDetected() {
         repository.updateWakefulness(powerButtonLaunchGestureTriggered = true)
+    }
+
+    suspend fun hydrateTableLogBuffer(tableLogBuffer: TableLogBuffer) {
+        detailedWakefulness
+            .logDiffsForTable(
+                tableLogBuffer = tableLogBuffer,
+                initialValue = detailedWakefulness.value,
+            )
+            .collect()
+    }
+
+    /**
+     * Whether the power button gesture isn't allowed to launch anything even if a double tap is
+     * detected.
+     */
+    private fun isPowerButtonGestureSuppressed(): Boolean {
+        return cameraGestureHelper
+            .get()
+            ?.canCameraGestureBeLaunched(statusBarStateController.state) == false
     }
 
     companion object {
@@ -246,7 +285,7 @@ constructor(
         @JvmOverloads
         fun PowerInteractor.setAwakeForTest(
             @PowerManager.WakeReason reason: Int = PowerManager.WAKE_REASON_UNKNOWN,
-            forceEmit: Boolean = false
+            forceEmit: Boolean = false,
         ) {
             emitDuplicateWakefulnessValue = forceEmit
 
@@ -277,9 +316,7 @@ constructor(
             emitDuplicateWakefulnessValue = forceEmit
 
             this.onStartedGoingToSleep(reason = sleepReason)
-            this.onFinishedGoingToSleep(
-                powerButtonLaunchGestureTriggeredDuringSleep = false,
-            )
+            this.onFinishedGoingToSleep(powerButtonLaunchGestureTriggeredDuringSleep = false)
         }
 
         /** Helper method for tests to simulate the device screen state change event. */

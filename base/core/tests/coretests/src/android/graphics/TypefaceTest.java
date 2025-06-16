@@ -26,14 +26,15 @@ import android.content.res.Resources;
 import android.graphics.fonts.FontFamily;
 import android.graphics.fonts.SystemFonts;
 import android.os.SharedMemory;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.text.FontConfig;
 import android.util.ArrayMap;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.frameworks.coretests.R;
 
@@ -196,6 +197,7 @@ public class TypefaceTest {
 
     @SmallTest
     @Test
+    @DisabledOnRavenwood(blockedBy = SharedMemory.class)
     public void testSerialize() throws Exception {
         FontConfig fontConfig = SystemFonts.getSystemPreinstalledFontConfig();
         Map<String, FontFamily[]> fallbackMap = SystemFonts.buildSystemFallback(fontConfig);

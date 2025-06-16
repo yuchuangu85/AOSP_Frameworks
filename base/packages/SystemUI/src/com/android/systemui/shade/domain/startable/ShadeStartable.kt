@@ -17,7 +17,9 @@
 package com.android.systemui.shade.domain.startable
 
 import android.content.Context
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.CoreStartable
+import com.android.systemui.biometrics.domain.interactor.DisplayStateInteractor
 import com.android.systemui.common.ui.data.repository.ConfigurationRepository
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
@@ -25,44 +27,50 @@ import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.dagger.ShadeTouchLog
 import com.android.systemui.scene.domain.interactor.SceneInteractor
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.shade.ShadeExpansionStateManager
 import com.android.systemui.shade.TouchLogger.Companion.logTouchesTo
 import com.android.systemui.shade.data.repository.ShadeRepository
 import com.android.systemui.shade.domain.interactor.PanelExpansionInteractor
-import com.android.systemui.shade.shared.flag.DualShade
-import com.android.systemui.shade.shared.model.ShadeMode
 import com.android.systemui.shade.transition.ScrimShadeTransitionController
+import com.android.systemui.statusbar.PulseExpansionHandler
+import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayoutController
+import com.android.systemui.statusbar.phone.ScrimController
 import com.android.systemui.statusbar.policy.SplitShadeStateController
 import javax.inject.Inject
 import javax.inject.Provider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 
 @SysUISingleton
 class ShadeStartable
 @Inject
 constructor(
     @Application private val applicationScope: CoroutineScope,
-    @Application private val applicationContext: Context,
+    @ShadeDisplayAware private val context: Context,
     @ShadeTouchLog private val touchLog: LogBuffer,
-    private val configurationRepository: ConfigurationRepository,
+    @ShadeDisplayAware private val configurationRepository: ConfigurationRepository,
     private val shadeRepository: ShadeRepository,
     private val splitShadeStateController: SplitShadeStateController,
     private val scrimShadeTransitionController: ScrimShadeTransitionController,
     private val sceneInteractorProvider: Provider<SceneInteractor>,
     private val panelExpansionInteractorProvider: Provider<PanelExpansionInteractor>,
     private val shadeExpansionStateManager: ShadeExpansionStateManager,
+    private val pulseExpansionHandler: PulseExpansionHandler,
+    private val displayStateInteractor: DisplayStateInteractor,
+    private val nsslc: NotificationStackScrollLayoutController,
+    private val scrimController: ScrimController,
 ) : CoreStartable {
 
     override fun start() {
-        hydrateShadeMode()
+        hydrateShadeLayoutWidth()
+        hydrateFullWidth()
         hydrateShadeExpansionStateManager()
         logTouchesTo(touchLog)
         scrimShadeTransitionController.init()
+        pulseExpansionHandler.setUp(nsslc)
     }
 
     private fun hydrateShadeExpansionStateManager() {
@@ -81,24 +89,31 @@ constructor(
         }
     }
 
-    private fun hydrateShadeMode() {
-        if (DualShade.isEnabled) {
-            shadeRepository.setShadeMode(ShadeMode.Dual)
-            return
-        }
+    private fun hydrateShadeLayoutWidth() {
         applicationScope.launch {
             configurationRepository.onAnyConfigurationChange
                 // Force initial collection.
                 .onStart { emit(Unit) }
-                .map { applicationContext.resources }
-                .map { resources ->
-                    splitShadeStateController.shouldUseSplitNotificationShade(resources)
-                }
-                .collect { isSplitShade ->
-                    shadeRepository.setShadeMode(
-                        if (isSplitShade) ShadeMode.Split else ShadeMode.Single
+                .collect {
+                    val resources = context.resources
+                    // The configuration for 'shouldUseSplitNotificationShade' dictates the width of
+                    // the shade in both split-shade and dual-shade modes.
+                    shadeRepository.setShadeLayoutWide(
+                        splitShadeStateController.shouldUseSplitNotificationShade(resources)
                     )
                 }
+        }
+    }
+
+    private fun hydrateFullWidth() {
+        if (SceneContainerFlag.isEnabled) {
+            applicationScope.launch {
+                displayStateInteractor.isLargeScreen.collect {
+                    val isFullWidth = !it
+                    nsslc.setIsFullWidth(isFullWidth)
+                    scrimController.setClipsQsScrim(isFullWidth)
+                }
+            }
         }
     }
 }

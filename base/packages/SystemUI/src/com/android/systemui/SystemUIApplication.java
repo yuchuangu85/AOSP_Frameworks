@@ -16,6 +16,7 @@
 
 package com.android.systemui;
 
+import android.animation.Animator;
 import android.annotation.SuppressLint;
 import android.app.ActivityThread;
 import android.app.Application;
@@ -24,7 +25,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Process;
@@ -38,14 +38,16 @@ import android.view.View;
 import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.systemui.dagger.GlobalRootComponent;
 import com.android.systemui.dagger.SysUIComponent;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.process.ProcessWrapper;
 import com.android.systemui.res.R;
-import com.android.systemui.statusbar.policy.ConfigurationController;
+import com.android.systemui.statusbar.phone.ConfigurationForwarder;
 import com.android.systemui.util.NotificationChannels;
+import com.android.wm.shell.dagger.HasWMComponent;
+import com.android.wm.shell.dagger.WMComponent;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayDeque;
@@ -62,7 +64,7 @@ import javax.inject.Provider;
  * Application class for SystemUI.
  */
 public class SystemUIApplication extends Application implements
-        SystemUIAppComponentFactoryBase.ContextInitializer {
+        SystemUIAppComponentFactoryBase.ContextInitializer, HasWMComponent {
 
     public static final String TAG = "SystemUIService";
     private static final boolean DEBUG = false;
@@ -81,7 +83,9 @@ public class SystemUIApplication extends Application implements
 
     public SystemUIApplication() {
         super();
-        Trace.registerWithPerfetto();
+        if (!isSubprocess()) {
+            Trace.registerWithPerfetto();
+        }
         Log.v(TAG, "SystemUIApplication constructed.");
         // SysUI may be building without protolog preprocessing in some cases
         ProtoLog.REQUIRE_PROTOLOGTOOL = false;
@@ -134,6 +138,9 @@ public class SystemUIApplication extends Application implements
         if (Flags.enableLayoutTracing()) {
             View.setTraceLayoutSteps(true);
         }
+        if (com.android.window.flags.Flags.systemUiPostAnimationEnd()) {
+            Animator.setPostNotifyEndListenerEnabled(true);
+        }
 
         if (mProcessWrapper.isSystemUser()) {
             IntentFilter bootCompletedFilter = new
@@ -182,9 +189,7 @@ public class SystemUIApplication extends Application implements
         } else {
             // We don't need to startServices for sub-process that is doing some tasks.
             // (screenshots, sweetsweetdesserts or tuner ..)
-            String processName = ActivityThread.currentProcessName();
-            ApplicationInfo info = getApplicationInfo();
-            if (processName != null && processName.startsWith(info.processName + ":")) {
+            if (isSubprocess()) {
                 return;
             }
             // For a secondary user, boot-completed will never be called because it has already
@@ -193,6 +198,12 @@ public class SystemUIApplication extends Application implements
             // start those components now for the current non-system user.
             startSecondaryUserServicesIfNeeded();
         }
+    }
+
+    /** Returns whether this is a subprocess (e.g. com.android.systemui:screenshot) */
+    private boolean isSubprocess() {
+        String processName = ActivityThread.currentProcessName();
+        return processName != null && processName.contains(":");
     }
 
     /**
@@ -449,13 +460,13 @@ public class SystemUIApplication extends Application implements
     @Override
     public void onConfigurationChanged(@NonNull Configuration newConfig) {
         if (mServicesStarted) {
-            ConfigurationController configController = mSysUIComponent.getConfigurationController();
+            ConfigurationForwarder configForwarder = mSysUIComponent.getConfigurationForwarder();
             if (Trace.isEnabled()) {
                 Trace.traceBegin(
                         Trace.TRACE_TAG_APP,
-                        configController.getClass().getSimpleName() + ".onConfigurationChanged()");
+                        configForwarder.getClass().getSimpleName() + ".onConfigurationChanged()");
             }
-            configController.onConfigurationChanged(newConfig);
+            configForwarder.onConfigurationChanged(newConfig);
             Trace.endSection();
         }
     }
@@ -480,5 +491,11 @@ public class SystemUIApplication extends Application implements
         extras.putString(Notification.EXTRA_SUBSTITUTE_APP_NAME, appName);
 
         n.addExtras(extras);
+    }
+
+    @NonNull
+    @Override
+    public WMComponent getWMComponent() {
+        return mInitializer.getWMComponent();
     }
 }

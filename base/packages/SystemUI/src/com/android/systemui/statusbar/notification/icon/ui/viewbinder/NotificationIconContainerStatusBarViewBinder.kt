@@ -16,7 +16,9 @@
 
 package com.android.systemui.statusbar.notification.icon.ui.viewbinder
 
+import android.view.Display
 import androidx.lifecycle.lifecycleScope
+import com.android.app.displaylib.PerDisplayRepository
 import com.android.app.tracing.traceSection
 import com.android.systemui.common.ui.ConfigurationState
 import com.android.systemui.lifecycle.repeatWhenAttached
@@ -34,19 +36,34 @@ class NotificationIconContainerStatusBarViewBinder
 @Inject
 constructor(
     private val viewModel: NotificationIconContainerStatusBarViewModel,
-    private val configuration: ConfigurationState,
+    private val configurationStateRepository: PerDisplayRepository<ConfigurationState>,
+    private val defaultConfigurationState: ConfigurationState,
     private val systemBarUtilsState: SystemBarUtilsState,
     private val failureTracker: StatusBarIconViewBindingFailureTracker,
-    private val viewStore: StatusBarNotificationIconViewStore,
+    private val defaultDisplayViewStore: StatusBarNotificationIconViewStore,
+    private val connectedDisplaysViewStoreFactory:
+        ConnectedDisplaysStatusBarNotificationIconViewStore.Factory,
 ) {
-    fun bindWhileAttached(view: NotificationIconContainer): DisposableHandle {
+
+    fun bindWhileAttached(view: NotificationIconContainer, displayId: Int): DisposableHandle {
         return traceSection("NICStatusBar#bindWhileAttached") {
             view.repeatWhenAttached {
+                val viewStore =
+                    if (displayId == Display.DEFAULT_DISPLAY) {
+                        defaultDisplayViewStore
+                    } else {
+                        connectedDisplaysViewStoreFactory.create(displayId = displayId).also {
+                            lifecycleScope.launch { it.activate() }
+                        }
+                    }
+                val configurationState: ConfigurationState =
+                    configurationStateRepository[displayId] ?: defaultConfigurationState
                 lifecycleScope.launch {
                     NotificationIconContainerViewBinder.bind(
+                        displayId = displayId,
                         view = view,
                         viewModel = viewModel,
-                        configuration = configuration,
+                        configuration = configurationState,
                         systemBarUtilsState = systemBarUtilsState,
                         failureTracker = failureTracker,
                         viewStore = viewStore,

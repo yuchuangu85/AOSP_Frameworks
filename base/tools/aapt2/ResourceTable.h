@@ -104,6 +104,9 @@ class ResourceConfigValue {
   // The actual Value.
   std::unique_ptr<Value> value;
 
+  // Whether the value uses read/write feature flags
+  bool uses_readwrite_feature_flags = false;
+
   ResourceConfigValue(const android::ConfigDescription& config, android::StringPiece product)
       : config(config), product(product) {
   }
@@ -136,6 +139,9 @@ class ResourceEntry {
   // The resource's values for each configuration.
   std::vector<std::unique_ptr<ResourceConfigValue>> values;
 
+  // The resource's values that are behind disabled flags.
+  std::vector<std::unique_ptr<ResourceConfigValue>> flag_disabled_values;
+
   explicit ResourceEntry(android::StringPiece name) : name(name) {
   }
 
@@ -147,6 +153,13 @@ class ResourceEntry {
   ResourceConfigValue* FindOrCreateValue(const android::ConfigDescription& config,
                                          android::StringPiece product);
   std::vector<ResourceConfigValue*> FindAllValues(const android::ConfigDescription& config);
+
+  // Either returns the existing ResourceConfigValue in the disabled list with the given flag,
+  // config, and product or creates a new one and returns that. In either case the returned value
+  // does not have the flag set on the value so it must be set by the caller.
+  ResourceConfigValue* FindOrCreateFlagDisabledValue(const FeatureFlagAttribute& flag,
+                                                     const android::ConfigDescription& config,
+                                                     android::StringPiece product = {});
 
   template <typename Func>
   std::vector<ResourceConfigValue*> FindValuesIf(Func f) {
@@ -215,9 +228,14 @@ struct ResourceTableEntryView {
   std::optional<OverlayableItem> overlayable_item;
   std::optional<StagedId> staged_id;
   std::vector<const ResourceConfigValue*> values;
+  std::vector<const ResourceConfigValue*> flag_disabled_values;
 
   const ResourceConfigValue* FindValue(const android::ConfigDescription& config,
                                        android::StringPiece product = {}) const;
+
+  const ResourceConfigValue* FindFlagDisabledValue(const FeatureFlagAttribute& flag,
+                                                   const android::ConfigDescription& config,
+                                                   android::StringPiece product = {}) const;
 };
 
 struct ResourceTableTypeView {
@@ -269,6 +287,7 @@ struct NewResource {
   std::optional<AllowNew> allow_new;
   std::optional<StagedId> staged_id;
   bool allow_mangled = false;
+  bool uses_readwrite_feature_flags = false;
 };
 
 struct NewResourceBuilder {
@@ -282,6 +301,7 @@ struct NewResourceBuilder {
   NewResourceBuilder& SetAllowNew(AllowNew allow_new);
   NewResourceBuilder& SetStagedId(StagedId id);
   NewResourceBuilder& SetAllowMangled(bool allow_mangled);
+  NewResourceBuilder& SetUsesReadWriteFeatureFlags(bool uses_feature_flags);
   NewResource Build();
 
  private:
@@ -330,7 +350,8 @@ class ResourceTable {
 
   std::unique_ptr<ResourceTable> Clone() const;
 
-  // When a collision of resources occurs, this method decides which value to keep.
+  // When a collision of resources occurs, these methods decide which value to keep.
+  static CollisionResult ResolveFlagCollision(FlagStatus existing, FlagStatus incoming);
   static CollisionResult ResolveValueCollision(Value* existing, Value* incoming);
 
   // The string pool used by this resource table. Values that reference strings must use

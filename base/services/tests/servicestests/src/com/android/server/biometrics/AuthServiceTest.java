@@ -38,13 +38,13 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.annotation.UserIdInt;
 import android.app.AppOpsManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.hardware.biometrics.AuthenticationStateListener;
 import android.hardware.biometrics.BiometricManager;
-import android.hardware.biometrics.Flags;
 import android.hardware.biometrics.IBiometricEnabledOnKeyguardCallback;
 import android.hardware.biometrics.IBiometricService;
 import android.hardware.biometrics.IBiometricServiceReceiver;
@@ -91,6 +91,8 @@ import java.util.List;
 public class AuthServiceTest {
 
     private static final String TEST_OP_PACKAGE_NAME = "test_package";
+
+    private final @UserIdInt int mUserId = UserHandle.getCallingUserId();
 
     private AuthService mAuthService;
 
@@ -257,12 +259,11 @@ public class AuthServiceTest {
         final Binder token = new Binder();
         final PromptInfo promptInfo = new PromptInfo();
         final long sessionId = 0;
-        final int userId = 0;
 
         mAuthService.mImpl.authenticate(
                 token,
                 sessionId,
-                userId,
+                mUserId,
                 mReceiver,
                 TEST_OP_PACKAGE_NAME,
                 promptInfo);
@@ -270,7 +271,7 @@ public class AuthServiceTest {
         verify(mBiometricService).authenticate(
                 eq(token),
                 eq(sessionId),
-                eq(userId),
+                eq(mUserId),
                 eq(mReceiver),
                 eq(TEST_OP_PACKAGE_NAME),
                 eq(promptInfo));
@@ -286,12 +287,11 @@ public class AuthServiceTest {
         final Binder token = new Binder();
         final PromptInfo promptInfo = new PromptInfo();
         final long sessionId = 0;
-        final int userId = 0;
 
         mAuthService.mImpl.authenticate(
                 token,
                 sessionId,
-                userId,
+                mUserId,
                 mReceiver,
                 TEST_OP_PACKAGE_NAME,
                 promptInfo);
@@ -299,7 +299,7 @@ public class AuthServiceTest {
         verify(mBiometricService, never()).authenticate(
                 eq(token),
                 eq(sessionId),
-                eq(userId),
+                eq(mUserId),
                 eq(mReceiver),
                 eq(TEST_OP_PACKAGE_NAME),
                 eq(promptInfo));
@@ -313,12 +313,11 @@ public class AuthServiceTest {
 
         final PromptInfo promptInfo = new PromptInfo();
         final long sessionId = 0;
-        final int userId = 0;
 
         mAuthService.mImpl.authenticate(
                 null /* token */,
                 sessionId,
-                userId,
+                mUserId,
                 mReceiver,
                 TEST_OP_PACKAGE_NAME,
                 promptInfo);
@@ -338,7 +337,7 @@ public class AuthServiceTest {
         mAuthService.mImpl.authenticate(
                 token,
                 0, /* sessionId */
-                0, /* userId */
+                mUserId,
                 mReceiver,
                 TEST_OP_PACKAGE_NAME,
                 new PromptInfo());
@@ -356,7 +355,7 @@ public class AuthServiceTest {
         mAuthService.mImpl.authenticate(
                 token,
                 0, /* sessionId */
-                0, /* userId */
+                mUserId,
                 mReceiver,
                 TEST_OP_PACKAGE_NAME,
                 new PromptInfo());
@@ -414,20 +413,19 @@ public class AuthServiceTest {
         mAuthService = new AuthService(mContext, mInjector);
         mAuthService.onStart();
 
-        final int userId = 0;
         final int expectedResult = BIOMETRIC_SUCCESS;
         final int authenticators = 0;
         when(mBiometricService.canAuthenticate(anyString(), anyInt(), anyInt(), anyInt()))
                 .thenReturn(expectedResult);
 
         final int result = mAuthService.mImpl
-                .canAuthenticate(TEST_OP_PACKAGE_NAME, userId, authenticators);
+                .canAuthenticate(TEST_OP_PACKAGE_NAME, mUserId, authenticators);
 
         assertEquals(expectedResult, result);
         waitForIdle();
         verify(mBiometricService).canAuthenticate(
                 eq(TEST_OP_PACKAGE_NAME),
-                eq(userId),
+                eq(mUserId),
                 eq(UserHandle.getCallingUserId()),
                 eq(authenticators));
     }
@@ -440,18 +438,17 @@ public class AuthServiceTest {
         mAuthService = new AuthService(mContext, mInjector);
         mAuthService.onStart();
 
-        final int userId = 0;
         final boolean expectedResult = true;
         when(mBiometricService.hasEnrolledBiometrics(anyInt(), anyString())).thenReturn(
                 expectedResult);
 
-        final boolean result = mAuthService.mImpl.hasEnrolledBiometrics(userId,
+        final boolean result = mAuthService.mImpl.hasEnrolledBiometrics(mUserId,
                 TEST_OP_PACKAGE_NAME);
 
         assertEquals(expectedResult, result);
         waitForIdle();
         verify(mBiometricService).hasEnrolledBiometrics(
-                eq(userId),
+                eq(mUserId),
                 eq(TEST_OP_PACKAGE_NAME));
     }
 
@@ -506,35 +503,20 @@ public class AuthServiceTest {
                 eq(callback));
     }
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void testGetLastAuthenticationTime_flaggedOff_throwsUnsupportedOperationException()
-            throws Exception {
-        mSetFlagsRule.disableFlags(Flags.FLAG_LAST_AUTHENTICATION_TIME);
-        setInternalAndTestBiometricPermissions(mContext, true /* hasPermission */);
-
-        mAuthService = new AuthService(mContext, mInjector);
-        mAuthService.onStart();
-
-        mAuthService.mImpl.getLastAuthenticationTime(0,
-                BiometricManager.Authenticators.BIOMETRIC_STRONG);
-    }
-
     @Test
-    public void testGetLastAuthenticationTime_flaggedOn_callsBiometricService()
+    public void testGetLastAuthenticationTime_callsBiometricService()
             throws Exception {
-        mSetFlagsRule.enableFlags(Flags.FLAG_LAST_AUTHENTICATION_TIME);
         setInternalAndTestBiometricPermissions(mContext, true /* hasPermission */);
 
         mAuthService = new AuthService(mContext, mInjector);
         mAuthService.onStart();
 
-        final int userId = 0;
         final int authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG;
 
-        mAuthService.mImpl.getLastAuthenticationTime(userId, authenticators);
+        mAuthService.mImpl.getLastAuthenticationTime(mUserId, authenticators);
 
         waitForIdle();
-        verify(mBiometricService).getLastAuthenticationTime(eq(userId), eq(authenticators));
+        verify(mBiometricService).getLastAuthenticationTime(eq(mUserId), eq(authenticators));
     }
 
     private static void setInternalAndTestBiometricPermissions(

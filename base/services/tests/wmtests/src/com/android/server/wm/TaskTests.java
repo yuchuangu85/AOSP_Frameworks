@@ -16,6 +16,7 @@
 
 package com.android.server.wm;
 
+
 import static android.app.ActivityTaskManager.INVALID_TASK_ID;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
@@ -27,6 +28,8 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
 import static android.content.Intent.FLAG_ACTIVITY_TASK_ON_HOME;
 import static android.content.pm.ActivityInfo.FLAG_RELINQUISH_TASK_IDENTITY;
+import static android.content.pm.ActivityInfo.RESIZE_MODE_RESIZEABLE;
+import static android.content.pm.ActivityInfo.RESIZE_MODE_UNRESIZEABLE;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSET;
@@ -46,6 +49,7 @@ import static com.android.server.wm.ActivityRecord.State.RESUMED;
 import static com.android.server.wm.Task.FLAG_FORCE_HIDDEN_FOR_TASK_ORG;
 import static com.android.server.wm.TaskFragment.EMBEDDED_DIM_AREA_PARENT_TASK;
 import static com.android.server.wm.TaskFragment.TASK_FRAGMENT_VISIBILITY_VISIBLE_BEHIND_TRANSLUCENT;
+import static com.android.server.wm.WindowContainer.POSITION_TOP;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -70,33 +74,39 @@ import static org.mockito.Mockito.never;
 
 import android.app.ActivityManager;
 import android.app.ActivityOptions;
-import android.app.CameraCompatTaskInfo;
 import android.app.TaskInfo;
 import android.app.WindowConfiguration;
+import android.compat.testing.PlatformCompatChangeRule;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.graphics.Color;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.os.IBinder;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
 import android.util.DisplayMetrics;
 import android.util.Xml;
 import android.view.Display;
 import android.view.DisplayInfo;
 import android.view.SurfaceControl;
+import android.view.WindowInsetsController;
 import android.window.TaskFragmentOrganizer;
 
 import androidx.test.filters.MediumTest;
 
 import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
+import com.android.window.flags.Flags;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestRule;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.xmlpull.v1.XmlPullParser;
@@ -118,6 +128,9 @@ import java.io.Reader;
 @Presubmit
 @RunWith(WindowTestRunner.class)
 public class TaskTests extends WindowTestsBase {
+
+    @Rule
+    public TestRule compatChangeRule = new PlatformCompatChangeRule();
 
     private static final String TASK_TAG = "task";
 
@@ -228,8 +241,7 @@ public class TaskTests extends WindowTestsBase {
         final Task originalTask = activityMain.getTask();
         final ActivityRecord activityPip = new ActivityBuilder(mAtm).setTask(originalTask).build();
         activityPip.setState(RESUMED, "test");
-        mAtm.mRootWindowContainer.moveActivityToPinnedRootTask(activityPip,
-                null /* launchIntoPipHostActivity */, "test");
+        mAtm.mRootWindowContainer.moveActivityToPinnedRootTask(activityPip, "test");
         final Task pinnedActivityTask = activityPip.getTask();
 
         // Simulate pinnedActivityTask unintentionally added to recent during top activity resume.
@@ -390,6 +402,111 @@ public class TaskTests extends WindowTestsBase {
         rootTask.ensureActivitiesVisible(null /* starting */);
         assertTrue(activity1.isVisible());
         assertTrue(activity2.isVisible());
+
+        // If notifyClients is false, it should only update the state without starting the client.
+        activity1.setVisible(false);
+        activity1.setVisibleRequested(false);
+        activity1.detachFromProcess();
+        rootTask.ensureActivitiesVisible(null /* starting */, false /* notifyClients */);
+        verify(mSupervisor, never()).startSpecificActivity(eq(activity1),
+                anyBoolean() /* andResume */, anyBoolean() /* checkConfig */);
+        assertTrue(activity1.isVisibleRequested());
+    }
+
+    @Test
+    public void testIsResizeable_nonResizeable_forceResize_overridesEnabled_resizeable() {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setCreateActivity(true)
+                .build();
+        task.setResizeMode(RESIZE_MODE_UNRESIZEABLE);
+        final ActivityRecord activity = task.getRootActivity();
+        final AppCompatResizeOverrides resizeOverrides =
+                activity.mAppCompatController.getResizeOverrides();
+        spyOn(activity);
+        spyOn(resizeOverrides);
+        doReturn(true).when(resizeOverrides).shouldOverrideForceResizeApp();
+        task.intent = null;
+        task.setIntent(activity);
+        // Override should take effect and task should be resizeable.
+        assertTrue(task.getTaskInfo().isResizeable);
+    }
+
+    @Test
+    public void testIsResizeable_resizeable_forceNonResize_overridesEnabled_nonResizeable() {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setCreateActivity(true)
+                .build();
+        task.setResizeMode(RESIZE_MODE_RESIZEABLE);
+        final ActivityRecord activity = task.getRootActivity();
+        final AppCompatResizeOverrides resizeOverrides =
+                activity.mAppCompatController.getResizeOverrides();
+        spyOn(activity);
+        spyOn(resizeOverrides);
+        doReturn(true).when(resizeOverrides).shouldOverrideForceNonResizeApp();
+        task.intent = null;
+        task.setIntent(activity);
+
+        // Override should take effect and task should be un-resizeable.
+        assertFalse(task.getTaskInfo().isResizeable);
+    }
+
+    @Test
+    public void testIsResizeable_resizeableTask_fullscreenOverride_resizeable() {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setCreateActivity(true)
+                .build();
+        task.setResizeMode(RESIZE_MODE_UNRESIZEABLE);
+        final ActivityRecord activity = task.getRootActivity();
+        final AppCompatAspectRatioOverrides aspectRatioOverrides =
+                activity.mAppCompatController.getAspectRatioOverrides();
+        spyOn(aspectRatioOverrides);
+        doReturn(true).when(aspectRatioOverrides).hasFullscreenOverride();
+        task.intent = null;
+        task.setIntent(activity);
+
+        // Override should take effect and task should be resizeable.
+        assertTrue(task.getTaskInfo().isResizeable);
+    }
+
+    @Test
+    public void testIsResizeable_resizeableTask_universalResizeable_resizeable() {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setCreateActivity(true)
+                .build();
+        task.setResizeMode(RESIZE_MODE_UNRESIZEABLE);
+        final ActivityRecord activity = task.getRootActivity();
+        spyOn(activity);
+        doReturn(true).when(activity).isUniversalResizeable();
+        task.intent = null;
+        task.setIntent(activity);
+
+        // Override should take effect and task should be resizeable.
+        assertTrue(task.getTaskInfo().isResizeable);
+    }
+
+    @Test
+    public void testIsResizeable_systemWideForceResize_compatForceNonResize_resizeable() {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setCreateActivity(true)
+                .setComponent(ComponentName.createRelative(mContext, TaskTests.class.getName()))
+                .build();
+        task.setResizeMode(RESIZE_MODE_RESIZEABLE);
+
+        // Set system-wide force resizeable override.
+        task.mAtmService.mForceResizableActivities = true;
+
+        final ActivityRecord activity = task.getRootActivity();
+        final AppCompatResizeOverrides resizeOverrides =
+                activity.mAppCompatController.getResizeOverrides();
+        spyOn(activity);
+        spyOn(resizeOverrides);
+        doReturn(true).when(resizeOverrides).shouldOverrideForceNonResizeApp();
+        task.intent = null;
+        task.setIntent(activity);
+
+        // System wide override should tak priority over app compat override so the task should
+        // remain resizeable.
+        assertTrue(task.getTaskInfo().isResizeable);
     }
 
     @Test
@@ -428,6 +545,7 @@ public class TaskTests extends WindowTestsBase {
 
     @Test
     public void testHandlesOrientationChangeFromDescendant() {
+        mDisplayContent.setIgnoreOrientationRequest(false);
         final Task rootTask = createTask(mDisplayContent,
                 WINDOWING_MODE_MULTI_WINDOW, ACTIVITY_TYPE_STANDARD);
         final Task leafTask1 = createTaskInRootTask(rootTask, 0 /* userId */);
@@ -584,9 +702,7 @@ public class TaskTests extends WindowTestsBase {
                 .setWindowingMode(WINDOWING_MODE_FREEFORM).build();
         Task task = rootTask.getBottomMostTask();
         task.getRootActivity().setOrientation(SCREEN_ORIENTATION_UNSPECIFIED);
-        DisplayInfo info = new DisplayInfo();
-        display.mDisplay.getDisplayInfo(info);
-        final Rect fullScreenBounds = new Rect(0, 0, info.logicalWidth, info.logicalHeight);
+        final Rect fullScreenBounds = new Rect(display.getBounds());
         final Rect freeformBounds = new Rect(fullScreenBounds);
         freeformBounds.inset((int) (freeformBounds.width() * 0.2),
                 (int) (freeformBounds.height() * 0.2));
@@ -605,55 +721,13 @@ public class TaskTests extends WindowTestsBase {
     }
 
     @Test
-    public void testTopActivityEligibleForUserAspectRatioButton() {
-        DisplayContent display = mAtm.mRootWindowContainer.getDefaultDisplay();
-        final Task rootTask = new TaskBuilder(mSupervisor).setCreateActivity(true)
-                .setWindowingMode(WINDOWING_MODE_FULLSCREEN).setDisplay(display).build();
-        final Task task = rootTask.getBottomMostTask();
-        final ActivityRecord root = task.getTopNonFinishingActivity();
-        spyOn(mWm.mLetterboxConfiguration);
-        spyOn(root);
-        spyOn(root.mLetterboxUiController);
-
-        doReturn(true).when(root).fillsParent();
-        doReturn(true).when(root.mLetterboxUiController)
-                .shouldEnableUserAspectRatioSettings();
-        doReturn(false).when(root).inSizeCompatMode();
-        doReturn(task).when(root).getOrganizedTask();
-
-        // The button should be eligible to be displayed
-        assertTrue(task.getTaskInfo()
-                .appCompatTaskInfo.topActivityEligibleForUserAspectRatioButton);
-
-        // When shouldApplyUserMinAspectRatioOverride is disable the button is not enabled
-        doReturn(false).when(root.mLetterboxUiController)
-                .shouldEnableUserAspectRatioSettings();
-        assertFalse(task.getTaskInfo()
-                .appCompatTaskInfo.topActivityEligibleForUserAspectRatioButton);
-        doReturn(true).when(root.mLetterboxUiController)
-                .shouldEnableUserAspectRatioSettings();
-
-        // When in size compat mode the button is not enabled
-        doReturn(true).when(root).inSizeCompatMode();
-        assertFalse(task.getTaskInfo()
-                .appCompatTaskInfo.topActivityEligibleForUserAspectRatioButton);
-        doReturn(false).when(root).inSizeCompatMode();
-
-        // When the top activity is transparent, the button is not enabled
-        doReturn(false).when(root).fillsParent();
-        assertFalse(task.getTaskInfo()
-                .appCompatTaskInfo.topActivityEligibleForUserAspectRatioButton);
-        doReturn(true).when(root).fillsParent();
-    }
-
-    @Test
     public void testIsTopActivityTranslucent() {
         DisplayContent display = mAtm.mRootWindowContainer.getDefaultDisplay();
         final Task rootTask = new TaskBuilder(mSupervisor).setCreateActivity(true)
                 .setWindowingMode(WINDOWING_MODE_FULLSCREEN).setDisplay(display).build();
         final Task task = rootTask.getBottomMostTask();
         final ActivityRecord root = task.getTopNonFinishingActivity();
-        spyOn(mWm.mLetterboxConfiguration);
+        spyOn(mWm.mAppCompatConfiguration);
         spyOn(root);
 
         doReturn(false).when(root).fillsParent();
@@ -854,8 +928,8 @@ public class TaskTests extends WindowTestsBase {
         // Without limiting to be inside the parent bounds, the out screen size should keep relative
         // to the input bounds.
         final ActivityRecord activity = new ActivityBuilder(mAtm).setTask(task).build();
-        final ActivityRecord.CompatDisplayInsets compatInsets =
-                new ActivityRecord.CompatDisplayInsets(
+        final AppCompatDisplayInsets compatInsets =
+                new AppCompatDisplayInsets(
                         display, activity, /* letterboxedContainerBounds */ null,
                         /* useOverrideInsets */ false);
         final TaskFragment.ConfigOverrideHint overrideHint = new TaskFragment.ConfigOverrideHint();
@@ -1513,6 +1587,7 @@ public class TaskTests extends WindowTestsBase {
 
     @Test
     public void testNotSpecifyOrientationByFloatingTask() {
+        mDisplayContent.setIgnoreOrientationRequest(false);
         final Task task = new TaskBuilder(mSupervisor)
                 .setCreateActivity(true).setCreateParentTask(true).build();
         final ActivityRecord activity = task.getTopMostActivity();
@@ -1532,6 +1607,7 @@ public class TaskTests extends WindowTestsBase {
 
     @Test
     public void testNotSpecifyOrientation_taskDisplayAreaNotFocused() {
+        mDisplayContent.setIgnoreOrientationRequest(false);
         final TaskDisplayArea firstTaskDisplayArea = mDisplayContent.getDefaultTaskDisplayArea();
         final TaskDisplayArea secondTaskDisplayArea = createTaskDisplayArea(
                 mDisplayContent, mRootWindowContainer.mWmService, "TestTaskDisplayArea",
@@ -1568,6 +1644,7 @@ public class TaskTests extends WindowTestsBase {
 
     @Test
     public void testTaskOrientationOnDisplayWindowingModeChange() {
+        mDisplayContent.setIgnoreOrientationRequest(false);
         // Skip unnecessary operations to speed up the test.
         mAtm.deferWindowLayout();
         final Task task = getTestTask();
@@ -1690,8 +1767,7 @@ public class TaskTests extends WindowTestsBase {
 
         primary.mVisibleRequested = true;
         secondary.mVisibleRequested = true;
-        primary.setAdjacentTaskFragment(secondary);
-        secondary.setAdjacentTaskFragment(primary);
+        primary.setAdjacentTaskFragments(new TaskFragment.AdjacentSet(primary, secondary));
         primary.setEmbeddedDimArea(EMBEDDED_DIM_AREA_PARENT_TASK);
         doReturn(true).when(primary).shouldBoostDimmer();
         task.assignChildLayers(t);
@@ -2010,14 +2086,111 @@ public class TaskTests extends WindowTestsBase {
     }
 
     @Test
-    public void getTaskInfoPropagatesCameraCompatMode() {
-        final Task task = new TaskBuilder(mSupervisor).setCreateActivity(true).build();
-        final ActivityRecord activity = task.getTopMostActivity();
-        activity.mLetterboxUiController
-                .setFreeformCameraCompatMode(CameraCompatTaskInfo.CAMERA_COMPAT_FREEFORM_PORTRAIT);
+    public void testUpdateTaskDescriptionOnReparent() {
+        final Task rootTask1 = createTask(mDisplayContent);
+        final Task rootTask2 = createTask(mDisplayContent);
+        final Task childTask = createTaskInRootTask(rootTask1, 0 /* userId */);
+        final ActivityRecord activity = createActivityRecord(mDisplayContent, childTask);
+        final String testLabel = "test_task_description_label";
+        final ActivityManager.TaskDescription td = new ActivityManager.TaskDescription(testLabel);
+        activity.setTaskDescription(td);
 
-        assertEquals(CameraCompatTaskInfo.CAMERA_COMPAT_FREEFORM_PORTRAIT,
-                task.getTaskInfo().appCompatTaskInfo.cameraCompatTaskInfo.freeformCameraCompatMode);
+        // Ensure the td is set for the original root task
+        assertEquals(testLabel, rootTask1.getTaskDescription().getLabel());
+        assertNull(rootTask2.getTaskDescription().getLabel());
+
+        childTask.reparent(rootTask2, POSITION_TOP, false /* moveParents */, "reparent");
+
+        // Ensure the td is set for the new root task
+        assertEquals(testLabel, rootTask2.getTaskDescription().getLabel());
+    }
+
+    @Test
+    public void testUpdateTaskDescriptionOnReorder() {
+        final Task task = createTask(mDisplayContent);
+        final ActivityRecord activity1 = createActivityRecord(mDisplayContent, task);
+        final ActivityRecord activity2 = createActivityRecord(mDisplayContent, task);
+        final ActivityManager.TaskDescription td1 = new ActivityManager.TaskDescription();
+        td1.setBackgroundColor(Color.RED);
+        activity1.setTaskDescription(td1);
+        final ActivityManager.TaskDescription td2 = new ActivityManager.TaskDescription();
+        td2.setBackgroundColor(Color.BLUE);
+        activity2.setTaskDescription(td2);
+
+        // Ensure the td is set for the original root task
+        assertEquals(Color.BLUE, task.getTaskDescription().getBackgroundColor());
+
+        task.positionChildAt(POSITION_TOP, activity1, false /* includeParents */);
+
+        // Ensure the td is set for the original root task
+        assertEquals(Color.RED, task.getTaskDescription().getBackgroundColor());
+    }
+
+    @Test
+    public void testUpdateTopOpaqueSystemBarsAppearanceWhenActivityBecomesTransparent() {
+        final Task task = createTask(mDisplayContent);
+        final ActivityRecord activity = createActivityRecord(task);
+        final ActivityManager.TaskDescription td = new ActivityManager.TaskDescription();
+        td.setSystemBarsAppearance(
+                WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        activity.setTaskDescription(td);
+
+        assertEquals(WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                task.getTaskDescription().getTopOpaqueSystemBarsAppearance());
+
+        activity.setOccludesParent(false);
+
+        assertEquals(0, task.getTaskDescription().getTopOpaqueSystemBarsAppearance());
+    }
+
+    @Test
+    public void testUpdateTopOpaqueSystemBarsAppearanceWhenActivityBecomesOpaque() {
+        final Task task = createTask(mDisplayContent);
+        final ActivityRecord activity = createActivityRecord(task);
+        activity.setOccludesParent(false);
+
+        final ActivityManager.TaskDescription td = new ActivityManager.TaskDescription();
+        td.setSystemBarsAppearance(
+                WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        activity.setTaskDescription(td);
+
+        assertEquals(0, task.getTaskDescription().getTopOpaqueSystemBarsAppearance());
+
+        activity.setOccludesParent(true);
+
+        assertEquals(WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                task.getTaskDescription().getTopOpaqueSystemBarsAppearance());
+
+    }
+
+    @Test
+    public void testIsForceExcludedFromRecents_defaultFalse() {
+        final Task task = createTask(mDisplayContent);
+        assertFalse(task.isForceExcludedFromRecents());
+    }
+
+    @Test
+    public void testSetForceExcludedFromRecents() {
+        final Task task = createTask(mDisplayContent);
+
+        task.setForceExcludedFromRecents(true);
+
+        if (Flags.excludeTaskFromRecents()) {
+            assertTrue(task.isForceExcludedFromRecents());
+        } else {
+            assertFalse(task.isForceExcludedFromRecents());
+        }
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_EXCLUDE_TASK_FROM_RECENTS)
+    public void testSetForceExcludedFromRecents_resetsTaskForceExcludedFromRecents() {
+        final Task task = createTask(mDisplayContent);
+        task.setForceExcludedFromRecents(true);
+
+        task.setForceExcludedFromRecents(false);
+
+        assertFalse(task.isForceExcludedFromRecents());
     }
 
     private Task getTestTask() {

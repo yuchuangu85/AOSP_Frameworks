@@ -22,10 +22,10 @@ import static com.android.systemui.keyguard.WakefulnessLifecycle.WAKEFULNESS_WAK
 import android.annotation.MainThread;
 import android.content.res.Configuration;
 import android.hardware.display.AmbientDisplayConfiguration;
-import android.os.Trace;
 import android.util.Log;
 import android.view.Display;
 
+import com.android.app.tracing.coroutines.TrackTracer;
 import com.android.internal.util.Preconditions;
 import com.android.systemui.dock.DockManager;
 import com.android.systemui.doze.dagger.DozeScope;
@@ -39,7 +39,6 @@ import com.android.systemui.util.wakelock.WakeLock;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
-import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
 
@@ -232,7 +231,6 @@ public class DozeMachine {
     }
 
     void onScreenState(int state) {
-        mDozeLog.traceDisplayState(state);
         for (Part part : mParts) {
             part.onScreenState(state);
         }
@@ -316,7 +314,7 @@ public class DozeMachine {
         mState = newState;
 
         mDozeLog.traceState(newState);
-        Trace.traceCounter(Trace.TRACE_TAG_APP, "doze_machine_state", newState.ordinal());
+        TrackTracer.instantForGroup("keyguard", "doze_machine_state", newState.ordinal());
 
         updatePulseReason(newState, oldState, pulseReason);
         performTransitionOnComponents(oldState, newState);
@@ -507,16 +505,18 @@ public class DozeMachine {
         /** Request waking up. */
         void requestWakeUp(@DozeLog.Reason int reason);
 
-        /** Set screen brightness */
+        /** Set screen brightness between 1 and 255 */
         void setDozeScreenBrightness(int brightness);
+
+        /** Set screen brightness between {@link PowerManager#BRIGHTNESS_MIN} and
+         * {@link PowerManager#BRIGHTNESS_MAX} */
+        void setDozeScreenBrightnessFloat(float brightness);
 
         class Delegate implements Service {
             private final Service mDelegate;
-            private final Executor mBgExecutor;
 
-            public Delegate(Service delegate, Executor bgExecutor) {
+            public Delegate(Service delegate) {
                 mDelegate = delegate;
-                mBgExecutor = bgExecutor;
             }
 
             @Override
@@ -536,9 +536,12 @@ public class DozeMachine {
 
             @Override
             public void setDozeScreenBrightness(int brightness) {
-                mBgExecutor.execute(() -> {
-                    mDelegate.setDozeScreenBrightness(brightness);
-                });
+                mDelegate.setDozeScreenBrightness(brightness);
+            }
+
+            @Override
+            public void setDozeScreenBrightnessFloat(float brightness) {
+                mDelegate.setDozeScreenBrightnessFloat(brightness);
             }
         }
     }

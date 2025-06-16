@@ -42,6 +42,7 @@ import com.android.internal.compat.CompatibilityOverridesToRemoveByPackageConfig
 import com.android.internal.compat.CompatibilityOverridesToRemoveConfig;
 import com.android.internal.compat.IOverrideValidator;
 import com.android.internal.compat.OverrideAllowedState;
+import com.android.internal.ravenwood.RavenwoodEnvironment;
 import com.android.server.compat.config.Change;
 import com.android.server.compat.config.Config;
 import com.android.server.compat.overrides.ChangeOverrides;
@@ -63,6 +64,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 
 import javax.xml.datatype.DatatypeConfigurationException;
 
@@ -72,11 +74,15 @@ import javax.xml.datatype.DatatypeConfigurationException;
  * <p>It stores the default configuration for each change, and any per-package overrides that have
  * been configured.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 final class CompatConfig {
     private static final String TAG = "CompatConfig";
     private static final String APP_COMPAT_DATA_DIR = "/data/misc/appcompat";
     private static final String STATIC_OVERRIDES_PRODUCT_DIR = "/product/etc/appcompat";
     private static final String OVERRIDES_FILE = "compat_framework_overrides.xml";
+
+    private static final String APP_COMPAT_DATA_DIR_RAVENWOOD = "/ravenwood-data/";
+    private static final String OVERRIDES_FILE_RAVENWOOD = "compat-config.xml";
 
     private final ConcurrentHashMap<Long, CompatChange> mChanges = new ConcurrentHashMap<>();
 
@@ -98,19 +104,32 @@ final class CompatConfig {
 
     static CompatConfig create(AndroidBuildClassifier androidBuildClassifier, Context context) {
         CompatConfig config = new CompatConfig(androidBuildClassifier, context);
-        config.initConfigFromLib(Environment.buildPath(
+        config.loadConfigFiles();
+        config.initOverrides();
+        config.invalidateCache();
+        return config;
+    }
+
+    @android.ravenwood.annotation.RavenwoodReplace
+    private void loadConfigFiles() {
+        initConfigFromLib(Environment.buildPath(
                 Environment.getRootDirectory(), "etc", "compatconfig"));
-        config.initConfigFromLib(Environment.buildPath(
+        initConfigFromLib(Environment.buildPath(
                 Environment.getRootDirectory(), "system_ext", "etc", "compatconfig"));
 
         List<ApexManager.ActiveApexInfo> apexes = ApexManager.getInstance().getActiveApexInfos();
         for (ApexManager.ActiveApexInfo apex : apexes) {
-            config.initConfigFromLib(Environment.buildPath(
+            initConfigFromLib(Environment.buildPath(
                     apex.apexDirectory, "etc", "compatconfig"));
         }
-        config.initOverrides();
-        config.invalidateCache();
-        return config;
+    }
+
+    @SuppressWarnings("unused")
+    private void loadConfigFiles$ravenwood() {
+        final var configDir = new File(
+                RavenwoodEnvironment.getInstance().getRavenwoodRuntimePath()
+                        + APP_COMPAT_DATA_DIR_RAVENWOOD);
+        initConfigFromLib(configDir, (file) -> file.getName().endsWith(OVERRIDES_FILE_RAVENWOOD));
     }
 
     /**
@@ -678,12 +697,25 @@ final class CompatConfig {
         return changeInfos;
     }
 
+    /**
+     * Load all config files in a given directory.
+     */
     void initConfigFromLib(File libraryDir) {
+        initConfigFromLib(libraryDir, (file) -> true);
+    }
+
+    /**
+     * Load config files in a given directory, but only the ones that match {@code includingFilter}.
+     */
+    void initConfigFromLib(File libraryDir, Predicate<File> includingFilter) {
         if (!libraryDir.exists() || !libraryDir.isDirectory()) {
             Slog.d(TAG, "No directory " + libraryDir + ", skipping");
             return;
         }
         for (File f : libraryDir.listFiles()) {
+            if (!includingFilter.test(f)) {
+                continue;
+            }
             Slog.d(TAG, "Found a config file: " + f.getPath());
             //TODO(b/138222363): Handle duplicate ids across config files.
             readConfig(f);
@@ -844,7 +876,28 @@ final class CompatConfig {
     }
 
     @Nullable
+    @android.ravenwood.annotation.RavenwoodReplace(
+            blockedBy = PackageManager.class,
+            reason = "PackageManager.getApplicationInfo() isn't supported yet")
     private Long getVersionCodeOrNull(String packageName) {
+        return getVersionCodeOrNullImpl(packageName);
+    }
+
+    @SuppressWarnings("unused")
+    @Nullable
+    private Long getVersionCodeOrNull$ravenwood(String packageName) {
+        try {
+            // It's possible that the context is mocked, try the real method first
+            return getVersionCodeOrNullImpl(packageName);
+        } catch (Throwable e) {
+            // For now, Ravenwood doesn't support the concept of "app updates", so let's
+            // just use a fixed version code for all packages.
+            return 1L;
+        }
+    }
+
+    @Nullable
+    private Long getVersionCodeOrNullImpl(String packageName) {
         try {
             ApplicationInfo applicationInfo = mContext.getPackageManager().getApplicationInfo(
                     packageName, MATCH_ANY_USER);

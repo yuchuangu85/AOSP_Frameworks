@@ -16,6 +16,10 @@
 
 package com.android.server.accounts;
 
+import static android.Manifest.permission.COPY_ACCOUNTS;
+import static android.Manifest.permission.REMOVE_ACCOUNTS;
+import static android.app.admin.flags.Flags.splitCreateManagedProfileEnabled;
+
 import android.Manifest;
 import android.accounts.AbstractAccountAuthenticator;
 import android.accounts.Account;
@@ -72,6 +76,7 @@ import android.content.pm.SigningDetails.CertCapabilities;
 import android.content.pm.UserInfo;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteCantOpenDatabaseException;
+import android.database.sqlite.SQLiteException;
 import android.database.sqlite.SQLiteFullException;
 import android.database.sqlite.SQLiteStatement;
 import android.os.Binder;
@@ -111,6 +116,7 @@ import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
 import com.android.internal.notification.SystemNotificationChannels;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.DumpUtils;
+import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
 import com.android.modules.expresslog.Histogram;
@@ -184,6 +190,13 @@ public class AccountManagerService
     }
 
     final Context mContext;
+    final PackageMonitor mPackageMonitor;
+
+    private static final int[] INTERESTING_APP_OPS = new int[] {
+        AppOpsManager.OP_GET_ACCOUNTS,
+        AppOpsManager.OP_READ_CONTACTS,
+        AppOpsManager.OP_WRITE_CONTACTS,
+    };
 
     private final PackageManager mPackageManager;
     private final AppOpsManager mAppOpsManager;
@@ -361,7 +374,7 @@ public class AccountManagerService
         }, UserHandle.ALL, userFilter, null, null);
 
         // Need to cancel account request notifications if the update/install can access the account
-        new PackageMonitor() {
+        mPackageMonitor = new PackageMonitor() {
             @Override
             public void onPackageAdded(String packageName, int uid) {
                 // Called on a handler, and running as the system
@@ -385,77 +398,52 @@ public class AccountManagerService
                     return;
                 }
             }
-        }.register(mContext, mHandler.getLooper(), UserHandle.ALL, true);
+        };
+        mPackageMonitor.register(mContext, mHandler.getLooper(), UserHandle.ALL, true);
 
         // Cancel account request notification if an app op was preventing the account access
-        mAppOpsManager.startWatchingMode(AppOpsManager.OP_GET_ACCOUNTS, null,
-                new AppOpsManager.OnOpChangedInternalListener() {
-            @Override
-            public void onOpChanged(int op, String packageName) {
-                try {
-                    final int userId = ActivityManager.getCurrentUser();
-                    final int uid = mPackageManager.getPackageUidAsUser(packageName, userId);
-                    final int mode = mAppOpsManager.checkOpNoThrow(
-                            AppOpsManager.OP_GET_ACCOUNTS, uid, packageName);
-                    if (mode == AppOpsManager.MODE_ALLOWED) {
-                        final long identity = Binder.clearCallingIdentity();
-                        try {
-                            UserAccounts accounts = getUserAccounts(userId);
-                            cancelAccountAccessRequestNotificationIfNeeded(
-                                    packageName, uid, true, accounts);
-                        } finally {
-                            Binder.restoreCallingIdentity(identity);
-                        }
-                    }
-                } catch (NameNotFoundException e) {
-                    /* ignore */
-                } catch (SQLiteCantOpenDatabaseException e) {
-                    Log.w(TAG, "Can't read accounts database", e);
-                    return;
-                }
-            }
-        });
+        for (int i = 0; i < INTERESTING_APP_OPS.length; ++i) {
+            mAppOpsManager.startWatchingMode(INTERESTING_APP_OPS[i], null,
+                    new OnInterestingAppOpChangedListener());
+        }
 
-        // Cancel account request notification if a permission was preventing the account access
-        mPackageManager.addOnPermissionsChangeListener(
-                (int uid) -> {
-            // Permission changes cause requires updating accounts cache.
+        // Clear the accounts cache on permission changes.
+        // The specific permissions we care about are backed by AppOps, so just
+        // let the change events on those handle clearing any notifications.
+        mPackageManager.addOnPermissionsChangeListener((int uid) -> {
             AccountManager.invalidateLocalAccountsDataCaches();
-
-            Account[] accounts = null;
-            String[] packageNames = mPackageManager.getPackagesForUid(uid);
-            if (packageNames != null) {
-                final int userId = UserHandle.getUserId(uid);
-                final long identity = Binder.clearCallingIdentity();
-                try {
-                    for (String packageName : packageNames) {
-                                // if app asked for permission we need to cancel notification even
-                                // for O+ applications.
-                                if (mPackageManager.checkPermission(
-                                        Manifest.permission.GET_ACCOUNTS,
-                                        packageName) != PackageManager.PERMISSION_GRANTED) {
-                                    continue;
-                                }
-
-                        if (accounts == null) {
-                            accounts = getAccountsOrEmptyArray(null, userId, "android");
-                            if (ArrayUtils.isEmpty(accounts)) {
-                                return;
-                            }
-                        }
-                        UserAccounts userAccounts = getUserAccounts(UserHandle.getUserId(uid));
-                        for (Account account : accounts) {
-                            cancelAccountAccessRequestNotificationIfNeeded(
-                                    account, uid, packageName, true, userAccounts);
-                        }
-                    }
-                } finally {
-                    Binder.restoreCallingIdentity(identity);
-                }
-            }
         });
     }
 
+    private class OnInterestingAppOpChangedListener
+            extends AppOpsManager.OnOpChangedInternalListener {
+        @Override
+        public void onOpChanged(int op, String packageName) {
+            final int userId = ActivityManager.getCurrentUser();
+            final int packageUid;
+            try {
+                packageUid = mPackageManager.getPackageUidAsUser(packageName, userId);
+            } catch (NameNotFoundException e) {
+                /* ignore */
+                return;
+            }
+
+            final int mode = mAppOpsManager.checkOpNoThrow(op, packageUid, packageName);
+            if (mode != AppOpsManager.MODE_ALLOWED) {
+                return;
+            }
+
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                cancelAccountAccessRequestNotificationIfNeeded(
+                        packageName, packageUid, true, getUserAccounts(userId));
+            } catch (SQLiteCantOpenDatabaseException e) {
+                Log.w(TAG, "Can't read accounts database", e);
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
+        }
+    }
 
     boolean getBindInstantServiceAllowed(int userId) {
         return  mAuthenticatorCache.getBindInstantServiceAllowed(userId);
@@ -1233,6 +1221,10 @@ public class AccountManagerService
                             obsoleteAuthType.add(type);
                             // And delete it from the TABLE_META
                             accountsDb.deleteMetaByAuthTypeAndUid(type, uid);
+                        } else if (knownUid != null && knownUid != uid) {
+                            Slog.w(TAG, "authenticator no longer exist for type " + type);
+                            obsoleteAuthType.add(type);
+                            accountsDb.deleteMetaByAuthTypeAndUid(type, uid);
                         }
                     }
                 }
@@ -1241,7 +1233,17 @@ public class AccountManagerService
                 // been re-enabled (after being updated for example), then we just overwrite the old
                 // values.
                 for (Entry<String, Integer> entry : knownAuth.entrySet()) {
-                    accountsDb.insertOrReplaceMetaAuthTypeAndUid(entry.getKey(), entry.getValue());
+                    String type = entry.getKey();
+                    Integer newUid = entry.getValue();
+                    if (!Objects.equals(metaAuthUid.get(type), newUid)) {
+                        FrameworkStatsLog.write(
+                                FrameworkStatsLog.ACCOUNT_MANAGER_EVENT,
+                                type,
+                                newUid,
+                                FrameworkStatsLog
+                                        .ACCOUNT_MANAGER_EVENT__EVENT_TYPE__AUTHENTICATOR_ADDED);
+                    }
+                    accountsDb.insertOrReplaceMetaAuthTypeAndUid(type, newUid);
                 }
 
                 final Map<Long, Account> accountsMap = accountsDb.findAllDeAccounts();
@@ -1457,8 +1459,8 @@ public class AccountManagerService
                 List<Integer> uids;
                 try {
                     uids = accounts.accountsDb.findAllUidGrants();
-                } catch (SQLiteCantOpenDatabaseException e) {
-                    Log.w(TAG, "Could not delete grants for user = " + accounts.userId);
+                } catch (SQLiteException e) {
+                    Log.w(TAG, "Could not delete grants for user = " + accounts.userId, e);
                     return;
                 }
                 for (int uid : uids) {
@@ -1743,9 +1745,11 @@ public class AccountManagerService
     public void copyAccountToUser(final IAccountManagerResponse response, final Account account,
             final int userFrom, int userTo) {
         int callingUid = Binder.getCallingUid();
-        if (isCrossUser(callingUid, UserHandle.USER_ALL)) {
+        if (isCrossUser(callingUid, UserHandle.USER_ALL)
+                && !hasCopyAccountsPermission()) {
             throw new SecurityException("Calling copyAccountToUser requires "
-                    + android.Manifest.permission.INTERACT_ACROSS_USERS_FULL);
+                    + android.Manifest.permission.INTERACT_ACROSS_USERS_FULL
+                    + " or " + COPY_ACCOUNTS);
         }
         final UserAccounts fromAccounts = getUserAccounts(userFrom);
         final UserAccounts toAccounts = getUserAccounts(userTo);
@@ -1795,6 +1799,12 @@ public class AccountManagerService
         } finally {
             restoreCallingIdentity(identityToken);
         }
+    }
+
+    private boolean hasCopyAccountsPermission() {
+        return splitCreateManagedProfileEnabled()
+                && mContext.checkCallingOrSelfPermission(COPY_ACCOUNTS)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     @Override
@@ -1960,6 +1970,11 @@ public class AccountManagerService
                     }
                     accounts.accountsDb.setTransactionSuccessful();
 
+                    FrameworkStatsLog.write(
+                            FrameworkStatsLog.ACCOUNT_MANAGER_EVENT,
+                            account.type,
+                            callingUid,
+                            FrameworkStatsLog.ACCOUNT_MANAGER_EVENT__EVENT_TYPE__ACCOUNT_ADDED);
                     logRecord(AccountsDb.DEBUG_ACTION_ACCOUNT_ADD, AccountsDb.TABLE_ACCOUNTS,
                             accountId,
                             accounts, callingUid);
@@ -2181,6 +2196,9 @@ public class AccountManagerService
             Log.i(TAG, "callingUid=" + callingUid + ", userId=" + accounts.userId
                     + " performing rename account");
             Account resultingAccount = renameAccountInternal(accounts, accountToRename, newName);
+            if (resultingAccount == null) {
+                resultingAccount = accountToRename;
+            }
             Bundle result = new Bundle();
             result.putString(AccountManager.KEY_ACCOUNT_NAME, resultingAccount.name);
             result.putString(AccountManager.KEY_ACCOUNT_TYPE, resultingAccount.type);
@@ -2342,7 +2360,8 @@ public class AccountManagerService
         UserHandle user = UserHandle.of(userId);
         if (!isAccountManagedByCaller(account.type, callingUid, user.getIdentifier())
                 && !isSystemUid(callingUid)
-                && !isProfileOwner(callingUid)) {
+                && !isProfileOwner(callingUid)
+                && !hasRemoveAccountsPermission()) {
             String msg = String.format(
                     "uid %s cannot remove accounts of type: %s",
                     callingUid,
@@ -2402,6 +2421,12 @@ public class AccountManagerService
         } finally {
             restoreCallingIdentity(identityToken);
         }
+    }
+
+    private boolean hasRemoveAccountsPermission() {
+        return splitCreateManagedProfileEnabled()
+                && mContext.checkCallingOrSelfPermission(REMOVE_ACCOUNTS)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     @Override
@@ -2556,6 +2581,11 @@ public class AccountManagerService
                     }
                     String action = userUnlocked ? AccountsDb.DEBUG_ACTION_ACCOUNT_REMOVE
                             : AccountsDb.DEBUG_ACTION_ACCOUNT_REMOVE_DE;
+                    FrameworkStatsLog.write(
+                            FrameworkStatsLog.ACCOUNT_MANAGER_EVENT,
+                            account.type,
+                            callingUid,
+                            FrameworkStatsLog.ACCOUNT_MANAGER_EVENT__EVENT_TYPE__ACCOUNT_REMOVED);
                     logRecord(action, AccountsDb.TABLE_ACCOUNTS, accountId, accounts);
                 }
             }
@@ -2818,6 +2848,14 @@ public class AccountManagerService
                                 : AccountsDb.DEBUG_ACTION_SET_PASSWORD;
                         logRecord(action, AccountsDb.TABLE_ACCOUNTS, accountId, accounts,
                                 callingUid);
+
+                        FrameworkStatsLog.write(
+                                FrameworkStatsLog.ACCOUNT_MANAGER_EVENT,
+                                account.type,
+                                callingUid,
+                                TextUtils.isEmpty(password)
+                                ? FrameworkStatsLog.ACCOUNT_MANAGER_EVENT__EVENT_TYPE__PASSWORD_REMOVED
+                                : FrameworkStatsLog.ACCOUNT_MANAGER_EVENT__EVENT_TYPE__PASSWORD_CHANGED);
                     }
                 } finally {
                     accounts.accountsDb.endTransaction();
@@ -2884,7 +2922,7 @@ public class AccountManagerService
             if (!accountExistsCache(accounts, account)) {
                 return;
             }
-            setUserdataInternal(accounts, account, key, value);
+            setUserdataInternal(accounts, account, key, value, callingUid);
         } finally {
             restoreCallingIdentity(identityToken);
         }
@@ -2904,7 +2942,7 @@ public class AccountManagerService
     }
 
     private void setUserdataInternal(UserAccounts accounts, Account account, String key,
-            String value) {
+            String value, int callingUid) {
         synchronized (accounts.dbLock) {
             accounts.accountsDb.beginTransaction();
             try {
@@ -2930,6 +2968,11 @@ public class AccountManagerService
                 AccountManager.invalidateLocalAccountUserDataCaches();
             }
         }
+        FrameworkStatsLog.write(
+                FrameworkStatsLog.ACCOUNT_MANAGER_EVENT,
+                account.type,
+                callingUid,
+                FrameworkStatsLog.ACCOUNT_MANAGER_EVENT__EVENT_TYPE__USER_DATA_CHANGED);
     }
 
     private void onResult(IAccountManagerResponse response, Bundle result) {
@@ -3186,6 +3229,12 @@ public class AccountManagerService
                                         "the type and name should not be empty");
                                 return;
                             }
+                            if (!type.equals(mAccountType)) {
+                                onError(AccountManager.ERROR_CODE_INVALID_RESPONSE,
+                                        "incorrect account type");
+                                return;
+                            }
+
                             Account resultAccount = new Account(name, type);
                             if (!customTokens) {
                                 saveAuthTokenToDatabase(
@@ -4460,6 +4509,9 @@ public class AccountManagerService
                     opPackageName,
                     visibleAccountTypes,
                     false /* includeUserManagedNotVisible */);
+        } catch (SQLiteException e) {
+            Log.w(TAG, "Could not get accounts for user " + userId, e);
+            return new Account[]{};
         } finally {
             restoreCallingIdentity(identityToken);
         }
@@ -4535,7 +4587,7 @@ public class AccountManagerService
         try {
             return getAccountsAsUserForPackage(type, userId, opPackageName /* callingPackage */, -1,
                     opPackageName, false /* includeUserManagedNotVisible */);
-        } catch (SQLiteCantOpenDatabaseException e) {
+        } catch (SQLiteException e) {
             Log.e(TAG, "Could not get accounts for user " + userId, e);
             return new Account[]{};
         }
@@ -4545,7 +4597,7 @@ public class AccountManagerService
     private Account[] getAccountsOrEmptyArray(String type, int userId, String opPackageName) {
         try {
             return getAccountsAsUser(type, userId, opPackageName);
-        } catch (SQLiteCantOpenDatabaseException e) {
+        } catch (SQLiteException e) {
             Log.w(TAG, "Could not get accounts for user " + userId, e);
             return new Account[]{};
         }
@@ -4608,6 +4660,9 @@ public class AccountManagerService
                     opPackageName,
                     visibleAccountTypes,
                     includeUserManagedNotVisible);
+        } catch (SQLiteException e) {
+            Log.w(TAG, "Could not get accounts for user " + userId, e);
+            return new Account[]{};
         } finally {
             restoreCallingIdentity(identityToken);
         }
@@ -4695,12 +4750,17 @@ public class AccountManagerService
 
     public Account[] getSharedAccountsAsUser(int userId) {
         userId = handleIncomingUser(userId);
-        UserAccounts accounts = getUserAccounts(userId);
-        synchronized (accounts.dbLock) {
-            List<Account> accountList = accounts.accountsDb.getSharedAccounts();
-            Account[] accountArray = new Account[accountList.size()];
-            accountList.toArray(accountArray);
-            return accountArray;
+        try {
+            UserAccounts accounts = getUserAccounts(userId);
+            synchronized (accounts.dbLock) {
+                List<Account> accountList = accounts.accountsDb.getSharedAccounts();
+                Account[] accountArray = new Account[accountList.size()];
+                accountList.toArray(accountArray);
+                return accountArray;
+            }
+        } catch (SQLiteException e) {
+            Log.w(TAG, "Could not get shared accounts for user " + userId, e);
+            return new Account[]{};
         }
     }
 
@@ -5048,6 +5108,9 @@ public class AccountManagerService
                 if (resolveInfo == null) {
                     return false;
                 }
+                if ("content".equals(intent.getScheme())) {
+                    return false;
+                }
                 ActivityInfo targetActivityInfo = resolveInfo.activityInfo;
                 int targetUid = targetActivityInfo.applicationInfo.uid;
                 PackageManagerInternal pmi = LocalServices.getService(PackageManagerInternal.class);
@@ -5060,6 +5123,8 @@ public class AccountManagerService
                     Log.e(TAG, String.format(tmpl, activityName, pkgName, mAccountType));
                     return false;
                 }
+                intent.setComponent(targetActivityInfo.getComponentName());
+                bundle.putParcelable(AccountManager.KEY_INTENT, intent);
                 return true;
             } finally {
                 Binder.restoreCallingIdentity(bid);
@@ -5081,14 +5146,15 @@ public class AccountManagerService
             Bundle simulateBundle = p.readBundle();
             p.recycle();
             Intent intent = bundle.getParcelable(AccountManager.KEY_INTENT, Intent.class);
-            if (intent != null && intent.getClass() != Intent.class) {
-                return false;
-            }
             Intent simulateIntent = simulateBundle.getParcelable(AccountManager.KEY_INTENT,
                     Intent.class);
             if (intent == null) {
                 return (simulateIntent == null);
             }
+            if (intent.getClass() != Intent.class || simulateIntent.getClass() != Intent.class) {
+                return false;
+            }
+
             if (!intent.filterEquals(simulateIntent)) {
                 return false;
             }
@@ -5202,6 +5268,22 @@ public class AccountManagerService
                 } catch (RemoteException e) {
                     if (Log.isLoggable(TAG, Log.VERBOSE)) {
                         Log.v(TAG, "Session.onServiceDisconnected: "
+                                + "caught RemoteException while responding", e);
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void onNullBinding(ComponentName name) {
+            IAccountManagerResponse response = getResponseAndClose();
+            if (response != null) {
+                try {
+                    response.onError(AccountManager.ERROR_CODE_REMOTE_EXCEPTION,
+                            "disconnected");
+                } catch (RemoteException e) {
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "Session.onNullBinding: "
                                 + "caught RemoteException while responding", e);
                     }
                 }

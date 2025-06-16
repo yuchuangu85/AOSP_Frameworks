@@ -16,7 +16,6 @@
 
 package com.android.packageinstaller.v2.ui
 
-import android.app.Activity
 import android.app.AppOpsManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -65,6 +64,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
             InstallLaunch::class.java.packageName + ".callingPkgName"
         private val LOG_TAG = InstallLaunch::class.java.simpleName
         private const val TAG_DIALOG = "dialog"
+        private const val ARGS_SAVED_INTENT = "saved_intent"
     }
 
     /**
@@ -94,7 +94,15 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
             intent.getStringExtra(EXTRA_CALLING_PKG_NAME),
             intent.getIntExtra(EXTRA_CALLING_PKG_UID, Process.INVALID_UID)
         )
-        installViewModel!!.preprocessIntent(intent, info)
+
+        var savedIntent: Intent? = null
+        if (savedInstanceState != null) {
+            savedIntent = savedInstanceState.getParcelable(ARGS_SAVED_INTENT, Intent::class.java)
+        }
+        if (!intent.filterEquals(savedIntent)) {
+            installViewModel!!.preprocessIntent(intent, info)
+        }
+
         installViewModel!!.currentInstallStage.observe(this) { installStage: InstallStage ->
             onInstallStageChange(installStage)
         }
@@ -125,9 +133,10 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
                 val aborted = installStage as InstallAborted
                 when (aborted.abortReason) {
                     InstallAborted.ABORT_REASON_DONE,
-                    InstallAborted.ABORT_REASON_INTERNAL_ERROR -> {
+                    InstallAborted.ABORT_REASON_INTERNAL_ERROR,
+                        -> {
                         if (aborted.errorDialogType == InstallAborted.DLG_PACKAGE_ERROR) {
-                            val parseErrorDialog = ParseErrorFragment(aborted)
+                            val parseErrorDialog = ParseErrorFragment.newInstance(aborted)
                             showDialogInner(parseErrorDialog)
                         } else {
                             setResult(aborted.activityResultCode, aborted.resultIntent, true)
@@ -135,7 +144,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
                     }
 
                     InstallAborted.ABORT_REASON_POLICY -> showPolicyRestrictionDialog(aborted)
-                    else -> setResult(Activity.RESULT_CANCELED, null, true)
+                    else -> setResult(RESULT_CANCELED, null, true)
                 }
             }
 
@@ -143,12 +152,12 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
                 val uar = installStage as InstallUserActionRequired
                 when (uar.actionReason) {
                     InstallUserActionRequired.USER_ACTION_REASON_INSTALL_CONFIRMATION -> {
-                        val actionDialog = InstallConfirmationFragment(uar)
+                        val actionDialog = InstallConfirmationFragment.newInstance(uar)
                         showDialogInner(actionDialog)
                     }
 
                     InstallUserActionRequired.USER_ACTION_REASON_UNKNOWN_SOURCE -> {
-                        val externalSourceDialog = ExternalSourcesBlockedFragment(uar)
+                        val externalSourceDialog = ExternalSourcesBlockedFragment.newInstance(uar)
                         showDialogInner(externalSourceDialog)
                     }
 
@@ -161,7 +170,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
 
             InstallStage.STAGE_INSTALLING -> {
                 val installing = installStage as InstallInstalling
-                val installingDialog = InstallInstallingFragment(installing)
+                val installingDialog = InstallInstallingFragment.newInstance(installing)
                 showDialogInner(installingDialog)
             }
 
@@ -169,17 +178,22 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
                 val success = installStage as InstallSuccess
                 if (success.shouldReturnResult) {
                     val successIntent = success.resultIntent
-                    setResult(Activity.RESULT_OK, successIntent, true)
+                    setResult(RESULT_OK, successIntent, true)
                 } else {
-                    val successFragment = InstallSuccessFragment(success)
-                    showDialogInner(successFragment)
+                    val successDialog = InstallSuccessFragment.newInstance(success)
+                    showDialogInner(successDialog)
                 }
             }
 
             InstallStage.STAGE_FAILED -> {
                 val failed = installStage as InstallFailed
-                val failedDialog = InstallFailedFragment(failed)
-                showDialogInner(failedDialog)
+                if (failed.shouldReturnResult) {
+                    val failureIntent = failed.resultIntent
+                    setResult(RESULT_FIRST_USER, failureIntent, true)
+                } else {
+                    val failureDialog = InstallFailedFragment.newInstance(failed)
+                    showDialogInner(failureDialog)
+                }
             }
 
             else -> {
@@ -214,7 +228,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
             shouldFinish = blockedByPolicyDialog == null
             showDialogInner(blockedByPolicyDialog)
         }
-        setResult(Activity.RESULT_CANCELED, null, shouldFinish)
+        setResult(RESULT_CANCELED, null, shouldFinish)
     }
 
     /**
@@ -229,11 +243,11 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
         }
         return when (restriction) {
             UserManager.DISALLOW_INSTALL_APPS ->
-                SimpleErrorFragment(R.string.install_apps_user_restriction_dlg_text)
+                SimpleErrorFragment.newInstance(R.string.install_apps_user_restriction_dlg_text)
 
             UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES,
             UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY ->
-                SimpleErrorFragment(R.string.unknown_apps_user_restriction_dlg_text)
+                SimpleErrorFragment.newInstance(R.string.unknown_apps_user_restriction_dlg_text)
 
             else -> null
         }
@@ -252,6 +266,10 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
 
     fun setResult(resultCode: Int, data: Intent?, shouldFinish: Boolean) {
         super.setResult(resultCode, data)
+        if (resultCode != RESULT_OK) {
+            // Let callers know that the install was cancelled
+            installViewModel!!.cleanupInstall()
+        }
         if (shouldFinish) {
             finish()
         }
@@ -277,7 +295,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
         if (stageCode == InstallStage.STAGE_USER_ACTION_REQUIRED) {
             installViewModel!!.cleanupInstall()
         }
-        setResult(Activity.RESULT_CANCELED, null, true)
+        setResult(RESULT_CANCELED, null, true)
     }
 
     override fun onNegativeResponse(resultCode: Int, data: Intent?) {
@@ -313,7 +331,7 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
         if (localLogv) {
             Log.d(LOG_TAG, "Opening $intent")
         }
-        setResult(Activity.RESULT_OK, intent, true)
+        setResult(RESULT_OK, intent, true)
         if (intent != null && intent.hasCategory(Intent.CATEGORY_LAUNCHER)) {
             startActivity(intent)
         }
@@ -331,6 +349,11 @@ class InstallLaunch : FragmentActivity(), InstallActionListener {
     private fun unregisterAppOpChangeListener(listener: UnknownSourcesListener) {
         activeUnknownSourcesListeners.remove(listener)
         appOpsManager!!.stopWatchingMode(listener)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putParcelable(ARGS_SAVED_INTENT, intent)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {

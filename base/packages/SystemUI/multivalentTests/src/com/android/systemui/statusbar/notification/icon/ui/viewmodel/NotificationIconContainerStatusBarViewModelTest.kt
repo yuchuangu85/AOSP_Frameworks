@@ -18,6 +18,8 @@ package com.android.systemui.statusbar.notification.icon.ui.viewmodel
 
 import android.graphics.Rect
 import android.graphics.drawable.Icon
+import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
 import android.platform.test.flag.junit.FlagsParameterization
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
@@ -36,6 +38,7 @@ import com.android.systemui.power.data.repository.fakePowerRepository
 import com.android.systemui.power.shared.model.WakeSleepReason
 import com.android.systemui.power.shared.model.WakefulnessState
 import com.android.systemui.shade.shadeTestUtil
+import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior
 import com.android.systemui.statusbar.notification.data.model.activeNotificationModel
 import com.android.systemui.statusbar.notification.data.repository.ActiveNotificationsStore
 import com.android.systemui.statusbar.notification.data.repository.activeNotificationListRepository
@@ -110,14 +113,10 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                 lastSleepReason = WakeSleepReason.OTHER,
             )
             keyguardTransitionRepository.sendTransitionStep(
-                TransitionStep(
-                    transitionState = TransitionState.STARTED,
-                )
+                TransitionStep(transitionState = TransitionState.STARTED)
             )
             keyguardRepository.setDozeTransitionModel(
-                DozeTransitionModel(
-                    to = DozeStateModel.DOZE_AOD,
-                )
+                DozeTransitionModel(to = DozeStateModel.DOZE_AOD)
             )
             val animationsEnabled by collectLastValue(underTest.animationsEnabled)
             runCurrent()
@@ -133,14 +132,10 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                 lastSleepReason = WakeSleepReason.OTHER,
             )
             keyguardTransitionRepository.sendTransitionStep(
-                TransitionStep(
-                    transitionState = TransitionState.STARTED,
-                )
+                TransitionStep(transitionState = TransitionState.STARTED)
             )
             keyguardRepository.setDozeTransitionModel(
-                DozeTransitionModel(
-                    to = DozeStateModel.DOZE_PULSING,
-                )
+                DozeTransitionModel(to = DozeStateModel.DOZE_PULSING)
             )
             val animationsEnabled by collectLastValue(underTest.animationsEnabled)
             runCurrent()
@@ -201,9 +196,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                 lastSleepReason = WakeSleepReason.OTHER,
             )
             keyguardTransitionRepository.sendTransitionStep(
-                TransitionStep(
-                    transitionState = TransitionState.STARTED,
-                )
+                TransitionStep(transitionState = TransitionState.STARTED)
             )
             val animationsEnabled by collectLastValue(underTest.animationsEnabled)
             runCurrent()
@@ -216,9 +209,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
             val animationsEnabled by collectLastValue(underTest.animationsEnabled)
 
             keyguardTransitionRepository.sendTransitionStep(
-                TransitionStep(
-                    transitionState = TransitionState.STARTED,
-                )
+                TransitionStep(transitionState = TransitionState.STARTED)
             )
             keyguardRepository.setKeyguardShowing(true)
             runCurrent()
@@ -234,22 +225,15 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
     @Test
     fun iconColors_testsDarkBounds() =
         testScope.runTest {
-            darkIconRepository.darkState.value =
-                SysuiDarkIconDispatcher.DarkChange(
-                    emptyList(),
-                    0f,
-                    0xAABBCC,
-                )
-            val iconColorsLookup by collectLastValue(underTest.iconColors)
-            assertThat(iconColorsLookup).isNotNull()
-
-            val iconColors = iconColorsLookup?.iconColors(Rect())
+            val displayId = 123
+            darkIconRepository.darkState(displayId).value =
+                SysuiDarkIconDispatcher.DarkChange(emptyList(), 0f, 0xAABBCC)
+            val iconColors by collectLastValue(underTest.iconColors(displayId)!!)
             assertThat(iconColors).isNotNull()
-            iconColors!!
 
-            assertThat(iconColors.tint).isEqualTo(0xAABBCC)
+            assertThat(iconColors!!.tint).isEqualTo(0xAABBCC)
 
-            val staticDrawableColor = iconColors.staticDrawableColor(Rect())
+            val staticDrawableColor = iconColors!!.staticDrawableColor(Rect())
 
             assertThat(staticDrawableColor).isEqualTo(0xAABBCC)
         }
@@ -257,14 +241,10 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
     @Test
     fun iconColors_staticDrawableColor_notInDarkTintArea() =
         testScope.runTest {
-            darkIconRepository.darkState.value =
-                SysuiDarkIconDispatcher.DarkChange(
-                    listOf(Rect(0, 0, 5, 5)),
-                    0f,
-                    0xAABBCC,
-                )
-            val iconColorsLookup by collectLastValue(underTest.iconColors)
-            val iconColors = iconColorsLookup?.iconColors(Rect(1, 1, 4, 4))
+            val displayId = 321
+            darkIconRepository.darkState(displayId).value =
+                SysuiDarkIconDispatcher.DarkChange(listOf(Rect(0, 0, 5, 5)), 0f, 0xAABBCC)
+            val iconColors by collectLastValue(underTest.iconColors(displayId)!!)
             val staticDrawableColor = iconColors?.staticDrawableColor(Rect(6, 6, 7, 7))
             assertThat(staticDrawableColor).isEqualTo(DarkIconDispatcher.DEFAULT_ICON_TINT)
         }
@@ -272,18 +252,16 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
     @Test
     fun iconColors_notInDarkTintArea() =
         testScope.runTest {
-            darkIconRepository.darkState.value =
-                SysuiDarkIconDispatcher.DarkChange(
-                    listOf(Rect(0, 0, 5, 5)),
-                    0f,
-                    0xAABBCC,
-                )
-            val iconColorsLookup by collectLastValue(underTest.iconColors)
-            val iconColors = iconColorsLookup?.iconColors(Rect(6, 6, 7, 7))
-            assertThat(iconColors).isNull()
+            val displayId = 987
+            darkIconRepository.darkState(displayId).value =
+                SysuiDarkIconDispatcher.DarkChange(listOf(Rect(0, 0, 5, 5)), 0f, 0xAABBCC)
+            val iconColors by collectLastValue(underTest.iconColors(displayId)!!)
+            assertThat(iconColors!!.staticDrawableColor(Rect(6, 6, 7, 7)))
+                .isEqualTo(DarkIconDispatcher.DEFAULT_ICON_TINT)
         }
 
     @Test
+    @DisableFlags(StatusBarNoHunBehavior.FLAG_NAME)
     fun isolatedIcon_animateOnAppear_shadeCollapsed() =
         testScope.runTest {
             val icon: Icon = mock()
@@ -295,7 +273,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                             activeNotificationModel(
                                 key = "notif1",
                                 groupKey = "group",
-                                statusBarIcon = icon
+                                statusBarIcon = icon,
                             )
                         )
                     }
@@ -311,6 +289,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
         }
 
     @Test
+    @DisableFlags(StatusBarNoHunBehavior.FLAG_NAME)
     fun isolatedIcon_dontAnimateOnAppear_shadeExpanded() =
         testScope.runTest {
             val icon: Icon = mock()
@@ -322,7 +301,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                             activeNotificationModel(
                                 key = "notif1",
                                 groupKey = "group",
-                                statusBarIcon = icon
+                                statusBarIcon = icon,
                             )
                         )
                     }
@@ -338,6 +317,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
         }
 
     @Test
+    @DisableFlags(StatusBarNoHunBehavior.FLAG_NAME)
     fun isolatedIcon_updateWhenIconDataChanges() =
         testScope.runTest {
             val icon: Icon = mock()
@@ -354,7 +334,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
                             activeNotificationModel(
                                 key = "notif1",
                                 groupKey = "group",
-                                statusBarIcon = icon
+                                statusBarIcon = icon,
                             )
                         )
                     }
@@ -365,6 +345,7 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
         }
 
     @Test
+    @DisableFlags(StatusBarNoHunBehavior.FLAG_NAME)
     fun isolatedIcon_lastMessageIsFromReply_notNull() =
         testScope.runTest {
             val icon: Icon = mock()
@@ -387,5 +368,33 @@ class NotificationIconContainerStatusBarViewModelTest(flags: FlagsParameterizati
             runCurrent()
 
             assertThat(isolatedIcon?.value?.notifKey).isEqualTo("notif1")
+        }
+
+    @Test
+    @EnableFlags(StatusBarNoHunBehavior.FLAG_NAME)
+    fun isolatedIcon_noHunBehaviorFlagEnabled_doesNothing() =
+        testScope.runTest {
+            val icon: Icon = mock()
+            val isolatedIcon by collectLastValue(underTest.isolatedIcon)
+            runCurrent()
+
+            headsUpViewStateRepository.isolatedNotification.value = "notif1"
+            runCurrent()
+
+            activeNotificationsRepository.activeNotifications.value =
+                ActiveNotificationsStore.Builder()
+                    .apply {
+                        addIndividualNotif(
+                            activeNotificationModel(
+                                key = "notif1",
+                                groupKey = "group",
+                                statusBarIcon = icon,
+                            )
+                        )
+                    }
+                    .build()
+            runCurrent()
+
+            assertThat(isolatedIcon?.value).isNull()
         }
 }

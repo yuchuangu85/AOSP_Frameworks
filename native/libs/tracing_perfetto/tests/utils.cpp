@@ -26,81 +26,68 @@
 #include "perfetto/public/protos/config/track_event/track_event_config.pzc.h"
 #include "perfetto/public/tracing_session.h"
 
+#include "protos/perfetto/config/ftrace/ftrace_config.pb.h"
+#include "protos/perfetto/config/track_event/track_event_config.pb.h"
+#include "protos/perfetto/config/data_source_config.pb.h"
+#include "protos/perfetto/config/trace_config.pb.h"
+
 namespace perfetto {
 namespace shlib {
 namespace test_utils {
-namespace {
-
-std::string ToHexChars(uint8_t val) {
-  std::string ret;
-  uint8_t high_nibble = (val & 0xF0) >> 4;
-  uint8_t low_nibble = (val & 0xF);
-  static const char hex_chars[] = "0123456789ABCDEF";
-  ret.push_back(hex_chars[high_nibble]);
-  ret.push_back(hex_chars[low_nibble]);
-  return ret;
-}
-
-}  // namespace
-
 TracingSession TracingSession::Builder::Build() {
-  struct PerfettoPbMsgWriter writer;
-  struct PerfettoHeapBuffer* hb = PerfettoHeapBufferCreate(&writer.writer);
-
-  struct perfetto_protos_TraceConfig cfg;
-  PerfettoPbMsgInit(&cfg.msg, &writer);
+  perfetto::protos::TraceConfig trace_config;
+  trace_config.add_buffers()->set_size_kb(1024);
 
   {
-    struct perfetto_protos_TraceConfig_BufferConfig buffers;
-    perfetto_protos_TraceConfig_begin_buffers(&cfg, &buffers);
+    if (!atrace_categories_.empty()) {
+      auto* ftrace_ds_config = trace_config.add_data_sources()->mutable_config();
+      ftrace_ds_config->set_name("linux.ftrace");
+      ftrace_ds_config->set_target_buffer(0);
 
-    perfetto_protos_TraceConfig_BufferConfig_set_size_kb(&buffers, 1024);
-
-    perfetto_protos_TraceConfig_end_buffers(&cfg, &buffers);
-  }
-
-  {
-    struct perfetto_protos_TraceConfig_DataSource data_sources;
-    perfetto_protos_TraceConfig_begin_data_sources(&cfg, &data_sources);
-
-    {
-      struct perfetto_protos_DataSourceConfig ds_cfg;
-      perfetto_protos_TraceConfig_DataSource_begin_config(&data_sources,
-                                                          &ds_cfg);
-
-      perfetto_protos_DataSourceConfig_set_cstr_name(&ds_cfg,
-                                                     data_source_name_.c_str());
-      if (!enabled_categories_.empty() && !disabled_categories_.empty()) {
-        perfetto_protos_TrackEventConfig te_cfg;
-        perfetto_protos_DataSourceConfig_begin_track_event_config(&ds_cfg,
-                                                                  &te_cfg);
-        for (const std::string& cat : enabled_categories_) {
-          perfetto_protos_TrackEventConfig_set_enabled_categories(
-              &te_cfg, cat.data(), cat.size());
-        }
-        for (const std::string& cat : disabled_categories_) {
-          perfetto_protos_TrackEventConfig_set_disabled_categories(
-              &te_cfg, cat.data(), cat.size());
-        }
-        perfetto_protos_DataSourceConfig_end_track_event_config(&ds_cfg,
-                                                                &te_cfg);
+      auto* ftrace_config = ftrace_ds_config->mutable_ftrace_config();
+      ftrace_config->add_ftrace_events("ftrace/print");
+      for (const std::string& cat : atrace_categories_) {
+        ftrace_config->add_atrace_categories(cat);
       }
 
-      perfetto_protos_TraceConfig_DataSource_end_config(&data_sources, &ds_cfg);
+      for (const std::string& cat : atrace_categories_prefer_sdk_) {
+        ftrace_config->add_atrace_categories_prefer_sdk(cat);
+      }
     }
-
-    perfetto_protos_TraceConfig_end_data_sources(&cfg, &data_sources);
   }
-  size_t cfg_size = PerfettoStreamWriterGetWrittenSize(&writer.writer);
-  std::unique_ptr<uint8_t[]> ser(new uint8_t[cfg_size]);
-  PerfettoHeapBufferCopyInto(hb, &writer.writer, ser.get(), cfg_size);
-  PerfettoHeapBufferDestroy(hb, &writer.writer);
 
+  {
+    if (!enabled_categories_.empty() || !disabled_categories_.empty()) {
+      auto* track_event_ds_config = trace_config.add_data_sources()->mutable_config();
+
+      track_event_ds_config->set_name("track_event");
+      track_event_ds_config->set_target_buffer(0);
+
+      auto* track_event_config = track_event_ds_config->mutable_track_event_config();
+
+      for (const std::string& cat : enabled_categories_) {
+        track_event_config->add_enabled_categories(cat);
+      }
+
+      for (const std::string& cat : disabled_categories_) {
+        track_event_config->add_disabled_categories(cat);
+      }
+    }
+  }
+
+  std::string trace_config_string;
+  trace_config.SerializeToString(&trace_config_string);
+
+  return TracingSession::FromBytes(trace_config_string.data(), trace_config_string.length());
+}
+
+TracingSession TracingSession::FromBytes(void *buf, size_t len) {
   struct PerfettoTracingSessionImpl* ts =
-      PerfettoTracingSessionCreate(PERFETTO_BACKEND_IN_PROCESS);
+      PerfettoTracingSessionCreate(PERFETTO_BACKEND_SYSTEM);
 
-  PerfettoTracingSessionSetup(ts, ser.get(), cfg_size);
+  PerfettoTracingSessionSetup(ts, buf, len);
 
+  // Fails to start here
   PerfettoTracingSessionStartBlocking(ts);
 
   return TracingSession::Adopt(ts);
@@ -181,39 +168,3 @@ std::vector<uint8_t> TracingSession::ReadBlocking() {
 }  // namespace test_utils
 }  // namespace shlib
 }  // namespace perfetto
-
-void PrintTo(const PerfettoPbDecoderField& field, std::ostream* pos) {
-  std::ostream& os = *pos;
-  PerfettoPbDecoderStatus status =
-      static_cast<PerfettoPbDecoderStatus>(field.status);
-  switch (status) {
-    case PERFETTO_PB_DECODER_ERROR:
-      os << "MALFORMED PROTOBUF";
-      break;
-    case PERFETTO_PB_DECODER_DONE:
-      os << "DECODER DONE";
-      break;
-    case PERFETTO_PB_DECODER_OK:
-      switch (field.wire_type) {
-        case PERFETTO_PB_WIRE_TYPE_DELIMITED:
-          os << "\"";
-          for (size_t i = 0; i < field.value.delimited.len; i++) {
-            os << perfetto::shlib::test_utils::ToHexChars(
-                      field.value.delimited.start[i])
-               << " ";
-          }
-          os << "\"";
-          break;
-        case PERFETTO_PB_WIRE_TYPE_VARINT:
-          os << "varint: " << field.value.integer64;
-          break;
-        case PERFETTO_PB_WIRE_TYPE_FIXED32:
-          os << "fixed32: " << field.value.integer32;
-          break;
-        case PERFETTO_PB_WIRE_TYPE_FIXED64:
-          os << "fixed64: " << field.value.integer64;
-          break;
-      }
-      break;
-  }
-}

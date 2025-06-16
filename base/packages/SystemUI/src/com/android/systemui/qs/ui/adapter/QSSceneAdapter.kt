@@ -22,8 +22,10 @@ import android.os.Bundle
 import android.view.View
 import androidx.annotation.VisibleForTesting
 import androidx.asynclayoutinflater.view.AsyncLayoutInflater
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.settingslib.applications.InterestingConfigChanges
 import com.android.systemui.Dumpable
+import com.android.systemui.biometrics.domain.interactor.DisplayStateInteractor
 import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
@@ -33,10 +35,10 @@ import com.android.systemui.plugins.qs.QSContainerController
 import com.android.systemui.qs.QSContainerImpl
 import com.android.systemui.qs.QSImpl
 import com.android.systemui.qs.dagger.QSSceneComponent
-import com.android.systemui.qs.tiles.viewmodel.StubQSTileViewModel.state
 import com.android.systemui.res.R
 import com.android.systemui.settings.brightness.MirrorController
-import com.android.systemui.shade.domain.interactor.ShadeInteractor
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shade.domain.interactor.ShadeModeInteractor
 import com.android.systemui.shade.shared.model.ShadeMode
 import com.android.systemui.util.kotlin.sample
 import java.io.PrintWriter
@@ -57,7 +59,6 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // TODO(307945185) Split View concerns into a ViewBinder
@@ -125,11 +126,17 @@ interface QSSceneAdapter {
     /** The current height of QQS in the current [qsView], or 0 if there's no view. */
     val qqsHeight: Int
 
+    /** @return height with the squishiness fraction applied. */
+    val squishedQqsHeight: Int
+
     /**
      * The current height of QS in the current [qsView], or 0 if there's no view. If customizing, it
      * will return the height allocated to the customizer.
      */
     val qsHeight: Int
+
+    /** @return height with the squishiness fraction applied. */
+    val squishedQsHeight: Int
 
     /** Compatibility for use by LockscreenShadeTransitionController. Matches default from [QS] */
     val isQsFullyCollapsed: Boolean
@@ -141,17 +148,17 @@ interface QSSceneAdapter {
     sealed interface State {
 
         val isVisible: Boolean
-        val expansion: Float
+        val expansion: () -> Float
         val squishiness: () -> Float
 
         data object CLOSED : State {
             override val isVisible = false
-            override val expansion = 0f
+            override val expansion = { 0f }
             override val squishiness = { 1f }
         }
 
         /** State for expanding between QQS and QS */
-        data class Expanding(override val expansion: Float) : State {
+        class Expanding(override val expansion: () -> Float) : State {
             override val isVisible = true
             override val squishiness = { 1f }
         }
@@ -164,7 +171,7 @@ interface QSSceneAdapter {
          */
         class UnsquishingQQS(override val squishiness: () -> Float) : State {
             override val isVisible = true
-            override val expansion = 0f
+            override val expansion = { 0f }
         }
 
         /**
@@ -175,16 +182,16 @@ interface QSSceneAdapter {
          */
         class UnsquishingQS(override val squishiness: () -> Float) : State {
             override val isVisible = true
-            override val expansion = 1f
+            override val expansion = { 1f }
         }
 
         companion object {
             // These are special cases of the expansion.
-            val QQS = Expanding(0f)
-            val QS = Expanding(1f)
+            val QQS = Expanding { 0f }
+            val QS = Expanding { 1f }
 
             /** Collapsing from QS to QQS. [progress] is 0f in QS and 1f in QQS. */
-            fun Collapsing(progress: Float) = Expanding(1f - progress)
+            fun Collapsing(progress: () -> Float) = Expanding { 1f - progress() }
         }
     }
 }
@@ -195,11 +202,12 @@ class QSSceneAdapterImpl
 constructor(
     private val qsSceneComponentFactory: QSSceneComponent.Factory,
     private val qsImplProvider: Provider<QSImpl>,
-    shadeInteractor: ShadeInteractor,
+    shadeModeInteractor: ShadeModeInteractor,
+    displayStateInteractor: DisplayStateInteractor,
     dumpManager: DumpManager,
     @Main private val mainDispatcher: CoroutineDispatcher,
     @Application applicationScope: CoroutineScope,
-    private val configurationInteractor: ConfigurationInteractor,
+    @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
     private val asyncLayoutInflaterFactory: (Context) -> AsyncLayoutInflater,
 ) : QSContainerController, QSSceneAdapter, Dumpable {
 
@@ -207,15 +215,17 @@ constructor(
     constructor(
         qsSceneComponentFactory: QSSceneComponent.Factory,
         qsImplProvider: Provider<QSImpl>,
-        shadeInteractor: ShadeInteractor,
+        shadeModeInteractor: ShadeModeInteractor,
+        displayStateInteractor: DisplayStateInteractor,
         dumpManager: DumpManager,
         @Main dispatcher: CoroutineDispatcher,
         @Application scope: CoroutineScope,
-        configurationInteractor: ConfigurationInteractor,
+        @ShadeDisplayAware configurationInteractor: ConfigurationInteractor,
     ) : this(
         qsSceneComponentFactory,
         qsImplProvider,
-        shadeInteractor,
+        shadeModeInteractor,
+        displayStateInteractor,
         dumpManager,
         dispatcher,
         scope,
@@ -247,7 +257,7 @@ constructor(
             .stateIn(
                 applicationScope,
                 SharingStarted.WhileSubscribed(),
-                customizerState.value.isShowing
+                customizerState.value.isShowing,
             )
     override val customizerAnimationDuration: StateFlow<Int> =
         customizerState
@@ -269,8 +279,14 @@ constructor(
     override val qqsHeight: Int
         get() = qsImpl.value?.qqsHeight ?: 0
 
+    override val squishedQqsHeight: Int
+        get() = qsImpl.value?.squishedQqsHeight ?: 0
+
     override val qsHeight: Int
         get() = qsImpl.value?.qsHeight ?: 0
+
+    override val squishedQsHeight: Int
+        get() = qsImpl.value?.squishedQsHeight ?: 0
 
     // If value is null, there's no QS and therefore it's fully collapsed.
     override val isQsFullyCollapsed: Boolean
@@ -315,9 +331,13 @@ constructor(
                 }
             }
             launch {
-                shadeInteractor.shadeMode.collect {
-                    qsImpl.value?.setInSplitShade(it == ShadeMode.Split)
+                shadeModeInteractor.shadeMode.collect {
+                    qsImpl.value?.setInSplitShade(it is ShadeMode.Split)
                 }
+            }
+            launch {
+                combine(displayStateInteractor.isLargeScreen, qsImpl.filterNotNull(), ::Pair)
+                    .collect { it.second.setIsNotificationPanelFullWidth(!it.first) }
             }
         }
     }
@@ -399,14 +419,14 @@ constructor(
 
     private fun QSImpl.applyState(state: QSSceneAdapter.State) {
         setQsVisible(state.isVisible)
-        setExpanded(state.isVisible && state.expansion > 0f)
+        setExpanded(state.isVisible && state.expansion() > 0f)
         setListening(state.isVisible)
     }
 
     override fun applyLatestExpansionAndSquishiness() {
         val qsImpl = _qsImpl.value
         val state = state.value
-        qsImpl?.setQsExpansion(state.expansion, 1f, 0f, state.squishiness())
+        qsImpl?.setQsExpansion(state.expansion(), 1f, 0f, state.squishiness())
     }
 
     override fun dump(pw: PrintWriter, args: Array<out String>) {

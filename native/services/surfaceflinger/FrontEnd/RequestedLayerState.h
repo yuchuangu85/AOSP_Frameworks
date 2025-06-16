@@ -23,7 +23,7 @@
 #include "Scheduler/LayerInfo.h"
 
 #include "LayerCreationArgs.h"
-#include "TransactionState.h"
+#include "QueuedTransactionState.h"
 
 namespace android::surfaceflinger::frontend {
 using namespace ftl::flag_operators;
@@ -79,7 +79,7 @@ struct RequestedLayerState : layer_state_t {
     bool isHiddenByPolicy() const;
     half4 getColor() const;
     Rect getBufferSize(uint32_t displayRotationFlags) const;
-    Rect getCroppedBufferSize(const Rect& bufferSize) const;
+    FloatRect getCroppedBufferSize(const Rect& bufferSize) const;
     Rect getBufferCrop() const;
     std::string getDebugString() const;
     std::string getDebugStringShort() const;
@@ -87,6 +87,9 @@ struct RequestedLayerState : layer_state_t {
     aidl::android::hardware::graphics::composer3::Composition getCompositionType() const;
     bool hasValidRelativeParent() const;
     bool hasInputInfo() const;
+    bool needsInputInfo() const;
+    bool hasBufferOrSidebandStream() const;
+    bool fillsColor() const;
     bool hasBlur() const;
     bool hasFrameUpdate() const;
     bool hasReadyFrame() const;
@@ -112,6 +115,7 @@ struct RequestedLayerState : layer_state_t {
     const gui::Pid ownerPid;
     bool dataspaceRequested;
     bool hasColorTransform;
+    bool transformIsValid = true;
     bool premultipliedAlpha{true};
     // This layer can be a cursor on some displays.
     bool potentialCursor{false};
@@ -130,6 +134,7 @@ struct RequestedLayerState : layer_state_t {
     uint64_t barrierFrameNumber = 0;
     uint32_t barrierProducerId = 0;
     std::string debugName;
+    std::atomic<int32_t>* pendingBuffers = 0;
 
     // book keeping states
     bool handleAlive = true;

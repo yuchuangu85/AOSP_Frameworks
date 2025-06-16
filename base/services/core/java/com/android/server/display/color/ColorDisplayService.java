@@ -25,6 +25,9 @@ import static android.hardware.display.ColorDisplayManager.COLOR_MODE_NATURAL;
 import static android.hardware.display.ColorDisplayManager.COLOR_MODE_SATURATED;
 import static android.hardware.display.ColorDisplayManager.VENDOR_COLOR_MODE_RANGE_MAX;
 import static android.hardware.display.ColorDisplayManager.VENDOR_COLOR_MODE_RANGE_MIN;
+import static android.os.UserHandle.USER_SYSTEM;
+import static android.os.UserHandle.getCallingUserId;
+import static android.os.UserManager.isVisibleBackgroundUsersEnabled;
 
 import static com.android.server.display.color.DisplayTransformManager.LEVEL_COLOR_MATRIX_NIGHT_DISPLAY;
 
@@ -67,6 +70,7 @@ import android.provider.Settings.System;
 import android.util.MathUtils;
 import android.util.Slog;
 import android.util.SparseIntArray;
+import android.util.Spline;
 import android.view.Display;
 import android.view.SurfaceControl;
 import android.view.accessibility.AccessibilityManager;
@@ -74,12 +78,14 @@ import android.view.animation.AnimationUtils;
 
 import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.annotations.WeaklyReferencedCallback;
 import com.android.internal.util.DumpUtils;
 import com.android.server.DisplayThread;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
 import com.android.server.accessibility.Flags;
 import com.android.server.display.feature.DisplayManagerFlags;
+import com.android.server.pm.UserManagerService;
 import com.android.server.twilight.TwilightListener;
 import com.android.server.twilight.TwilightManager;
 import com.android.server.twilight.TwilightState;
@@ -110,6 +116,8 @@ public final class ColorDisplayService extends SystemService {
         Matrix.setIdentityM(MATRIX_IDENTITY, 0);
     }
 
+    private static final int EVEN_DIMMER_MAX_PERCENT_ALLOWED = 100;
+
     private static final int MSG_USER_CHANGED = 0;
     private static final int MSG_SET_UP = 1;
     private static final int MSG_APPLY_NIGHT_DISPLAY_IMMEDIATE = 2;
@@ -122,6 +130,12 @@ public final class ColorDisplayService extends SystemService {
      * Return value if a setting has not been set.
      */
     private static final int NOT_SET = -1;
+
+    /**
+     * Min and Max values for percentage of RBC setting.
+     */
+    private static final int PERCENTAGE_MIN = 0;
+    private static final int PERCENTAGE_MAX = 100;
 
     /**
      * Evaluator used to animate color matrix transitions.
@@ -160,8 +174,7 @@ public final class ColorDisplayService extends SystemService {
             new NightDisplayTintController();
     private final TintController mGlobalSaturationTintController =
             new GlobalSaturationTintController();
-    private final ReduceBrightColorsTintController mReduceBrightColorsTintController =
-            new ReduceBrightColorsTintController();
+    private final ReduceBrightColorsTintController mReduceBrightColorsTintController;
 
     @VisibleForTesting
     final Handler mHandler;
@@ -186,9 +199,23 @@ public final class ColorDisplayService extends SystemService {
 
     private final Object mCctTintApplierLock = new Object();
 
+    private final boolean mVisibleBackgroundUsersEnabled;
+    private final UserManagerService mUserManager;
+
+    private Spline mEvenDimmerSpline;
+    private boolean mEvenDimmerActivated;
+
     public ColorDisplayService(Context context) {
+        this(context, new ReduceBrightColorsTintController());
+    }
+
+    @VisibleForTesting
+    public ColorDisplayService(Context context, ReduceBrightColorsTintController rbcController) {
         super(context);
+        mReduceBrightColorsTintController = rbcController;
         mHandler = new TintHandler(DisplayThread.get().getLooper());
+        mVisibleBackgroundUsersEnabled = isVisibleBackgroundUsersEnabled();
+        mUserManager = UserManagerService.getInstance();
     }
 
     @Override
@@ -555,27 +582,37 @@ public final class ColorDisplayService extends SystemService {
         return mColorModeCompositionColorSpaces.get(mode, Display.COLOR_MODE_INVALID);
     }
 
-    private void onDisplayColorModeChanged(int mode) {
+    @VisibleForTesting
+    void onDisplayColorModeChanged(int mode) {
         if (mode == NOT_SET) {
             return;
         }
 
+        mReduceBrightColorsTintController.cancelAnimator();
         mNightDisplayTintController.cancelAnimator();
         mDisplayWhiteBalanceTintController.cancelAnimator();
 
+        final DisplayTransformManager dtm = getLocalService(DisplayTransformManager.class);
+
         if (mNightDisplayTintController.isAvailable(getContext())) {
-            final DisplayTransformManager dtm = getLocalService(DisplayTransformManager.class);
             mNightDisplayTintController.setUp(getContext(), dtm.needsLinearColorMatrix(mode));
             mNightDisplayTintController
                     .setMatrix(mNightDisplayTintController.getColorTemperatureSetting());
+        }
+
+        if (mReduceBrightColorsTintController.isAvailable(getContext())) {
+            // Different color modes may require different coefficients to be loaded for RBC.
+            // Re-set up RBC so that it can recalculate its transform matrix with new values.
+            mReduceBrightColorsTintController.setUp(getContext(), dtm.needsLinearColorMatrix(mode));
+            onReduceBrightColorsStrengthLevelChanged(); // Trigger matrix recalc + updates
         }
 
         // dtm.setColorMode() needs to be called before
         // updateDisplayWhiteBalanceStatus(), this is because the latter calls
         // DisplayTransformManager.needsLinearColorMatrix(), therefore it is dependent
         // on the state of DisplayTransformManager.
-        final DisplayTransformManager dtm = getLocalService(DisplayTransformManager.class);
         dtm.setColorMode(mode, mNightDisplayTintController.getMatrix(),
+                mReduceBrightColorsTintController.getMatrix(),
                 getCompositionColorSpace(mode));
 
         if (mDisplayWhiteBalanceTintController.isAvailable(getContext())) {
@@ -665,15 +702,25 @@ public final class ColorDisplayService extends SystemService {
         if (mCurrentUser == UserHandle.USER_NULL) {
             return;
         }
-        int strength = Secure.getIntForUser(getContext().getContentResolver(),
+
+        int percentage = Secure.getIntForUser(getContext().getContentResolver(),
                 Secure.REDUCE_BRIGHT_COLORS_LEVEL, NOT_SET, mCurrentUser);
-        if (strength == NOT_SET) {
-            strength = getContext().getResources().getInteger(
+        final int deviceRange;
+
+        if (percentage == NOT_SET) {
+            deviceRange = getContext().getResources().getInteger(
                     R.integer.config_reduceBrightColorsStrengthDefault);
+        } else {
+            final int deviceMin = getContext().getResources().getInteger(
+                    R.integer.config_reduceBrightColorsStrengthMin);
+            final int deviceMax = getContext().getResources().getInteger(
+                    R.integer.config_reduceBrightColorsStrengthMax);
+            deviceRange = (int) MathUtils.constrainedMap(
+                    deviceMin, deviceMax, PERCENTAGE_MIN, PERCENTAGE_MAX, percentage);
         }
-        mReduceBrightColorsTintController.setMatrix(strength);
+        mReduceBrightColorsTintController.setMatrix(deviceRange);
         if (mReduceBrightColorsListener != null) {
-            mReduceBrightColorsListener.onReduceBrightColorsStrengthChanged(strength);
+            mReduceBrightColorsListener.onReduceBrightColorsStrengthChanged(deviceRange);
         }
     }
 
@@ -1616,6 +1663,16 @@ public final class ColorDisplayService extends SystemService {
         }
 
         /**
+         * Gets the adjusted nits, given a strength and nits.
+         * @param strength of reduce bright colors
+         * @param nits target nits
+         * @return the actual nits that would be output, given input nits and rbc strength.
+         */
+        public float getAdjustedNitsForStrength(float nits, int strength) {
+            return mReduceBrightColorsTintController.getAdjustedNitsForStrength(nits, strength);
+        }
+
+        /**
          * Sets the listener and returns whether reduce bright colors is currently enabled.
          */
         public boolean setReduceBrightColorsListener(ReduceBrightColorsListener listener) {
@@ -1632,6 +1689,14 @@ public final class ColorDisplayService extends SystemService {
 
         public int getReduceBrightColorsStrength() {
             return mReduceBrightColorsTintController.getStrength();
+        }
+
+        /**
+         *
+         * @return whether reduce bright colors is on, due to even dimmer being activated
+         */
+        public boolean getReduceBrightColorsActivatedForEvenDimmer() {
+            return mEvenDimmerActivated;
         }
 
         /**
@@ -1658,9 +1723,41 @@ public final class ColorDisplayService extends SystemService {
          * Applies tint changes for even dimmer feature.
          */
         public void applyEvenDimmerColorChanges(boolean enabled, int strength) {
+            mEvenDimmerActivated = enabled;
             mReduceBrightColorsTintController.setActivated(enabled);
             mReduceBrightColorsTintController.setMatrix(strength);
             mHandler.sendEmptyMessage(MSG_APPLY_REDUCE_BRIGHT_COLORS);
+        }
+
+        /**
+         * Get spline to map between requested nits, and required even dimmer strength.
+         * @return nits to strength spline
+         */
+        public Spline fetchEvenDimmerSpline(float nits) {
+            if (mEvenDimmerSpline == null) {
+                mEvenDimmerSpline = createNitsToStrengthSpline(nits);
+            }
+            return mEvenDimmerSpline;
+        }
+
+        /**
+         * Creates a spline mapping requested nits values, for each resulting strength value
+         * (in percent) for even dimmer.
+         * Returns null if coefficients are not initialised.
+         * @return spline from nits to strength
+         */
+        private Spline createNitsToStrengthSpline(float nits) {
+            final float[] requestedNits = new float[EVEN_DIMMER_MAX_PERCENT_ALLOWED + 1];
+            final float[] resultingStrength = new float[EVEN_DIMMER_MAX_PERCENT_ALLOWED + 1];
+            for (int i = 0; i <= EVEN_DIMMER_MAX_PERCENT_ALLOWED; i++) {
+                resultingStrength[EVEN_DIMMER_MAX_PERCENT_ALLOWED - i] = i;
+                requestedNits[EVEN_DIMMER_MAX_PERCENT_ALLOWED - i] =
+                        getAdjustedNitsForStrength(nits, i);
+                if (requestedNits[EVEN_DIMMER_MAX_PERCENT_ALLOWED - i] == 0) {
+                    return null;
+                }
+            }
+            return new Spline.LinearSpline(requestedNits, resultingStrength);
         }
     }
 
@@ -1730,6 +1827,7 @@ public final class ColorDisplayService extends SystemService {
     /**
      * Interface for applying transforms to a given AppWindow.
      */
+    @WeaklyReferencedCallback
     public interface ColorTransformController {
 
         /**
@@ -1745,6 +1843,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public void setColorMode(int colorMode) {
             setColorMode_enforcePermission();
+
+            enforceValidCallingUser("setColorMode");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 setColorModeInternal(colorMode);
@@ -1784,6 +1885,9 @@ public final class ColorDisplayService extends SystemService {
             if (!hasTransformsPermission && !hasLegacyPermission) {
                 throw new SecurityException("Permission required to set display saturation level");
             }
+
+            enforceValidCallingUser("setSaturationLevel");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 setSaturationLevelInternal(level);
@@ -1812,6 +1916,8 @@ public final class ColorDisplayService extends SystemService {
         public boolean setAppSaturationLevel(String packageName, int level) {
             super.setAppSaturationLevel_enforcePermission();
 
+            enforceValidCallingUser("setAppSaturationLevel");
+
             final String callingPackageName = LocalServices.getService(PackageManagerInternal.class)
                     .getNameForUid(Binder.getCallingUid());
             final long token = Binder.clearCallingIdentity();
@@ -1838,6 +1944,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setNightDisplayActivated(boolean activated) {
             setNightDisplayActivated_enforcePermission();
+
+            enforceValidCallingUser("setNightDisplayActivated");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 mNightDisplayTintController.setActivated(activated);
@@ -1861,6 +1970,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setNightDisplayColorTemperature(int temperature) {
             setNightDisplayColorTemperature_enforcePermission();
+
+            enforceValidCallingUser("setNightDisplayColorTemperature");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return mNightDisplayTintController.setColorTemperature(temperature);
@@ -1883,6 +1995,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setNightDisplayAutoMode(int autoMode) {
             setNightDisplayAutoMode_enforcePermission();
+
+            enforceValidCallingUser("setNightDisplayAutoMode");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setNightDisplayAutoModeInternal(autoMode);
@@ -1917,6 +2032,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setNightDisplayCustomStartTime(Time startTime) {
             setNightDisplayCustomStartTime_enforcePermission();
+
+            enforceValidCallingUser("setNightDisplayCustomStartTime");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setNightDisplayCustomStartTimeInternal(startTime);
@@ -1939,6 +2057,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setNightDisplayCustomEndTime(Time endTime) {
             setNightDisplayCustomEndTime_enforcePermission();
+
+            enforceValidCallingUser("setNightDisplayCustomEndTime");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setNightDisplayCustomEndTimeInternal(endTime);
@@ -1961,6 +2082,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setDisplayWhiteBalanceEnabled(boolean enabled) {
             setDisplayWhiteBalanceEnabled_enforcePermission();
+
+            enforceValidCallingUser("setDisplayWhiteBalanceEnabled");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setDisplayWhiteBalanceSettingEnabled(enabled);
@@ -1993,6 +2117,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setReduceBrightColorsActivated(boolean activated) {
             setReduceBrightColorsActivated_enforcePermission();
+
+            enforceValidCallingUser("setReduceBrightColorsActivated");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setReduceBrightColorsActivatedInternal(activated);
@@ -2025,6 +2152,9 @@ public final class ColorDisplayService extends SystemService {
         @Override
         public boolean setReduceBrightColorsStrength(int strength) {
             setReduceBrightColorsStrength_enforcePermission();
+
+            enforceValidCallingUser("setReduceBrightColorsStrength");
+
             final long token = Binder.clearCallingIdentity();
             try {
                 return setReduceBrightColorsStrengthInternal(strength);
@@ -2063,5 +2193,33 @@ public final class ColorDisplayService extends SystemService {
                 Binder.restoreCallingIdentity(token);
             }
         }
+    }
+
+    /**
+     * This method validates whether the calling user is allowed to set display's color transform
+     * on a device that enables visible background users.
+     * Only system or current user or the user that belongs to the same profile group as the current
+     * user is permitted to set the color transform.
+     */
+    private void enforceValidCallingUser(String method) {
+        if (!mVisibleBackgroundUsersEnabled) {
+            return;
+        }
+
+        int callingUserId = getCallingUserId();
+        if (callingUserId == USER_SYSTEM || callingUserId == mCurrentUser) {
+            return;
+        }
+        long ident = Binder.clearCallingIdentity();
+        try {
+            if (mUserManager.isSameProfileGroup(callingUserId, mCurrentUser)) {
+                return;
+            }
+        } finally {
+            Binder.restoreCallingIdentity(ident);
+        }
+
+        throw new SecurityException("Calling user id: " + callingUserId
+                + ", is not permitted to use Method " + method + "().");
     }
 }

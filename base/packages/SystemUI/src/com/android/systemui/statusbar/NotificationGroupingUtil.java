@@ -16,9 +16,13 @@
 
 package com.android.systemui.statusbar;
 
+import static android.app.Flags.notificationsRedesignTemplates;
+
+import android.app.Flags;
 import android.app.Notification;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
+import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -28,14 +32,18 @@ import android.view.ViewGroup;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.annotation.VisibleForTesting;
+
 import com.android.internal.R;
 import com.android.internal.widget.CachingIconView;
 import com.android.internal.widget.ConversationLayout;
 import com.android.internal.widget.ImageFloatingTextView;
+import com.android.systemui.statusbar.notification.icon.IconPack;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.NotificationContentView;
 import com.android.systemui.statusbar.notification.row.shared.AsyncGroupHeaderViewInflation;
 import com.android.systemui.statusbar.notification.row.wrapper.NotificationViewWrapper;
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -54,32 +62,18 @@ public class NotificationGroupingUtil {
     private static final VisibilityApplicator VISIBILITY_APPLICATOR = new VisibilityApplicator();
     private static final VisibilityApplicator APP_NAME_APPLICATOR = new AppNameApplicator();
     private static final ResultApplicator LEFT_ICON_APPLICATOR = new LeftIconApplicator();
-    private static final DataExtractor ICON_EXTRACTOR = new DataExtractor() {
+
+    @VisibleForTesting
+    static final DataExtractor ICON_EXTRACTOR = new DataExtractor() {
         @Override
         public Object extractData(ExpandableNotificationRow row) {
-            return row.getEntry().getSbn().getNotification();
-        }
-    };
-    private static final IconComparator ICON_VISIBILITY_COMPARATOR = new IconComparator() {
-        public boolean compare(View parent, View child, Object parentData,
-                Object childData) {
-            return hasSameIcon(parentData, childData)
-                    && hasSameColor(parentData, childData);
-        }
-    };
-    private static final IconComparator GREY_COMPARATOR = new IconComparator() {
-        public boolean compare(View parent, View child, Object parentData,
-                Object childData) {
-            return !hasSameIcon(parentData, childData)
-                    || hasSameColor(parentData, childData);
-        }
-    };
-    private static final ResultApplicator GREY_APPLICATOR = new ResultApplicator() {
-        @Override
-        public void apply(View parent, View view, boolean apply, boolean reset) {
-            CachingIconView icon = view.findViewById(com.android.internal.R.id.icon);
-            if (icon != null) {
-                icon.setGrayedOut(apply);
+            if (NotificationBundleUi.isEnabled()) {
+                if (row.getEntryAdapter().getSbn() != null) {
+                    return row.getEntryAdapter().getSbn().getNotification();
+                }
+                return null;
+            } else {
+                return row.getEntryLegacy().getSbn().getNotification();
             }
         }
     };
@@ -90,34 +84,77 @@ public class NotificationGroupingUtil {
 
     public NotificationGroupingUtil(ExpandableNotificationRow row) {
         mRow = row;
+
+        final IconComparator iconVisibilityComparator = new IconComparator() {
+            @Override
+            public boolean compare(View parent, View child, Object parentData,
+                    Object childData) {
+                if (Flags.notificationsRedesignAppIcons() && mRow.isShowingAppIcon()) {
+                    // Icon is always the same when we're showing the app icon.
+                    return true;
+                }
+                return hasSameIcon(parentData, childData)
+                        && hasSameColor(parentData, childData);
+            }
+        };
+        final IconComparator greyComparator = new IconComparator() {
+            @Override
+            public boolean compare(View parent, View child, Object parentData,
+                    Object childData) {
+                if (Flags.notificationsRedesignAppIcons() && mRow.isShowingAppIcon()) {
+                    return false;
+                }
+                return !hasSameIcon(parentData, childData)
+                        || hasSameColor(parentData, childData);
+            }
+        };
+        final ResultApplicator greyApplicator = new ResultApplicator() {
+            @Override
+            public void apply(View parent, View view, boolean apply, boolean reset) {
+                if (Flags.notificationsRedesignAppIcons() && mRow.isShowingAppIcon()) {
+                    // Do nothing.
+                    return;
+                }
+                CachingIconView icon = view.findViewById(com.android.internal.R.id.icon);
+                if (icon != null) {
+                    icon.setGrayedOut(apply);
+                }
+            }
+        };
+
         // To hide the icons if they are the same and the color is the same
         mProcessors.add(new Processor(mRow,
                 com.android.internal.R.id.icon,
                 ICON_EXTRACTOR,
-                ICON_VISIBILITY_COMPARATOR,
+                iconVisibilityComparator,
                 VISIBILITY_APPLICATOR));
-        // To grey them out the icons and expand button when the icons are not the same
+        // To grey out the icons when they are not the same, or they have the same color
         mProcessors.add(new Processor(mRow,
                 com.android.internal.R.id.status_bar_latest_event_content,
                 ICON_EXTRACTOR,
-                GREY_COMPARATOR,
-                GREY_APPLICATOR));
+                greyComparator,
+                greyApplicator));
+        // To show the large icon on the left side instead if all the small icons are the same
         mProcessors.add(new Processor(mRow,
                 com.android.internal.R.id.status_bar_latest_event_content,
                 ICON_EXTRACTOR,
-                ICON_VISIBILITY_COMPARATOR,
+                iconVisibilityComparator,
                 LEFT_ICON_APPLICATOR));
+        // To only show the work profile icon in the group header
         mProcessors.add(new Processor(mRow,
                 com.android.internal.R.id.profile_badge,
                 null /* Extractor */,
                 BADGE_COMPARATOR,
                 VISIBILITY_APPLICATOR));
+        // To hide the app name in group children
         mProcessors.add(new Processor(mRow,
                 com.android.internal.R.id.app_name_text,
                 null,
                 APP_NAME_COMPARATOR,
                 APP_NAME_APPLICATOR));
+        // To hide the header text if it's the same
         mProcessors.add(Processor.forTextView(mRow, com.android.internal.R.id.header_text));
+
         mDividers.add(com.android.internal.R.id.header_text_divider);
         mDividers.add(com.android.internal.R.id.header_text_secondary_divider);
         mDividers.add(com.android.internal.R.id.time_divider);
@@ -191,7 +228,7 @@ public class NotificationGroupingUtil {
         }
         // in case no view is visible we make sure the time is visible
         int timeVisibility = !hasVisibleText
-                || row.getEntry().getSbn().getNotification().showsTime()
+                || showsTime(row)
                 ? View.VISIBLE : View.GONE;
         time.setVisibility(timeVisibility);
         View left = null;
@@ -218,6 +255,17 @@ public class NotificationGroupingUtil {
                 left = child;
             }
         }
+    }
+
+    @VisibleForTesting
+    boolean showsTime(ExpandableNotificationRow row) {
+        StatusBarNotification sbn;
+        if (NotificationBundleUi.isEnabled()) {
+            sbn = row.getEntryAdapter() != null ? row.getEntryAdapter().getSbn() : null;
+        } else {
+            sbn = row.getEntryLegacy().getSbn();
+        }
+        return (sbn != null && sbn.getNotification().showsTime());
     }
 
     /**
@@ -261,6 +309,7 @@ public class NotificationGroupingUtil {
             mParentData = mExtractor == null ? null : mExtractor.extractData(mParentRow);
             mApply = !mComparator.isEmpty(mParentView);
         }
+
         public void compareToGroupParent(ExpandableNotificationRow row) {
             if (!mApply) {
                 return;
@@ -307,17 +356,19 @@ public class NotificationGroupingUtil {
 
     private interface ViewComparator {
         /**
-         * @param parent the view with the given id in the group header
-         * @param child the view with the given id in the child notification
+         * @param parent     the view with the given id in the group header
+         * @param child      the view with the given id in the child notification
          * @param parentData optional data for the parent
-         * @param childData optional data for the child
+         * @param childData  optional data for the child
          * @return whether to views are the same
          */
         boolean compare(View parent, View child, Object parentData, Object childData);
+
         boolean isEmpty(View view);
     }
 
-    private interface DataExtractor {
+    @VisibleForTesting
+    interface DataExtractor {
         Object extractData(ExpandableNotificationRow row);
     }
 
@@ -355,39 +406,33 @@ public class NotificationGroupingUtil {
         }
     }
 
-    private abstract static class IconComparator implements ViewComparator {
+    @VisibleForTesting
+    static class IconComparator implements ViewComparator {
         @Override
         public boolean compare(View parent, View child, Object parentData, Object childData) {
             return false;
         }
 
         protected boolean hasSameIcon(Object parentData, Object childData) {
-            Icon parentIcon = getIcon((Notification) parentData);
-            Icon childIcon = getIcon((Notification) childData);
-            return parentIcon.sameAs(childIcon);
-        }
-
-        private static Icon getIcon(Notification notification) {
-            if (notification.shouldUseAppIcon()) {
-                return notification.getAppIcon();
+            if (parentData == null || childData == null) {
+                return false;
             }
-            return notification.getSmallIcon();
+            Icon parentIcon = ((Notification) parentData).getSmallIcon();
+            Icon childIcon = ((Notification) childData).getSmallIcon();
+            return parentIcon.sameAs(childIcon);
         }
 
         /**
          * @return whether two ImageViews have the same colorFilterSet or none at all
          */
         protected boolean hasSameColor(Object parentData, Object childData) {
-            int parentColor = getColor((Notification) parentData);
-            int childColor = getColor((Notification) childData);
-            return parentColor == childColor;
-        }
-
-        private static int getColor(Notification notification) {
-            if (notification.shouldUseAppIcon()) {
-                return 0;  // the color filter isn't applied if using the app icon
+            if ((parentData == null && childData != null)
+                    || (parentData != null && childData == null)) {
+                return false;
             }
-            return notification.color;
+            int parentColor = ((Notification) parentData).color;
+            int childColor = ((Notification) childData).color;
+            return parentColor == childColor;
         }
 
         @Override
@@ -399,9 +444,9 @@ public class NotificationGroupingUtil {
     private interface ResultApplicator {
         /**
          * @param parent the root view of the child notification
-         * @param view the view with the given id in the child notification
-         * @param apply whether the state should be applied or removed
-         * @param reset if [de]application is the result of a reset
+         * @param view   the view with the given id in the child notification
+         * @param apply  whether the state should be applied or removed
+         * @param reset  if [de]application is the result of a reset
          */
         void apply(View parent, View view, boolean apply, boolean reset);
     }
@@ -420,7 +465,8 @@ public class NotificationGroupingUtil {
 
         @Override
         public void apply(View parent, View view, boolean apply, boolean reset) {
-            if (reset && parent instanceof ConversationLayout) {
+            if (!notificationsRedesignTemplates()
+                    && reset && parent instanceof ConversationLayout) {
                 ConversationLayout layout = (ConversationLayout) parent;
                 apply = layout.shouldHideAppName();
             }

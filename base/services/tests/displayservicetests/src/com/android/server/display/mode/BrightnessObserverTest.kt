@@ -25,6 +25,7 @@ import androidx.test.filters.SmallTest
 import com.android.server.display.DisplayDeviceConfig
 import com.android.server.display.config.RefreshRateData
 import com.android.server.display.config.SupportedModeData
+import com.android.server.display.config.createRefreshRateData
 import com.android.server.display.feature.DisplayManagerFlags
 import com.android.server.display.mode.DisplayModeDirector.DisplayDeviceConfigProvider
 import com.android.server.testutils.TestHandler
@@ -96,11 +97,14 @@ class BrightnessObserverTest {
 
     private fun setUpLowBrightnessZone() {
         whenever(mockInjector.getBrightnessInfo(Display.DEFAULT_DISPLAY)).thenReturn(
-                BrightnessInfo(/* brightness = */ 0.05f, /* adjustedBrightness = */ 0.05f,
-                        /* brightnessMinimum = */ 0.0f, /* brightnessMaximum = */ 1.0f,
-                        BrightnessInfo.HIGH_BRIGHTNESS_MODE_OFF,
-                        /* highBrightnessTransitionPoint = */ 1.0f,
-                        BrightnessInfo.BRIGHTNESS_MAX_REASON_NONE))
+            BrightnessInfo(/* brightness = */ 0.05f, /* adjustedBrightness = */ 0.05f,
+                /* brightnessMinimum = */ 0.0f, /* brightnessMaximum = */ 1.0f,
+                BrightnessInfo.HIGH_BRIGHTNESS_MODE_OFF,
+                /* highBrightnessTransitionPoint = */ 1.0f,
+                BrightnessInfo.BRIGHTNESS_MAX_REASON_NONE,
+                false /* isBrightnessOverrideByWindow */
+            )
+        )
         whenever(mockDeviceConfig.highDisplayBrightnessThresholds).thenReturn(floatArrayOf())
         whenever(mockDeviceConfig.highAmbientBrightnessThresholds).thenReturn(floatArrayOf())
         whenever(mockDeviceConfig.lowDisplayBrightnessThresholds).thenReturn(floatArrayOf(0.1f))

@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.scene.domain.interactor
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -28,11 +26,13 @@ import com.android.systemui.authentication.domain.interactor.authenticationInter
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.flags.EnableSceneContainer
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.scene.data.model.asIterable
+import com.android.systemui.scene.data.model.sceneStackOf
+import com.android.systemui.scene.domain.startable.sceneContainerStartable
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -53,15 +53,13 @@ class SceneBackInteractorTest : SysuiTestCase() {
 
     @Test
     @EnableSceneContainer
-    fun navigateToQs_thenBouncer_thenBack_whileLocked() =
+    fun navigateToQs_thenBack_whileLocked() =
         testScope.runTest {
             sceneContainerStartable.start()
 
             assertRoute(
                 RouteNode(Scenes.Lockscreen, null),
                 RouteNode(Scenes.Shade, Scenes.Lockscreen),
-                RouteNode(Scenes.QuickSettings, Scenes.Shade),
-                RouteNode(Scenes.Bouncer, Scenes.QuickSettings),
                 RouteNode(Scenes.QuickSettings, Scenes.Shade),
                 RouteNode(Scenes.Shade, Scenes.Lockscreen),
                 RouteNode(Scenes.Lockscreen, null),
@@ -70,29 +68,26 @@ class SceneBackInteractorTest : SysuiTestCase() {
 
     @Test
     @EnableSceneContainer
-    fun navigateToQs_thenBouncer_thenUnlock() =
+    fun navigateToQs_thenUnlock() =
         testScope.runTest {
             sceneContainerStartable.start()
 
             assertRoute(
                 RouteNode(Scenes.Lockscreen, null),
                 RouteNode(Scenes.Shade, Scenes.Lockscreen),
-                RouteNode(Scenes.QuickSettings, Scenes.Shade),
-                RouteNode(Scenes.Bouncer, Scenes.QuickSettings, unlockDevice = true),
+                RouteNode(Scenes.QuickSettings, Scenes.Shade, unlockDevice = true),
                 RouteNode(Scenes.Gone, null),
             )
         }
 
     @Test
     @EnableSceneContainer
-    fun navigateToQs_skippingShade_thenBouncer_thenBack_whileLocked() =
+    fun navigateToQs_skippingShade_thenBack_whileLocked() =
         testScope.runTest {
             sceneContainerStartable.start()
 
             assertRoute(
                 RouteNode(Scenes.Lockscreen, null),
-                RouteNode(Scenes.QuickSettings, Scenes.Lockscreen),
-                RouteNode(Scenes.Bouncer, Scenes.QuickSettings),
                 RouteNode(Scenes.QuickSettings, Scenes.Lockscreen),
                 RouteNode(Scenes.Lockscreen, null),
             )
@@ -100,27 +95,12 @@ class SceneBackInteractorTest : SysuiTestCase() {
 
     @Test
     @EnableSceneContainer
-    fun navigateToBouncer_thenBack_whileLocked() =
+    fun navigateToQs_skippingShade_thenBack_thenShade_whileLocked() =
         testScope.runTest {
             sceneContainerStartable.start()
 
             assertRoute(
                 RouteNode(Scenes.Lockscreen, null),
-                RouteNode(Scenes.Bouncer, Scenes.Lockscreen),
-                RouteNode(Scenes.Lockscreen, null),
-            )
-        }
-
-    @Test
-    @EnableSceneContainer
-    fun navigateToQs_skippingShade_thenBouncer_thenBack_thenShade_whileLocked() =
-        testScope.runTest {
-            sceneContainerStartable.start()
-
-            assertRoute(
-                RouteNode(Scenes.Lockscreen, null),
-                RouteNode(Scenes.QuickSettings, Scenes.Lockscreen),
-                RouteNode(Scenes.Bouncer, Scenes.QuickSettings),
                 RouteNode(Scenes.QuickSettings, Scenes.Lockscreen),
                 RouteNode(Scenes.Lockscreen, null),
                 RouteNode(Scenes.Shade, Scenes.Lockscreen),
@@ -172,12 +152,31 @@ class SceneBackInteractorTest : SysuiTestCase() {
             )
         }
 
+    @Test
+    @EnableSceneContainer
+    fun updateBackStack() =
+        testScope.runTest {
+            underTest.onSceneChange(from = Scenes.Lockscreen, to = Scenes.Shade)
+            underTest.onSceneChange(from = Scenes.Shade, to = Scenes.QuickSettings)
+            assertThat(underTest.backStack.value.asIterable().toList())
+                .isEqualTo(listOf(Scenes.Shade, Scenes.Lockscreen))
+
+            underTest.updateBackStack { stack ->
+                // Reverse the stack, just to see if it can be done:
+                sceneStackOf(*stack.asIterable().reversed().toTypedArray())
+            }
+
+            assertThat(underTest.backStack.value.asIterable().toList())
+                .isEqualTo(listOf(Scenes.Lockscreen, Scenes.Shade))
+        }
+
     private suspend fun TestScope.assertRoute(vararg route: RouteNode) {
         val currentScene by collectLastValue(sceneInteractor.currentScene)
         val backScene by collectLastValue(underTest.backScene)
 
         route.forEachIndexed { index, node ->
             sceneInteractor.changeScene(node.changeSceneTo, "")
+            runCurrent()
             assertWithMessage("node at index $index currentScene mismatch")
                 .that(currentScene)
                 .isEqualTo(node.changeSceneTo)

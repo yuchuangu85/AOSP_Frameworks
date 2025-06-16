@@ -63,10 +63,13 @@ cc_library {
         "libhardware",
         "libpermission",
         "android.companion.virtual.virtualdevice_aidl-cpp",
+        "libaconfig_storage_read_api_cc",
+        "server_configurable_flags",
     ],
 
     static_libs: [
         "libsensor_flags_c_lib",
+        "android.permission.flags-aconfig-cc",
     ],
 
     export_include_dirs: ["include"],

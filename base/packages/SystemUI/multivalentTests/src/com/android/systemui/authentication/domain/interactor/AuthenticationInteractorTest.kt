@@ -17,8 +17,6 @@
 package com.android.systemui.authentication.domain.interactor
 
 import android.app.admin.DevicePolicyManager
-import android.app.admin.flags.Flags as DevicePolicyFlags
-import android.platform.test.annotations.EnableFlags
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.widget.LockPatternUtils
@@ -38,7 +36,6 @@ import com.android.systemui.user.data.repository.FakeUserRepository
 import com.android.systemui.user.data.repository.fakeUserRepository
 import com.google.common.truth.Truth.assertThat
 import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
@@ -46,7 +43,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class AuthenticationInteractorTest : SysuiTestCase() {
@@ -414,7 +410,6 @@ class AuthenticationInteractorTest : SysuiTestCase() {
         }
 
     @Test
-    @EnableFlags(DevicePolicyFlags.FLAG_HEADLESS_SINGLE_USER_FIXES)
     fun upcomingWipe() =
         testScope.runTest {
             val upcomingWipe by collectLastValue(underTest.upcomingWipe)

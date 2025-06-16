@@ -92,6 +92,8 @@ public class KeyguardServiceDelegate {
         public boolean bootCompleted;
         public int screenState;
         public int interactiveState;
+        boolean doKeyguardTimeoutRequested;
+        Bundle doKeyguardTimeoutRequestedOptions;
 
         private void reset() {
             // Assume keyguard is showing and secure until we know for sure. This is here in
@@ -176,8 +178,9 @@ public class KeyguardServiceDelegate {
 
         final DreamManagerInternal dreamManager =
                 LocalServices.getService(DreamManagerInternal.class);
-
-        dreamManager.registerDreamManagerStateListener(mDreamManagerStateListener);
+        if(dreamManager != null){
+            dreamManager.registerDreamManagerStateListener(mDreamManagerStateListener);
+        }
     }
 
     private final ServiceConnection mKeyguardConnection = new ServiceConnection() {
@@ -197,7 +200,7 @@ public class KeyguardServiceDelegate {
                 if (mKeyguardState.interactiveState == INTERACTIVE_STATE_AWAKE
                         || mKeyguardState.interactiveState == INTERACTIVE_STATE_WAKING) {
                     mKeyguardService.onStartedWakingUp(PowerManager.WAKE_REASON_UNKNOWN,
-                            false /* cameraGestureTriggered */);
+                            false /* powerButtonLaunchGestureTriggered */);
                 }
                 if (mKeyguardState.interactiveState == INTERACTIVE_STATE_AWAKE) {
                     mKeyguardService.onFinishedWakingUp();
@@ -223,6 +226,12 @@ public class KeyguardServiceDelegate {
             }
             if (mKeyguardState.dreaming) {
                 mKeyguardService.onDreamingStarted();
+            }
+            if (mKeyguardState.doKeyguardTimeoutRequested) {
+                mKeyguardService.doKeyguardTimeout(
+                        mKeyguardState.doKeyguardTimeoutRequestedOptions);
+                mKeyguardState.doKeyguardTimeoutRequested = false;
+                mKeyguardState.doKeyguardTimeoutRequestedOptions = null;
             }
         }
 
@@ -318,10 +327,10 @@ public class KeyguardServiceDelegate {
     }
 
     public void onStartedWakingUp(
-            @PowerManager.WakeReason int pmWakeReason, boolean cameraGestureTriggered) {
+            @PowerManager.WakeReason int pmWakeReason, boolean powerButtonLaunchGestureTriggered) {
         if (mKeyguardService != null) {
             if (DEBUG) Log.v(TAG, "onStartedWakingUp()");
-            mKeyguardService.onStartedWakingUp(pmWakeReason, cameraGestureTriggered);
+            mKeyguardService.onStartedWakingUp(pmWakeReason, powerButtonLaunchGestureTriggered);
         }
         mKeyguardState.interactiveState = INTERACTIVE_STATE_WAKING;
     }
@@ -382,9 +391,11 @@ public class KeyguardServiceDelegate {
     }
 
     public void onFinishedGoingToSleep(
-            @PowerManager.GoToSleepReason int pmSleepReason, boolean cameraGestureTriggered) {
+            @PowerManager.GoToSleepReason int pmSleepReason,
+            boolean powerButtonLaunchGestureTriggered) {
         if (mKeyguardService != null) {
-            mKeyguardService.onFinishedGoingToSleep(pmSleepReason, cameraGestureTriggered);
+            mKeyguardService.onFinishedGoingToSleep(pmSleepReason,
+                    powerButtonLaunchGestureTriggered);
         }
         mKeyguardState.interactiveState = INTERACTIVE_STATE_SLEEP;
     }
@@ -407,6 +418,11 @@ public class KeyguardServiceDelegate {
     public void doKeyguardTimeout(Bundle options) {
         if (mKeyguardService != null) {
             mKeyguardService.doKeyguardTimeout(options);
+        } else {
+            mKeyguardState.doKeyguardTimeoutRequested = true;
+            if (options != null) {
+                mKeyguardState.doKeyguardTimeoutRequestedOptions = options;
+            }
         }
     }
 

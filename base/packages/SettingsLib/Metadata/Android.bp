@@ -1,0 +1,25 @@
+package {
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
+filegroup {
+    name: "SettingsLibMetadata-srcs",
+    srcs: ["src/**/*.kt"],
+}
+
+android_library {
+    name: "SettingsLibMetadata",
+    defaults: [
+        "SettingsLintDefaults",
+    ],
+    srcs: [":SettingsLibMetadata-srcs"],
+    static_libs: [
+        "SettingsLibDataStore",
+        "androidx.annotation_annotation",
+        "androidx.fragment_fragment",
+    ],
+    kotlincflags: ["-Xjvm-default=all"],
+    optimize: {
+        proguard_flags_files: ["proguard.pgcfg"],
+    },
+}

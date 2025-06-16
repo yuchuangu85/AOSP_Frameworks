@@ -67,6 +67,7 @@ struct ResourcePathData {
   std::string resource_dir;
   std::string name;
   std::string extension;
+  std::string flag_name;
 
   // Original config str. We keep this because when we parse the config, we may add on
   // version qualifiers. We want to preserve the original input so the output is easily
@@ -81,6 +82,22 @@ static std::optional<ResourcePathData> ExtractResourcePathData(const std::string
                                                                std::string* out_error,
                                                                const CompileOptions& options) {
   std::vector<std::string> parts = util::Split(path, dir_sep);
+
+  std::string flag_name;
+  // Check for a flag
+  for (auto iter = parts.begin(); iter != parts.end();) {
+    if (iter->starts_with("flag(") && iter->ends_with(")")) {
+      if (!flag_name.empty()) {
+        if (out_error) *out_error = "resource path cannot contain more than one flag directory";
+        return {};
+      }
+      flag_name = iter->substr(5, iter->size() - 6);
+      iter = parts.erase(iter);
+    } else {
+      ++iter;
+    }
+  }
+
   if (parts.size() < 2) {
     if (out_error) *out_error = "bad resource path";
     return {};
@@ -131,6 +148,7 @@ static std::optional<ResourcePathData> ExtractResourcePathData(const std::string
                           std::string(dir_str),
                           std::string(name),
                           std::string(extension),
+                          std::move(flag_name),
                           std::string(config_str),
                           config};
 }
@@ -142,6 +160,9 @@ static std::string BuildIntermediateContainerFilename(const ResourcePathData& da
     name << "-" << data.config_str;
   }
   name << "_" << data.name;
+  if (!data.flag_name.empty()) {
+    name << ".(" << data.flag_name << ")";
+  }
   if (!data.extension.empty()) {
     name << "." << data.extension;
   }
@@ -163,7 +184,6 @@ static bool CompileTable(IAaptContext* context, const CompileOptions& options,
                                        << "failed to open file: " << fin->GetError());
       return false;
     }
-
     // Parse the values file from XML.
     xml::XmlPullParser xml_parser(fin.get());
 
@@ -171,10 +191,23 @@ static bool CompileTable(IAaptContext* context, const CompileOptions& options,
     parser_options.error_on_positional_arguments = !options.legacy_mode;
     parser_options.preserve_visibility_of_styleables = options.preserve_visibility_of_styleables;
     parser_options.translatable = translatable_file;
+    parser_options.feature_flag_values = options.feature_flag_values;
 
     // If visibility was forced, we need to use it when creating a new resource and also error if
     // we try to parse the <public>, <public-group>, <java-symbol> or <symbol> tags.
     parser_options.visibility = options.visibility;
+    parser_options.flag = ParseFlag(path_data.flag_name);
+
+    if (parser_options.flag) {
+      std::string error;
+      auto flag_status = GetFlagStatus(parser_options.flag, options.feature_flag_values, &error);
+      if (flag_status) {
+        parser_options.flag_status = std::move(flag_status.value());
+      } else {
+        context->GetDiagnostics()->Error(android::DiagMessage(path_data.source) << error);
+        return false;
+      }
+    }
 
     ResourceParser res_parser(context->GetDiagnostics(), &table, path_data.source, path_data.config,
         parser_options);
@@ -374,6 +407,45 @@ static bool IsValidFile(IAaptContext* context, const std::string& input_path) {
   return true;
 }
 
+class FindReadWriteFlagsVisitor : public xml::Visitor {
+ public:
+  FindReadWriteFlagsVisitor(const FeatureFlagValues& feature_flag_values)
+      : feature_flag_values_(feature_flag_values) {
+  }
+
+  void Visit(xml::Element* node) override {
+    if (had_flags_) {
+      return;
+    }
+    auto* attr = node->FindAttribute(xml::kSchemaAndroid, xml::kAttrFeatureFlag);
+    if (attr != nullptr) {
+      std::string_view flag_name = util::TrimWhitespace(attr->value);
+      if (flag_name.starts_with('!')) {
+        flag_name = flag_name.substr(1);
+      }
+      if (auto it = feature_flag_values_.find(flag_name); it != feature_flag_values_.end()) {
+        if (!it->second.read_only) {
+          had_flags_ = true;
+          return;
+        }
+      } else {
+        // Flag not passed to aapt2, must evaluate at runtime
+        had_flags_ = true;
+        return;
+      }
+    }
+    VisitChildren(node);
+  }
+
+  bool HadFlags() const {
+    return had_flags_;
+  }
+
+ private:
+  bool had_flags_ = false;
+  const FeatureFlagValues& feature_flag_values_;
+};
+
 static bool CompileXml(IAaptContext* context, const CompileOptions& options,
                        const ResourcePathData& path_data, io::IFile* file, IArchiveWriter* writer,
                        const std::string& output_path) {
@@ -401,6 +473,22 @@ static bool CompileXml(IAaptContext* context, const CompileOptions& options,
   xmlres->file.config = path_data.config;
   xmlres->file.source = path_data.source;
   xmlres->file.type = ResourceFile::Type::kProtoXml;
+  xmlres->file.flag = ParseFlag(path_data.flag_name);
+
+  FindReadWriteFlagsVisitor visitor(options.feature_flag_values);
+  xmlres->root->Accept(&visitor);
+  xmlres->file.uses_readwrite_feature_flags = visitor.HadFlags();
+
+  if (xmlres->file.flag) {
+    std::string error;
+    auto flag_status = GetFlagStatus(xmlres->file.flag, options.feature_flag_values, &error);
+    if (flag_status) {
+      xmlres->file.flag_status = flag_status.value();
+    } else {
+      context->GetDiagnostics()->Error(android::DiagMessage(path_data.source) << error);
+      return false;
+    }
+  }
 
   // Collect IDs that are defined here.
   XmlIdCollector collector;
@@ -490,6 +578,27 @@ static bool CompilePng(IAaptContext* context, const CompileOptions& options,
   res_file.source = path_data.source;
   res_file.type = ResourceFile::Type::kPng;
 
+  if (!path_data.flag_name.empty()) {
+    FeatureFlagAttribute flag;
+    auto name = path_data.flag_name;
+    if (name.starts_with('!')) {
+      flag.negated = true;
+      flag.name = name.substr(1);
+    } else {
+      flag.name = name;
+    }
+    res_file.flag = flag;
+
+    std::string error;
+    auto flag_status = GetFlagStatus(flag, options.feature_flag_values, &error);
+    if (flag_status) {
+      res_file.flag_status = flag_status.value();
+    } else {
+      context->GetDiagnostics()->Error(android::DiagMessage(path_data.source) << error);
+      return false;
+    }
+  }
+
   {
     auto data = file->OpenAsData();
     if (!data) {
@@ -539,8 +648,9 @@ static bool CompilePng(IAaptContext* context, const CompileOptions& options,
     }
 
     // Write the crunched PNG.
-    if (!android::WritePng(image.get(), nine_patch.get(), &crunched_png_buffer_out, {},
-                           &source_diag, context->IsVerbose())) {
+    if (!android::WritePng(image.get(), nine_patch.get(), &crunched_png_buffer_out,
+                           {.compression_level = options.png_compression_level_int}, &source_diag,
+                           context->IsVerbose())) {
       return false;
     }
 
@@ -834,6 +944,41 @@ int CompileCommand::Action(const std::vector<std::string>& args) {
 
   if (!archive_writer) {
     return 1;
+  }
+
+  // Parse the feature flag values. An argument that starts with '@' points to a file to read flag
+  // values from.
+  std::vector<std::string> all_feature_flags_args;
+  for (const std::string& arg : feature_flags_args_) {
+    if (util::StartsWith(arg, "@")) {
+      const std::string path = arg.substr(1, arg.size() - 1);
+      std::string error;
+      if (!file::AppendArgsFromFile(path, &all_feature_flags_args, &error)) {
+        context.GetDiagnostics()->Error(android::DiagMessage(path) << error);
+        return 1;
+      }
+    } else {
+      all_feature_flags_args.push_back(arg);
+    }
+  }
+
+  for (const std::string& arg : all_feature_flags_args) {
+    if (!ParseFeatureFlagsParameter(arg, context.GetDiagnostics(), &options_.feature_flag_values)) {
+      return 1;
+    }
+  }
+
+  if (!options_.png_compression_level) {
+    options_.png_compression_level_int = 9;
+  } else {
+    if (options_.png_compression_level->size() != 1 ||
+        options_.png_compression_level->front() < '0' ||
+        options_.png_compression_level->front() > '9') {
+      context.GetDiagnostics()->Error(
+          android::DiagMessage() << "PNG compression level should be a number in [0..9] range");
+      return 1;
+    }
+    options_.png_compression_level_int = options_.png_compression_level->front() - '0';
   }
 
   return Compile(&context, file_collection.get(), archive_writer.get(), options_);

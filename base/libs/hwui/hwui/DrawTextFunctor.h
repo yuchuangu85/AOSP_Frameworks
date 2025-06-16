@@ -17,7 +17,6 @@
 #include <SkFontMetrics.h>
 #include <SkRRect.h>
 #include <SkTextBlob.h>
-#include <com_android_graphics_hwui_flags.h>
 
 #include "../utils/Color.h"
 #include "Canvas.h"
@@ -30,7 +29,19 @@
 #include "hwui/PaintFilter.h"
 #include "pipeline/skia/SkiaRecordingCanvas.h"
 
+#ifdef __ANDROID__
+#include <com_android_graphics_hwui_flags.h>
 namespace flags = com::android::graphics::hwui::flags;
+#else
+namespace flags {
+constexpr bool high_contrast_text_small_text_rect() {
+    return false;
+}
+constexpr bool high_contrast_text_inner_text_color() {
+    return false;
+}
+}  // namespace flags
+#endif
 
 namespace android {
 
@@ -62,6 +73,42 @@ static void simplifyPaint(int color, Paint* paint) {
     }
     paint->setStrokeJoin(SkPaint::kRound_Join);
     paint->setLooper(nullptr);
+    paint->setBlendMode(SkBlendMode::kSrcOver);
+}
+
+namespace {
+
+static bool shouldDarkenTextForHighContrast(const uirenderer::Lab& lab) {
+    // LINT.IfChange(hct_darken)
+    return lab.L <= 50;
+    // LINT.ThenChange(/core/java/android/text/Layout.java:hct_darken)
+}
+
+}  // namespace
+
+static void adjustHighContrastInnerTextColor(uirenderer::Lab* lab) {
+    bool darken = shouldDarkenTextForHighContrast(*lab);
+    bool isGrayscale = abs(lab->a) < 10 && abs(lab->b) < 10;
+    if (isGrayscale) {
+        // For near-grayscale text we first remove all color.
+        lab->a = lab->b = 0;
+        if (lab->L > 40 && lab->L < 60) {
+            // Text near "middle gray" is pushed to a more contrasty gray.
+            lab->L = darken ? 20 : 80;
+        } else {
+            // Other grayscale text is pushed completely white or black.
+            lab->L = darken ? 0 : 100;
+        }
+    } else {
+        // For color text we ensure the text is bright enough (for light text)
+        // or dark enough (for dark text) to stand out against the background,
+        // without touching the A and B components so we retain color.
+        if (darken && lab->L > 20.f) {
+            lab->L = 20.0f;
+        } else if (!darken && lab->L < 90.f) {
+            lab->L = 90.0f;
+        }
+    }
 }
 
 class DrawTextFunctor {
@@ -102,15 +149,8 @@ public:
         if (CC_UNLIKELY(canvas->isHighContrastText() && paint.getAlpha() != 0)) {
             // high contrast draw path
             int color = paint.getColor();
-            bool darken;
-            // This equation should match the one in core/java/android/text/Layout.java
-            if (flags::high_contrast_text_luminance()) {
-                uirenderer::Lab lab = uirenderer::sRGBToLab(color);
-                darken = lab.L <= 50;
-            } else {
-                int channelSum = SkColorGetR(color) + SkColorGetG(color) + SkColorGetB(color);
-                darken = channelSum < (128 * 3);
-            }
+            uirenderer::Lab lab = uirenderer::sRGBToLab(color);
+            bool darken = shouldDarkenTextForHighContrast(lab);
 
             // outline
             gDrawTextBlobMode = DrawTextBlobMode::HctOutline;
@@ -122,7 +162,12 @@ public:
             // inner
             gDrawTextBlobMode = DrawTextBlobMode::HctInner;
             Paint innerPaint(paint);
-            simplifyPaint(darken ? SK_ColorBLACK : SK_ColorWHITE, &innerPaint);
+            if (flags::high_contrast_text_inner_text_color()) {
+                adjustHighContrastInnerTextColor(&lab);
+                simplifyPaint(uirenderer::LabToSRGB(lab, SK_AlphaOPAQUE), &innerPaint);
+            } else {
+                simplifyPaint(darken ? SK_ColorBLACK : SK_ColorWHITE, &innerPaint);
+            }
             innerPaint.setStyle(SkPaint::kFill_Style);
             canvas->drawGlyphs(glyphFunc, glyphCount, innerPaint, x, y, totalAdvance);
             gDrawTextBlobMode = DrawTextBlobMode::Normal;
@@ -131,32 +176,30 @@ public:
             canvas->drawGlyphs(glyphFunc, glyphCount, paint, x, y, totalAdvance);
         }
 
-        if (text_feature::fix_double_underline()) {
-            // Extract underline position and thickness.
-            if (paint.isUnderline()) {
-                SkFontMetrics metrics;
-                paint.getSkFont().getMetrics(&metrics);
-                const float textSize = paint.getSkFont().getSize();
-                SkScalar position;
-                if (!metrics.hasUnderlinePosition(&position)) {
-                    position = textSize * Paint::kStdUnderline_Top;
-                }
-                SkScalar thickness;
-                if (!metrics.hasUnderlineThickness(&thickness)) {
-                    thickness = textSize * Paint::kStdUnderline_Thickness;
-                }
-
-                // If multiple fonts are used, use the most bottom position and most thick stroke
-                // width as the underline position. This follows the CSS standard:
-                // https://www.w3.org/TR/css-text-decor-3/#text-underline-position-property
-                // <quote>
-                // The exact position and thickness of line decorations is UA-defined in this level.
-                // However, for underlines and overlines the UA must use a single thickness and
-                // position on each line for the decorations deriving from a single decorating box.
-                // </quote>
-                underlinePosition = std::max(underlinePosition, position);
-                underlineThickness = std::max(underlineThickness, thickness);
+        // Extract underline position and thickness.
+        if (paint.isUnderline()) {
+            SkFontMetrics metrics;
+            paint.getSkFont().getMetrics(&metrics);
+            const float textSize = paint.getSkFont().getSize();
+            SkScalar position;
+            if (!metrics.hasUnderlinePosition(&position)) {
+                position = textSize * Paint::kStdUnderline_Top;
             }
+            SkScalar thickness;
+            if (!metrics.hasUnderlineThickness(&thickness)) {
+                thickness = textSize * Paint::kStdUnderline_Thickness;
+            }
+
+            // If multiple fonts are used, use the most bottom position and most thick stroke
+            // width as the underline position. This follows the CSS standard:
+            // https://www.w3.org/TR/css-text-decor-3/#text-underline-position-property
+            // <quote>
+            // The exact position and thickness of line decorations is UA-defined in this level.
+            // However, for underlines and overlines the UA must use a single thickness and
+            // position on each line for the decorations deriving from a single decorating box.
+            // </quote>
+            underlinePosition = std::max(underlinePosition, position);
+            underlineThickness = std::max(underlineThickness, thickness);
         }
     }
 

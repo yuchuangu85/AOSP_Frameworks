@@ -86,6 +86,14 @@ public:
     // Visit each visible snapshot in z-order and move the snapshot if needed
     void forEachVisibleSnapshot(const Visitor& visitor);
 
+    typedef std::function<bool(const LayerSnapshot& snapshot)> ConstPredicate;
+    // Visit each snapshot that satisfies the predicate and move the snapshot if needed with visible
+    // snapshots in z-order
+    void forEachSnapshot(const Visitor& visitor, const ConstPredicate& predicate);
+
+    // Visit each snapshot
+    void forEachSnapshot(const ConstVisitor& visitor) const;
+
     // Visit each snapshot interesting to input reverse z-order
     void forEachInputSnapshot(const ConstVisitor& visitor) const;
 
@@ -98,9 +106,10 @@ private:
 
     void updateSnapshots(const Args& args);
 
-    const LayerSnapshot& updateSnapshotsInHierarchy(const Args&, const LayerHierarchy& hierarchy,
-                                                    LayerHierarchy::TraversalPath& traversalPath,
-                                                    const LayerSnapshot& parentSnapshot, int depth);
+    const LayerSnapshot& updateSnapshotsInHierarchy(
+            const Args&, const LayerHierarchy& hierarchy,
+            const LayerHierarchy::TraversalPath& traversalPath, const LayerSnapshot& parentSnapshot,
+            int depth);
     void updateSnapshot(LayerSnapshot&, const Args&, const RequestedLayerState&,
                         const LayerSnapshot& parentSnapshot, const LayerHierarchy::TraversalPath&);
     static void updateRelativeState(LayerSnapshot& snapshot, const LayerSnapshot& parentSnapshot,
@@ -108,6 +117,10 @@ private:
     static void resetRelativeState(LayerSnapshot& snapshot);
     static void updateRoundedCorner(LayerSnapshot& snapshot, const RequestedLayerState& layerState,
                                     const LayerSnapshot& parentSnapshot, const Args& args);
+    static bool extensionEdgeSharedWithParent(LayerSnapshot& snapshot,
+                                              const RequestedLayerState& requested,
+                                              const LayerSnapshot& parentSnapshot);
+    static void updateBoundsForEdgeExtension(LayerSnapshot& snapshot);
     void updateLayerBounds(LayerSnapshot& snapshot, const RequestedLayerState& layerState,
                            const LayerSnapshot& parentSnapshot, uint32_t displayRotationFlags);
     static void updateShadows(LayerSnapshot& snapshot, const RequestedLayerState& requested,
@@ -121,7 +134,9 @@ private:
                                   const RequestedLayerState& layer,
                                   const LayerSnapshot& parentSnapshot);
     void updateFrameRateFromChildSnapshot(LayerSnapshot& snapshot,
-                                          const LayerSnapshot& childSnapshot, const Args& args);
+                                          const LayerSnapshot& childSnapshot,
+                                          const RequestedLayerState& requestedCHildState,
+                                          const Args& args, bool* outChildHasValidFrameRate);
     void updateTouchableRegionCrop(const Args& args);
 
     std::unordered_map<LayerHierarchy::TraversalPath, LayerSnapshot*,

@@ -42,7 +42,6 @@ import android.app.admin.PolicyUpdateReceiver;
 import android.app.admin.PolicyValue;
 import android.app.admin.TargetUser;
 import android.app.admin.UserRestrictionPolicyKey;
-import android.app.admin.flags.Flags;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -66,6 +65,7 @@ import android.util.Log;
 import android.util.SparseArray;
 import android.util.Xml;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.XmlUtils;
 import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
@@ -91,6 +91,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Class responsible for setting, resolving, and enforcing policies set by multiple management
@@ -99,9 +100,10 @@ import java.util.Set;
 final class DevicePolicyEngine {
     static final String TAG = "DevicePolicyEngine";
 
-    // TODO(b/281701062): reference role name from role manager once its exposed.
     static final String DEVICE_LOCK_CONTROLLER_ROLE =
             "android.app.role.SYSTEM_FINANCED_DEVICE_CONTROLLER";
+
+    static final String SYSTEM_SUPERVISION_ROLE = "android.app.role.SYSTEM_SUPERVISION";
 
     private static final String CELLULAR_2G_USER_RESTRICTION_ID =
             DevicePolicyIdentifiers.getIdentifierForUserRestriction(
@@ -119,11 +121,13 @@ final class DevicePolicyEngine {
     /**
      * Map of <userId, Map<policyKey, policyState>>
      */
+    @GuardedBy("mLock")
     private final SparseArray<Map<PolicyKey, PolicyState<?>>> mLocalPolicies;
 
     /**
      * Map of <policyKey, policyState>
      */
+    @GuardedBy("mLock")
     private final Map<PolicyKey, PolicyState<?>> mGlobalPolicies;
 
     /**
@@ -151,19 +155,21 @@ final class DevicePolicyEngine {
         mAdminPolicySize = new SparseArray<>();
     }
 
-    private void maybeForceEnforcementRefreshLocked(@NonNull PolicyDefinition<?> policyDefinition) {
+    @GuardedBy("mLock")
+    private void forceEnforcementRefreshIfUserRestrictionLocked(
+            @NonNull PolicyDefinition<?> policyDefinition) {
         try {
-            if (shouldForceEnforcementRefresh(policyDefinition)) {
+            if (isUserRestrictionPolicy(policyDefinition)) {
                 // This is okay because it's only true for user restrictions which are all <Boolean>
                 forceEnforcementRefreshLocked((PolicyDefinition<Boolean>) policyDefinition);
             }
         } catch (Throwable e) {
             // Catch any possible exceptions just to be on the safe side
-            Log.e(TAG, "Exception throw during maybeForceEnforcementRefreshLocked", e);
+            Log.e(TAG, "Exception thrown during forceEnforcementRefreshIfUserRestrictionLocked", e);
         }
     }
 
-    private boolean shouldForceEnforcementRefresh(@NonNull PolicyDefinition<?> policyDefinition) {
+    private boolean isUserRestrictionPolicy(@NonNull PolicyDefinition<?> policyDefinition) {
         // These are all "not nullable" but for the purposes of maximum safety for a lightly tested
         // change we check here
         if (policyDefinition == null) {
@@ -183,6 +189,7 @@ final class DevicePolicyEngine {
         return false;
     }
 
+    @GuardedBy("mLock")
     private void forceEnforcementRefreshLocked(PolicyDefinition<Boolean> policyDefinition) {
         Binder.withCleanCallingIdentity(() -> {
             // Sync global state
@@ -230,11 +237,9 @@ final class DevicePolicyEngine {
 
         synchronized (mLock) {
             PolicyState<V> localPolicyState = getLocalPolicyStateLocked(policyDefinition, userId);
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                if (!handleAdminPolicySizeLimit(localPolicyState, enforcingAdmin, value,
-                        policyDefinition, userId)) {
-                    return;
-                }
+            if (!handleAdminPolicySizeLimit(localPolicyState, enforcingAdmin, value,
+                    policyDefinition, userId)) {
+                return;
             }
 
             if (policyDefinition.isNonCoexistablePolicy()) {
@@ -258,7 +263,7 @@ final class DevicePolicyEngine {
             // No need to notify admins as no new policy is actually enforced, we're just filling in
             // the data structures.
             if (!skipEnforcePolicy) {
-                maybeForceEnforcementRefreshLocked(policyDefinition);
+                forceEnforcementRefreshIfUserRestrictionLocked(policyDefinition);
                 if (policyChanged) {
                     onLocalPolicyChangedLocked(policyDefinition, enforcingAdmin, userId);
                 }
@@ -296,6 +301,7 @@ final class DevicePolicyEngine {
      *
      * <p>Passing a {@code null} value means the policy set by this admin should be removed.
      */
+    @GuardedBy("mLock")
     private <V> void setNonCoexistableLocalPolicyLocked(
             PolicyDefinition<V> policyDefinition,
             PolicyState<V> localPolicyState,
@@ -348,15 +354,13 @@ final class DevicePolicyEngine {
         Objects.requireNonNull(enforcingAdmin);
 
         synchronized (mLock) {
-            maybeForceEnforcementRefreshLocked(policyDefinition);
+            forceEnforcementRefreshIfUserRestrictionLocked(policyDefinition);
             if (!hasLocalPolicyLocked(policyDefinition, userId)) {
                 return;
             }
             PolicyState<V> localPolicyState = getLocalPolicyStateLocked(policyDefinition, userId);
 
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                decreasePolicySizeForAdmin(localPolicyState, enforcingAdmin);
-            }
+            decreasePolicySizeForAdmin(localPolicyState, enforcingAdmin);
 
             if (policyDefinition.isNonCoexistablePolicy()) {
                 setNonCoexistableLocalPolicyLocked(policyDefinition, localPolicyState,
@@ -405,22 +409,23 @@ final class DevicePolicyEngine {
      */
     private <V> void applyToInheritableProfiles(PolicyDefinition<V> policyDefinition,
             EnforcingAdmin enforcingAdmin, @Nullable PolicyValue<V> value, int userId) {
-        if (policyDefinition.isInheritable()) {
-            Binder.withCleanCallingIdentity(() -> {
-                List<UserInfo> userInfos = mUserManager.getProfiles(userId);
-                for (UserInfo childUserInfo : userInfos) {
-                    int childUserId = childUserInfo.getUserHandle().getIdentifier();
-                    if (isProfileOfUser(childUserId, userId)
-                            && isInheritDevicePolicyFromParent(childUserInfo)) {
-                        if (value != null) {
-                            setLocalPolicy(policyDefinition, enforcingAdmin, value, childUserId);
-                        } else {
-                            removeLocalPolicy(policyDefinition, enforcingAdmin, childUserId);
-                        }
+        if (!policyDefinition.isInheritable()) {
+            return;
+        }
+        Binder.withCleanCallingIdentity(() -> {
+            List<UserInfo> userInfos = mUserManager.getProfiles(userId);
+            for (UserInfo childUserInfo : userInfos) {
+                int childUserId = childUserInfo.getUserHandle().getIdentifier();
+                if (isProfileOfUser(childUserId, userId)
+                        && isInheritDevicePolicyFromParent(childUserInfo)) {
+                    if (value != null) {
+                        setLocalPolicy(policyDefinition, enforcingAdmin, value, childUserId);
+                    } else {
+                        removeLocalPolicy(policyDefinition, enforcingAdmin, childUserId);
                     }
                 }
-            });
-        }
+            }
+        });
     }
 
     /**
@@ -441,6 +446,7 @@ final class DevicePolicyEngine {
     /**
      * Enforces the new policy and notifies relevant admins.
      */
+    @GuardedBy("mLock")
     private <V> void onLocalPolicyChangedLocked(
             @NonNull PolicyDefinition<V> policyDefinition,
             @NonNull EnforcingAdmin enforcingAdmin,
@@ -500,11 +506,9 @@ final class DevicePolicyEngine {
 
         synchronized (mLock) {
             PolicyState<V> globalPolicyState = getGlobalPolicyStateLocked(policyDefinition);
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                if (!handleAdminPolicySizeLimit(globalPolicyState, enforcingAdmin, value,
-                        policyDefinition, UserHandle.USER_ALL)) {
-                    return;
-                }
+            if (!handleAdminPolicySizeLimit(globalPolicyState, enforcingAdmin, value,
+                    policyDefinition, UserHandle.USER_ALL)) {
+                return;
             }
             // TODO(b/270999567): Move error handling for DISALLOW_CELLULAR_2G into the code
             //  that honors the restriction once there's an API available
@@ -522,7 +526,7 @@ final class DevicePolicyEngine {
             // No need to notify admins as no new policy is actually enforced, we're just filling in
             // the data structures.
             if (!skipEnforcePolicy) {
-                maybeForceEnforcementRefreshLocked(policyDefinition);
+                forceEnforcementRefreshIfUserRestrictionLocked(policyDefinition);
                 if (policyChanged) {
                     onGlobalPolicyChangedLocked(policyDefinition, enforcingAdmin);
                 }
@@ -571,13 +575,11 @@ final class DevicePolicyEngine {
         synchronized (mLock) {
             PolicyState<V> policyState = getGlobalPolicyStateLocked(policyDefinition);
 
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                decreasePolicySizeForAdmin(policyState, enforcingAdmin);
-            }
+            decreasePolicySizeForAdmin(policyState, enforcingAdmin);
 
             boolean policyChanged = policyState.removePolicy(enforcingAdmin);
 
-            maybeForceEnforcementRefreshLocked(policyDefinition);
+            forceEnforcementRefreshIfUserRestrictionLocked(policyDefinition);
             if (policyChanged) {
                 onGlobalPolicyChangedLocked(policyDefinition, enforcingAdmin);
             }
@@ -605,6 +607,7 @@ final class DevicePolicyEngine {
     /**
      * Enforces the new policy globally and notifies relevant admins.
      */
+    @GuardedBy("mLock")
     private <V> void onGlobalPolicyChangedLocked(
             @NonNull PolicyDefinition<V> policyDefinition,
             @NonNull EnforcingAdmin enforcingAdmin) {
@@ -632,6 +635,7 @@ final class DevicePolicyEngine {
      *
      * <p>Returns {@code true} if the policy is enforced successfully on all users.
      */
+    @GuardedBy("mLock")
     private <V> boolean applyGlobalPolicyOnUsersWithLocalPoliciesLocked(
             @NonNull PolicyDefinition<V> policyDefinition,
             @NonNull EnforcingAdmin enforcingAdmin,
@@ -935,6 +939,7 @@ final class DevicePolicyEngine {
         removePoliciesForAdmin(oldAdmin);
     }
 
+    @GuardedBy("mLock")
     private Set<UserRestrictionPolicyKey> getUserRestrictionPolicyKeysForAdminLocked(
             Map<PolicyKey, PolicyState<?>> policies,
             EnforcingAdmin admin) {
@@ -954,6 +959,7 @@ final class DevicePolicyEngine {
         return keys;
     }
 
+    @GuardedBy("mLock")
     private <V> boolean hasLocalPolicyLocked(PolicyDefinition<V> policyDefinition, int userId) {
         if (policyDefinition.isGlobalOnlyPolicy()) {
             return false;
@@ -968,6 +974,7 @@ final class DevicePolicyEngine {
                 .getPoliciesSetByAdmins().isEmpty();
     }
 
+    @GuardedBy("mLock")
     private <V> boolean hasGlobalPolicyLocked(PolicyDefinition<V> policyDefinition) {
         if (policyDefinition.isLocalOnlyPolicy()) {
             return false;
@@ -979,6 +986,7 @@ final class DevicePolicyEngine {
                 .isEmpty();
     }
 
+    @GuardedBy("mLock")
     @NonNull
     private <V> PolicyState<V> getLocalPolicyStateLocked(
             PolicyDefinition<V> policyDefinition, int userId) {
@@ -998,6 +1006,7 @@ final class DevicePolicyEngine {
         return getPolicyStateLocked(mLocalPolicies.get(userId), policyDefinition);
     }
 
+    @GuardedBy("mLock")
     private <V> void removeLocalPolicyStateLocked(
             PolicyDefinition<V> policyDefinition, int userId) {
         if (!mLocalPolicies.contains(userId)) {
@@ -1006,6 +1015,7 @@ final class DevicePolicyEngine {
         mLocalPolicies.get(userId).remove(policyDefinition.getPolicyKey());
     }
 
+    @GuardedBy("mLock")
     @NonNull
     private <V> PolicyState<V> getGlobalPolicyStateLocked(PolicyDefinition<V> policyDefinition) {
         if (policyDefinition.isLocalOnlyPolicy()) {
@@ -1020,10 +1030,12 @@ final class DevicePolicyEngine {
         return getPolicyStateLocked(mGlobalPolicies, policyDefinition);
     }
 
+    @GuardedBy("mLock")
     private <V> void removeGlobalPolicyStateLocked(PolicyDefinition<V> policyDefinition) {
         mGlobalPolicies.remove(policyDefinition.getPolicyKey());
     }
 
+    @GuardedBy("mLock")
     private static <V> PolicyState<V> getPolicyStateLocked(
             Map<PolicyKey, PolicyState<?>> policies, PolicyDefinition<V> policyDefinition) {
         try {
@@ -1039,11 +1051,11 @@ final class DevicePolicyEngine {
         }
     }
 
-    private <V> void enforcePolicy(PolicyDefinition<V> policyDefinition,
+    private <V> CompletableFuture<Boolean> enforcePolicy(PolicyDefinition<V> policyDefinition,
             @Nullable PolicyValue<V> policyValue, int userId) {
         // null policyValue means remove any enforced policies, ensure callbacks handle this
         // properly
-        policyDefinition.enforcePolicy(
+        return policyDefinition.enforcePolicy(
                 policyValue == null ? null : policyValue.getValue(), mContext, userId);
     }
 
@@ -1094,6 +1106,7 @@ final class DevicePolicyEngine {
     }
 
     // TODO(b/261430877): Finalise the decision on which admins to send the updates to.
+    @GuardedBy("mLock")
     private <V> void sendPolicyChangedToAdminsLocked(
             PolicyState<V> policyState,
             EnforcingAdmin callingAdmin,
@@ -1243,6 +1256,8 @@ final class DevicePolicyEngine {
                 }
             }
             for (EnforcingAdmin admin : admins) {
+                // No need to make changes to system enforcing admins.
+                if (admin.isSystemAuthority()) break;
                 if (updatedPackage == null || updatedPackage.equals(admin.getPackageName())) {
                     if (!isPackageInstalled(admin.getPackageName(), userId)) {
                         Slogf.i(TAG, String.format(
@@ -1381,6 +1396,7 @@ final class DevicePolicyEngine {
         });
     }
 
+    @GuardedBy("mLock")
     private <V> void enforcePolicyOnUserLocked(int userId, PolicyState<V> policyState) {
         if (!policyState.getPolicyDefinition().isInheritable()) {
             return;
@@ -1438,11 +1454,12 @@ final class DevicePolicyEngine {
             }
 
             for (int i = 0; i < mLocalPolicies.size(); i++) {
-                Set<PolicyKey> localPolicies = new HashSet<>(
-                        mLocalPolicies.get(mLocalPolicies.keyAt(i)).keySet());
+                // New users are potentially added to mLocalPolicies during the loop body
+                // (see b/374511959).
+                int userId = mLocalPolicies.keyAt(i);
+                Set<PolicyKey> localPolicies = new HashSet<>(mLocalPolicies.get(userId).keySet());
                 for (PolicyKey policy : localPolicies) {
-                    PolicyState<?> policyState = mLocalPolicies.get(
-                            mLocalPolicies.keyAt(i)).get(policy);
+                    PolicyState<?> policyState = mLocalPolicies.get(userId).get(policy);
                     if (policyState.getPoliciesSetByAdmins().containsKey(admin)) {
                         removeLocalPolicy(
                                 policyState.getPolicyDefinition(), admin, mLocalPolicies.keyAt(i));
@@ -1512,6 +1529,7 @@ final class DevicePolicyEngine {
      * Called after an admin policy has been added to start binding to the admin if a connection
      * was not already established.
      */
+    @GuardedBy("mLock")
     private void updateDeviceAdminServiceOnPolicyAddLocked(@NonNull EnforcingAdmin enforcingAdmin) {
         int userId = enforcingAdmin.getUserId();
 
@@ -1540,6 +1558,7 @@ final class DevicePolicyEngine {
      * Called after an admin policy has been removed to stop binding to the admin if they no longer
      * have any policies set.
      */
+    @GuardedBy("mLock")
     private void updateDeviceAdminServiceOnPolicyRemoveLocked(
             @NonNull EnforcingAdmin enforcingAdmin) {
         if (doesAdminHavePoliciesLocked(enforcingAdmin)) {
@@ -1565,6 +1584,7 @@ final class DevicePolicyEngine {
                 /* actionForLog= */ "policy-removed");
     }
 
+    @GuardedBy("mLock")
     private boolean doesAdminHavePoliciesLocked(@NonNull EnforcingAdmin enforcingAdmin) {
         for (PolicyKey policy : mGlobalPolicies.keySet()) {
             PolicyState<?> policyState = mGlobalPolicies.get(policy);
@@ -1739,25 +1759,23 @@ final class DevicePolicyEngine {
                 pw.println();
             }
             pw.decreaseIndent();
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                pw.println();
+            pw.println();
 
-                pw.println("Default admin policy size limit: " + DEFAULT_POLICY_SIZE_LIMIT);
-                pw.println("Current admin policy size limit: " + mPolicySizeLimit);
-                pw.println("Admin Policies size: ");
-                for (int i = 0; i < mAdminPolicySize.size(); i++) {
-                    int userId = mAdminPolicySize.keyAt(i);
-                    pw.printf("User %d:\n", userId);
-                    pw.increaseIndent();
-                    for (EnforcingAdmin admin : mAdminPolicySize.get(userId).keySet()) {
-                        pw.printf("Admin : " + admin + " : " + mAdminPolicySize.get(userId).get(
-                                admin));
-                        pw.println();
-                    }
-                    pw.decreaseIndent();
+            pw.println("Default admin policy size limit: " + DEFAULT_POLICY_SIZE_LIMIT);
+            pw.println("Current admin policy size limit: " + mPolicySizeLimit);
+            pw.println("Admin Policies size: ");
+            for (int i = 0; i < mAdminPolicySize.size(); i++) {
+                int userId = mAdminPolicySize.keyAt(i);
+                pw.printf("User %d:\n", userId);
+                pw.increaseIndent();
+                for (EnforcingAdmin admin : mAdminPolicySize.get(userId).keySet()) {
+                    pw.printf("Admin : " + admin + " : " + mAdminPolicySize.get(userId).get(
+                            admin));
+                    pw.println();
                 }
                 pw.decreaseIndent();
             }
+            pw.decreaseIndent();
         }
     }
 
@@ -1790,6 +1808,7 @@ final class DevicePolicyEngine {
         }
     }
 
+    @GuardedBy("mLock")
     <V> void reapplyAllPoliciesOnBootLocked() {
         for (PolicyKey policy : mGlobalPolicies.keySet()) {
             PolicyState<?> policyState = mGlobalPolicies.get(policy);
@@ -1874,7 +1893,7 @@ final class DevicePolicyEngine {
      * of the resolved policy. This method controls which policies should use this special logic.
      */
     private <V> boolean shouldApplyPackageSetUnionPolicyHack(PolicyDefinition<V> policy) {
-        String policyKey =  policy.getPolicyKey().getIdentifier();
+        String policyKey = policy.getPolicyKey().getIdentifier();
         return policyKey.equals(USER_CONTROL_DISABLED_PACKAGES_POLICY)
                 || policyKey.equals(PACKAGES_SUSPENDED_POLICY);
     }
@@ -1900,6 +1919,7 @@ final class DevicePolicyEngine {
         private static File getFileName() {
             return new File(Environment.getDataSystemDirectory(), DEVICE_POLICIES_XML);
         }
+
         private DevicePoliciesReaderWriter() {
             mFile = getFileName();
         }
@@ -1923,6 +1943,7 @@ final class DevicePolicyEngine {
             }
         }
 
+        @GuardedBy("mLock")
         void writeToFileLocked() {
             Log.d(TAG, "Writing to " + mFile);
 
@@ -1935,7 +1956,7 @@ final class DevicePolicyEngine {
                 out.startDocument(null, true);
 
                 // Actual content
-                writeInner(out);
+                writeInnerLocked(out);
 
                 out.endDocument();
                 out.flush();
@@ -1952,16 +1973,19 @@ final class DevicePolicyEngine {
             }
         }
 
+        @GuardedBy("mLock")
         // TODO(b/256846294): Add versioning to read/write
-        void writeInner(TypedXmlSerializer serializer) throws IOException {
-            writeLocalPoliciesInner(serializer);
-            writeGlobalPoliciesInner(serializer);
-            writeEnforcingAdminsInner(serializer);
-            writeEnforcingAdminSizeInner(serializer);
-            writeMaxPolicySizeInner(serializer);
+        void writeInnerLocked(TypedXmlSerializer serializer) throws IOException {
+            writeLocalPoliciesInnerLocked(serializer);
+            writeGlobalPoliciesInnerLocked(serializer);
+            writeEnforcingAdminsInnerLocked(serializer);
+            writeEnforcingAdminSizeInnerLocked(serializer);
+            writeMaxPolicySizeInnerLocked(serializer);
         }
 
-        private void writeLocalPoliciesInner(TypedXmlSerializer serializer) throws IOException {
+        @GuardedBy("mLock")
+        private void writeLocalPoliciesInnerLocked(TypedXmlSerializer serializer)
+                throws IOException {
             if (mLocalPolicies != null) {
                 for (int i = 0; i < mLocalPolicies.size(); i++) {
                     int userId = mLocalPolicies.keyAt(i);
@@ -1985,7 +2009,9 @@ final class DevicePolicyEngine {
             }
         }
 
-        private void writeGlobalPoliciesInner(TypedXmlSerializer serializer) throws IOException {
+        @GuardedBy("mLock")
+        private void writeGlobalPoliciesInnerLocked(TypedXmlSerializer serializer)
+                throws IOException {
             if (mGlobalPolicies != null) {
                 for (Map.Entry<PolicyKey, PolicyState<?>> policy : mGlobalPolicies.entrySet()) {
                     serializer.startTag(/* namespace= */ null, TAG_GLOBAL_POLICY_ENTRY);
@@ -2003,7 +2029,9 @@ final class DevicePolicyEngine {
             }
         }
 
-        private void writeEnforcingAdminsInner(TypedXmlSerializer serializer) throws IOException {
+        @GuardedBy("mLock")
+        private void writeEnforcingAdminsInnerLocked(TypedXmlSerializer serializer)
+                throws IOException {
             if (mEnforcingAdmins != null) {
                 for (int i = 0; i < mEnforcingAdmins.size(); i++) {
                     int userId = mEnforcingAdmins.keyAt(i);
@@ -2016,41 +2044,39 @@ final class DevicePolicyEngine {
             }
         }
 
-        private void writeEnforcingAdminSizeInner(TypedXmlSerializer serializer)
+        @GuardedBy("mLock")
+        private void writeEnforcingAdminSizeInnerLocked(TypedXmlSerializer serializer)
                 throws IOException {
-            if (Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                if (mAdminPolicySize != null) {
-                    for (int i = 0; i < mAdminPolicySize.size(); i++) {
-                        int userId = mAdminPolicySize.keyAt(i);
-                        for (EnforcingAdmin admin : mAdminPolicySize.get(
-                                userId).keySet()) {
-                            serializer.startTag(/* namespace= */ null,
-                                    TAG_ENFORCING_ADMIN_AND_SIZE);
-                            serializer.startTag(/* namespace= */ null, TAG_ENFORCING_ADMIN);
-                            admin.saveToXml(serializer);
-                            serializer.endTag(/* namespace= */ null, TAG_ENFORCING_ADMIN);
-                            serializer.startTag(/* namespace= */ null, TAG_POLICY_SUM_SIZE);
-                            serializer.attributeInt(/* namespace= */ null, ATTR_POLICY_SUM_SIZE,
-                                    mAdminPolicySize.get(userId).get(admin));
-                            serializer.endTag(/* namespace= */ null, TAG_POLICY_SUM_SIZE);
-                            serializer.endTag(/* namespace= */ null, TAG_ENFORCING_ADMIN_AND_SIZE);
-                        }
+            if (mAdminPolicySize != null) {
+                for (int i = 0; i < mAdminPolicySize.size(); i++) {
+                    int userId = mAdminPolicySize.keyAt(i);
+                    for (EnforcingAdmin admin : mAdminPolicySize.get(
+                            userId).keySet()) {
+                        serializer.startTag(/* namespace= */ null,
+                                TAG_ENFORCING_ADMIN_AND_SIZE);
+                        serializer.startTag(/* namespace= */ null, TAG_ENFORCING_ADMIN);
+                        admin.saveToXml(serializer);
+                        serializer.endTag(/* namespace= */ null, TAG_ENFORCING_ADMIN);
+                        serializer.startTag(/* namespace= */ null, TAG_POLICY_SUM_SIZE);
+                        serializer.attributeInt(/* namespace= */ null, ATTR_POLICY_SUM_SIZE,
+                                mAdminPolicySize.get(userId).get(admin));
+                        serializer.endTag(/* namespace= */ null, TAG_POLICY_SUM_SIZE);
+                        serializer.endTag(/* namespace= */ null, TAG_ENFORCING_ADMIN_AND_SIZE);
                     }
                 }
             }
         }
 
-        private void writeMaxPolicySizeInner(TypedXmlSerializer serializer)
+        @GuardedBy("mLock")
+        private void writeMaxPolicySizeInnerLocked(TypedXmlSerializer serializer)
                 throws IOException {
-            if (!Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                return;
-            }
             serializer.startTag(/* namespace= */ null, TAG_MAX_POLICY_SIZE_LIMIT);
             serializer.attributeInt(
                     /* namespace= */ null, ATTR_POLICY_SUM_SIZE, mPolicySizeLimit);
             serializer.endTag(/* namespace= */ null, TAG_MAX_POLICY_SIZE_LIMIT);
         }
 
+        @GuardedBy("mLock")
         void readFromFileLocked() {
             if (!mFile.exists()) {
                 Log.d(TAG, "" + mFile + " doesn't exist");
@@ -2064,7 +2090,7 @@ final class DevicePolicyEngine {
                 input = f.openRead();
                 TypedXmlPullParser parser = Xml.resolvePullParser(input);
 
-                readInner(parser);
+                readInnerLocked(parser);
 
             } catch (XmlPullParserException | IOException | ClassNotFoundException e) {
                 Slogf.wtf(TAG, "Error parsing resources file", e);
@@ -2073,17 +2099,22 @@ final class DevicePolicyEngine {
             }
         }
 
-        private void readInner(TypedXmlPullParser parser)
+        @GuardedBy("mLock")
+        private void readInnerLocked(TypedXmlPullParser parser)
                 throws IOException, XmlPullParserException, ClassNotFoundException {
             int outerDepth = parser.getDepth();
             while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                 String tag = parser.getName();
                 switch (tag) {
                     case TAG_LOCAL_POLICY_ENTRY:
-                        readLocalPoliciesInner(parser);
+                        int userId = parser.getAttributeInt(/* namespace= */ null, ATTR_USER_ID);
+                        if (!mLocalPolicies.contains(userId)) {
+                            mLocalPolicies.put(userId, new HashMap<>());
+                        }
+                        readPoliciesInner(parser, mLocalPolicies.get(userId));
                         break;
                     case TAG_GLOBAL_POLICY_ENTRY:
-                        readGlobalPoliciesInner(parser);
+                        readPoliciesInner(parser, mGlobalPolicies);
                         break;
                     case TAG_ENFORCING_ADMINS_ENTRY:
                         readEnforcingAdminsInner(parser);
@@ -2100,64 +2131,41 @@ final class DevicePolicyEngine {
             }
         }
 
-        private void readLocalPoliciesInner(TypedXmlPullParser parser)
-                throws XmlPullParserException, IOException {
-            int userId = parser.getAttributeInt(/* namespace= */ null, ATTR_USER_ID);
-            PolicyKey policyKey = null;
-            PolicyState<?> policyState = null;
-            int outerDepth = parser.getDepth();
-            while (XmlUtils.nextElementWithin(parser, outerDepth)) {
-                String tag = parser.getName();
-                switch (tag) {
-                    case TAG_POLICY_KEY_ENTRY:
-                        policyKey = PolicyDefinition.readPolicyKeyFromXml(parser);
-                        break;
-                    case TAG_POLICY_STATE_ENTRY:
-                        policyState = PolicyState.readFromXml(parser);
-                        break;
-                    default:
-                        Slogf.wtf(TAG, "Unknown tag for local policy entry" + tag);
-                }
-            }
-
-            if (policyKey != null && policyState != null) {
-                if (!mLocalPolicies.contains(userId)) {
-                    mLocalPolicies.put(userId, new HashMap<>());
-                }
-                mLocalPolicies.get(userId).put(policyKey, policyState);
-            } else {
-                Slogf.wtf(TAG, "Error parsing local policy, policyKey is "
-                        + (policyKey == null ? "null" : policyKey) + ", and policyState is "
-                        + (policyState == null ? "null" : policyState) + ".");
-            }
-        }
-
-        private void readGlobalPoliciesInner(TypedXmlPullParser parser)
+        private static void readPoliciesInner(
+                TypedXmlPullParser parser, Map<PolicyKey, PolicyState<?>> policyStateMap)
                 throws IOException, XmlPullParserException {
             PolicyKey policyKey = null;
+            PolicyDefinition<?> policyDefinition = null;
             PolicyState<?> policyState = null;
             int outerDepth = parser.getDepth();
             while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                 String tag = parser.getName();
                 switch (tag) {
                     case TAG_POLICY_KEY_ENTRY:
-                        policyKey = PolicyDefinition.readPolicyKeyFromXml(parser);
+                        policyDefinition = PolicyDefinition.readFromXml(parser);
+                        if (policyDefinition != null) {
+                            policyKey = policyDefinition.getPolicyKey();
+                        }
                         break;
                     case TAG_POLICY_STATE_ENTRY:
-                        policyState = PolicyState.readFromXml(parser);
+                        if (policyDefinition == null) {
+                            Slogf.w(TAG, "Skipping policy state - unknown policy definition");
+                        } else {
+                            policyState = PolicyState.readFromXml(policyDefinition, parser);
+                        }
                         break;
                     default:
-                        Slogf.wtf(TAG, "Unknown tag for local policy entry" + tag);
+                        Slogf.wtf(TAG, "Unknown tag for policy entry" + tag);
                 }
             }
 
-            if (policyKey != null && policyState != null) {
-                mGlobalPolicies.put(policyKey, policyState);
-            } else {
-                Slogf.wtf(TAG, "Error parsing global policy, policyKey is "
-                        + (policyKey == null ? "null" : policyKey) + ", and policyState is "
-                        + (policyState == null ? "null" : policyState) + ".");
+            if (policyKey == null || policyState == null) {
+                Slogf.wtf(TAG, "Error parsing policy, policyKey is %s, and policyState is %s.",
+                        policyKey, policyState);
+                return;
             }
+
+            policyStateMap.put(policyKey, policyState);
         }
 
         private void readEnforcingAdminsInner(TypedXmlPullParser parser)
@@ -2207,9 +2215,6 @@ final class DevicePolicyEngine {
 
         private void readMaxPolicySizeInner(TypedXmlPullParser parser)
                 throws XmlPullParserException, IOException {
-            if (!Flags.devicePolicySizeTrackingInternalBugFixEnabled()) {
-                return;
-            }
             mPolicySizeLimit = parser.getAttributeInt(/* namespace= */ null, ATTR_POLICY_SUM_SIZE);
         }
     }

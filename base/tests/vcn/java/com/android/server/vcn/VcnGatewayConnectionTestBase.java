@@ -24,8 +24,8 @@ import static com.android.server.vcn.VcnTestUtils.setupIpSecManager;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
@@ -222,9 +222,6 @@ public class VcnGatewayConnectionTestBase {
         doReturn(mTestLooper.getLooper()).when(mVcnContext).getLooper();
         doReturn(mVcnNetworkProvider).when(mVcnContext).getVcnNetworkProvider();
         doReturn(mFeatureFlags).when(mVcnContext).getFeatureFlags();
-        doReturn(true).when(mVcnContext).isFlagSafeModeTimeoutConfigEnabled();
-        doReturn(true).when(mVcnContext).isFlagIpSecTransformStateEnabled();
-        doReturn(true).when(mVcnContext).isFlagNetworkMetricMonitorEnabled();
 
         doReturn(mUnderlyingNetworkController)
                 .when(mDeps)

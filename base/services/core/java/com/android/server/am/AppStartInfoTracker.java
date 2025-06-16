@@ -16,13 +16,13 @@
 
 package com.android.server.am;
 
-import static android.app.ApplicationStartInfo.START_TIMESTAMP_LAUNCH;
 import static android.os.Process.THREAD_PRIORITY_BACKGROUND;
 
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NAME;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.ApplicationStartInfo;
 import android.app.Flags;
 import android.app.IApplicationStartInfoCompleteListener;
@@ -34,6 +34,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.icu.text.SimpleDateFormat;
 import android.os.Binder;
+import android.os.Debug;
 import android.os.FileUtils;
 import android.os.Handler;
 import android.os.IBinder.DeathRecipient;
@@ -51,15 +52,23 @@ import android.util.proto.WireTypeMismatchException;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.ProcessMap;
+import com.android.internal.os.Clock;
+import com.android.internal.os.MonotonicClock;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.IoThread;
 import com.android.server.ServiceThread;
 import com.android.server.SystemServiceManager;
 import com.android.server.wm.WindowProcessController;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -89,6 +98,9 @@ public final class AppStartInfoTracker {
 
     @VisibleForTesting static final int APP_START_INFO_HISTORY_LIST_SIZE = 16;
 
+    @VisibleForTesting
+    static final long APP_START_INFO_HISTORY_LENGTH_MS = TimeUnit.DAYS.toMillis(14);
+
     /**
      * The max number of records that can be present in {@link mInProgressRecords}.
      *
@@ -106,6 +118,20 @@ public final class AppStartInfoTracker {
     @VisibleForTesting final Object mLock = new Object();
 
     @VisibleForTesting boolean mEnabled = false;
+
+    /**
+     * Monotonic clock which does not reset on reboot.
+     *
+     * Time for offset is persisted along with records, see {@link #persistProcessStartInfo}.
+     * This does not currently follow the recommendation of {@link MonotonicClock} to persist on
+     * shutdown as it's ok in this case to lose any time change past the last persist as records
+     * added since then will be lost as well. Since this time is used for cleanup as well, the
+     * potential old offset may result in the cleanup window being extended slightly beyond the
+     * targeted 14 days.
+     *
+     * TODO: b/402794215 - Persist on shutdown once persist performance is sufficiently improved.
+     */
+    @VisibleForTesting MonotonicClock mMonotonicClock = null;
 
     /** Initialized in {@link #init} and read-only after that. */
     @VisibleForTesting ActivityManagerService mService;
@@ -203,6 +229,15 @@ public final class AppStartInfoTracker {
         IoThread.getHandler().post(() -> {
             loadExistingProcessStartInfo();
         });
+
+        if (mMonotonicClock == null) {
+            // This should only happen if there are no persisted records, or if the records were
+            // persisted by a version without the monotonic clock. Either way, create a new clock
+            // with no offset. In the case of records with no monotonic time the value will default
+            // to 0 and all new records will correctly end up in front of them.
+            mMonotonicClock = new MonotonicClock(Clock.SYSTEM_CLOCK.elapsedRealtime(),
+                    Clock.SYSTEM_CLOCK);
+        }
     }
 
     /**
@@ -259,16 +294,24 @@ public final class AppStartInfoTracker {
         mTemporaryInProgressIndexes.clear();
     }
 
-    void onIntentStarted(@NonNull Intent intent, long timestampNanos) {
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
+    void onActivityIntentStarted(@NonNull Intent intent, long timestampNanos) {
         synchronized (mLock) {
             if (!mEnabled) {
                 return;
             }
-            ApplicationStartInfo start = new ApplicationStartInfo();
+            ApplicationStartInfo start = new ApplicationStartInfo(getMonotonicTimeMs());
             start.setStartupState(ApplicationStartInfo.STARTUP_STATE_STARTED);
             start.setIntent(intent);
             start.setStartType(ApplicationStartInfo.START_TYPE_UNSET);
             start.addStartupTimestamp(ApplicationStartInfo.START_TIMESTAMP_LAUNCH, timestampNanos);
+
+            if (android.app.Flags.appStartInfoComponent()) {
+                start.setStartComponent(ApplicationStartInfo.START_COMPONENT_ACTIVITY);
+            }
 
             // TODO: handle possible alarm activity start.
             if (intent != null && intent.getCategories() != null
@@ -282,7 +325,11 @@ public final class AppStartInfoTracker {
         }
     }
 
-    void onIntentFailed(long id) {
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
+    void onActivityIntentFailed(long id) {
         synchronized (mLock) {
             if (!mEnabled) {
                 return;
@@ -301,6 +348,10 @@ public final class AppStartInfoTracker {
         }
     }
 
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
     void onActivityLaunched(long id, ComponentName name, long temperature, ProcessRecord app) {
         synchronized (mLock) {
             if (!mEnabled) {
@@ -328,6 +379,10 @@ public final class AppStartInfoTracker {
         }
     }
 
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
     void onActivityLaunchCancelled(long id) {
         synchronized (mLock) {
             if (!mEnabled) {
@@ -347,6 +402,10 @@ public final class AppStartInfoTracker {
         }
     }
 
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
     void onActivityLaunchFinished(long id, ComponentName name, long timestampNanos,
             int launchMode) {
         synchronized (mLock) {
@@ -370,23 +429,29 @@ public final class AppStartInfoTracker {
         }
     }
 
-    void onReportFullyDrawn(long id, long timestampNanos) {
+    /**
+     * Should only be called for Activity launch sequences from an instance of
+     * {@link ActivityMetricsLaunchObserver}.
+     */
+    @Nullable
+    ApplicationStartInfo onActivityReportFullyDrawn(long id, long timestampNanos) {
         synchronized (mLock) {
             if (!mEnabled) {
-                return;
+                return null;
             }
             int index = mInProgressRecords.indexOfKey(id);
             if (index < 0) {
-                return;
+                return null;
             }
             ApplicationStartInfo info = mInProgressRecords.valueAt(index);
             if (info == null) {
                 mInProgressRecords.removeAt(index);
-                return;
+                return null;
             }
             info.addStartupTimestamp(ApplicationStartInfo.START_TIMESTAMP_FULLY_DRAWN,
                     timestampNanos);
             mInProgressRecords.removeAt(index);
+            return info;
         }
     }
 
@@ -396,12 +461,16 @@ public final class AppStartInfoTracker {
             if (!mEnabled) {
                 return;
             }
-            ApplicationStartInfo start = new ApplicationStartInfo();
+            ApplicationStartInfo start = new ApplicationStartInfo(getMonotonicTimeMs());
             addBaseFieldsFromProcessRecord(start, app);
             start.setStartupState(ApplicationStartInfo.STARTUP_STATE_STARTED);
             start.addStartupTimestamp(
                     ApplicationStartInfo.START_TIMESTAMP_LAUNCH, startTimeNs);
             start.setStartType(ApplicationStartInfo.START_TYPE_COLD);
+
+            if (android.app.Flags.appStartInfoComponent()) {
+                start.setStartComponent(ApplicationStartInfo.START_COMPONENT_SERVICE);
+            }
 
             // TODO: handle possible alarm service start.
             start.setReason(serviceRecord.permission != null
@@ -422,7 +491,7 @@ public final class AppStartInfoTracker {
             if (!mEnabled) {
                 return;
             }
-            ApplicationStartInfo start = new ApplicationStartInfo();
+            ApplicationStartInfo start = new ApplicationStartInfo(getMonotonicTimeMs());
             addBaseFieldsFromProcessRecord(start, app);
             start.setStartupState(ApplicationStartInfo.STARTUP_STATE_STARTED);
             start.addStartupTimestamp(
@@ -434,6 +503,11 @@ public final class AppStartInfoTracker {
                 start.setReason(ApplicationStartInfo.START_REASON_BROADCAST);
             }
             start.setIntent(intent);
+
+            if (android.app.Flags.appStartInfoComponent()) {
+                start.setStartComponent(ApplicationStartInfo.START_COMPONENT_BROADCAST);
+            }
+
             addStartInfoLocked(start);
         }
     }
@@ -444,13 +518,18 @@ public final class AppStartInfoTracker {
             if (!mEnabled) {
                 return;
             }
-            ApplicationStartInfo start = new ApplicationStartInfo();
+            ApplicationStartInfo start = new ApplicationStartInfo(getMonotonicTimeMs());
             addBaseFieldsFromProcessRecord(start, app);
             start.setStartupState(ApplicationStartInfo.STARTUP_STATE_STARTED);
             start.addStartupTimestamp(
                     ApplicationStartInfo.START_TIMESTAMP_LAUNCH, startTimeNs);
             start.setStartType(ApplicationStartInfo.START_TYPE_COLD);
             start.setReason(ApplicationStartInfo.START_REASON_CONTENT_PROVIDER);
+
+            if (android.app.Flags.appStartInfoComponent()) {
+                start.setStartComponent(ApplicationStartInfo.START_COMPONENT_CONTENT_PROVIDER);
+            }
+
             addStartInfoLocked(start);
         }
     }
@@ -461,7 +540,7 @@ public final class AppStartInfoTracker {
             if (!mEnabled) {
                 return;
             }
-            ApplicationStartInfo start = new ApplicationStartInfo();
+            ApplicationStartInfo start = new ApplicationStartInfo(getMonotonicTimeMs());
             addBaseFieldsFromProcessRecord(start, app);
             start.setStartupState(ApplicationStartInfo.STARTUP_STATE_STARTED);
             start.addStartupTimestamp(
@@ -469,12 +548,21 @@ public final class AppStartInfoTracker {
             start.setStartType(cold ? ApplicationStartInfo.START_TYPE_COLD
                     : ApplicationStartInfo.START_TYPE_WARM);
             start.setReason(ApplicationStartInfo.START_REASON_BACKUP);
+
+            if (android.app.Flags.appStartInfoComponent()) {
+                start.setStartComponent(ApplicationStartInfo.START_COMPONENT_OTHER);
+            }
+
             addStartInfoLocked(start);
         }
     }
 
     private void addBaseFieldsFromProcessRecord(ApplicationStartInfo start, ProcessRecord app) {
         if (app == null) {
+            if (DEBUG) {
+                Slog.w(TAG,
+                        "app is null in addBaseFieldsFromProcessRecord: " + Debug.getCallers(4));
+            }
             return;
         }
         final int definingUid = app.getHostingRecord() != null
@@ -559,12 +647,20 @@ public final class AppStartInfoTracker {
         }
 
         final ApplicationStartInfo info = new ApplicationStartInfo(raw);
+        int uid = raw.getRealUid();
 
-        AppStartInfoContainer container = mData.get(raw.getPackageName(), raw.getRealUid());
+        // Isolated process starts won't be reasonably accessible if stored by their uid, don't
+        // store them.
+        if (com.android.server.am.Flags.appStartInfoIsolatedProcess()
+                && UserHandle.isIsolated(uid)) {
+            return null;
+        }
+
+        AppStartInfoContainer container = mData.get(raw.getPackageName(), uid);
         if (container == null) {
             container = new AppStartInfoContainer(mAppStartInfoHistoryListSize);
-            container.mUid = info.getRealUid();
-            mData.put(raw.getPackageName(), raw.getRealUid(), container);
+            container.mUid = uid;
+            mData.put(raw.getPackageName(), uid, container);
         }
         container.addStartInfoLocked(info);
 
@@ -632,7 +728,8 @@ public final class AppStartInfoTracker {
 
                     Collections.sort(
                             list, (a, b) ->
-                            Long.compare(getStartTimestamp(b), getStartTimestamp(a)));
+                            Long.compare(b.getMonotonicCreationTimeMs(),
+                                    a.getMonotonicCreationTimeMs()));
                     int size = list.size();
                     if (maxNum > 0) {
                         size = Math.min(size, maxNum);
@@ -898,6 +995,10 @@ public final class AppStartInfoTracker {
                     case (int) AppsStartInfoProto.PACKAGES:
                         loadPackagesFromProto(proto, next);
                         break;
+                    case (int) AppsStartInfoProto.MONOTONIC_TIME:
+                        long monotonicTime = proto.readLong(AppsStartInfoProto.MONOTONIC_TIME);
+                        mMonotonicClock = new MonotonicClock(monotonicTime, Clock.SYSTEM_CLOCK);
+                        break;
                 }
             }
         } catch (IOException | IllegalArgumentException | WireTypeMismatchException
@@ -918,6 +1019,12 @@ public final class AppStartInfoTracker {
             throws IOException, WireTypeMismatchException, ClassNotFoundException {
         long token = proto.start(fieldId);
         String pkgName = "";
+
+        // Create objects for reuse.
+        ByteArrayInputStream byteArrayInputStream = null;
+        ObjectInputStream objectInputStream = null;
+        TypedXmlPullParser typedXmlPullParser = null;
+
         for (int next = proto.nextField();
                 next != ProtoInputStream.NO_MORE_FIELDS;
                 next = proto.nextField()) {
@@ -928,7 +1035,19 @@ public final class AppStartInfoTracker {
                 case (int) AppsStartInfoProto.Package.USERS:
                     AppStartInfoContainer container =
                             new AppStartInfoContainer(mAppStartInfoHistoryListSize);
-                    int uid = container.readFromProto(proto, AppsStartInfoProto.Package.USERS);
+                    int uid = container.readFromProto(proto, AppsStartInfoProto.Package.USERS,
+                            pkgName, byteArrayInputStream, objectInputStream, typedXmlPullParser);
+
+                    // If the isolated process flag is enabled and the uid is that of an isolated
+                    // process, then break early so that the container will not be added to mData.
+                    // This is expected only as a one time mitigation, records added after this flag
+                    // is enabled should always return false for isIsolated and thereby always
+                    // continue on.
+                    if (com.android.server.am.Flags.appStartInfoIsolatedProcess()
+                            && UserHandle.isIsolated(uid)) {
+                        break;
+                    }
+
                     synchronized (mLock) {
                         mData.put(pkgName, uid, container);
                     }
@@ -952,6 +1071,12 @@ public final class AppStartInfoTracker {
             out = af.startWrite();
             ProtoOutputStream proto = new ProtoOutputStream(out);
             proto.write(AppsStartInfoProto.LAST_UPDATE_TIMESTAMP, now);
+
+            // Create objects for reuse.
+            ByteArrayOutputStream byteArrayOutputStream = null;
+            ObjectOutputStream objectOutputStream = null;
+            TypedXmlSerializer typedXmlSerializer = null;
+
             synchronized (mLock) {
                 succeeded = forEachPackageLocked(
                         (packageName, records) -> {
@@ -960,8 +1085,9 @@ public final class AppStartInfoTracker {
                             int uidArraySize = records.size();
                             for (int j = 0; j < uidArraySize; j++) {
                                 try {
-                                    records.valueAt(j)
-                                            .writeToProto(proto, AppsStartInfoProto.Package.USERS);
+                                    records.valueAt(j).writeToProto(proto,
+                                            AppsStartInfoProto.Package.USERS, byteArrayOutputStream,
+                                            objectOutputStream, typedXmlSerializer);
                                 } catch (IOException e) {
                                     Slog.w(TAG, "Unable to write app start info into persistent"
                                             + "storage: " + e);
@@ -979,6 +1105,7 @@ public final class AppStartInfoTracker {
                     mLastAppStartInfoPersistTimestamp = now;
                 }
             }
+            proto.write(AppsStartInfoProto.MONOTONIC_TIME, getMonotonicTimeMs());
             if (succeeded) {
                 proto.flush();
                 af.finishWrite(out);
@@ -1099,18 +1226,21 @@ public final class AppStartInfoTracker {
         }
     }
 
-    /** Convenience method to obtain timestamp of beginning of start.*/
-    private static long getStartTimestamp(ApplicationStartInfo startInfo) {
-        if (startInfo.getStartupTimestamps() == null
-                    || !startInfo.getStartupTimestamps().containsKey(START_TIMESTAMP_LAUNCH)) {
-            return -1;
+    /**
+     * Monotonic time that doesn't change with reboot or device time change for ordering records.
+     */
+    @VisibleForTesting
+    public long getMonotonicTimeMs() {
+        if (mMonotonicClock == null) {
+            // This should never happen. Return 0 to not interfere with past or future records.
+            return 0;
         }
-        return startInfo.getStartupTimestamps().get(START_TIMESTAMP_LAUNCH);
+        return mMonotonicClock.monotonicTime();
     }
 
     /** A container class of (@link android.app.ApplicationStartInfo) */
     final class AppStartInfoContainer {
-        private ArrayList<ApplicationStartInfo> mInfos; // Always kept sorted by first timestamp.
+        private ArrayList<ApplicationStartInfo> mInfos; // Always kept sorted by monotonic time.
         private int mMaxCapacity;
         private int mUid;
         private boolean mMonitoringModeEnabled = false;
@@ -1141,9 +1271,12 @@ public final class AppStartInfoTracker {
                 return;
             }
 
-            // Sort records so we can remove the least recent ones.
-            Collections.sort(mInfos, (a, b) ->
-                    Long.compare(getStartTimestamp(b), getStartTimestamp(a)));
+            if (!android.app.Flags.appStartInfoKeepRecordsSorted()) {
+                // Sort records so we can remove the least recent ones.
+                Collections.sort(mInfos, (a, b) ->
+                        Long.compare(b.getMonotonicCreationTimeMs(),
+                                a.getMonotonicCreationTimeMs()));
+            }
 
             // Remove records and trim list object back to size.
             mInfos.subList(0, mInfos.size() - getMaxCapacity()).clear();
@@ -1158,25 +1291,34 @@ public final class AppStartInfoTracker {
 
         @GuardedBy("mLock")
         void addStartInfoLocked(ApplicationStartInfo info) {
-            int size = mInfos.size();
-            if (size >= getMaxCapacity()) {
-                // Remove oldest record if size is over max capacity.
-                int oldestIndex = -1;
-                long oldestTimeStamp = Long.MAX_VALUE;
-                for (int i = 0; i < size; i++) {
-                    ApplicationStartInfo startInfo = mInfos.get(i);
-                    if (getStartTimestamp(startInfo) < oldestTimeStamp) {
-                        oldestTimeStamp = getStartTimestamp(startInfo);
-                        oldestIndex = i;
+            if (android.app.Flags.appStartInfoKeepRecordsSorted()) {
+                while (mInfos.size() >= getMaxCapacity()) {
+                    // Expected to execute at most once.
+                    mInfos.removeLast();
+                }
+                mInfos.addFirst(info);
+            } else {
+                int size = mInfos.size();
+                if (size >= getMaxCapacity()) {
+                    // Remove oldest record if size is over max capacity.
+                    int oldestIndex = -1;
+                    long oldestTimeStamp = Long.MAX_VALUE;
+                    for (int i = 0; i < size; i++) {
+                        ApplicationStartInfo startInfo = mInfos.get(i);
+                        if (startInfo.getMonotonicCreationTimeMs() < oldestTimeStamp) {
+                            oldestTimeStamp = startInfo.getMonotonicCreationTimeMs();
+                            oldestIndex = i;
+                        }
+                    }
+                    if (oldestIndex >= 0) {
+                        mInfos.remove(oldestIndex);
                     }
                 }
-                if (oldestIndex >= 0) {
-                    mInfos.remove(oldestIndex);
-                }
+                mInfos.add(info);
+                Collections.sort(mInfos, (a, b) ->
+                        Long.compare(b.getMonotonicCreationTimeMs(),
+                                a.getMonotonicCreationTimeMs()));
             }
-            mInfos.add(info);
-            Collections.sort(mInfos, (a, b) ->
-                    Long.compare(getStartTimestamp(b), getStartTimestamp(a)));
         }
 
         /**
@@ -1314,19 +1456,39 @@ public final class AppStartInfoTracker {
         }
 
         @GuardedBy("mLock")
-        void writeToProto(ProtoOutputStream proto, long fieldId) throws IOException {
+        void writeToProto(ProtoOutputStream proto, long fieldId,
+                ByteArrayOutputStream byteArrayOutputStream, ObjectOutputStream objectOutputStream,
+                TypedXmlSerializer typedXmlSerializer) throws IOException {
             long token = proto.start(fieldId);
             proto.write(AppsStartInfoProto.Package.User.UID, mUid);
             int size = mInfos.size();
-            for (int i = 0; i < size; i++) {
-                mInfos.get(i)
-                        .writeToProto(proto, AppsStartInfoProto.Package.User.APP_START_INFO);
+            if (android.app.Flags.appStartInfoCleanupOldRecords()) {
+                long removeOlderThan = getMonotonicTimeMs() - APP_START_INFO_HISTORY_LENGTH_MS;
+                // Iterate backwards so we can remove old records as we go.
+                for (int i = size - 1; i >= 0; i--) {
+                    if (mInfos.get(i).getMonotonicCreationTimeMs() < removeOlderThan) {
+                        // Remove the record.
+                        mInfos.remove(i);
+                    } else {
+                        mInfos.get(i).writeToProto(
+                                proto, AppsStartInfoProto.Package.User.APP_START_INFO,
+                                byteArrayOutputStream, objectOutputStream, typedXmlSerializer);
+                    }
+                }
+            } else {
+                for (int i = 0; i < size; i++) {
+                    mInfos.get(i).writeToProto(
+                            proto, AppsStartInfoProto.Package.User.APP_START_INFO,
+                            byteArrayOutputStream, objectOutputStream, typedXmlSerializer);
+                }
             }
             proto.write(AppsStartInfoProto.Package.User.MONITORING_ENABLED, mMonitoringModeEnabled);
             proto.end(token);
         }
 
-        int readFromProto(ProtoInputStream proto, long fieldId)
+        int readFromProto(ProtoInputStream proto, long fieldId, String packageName,
+                ByteArrayInputStream byteArrayInputStream, ObjectInputStream objectInputStream,
+                TypedXmlPullParser typedXmlPullParser)
                 throws IOException, WireTypeMismatchException, ClassNotFoundException {
             long token = proto.start(fieldId);
             for (int next = proto.nextField();
@@ -1337,9 +1499,19 @@ public final class AppStartInfoTracker {
                         mUid = proto.readInt(AppsStartInfoProto.Package.User.UID);
                         break;
                     case (int) AppsStartInfoProto.Package.User.APP_START_INFO:
-                        ApplicationStartInfo info = new ApplicationStartInfo();
-                        info.readFromProto(proto, AppsStartInfoProto.Package.User.APP_START_INFO);
-                        mInfos.add(info);
+                        // Create record with monotonic time 0 in case the persisted record does not
+                        // have a create time.
+                        ApplicationStartInfo info = new ApplicationStartInfo(0);
+                        info.readFromProto(proto, AppsStartInfoProto.Package.User.APP_START_INFO,
+                                byteArrayInputStream, objectInputStream, typedXmlPullParser);
+                        info.setPackageName(packageName);
+                        if (android.app.Flags.appStartInfoKeepRecordsSorted()) {
+                            // Since the writes are done from oldest to newest, each additional
+                            // record will be newer than the previous so use addFirst.
+                            mInfos.addFirst(info);
+                        } else {
+                            mInfos.add(info);
+                        }
                         break;
                     case (int) AppsStartInfoProto.Package.User.MONITORING_ENABLED:
                         mMonitoringModeEnabled = proto.readBoolean(

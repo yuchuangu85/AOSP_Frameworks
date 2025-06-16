@@ -21,17 +21,16 @@ import android.media.AudioManager
 import android.provider.Settings.Global
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.settingslib.statusbar.notification.data.model.ZenMode
-import com.android.settingslib.statusbar.notification.data.repository.updateNotificationPolicy
-import com.android.settingslib.statusbar.notification.domain.interactor.NotificationsSoundPolicyInteractor
+import com.android.settingslib.notification.data.repository.updateNotificationPolicy
+import com.android.settingslib.notification.domain.interactor.NotificationsSoundPolicyInteractor
 import com.android.settingslib.volume.shared.model.AudioStream
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.statusbar.policy.data.repository.zenModeRepository
 import com.android.systemui.testKosmos
 import com.google.common.truth.Expect
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -39,7 +38,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
@@ -52,24 +50,20 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
 
     @Before
     fun setup() {
-        with(kosmos) {
-            underTest = NotificationsSoundPolicyInteractor(notificationsSoundPolicyRepository)
-        }
+        with(kosmos) { underTest = NotificationsSoundPolicyInteractor(zenModeRepository) }
     }
 
     @Test
     fun onlyAlarmsCategory_areAlarmsAllowed_isTrue() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(ZenMode(Global.ZEN_MODE_OFF))
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_OFF)
                 val expectedByCategory =
                     NotificationManager.Policy.ALL_PRIORITY_CATEGORIES.associateWith {
                         it == NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS
                     }
                 expectedByCategory.forEach { entry ->
-                    notificationsSoundPolicyRepository.updateNotificationPolicy(
-                        priorityCategories = entry.key
-                    )
+                    zenModeRepository.updateNotificationPolicy(priorityCategories = entry.key)
 
                     val areAlarmsAllowed by collectLastValue(underTest.areAlarmsAllowed)
                     runCurrent()
@@ -84,15 +78,13 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun onlyMediaCategory_areAlarmsAllowed_isTrue() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(ZenMode(Global.ZEN_MODE_OFF))
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_OFF)
                 val expectedByCategory =
                     NotificationManager.Policy.ALL_PRIORITY_CATEGORIES.associateWith {
                         it == NotificationManager.Policy.PRIORITY_CATEGORY_MEDIA
                     }
                 expectedByCategory.forEach { entry ->
-                    notificationsSoundPolicyRepository.updateNotificationPolicy(
-                        priorityCategories = entry.key
-                    )
+                    zenModeRepository.updateNotificationPolicy(priorityCategories = entry.key)
 
                     val isMediaAllowed by collectLastValue(underTest.isMediaAllowed)
                     runCurrent()
@@ -108,7 +100,7 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
         with(kosmos) {
             testScope.runTest {
                 for (category in NotificationManager.Policy.ALL_PRIORITY_CATEGORIES) {
-                    notificationsSoundPolicyRepository.updateNotificationPolicy(
+                    zenModeRepository.updateNotificationPolicy(
                         priorityCategories = category,
                         state = NotificationManager.Policy.STATE_UNSET,
                     )
@@ -126,7 +118,7 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun allCategoriesAllowed_isRingerAllowed_isTrue() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories =
                         NotificationManager.Policy.ALL_PRIORITY_CATEGORIES.reduce { acc, value ->
                             acc or value
@@ -146,7 +138,7 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun noCategoriesAndBlocked_isRingerAllowed_isFalse() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories = 0,
                     state = NotificationManager.Policy.STATE_PRIORITY_CHANNELS_BLOCKED,
                 )
@@ -163,10 +155,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun zenModeNoInterruptions_allStreams_muted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy()
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Global.ZEN_MODE_NO_INTERRUPTIONS)
-                )
+                zenModeRepository.updateNotificationPolicy()
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_NO_INTERRUPTIONS)
 
                 for (stream in AudioStream.supportedStreamTypes) {
                     val isZenMuted by collectLastValue(underTest.isZenMuted(AudioStream(stream)))
@@ -182,8 +172,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun zenModeOff_allStreams_notMuted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy()
-                notificationsSoundPolicyRepository.updateZenMode(ZenMode(Global.ZEN_MODE_OFF))
+                zenModeRepository.updateNotificationPolicy()
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_OFF)
 
                 for (stream in AudioStream.supportedStreamTypes) {
                     val isZenMuted by collectLastValue(underTest.isZenMuted(AudioStream(stream)))
@@ -205,8 +195,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
                     AudioManager.STREAM_SYSTEM,
                 )
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateNotificationPolicy()
-                notificationsSoundPolicyRepository.updateZenMode(ZenMode(Global.ZEN_MODE_ALARMS))
+                zenModeRepository.updateNotificationPolicy()
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_ALARMS)
 
                 for (stream in AudioStream.supportedStreamTypes) {
                     val isZenMuted by collectLastValue(underTest.isZenMuted(AudioStream(stream)))
@@ -222,10 +212,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun alarms_allowed_notMuted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
-                )
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories = NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS
                 )
 
@@ -242,10 +230,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun media_allowed_notMuted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
-                )
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories = NotificationManager.Policy.PRIORITY_CATEGORY_MEDIA
                 )
 
@@ -262,10 +248,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun ringer_allowed_notificationsNotMuted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
-                )
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories =
                         NotificationManager.Policy.ALL_PRIORITY_CATEGORIES.reduce { acc, value ->
                             acc or value
@@ -288,10 +272,8 @@ class NotificationsSoundPolicyInteractorTest : SysuiTestCase() {
     fun ringer_allowed_ringNotMuted() {
         with(kosmos) {
             testScope.runTest {
-                notificationsSoundPolicyRepository.updateZenMode(
-                    ZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
-                )
-                notificationsSoundPolicyRepository.updateNotificationPolicy(
+                zenModeRepository.updateZenMode(Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS)
+                zenModeRepository.updateNotificationPolicy(
                     priorityCategories =
                         NotificationManager.Policy.ALL_PRIORITY_CATEGORIES.reduce { acc, value ->
                             acc or value

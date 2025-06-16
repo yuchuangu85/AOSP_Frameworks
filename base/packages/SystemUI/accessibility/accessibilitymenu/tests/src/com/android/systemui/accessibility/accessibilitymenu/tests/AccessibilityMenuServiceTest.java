@@ -45,7 +45,8 @@ import android.hardware.display.BrightnessInfo;
 import android.hardware.display.DisplayManager;
 import android.media.AudioManager;
 import android.os.PowerManager;
-import android.platform.uiautomator_helpers.WaitUtils;
+import android.os.UserManager;
+import android.platform.uiautomatorhelpers.WaitUtils;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.Display;
@@ -121,26 +122,8 @@ public class AccessibilityMenuServiceTest {
         sDisplayManager = context.getSystemService(DisplayManager.class);
         unlockSignal();
 
-        // Disable all a11yServices if any are active.
-        if (!sAccessibilityManager.getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_ALL_MASK).isEmpty()) {
-            Settings.Secure.putString(context.getContentResolver(),
-                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, "");
-            TestUtils.waitUntil("Failed to disable all services",
-                    TIMEOUT_SERVICE_STATUS_CHANGE_S,
-                    () -> sAccessibilityManager.getEnabledAccessibilityServiceList(
-                            AccessibilityServiceInfo.FEEDBACK_ALL_MASK).isEmpty());
-        }
+        enableA11yMenuService(context);
 
-        // Enable a11yMenu service.
-        Settings.Secure.putString(context.getContentResolver(),
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, SERVICE_NAME);
-
-        TestUtils.waitUntil("Failed to enable service",
-                TIMEOUT_SERVICE_STATUS_CHANGE_S,
-                () -> sAccessibilityManager.getEnabledAccessibilityServiceList(
-                        AccessibilityServiceInfo.FEEDBACK_ALL_MASK).stream().filter(
-                                info -> info.getId().contains(SERVICE_NAME)).count() == 1);
         context.registerReceiver(new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -182,6 +165,29 @@ public class AccessibilityMenuServiceTest {
         // dismisses screenshot popup if present.
         sUiDevice.pressBack();
         sUiDevice.pressHome();
+    }
+
+    private static void enableA11yMenuService(Context context) throws Throwable {
+        // Disable all a11yServices if any are active.
+        if (!sAccessibilityManager.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK).isEmpty()) {
+            Settings.Secure.putString(context.getContentResolver(),
+                    Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, "");
+            TestUtils.waitUntil("Failed to disable all services",
+                    TIMEOUT_SERVICE_STATUS_CHANGE_S,
+                    () -> sAccessibilityManager.getEnabledAccessibilityServiceList(
+                            AccessibilityServiceInfo.FEEDBACK_ALL_MASK).isEmpty());
+        }
+
+        // Enable a11yMenu service.
+        Settings.Secure.putString(context.getContentResolver(),
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, SERVICE_NAME);
+
+        TestUtils.waitUntil("Failed to enable service",
+                TIMEOUT_SERVICE_STATUS_CHANGE_S,
+                () -> sAccessibilityManager.getEnabledAccessibilityServiceList(
+                        AccessibilityServiceInfo.FEEDBACK_ALL_MASK).stream().filter(
+                                info -> info.getId().contains(SERVICE_NAME)).count() == 1);
     }
 
     private static boolean isMenuVisible() {
@@ -482,6 +488,50 @@ public class AccessibilityMenuServiceTest {
         TestUtils.waitUntil("Did not receive signal that menu cannot open",
                 TIMEOUT_UI_CHANGE_S,
                 sOpenBlocked::get);
+    }
+
+    @Test
+    public void testRestrictedActions_BrightnessNotAvailable() throws Throwable {
+        try {
+            setUserRestriction(UserManager.DISALLOW_CONFIG_BRIGHTNESS, true);
+            openMenu();
+
+            List<AccessibilityNodeInfo> buttons = getGridButtonList();
+            AccessibilityNodeInfo brightnessUpButton = findGridButtonInfo(buttons,
+                    String.valueOf(ShortcutId.ID_BRIGHTNESS_UP_VALUE.ordinal()));
+            AccessibilityNodeInfo brightnessDownButton = findGridButtonInfo(buttons,
+                    String.valueOf(ShortcutId.ID_BRIGHTNESS_DOWN_VALUE.ordinal()));
+
+            assertThat(brightnessUpButton).isNull();
+            assertThat(brightnessDownButton).isNull();
+        } finally {
+            setUserRestriction(UserManager.DISALLOW_CONFIG_BRIGHTNESS, false);
+        }
+    }
+
+    @Test
+    public void testRestrictedActions_VolumeNotAvailable() throws Throwable {
+        try {
+            setUserRestriction(UserManager.DISALLOW_ADJUST_VOLUME, true);
+            openMenu();
+
+            List<AccessibilityNodeInfo> buttons = getGridButtonList();
+            AccessibilityNodeInfo volumeUpButton = findGridButtonInfo(buttons,
+                    String.valueOf(ShortcutId.ID_VOLUME_UP_VALUE.ordinal()));
+            AccessibilityNodeInfo volumeDownButton = findGridButtonInfo(buttons,
+                    String.valueOf(ShortcutId.ID_VOLUME_DOWN_VALUE.ordinal()));
+
+            assertThat(volumeUpButton).isNull();
+            assertThat(volumeDownButton).isNull();
+        } finally {
+            setUserRestriction(UserManager.DISALLOW_ADJUST_VOLUME, false);
+        }
+    }
+
+    private void setUserRestriction(String restriction, boolean isRestricted) throws Throwable {
+        final Context context = sInstrumentation.getTargetContext();
+        final UserManager userManager = context.getSystemService(UserManager.class);
+        userManager.setUserRestriction(restriction, isRestricted);
     }
 
     private static void unlockSignal() throws IOException {

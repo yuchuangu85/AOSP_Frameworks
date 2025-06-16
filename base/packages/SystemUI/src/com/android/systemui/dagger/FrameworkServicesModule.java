@@ -38,7 +38,10 @@ import android.app.ambientcontext.AmbientContextManager;
 import android.app.job.JobScheduler;
 import android.app.role.RoleManager;
 import android.app.smartspace.SmartspaceManager;
+import android.app.supervision.SupervisionManager;
 import android.app.trust.TrustManager;
+import android.app.usage.UsageStatsManager;
+import android.appwidget.AppWidgetManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.companion.virtual.VirtualDeviceManager;
@@ -66,6 +69,7 @@ import android.hardware.display.DisplayManager;
 import android.hardware.face.FaceManager;
 import android.hardware.fingerprint.FingerprintManager;
 import android.hardware.input.InputManager;
+import android.hardware.location.ContextHubManager;
 import android.location.LocationManager;
 import android.media.AudioManager;
 import android.media.IAudioService;
@@ -96,7 +100,6 @@ import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.telephony.satellite.SatelliteManager;
-import android.view.Choreographer;
 import android.view.CrossWindowBlurListeners;
 import android.view.IWindowManager;
 import android.view.LayoutInflater;
@@ -124,6 +127,8 @@ import com.android.systemui.dagger.qualifiers.TestHarness;
 import com.android.systemui.shared.system.PackageManagerWrapper;
 import com.android.systemui.user.utils.UserScopedService;
 import com.android.systemui.user.utils.UserScopedServiceImpl;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
+import com.android.systemui.utils.windowmanager.WindowManagerProviderImpl;
 
 import dagger.Module;
 import dagger.Provides;
@@ -193,11 +198,11 @@ public class FrameworkServicesModule {
         return context.getSystemService(CaptioningManager.class);
     }
 
-    /** */
     @Provides
     @Singleton
-    public Choreographer providesChoreographer() {
-        return Choreographer.getInstance();
+    static UserScopedService<CaptioningManager> provideUserScopedCaptioningManager(
+            Context context) {
+        return new UserScopedServiceImpl<>(context, CaptioningManager.class);
     }
 
     @Provides
@@ -216,6 +221,13 @@ public class FrameworkServicesModule {
     @Singleton
     static ContentResolver provideContentResolver(Context context) {
         return context.getContentResolver();
+    }
+
+    @Provides
+    @Singleton
+    @Nullable
+    static ContextHubManager provideContextHubManager(Context context) {
+        return context.getSystemService(ContextHubManager.class);
     }
 
     @Provides
@@ -250,6 +262,7 @@ public class FrameworkServicesModule {
     }
 
     @Provides
+    @Nullable
     @Singleton
     static VirtualDeviceManager provideVirtualDeviceManager(Context context) {
         return context.getSystemService(VirtualDeviceManager.class);
@@ -367,6 +380,12 @@ public class FrameworkServicesModule {
 
     @Provides
     @Singleton
+    static Optional<AppWidgetManager> provideAppWidgetManager(@Application Context context) {
+        return Optional.ofNullable(AppWidgetManager.getInstance(context));
+    }
+
+    @Provides
+    @Singleton
     static IAppWidgetService provideIAppWidgetService() {
         return IAppWidgetService.Stub.asInterface(
                 ServiceManager.getService(Context.APPWIDGET_SERVICE));
@@ -402,6 +421,12 @@ public class FrameworkServicesModule {
     @Singleton
     static KeyguardManager provideKeyguardManager(Context context) {
         return context.getSystemService(KeyguardManager.class);
+    }
+
+    @Provides
+    @Singleton
+    static UserScopedService<KeyguardManager> provideKeyguardManagerUserScoped(Context context) {
+        return new UserScopedServiceImpl<>(context, KeyguardManager.class);
     }
 
     @Provides
@@ -528,6 +553,13 @@ public class FrameworkServicesModule {
     @Singleton
     static UiModeManager provideUiModeManager(Context context) {
         return context.getSystemService(UiModeManager.class);
+    }
+
+    /** */
+    @Provides
+    @Singleton
+    static UsageStatsManager provideUsageStatsManager(Context context) {
+        return context.getSystemService(UsageStatsManager.class);
     }
 
     @Provides
@@ -674,8 +706,23 @@ public class FrameworkServicesModule {
 
     @Provides
     @Singleton
-    static WindowManager provideWindowManager(Context context) {
-        return context.getSystemService(WindowManager.class);
+    static WindowManagerProvider provideWindowManagerProvider() {
+        return new WindowManagerProviderImpl();
+    }
+
+    @Provides
+    @Singleton
+    static WindowManager provideWindowManager(Context context,
+            WindowManagerProvider windowManagerProvider) {
+        return windowManagerProvider.getWindowManager(context);
+    }
+
+    /** A window manager working for the default display only. */
+    @Provides
+    @Singleton
+    @Main
+    static WindowManager provideMainWindowManager(WindowManager windowManager) {
+        return windowManager;
     }
 
     @Provides
@@ -695,9 +742,8 @@ public class FrameworkServicesModule {
     }
 
     @Provides
-    @Singleton
-    static ClipboardManager provideClipboardManager(Context context) {
-        return context.getSystemService(ClipboardManager.class);
+    static UserScopedService<ClipboardManager> provideClipboardManager(Context context) {
+        return new UserScopedServiceImpl<>(context, ClipboardManager.class);
     }
 
     @Provides
@@ -763,5 +809,12 @@ public class FrameworkServicesModule {
     static IDeviceIdleController provideDeviceIdleController() {
         return IDeviceIdleController.Stub.asInterface(
                 ServiceManager.getService(Context.DEVICE_IDLE_CONTROLLER));
+    }
+
+    @Provides
+    @Singleton
+    @Nullable
+    static SupervisionManager provideSupervisionManager(Context context) {
+        return (SupervisionManager) context.getSystemService(Context.SUPERVISION_SERVICE);
     }
 }

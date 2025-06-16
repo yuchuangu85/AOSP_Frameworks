@@ -58,6 +58,7 @@ using namespace std::chrono_literals;
 
 using Hwc2::Config;
 
+using ::aidl::android::hardware::drm::HdcpLevels;
 using ::aidl::android::hardware::graphics::common::DisplayHotplugEvent;
 using ::aidl::android::hardware::graphics::composer3::RefreshRateChangedDebugData;
 using hal::IComposerClient;
@@ -68,7 +69,7 @@ using ::testing::SetArgPointee;
 using ::testing::StrictMock;
 
 struct HWComposerTest : testing::Test {
-    using HalError = hardware::graphics::composer::V2_1::Error;
+    using HalError = hal::Error;
 
     Hwc2::mock::Composer* const mHal = new StrictMock<Hwc2::mock::Composer>();
     impl::HWComposer mHwc{std::unique_ptr<Hwc2::Composer>(mHal)};
@@ -93,7 +94,7 @@ TEST_F(HWComposerTest, isHeadless) {
     constexpr hal::HWDisplayId kHwcDisplayId = 1;
     expectHotplugConnect(kHwcDisplayId);
 
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     ASSERT_FALSE(mHwc.isHeadless());
@@ -110,7 +111,7 @@ TEST_F(HWComposerTest, getDisplayConnectionType) {
     constexpr hal::HWDisplayId kHwcDisplayId = 1;
     expectHotplugConnect(kHwcDisplayId);
 
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     EXPECT_CALL(*mHal, getDisplayConnectionType(kHwcDisplayId, _))
@@ -132,7 +133,7 @@ TEST_F(HWComposerTest, getActiveMode) {
     constexpr hal::HWDisplayId kHwcDisplayId = 2;
     expectHotplugConnect(kHwcDisplayId);
 
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     {
@@ -163,8 +164,9 @@ TEST_F(HWComposerTest, getModesWithLegacyDisplayConfigs) {
     constexpr int32_t kMaxFrameIntervalNs = 50000000; // 20Fps
 
     expectHotplugConnect(kHwcDisplayId);
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
+    ASSERT_TRUE(info->preferredDetailedTimingDescriptor.has_value());
 
     EXPECT_CALL(*mHal, isVrrSupported()).WillRepeatedly(Return(false));
 
@@ -178,6 +180,10 @@ TEST_F(HWComposerTest, getModesWithLegacyDisplayConfigs) {
         constexpr int32_t kHeight = 720;
         constexpr int32_t kConfigGroup = 1;
         constexpr int32_t kVsyncPeriod = 16666667;
+        constexpr float kMmPerInch = 25.4f;
+        const ui::Size size = info->preferredDetailedTimingDescriptor->physicalSizeInMm;
+        const float expectedDpiX = (kWidth * kMmPerInch / size.width);
+        const float expectedDpiY = (kHeight * kMmPerInch / size.height);
 
         EXPECT_CALL(*mHal,
                     getDisplayAttribute(kHwcDisplayId, kConfigId, IComposerClient::Attribute::WIDTH,
@@ -217,8 +223,13 @@ TEST_F(HWComposerTest, getModesWithLegacyDisplayConfigs) {
         EXPECT_EQ(modes.front().height, kHeight);
         EXPECT_EQ(modes.front().configGroup, kConfigGroup);
         EXPECT_EQ(modes.front().vsyncPeriod, kVsyncPeriod);
-        EXPECT_EQ(modes.front().dpiX, -1);
-        EXPECT_EQ(modes.front().dpiY, -1);
+        if (!FlagManager::getInstance().correct_dpi_with_display_size()) {
+            EXPECT_EQ(modes.front().dpiX, -1);
+            EXPECT_EQ(modes.front().dpiY, -1);
+        } else {
+            EXPECT_EQ(modes.front().dpiX, expectedDpiX);
+            EXPECT_EQ(modes.front().dpiY, expectedDpiY);
+        }
 
         // Optional parameters are supported
         constexpr int32_t kDpi = 320;
@@ -255,7 +266,7 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_OFF) {
     constexpr int32_t kMaxFrameIntervalNs = 50000000; // 20Fps
 
     expectHotplugConnect(kHwcDisplayId);
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     EXPECT_CALL(*mHal, isVrrSupported()).WillRepeatedly(Return(false));
@@ -270,6 +281,10 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_OFF) {
         constexpr int32_t kHeight = 720;
         constexpr int32_t kConfigGroup = 1;
         constexpr int32_t kVsyncPeriod = 16666667;
+        constexpr float kMmPerInch = 25.4f;
+        const ui::Size size = info->preferredDetailedTimingDescriptor->physicalSizeInMm;
+        const float expectedDpiX = (kWidth * kMmPerInch / size.width);
+        const float expectedDpiY = (kHeight * kMmPerInch / size.height);
 
         EXPECT_CALL(*mHal,
                     getDisplayAttribute(kHwcDisplayId, kConfigId, IComposerClient::Attribute::WIDTH,
@@ -309,8 +324,13 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_OFF) {
         EXPECT_EQ(modes.front().height, kHeight);
         EXPECT_EQ(modes.front().configGroup, kConfigGroup);
         EXPECT_EQ(modes.front().vsyncPeriod, kVsyncPeriod);
-        EXPECT_EQ(modes.front().dpiX, -1);
-        EXPECT_EQ(modes.front().dpiY, -1);
+        if (!FlagManager::getInstance().correct_dpi_with_display_size()) {
+            EXPECT_EQ(modes.front().dpiX, -1);
+            EXPECT_EQ(modes.front().dpiY, -1);
+        } else {
+            EXPECT_EQ(modes.front().dpiX, expectedDpiX);
+            EXPECT_EQ(modes.front().dpiY, expectedDpiY);
+        }
 
         // Optional parameters are supported
         constexpr int32_t kDpi = 320;
@@ -344,7 +364,7 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_ON) {
     constexpr hal::HWConfigId kConfigId = 42;
     constexpr int32_t kMaxFrameIntervalNs = 50000000; // 20Fps
     expectHotplugConnect(kHwcDisplayId);
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     EXPECT_CALL(*mHal, isVrrSupported()).WillRepeatedly(Return(true));
@@ -360,6 +380,11 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_ON) {
         constexpr int32_t kHeight = 720;
         constexpr int32_t kConfigGroup = 1;
         constexpr int32_t kVsyncPeriod = 16666667;
+        constexpr float kMmPerInch = 25.4f;
+        const ui::Size size = info->preferredDetailedTimingDescriptor->physicalSizeInMm;
+        const float expectedDpiX = (kWidth * kMmPerInch / size.width);
+        const float expectedDpiY = (kHeight * kMmPerInch / size.height);
+        const OutputType hdrOutputType = OutputType::SYSTEM;
         const hal::VrrConfig vrrConfig =
                 hal::VrrConfig{.minFrameIntervalNs = static_cast<Fps>(120_Hz).getPeriodNsecs(),
                                .notifyExpectedPresentConfig = hal::VrrConfig::
@@ -370,7 +395,8 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_ON) {
                                                        .height = kHeight,
                                                        .configGroup = kConfigGroup,
                                                        .vsyncPeriod = kVsyncPeriod,
-                                                       .vrrConfig = vrrConfig};
+                                                       .vrrConfig = vrrConfig,
+                                                       .hdrOutputType = hdrOutputType};
 
         EXPECT_CALL(*mHal, getDisplayConfigurations(kHwcDisplayId, _, _))
                 .WillOnce(DoAll(SetArgPointee<2>(std::vector<hal::DisplayConfiguration>{
@@ -386,8 +412,14 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_ON) {
         EXPECT_EQ(modes.front().configGroup, kConfigGroup);
         EXPECT_EQ(modes.front().vsyncPeriod, kVsyncPeriod);
         EXPECT_EQ(modes.front().vrrConfig, vrrConfig);
-        EXPECT_EQ(modes.front().dpiX, -1);
-        EXPECT_EQ(modes.front().dpiY, -1);
+        EXPECT_EQ(modes.front().hdrOutputType, hdrOutputType);
+        if (!FlagManager::getInstance().correct_dpi_with_display_size()) {
+            EXPECT_EQ(modes.front().dpiX, -1);
+            EXPECT_EQ(modes.front().dpiY, -1);
+        } else {
+            EXPECT_EQ(modes.front().dpiX, expectedDpiX);
+            EXPECT_EQ(modes.front().dpiY, expectedDpiY);
+        }
 
         // Supports optional dpi parameter
         constexpr int32_t kDpi = 320;
@@ -406,6 +438,7 @@ TEST_F(HWComposerTest, getModesWithDisplayConfigurations_VRR_ON) {
         EXPECT_EQ(modes.front().configGroup, kConfigGroup);
         EXPECT_EQ(modes.front().vsyncPeriod, kVsyncPeriod);
         EXPECT_EQ(modes.front().vrrConfig, vrrConfig);
+        EXPECT_EQ(modes.front().hdrOutputType, hdrOutputType);
         EXPECT_EQ(modes.front().dpiX, kDpi);
         EXPECT_EQ(modes.front().dpiY, kDpi);
 
@@ -419,7 +452,7 @@ TEST_F(HWComposerTest, onVsync) {
     constexpr hal::HWDisplayId kHwcDisplayId = 1;
     expectHotplugConnect(kHwcDisplayId);
 
-    const auto info = mHwc.onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+    const auto info = mHwc.onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
     ASSERT_TRUE(info);
 
     const auto physicalDisplayId = info->id;
@@ -454,6 +487,8 @@ struct MockHWC2ComposerCallback final : StrictMock<HWC2::ComposerCallback> {
     MOCK_METHOD1(onComposerHalSeamlessPossible, void(hal::HWDisplayId));
     MOCK_METHOD1(onComposerHalVsyncIdle, void(hal::HWDisplayId));
     MOCK_METHOD(void, onRefreshRateChangedDebug, (const RefreshRateChangedDebugData&), (override));
+    MOCK_METHOD(void, onComposerHalHdcpLevelsChanged, (hal::HWDisplayId, const HdcpLevels&),
+                (override));
 };
 
 struct HWComposerSetCallbackTest : HWComposerTest {

@@ -2,17 +2,18 @@ package com.android.systemui.battery
 
 import com.android.systemui.qs.QsEventLogger
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.qs.shared.model.TileCategory
 import com.android.systemui.qs.tileimpl.QSTileImpl
 import com.android.systemui.qs.tiles.BatterySaverTile
-import com.android.systemui.qs.tiles.base.interactor.QSTileAvailabilityInteractor
-import com.android.systemui.qs.tiles.base.viewmodel.QSTileViewModelFactory
+import com.android.systemui.qs.tiles.base.domain.interactor.QSTileAvailabilityInteractor
+import com.android.systemui.qs.tiles.base.shared.model.QSTileConfig
+import com.android.systemui.qs.tiles.base.shared.model.QSTileUIConfig
+import com.android.systemui.qs.tiles.base.ui.viewmodel.QSTileViewModel
+import com.android.systemui.qs.tiles.base.ui.viewmodel.QSTileViewModelFactory
 import com.android.systemui.qs.tiles.impl.battery.domain.interactor.BatterySaverTileDataInteractor
 import com.android.systemui.qs.tiles.impl.battery.domain.interactor.BatterySaverTileUserActionInteractor
 import com.android.systemui.qs.tiles.impl.battery.domain.model.BatterySaverTileModel
-import com.android.systemui.qs.tiles.impl.battery.ui.BatterySaverTileMapper
-import com.android.systemui.qs.tiles.viewmodel.QSTileConfig
-import com.android.systemui.qs.tiles.viewmodel.QSTileUIConfig
-import com.android.systemui.qs.tiles.viewmodel.QSTileViewModel
+import com.android.systemui.qs.tiles.impl.battery.ui.mapper.BatterySaverTileMapper
 import com.android.systemui.res.R
 import dagger.Binds
 import dagger.Module
@@ -33,7 +34,7 @@ interface BatterySaverModule {
     @IntoMap
     @StringKey(BATTERY_SAVER_TILE_SPEC)
     fun provideBatterySaverAvailabilityInteractor(
-            impl: BatterySaverTileDataInteractor
+        impl: BatterySaverTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     companion object {
@@ -51,6 +52,7 @@ interface BatterySaverModule {
                         labelRes = R.string.battery_detail_switch_title,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.UTILITIES,
             )
 
         /** Inject BatterySaverTile into tileViewModelMap in QSModule */
@@ -61,7 +63,7 @@ interface BatterySaverModule {
             factory: QSTileViewModelFactory.Static<BatterySaverTileModel>,
             mapper: BatterySaverTileMapper,
             stateInteractor: BatterySaverTileDataInteractor,
-            userActionInteractor: BatterySaverTileUserActionInteractor
+            userActionInteractor: BatterySaverTileUserActionInteractor,
         ): QSTileViewModel =
             factory.create(
                 TileSpec.create(BATTERY_SAVER_TILE_SPEC),

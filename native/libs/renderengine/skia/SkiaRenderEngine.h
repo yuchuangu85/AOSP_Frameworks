@@ -18,11 +18,12 @@
 #define SF_SKIARENDERENGINE_H_
 
 #include <renderengine/RenderEngine.h>
-#include <sys/types.h>
 
-#include <GrBackendSemaphore.h>
-#include <SkSurface.h>
 #include <android-base/thread_annotations.h>
+#include <include/core/SkImageInfo.h>
+#include <include/core/SkSurface.h>
+#include <include/gpu/ganesh/GrBackendSemaphore.h>
+#include <include/gpu/ganesh/GrContextOptions.h>
 #include <renderengine/ExternalTexture.h>
 #include <renderengine/RenderEngine.h>
 #include <sys/types.h>
@@ -32,13 +33,13 @@
 #include <unordered_map>
 
 #include "AutoBackendTexture.h"
-#include "GrContextOptions.h"
-#include "SkImageInfo.h"
 #include "android-base/macros.h"
 #include "compat/SkiaGpuContext.h"
 #include "debug/SkiaCapture.h"
 #include "filters/BlurFilter.h"
+#include "filters/EdgeExtensionShaderFactory.h"
 #include "filters/LinearEffect.h"
+#include "filters/LutShader.h"
 #include "filters/StretchShaderFactory.h"
 
 class SkData;
@@ -142,6 +143,11 @@ private:
                             const std::vector<LayerSettings>& layers,
                             const std::shared_ptr<ExternalTexture>& buffer,
                             base::unique_fd&& bufferFence) override final;
+    void tonemapAndDrawGainmapInternal(
+            const std::shared_ptr<std::promise<FenceResult>>&& resultPromise,
+            const std::shared_ptr<ExternalTexture>& hdr, base::borrowed_fd&& hdrFence,
+            float hdrSdrRatio, ui::Dataspace dataspace, const std::shared_ptr<ExternalTexture>& sdr,
+            const std::shared_ptr<ExternalTexture>& gainmap) override final;
 
     void dump(std::string& result) override final;
 
@@ -156,8 +162,11 @@ private:
         float layerDimmingRatio;
         const ui::Dataspace outputDataSpace;
         const ui::Dataspace fakeOutputDataspace;
+        const SkRect& imageBounds;
     };
     sk_sp<SkShader> createRuntimeEffectShader(const RuntimeEffectShaderParameters&);
+
+    sk_sp<SkShader> localTonemap(sk_sp<SkShader>, float inputMultiplier, float targetHdrSdrRatio);
 
     const PixelFormat mDefaultPixelFormat;
 
@@ -175,6 +184,8 @@ private:
     AutoBackendTexture::CleanupManager mTextureCleanupMgr GUARDED_BY(mRenderingMutex);
 
     StretchShaderFactory mStretchShaderFactory;
+    EdgeExtensionShaderFactory mEdgeExtensionShaderFactory;
+    LutShader mLutShader;
 
     sp<Fence> mLastDrawFence;
     BlurFilter* mBlurFilter = nullptr;

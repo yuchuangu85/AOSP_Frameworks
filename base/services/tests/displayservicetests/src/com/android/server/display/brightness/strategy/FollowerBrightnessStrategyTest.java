@@ -55,14 +55,14 @@ public class FollowerBrightnessStrategyTest {
                 new DisplayBrightnessState.Builder()
                         .setBrightness(brightnessToFollow)
                         .setBrightnessReason(brightnessReason)
-                        .setSdrBrightness(brightnessToFollow)
                         .setDisplayBrightnessStrategyName(mFollowerBrightnessStrategy.getName())
                         .setIsSlowChange(slowChange)
                         .build();
         DisplayBrightnessState updatedDisplayBrightnessState =
                 mFollowerBrightnessStrategy.updateBrightness(
                         new StrategyExecutionRequest(displayPowerRequest, 0.2f,
-                                /* userSetBrightnessChanged= */ false));
+                                /* userSetBrightnessChanged= */ false,
+                                /* isStylusBeingUsed */ false));
         assertEquals(expectedDisplayBrightnessState, updatedDisplayBrightnessState);
     }
 

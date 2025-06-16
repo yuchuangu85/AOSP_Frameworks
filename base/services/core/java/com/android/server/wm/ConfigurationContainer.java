@@ -25,6 +25,7 @@ import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
 import static android.app.WindowConfiguration.ROTATION_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.app.WindowConfiguration.activityTypeToString;
@@ -195,12 +196,14 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
      * screenWidthDp, screenHeightDp, smallestScreenWidthDp, and orientation.
      * All overrides to those fields should be in this method.
      *
+     * Task is only needed for split-screen to apply an offset special handling.
+     *
      * TODO: Consider integrate this with computeConfigByResolveHint()
      */
     static void applySizeOverrideIfNeeded(DisplayContent displayContent, ApplicationInfo appInfo,
             Configuration newParentConfiguration, Configuration inOutConfig,
             boolean optsOutEdgeToEdge, boolean hasFixedRotationTransform,
-            boolean hasCompatDisplayInsets) {
+            boolean hasCompatDisplayInsets, Task task) {
         if (displayContent == null) {
             return;
         }
@@ -223,11 +226,14 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         }
         if (!optsOutEdgeToEdge && (!useOverrideInsetsForConfig
                 || hasCompatDisplayInsets
-                || isFloating
                 || rotation == ROTATION_UNDEFINED)) {
             // If the insets configuration decoupled logic is not enabled for the app, or the app
             // already has a compat override, or the context doesn't contain enough info to
             // calculate the override, skip the override.
+            return;
+        }
+        if (isFloating) {
+            // Floating window won't have any insets affect configuration. Skip the override.
             return;
         }
         // Make sure the orientation related fields will be updated by the override insets, because
@@ -251,12 +257,39 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         // This should be the only place override the configuration for ActivityRecord. Override
         // the value if not calculated yet.
         Rect outAppBounds = inOutConfig.windowConfiguration.getAppBounds();
+        Rect outConfigBounds = new Rect(outAppBounds);
         if (outAppBounds == null || outAppBounds.isEmpty()) {
             inOutConfig.windowConfiguration.setAppBounds(
                     newParentConfiguration.windowConfiguration.getBounds());
             outAppBounds = inOutConfig.windowConfiguration.getAppBounds();
-            outAppBounds.inset(displayContent.getDisplayPolicy()
-                    .getDecorInsetsInfo(rotation, dw, dh).mOverrideNonDecorInsets);
+            outConfigBounds.set(outAppBounds);
+            if (task != null) {
+                task = task.getCreatedByOrganizerTask();
+                if (task != null && (task.mOffsetYForInsets != 0 || task.mOffsetXForInsets != 0)) {
+                    outAppBounds.offset(task.mOffsetXForInsets, task.mOffsetYForInsets);
+                }
+            }
+            final DisplayPolicy.DecorInsets.Info decor =
+                    displayContent.getDisplayPolicy().getDecorInsetsInfo(rotation, dw, dh);
+            if (!outAppBounds.intersect(decor.mOverrideNonDecorFrame)) {
+                // TODO (b/364883053): When a split screen is requested from an app intent for a new
+                //  task, the bounds is not the final bounds, and this is also not a bounds change
+                //  event handled correctly with the offset. Revert back to legacy method for this
+                //  case.
+                if (inOutConfig.windowConfiguration.getWindowingMode()
+                        == WINDOWING_MODE_MULTI_WINDOW) {
+                    outAppBounds.inset(decor.mOverrideNonDecorInsets);
+                }
+            }
+            if (!outConfigBounds.intersect(decor.mOverrideConfigFrame)) {
+                if (inOutConfig.windowConfiguration.getWindowingMode()
+                        == WINDOWING_MODE_MULTI_WINDOW) {
+                    outAppBounds.inset(decor.mOverrideConfigInsets);
+                }
+            }
+            if (task != null && (task.mOffsetYForInsets != 0 || task.mOffsetXForInsets != 0)) {
+                outAppBounds.offset(-task.mOffsetXForInsets, -task.mOffsetYForInsets);
+            }
         }
         float density = inOutConfig.densityDpi;
         if (density == Configuration.DENSITY_DPI_UNDEFINED) {
@@ -264,10 +297,10 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         }
         density *= DisplayMetrics.DENSITY_DEFAULT_SCALE;
         if (inOutConfig.screenWidthDp == Configuration.SCREEN_WIDTH_DP_UNDEFINED) {
-            inOutConfig.screenWidthDp = (int) (outAppBounds.width() / density + 0.5f);
+            inOutConfig.screenWidthDp = (int) (outConfigBounds.width() / density + 0.5f);
         }
         if (inOutConfig.screenHeightDp == Configuration.SCREEN_HEIGHT_DP_UNDEFINED) {
-            inOutConfig.screenHeightDp = (int) (outAppBounds.height() / density + 0.5f);
+            inOutConfig.screenHeightDp = (int) (outConfigBounds.height() / density + 0.5f);
         }
         if (inOutConfig.smallestScreenWidthDp == Configuration.SMALLEST_SCREEN_WIDTH_DP_UNDEFINED
                 && parentWindowingMode == WINDOWING_MODE_FULLSCREEN) {
@@ -807,23 +840,23 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
      */
     @CallSuper
     protected void dumpDebug(ProtoOutputStream proto, long fieldId,
-            @WindowTraceLogLevel int logLevel) {
+            @WindowTracingLogLevel int logLevel) {
         final long token = proto.start(fieldId);
 
-        if (logLevel == WindowTraceLogLevel.ALL || mHasOverrideConfiguration) {
+        if (logLevel == WindowTracingLogLevel.ALL || mHasOverrideConfiguration) {
             mRequestedOverrideConfiguration.dumpDebug(proto, OVERRIDE_CONFIGURATION,
-                    logLevel == WindowTraceLogLevel.CRITICAL);
+                    logLevel == WindowTracingLogLevel.CRITICAL);
         }
 
         // Unless trace level is set to `WindowTraceLogLevel.ALL` don't dump anything that isn't
         // required to mitigate performance overhead
-        if (logLevel == WindowTraceLogLevel.ALL) {
+        if (logLevel == WindowTracingLogLevel.ALL) {
             mFullConfiguration.dumpDebug(proto, FULL_CONFIGURATION, false /* critical */);
             mMergedOverrideConfiguration.dumpDebug(proto, MERGED_OVERRIDE_CONFIGURATION,
                     false /* critical */);
         }
 
-        if (logLevel == WindowTraceLogLevel.TRIM) {
+        if (logLevel == WindowTracingLogLevel.TRIM) {
             // Required for Fass to automatically detect pip transitions in Winscope traces
             dumpDebugWindowingMode(proto);
         }

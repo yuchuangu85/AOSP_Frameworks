@@ -17,6 +17,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 
 #include <EventHub.h>
 #include <InputDevice.h>
@@ -31,8 +32,29 @@ constexpr size_t kValidTypes[] = {EV_SW,
                                   EV_MSC,
                                   EV_REL,
                                   android::EventHubInterface::DEVICE_ADDED,
-                                  android::EventHubInterface::DEVICE_REMOVED,
-                                  android::EventHubInterface::FINISHED_DEVICE_SCAN};
+                                  android::EventHubInterface::DEVICE_REMOVED};
+
+static const android::InputDeviceClass kInputDeviceClasses[] = {
+        android::InputDeviceClass::KEYBOARD,
+        android::InputDeviceClass::ALPHAKEY,
+        android::InputDeviceClass::TOUCH,
+        android::InputDeviceClass::CURSOR,
+        android::InputDeviceClass::TOUCH_MT,
+        android::InputDeviceClass::DPAD,
+        android::InputDeviceClass::GAMEPAD,
+        android::InputDeviceClass::SWITCH,
+        android::InputDeviceClass::JOYSTICK,
+        android::InputDeviceClass::VIBRATOR,
+        android::InputDeviceClass::MIC,
+        android::InputDeviceClass::EXTERNAL_STYLUS,
+        android::InputDeviceClass::ROTARY_ENCODER,
+        android::InputDeviceClass::SENSOR,
+        android::InputDeviceClass::BATTERY,
+        android::InputDeviceClass::LIGHT,
+        android::InputDeviceClass::TOUCHPAD,
+        android::InputDeviceClass::VIRTUAL,
+        android::InputDeviceClass::EXTERNAL,
+};
 
 constexpr size_t kValidCodes[] = {
         SYN_REPORT,
@@ -105,7 +127,13 @@ public:
     void addProperty(std::string key, std::string value) { mFuzzConfig.addProperty(key, value); }
 
     ftl::Flags<InputDeviceClass> getDeviceClasses(int32_t deviceId) const override {
-        return ftl::Flags<InputDeviceClass>(mFdp->ConsumeIntegral<uint32_t>());
+        uint32_t flags = 0;
+        for (auto inputDeviceClass : kInputDeviceClasses) {
+            if (mFdp->ConsumeBool()) {
+                flags |= static_cast<uint32_t>(inputDeviceClass);
+            }
+        }
+        return ftl::Flags<InputDeviceClass>(flags);
     }
     InputDeviceIdentifier getDeviceIdentifier(int32_t deviceId) const override {
         return mIdentifier;
@@ -119,16 +147,25 @@ public:
     void setAbsoluteAxisInfo(int32_t deviceId, int axis, const RawAbsoluteAxisInfo& axisInfo) {
         mAxes[deviceId][axis] = axisInfo;
     }
-    status_t getAbsoluteAxisInfo(int32_t deviceId, int axis,
-                                 RawAbsoluteAxisInfo* outAxisInfo) const override {
+    std::optional<RawAbsoluteAxisInfo> getAbsoluteAxisInfo(int32_t deviceId,
+                                                           int axis) const override {
         if (auto deviceAxesIt = mAxes.find(deviceId); deviceAxesIt != mAxes.end()) {
             const std::map<int, RawAbsoluteAxisInfo>& deviceAxes = deviceAxesIt->second;
             if (auto axisInfoIt = deviceAxes.find(axis); axisInfoIt != deviceAxes.end()) {
-                *outAxisInfo = axisInfoIt->second;
-                return OK;
+                return axisInfoIt->second;
             }
         }
-        return mFdp->ConsumeIntegral<status_t>();
+        if (mFdp->ConsumeBool()) {
+            return std::optional<RawAbsoluteAxisInfo>({
+                    .minValue = mFdp->ConsumeIntegral<int32_t>(),
+                    .maxValue = mFdp->ConsumeIntegral<int32_t>(),
+                    .flat = mFdp->ConsumeIntegral<int32_t>(),
+                    .fuzz = mFdp->ConsumeIntegral<int32_t>(),
+                    .resolution = mFdp->ConsumeIntegral<int32_t>(),
+            });
+        } else {
+            return std::nullopt;
+        }
     }
     bool hasRelativeAxis(int32_t deviceId, int axis) const override { return mFdp->ConsumeBool(); }
     bool hasInputProperty(int32_t deviceId, int property) const override {
@@ -193,13 +230,17 @@ public:
     int32_t getSwitchState(int32_t deviceId, int32_t sw) const override {
         return mFdp->ConsumeIntegral<int32_t>();
     }
-    void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode, int32_t toKeyCode) const override {}
+    void setKeyRemapping(int32_t deviceId,
+                         const std::map<int32_t, int32_t>& keyRemapping) const override {}
     int32_t getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const override {
         return mFdp->ConsumeIntegral<int32_t>();
     }
-    status_t getAbsoluteAxisValue(int32_t deviceId, int32_t axis,
-                                  int32_t* outValue) const override {
-        return mFdp->ConsumeIntegral<status_t>();
+    std::optional<int32_t> getAbsoluteAxisValue(int32_t deviceId, int32_t axis) const override {
+        if (mFdp->ConsumeBool()) {
+            return mFdp->ConsumeIntegral<int32_t>();
+        } else {
+            return std::nullopt;
+        }
     }
     base::Result<std::vector<int32_t>> getMtSlotValues(int32_t deviceId, int32_t axis,
                                                        size_t slotCount) const override {
@@ -255,7 +296,11 @@ public:
     bool isDeviceEnabled(int32_t deviceId) const override { return mFdp->ConsumeBool(); }
     status_t enableDevice(int32_t deviceId) override { return mFdp->ConsumeIntegral<status_t>(); }
     status_t disableDevice(int32_t deviceId) override { return mFdp->ConsumeIntegral<status_t>(); }
+    std::filesystem::path getSysfsRootPath(int32_t deviceId) const override { return {}; }
     void sysfsNodeChanged(const std::string& sysfsNodePath) override {}
+    bool setKernelWakeEnabled(int32_t deviceId, bool enabled) override {
+        return mFdp->ConsumeBool();
+    }
 };
 
 class FuzzInputReaderPolicy : public InputReaderPolicyInterface {
@@ -269,6 +314,10 @@ public:
     FuzzInputReaderPolicy(std::shared_ptr<ThreadSafeFuzzedDataProvider> mFdp) : mFdp(mFdp) {}
     void getReaderConfiguration(InputReaderConfiguration* outConfig) override {}
     void notifyInputDevicesChanged(const std::vector<InputDeviceInfo>& inputDevices) override {}
+    void notifyTouchpadHardwareState(const SelfContainedHardwareState& schs,
+                                     int32_t deviceId) override {}
+    void notifyTouchpadGestureInfo(GestureType type, int32_t deviceId) override {}
+    void notifyTouchpadThreeFingerTap() override {}
     std::shared_ptr<KeyCharacterMap> getKeyboardLayoutOverlay(
             const InputDeviceIdentifier& identifier,
             const std::optional<KeyboardLayoutInfo> layoutInfo) override {
@@ -293,7 +342,6 @@ public:
 class FuzzInputListener : public virtual InputListenerInterface {
 public:
     void notifyInputDevicesChanged(const NotifyInputDevicesChangedArgs& args) override {}
-    void notifyConfigurationChanged(const NotifyConfigurationChangedArgs& args) override {}
     void notifyKey(const NotifyKeyArgs& args) override {}
     void notifyMotion(const NotifyMotionArgs& args) override {}
     void notifySwitch(const NotifySwitchArgs& args) override {}
@@ -313,6 +361,7 @@ public:
                            std::shared_ptr<ThreadSafeFuzzedDataProvider> fdp)
           : mEventHub(eventHub), mPolicy(sp<FuzzInputReaderPolicy>::make(fdp)), mFdp(fdp) {}
     ~FuzzInputReaderContext() {}
+    std::string dump() { return "(dump from FuzzInputReaderContext)"; }
     void updateGlobalMetaState() override {}
     int32_t getGlobalMetaState() { return mFdp->ConsumeIntegral<int32_t>(); }
     void disableVirtualKeysUntil(nsecs_t time) override {}
@@ -327,14 +376,14 @@ public:
     }
     InputReaderPolicyInterface* getPolicy() override { return mPolicy.get(); }
     EventHubInterface* getEventHub() override { return mEventHub.get(); }
-    int32_t getNextId() override { return mFdp->ConsumeIntegral<int32_t>(); }
+    int32_t getNextId() const override { return mFdp->ConsumeIntegral<int32_t>(); }
 
     void updateLedMetaState(int32_t metaState) override{};
     int32_t getLedMetaState() override { return mFdp->ConsumeIntegral<int32_t>(); };
     void notifyStylusGestureStarted(int32_t, nsecs_t) {}
 
-    void setPreventingTouchpadTaps(bool prevent) {}
-    bool isPreventingTouchpadTaps() { return mFdp->ConsumeBool(); };
+    void setPreventingTouchpadTaps(bool prevent) override {}
+    bool isPreventingTouchpadTaps() override { return mFdp->ConsumeBool(); };
 
     void setLastKeyDownTimestamp(nsecs_t when) { mLastKeyDownTimestamp = when; };
     nsecs_t getLastKeyDownTimestamp() { return mLastKeyDownTimestamp; };
@@ -348,8 +397,8 @@ private:
 template <class Fdp>
 InputDevice getFuzzedInputDevice(Fdp& fdp, FuzzInputReaderContext* context) {
     InputDeviceIdentifier identifier;
-    identifier.name = fdp.ConsumeRandomLengthString(16);
-    identifier.location = fdp.ConsumeRandomLengthString(12);
+    identifier.name = fdp.ConsumeRandomLengthUtf8String(16);
+    identifier.location = fdp.ConsumeRandomLengthUtf8String(12);
     int32_t deviceID = fdp.ConsumeIntegralInRange(0, 5);
     int32_t deviceGeneration = fdp.ConsumeIntegralInRange(0, 5);
     return InputDevice(context, deviceID, deviceGeneration, identifier);

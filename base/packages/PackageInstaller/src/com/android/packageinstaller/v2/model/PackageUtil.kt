@@ -17,27 +17,59 @@
 package com.android.packageinstaller.v2.model
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageInfo
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.content.res.Resources
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Build
+import android.os.Parcel
+import android.os.Parcelable
 import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.util.Log
+import com.android.packageinstaller.v2.model.PackageUtil.getAppSnippet
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlinx.parcelize.Parceler
+import kotlinx.parcelize.Parcelize
 
 object PackageUtil {
     private val LOG_TAG = InstallRepository::class.java.simpleName
     private const val DOWNLOADS_AUTHORITY = "downloads"
     private const val SPLIT_BASE_APK_SUFFIX = "base.apk"
+    private const val SPLIT_APK_SUFFIX = ".apk"
     const val localLogv = false
+
+    const val ARGS_ABORT_REASON: String = "abort_reason"
+    const val ARGS_ACTION_REASON: String = "action_reason"
+    const val ARGS_ACTIVITY_RESULT_CODE: String = "activity_result_code"
+    const val ARGS_APP_DATA_SIZE: String = "app_data_size"
+    const val ARGS_APP_LABEL: String = "app_label"
+    const val ARGS_APP_SNIPPET: String = "app_snippet"
+    const val ARGS_ERROR_DIALOG_TYPE: String = "error_dialog_type"
+    const val ARGS_IS_ARCHIVE: String = "is_archive"
+    const val ARGS_IS_CLONE_USER: String = "clone_user"
+    const val ARGS_IS_UPDATING: String = "is_updating"
+    const val ARGS_LEGACY_CODE: String = "legacy_code"
+    const val ARGS_MESSAGE: String = "message"
+    const val ARGS_RESULT_INTENT: String = "result_intent"
+    const val ARGS_SHOULD_RETURN_RESULT: String = "should_return_result"
+    const val ARGS_SOURCE_APP: String = "source_app"
+    const val ARGS_STATUS_CODE: String = "status_code"
+    const val ARGS_TITLE: String = "title"
 
     /**
      * Determines if the UID belongs to the system downloads provider and returns the
@@ -128,18 +160,19 @@ object PackageUtil {
 
     /**
      * @param context the [Context] object
-     * @param callingUid the UID of the caller who's permission is being checked
-     * @param originatingUid the UID from where install is being originated. This could be same as
-     * callingUid or it will be the UID of the package performing a session based install
-     * @param isTrustedSource whether install request is coming from a privileged app or an app that
-     * has [Manifest.permission.INSTALL_PACKAGES] permission granted
-     * @return `true` if the package is granted the said permission
+     * @param callingUid the UID of the caller of Pia
+     * @param isTrustedSource indicates whether install request is coming from a privileged app
+     * that has passed EXTRA_NOT_UNKNOWN_SOURCE as `true` in the installation intent, or an app that
+     * has the [INSTALL_PACKAGES][Manifest.permission.INSTALL_PACKAGES] permission granted.
+     *
+     * @return `true` if the package is either a system downloads provider, a document manager,
+     * a trusted source, or has declared the
+     * [REQUEST_INSTALL_PACKAGES][Manifest.permission.REQUEST_INSTALL_PACKAGES] in its manifest.
      */
     @JvmStatic
     fun isInstallPermissionGrantedOrRequested(
         context: Context,
         callingUid: Int,
-        originatingUid: Int,
         isTrustedSource: Boolean,
     ): Boolean {
         val isDocumentsManager =
@@ -148,19 +181,18 @@ object PackageUtil {
             getSystemDownloadsProviderInfo(context.packageManager, callingUid) != null
 
         if (!isTrustedSource && !isSystemDownloadsProvider && !isDocumentsManager) {
-            val targetSdkVersion = getMaxTargetSdkVersionForUid(context, originatingUid)
+            val targetSdkVersion = getMaxTargetSdkVersionForUid(context, callingUid)
             if (targetSdkVersion < 0) {
-                // Invalid originating uid supplied. Abort install.
-                Log.w(LOG_TAG, "Cannot get target sdk version for uid $originatingUid")
+                // Invalid calling uid supplied. Abort install.
+                Log.e(LOG_TAG, "Cannot get target SDK version for uid $callingUid")
                 return false
             } else if (targetSdkVersion >= Build.VERSION_CODES.O
                 && !isUidRequestingPermission(
-                    context.packageManager, originatingUid,
-                    Manifest.permission.REQUEST_INSTALL_PACKAGES
+                    context.packageManager, callingUid, Manifest.permission.REQUEST_INSTALL_PACKAGES
                 )
             ) {
                 Log.e(
-                    LOG_TAG, "Requesting uid " + originatingUid + " needs to declare permission "
+                    LOG_TAG, "Requesting uid " + callingUid + " needs to declare permission "
                         + Manifest.permission.REQUEST_INSTALL_PACKAGES
                 )
                 return false
@@ -204,13 +236,13 @@ object PackageUtil {
      * @return `true` if the caller is the session owner
      */
     @JvmStatic
-    fun isCallerSessionOwner(pi: PackageInstaller, originatingUid: Int, sessionId: Int): Boolean {
-        if (originatingUid == Process.ROOT_UID) {
+    fun isCallerSessionOwner(pi: PackageInstaller, callingUid: Int, sessionId: Int): Boolean {
+        if (callingUid == Process.ROOT_UID) {
             return true
         }
         val sessionInfo = pi.getSessionInfo(sessionId) ?: return false
         val installerUid = sessionInfo.getInstallerUid()
-        return originatingUid == installerUid
+        return callingUid == installerUid
     }
 
     /**
@@ -238,7 +270,8 @@ object PackageUtil {
             context.resources,
             info.getAppIcon()
         ) else pm.defaultActivityIcon
-        return AppSnippet(label, icon)
+        val largeIconSize = getLargeIconSize(context)
+        return AppSnippet(label, icon, largeIconSize)
     }
 
     /**
@@ -247,8 +280,11 @@ object PackageUtil {
      */
     @JvmStatic
     fun getAppSnippet(context: Context, pkgInfo: PackageInfo): AppSnippet {
+        val largeIconSize = getLargeIconSize(context)
         return pkgInfo.applicationInfo?.let { getAppSnippet(context, it) } ?: run {
-            AppSnippet(pkgInfo.packageName, context.packageManager.defaultActivityIcon)
+            AppSnippet(
+                pkgInfo.packageName, context.packageManager.defaultActivityIcon, largeIconSize
+            )
         }
     }
 
@@ -261,7 +297,8 @@ object PackageUtil {
         val pm = context.packageManager
         val label = pm.getApplicationLabel(appInfo)
         val icon = pm.getApplicationIcon(appInfo)
-        return AppSnippet(label, icon)
+        val largeIconSize = getLargeIconSize(context)
+        return AppSnippet(label, icon, largeIconSize)
     }
 
     /**
@@ -270,14 +307,22 @@ object PackageUtil {
      */
     @JvmStatic
     fun getAppSnippet(context: Context, pkgInfo: PackageInfo, sourceFile: File): AppSnippet {
+        val largeIconSize = getLargeIconSize(context)
         pkgInfo.applicationInfo?.let {
             val appInfoFromFile = processAppInfoForFile(it, sourceFile)
             val label = getAppLabelFromFile(context, appInfoFromFile)
             val icon = getAppIconFromFile(context, appInfoFromFile)
-            return AppSnippet(label, icon)
+            return AppSnippet(label, icon, largeIconSize)
         } ?: run {
-            return AppSnippet(pkgInfo.packageName, context.packageManager.defaultActivityIcon)
+            return AppSnippet(
+                pkgInfo.packageName, context.packageManager.defaultActivityIcon, largeIconSize
+            )
         }
+    }
+
+    private fun getLargeIconSize(context: Context): Int {
+        val am = context.getSystemService<ActivityManager>(ActivityManager::class.java)
+        return am.launcherLargeIconSize
     }
 
     /**
@@ -362,8 +407,8 @@ object PackageUtil {
      * @return the packageName corresponding to a UID.
      */
     @JvmStatic
-    fun getPackageNameForUid(context: Context, sourceUid: Int, callingPackage: String?): String? {
-        if (sourceUid == Process.INVALID_UID) {
+    fun getPackageNameForUid(context: Context, uid: Int, preferredPkgName: String?): String? {
+        if (uid == Process.INVALID_UID) {
             return null
         }
         // If the sourceUid belongs to the system downloads provider, we explicitly return the
@@ -371,20 +416,21 @@ object PackageUtil {
         // packages, resulting in uncertainty about which package will end up first in the list
         // of packages associated with this UID
         val pm = context.packageManager
-        val systemDownloadProviderInfo = getSystemDownloadsProviderInfo(pm, sourceUid)
+        val systemDownloadProviderInfo = getSystemDownloadsProviderInfo(pm, uid)
         if (systemDownloadProviderInfo != null) {
             return systemDownloadProviderInfo.packageName
         }
-        val packagesForUid = pm.getPackagesForUid(sourceUid) ?: return null
+
+        val packagesForUid = pm.getPackagesForUid(uid) ?: return null
         if (packagesForUid.size > 1) {
-            if (callingPackage != null) {
+            Log.i(LOG_TAG, "Multiple packages found for source uid $uid")
+            if (preferredPkgName != null) {
                 for (packageName in packagesForUid) {
-                    if (packageName == callingPackage) {
+                    if (packageName == preferredPkgName) {
                         return packageName
                     }
                 }
             }
-            Log.i(LOG_TAG, "Multiple packages found for source uid $sourceUid")
         }
         return packagesForUid[0]
     }
@@ -397,9 +443,20 @@ object PackageUtil {
         var filePath = sourceFile.absolutePath
         if (filePath.endsWith(SPLIT_BASE_APK_SUFFIX)) {
             val dir = sourceFile.parentFile
-            if ((dir?.listFiles()?.size ?: 0) > 1) {
-                // split apks, use file directory to get archive info
-                filePath = dir.path
+            try {
+                Files.list(dir.toPath()).use { list ->
+                    val count: Long = list
+                        .filter { name: Path -> name.endsWith(SPLIT_APK_SUFFIX) }
+                        .limit(2)
+                        .count()
+                    if (count > 1) {
+                        // split apks, use file directory to get archive info
+                        filePath = dir.path
+                    }
+                }
+            } catch (ignored: Exception) {
+                // No access to the parent directory, proceed to read app snippet
+                // from the base apk only
             }
         }
         return try {
@@ -437,9 +494,71 @@ object PackageUtil {
      * The class to hold an incoming package's icon and label.
      * See [getAppSnippet]
      */
-    data class AppSnippet(var label: CharSequence?, var icon: Drawable?) {
+    @Parcelize
+    data class AppSnippet(
+        var label: CharSequence?,
+        var icon: Drawable?,
+        var iconSize: Int,
+    ) : Parcelable {
+        private companion object : Parceler<AppSnippet> {
+            override fun AppSnippet.write(dest: Parcel, flags: Int) {
+                dest.writeString(label.toString())
+
+                val bmp = getBitmapFromDrawable(icon!!)
+                dest.writeBlob(getBytesFromBitmap(bmp))
+                bmp.recycle()
+
+                dest.writeInt(iconSize)
+            }
+
+            @SuppressLint("UseKtx")
+            override fun create(parcel: Parcel): AppSnippet {
+                val label = parcel.readString()
+
+                val b: ByteArray = parcel.readBlob()!!
+                val bmp: Bitmap? = BitmapFactory.decodeByteArray(b, 0, b.size)
+                val icon = BitmapDrawable(Resources.getSystem(), bmp)
+
+                val iconSize = parcel.readInt()
+
+                return AppSnippet(label.toString(), icon, iconSize)
+            }
+        }
+
+        @SuppressLint("UseKtx")
+        private fun getBitmapFromDrawable(drawable: Drawable): Bitmap {
+            // Create an empty bitmap with the dimensions of our drawable
+            val bmp = Bitmap.createBitmap(
+                drawable.intrinsicWidth,
+                drawable.intrinsicHeight, Bitmap.Config.ARGB_8888
+            )
+            // Associate it with a canvas. This canvas will draw the icon on the bitmap
+            val canvas = Canvas(bmp)
+            // Draw the drawable in the canvas. The canvas will ultimately paint the drawable in the
+            // bitmap held within
+            drawable.draw(canvas)
+
+            // Scale it down if the icon is too large
+            if ((bmp.getWidth() > iconSize * 2) || (bmp.getHeight() > iconSize * 2)) {
+                val scaledBitmap = Bitmap.createScaledBitmap(bmp, iconSize, iconSize, true)
+                if (scaledBitmap != bmp) {
+                    bmp.recycle()
+                }
+                return scaledBitmap
+            }
+            return bmp
+        }
+
+        private fun getBytesFromBitmap(bmp: Bitmap): ByteArray? {
+            var baos = ByteArrayOutputStream()
+            baos.use {
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
+            return baos.toByteArray()
+        }
+
         override fun toString(): String {
-            return "AppSnippet[label = ${label}, hasIcon = ${icon != null}]"
+            return "AppSnippet[label = $label, hasIcon = ${icon != null}]"
         }
     }
 }

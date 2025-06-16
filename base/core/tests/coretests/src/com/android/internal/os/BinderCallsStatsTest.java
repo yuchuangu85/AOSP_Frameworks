@@ -29,14 +29,14 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.Process;
 import android.os.SystemClock;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.ArrayMap;
 import android.util.SparseArray;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.os.BinderInternal.CallSession;
 
@@ -59,7 +59,7 @@ import java.util.Set;
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 @Presubmit
-@IgnoreUnderRavenwood(blockedBy = BinderCallsStats.class)
+@DisabledOnRavenwood(blockedBy = BinderCallsStats.class)
 public class BinderCallsStatsTest {
     @Rule
     public final RavenwoodRule mRavenwood = new RavenwoodRule();

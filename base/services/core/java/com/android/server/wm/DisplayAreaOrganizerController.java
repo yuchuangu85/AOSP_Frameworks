@@ -18,7 +18,7 @@ package com.android.server.wm;
 
 import static android.window.DisplayAreaOrganizer.FEATURE_RUNTIME_TASK_CONTAINER_FIRST;
 
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_WINDOW_ORGANIZER;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_WINDOW_ORGANIZER;
 import static com.android.server.wm.DisplayArea.Type.ANY;
 
 import android.annotation.Nullable;
@@ -33,7 +33,7 @@ import android.window.IDisplayAreaOrganizer;
 import android.window.IDisplayAreaOrganizerController;
 import android.window.WindowContainerToken;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -366,10 +366,10 @@ public class DisplayAreaOrganizerController extends IDisplayAreaOrganizerControl
         taskDisplayArea.setOrganizer(null);
         mService.mRootWindowContainer.mTaskSupervisor.beginDeferResume();
 
-        // TaskDisplayArea#remove() move the stacks to the default TaskDisplayArea.
+        // TaskDisplayArea#remove() moves the stacks to the default TaskDisplayArea.
         Task lastReparentedRootTask;
         try {
-            lastReparentedRootTask = taskDisplayArea.remove();
+            lastReparentedRootTask = taskDisplayArea.prepareForRemoval();
         } finally {
             mService.mRootWindowContainer.mTaskSupervisor.endDeferResume();
         }

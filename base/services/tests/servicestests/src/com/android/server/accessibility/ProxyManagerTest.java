@@ -51,9 +51,6 @@ import android.os.IBinder;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.test.FakePermissionEnforcer;
-import android.platform.test.annotations.RequiresFlagsEnabled;
-import android.platform.test.flag.junit.CheckFlagsRule;
-import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.ArraySet;
 import android.view.KeyEvent;
@@ -96,9 +93,6 @@ public class ProxyManagerTest {
     private static final int DISPLAY_2_ID = 1001;
     private static final int DEVICE_ID = 10;
     private static final int STREAMED_CALLING_UID = 9876;
-
-    @Rule
-    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     @Rule
     public SetFlagsRule mSetFlagsRule = new SetFlagsRule();
@@ -243,7 +237,6 @@ public class ProxyManagerTest {
      * app changes to the proxy device.
      */
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_PROXY_USE_APPS_ON_VIRTUAL_DEVICE_LISTENER)
     public void testUpdateProxyOfRunningAppsChange_changedUidIsStreamedApp_propagatesChange() {
         final VirtualDeviceManagerInternal localVdm =
                 Mockito.mock(VirtualDeviceManagerInternal.class);
@@ -432,7 +425,6 @@ public class ProxyManagerTest {
 
     @Test
     public void testRegisterProxy_registersVirtualDeviceListener() throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
 
         verify(mMockIVirtualDeviceManager, times(1)).registerVirtualDeviceListener(any());
@@ -441,7 +433,6 @@ public class ProxyManagerTest {
     @Test
     public void testRegisterMultipleProxies_registersOneVirtualDeviceListener()
             throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
         registerProxy(DISPLAY_2_ID);
 
@@ -450,7 +441,6 @@ public class ProxyManagerTest {
 
     @Test
     public void testUnregisterProxy_unregistersVirtualDeviceListener() throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
 
         mProxyManager.unregisterProxy(DISPLAY_ID);
@@ -461,7 +451,6 @@ public class ProxyManagerTest {
     @Test
     public void testUnregisterProxy_onlyUnregistersVirtualDeviceListenerOnLastProxyRemoval()
             throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
         registerProxy(DISPLAY_2_ID);
 
@@ -475,7 +464,6 @@ public class ProxyManagerTest {
     @Test
     public void testRegisteredProxy_virtualDeviceClosed_proxyClosed()
             throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
 
         assertThat(mProxyManager.isProxyedDeviceId(DEVICE_ID)).isTrue();
@@ -497,7 +485,6 @@ public class ProxyManagerTest {
     @Test
     public void testRegisteredProxy_unrelatedVirtualDeviceClosed_proxyNotClosed()
             throws RemoteException {
-        mSetFlagsRule.enableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
         registerProxy(DISPLAY_ID);
 
         assertThat(mProxyManager.isProxyedDeviceId(DEVICE_ID)).isTrue();
@@ -512,17 +499,6 @@ public class ProxyManagerTest {
 
         assertThat(mProxyManager.isProxyedDeviceId(DEVICE_ID)).isTrue();
         assertThat(mProxyManager.isProxyedDisplay(DISPLAY_ID)).isTrue();
-    }
-
-    @Test
-    public void testRegisterProxy_doesNotRegisterVirtualDeviceListener_flagDisabled()
-            throws RemoteException {
-        mSetFlagsRule.disableFlags(android.companion.virtual.flags.Flags.FLAG_VDM_PUBLIC_APIS);
-        registerProxy(DISPLAY_ID);
-        mProxyManager.unregisterProxy(DISPLAY_ID);
-
-        verify(mMockIVirtualDeviceManager, never()).registerVirtualDeviceListener(any());
-        verify(mMockIVirtualDeviceManager, never()).unregisterVirtualDeviceListener(any());
     }
 
     private void registerProxy(int displayId) {

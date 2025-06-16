@@ -19,27 +19,21 @@ package com.android.systemui.media.controls.ui.viewmodel
 import android.R
 import android.content.packageManager
 import android.content.pm.ApplicationInfo
-import android.graphics.drawable.Icon
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.logging.InstanceId
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
-import com.android.systemui.flags.Flags
-import com.android.systemui.flags.fakeFeatureFlagsClassic
 import com.android.systemui.kosmos.testScope
-import com.android.systemui.media.controls.MediaTestHelper
 import com.android.systemui.media.controls.domain.pipeline.MediaDataFilterImpl
 import com.android.systemui.media.controls.domain.pipeline.interactor.mediaCarouselInteractor
-import com.android.systemui.media.controls.domain.pipeline.interactor.mediaRecommendationsInteractor
 import com.android.systemui.media.controls.domain.pipeline.mediaDataFilter
+import com.android.systemui.media.controls.shared.mediaLogger
+import com.android.systemui.media.controls.shared.mockMediaLogger
 import com.android.systemui.media.controls.shared.model.MediaData
-import com.android.systemui.media.controls.shared.model.SmartspaceMediaData
-import com.android.systemui.statusbar.notification.collection.provider.visualStabilityProvider
 import com.android.systemui.statusbar.notificationLockscreenUserManager
 import com.android.systemui.testKosmos
 import com.android.systemui.util.mockito.any
-import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.whenever
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
@@ -48,26 +42,22 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.never
+import org.mockito.kotlin.reset
+import org.mockito.kotlin.verify
 
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class MediaCarouselViewModelTest : SysuiTestCase() {
 
-    private val kosmos = testKosmos()
+    private val kosmos = testKosmos().apply { mediaLogger = mockMediaLogger }
     private val testScope = kosmos.testScope
 
     private val mediaDataFilter: MediaDataFilterImpl = kosmos.mediaDataFilter
     private val notificationLockscreenUserManager = kosmos.notificationLockscreenUserManager
     private val packageManager = kosmos.packageManager
-    private val icon = Icon.createWithResource(context, R.drawable.ic_media_play)
     private val drawable = context.getDrawable(R.drawable.ic_media_play)
-    private val smartspaceMediaData: SmartspaceMediaData =
-        SmartspaceMediaData(
-            targetId = KEY_MEDIA_SMARTSPACE,
-            isActive = true,
-            packageName = PACKAGE_NAME,
-            recommendations = MediaTestHelper.getValidRecommendationList(icon),
-        )
 
     private val underTest: MediaCarouselViewModel = kosmos.mediaCarouselViewModel
 
@@ -96,74 +86,57 @@ class MediaCarouselViewModelTest : SysuiTestCase() {
             loadMediaControl(KEY_2, instanceId2, isPlaying = true)
             loadMediaControl(KEY, instanceId1, isPlaying = false)
 
-            var mediaControl2 = sortedMedia?.get(0) as MediaCommonViewModel.MediaControl
-            var mediaControl1 = sortedMedia?.get(1) as MediaCommonViewModel.MediaControl
+            var mediaControl2 = sortedMedia?.get(0) as MediaControlViewModel
+            var mediaControl1 = sortedMedia?.get(1) as MediaControlViewModel
             assertThat(mediaControl2.instanceId).isEqualTo(instanceId2)
             assertThat(mediaControl1.instanceId).isEqualTo(instanceId1)
 
             loadMediaControl(KEY, instanceId1, isPlaying = true)
             loadMediaControl(KEY_2, instanceId2, isPlaying = false)
 
-            mediaControl2 = sortedMedia?.get(0) as MediaCommonViewModel.MediaControl
-            mediaControl1 = sortedMedia?.get(1) as MediaCommonViewModel.MediaControl
+            mediaControl2 = sortedMedia?.get(0) as MediaControlViewModel
+            mediaControl1 = sortedMedia?.get(1) as MediaControlViewModel
             assertThat(mediaControl2.instanceId).isEqualTo(instanceId2)
             assertThat(mediaControl1.instanceId).isEqualTo(instanceId1)
 
             underTest.onReorderingAllowed()
 
-            mediaControl1 = sortedMedia?.get(0) as MediaCommonViewModel.MediaControl
-            mediaControl2 = sortedMedia?.get(1) as MediaCommonViewModel.MediaControl
+            mediaControl1 = sortedMedia?.get(0) as MediaControlViewModel
+            mediaControl2 = sortedMedia?.get(1) as MediaControlViewModel
             assertThat(mediaControl1.instanceId).isEqualTo(instanceId1)
             assertThat(mediaControl2.instanceId).isEqualTo(instanceId2)
         }
 
     @Test
-    fun loadMediaControlsAndRecommendations_mediaItemsAreUpdated() =
+    fun addMediaControlThenRemove_mediaEventsAreLogged() =
         testScope.runTest {
             val sortedMedia by collectLastValue(underTest.mediaItems)
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
-            val instanceId1 = InstanceId.fakeInstanceId(123)
-            val instanceId2 = InstanceId.fakeInstanceId(456)
-
-            loadMediaControl(KEY, instanceId1)
-            loadMediaControl(KEY_2, instanceId2)
-            loadMediaRecommendations()
-
-            val firstMediaControl = sortedMedia?.get(0) as MediaCommonViewModel.MediaControl
-            val secondMediaControl = sortedMedia?.get(1) as MediaCommonViewModel.MediaControl
-            val recsCard = sortedMedia?.get(2) as MediaCommonViewModel.MediaRecommendations
-            assertThat(firstMediaControl.instanceId).isEqualTo(instanceId2)
-            assertThat(secondMediaControl.instanceId).isEqualTo(instanceId1)
-            assertThat(recsCard.key).isEqualTo(KEY_MEDIA_SMARTSPACE)
-        }
-
-    @Test
-    fun recommendationClicked_switchToPlayer() =
-        testScope.runTest {
-            val sortedMedia by collectLastValue(underTest.mediaItems)
-            kosmos.visualStabilityProvider.isReorderingAllowed = false
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
             val instanceId = InstanceId.fakeInstanceId(123)
 
-            loadMediaRecommendations()
-            kosmos.mediaRecommendationsInteractor.switchToMediaControl(PACKAGE_NAME)
+            loadMediaControl(KEY, instanceId)
 
-            var recsCard = sortedMedia?.get(0) as MediaCommonViewModel.MediaRecommendations
-            assertThat(sortedMedia).hasSize(1)
-            assertThat(recsCard.key).isEqualTo(KEY_MEDIA_SMARTSPACE)
-
-            loadMediaControl(KEY, instanceId, false)
-
-            recsCard = sortedMedia?.get(0) as MediaCommonViewModel.MediaRecommendations
-            assertThat(sortedMedia).hasSize(1)
-            assertThat(recsCard.key).isEqualTo(KEY_MEDIA_SMARTSPACE)
-
-            loadMediaControl(KEY, instanceId, true)
-
-            val mediaControl = sortedMedia?.get(0) as MediaCommonViewModel.MediaControl
-            assertThat(sortedMedia).hasSize(2)
+            val mediaControl = sortedMedia?.get(0) as MediaControlViewModel
             assertThat(mediaControl.instanceId).isEqualTo(instanceId)
-            assertThat(mediaControl.isMediaFromRec).isTrue()
+
+            // when media control is added to carousel
+            mediaControl.onAdded(mediaControl)
+
+            verify(kosmos.mediaLogger).logMediaCardAdded(eq(instanceId))
+
+            reset(kosmos.mediaLogger)
+
+            // when media control is updated.
+            mediaControl.onUpdated(mediaControl)
+
+            verify(kosmos.mediaLogger, never()).logMediaCardAdded(eq(instanceId))
+
+            mediaDataFilter.onMediaDataRemoved(KEY, true)
+            assertThat(sortedMedia).isEmpty()
+
+            // when media control is removed from carousel
+            mediaControl.onRemoved(true)
+
+            verify(kosmos.mediaLogger).logMediaCardRemoved(eq(instanceId))
         }
 
     private fun loadMediaControl(key: String, instanceId: InstanceId, isPlaying: Boolean = true) {
@@ -181,15 +154,10 @@ class MediaCarouselViewModelTest : SysuiTestCase() {
         mediaDataFilter.onMediaDataLoaded(key, key, mediaData)
     }
 
-    private fun loadMediaRecommendations(key: String = KEY_MEDIA_SMARTSPACE) {
-        mediaDataFilter.onSmartspaceMediaDataLoaded(key, smartspaceMediaData)
-    }
-
     companion object {
         private const val USER_ID = 0
         private const val KEY = "key"
         private const val KEY_2 = "key2"
         private const val PACKAGE_NAME = "com.example.app"
-        private const val KEY_MEDIA_SMARTSPACE = "MEDIA_SMARTSPACE_ID"
     }
 }

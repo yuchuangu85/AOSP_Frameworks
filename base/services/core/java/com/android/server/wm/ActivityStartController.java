@@ -25,6 +25,7 @@ import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
 import static android.os.FactoryTest.FACTORY_TEST_LOW_LEVEL;
 
+import static com.android.server.wm.ActivityStarter.Request.DEFAULT_INTENT_CREATOR_UID;
 import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_ATM;
 import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.ActivityTaskSupervisor.ON_TOP;
@@ -33,7 +34,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.app.ActivityOptions;
-import android.app.BackgroundStartPrivileges;
 import android.app.IApplicationThread;
 import android.content.ComponentName;
 import android.content.ContentResolver;
@@ -43,7 +43,6 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.Binder;
-import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Trace;
 import android.os.UserHandle;
@@ -61,6 +60,7 @@ import com.android.server.wm.ActivityStarter.DefaultFactory;
 import com.android.server.wm.ActivityStarter.Factory;
 
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -97,6 +97,9 @@ public class ActivityStartController {
 
     /** Whether an {@link ActivityStarter} is currently executing (starting an Activity). */
     private boolean mInExecution = false;
+
+    /** The {@link TaskDisplayArea}s that are currently starting home activity. */
+    private ArrayList<TaskDisplayArea> mHomeLaunchingTaskDisplayAreas = new ArrayList<>();
 
     /**
      * TODO(b/64750076): Capture information necessary for dump and
@@ -163,6 +166,11 @@ public class ActivityStartController {
 
     void startHomeActivity(Intent intent, ActivityInfo aInfo, String reason,
             TaskDisplayArea taskDisplayArea) {
+        if (mHomeLaunchingTaskDisplayAreas.contains(taskDisplayArea)) {
+            Slog.e(TAG, "Abort starting home on " + taskDisplayArea + " recursively.");
+            return;
+        }
+
         final ActivityOptions options = ActivityOptions.makeBasic();
         options.setLaunchWindowingMode(WINDOWING_MODE_FULLSCREEN);
         if (!ActivityRecord.isResolverActivity(aInfo.name)) {
@@ -187,12 +195,18 @@ public class ActivityStartController {
             mSupervisor.endDeferResume();
         }
 
-        mLastHomeActivityStartResult = obtainStarter(intent, "startHomeActivity: " + reason)
-                .setOutActivity(tmpOutRecord)
-                .setCallingUid(0)
-                .setActivityInfo(aInfo)
-                .setActivityOptions(options.toBundle())
-                .execute();
+        try {
+            mHomeLaunchingTaskDisplayAreas.add(taskDisplayArea);
+            mLastHomeActivityStartResult = obtainStarter(intent, "startHomeActivity: " + reason)
+                    .setOutActivity(tmpOutRecord)
+                    .setCallingUid(0)
+                    .setActivityInfo(aInfo)
+                    .setActivityOptions(options.toBundle(),
+                            Binder.getCallingPid(), Binder.getCallingUid())
+                    .execute();
+        } finally {
+            mHomeLaunchingTaskDisplayAreas.remove(taskDisplayArea);
+        }
         mLastHomeActivityStartRecord = tmpOutRecord[0];
         if (rootHomeTask.mInResumeTopActivity) {
             // If we are in resume section already, home activity will be initialized, but not
@@ -280,8 +294,8 @@ public class ActivityStartController {
      * @param validateIncomingUser Set true to skip checking {@code userId} with the calling UID.
      * @param originatingPendingIntent PendingIntentRecord that originated this activity start or
      *        null if not originated by PendingIntent
-     * @param forcedBalByPiSender If set to allow, the
-     *        PendingIntent's sender will try to force allow background activity starts.
+     * @param allowBalExemptionForSystemProcess If set to {@code true}, the
+     *        PendingIntent's sender will allow additional exemptions.
      *        This is only possible if the sender of the PendingIntent is a system process.
      */
     final int startActivityInPackage(int uid, int realCallingPid, int realCallingUid,
@@ -289,7 +303,7 @@ public class ActivityStartController {
             String resolvedType, IBinder resultTo, String resultWho, int requestCode,
             int startFlags, SafeActivityOptions options, int userId, Task inTask, String reason,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender) {
+            boolean allowBalExemptionForSystemProcess) {
 
         userId = checkTargetUser(userId, validateIncomingUser, realCallingPid, realCallingUid,
                 reason);
@@ -310,7 +324,7 @@ public class ActivityStartController {
                 .setUserId(userId)
                 .setInTask(inTask)
                 .setOriginatingPendingIntent(originatingPendingIntent)
-                .setBackgroundStartPrivileges(forcedBalByPiSender)
+                .setAllowBalExemptionForSystemProcess(allowBalExemptionForSystemProcess)
                 .execute();
     }
 
@@ -325,18 +339,18 @@ public class ActivityStartController {
      * @param validateIncomingUser Set true to skip checking {@code userId} with the calling UID.
      * @param originatingPendingIntent PendingIntentRecord that originated this activity start or
      *        null if not originated by PendingIntent
-     * @param forcedBalByPiSender If set to allow, the
-     *        PendingIntent's sender will try to force allow background activity starts.
+     * @param allowBalExemptionForSystemProcess If set to {@code true}, the
+     *        PendingIntent's sender will allow additional exemptions.
      *        This is only possible if the sender of the PendingIntent is a system process.
      */
     final int startActivitiesInPackage(int uid, String callingPackage,
             @Nullable String callingFeatureId, Intent[] intents, String[] resolvedTypes,
             IBinder resultTo, SafeActivityOptions options, int userId, boolean validateIncomingUser,
             PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender) {
+            boolean allowBalExemptionForSystemProcess) {
         return startActivitiesInPackage(uid, 0 /* realCallingPid */, -1 /* realCallingUid */,
                 callingPackage, callingFeatureId, intents, resolvedTypes, resultTo, options, userId,
-                validateIncomingUser, originatingPendingIntent, forcedBalByPiSender);
+                validateIncomingUser, originatingPendingIntent, allowBalExemptionForSystemProcess);
     }
 
     /**
@@ -351,15 +365,15 @@ public class ActivityStartController {
      * @param validateIncomingUser Set true to skip checking {@code userId} with the calling UID.
      * @param originatingPendingIntent PendingIntentRecord that originated this activity start or
      *        null if not originated by PendingIntent
-     * @param forcedBalByPiSender If set to allow, the
-     *        PendingIntent's sender will try to force allow background activity starts.
+     * @param allowBalExemptionForSystemProcess If set to {@code true}, the
+     *        PendingIntent's sender will allow additional exemptions.
      *        This is only possible if the sender of the PendingIntent is a system process.
      */
     final int startActivitiesInPackage(int uid, int realCallingPid, int realCallingUid,
             String callingPackage, @Nullable String callingFeatureId, Intent[] intents,
             String[] resolvedTypes, IBinder resultTo, SafeActivityOptions options, int userId,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender) {
+            boolean allowBalExemptionForSystemProcess) {
 
         final String reason = "startActivityInPackage";
 
@@ -369,14 +383,14 @@ public class ActivityStartController {
         // TODO: Switch to user app stacks here.
         return startActivities(null, uid, realCallingPid, realCallingUid, callingPackage,
                 callingFeatureId, intents, resolvedTypes, resultTo, options, userId, reason,
-                originatingPendingIntent, forcedBalByPiSender);
+                originatingPendingIntent, allowBalExemptionForSystemProcess);
     }
 
     int startActivities(IApplicationThread caller, int callingUid, int incomingRealCallingPid,
             int incomingRealCallingUid, String callingPackage, @Nullable String callingFeatureId,
             Intent[] intents, String[] resolvedTypes, IBinder resultTo, SafeActivityOptions options,
             int userId, String reason, PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender) {
+            boolean allowBalExemptionForSystemProcess) {
         if (intents == null) {
             throw new NullPointerException("intents is null");
         }
@@ -442,6 +456,17 @@ public class ActivityStartController {
                         0 /* startFlags */, null /* profilerInfo */, userId, filterCallingUid,
                         callingPid);
                 aInfo = mService.mAmInternal.getActivityInfoForUser(aInfo, userId);
+                int creatorUid = DEFAULT_INTENT_CREATOR_UID;
+                String creatorPackage = null;
+                if (ActivityManagerService.IntentCreatorToken.isValid(intent)) {
+                    ActivityManagerService.IntentCreatorToken creatorToken =
+                            (ActivityManagerService.IntentCreatorToken) intent.getCreatorToken();
+                    if (creatorToken.getCreatorUid() != filterCallingUid) {
+                        creatorUid = creatorToken.getCreatorUid();
+                        creatorPackage = creatorToken.getCreatorPackage();
+                    }
+                    // leave creatorUid as -1 if the intent creator is the same as the launcher
+                }
 
                 if (aInfo != null) {
                     try {
@@ -455,6 +480,24 @@ public class ActivityStartController {
                         return START_CANCELED;
                     }
 
+                    if (creatorUid != DEFAULT_INTENT_CREATOR_UID) {
+                        try {
+                            NeededUriGrants creatorIntentGrants = mSupervisor.mService.mUgmInternal
+                                    .checkGrantUriPermissionFromIntent(intent, creatorUid,
+                                            aInfo.applicationInfo.packageName,
+                                            UserHandle.getUserId(aInfo.applicationInfo.uid));
+                            if (intentGrants == null) {
+                                intentGrants = creatorIntentGrants;
+                            } else {
+                                intentGrants.merge(creatorIntentGrants);
+                            }
+                        } catch (SecurityException securityException) {
+                            ActivityStarter.logAndThrowExceptionForIntentRedirect(mService.mContext,
+                                    ActivityStarter.INTENT_REDIRECT_EXCEPTION_GRANT_URI_PERMISSION,
+                                    intent, creatorUid, creatorPackage, filterCallingUid,
+                                    callingPackage, securityException);
+                        }
+                    }
                     if ((aInfo.applicationInfo.privateFlags
                             & ApplicationInfo.PRIVATE_FLAG_CANT_SAVE_STATE) != 0) {
                         throw new IllegalArgumentException(
@@ -478,6 +521,8 @@ public class ActivityStartController {
                         .setCallingUid(callingUid)
                         .setCallingPackage(callingPackage)
                         .setCallingFeatureId(callingFeatureId)
+                        .setIntentCreatorUid(creatorUid)
+                        .setIntentCreatorPackage(creatorPackage)
                         .setRealCallingPid(realCallingPid)
                         .setRealCallingUid(realCallingUid)
                         .setActivityOptions(checkedOptions)
@@ -487,7 +532,7 @@ public class ActivityStartController {
                         // top one as otherwise an activity below might consume it.
                         .setAllowPendingRemoteAnimationRegistryLookup(top /* allowLookup*/)
                         .setOriginatingPendingIntent(originatingPendingIntent)
-                        .setBackgroundStartPrivileges(forcedBalByPiSender);
+                        .setAllowBalExemptionForSystemProcess(allowBalExemptionForSystemProcess);
             }
             // Log if the activities to be started have different uids.
             if (startingUidPkgs.size() > 1) {
@@ -550,14 +595,14 @@ public class ActivityStartController {
      * Starts an activity in the TaskFragment.
      * @param taskFragment TaskFragment {@link TaskFragment} to start the activity in.
      * @param activityIntent intent to start the activity.
-     * @param activityOptions ActivityOptions to start the activity with.
+     * @param activityOptions SafeActivityOptions to start the activity with.
      * @param resultTo the caller activity
      * @param callingUid the caller uid
      * @param callingPid the caller pid
      * @return the start result.
      */
     int startActivityInTaskFragment(@NonNull TaskFragment taskFragment,
-            @NonNull Intent activityIntent, @Nullable Bundle activityOptions,
+            @NonNull Intent activityIntent, @Nullable SafeActivityOptions activityOptions,
             @Nullable IBinder resultTo, int callingUid, int callingPid,
             @Nullable IBinder errorCallbackToken) {
         final ActivityRecord caller =
@@ -618,11 +663,10 @@ public class ActivityStartController {
         final Task task = r.getTask();
         mService.deferWindowLayout();
         try {
-            final TransitionController controller = r.mTransitionController;
-            final Transition transition = controller.getCollectingTransition();
+            final Transition transition = r.mTransitionController.getCollectingTransition();
             if (transition != null) {
                 transition.setRemoteAnimationApp(r.app.getThread());
-                controller.setTransientLaunch(r, TaskDisplayArea.getRootTaskAbove(rootTask));
+                transition.setTransientLaunch(r, TaskDisplayArea.getRootTaskAbove(rootTask));
             }
             task.moveToFront("startExistingRecents");
             task.mInResumeTopActivity = true;
@@ -688,6 +732,12 @@ public class ActivityStartController {
                     return;
                 }
             }
+        }
+
+        if (!mHomeLaunchingTaskDisplayAreas.isEmpty()) {
+            dumped = true;
+            pw.print(prefix);
+            pw.println("mHomeLaunchingTaskDisplayAreas:" + mHomeLaunchingTaskDisplayAreas);
         }
 
         if (!dumped) {

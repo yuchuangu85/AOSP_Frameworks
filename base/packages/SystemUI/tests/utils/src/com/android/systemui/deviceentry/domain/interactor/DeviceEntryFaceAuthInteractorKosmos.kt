@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.deviceentry.domain.interactor
 
 import android.content.applicationContext
@@ -33,9 +31,9 @@ import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testDispatcher
 import com.android.systemui.log.FaceAuthenticationLogger
 import com.android.systemui.power.domain.interactor.powerInteractor
+import com.android.systemui.scene.domain.interactor.sceneInteractor
 import com.android.systemui.user.data.repository.userRepository
 import com.android.systemui.util.mockito.mock
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 
 val Kosmos.faceAuthLogger by Kosmos.Fixture { mock<FaceAuthenticationLogger>() }
 val Kosmos.deviceEntryFaceAuthInteractor by
@@ -57,5 +55,7 @@ val Kosmos.deviceEntryFaceAuthInteractor by
             powerInteractor = powerInteractor,
             biometricSettingsRepository = biometricSettingsRepository,
             trustManager = trustManager,
+            sceneInteractor = { sceneInteractor },
+            deviceEntryFaceAuthStatusInteractor = deviceEntryFaceAuthStatusInteractor,
         )
     }

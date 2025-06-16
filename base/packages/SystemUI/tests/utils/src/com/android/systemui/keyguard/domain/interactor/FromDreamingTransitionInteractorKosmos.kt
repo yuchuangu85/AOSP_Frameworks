@@ -16,6 +16,11 @@
 
 package com.android.systemui.keyguard.domain.interactor
 
+import android.service.dream.dreamManager
+import com.android.systemui.communal.domain.interactor.communalInteractor
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.communalSettingsInteractor
+import com.android.systemui.deviceentry.domain.interactor.deviceEntryInteractor
 import com.android.systemui.keyguard.data.repository.keyguardTransitionRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
@@ -28,12 +33,17 @@ var Kosmos.fromDreamingTransitionInteractor by
         FromDreamingTransitionInteractor(
             transitionRepository = keyguardTransitionRepository,
             transitionInteractor = keyguardTransitionInteractor,
+            internalTransitionInteractor = internalKeyguardTransitionInteractor,
             scope = applicationCoroutineScope,
             bgDispatcher = testDispatcher,
             mainDispatcher = testDispatcher,
             keyguardInteractor = keyguardInteractor,
-            glanceableHubTransitions = glanceableHubTransitions,
+            communalInteractor = communalInteractor,
+            communalSceneInteractor = communalSceneInteractor,
+            communalSettingsInteractor = communalSettingsInteractor,
             powerInteractor = powerInteractor,
             keyguardOcclusionInteractor = keyguardOcclusionInteractor,
+            dreamManager = dreamManager,
+            deviceEntryInteractor = deviceEntryInteractor,
         )
     }

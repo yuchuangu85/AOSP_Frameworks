@@ -16,6 +16,7 @@
 
 package com.android.systemui.shade.domain.interactor
 
+import com.android.app.tracing.coroutines.flow.flowName
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.data.repository.KeyguardRepository
@@ -24,7 +25,7 @@ import com.android.systemui.keyguard.shared.model.DozeStateModel
 import com.android.systemui.keyguard.shared.model.Edge
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.power.domain.interactor.PowerInteractor
-import com.android.systemui.statusbar.disableflags.data.repository.DisableFlagsRepository
+import com.android.systemui.statusbar.disableflags.domain.interactor.DisableFlagsInteractor
 import com.android.systemui.statusbar.phone.DozeParameters
 import com.android.systemui.statusbar.policy.data.repository.UserSetupRepository
 import com.android.systemui.statusbar.policy.domain.interactor.DeviceProvisioningInteractor
@@ -39,14 +40,14 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
-/** The non-empty SceneInteractor implementation. */
+/** The non-empty [ShadeInteractor] implementation. */
 @SysUISingleton
 class ShadeInteractorImpl
 @Inject
 constructor(
     @Application val scope: CoroutineScope,
     deviceProvisioningInteractor: DeviceProvisioningInteractor,
-    disableFlagsRepository: DisableFlagsRepository,
+    disableFlagsInteractor: DisableFlagsInteractor,
     dozeParams: DozeParameters,
     keyguardRepository: KeyguardRepository,
     keyguardTransitionInteractor: KeyguardTransitionInteractor,
@@ -56,31 +57,39 @@ constructor(
     private val baseShadeInteractor: BaseShadeInteractor,
 ) : ShadeInteractor, BaseShadeInteractor by baseShadeInteractor {
     override val isShadeEnabled: StateFlow<Boolean> =
-        disableFlagsRepository.disableFlags
-            .map { isDisabledByFlags -> isDisabledByFlags.isShadeEnabled() }
-            .distinctUntilChanged()
+        disableFlagsInteractor.disableFlags
+            .map { it.isShadeEnabled() }
+            .flowName("isShadeEnabled")
             .stateIn(scope, SharingStarted.Eagerly, initialValue = false)
 
     override val isQsEnabled: StateFlow<Boolean> =
-        disableFlagsRepository.disableFlags
+        disableFlagsInteractor.disableFlags
             .map { it.isQuickSettingsEnabled() }
+            .flowName("isQsEnabled")
             .stateIn(scope, SharingStarted.Eagerly, initialValue = false)
 
     override val isAnyFullyExpanded: StateFlow<Boolean> =
         anyExpansion
             .map { it >= 1f }
             .distinctUntilChanged()
+            .flowName("isAnyFullyExpanded")
             .stateIn(scope, SharingStarted.Eagerly, initialValue = false)
 
     override val isShadeFullyExpanded: Flow<Boolean> =
         baseShadeInteractor.shadeExpansion.map { it >= 1f }.distinctUntilChanged()
+
+    override val isShadeAnyExpanded: StateFlow<Boolean> =
+        baseShadeInteractor.shadeExpansion
+            .map { it > 0 }
+            .flowName("isShadeAnyExpanded")
+            .stateIn(scope, SharingStarted.Eagerly, false)
 
     override val isShadeFullyCollapsed: Flow<Boolean> =
         baseShadeInteractor.shadeExpansion.map { it <= 0f }.distinctUntilChanged()
 
     override val isUserInteracting: StateFlow<Boolean> =
         combine(isUserInteractingWithShade, isUserInteractingWithQs) { shade, qs -> shade || qs }
-            .distinctUntilChanged()
+            .flowName("isUserInteracting")
             .stateIn(scope, SharingStarted.Eagerly, false)
 
     override val isShadeTouchable: Flow<Boolean> =
@@ -88,11 +97,10 @@ constructor(
             powerInteractor.isAsleep,
             keyguardTransitionInteractor.isInTransition(Edge.create(to = KeyguardState.AOD)),
             keyguardRepository.dozeTransitionModel.map { it.to == DozeStateModel.DOZE_PULSING },
-        ) { isAsleep, goingToSleep, isPulsing ->
+        ) { isAsleep, isTransitioningToAod, isPulsing ->
             when {
-                // If the device is going to sleep, only accept touches if we're still
-                // animating
-                goingToSleep -> dozeParams.shouldControlScreenOff()
+                // If the device is transitioning to AOD, only accept touches if still animating.
+                isTransitioningToAod -> dozeParams.shouldControlScreenOff()
                 // If the device is asleep, only accept touches if there's a pulse
                 isAsleep -> isPulsing
                 else -> true
@@ -101,7 +109,7 @@ constructor(
 
     override val isExpandToQsEnabled: Flow<Boolean> =
         combine(
-            disableFlagsRepository.disableFlags,
+            disableFlagsInteractor.disableFlags,
             isShadeEnabled,
             keyguardRepository.isDozing,
             userSetupRepository.isUserSetUp,

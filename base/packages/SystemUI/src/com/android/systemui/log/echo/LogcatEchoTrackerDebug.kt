@@ -26,8 +26,7 @@ import com.android.systemui.util.settings.GlobalSettings
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * A version of [LogcatEchoTracker] that supports fine-grained echoing of log messages to logcat,
@@ -39,7 +38,6 @@ import kotlinx.coroutines.launch
  * Note that some log messages may fail to be echoed while the systemui process is first starting
  * up, before we load the echo settings.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 class LogcatEchoTrackerDebug
 @Inject
 constructor(
@@ -108,7 +106,7 @@ constructor(
     }
 
     fun setEchoLevel(type: EchoOverrideType, name: String, level: LogLevel?) {
-        applicationScope.launch(sequentialBgDispatcher) {
+        applicationScope.launch(context = sequentialBgDispatcher) {
             val newBufferOverrides = bufferOverrides.toMutableMap()
             val newTagOverrides = tagOverrides.toMutableMap()
 
@@ -132,7 +130,7 @@ constructor(
     }
 
     fun clearAllOverrides() {
-        applicationScope.launch(sequentialBgDispatcher) {
+        applicationScope.launch(context = sequentialBgDispatcher) {
             bufferOverrides = emptyMap()
             tagOverrides = emptyMap()
 
@@ -142,7 +140,7 @@ constructor(
     }
 
     private fun loadEchoOverrides() {
-        applicationScope.launch(sequentialBgDispatcher) {
+        applicationScope.launch(context = sequentialBgDispatcher) {
             val overrideSetting = globalSettings.getString(OVERRIDE_SETTING_PATH) ?: return@launch
             val overrideList = settingFormat.parseOverrides(overrideSetting)
 

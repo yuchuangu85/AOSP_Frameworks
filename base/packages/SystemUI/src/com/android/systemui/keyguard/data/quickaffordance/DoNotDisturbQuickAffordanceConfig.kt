@@ -25,56 +25,86 @@ import android.provider.Settings.Global.ZEN_MODE_OFF
 import android.provider.Settings.Secure.ZEN_DURATION_FOREVER
 import android.provider.Settings.Secure.ZEN_DURATION_PROMPT
 import android.service.notification.ZenModeConfig
-import com.android.settingslib.notification.EnableZenModeDialog
-import com.android.settingslib.notification.ZenModeDialogMetricsLogger
-import com.android.systemui.res.R
+import android.util.Log
+import com.android.settingslib.notification.modes.EnableDndDialogFactory
+import com.android.settingslib.notification.modes.EnableDndDialogMetricsLogger
 import com.android.systemui.animation.Expandable
 import com.android.systemui.common.coroutine.ChannelExt.trySendWithFailureLogging
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.common.shared.model.ContentDescription
 import com.android.systemui.common.shared.model.Icon
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.keyguard.shared.quickaffordance.ActivationState
+import com.android.systemui.modes.shared.ModesUi
+import com.android.systemui.res.R
 import com.android.systemui.settings.UserTracker
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.policy.ZenModeController
+import com.android.systemui.statusbar.policy.domain.interactor.ZenModeInteractor
 import com.android.systemui.util.settings.SecureSettings
 import com.android.systemui.util.settings.SettingsProxyExt.observerFlow
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.stateIn
 
 @SysUISingleton
-class DoNotDisturbQuickAffordanceConfig
-constructor(
+class DoNotDisturbQuickAffordanceConfig(
     private val context: Context,
     private val controller: ZenModeController,
+    private val interactor: ZenModeInteractor,
     private val secureSettings: SecureSettings,
     private val userTracker: UserTracker,
     @Background private val backgroundDispatcher: CoroutineDispatcher,
+    @Background private val backgroundScope: CoroutineScope,
     private val testConditionId: Uri?,
-    testDialog: EnableZenModeDialog?,
+    testDialogFactory: EnableDndDialogFactory?,
 ) : KeyguardQuickAffordanceConfig {
 
     @Inject
     constructor(
-        context: Context,
+        @ShadeDisplayAware context: Context,
         controller: ZenModeController,
+        interactor: ZenModeInteractor,
         secureSettings: SecureSettings,
         userTracker: UserTracker,
         @Background backgroundDispatcher: CoroutineDispatcher,
-    ) : this(context, controller, secureSettings, userTracker, backgroundDispatcher, null, null)
+        @Background backgroundScope: CoroutineScope,
+    ) : this(
+        context,
+        controller,
+        interactor,
+        secureSettings,
+        userTracker,
+        backgroundDispatcher,
+        backgroundScope,
+        null,
+        null,
+    )
 
-    private var dndMode: Int = 0
-    private var isAvailable = false
+    private var zenMode: Int = 0
+    private var oldIsAvailable = false
     private var settingsValue: Int = 0
+
+    private val isAvailable: StateFlow<Boolean> by lazy {
+        ModesUi.unsafeAssertInNewMode()
+        interactor.isZenAvailable.stateIn(
+            scope = backgroundScope,
+            started = SharingStarted.Eagerly,
+            initialValue = false,
+        )
+    }
 
     private val conditionUri: Uri
         get() =
@@ -87,13 +117,13 @@ constructor(
                     )
                     .id
 
-    private val dialog: EnableZenModeDialog by lazy {
-        testDialog
-            ?: EnableZenModeDialog(
+    private val dialogFactory: EnableDndDialogFactory by lazy {
+        testDialogFactory
+            ?: EnableDndDialogFactory(
                 context,
                 R.style.Theme_SystemUI_Dialog,
                 true, /* cancelIsNeutral */
-                ZenModeDialogMetricsLogger(context),
+                EnableDndDialogMetricsLogger(context),
             )
     }
 
@@ -104,42 +134,68 @@ constructor(
     override val pickerIconResourceId: Int = R.drawable.ic_do_not_disturb
 
     override val lockScreenState: Flow<KeyguardQuickAffordanceConfig.LockScreenState> =
-        combine(
-            conflatedCallbackFlow {
-                val callback =
-                    object : ZenModeController.Callback {
-                        override fun onZenChanged(zen: Int) {
-                            dndMode = zen
-                            trySendWithFailureLogging(updateState(), TAG)
+        if (ModesUi.isEnabled) {
+            combine(isAvailable, interactor.dndMode) { isAvailable, dndMode ->
+                if (!isAvailable) {
+                    KeyguardQuickAffordanceConfig.LockScreenState.Hidden
+                } else if (dndMode?.isActive == true) {
+                    KeyguardQuickAffordanceConfig.LockScreenState.Visible(
+                        Icon.Resource(
+                            R.drawable.qs_dnd_icon_on,
+                            ContentDescription.Resource(R.string.dnd_is_on),
+                        ),
+                        ActivationState.Active,
+                    )
+                } else {
+                    KeyguardQuickAffordanceConfig.LockScreenState.Visible(
+                        Icon.Resource(
+                            R.drawable.qs_dnd_icon_off,
+                            ContentDescription.Resource(R.string.dnd_is_off),
+                        ),
+                        ActivationState.Inactive,
+                    )
+                }
+            }
+        } else {
+            combine(
+                conflatedCallbackFlow {
+                    val callback =
+                        object : ZenModeController.Callback {
+                            override fun onZenChanged(zen: Int) {
+                                zenMode = zen
+                                trySendWithFailureLogging(updateState(), TAG)
+                            }
+
+                            override fun onZenAvailableChanged(available: Boolean) {
+                                oldIsAvailable = available
+                                trySendWithFailureLogging(updateState(), TAG)
+                            }
                         }
 
-                        override fun onZenAvailableChanged(available: Boolean) {
-                            isAvailable = available
-                            trySendWithFailureLogging(updateState(), TAG)
-                        }
-                    }
+                    zenMode = controller.zen
+                    oldIsAvailable = controller.isZenAvailable
+                    trySendWithFailureLogging(updateState(), TAG)
 
-                dndMode = controller.zen
-                isAvailable = controller.isZenAvailable
-                trySendWithFailureLogging(updateState(), TAG)
+                    controller.addCallback(callback)
 
-                controller.addCallback(callback)
-
-                awaitClose { controller.removeCallback(callback) }
-            },
-            secureSettings
-                .observerFlow(userTracker.userId, Settings.Secure.ZEN_DURATION)
-                .onStart { emit(Unit) }
-                .map { secureSettings.getInt(Settings.Secure.ZEN_DURATION, ZEN_MODE_OFF) }
-                .flowOn(backgroundDispatcher)
-                .distinctUntilChanged()
-                .onEach { settingsValue = it }
-        ) { callbackFlowValue, _ ->
-            callbackFlowValue
+                    awaitClose { controller.removeCallback(callback) }
+                },
+                secureSettings
+                    .observerFlow(userTracker.userId, Settings.Secure.ZEN_DURATION)
+                    .onStart { emit(Unit) }
+                    .map { secureSettings.getInt(Settings.Secure.ZEN_DURATION, ZEN_MODE_OFF) }
+                    .flowOn(backgroundDispatcher)
+                    .distinctUntilChanged()
+                    .onEach { settingsValue = it },
+            ) { callbackFlowValue, _ ->
+                callbackFlowValue
+            }
         }
 
     override suspend fun getPickerScreenState(): KeyguardQuickAffordanceConfig.PickerScreenState {
-        return if (controller.isZenAvailable) {
+        val isZenAvailable = if (ModesUi.isEnabled) isAvailable.value else controller.isZenAvailable
+
+        return if (isZenAvailable) {
             KeyguardQuickAffordanceConfig.PickerScreenState.Default(
                 configureIntent = Intent(Settings.ACTION_ZEN_MODE_SETTINGS)
             )
@@ -151,32 +207,63 @@ constructor(
     override fun onTriggered(
         expandable: Expandable?
     ): KeyguardQuickAffordanceConfig.OnTriggeredResult {
-        return when {
-            !isAvailable -> KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled
-            dndMode != ZEN_MODE_OFF -> {
-                controller.setZen(ZEN_MODE_OFF, null, TAG)
-                KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled
+        return if (ModesUi.isEnabled) {
+            if (!isAvailable.value) {
+                KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+            } else {
+                val dnd = interactor.dndMode.value
+                if (dnd == null) {
+                    Log.wtf(TAG, "Triggered DND but it's null!?")
+                    return KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                }
+                if (dnd.isActive) {
+                    interactor.deactivateMode(dnd)
+                    return KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                } else {
+                    if (interactor.shouldAskForZenDuration(dnd)) {
+                        // NOTE: The dialog handles turning on the mode itself.
+                        return KeyguardQuickAffordanceConfig.OnTriggeredResult.ShowDialog(
+                            dialogFactory.createDialog(),
+                            expandable,
+                        )
+                    } else {
+                        interactor.activateMode(dnd)
+                        return KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                    }
+                }
             }
-            settingsValue == ZEN_DURATION_PROMPT ->
-                KeyguardQuickAffordanceConfig.OnTriggeredResult.ShowDialog(
-                    dialog.createDialog(),
-                    expandable
-                )
-            settingsValue == ZEN_DURATION_FOREVER -> {
-                controller.setZen(ZEN_MODE_IMPORTANT_INTERRUPTIONS, null, TAG)
-                KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled
-            }
-            else -> {
-                controller.setZen(ZEN_MODE_IMPORTANT_INTERRUPTIONS, conditionUri, TAG)
-                KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled
+        } else {
+            when {
+                !oldIsAvailable -> KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                zenMode != ZEN_MODE_OFF -> {
+                    controller.setZen(ZEN_MODE_OFF, null, TAG)
+                    KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                }
+
+                settingsValue == ZEN_DURATION_PROMPT ->
+                    KeyguardQuickAffordanceConfig.OnTriggeredResult.ShowDialog(
+                        dialogFactory.createDialog(),
+                        expandable,
+                    )
+
+                settingsValue == ZEN_DURATION_FOREVER -> {
+                    controller.setZen(ZEN_MODE_IMPORTANT_INTERRUPTIONS, null, TAG)
+                    KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                }
+
+                else -> {
+                    controller.setZen(ZEN_MODE_IMPORTANT_INTERRUPTIONS, conditionUri, TAG)
+                    KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
+                }
             }
         }
     }
 
     private fun updateState(): KeyguardQuickAffordanceConfig.LockScreenState {
-        return if (!isAvailable) {
+        ModesUi.assertInLegacyMode()
+        return if (!oldIsAvailable) {
             KeyguardQuickAffordanceConfig.LockScreenState.Hidden
-        } else if (dndMode == ZEN_MODE_OFF) {
+        } else if (zenMode == ZEN_MODE_OFF) {
             KeyguardQuickAffordanceConfig.LockScreenState.Visible(
                 Icon.Resource(
                     R.drawable.qs_dnd_icon_off,

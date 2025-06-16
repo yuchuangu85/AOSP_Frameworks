@@ -30,6 +30,7 @@ import androidx.annotation.Nullable;
 
 import com.android.internal.R;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Application;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.util.DeviceConfigProxy;
@@ -72,7 +73,7 @@ public class AssistantFeedbackController {
     /** Injected constructor */
     @Inject
     public AssistantFeedbackController(@Main Handler handler,
-            Context context, DeviceConfigProxy proxy) {
+            @Application Context context, DeviceConfigProxy proxy) {
         mHandler = handler;
         mContext = context;
         mDeviceConfigProxy = proxy;
@@ -107,13 +108,12 @@ public class AssistantFeedbackController {
     /**
      * Get the feedback status according to assistant's adjustments
      *
-     * @param entry Notification Entry to show feedback for
+     * @param ranking Ranking of the notification show feedback for
      */
-    public int getFeedbackStatus(NotificationEntry entry) {
+    public int getFeedbackStatus(Ranking ranking) {
         if (!isFeedbackEnabled()) {
             return STATUS_UNCHANGED;
         }
-        Ranking ranking = entry.getRanking();
         int oldImportance = ranking.getChannel().getImportance();
         int newImportance = ranking.getImportance();
         if (oldImportance < NotificationManager.IMPORTANCE_DEFAULT
@@ -137,11 +137,11 @@ public class AssistantFeedbackController {
      * Get the feedback indicator image and content description resources according to assistant's
      * changes on this notification's rank or importance.
      *
-     * @param entry Notification Entry to show feedback for
+     * @param ranking Ranking of the notification to show feedback for
      */
     @Nullable
-    public FeedbackIcon getFeedbackIcon(NotificationEntry entry) {
-        int feedbackStatus = getFeedbackStatus(entry);
+    public FeedbackIcon getFeedbackIcon(Ranking ranking) {
+        int feedbackStatus = getFeedbackStatus(ranking);
         return mIcons.get(feedbackStatus);
     }
 
@@ -149,10 +149,10 @@ public class AssistantFeedbackController {
      * Get the inline settings description resource according to assistant's changes on this
      * notification's rank or importance.
      *
-     * @param entry Notification Entry to show feedback for
+     * @param ranking Ranking of the notification to show feedback for
      */
-    public int getInlineDescriptionResource(NotificationEntry entry) {
-        int feedbackStatus = getFeedbackStatus(entry);
+    public int getInlineDescriptionResource(Ranking ranking) {
+        int feedbackStatus = getFeedbackStatus(ranking);
         switch (feedbackStatus) {
             case STATUS_ALERTED:
                 return com.android.systemui.res.R.string.notification_channel_summary_automatic_alerted;

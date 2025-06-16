@@ -26,7 +26,6 @@ import com.android.systemui.log.table.TableLogBuffer
 import com.android.systemui.log.table.logDiffsForTable
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,10 +38,9 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformWhile
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /** Encapsulates business-logic related to communal tutorial state. */
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class CommunalTutorialInteractor
 @Inject
@@ -67,7 +65,6 @@ constructor(
             }
             .logDiffsForTable(
                 tableLogBuffer = tableLogBuffer,
-                columnPrefix = "",
                 columnName = "isTutorialAvailable",
                 initialValue = false,
             )

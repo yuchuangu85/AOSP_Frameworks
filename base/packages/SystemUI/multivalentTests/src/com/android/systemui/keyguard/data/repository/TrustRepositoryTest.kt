@@ -29,7 +29,7 @@ import com.android.systemui.log.LogcatEchoTracker
 import com.android.systemui.user.data.repository.FakeUserRepository
 import com.android.systemui.util.mockito.whenever
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -43,7 +43,6 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 @android.platform.test.annotations.EnabledOnRavenwood
@@ -61,7 +60,8 @@ class TrustRepositoryTest : SysuiTestCase() {
     @Before
     fun setUp() {
         MockitoAnnotations.initMocks(this)
-        testScope = TestScope()
+        val testDispatcher = StandardTestDispatcher()
+        testScope = TestScope(testDispatcher)
         userRepository = FakeUserRepository()
         userRepository.setUserInfos(users)
         val logger =
@@ -69,7 +69,13 @@ class TrustRepositoryTest : SysuiTestCase() {
                 LogBuffer("TestBuffer", 1, mock(LogcatEchoTracker::class.java), false)
             )
         underTest =
-            TrustRepositoryImpl(testScope.backgroundScope, userRepository, trustManager, logger)
+            TrustRepositoryImpl(
+                testScope.backgroundScope,
+                testDispatcher,
+                userRepository,
+                trustManager,
+                logger,
+            )
     }
 
     fun TestScope.init() {
@@ -274,5 +280,12 @@ class TrustRepositoryTest : SysuiTestCase() {
             assertThat(trustUsuallyManaged).isTrue()
             userRepository.setSelectedUserInfo(users[1])
             assertThat(trustUsuallyManaged).isFalse()
+        }
+
+    @Test
+    fun reportKeyguardShowingChanged() =
+        testScope.runTest {
+            underTest.reportKeyguardShowingChanged()
+            verify(trustManager).reportKeyguardShowingChanged()
         }
 }

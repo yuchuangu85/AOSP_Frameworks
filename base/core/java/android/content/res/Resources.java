@@ -58,6 +58,8 @@ import android.graphics.drawable.DrawableInflater;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.AttributeSet;
@@ -124,6 +126,7 @@ import java.util.WeakHashMap;
  * <p>For more information about using resources, see the documentation about <a
  * href="{@docRoot}guide/topics/resources/index.html">Application Resources</a>.</p>
  */
+@RavenwoodKeepWholeClass
 public class Resources {
     /**
      * The {@code null} resource ID. This denotes an invalid resource ID that is returned by the
@@ -417,6 +420,7 @@ public class Resources {
      * @hide Pending API finalization.
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @RavenwoodThrow(blockedBy = DrawableInflater.class)
     public final DrawableInflater getDrawableInflater() {
         if (mDrawableInflater == null) {
             mDrawableInflater = new DrawableInflater(this, mClassLoader);
@@ -915,6 +919,7 @@ public class Resources {
      * @deprecated Use {@link #getDrawable(int, Theme)} instead.
      */
     @Deprecated
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawable(@DrawableRes int id) throws NotFoundException {
         final Drawable d = getDrawable(id, null);
         if (d != null && d.canApplyTheme()) {
@@ -939,6 +944,7 @@ public class Resources {
      * @throws NotFoundException Throws NotFoundException if the given ID does
      *         not exist.
      */
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawable(@DrawableRes int id, @Nullable Theme theme)
             throws NotFoundException {
         return getDrawableForDensity(id, 0, theme);
@@ -974,6 +980,7 @@ public class Resources {
      */
     @Nullable
     @Deprecated
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawableForDensity(@DrawableRes int id, int density)
             throws NotFoundException {
         return getDrawableForDensity(id, density, null);
@@ -997,6 +1004,7 @@ public class Resources {
      *             not exist.
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawableForDensity(@DrawableRes int id, int density, @Nullable Theme theme) {
         final TypedValue value = obtainTempTypedValue();
         try {
@@ -1025,6 +1033,7 @@ public class Resources {
      * @deprecated Prefer {@link android.graphics.drawable.AnimatedImageDrawable}.
      */
     @Deprecated
+    @RavenwoodThrow(blockedBy = Movie.class)
     public Movie getMovie(@RawRes int id) throws NotFoundException {
         final InputStream is = openRawResource(id);
         final Movie movie = Movie.decodeStream(is);
@@ -1783,6 +1792,7 @@ public class Resources {
          * @throws NotFoundException Throws NotFoundException if the given ID
          *         does not exist.
          */
+        @RavenwoodThrow(blockedBy = Drawable.class)
         public Drawable getDrawable(@DrawableRes int id) throws NotFoundException {
             return Resources.this.getDrawable(id, this);
         }
@@ -2558,7 +2568,7 @@ public class Resources {
             impl.getValue(id, value, true);
             if (value.type == TypedValue.TYPE_STRING) {
                 return loadXmlResourceParser(value.string.toString(), id,
-                        value.assetCookie, type);
+                        value.assetCookie, type, value.usesFeatureFlags);
             }
             throw new NotFoundException("Resource ID #0x" + Integer.toHexString(id)
                     + " type #0x" + Integer.toHexString(value.type) + " is not valid");
@@ -2581,7 +2591,26 @@ public class Resources {
     @UnsupportedAppUsage
     XmlResourceParser loadXmlResourceParser(String file, int id, int assetCookie,
                                             String type) throws NotFoundException {
-        return mResourcesImpl.loadXmlResourceParser(file, id, assetCookie, type);
+        return loadXmlResourceParser(file, id, assetCookie, type, true);
+    }
+
+    /**
+     * Loads an XML parser for the specified file.
+     *
+     * @param file the path for the XML file to parse
+     * @param id the resource identifier for the file
+     * @param assetCookie the asset cookie for the file
+     * @param type the type of resource (used for logging)
+     * @param usesFeatureFlags whether the xml has read/write feature flags
+     * @return a parser for the specified XML file
+     * @throws NotFoundException if the file could not be loaded
+     * @hide
+     */
+    @NonNull
+    @VisibleForTesting
+    public XmlResourceParser loadXmlResourceParser(String file, int id, int assetCookie,
+            String type, boolean usesFeatureFlags) throws NotFoundException {
+        return mResourcesImpl.loadXmlResourceParser(file, id, assetCookie, type, usesFeatureFlags);
     }
 
     /**
@@ -2845,6 +2874,7 @@ public class Resources {
      * @param appInfo The ApplicationInfo that contains resources paths of the package.
      */
     @FlaggedApi(android.content.res.Flags.FLAG_REGISTER_RESOURCE_PATHS)
+    @RavenwoodThrow(reason = "FLAG_REGISTER_RESOURCE_PATHS is unsupported")
     public static void registerResourcePaths(@NonNull String uniqueId,
             @NonNull ApplicationInfo appInfo) {
         if (Flags.registerResourcePaths()) {

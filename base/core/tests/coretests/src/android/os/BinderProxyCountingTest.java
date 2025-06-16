@@ -24,13 +24,13 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.Log;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
-import androidx.test.runner.AndroidJUnit4;
 import androidx.test.uiautomator.UiDevice;
 
 import com.android.frameworks.coretests.aidl.IBpcCallbackObserver;
@@ -74,7 +74,7 @@ import java.util.function.Consumer;
  */
 @LargeTest
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(blockedBy = ActivityManager.class)
+@DisabledOnRavenwood(blockedBy = ActivityManager.class)
 public class BinderProxyCountingTest {
     private static final String TAG = BinderProxyCountingTest.class.getSimpleName();
 

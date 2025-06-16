@@ -26,7 +26,6 @@ import com.android.systemui.scene.domain.interactor.sceneInteractor
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.testKosmos
 import com.google.common.truth.Truth
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runCurrent
@@ -34,7 +33,6 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class ShadeAnimationInteractorSceneContainerImplTest : SysuiTestCase() {
@@ -123,5 +121,37 @@ class ShadeAnimationInteractorSceneContainerImplTest : SysuiTestCase() {
 
             underTest.setIsLaunchingActivity(true)
             Truth.assertThat(underTest.isLaunchingActivity.value).isEqualTo(true)
+        }
+
+    @Test
+    fun isAnyFlingAnimationRunning() =
+        testScope.runTest() {
+            val actual by collectLastValue(underTest.isAnyFlingAnimationRunning)
+
+            // WHEN transitioning from QS to Gone with user input ongoing
+            val userInputOngoing = MutableStateFlow(true)
+            val transitionState =
+                MutableStateFlow<ObservableTransitionState>(
+                    ObservableTransitionState.Transition(
+                        fromScene = Scenes.QuickSettings,
+                        toScene = Scenes.Gone,
+                        currentScene = flowOf(Scenes.QuickSettings),
+                        progress = MutableStateFlow(.1f),
+                        isInitiatedByUserInput = true,
+                        isUserInputOngoing = userInputOngoing,
+                    )
+                )
+            sceneInteractor.setTransitionState(transitionState)
+            runCurrent()
+
+            // THEN qs is not flinging
+            Truth.assertThat(actual).isFalse()
+
+            // WHEN user input ends
+            userInputOngoing.value = false
+            runCurrent()
+
+            // THEN qs is flinging
+            Truth.assertThat(actual).isTrue()
         }
 }

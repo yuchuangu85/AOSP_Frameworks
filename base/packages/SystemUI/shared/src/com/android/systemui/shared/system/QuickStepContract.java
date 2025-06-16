@@ -25,8 +25,16 @@ import static com.android.systemui.shared.Flags.shadeAllowBackGesture;
 import android.annotation.LongDef;
 import android.content.Context;
 import android.content.res.Resources;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.IInterface;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.ViewConfiguration;
 import android.view.WindowManagerPolicyConstants;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.policy.ScreenDecorationsUtils;
 
@@ -39,10 +47,7 @@ import java.util.StringJoiner;
  */
 public class QuickStepContract {
 
-    public static final String KEY_EXTRA_SYSUI_PROXY = "extra_sysui_proxy";
-    public static final String KEY_EXTRA_UNFOLD_ANIMATION_FORWARDER = "extra_unfold_animation";
-    // See ISysuiUnlockAnimationController.aidl
-    public static final String KEY_EXTRA_UNLOCK_ANIMATION_CONTROLLER = "unlock_animation";
+    private static final String TAG = "QuickStepContract";
 
     public static final String NAV_BAR_MODE_3BUTTON_OVERLAY =
             WindowManagerPolicyConstants.NAV_BAR_MODE_3BUTTON_OVERLAY;
@@ -92,12 +97,12 @@ public class QuickStepContract {
     public static final long SYSUI_STATE_ONE_HANDED_ACTIVE = 1L << 16;
     // Allow system gesture no matter the system bar(s) is visible or not
     public static final long SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY = 1L << 17;
-    // The IME is showing
-    public static final long SYSUI_STATE_IME_SHOWING = 1L << 18;
+    // The IME is visible.
+    public static final long SYSUI_STATE_IME_VISIBLE = 1L << 18;
     // The window magnification is overlapped with system gesture insets at the bottom.
     public static final long SYSUI_STATE_MAGNIFICATION_OVERLAP = 1L << 19;
-    // ImeSwitcher is showing
-    public static final long SYSUI_STATE_IME_SWITCHER_SHOWING = 1L << 20;
+    // The IME Switcher button is visible.
+    public static final long SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE = 1L << 20;
     // Device dozing/AOD state
     public static final long SYSUI_STATE_DEVICE_DOZING = 1L << 21;
     // The home feature is disabled (either by SUW/SysUI/device policy)
@@ -124,6 +129,14 @@ public class QuickStepContract {
     public static final long SYSUI_STATE_SHORTCUT_HELPER_SHOWING = 1L << 32;
     // Touchpad gestures are disabled
     public static final long SYSUI_STATE_TOUCHPAD_GESTURES_DISABLED = 1L << 33;
+    // PiP animation is running
+    public static final long SYSUI_STATE_DISABLE_GESTURE_PIP_ANIMATING = 1L << 34;
+    // Communal hub is showing
+    public static final long SYSUI_STATE_COMMUNAL_HUB_SHOWING = 1L << 35;
+    // The back button is visually adjusted to indicate that it will dismiss the IME when pressed.
+    // This only takes effect while the IME is visible. By default, it is set while the IME is
+    // visible, but may be overridden by the backDispositionMode set by the IME.
+    public static final long SYSUI_STATE_BACK_DISMISS_IME = 1L << 36;
 
     // Mask for SystemUiStateFlags to isolate SYSUI_STATE_AWAKE and
     // SYSUI_STATE_WAKEFULNESS_TRANSITION, to match WAKEFULNESS_* constants
@@ -158,9 +171,9 @@ public class QuickStepContract {
             SYSUI_STATE_DIALOG_SHOWING,
             SYSUI_STATE_ONE_HANDED_ACTIVE,
             SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY,
-            SYSUI_STATE_IME_SHOWING,
+            SYSUI_STATE_IME_VISIBLE,
             SYSUI_STATE_MAGNIFICATION_OVERLAP,
-            SYSUI_STATE_IME_SWITCHER_SHOWING,
+            SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE,
             SYSUI_STATE_DEVICE_DOZING,
             SYSUI_STATE_BACK_DISABLED,
             SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED,
@@ -173,6 +186,9 @@ public class QuickStepContract {
             SYSUI_STATE_STATUS_BAR_KEYGUARD_GOING_AWAY,
             SYSUI_STATE_SHORTCUT_HELPER_SHOWING,
             SYSUI_STATE_TOUCHPAD_GESTURES_DISABLED,
+            SYSUI_STATE_DISABLE_GESTURE_PIP_ANIMATING,
+            SYSUI_STATE_COMMUNAL_HUB_SHOWING,
+            SYSUI_STATE_BACK_DISMISS_IME,
     })
     public @interface SystemUiStateFlags {}
 
@@ -232,14 +248,14 @@ public class QuickStepContract {
         if ((flags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
             str.add("allow_gesture");
         }
-        if ((flags & SYSUI_STATE_IME_SHOWING) != 0) {
+        if ((flags & SYSUI_STATE_IME_VISIBLE) != 0) {
             str.add("ime_visible");
         }
         if ((flags & SYSUI_STATE_MAGNIFICATION_OVERLAP) != 0) {
             str.add("magnification_overlap");
         }
-        if ((flags & SYSUI_STATE_IME_SWITCHER_SHOWING) != 0) {
-            str.add("ime_switcher_showing");
+        if ((flags & SYSUI_STATE_IME_SWITCHER_BUTTON_VISIBLE) != 0) {
+            str.add("ime_switcher_button_visible");
         }
         if ((flags & SYSUI_STATE_DEVICE_DOZING) != 0) {
             str.add("device_dozing");
@@ -276,6 +292,15 @@ public class QuickStepContract {
         }
         if ((flags & SYSUI_STATE_TOUCHPAD_GESTURES_DISABLED) != 0) {
             str.add("touchpad_gestures_disabled");
+        }
+        if ((flags & SYSUI_STATE_DISABLE_GESTURE_PIP_ANIMATING) != 0) {
+            str.add("disable_gesture_pip_animating");
+        }
+        if ((flags & SYSUI_STATE_COMMUNAL_HUB_SHOWING) != 0) {
+            str.add("communal_hub_showing");
+        }
+        if ((flags & SYSUI_STATE_BACK_DISMISS_IME) != 0) {
+            str.add("back_dismiss_ime");
         }
 
         return str.toString();
@@ -332,6 +357,15 @@ public class QuickStepContract {
                 || (sysuiStateFlags & SYSUI_STATE_DIALOG_SHOWING) != 0
                 || (sysuiStateFlags & SYSUI_STATE_VOICE_INTERACTION_WINDOW_SHOWING) != 0) {
             return false;
+        }
+        // Disable back gesture on the hub, but not when the shade is showing.
+        if ((sysuiStateFlags & SYSUI_STATE_COMMUNAL_HUB_SHOWING) != 0) {
+            // Use QS expanded signal as the notification panel is always considered visible
+            // expanded when on the lock screen and when opening hub over lock screen. This does
+            // mean that back gesture is disabled when opening shade over hub while in portrait
+            // mode, since QS is not expanded.
+            // TODO(b/370108274): allow back gesture on shade over hub in portrait
+            return (sysuiStateFlags & SYSUI_STATE_QUICK_SETTINGS_EXPANDED) == 0;
         }
         if ((sysuiStateFlags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
             sysuiStateFlags &= ~SYSUI_STATE_NAV_BAR_HIDDEN;
@@ -390,5 +424,21 @@ public class QuickStepContract {
      */
     public static boolean supportsRoundedCornersOnWindows(Resources resources) {
         return ScreenDecorationsUtils.supportsRoundedCornersOnWindows(resources);
+    }
+
+    /**
+     * Adds the provided interface to the bundle using the interface descriptor as the key
+     */
+    public static void addInterface(@Nullable IInterface iInterface, @NonNull Bundle out) {
+        if (iInterface != null) {
+            IBinder binder = iInterface.asBinder();
+            if (binder != null) {
+                try {
+                    out.putIBinder(binder.getInterfaceDescriptor(), binder);
+                } catch (RemoteException e) {
+                    Log.d(TAG, "Invalid interface description " + binder, e);
+                }
+            }
+        }
     }
 }

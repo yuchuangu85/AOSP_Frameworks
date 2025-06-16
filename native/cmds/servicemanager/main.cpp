@@ -26,6 +26,26 @@
 #include "Access.h"
 #include "ServiceManager.h"
 
+#if !defined(VENDORSERVICEMANAGER) && !defined(__ANDROID_RECOVERY__)
+
+#include <perfetto/public/producer.h>
+#include <perfetto/public/te_category_macros.h>
+#include <perfetto/public/te_macros.h>
+#include <perfetto/public/track_event.h>
+
+namespace android {
+
+static void register_perfetto_te_categories() {
+    struct PerfettoProducerInitArgs perfetto_args = PERFETTO_PRODUCER_INIT_ARGS_INIT();
+    perfetto_args.backends = PERFETTO_BACKEND_SYSTEM;
+    PerfettoProducerInit(perfetto_args);
+    PerfettoTeInit();
+    PERFETTO_TE_REGISTER_CATEGORIES(PERFETTO_SM_CATEGORIES);
+}
+} // namespace android
+
+#endif // !defined(VENDORSERVICEMANAGER) && !defined(__ANDROID_RECOVERY__)
+
 using ::android::Access;
 using ::android::IPCThreadState;
 using ::android::Looper;
@@ -132,6 +152,10 @@ int main(int argc, char** argv) {
 
     const char* driver = argc == 2 ? argv[1] : "/dev/binder";
 
+#if !defined(VENDORSERVICEMANAGER) && !defined(__ANDROID_RECOVERY__)
+    android::register_perfetto_te_categories();
+#endif // !defined(VENDORSERVICEMANAGER) && !defined(__ANDROID_RECOVERY__)
+
     LOG(INFO) << "Starting sm instance on " << driver;
 
     sp<ProcessState> ps = ProcessState::initWithDriver(driver);
@@ -141,6 +165,7 @@ int main(int argc, char** argv) {
     IPCThreadState::self()->disableBackgroundScheduling(true);
 
     sp<ServiceManager> manager = sp<ServiceManager>::make(std::make_unique<Access>());
+    manager->setRequestingSid(true);
     if (!manager->addService("manager", manager, false /*allowIsolated*/, IServiceManager::DUMP_FLAG_PRIORITY_DEFAULT).isOk()) {
         LOG(ERROR) << "Could not self register servicemanager";
     }

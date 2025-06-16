@@ -29,9 +29,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 /** Utilities for communal backup and restore. */
-class CommunalBackupUtils(
-    private val context: Context,
-) {
+class CommunalBackupUtils(private val context: Context) {
 
     /**
      * Retrieves a communal hub state protobuf that represents the current state of the communal
@@ -43,11 +41,15 @@ class CommunalBackupUtils(
         val widgetsFromDb = runBlocking { database.communalWidgetDao().getWidgets().first() }
         val widgetsState = mutableListOf<CommunalHubState.CommunalWidgetItem>()
         widgetsFromDb.keys.forEach { rankItem ->
+            val widget = widgetsFromDb[rankItem]!!
             widgetsState.add(
                 CommunalHubState.CommunalWidgetItem().apply {
                     rank = rankItem.rank
-                    widgetId = widgetsFromDb[rankItem]!!.widgetId
-                    componentName = widgetsFromDb[rankItem]?.componentName
+                    widgetId = widget.widgetId
+                    componentName = widget.componentName
+                    userSerialNumber = widget.userSerialNumber
+                    spanY = widget.spanY
+                    spanYNew = widget.spanYNew
                 }
             )
         }

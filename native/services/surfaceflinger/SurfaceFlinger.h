@@ -24,10 +24,14 @@
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 #include <android-base/thread_annotations.h>
+#include <android/gui/ActivePicture.h>
 #include <android/gui/BnSurfaceComposer.h>
 #include <android/gui/DisplayStatInfo.h>
 #include <android/gui/DisplayState.h>
+#include <android/gui/IActivePictureListener.h>
+#include <android/gui/IJankListener.h>
 #include <android/gui/ISurfaceComposerClient.h>
+#include <common/trace.h>
 #include <cutils/atomic.h>
 #include <cutils/compiler.h>
 #include <ftl/algorithm.h>
@@ -52,10 +56,10 @@
 #include <utils/KeyedVector.h>
 #include <utils/RefBase.h>
 #include <utils/SortedVector.h>
-#include <utils/Trace.h>
 #include <utils/threads.h>
 
 #include <compositionengine/OutputColorSetting.h>
+#include <compositionengine/impl/OutputCompositionState.h>
 #include <scheduler/Fps.h>
 #include <scheduler/PresentLatencyTracker.h>
 #include <scheduler/Time.h>
@@ -65,11 +69,13 @@
 #include <ui/FenceResult.h>
 
 #include <common/FlagManager.h>
+#include "ActivePictureTracker.h"
 #include "Display/DisplayModeController.h"
 #include "Display/PhysicalDisplay.h"
+#include "Display/VirtualDisplaySnapshot.h"
 #include "DisplayDevice.h"
 #include "DisplayHardware/HWC2.h"
-#include "DisplayHardware/PowerAdvisor.h"
+#include "DisplayHardware/HWComposer.h"
 #include "DisplayIdGenerator.h"
 #include "Effects/Daltonizer.h"
 #include "FrontEnd/DisplayInfo.h"
@@ -80,6 +86,8 @@
 #include "FrontEnd/TransactionHandler.h"
 #include "LayerVector.h"
 #include "MutexUtils.h"
+#include "PowerAdvisor/PowerAdvisor.h"
+#include "QueuedTransactionState.h"
 #include "Scheduler/ISchedulerCallback.h"
 #include "Scheduler/RefreshRateSelector.h"
 #include "Scheduler/Scheduler.h"
@@ -88,18 +96,15 @@
 #include "Tracing/LayerTracing.h"
 #include "Tracing/TransactionTracing.h"
 #include "TransactionCallbackInvoker.h"
-#include "TransactionState.h"
 #include "Utils/OnceFuture.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <queue>
-#include <set>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -122,18 +127,17 @@ class FlagManager;
 class FpsReporter;
 class TunnelModeEnabledReporter;
 class HdrLayerInfoReporter;
-class HWComposer;
 class IGraphicBufferProducer;
 class Layer;
 class MessageBase;
 class RefreshRateOverlay;
 class RegionSamplingThread;
-class RenderArea;
 class TimeStats;
 class FrameTracer;
 class ScreenCapturer;
 class WindowInfosListenerInvoker;
 
+using ::aidl::android::hardware::drm::HdcpLevels;
 using ::aidl::android::hardware::graphics::common::DisplayHotplugEvent;
 using ::aidl::android::hardware::graphics::composer3::RefreshRateChangedDebugData;
 using frontend::TransactionHandler;
@@ -156,6 +160,7 @@ class DisplaySurface;
 class OutputLayer;
 
 struct CompositionRefreshArgs;
+class DisplayCreationArgsBuilder;
 } // namespace compositionengine
 
 namespace renderengine {
@@ -192,9 +197,6 @@ enum class LatchUnsignaledConfig {
     Always,
 };
 
-struct DisplayRenderAreaBuilder;
-struct LayerRenderAreaBuilder;
-
 using DisplayColorSetting = compositionengine::OutputColorSetting;
 
 class SurfaceFlinger : public BnSurfaceComposer,
@@ -210,11 +212,9 @@ public:
     SurfaceFlinger(surfaceflinger::Factory&, SkipInitializationTag) ANDROID_API;
     explicit SurfaceFlinger(surfaceflinger::Factory&) ANDROID_API;
 
-    // set main thread scheduling policy
-    static status_t setSchedFifo(bool enabled) ANDROID_API;
-
-    // set main thread scheduling attributes
-    static status_t setSchedAttr(bool enabled);
+    // Set scheduling policy and attributes of main thread.
+    static void setSchedFifo(bool enabled, const char* whence);
+    static void setSchedAttr(bool enabled, const char* whence);
 
     static char const* getServiceName() ANDROID_API { return "SurfaceFlinger"; }
 
@@ -238,6 +238,11 @@ public:
     // Controls the minimum acquired buffers SurfaceFlinger will suggest via
     // ISurfaceComposer.getMaxAcquiredBufferCount().
     static int64_t minAcquiredBuffers;
+
+    // Controls the maximum acquired buffers SurfaceFlinger will suggest via
+    // ISurfaceComposer.getMaxAcquiredBufferCount().
+    // Value is set through ro.surface_flinger.max_acquired_buffers.
+    static std::optional<int64_t> maxAcquiredBuffersOpt;
 
     // Controls the maximum width and height in pixels that the graphics pipeline can support for
     // GPU fallback composition. For example, 8k devices with 4k GPUs, or 4k devices with 2k GPUs.
@@ -272,7 +277,7 @@ public:
     enum class FrameHint { kNone, kActive };
 
     // Schedule commit of transactions on the main thread ahead of the next VSYNC.
-    void scheduleCommit(FrameHint);
+    void scheduleCommit(FrameHint, Duration workDurationSlack = Duration::fromNs(0));
     // As above, but also force composite regardless if transactions were committed.
     void scheduleComposite(FrameHint);
     // As above, but also force dirty geometry to repaint.
@@ -291,15 +296,10 @@ public:
     void onLayerDestroyed(Layer*);
     void onLayerUpdate();
 
-    void removeHierarchyFromOffscreenLayers(Layer* layer);
-    void removeFromOffscreenLayers(Layer* layer);
-
     // Called when all clients have released all their references to
     // this layer. The layer may still be kept alive by its parents but
     // the client can no longer modify this layer directly.
-    void onHandleDestroyed(BBinder* handle, sp<Layer>& layer, uint32_t layerId);
-
-    std::vector<Layer*> mLayerMirrorRoots;
+    void onHandleDestroyed(sp<Layer>& layer, uint32_t layerId);
 
     TransactionCallbackInvoker& getTransactionCallbackInvoker() {
         return mTransactionCallbackInvoker;
@@ -312,7 +312,6 @@ public:
     // Disables expensive rendering for all displays
     // This is scheduled on the main thread
     void disableExpensiveRendering();
-    FloatRect getMaxDisplayBounds();
 
     // If set, composition engine tries to predict the composition strategy provided by HWC
     // based on the previous frame. If the strategy can be predicted, gpu composition will
@@ -351,9 +350,6 @@ protected:
     // We're reference counted, never destroy SurfaceFlinger directly
     virtual ~SurfaceFlinger();
 
-    virtual void processDisplayAdded(const wp<IBinder>& displayToken, const DisplayDeviceState&)
-            REQUIRES(mStateLock);
-
     virtual std::shared_ptr<renderengine::ExternalTexture> getExternalTextureFromBufferData(
             BufferData& bufferData, const char* layerName, uint64_t transactionId);
 
@@ -375,9 +371,7 @@ private:
     friend class Layer;
     friend class RefreshRateOverlay;
     friend class RegionSamplingThread;
-    friend class LayerRenderArea;
     friend class SurfaceComposerAIDL;
-    friend class DisplayRenderArea;
 
     // For unit tests
     friend class TestableSurfaceFlinger;
@@ -386,17 +380,15 @@ private:
 
     using TransactionSchedule = scheduler::TransactionSchedule;
     using GetLayerSnapshotsFunction = std::function<std::vector<std::pair<Layer*, sp<LayerFE>>>()>;
-    using RenderAreaBuilderVariant = std::variant<DisplayRenderAreaBuilder, LayerRenderAreaBuilder>;
     using DumpArgs = Vector<String16>;
     using Dumper = std::function<void(const DumpArgs&, bool asProto, std::string&)>;
 
     class State {
     public:
-        explicit State(LayerVector::StateSet set) : stateSet(set), layersSortedByZ(set) {}
+        explicit State(LayerVector::StateSet set) : stateSet(set) {}
         State& operator=(const State& other) {
             // We explicitly don't copy stateSet so that, e.g., mDrawingState
             // always uses the Drawing StateSet.
-            layersSortedByZ = other.layersSortedByZ;
             displays = other.displays;
             colorMatrixChanged = other.colorMatrixChanged;
             if (colorMatrixChanged) {
@@ -408,7 +400,6 @@ private:
         }
 
         const LayerVector::StateSet stateSet = LayerVector::StateSet::Invalid;
-        LayerVector layersSortedByZ;
 
         // TODO(b/241285876): Replace deprecated DefaultKeyedVector with ftl::SmallMap.
         DefaultKeyedVector<wp<IBinder>, DisplayDeviceState> displays;
@@ -428,10 +419,6 @@ private:
         mat4 colorMatrix;
 
         ShadowSettings globalShadowSettings;
-
-        void traverse(const LayerVector::Visitor& visitor) const;
-        void traverseInZOrder(const LayerVector::Visitor& visitor) const;
-        void traverseInReverseZOrder(const LayerVector::Visitor& visitor) const;
     };
 
     // Keeps track of pending buffers per layer handle in the transaction queue or current/drawing
@@ -443,32 +430,32 @@ private:
     // This is done to avoid lock contention with the main thread.
     class BufferCountTracker {
     public:
-        void increment(BBinder* layerHandle) {
+        void increment(uint32_t layerId) {
             std::lock_guard<std::mutex> lock(mLock);
-            auto it = mCounterByLayerHandle.find(layerHandle);
-            if (it != mCounterByLayerHandle.end()) {
+            auto it = mCounterByLayerId.find(layerId);
+            if (it != mCounterByLayerId.end()) {
                 auto [name, pendingBuffers] = it->second;
                 int32_t count = ++(*pendingBuffers);
-                ATRACE_INT(name.c_str(), count);
+                SFTRACE_INT(name.c_str(), count);
             } else {
-                ALOGW("Handle not found! %p", layerHandle);
+                ALOGW("Layer ID not found! %d", layerId);
             }
         }
 
-        void add(BBinder* layerHandle, const std::string& name, std::atomic<int32_t>* counter) {
+        void add(uint32_t layerId, const std::string& name, std::atomic<int32_t>* counter) {
             std::lock_guard<std::mutex> lock(mLock);
-            mCounterByLayerHandle[layerHandle] = std::make_pair(name, counter);
+            mCounterByLayerId[layerId] = std::make_pair(name, counter);
         }
 
-        void remove(BBinder* layerHandle) {
+        void remove(uint32_t layerId) {
             std::lock_guard<std::mutex> lock(mLock);
-            mCounterByLayerHandle.erase(layerHandle);
+            mCounterByLayerId.erase(layerId);
         }
 
     private:
         std::mutex mLock;
-        std::unordered_map<BBinder*, std::pair<std::string, std::atomic<int32_t>*>>
-                mCounterByLayerHandle GUARDED_BY(mLock);
+        std::unordered_map<uint32_t, std::pair<std::string, std::atomic<int32_t>*>>
+                mCounterByLayerId GUARDED_BY(mLock);
     };
 
     enum class BootStage {
@@ -548,6 +535,7 @@ private:
 
     // ISurfaceComposer implementation:
     sp<IBinder> createVirtualDisplay(const std::string& displayName, bool isSecure,
+                                     gui::ISurfaceComposer::OptimizationPolicy optimizationPolicy,
                                      const std::string& uniqueId,
                                      float requestedRefreshRate = 0.0f);
     status_t destroyVirtualDisplay(const sp<IBinder>& displayToken);
@@ -557,13 +545,7 @@ private:
     }
 
     sp<IBinder> getPhysicalDisplayToken(PhysicalDisplayId displayId) const;
-    status_t setTransactionState(
-            const FrameTimelineInfo& frameTimelineInfo, Vector<ComposerState>& state,
-            const Vector<DisplayState>& displays, uint32_t flags, const sp<IBinder>& applyToken,
-            InputWindowCommands inputWindowCommands, int64_t desiredPresentTime,
-            bool isAutoTimestamp, const std::vector<client_cache_t>& uncacheBuffers,
-            bool hasListenerCallbacks, const std::vector<ListenerCallbacks>& listenerCallbacks,
-            uint64_t transactionId, const std::vector<uint64_t>& mergedTransactionIds) override;
+    status_t setTransactionState(TransactionState&&) override;
     void bootFinished();
     status_t getSupportedFrameTimestamps(std::vector<FrameEvent>* outSupported) const;
     sp<IDisplayEventConnection> createDisplayEventConnection(
@@ -600,6 +582,7 @@ private:
     status_t getHdrOutputConversionSupport(bool* outSupport) const;
     void setAutoLowLatencyMode(const sp<IBinder>& displayToken, bool on);
     void setGameContentType(const sp<IBinder>& displayToken, bool on);
+    status_t getMaxLayerPictureProfiles(const sp<IBinder>& displayToken, int32_t* outMaxProfiles);
     void setPowerMode(const sp<IBinder>& displayToken, int mode);
     status_t overrideHdrTypes(const sp<IBinder>& displayToken,
                               const std::vector<ui::Hdr>& hdrTypes);
@@ -669,6 +652,10 @@ private:
 
     void updateHdcpLevels(hal::HWDisplayId hwcDisplayId, int32_t connectedLevel, int32_t maxLevel);
 
+    void addActivePictureListener(const sp<gui::IActivePictureListener>& listener);
+
+    void removeActivePictureListener(const sp<gui::IActivePictureListener>& listener);
+
     // IBinder::DeathRecipient overrides:
     void binderDied(const wp<IBinder>& who) override;
 
@@ -682,6 +669,7 @@ private:
     void onComposerHalSeamlessPossible(hal::HWDisplayId) override;
     void onComposerHalVsyncIdle(hal::HWDisplayId) override;
     void onRefreshRateChangedDebug(const RefreshRateChangedDebugData&) override;
+    void onComposerHalHdcpLevelsChanged(hal::HWDisplayId, const HdcpLevels& levels) override;
 
     // ICompositor overrides:
     void configure() override REQUIRES(kMainThreadContext);
@@ -697,19 +685,15 @@ private:
     void requestHardwareVsync(PhysicalDisplayId, bool) override;
     void requestDisplayModes(std::vector<display::DisplayModeRequest>) override;
     void kernelTimerChanged(bool expired) override;
-    void triggerOnFrameRateOverridesChanged() override;
     void onChoreographerAttached() override;
     void onExpectedPresentTimePosted(TimePoint expectedPresentTime, ftl::NonNull<DisplayModePtr>,
                                      Fps renderRate) override;
-    void onCommitNotComposited(PhysicalDisplayId pacesetterDisplayId) override
+    void onCommitNotComposited() override
             REQUIRES(kMainThreadContext);
     void vrrDisplayIdle(bool idle) override;
 
     // ICEPowerCallback overrides:
     void notifyCpuLoadUp() override;
-
-    // Toggles the kernel idle timer on or off depending the policy decisions around refresh rates.
-    void toggleKernelIdleTimer() REQUIRES(mStateLock);
 
     using KernelIdleTimerController = scheduler::RefreshRateSelector::KernelIdleTimerController;
 
@@ -717,13 +701,7 @@ private:
     // configured and what value to use as the timeout.
     std::pair<std::optional<KernelIdleTimerController>, std::chrono::milliseconds>
             getKernelIdleTimerProperties(PhysicalDisplayId) REQUIRES(mStateLock);
-    // Updates the kernel idle timer either through HWC or through sysprop
-    // depending on which controller is provided
-    void updateKernelIdleTimer(std::chrono::milliseconds timeoutMs, KernelIdleTimerController,
-                               PhysicalDisplayId) REQUIRES(mStateLock);
-    // Keeps track of whether the kernel idle timer is currently enabled, so we don't have to
-    // make calls to sys prop each time.
-    bool mKernelIdleTimerEnabled = false;
+
     // Show spinner with refresh rate overlay
     bool mRefreshRateOverlaySpinner = false;
     // Show render rate with refresh rate overlay
@@ -739,15 +717,35 @@ private:
                                        Fps maxFps);
 
     void initiateDisplayModeChanges() REQUIRES(kMainThreadContext) REQUIRES(mStateLock);
-    void finalizeDisplayModeChange(PhysicalDisplayId) REQUIRES(kMainThreadContext)
+
+    // Returns whether the commit stage should proceed. The return value is ignored when finalizing
+    // immediate mode changes, which happen toward the end of the commit stage.
+    // TODO: b/355427258 - Remove the return value once the `synced_resolution_switch` flag is live.
+    bool finalizeDisplayModeChange(PhysicalDisplayId) REQUIRES(kMainThreadContext)
             REQUIRES(mStateLock);
 
     void dropModeRequest(PhysicalDisplayId) REQUIRES(kMainThreadContext);
     void applyActiveMode(PhysicalDisplayId) REQUIRES(kMainThreadContext);
 
     // Called on the main thread in response to setPowerMode()
-    void setPowerModeInternal(const sp<DisplayDevice>& display, hal::PowerMode mode)
+    void setPhysicalDisplayPowerMode(const sp<DisplayDevice>& display, hal::PowerMode mode)
             REQUIRES(mStateLock, kMainThreadContext);
+    void setVirtualDisplayPowerMode(const sp<DisplayDevice>& display, hal::PowerMode mode)
+            REQUIRES(mStateLock, kMainThreadContext);
+
+    // Returns whether to optimize globally for performance instead of power.
+    bool shouldOptimizeForPerformance() REQUIRES(mStateLock);
+
+    // Turns on power optimizations, for example when there are no displays to be optimized for
+    // performance.
+    static void enablePowerOptimizations(const char* whence);
+
+    // Turns off power optimizations.
+    static void disablePowerOptimizations(const char* whence);
+
+    // Enables or disables power optimizations depending on whether there are displays that should
+    // be optimized for performance.
+    void applyOptimizationPolicy(const char* whence) REQUIRES(mStateLock);
 
     // Returns the preferred mode for PhysicalDisplayId if the Scheduler has selected one for that
     // display. Falls back to the display's defaultModeId otherwise.
@@ -763,17 +761,11 @@ private:
                                             const scheduler::RefreshRateSelector&)
             REQUIRES(mStateLock, kMainThreadContext);
 
-    void commitTransactionsLegacy() EXCLUDES(mStateLock) REQUIRES(kMainThreadContext);
     void commitTransactions() REQUIRES(kMainThreadContext, mStateLock);
     void commitTransactionsLocked(uint32_t transactionFlags)
             REQUIRES(mStateLock, kMainThreadContext);
     void doCommitTransactions() REQUIRES(mStateLock);
 
-    // Returns whether a new buffer has been latched.
-    bool latchBuffers();
-
-    void updateLayerGeometry();
-    void updateLayerMetadataSnapshot();
     std::vector<std::pair<Layer*, LayerFE*>> moveSnapshotsToCompositionArgs(
             compositionengine::CompositionRefreshArgs& refreshArgs, bool cursorOnly)
             REQUIRES(kMainThreadContext);
@@ -781,13 +773,9 @@ private:
                                           const std::vector<std::pair<Layer*, LayerFE*>>& layers)
             REQUIRES(kMainThreadContext);
     // Return true if we must composite this frame
-    bool updateLayerSnapshotsLegacy(VsyncId vsyncId, nsecs_t frameTimeNs, bool transactionsFlushed,
-                                    bool& out) REQUIRES(kMainThreadContext);
-    // Return true if we must composite this frame
     bool updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs, bool transactionsFlushed,
                               bool& out) REQUIRES(kMainThreadContext);
     void updateLayerHistory(nsecs_t now) REQUIRES(kMainThreadContext);
-    frontend::Update flushLifecycleUpdates() REQUIRES(kMainThreadContext);
 
     void updateInputFlinger(VsyncId vsyncId, TimePoint frameTime) REQUIRES(kMainThreadContext);
     void persistDisplayBrightness(bool needsComposite) REQUIRES(kMainThreadContext);
@@ -804,7 +792,7 @@ private:
      */
     bool applyTransactionState(const FrameTimelineInfo& info,
                                std::vector<ResolvedComposerState>& state,
-                               Vector<DisplayState>& displays, uint32_t flags,
+                               std::span<DisplayState> displays, uint32_t flags,
                                const InputWindowCommands& inputWindowCommands,
                                const int64_t desiredPresentTime, bool isAutoTimestamp,
                                const std::vector<uint64_t>& uncacheBufferIds,
@@ -814,10 +802,11 @@ private:
             REQUIRES(mStateLock, kMainThreadContext);
     // Flush pending transactions that were presented after desiredPresentTime.
     // For test only
-    bool flushTransactionQueues(VsyncId) REQUIRES(kMainThreadContext);
+    bool flushTransactionQueues() REQUIRES(kMainThreadContext);
 
-    bool applyTransactions(std::vector<TransactionState>&, VsyncId) REQUIRES(kMainThreadContext);
-    bool applyAndCommitDisplayTransactionStatesLocked(std::vector<TransactionState>& transactions)
+    bool applyTransactions(std::vector<QueuedTransactionState>&) REQUIRES(kMainThreadContext);
+    bool applyAndCommitDisplayTransactionStatesLocked(
+            std::vector<QueuedTransactionState>& transactions)
             REQUIRES(kMainThreadContext, mStateLock);
 
     // Returns true if there is at least one transaction that needs to be flushed
@@ -826,16 +815,10 @@ private:
     TransactionHandler::TransactionReadiness transactionReadyTimelineCheck(
             const TransactionHandler::TransactionFlushState& flushState)
             REQUIRES(kMainThreadContext);
-    TransactionHandler::TransactionReadiness transactionReadyBufferCheckLegacy(
-            const TransactionHandler::TransactionFlushState& flushState)
-            REQUIRES(kMainThreadContext);
     TransactionHandler::TransactionReadiness transactionReadyBufferCheck(
             const TransactionHandler::TransactionFlushState& flushState)
             REQUIRES(kMainThreadContext);
 
-    uint32_t setClientStateLocked(const FrameTimelineInfo&, ResolvedComposerState&,
-                                  int64_t desiredPresentTime, bool isAutoTimestamp,
-                                  int64_t postTime, uint64_t transactionId) REQUIRES(mStateLock);
     uint32_t updateLayerCallbacksAndStats(const FrameTimelineInfo&, ResolvedComposerState&,
                                           int64_t desiredPresentTime, bool isAutoTimestamp,
                                           int64_t postTime, uint64_t transactionId)
@@ -850,11 +833,9 @@ private:
     // Clears and returns the masked bits.
     uint32_t clearTransactionFlags(uint32_t mask);
 
-    void commitOffscreenLayers();
-
     static LatchUnsignaledConfig getLatchUnsignaledConfig();
     bool shouldLatchUnsignaled(const layer_state_t&, size_t numStates, bool firstTransaction) const;
-    bool applyTransactionsLocked(std::vector<TransactionState>& transactions, VsyncId)
+    bool applyTransactionsLocked(std::vector<QueuedTransactionState>& transactions)
             REQUIRES(mStateLock, kMainThreadContext);
     uint32_t setDisplayStateLocked(const DisplayState& s) REQUIRES(mStateLock);
     uint32_t addInputWindowCommands(const InputWindowCommands& inputWindowCommands)
@@ -872,73 +853,100 @@ private:
     status_t createEffectLayer(const LayerCreationArgs& args, sp<IBinder>* outHandle,
                                sp<Layer>* outLayer);
 
+    // Checks if there are layer leaks before creating layer
+    status_t checkLayerLeaks();
+
     status_t mirrorLayer(const LayerCreationArgs& args, const sp<IBinder>& mirrorFromHandle,
                          gui::CreateSurfaceResult& outResult);
 
     status_t mirrorDisplay(DisplayId displayId, const LayerCreationArgs& args,
                            gui::CreateSurfaceResult& outResult);
 
-    void markLayerPendingRemovalLocked(const sp<Layer>& layer) REQUIRES(mStateLock);
-
     // add a layer to SurfaceFlinger
     status_t addClientLayer(LayerCreationArgs& args, const sp<IBinder>& handle,
                             const sp<Layer>& layer, const wp<Layer>& parentLayer,
                             uint32_t* outTransformHint);
-
-    // Traverse through all the layers and compute and cache its bounds.
-    void computeLayerBounds();
 
     // Creates a promise for a future release fence for a layer. This allows for
     // the layer to keep track of when its buffer can be released.
     void attachReleaseFenceFutureToLayer(Layer* layer, LayerFE* layerFE, ui::LayerStack layerStack);
 
     // Checks if a protected layer exists in a list of layers.
-    bool layersHasProtectedLayer(const std::vector<sp<LayerFE>>& layers) const;
+    bool layersHasProtectedLayer(const std::vector<std::pair<Layer*, sp<LayerFE>>>& layers) const;
 
     using OutputCompositionState = compositionengine::impl::OutputCompositionState;
 
-    std::optional<OutputCompositionState> getDisplayAndLayerSnapshotsFromMainThread(
-            RenderAreaBuilderVariant& renderAreaBuilder,
-            GetLayerSnapshotsFunction getLayerSnapshotsFn, std::vector<sp<LayerFE>>& layerFEs);
+    /*
+     * Parameters used across screenshot methods.
+     */
+    struct ScreenshotArgs {
+        // Contains the sequence ID of the parent layer if the screenshot is
+        // initiated though captureLayers(), or the display that the render
+        // result will be on if initiated through captureDisplay()
+        std::variant<int32_t, wp<const DisplayDevice>> captureTypeVariant;
 
-    void captureScreenCommon(RenderAreaBuilderVariant, GetLayerSnapshotsFunction,
-                             ui::Size bufferSize, ui::PixelFormat, bool allowProtected,
-                             bool grayscale, const sp<IScreenCaptureListener>&);
+        // Display ID of the display the result will be on
+        ftl::Optional<DisplayIdVariant> displayIdVariant{std::nullopt};
 
-    std::optional<OutputCompositionState> getDisplayStateFromRenderAreaBuilder(
-            RenderAreaBuilderVariant& renderAreaBuilder) REQUIRES(kMainThreadContext);
+        // If true, transform is inverted from the parent layer snapshot
+        bool childrenOnly{false};
 
-    // Legacy layer raw pointer is not safe to access outside the main thread.
-    // Creates a new vector consisting only of LayerFEs, which can be safely
-    // accessed outside the main thread.
-    std::vector<sp<LayerFE>> extractLayerFEs(
-            const std::vector<std::pair<Layer*, sp<LayerFE>>>& layers) const;
+        // Source crop of the render area
+        Rect sourceCrop;
+
+        // Transform to be applied on the layers to transform them
+        // into the logical render area
+        ui::Transform transform;
+
+        // Size of the physical render area
+        ui::Size reqSize;
+
+        // Composition dataspace of the render area
+        ui::Dataspace dataspace;
+
+        // If false, the secure layer is blacked out or skipped
+        // when rendered to an insecure render area
+        bool isSecure{false};
+
+        // If true, the render result may be used for system animations
+        // that must preserve the exact colors of the display
+        bool seamlessTransition{false};
+
+        // Current display brightness of the output composition state
+        float displayBrightnessNits{-1.f};
+
+        // SDR white point of the output composition state
+        float sdrWhitePointNits{-1.f};
+
+        // Current active color mode of the output composition state
+        ui::ColorMode colorMode{ui::ColorMode::NATIVE};
+
+        // Current active render intent of the output composition state
+        ui::RenderIntent renderIntent{ui::RenderIntent::COLORIMETRIC};
+    };
+
+    bool getSnapshotsFromMainThread(ScreenshotArgs& args,
+                                    GetLayerSnapshotsFunction getLayerSnapshotsFn,
+                                    std::vector<std::pair<Layer*, sp<LayerFE>>>& layers);
+
+    void captureScreenCommon(ScreenshotArgs& args, GetLayerSnapshotsFunction, ui::Size bufferSize,
+                             ui::PixelFormat, bool allowProtected, bool grayscale,
+                             const sp<IScreenCaptureListener>&);
+
+    bool getDisplayStateOnMainThread(ScreenshotArgs& args) REQUIRES(kMainThreadContext);
 
     ftl::SharedFuture<FenceResult> captureScreenshot(
-            const RenderAreaBuilderVariant& renderAreaBuilder,
-            const std::shared_ptr<renderengine::ExternalTexture>& buffer, bool regionSampling,
-            bool grayscale, bool isProtected, const sp<IScreenCaptureListener>& captureListener,
-            std::optional<OutputCompositionState>& displayState,
-            std::vector<sp<LayerFE>>& layerFEs);
-
-    ftl::SharedFuture<FenceResult> captureScreenshotLegacy(
-            RenderAreaBuilderVariant, GetLayerSnapshotsFunction,
-            const std::shared_ptr<renderengine::ExternalTexture>&, bool regionSampling,
-            bool grayscale, bool isProtected, const sp<IScreenCaptureListener>&);
+            ScreenshotArgs& args, const std::shared_ptr<renderengine::ExternalTexture>& buffer,
+            bool regionSampling, bool grayscale, bool isProtected,
+            const sp<IScreenCaptureListener>& captureListener,
+            const std::vector<std::pair<Layer*, sp<LayerFE>>>& layers,
+            const std::shared_ptr<renderengine::ExternalTexture>& hdrBuffer = nullptr,
+            const std::shared_ptr<renderengine::ExternalTexture>& gainmapBuffer = nullptr);
 
     ftl::SharedFuture<FenceResult> renderScreenImpl(
-            std::unique_ptr<const RenderArea>,
-            const std::shared_ptr<renderengine::ExternalTexture>&, bool regionSampling,
-            bool grayscale, bool isProtected, ScreenCaptureResults&,
-            std::optional<OutputCompositionState>& displayState,
-            std::vector<std::pair<Layer*, sp<LayerFE>>>& layers,
-            std::vector<sp<LayerFE>>& layerFEs);
-
-    // If the uid provided is not UNSET_UID, the traverse will skip any layers that don't have a
-    // matching ownerUid
-    void traverseLayersInLayerStack(ui::LayerStack, const int32_t uid,
-                                    std::unordered_set<uint32_t> excludeLayerIds,
-                                    const LayerVector::Visitor&);
+            ScreenshotArgs& args, const std::shared_ptr<renderengine::ExternalTexture>&,
+            bool regionSampling, bool grayscale, bool isProtected, ScreenCaptureResults&,
+            const std::vector<std::pair<Layer*, sp<LayerFE>>>& layers);
 
     void readPersistentProperties();
 
@@ -988,18 +996,12 @@ private:
         return nullptr;
     }
 
-    // Returns the primary display or (for foldables) the active display, assuming that the inner
-    // and outer displays have mutually exclusive power states.
+    // Returns the primary display or (for foldables) the active display.
     sp<const DisplayDevice> getDefaultDisplayDeviceLocked() const REQUIRES(mStateLock) {
         return const_cast<SurfaceFlinger*>(this)->getDefaultDisplayDeviceLocked();
     }
 
     sp<DisplayDevice> getDefaultDisplayDeviceLocked() REQUIRES(mStateLock) {
-        if (const auto display = getDisplayDeviceLocked(mActiveDisplayId)) {
-            return display;
-        }
-        // The active display is outdated, so fall back to the primary display.
-        mActiveDisplayId = getPrimaryDisplayIdLocked();
         return getDisplayDeviceLocked(mActiveDisplayId);
     }
 
@@ -1038,10 +1040,10 @@ private:
     // region of all screens presenting this layer stack.
     void invalidateLayerStack(const ui::LayerFilter& layerFilter, const Region& dirty);
 
-    ui::LayerFilter makeLayerFilterForDisplay(DisplayId displayId, ui::LayerStack layerStack)
+    ui::LayerFilter makeLayerFilterForDisplay(DisplayIdVariant displayId, ui::LayerStack layerStack)
             REQUIRES(mStateLock) {
         return {layerStack,
-                PhysicalDisplayId::tryCast(displayId)
+                asPhysicalDisplayId(displayId)
                         .and_then(display::getPhysicalDisplay(mPhysicalDisplays))
                         .transform(&display::PhysicalDisplay::isInternal)
                         .value_or(false)};
@@ -1080,7 +1082,8 @@ private:
     // Returns the active mode ID, or nullopt on hotplug failure.
     std::optional<DisplayModeId> processHotplugConnect(PhysicalDisplayId, hal::HWDisplayId,
                                                        DisplayIdentificationInfo&&,
-                                                       const char* displayString)
+                                                       const char* displayString,
+                                                       HWComposer::HotplugEvent event)
             REQUIRES(mStateLock, kMainThreadContext);
     void processHotplugDisconnect(PhysicalDisplayId, const char* displayString)
             REQUIRES(mStateLock, kMainThreadContext);
@@ -1092,19 +1095,14 @@ private:
             const sp<compositionengine::DisplaySurface>& displaySurface,
             const sp<IGraphicBufferProducer>& producer) REQUIRES(mStateLock);
     void processDisplayChangesLocked() REQUIRES(mStateLock, kMainThreadContext);
+    void processDisplayAdded(const wp<IBinder>& displayToken, const DisplayDeviceState&)
+            REQUIRES(mStateLock, kMainThreadContext);
     void processDisplayRemoved(const wp<IBinder>& displayToken)
             REQUIRES(mStateLock, kMainThreadContext);
     void processDisplayChanged(const wp<IBinder>& displayToken,
                                const DisplayDeviceState& currentState,
                                const DisplayDeviceState& drawingState)
             REQUIRES(mStateLock, kMainThreadContext);
-
-    void dispatchDisplayModeChangeEvent(PhysicalDisplayId, const scheduler::FrameRateMode&);
-
-    /*
-     * VSYNC
-     */
-    nsecs_t getVsyncPeriodFromHWC() const REQUIRES(mStateLock);
 
     /*
      * Display identification
@@ -1138,8 +1136,22 @@ private:
     void enableHalVirtualDisplays(bool);
 
     // Virtual display lifecycle for ID generation and HAL allocation.
-    VirtualDisplayId acquireVirtualDisplay(ui::Size, ui::PixelFormat) REQUIRES(mStateLock);
-    void releaseVirtualDisplay(VirtualDisplayId);
+    std::optional<VirtualDisplayIdVariant> acquireVirtualDisplay(
+            ui::Size, ui::PixelFormat, const std::string& uniqueId,
+            compositionengine::DisplayCreationArgsBuilder&) REQUIRES(mStateLock);
+
+    template <typename ID>
+    void acquireVirtualDisplaySnapshot(ID displayId, const std::string& uniqueId) {
+        std::lock_guard lock(mVirtualDisplaysMutex);
+        const bool emplace_success =
+                mVirtualDisplays.try_emplace(displayId, displayId, uniqueId).second;
+        if (!emplace_success) {
+            ALOGW("%s: Virtual display snapshot with the same ID already exists", __func__);
+        }
+    }
+
+    void releaseVirtualDisplay(VirtualDisplayIdVariant displayId);
+    void releaseVirtualDisplaySnapshot(VirtualDisplayId displayId);
 
     // Returns a display other than `mActiveDisplayId` that can be activated, if any.
     sp<DisplayDevice> getActivatableDisplay() const REQUIRES(mStateLock, kMainThreadContext);
@@ -1156,7 +1168,6 @@ private:
     void dumpAll(const DumpArgs& args, const std::string& compositionLayers,
                  std::string& result) const EXCLUDES(mStateLock);
     void dumpHwcLayersMinidump(std::string& result) const REQUIRES(mStateLock, kMainThreadContext);
-    void dumpHwcLayersMinidumpLockedLegacy(std::string& result) const REQUIRES(mStateLock);
 
     void appendSfConfigString(std::string& result) const;
     void listLayers(std::string& result) const REQUIRES(kMainThreadContext);
@@ -1182,8 +1193,6 @@ private:
 
     perfetto::protos::LayersProto dumpDrawingStateProto(uint32_t traceFlags) const
             REQUIRES(kMainThreadContext);
-    void dumpOffscreenLayersProto(perfetto::protos::LayersProto& layersProto,
-                                  uint32_t traceFlags = LayerTracing::TRACE_ALL) const;
     google::protobuf::RepeatedPtrField<perfetto::protos::DisplayProto> dumpDisplayProto() const;
     void doActiveLayersTracingIfNeeded(bool isCompositionComputed, bool visibleRegionDirty,
                                        TimePoint, VsyncId) REQUIRES(kMainThreadContext);
@@ -1195,7 +1204,6 @@ private:
     void dumpHwc(std::string& result) const;
     perfetto::protos::LayersProto dumpProtoFromMainThread(
             uint32_t traceFlags = LayerTracing::TRACE_ALL) EXCLUDES(mStateLock);
-    void dumpOffscreenLayers(std::string& result) EXCLUDES(mStateLock);
     void dumpPlannerInfo(const DumpArgs& args, std::string& result) const REQUIRES(mStateLock);
 
     status_t doDump(int fd, const DumpArgs& args, bool asProto);
@@ -1227,7 +1235,7 @@ private:
 
     bool isHdrLayer(const frontend::LayerSnapshot& snapshot) const;
 
-    ui::Rotation getPhysicalDisplayOrientation(DisplayId, bool isPrimary) const
+    ui::Rotation getPhysicalDisplayOrientation(PhysicalDisplayId, bool isPrimary) const
             REQUIRES(mStateLock);
     void traverseLegacyLayers(const LayerVector::Visitor& visitor) const
             REQUIRES(kMainThreadContext);
@@ -1256,7 +1264,6 @@ private:
     State mCurrentState{LayerVector::StateSet::Current};
     std::atomic<int32_t> mTransactionFlags = 0;
     std::atomic<uint32_t> mUniqueTransactionId = 1;
-    SortedVector<sp<Layer>> mLayersPendingRemoval;
 
     // Buffers that have been discarded by clients and need to be evicted from per-layer caches so
     // the graphics memory can be immediately freed.
@@ -1286,6 +1293,14 @@ private:
 
     bool mHdrLayerInfoChanged = false;
 
+    struct LayerEvent {
+        uid_t uid;
+        int32_t layerId;
+        ui::Dataspace dataspace;
+        std::chrono::milliseconds timeSinceLastEvent;
+    };
+    std::vector<LayerEvent> mLayerEvents;
+
     // Used to ensure we omit a callback when HDR layer info listener is newly added but the
     // scene hasn't changed
     bool mAddingHDRLayerInfoListener = false;
@@ -1296,21 +1311,21 @@ private:
     // TODO: Also move visibleRegions over to a boolean system.
     bool mUpdateInputInfo = false;
     bool mSomeChildrenChanged;
-    bool mForceTransactionDisplayChange = false;
     bool mUpdateAttachedChoreographer = false;
 
-    // Set if LayerMetadata has changed since the last LayerMetadata snapshot.
-    bool mLayerMetadataSnapshotNeeded = false;
+    struct LayerIntHash {
+        size_t operator()(const std::pair<sp<Layer>, gui::GameMode>& k) const {
+            return std::hash<Layer*>()(k.first.get()) ^
+                    std::hash<int32_t>()(static_cast<int32_t>(k.second));
+        }
+    };
 
     // TODO(b/238781169) validate these on composition
     // Tracks layers that have pending frames which are candidates for being
     // latched.
-    std::unordered_set<sp<Layer>, SpHash<Layer>> mLayersWithQueuedFrames;
+    std::unordered_set<std::pair<sp<Layer>, gui::GameMode>, LayerIntHash> mLayersWithQueuedFrames;
     std::unordered_set<sp<Layer>, SpHash<Layer>> mLayersWithBuffersRemoved;
-    std::unordered_set<uint32_t> mLayersIdsWithQueuedFrames;
 
-    // Tracks layers that need to update a display's dirty region.
-    std::vector<sp<Layer>> mLayersPendingRefresh;
     // Sorted list of layers that were composed during previous frame. This is used to
     // avoid an expensive traversal of the layer hierarchy when there are no
     // visible region changes. Because this is a list of strong pointers, this will
@@ -1321,11 +1336,8 @@ private:
 
     struct HotplugEvent {
         hal::HWDisplayId hwcDisplayId;
-        hal::Connection connection = hal::Connection::INVALID;
+        HWComposer::HotplugEvent event;
     };
-
-    bool mIsHdcpViaNegVsync = false;
-    bool mIsHotplugErrViaNegVsync = false;
 
     std::mutex mHotplugMutex;
     std::vector<HotplugEvent> mPendingHotplugEvents GUARDED_BY(mHotplugMutex);
@@ -1338,7 +1350,11 @@ private:
 
     display::PhysicalDisplays mPhysicalDisplays GUARDED_BY(mStateLock);
 
-    // The inner or outer display for foldables, assuming they have mutually exclusive power states.
+    mutable std::mutex mVirtualDisplaysMutex;
+    ftl::SmallMap<VirtualDisplayId, const display::VirtualDisplaySnapshot, 2> mVirtualDisplays
+            GUARDED_BY(mVirtualDisplaysMutex);
+
+    // The inner or outer display for foldables, while unfolded or folded, respectively.
     std::atomic<PhysicalDisplayId> mActiveDisplayId;
 
     display::DisplayModeController mDisplayModeController;
@@ -1404,6 +1420,7 @@ private:
     std::atomic<int> mNumTrustedPresentationListeners = 0;
 
     std::unique_ptr<compositionengine::CompositionEngine> mCompositionEngine;
+    std::unique_ptr<HWComposer> mHWComposer;
 
     CompositionCoveragePerDisplay mCompositionCoverage;
 
@@ -1430,7 +1447,7 @@ private:
     sp<os::IInputFlinger> mInputFlinger;
     InputWindowCommands mInputWindowCommands;
 
-    std::unique_ptr<Hwc2::PowerAdvisor> mPowerAdvisor;
+    std::unique_ptr<adpf::PowerAdvisor> mPowerAdvisor;
 
     void enableRefreshRateOverlay(bool enable) REQUIRES(mStateLock, kMainThreadContext);
 
@@ -1439,37 +1456,14 @@ private:
     // Flag used to set override desired display mode from backdoor
     bool mDebugDisplayModeSetByBackdoor = false;
 
-    // A set of layers that have no parent so they are not drawn on screen.
-    // Should only be accessed by the main thread.
-    // The Layer pointer is removed from the set when the destructor is called so there shouldn't
-    // be any issues with a raw pointer referencing an invalid object.
-    std::unordered_set<Layer*> mOffscreenLayers;
-
     BufferCountTracker mBufferCountTracker;
 
     std::unordered_map<DisplayId, sp<HdrLayerInfoReporter>> mHdrLayerInfoListeners
             GUARDED_BY(mStateLock);
 
-    mutable std::mutex mCreatedLayersLock;
-
-    // A temporay pool that store the created layers and will be added to current state in main
-    // thread.
-    std::vector<LayerCreatedState> mCreatedLayers GUARDED_BY(mCreatedLayersLock);
-    bool commitCreatedLayers(VsyncId, std::vector<LayerCreatedState>& createdLayers);
-    void handleLayerCreatedLocked(const LayerCreatedState&, VsyncId) REQUIRES(mStateLock);
-
-    mutable std::mutex mMirrorDisplayLock;
-    struct MirrorDisplayState {
-        MirrorDisplayState(ui::LayerStack layerStack, sp<IBinder>& rootHandle,
-                           const sp<Client>& client)
-              : layerStack(layerStack), rootHandle(rootHandle), client(client) {}
-
-        ui::LayerStack layerStack;
-        sp<IBinder> rootHandle;
-        const sp<Client> client;
-    };
-    std::vector<MirrorDisplayState> mMirrorDisplays GUARDED_BY(mMirrorDisplayLock);
-    bool commitMirrorDisplays(VsyncId);
+    ActivePictureTracker mActivePictureTracker GUARDED_BY(kMainThreadContext);
+    ActivePictureTracker::Listeners mActivePictureListenersToAdd GUARDED_BY(mStateLock);
+    ActivePictureTracker::Listeners mActivePictureListenersToRemove GUARDED_BY(mStateLock);
 
     std::atomic<ui::Transform::RotationFlags> mActiveDisplayTransformHint;
 
@@ -1504,15 +1498,20 @@ private:
     }
 
     bool mPowerHintSessionEnabled;
-
-    bool mLayerLifecycleManagerEnabled = false;
     // Whether a display should be turned on when initialized
     bool mSkipPowerOnForQuiescent;
+
+    // used for omitting vsync callbacks to apps when the display is not updatable
+    int mRefreshableDisplays GUARDED_BY(mStateLock) = 0;
+    void incRefreshableDisplays() REQUIRES(mStateLock);
+    void decRefreshableDisplays() REQUIRES(mStateLock);
 
     frontend::LayerLifecycleManager mLayerLifecycleManager GUARDED_BY(kMainThreadContext);
     frontend::LayerHierarchyBuilder mLayerHierarchyBuilder GUARDED_BY(kMainThreadContext);
     frontend::LayerSnapshotBuilder mLayerSnapshotBuilder GUARDED_BY(kMainThreadContext);
 
+    mutable std::mutex mCreatedLayersLock;
+    std::vector<sp<Layer>> mCreatedLayers GUARDED_BY(mCreatedLayersLock);
     std::vector<std::pair<uint32_t, std::string>> mDestroyedHandles GUARDED_BY(mCreatedLayersLock);
     std::vector<std::unique_ptr<frontend::RequestedLayerState>> mNewLayers
             GUARDED_BY(mCreatedLayersLock);
@@ -1579,9 +1578,11 @@ public:
             const sp<IBinder>& layerHandle,
             sp<gui::IDisplayEventConnection>* outConnection) override;
     binder::Status createConnection(sp<gui::ISurfaceComposerClient>* outClient) override;
-    binder::Status createVirtualDisplay(const std::string& displayName, bool isSecure,
-                                        const std::string& uniqueId, float requestedRefreshRate,
-                                        sp<IBinder>* outDisplay) override;
+    binder::Status createVirtualDisplay(
+            const std::string& displayName, bool isSecure,
+            gui::ISurfaceComposer::OptimizationPolicy optimizationPolicy,
+            const std::string& uniqueId, float requestedRefreshRate,
+            sp<IBinder>* outDisplay) override;
     binder::Status destroyVirtualDisplay(const sp<IBinder>& displayToken) override;
     binder::Status getPhysicalDisplayIds(std::vector<int64_t>* outDisplayIds) override;
     binder::Status getPhysicalDisplayToken(int64_t displayId, sp<IBinder>* outDisplay) override;
@@ -1611,6 +1612,8 @@ public:
     binder::Status getHdrOutputConversionSupport(bool* outSupport) override;
     binder::Status setAutoLowLatencyMode(const sp<IBinder>& display, bool on) override;
     binder::Status setGameContentType(const sp<IBinder>& display, bool on) override;
+    binder::Status getMaxLayerPictureProfiles(const sp<IBinder>& display,
+                                              int32_t* outMaxProfiles) override;
     binder::Status captureDisplay(const DisplayCaptureArgs&,
                                   const sp<IScreenCaptureListener>&) override;
     binder::Status captureDisplayById(int64_t, const CaptureArgs&,
@@ -1694,12 +1697,20 @@ public:
             int pid, std::optional<gui::StalledTransactionInfo>* outInfo) override;
     binder::Status getSchedulingPolicy(gui::SchedulingPolicy* outPolicy) override;
     binder::Status notifyShutdown() override;
+    binder::Status addJankListener(const sp<IBinder>& layer,
+                                   const sp<gui::IJankListener>& listener) override;
+    binder::Status flushJankData(int32_t layerId) override;
+    binder::Status removeJankListener(int32_t layerId, const sp<gui::IJankListener>& listener,
+                                      int64_t afterVsync) override;
+    binder::Status addActivePictureListener(const sp<gui::IActivePictureListener>& listener);
+    binder::Status removeActivePictureListener(const sp<gui::IActivePictureListener>& listener);
 
 private:
     static const constexpr bool kUsePermissionCache = true;
     status_t checkAccessPermission(bool usePermissionCache = kUsePermissionCache);
     status_t checkControlDisplayBrightnessPermission();
     status_t checkReadFrameBufferPermission();
+    status_t checkObservePictureProfilesPermission();
     static void getDynamicDisplayInfoInternal(ui::DynamicDisplayInfo& info,
                                               gui::DynamicDisplayInfo*& outInfo);
 

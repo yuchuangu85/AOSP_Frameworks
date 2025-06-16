@@ -22,13 +22,14 @@ import android.app.admin.DevicePolicyManager
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.android.app.tracing.coroutines.withContext
+import android.view.accessibility.AccessibilityManager
+import com.android.app.tracing.coroutines.withContextTraced as withContext
 import com.android.compose.animation.scene.ObservableTransitionState
 import com.android.internal.widget.LockPatternUtils
+import com.android.keyguard.logging.KeyguardQuickAffordancesLogger
 import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.animation.Expandable
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.devicepolicy.areKeyguardShortcutsDisabled
 import com.android.systemui.dock.DockManager
@@ -50,15 +51,19 @@ import com.android.systemui.scene.domain.interactor.SceneInteractor
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.settings.UserTracker
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import com.android.systemui.shared.customization.data.content.CustomizationProviderContract as Contract
+import com.android.systemui.shared.quickaffordance.shared.model.KeyguardPreviewConstants.KEYGUARD_QUICK_AFFORDANCE_ID_NONE
 import com.android.systemui.statusbar.phone.SystemUIDialog
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import dagger.Lazy
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
@@ -66,7 +71,6 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class KeyguardQuickAffordanceInteractor
 @Inject
@@ -80,21 +84,39 @@ constructor(
     private val featureFlags: FeatureFlags,
     private val repository: Lazy<KeyguardQuickAffordanceRepository>,
     private val launchAnimator: DialogTransitionAnimator,
-    private val logger: KeyguardQuickAffordancesMetricsLogger,
+    private val logger: KeyguardQuickAffordancesLogger,
+    private val metricsLogger: KeyguardQuickAffordancesMetricsLogger,
     private val devicePolicyManager: DevicePolicyManager,
     private val dockManager: DockManager,
     private val biometricSettingsRepository: BiometricSettingsRepository,
+    private val accessibilityManager: AccessibilityManager,
     @Background private val backgroundDispatcher: CoroutineDispatcher,
-    @Application private val appContext: Context,
+    @ShadeDisplayAware private val appContext: Context,
     private val sceneInteractor: Lazy<SceneInteractor>,
 ) {
+    /**
+     * Whether a quick affordance is being launched. Quick Affordances are interactive lockscreen UI
+     * elements that allow the user to perform quick actions without unlocking their device.
+     */
+    val launchingAffordance: StateFlow<Boolean> = repository.get().launchingAffordance.asStateFlow()
+
+    /**
+     * Whether a [KeyguardQuickAffordanceConfig.OnTriggeredResult] indicated that the system
+     * launched an activity or showed a dialog.
+     */
+    private val _launchingFromTriggeredResult =
+        MutableStateFlow<KeyguardQuickAffordanceConfig.LaunchingFromTriggeredResult?>(null)
+    val launchingFromTriggeredResult = _launchingFromTriggeredResult.asStateFlow()
 
     /**
      * Whether the UI should use the long press gesture to activate quick affordances.
      *
      * If `false`, the UI goes back to using single taps.
      */
-    fun useLongPress(): Flow<Boolean> = dockManager.retrieveIsDocked().map { !it }
+    fun useLongPress(): Flow<Boolean> =
+        dockManager.retrieveIsDocked().map { isDocked ->
+            !isDocked && !accessibilityManager.isEnabled()
+        }
 
     /** Returns an observable for the quick affordance at the given position. */
     suspend fun quickAffordance(
@@ -116,7 +138,8 @@ constructor(
                             is ObservableTransitionState.Idle ->
                                 it.currentScene == Scenes.Lockscreen
                             is ObservableTransitionState.Transition ->
-                                it.fromScene == Scenes.Lockscreen || it.toScene == Scenes.Lockscreen
+                                it.fromContent == Scenes.Lockscreen ||
+                                    it.toContent == Scenes.Lockscreen
                         }
                     }
                     .distinctUntilChanged()
@@ -140,14 +163,18 @@ constructor(
      *
      * This is useful for experiences like the lock screen preview mode, where the affordances must
      * always be visible.
+     *
+     * @param overrideQuickAffordanceId If null, return the currently-set quick affordance;
+     *   otherwise, override and return the correspondent [KeyguardQuickAffordanceModel].
      */
     suspend fun quickAffordanceAlwaysVisible(
         position: KeyguardQuickAffordancePosition,
+        overrideQuickAffordanceId: String? = null,
     ): Flow<KeyguardQuickAffordanceModel> {
         return if (isFeatureDisabledByDevicePolicy()) {
             flowOf(KeyguardQuickAffordanceModel.Hidden)
         } else {
-            quickAffordanceInternal(position)
+            quickAffordanceInternal(position, overrideQuickAffordanceId)
         }
     }
 
@@ -159,11 +186,7 @@ constructor(
      * @param expandable An optional [Expandable] for the activity- or dialog-launch animation
      * @param slotId The id of the lockscreen slot that the affordance is in
      */
-    fun onQuickAffordanceTriggered(
-        configKey: String,
-        expandable: Expandable?,
-        slotId: String,
-    ) {
+    fun onQuickAffordanceTriggered(configKey: String, expandable: Expandable?, slotId: String) {
         val (decodedSlotId, decodedConfigKey) = configKey.decode()
         val config =
             repository.get().selections.value[decodedSlotId]?.find { it.key == decodedConfigKey }
@@ -171,22 +194,47 @@ constructor(
             Log.e(TAG, "Affordance config with key of \"$configKey\" not found!")
             return
         }
-        logger.logOnShortcutTriggered(slotId, configKey)
+        logger.logQuickAffordanceTriggered(decodedSlotId, decodedConfigKey)
+        metricsLogger.logOnShortcutTriggered(slotId, configKey)
 
         when (val result = config.onTriggered(expandable)) {
-            is KeyguardQuickAffordanceConfig.OnTriggeredResult.StartActivity ->
+            is KeyguardQuickAffordanceConfig.OnTriggeredResult.StartActivity -> {
+                setLaunchingFromTriggeredResult(
+                    KeyguardQuickAffordanceConfig.LaunchingFromTriggeredResult(
+                        launched = true,
+                        configKey,
+                    )
+                )
                 launchQuickAffordance(
                     intent = result.intent,
                     canShowWhileLocked = result.canShowWhileLocked,
                     expandable = expandable,
                 )
-            is KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled -> Unit
-            is KeyguardQuickAffordanceConfig.OnTriggeredResult.ShowDialog ->
-                showDialog(
-                    result.dialog,
-                    result.expandable,
+            }
+            is KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled -> {
+                setLaunchingFromTriggeredResult(
+                    KeyguardQuickAffordanceConfig.LaunchingFromTriggeredResult(
+                        result.actionLaunched,
+                        configKey,
+                    )
                 )
+            }
+            is KeyguardQuickAffordanceConfig.OnTriggeredResult.ShowDialog -> {
+                setLaunchingFromTriggeredResult(
+                    KeyguardQuickAffordanceConfig.LaunchingFromTriggeredResult(
+                        launched = true,
+                        configKey,
+                    )
+                )
+                showDialog(result.dialog, result.expandable)
+            }
         }
+    }
+
+    fun setLaunchingFromTriggeredResult(
+        launchingResult: KeyguardQuickAffordanceConfig.LaunchingFromTriggeredResult?
+    ) {
+        _launchingFromTriggeredResult.value = launchingResult
     }
 
     /**
@@ -216,14 +264,10 @@ constructor(
 
         selections.add(affordanceId)
 
-        repository
-            .get()
-            .setSelections(
-                slotId = slotId,
-                affordanceIds = selections,
-            )
+        repository.get().setSelections(slotId = slotId, affordanceIds = selections)
 
-        logger.logOnShortcutSelected(slotId, affordanceId)
+        logger.logQuickAffordanceSelected(slotId, affordanceId)
+        metricsLogger.logOnShortcutSelected(slotId, affordanceId)
         return true
     }
 
@@ -264,12 +308,7 @@ constructor(
                 .getOrDefault(slotId, emptyList())
                 .toMutableList()
         return if (selections.remove(affordanceId)) {
-            repository
-                .get()
-                .setSelections(
-                    slotId = slotId,
-                    affordanceIds = selections,
-                )
+            repository.get().setSelections(slotId = slotId, affordanceIds = selections)
             true
         } else {
             false
@@ -295,12 +334,24 @@ constructor(
     }
 
     private fun quickAffordanceInternal(
-        position: KeyguardQuickAffordancePosition
+        position: KeyguardQuickAffordancePosition,
+        overrideAffordanceId: String? = null,
     ): Flow<KeyguardQuickAffordanceModel> =
         repository
             .get()
             .selections
-            .map { it[position.toSlotId()] ?: emptyList() }
+            .map { selections ->
+                val overrideQuickAffordanceConfigs =
+                    overrideAffordanceId?.let {
+                        if (it == KEYGUARD_QUICK_AFFORDANCE_ID_NONE) {
+                            emptyList()
+                        } else {
+                            val config = repository.get().getConfig(it)
+                            listOfNotNull(config)
+                        }
+                    }
+                overrideQuickAffordanceConfigs ?: selections[position.toSlotId()] ?: emptyList()
+            }
             .flatMapLatest { configs -> combinedConfigs(position, configs) }
 
     private fun combinedConfigs(
@@ -377,9 +428,13 @@ constructor(
                 intent,
                 true /* dismissShade */,
                 expandable?.activityTransitionController(),
-                true /* showOverLockscreenWhenLocked */,
+                true, /* showOverLockscreenWhenLocked */
             )
         }
+    }
+
+    fun setLaunchingAffordance(isLaunchingAffordance: Boolean) {
+        repository.get().launchingAffordance.value = isLaunchingAffordance
     }
 
     private fun String.encode(slotId: String): String {
@@ -414,7 +469,9 @@ constructor(
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_CUSTOM_CLOCKS_ENABLED,
-                value = featureFlags.isEnabled(Flags.LOCKSCREEN_CUSTOM_CLOCKS),
+                value =
+                    com.android.systemui.shared.Flags.lockscreenCustomClocks() ||
+                        featureFlags.isEnabled(Flags.LOCKSCREEN_CUSTOM_CLOCKS),
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_WALLPAPER_FULLSCREEN_PREVIEW,
@@ -422,23 +479,19 @@ constructor(
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_MONOCHROMATIC_THEME,
-                value = featureFlags.isEnabled(Flags.MONOCHROMATIC_THEME)
+                value = featureFlags.isEnabled(Flags.MONOCHROMATIC_THEME),
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_WALLPAPER_PICKER_UI_FOR_AIWP,
-                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_UI_FOR_AIWP)
-            ),
-            KeyguardPickerFlag(
-                name = Contract.FlagsTable.FLAG_NAME_TRANSIT_CLOCK,
-                value = featureFlags.isEnabled(Flags.TRANSIT_CLOCK)
+                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_UI_FOR_AIWP),
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_PAGE_TRANSITIONS,
-                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_PAGE_TRANSITIONS)
+                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_PAGE_TRANSITIONS),
             ),
             KeyguardPickerFlag(
                 name = Contract.FlagsTable.FLAG_NAME_WALLPAPER_PICKER_PREVIEW_ANIMATION,
-                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_PREVIEW_ANIMATION)
+                value = featureFlags.isEnabled(Flags.WALLPAPER_PICKER_PREVIEW_ANIMATION),
             ),
         )
     }

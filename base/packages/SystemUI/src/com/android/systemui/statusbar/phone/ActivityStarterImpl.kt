@@ -20,14 +20,17 @@ import android.os.Bundle
 import android.os.UserHandle
 import android.view.View
 import com.android.systemui.animation.ActivityTransitionAnimator
+import com.android.systemui.animation.TransitionAnimator
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.plugins.ActivityStarter.OnDismissAction
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import com.android.systemui.util.concurrency.DelayableExecutor
 import dagger.Lazy
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
 
 /** Handles start activity logic in SystemUI. */
 @SysUISingleton
@@ -36,15 +39,35 @@ class ActivityStarterImpl
 constructor(
     private val statusBarStateController: SysuiStatusBarStateController,
     @Main private val mainExecutor: DelayableExecutor,
-    legacyActivityStarter: Lazy<LegacyActivityStarterInternalImpl>
+    activityStarterInternal: Lazy<ActivityStarterInternalImpl>,
+    legacyActivityStarter: Lazy<LegacyActivityStarterInternalImpl>,
 ) : ActivityStarter {
 
-    private val activityStarterInternal: ActivityStarterInternal = legacyActivityStarter.get()
+    private val activityStarterInternal: ActivityStarterInternal =
+        if (SceneContainerFlag.isEnabled) {
+            activityStarterInternal.get()
+        } else {
+            legacyActivityStarter.get()
+        }
+
+    override fun registerTransition(
+        cookie: ActivityTransitionAnimator.TransitionCookie,
+        controllerFactory: ActivityTransitionAnimator.ControllerFactory,
+        scope: CoroutineScope,
+    ) {
+        if (!TransitionAnimator.longLivedReturnAnimationsEnabled()) return
+        activityStarterInternal.registerTransition(cookie, controllerFactory, scope)
+    }
+
+    override fun unregisterTransition(cookie: ActivityTransitionAnimator.TransitionCookie) {
+        if (!TransitionAnimator.longLivedReturnAnimationsEnabled()) return
+        activityStarterInternal.unregisterTransition(cookie)
+    }
 
     override fun startPendingIntentDismissingKeyguard(intent: PendingIntent) {
         activityStarterInternal.startPendingIntentDismissingKeyguard(
             intent = intent,
-            dismissShade = true
+            dismissShade = true,
         )
     }
 
@@ -91,7 +114,7 @@ constructor(
         intentSentUiThreadCallback: Runnable?,
         animationController: ActivityTransitionAnimator.Controller?,
         fillInIntent: Intent?,
-        extraOptions: Bundle?
+        extraOptions: Bundle?,
     ) {
         activityStarterInternal.startPendingIntentDismissingKeyguard(
             intent = intent,
@@ -108,7 +131,7 @@ constructor(
     override fun startPendingIntentMaybeDismissingKeyguard(
         intent: PendingIntent,
         intentSentUiThreadCallback: Runnable?,
-        animationController: ActivityTransitionAnimator.Controller?
+        animationController: ActivityTransitionAnimator.Controller?,
     ) {
         activityStarterInternal.startPendingIntentDismissingKeyguard(
             intent = intent,
@@ -126,6 +149,7 @@ constructor(
         animationController: ActivityTransitionAnimator.Controller?,
         fillInIntent: Intent?,
         extraOptions: Bundle?,
+        customMessage: String?,
     ) {
         activityStarterInternal.startPendingIntentDismissingKeyguard(
             intent = intent,
@@ -135,6 +159,7 @@ constructor(
             dismissShade = dismissShade,
             fillInIntent = fillInIntent,
             extraOptions = extraOptions,
+            customMessage = customMessage,
         )
     }
 
@@ -236,7 +261,7 @@ constructor(
 
     override fun postStartActivityDismissingKeyguard(
         intent: PendingIntent,
-        animationController: ActivityTransitionAnimator.Controller?
+        animationController: ActivityTransitionAnimator.Controller?,
     ) {
         postOnUiThread {
             activityStarterInternal.startPendingIntentDismissingKeyguard(
@@ -289,6 +314,25 @@ constructor(
         }
     }
 
+    override fun postStartActivityDismissingKeyguard(
+        intent: Intent,
+        delay: Int,
+        animationController: ActivityTransitionAnimator.Controller?,
+        customMessage: String?,
+        userHandle: UserHandle?,
+    ) {
+        postOnUiThread(delay) {
+            activityStarterInternal.startActivityDismissingKeyguard(
+                intent = intent,
+                onlyProvisioned = true,
+                dismissShade = true,
+                animationController = animationController,
+                customMessage = customMessage,
+                userHandle = userHandle,
+            )
+        }
+    }
+
     override fun dismissKeyguardThenExecute(
         action: OnDismissAction,
         cancel: Runnable?,
@@ -319,11 +363,13 @@ constructor(
         intent: Intent,
         onlyProvisioned: Boolean,
         dismissShade: Boolean,
+        customMessage: String?,
     ) {
         activityStarterInternal.startActivityDismissingKeyguard(
             intent = intent,
             onlyProvisioned = onlyProvisioned,
             dismissShade = dismissShade,
+            customMessage = customMessage,
         )
     }
 
@@ -370,7 +416,7 @@ constructor(
         postOnUiThread {
             statusBarStateController.setLeaveOpenOnKeyguardHide(true)
             activityStarterInternal.executeRunnableDismissingKeyguard(
-                runnable = { runnable?.let { postOnUiThread(runnable = it) } },
+                runnable = { runnable?.let { postOnUiThread(runnable = it) } }
             )
         }
     }

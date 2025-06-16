@@ -17,6 +17,7 @@
 package com.android.server.hdmi;
 
 import static com.android.server.hdmi.HdmiCecKeycode.CEC_KEYCODE_VOLUME_UP;
+import static com.android.server.hdmi.HdmiCecFeatureAction.DELAY_GIVE_AUDIO_STATUS;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -95,13 +96,15 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         receiveSetAudioVolumeLevelSupport(DeviceFeatures.FEATURE_NOT_SUPPORTED);
 
         // Adjust-only AVB should not be enabled before receiving <Report Audio Status>
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_FULL);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_FULL);
 
         receiveReportAudioStatus(20, false);
 
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
 
         verify(mAudioDeviceVolumeManager).setDeviceAbsoluteVolumeAdjustOnlyBehavior(
                 eq(getAudioOutputDevice()),
@@ -111,7 +114,7 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                         .setMaxVolumeIndex(AudioStatus.MAX_VOLUME)
                         .setMinVolumeIndex(AudioStatus.MIN_VOLUME)
                         .build()),
-                any(), any(), anyBoolean());
+                anyBoolean(), any(), any());
     }
 
 
@@ -123,8 +126,9 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
 
         receiveReportAudioStatus(40, true);
 
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
 
         verify(mAudioDeviceVolumeManager).setDeviceAbsoluteVolumeAdjustOnlyBehavior(
                 eq(getAudioOutputDevice()),
@@ -134,7 +138,7 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                         .setMaxVolumeIndex(AudioStatus.MAX_VOLUME)
                         .setMinVolumeIndex(AudioStatus.MIN_VOLUME)
                         .build()),
-                any(), any(), anyBoolean());
+                anyBoolean(), any(), any());
     }
 
     @Test
@@ -148,8 +152,9 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
 
         receiveReportAudioStatus(40, true);
 
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
 
         verify(mAudioDeviceVolumeManager).setDeviceAbsoluteVolumeAdjustOnlyBehavior(
                 eq(getAudioOutputDevice()),
@@ -159,7 +164,7 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                         .setMaxVolumeIndex(AudioStatus.MAX_VOLUME)
                         .setMinVolumeIndex(AudioStatus.MIN_VOLUME)
                         .build()),
-                any(), any(), anyBoolean());
+                anyBoolean(), any(), any());
     }
 
     @Test
@@ -223,6 +228,9 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         );
         mTestLooper.dispatchAll();
 
+        mTestLooper.moveTimeForward(DELAY_GIVE_AUDIO_STATUS);
+        mTestLooper.dispatchAll();
+
         assertThat(mNativeWrapper.getResultMessages()).contains(
                 HdmiCecMessageBuilder.buildUserControlPressed(getLogicalAddress(),
                         getSystemAudioDeviceLogicalAddress(), CEC_KEYCODE_VOLUME_UP));
@@ -279,13 +287,15 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         verifyGiveAudioStatusSent();
 
         // The device should use adjust-only AVB while waiting for <Report Audio Status>
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
 
         // The device should switch to AVB upon receiving <Report Audio Status>
         receiveReportAudioStatus(60, false);
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE);
 
     }
 
@@ -317,8 +327,9 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         mTestLooper.dispatchAll();
 
         // The device should not switch away from adjust-only AVB
-        assertThat(mAudioManager.getDeviceVolumeBehavior(getAudioOutputDevice())).isEqualTo(
-                AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
+        assertThat(mAudioDeviceVolumeManager.getDeviceVolumeBehavior(
+                getAudioOutputDevice())).isEqualTo(
+                AudioDeviceVolumeManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY);
 
         // The device should query support for <Set Audio Volume Level> again
         assertThat(mNativeWrapper.getResultMessages()).contains(

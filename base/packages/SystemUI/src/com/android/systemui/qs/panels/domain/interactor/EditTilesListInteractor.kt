@@ -24,7 +24,8 @@ import com.android.systemui.qs.panels.data.repository.IconAndNameCustomRepositor
 import com.android.systemui.qs.panels.data.repository.StockTilesRepository
 import com.android.systemui.qs.panels.domain.model.EditTilesModel
 import com.android.systemui.qs.panels.shared.model.EditTileData
-import com.android.systemui.qs.tiles.viewmodel.QSTileConfigProvider
+import com.android.systemui.qs.shared.model.TileCategory
+import com.android.systemui.qs.tiles.base.shared.model.QSTileConfigProvider
 import javax.inject.Inject
 
 @SysUISingleton
@@ -49,20 +50,22 @@ constructor(
                         it,
                         Icon.Resource(
                             config.uiConfig.iconRes,
-                            ContentDescription.Resource(config.uiConfig.labelRes)
+                            ContentDescription.Resource(config.uiConfig.labelRes),
                         ),
                         Text.Resource(config.uiConfig.labelRes),
                         null,
+                        category = config.category,
                     )
                 } else {
                     EditTileData(
                         it,
                         Icon.Resource(
                             android.R.drawable.star_on,
-                            ContentDescription.Loaded(it.spec)
+                            ContentDescription.Loaded(it.spec),
                         ),
                         Text.Loaded(it.spec),
-                        null
+                        null,
+                        category = TileCategory.UNKNOWN,
                     )
                 }
             }

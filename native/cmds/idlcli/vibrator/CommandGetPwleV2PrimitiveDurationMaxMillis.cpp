@@ -1,0 +1,69 @@
+/*
+ * Copyright (C) 2024 The Android Open Source Project *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "utils.h"
+#include "vibrator.h"
+
+namespace android {
+namespace idlcli {
+
+class CommandVibrator;
+
+namespace vibrator {
+
+class CommandGetPwleV2PrimitiveDurationMaxMillis : public Command {
+    std::string getDescription() const override {
+        return "Retrieves vibrator PwleV2 max primitive duration in milliseconds.";
+    }
+
+    std::string getUsageSummary() const override { return ""; }
+
+    UsageDetails getUsageDetails() const override {
+        UsageDetails details{};
+        return details;
+    }
+
+    Status doArgs(Args& args) override {
+        if (!args.empty()) {
+            std::cerr << "Unexpected Arguments!" << std::endl;
+            return USAGE;
+        }
+        return OK;
+    }
+
+    Status doMain(Args&& /*args*/) override {
+        auto hal = getHal();
+
+        if (!hal) {
+            return UNAVAILABLE;
+        }
+
+        int32_t maxDurationMs;
+        auto status = hal->getPwleV2PrimitiveDurationMaxMillis(&maxDurationMs);
+
+        std::cout << "Status: " << status.getDescription() << std::endl;
+        std::cout << "Primitive duration max: " << maxDurationMs << " ms" << std::endl;
+
+        return status.isOk() ? OK : ERROR;
+    }
+};
+
+static const auto Command =
+        CommandRegistry<CommandVibrator>::Register<CommandGetPwleV2PrimitiveDurationMaxMillis>(
+                "getPwleV2PrimitiveDurationMaxMillis");
+
+} // namespace vibrator
+} // namespace idlcli
+} // namespace android

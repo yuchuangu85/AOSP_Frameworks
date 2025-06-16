@@ -149,6 +149,13 @@ flag {
 }
 
 flag {
+    name: "cache_sdk_system_features"
+    namespace: "system_performance"
+    description: "Feature flag to enable optimized cache for SDK-defined system feature lookups."
+    bug: "326623529"
+}
+
+flag {
     name: "provide_info_of_apk_in_apex"
     is_exported: true
     namespace: "package_manager_service"
@@ -237,6 +244,8 @@ flag {
     bug: "307327678"
 }
 
+# This flag is enabled since V but not a MUST requirement in CDD yet, so it needs to stay around
+# for now and any code working with it should keep checking the flag.
 flag {
     name: "restrict_nonpreloads_system_shareduids"
     namespace: "package_manager_service"
@@ -283,4 +292,126 @@ flag {
     namespace: "package_manager_service"
     description: "Feature flag to enable the feature to retrieve package info without installation with a file descriptor."
     bug: "340879905"
+}
+
+flag {
+    name: "audio_playback_capture_allowance"
+    is_exported: true
+    namespace: "package_manager_service"
+    description: "Feature flag to enable the feature to retrieve info about audio playback capture allowance at manifest level."
+    bug: "362425551"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "remove_cross_user_permission_hack"
+    namespace: "package_manager_service"
+    description: "Feature flag to remove hack code of using PackageManager.MATCH_ANY_USER flag without cross user permission."
+    bug: "332664521"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "delete_packages_silently_backport"
+    namespace: "package_manager_service"
+    description: "Feature flag to enable the holder of SYSTEM_APP_PROTECTION_SERVICE role to silently delete packages. To be deprecated by delete_packages_silently."
+    bug: "361776825"
+}
+
+flag {
+    name: "sdk_dependency_installer"
+    is_exported: true
+    namespace: "package_manager_service"
+    description: "Feature flag to enable installation of missing sdk dependency of app"
+    bug: "370822870"
+}
+
+flag {
+    name: "include_feature_flags_in_package_cacher"
+    namespace: "package_manager_service"
+    description: "Include feature flag status when determining hits or misses in PackageCacher."
+    bug: "364771256"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "reduce_broadcasts_for_component_state_changes"
+    namespace: "package_manager_service"
+    description: "Feature flag to limit sending of the PACKAGE_CHANGED broadcast to only the system and the application itself during component state changes."
+    bug: "292261144"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "change_launcher_badging"
+    namespace: "package_manager_service"
+    description: "Feature flag to introduce a new way to change the launcher badging."
+    bug: "364760703"
+    is_fixed_read_only: true
+    is_exported: true
+}
+
+flag {
+    name: "cloud_compilation_pm"
+    is_exported: true
+    namespace: "art_mainline"
+    description: "Feature flag to enable the Cloud Compilation support on the package manager side."
+    bug: "377474232"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "app_compat_option_16kb"
+    is_exported: true
+    namespace: "devoptions_settings"
+    description: "Feature flag to enable page size app compat mode from manifest, package manager and settings level."
+    bug: "371049373"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "remove_hidden_module_usage"
+    namespace: "modularization"
+    description: "Feature flag to remove the consumption of the hidden module status (ModuleInfo#IsHidden) in the Android source tree."
+    bug: "363952383"
+}
+
+flag {
+    name: "uid_based_provider_lookup"
+    is_exported: true
+    namespace: "package_manager_service"
+    bug: "334024639"
+    description: "Feature flag to check whether a given UID can access a content provider"
+}
+
+flag {
+    name: "optimize_parsing_in_registered_services_cache"
+    namespace: "package_manager_service"
+    description: "Feature flag to optimize RegisteredServicesCache ServiceInfo parsing by using caches."
+    bug: "319137634"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "always_load_past_certs_v4"
+    is_exported: true
+    namespace: "package_manager_service"
+    description: "Always read the corresponding v3/3.1 signature block for the current v4 to get the past rotated certificates, even when not verifying integrity."
+    bug: "378539511"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "cloud_compilation_verification"
+    namespace: "art_mainline"
+    description: "Feature flag to enable the Cloud Compilation install-time verification in the package manager."
+    bug: "377474232"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "parallel_package_parsing_across_system_dirs"
+    namespace: "system_performance"
+    description: "Continue parsing packages in system dirs instead of blocking on install completion for each directory."
+    bug: "401622806"
 }

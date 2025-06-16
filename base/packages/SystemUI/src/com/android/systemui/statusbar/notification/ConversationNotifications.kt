@@ -17,28 +17,37 @@
 package com.android.systemui.statusbar.notification
 
 import android.app.Notification
+import android.app.Notification.EXTRA_SUMMARIZED_CONTENT
 import android.content.Context
 import android.content.pm.LauncherApps
+import android.graphics.Typeface
 import android.graphics.drawable.AnimatedImageDrawable
 import android.os.Handler
 import android.service.notification.NotificationListenerService.Ranking
 import android.service.notification.NotificationListenerService.RankingMap
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextUtils
+import android.text.style.ImageSpan
+import android.text.style.StyleSpan
+import com.android.internal.R
 import com.android.internal.widget.ConversationLayout
 import com.android.internal.widget.MessagingImageMessage
 import com.android.internal.widget.MessagingLayout
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.plugins.statusbar.StatusBarStateController
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.notification.collection.NotificationEntry
 import com.android.systemui.statusbar.notification.collection.inflation.BindEventManager
 import com.android.systemui.statusbar.notification.collection.notifcollection.CommonNotifCollection
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionListener
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager
+import com.android.systemui.statusbar.notification.headsup.OnHeadsUpChangedListener
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow
 import com.android.systemui.statusbar.notification.row.NotificationContentView
 import com.android.systemui.statusbar.notification.row.NotificationRowContentBinderLogger
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator
-import com.android.systemui.statusbar.policy.HeadsUpManager
-import com.android.systemui.statusbar.policy.OnHeadsUpChangedListener
 import com.android.systemui.util.children
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -47,24 +56,66 @@ import javax.inject.Inject
 class ConversationNotificationProcessor
 @Inject
 constructor(
+    @ShadeDisplayAware private val context: Context,
     private val launcherApps: LauncherApps,
-    private val conversationNotificationManager: ConversationNotificationManager
+    private val conversationNotificationManager: ConversationNotificationManager,
 ) {
     fun processNotification(
         entry: NotificationEntry,
         recoveredBuilder: Notification.Builder,
-        logger: NotificationRowContentBinderLogger
+        logger: NotificationRowContentBinderLogger,
     ): Notification.MessagingStyle? {
         val messagingStyle = recoveredBuilder.style as? Notification.MessagingStyle ?: return null
         messagingStyle.conversationType =
             if (entry.ranking.channel.isImportantConversation)
                 Notification.MessagingStyle.CONVERSATION_TYPE_IMPORTANT
-            else Notification.MessagingStyle.CONVERSATION_TYPE_NORMAL
+            else if (entry.ranking.isConversation)
+                Notification.MessagingStyle.CONVERSATION_TYPE_NORMAL
+            else Notification.MessagingStyle.CONVERSATION_TYPE_LEGACY
         entry.ranking.conversationShortcutInfo?.let { shortcutInfo ->
-            logger.logAsyncTaskProgress(entry, "getting shortcut icon")
+            logger.logAsyncTaskProgress(entry.logKey, "getting shortcut icon")
             messagingStyle.shortcutIcon = launcherApps.getShortcutIcon(shortcutInfo)
             shortcutInfo.label?.let { label -> messagingStyle.conversationTitle = label }
         }
+        if (NmSummarizationUiFlag.isEnabled) {
+            if (!TextUtils.isEmpty(entry.ranking.summarization)) {
+                val icon = context.getDrawable(R.drawable.ic_notification_summarization)?.mutate()
+                val imageSpan =
+                    icon?.let {
+                        it.setBounds(
+                            /* left= */ 0,
+                            /* top= */ 0,
+                            icon.getIntrinsicWidth(),
+                            icon.getIntrinsicHeight(),
+                        )
+                        ImageSpan(it, ImageSpan.ALIGN_CENTER)
+                    }
+                val decoratedSummary =
+                    SpannableString("x " + entry.ranking.summarization).apply {
+                        setSpan(
+                            /* what = */ imageSpan,
+                            /* start = */ 0,
+                            /* end = */ 1,
+                            /* flags = */ Spanned.SPAN_INCLUSIVE_EXCLUSIVE,
+                        )
+                        entry.ranking.summarization?.let {
+                            setSpan(
+                                /* what = */ StyleSpan(Typeface.ITALIC),
+                                /* start = */ 2,
+                                /* end = */ it.length + 2,
+                                /* flags = */ Spanned.SPAN_EXCLUSIVE_INCLUSIVE,
+                            )
+                        }
+                    }
+                entry.sbn.notification.extras.putCharSequence(
+                    EXTRA_SUMMARIZED_CONTENT,
+                    decoratedSummary,
+                )
+            } else {
+                entry.sbn.notification.extras.putCharSequence(EXTRA_SUMMARIZED_CONTENT, null)
+            }
+        }
+
         messagingStyle.unreadMessageCount =
             conversationNotificationManager.getUnreadCount(entry, recoveredBuilder)
         return messagingStyle
@@ -82,7 +133,7 @@ constructor(
     private val notifCollection: CommonNotifCollection,
     private val bindEventManager: BindEventManager,
     private val headsUpManager: HeadsUpManager,
-    private val statusBarStateController: StatusBarStateController
+    private val statusBarStateController: StatusBarStateController,
 ) {
 
     private var isStatusBarExpanded = false
@@ -117,7 +168,8 @@ constructor(
             .flatMap { layout -> layout.allViews.asSequence() }
             .flatMap { view ->
                 (view as? ConversationLayout)?.messagingGroups?.asSequence()
-                    ?: (view as? MessagingLayout)?.messagingGroups?.asSequence() ?: emptySequence()
+                    ?: (view as? MessagingLayout)?.messagingGroups?.asSequence()
+                    ?: emptySequence()
             }
             .flatMap { messagingGroup -> messagingGroup.messageContainer.children }
             .mapNotNull { view ->
@@ -141,9 +193,9 @@ class ConversationNotificationManager
 @Inject
 constructor(
     bindEventManager: BindEventManager,
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val notifCollection: CommonNotifCollection,
-    @Main private val mainHandler: Handler
+    @Main private val mainHandler: Handler,
 ) {
     // Need this state to be thread safe, since it's accessed from the ui thread
     // (NotificationEntryListener) and a bg thread (NotificationRowContentBinder)
@@ -174,7 +226,7 @@ constructor(
                             // the notif has been moved in the shade
                             mainHandler.postDelayed(
                                 { layout.setIsImportantConversation(important, true) },
-                                IMPORTANCE_ANIMATION_DELAY.toLong()
+                                IMPORTANCE_ANIMATION_DELAY.toLong(),
                             )
                         } else {
                             layout.setIsImportantConversation(important, false)
@@ -232,8 +284,7 @@ constructor(
                     state?.run {
                         if (shouldIncrementUnread(recoveredBuilder)) unreadCount + 1
                         else unreadCount
-                    }
-                        ?: 1
+                    } ?: 1
                 ConversationState(newCount, entry.sbn.notification)
             }!!
             .unreadCount

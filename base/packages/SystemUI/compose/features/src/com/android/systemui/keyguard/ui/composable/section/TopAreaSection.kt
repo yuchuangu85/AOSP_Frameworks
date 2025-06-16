@@ -17,6 +17,7 @@
 package com.android.systemui.keyguard.ui.composable.section
 
 import android.content.Context
+import android.content.res.Resources
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,10 +34,9 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.android.compose.animation.scene.SceneScope
-import com.android.compose.animation.scene.SceneTransitionLayout
+import com.android.compose.animation.scene.ContentScope
+import com.android.compose.animation.scene.rememberMutableSceneTransitionLayoutState
 import com.android.compose.modifiers.thenIf
-import com.android.systemui.keyguard.domain.interactor.KeyguardClockInteractor
 import com.android.systemui.keyguard.ui.composable.blueprint.ClockScenes.largeClockScene
 import com.android.systemui.keyguard.ui.composable.blueprint.ClockScenes.smallClockScene
 import com.android.systemui.keyguard.ui.composable.blueprint.ClockScenes.splitShadeLargeClockScene
@@ -55,10 +55,11 @@ constructor(
     private val mediaCarouselSection: MediaCarouselSection,
     private val clockSection: DefaultClockSection,
     private val weatherClockSection: WeatherClockSection,
-    private val clockInteractor: KeyguardClockInteractor,
+    private val keyguardClockViewModel: KeyguardClockViewModel,
 ) {
     @Composable
-    fun DefaultClockLayout(
+    fun ContentScope.DefaultClockLayout(
+        smartSpacePaddingTop: (Resources) -> Int,
         modifier: Modifier = Modifier,
     ) {
         val currentClockLayout by clockViewModel.currentClockLayout.collectAsStateWithLifecycle()
@@ -78,60 +79,89 @@ constructor(
                     WeatherClockScenes.splitShadeLargeClockScene
             }
 
-        SceneTransitionLayout(
-            modifier = modifier,
-            currentScene = currentScene,
-            onChangeScene = {},
-            transitions = ClockTransition.defaultClockTransitions,
-            enableInterruptions = false,
-        ) {
-            scene(splitShadeLargeClockScene) {
-                LargeClockWithSmartSpace(
-                    shouldOffSetClockToOneHalf = !hasCustomPositionUpdatedAnimation
-                )
-            }
+        val state =
+            rememberMutableSceneTransitionLayoutState(
+                currentScene,
+                ClockTransition.defaultClockTransitions,
+            )
 
-            scene(splitShadeSmallClockScene) {
-                SmallClockWithSmartSpace(modifier = Modifier.fillMaxWidth(0.5f))
-            }
-
-            scene(smallClockScene) { SmallClockWithSmartSpace() }
-
-            scene(largeClockScene) { LargeClockWithSmartSpace() }
-
-            scene(WeatherClockScenes.largeClockScene) { WeatherLargeClockWithSmartSpace() }
-
-            scene(WeatherClockScenes.splitShadeLargeClockScene) {
-                WeatherLargeClockWithSmartSpace(modifier = Modifier.fillMaxWidth(0.5f))
+        // Update state whenever currentSceneKey has changed.
+        LaunchedEffect(state, currentScene) {
+            if (currentScene != state.transitionState.currentScene) {
+                state.setTargetScene(currentScene, animationScope = this)
             }
         }
-    }
 
-    @Composable
-    private fun SceneScope.SmallClockWithSmartSpace(modifier: Modifier = Modifier) {
-        val burnIn = rememberBurnIn(clockInteractor)
+        Column(modifier) {
+            NestedSceneTransitionLayout(state, Modifier) {
+                scene(splitShadeLargeClockScene) {
+                    LargeClockWithSmartSpace(
+                        smartSpacePaddingTop = smartSpacePaddingTop,
+                        shouldOffSetClockToOneHalf = !hasCustomPositionUpdatedAnimation,
+                    )
+                }
 
-        Column(modifier = modifier) {
-            with(clockSection) {
-                SmallClock(
-                    burnInParams = burnIn.parameters,
-                    onTopChanged = burnIn.onSmallClockTopChanged,
-                    modifier = Modifier.wrapContentSize()
-                )
-            }
-            with(smartSpaceSection) {
-                SmartSpace(
-                    burnInParams = burnIn.parameters,
-                    onTopChanged = burnIn.onSmartspaceTopChanged,
-                )
+                scene(splitShadeSmallClockScene) {
+                    SmallClockWithSmartSpace(
+                        smartSpacePaddingTop = smartSpacePaddingTop,
+                        modifier = Modifier.fillMaxWidth(0.5f),
+                    )
+                }
+
+                scene(smallClockScene) {
+                    SmallClockWithSmartSpace(smartSpacePaddingTop = smartSpacePaddingTop)
+                }
+
+                scene(largeClockScene) {
+                    LargeClockWithSmartSpace(smartSpacePaddingTop = smartSpacePaddingTop)
+                }
+
+                scene(WeatherClockScenes.largeClockScene) {
+                    WeatherLargeClockWithSmartSpace(smartSpacePaddingTop = smartSpacePaddingTop)
+                }
+
+                scene(WeatherClockScenes.splitShadeLargeClockScene) {
+                    WeatherLargeClockWithSmartSpace(
+                        smartSpacePaddingTop = smartSpacePaddingTop,
+                        modifier = Modifier.fillMaxWidth(0.5f),
+                    )
+                }
             }
             with(mediaCarouselSection) { KeyguardMediaCarousel() }
         }
     }
 
     @Composable
-    private fun SceneScope.LargeClockWithSmartSpace(shouldOffSetClockToOneHalf: Boolean = false) {
-        val burnIn = rememberBurnIn(clockInteractor)
+    private fun ContentScope.SmallClockWithSmartSpace(
+        smartSpacePaddingTop: (Resources) -> Int,
+        modifier: Modifier = Modifier,
+    ) {
+        val burnIn = rememberBurnIn(keyguardClockViewModel)
+
+        Column(modifier = modifier) {
+            with(clockSection) {
+                SmallClock(
+                    burnInParams = burnIn.parameters,
+                    onTopChanged = burnIn.onSmallClockTopChanged,
+                    modifier = Modifier.wrapContentSize(),
+                )
+            }
+            with(smartSpaceSection) {
+                SmartSpace(
+                    burnInParams = burnIn.parameters,
+                    onTopChanged = burnIn.onSmartspaceTopChanged,
+                    smartSpacePaddingTop = smartSpacePaddingTop,
+                )
+            }
+        }
+    }
+
+    @Composable
+    private fun ContentScope.LargeClockWithSmartSpace(
+        smartSpacePaddingTop: (Resources) -> Int,
+        shouldOffSetClockToOneHalf: Boolean = false,
+    ) {
+        val burnIn = rememberBurnIn(keyguardClockViewModel)
         val isLargeClockVisible by clockViewModel.isLargeClockVisible.collectAsStateWithLifecycle()
 
         LaunchedEffect(isLargeClockVisible) {
@@ -145,6 +175,7 @@ constructor(
                 SmartSpace(
                     burnInParams = burnIn.parameters,
                     onTopChanged = burnIn.onSmartspaceTopChanged,
+                    smartSpacePaddingTop = smartSpacePaddingTop,
                 )
             }
             with(clockSection) {
@@ -160,15 +191,18 @@ constructor(
                                     y = 0,
                                 )
                             }
-                        }
+                        },
                 )
             }
         }
     }
 
     @Composable
-    private fun SceneScope.WeatherLargeClockWithSmartSpace(modifier: Modifier = Modifier) {
-        val burnIn = rememberBurnIn(clockInteractor)
+    private fun ContentScope.WeatherLargeClockWithSmartSpace(
+        smartSpacePaddingTop: (Resources) -> Int,
+        modifier: Modifier = Modifier,
+    ) {
+        val burnIn = rememberBurnIn(keyguardClockViewModel)
         val isLargeClockVisible by clockViewModel.isLargeClockVisible.collectAsStateWithLifecycle()
         val currentClockState = clockViewModel.currentClock.collectAsStateWithLifecycle()
 
@@ -181,10 +215,7 @@ constructor(
         Column(modifier = modifier) {
             val currentClock = currentClockState.value ?: return@Column
             with(weatherClockSection) {
-                Time(
-                    clock = currentClock,
-                    burnInParams = burnIn.parameters,
-                )
+                Time(clock = currentClock, burnInParams = burnIn.parameters)
             }
             val density = LocalDensity.current
             val context = LocalContext.current
@@ -193,10 +224,11 @@ constructor(
                 SmartSpace(
                     burnInParams = burnIn.parameters,
                     onTopChanged = burnIn.onSmartspaceTopChanged,
+                    smartSpacePaddingTop = smartSpacePaddingTop,
                     modifier =
                         Modifier.heightIn(
                             min = getDimen(context, "enhanced_smartspace_height", density)
-                        )
+                        ),
                 )
             }
             with(weatherClockSection) {

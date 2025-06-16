@@ -16,6 +16,7 @@
 
 package com.android.server.job;
 
+import static android.app.job.Flags.FLAG_HANDLE_ABANDONED_JOBS;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
@@ -31,8 +32,10 @@ import static com.android.server.job.JobSchedulerService.sElapsedRealtimeClock;
 import static com.android.server.job.JobSchedulerService.sUptimeMillisClock;
 import static com.android.server.job.Flags.FLAG_BATCH_ACTIVE_BUCKET_JOBS;
 import static com.android.server.job.Flags.FLAG_BATCH_CONNECTIVITY_JOBS_PER_NETWORK;
+import static com.android.server.job.Flags.FLAG_CREATE_WORK_CHAIN_BY_DEFAULT;
 import static com.android.server.job.Flags.FLAG_THERMAL_RESTRICTIONS_TO_FGS_JOBS;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -50,15 +53,19 @@ import static org.mockito.Mockito.when;
 
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
+import android.app.AppGlobals;
 import android.app.IActivityManager;
 import android.app.UiModeManager;
+import android.app.compat.CompatChanges;
 import android.app.job.JobInfo;
 import android.app.job.JobParameters;
 import android.app.job.JobScheduler;
 import android.app.job.JobWorkItem;
 import android.app.usage.UsageStatsManagerInternal;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.IContentProvider;
 import android.content.Intent;
 import android.content.PermissionChecker;
 import android.content.pm.PackageManager;
@@ -72,10 +79,16 @@ import android.os.BatteryManager;
 import android.os.BatteryManagerInternal;
 import android.os.BatteryManagerInternal.ChargingPolicyChangeListener;
 import android.os.Looper;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
+import android.os.WorkSource;
+import android.os.WorkSource.WorkChain;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.platform.test.flag.junit.SetFlagsRule;
@@ -86,6 +99,7 @@ import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
 import com.android.server.PowerAllowlistInternal;
 import com.android.server.SystemServiceManager;
+import com.android.server.compat.PlatformCompat;
 import com.android.server.job.controllers.ConnectivityController;
 import com.android.server.job.controllers.JobStatus;
 import com.android.server.job.controllers.QuotaController;
@@ -109,6 +123,7 @@ import java.time.Duration;
 import java.time.ZoneOffset;
 
 public class JobSchedulerServiceTest {
+    private static final String SOURCE_PACKAGE = "com.android.frameworks.mockingservicestests";
     private static final String TAG = JobSchedulerServiceTest.class.getSimpleName();
     private static final int TEST_UID = 10123;
 
@@ -132,6 +147,8 @@ public class JobSchedulerServiceTest {
 
     private ChargingPolicyChangeListener mChargingPolicyChangeListener;
 
+    private int mSourceUid;
+
     private class TestJobSchedulerService extends JobSchedulerService {
         TestJobSchedulerService(Context context) {
             super(context);
@@ -144,6 +161,7 @@ public class JobSchedulerServiceTest {
         mMockingSession = mockitoSession()
                 .initMocks(this)
                 .strictness(Strictness.LENIENT)
+                .mockStatic(CompatChanges.class)
                 .mockStatic(LocalServices.class)
                 .mockStatic(PermissionChecker.class)
                 .mockStatic(ServiceManager.class)
@@ -209,12 +227,16 @@ public class JobSchedulerServiceTest {
         ArgumentCaptor<ChargingPolicyChangeListener> chargingPolicyChangeListenerCaptor =
                 ArgumentCaptor.forClass(ChargingPolicyChangeListener.class);
 
+        doReturn(mock(PlatformCompat.class))
+                .when(() -> ServiceManager.getService(Context.PLATFORM_COMPAT_SERVICE));
+
         mService = new TestJobSchedulerService(mContext);
         mService.waitOnAsyncLoadingForTesting();
 
         verify(mBatteryManagerInternal).registerChargingPolicyChangeListener(
                 chargingPolicyChangeListenerCaptor.capture());
         mChargingPolicyChangeListener = chargingPolicyChangeListenerCaptor.getValue();
+        mSourceUid = AppGlobals.getPackageManager().getPackageUid(SOURCE_PACKAGE, 0, 0);
     }
 
     @After
@@ -1043,6 +1065,126 @@ public class JobSchedulerServiceTest {
                 JobParameters.INTERNAL_STOP_REASON_ANR);
         assertEquals(nowElapsed + 5 * initialBackoffMs, rescheduledJob.getEarliestRunTime());
         assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+    }
+
+    /**
+     * Confirm that
+     * {@link JobSchedulerService#getRescheduleJobForFailureLocked(JobStatus, int, int)}
+     * returns a job with the correct delay for abandoned jobs.
+     */
+    @Test
+    @EnableFlags(FLAG_HANDLE_ABANDONED_JOBS)
+    public void testGetRescheduleJobForFailure_abandonedJob() {
+        final long nowElapsed = sElapsedRealtimeClock.millis();
+        final long initialBackoffMs = MINUTE_IN_MILLIS;
+        mService.mConstants.SYSTEM_STOP_TO_FAILURE_RATIO = 3;
+
+        // Mock the OVERRIDE_HANDLE_ABANDONED_JOBS compat change overrides.
+        when(CompatChanges.isChangeEnabled(
+                eq(JobParameters.OVERRIDE_HANDLE_ABANDONED_JOBS), anyInt())).thenReturn(false);
+
+        JobStatus originalJob = createJobStatus("testGetRescheduleJobForFailure",
+                createJobInfo()
+                        .setBackoffCriteria(initialBackoffMs, JobInfo.BACKOFF_POLICY_LINEAR));
+        assertEquals(JobStatus.NO_EARLIEST_RUNTIME, originalJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, originalJob.getLatestRunTimeElapsed());
+
+        spyOn(originalJob);
+        doReturn(mSourceUid).when(originalJob).getSourceUid();
+
+        // failure = 1, systemStop = 0, abandoned = 1
+        JobStatus rescheduledJob = mService.getRescheduleJobForFailureLocked(originalJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + initialBackoffMs, rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        spyOn(rescheduledJob);
+        doReturn(mSourceUid).when(rescheduledJob).getSourceUid();
+        // failure = 2, systemstop = 0, abandoned = 2
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + (2 * initialBackoffMs), rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 3, systemstop = 0, abandoned = 3
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + (3 * initialBackoffMs), rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemstop = 0, abandoned = 4
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 3)),
+                rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemstop = 1, abandoned = 4
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_DEVICE_THERMAL);
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 3)),
+                rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemStop =  4  / SYSTEM_STOP_TO_FAILURE_RATIO, abandoned = 4
+        for (int i = 0; i < mService.mConstants.SYSTEM_STOP_TO_FAILURE_RATIO; ++i) {
+            rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                    JobParameters.STOP_REASON_SYSTEM_PROCESSING,
+                    JobParameters.INTERNAL_STOP_REASON_RTC_UPDATED);
+        }
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 4)),
+                rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+    }
+
+    /**
+     * Confirm that {@link JobSchedulerService#shouldUseAggressiveBackoff(int, int)} returns true
+     * when the number of abandoned jobs is greater than the threshold.
+     */
+    @Test
+    @EnableFlags(FLAG_HANDLE_ABANDONED_JOBS)
+    public void testGetRescheduleJobForFailure_EnableFlagDisableCompatCheckAggressiveBackoff() {
+        // Mock the OVERRIDE_HANDLE_ABANDONED_JOBS compat change overrides.
+        when(CompatChanges.isChangeEnabled(
+                eq(JobParameters.OVERRIDE_HANDLE_ABANDONED_JOBS), anyInt())).thenReturn(false);
+        assertFalse(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF - 1,
+                        mSourceUid));
+        assertFalse(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF,
+                        mSourceUid));
+        assertTrue(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF + 1,
+                        mSourceUid));
+    }
+
+    /**
+     * Confirm that {@link JobSchedulerService#shouldUseAggressiveBackoff(int, int)} returns false
+     * always when the compat change is enabled and the flag is enabled.
+     */
+    @Test
+    @EnableFlags(FLAG_HANDLE_ABANDONED_JOBS)
+    public void testGetRescheduleJobForFailure_EnableFlagEnableCompatCheckAggressiveBackoff() {
+        // Mock the OVERRIDE_HANDLE_ABANDONED_JOBS compat change overrides.
+        when(CompatChanges.isChangeEnabled(
+                eq(JobParameters.OVERRIDE_HANDLE_ABANDONED_JOBS), anyInt())).thenReturn(true);
+        assertFalse(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF - 1,
+                        mSourceUid));
+        assertFalse(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF,
+                        mSourceUid));
+        assertFalse(mService.shouldUseAggressiveBackoff(
+                        mService.mConstants.ABANDONED_JOB_TIMEOUTS_BEFORE_AGGRESSIVE_BACKOFF + 1,
+                        mSourceUid));
     }
 
     /**
@@ -2240,11 +2382,12 @@ public class JobSchedulerServiceTest {
     }
 
     /**
-     * Tests that jobs scheduled through a proxy (eg. system server) don't count towards scheduling
+     * Tests that jobs scheduled through a proxy (eg. system server) count towards scheduling
      * limits.
      */
     @Test
-    public void testScheduleLimiting_Proxy() {
+    @DisableFlags(Flags.FLAG_ENFORCE_SCHEDULE_LIMIT_TO_PROXY_JOBS)
+    public void testScheduleLimiting_Proxy_NotCountTowardsLimit() {
         mService.mConstants.ENABLE_API_QUOTAS = true;
         mService.mConstants.API_QUOTA_SCHEDULE_COUNT = 300;
         mService.mConstants.API_QUOTA_SCHEDULE_WINDOW_MS = 300000;
@@ -2257,6 +2400,32 @@ public class JobSchedulerServiceTest {
         for (int i = 0; i < 500; ++i) {
             assertEquals("Got unexpected result for schedule #" + (i + 1),
                     JobScheduler.RESULT_SUCCESS,
+                    mService.scheduleAsPackage(job, null, TEST_UID, "proxied.package", 0, "JSSTest",
+                            ""));
+        }
+    }
+
+    /**
+     * Tests that jobs scheduled through a proxy (eg. system server) don't count towards scheduling
+     * limits.
+     */
+    @Test
+    @EnableFlags(Flags.FLAG_ENFORCE_SCHEDULE_LIMIT_TO_PROXY_JOBS)
+    public void testScheduleLimiting_Proxy_CountTowardsLimit() {
+        mService.mConstants.ENABLE_API_QUOTAS = true;
+        mService.mConstants.API_QUOTA_SCHEDULE_COUNT = 300;
+        mService.mConstants.API_QUOTA_SCHEDULE_WINDOW_MS = 300000;
+        mService.mConstants.API_QUOTA_SCHEDULE_THROW_EXCEPTION = false;
+        mService.mConstants.API_QUOTA_SCHEDULE_RETURN_FAILURE_RESULT = true;
+        mService.updateQuotaTracker();
+        mService.resetScheduleQuota();
+
+        final JobInfo job = createJobInfo().setPersisted(true).build();
+        for (int i = 0; i < 500; ++i) {
+            final int expected =
+                    i < 300 ? JobScheduler.RESULT_SUCCESS : JobScheduler.RESULT_FAILURE;
+            assertEquals("Got unexpected result for schedule #" + (i + 1),
+                    expected,
                     mService.scheduleAsPackage(job, null, TEST_UID, "proxied.package", 0, "JSSTest",
                             ""));
         }
@@ -2343,6 +2512,7 @@ public class JobSchedulerServiceTest {
 
     /** Tests that jobs are removed from the pending list if the user stops the app. */
     @Test
+    @RequiresFlagsDisabled(android.app.job.Flags.FLAG_GET_PENDING_JOB_REASONS_API)
     public void testUserStopRemovesPending() {
         spyOn(mService);
 
@@ -2392,6 +2562,60 @@ public class JobSchedulerServiceTest {
         assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReason(job2a));
         assertFalse(mService.getPendingJobQueue().contains(job2b));
         assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReason(job2b));
+    }
+
+    /** Tests that jobs are removed from the pending list if the user stops the app. */
+    @Test
+    @RequiresFlagsEnabled(android.app.job.Flags.FLAG_GET_PENDING_JOB_REASONS_API)
+    public void testUserStopRemovesPending_withPendingJobReasonsApi() {
+        spyOn(mService);
+
+        JobStatus job1a = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(1), 1, "pkg1");
+        JobStatus job1b = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(2), 1, "pkg1");
+        JobStatus job2a = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(1), 2, "pkg2");
+        JobStatus job2b = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(2), 2, "pkg2");
+        doReturn(1).when(mPackageManagerInternal).getPackageUid("pkg1", 0, 0);
+        doReturn(11).when(mPackageManagerInternal).getPackageUid("pkg1", 0, 1);
+        doReturn(2).when(mPackageManagerInternal).getPackageUid("pkg2", 0, 0);
+
+        mService.getPendingJobQueue().clear();
+        mService.getPendingJobQueue().add(job1a);
+        mService.getPendingJobQueue().add(job1b);
+        mService.getPendingJobQueue().add(job2a);
+        mService.getPendingJobQueue().add(job2b);
+        mService.getJobStore().add(job1a);
+        mService.getJobStore().add(job1b);
+        mService.getJobStore().add(job2a);
+        mService.getJobStore().add(job2b);
+
+        mService.notePendingUserRequestedAppStopInternal("pkg1", 1, "test");
+        assertEquals(4, mService.getPendingJobQueue().size());
+        assertTrue(mService.getPendingJobQueue().contains(job1a));
+        assertTrue(mService.getPendingJobQueue().contains(job1b));
+        assertTrue(mService.getPendingJobQueue().contains(job2a));
+        assertTrue(mService.getPendingJobQueue().contains(job2b));
+
+        mService.notePendingUserRequestedAppStopInternal("pkg1", 0, "test");
+        assertEquals(2, mService.getPendingJobQueue().size());
+        assertFalse(mService.getPendingJobQueue().contains(job1a));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job1a)[0]);
+        assertFalse(mService.getPendingJobQueue().contains(job1b));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job1b)[0]);
+        assertTrue(mService.getPendingJobQueue().contains(job2a));
+        assertTrue(mService.getPendingJobQueue().contains(job2b));
+
+        mService.notePendingUserRequestedAppStopInternal("pkg2", 0, "test");
+        assertEquals(0, mService.getPendingJobQueue().size());
+        assertFalse(mService.getPendingJobQueue().contains(job1a));
+        assertFalse(mService.getPendingJobQueue().contains(job1b));
+        assertFalse(mService.getPendingJobQueue().contains(job2a));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job2a)[0]);
+        assertFalse(mService.getPendingJobQueue().contains(job2b));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job2b)[0]);
     }
 
     /**
@@ -2494,6 +2718,32 @@ public class JobSchedulerServiceTest {
         synchronized (mService.mLock) {
             assertNull(mService.checkIfRestricted(topAppJob));
         }
+    }
+
+    @RequiresFlagsEnabled(FLAG_CREATE_WORK_CHAIN_BY_DEFAULT)
+    @Test
+    public void testDeriveWorkSource_flagCreateWorkChainByDefaultEnabled() {
+        final WorkSource workSource = mService.deriveWorkSource(TEST_UID, "com.test.pkg");
+        assertEquals(TEST_UID, workSource.getAttributionUid());
+
+        assertEquals(1, workSource.getWorkChains().size());
+        final WorkChain workChain = workSource.getWorkChains().get(0);
+        final int[] expectedUids = {TEST_UID, Process.SYSTEM_UID};
+        assertArrayEquals(expectedUids, workChain.getUids());
+    }
+
+    @RequiresFlagsDisabled(FLAG_CREATE_WORK_CHAIN_BY_DEFAULT)
+    @Test
+    public void testDeriveWorkSource_flagCreateWorkChainByDefaultDisabled() {
+        final ContentResolver contentResolver = mock(ContentResolver.class);
+        doReturn(contentResolver).when(mContext).getContentResolver();
+        final IContentProvider iContentProvider = mock(IContentProvider.class);
+        doReturn(iContentProvider).when(contentResolver).acquireProvider(anyString());
+
+        final WorkSource workSource = mService.deriveWorkSource(TEST_UID, "com.test.pkg");
+        assertEquals(TEST_UID, workSource.getAttributionUid());
+
+        assertNull(workSource.getWorkChains());
     }
 
     private void setBatteryLevel(int level) {

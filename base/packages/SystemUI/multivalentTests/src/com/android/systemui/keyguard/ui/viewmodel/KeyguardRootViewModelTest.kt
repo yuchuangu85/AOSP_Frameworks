@@ -15,18 +15,21 @@
  *
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.keyguard.ui.viewmodel
 
+import android.content.res.Configuration
+import android.content.res.mainResources
+import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
 import android.platform.test.flag.junit.FlagsParameterization
 import android.view.View
 import androidx.test.filters.SmallTest
 import com.android.compose.animation.scene.ObservableTransitionState
-import com.android.systemui.Flags as AConfigFlags
-import com.android.systemui.Flags.FLAG_NEW_AOD_TRANSITION
+import com.android.systemui.Flags.FLAG_GLANCEABLE_HUB_V2
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.communal.data.repository.communalSceneRepository
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.setCommunalV2ConfigEnabled
 import com.android.systemui.communal.shared.model.CommunalScenes
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.deviceentry.data.repository.fakeDeviceEntryRepository
@@ -35,9 +38,13 @@ import com.android.systemui.flags.EnableSceneContainer
 import com.android.systemui.flags.parameterizeSceneContainerFlag
 import com.android.systemui.keyguard.data.repository.fakeKeyguardRepository
 import com.android.systemui.keyguard.data.repository.fakeKeyguardTransitionRepository
+import com.android.systemui.keyguard.domain.interactor.pulseExpansionInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.keyguard.shared.model.TransitionState
 import com.android.systemui.keyguard.shared.model.TransitionStep
+import com.android.systemui.kosmos.collectLastValue
+import com.android.systemui.kosmos.runCurrent
+import com.android.systemui.kosmos.runTest
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.scene.data.repository.Idle
 import com.android.systemui.scene.data.repository.sceneContainerRepository
@@ -45,16 +52,20 @@ import com.android.systemui.scene.data.repository.setSceneTransition
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.shade.shadeTestUtil
+import com.android.systemui.statusbar.notification.data.model.activeNotificationModel
+import com.android.systemui.statusbar.notification.data.repository.ActiveNotificationsStore
+import com.android.systemui.statusbar.notification.data.repository.activeNotificationListRepository
 import com.android.systemui.statusbar.notification.stack.domain.interactor.notificationsKeyguardInteractor
 import com.android.systemui.statusbar.phone.dozeParameters
 import com.android.systemui.statusbar.phone.screenOffAnimationController
+import com.android.systemui.statusbar.policy.keyguardStateController
 import com.android.systemui.testKosmos
+import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.mockito.whenever
 import com.android.systemui.util.ui.isAnimating
 import com.android.systemui.util.ui.stopAnimating
 import com.android.systemui.util.ui.value
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
@@ -69,13 +80,15 @@ import platform.test.runner.parameterized.Parameters
 @SmallTest
 @RunWith(ParameterizedAndroidJunit4::class)
 class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() {
-    private val kosmos = testKosmos()
+    private val kosmos =
+        testKosmos().apply { mainResources = mContext.orCreateTestableResources.resources }
     private val testScope = kosmos.testScope
     private val keyguardTransitionRepository by lazy { kosmos.fakeKeyguardTransitionRepository }
     private val keyguardRepository by lazy { kosmos.fakeKeyguardRepository }
     private val communalRepository by lazy { kosmos.communalSceneRepository }
     private val screenOffAnimationController by lazy { kosmos.screenOffAnimationController }
     private val deviceEntryRepository by lazy { kosmos.fakeDeviceEntryRepository }
+    private val pulseExpansionInteractor by lazy { kosmos.pulseExpansionInteractor }
     private val notificationsKeyguardInteractor by lazy { kosmos.notificationsKeyguardInteractor }
     private val dozeParameters by lazy { kosmos.dozeParameters }
     private val shadeTestUtil by lazy { kosmos.shadeTestUtil }
@@ -102,14 +115,21 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
 
     @Before
     fun setUp() {
-        mSetFlagsRule.enableFlags(FLAG_NEW_AOD_TRANSITION)
-        if (!SceneContainerFlag.isEnabled) {
-            mSetFlagsRule.enableFlags(AConfigFlags.FLAG_KEYGUARD_BOTTOM_AREA_REFACTOR)
-            mSetFlagsRule.disableFlags(
-                AConfigFlags.FLAG_MIGRATE_CLOCKS_TO_BLUEPRINT,
-            )
-        }
         kosmos.sceneContainerRepository.setTransitionState(transitionState)
+
+        // Add sample notif so that the notif shelf has something to display
+        kosmos.activeNotificationListRepository.activeNotifications.value =
+            ActiveNotificationsStore.Builder()
+                .apply {
+                    addIndividualNotif(
+                        activeNotificationModel(
+                            key = "notif",
+                            aodIcon = mock(),
+                            groupKey = "testGroup",
+                        )
+                    )
+                }
+                .build()
     }
 
     @Test
@@ -129,7 +149,7 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
                     from = KeyguardState.LOCKSCREEN,
                     to = KeyguardState.AOD,
                     value = 0f,
-                    transitionState = TransitionState.STARTED
+                    transitionState = TransitionState.STARTED,
                 ),
                 validateStep = false,
             )
@@ -171,22 +191,11 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         }
 
     @Test
-    fun iconContainer_isVisible_bypassEnabled() =
-        testScope.runTest {
-            val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
-            runCurrent()
-            deviceEntryRepository.setBypassEnabled(true)
-            runCurrent()
-
-            assertThat(isVisible?.value).isTrue()
-        }
-
-    @Test
     fun iconContainer_isNotVisible_pulseExpanding_notBypassing() =
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(true)
+            pulseExpansionInteractor.setPulseExpanding(true)
             deviceEntryRepository.setBypassEnabled(false)
             runCurrent()
 
@@ -198,7 +207,7 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(false)
+            pulseExpansionInteractor.setPulseExpanding(false)
             deviceEntryRepository.setBypassEnabled(true)
             notificationsKeyguardInteractor.setNotificationsFullyHidden(true)
             runCurrent()
@@ -212,7 +221,12 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(false)
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.LOCKSCREEN,
+                to = KeyguardState.DOZING,
+                testScope,
+            )
+            pulseExpansionInteractor.setPulseExpanding(false)
             deviceEntryRepository.setBypassEnabled(false)
             whenever(dozeParameters.alwaysOn).thenReturn(false)
             notificationsKeyguardInteractor.setNotificationsFullyHidden(true)
@@ -227,7 +241,12 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(false)
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.LOCKSCREEN,
+                to = KeyguardState.DOZING,
+                testScope,
+            )
+            pulseExpansionInteractor.setPulseExpanding(false)
             deviceEntryRepository.setBypassEnabled(false)
             whenever(dozeParameters.alwaysOn).thenReturn(true)
             whenever(dozeParameters.displayNeedsBlanking).thenReturn(true)
@@ -243,7 +262,12 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(false)
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.LOCKSCREEN,
+                to = KeyguardState.DOZING,
+                testScope,
+            )
+            pulseExpansionInteractor.setPulseExpanding(false)
             deviceEntryRepository.setBypassEnabled(false)
             whenever(dozeParameters.alwaysOn).thenReturn(true)
             whenever(dozeParameters.displayNeedsBlanking).thenReturn(false)
@@ -255,11 +279,33 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         }
 
     @Test
+    fun iconContainer_isNotVisible_notifsFullyHiddenThenVisible_bypassEnabled() =
+        testScope.runTest {
+            val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
+            runCurrent()
+            pulseExpansionInteractor.setPulseExpanding(false)
+            deviceEntryRepository.setBypassEnabled(true)
+            whenever(dozeParameters.alwaysOn).thenReturn(true)
+            whenever(dozeParameters.displayNeedsBlanking).thenReturn(false)
+            notificationsKeyguardInteractor.setNotificationsFullyHidden(true)
+            runCurrent()
+
+            assertThat(isVisible?.value).isTrue()
+            assertThat(isVisible?.isAnimating).isTrue()
+
+            notificationsKeyguardInteractor.setNotificationsFullyHidden(false)
+            runCurrent()
+
+            assertThat(isVisible?.value).isFalse()
+            assertThat(isVisible?.isAnimating).isTrue()
+        }
+
+    @Test
     fun isIconContainerVisible_stopAnimation() =
         testScope.runTest {
             val isVisible by collectLastValue(underTest.isNotifIconContainerVisible)
             runCurrent()
-            notificationsKeyguardInteractor.setPulseExpanding(false)
+            pulseExpansionInteractor.setPulseExpanding(false)
             deviceEntryRepository.setBypassEnabled(false)
             whenever(dozeParameters.alwaysOn).thenReturn(true)
             whenever(dozeParameters.displayNeedsBlanking).thenReturn(false)
@@ -299,6 +345,7 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         }
 
     @Test
+    @DisableSceneContainer
     fun alpha_idleOnHub_isZero() =
         testScope.runTest {
             val alpha by collectLastValue(underTest.alpha(viewState))
@@ -324,6 +371,26 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         }
 
     @Test
+    @DisableSceneContainer
+    fun alpha_transitionBetweenHubAndDream_isZero() =
+        testScope.runTest {
+            val alpha by collectLastValue(underTest.alpha(viewState))
+
+            // Default value check
+            assertThat(alpha).isEqualTo(1f)
+
+            // Start transitioning between DREAM and HUB but don't finish.
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.DREAMING,
+                to = KeyguardState.GLANCEABLE_HUB,
+                testScope = testScope,
+                throughTransitionState = TransitionState.STARTED,
+            )
+
+            assertThat(alpha).isEqualTo(0f)
+        }
+
+    @Test
     @EnableSceneContainer
     fun alpha_transitionToHub_isZero_scene_container() =
         testScope.runTest {
@@ -333,10 +400,10 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
                 ObservableTransitionState.Transition(
                     fromScene = Scenes.Lockscreen,
                     toScene = Scenes.Communal,
-                    emptyFlow(),
-                    emptyFlow(),
+                    flowOf(Scenes.Communal),
+                    flowOf(0.5f),
                     false,
-                    emptyFlow()
+                    emptyFlow(),
                 )
 
             keyguardTransitionRepository.sendTransitionSteps(
@@ -364,6 +431,7 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
         }
 
     @Test
+    @DisableFlags(FLAG_GLANCEABLE_HUB_V2)
     fun alpha_transitionFromHubToLockscreen_isOne() =
         testScope.runTest {
             val alpha by collectLastValue(underTest.alpha(viewState))
@@ -377,6 +445,84 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
             keyguardTransitionRepository.sendTransitionSteps(
                 from = KeyguardState.GLANCEABLE_HUB,
                 to = KeyguardState.LOCKSCREEN,
+                testScope,
+            )
+
+            assertThat(alpha).isEqualTo(1.0f)
+        }
+
+    @Test
+    @DisableSceneContainer
+    @EnableFlags(FLAG_GLANCEABLE_HUB_V2)
+    fun alpha_transitionFromHubToLockscreenInLandscape_isOne() =
+        kosmos.runTest {
+            setCommunalV2ConfigEnabled(true)
+            whenever(keyguardStateController.isKeyguardScreenRotationAllowed).thenReturn(false)
+            communalSceneInteractor.changeScene(CommunalScenes.Communal, "test")
+            communalSceneRepository.setCommunalContainerOrientation(
+                Configuration.ORIENTATION_LANDSCAPE
+            )
+
+            val alpha by collectLastValue(underTest.alpha(viewState))
+
+            // Transition to the glanceable hub and back.
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.LOCKSCREEN,
+                to = KeyguardState.GLANCEABLE_HUB,
+                testScope,
+            )
+
+            communalSceneInteractor.changeScene(CommunalScenes.Communal, "test")
+            runCurrent()
+
+            // Exit hub to lockscreen
+            val progress = MutableStateFlow(0f)
+            val transitionState =
+                MutableStateFlow(
+                    ObservableTransitionState.Transition(
+                        fromScene = CommunalScenes.Communal,
+                        toScene = CommunalScenes.Blank,
+                        currentScene = flowOf(CommunalScenes.Blank),
+                        progress = progress,
+                        isInitiatedByUserInput = false,
+                        isUserInputOngoing = flowOf(false),
+                    )
+                )
+            communalSceneInteractor.setTransitionState(transitionState)
+            progress.value = .4f
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.GLANCEABLE_HUB,
+                        to = KeyguardState.LOCKSCREEN,
+                        transitionState = TransitionState.STARTED,
+                        value = 0f,
+                    ),
+                    TransitionStep(
+                        from = KeyguardState.GLANCEABLE_HUB,
+                        to = KeyguardState.LOCKSCREEN,
+                        transitionState = TransitionState.RUNNING,
+                        value = 0.4f,
+                    ),
+                ),
+                testScope,
+            )
+
+            communalSceneRepository.setCommunalContainerOrientation(
+                Configuration.ORIENTATION_PORTRAIT
+            )
+            runCurrent()
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.GLANCEABLE_HUB,
+                        to = KeyguardState.LOCKSCREEN,
+                        transitionState = TransitionState.FINISHED,
+                        value = 1f,
+                    )
+                ),
                 testScope,
             )
 
@@ -398,6 +544,56 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
             assertThat(alpha).isEqualTo(1f)
 
             shadeTestUtil.setQsExpansion(0.5f)
+            assertThat(alpha).isEqualTo(0f)
+        }
+
+    @Test
+    @DisableSceneContainer
+    fun alpha_shadeExpansionIgnoredWhenTransitioningAwayFromLockscreen() =
+        testScope.runTest {
+            val alpha by collectLastValue(underTest.alpha(viewState))
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.AOD,
+                to = KeyguardState.LOCKSCREEN,
+                testScope,
+            )
+
+            shadeTestUtil.setQsExpansion(0f)
+            assertThat(alpha).isEqualTo(1f)
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.PRIMARY_BOUNCER,
+                        transitionState = TransitionState.STARTED,
+                        value = 0f,
+                    ),
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.PRIMARY_BOUNCER,
+                        transitionState = TransitionState.RUNNING,
+                        value = 0.8f,
+                    ),
+                ),
+                testScope,
+            )
+            val priorAlpha = alpha
+            shadeTestUtil.setQsExpansion(0.5f)
+            assertThat(alpha).isEqualTo(priorAlpha)
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.PRIMARY_BOUNCER,
+                        transitionState = TransitionState.FINISHED,
+                        value = 1f,
+                    )
+                ),
+                testScope,
+            )
             assertThat(alpha).isEqualTo(0f)
         }
 
@@ -446,6 +642,85 @@ class KeyguardRootViewModelTest(flags: FlagsParameterization) : SysuiTestCase() 
             shadeTestUtil.setQsExpansion(0.5f)
             // Alpha should remain unchanged instead of fading out
             assertThat(alpha).isEqualTo(1f)
+        }
+
+    @Test
+    @DisableSceneContainer
+    fun alphaFromShadeExpansion_doesNotEmitWhenOccludedTransitionRunning() =
+        testScope.runTest {
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.AOD,
+                to = KeyguardState.LOCKSCREEN,
+                testScope,
+            )
+
+            val alpha by collectLastValue(underTest.alpha(viewState))
+            shadeTestUtil.setQsExpansion(0f)
+            runCurrent()
+            assertThat(alpha).isEqualTo(1f)
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.OCCLUDED,
+                        transitionState = TransitionState.STARTED,
+                        value = 0f,
+                    ),
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.OCCLUDED,
+                        transitionState = TransitionState.RUNNING,
+                        value = 0.8f,
+                    ),
+                ),
+                testScope,
+            )
+            // Alpha should be 0f from the above transition
+            assertThat(alpha).isEqualTo(0f)
+
+            shadeTestUtil.setQsExpansion(0.5f)
+            // Alpha should remain unchanged
+            assertThat(alpha).isEqualTo(0f)
+        }
+
+    @Test
+    @DisableSceneContainer
+    fun alphaFromShadeExpansion_doesNotEmitWhenLockscreenToDreamTransitionRunning() =
+        testScope.runTest {
+            keyguardTransitionRepository.sendTransitionSteps(
+                from = KeyguardState.AOD,
+                to = KeyguardState.LOCKSCREEN,
+                testScope,
+            )
+
+            val alpha by collectLastValue(underTest.alpha(viewState))
+            shadeTestUtil.setQsExpansion(0f)
+
+            assertThat(alpha).isEqualTo(1f)
+
+            keyguardTransitionRepository.sendTransitionSteps(
+                listOf(
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.DREAMING,
+                        transitionState = TransitionState.STARTED,
+                        value = 0f,
+                    ),
+                    TransitionStep(
+                        from = KeyguardState.LOCKSCREEN,
+                        to = KeyguardState.DREAMING,
+                        transitionState = TransitionState.RUNNING,
+                        value = 0.1f,
+                    ),
+                ),
+                testScope,
+            )
+
+            val alphaBeforeExpansion = alpha
+            shadeTestUtil.setQsExpansion(0.5f)
+            // Alpha should remain unchanged instead of being affected by expansion.
+            assertThat(alpha).isEqualTo(alphaBeforeExpansion)
         }
 
     @Test

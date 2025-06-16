@@ -17,12 +17,14 @@ use super::event::Event;
 use super::event_type::EventType;
 use super::storage::Storage;
 use crate::cxxffi::uptimeMillis;
-use once_cell::sync::Lazy;
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock,
+};
 
 //  Lazily initialized static instance of DebugStore.
-static INSTANCE: Lazy<DebugStore> = Lazy::new(DebugStore::new);
+static INSTANCE: LazyLock<DebugStore> = LazyLock::new(DebugStore::new);
 
 /// The `DebugStore` struct is responsible for managing debug events and data.
 pub struct DebugStore {
@@ -46,7 +48,7 @@ impl DebugStore {
     ///
     /// This constant is used as a part of the debug store's data format,
     /// allowing for version tracking and compatibility checks.
-    const ENCODE_VERSION: u32 = 1;
+    const ENCODE_VERSION: u32 = 3;
 
     /// Creates a new instance of `DebugStore` with specified event limit and maximum delay.
     fn new() -> Self {
@@ -121,20 +123,25 @@ impl DebugStore {
 
 impl fmt::Display for DebugStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write the debug store header information
         let uptime_now = uptimeMillis();
         write!(f, "{},{},{}::", Self::ENCODE_VERSION, self.event_store.len(), uptime_now)?;
 
+        // Join events with a separator
         write!(
             f,
             "{}",
-            self.event_store.fold(String::new(), |mut acc, event| {
+            self.event_store.rfold(String::new(), |mut acc, event| {
                 if !acc.is_empty() {
                     acc.push_str("||");
                 }
                 acc.push_str(&event.to_string());
                 acc
             })
-        )
+        )?;
+
+        // Write the debug store footer
+        write!(f, ";;")
     }
 }
 

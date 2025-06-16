@@ -21,7 +21,6 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.AppProtoEnums;
-import android.app.BackgroundStartPrivileges;
 import android.app.IActivityManager;
 import android.app.IAppTask;
 import android.app.IApplicationThread;
@@ -125,45 +124,10 @@ public abstract class ActivityTaskManagerInternal {
     public static final String ASSIST_KEY_RECEIVER_EXTRAS = "receiverExtras";
 
     public interface ScreenObserver {
-        void onAwakeStateChanged(boolean isAwake);
-        void onKeyguardStateChanged(boolean isShowing);
+        default void onAwakeStateChanged(boolean isAwake) {}
+        default void onKeyguardStateChanged(boolean isShowing) {}
+        default void onKeyguardGoingAway() {}
     }
-
-    /**
-     * Sleep tokens cause the activity manager to put the top activity to sleep.
-     * They are used by components such as dreams that may hide and block interaction
-     * with underlying activities.
-     * The Acquirer provides an interface that encapsulates the underlying work, so the user does
-     * not need to handle the token by him/herself.
-     */
-    public interface SleepTokenAcquirer {
-
-        /**
-         * Acquires a sleep token.
-         * @param displayId The display to apply to.
-         */
-        void acquire(int displayId);
-
-        /**
-         * Acquires a sleep token.
-         * @param displayId The display to apply to.
-         * @param isSwappingDisplay Whether the display is swapping to another physical display.
-         */
-        void acquire(int displayId, boolean isSwappingDisplay);
-
-        /**
-         * Releases the sleep token.
-         * @param displayId The display to apply to.
-         */
-        void release(int displayId);
-    }
-
-    /**
-     * Creates a sleep token acquirer for the specified display with the specified tag.
-     *
-     * @param tag A string identifying the purpose (eg. "Dream").
-     */
-    public abstract SleepTokenAcquirer createSleepTokenAcquirer(@NonNull String tag);
 
     /**
      * Returns home activity for the specified user.
@@ -215,15 +179,15 @@ public abstract class ActivityTaskManagerInternal {
      * @param validateIncomingUser Set true to skip checking {@code userId} with the calling UID.
      * @param originatingPendingIntent PendingIntentRecord that originated this activity start or
      *        null if not originated by PendingIntent
-     * @param forcedBalByPiSender If set to allow, the
-     *        PendingIntent's sender will try to force allow background activity starts.
+     * @param allowBalExemptionForSystemProcess If set to {@code true}, the
+     *        PendingIntent's sender will allow additional exemptions.
      *        This is only possible if the sender of the PendingIntent is a system process.
      */
     public abstract int startActivitiesInPackage(int uid, int realCallingPid, int realCallingUid,
             String callingPackage, @Nullable String callingFeatureId, Intent[] intents,
             String[] resolvedTypes, IBinder resultTo, SafeActivityOptions options, int userId,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender);
+            boolean allowBalExemptionForSystemProcess);
 
     /**
      * Start intent as a package.
@@ -238,8 +202,8 @@ public abstract class ActivityTaskManagerInternal {
      * @param validateIncomingUser Set true to skip checking {@code userId} with the calling UID.
      * @param originatingPendingIntent PendingIntentRecord that originated this activity start or
      *        null if not originated by PendingIntent
-     * @param forcedBalByPiSender If set to allow, the
-     *        PendingIntent's sender will try to force allow background activity starts.
+     * @param allowBalExemptionForSystemProcess If set to {@code true}, the
+     *        PendingIntent's sender will allow additional exemptions.
      *        This is only possible if the sender of the PendingIntent is a system process.
      */
     public abstract int startActivityInPackage(int uid, int realCallingPid, int realCallingUid,
@@ -247,7 +211,7 @@ public abstract class ActivityTaskManagerInternal {
             String resolvedType, IBinder resultTo, String resultWho, int requestCode,
             int startFlags, SafeActivityOptions options, int userId, Task inTask, String reason,
             boolean validateIncomingUser, PendingIntentRecord originatingPendingIntent,
-            BackgroundStartPrivileges forcedBalByPiSender);
+            boolean allowBalExemptionForSystemProcess);
 
     /**
      * Callback to be called on certain activity start scenarios.
@@ -387,7 +351,16 @@ public abstract class ActivityTaskManagerInternal {
     public abstract void onPackageAdded(String name, boolean replacing);
     public abstract void onPackageReplaced(ApplicationInfo aInfo);
 
-    public abstract CompatibilityInfo compatibilityInfoForPackage(ApplicationInfo ai);
+    /** The data for IApplicationThread#bindApplication. */
+    public static final class PreBindInfo {
+        public final @NonNull CompatibilityInfo compatibilityInfo;
+        public final @NonNull Configuration configuration;
+
+        PreBindInfo(@NonNull CompatibilityInfo compatInfo, @NonNull Configuration config) {
+            compatibilityInfo = compatInfo;
+            configuration = config;
+        }
+    }
 
     public final class ActivityTokens {
         private final @NonNull IBinder mActivityToken;
@@ -509,7 +482,9 @@ public abstract class ActivityTaskManagerInternal {
     public abstract void resumeTopActivities(boolean scheduleIdle);
 
     /** Called by AM just before it binds to an application process. */
-    public abstract void preBindApplication(WindowProcessController wpc);
+    @NonNull
+    public abstract PreBindInfo preBindApplication(@NonNull WindowProcessController wpc,
+            @NonNull ApplicationInfo info);
 
     /** Called by AM when an application process attaches. */
     public abstract boolean attachApplication(WindowProcessController wpc) throws RemoteException;
@@ -591,7 +566,7 @@ public abstract class ActivityTaskManagerInternal {
 
     public abstract void clearLockedTasks(String reason);
     public abstract void updateUserConfiguration();
-    public abstract boolean canShowErrorDialogs();
+    public abstract boolean canShowErrorDialogs(int userId);
 
     public abstract void setProfileApp(String profileApp);
     public abstract void setProfileProc(WindowProcessController wpc);
@@ -614,7 +589,7 @@ public abstract class ActivityTaskManagerInternal {
      * sensitive environment.
      */
     public abstract TaskSnapshot getTaskSnapshotBlocking(int taskId,
-            boolean isLowResolution);
+            boolean isLowResolution, @TaskSnapshot.ReferenceFlags int usage);
 
     /** Returns true if uid is considered foreground for activity start purposes. */
     public abstract boolean isUidForeground(int uid);
@@ -642,6 +617,9 @@ public abstract class ActivityTaskManagerInternal {
      * @return Whether the package is the base of any locked task
      */
     public abstract boolean isBaseOfLockedTask(String packageName);
+
+    /** Returns the value of {@link android.R.attr#windowNoDisplay} from the given theme. */
+    public abstract boolean isNoDisplay(String packageName, int theme, int userId);
 
     /**
      * Creates an interface to update configuration for the calling application.
@@ -825,4 +803,10 @@ public abstract class ActivityTaskManagerInternal {
 
     /** Returns whether assist data is allowed. */
     public abstract boolean isAssistDataAllowed();
+
+    /**
+     * Delegate back gesture request from shell.
+     * Returns true if the back gesture request was successful, false otherwise.
+     */
+    public abstract boolean requestBackGesture();
 }

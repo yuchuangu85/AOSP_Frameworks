@@ -15,6 +15,8 @@
  */
 package com.android.server.hdmi;
 
+import static android.content.pm.PackageManager.FEATURE_HDMI_CEC;
+
 import static com.android.server.SystemService.PHASE_SYSTEM_SERVICES_READY;
 import static com.android.server.hdmi.Constants.ABORT_UNRECOGNIZED_OPCODE;
 import static com.android.server.hdmi.Constants.ADDR_AUDIO_SYSTEM;
@@ -28,6 +30,9 @@ import static com.android.server.hdmi.HdmiControlService.INITIATED_BY_ENABLE_CEC
 import static com.android.server.hdmi.HdmiControlService.INITIATED_BY_WAKE_UP_MESSAGE;
 import static com.android.server.hdmi.HdmiControlService.STANDBY_SCREEN_OFF;
 import static com.android.server.hdmi.HdmiControlService.WAKE_UP_SCREEN_ON;
+import static com.android.server.hdmi.RequestActiveSourceAction.TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS;
+import static com.android.server.hdmi.RequestSadAction.RETRY_COUNTER_MAX;
+import static com.android.server.hdmi.RoutingControlAction.TIMEOUT_ROUTING_INFORMATION_MS;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -35,6 +40,7 @@ import static junit.framework.Assert.assertEquals;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.eq;
@@ -60,6 +66,7 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -67,6 +74,7 @@ import org.junit.runners.JUnit4;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 @SmallTest
@@ -76,6 +84,7 @@ import java.util.concurrent.TimeUnit;
 public class HdmiCecLocalDeviceTvTest {
     private static final int TIMEOUT_MS = HdmiConfig.TIMEOUT_MS + 1;
     private static final int PORT_1 = 1;
+    private static final int PORT_2 = 2;
 
     private static final String[] SADS_NOT_TO_QUERY = new String[]{
             HdmiControlManager.CEC_SETTING_NAME_QUERY_SAD_MPEG1,
@@ -109,6 +118,11 @@ public class HdmiCecLocalDeviceTvTest {
     private boolean mWokenUp;
     private boolean mEarcBlocksArc;
     private List<DeviceEventListener> mDeviceEventListeners = new ArrayList<>();
+    private List<VendorCommandListener> mVendorCommandListeners = new ArrayList<>();
+    private boolean mDisableCecOnStandbyByLowEnergyMode;
+    private boolean mWasCecDisabledOnStandbyByLowEnergyMode;
+    private boolean mUseHdmiCecPowerStatusController;
+    private boolean mUserEnabledCecInOfflineMode;
 
     private class DeviceEventListener {
         private HdmiDeviceInfo mDevice;
@@ -128,11 +142,38 @@ public class HdmiCecLocalDeviceTvTest {
         }
     }
 
+    private class VendorCommandListener {
+        private boolean mEnabled;
+        private int mReason;
+
+        VendorCommandListener(boolean enabled, int reason) {
+            this.mEnabled = enabled;
+            this.mReason = reason;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (!(obj instanceof VendorCommandListener)) {
+                return false;
+            }
+            VendorCommandListener other = (VendorCommandListener) obj;
+            return other.mReason == mReason && other.mEnabled == mEnabled;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(mEnabled, mReason);
+        }
+    }
+
     private FakeAudioFramework mAudioFramework;
     private AudioManagerWrapper mAudioManager;
 
     @Before
     public void setUp() {
+        assumeTrue("Test requires FEATURE_HDMI_CEC",
+                InstrumentationRegistry.getTargetContext().getPackageManager()
+                        .hasSystemFeature(FEATURE_HDMI_CEC));
         Context context = InstrumentationRegistry.getTargetContext();
         mMyLooper = mTestLooper.getLooper();
 
@@ -165,6 +206,9 @@ public class HdmiCecLocalDeviceTvTest {
 
                     @Override
                     boolean isPowerStandby() {
+                        if (mUseHdmiCecPowerStatusController) {
+                            return mPowerStatusController.isPowerStatusStandby();
+                        }
                         return false;
                     }
 
@@ -184,6 +228,13 @@ public class HdmiCecLocalDeviceTvTest {
                     }
 
                     @Override
+                    boolean invokeVendorCommandListenersOnControlStateChanged(
+                            boolean enabled, int reason) {
+                        mVendorCommandListeners.add(new VendorCommandListener(enabled, reason));
+                        return true;
+                    }
+
+                    @Override
                     protected boolean earcBlocksArcConnection() {
                         return mEarcBlocksArc;
                     }
@@ -191,6 +242,26 @@ public class HdmiCecLocalDeviceTvTest {
                     @Override
                     protected void sendBroadcastAsUser(@RequiresPermission Intent intent) {
                         // do nothing
+                    }
+
+                    @Override
+                    protected boolean getDisableCecOnStandbyByLowEnergyMode() {
+                        return mDisableCecOnStandbyByLowEnergyMode;
+                    }
+
+                    @Override
+                    protected boolean getWasCecDisabledOnStandbyByLowEnergyMode() {
+                        return mWasCecDisabledOnStandbyByLowEnergyMode;
+                    }
+
+                    @Override
+                    protected void setWasCecDisabledOnStandbyByLowEnergyMode(boolean value) {
+                        mWasCecDisabledOnStandbyByLowEnergyMode = value;
+                    }
+
+                    @Override
+                    protected boolean userEnabledCecInOfflineMode() {
+                        return mUserEnabledCecInOfflineMode;
                     }
                 };
 
@@ -214,7 +285,7 @@ public class HdmiCecLocalDeviceTvTest {
                 .setEarcSupported(false)
                 .build();
         hdmiPortInfos[1] =
-                new HdmiPortInfo.Builder(2, HdmiPortInfo.PORT_INPUT, 0x2000)
+                new HdmiPortInfo.Builder(PORT_2, HdmiPortInfo.PORT_INPUT, 0x2000)
                         .setCecSupported(true)
                         .setMhlSupported(false)
                         .setArcSupported(true)
@@ -237,6 +308,10 @@ public class HdmiCecLocalDeviceTvTest {
             mHdmiControlService.getHdmiCecConfig().setIntValue(
                     sad, HdmiControlManager.QUERY_SAD_DISABLED);
         }
+        mWasCecDisabledOnStandbyByLowEnergyMode = false;
+        mDisableCecOnStandbyByLowEnergyMode = false;
+        mUseHdmiCecPowerStatusController = false;
+        mUserEnabledCecInOfflineMode = false;
         mNativeWrapper.clearResultMessages();
     }
 
@@ -266,19 +341,9 @@ public class HdmiCecLocalDeviceTvTest {
         HdmiCecMessage reportArcInitiated = HdmiCecMessageBuilder.buildReportArcInitiated(
                 ADDR_TV,
                 ADDR_AUDIO_SYSTEM);
-        // <Report ARC Initiated> should only be sent after SAD querying is done
-        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(reportArcInitiated);
-
-        // Finish querying SADs
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mNativeWrapper.clearResultMessages();
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-
         assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
+        // But we need to check SADs started to be queried at this time
+        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
         mNativeWrapper.clearResultMessages();
     }
 
@@ -678,19 +743,36 @@ public class HdmiCecLocalDeviceTvTest {
         HdmiCecMessage reportArcInitiated = HdmiCecMessageBuilder.buildReportArcInitiated(
                 ADDR_TV,
                 ADDR_AUDIO_SYSTEM);
-        // <Report ARC Initiated> should only be sent after SAD querying is done
-        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(reportArcInitiated);
+        assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
+    }
+
+    @Test
+    public void handleInitiateArc_arcAlreadyEstablished_noRequestSad() {
+        // Emulate Audio device on port 0x2000 (supports ARC)
+        mNativeWrapper.setPortConnectionStatus(2, true);
+        HdmiCecMessage reportPhysicalAddress =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_AUDIO_SYSTEM, 0x2000, HdmiDeviceInfo.DEVICE_AUDIO_SYSTEM);
+        mNativeWrapper.onCecMessage(reportPhysicalAddress);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceTv.isArcEstablished()).isFalse();
+
+        HdmiCecMessage requestArcInitiation = HdmiCecMessageBuilder.buildInitiateArc(
+                ADDR_AUDIO_SYSTEM,
+                ADDR_TV);
+        mNativeWrapper.onCecMessage(requestArcInitiation);
+        mTestLooper.dispatchAll();
 
         // Finish querying SADs
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mNativeWrapper.clearResultMessages();
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
+        for (int i = 0; i <= RETRY_COUNTER_MAX; ++i) {
+            assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
+            mNativeWrapper.clearResultMessages();
+            mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
+            mTestLooper.dispatchAll();
+        }
 
-        assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
+        assertThat(mHdmiCecLocalDeviceTv.isArcEstablished()).isTrue();
     }
 
     @Test
@@ -932,6 +1014,7 @@ public class HdmiCecLocalDeviceTvTest {
     }
 
     @Test
+    @Ignore("b/360768278")
     public void onHotplug_doNotSend_systemAudioModeRequestWithParameter(){
         // Add a device to the network and assert that this device is included in the list of
         // devices.
@@ -964,17 +1047,6 @@ public class HdmiCecLocalDeviceTvTest {
         HdmiCecMessage reportArcInitiated = HdmiCecMessageBuilder.buildReportArcInitiated(
             ADDR_TV,
             ADDR_AUDIO_SYSTEM);
-        // <Report ARC Initiated> should only be sent after SAD querying is done
-        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(reportArcInitiated);
-        // Finish querying SADs
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mNativeWrapper.clearResultMessages();
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-
         assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
         mNativeWrapper.clearResultMessages();
 
@@ -1166,17 +1238,6 @@ public class HdmiCecLocalDeviceTvTest {
 
         mNativeWrapper.onCecMessage(initiateArc);
         mTestLooper.dispatchAll();
-
-        // Finish querying SADs
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mNativeWrapper.clearResultMessages();
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-
-        // ARC should be established after RequestSadAction is finished
         assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
 
         mHdmiControlService.onStandby(HdmiControlService.STANDBY_SCREEN_OFF);
@@ -1320,18 +1381,6 @@ public class HdmiCecLocalDeviceTvTest {
         HdmiCecMessage reportArcInitiated = HdmiCecMessageBuilder.buildReportArcInitiated(
                 ADDR_TV,
                 ADDR_AUDIO_SYSTEM);
-        // <Report ARC Initiated> should only be sent after SAD querying is done
-        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(reportArcInitiated);
-
-        // Finish querying SADs
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mNativeWrapper.clearResultMessages();
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-        assertThat(mNativeWrapper.getResultMessages()).contains(SAD_QUERY);
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS);
-        mTestLooper.dispatchAll();
-
         assertThat(mNativeWrapper.getResultMessages()).contains(reportArcInitiated);
     }
 
@@ -1792,7 +1841,7 @@ public class HdmiCecLocalDeviceTvTest {
         mTestLooper.dispatchAll();
 
         // Skip the LauncherX API timeout.
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS * 2);
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
         mTestLooper.dispatchAll();
 
         assertThat(mNativeWrapper.getResultMessages()).contains(requestActiveSource);
@@ -1825,7 +1874,7 @@ public class HdmiCecLocalDeviceTvTest {
         mTestLooper.dispatchAll();
 
         // Skip the LauncherX API timeout.
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS * 2);
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
         mTestLooper.dispatchAll();
 
         assertThat(mNativeWrapper.getResultMessages()).contains(requestActiveSource);
@@ -1861,7 +1910,7 @@ public class HdmiCecLocalDeviceTvTest {
         mTestLooper.dispatchAll();
 
         // Skip the LauncherX API timeout.
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS * 2);
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
         mTestLooper.dispatchAll();
 
         assertThat(mNativeWrapper.getResultMessages()).contains(requestActiveSource);
@@ -1904,7 +1953,7 @@ public class HdmiCecLocalDeviceTvTest {
         mTestLooper.dispatchAll();
 
         // Skip the LauncherX API timeout.
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS * 2);
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
         mTestLooper.dispatchAll();
 
         assertThat(mNativeWrapper.getResultMessages()).contains(requestActiveSource);
@@ -1941,7 +1990,7 @@ public class HdmiCecLocalDeviceTvTest {
         mHdmiControlService.sendCecCommand(setStreamPathFromTv);
 
         // Skip the LauncherX API timeout.
-        mTestLooper.moveTimeForward(HdmiConfig.TIMEOUT_MS * 2);
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
         mTestLooper.dispatchAll();
 
         assertThat(mNativeWrapper.getResultMessages()).doesNotContain(requestActiveSource);
@@ -2012,38 +2061,450 @@ public class HdmiCecLocalDeviceTvTest {
     }
 
     @Test
-    public void handleStandby_fromActiveSource_standby() {
-        mPowerManager.setInteractive(true);
-        mHdmiControlService.allocateLogicalAddress(mLocalDevices, INITIATED_BY_ENABLE_CEC);
+    public void handleStandby_fromActiveSource_previousActiveSourceSet_standby() {
+        mHdmiCecLocalDeviceTv = new MockTvDevice(mHdmiControlService);
+        HdmiCecMessage activeSourceFromPlayback =
+                HdmiCecMessageBuilder.buildActiveSource(ADDR_PLAYBACK_1, 0x1000);
+        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(ADDR_PLAYBACK_1,
+                ADDR_TV);
         mTestLooper.dispatchAll();
 
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
+        mPowerManager.setInteractive(true);
+        mTestLooper.dispatchAll();
+
+        mHdmiCecLocalDeviceTv.dispatchMessage(activeSourceFromPlayback);
         mHdmiControlService.setActiveSource(ADDR_PLAYBACK_1, 0x1000,
                 "HdmiCecLocalDeviceTvTest");
         mTestLooper.dispatchAll();
 
-        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(ADDR_PLAYBACK_1,
-                ADDR_TV);
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isTrue();
         assertThat(mHdmiCecLocalDeviceTv.dispatchMessage(standbyMessage))
                 .isEqualTo(Constants.HANDLED);
         mTestLooper.dispatchAll();
 
         assertThat(mPowerManager.isInteractive()).isFalse();
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
     }
 
     @Test
-    public void handleStandby_fromNonActiveSource_noStandby() {
+    public void handleStandby_fromNonActiveSource_previousActiveSourceSet_noStandby() {
+        HdmiCecMessage activeSourceFromPlayback =
+                HdmiCecMessageBuilder.buildActiveSource(ADDR_PLAYBACK_2, 0x2000);
+        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(ADDR_PLAYBACK_1,
+                ADDR_TV);
+        mHdmiCecLocalDeviceTv = new MockTvDevice(mHdmiControlService);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
         mPowerManager.setInteractive(true);
-        mHdmiControlService.allocateLogicalAddress(mLocalDevices, INITIATED_BY_ENABLE_CEC);
+
+        mHdmiCecLocalDeviceTv.dispatchMessage(activeSourceFromPlayback);
         mHdmiControlService.setActiveSource(ADDR_PLAYBACK_2, 0x2000,
                 "HdmiCecLocalDeviceTvTest");
         mTestLooper.dispatchAll();
 
-        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(ADDR_PLAYBACK_1,
-                ADDR_TV);
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isTrue();
         assertThat(mHdmiCecLocalDeviceTv.dispatchMessage(standbyMessage))
                 .isEqualTo(Constants.HANDLED);
         mTestLooper.dispatchAll();
 
         assertThat(mPowerManager.isInteractive()).isTrue();
+    }
+
+    @Test
+    public void handleStandby_fromNonActiveSource_previousActiveSourceNotSet_Standby() {
+        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(ADDR_PLAYBACK_1,
+                ADDR_TV);
+        mHdmiCecLocalDeviceTv = new MockTvDevice(mHdmiControlService);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
+        mPowerManager.setInteractive(true);
+
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
+        assertThat(mHdmiCecLocalDeviceTv.dispatchMessage(standbyMessage))
+                .isEqualTo(Constants.HANDLED);
+        mTestLooper.dispatchAll();
+
+        assertThat(mPowerManager.isInteractive()).isFalse();
+        assertThat(mHdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
+    }
+
+    @Test
+    public void handleStandby_fromNonActiveSource_previousActivePathSetToNonCecDevice_Standby() {
+        HdmiCecLocalDeviceTv hdmiCecLocalDeviceTv = new MockTvDevice(mHdmiControlService);
+        hdmiCecLocalDeviceTv.setDeviceInfo(mHdmiCecLocalDeviceTv.getDeviceInfo());
+        mTestLooper.dispatchAll();
+
+        assertThat(hdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isFalse();
+        mPowerManager.setInteractive(true);
+        hdmiCecLocalDeviceTv.doManualPortSwitching(PORT_2, null);
+        mTestLooper.dispatchAll();
+
+        // Timeout the action RoutingControlAction such that the active path would be updated.
+        mTestLooper.moveTimeForward(TIMEOUT_ROUTING_INFORMATION_MS);
+        mTestLooper.dispatchAll();
+
+        assertThat(hdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isTrue();
+        HdmiCecMessage standbyMessage = HdmiCecMessageBuilder.buildStandby(
+                ADDR_PLAYBACK_1, ADDR_TV);
+        assertThat(hdmiCecLocalDeviceTv.dispatchMessage(standbyMessage))
+                .isEqualTo(Constants.HANDLED);
+        mTestLooper.dispatchAll();
+
+        assertThat(mPowerManager.isInteractive()).isTrue();
+        assertThat(hdmiCecLocalDeviceTv.getWasActivePathSetToConnectedDevice())
+                .isTrue();
+    }
+
+    @Test
+    public void handleReportPhysicalAddress_DeviceDiscoveryActionInProgress_noNewDeviceAction() {
+        mHdmiControlService.getHdmiCecNetwork().clearDeviceList();
+        mNativeWrapper.setPollAddressResponse(ADDR_PLAYBACK_1, SendMessageResult.SUCCESS);
+        mHdmiControlService.allocateLogicalAddress(mLocalDevices, INITIATED_BY_ENABLE_CEC);
+        mNativeWrapper.clearResultMessages();
+        mTestLooper.dispatchAll();
+
+        HdmiCecMessage reportPhysicalAddressFromPlayback1 =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_PLAYBACK_1, 0x1000, HdmiDeviceInfo.DEVICE_PLAYBACK);
+        HdmiCecMessage reportPhysicalAddressFromPlayback2 =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_PLAYBACK_2, 0x2000, HdmiDeviceInfo.DEVICE_PLAYBACK);
+        HdmiCecMessage giveOsdName = HdmiCecMessageBuilder.buildGiveOsdNameCommand(
+                ADDR_TV, ADDR_PLAYBACK_2);
+        // Skip state waiting for <Report Physical Address> for DeviceDiscoveryAction s.t. message
+        // can be dispatched to local device TV.
+        mNativeWrapper.onCecMessage(reportPhysicalAddressFromPlayback1);
+        mNativeWrapper.clearResultMessages();
+        mTestLooper.dispatchAll();
+
+        mNativeWrapper.onCecMessage(reportPhysicalAddressFromPlayback2);
+        mTestLooper.dispatchAll();
+
+        // NewDeviceAction did not start and <Give OSD Name> was not sent.
+        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(giveOsdName);
+    }
+
+    @Test
+    public void handleReportPhysicalAddress_samePathAsActiveSource_differentLA_newActiveSource() {
+        // This scenario can be reproduced if active source is hotplugged out and replaced with
+        // another device that might have another LA.
+        int physicalAddress = 0x1000;
+        mHdmiControlService.setActiveSource(Constants.ADDR_PLAYBACK_1, physicalAddress,
+                "HdmiControlServiceTest");
+        mHdmiCecLocalDeviceTv.setActivePath(physicalAddress);
+        HdmiCecMessage reportPhysicalAddressFromPlayback2 =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(ADDR_PLAYBACK_2,
+                        physicalAddress, HdmiDeviceInfo.DEVICE_PLAYBACK);
+        HdmiCecMessage setStreamPath = HdmiCecMessageBuilder.buildSetStreamPath(ADDR_TV,
+                physicalAddress);
+        mNativeWrapper.onCecMessage(reportPhysicalAddressFromPlayback2);
+        mTestLooper.dispatchAll();
+
+        assertThat(mNativeWrapper.getResultMessages()).contains(setStreamPath);
+    }
+
+    @Test
+    public void onOneTouchPlay_wakeUp_addCecDevice() {
+        assertThat(mHdmiControlService.getHdmiCecNetwork().getDeviceInfoList(false))
+                .isEmpty();
+        mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().setIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_TV_WAKE_ON_ONE_TOUCH_PLAY,
+                HdmiControlManager.TV_WAKE_ON_ONE_TOUCH_PLAY_ENABLED);
+        mPowerManager.setInteractive(false);
+        mTestLooper.dispatchAll();
+
+        HdmiCecMessage textViewOn = HdmiCecMessageBuilder.buildTextViewOn(ADDR_PLAYBACK_1,
+                mTvLogicalAddress);
+        HdmiCecMessage activeSource = HdmiCecMessageBuilder.buildActiveSource(ADDR_PLAYBACK_1,
+                0x1000);
+        assertThat(mHdmiCecLocalDeviceTv.dispatchMessage(textViewOn)).isEqualTo(Constants.HANDLED);
+        assertThat(mHdmiCecLocalDeviceTv.dispatchMessage(activeSource)).isEqualTo(
+                Constants.HANDLED);
+        mTestLooper.dispatchAll();
+        assertThat(mPowerManager.isInteractive()).isTrue();
+
+        // FakePowerManagerWrapper#wakeUp() doesn't broadcast Intent.ACTION_SCREEN_ON so we have to
+        // manually call this method.
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+        assertThat(mHdmiControlService.getHdmiCecNetwork().getDeviceInfoList(false))
+                .hasSize(1);
+    }
+
+    @Test
+    public void onOneTouchPlay_wakeUp_exist_device() {
+        HdmiCecMessage requestActiveSource =
+                HdmiCecMessageBuilder.buildRequestActiveSource(ADDR_TV);
+
+        // Go to standby to trigger RequestActiveSourceAction for playback_1
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        mNativeWrapper.setPollAddressResponse(ADDR_PLAYBACK_1, SendMessageResult.SUCCESS);
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        // Skip the LauncherX API timeout.
+        mTestLooper.moveTimeForward(TIMEOUT_WAIT_FOR_TV_ASSERT_ACTIVE_SOURCE_MS);
+        mTestLooper.dispatchAll();
+
+        assertThat(mNativeWrapper.getResultMessages()).contains(requestActiveSource);
+        mNativeWrapper.clearResultMessages();
+
+        // turn off TV and wake up with one touch play
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        // FakePowerManagerWrapper#wakeUp() doesn't broadcast Intent.ACTION_SCREEN_ON
+        // manually trigger onWakeUp to mock OTP
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        assertThat(mNativeWrapper.getResultMessages()).doesNotContain(requestActiveSource);
+    }
+
+
+    @Test
+    public void handleReportAudioStatus_SamOnAvrStandby_startSystemAudioActionFromTv() {
+        mHdmiControlService.getHdmiCecConfig().setIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_SYSTEM_AUDIO_CONTROL,
+                HdmiControlManager.SYSTEM_AUDIO_CONTROL_ENABLED);
+        // Emulate Audio device on port 0x1000 (does not support ARC)
+        mNativeWrapper.setPortConnectionStatus(1, true);
+        HdmiCecMessage reportPhysicalAddress =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_AUDIO_SYSTEM, 0x1000, HdmiDeviceInfo.DEVICE_AUDIO_SYSTEM);
+        HdmiCecMessage reportPowerStatus =
+                HdmiCecMessageBuilder.buildReportPowerStatus(ADDR_AUDIO_SYSTEM, ADDR_TV,
+                        HdmiControlManager.POWER_STATUS_STANDBY);
+        mNativeWrapper.onCecMessage(reportPhysicalAddress);
+        mNativeWrapper.onCecMessage(reportPowerStatus);
+        mTestLooper.dispatchAll();
+        assertThat(mHdmiCecLocalDeviceTv.getActions(SystemAudioActionFromTv.class)).hasSize(0);
+
+        HdmiCecFeatureAction systemAudioAutoInitiationAction =
+                new SystemAudioAutoInitiationAction(mHdmiCecLocalDeviceTv, ADDR_AUDIO_SYSTEM);
+        mHdmiCecLocalDeviceTv.addAndStartAction(systemAudioAutoInitiationAction);
+        HdmiCecMessage reportSystemAudioMode =
+                HdmiCecMessageBuilder.buildReportSystemAudioMode(
+                        ADDR_AUDIO_SYSTEM,
+                        mHdmiCecLocalDeviceTv.getDeviceInfo().getLogicalAddress(),
+                        true);
+        mHdmiControlService.handleCecCommand(reportSystemAudioMode);
+        mTestLooper.dispatchAll();
+
+        // SAM must be on; ARC must be off
+        assertThat(mHdmiCecLocalDeviceTv.getActions(SystemAudioActionFromTv.class)).hasSize(1);
+    }
+
+    @Test
+    public void lowEnergyMode_disableCecOnStandby_reEnableOnWakeup() {
+        mDisableCecOnStandbyByLowEnergyMode = true;
+        mUseHdmiCecPowerStatusController = true;
+        mPowerManager.setIsLowPowerStandbyEnabled(true);
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_DISABLED);
+        assertTrue(mWasCecDisabledOnStandbyByLowEnergyMode);
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        assertFalse(mWasCecDisabledOnStandbyByLowEnergyMode);
+    }
+
+    @Test
+    public void lowEnergyMode_disableCecBeforeStandby_cecStaysDisabledOnWakeup() {
+        mDisableCecOnStandbyByLowEnergyMode = true;
+        mUseHdmiCecPowerStatusController = true;
+        mPowerManager.setIsLowPowerStandbyEnabled(true);
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().setIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED,
+                HdmiControlManager.HDMI_CEC_CONTROL_DISABLED);
+        mTestLooper.dispatchAll();
+
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_DISABLED);
+        assertFalse(mWasCecDisabledOnStandbyByLowEnergyMode);
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_DISABLED);
+    }
+
+    @Test
+    public void lowEnergyMode_onWakeUp_reEnableCec_invokeVendorCommandListeners() {
+        mDisableCecOnStandbyByLowEnergyMode = true;
+        mUseHdmiCecPowerStatusController = true;
+        mPowerManager.setIsLowPowerStandbyEnabled(true);
+        VendorCommandListener vendorCommandListenerInvocationWakeup = new VendorCommandListener(
+                true, HdmiControlManager.CONTROL_STATE_CHANGED_REASON_WAKEUP);
+        VendorCommandListener vendorCommandListenerInvocationSettingChange =
+                new VendorCommandListener(true,
+                        HdmiControlManager.CONTROL_STATE_CHANGED_REASON_WAKEUP);
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_DISABLED);
+        assertTrue(mWasCecDisabledOnStandbyByLowEnergyMode);
+        mVendorCommandListeners.clear();
+        mTestLooper.dispatchAll();
+
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        assertThat(mVendorCommandListeners.size()).isEqualTo(2);
+        assertTrue(mVendorCommandListeners.contains(vendorCommandListenerInvocationWakeup));
+        assertTrue(mVendorCommandListeners.contains(vendorCommandListenerInvocationSettingChange));
+    }
+
+    @Test
+    public void lowEnergyMode_userEnabledCecInOfflineMode_onStandby_cecStaysEnabled() {
+        mDisableCecOnStandbyByLowEnergyMode = true;
+        mUseHdmiCecPowerStatusController = true;
+        mUserEnabledCecInOfflineMode = true;
+        mPowerManager.setIsLowPowerStandbyEnabled(true);
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        mHdmiControlService.onStandby(STANDBY_SCREEN_OFF);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        assertFalse(mWasCecDisabledOnStandbyByLowEnergyMode);
+        mHdmiControlService.onWakeUp(WAKE_UP_SCREEN_ON);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mHdmiCecLocalDeviceTv.mService.getHdmiCecConfig().getIntValue(
+                        HdmiControlManager.CEC_SETTING_NAME_HDMI_CEC_ENABLED),
+                HdmiControlManager.HDMI_CEC_CONTROL_ENABLED);
+        assertFalse(mWasCecDisabledOnStandbyByLowEnergyMode);
+    }
+
+    @Test
+    public void sendSystemAudioModeRequest_sendsRequest_retry() throws Exception {
+        // Enable System Audio Control
+        mHdmiControlService.getHdmiCecConfig().setIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_SYSTEM_AUDIO_CONTROL,
+                HdmiControlManager.SYSTEM_AUDIO_CONTROL_ENABLED);
+        mNativeWrapper.setPortConnectionStatus(1, true);
+
+        HdmiCecMessage reportPhysicalAddress =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_AUDIO_SYSTEM, 0x1000, HdmiDeviceInfo.DEVICE_AUDIO_SYSTEM);
+        HdmiCecMessage reportPowerStatus =
+                HdmiCecMessageBuilder.buildReportPowerStatus(ADDR_AUDIO_SYSTEM, ADDR_TV,
+                        HdmiControlManager.POWER_STATUS_STANDBY);
+        mNativeWrapper.onCecMessage(reportPhysicalAddress);
+        mNativeWrapper.onCecMessage(reportPowerStatus);
+        mTestLooper.dispatchAll();
+
+        mNativeWrapper.setMessageSendResult(Constants.MESSAGE_SYSTEM_AUDIO_MODE_REQUEST,
+                SendMessageResult.NACK);
+        mTestLooper.dispatchAll();
+
+        // Use SystemAudioAutoInitiationAction to trigger SystemAudioActionFromTv
+        HdmiCecFeatureAction systemAudioAutoInitiationAction =
+                new SystemAudioAutoInitiationAction(mHdmiCecLocalDeviceTv, ADDR_AUDIO_SYSTEM);
+        mHdmiCecLocalDeviceTv.addAndStartAction(systemAudioAutoInitiationAction);
+        HdmiCecMessage reportSystemAudioMode =
+                HdmiCecMessageBuilder.buildReportSystemAudioMode(
+                        ADDR_AUDIO_SYSTEM,
+                        mHdmiCecLocalDeviceTv.getDeviceInfo().getLogicalAddress(),
+                        true);
+        mHdmiControlService.handleCecCommand(reportSystemAudioMode);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceTv.getActions(SystemAudioActionFromTv.class)).hasSize(1);
+    }
+
+    @Test
+    public void sendSystemAudioModeRequest_sendsRequest_return() throws Exception {
+        // Enable System Audio Control
+        mHdmiControlService.getHdmiCecConfig().setIntValue(
+                HdmiControlManager.CEC_SETTING_NAME_SYSTEM_AUDIO_CONTROL,
+                HdmiControlManager.SYSTEM_AUDIO_CONTROL_ENABLED);
+        mNativeWrapper.setPortConnectionStatus(1, true);
+
+        HdmiCecMessage reportPhysicalAddress =
+                HdmiCecMessageBuilder.buildReportPhysicalAddressCommand(
+                        ADDR_AUDIO_SYSTEM, 0x1000, HdmiDeviceInfo.DEVICE_AUDIO_SYSTEM);
+        HdmiCecMessage reportPowerStatus =
+                HdmiCecMessageBuilder.buildReportPowerStatus(ADDR_AUDIO_SYSTEM, ADDR_TV,
+                        HdmiControlManager.POWER_STATUS_STANDBY);
+        mNativeWrapper.onCecMessage(reportPhysicalAddress);
+        mNativeWrapper.onCecMessage(reportPowerStatus);
+        mTestLooper.dispatchAll();
+
+        mNativeWrapper.setMessageSendResult(Constants.MESSAGE_SYSTEM_AUDIO_MODE_REQUEST,
+                SendMessageResult.FAIL);
+        mTestLooper.dispatchAll();
+
+        // Use SystemAudioAutoInitiationAction to trigger SystemAudioActionFromTv
+        HdmiCecFeatureAction systemAudioAutoInitiationAction =
+                new SystemAudioAutoInitiationAction(mHdmiCecLocalDeviceTv, ADDR_AUDIO_SYSTEM);
+        mHdmiCecLocalDeviceTv.addAndStartAction(systemAudioAutoInitiationAction);
+        HdmiCecMessage reportSystemAudioMode =
+                HdmiCecMessageBuilder.buildReportSystemAudioMode(
+                        ADDR_AUDIO_SYSTEM,
+                        mHdmiCecLocalDeviceTv.getDeviceInfo().getLogicalAddress(),
+                        true);
+        mHdmiControlService.handleCecCommand(reportSystemAudioMode);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceTv.getActions(SystemAudioActionFromTv.class)).hasSize(0);
+    }
+
+    protected static class MockTvDevice extends HdmiCecLocalDeviceTv {
+        MockTvDevice(HdmiControlService service) {
+            super(service);
+        }
+
+        @Override
+        protected int handleActiveSource(HdmiCecMessage message) {
+            setWasActivePathSetToConnectedDevice(true);
+            return super.handleActiveSource(message);
+        }
     }
 }

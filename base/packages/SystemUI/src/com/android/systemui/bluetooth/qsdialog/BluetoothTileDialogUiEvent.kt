@@ -31,6 +31,8 @@ enum class BluetoothTileDialogUiEvent(val metricId: Int) : UiEventLogger.UiEvent
     @UiEvent(doc = "Saved clicked to connect") SAVED_DEVICE_CONNECT(1500),
     @UiEvent(doc = "Active device clicked to disconnect") ACTIVE_DEVICE_DISCONNECT(1507),
     @UiEvent(doc = "Audio sharing device clicked, do nothing") AUDIO_SHARING_DEVICE_CLICKED(1699),
+    @UiEvent(doc = "Available audio sharing device clicked, do nothing")
+    AVAILABLE_AUDIO_SHARING_DEVICE_CLICKED(1880),
     @UiEvent(doc = "Connected other device clicked to disconnect")
     CONNECTED_OTHER_DEVICE_DISCONNECT(1508),
     @UiEvent(doc = "The auto on toggle is clicked") BLUETOOTH_AUTO_ON_TOGGLE_CLICKED(1617),
@@ -40,12 +42,28 @@ enum class BluetoothTileDialogUiEvent(val metricId: Int) : UiEventLogger.UiEvent
     LAUNCH_SETTINGS_IN_SHARING_LE_DEVICE_CLICKED(1717),
     @UiEvent(doc = "Currently broadcasting and a non-LE audio supported device is clicked")
     LAUNCH_SETTINGS_IN_SHARING_NON_LE_DEVICE_CLICKED(1718),
+    @Deprecated("Use case no longer needed")
     @UiEvent(
         doc = "Not broadcasting, having one connected, another saved LE audio device is clicked"
     )
     LAUNCH_SETTINGS_NOT_SHARING_SAVED_LE_DEVICE_CLICKED(1719),
+    @Deprecated(
+        "Use case no longer needed",
+        ReplaceWith("LAUNCH_SETTINGS_NOT_SHARING_ACTIVE_LE_DEVICE_CLICKED"),
+    )
     @UiEvent(doc = "Not broadcasting, one of the two connected LE audio devices is clicked")
-    LAUNCH_SETTINGS_NOT_SHARING_CONNECTED_LE_DEVICE_CLICKED(1720);
+    LAUNCH_SETTINGS_NOT_SHARING_CONNECTED_LE_DEVICE_CLICKED(1720),
+    @Deprecated("Use case no longer needed")
+    @UiEvent(doc = "Not broadcasting, having two connected, the active LE audio devices is clicked")
+    LAUNCH_SETTINGS_NOT_SHARING_ACTIVE_LE_DEVICE_CLICKED(1881),
+    @UiEvent(doc = "Clicked on switch active button on audio sharing dialog")
+    AUDIO_SHARING_DIALOG_SWITCH_ACTIVE_CLICKED(1890),
+    @UiEvent(doc = "Clicked on share audio button on audio sharing dialog")
+    AUDIO_SHARING_DIALOG_SHARE_AUDIO_CLICKED(1891),
+    @UiEvent(doc = "Clicked on plus action button")
+    PLUS_ACTION_BUTTON_CLICKED(2061),
+    @UiEvent(doc = "Clicked on checkmark action button")
+    CHECK_MARK_ACTION_BUTTON_CLICKED(2062);
 
     override fun getId() = metricId
 }

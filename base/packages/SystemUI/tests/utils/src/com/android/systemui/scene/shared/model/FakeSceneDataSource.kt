@@ -16,27 +16,39 @@
 
 package com.android.systemui.scene.shared.model
 
+import com.android.compose.animation.scene.OverlayKey
 import com.android.compose.animation.scene.SceneKey
 import com.android.compose.animation.scene.TransitionKey
+import com.android.systemui.kosmos.currentValue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.test.TestScope
 
-class FakeSceneDataSource(
-    initialSceneKey: SceneKey,
-) : SceneDataSource {
+class FakeSceneDataSource(initialSceneKey: SceneKey, val testScope: TestScope) : SceneDataSource {
 
     private val _currentScene = MutableStateFlow(initialSceneKey)
     override val currentScene: StateFlow<SceneKey> = _currentScene.asStateFlow()
 
-    var isPaused = false
-        private set
-    var pendingScene: SceneKey? = null
+    private val _currentOverlays = MutableStateFlow<Set<OverlayKey>>(emptySet())
+    override val currentOverlays: StateFlow<Set<OverlayKey>> = _currentOverlays.asStateFlow()
+
+    private var _isPaused = false
+    val isPaused
+        get() = testScope.currentValue { _isPaused }
+
+    private var _pendingScene: SceneKey? = null
+    val pendingScene
+        get() = testScope.currentValue { _pendingScene }
+
+    var pendingOverlays: Set<OverlayKey>? = null
         private set
 
+    var freezeAndAnimateToCurrentStateCallCount = 0
+
     override fun changeScene(toScene: SceneKey, transitionKey: TransitionKey?) {
-        if (isPaused) {
-            pendingScene = toScene
+        if (_isPaused) {
+            _pendingScene = toScene
         } else {
             _currentScene.value = toScene
         }
@@ -46,43 +58,88 @@ class FakeSceneDataSource(
         changeScene(toScene)
     }
 
-    /**
-     * Pauses scene changes.
-     *
-     * Any following calls to [changeScene] will be conflated and the last one will be remembered.
-     */
-    fun pause() {
-        check(!isPaused) { "Can't pause what's already paused!" }
+    override fun showOverlay(overlay: OverlayKey, transitionKey: TransitionKey?) {
+        if (_isPaused) {
+            pendingOverlays = (pendingOverlays ?: currentOverlays.value) + overlay
+        } else {
+            _currentOverlays.value += overlay
+        }
+    }
 
-        isPaused = true
+    override fun hideOverlay(overlay: OverlayKey, transitionKey: TransitionKey?) {
+        if (_isPaused) {
+            pendingOverlays = (pendingOverlays ?: currentOverlays.value) - overlay
+        } else {
+            _currentOverlays.value -= overlay
+        }
+    }
+
+    override fun replaceOverlay(from: OverlayKey, to: OverlayKey, transitionKey: TransitionKey?) {
+        hideOverlay(from, transitionKey)
+        showOverlay(to, transitionKey)
+    }
+
+    override fun instantlyShowOverlay(overlay: OverlayKey) {
+        showOverlay(overlay)
+    }
+
+    override fun instantlyHideOverlay(overlay: OverlayKey) {
+        hideOverlay(overlay)
+    }
+
+    override fun freezeAndAnimateToCurrentState() {
+        freezeAndAnimateToCurrentStateCallCount++
     }
 
     /**
-     * Unpauses scene changes.
+     * Pauses scene and overlay changes.
+     *
+     * Any following calls to [changeScene] or overlay changing functions will be conflated and the
+     * last one will be remembered.
+     */
+    fun pause() {
+        check(!_isPaused) { "Can't pause what's already paused!" }
+
+        _isPaused = true
+    }
+
+    /**
+     * Unpauses scene and overlay changes.
      *
      * If there were any calls to [changeScene] since [pause] was called, the latest of the bunch
      * will be replayed.
      *
+     * If there were any calls to show, hide or replace overlays since [pause] was called, they will
+     * all be applied at once.
+     *
      * If [force] is `true`, there will be no check that [isPaused] is true.
      *
      * If [expectedScene] is provided, will assert that it's indeed the latest called.
+     *
+     * If [expectedOverlays] is provided, will assert they are indeed present.
      */
     fun unpause(
         force: Boolean = false,
         expectedScene: SceneKey? = null,
+        expectedOverlays: Set<OverlayKey>? = null,
     ) {
-        check(force || isPaused) { "Can't unpause what's already not paused!" }
+        check(force || _isPaused) { "Can't unpause what's already not paused!" }
 
-        isPaused = false
-        pendingScene?.let { _currentScene.value = it }
-        pendingScene = null
+        _isPaused = false
+        _pendingScene?.let { _currentScene.value = it }
+        _pendingScene = null
+        pendingOverlays?.let { _currentOverlays.value = it }
+        pendingOverlays = null
 
         check(expectedScene == null || currentScene.value == expectedScene) {
             """
                 Unexpected scene while unpausing.
-                Expected $expectedScene but was $currentScene.
+                Expected $expectedScene but was ${currentScene.value}.
             """
                 .trimIndent()
+        }
+        check(expectedOverlays == null || expectedOverlays == currentOverlays.value) {
+            "Expected $expectedOverlays, but instead found overlays ${currentOverlays.value}."
         }
     }
 }

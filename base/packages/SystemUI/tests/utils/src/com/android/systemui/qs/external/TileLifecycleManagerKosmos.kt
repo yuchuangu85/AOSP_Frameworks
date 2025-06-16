@@ -24,8 +24,9 @@ import com.android.systemui.concurrency.fakeExecutor
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.qs.tiles.impl.custom.packageManagerAdapterFacade
 import com.android.systemui.util.mockito.mock
+import com.android.systemui.util.time.fakeSystemClock
 
-val Kosmos.tileLifecycleManagerFactory: TileLifecycleManager.Factory by
+var Kosmos.tileLifecycleManagerFactory: TileLifecycleManager.Factory by
     Kosmos.Fixture {
         TileLifecycleManager.Factory { intent, userHandle ->
             TileLifecycleManager(
@@ -39,6 +40,7 @@ val Kosmos.tileLifecycleManagerFactory: TileLifecycleManager.Factory by
                 activityManager,
                 mock(),
                 fakeExecutor,
+                fakeSystemClock,
             )
         }
     }

@@ -40,11 +40,11 @@ import com.android.systemui.keyguard.shared.model.FingerprintAuthenticationStatu
 import com.android.systemui.keyguard.shared.model.SuccessFingerprintAuthenticationStatus
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.phone.DozeServiceHost
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,14 +59,13 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onCompletion
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class SideFpsProgressBarViewModel
 @Inject
 constructor(
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     biometricStatusInteractor: BiometricStatusInteractor,
     deviceEntryFingerprintAuthInteractor: DeviceEntryFingerprintAuthInteractor,
     private val sfpsSensorInteractor: SideFpsSensorInteractor,

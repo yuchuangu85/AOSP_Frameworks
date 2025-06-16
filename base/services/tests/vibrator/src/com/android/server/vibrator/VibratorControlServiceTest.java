@@ -33,10 +33,10 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.pm.PackageManagerInternal;
 import android.frameworks.vibrator.ScaleParam;
 import android.frameworks.vibrator.VibrationParam;
@@ -45,6 +45,12 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Process;
 import android.os.test.TestLooper;
+import android.os.vibrator.Flags;
+import android.os.vibrator.VibrationConfig;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.util.SparseArray;
 
 import androidx.test.InstrumentationRegistry;
@@ -63,7 +69,6 @@ import org.mockito.junit.MockitoRule;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 public class VibratorControlServiceTest {
 
@@ -71,6 +76,8 @@ public class VibratorControlServiceTest {
 
     @Rule
     public MockitoRule rule = MockitoJUnit.rule();
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     @Mock private VibrationScaler mMockVibrationScaler;
     @Mock private PackageManagerInternal mPackageManagerInternalMock;
@@ -91,13 +98,15 @@ public class VibratorControlServiceTest {
         LocalServices.addService(PackageManagerInternal.class, mPackageManagerInternalMock);
 
         TestLooper testLooper = new TestLooper();
-        mVibrationSettings = new VibrationSettings(
-                ApplicationProvider.getApplicationContext(), new Handler(testLooper.getLooper()));
+        Context context = ApplicationProvider.getApplicationContext();
+        mVibrationSettings = new VibrationSettings(context, new Handler(testLooper.getLooper()),
+                new VibrationConfig(context.getResources()));
 
         mFakeVibratorController = new FakeVibratorController(mTestLooper.getLooper());
         mVibratorControlService = new VibratorControlService(
                 InstrumentationRegistry.getContext(), new VibratorControllerHolder(),
                 mMockVibrationScaler, mVibrationSettings, mStatsLoggerMock, mLock);
+        mFakeVibratorController.setVibratorControlService(mVibratorControlService);
     }
 
     @Test
@@ -123,7 +132,7 @@ public class VibratorControlServiceTest {
         mVibratorControlService.registerVibratorController(controller1);
         mVibratorControlService.unregisterVibratorController(controller2);
 
-        verifyZeroInteractions(mMockVibrationScaler);
+        verifyNoMoreInteractions(mMockVibrationScaler);
         assertThat(controller1.isLinkedToDeath).isTrue();
     }
 
@@ -177,7 +186,7 @@ public class VibratorControlServiceTest {
         verify(mStatsLoggerMock).logVibrationParamResponseIgnored();
         verifyNoMoreInteractions(mStatsLoggerMock);
 
-        verifyZeroInteractions(mMockVibrationScaler);
+        verifyNoMoreInteractions(mMockVibrationScaler);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -232,7 +241,7 @@ public class VibratorControlServiceTest {
                 mFakeVibratorController);
 
         verify(mStatsLoggerMock, never()).logVibrationParamScale(anyFloat());
-        verifyZeroInteractions(mMockVibrationScaler);
+        verifyNoMoreInteractions(mMockVibrationScaler);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -270,7 +279,7 @@ public class VibratorControlServiceTest {
                 mFakeVibratorController);
 
         verify(mStatsLoggerMock, never()).logVibrationParamScale(anyFloat());
-        verifyZeroInteractions(mMockVibrationScaler);
+        verifyNoMoreInteractions(mMockVibrationScaler);
     }
 
     @Test
@@ -280,10 +289,10 @@ public class VibratorControlServiceTest {
         CompletableFuture<Void> future =
                 mVibratorControlService.triggerVibrationParamsRequest(UID, USAGE_RINGTONE,
                         timeoutInMillis);
-        try {
-            future.orTimeout(timeoutInMillis, TimeUnit.MILLISECONDS).get();
-        } catch (Throwable ignored) {
-        }
+        mTestLooper.dispatchAll();
+
+        assertThat(future).isNotNull();
+        assertThat(future.isDone()).isTrue();
         assertThat(mFakeVibratorController.didRequestVibrationParams).isTrue();
         assertThat(mFakeVibratorController.requestVibrationType).isEqualTo(
                 ScaleParam.TYPE_RINGTONE);
@@ -313,6 +322,46 @@ public class VibratorControlServiceTest {
         for (int vibration : vibrations) {
             assertThat(mVibratorControlService.shouldRequestVibrationParams(vibration)).isFalse();
         }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_THROTTLE_VIBRATION_PARAMS_REQUESTS)
+    public void testRequestVibrationParams_withOngoingRequestAndSameUsage_returnOngoingFuture() {
+        int timeoutInMillis = 10;
+        mVibratorControlService.registerVibratorController(mFakeVibratorController);
+        CompletableFuture<Void> future =
+                mVibratorControlService.triggerVibrationParamsRequest(UID, USAGE_RINGTONE,
+                        timeoutInMillis);
+        CompletableFuture<Void> future2 =
+                mVibratorControlService.triggerVibrationParamsRequest(UID, USAGE_RINGTONE,
+                        timeoutInMillis);
+        mTestLooper.dispatchAll();
+
+        assertThat(future).isNotNull();
+        assertThat(future).isEqualTo(future2);
+        assertThat(future.isDone()).isTrue();
+        assertThat(mFakeVibratorController.requestVibrationParamsCounter).isEqualTo(1);
+    }
+
+    @Test
+    @RequiresFlagsDisabled(Flags.FLAG_THROTTLE_VIBRATION_PARAMS_REQUESTS)
+    public void testRequestVibrationParams_withOngoingRequestAndSameUsage_returnNewFuture() {
+        int timeoutInMillis = 10;
+        mVibratorControlService.registerVibratorController(mFakeVibratorController);
+        CompletableFuture<Void> future =
+                mVibratorControlService.triggerVibrationParamsRequest(UID, USAGE_RINGTONE,
+                        timeoutInMillis);
+        CompletableFuture<Void> future2 =
+                mVibratorControlService.triggerVibrationParamsRequest(UID, USAGE_RINGTONE,
+                        timeoutInMillis);
+        mTestLooper.dispatchAll();
+
+        assertThat(future).isNotNull();
+        assertThat(future2).isNotNull();
+        assertThat(future).isNotEqualTo(future2);
+        assertThat(future.isDone()).isTrue();
+        assertThat(future2.isDone()).isTrue();
+        assertThat(mFakeVibratorController.requestVibrationParamsCounter).isEqualTo(2);
     }
 
     private static int buildVibrationTypesMask(int... types) {

@@ -99,17 +99,20 @@ class MagnificationModeSwitch implements MagnificationGestureDetector.OnGestureL
         void onClick(int displayId);
     }
 
-    MagnificationModeSwitch(@UiContext Context context, ClickListener clickListener) {
-        this(context, createView(context), new SfVsyncFrameCallbackProvider(), clickListener);
+    MagnificationModeSwitch(@UiContext Context context, WindowManager windowManager,
+            ClickListener clickListener) {
+        this(context, windowManager, createView(context), new SfVsyncFrameCallbackProvider(),
+                clickListener);
     }
 
     @VisibleForTesting
-    MagnificationModeSwitch(Context context, @NonNull ImageView imageView,
-            SfVsyncFrameCallbackProvider sfVsyncFrameProvider, ClickListener clickListener) {
+    MagnificationModeSwitch(Context context, WindowManager windowManager,
+            @NonNull ImageView imageView, SfVsyncFrameCallbackProvider sfVsyncFrameProvider,
+            ClickListener clickListener) {
         mContext = context;
         mConfiguration = new Configuration(context.getResources().getConfiguration());
         mAccessibilityManager = mContext.getSystemService(AccessibilityManager.class);
-        mWindowManager = mContext.getSystemService(WindowManager.class);
+        mWindowManager = windowManager;
         mSfVsyncFrameProvider = sfVsyncFrameProvider;
         mClickListener = clickListener;
         mParams = createLayoutParams(context);
@@ -299,7 +302,7 @@ class MagnificationModeSwitch implements MagnificationGestureDetector.OnGestureL
         }
         if (mMagnificationMode != mode) {
             mMagnificationMode = mode;
-            mImageView.setImageResource(getIconResId(mMagnificationMode));
+            mImageView.setImageResource(getIconResId());
         }
         if (!mIsVisible) {
             onConfigurationChanged(mContext.getResources().getConfiguration());
@@ -449,7 +452,7 @@ class MagnificationModeSwitch implements MagnificationGestureDetector.OnGestureL
     }
 
     @VisibleForTesting
-    static int getIconResId(int mode) { // TODO(b/242233514): delete non used param
+    static int getIconResId() {
         return R.drawable.ic_open_in_new_window;
     }
 

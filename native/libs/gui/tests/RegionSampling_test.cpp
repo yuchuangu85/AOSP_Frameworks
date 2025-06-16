@@ -19,7 +19,7 @@
 
 #include <android/gui/BnRegionSamplingListener.h>
 #include <binder/ProcessState.h>
-#include <gui/AidlStatusUtil.h>
+#include <gui/AidlUtil.h>
 #include <gui/DisplayEventReceiver.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/Surface.h>
@@ -40,7 +40,7 @@ struct ChoreographerSync {
         std::unique_lock<decltype(mutex_)> lk(mutex_);
 
         auto check_event = [](auto const& ev) -> bool {
-            return ev.header.type == DisplayEventReceiver::DISPLAY_EVENT_VSYNC;
+            return ev.header.type == DisplayEventType::DISPLAY_EVENT_VSYNC;
         };
         DisplayEventReceiver::Event ev_;
         int evs = receiver_.getEvents(&ev_, 1);
@@ -180,7 +180,7 @@ protected:
     }
 
     void SetUp() override {
-        mSurfaceComposerClient = new SurfaceComposerClient;
+        mSurfaceComposerClient = sp<SurfaceComposerClient>::make();
         ASSERT_EQ(NO_ERROR, mSurfaceComposerClient->initCheck());
 
         mBackgroundLayer =

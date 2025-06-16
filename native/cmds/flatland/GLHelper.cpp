@@ -18,6 +18,7 @@
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <com_android_graphics_libgui_flags.h>
 #include <gui/SurfaceComposerClient.h>
 #include <ui/DisplayMode.h>
 
@@ -201,17 +202,13 @@ bool GLHelper::getShaderProgram(const char* name, GLuint* outPgm) {
 }
 
 bool GLHelper::createNamedSurfaceTexture(GLuint name, uint32_t w, uint32_t h,
-        sp<GLConsumer>* glConsumer, EGLSurface* surface) {
-    sp<IGraphicBufferProducer> producer;
-    sp<IGraphicBufferConsumer> consumer;
-    BufferQueue::createBufferQueue(&producer, &consumer);
-    sp<GLConsumer> glc = new GLConsumer(consumer, name,
-            GL_TEXTURE_EXTERNAL_OES, false, true);
+                                         sp<GLConsumer>* glConsumer, EGLSurface* surface) {
+    auto [glc, surf] = GLConsumer::create(name, GL_TEXTURE_EXTERNAL_OES, false, true);
     glc->setDefaultBufferSize(w, h);
-    producer->setMaxDequeuedBufferCount(2);
     glc->setConsumerUsageBits(GRALLOC_USAGE_HW_COMPOSER);
+    surf->setMaxDequeuedBufferCount(2);
+    sp<ANativeWindow> anw = surf;
 
-    sp<ANativeWindow> anw = new Surface(producer);
     EGLSurface s = eglCreateWindowSurface(mDisplay, mConfig, anw.get(), nullptr);
     if (s == EGL_NO_SURFACE) {
         fprintf(stderr, "eglCreateWindowSurface error: %#x\n", eglGetError());
@@ -244,7 +241,7 @@ bool GLHelper::createWindowSurface(uint32_t w, uint32_t h,
     status_t err;
 
     if (mSurfaceComposerClient == nullptr) {
-        mSurfaceComposerClient = new SurfaceComposerClient;
+        mSurfaceComposerClient = sp<SurfaceComposerClient>::make();
     }
     err = mSurfaceComposerClient->initCheck();
     if (err != NO_ERROR) {

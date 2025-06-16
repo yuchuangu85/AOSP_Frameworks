@@ -26,7 +26,6 @@ import static org.mockito.Mockito.when;
 
 import android.graphics.drawable.Icon;
 import android.os.Handler;
-import android.platform.test.annotations.EnableFlags;
 import android.view.KeyboardShortcutGroup;
 import android.view.KeyboardShortcutInfo;
 import android.view.WindowManager;
@@ -34,8 +33,8 @@ import android.view.WindowManager;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.systemui.Flags;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
 
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 
@@ -63,10 +62,13 @@ public class KeyboardShortcutListSearchTest extends SysuiTestCase {
     @Mock private BottomSheetDialog mBottomSheetDialog;
     @Mock WindowManager mWindowManager;
     @Mock Handler mHandler;
+    @Mock WindowManagerProvider mWindowManagerProvider;
 
     @Before
     public void setUp() {
-        mKeyboardShortcutListSearch = new KeyboardShortcutListSearch(mContext, mWindowManager);
+        when(mWindowManager.getApplicationLaunchKeyboardShortcuts(anyInt())).thenReturn(
+                new KeyboardShortcutGroup("", Collections.emptyList()));
+        mKeyboardShortcutListSearch = new KeyboardShortcutListSearch(mContext, mWindowManager, -1);
         mKeyboardShortcutListSearch.sInstance = mKeyboardShortcutListSearch;
         mKeyboardShortcutListSearch.mKeyboardShortcutsBottomSheetDialog = mBottomSheetDialog;
         mKeyboardShortcutListSearch.mContext = mContext;
@@ -77,7 +79,7 @@ public class KeyboardShortcutListSearchTest extends SysuiTestCase {
     public void toggle_isShowingTrue_instanceShouldBeNull() {
         when(mBottomSheetDialog.isShowing()).thenReturn(true);
 
-        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID);
+        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID, mWindowManagerProvider);
 
         assertThat(mKeyboardShortcutListSearch.sInstance).isNull();
     }
@@ -86,18 +88,17 @@ public class KeyboardShortcutListSearchTest extends SysuiTestCase {
     public void toggle_isShowingFalse_showKeyboardShortcuts() {
         when(mBottomSheetDialog.isShowing()).thenReturn(false);
 
-        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID);
+        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID, mWindowManagerProvider);
 
         verify(mWindowManager).requestAppKeyboardShortcuts(any(), anyInt());
         verify(mWindowManager).requestImeKeyboardShortcuts(any(), anyInt());
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_VALIDATE_KEYBOARD_SHORTCUT_HELPER_ICON_URI)
     public void requestAppKeyboardShortcuts_callback_sanitisesIcons() {
         KeyboardShortcutGroup group = createKeyboardShortcutGroupForIconTests();
 
-        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID);
+        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID, mWindowManagerProvider);
 
         ArgumentCaptor<WindowManager.KeyboardShortcutsReceiver> callbackCaptor =
                 ArgumentCaptor.forClass(WindowManager.KeyboardShortcutsReceiver.class);
@@ -112,11 +113,10 @@ public class KeyboardShortcutListSearchTest extends SysuiTestCase {
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_VALIDATE_KEYBOARD_SHORTCUT_HELPER_ICON_URI)
     public void requestImeKeyboardShortcuts_callback_sanitisesIcons() {
         KeyboardShortcutGroup group = createKeyboardShortcutGroupForIconTests();
 
-        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID);
+        mKeyboardShortcutListSearch.toggle(mContext, DEVICE_ID, mWindowManagerProvider);
 
         ArgumentCaptor<WindowManager.KeyboardShortcutsReceiver> callbackCaptor =
                 ArgumentCaptor.forClass(WindowManager.KeyboardShortcutsReceiver.class);

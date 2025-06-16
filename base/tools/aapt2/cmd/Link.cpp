@@ -57,6 +57,8 @@
 #include "java/ManifestClassGenerator.h"
 #include "java/ProguardRules.h"
 #include "link/FeatureFlagsFilter.h"
+#include "link/FlagDisabledResourceRemover.h"
+#include "link/FlaggedXmlVersioner.h"
 #include "link/Linkers.h"
 #include "link/ManifestFixer.h"
 #include "link/NoDefaultResourceRemover.h"
@@ -305,6 +307,7 @@ struct ResourceFileFlattenerOptions {
   OutputFormat output_format = OutputFormat::kApk;
   std::unordered_set<std::string> extensions_to_not_compress;
   std::optional<std::regex> regex_to_not_compress;
+  FeatureFlagValues feature_flag_values;
 };
 
 // A sampling of public framework resource IDs.
@@ -501,10 +504,19 @@ std::vector<std::unique_ptr<xml::XmlResource>> ResourceFileFlattener::LinkAndVer
   const ConfigDescription& config = file_op->config;
   ResourceEntry* entry = file_op->entry;
 
+  FlaggedXmlVersioner flagged_xml_versioner;
+  auto flag_split_resources = flagged_xml_versioner.Process(context_, doc);
+
+  std::vector<std::unique_ptr<xml::XmlResource>> final_resources;
   XmlCompatVersioner xml_compat_versioner(&rules_);
   const util::Range<ApiVersion> api_range{config.sdkVersion,
                                           FindNextApiVersionForConfig(entry, config)};
-  return xml_compat_versioner.Process(context_, doc, api_range);
+  for (auto& split_res : flag_split_resources) {
+    auto inner_resources = xml_compat_versioner.Process(context_, split_res.get(), api_range);
+    final_resources.insert(final_resources.end(), std::make_move_iterator(inner_resources.begin()),
+                           std::make_move_iterator(inner_resources.end()));
+  }
+  return final_resources;
 }
 
 ResourceFile::Type XmlFileTypeForOutputFormat(OutputFormat format) {
@@ -603,6 +615,8 @@ bool ResourceFileFlattener::Flatten(ResourceTable* table, IArchiveWriter* archiv
             file_op.xml_to_flatten->file.source = file_ref->GetSource();
             file_op.xml_to_flatten->file.name =
                 ResourceName(pkg->name, type->named_type, entry->name);
+            file_op.xml_to_flatten->file.uses_readwrite_feature_flags =
+                config_value->uses_readwrite_feature_flags;
           }
 
           // NOTE(adamlesinski): Explicitly construct a StringPiece here, or
@@ -635,6 +649,17 @@ bool ResourceFileFlattener::Flatten(ResourceTable* table, IArchiveWriter* archiv
             }
           }
 
+          FeatureFlagsFilterOptions flags_filter_options;
+          // Don't fail on unrecognized flags or flags without values as these flags might be
+          // defined and have a value by the time they are evaluated at runtime.
+          flags_filter_options.fail_on_unrecognized_flags = false;
+          flags_filter_options.flags_must_have_value = false;
+          flags_filter_options.remove_disabled_elements = true;
+          FeatureFlagsFilter flags_filter(options_.feature_flag_values, flags_filter_options);
+          if (!flags_filter.Consume(context_, file_op.xml_to_flatten.get())) {
+            return 1;
+          }
+
           std::vector<std::unique_ptr<xml::XmlResource>> versioned_docs =
               LinkAndVersionXmlFile(table, &file_op);
           if (versioned_docs.empty()) {
@@ -661,11 +686,14 @@ bool ResourceFileFlattener::Flatten(ResourceTable* table, IArchiveWriter* archiv
 
               // Update the output format of this XML file.
               file_ref->type = XmlFileTypeForOutputFormat(options_.output_format);
-              bool result = table->AddResource(NewResourceBuilder(file.name)
-                                                   .SetValue(std::move(file_ref), file.config)
-                                                   .SetAllowMangled(true)
-                                                   .Build(),
-                                               context_->GetDiagnostics());
+
+              bool result = table->AddResource(
+                  NewResourceBuilder(file.name)
+                      .SetValue(std::move(file_ref), file.config)
+                      .SetAllowMangled(true)
+                      .SetUsesReadWriteFeatureFlags(doc->file.uses_readwrite_feature_flags)
+                      .Build(),
+                  context_->GetDiagnostics());
               if (!result) {
                 return false;
               }
@@ -1565,7 +1593,10 @@ class Linker {
   // If the file path ends with .flata, .jar, .jack, or .zip the file is treated
   // as ZIP archive and the files within are merged individually.
   // Otherwise the file is processed on its own.
-  bool MergePath(const std::string& path, bool override) {
+  bool MergePath(std::string path, bool override) {
+    if (path.size() > 2 && util::StartsWith(path, "'") && util::EndsWith(path, "'")) {
+      path = path.substr(1, path.size() - 2);
+    }
     if (util::EndsWith(path, ".flata") || util::EndsWith(path, ".jar") ||
         util::EndsWith(path, ".jack") || util::EndsWith(path, ".zip")) {
       return MergeArchive(path, override);
@@ -1840,11 +1871,57 @@ class Linker {
     return validate(attr->value);
   }
 
+  class FlagDisabledStringVisitor : public DescendingValueVisitor {
+   public:
+    using DescendingValueVisitor::Visit;
+
+    explicit FlagDisabledStringVisitor(android::StringPool& string_pool)
+        : string_pool_(string_pool) {
+    }
+
+    void Visit(RawString* value) override {
+      value->value = string_pool_.MakeRef("");
+    }
+
+    void Visit(String* value) override {
+      value->value = string_pool_.MakeRef("");
+    }
+
+    void Visit(StyledString* value) override {
+      value->value = string_pool_.MakeRef(android::StyleString{{""}, {}});
+    }
+
+   private:
+    DISALLOW_COPY_AND_ASSIGN(FlagDisabledStringVisitor);
+    android::StringPool& string_pool_;
+  };
+
   // Writes the AndroidManifest, ResourceTable, and all XML files referenced by the ResourceTable
   // to the IArchiveWriter.
   bool WriteApk(IArchiveWriter* writer, proguard::KeepSet* keep_set, xml::XmlResource* manifest,
                 ResourceTable* table) {
     TRACE_CALL();
+
+    FlagDisabledStringVisitor visitor(table->string_pool);
+
+    for (auto& package : table->packages) {
+      for (auto& type : package->types) {
+        for (auto& entry : type->entries) {
+          for (auto& config_value : entry->values) {
+            if (config_value->value->GetFlagStatus() == FlagStatus::Disabled) {
+              config_value->value->Accept(&visitor);
+            }
+          }
+        }
+      }
+    }
+
+    if (!FlagDisabledResourceRemover{}.Consume(context_, table)) {
+      context_->GetDiagnostics()->Error(android::DiagMessage()
+                                        << "failed removing resources behind disabled flags");
+      return 1;
+    }
+
     const bool keep_raw_values = (context_->GetPackageType() == PackageType::kStaticLib)
                                  || options_.keep_raw_values;
     bool result = FlattenXml(context_, *manifest, kAndroidManifestPath, keep_raw_values,
@@ -1879,6 +1956,7 @@ class Linker {
         static_cast<bool>(options_.generate_proguard_rules_path);
     file_flattener_options.output_format = options_.output_format;
     file_flattener_options.do_not_fail_on_missing_resources = options_.merge_only;
+    file_flattener_options.feature_flag_values = options_.feature_flag_values;
 
     ResourceFileFlattener file_flattener(file_flattener_options, context_, keep_set);
     if (!file_flattener.Flatten(table, writer)) {
@@ -2331,18 +2409,18 @@ class Linker {
       return 1;
     };
 
+    if (options_.generate_java_class_path || options_.generate_text_symbols_path) {
+      if (!GenerateJavaClasses()) {
+        return 1;
+      }
+    }
+
     if (!WriteApk(archive_writer.get(), &proguard_keep_set, manifest_xml.get(), &final_table_)) {
       return 1;
     }
 
     if (!CopyAssetsDirsToApk(archive_writer.get())) {
       return 1;
-    }
-
-    if (options_.generate_java_class_path || options_.generate_text_symbols_path) {
-      if (!GenerateJavaClasses()) {
-        return 1;
-      }
     }
 
     if (!WriteProguardFile(options_.generate_proguard_rules_path, proguard_keep_set)) {
@@ -2588,6 +2666,10 @@ int LinkCommand::Action(const std::vector<std::string>& args) {
       // Audio/video extensions
       ".mpg", ".mpeg", ".mp4", ".m4a", ".m4v", ".3gp", ".3gpp", ".3g2", ".3gpp2", ".wma", ".wmv",
       ".webm", ".mkv"});
+
+  if (options_.no_compress_fonts) {
+    options_.extensions_to_not_compress.insert({".ttf", ".otf", ".ttc"});
+  }
 
   // Turn off auto versioning for static-libs.
   if (context.GetPackageType() == PackageType::kStaticLib) {

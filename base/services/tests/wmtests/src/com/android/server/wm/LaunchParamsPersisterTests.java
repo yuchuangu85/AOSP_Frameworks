@@ -30,7 +30,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 
 import android.content.ComponentName;
 import android.content.pm.PackageManagerInternal;
@@ -491,6 +491,21 @@ public class LaunchParamsPersisterTests extends WindowTestsBase {
 
         target.getLaunchParams(mTestTask, null, mResult);
 
+        assertTrue("Result should be empty.", mResult.isEmpty());
+    }
+
+    @Test
+    public void testAbortsLoadingWhenUserCleansUpBeforeLoadingFinishes() {
+        mTarget.saveTask(mTestTask);
+        mPersisterQueue.flush();
+
+        final LaunchParamsPersister target = new LaunchParamsPersister(mPersisterQueue, mSupervisor,
+                mUserFolderGetter);
+        target.onSystemReady();
+        target.onUnlockUser(TEST_USER_ID);
+        target.onCleanupUser(TEST_USER_ID);
+
+        target.getLaunchParams(mTestTask, null, mResult);
         assertTrue("Result should be empty.", mResult.isEmpty());
     }
 

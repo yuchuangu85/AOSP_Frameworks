@@ -35,22 +35,23 @@ import static android.view.WindowManager.LayoutParams.INVALID_WINDOW_TYPE;
 import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG;
+import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
 import static android.view.WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
 import static android.view.WindowManager.LayoutParams.TYPE_INPUT_METHOD;
 import static android.view.WindowManager.LayoutParams.TYPE_INPUT_METHOD_DIALOG;
+import static android.view.WindowManager.LayoutParams.TYPE_NOTIFICATION_SHADE;
 import static android.view.WindowManager.LayoutParams.TYPE_TOAST;
 import static android.view.flags.Flags.FLAG_SENSITIVE_CONTENT_APP_PROTECTION;
 import static android.window.DisplayAreaOrganizer.FEATURE_VENDOR_FIRST;
 
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.doAnswer;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doNothing;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.never;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
-import static com.android.server.wm.LetterboxConfiguration.LETTERBOX_BACKGROUND_APP_COLOR_BACKGROUND;
-import static com.android.server.wm.LetterboxConfiguration.LETTERBOX_BACKGROUND_APP_COLOR_BACKGROUND_FLOATING;
-import static com.android.server.wm.LetterboxConfiguration.LETTERBOX_BACKGROUND_SOLID_COLOR;
-import static com.android.server.wm.LetterboxConfiguration.LETTERBOX_BACKGROUND_WALLPAPER;
+import static com.android.server.wm.AppCompatConfiguration.LETTERBOX_BACKGROUND_APP_COLOR_BACKGROUND;
+import static com.android.server.wm.AppCompatConfiguration.LETTERBOX_BACKGROUND_APP_COLOR_BACKGROUND_FLOATING;
+import static com.android.server.wm.AppCompatConfiguration.LETTERBOX_BACKGROUND_SOLID_COLOR;
+import static com.android.server.wm.AppCompatConfiguration.LETTERBOX_BACKGROUND_WALLPAPER;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -69,36 +70,41 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.description;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.ActivityManager;
 import android.app.ActivityThread;
 import android.app.IApplicationThread;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Rect;
 import android.os.Binder;
-import android.os.Bundle;
 import android.os.IBinder;
 import android.os.InputConfig;
+import android.os.Parcel;
+import android.os.Parcelable;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
-import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.annotations.RequiresFlagsEnabled;
-import android.platform.test.flag.junit.CheckFlagsRule;
-import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.provider.Settings;
 import android.util.ArraySet;
 import android.util.MergedConfiguration;
 import android.view.ContentRecordingSession;
+import android.view.Display;
+import android.view.DisplayInfo;
 import android.view.IWindow;
-import android.view.IWindowSession;
 import android.view.InputChannel;
+import android.view.InputDevice;
 import android.view.InsetsSourceControl;
 import android.view.InsetsState;
-import android.view.Surface;
 import android.view.SurfaceControl;
 import android.view.View;
 import android.view.WindowInsets;
@@ -108,6 +114,7 @@ import android.view.WindowManagerGlobal;
 import android.view.WindowRelayoutResult;
 import android.window.ActivityWindowInfo;
 import android.window.ClientWindowFrames;
+import android.window.ConfigurationChangeSetting;
 import android.window.InputTransferToken;
 import android.window.ScreenCapture;
 import android.window.WindowContainerToken;
@@ -125,12 +132,15 @@ import com.android.window.flags.Flags;
 import com.google.common.truth.Expect;
 
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Build/Install/Run:
@@ -152,12 +162,15 @@ public class WindowManagerServiceTests extends WindowTestsBase {
     @Rule
     public Expect mExpect = Expect.create();
 
-    @Rule
-    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+    @Before
+    public void setUp() {
+        Settings.System.clearProviderForTest();
+    }
 
     @After
     public void tearDown() {
         mWm.mSensitiveContentPackages.clearBlockedApps();
+        Settings.System.clearProviderForTest();
     }
 
     @Test
@@ -255,84 +268,18 @@ public class WindowManagerServiceTests extends WindowTestsBase {
         final Session session = createTestSession(mAtm, wpc.getPid(), wpc.mUid);
         spyOn(session);
         assertTrue(session.mCanAddInternalSystemWindow);
-        final WindowSurfaceController winSurface = mock(WindowSurfaceController.class);
-        session.onWindowSurfaceVisibilityChanged(winSurface, true /* visible */,
-                LayoutParams.TYPE_PHONE);
+        final WindowState window = newWindowBuilder("win", LayoutParams.TYPE_PHONE).build();
+        session.onWindowSurfaceVisibilityChanged(window, true /* visible */);
         verify(session).setHasOverlayUi(true);
-        session.onWindowSurfaceVisibilityChanged(winSurface, false /* visible */,
-                LayoutParams.TYPE_PHONE);
+        session.onWindowSurfaceVisibilityChanged(window, false /* visible */);
         verify(session).setHasOverlayUi(false);
     }
 
     @Test
-    public void testRelayoutExitingWindow_legacy() {
-        mSetFlagsRule.disableFlags(Flags.FLAG_WINDOW_SESSION_RELAYOUT_INFO);
-
-        final WindowState win = createWindow(null, TYPE_BASE_APPLICATION, "appWin");
-        final WindowSurfaceController surfaceController = mock(WindowSurfaceController.class);
-        win.mWinAnimator.mSurfaceController = surfaceController;
-        win.mWinAnimator.mDrawState = WindowStateAnimator.HAS_DRAWN;
-        doReturn(true).when(surfaceController).hasSurface();
-        spyOn(win.mTransitionController);
-        doReturn(true).when(win.mTransitionController).isShellTransitionsEnabled();
-        doReturn(true).when(win.mTransitionController).inTransition(
-                eq(win.mActivityRecord));
-        win.mViewVisibility = View.VISIBLE;
-        win.mHasSurface = true;
-        win.mActivityRecord.mAppStopped = true;
-        mWm.mWindowMap.put(win.mClient.asBinder(), win);
-        spyOn(mWm.mWindowPlacerLocked);
-        // Skip unnecessary operations of relayout.
-        doNothing().when(mWm.mWindowPlacerLocked).performSurfacePlacement(anyBoolean());
-        final int w = 100;
-        final int h = 200;
-        final ClientWindowFrames outFrames = new ClientWindowFrames();
-        final MergedConfiguration outConfig = new MergedConfiguration();
-        final SurfaceControl outSurfaceControl = new SurfaceControl();
-        final InsetsState outInsetsState = new InsetsState();
-        final InsetsSourceControl.Array outControls = new InsetsSourceControl.Array();
-        final Bundle outBundle = new Bundle();
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.GONE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-        // The window is in transition, so its destruction is deferred.
-        assertTrue(win.mAnimatingExit);
-        assertFalse(win.mDestroying);
-        assertTrue(win.mTransitionController.mAnimatingExitWindows.contains(win));
-
-        win.mAnimatingExit = false;
-        win.mViewVisibility = View.VISIBLE;
-        win.mActivityRecord.setVisibleRequested(false);
-        win.mActivityRecord.setVisible(false);
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.GONE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-        // Because the window is already invisible, it doesn't need to apply exiting animation
-        // and WMS#tryStartExitingAnimation() will destroy the surface directly.
-        assertFalse(win.mAnimatingExit);
-        assertFalse(win.mHasSurface);
-        assertNull(win.mWinAnimator.mSurfaceController);
-
-        // Invisible requested activity should not get the last config even if its view is visible.
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.VISIBLE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-        assertEquals(0, outConfig.getMergedConfiguration().densityDpi);
-        // Non activity window can still get the last config.
-        win.mActivityRecord = null;
-        win.fillClientWindowFramesAndConfiguration(outFrames, outConfig,
-                null /* outActivityWindowInfo*/, false /* useLatestConfig */,
-                true /* relayoutVisible */);
-        assertEquals(win.getConfiguration().densityDpi,
-                outConfig.getMergedConfiguration().densityDpi);
-    }
-
-    @Test
     public void testRelayoutExitingWindow() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_WINDOW_SESSION_RELAYOUT_INFO);
-
-        final WindowState win = createWindow(null, TYPE_BASE_APPLICATION, "appWin");
-        final WindowSurfaceController surfaceController = mock(WindowSurfaceController.class);
-        win.mWinAnimator.mSurfaceController = surfaceController;
+        final WindowState win = newWindowBuilder("appWin", TYPE_BASE_APPLICATION).build();
         win.mWinAnimator.mDrawState = WindowStateAnimator.HAS_DRAWN;
-        doReturn(true).when(surfaceController).hasSurface();
+        win.mWinAnimator.mSurfaceControl = mock(SurfaceControl.class);
         spyOn(win.mTransitionController);
         doReturn(true).when(win.mTransitionController).isShellTransitionsEnabled();
         doReturn(true).when(win.mTransitionController).inTransition(
@@ -370,7 +317,7 @@ public class WindowManagerServiceTests extends WindowTestsBase {
         // and WMS#tryStartExitingAnimation() will destroy the surface directly.
         assertFalse(win.mAnimatingExit);
         assertFalse(win.mHasSurface);
-        assertNull(win.mWinAnimator.mSurfaceController);
+        assertNull(win.mWinAnimator.mSurfaceControl);
 
         // Invisible requested activity should not get the last config even if its view is visible.
         mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.VISIBLE, 0, 0, 0,
@@ -464,7 +411,7 @@ public class WindowManagerServiceTests extends WindowTestsBase {
             int startPrivateFlags, int newFlags, int newPrivateFlags, int expectedChangedFlags,
             int expectedChangedPrivateFlags, int expectedFlagsValue,
             int expectedPrivateFlagsValue) {
-        final WindowState win = createWindow(null, TYPE_BASE_APPLICATION, "appWin");
+        final WindowState win = newWindowBuilder("appWin", TYPE_BASE_APPLICATION).build();
         win.mRelayoutCalled = !firstRelayout;
         mWm.mWindowMap.put(win.mClient.asBinder(), win);
         spyOn(mDisplayContent.mDwpcHelper);
@@ -483,15 +430,8 @@ public class WindowManagerServiceTests extends WindowTestsBase {
             win.mRelayoutSeq = 1;
             seq = 2;
         }
-        if (Flags.windowSessionRelayoutInfo()) {
-            mWm.relayoutWindow(win.mSession, win.mClient, newParams, 100, 200, View.VISIBLE, 0, seq,
-                    0, new WindowRelayoutResult());
-        } else {
-            mWm.relayoutWindow(win.mSession, win.mClient, newParams, 100, 200, View.VISIBLE, 0, seq,
-                    0, new ClientWindowFrames(), new MergedConfiguration(),
-                    new SurfaceControl(), new InsetsState(), new InsetsSourceControl.Array(),
-                    new Bundle());
-        }
+        mWm.relayoutWindow(win.mSession, win.mClient, newParams, 100, 200, View.VISIBLE, 0, seq,
+                0, new WindowRelayoutResult());
 
         ArgumentCaptor<Integer> changedFlags = ArgumentCaptor.forClass(Integer.class);
         ArgumentCaptor<Integer> changedPrivateFlags = ArgumentCaptor.forClass(Integer.class);
@@ -604,7 +544,7 @@ public class WindowManagerServiceTests extends WindowTestsBase {
     public void testAddWindowWithSubWindowTypeByWindowContext() {
         spyOn(mWm.mWindowContextListenerController);
 
-        final WindowState parentWin = createWindow(null, TYPE_INPUT_METHOD, "ime");
+        final WindowState parentWin = newWindowBuilder("ime", TYPE_INPUT_METHOD).build();
         final IBinder parentToken = parentWin.mToken.token;
         parentWin.mAttrs.token = parentToken;
         mWm.mWindowMap.put(parentToken, parentWin);
@@ -628,6 +568,14 @@ public class WindowManagerServiceTests extends WindowTestsBase {
 
         verify(mWm.mWindowContextListenerController, never()).registerWindowContainerListener(any(),
                 any(), any(), anyInt(), any(), anyBoolean());
+
+        // Even if the given display id is INVALID_DISPLAY, the specified params.token should be
+        // able to map the corresponding display.
+        final int result = mWm.addWindow(
+                session, new TestIWindow(), params, View.VISIBLE, INVALID_DISPLAY,
+                UserHandle.USER_SYSTEM, WindowInsets.Type.defaultVisible(), null, new InsetsState(),
+                new InsetsSourceControl.Array(), new Rect(), new float[1]);
+        assertThat(result).isAtLeast(WindowManagerGlobal.ADD_OKAY);
 
         assertTrue(parentWin.hasChild());
         assertTrue(parentWin.isAttached());
@@ -1258,55 +1206,6 @@ public class WindowManagerServiceTests extends WindowTestsBase {
                 argThat(h -> (h.inputConfig & InputConfig.SENSITIVE_FOR_PRIVACY) != 0));
     }
 
-    @RequiresFlagsDisabled(Flags.FLAG_ALWAYS_DRAW_MAGNIFICATION_FULLSCREEN_BORDER)
-    @Test
-    public void testDrawMagnifiedViewport() {
-        final int displayId = mDisplayContent.mDisplayId;
-        // Use real surface, so ViewportWindow's BlastBufferQueue can be created.
-        final ArrayList<SurfaceControl> surfaceControls = new ArrayList<>();
-        mWm.mSurfaceControlFactory = s -> new SurfaceControl.Builder() {
-            @Override
-            public SurfaceControl build() {
-                final SurfaceControl sc = super.build();
-                surfaceControls.add(sc);
-                return sc;
-            }
-        };
-        mWm.mAccessibilityController.setMagnificationCallbacks(displayId,
-                mock(WindowManagerInternal.MagnificationCallbacks.class));
-        final boolean[] lockCanvasInWmLock = { false };
-        final Surface surface = mWm.mAccessibilityController.forceShowMagnifierSurface(displayId);
-        spyOn(surface);
-        doAnswer(invocationOnMock -> {
-            lockCanvasInWmLock[0] |= Thread.holdsLock(mWm.mGlobalLock);
-            invocationOnMock.callRealMethod();
-            return null;
-        }).when(surface).lockCanvas(any());
-        mWm.mAccessibilityController
-                .recomputeMagnifiedRegionAndDrawMagnifiedRegionBorderIfNeeded(displayId);
-        waitUntilHandlersIdle();
-        try {
-            verify(surface).lockCanvas(any());
-
-            clearInvocations(surface);
-            // Invalidate and redraw.
-            mWm.mAccessibilityController.onDisplaySizeChanged(mDisplayContent);
-            mWm.mAccessibilityController
-                    .recomputeMagnifiedRegionAndDrawMagnifiedRegionBorderIfNeeded(displayId);
-            // Turn off magnification to release surface.
-            mWm.mAccessibilityController.setMagnificationCallbacks(displayId, null);
-            waitUntilHandlersIdle();
-            // lockCanvas must not be called after releasing.
-            verify(surface, never()).lockCanvas(any());
-            verify(surface).release();
-            assertFalse(lockCanvasInWmLock[0]);
-        } finally {
-            for (int i = surfaceControls.size() - 1; i >= 0; --i) {
-                surfaceControls.get(i).release();
-            }
-        }
-    }
-
     @Test
     public void testRequestKeyboardShortcuts_noWindow() {
         doNothing().when(mWm.mContext).enforceCallingOrSelfPermission(anyString(), anyString());
@@ -1329,8 +1228,8 @@ public class WindowManagerServiceTests extends WindowTestsBase {
         final IWindow window = mock(IWindow.class);
         final IBinder binder = mock(IBinder.class);
         doReturn(binder).when(window).asBinder();
-        final WindowState windowState =
-                createWindow(null, TYPE_BASE_APPLICATION, mDisplayContent, "appWin", window);
+        final WindowState windowState = newWindowBuilder("appWin",
+                TYPE_BASE_APPLICATION).setDisplay(mDisplayContent).setClientWindow(window).build();
         doNothing().when(mWm.mContext).enforceCallingOrSelfPermission(anyString(), anyString());
         doReturn(windowState).when(mWm).getFocusedWindowLocked();
         doReturn(windowState).when(mWm.mRoot).getCurrentInputMethodWindow();
@@ -1339,6 +1238,47 @@ public class WindowManagerServiceTests extends WindowTestsBase {
         mWm.requestAppKeyboardShortcuts(receiver, 0);
         mWm.requestImeKeyboardShortcuts(receiver, 0);
         verify(window, times(2)).requestAppKeyboardShortcuts(receiver, 0);
+    }
+
+    @Test
+    public void testInputDeviceNotifyConfigurationChanged() {
+        spyOn(mDisplayContent);
+        doReturn(false).when(mDisplayContent).sendNewConfiguration();
+        final InputDevice deviceA = mock(InputDevice.class);
+        final InputDevice deviceB = mock(InputDevice.class);
+        doReturn("deviceA").when(deviceA).getDescriptor();
+        doReturn("deviceB").when(deviceB).getDescriptor();
+        final InputDevice[] devices1 = { deviceA };
+        final InputDevice[] devices2 = { deviceB, deviceA };
+        final Runnable verifySendNewConfiguration = () -> {
+            clearInvocations(mDisplayContent);
+            mWm.mInputManagerCallback.notifyConfigurationChanged();
+            verify(mDisplayContent).sendNewConfiguration();
+        };
+        doReturn(devices1).when(mWm.mInputManager).getInputDevices();
+        verifySendNewConfiguration.run();
+
+        doReturn(devices2).when(mWm.mInputManager).getInputDevices();
+        verifySendNewConfiguration.run();
+
+        doReturn(true).when(deviceB).isEnabled();
+        verifySendNewConfiguration.run();
+
+        doReturn(true).when(deviceA).isExternal();
+        verifySendNewConfiguration.run();
+
+        doReturn(1).when(deviceA).getSources();
+        verifySendNewConfiguration.run();
+
+        doReturn(1).when(deviceA).getAssociatedDisplayId();
+        verifySendNewConfiguration.run();
+
+        doReturn(1).when(deviceA).getKeyboardType();
+        verifySendNewConfiguration.run();
+
+        clearInvocations(mDisplayContent);
+        mWm.mInputManagerCallback.notifyConfigurationChanged();
+        verify(mDisplayContent, never()).sendNewConfiguration();
     }
 
     @Test
@@ -1364,71 +1304,7 @@ public class WindowManagerServiceTests extends WindowTestsBase {
     }
 
     @Test
-    public void testRelayout_appWindowSendActivityWindowInfo_legacy() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_ACTIVITY_WINDOW_INFO_FLAG);
-        mSetFlagsRule.disableFlags(Flags.FLAG_WINDOW_SESSION_RELAYOUT_INFO);
-
-        // Skip unnecessary operations of relayout.
-        spyOn(mWm.mWindowPlacerLocked);
-        doNothing().when(mWm.mWindowPlacerLocked).performSurfacePlacement(anyBoolean());
-
-        final Task task = createTask(mDisplayContent);
-        final WindowState win = createAppWindow(task, ACTIVITY_TYPE_STANDARD, "appWindow");
-        mWm.mWindowMap.put(win.mClient.asBinder(), win);
-
-        final int w = 100;
-        final int h = 200;
-        final ClientWindowFrames outFrames = new ClientWindowFrames();
-        final MergedConfiguration outConfig = new MergedConfiguration();
-        final SurfaceControl outSurfaceControl = new SurfaceControl();
-        final InsetsState outInsetsState = new InsetsState();
-        final InsetsSourceControl.Array outControls = new InsetsSourceControl.Array();
-        final Bundle outBundle = new Bundle();
-
-        final ActivityRecord activity = win.mActivityRecord;
-        final ActivityWindowInfo expectedInfo = new ActivityWindowInfo();
-        expectedInfo.set(true, new Rect(0, 0, 1000, 2000), new Rect(0, 0, 500, 2000));
-        doReturn(expectedInfo).when(activity).getActivityWindowInfo();
-        activity.setVisibleRequested(false);
-        activity.setVisible(false);
-
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.VISIBLE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-
-        // No latest reported value, so return empty when activity is invisible
-        final ActivityWindowInfo activityWindowInfo = outBundle.getParcelable(
-                IWindowSession.KEY_RELAYOUT_BUNDLE_ACTIVITY_WINDOW_INFO, ActivityWindowInfo.class);
-        assertEquals(new ActivityWindowInfo(), activityWindowInfo);
-
-        activity.setVisibleRequested(true);
-        activity.setVisible(true);
-
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.VISIBLE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-
-        // Report the latest when activity is visible.
-        final ActivityWindowInfo activityWindowInfo2 = outBundle.getParcelable(
-                IWindowSession.KEY_RELAYOUT_BUNDLE_ACTIVITY_WINDOW_INFO, ActivityWindowInfo.class);
-        assertEquals(expectedInfo, activityWindowInfo2);
-
-        expectedInfo.set(false, new Rect(0, 0, 1000, 2000), new Rect(0, 0, 1000, 2000));
-        activity.setVisibleRequested(false);
-        activity.setVisible(false);
-
-        mWm.relayoutWindow(win.mSession, win.mClient, win.mAttrs, w, h, View.VISIBLE, 0, 0, 0,
-                outFrames, outConfig, outSurfaceControl, outInsetsState, outControls, outBundle);
-
-        // Report the last reported value when activity is invisible.
-        final ActivityWindowInfo activityWindowInfo3 = outBundle.getParcelable(
-                IWindowSession.KEY_RELAYOUT_BUNDLE_ACTIVITY_WINDOW_INFO, ActivityWindowInfo.class);
-        assertEquals(activityWindowInfo2, activityWindowInfo3);
-    }
-
-    @Test
     public void testRelayout_appWindowSendActivityWindowInfo() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_ACTIVITY_WINDOW_INFO_FLAG);
-        mSetFlagsRule.enableFlags(Flags.FLAG_WINDOW_SESSION_RELAYOUT_INFO);
-
         // Skip unnecessary operations of relayout.
         spyOn(mWm.mWindowPlacerLocked);
         doNothing().when(mWm.mWindowPlacerLocked).performSurfacePlacement(anyBoolean());
@@ -1502,13 +1378,300 @@ public class WindowManagerServiceTests extends WindowTestsBase {
         assertThat(result).isEqualTo(WindowManagerGlobal.ADD_INVALID_DISPLAY);
     }
 
-    class TestResultReceiver implements IResultReceiver {
+    /** Mocks some deps to associate a display content to a specific display id. */
+    private void setupReparentWindowContextToDisplayAreaTest(WindowToken windowToken,
+            DisplayContent dc, int displayId) {
+        spyOn(mWm.mWindowContextListenerController);
+        doReturn(dc).when(mWm.mRoot).getDisplayContentOrCreate(displayId);
+        doReturn(true).when(mWm.mWindowContextListenerController).assertCallerCanReparentListener(
+                any(), anyBoolean(), anyInt(), eq(displayId));
+        doReturn(windowToken).when(mWm.mWindowContextListenerController).getContainer(
+                eq(windowToken.token));
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_FIX_HIDE_OVERLAY_API)
+    public void testUpdateOverlayWindows_singleWindowRequestsHiding_doNotHideOverlayWithSameUid() {
+        WindowState overlayWindow = newWindowBuilder("overlay_window",
+                TYPE_APPLICATION_OVERLAY).build();
+        WindowState appWindow = newWindowBuilder("app_window", TYPE_APPLICATION).build();
+        makeWindowVisible(appWindow, overlayWindow);
+
+        int uid = 100000;
+        spyOn(appWindow);
+        spyOn(overlayWindow);
+        doReturn(true).when(appWindow).hideNonSystemOverlayWindowsWhenVisible();
+        doReturn(uid).when(appWindow).getOwningUid();
+        doReturn(uid).when(overlayWindow).getOwningUid();
+
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(appWindow, true);
+
+        verify(overlayWindow).setForceHideNonSystemOverlayWindowIfNeeded(false);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_FIX_HIDE_OVERLAY_API)
+    public void testUpdateOverlayWindows_multipleWindowsRequestHiding_hideOverlaysWithAnyUids() {
+        WindowState overlayWindow = newWindowBuilder("overlay_window",
+                TYPE_APPLICATION_OVERLAY).build();
+        WindowState appWindow1 = newWindowBuilder("app_window_1", TYPE_APPLICATION).build();
+        WindowState appWindow2 = newWindowBuilder("app_window_2", TYPE_APPLICATION).build();
+        makeWindowVisible(appWindow1, appWindow2, overlayWindow);
+
+        int uid1 = 100000;
+        int uid2 = 100001;
+        spyOn(appWindow1);
+        spyOn(appWindow2);
+        spyOn(overlayWindow);
+        doReturn(true).when(appWindow1).hideNonSystemOverlayWindowsWhenVisible();
+        doReturn(true).when(appWindow2).hideNonSystemOverlayWindowsWhenVisible();
+        doReturn(uid1).when(appWindow1).getOwningUid();
+        doReturn(uid1).when(overlayWindow).getOwningUid();
+        doReturn(uid2).when(appWindow2).getOwningUid();
+
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(appWindow1, true);
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(appWindow2, true);
+
+        verify(overlayWindow).setForceHideNonSystemOverlayWindowIfNeeded(true);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_FIX_HIDE_OVERLAY_API)
+    public void testUpdateOverlayWindows_multipleWindowsFromSameUid_idempotent() {
+        // Deny INTERNAL_SYSTEM_WINDOW permission for WindowSession so that the saw isn't allowed to
+        // show despite hideNonSystemOverlayWindows.
+        doReturn(PackageManager.PERMISSION_DENIED).when(mWm.mContext).checkPermission(
+                eq(android.Manifest.permission.INTERNAL_SYSTEM_WINDOW), anyInt(), anyInt());
+
+        WindowState saw =
+                newWindowBuilder("saw", TYPE_APPLICATION_OVERLAY).setOwnerId(10123).build();
+        saw.mWinAnimator.mDrawState = WindowStateAnimator.HAS_DRAWN;
+        saw.mWinAnimator.mSurfaceControl = mock(SurfaceControl.class);
+        assertThat(saw.mSession.mCanAddInternalSystemWindow).isFalse();
+
+        WindowState app1 = newWindowBuilder("app1", TYPE_APPLICATION).setOwnerId(10456).build();
+        spyOn(app1);
+        doReturn(true).when(app1).hideNonSystemOverlayWindowsWhenVisible();
+
+        WindowState app2 = newWindowBuilder("app2", TYPE_APPLICATION).setOwnerId(10456).build();
+        spyOn(app2);
+        doReturn(true).when(app2).hideNonSystemOverlayWindowsWhenVisible();
+
+        makeWindowVisible(saw, app1, app2);
+        assertThat(saw.isVisibleByPolicy()).isTrue();
+
+        // Two hideNonSystemOverlayWindows windows: SAW is hidden.
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(app1, true);
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(app2, true);
+        assertThat(saw.isVisibleByPolicy()).isFalse();
+
+        // Marking the same window hidden twice: SAW is still hidden.
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(app1, false);
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(app1, false);
+        assertThat(saw.isVisibleByPolicy()).isFalse();
+
+        // Marking the remaining window hidden: SAW can be shown again.
+        mWm.updateNonSystemOverlayWindowsVisibilityIfNeeded(app2, false);
+        assertThat(saw.isVisibleByPolicy()).isTrue();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_REPARENT_WINDOW_TOKEN_API)
+    public void reparentWindowContextToDisplayArea_newDisplay_reparented() {
+        final WindowToken windowToken = createTestClientWindowToken(TYPE_NOTIFICATION_SHADE,
+                mDisplayContent);
+        final int newDisplayId = 1;
+        final DisplayContent dc = createNewDisplay();
+        setupReparentWindowContextToDisplayAreaTest(windowToken, dc, newDisplayId);
+
+        assertThat(windowToken.getDisplayContent()).isEqualTo(mDisplayContent);
+
+        assertThat(mWm.reparentWindowContextToDisplayArea(mAppThread, windowToken.token,
+                newDisplayId)).isTrue();
+
+        assertThat(windowToken.getDisplayContent()).isNotEqualTo(mDisplayContent);
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_REPARENT_WINDOW_TOKEN_API)
+    public void reparentWindowContextToDisplayArea_newDisplayButFlagDisabled_notReparented() {
+        final WindowToken windowToken = createTestClientWindowToken(TYPE_NOTIFICATION_SHADE,
+                mDisplayContent);
+        final int newDisplayId = 1;
+        final DisplayContent dc = createNewDisplay();
+        setupReparentWindowContextToDisplayAreaTest(windowToken, dc, newDisplayId);
+
+        assertThat(mWm.reparentWindowContextToDisplayArea(mAppThread, windowToken.token,
+                newDisplayId)).isFalse();
+
+        assertThat(windowToken.getDisplayContent()).isEqualTo(mDisplayContent);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_REPARENT_WINDOW_TOKEN_API)
+    public void reparentWindowContext_afterReparent_DCNeedsLayout() {
+        final WindowToken windowToken = createTestClientWindowToken(TYPE_NOTIFICATION_SHADE,
+                mDisplayContent);
+        final int newDisplayId = 1;
+        final DisplayContent dc = createNewDisplay();
+        setupReparentWindowContextToDisplayAreaTest(windowToken, dc, newDisplayId);
+
+        assertThat(mWm.reparentWindowContextToDisplayArea(mAppThread, windowToken.token,
+                newDisplayId)).isTrue();
+
+        assertThat(dc.isLayoutNeeded()).isTrue();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_REPARENT_WINDOW_TOKEN_API)
+    public void reparentWindowContext_afterReparent_traversalScheduled() {
+        final WindowToken windowToken = createTestClientWindowToken(TYPE_NOTIFICATION_SHADE,
+                mDisplayContent);
+        final int newDisplayId = 1;
+        final DisplayContent dc = createNewDisplay();
+        setupReparentWindowContextToDisplayAreaTest(windowToken, dc, newDisplayId);
+        spyOn(mWm.mWindowPlacerLocked);
+        reset(mWm.mWindowPlacerLocked);
+
+        verify(mWm.mWindowPlacerLocked, never()).requestTraversal();
+
+        assertThat(mWm.reparentWindowContextToDisplayArea(mAppThread, windowToken.token,
+                newDisplayId)).isTrue();
+
+        verify(mWm.mWindowPlacerLocked).requestTraversal();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_CONDENSE_CONFIGURATION_CHANGE_FOR_SIMPLE_MODE)
+    public void createImplFromParcel_invalidSettingType_throwsException() {
+        final Parcelable.Creator<ConfigurationChangeSetting> creator =
+                new ConfigurationChangeSetting.CreatorImpl(true /* isSystem */);
+        final Parcel parcel = Parcel.obtain();
+        try {
+            parcel.writeInt(ConfigurationChangeSetting.SETTING_TYPE_UNKNOWN);
+            parcel.setDataPosition(0);
+
+            assertThrows(IllegalArgumentException.class, () -> {
+                creator.createFromParcel(parcel);
+            });
+        } finally {
+            parcel.recycle();
+        }
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_CONDENSE_CONFIGURATION_CHANGE_FOR_SIMPLE_MODE)
+    public void setConfigurationChangeSettingsForUser_createsFromParcel_callsSettingImpl()
+            throws Settings.SettingNotFoundException {
+        final int currentUserId = ActivityManager.getCurrentUser();
+        final int forcedDensity = 400;
+        final float forcedFontScaleFactor = 1.15f;
+        final Parcelable.Creator<ConfigurationChangeSetting> creator =
+                new ConfigurationChangeSetting.CreatorImpl(true /* isSystem */);
+        final List<ConfigurationChangeSetting> settings = Stream.of(
+                // Display Size
+                new ConfigurationChangeSetting.DensitySetting(DEFAULT_DISPLAY, forcedDensity),
+                // Font Size
+                new ConfigurationChangeSetting.FontScaleSetting(forcedFontScaleFactor)
+        ).map(setting -> simulateIpcTransfer(setting, creator)).toList();
+
+        mWm.setConfigurationChangeSettingsForUser(settings, UserHandle.USER_CURRENT);
+
+        verify(mDisplayContent).setForcedDensity(forcedDensity, currentUserId);
+        assertEquals(forcedFontScaleFactor, Settings.System.getFloat(
+                mContext.getContentResolver(), Settings.System.FONT_SCALE), 0.1f /* delta */);
+        verify(mAtm).updateFontScaleIfNeeded(currentUserId);
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_CONDENSE_CONFIGURATION_CHANGE_FOR_SIMPLE_MODE)
+    public void setConfigurationChangeSettingsForUser_flagDisabled_throwsException() {
+        final List<ConfigurationChangeSetting> settings = List.of();
+
+        assertThrows(IllegalStateException.class, () -> {
+            mWm.setConfigurationChangeSettingsForUser(settings, UserHandle.USER_CURRENT);
+        });
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_PERSISTING_DISPLAY_SIZE_FOR_CONNECTED_DISPLAYS)
+    public void setForcedDisplayDensityRatio_forExternalDisplay_setsRatio() {
+        final DisplayInfo displayInfo = new DisplayInfo(mDisplayInfo);
+        displayInfo.displayId = DEFAULT_DISPLAY + 1;
+        displayInfo.type = Display.TYPE_EXTERNAL;
+        displayInfo.logicalDensityDpi = 100;
+        mDisplayContent = createNewDisplay(displayInfo);
+        final int currentUserId = ActivityManager.getCurrentUser();
+        final float forcedDensityRatio = 2f;
+
+        mWm.setForcedDisplayDensityRatio(displayInfo.displayId, forcedDensityRatio,
+                currentUserId);
+
+        verify(mDisplayContent).setForcedDensityRatio(forcedDensityRatio,
+                currentUserId);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_PERSISTING_DISPLAY_SIZE_FOR_CONNECTED_DISPLAYS)
+    public void setForcedDisplayDensityRatio_forInternalDisplay_setsRatio() {
+        final DisplayInfo displayInfo = new DisplayInfo(mDisplayInfo);
+        displayInfo.displayId = DEFAULT_DISPLAY + 1;
+        displayInfo.type = Display.TYPE_INTERNAL;
+        mDisplayContent = createNewDisplay(displayInfo);
+        final int currentUserId = ActivityManager.getCurrentUser();
+        final float forcedDensityRatio = 2f;
+
+        mWm.setForcedDisplayDensityRatio(displayInfo.displayId, forcedDensityRatio,
+                currentUserId);
+
+        verify(mDisplayContent).setForcedDensityRatio(forcedDensityRatio,
+                currentUserId);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_PERSISTING_DISPLAY_SIZE_FOR_CONNECTED_DISPLAYS)
+    public void clearForcedDisplayDensityRatio_clearsRatioAndDensity() {
+        final DisplayInfo displayInfo = new DisplayInfo(mDisplayInfo);
+        displayInfo.displayId = DEFAULT_DISPLAY + 1;
+        displayInfo.type = Display.TYPE_INTERNAL;
+        mDisplayContent = createNewDisplay(displayInfo);
+        final int currentUserId = ActivityManager.getCurrentUser();
+
+        mWm.clearForcedDisplayDensityForUser(displayInfo.displayId, currentUserId);
+
+        verify(mDisplayContent).setForcedDensityRatio(0.0f,
+                currentUserId);
+
+        assertEquals(mDisplayContent.mBaseDisplayDensity,
+                mDisplayContent.getInitialDisplayDensity());
+        assertEquals(mDisplayContent.mForcedDisplayDensityRatio, 0.0f, 0.001);
+    }
+
+    /**
+     * Simulates IPC transfer by writing the setting to a parcel and reading it back.
+     *
+     * @param setting the setting to transfer.
+     * @param creator the creator to use for reconstructing the setting from the parcel.
+     * @return a new instance of the setting created from the parcel.
+     */
+    private static <T extends ConfigurationChangeSetting> T simulateIpcTransfer(
+            T setting, Parcelable.Creator<T> creator) {
+        final Parcel parcel = Parcel.obtain();
+        try {
+            setting.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            return creator.createFromParcel(parcel);
+        } finally {
+            parcel.recycle();
+        }
+    }
+
+    private static class TestResultReceiver implements IResultReceiver {
         public android.os.Bundle resultData;
         private final IBinder mBinder = mock(IBinder.class);
 
         @Override
-        public void send(int resultCode, android.os.Bundle resultData)
-                throws android.os.RemoteException {
+        public void send(int resultCode, android.os.Bundle resultData) {
             this.resultData = resultData;
         }
 
@@ -1529,8 +1692,8 @@ public class WindowManagerServiceTests extends WindowTestsBase {
     }
 
     private boolean setupLetterboxConfigurationWithBackgroundType(
-            @LetterboxConfiguration.LetterboxBackgroundType int letterboxBackgroundType) {
-        mWm.mLetterboxConfiguration.setLetterboxBackgroundTypeOverride(letterboxBackgroundType);
+            @AppCompatConfiguration.LetterboxBackgroundType int letterboxBackgroundType) {
+        mWm.mAppCompatConfiguration.setLetterboxBackgroundTypeOverride(letterboxBackgroundType);
         return mWm.isLetterboxBackgroundMultiColored();
     }
 }

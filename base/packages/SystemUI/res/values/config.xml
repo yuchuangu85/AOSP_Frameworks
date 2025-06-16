@@ -25,9 +25,6 @@
      (package/class)  -->
     <string name="config_recentsComponent" translatable="false">com.android.systemui.recents.OverviewProxyRecentsImpl</string>
 
-    <!-- Whether or not we show the number in the bar. -->
-    <bool name="config_statusBarShowNumber">false</bool>
-
     <!-- For how long the lock screen can be on before the display turns off. -->
     <integer name="config_lockScreenDisplayTimeout">10000</integer>
 
@@ -73,8 +70,23 @@
     <!-- The number of rows in the QuickSettings -->
     <integer name="quick_settings_max_rows">4</integer>
 
+    <!-- The number of rows in the paginated grid QuickSettings -->
+    <integer name="quick_settings_paginated_grid_num_rows">4</integer>
+
+    <!-- The number of rows in the paginated grid QuickQuickSettings -->
+    <integer name="quick_qs_paginated_grid_num_rows">2</integer>
+
     <!-- The number of columns in the infinite grid QuickSettings -->
     <integer name="quick_settings_infinite_grid_num_columns">4</integer>
+
+    <!-- The maximum width of large tiles in the infinite grid QuickSettings -->
+    <integer name="quick_settings_infinite_grid_tile_max_width">4</integer>
+
+    <!-- The number of columns in the Dual Shade QuickSettings -->
+    <integer name="quick_settings_dual_shade_num_columns">4</integer>
+
+    <!-- The number of columns in the Split Shade QuickSettings -->
+    <integer name="quick_settings_split_shade_num_columns">4</integer>
 
     <!-- Override column number for quick settings.
     For now, this value has effect only when flag lockscreen.enable_landscape is enabled.
@@ -85,10 +97,6 @@
     For now, this value has effect only when flag lockscreen.enable_landscape is enabled.
     TODO (b/293252410) - change this comment/resource when flag is enabled -->
     <integer name="small_land_lockscreen_quick_settings_max_rows">2</integer>
-
-    <!-- If the dp width of the available space is <= this value, potentially adjust the number
-         of media recommendation items-->
-    <integer name="default_qs_media_rec_width_dp">380</integer>
 
     <!-- The number of columns that the top level tiles span in the QuickSettings -->
 
@@ -107,7 +115,7 @@
 
     <!-- Tiles native to System UI. Order should match "quick_settings_tiles_default" -->
     <string name="quick_settings_tiles_stock" translatable="false">
-        internet,bt,flashlight,dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,dream,font_scaling,record_issue,hearing_devices
+        internet,bt,flashlight,dnd,modes_dnd,alarm,airplane,controls,wallet,rotation,battery,cast,screenrecord,mictoggle,cameratoggle,location,hotspot,inversion,saver,dark,work,night,reverse,reduce_brightness,qr_code_scanner,onehanded,color_correction,dream,font_scaling,record_issue,hearing_devices,notes,desktopeffects
     </string>
 
     <!-- The tiles to display in QuickSettings -->
@@ -128,17 +136,19 @@
     <!-- Use collapsed layout for media player in landscape QQS -->
     <bool name="config_quickSettingsMediaLandscapeCollapsed">true</bool>
 
-    <!-- For hearing devices related tool list. Need to be in ComponentName format (package/class).
-         Should be activity to be launched.
-         Already contains tool that holds intent: "com.android.settings.action.live_caption".
-         Maximum number is 3. -->
+    <!-- Hearing devices related tool list. Each entry must be in ComponentName format
+         (package/class), indicating the specific application component to launch.
+         Already contains tool that handles intent: "com.android.settings.action.live_caption" by
+         default. You can add up to 2 additional related tools. -->
     <string-array name="config_quickSettingsHearingDevicesRelatedToolName" translatable="false">
     </string-array>
 
-    <!-- The drawable resource names. If provided, it will replace the corresponding icons in
-         config_quickSettingsHearingDevicesRelatedToolName. Can be empty to use original icons.
-         Already contains tool that holds intent: "com.android.settings.action.live_caption".
-         Maximum number is 3. -->
+    <!-- Hearing devices related tool icon list. Provide drawable resource names in the same order
+         as the component names in config_quickSettingsHearingDevicesRelatedToolName. The icons
+         should be monochrome and will be tinted according to the system's material color. Ensure
+         the number of icon resources matches the number of components specified in
+         config_quickSettingsHearingDevicesRelatedToolName. If this array is empty or the sizes
+         don't match, the original application icons will be used. -->
     <string-array name="config_quickSettingsHearingDevicesRelatedToolIcon" translatable="false">
     </string-array>
 
@@ -157,6 +167,12 @@
 
     <!-- Minimum display time for a heads up notification, in milliseconds. -->
     <integer name="heads_up_notification_minimum_time">2000</integer>
+
+    <!-- Minimum display time for a heads up notification if throttling is enabled, in milliseconds. -->
+    <integer name="heads_up_notification_minimum_time_with_throttling">500</integer>
+
+    <!-- Minimum display time for a heads up notification that was shown from a user action (like tapping on a different part of the UI), in milliseconds. -->
+    <integer name="heads_up_notification_minimum_time_for_user_initiated">3000</integer>
 
     <!-- Display time for a sticky heads up notification, in milliseconds. -->
     <integer name="sticky_heads_up_notification_time">60000</integer>
@@ -290,7 +306,8 @@
     <integer name="doze_small_icon_alpha">222</integer><!-- 87% of 0xff -->
 
     <!-- Doze: Table that translates sensor values from the doze_brightness_sensor_type sensor
-               to brightness values; -1 means keeping the current brightness. -->
+               to brightness values in the integer scale [1, 255]; -1 means keeping the current
+               brightness. -->
     <integer-array name="config_doze_brightness_sensor_to_brightness">
         <item>-1</item> <!-- 0: OFF -->
         <item>2</item> <!-- 1: NIGHT -->
@@ -325,6 +342,9 @@
 
     <!-- Whether to show the full screen user switcher. -->
     <bool name="config_enableFullscreenUserSwitcher">false</bool>
+
+    <!-- Whether to go to the launcher when unlocking via an occluding app -->
+    <bool name="config_goToHomeFromOccludedApps">false</bool>
 
     <!-- Determines whether the shell features all run on another thread. -->
     <bool name="config_enableShellMainThread">true</bool>
@@ -367,6 +387,10 @@
 
     <!-- Whether to show activity indicators in the status bar -->
     <bool name="config_showActivity">false</bool>
+
+    <!-- Whether to show the opportunistic satellite icon. When true, an icon will show to indicate
+         satellite capabilities when all other connections are out of service. -->
+    <bool name="config_showOpportunisticSatelliteIcon">true</bool>
 
     <!-- Whether or not to show the notification shelf that houses the icons of notifications that
      have been scrolled off-screen. -->
@@ -473,7 +497,16 @@
     <!-- Smartspace trampoline activity that is used when the user taps smartspace. -->
     <string name="config_smartspaceTrampolineActivityComponent" translatable="false">com.google.android.apps.gsa.staticplugins.opa.smartspace.ExportedSmartspaceTrampolineActivity</string>
 
-    <!-- Screenshot editing default activity.  Must handle ACTION_EDIT image/png intents.
+    <!-- Screenshot editing default activity. Will only be used if the provided component exists and
+      is enabled.
+
+      Must handle ACTION_EDIT image/png intents.
+      Blank falls back to config_screenshotEditor.
+      This name is in the ComponentName flattened format (package/class)  -->
+    <string name="config_preferredScreenshotEditor" translatable="false"></string>
+
+    <!-- Screenshot editing activity used if config_preferredScreenshotEditor is not available.
+     Must handle ACTION_EDIT image/png intents.
          Blank sends the user to the Chooser first.
          This name is in the ComponentName flattened format (package/class)  -->
     <string name="config_screenshotEditor" translatable="false"></string>
@@ -483,6 +516,12 @@
          screenshot has been saved to a different profile (e.g. work profile). If blank, a default
          icon will be shown. -->
     <string name="config_screenshotFilesApp" translatable="false"></string>
+
+    <!-- Recommends a UI mode for the default note-taking app when launched with
+         android.content.Intent#ACTION_CREATE_NOTE
+         0: No UI recommendation. The note app should use its default mode
+         1: Recommend a UI optimized for stylus input. -->
+    <integer name="config_preferredNotesMode">1</integer>
 
     <!-- The component name of the screenshot editing activity that provides the App Clips flow.
          The App Clips flow includes taking a screenshot, showing user screenshot cropping activity
@@ -728,6 +767,10 @@
           translatable="false" format="float" type="dimen">
         .75
     </item>
+
+    <!-- The last x ms of face acquired info messages to analyze to determine
+         whether to show a deferred face auth help message. -->
+    <integer name="config_face_help_msgs_defer_analyze_timeframe">500</integer>
 
     <!-- Which face help messages to surface when fingerprint is also enrolled.
          Message ids correspond with the acquired ids in BiometricFaceConstants -->
@@ -1049,4 +1092,36 @@
 
     <!-- The width of the shortcut helper container, as a fraction of the screen's width. -->
     <item name="shortcut_helper_screen_width_fraction" format="float" type="dimen">1.0</item>
+
+    <!-- List of packages for which we want to use activity info (instead of application info) for biometric prompt logo. Empty for AOSP. [DO NOT TRANSLATE] -->
+    <string-array name="config_useActivityLogoForBiometricPrompt" translatable="false"/>
+
+    <!--
+    Whether to enable the desktop specific feature set.
+
+    Refrain from using this from code that needs to make decisions
+    regarding the size or density of the display.
+
+    Variant owners and OEMs should override this to true when they want to
+    enable the desktop specific features.
+    -->
+    <bool name="config_enableDesktopFeatureSet">false</bool>
+
+    <!--
+    Whether the user switching can only happen by logging out and going through the system user (login screen).
+    -->
+    <bool name="config_userSwitchingMustGoThroughLoginScreen">false</bool>
+
+    <!-- The dream component used when the device is low light environment. -->
+    <string translatable="false" name="config_lowLightDreamComponent"/>
+
+    <!-- Configuration for wallpaper focal area -->
+    <bool name="center_align_focal_area_shape">false</bool>
+    <string name="focal_area_target" translatable="false" />
+
+    <!-- Configuration to swipe to open glanceable hub -->
+    <bool name="config_swipeToOpenGlanceableHub">false</bool>
+
+    <!-- Whether or not to show the UMO on the glanceable hub when media is playing. -->
+    <bool name="config_showUmoOnHub">false</bool>
 </resources>

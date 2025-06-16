@@ -21,6 +21,7 @@ import android.app.Service;
 import android.app.backup.BackupManager;
 import android.content.Context;
 import android.service.dreams.IDreamManager;
+import android.view.Display;
 
 import androidx.annotation.Nullable;
 
@@ -31,9 +32,9 @@ import com.android.systemui.BootCompleteCache;
 import com.android.systemui.BootCompleteCacheImpl;
 import com.android.systemui.CameraProtectionModule;
 import com.android.systemui.CoreStartable;
+import com.android.systemui.KairosCoreStartableModule;
 import com.android.systemui.SystemUISecondaryUserService;
-import com.android.systemui.accessibility.AccessibilityModule;
-import com.android.systemui.accessibility.data.repository.AccessibilityRepositoryModule;
+import com.android.systemui.activity.ActivityManagerModule;
 import com.android.systemui.ambient.dagger.AmbientModule;
 import com.android.systemui.appops.dagger.AppOpsModule;
 import com.android.systemui.assist.AssistModule;
@@ -50,8 +51,12 @@ import com.android.systemui.brightness.dagger.ScreenBrightnessModule;
 import com.android.systemui.classifier.FalsingModule;
 import com.android.systemui.clipboardoverlay.dagger.ClipboardOverlayModule;
 import com.android.systemui.common.data.CommonDataLayerModule;
+import com.android.systemui.common.ui.ConfigurationModule;
+import com.android.systemui.common.ui.data.repository.ConfigurationRepositoryModule;
+import com.android.systemui.common.usagestats.data.CommonUsageStatsDataLayerModule;
 import com.android.systemui.communal.dagger.CommunalModule;
 import com.android.systemui.complication.dagger.ComplicationComponent;
+import com.android.systemui.compose.ComposeModule;
 import com.android.systemui.controls.dagger.ControlsModule;
 import com.android.systemui.dagger.qualifiers.Application;
 import com.android.systemui.dagger.qualifiers.Main;
@@ -60,40 +65,48 @@ import com.android.systemui.dagger.qualifiers.UiBackground;
 import com.android.systemui.demomode.dagger.DemoModeModule;
 import com.android.systemui.deviceentry.DeviceEntryModule;
 import com.android.systemui.display.DisplayModule;
+import com.android.app.displaylib.PerDisplayRepository;
+import com.android.systemui.display.dagger.SystemUIDisplaySubcomponent;
 import com.android.systemui.doze.dagger.DozeComponent;
 import com.android.systemui.dreams.dagger.DreamModule;
-import com.android.systemui.dump.DumpManager;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.flags.FlagDependenciesModule;
 import com.android.systemui.flags.FlagsModule;
+import com.android.systemui.haptics.msdl.dagger.MSDLModule;
 import com.android.systemui.inputmethod.InputMethodModule;
 import com.android.systemui.keyboard.KeyboardModule;
 import com.android.systemui.keyevent.data.repository.KeyEventRepositoryModule;
+import com.android.systemui.keyguard.data.quickaffordance.KeyguardDataQuickAffordanceModule;
+import com.android.systemui.keyguard.shared.quickaffordance.KeyguardQuickAffordancesMetricsLogger;
+import com.android.systemui.keyguard.shared.quickaffordance.KeyguardQuickAffordancesMetricsLoggerImpl;
 import com.android.systemui.keyguard.ui.composable.LockscreenContent;
 import com.android.systemui.log.dagger.LogModule;
 import com.android.systemui.log.dagger.MonitorLog;
 import com.android.systemui.log.table.TableLogBuffer;
+import com.android.systemui.lowlightclock.dagger.LowLightModule;
 import com.android.systemui.mediaprojection.MediaProjectionModule;
 import com.android.systemui.mediaprojection.appselector.MediaProjectionActivitiesModule;
 import com.android.systemui.mediaprojection.taskswitcher.MediaProjectionTaskSwitcherModule;
-import com.android.systemui.model.SceneContainerPlugin;
+import com.android.systemui.mediarouter.MediaRouterModule;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.motiontool.MotionToolModule;
 import com.android.systemui.navigationbar.NavigationBarComponent;
+import com.android.systemui.navigationbar.gestural.dagger.GestureModule;
 import com.android.systemui.notetask.NoteTaskModule;
 import com.android.systemui.people.PeopleModule;
 import com.android.systemui.plugins.BcSmartspaceConfigPlugin;
 import com.android.systemui.plugins.BcSmartspaceDataPlugin;
 import com.android.systemui.privacy.PrivacyModule;
 import com.android.systemui.process.condition.SystemProcessCondition;
-import com.android.systemui.qrcodescanner.dagger.QRCodeScannerModule;
 import com.android.systemui.qs.FgsManagerController;
 import com.android.systemui.qs.FgsManagerControllerImpl;
 import com.android.systemui.qs.QSFragmentStartableModule;
 import com.android.systemui.qs.footer.dagger.FooterActionsModule;
+import com.android.systemui.qs.tiles.impl.qr.ui.model.QRCodeScannerModule;
 import com.android.systemui.recents.Recents;
 import com.android.systemui.recordissue.RecordIssueModule;
-import com.android.systemui.retail.dagger.RetailModeModule;
+import com.android.systemui.retail.RetailModeModule;
+import com.android.systemui.rotationlock.DeviceStateAutoRotateModule.BoundsDeviceStateAutoRotateModule;
 import com.android.systemui.scene.shared.model.SceneContainerConfig;
 import com.android.systemui.scene.shared.model.SceneDataSource;
 import com.android.systemui.scene.shared.model.SceneDataSourceDelegator;
@@ -101,8 +114,9 @@ import com.android.systemui.scene.ui.view.WindowRootViewComponent;
 import com.android.systemui.screenrecord.ScreenRecordModule;
 import com.android.systemui.screenshot.dagger.ScreenshotModule;
 import com.android.systemui.security.data.repository.SecurityRepositoryModule;
-import com.android.systemui.settings.DisplayTracker;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.shade.ShadeController;
+import com.android.systemui.shade.ShadeDisplayAwareModule;
 import com.android.systemui.shade.transition.LargeScreenShadeInterpolator;
 import com.android.systemui.shade.transition.LargeScreenShadeInterpolatorImpl;
 import com.android.systemui.shared.condition.Monitor;
@@ -111,6 +125,7 @@ import com.android.systemui.startable.Dependencies;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationShadeWindowController;
+import com.android.systemui.statusbar.chips.StatusBarChipsModule;
 import com.android.systemui.statusbar.connectivity.ConnectivityModule;
 import com.android.systemui.statusbar.dagger.StatusBarModule;
 import com.android.systemui.statusbar.disableflags.dagger.DisableFlagsModule;
@@ -122,6 +137,7 @@ import com.android.systemui.statusbar.notification.collection.inflation.Notifica
 import com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinderImpl;
 import com.android.systemui.statusbar.notification.collection.notifcollection.CommonNotifCollection;
 import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionDecisionProvider;
 import com.android.systemui.statusbar.notification.people.PeopleHubModule;
 import com.android.systemui.statusbar.notification.row.dagger.ExpandableNotificationRowComponent;
@@ -129,9 +145,8 @@ import com.android.systemui.statusbar.notification.row.dagger.NotificationRowCom
 import com.android.systemui.statusbar.phone.CentralSurfaces;
 import com.android.systemui.statusbar.phone.ConfigurationControllerModule;
 import com.android.systemui.statusbar.phone.LetterboxModule;
-import com.android.systemui.statusbar.phone.NotificationIconAreaControllerModule;
 import com.android.systemui.statusbar.pipeline.dagger.StatusBarPipelineModule;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.policy.DeviceStateRotationLockSettingController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.statusbar.policy.PolicyModule;
 import com.android.systemui.statusbar.policy.SensitiveNotificationProtectionController;
@@ -142,6 +157,7 @@ import com.android.systemui.statusbar.ui.binder.StatusBarViewBinderModule;
 import com.android.systemui.statusbar.window.StatusBarWindowModule;
 import com.android.systemui.telephony.data.repository.TelephonyRepositoryModule;
 import com.android.systemui.temporarydisplay.dagger.TemporaryDisplayModule;
+import com.android.systemui.touchpad.TouchpadModule;
 import com.android.systemui.tuner.dagger.TunerModule;
 import com.android.systemui.user.UserModule;
 import com.android.systemui.user.domain.UserDomainLayerModule;
@@ -151,6 +167,7 @@ import com.android.systemui.util.dagger.UtilModule;
 import com.android.systemui.util.kotlin.SysUICoroutinesModule;
 import com.android.systemui.util.reference.ReferenceModule;
 import com.android.systemui.util.sensors.SensorModule;
+import com.android.systemui.util.settings.SettingsProxy;
 import com.android.systemui.util.settings.SettingsUtilModule;
 import com.android.systemui.util.time.SystemClock;
 import com.android.systemui.util.time.SystemClockImpl;
@@ -187,8 +204,7 @@ import javax.inject.Named;
  * may not appreciate that.
  */
 @Module(includes = {
-        AccessibilityModule.class,
-        AccessibilityRepositoryModule.class,
+        ActivityManagerModule.class,
         AmbientModule.class,
         AppOpsModule.class,
         AssistModule.class,
@@ -203,6 +219,10 @@ import javax.inject.Named;
         ClockRegistryModule.class,
         CommunalModule.class,
         CommonDataLayerModule.class,
+        ComposeModule.class,
+        ConfigurationModule.class,
+        ConfigurationRepositoryModule.class,
+        CommonUsageStatsDataLayerModule.class,
         ConfigurationControllerModule.class,
         ConnectivityModule.class,
         ControlsModule.class,
@@ -216,16 +236,20 @@ import javax.inject.Named;
         FlagsModule.class,
         FlagDependenciesModule.class,
         FooterActionsModule.class,
+        KairosCoreStartableModule.class,
+        GestureModule.class,
         InputMethodModule.class,
         KeyEventRepositoryModule.class,
         KeyboardModule.class,
+        KeyguardDataQuickAffordanceModule.class,
         LetterboxModule.class,
         LogModule.class,
         MediaProjectionActivitiesModule.class,
         MediaProjectionModule.class,
         MediaProjectionTaskSwitcherModule.class,
+        MediaRouterModule.class,
         MotionToolModule.class,
-        NotificationIconAreaControllerModule.class,
+        MSDLModule.class,
         PeopleHubModule.class,
         PeopleModule.class,
         PluginModule.class,
@@ -246,6 +270,7 @@ import javax.inject.Named;
         SmartspaceModule.class,
         StatusBarEventsModule.class,
         StatusBarModule.class,
+        StatusBarChipsModule.class,
         StatusBarPipelineModule.class,
         StatusBarPolicyModule.class,
         StatusBarViewBinderModule.class,
@@ -256,21 +281,26 @@ import javax.inject.Named;
         CommonSystemUIUnfoldModule.class,
         TelephonyRepositoryModule.class,
         TemporaryDisplayModule.class,
+        ShadeDisplayAwareModule.class,
+        TouchpadModule.class,
         TunerModule.class,
         UserDomainLayerModule.class,
         UserModule.class,
         UtilModule.class,
         NoteTaskModule.class,
-        WalletModule.class
-        },
+        WalletModule.class,
+        LowLightModule.class,
+        PerDisplayRepositoriesModule.class
+},
         subcomponents = {
-            ComplicationComponent.class,
-            DozeComponent.class,
-            ExpandableNotificationRowComponent.class,
-            KeyguardBouncerComponent.class,
-            NavigationBarComponent.class,
-            NotificationRowComponent.class,
-            WindowRootViewComponent.class,
+                ComplicationComponent.class,
+                DozeComponent.class,
+                ExpandableNotificationRowComponent.class,
+                KeyguardBouncerComponent.class,
+                NavigationBarComponent.class,
+                NotificationRowComponent.class,
+                WindowRootViewComponent.class,
+                SystemUIDisplaySubcomponent.class,
         })
 public abstract class SystemUIModule {
 
@@ -298,12 +328,8 @@ public abstract class SystemUIModule {
     @SysUISingleton
     @Provides
     static SysUiState provideSysUiState(
-            DisplayTracker displayTracker,
-            DumpManager dumpManager,
-            SceneContainerPlugin sceneContainerPlugin) {
-        final SysUiState state = new SysUiState(displayTracker, sceneContainerPlugin);
-        dumpManager.registerDumpable(state);
-        return state;
+            PerDisplayRepository<SysUiState> repository) {
+        return repository.get(Display.DEFAULT_DISPLAY);
     }
 
     /**
@@ -365,6 +391,11 @@ public abstract class SystemUIModule {
     @BindsOptionalOf
     abstract LockscreenContent optionalLockscreenContent();
 
+    @BindsOptionalOf
+    @BoundsDeviceStateAutoRotateModule
+    abstract Optional<DeviceStateRotationLockSettingController>
+            optionalDeviceStateRotationLockSettingController();
+
     @SysUISingleton
     @Binds
     abstract SystemClock bindSystemClock(SystemClockImpl systemClock);
@@ -416,6 +447,11 @@ public abstract class SystemUIModule {
                 sysuiUiBgExecutor));
     }
 
+    @Provides
+    static KeyguardQuickAffordancesMetricsLogger providesKeyguardQuickAffordancesMetricsLogger() {
+        return new KeyguardQuickAffordancesMetricsLoggerImpl();
+    }
+
     @Binds
     abstract FgsManagerController bindFgsManagerController(FgsManagerControllerImpl impl);
 
@@ -435,6 +471,21 @@ public abstract class SystemUIModule {
         return new SceneDataSourceDelegator(applicationScope, config);
     }
 
+    @Provides
+    @SysUISingleton
+    static Optional<DeviceStateRotationLockSettingController>
+            provideDeviceStateRotationLockSettingController(
+            @BoundsDeviceStateAutoRotateModule
+            Optional<Optional<DeviceStateRotationLockSettingController>> optionalOfOptional
+    ) {
+        return optionalOfOptional.orElseGet(Optional::empty);
+    }
+
     @Binds
     abstract SceneDataSource bindSceneDataSource(SceneDataSourceDelegator delegator);
+
+    @Provides
+    static SettingsProxy.CurrentUserIdProvider provideCurrentUserId(UserTracker userTracker) {
+        return userTracker::getUserId;
+    }
 }

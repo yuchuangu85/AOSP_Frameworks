@@ -16,18 +16,22 @@
 
 #define LOG_TAG "InputChannel-JNI"
 
-#include "android-base/stringprintf.h"
-#include <nativehelper/JNIHelp.h>
-#include "nativehelper/scoped_utf_chars.h"
+#include "android_view_InputChannel.h"
+
 #include <android_runtime/AndroidRuntime.h>
 #include <binder/Parcel.h>
-#include <utils/Log.h>
+#include <com_android_input_flags.h>
 #include <input/InputTransport.h>
-#include "android_view_InputChannel.h"
+#include <nativehelper/JNIHelp.h>
+#include <utils/Log.h>
+
+#include "android-base/stringprintf.h"
 #include "android_os_Parcel.h"
 #include "android_util_Binder.h"
-
 #include "core_jni_helpers.h"
+#include "nativehelper/scoped_utf_chars.h"
+
+namespace input_flags = com::android::input::flags;
 
 namespace android {
 
@@ -51,26 +55,18 @@ public:
 
     inline std::shared_ptr<InputChannel> getInputChannel() { return mInputChannel; }
 
-    void setDisposeCallback(InputChannelObjDisposeCallback callback, void* data);
     void dispose(JNIEnv* env, jobject obj);
 
 private:
     std::shared_ptr<InputChannel> mInputChannel;
-    InputChannelObjDisposeCallback mDisposeCallback;
-    void* mDisposeData;
 };
 
 // ----------------------------------------------------------------------------
 
 NativeInputChannel::NativeInputChannel(std::unique_ptr<InputChannel> inputChannel)
-      : mInputChannel(std::move(inputChannel)), mDisposeCallback(nullptr) {}
+      : mInputChannel(std::move(inputChannel)) {}
 
 NativeInputChannel::~NativeInputChannel() {
-}
-
-void NativeInputChannel::setDisposeCallback(InputChannelObjDisposeCallback callback, void* data) {
-    mDisposeCallback = callback;
-    mDisposeData = data;
 }
 
 void NativeInputChannel::dispose(JNIEnv* env, jobject obj) {
@@ -78,11 +74,6 @@ void NativeInputChannel::dispose(JNIEnv* env, jobject obj) {
         return;
     }
 
-    if (mDisposeCallback) {
-        mDisposeCallback(env, obj, mInputChannel, mDisposeData);
-        mDisposeCallback = nullptr;
-        mDisposeData = nullptr;
-    }
     mInputChannel.reset();
 }
 
@@ -99,17 +90,6 @@ std::shared_ptr<InputChannel> android_view_InputChannel_getInputChannel(JNIEnv* 
     NativeInputChannel* nativeInputChannel =
             android_view_InputChannel_getNativeInputChannel(env, inputChannelObj);
     return nativeInputChannel != nullptr ? nativeInputChannel->getInputChannel() : nullptr;
-}
-
-void android_view_InputChannel_setDisposeCallback(JNIEnv* env, jobject inputChannelObj,
-        InputChannelObjDisposeCallback callback, void* data) {
-    NativeInputChannel* nativeInputChannel =
-            android_view_InputChannel_getNativeInputChannel(env, inputChannelObj);
-    if (!nativeInputChannel || !nativeInputChannel->getInputChannel()) {
-        ALOGW("Cannot set dispose callback because input channel object has not been initialized.");
-    } else {
-        nativeInputChannel->setDisposeCallback(callback, data);
-    }
 }
 
 static jlong android_view_InputChannel_createInputChannel(

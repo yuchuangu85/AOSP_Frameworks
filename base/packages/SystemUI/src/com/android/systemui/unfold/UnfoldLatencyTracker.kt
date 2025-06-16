@@ -22,11 +22,13 @@ import android.hardware.devicestate.DeviceStateManager
 import android.os.Trace
 import android.util.Log
 import com.android.internal.util.LatencyTracker
+import com.android.systemui.Flags.unfoldLatencyTrackingFix
 import com.android.systemui.dagger.qualifiers.UiBackground
 import com.android.systemui.keyguard.ScreenLifecycle
 import com.android.systemui.unfold.UnfoldTransitionProgressProvider.TransitionProgressListener
 import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider.Companion.areAnimationsEnabled
 import com.android.systemui.util.Compile
+import com.android.systemui.util.Utils.isDeviceFoldable
 import java.util.Optional
 import java.util.concurrent.Executor
 import javax.inject.Inject
@@ -51,22 +53,18 @@ constructor(
     @UiBackground private val uiBgExecutor: Executor,
     private val context: Context,
     private val contentResolver: ContentResolver,
-    private val screenLifecycle: ScreenLifecycle
+    private val screenLifecycle: ScreenLifecycle,
 ) : ScreenLifecycle.Observer, TransitionProgressListener {
 
     private var folded: Boolean? = null
     private var isTransitionEnabled: Boolean? = null
     private val foldStateListener = FoldStateListener(context)
     private var unfoldInProgress = false
-    private val isFoldable: Boolean
-        get() =
-            context.resources
-                .getIntArray(com.android.internal.R.array.config_foldedDeviceStates)
-                .isNotEmpty()
+    private val isFoldable: Boolean = isDeviceFoldable(context.resources, deviceStateManager)
 
     /** Registers for relevant events only if the device is foldable. */
     fun init() {
-        if (!isFoldable) {
+        if (unfoldLatencyTrackingFix() || !isFoldable) {
             return
         }
         deviceStateManager.registerCallback(uiBgExecutor, foldStateListener)
@@ -88,7 +86,7 @@ constructor(
         if (DEBUG) {
             Log.d(
                 TAG,
-                "onScreenTurnedOn: folded = $folded, isTransitionEnabled = $isTransitionEnabled"
+                "onScreenTurnedOn: folded = $folded, isTransitionEnabled = $isTransitionEnabled",
             )
         }
 
@@ -112,7 +110,7 @@ constructor(
         if (DEBUG) {
             Log.d(
                 TAG,
-                "onTransitionStarted: folded = $folded, isTransitionEnabled = $isTransitionEnabled"
+                "onTransitionStarted: folded = $folded, isTransitionEnabled = $isTransitionEnabled",
             )
         }
 
@@ -164,7 +162,7 @@ constructor(
                     Log.d(
                         TAG,
                         "Starting ACTION_SWITCH_DISPLAY_UNFOLD, " +
-                            "isTransitionEnabled = $isTransitionEnabled"
+                            "isTransitionEnabled = $isTransitionEnabled",
                     )
                 }
             }

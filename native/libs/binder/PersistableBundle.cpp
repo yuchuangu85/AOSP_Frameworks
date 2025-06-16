@@ -113,12 +113,15 @@ status_t PersistableBundle::writeToParcel(Parcel* parcel) const {
     // Backpatch length. This length value includes the length header.
     parcel->setDataPosition(length_pos);
     size_t length = end_pos - start_pos;
-    if (length > std::numeric_limits<int32_t>::max()) {
+    if (length > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
         ALOGE("Parcel length (%zu) too large to store in 32-bit signed int", length);
         return BAD_VALUE;
     }
     RETURN_IF_FAILED(parcel->writeInt32(static_cast<int32_t>(length)));
     parcel->setDataPosition(end_pos);
+    // write mHasIntent to be consistent with BaseBundle.writeToBundle. But it would always be
+    // false since PersistableBundle won't contain an intent.
+    RETURN_IF_FAILED(parcel->writeBool(false));
     return NO_ERROR;
 }
 
@@ -319,7 +322,7 @@ status_t PersistableBundle::writeToParcelInner(Parcel* parcel) const {
      * pairs themselves.
      */
     size_t num_entries = size();
-    if (num_entries > std::numeric_limits<int32_t>::max()) {
+    if (num_entries > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
         ALOGE("The size of this PersistableBundle (%zu) too large to store in 32-bit signed int",
               num_entries);
         return BAD_VALUE;
@@ -473,6 +476,8 @@ status_t PersistableBundle::readFromParcelInner(const Parcel* parcel, size_t len
             }
         }
     }
+    // result intentional ignored since it will always be false;
+    RETURN_IF_FAILED(parcel->readBool());
 
     return NO_ERROR;
 }

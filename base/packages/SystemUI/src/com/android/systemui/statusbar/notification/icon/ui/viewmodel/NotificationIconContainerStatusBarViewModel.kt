@@ -23,6 +23,7 @@ import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor
 import com.android.systemui.plugins.DarkIconDispatcher
 import com.android.systemui.res.R
 import com.android.systemui.shade.domain.interactor.ShadeInteractor
+import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior
 import com.android.systemui.statusbar.notification.domain.interactor.HeadsUpNotificationIconInteractor
 import com.android.systemui.statusbar.notification.icon.domain.interactor.StatusBarNotificationIconsInteractor
 import com.android.systemui.statusbar.phone.domain.interactor.DarkIconInteractor
@@ -37,7 +38,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 
@@ -45,8 +48,8 @@ import kotlinx.coroutines.flow.map
 class NotificationIconContainerStatusBarViewModel
 @Inject
 constructor(
-    @Background bgContext: CoroutineContext,
-    darkIconInteractor: DarkIconInteractor,
+    @Background private val bgContext: CoroutineContext,
+    private val darkIconInteractor: DarkIconInteractor,
     iconsInteractor: StatusBarNotificationIconsInteractor,
     headsUpIconInteractor: HeadsUpNotificationIconInteractor,
     keyguardInteractor: KeyguardInteractor,
@@ -58,10 +61,9 @@ constructor(
 
     /** Are changes to the icon container animated? */
     val animationsEnabled: Flow<Boolean> =
-        combine(
-                shadeInteractor.isShadeTouchable,
-                keyguardInteractor.isKeyguardShowing,
-            ) { panelTouchesEnabled, isKeyguardShowing ->
+        combine(shadeInteractor.isShadeTouchable, keyguardInteractor.isKeyguardShowing) {
+                panelTouchesEnabled,
+                isKeyguardShowing ->
                 panelTouchesEnabled && !isKeyguardShowing
             }
             .flowOn(bgContext)
@@ -69,20 +71,14 @@ constructor(
             .distinctUntilChanged()
 
     /** The colors with which to display the notification icons. */
-    val iconColors: Flow<NotificationIconColorLookup> =
-        darkIconInteractor.darkState
-            .map { (areas: Collection<Rect>, tint: Int) ->
-                NotificationIconColorLookup { viewBounds: Rect ->
-                    if (DarkIconDispatcher.isInAreas(areas, viewBounds)) {
-                        IconColorsImpl(tint, areas)
-                    } else {
-                        null
-                    }
-                }
-            }
+    fun iconColors(displayId: Int): Flow<NotificationIconColors> {
+        return darkIconInteractor
+            .darkState(displayId)
+            .map { (areas: Collection<Rect>, tint: Int) -> IconColorsImpl(tint, areas) }
             .flowOn(bgContext)
             .conflate()
             .distinctUntilChanged()
+    }
 
     /** [NotificationIconsViewData] indicating which icons to display in the view. */
     val icons: Flow<NotificationIconsViewData> =
@@ -99,36 +95,45 @@ constructor(
 
     /** An Icon to show "isolated" in the IconContainer. */
     val isolatedIcon: Flow<AnimatedValue<NotificationIconInfo?>> =
-        headsUpIconInteractor.isolatedNotification
-            .combine(icons) { isolatedNotif, iconsViewData ->
-                isolatedNotif?.let {
-                    iconsViewData.visibleIcons.firstOrNull { it.notifKey == isolatedNotif }
-                }
-            }
-            .distinctUntilChanged()
-            .flowOn(bgContext)
-            .conflate()
-            .distinctUntilChanged()
-            .pairwise(initialValue = null)
-            .sample(shadeInteractor.shadeExpansion) { (prev, iconInfo), shadeExpansion ->
-                val animate =
-                    when {
-                        iconInfo?.notifKey == prev?.notifKey -> false
-                        iconInfo == null || prev == null -> shadeExpansion == 0f
-                        else -> false
+        if (StatusBarNoHunBehavior.isEnabled) {
+            flowOf(AnimatedValue.NotAnimating(null))
+        } else {
+            headsUpIconInteractor.isolatedNotification
+                .combine(icons) { isolatedNotif, iconsViewData ->
+                    isolatedNotif?.let {
+                        iconsViewData.visibleIcons.firstOrNull { it.notifKey == isolatedNotif }
                     }
-                AnimatableEvent(iconInfo, animate)
-            }
-            .toAnimatedValueFlow()
+                }
+                .distinctUntilChanged()
+                .flowOn(bgContext)
+                .conflate()
+                .distinctUntilChanged()
+                .pairwise(initialValue = null)
+                .sample(shadeInteractor.shadeExpansion) { (prev, iconInfo), shadeExpansion ->
+                    val animate =
+                        when {
+                            iconInfo?.notifKey == prev?.notifKey -> false
+                            iconInfo == null || prev == null -> shadeExpansion == 0f
+                            else -> false
+                        }
+                    AnimatableEvent(iconInfo, animate)
+                }
+                .toAnimatedValueFlow()
+        }
 
     /** Location to show an isolated icon, if there is one. */
     val isolatedIconLocation: Flow<Rect> =
-        headsUpIconInteractor.isolatedIconLocation.filterNotNull().conflate().distinctUntilChanged()
+        if (StatusBarNoHunBehavior.isEnabled) {
+            emptyFlow()
+        } else {
+            headsUpIconInteractor.isolatedIconLocation
+                .filterNotNull()
+                .conflate()
+                .distinctUntilChanged()
+        }
 
-    private class IconColorsImpl(
-        override val tint: Int,
-        private val areas: Collection<Rect>,
-    ) : NotificationIconColors {
+    private class IconColorsImpl(override val tint: Int, private val areas: Collection<Rect>) :
+        NotificationIconColors {
         override fun staticDrawableColor(viewBounds: Rect): Int {
             return if (DarkIconDispatcher.isInAreas(areas, viewBounds)) {
                 tint

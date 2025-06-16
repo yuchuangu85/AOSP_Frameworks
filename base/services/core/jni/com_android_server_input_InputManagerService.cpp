@@ -44,7 +44,10 @@
 #include <batteryservice/include/batteryservice/BatteryServiceConstants.h>
 #include <binder/IServiceManager.h>
 #include <com_android_input_flags.h>
+#include <dispatcher/Entry.h>
+#include <include/gestures.h>
 #include <input/Input.h>
+#include <input/InputFlags.h>
 #include <input/PointerController.h>
 #include <input/PrintTools.h>
 #include <input/SpriteController.h>
@@ -55,6 +58,7 @@
 #include <nativehelper/ScopedPrimitiveArray.h>
 #include <nativehelper/ScopedUtfChars.h>
 #include <server_configurable_flags/get_flags.h>
+#include <ui/LogicalDisplayId.h>
 #include <ui/Region.h>
 #include <utils/Log.h>
 #include <utils/Looper.h>
@@ -63,8 +67,11 @@
 
 #include <atomic>
 #include <cinttypes>
+#include <map>
+#include <variant>
 #include <vector>
 
+#include "android_hardware_display_DisplayTopology.h"
 #include "android_hardware_display_DisplayViewport.h"
 #include "android_hardware_input_InputApplicationHandle.h"
 #include "android_hardware_input_InputWindowHandle.h"
@@ -88,8 +95,6 @@ namespace input_flags = com::android::input::flags;
 
 namespace android {
 
-static const bool ENABLE_INPUT_FILTER_RUST = input_flags::enable_input_filter_rust_impl();
-
 // The exponent used to calculate the pointer speed scaling factor.
 // The scaling factor is calculated as 2 ^ (speed * exponent),
 // where the speed ranges from -7 to + 7 and is supplied by the user.
@@ -104,8 +109,10 @@ static const char* VELOCITYTRACKER_STRATEGY = "velocitytracker_strategy";
 
 static struct {
     jclass clazz;
-    jmethodID notifyConfigurationChanged;
     jmethodID notifyInputDevicesChanged;
+    jmethodID notifyTouchpadHardwareState;
+    jmethodID notifyTouchpadGestureInfo;
+    jmethodID notifyTouchpadThreeFingerTap;
     jmethodID notifySwitch;
     jmethodID notifyInputChannelBroken;
     jmethodID notifyNoFocusedWindowAnr;
@@ -118,6 +125,7 @@ static struct {
     jmethodID notifyStylusGestureStarted;
     jmethodID notifyVibratorState;
     jmethodID filterInputEvent;
+    jmethodID filterPointerMotion;
     jmethodID interceptKeyBeforeQueueing;
     jmethodID interceptMotionBeforeQueueingNonInteractive;
     jmethodID interceptKeyBeforeDispatching;
@@ -142,6 +150,34 @@ static struct {
     jmethodID notifyDropWindow;
     jmethodID getParentSurfaceForPointers;
 } gServiceClassInfo;
+
+static struct {
+    jclass clazz;
+    // fields
+    jfieldID timestamp;
+    jfieldID buttonsDown;
+    jfieldID fingerCount;
+    jfieldID touchCount;
+    jfieldID fingerStates;
+    // methods
+    jmethodID init;
+} gTouchpadHardwareStateClassInfo;
+
+static struct {
+    jclass clazz;
+    // fields
+    jfieldID touchMajor;
+    jfieldID touchMinor;
+    jfieldID widthMajor;
+    jfieldID widthMinor;
+    jfieldID pressure;
+    jfieldID orientation;
+    jfieldID positionX;
+    jfieldID positionY;
+    jfieldID trackingId;
+    // methods
+    jmethodID init;
+} gTouchpadFingerStateClassInfo;
 
 static struct {
     jclass clazz;
@@ -177,6 +213,7 @@ static struct {
     jfieldID lightTypePlayerId;
     jfieldID lightTypeKeyboardBacklight;
     jfieldID lightTypeKeyboardMicMute;
+    jfieldID lightTypeKeyboardVolumeMute;
     jfieldID lightCapabilityBrightness;
     jfieldID lightCapabilityColorRgb;
 } gLightClassInfo;
@@ -217,6 +254,23 @@ static struct InputSensorInfoOffsets {
     // methods
     jmethodID init;
 } gInputSensorInfo;
+
+static struct TouchpadHardwarePropertiesOffsets {
+    jclass clazz;
+    jmethodID constructor;
+    jfieldID left;
+    jfieldID top;
+    jfieldID right;
+    jfieldID bottom;
+    jfieldID resX;
+    jfieldID resY;
+    jfieldID orientationMinimum;
+    jfieldID orientationMaximum;
+    jfieldID maxFingerCount;
+    jfieldID isButtonPad;
+    jfieldID isHapticPad;
+    jfieldID reportsPressure;
+} gTouchpadHardwarePropertiesOffsets;
 
 // --- Global functions ---
 
@@ -270,6 +324,8 @@ public:
 
     void setDisplayViewports(JNIEnv* env, jobjectArray viewportObjArray);
 
+    void setDisplayTopology(JNIEnv* env, jobject topologyGraph);
+
     base::Result<std::unique_ptr<InputChannel>> createInputChannel(const std::string& name);
     base::Result<std::unique_ptr<InputChannel>> createInputMonitor(ui::LogicalDisplayId displayId,
                                                                    const std::string& name,
@@ -287,15 +343,24 @@ public:
     void setPointerDisplayId(ui::LogicalDisplayId displayId);
     int32_t getMousePointerSpeed();
     void setPointerSpeed(int32_t speed);
-    void setMousePointerAccelerationEnabled(ui::LogicalDisplayId displayId, bool enabled);
+    void setMouseScalingEnabled(ui::LogicalDisplayId displayId, bool enabled);
+    void setMouseReverseVerticalScrollingEnabled(bool enabled);
+    void setMouseScrollingAccelerationEnabled(bool enabled);
+    void setMouseScrollingSpeed(int32_t speed);
+    void setMouseSwapPrimaryButtonEnabled(bool enabled);
+    void setMouseAccelerationEnabled(bool enabled);
     void setTouchpadPointerSpeed(int32_t speed);
     void setTouchpadNaturalScrollingEnabled(bool enabled);
     void setTouchpadTapToClickEnabled(bool enabled);
     void setTouchpadTapDraggingEnabled(bool enabled);
+    void setShouldNotifyTouchpadHardwareState(bool enabled);
     void setTouchpadRightClickZoneEnabled(bool enabled);
+    void setTouchpadThreeFingerTapShortcutEnabled(bool enabled);
+    void setTouchpadSystemGesturesEnabled(bool enabled);
+    void setTouchpadAccelerationEnabled(bool enabled);
     void setInputDeviceEnabled(uint32_t deviceId, bool enabled);
     void setShowTouches(bool enabled);
-    void setInteractive(bool interactive);
+    void setNonInteractiveDisplays(const std::set<ui::LogicalDisplayId>& displayIds);
     void reloadCalibration();
     void reloadPointerIcons();
     void requestPointerCapture(const sp<IBinder>& windowToken, bool enabled);
@@ -306,14 +371,19 @@ public:
     void setMotionClassifierEnabled(bool enabled);
     std::optional<std::string> getBluetoothAddress(int32_t deviceId);
     void setStylusButtonMotionEventsEnabled(bool enabled);
-    FloatPoint getMouseCursorPosition(ui::LogicalDisplayId displayId);
+    vec2 getMouseCursorPosition(ui::LogicalDisplayId displayId);
     void setStylusPointerIconEnabled(bool enabled);
     void setInputMethodConnectionIsActive(bool isActive);
+    void setKeyRemapping(const std::map<int32_t, int32_t>& keyRemapping);
 
     /* --- InputReaderPolicyInterface implementation --- */
 
     void getReaderConfiguration(InputReaderConfiguration* outConfig) override;
     void notifyInputDevicesChanged(const std::vector<InputDeviceInfo>& inputDevices) override;
+    void notifyTouchpadHardwareState(const SelfContainedHardwareState& schs,
+                                     int32_t deviceId) override;
+    void notifyTouchpadGestureInfo(enum GestureType type, int32_t deviceId) override;
+    void notifyTouchpadThreeFingerTap() override;
     std::shared_ptr<KeyCharacterMap> getKeyboardLayoutOverlay(
             const InputDeviceIdentifier& identifier,
             const std::optional<KeyboardLayoutInfo> keyboardLayoutInfo) override;
@@ -331,7 +401,6 @@ public:
 
     void notifySwitch(nsecs_t when, uint32_t switchValues, uint32_t switchMask,
                       uint32_t policyFlags) override;
-    void notifyConfigurationChanged(nsecs_t when) override;
     // ANR-related callbacks -- start
     void notifyNoFocusedWindowAnr(const std::shared_ptr<InputApplicationHandle>& handle) override;
     void notifyWindowUnresponsive(const sp<IBinder>& token, std::optional<gui::Pid> pid,
@@ -351,8 +420,9 @@ public:
     void interceptMotionBeforeQueueing(ui::LogicalDisplayId displayId, uint32_t source,
                                        int32_t action, nsecs_t when,
                                        uint32_t& policyFlags) override;
-    nsecs_t interceptKeyBeforeDispatching(const sp<IBinder>& token, const KeyEvent& keyEvent,
-                                          uint32_t policyFlags) override;
+    std::variant<nsecs_t, inputdispatcher::KeyEntry::InterceptKeyResult>
+    interceptKeyBeforeDispatching(const sp<IBinder>& token, const KeyEvent& keyEvent,
+                                  uint32_t policyFlags) override;
     std::optional<KeyEvent> dispatchUnhandledKey(const sp<IBinder>& token, const KeyEvent& keyEvent,
                                                  uint32_t policyFlags) override;
     void pokeUserActivity(nsecs_t eventTime, int32_t eventType,
@@ -381,7 +451,10 @@ public:
     std::shared_ptr<PointerControllerInterface> createPointerController(
             PointerControllerInterface::ControllerType type) override;
     void notifyPointerDisplayIdChanged(ui::LogicalDisplayId displayId,
-                                       const FloatPoint& position) override;
+                                       const vec2& position) override;
+    void notifyMouseCursorFadedOnTyping() override;
+    std::optional<vec2> filterPointerMotionForAccessibility(
+            const vec2& current, const vec2& delta, const ui::LogicalDisplayId& displayId) override;
 
     /* --- InputFilterPolicyInterface implementation --- */
     void notifyStickyModifierStateChanged(uint32_t modifierState,
@@ -404,8 +477,8 @@ private:
         // Pointer speed.
         int32_t pointerSpeed{0};
 
-        // Displays on which its associated mice will have pointer acceleration disabled.
-        std::set<ui::LogicalDisplayId> displaysWithMousePointerAccelerationDisabled{};
+        // Displays on which its associated mice will have all scaling disabled.
+        std::set<ui::LogicalDisplayId> displaysWithMouseScalingDisabled{};
 
         // True if pointer gestures are enabled.
         bool pointerGesturesEnabled{true};
@@ -428,6 +501,21 @@ private:
         // True if stylus button reporting through motion events is enabled.
         bool stylusButtonMotionEventsEnabled{true};
 
+        // True if mouse scrolling acceleration is enabled.
+        bool mouseScrollingAccelerationEnabled{true};
+
+        // The mouse scrolling speed, as a number from -7 (slowest) to 7 (fastest).
+        int32_t mouseScrollingSpeed{0};
+
+        // True if mouse vertical scrolling is reversed.
+        bool mouseReverseVerticalScrollingEnabled{false};
+
+        // True if the mouse primary button is swapped (left/right buttons).
+        bool mouseSwapPrimaryButtonEnabled{false};
+
+        // True if the mouse cursor will accelerate as the mouse moves faster.
+        bool mousePointerAccelerationEnabled{true};
+
         // The touchpad pointer speed, as a number from -7 (slowest) to 7 (fastest).
         int32_t touchpadPointerSpeed{0};
 
@@ -441,18 +529,37 @@ private:
         // True to enable tap dragging on touchpads.
         bool touchpadTapDraggingEnabled{false};
 
+        // True if hardware state update notifications should be sent to the policy.
+        bool shouldNotifyTouchpadHardwareState{false};
+
         // True to enable a zone on the right-hand side of touchpads where clicks will be turned
         // into context (a.k.a. "right") clicks.
         bool touchpadRightClickZoneEnabled{false};
+
+        // True to use three-finger tap as a customizable shortcut; false to use it as a
+        // middle-click.
+        bool touchpadThreeFingerTapShortcutEnabled{false};
+
+        // True to enable system gestures (three- and four-finger swipes) on touchpads.
+        bool touchpadSystemGesturesEnabled{true};
+
+        // True if the speed of the pointer will increase as the user moves
+        // their finger faster on the touchpad.
+        bool touchpadAccelerationEnabled{true};
 
         // True if a pointer icon should be shown for stylus pointers.
         bool stylusPointerIconEnabled{false};
 
         // True if there is an active input method connection.
         bool isInputMethodConnectionActive{false};
+
+        // Keycodes to be remapped.
+        std::map<int32_t /* fromKeyCode */, int32_t /* toKeyCode */> keyRemapping{};
+
+        // Displays which are non-interactive.
+        std::set<ui::LogicalDisplayId> nonInteractiveDisplays;
     } mLocked GUARDED_BY(mLock);
 
-    std::atomic<bool> mInteractive;
     void updateInactivityTimeoutLocked();
     void handleInterceptActions(jint wmActions, nsecs_t when, uint32_t& policyFlags);
     void ensureSpriteControllerLocked();
@@ -466,12 +573,13 @@ private:
     void forEachPointerControllerLocked(std::function<void(PointerController&)> apply)
             REQUIRES(mLock);
     PointerIcon loadPointerIcon(JNIEnv* env, ui::LogicalDisplayId displayId, PointerIconStyle type);
+    bool isDisplayInteractive(ui::LogicalDisplayId displayId);
 
     static inline JNIEnv* jniEnv() { return AndroidRuntime::getJNIEnv(); }
 };
 
 NativeInputManager::NativeInputManager(jobject serviceObj, const sp<Looper>& looper)
-      : mLooper(looper), mInteractive(true) {
+      : mLooper(looper) {
     JNIEnv* env = jniEnv();
 
     mServiceObj = env->NewGlobalRef(serviceObj);
@@ -489,15 +597,20 @@ NativeInputManager::~NativeInputManager() {
 
 void NativeInputManager::dump(std::string& dump) {
     dump += "Input Manager State:\n";
-    dump += StringPrintf(INDENT "Interactive: %s\n", toString(mInteractive.load()));
     { // acquire lock
         std::scoped_lock _l(mLock);
+        auto logicalDisplayIdToString = [](const ui::LogicalDisplayId& displayId) {
+            return std::to_string(displayId.val());
+        };
+        dump += StringPrintf(INDENT "Display not interactive: %s\n",
+                             dumpContainer(mLocked.nonInteractiveDisplays, streamableToString)
+                                     .c_str());
         dump += StringPrintf(INDENT "System UI Lights Out: %s\n",
                              toString(mLocked.systemUiLightsOut));
         dump += StringPrintf(INDENT "Pointer Speed: %" PRId32 "\n", mLocked.pointerSpeed);
-        dump += StringPrintf(INDENT "Display with Mouse Pointer Acceleration Disabled: %s\n",
-                             dumpSet(mLocked.displaysWithMousePointerAccelerationDisabled,
-                                     streamableToString)
+        dump += StringPrintf(INDENT "Display with Mouse Scaling Disabled: %s\n",
+                             dumpContainer(mLocked.displaysWithMouseScalingDisabled,
+                                           streamableToString)
                                      .c_str());
         dump += StringPrintf(INDENT "Pointer Gestures Enabled: %s\n",
                              toString(mLocked.pointerGesturesEnabled));
@@ -551,6 +664,22 @@ void NativeInputManager::setDisplayViewports(JNIEnv* env, jobjectArray viewportO
     mInputManager->getChoreographer().setDisplayViewports(viewports);
     mInputManager->getReader().requestRefreshConfiguration(
             InputReaderConfiguration::Change::DISPLAY_INFO);
+}
+
+void NativeInputManager::setDisplayTopology(JNIEnv* env, jobject topologyGraph) {
+    if (!InputFlags::connectedDisplaysCursorEnabled()) {
+        return;
+    }
+
+    const DisplayTopologyGraph displayTopology =
+            android_hardware_display_DisplayTopologyGraph_toNative(env, topologyGraph);
+    if (input_flags::enable_display_topology_validation() && !displayTopology.isValid()) {
+        LOG(ERROR) << "Ignoring Invalid DisplayTopology";
+        return;
+    }
+
+    mInputManager->getDispatcher().setDisplayTopology(displayTopology);
+    mInputManager->getChoreographer().setDisplayTopology(displayTopology);
 }
 
 base::Result<std::unique_ptr<InputChannel>> NativeInputManager::createInputChannel(
@@ -678,15 +807,20 @@ void NativeInputManager::getReaderConfiguration(InputReaderConfiguration* outCon
         std::scoped_lock _l(mLock);
 
         outConfig->mousePointerSpeed = mLocked.pointerSpeed;
-        outConfig->displaysWithMousePointerAccelerationDisabled =
-                mLocked.displaysWithMousePointerAccelerationDisabled;
+        outConfig->displaysWithMouseScalingDisabled = mLocked.displaysWithMouseScalingDisabled;
         outConfig->pointerVelocityControlParameters.scale =
                 exp2f(mLocked.pointerSpeed * POINTER_SPEED_EXPONENT);
         outConfig->pointerVelocityControlParameters.acceleration =
-                mLocked.displaysWithMousePointerAccelerationDisabled.count(
-                        mLocked.pointerDisplayId) == 0
+                mLocked.displaysWithMouseScalingDisabled.count(mLocked.pointerDisplayId) == 0
                 ? android::os::IInputConstants::DEFAULT_POINTER_ACCELERATION
                 : 1;
+        outConfig->wheelVelocityControlParameters.acceleration =
+                mLocked.mouseScrollingAccelerationEnabled
+                ? android::os::IInputConstants::DEFAULT_MOUSE_WHEEL_ACCELERATION
+                : 1;
+        outConfig->wheelVelocityControlParameters.scale = mLocked.mouseScrollingAccelerationEnabled
+                ? 1
+                : exp2f(mLocked.mouseScrollingSpeed * POINTER_SPEED_EXPONENT);
         outConfig->pointerGesturesEnabled = mLocked.pointerGesturesEnabled;
 
         outConfig->pointerCaptureRequest = mLocked.pointerCaptureRequest;
@@ -695,17 +829,29 @@ void NativeInputManager::getReaderConfiguration(InputReaderConfiguration* outCon
 
         outConfig->defaultPointerDisplayId = mLocked.pointerDisplayId;
 
+        outConfig->mouseReverseVerticalScrollingEnabled =
+                mLocked.mouseReverseVerticalScrollingEnabled;
+        outConfig->mouseSwapPrimaryButtonEnabled = mLocked.mouseSwapPrimaryButtonEnabled;
+        outConfig->mousePointerAccelerationEnabled = mLocked.mousePointerAccelerationEnabled;
+
         outConfig->touchpadPointerSpeed = mLocked.touchpadPointerSpeed;
         outConfig->touchpadNaturalScrollingEnabled = mLocked.touchpadNaturalScrollingEnabled;
         outConfig->touchpadTapToClickEnabled = mLocked.touchpadTapToClickEnabled;
         outConfig->touchpadTapDraggingEnabled = mLocked.touchpadTapDraggingEnabled;
+        outConfig->shouldNotifyTouchpadHardwareState = mLocked.shouldNotifyTouchpadHardwareState;
         outConfig->touchpadRightClickZoneEnabled = mLocked.touchpadRightClickZoneEnabled;
+        outConfig->touchpadThreeFingerTapShortcutEnabled =
+                mLocked.touchpadThreeFingerTapShortcutEnabled;
+        outConfig->touchpadSystemGesturesEnabled = mLocked.touchpadSystemGesturesEnabled;
+        outConfig->touchpadAccelerationEnabled = mLocked.touchpadAccelerationEnabled;
 
         outConfig->disabledDevices = mLocked.disabledInputDevices;
 
         outConfig->stylusButtonMotionEventsEnabled = mLocked.stylusButtonMotionEventsEnabled;
 
         outConfig->stylusPointerIconEnabled = mLocked.stylusPointerIconEnabled;
+
+        outConfig->keyRemapping = mLocked.keyRemapping;
     } // release lock
 }
 
@@ -774,7 +920,7 @@ std::shared_ptr<PointerControllerInterface> NativeInputManager::createPointerCon
 }
 
 void NativeInputManager::notifyPointerDisplayIdChanged(ui::LogicalDisplayId pointerDisplayId,
-                                                       const FloatPoint& position) {
+                                                       const vec2& position) {
     // Notify the Reader so that devices can be reconfigured.
     { // acquire lock
         std::scoped_lock _l(mLock);
@@ -788,12 +934,37 @@ void NativeInputManager::notifyPointerDisplayIdChanged(ui::LogicalDisplayId poin
             InputReaderConfiguration::Change::DISPLAY_INFO);
 }
 
+void NativeInputManager::notifyMouseCursorFadedOnTyping() {
+    mInputManager->getReader().notifyMouseCursorFadedOnTyping();
+}
+
 void NativeInputManager::notifyStickyModifierStateChanged(uint32_t modifierState,
                                                           uint32_t lockedModifierState) {
     JNIEnv* env = jniEnv();
     env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyStickyModifierStateChanged,
                         modifierState, lockedModifierState);
     checkAndClearExceptionFromCallback(env, "notifyStickyModifierStateChanged");
+}
+
+std::optional<vec2> NativeInputManager::filterPointerMotionForAccessibility(
+        const vec2& current, const vec2& delta, const ui::LogicalDisplayId& displayId) {
+    JNIEnv* env = jniEnv();
+    ScopedFloatArrayRO filtered(env,
+                                jfloatArray(
+                                        env->CallObjectMethod(mServiceObj,
+                                                              gServiceClassInfo.filterPointerMotion,
+                                                              delta.x, delta.y, current.x,
+                                                              current.y, displayId.val())));
+    if (checkAndClearExceptionFromCallback(env, "filterPointerMotionForAccessibilityLocked")) {
+        ALOGE("Disabling accessibility pointer motion filter due to an error. "
+              "The filter state in Java and PointerChoreographer would no longer be in sync.");
+        return std::nullopt;
+    }
+    LOG_ALWAYS_FATAL_IF(filtered.size() != 2,
+                        "Accessibility pointer motion filter is misbehaving. Returned array size "
+                        "%zu should be 2.",
+                        filtered.size());
+    return vec2{filtered[0], filtered[1]};
 }
 
 sp<SurfaceControl> NativeInputManager::getParentSurfaceForPointers(ui::LogicalDisplayId displayId) {
@@ -856,6 +1027,103 @@ void NativeInputManager::notifyInputDevicesChanged(const std::vector<InputDevice
     }
 
     checkAndClearExceptionFromCallback(env, "notifyInputDevicesChanged");
+}
+
+static ScopedLocalRef<jobject> createTouchpadHardwareStateObj(
+        JNIEnv* env, const SelfContainedHardwareState& schs) {
+    ScopedLocalRef<jobject>
+            touchpadHardwareStateObj(env,
+                                     env->NewObject(gTouchpadHardwareStateClassInfo.clazz,
+                                                    gTouchpadHardwareStateClassInfo.init, ""));
+
+    if (!touchpadHardwareStateObj.get()) {
+        return ScopedLocalRef<jobject>(env);
+    }
+
+    env->SetFloatField(touchpadHardwareStateObj.get(), gTouchpadHardwareStateClassInfo.timestamp,
+                       static_cast<jfloat>(schs.state.timestamp));
+    env->SetIntField(touchpadHardwareStateObj.get(), gTouchpadHardwareStateClassInfo.buttonsDown,
+                     static_cast<jint>(schs.state.buttons_down));
+    env->SetIntField(touchpadHardwareStateObj.get(), gTouchpadHardwareStateClassInfo.fingerCount,
+                     static_cast<jint>(schs.state.finger_cnt));
+    env->SetIntField(touchpadHardwareStateObj.get(), gTouchpadHardwareStateClassInfo.touchCount,
+                     static_cast<jint>(schs.state.touch_cnt));
+
+    size_t count = schs.fingers.size();
+    ScopedLocalRef<jobjectArray>
+            fingerStateObjArray(env,
+                                env->NewObjectArray(count, gTouchpadFingerStateClassInfo.clazz,
+                                                    nullptr));
+
+    if (!fingerStateObjArray.get()) {
+        return ScopedLocalRef<jobject>(env);
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        ScopedLocalRef<jobject> fingerStateObj(env,
+                                               env->NewObject(gTouchpadFingerStateClassInfo.clazz,
+                                                              gTouchpadFingerStateClassInfo.init,
+                                                              ""));
+        if (!fingerStateObj.get()) {
+            return ScopedLocalRef<jobject>(env);
+        }
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.touchMajor,
+                           static_cast<jfloat>(schs.fingers[i].touch_major));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.touchMinor,
+                           static_cast<jfloat>(schs.fingers[i].touch_minor));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.widthMajor,
+                           static_cast<jfloat>(schs.fingers[i].width_major));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.widthMinor,
+                           static_cast<jfloat>(schs.fingers[i].width_minor));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.pressure,
+                           static_cast<jfloat>(schs.fingers[i].pressure));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.orientation,
+                           static_cast<jfloat>(schs.fingers[i].orientation));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.positionX,
+                           static_cast<jfloat>(schs.fingers[i].position_x));
+        env->SetFloatField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.positionY,
+                           static_cast<jfloat>(schs.fingers[i].position_y));
+        env->SetIntField(fingerStateObj.get(), gTouchpadFingerStateClassInfo.trackingId,
+                         static_cast<jint>(schs.fingers[i].tracking_id));
+
+        env->SetObjectArrayElement(fingerStateObjArray.get(), i, fingerStateObj.get());
+    }
+
+    env->SetObjectField(touchpadHardwareStateObj.get(),
+                        gTouchpadHardwareStateClassInfo.fingerStates, fingerStateObjArray.get());
+
+    return touchpadHardwareStateObj;
+}
+
+void NativeInputManager::notifyTouchpadHardwareState(const SelfContainedHardwareState& schs,
+                                                     int32_t deviceId) {
+    ATRACE_CALL();
+    JNIEnv* env = jniEnv();
+
+    ScopedLocalRef<jobject> hardwareStateObj = createTouchpadHardwareStateObj(env, schs);
+
+    if (hardwareStateObj.get()) {
+        env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyTouchpadHardwareState,
+                            hardwareStateObj.get(), deviceId);
+    }
+
+    checkAndClearExceptionFromCallback(env, "notifyTouchpadHardwareState");
+}
+
+void NativeInputManager::notifyTouchpadGestureInfo(enum GestureType type, int32_t deviceId) {
+    ATRACE_CALL();
+    JNIEnv* env = jniEnv();
+
+    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyTouchpadGestureInfo, type, deviceId);
+
+    checkAndClearExceptionFromCallback(env, "notifyTouchpadGestureInfo");
+}
+
+void NativeInputManager::notifyTouchpadThreeFingerTap() {
+    ATRACE_CALL();
+    JNIEnv* env = jniEnv();
+    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyTouchpadThreeFingerTap);
+    checkAndClearExceptionFromCallback(env, "notifyTouchpadThreeFingerTap");
 }
 
 std::shared_ptr<KeyCharacterMap> NativeInputManager::getKeyboardLayoutOverlay(
@@ -933,18 +1201,6 @@ void NativeInputManager::notifySwitch(nsecs_t when,
     env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifySwitch,
             when, switchValues, switchMask);
     checkAndClearExceptionFromCallback(env, "notifySwitch");
-}
-
-void NativeInputManager::notifyConfigurationChanged(nsecs_t when) {
-#if DEBUG_INPUT_DISPATCHER_POLICY
-    ALOGD("notifyConfigurationChanged - when=%lld", when);
-#endif
-    ATRACE_CALL();
-
-    JNIEnv* env = jniEnv();
-
-    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyConfigurationChanged, when);
-    checkAndClearExceptionFromCallback(env, "notifyConfigurationChanged");
 }
 
 static jobject getInputApplicationHandleObjLocalRef(
@@ -1165,6 +1421,81 @@ int32_t NativeInputManager::getMousePointerSpeed() {
     return mLocked.pointerSpeed;
 }
 
+void NativeInputManager::setMouseReverseVerticalScrollingEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.mouseReverseVerticalScrollingEnabled == enabled) {
+            return;
+        }
+
+        mLocked.mouseReverseVerticalScrollingEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::MOUSE_SETTINGS);
+}
+
+void NativeInputManager::setMouseScrollingAccelerationEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.mouseScrollingAccelerationEnabled == enabled) {
+            return;
+        }
+
+        mLocked.mouseScrollingAccelerationEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::POINTER_SPEED);
+}
+
+void NativeInputManager::setMouseScrollingSpeed(int32_t speed) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.mouseScrollingSpeed == speed) {
+            return;
+        }
+
+        mLocked.mouseScrollingSpeed = speed;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::POINTER_SPEED);
+}
+
+void NativeInputManager::setMouseSwapPrimaryButtonEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.mouseSwapPrimaryButtonEnabled == enabled) {
+            return;
+        }
+
+        mLocked.mouseSwapPrimaryButtonEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::MOUSE_SETTINGS);
+}
+
+void NativeInputManager::setMouseAccelerationEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.mousePointerAccelerationEnabled == enabled) {
+            return;
+        }
+
+        mLocked.mousePointerAccelerationEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::POINTER_SPEED);
+}
+
 void NativeInputManager::setPointerSpeed(int32_t speed) {
     { // acquire lock
         std::scoped_lock _l(mLock);
@@ -1181,23 +1512,21 @@ void NativeInputManager::setPointerSpeed(int32_t speed) {
             InputReaderConfiguration::Change::POINTER_SPEED);
 }
 
-void NativeInputManager::setMousePointerAccelerationEnabled(ui::LogicalDisplayId displayId,
-                                                            bool enabled) {
+void NativeInputManager::setMouseScalingEnabled(ui::LogicalDisplayId displayId, bool enabled) {
     { // acquire lock
         std::scoped_lock _l(mLock);
 
-        const bool oldEnabled =
-                mLocked.displaysWithMousePointerAccelerationDisabled.count(displayId) == 0;
+        const bool oldEnabled = mLocked.displaysWithMouseScalingDisabled.count(displayId) == 0;
         if (oldEnabled == enabled) {
             return;
         }
 
-        ALOGI("Setting mouse pointer acceleration to %s on display %s", toString(enabled),
+        ALOGI("Setting mouse pointer scaling to %s on display %s", toString(enabled),
               displayId.toString().c_str());
         if (enabled) {
-            mLocked.displaysWithMousePointerAccelerationDisabled.erase(displayId);
+            mLocked.displaysWithMouseScalingDisabled.erase(displayId);
         } else {
-            mLocked.displaysWithMousePointerAccelerationDisabled.emplace(displayId);
+            mLocked.displaysWithMouseScalingDisabled.emplace(displayId);
         }
     } // release lock
 
@@ -1269,6 +1598,22 @@ void NativeInputManager::setTouchpadTapDraggingEnabled(bool enabled) {
             InputReaderConfiguration::Change::TOUCHPAD_SETTINGS);
 }
 
+void NativeInputManager::setShouldNotifyTouchpadHardwareState(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.shouldNotifyTouchpadHardwareState == enabled) {
+            return;
+        }
+
+        ALOGI("Should touchpad hardware state be notified: %s.", toString(enabled));
+        mLocked.shouldNotifyTouchpadHardwareState = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::TOUCHPAD_SETTINGS);
+}
+
 void NativeInputManager::setTouchpadRightClickZoneEnabled(bool enabled) {
     { // acquire lock
         std::scoped_lock _l(mLock);
@@ -1279,6 +1624,53 @@ void NativeInputManager::setTouchpadRightClickZoneEnabled(bool enabled) {
 
         ALOGI("Setting touchpad right click zone to %s.", toString(enabled));
         mLocked.touchpadRightClickZoneEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::TOUCHPAD_SETTINGS);
+}
+
+void NativeInputManager::setTouchpadThreeFingerTapShortcutEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.touchpadThreeFingerTapShortcutEnabled == enabled) {
+            return;
+        }
+
+        ALOGI("Setting touchpad three finger tap shortcut to %s.", toString(enabled));
+        mLocked.touchpadThreeFingerTapShortcutEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::TOUCHPAD_SETTINGS);
+}
+
+void NativeInputManager::setTouchpadSystemGesturesEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.touchpadSystemGesturesEnabled == enabled) {
+            return;
+        }
+
+        ALOGI("Setting touchpad system gestures enabled to %s.", toString(enabled));
+        mLocked.touchpadSystemGesturesEnabled = enabled;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::TOUCHPAD_SETTINGS);
+}
+
+void NativeInputManager::setTouchpadAccelerationEnabled(bool enabled) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        if (mLocked.touchpadAccelerationEnabled == enabled) {
+            return;
+        }
+
+        mLocked.touchpadAccelerationEnabled = enabled;
     } // release lock
 
     mInputManager->getReader().requestRefreshConfiguration(
@@ -1317,8 +1709,10 @@ void NativeInputManager::requestPointerCapture(const sp<IBinder>& windowToken, b
     mInputManager->getDispatcher().requestPointerCapture(windowToken, enabled);
 }
 
-void NativeInputManager::setInteractive(bool interactive) {
-    mInteractive = interactive;
+void NativeInputManager::setNonInteractiveDisplays(
+        const std::set<ui::LogicalDisplayId>& displayIds) {
+    std::scoped_lock _l(mLock);
+    mLocked.nonInteractiveDisplays = displayIds;
 }
 
 void NativeInputManager::reloadCalibration() {
@@ -1447,7 +1841,7 @@ void NativeInputManager::interceptKeyBeforeQueueing(const KeyEvent& keyEvent,
     // - Ignore untrusted events and pass them along.
     // - Ask the window manager what to do with normal events and trusted injected events.
     // - For normal events wake and brighten the screen if currently off or dim.
-    const bool interactive = mInteractive.load();
+    const bool interactive = isDisplayInteractive(keyEvent.getDisplayId());
     if (interactive) {
         policyFlags |= POLICY_FLAG_INTERACTIVE;
     }
@@ -1485,7 +1879,7 @@ void NativeInputManager::interceptMotionBeforeQueueing(ui::LogicalDisplayId disp
     // - No special filtering for injected events required at this time.
     // - Filter normal events based on screen state.
     // - For normal events brighten (but do not wake) the screen if currently dim.
-    const bool interactive = mInteractive.load();
+    const bool interactive = isDisplayInteractive(displayId);
     if (interactive) {
         policyFlags |= POLICY_FLAG_INTERACTIVE;
     }
@@ -1524,9 +1918,27 @@ void NativeInputManager::handleInterceptActions(jint wmActions, nsecs_t when,
     }
 }
 
-nsecs_t NativeInputManager::interceptKeyBeforeDispatching(const sp<IBinder>& token,
-                                                          const KeyEvent& keyEvent,
-                                                          uint32_t policyFlags) {
+bool NativeInputManager::isDisplayInteractive(ui::LogicalDisplayId displayId) {
+    // If an input event doesn't have an associated id, use the default display id
+    if (displayId == ui::LogicalDisplayId::INVALID) {
+        displayId = ui::LogicalDisplayId::DEFAULT;
+    }
+
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+
+        auto it = mLocked.nonInteractiveDisplays.find(displayId);
+        if (it != mLocked.nonInteractiveDisplays.end()) {
+            return false;
+        }
+    } // release lock
+
+    return true;
+}
+
+std::variant<nsecs_t, inputdispatcher::KeyEntry::InterceptKeyResult>
+NativeInputManager::interceptKeyBeforeDispatching(const sp<IBinder>& token,
+                                                  const KeyEvent& keyEvent, uint32_t policyFlags) {
     ATRACE_CALL();
     // Policy:
     // - Ignore untrusted events and pass them along.
@@ -1554,7 +1966,24 @@ nsecs_t NativeInputManager::interceptKeyBeforeDispatching(const sp<IBinder>& tok
     if (checkAndClearExceptionFromCallback(env, "interceptKeyBeforeDispatching")) {
         return 0;
     }
-    return delayMillis < 0 ? -1 : milliseconds_to_nanoseconds(delayMillis);
+
+    // Negative delay represent states from intercepting the key.
+    // 0 : Continue event.
+    if (delayMillis == 0) {
+        return inputdispatcher::KeyEntry::InterceptKeyResult::CONTINUE;
+    }
+
+    // -1 : Drop and skip the key event.
+    if (delayMillis == -1) {
+        return inputdispatcher::KeyEntry::InterceptKeyResult::SKIP;
+    }
+
+    // -2 : Skip sending even to application and go directly to post processing e.g. fallbacks.
+    if (delayMillis == -2) {
+        return inputdispatcher::KeyEntry::InterceptKeyResult::FALLBACK;
+    }
+
+    return milliseconds_to_nanoseconds(delayMillis);
 }
 
 std::optional<KeyEvent> NativeInputManager::dispatchUnhandledKey(const sp<IBinder>& token,
@@ -1655,9 +2084,30 @@ void NativeInputManager::loadAdditionalMouseResources(
     ATRACE_CALL();
     JNIEnv* env = jniEnv();
 
-    for (int32_t iconId = static_cast<int32_t>(PointerIconStyle::TYPE_CONTEXT_MENU);
-         iconId <= static_cast<int32_t>(PointerIconStyle::TYPE_HANDWRITING); ++iconId) {
-        const PointerIconStyle pointerIconStyle = static_cast<PointerIconStyle>(iconId);
+    constexpr static std::array ADDITIONAL_STYLES{PointerIconStyle::TYPE_CONTEXT_MENU,
+                                                  PointerIconStyle::TYPE_HAND,
+                                                  PointerIconStyle::TYPE_HELP,
+                                                  PointerIconStyle::TYPE_WAIT,
+                                                  PointerIconStyle::TYPE_CELL,
+                                                  PointerIconStyle::TYPE_CROSSHAIR,
+                                                  PointerIconStyle::TYPE_TEXT,
+                                                  PointerIconStyle::TYPE_VERTICAL_TEXT,
+                                                  PointerIconStyle::TYPE_ALIAS,
+                                                  PointerIconStyle::TYPE_COPY,
+                                                  PointerIconStyle::TYPE_NO_DROP,
+                                                  PointerIconStyle::TYPE_ALL_SCROLL,
+                                                  PointerIconStyle::TYPE_HORIZONTAL_DOUBLE_ARROW,
+                                                  PointerIconStyle::TYPE_VERTICAL_DOUBLE_ARROW,
+                                                  PointerIconStyle::TYPE_TOP_RIGHT_DOUBLE_ARROW,
+                                                  PointerIconStyle::TYPE_TOP_LEFT_DOUBLE_ARROW,
+                                                  PointerIconStyle::TYPE_ZOOM_IN,
+                                                  PointerIconStyle::TYPE_ZOOM_OUT,
+                                                  PointerIconStyle::TYPE_GRAB,
+                                                  PointerIconStyle::TYPE_GRABBING,
+                                                  PointerIconStyle::TYPE_HANDWRITING,
+                                                  PointerIconStyle::TYPE_SPOT_HOVER};
+
+    for (const auto pointerIconStyle : ADDITIONAL_STYLES) {
         PointerIcon pointerIcon = loadPointerIcon(env, displayId, pointerIconStyle);
         (*outResources)[pointerIconStyle] = toSpriteIcon(pointerIcon);
         if (!pointerIcon.bitmapFrames.empty()) {
@@ -1718,7 +2168,7 @@ void NativeInputManager::setStylusButtonMotionEventsEnabled(bool enabled) {
             InputReaderConfiguration::Change::STYLUS_BUTTON_REPORTING);
 }
 
-FloatPoint NativeInputManager::getMouseCursorPosition(ui::LogicalDisplayId displayId) {
+vec2 NativeInputManager::getMouseCursorPosition(ui::LogicalDisplayId displayId) {
     return mInputManager->getChoreographer().getMouseCursorPosition(displayId);
 }
 
@@ -1734,6 +2184,16 @@ void NativeInputManager::setInputMethodConnectionIsActive(bool isActive) {
     } // release lock
 
     mInputManager->getDispatcher().setInputMethodConnectionIsActive(isActive);
+}
+
+void NativeInputManager::setKeyRemapping(const std::map<int32_t, int32_t>& keyRemapping) {
+    { // acquire lock
+        std::scoped_lock _l(mLock);
+        mLocked.keyRemapping = keyRemapping;
+    } // release lock
+
+    mInputManager->getReader().requestRefreshConfiguration(
+            InputReaderConfiguration::Change::KEY_REMAPPING);
 }
 
 // ----------------------------------------------------------------------------
@@ -1777,6 +2237,12 @@ static void nativeSetDisplayViewports(JNIEnv* env, jobject nativeImplObj,
     im->setDisplayViewports(env, viewportObjArray);
 }
 
+static void nativeSetDisplayTopology(JNIEnv* env, jobject nativeImplObj,
+                                     jobject displayTopologyObj) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setDisplayTopology(env, displayTopologyObj);
+}
+
 static jint nativeGetScanCodeState(JNIEnv* env, jobject nativeImplObj, jint deviceId,
                                    jint sourceMask, jint scanCode) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
@@ -1809,10 +2275,19 @@ static std::vector<int32_t> getIntArray(JNIEnv* env, jintArray arr) {
     return vec;
 }
 
-static void nativeAddKeyRemapping(JNIEnv* env, jobject nativeImplObj, jint deviceId,
-                                  jint fromKeyCode, jint toKeyCode) {
+static void nativeSetKeyRemapping(JNIEnv* env, jobject nativeImplObj, jintArray fromKeyCodesArr,
+                                  jintArray toKeyCodesArr) {
+    const std::vector<int32_t> fromKeycodes = getIntArray(env, fromKeyCodesArr);
+    const std::vector<int32_t> toKeycodes = getIntArray(env, toKeyCodesArr);
+    if (fromKeycodes.size() != toKeycodes.size()) {
+        jniThrowRuntimeException(env, "FromKeycodes and toKeycodes cannot match.");
+    }
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
-    im->getInputManager()->getReader().addKeyRemapping(deviceId, fromKeyCode, toKeyCode);
+    std::map<int32_t, int32_t> keyRemapping;
+    for (int i = 0; i < fromKeycodes.size(); i++) {
+        keyRemapping.insert_or_assign(fromKeycodes[i], toKeycodes[i]);
+    }
+    im->setKeyRemapping(keyRemapping);
 }
 
 static jboolean nativeHasKeys(JNIEnv* env, jobject nativeImplObj, jint deviceId, jint sourceMask,
@@ -1843,17 +2318,6 @@ static jint nativeGetKeyCodeForKeyLocation(JNIEnv* env, jobject nativeImplObj, j
                                                                              locationKeyCode);
 }
 
-static void handleInputChannelDisposed(JNIEnv* env, jobject /* inputChannelObj */,
-                                       const std::shared_ptr<InputChannel>& inputChannel,
-                                       void* data) {
-    NativeInputManager* im = static_cast<NativeInputManager*>(data);
-
-    ALOGW("Input channel object '%s' was disposed without first being removed with "
-          "the input manager!",
-          inputChannel->getName().c_str());
-    im->removeInputChannel(inputChannel->getConnectionToken());
-}
-
 static jobject nativeCreateInputChannel(JNIEnv* env, jobject nativeImplObj, jstring nameObj) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
 
@@ -1875,8 +2339,6 @@ static jobject nativeCreateInputChannel(JNIEnv* env, jobject nativeImplObj, jstr
         return nullptr;
     }
 
-    android_view_InputChannel_setDisposeCallback(env, inputChannelObj,
-            handleInputChannelDisposed, im);
     return inputChannelObj;
 }
 
@@ -2031,6 +2493,12 @@ static void nativeToggleCapsLock(JNIEnv* env, jobject nativeImplObj, jint device
     im->getInputManager()->getReader().toggleCapsLockState(deviceId);
 }
 
+static void resetLockedModifierState(JNIEnv* env, jobject nativeImplObj) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+
+    im->getInputManager()->getReader().resetLockedModifierState();
+}
+
 static void nativeDisplayRemoved(JNIEnv* env, jobject nativeImplObj, jint displayId) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
 
@@ -2080,7 +2548,7 @@ static void nativeSetSystemUiLightsOut(JNIEnv* env, jobject nativeImplObj, jbool
 
 static jboolean nativeTransferTouchGesture(JNIEnv* env, jobject nativeImplObj,
                                            jobject fromChannelTokenObj, jobject toChannelTokenObj,
-                                           jboolean isDragDrop) {
+                                           jboolean isDragDrop, jboolean transferEntireGesture) {
     if (fromChannelTokenObj == nullptr || toChannelTokenObj == nullptr) {
         return JNI_FALSE;
     }
@@ -2090,7 +2558,8 @@ static jboolean nativeTransferTouchGesture(JNIEnv* env, jobject nativeImplObj,
 
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
     if (im->getInputManager()->getDispatcher().transferTouchGesture(fromChannelToken,
-                                                                    toChannelToken, isDragDrop)) {
+                                                                    toChannelToken, isDragDrop,
+                                                                    transferEntireGesture)) {
         return JNI_TRUE;
     } else {
         return JNI_FALSE;
@@ -2123,11 +2592,11 @@ static void nativeSetPointerSpeed(JNIEnv* env, jobject nativeImplObj, jint speed
     im->setPointerSpeed(speed);
 }
 
-static void nativeSetMousePointerAccelerationEnabled(JNIEnv* env, jobject nativeImplObj,
-                                                     jint displayId, jboolean enabled) {
+static void nativeSetMouseScalingEnabled(JNIEnv* env, jobject nativeImplObj, jint displayId,
+                                         jboolean enabled) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
 
-    im->setMousePointerAccelerationEnabled(ui::LogicalDisplayId{displayId}, enabled);
+    im->setMouseScalingEnabled(ui::LogicalDisplayId{displayId}, enabled);
 }
 
 static void nativeSetTouchpadPointerSpeed(JNIEnv* env, jobject nativeImplObj, jint speed) {
@@ -2157,11 +2626,37 @@ static void nativeSetTouchpadTapDraggingEnabled(JNIEnv* env, jobject nativeImplO
     im->setTouchpadTapDraggingEnabled(enabled);
 }
 
+static void nativeSetShouldNotifyTouchpadHardwareState(JNIEnv* env, jobject nativeImplObj,
+                                                       jboolean enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+
+    im->setShouldNotifyTouchpadHardwareState(enabled);
+}
+
 static void nativeSetTouchpadRightClickZoneEnabled(JNIEnv* env, jobject nativeImplObj,
                                                    jboolean enabled) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
 
     im->setTouchpadRightClickZoneEnabled(enabled);
+}
+
+static void nativeSetTouchpadThreeFingerTapShortcutEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                           jboolean enabled) {
+    getNativeInputManager(env, nativeImplObj)->setTouchpadThreeFingerTapShortcutEnabled(enabled);
+}
+
+static void nativeSetTouchpadSystemGesturesEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                   jboolean enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+
+    im->setTouchpadSystemGesturesEnabled(enabled);
+}
+
+static void nativeSetTouchpadAccelerationEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                 jboolean enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+
+    im->setTouchpadAccelerationEnabled(enabled);
 }
 
 static void nativeSetShowTouches(JNIEnv* env, jobject nativeImplObj, jboolean enabled) {
@@ -2170,10 +2665,17 @@ static void nativeSetShowTouches(JNIEnv* env, jobject nativeImplObj, jboolean en
     im->setShowTouches(enabled);
 }
 
-static void nativeSetInteractive(JNIEnv* env, jobject nativeImplObj, jboolean interactive) {
+static void nativeSetNonInteractiveDisplays(JNIEnv* env, jobject nativeImplObj,
+                                            jintArray displayIds) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
 
-    im->setInteractive(interactive);
+    const std::vector displayIdsVec = getIntArray(env, displayIds);
+    std::set<ui::LogicalDisplayId> logicalDisplayIds;
+    for (int displayId : displayIdsVec) {
+        logicalDisplayIds.emplace(ui::LogicalDisplayId{displayId});
+    }
+
+    im->setNonInteractiveDisplays(logicalDisplayIds);
 }
 
 static void nativeReloadCalibration(JNIEnv* env, jobject nativeImplObj) {
@@ -2313,8 +2815,11 @@ static jobject nativeGetLights(JNIEnv* env, jobject nativeImplObj, jint deviceId
         } else if (lightInfo.type == InputDeviceLightType::KEYBOARD_MIC_MUTE) {
             jTypeId = env->GetStaticIntField(gLightClassInfo.clazz,
                                              gLightClassInfo.lightTypeKeyboardMicMute);
+        } else if (lightInfo.type == InputDeviceLightType::KEYBOARD_VOLUME_MUTE) {
+            jTypeId = env->GetStaticIntField(gLightClassInfo.clazz,
+                                             gLightClassInfo.lightTypeKeyboardVolumeMute);
         } else {
-            ALOGW("Unknown light type %d", lightInfo.type);
+            ALOGW("Unknown light type %s", ftl::enum_string(lightInfo.type).c_str());
             continue;
         }
 
@@ -2419,6 +2924,12 @@ static void nativeReloadDeviceAliases(JNIEnv* env, jobject nativeImplObj) {
 
     im->getInputManager()->getReader().requestRefreshConfiguration(
             InputReaderConfiguration::Change::DEVICE_ALIAS);
+}
+
+static jstring nativeGetSysfsRootPath(JNIEnv* env, jobject nativeImplObj, jint deviceId) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    const auto path = im->getInputManager()->getReader().getSysfsRootPath(deviceId);
+    return path.empty() ? nullptr : env->NewStringUTF(path.c_str());
 }
 
 static void nativeSysfsNodeChanged(JNIEnv* env, jobject nativeImplObj, jstring path) {
@@ -2548,12 +3059,13 @@ static void nativeSetMotionClassifierEnabled(JNIEnv* env, jobject nativeImplObj,
 }
 
 static void nativeSetKeyRepeatConfiguration(JNIEnv* env, jobject nativeImplObj, jint timeoutMs,
-                                            jint delayMs) {
+                                            jint delayMs, jboolean keyRepeatEnabled) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
     im->getInputManager()->getDispatcher().setKeyRepeatConfiguration(std::chrono::milliseconds(
                                                                              timeoutMs),
                                                                      std::chrono::milliseconds(
-                                                                             delayMs));
+                                                                             delayMs),
+                                                                     keyRepeatEnabled);
 }
 
 static jobject createInputSensorInfo(JNIEnv* env, jstring name, jstring vendor, jint version,
@@ -2615,6 +3127,45 @@ static jobjectArray nativeGetSensorList(JNIEnv* env, jobject nativeImplObj, jint
         env->DeleteLocalRef(info);
     }
     return arr;
+}
+
+static jobject nativeGetTouchpadHardwareProperties(JNIEnv* env, jobject nativeImplObj,
+                                                   jint deviceId) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    std::optional<HardwareProperties> touchpadHardwareProperties =
+            im->getInputManager()->getReader().getTouchpadHardwareProperties(deviceId);
+
+    jobject hwPropsObj = env->NewObject(gTouchpadHardwarePropertiesOffsets.clazz,
+                                        gTouchpadHardwarePropertiesOffsets.constructor);
+    if (hwPropsObj == NULL || !touchpadHardwareProperties.has_value()) {
+        return hwPropsObj;
+    }
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.left,
+                       touchpadHardwareProperties->left);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.top,
+                       touchpadHardwareProperties->top);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.right,
+                       touchpadHardwareProperties->right);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.bottom,
+                       touchpadHardwareProperties->bottom);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.resX,
+                       touchpadHardwareProperties->res_x);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.resY,
+                       touchpadHardwareProperties->res_y);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.orientationMinimum,
+                       touchpadHardwareProperties->orientation_minimum);
+    env->SetFloatField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.orientationMaximum,
+                       touchpadHardwareProperties->orientation_maximum);
+    env->SetIntField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.maxFingerCount,
+                     touchpadHardwareProperties->max_finger_cnt);
+    env->SetBooleanField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.isButtonPad,
+                         touchpadHardwareProperties->is_button_pad);
+    env->SetBooleanField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.isHapticPad,
+                         touchpadHardwareProperties->is_haptic_pad);
+    env->SetBooleanField(hwPropsObj, gTouchpadHardwarePropertiesOffsets.reportsPressure,
+                         touchpadHardwareProperties->reports_pressure);
+
+    return hwPropsObj;
 }
 
 static jboolean nativeEnableSensor(JNIEnv* env, jobject nativeImplObj, jint deviceId,
@@ -2690,27 +3241,21 @@ static void nativeSetStylusPointerIconEnabled(JNIEnv* env, jobject nativeImplObj
 static void nativeSetAccessibilityBounceKeysThreshold(JNIEnv* env, jobject nativeImplObj,
                                                       jint thresholdTimeMs) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
-    if (ENABLE_INPUT_FILTER_RUST) {
-        im->getInputManager()->getInputFilter().setAccessibilityBounceKeysThreshold(
-                static_cast<nsecs_t>(thresholdTimeMs) * 1000000);
-    }
+    im->getInputManager()->getInputFilter().setAccessibilityBounceKeysThreshold(
+            static_cast<nsecs_t>(thresholdTimeMs) * 1000000);
 }
 
 static void nativeSetAccessibilitySlowKeysThreshold(JNIEnv* env, jobject nativeImplObj,
                                                     jint thresholdTimeMs) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
-    if (ENABLE_INPUT_FILTER_RUST) {
-        im->getInputManager()->getInputFilter().setAccessibilitySlowKeysThreshold(
-                static_cast<nsecs_t>(thresholdTimeMs) * 1000000);
-    }
+    im->getInputManager()->getInputFilter().setAccessibilitySlowKeysThreshold(
+            static_cast<nsecs_t>(thresholdTimeMs) * 1000000);
 }
 
 static void nativeSetAccessibilityStickyKeysEnabled(JNIEnv* env, jobject nativeImplObj,
                                                     jboolean enabled) {
     NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
-    if (ENABLE_INPUT_FILTER_RUST) {
-        im->getInputManager()->getInputFilter().setAccessibilityStickyKeysEnabled(enabled);
-    }
+    im->getInputManager()->getInputFilter().setAccessibilityStickyKeysEnabled(enabled);
 }
 
 static void nativeSetInputMethodConnectionIsActive(JNIEnv* env, jobject nativeImplObj,
@@ -2724,6 +3269,46 @@ static jint nativeGetLastUsedInputDeviceId(JNIEnv* env, jobject nativeImplObj) {
     return static_cast<jint>(im->getInputManager()->getReader().getLastUsedInputDeviceId());
 }
 
+static void nativeSetMouseScrollingAccelerationEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                       bool enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setMouseScrollingAccelerationEnabled(enabled);
+}
+
+static void nativeSetMouseScrollingSpeed(JNIEnv* env, jobject nativeImplObj, jint speed) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setMouseScrollingSpeed(speed);
+}
+
+static void nativeSetMouseReverseVerticalScrollingEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                          bool enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setMouseReverseVerticalScrollingEnabled(enabled);
+}
+
+static void nativeSetMouseSwapPrimaryButtonEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                   bool enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setMouseSwapPrimaryButtonEnabled(enabled);
+}
+
+static void nativeSetMouseAccelerationEnabled(JNIEnv* env, jobject nativeImplObj, bool enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->setMouseAccelerationEnabled(enabled);
+}
+
+static jboolean nativeSetKernelWakeEnabled(JNIEnv* env, jobject nativeImplObj, jint deviceId,
+                                      jboolean enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    return im->getInputManager()->getReader().setKernelWakeEnabled(deviceId, enabled);
+}
+
+static void nativeSetAccessibilityPointerMotionFilterEnabled(JNIEnv* env, jobject nativeImplObj,
+                                                             jboolean enabled) {
+    NativeInputManager* im = getNativeInputManager(env, nativeImplObj);
+    im->getInputManager()->getChoreographer().setAccessibilityPointerMotionFilterEnabled(enabled);
+}
+
 // ----------------------------------------------------------------------------
 
 static const JNINativeMethod gInputManagerMethods[] = {
@@ -2735,10 +3320,12 @@ static const JNINativeMethod gInputManagerMethods[] = {
         {"start", "()V", (void*)nativeStart},
         {"setDisplayViewports", "([Landroid/hardware/display/DisplayViewport;)V",
          (void*)nativeSetDisplayViewports},
+        {"setDisplayTopology", "(Landroid/hardware/display/DisplayTopologyGraph;)V",
+         (void*)nativeSetDisplayTopology},
         {"getScanCodeState", "(III)I", (void*)nativeGetScanCodeState},
         {"getKeyCodeState", "(III)I", (void*)nativeGetKeyCodeState},
         {"getSwitchState", "(III)I", (void*)nativeGetSwitchState},
-        {"addKeyRemapping", "(III)V", (void*)nativeAddKeyRemapping},
+        {"setKeyRemapping", "([I[I)V", (void*)nativeSetKeyRemapping},
         {"hasKeys", "(II[I[Z)Z", (void*)nativeHasKeys},
         {"getKeyCodeForKeyLocation", "(II)I", (void*)nativeGetKeyCodeForKeyLocation},
         {"createInputChannel", "(Ljava/lang/String;)Landroid/view/InputChannel;",
@@ -2755,6 +3342,7 @@ static const JNINativeMethod gInputManagerMethods[] = {
         {"verifyInputEvent", "(Landroid/view/InputEvent;)Landroid/view/VerifiedInputEvent;",
          (void*)nativeVerifyInputEvent},
         {"toggleCapsLock", "(I)V", (void*)nativeToggleCapsLock},
+        {"resetLockedModifierState", "()V", (void*)resetLockedModifierState},
         {"displayRemoved", "(I)V", (void*)nativeDisplayRemoved},
         {"setFocusedApplication", "(ILandroid/view/InputApplicationHandle;)V",
          (void*)nativeSetFocusedApplication},
@@ -2763,21 +3351,33 @@ static const JNINativeMethod gInputManagerMethods[] = {
         {"requestPointerCapture", "(Landroid/os/IBinder;Z)V", (void*)nativeRequestPointerCapture},
         {"setInputDispatchMode", "(ZZ)V", (void*)nativeSetInputDispatchMode},
         {"setSystemUiLightsOut", "(Z)V", (void*)nativeSetSystemUiLightsOut},
-        {"transferTouchGesture", "(Landroid/os/IBinder;Landroid/os/IBinder;Z)Z",
+        {"transferTouchGesture", "(Landroid/os/IBinder;Landroid/os/IBinder;ZZ)Z",
          (void*)nativeTransferTouchGesture},
         {"transferTouch", "(Landroid/os/IBinder;I)Z", (void*)nativeTransferTouchOnDisplay},
         {"getMousePointerSpeed", "()I", (void*)nativeGetMousePointerSpeed},
         {"setPointerSpeed", "(I)V", (void*)nativeSetPointerSpeed},
-        {"setMousePointerAccelerationEnabled", "(IZ)V",
-         (void*)nativeSetMousePointerAccelerationEnabled},
+        {"setMouseScalingEnabled", "(IZ)V", (void*)nativeSetMouseScalingEnabled},
+        {"setMouseReverseVerticalScrollingEnabled", "(Z)V",
+         (void*)nativeSetMouseReverseVerticalScrollingEnabled},
+        {"setMouseScrollingAccelerationEnabled", "(Z)V",
+         (void*)nativeSetMouseScrollingAccelerationEnabled},
+        {"setMouseScrollingSpeed", "(I)V", (void*)nativeSetMouseScrollingSpeed},
+        {"setMouseSwapPrimaryButtonEnabled", "(Z)V", (void*)nativeSetMouseSwapPrimaryButtonEnabled},
+        {"setMouseAccelerationEnabled", "(Z)V", (void*)nativeSetMouseAccelerationEnabled},
         {"setTouchpadPointerSpeed", "(I)V", (void*)nativeSetTouchpadPointerSpeed},
         {"setTouchpadNaturalScrollingEnabled", "(Z)V",
          (void*)nativeSetTouchpadNaturalScrollingEnabled},
         {"setTouchpadTapToClickEnabled", "(Z)V", (void*)nativeSetTouchpadTapToClickEnabled},
         {"setTouchpadTapDraggingEnabled", "(Z)V", (void*)nativeSetTouchpadTapDraggingEnabled},
+        {"setShouldNotifyTouchpadHardwareState", "(Z)V",
+         (void*)nativeSetShouldNotifyTouchpadHardwareState},
         {"setTouchpadRightClickZoneEnabled", "(Z)V", (void*)nativeSetTouchpadRightClickZoneEnabled},
+        {"setTouchpadThreeFingerTapShortcutEnabled", "(Z)V",
+         (void*)nativeSetTouchpadThreeFingerTapShortcutEnabled},
+        {"setTouchpadSystemGesturesEnabled", "(Z)V", (void*)nativeSetTouchpadSystemGesturesEnabled},
+        {"setTouchpadAccelerationEnabled", "(Z)V", (void*)nativeSetTouchpadAccelerationEnabled},
         {"setShowTouches", "(Z)V", (void*)nativeSetShowTouches},
-        {"setInteractive", "(Z)V", (void*)nativeSetInteractive},
+        {"setNonInteractiveDisplays", "([I)V", (void*)nativeSetNonInteractiveDisplays},
         {"reloadCalibration", "()V", (void*)nativeReloadCalibration},
         {"vibrate", "(I[J[III)V", (void*)nativeVibrate},
         {"vibrateCombined", "(I[JLandroid/util/SparseArray;II)V", (void*)nativeVibrateCombined},
@@ -2794,6 +3394,7 @@ static const JNINativeMethod gInputManagerMethods[] = {
         {"getBatteryDevicePath", "(I)Ljava/lang/String;", (void*)nativeGetBatteryDevicePath},
         {"reloadKeyboardLayouts", "()V", (void*)nativeReloadKeyboardLayouts},
         {"reloadDeviceAliases", "()V", (void*)nativeReloadDeviceAliases},
+        {"getSysfsRootPath", "(I)Ljava/lang/String;", (void*)nativeGetSysfsRootPath},
         {"sysfsNodeChanged", "(Ljava/lang/String;)V", (void*)nativeSysfsNodeChanged},
         {"dump", "()Ljava/lang/String;", (void*)nativeDump},
         {"monitor", "()V", (void*)nativeMonitor},
@@ -2811,9 +3412,12 @@ static const JNINativeMethod gInputManagerMethods[] = {
         {"setDisplayEligibilityForPointerCapture", "(IZ)V",
          (void*)nativeSetDisplayEligibilityForPointerCapture},
         {"setMotionClassifierEnabled", "(Z)V", (void*)nativeSetMotionClassifierEnabled},
-        {"setKeyRepeatConfiguration", "(II)V", (void*)nativeSetKeyRepeatConfiguration},
+        {"setKeyRepeatConfiguration", "(IIZ)V", (void*)nativeSetKeyRepeatConfiguration},
         {"getSensorList", "(I)[Landroid/hardware/input/InputSensorInfo;",
          (void*)nativeGetSensorList},
+        {"getTouchpadHardwareProperties",
+         "(I)Lcom/android/server/input/TouchpadHardwareProperties;",
+         (void*)nativeGetTouchpadHardwareProperties},
         {"enableSensor", "(IIII)Z", (void*)nativeEnableSensor},
         {"disableSensor", "(II)V", (void*)nativeDisableSensor},
         {"flushSensor", "(II)Z", (void*)nativeFlushSensor},
@@ -2832,6 +3436,9 @@ static const JNINativeMethod gInputManagerMethods[] = {
          (void*)nativeSetAccessibilityStickyKeysEnabled},
         {"setInputMethodConnectionIsActive", "(Z)V", (void*)nativeSetInputMethodConnectionIsActive},
         {"getLastUsedInputDeviceId", "()I", (void*)nativeGetLastUsedInputDeviceId},
+        {"setKernelWakeEnabled", "(IZ)Z", (void*)nativeSetKernelWakeEnabled},
+        {"setAccessibilityPointerMotionFilterEnabled", "(Z)V",
+         (void*)nativeSetAccessibilityPointerMotionFilterEnabled},
 };
 
 #define FIND_CLASS(var, className) \
@@ -2872,12 +3479,18 @@ int register_android_server_InputManager(JNIEnv* env) {
     FIND_CLASS(clazz, "com/android/server/input/InputManagerService");
     gServiceClassInfo.clazz = reinterpret_cast<jclass>(env->NewGlobalRef(clazz));
 
-    GET_METHOD_ID(gServiceClassInfo.notifyConfigurationChanged, clazz,
-            "notifyConfigurationChanged", "(J)V");
-
     GET_METHOD_ID(gServiceClassInfo.notifyInputDevicesChanged, clazz,
             "notifyInputDevicesChanged", "([Landroid/view/InputDevice;)V");
 
+    GET_METHOD_ID(gServiceClassInfo.notifyTouchpadHardwareState, clazz,
+                  "notifyTouchpadHardwareState",
+                  "(Lcom/android/server/input/TouchpadHardwareState;I)V")
+
+    GET_METHOD_ID(gServiceClassInfo.notifyTouchpadGestureInfo, clazz, "notifyTouchpadGestureInfo",
+                  "(II)V")
+
+    GET_METHOD_ID(gServiceClassInfo.notifyTouchpadThreeFingerTap, clazz,
+                  "notifyTouchpadThreeFingerTap", "()V")
     GET_METHOD_ID(gServiceClassInfo.notifySwitch, clazz,
             "notifySwitch", "(JII)V");
 
@@ -2909,6 +3522,8 @@ int register_android_server_InputManager(JNIEnv* env) {
 
     GET_METHOD_ID(gServiceClassInfo.filterInputEvent, clazz,
             "filterInputEvent", "(Landroid/view/InputEvent;I)Z");
+
+    GET_METHOD_ID(gServiceClassInfo.filterPointerMotion, clazz, "filterPointerMotion", "(FFFFI)[F");
 
     GET_METHOD_ID(gServiceClassInfo.interceptKeyBeforeQueueing, clazz,
             "interceptKeyBeforeQueueing", "(Landroid/view/KeyEvent;I)I");
@@ -3028,6 +3643,8 @@ int register_android_server_InputManager(JNIEnv* env) {
             env->GetStaticFieldID(gLightClassInfo.clazz, "LIGHT_TYPE_KEYBOARD_BACKLIGHT", "I");
     gLightClassInfo.lightTypeKeyboardMicMute =
             env->GetStaticFieldID(gLightClassInfo.clazz, "LIGHT_TYPE_KEYBOARD_MIC_MUTE", "I");
+    gLightClassInfo.lightTypeKeyboardVolumeMute =
+            env->GetStaticFieldID(gLightClassInfo.clazz, "LIGHT_TYPE_KEYBOARD_VOLUME_MUTE", "I");
     gLightClassInfo.lightCapabilityBrightness =
             env->GetStaticFieldID(gLightClassInfo.clazz, "LIGHT_CAPABILITY_BRIGHTNESS", "I");
     gLightClassInfo.lightCapabilityColorRgb =
@@ -3075,6 +3692,92 @@ int register_android_server_InputManager(JNIEnv* env) {
     GET_FIELD_ID(gInputSensorInfo.id, gInputSensorInfo.clazz, "mId", "I");
 
     GET_METHOD_ID(gInputSensorInfo.init, gInputSensorInfo.clazz, "<init>", "()V");
+
+    // TouchpadHardwareState
+
+    FIND_CLASS(gTouchpadHardwareStateClassInfo.clazz,
+               "com/android/server/input/TouchpadHardwareState");
+    gTouchpadHardwareStateClassInfo.clazz =
+            reinterpret_cast<jclass>(env->NewGlobalRef(gTouchpadHardwareStateClassInfo.clazz));
+
+    GET_FIELD_ID(gTouchpadHardwareStateClassInfo.touchCount, gTouchpadHardwareStateClassInfo.clazz,
+                 "mTouchCount", "I");
+    GET_FIELD_ID(gTouchpadHardwareStateClassInfo.fingerCount, gTouchpadHardwareStateClassInfo.clazz,
+                 "mFingerCount", "I");
+    GET_FIELD_ID(gTouchpadHardwareStateClassInfo.buttonsDown, gTouchpadHardwareStateClassInfo.clazz,
+                 "mButtonsDown", "I");
+    GET_FIELD_ID(gTouchpadHardwareStateClassInfo.timestamp, gTouchpadHardwareStateClassInfo.clazz,
+                 "mTimestamp", "F");
+    GET_FIELD_ID(gTouchpadHardwareStateClassInfo.fingerStates,
+                 gTouchpadHardwareStateClassInfo.clazz, "mFingerStates",
+                 "[Lcom/android/server/input/TouchpadFingerState;");
+
+    GET_METHOD_ID(gTouchpadHardwareStateClassInfo.init, gTouchpadHardwareStateClassInfo.clazz,
+                  "<init>", "()V");
+
+    // TouchpadFingerState
+
+    FIND_CLASS(gTouchpadFingerStateClassInfo.clazz, "com/android/server/input/TouchpadFingerState");
+    gTouchpadFingerStateClassInfo.clazz =
+            reinterpret_cast<jclass>(env->NewGlobalRef(gTouchpadFingerStateClassInfo.clazz));
+
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.touchMajor, gTouchpadFingerStateClassInfo.clazz,
+                 "mTouchMajor", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.touchMinor, gTouchpadFingerStateClassInfo.clazz,
+                 "mTouchMinor", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.widthMajor, gTouchpadFingerStateClassInfo.clazz,
+                 "mWidthMajor", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.widthMinor, gTouchpadFingerStateClassInfo.clazz,
+                 "mWidthMinor", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.pressure, gTouchpadFingerStateClassInfo.clazz,
+                 "mPressure", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.orientation, gTouchpadFingerStateClassInfo.clazz,
+                 "mOrientation", "F")
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.positionX, gTouchpadFingerStateClassInfo.clazz,
+                 "mPositionX", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.positionY, gTouchpadFingerStateClassInfo.clazz,
+                 "mPositionY", "F");
+    GET_FIELD_ID(gTouchpadFingerStateClassInfo.trackingId, gTouchpadFingerStateClassInfo.clazz,
+                 "mTrackingId", "I");
+
+    GET_METHOD_ID(gTouchpadFingerStateClassInfo.init, gTouchpadFingerStateClassInfo.clazz, "<init>",
+                  "()V");
+
+    // TouchpadHardawreProperties
+    FIND_CLASS(gTouchpadHardwarePropertiesOffsets.clazz,
+               "com/android/server/input/TouchpadHardwareProperties");
+    gTouchpadHardwarePropertiesOffsets.clazz =
+            reinterpret_cast<jclass>(env->NewGlobalRef(gTouchpadHardwarePropertiesOffsets.clazz));
+
+    // Get the constructor ID
+    GET_METHOD_ID(gTouchpadHardwarePropertiesOffsets.constructor,
+                  gTouchpadHardwarePropertiesOffsets.clazz, "<init>", "()V");
+
+    // Get the field IDs
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.left, gTouchpadHardwarePropertiesOffsets.clazz,
+                 "mLeft", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.top, gTouchpadHardwarePropertiesOffsets.clazz,
+                 "mTop", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.right, gTouchpadHardwarePropertiesOffsets.clazz,
+                 "mRight", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.bottom,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mBottom", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.resX, gTouchpadHardwarePropertiesOffsets.clazz,
+                 "mResX", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.resY, gTouchpadHardwarePropertiesOffsets.clazz,
+                 "mResY", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.orientationMinimum,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mOrientationMinimum", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.orientationMaximum,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mOrientationMaximum", "F");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.maxFingerCount,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mMaxFingerCount", "S");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.isButtonPad,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mIsButtonPad", "Z");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.isHapticPad,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mIsHapticPad", "Z");
+    GET_FIELD_ID(gTouchpadHardwarePropertiesOffsets.reportsPressure,
+                 gTouchpadHardwarePropertiesOffsets.clazz, "mReportsPressure", "Z");
 
     return 0;
 }

@@ -37,12 +37,11 @@ import com.android.settingslib.spa.widget.preference.Preference
 import com.android.settingslib.spa.widget.preference.PreferenceModel
 import com.android.settingslib.spa.widget.preference.SwitchPreferenceModel
 import com.android.settingslib.spa.widget.ui.AnnotatedText
+import com.android.settingslib.spa.widget.ui.Category
 import com.android.settingslib.spaprivileged.model.app.AppRecord
 import com.android.settingslib.spaprivileged.model.app.IPackageManagers
 import com.android.settingslib.spaprivileged.model.app.PackageManagers
 import com.android.settingslib.spaprivileged.model.app.toRoute
-import com.android.settingslib.spaprivileged.model.enterprise.EnhancedConfirmation
-import com.android.settingslib.spaprivileged.model.enterprise.Restrictions
 import com.android.settingslib.spaprivileged.model.enterprise.RestrictionsProviderFactory
 import com.android.settingslib.spaprivileged.model.enterprise.RestrictionsProviderImpl
 import com.android.settingslib.spaprivileged.template.preference.RestrictedSwitchPreference
@@ -155,13 +154,15 @@ internal fun <T : AppRecord> TogglePermissionAppListModel<T>.TogglePermissionApp
             override val changeable = { isChangeable }
             override val onCheckedChange: (Boolean) -> Unit = { setAllowed(record, it) }
         }
-        val restrictions = Restrictions(userId = userId,
-            keys = switchRestrictionKeys,
-            enhancedConfirmation = enhancedConfirmationKey?.let { EnhancedConfirmation(
-                key = it,
-                packageName = packageName) })
-        RestrictedSwitchPreference(switchModel, restrictions, restrictionsProviderFactory)
-        InfoPageAdditionalContent(record, isAllowed)
+        Category {
+            RestrictedSwitchPreference(
+                model = switchModel,
+                restrictions = getRestrictions(userId, packageName, isAllowed()),
+                ifBlockedByAdminOverrideCheckedValueTo =
+                    switchifBlockedByAdminOverrideCheckedValueTo,
+                restrictionsProviderFactory = restrictionsProviderFactory,
+            )
+        }
     }
 }
 

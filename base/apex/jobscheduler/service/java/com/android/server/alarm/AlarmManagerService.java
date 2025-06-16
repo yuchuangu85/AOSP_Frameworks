@@ -96,6 +96,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.UserPackage;
+import android.content.res.Resources;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.BatteryStatsInternal;
@@ -116,10 +117,10 @@ import android.os.ServiceManager;
 import android.os.ShellCallback;
 import android.os.ShellCommand;
 import android.os.SystemClock;
-import android.os.SystemProperties;
 import android.os.ThreadLocalWorkSource;
 import android.os.Trace;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.os.WorkSource;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
@@ -165,6 +166,7 @@ import com.android.server.SystemService;
 import com.android.server.SystemServiceManager;
 import com.android.server.SystemTimeZone;
 import com.android.server.SystemTimeZone.TimeZoneConfidence;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.pm.permission.PermissionManagerService;
 import com.android.server.pm.permission.PermissionManagerServiceInternal;
 import com.android.server.pm.pkg.AndroidPackage;
@@ -178,9 +180,6 @@ import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.text.SimpleDateFormat;
-import java.time.Instant;
-import java.time.zone.ZoneOffsetTransition;
-import java.time.zone.ZoneRules;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
@@ -192,7 +191,6 @@ import java.util.Set;
 import java.util.TimeZone;
 import java.util.TreeSet;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 /**
@@ -231,13 +229,6 @@ public class AlarmManagerService extends SystemService {
     static final int NEVER_INDEX = 4;
 
     private static final long TEMPORARY_QUOTA_DURATION = INTERVAL_DAY;
-
-    // System properties read on some device configurations to initialize time properly and
-    // perform DST transitions at the bootloader level.
-    private static final String TIMEOFFSET_PROPERTY = "persist.sys.time.offset";
-    private static final String DST_TRANSITION_PROPERTY = "persist.sys.time.dst_transition";
-    private static final String DST_OFFSET_PROPERTY = "persist.sys.time.dst_offset";
-
 
     private final Intent mBackgroundIntent
             = new Intent().addFlags(Intent.FLAG_FROM_BACKGROUND);
@@ -292,7 +283,6 @@ public class AlarmManagerService extends SystemService {
 
     private final Injector mInjector;
     int mBroadcastRefCount = 0;
-    boolean mUseFrozenStateToDropListenerAlarms;
     MetricsHelper mMetricsHelper;
     PowerManager.WakeLock mWakeLock;
     SparseIntArray mAlarmsPerUid = new SparseIntArray();
@@ -329,7 +319,7 @@ public class AlarmManagerService extends SystemService {
      */
     int mSystemUiUid;
 
-    static boolean isTimeTickAlarm(Alarm a) {
+    private static boolean isTimeTickAlarm(Alarm a) {
         return a.uid == Process.SYSTEM_UID && TIME_TICK_TAG.equals(a.listenerTag);
     }
 
@@ -367,6 +357,7 @@ public class AlarmManagerService extends SystemService {
     }
 
     // TODO(b/172085676): Move inside alarm store.
+    @GuardedBy("mLock")
     private final SparseArray<AlarmManager.AlarmClockInfo> mNextAlarmClockForUser =
             new SparseArray<>();
     private final SparseArray<AlarmManager.AlarmClockInfo> mTmpSparseAlarmClockArray =
@@ -1793,39 +1784,38 @@ public class AlarmManagerService extends SystemService {
         mMetricsHelper = new MetricsHelper(getContext(), mLock);
         mActivityManagerInternal = LocalServices.getService(ActivityManagerInternal.class);
 
-        mUseFrozenStateToDropListenerAlarms = Flags.useFrozenStateToDropListenerAlarms();
-        mStartUserBeforeScheduledAlarms = Flags.startUserBeforeScheduledAlarms();
+        mStartUserBeforeScheduledAlarms = Flags.startUserBeforeScheduledAlarms()
+                && UserManager.supportsMultipleUsers() && Resources.getSystem().getBoolean(
+                com.android.internal.R.bool.config_allowAlarmsOnStoppedUsers);
         if (mStartUserBeforeScheduledAlarms) {
             mUserWakeupStore = new UserWakeupStore();
             mUserWakeupStore.init();
         }
-        if (mUseFrozenStateToDropListenerAlarms) {
-            final ActivityManager.UidFrozenStateChangedCallback callback = (uids, frozenStates) -> {
-                final int size = frozenStates.length;
-                if (uids.length != size) {
-                    Slog.wtf(TAG, "Got different length arrays in frozen state callback!"
-                            + " uids.length: " + uids.length + " frozenStates.length: " + size);
-                    // Cannot process received data in any meaningful way.
-                    return;
+        final ActivityManager.UidFrozenStateChangedCallback callback = (uids, frozenStates) -> {
+            final int size = frozenStates.length;
+            if (uids.length != size) {
+                Slog.wtf(TAG, "Got different length arrays in frozen state callback!"
+                        + " uids.length: " + uids.length + " frozenStates.length: " + size);
+                // Cannot process received data in any meaningful way.
+                return;
+            }
+            final IntArray affectedUids = new IntArray();
+            for (int i = 0; i < size; i++) {
+                if (frozenStates[i] != UID_FROZEN_STATE_FROZEN) {
+                    continue;
                 }
-                final IntArray affectedUids = new IntArray();
-                for (int i = 0; i < size; i++) {
-                    if (frozenStates[i] != UID_FROZEN_STATE_FROZEN) {
-                        continue;
-                    }
-                    if (!CompatChanges.isChangeEnabled(EXACT_LISTENER_ALARMS_DROPPED_ON_CACHED,
-                            uids[i])) {
-                        continue;
-                    }
-                    affectedUids.add(uids[i]);
+                if (!CompatChanges.isChangeEnabled(EXACT_LISTENER_ALARMS_DROPPED_ON_CACHED,
+                        uids[i])) {
+                    continue;
                 }
-                if (affectedUids.size() > 0) {
-                    removeExactListenerAlarms(affectedUids.toArray());
-                }
-            };
-            final ActivityManager am = getContext().getSystemService(ActivityManager.class);
-            am.registerUidFrozenStateChangedCallback(new HandlerExecutor(mHandler), callback);
-        }
+                affectedUids.add(uids[i]);
+            }
+            if (affectedUids.size() > 0) {
+                removeExactListenerAlarms(affectedUids.toArray());
+            }
+        };
+        final ActivityManager am = getContext().getSystemService(ActivityManager.class);
+        am.registerUidFrozenStateChangedCallback(new HandlerExecutor(mHandler), callback);
 
         mListenerDeathRecipient = new IBinder.DeathRecipient() {
             @Override
@@ -2125,22 +2115,6 @@ public class AlarmManagerService extends SystemService {
             // "GMT" if the ID is unrecognized). The parameter ID is used here rather than
             // newZone.getId(). It will be rejected if it is invalid.
             timeZoneWasChanged = SystemTimeZone.setTimeZoneId(tzId, confidence, logInfo);
-
-            final int gmtOffset = newZone.getOffset(mInjector.getCurrentTimeMillis());
-            SystemProperties.set(TIMEOFFSET_PROPERTY, String.valueOf(gmtOffset));
-
-            final ZoneRules rules = newZone.toZoneId().getRules();
-            final ZoneOffsetTransition transition = rules.nextTransition(Instant.now());
-            if (null != transition) {
-                // Get the offset between the time after the DST transition and before.
-                final long transitionOffset = TimeUnit.SECONDS.toMillis((
-                        transition.getOffsetAfter().getTotalSeconds()
-                        - transition.getOffsetBefore().getTotalSeconds()));
-                // Time when the next DST transition is programmed.
-                final long nextTransition = TimeUnit.SECONDS.toMillis(transition.toEpochSecond());
-                SystemProperties.set(DST_TRANSITION_PROPERTY, String.valueOf(nextTransition));
-                SystemProperties.set(DST_OFFSET_PROPERTY, String.valueOf(transitionOffset));
-            }
         }
 
         // Clear the default time zone in the system server process. This forces the next call
@@ -2641,6 +2615,13 @@ public class AlarmManagerService extends SystemService {
                 mInFlightListeners.add(callback);
             }
         }
+
+        /** @see AlarmManagerInternal#getNextAlarmTriggerTimeForUser(int) */
+        @Override
+        public long getNextAlarmTriggerTimeForUser(@UserIdInt int userId) {
+            final AlarmManager.AlarmClockInfo nextAlarm = getNextAlarmClockImpl(userId);
+            return nextAlarm != null ? nextAlarm.getTriggerTime() : 0;
+        }
     }
 
     boolean hasUseExactAlarmInternal(String packageName, int uid) {
@@ -3011,13 +2992,12 @@ public class AlarmManagerService extends SystemService {
 
             pw.println("Feature Flags:");
             pw.increaseIndent();
-            pw.print(Flags.FLAG_USE_FROZEN_STATE_TO_DROP_LISTENER_ALARMS,
-                    mUseFrozenStateToDropListenerAlarms);
-            pw.println();
             pw.print(Flags.FLAG_START_USER_BEFORE_SCHEDULED_ALARMS,
-                    mStartUserBeforeScheduledAlarms);
-            pw.decreaseIndent();
+                    Flags.startUserBeforeScheduledAlarms());
             pw.println();
+            pw.print(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND, Flags.acquireWakelockBeforeSend());
+            pw.println();
+            pw.decreaseIndent();
             pw.println();
 
             pw.println("App Standby Parole: " + mAppStandbyParole);
@@ -3789,8 +3769,10 @@ public class AlarmManagerService extends SystemService {
             }
             mNextAlarmClockForUser.put(userId, alarmClock);
             if (mStartUserBeforeScheduledAlarms) {
-                mUserWakeupStore.addUserWakeup(userId, convertToElapsed(
-                        mNextAlarmClockForUser.get(userId).getTriggerTime(), RTC));
+                if (shouldAddWakeupForUser(userId)) {
+                    mUserWakeupStore.addUserWakeup(userId, convertToElapsed(
+                            mNextAlarmClockForUser.get(userId).getTriggerTime(), RTC));
+                }
             }
         } else {
             if (DEBUG_ALARM_CLOCK) {
@@ -3807,6 +3789,23 @@ public class AlarmManagerService extends SystemService {
         mPendingSendNextAlarmClockChangedForUser.put(userId, true);
         mHandler.removeMessages(AlarmHandler.SEND_NEXT_ALARM_CLOCK_CHANGED);
         mHandler.sendEmptyMessage(AlarmHandler.SEND_NEXT_ALARM_CLOCK_CHANGED);
+    }
+
+    /**
+     * Checks whether the user is of type that needs to be started before the alarm.
+     */
+    @VisibleForTesting
+    boolean shouldAddWakeupForUser(@UserIdInt int userId) {
+        final UserManagerInternal umInternal = LocalServices.getService(UserManagerInternal.class);
+        if (umInternal.getUserInfo(userId) == null || umInternal.getUserInfo(userId).isGuest()) {
+            // Guest user should not be started in the background.
+            return false;
+        } else {
+            // SYSTEM user is always running, so no need to schedule wakeup for it.
+            // Profiles are excluded from the wakeup list because users can explicitly stop them and
+            // so starting them in the background would go against the user's intent.
+            return userId != UserHandle.USER_SYSTEM && umInternal.getUserInfo(userId).isFull();
+        }
     }
 
     /**
@@ -3952,6 +3951,9 @@ public class AlarmManagerService extends SystemService {
             }
             if (!RemovedAlarm.isLoggable(reason)) {
                 continue;
+            }
+            if (isTimeTickAlarm(removed)) {
+                Slog.wtf(TAG, "Removed TIME_TICK alarm");
             }
             RingBuffer<RemovedAlarm> bufferForUid = mRemovalHistory.get(removed.uid);
             if (bufferForUid == null) {
@@ -4447,6 +4449,11 @@ public class AlarmManagerService extends SystemService {
         public void run() {
             ArrayList<Alarm> triggerList = new ArrayList<Alarm>();
 
+            synchronized (mLock) {
+                mLastTimeChangeClockTime = mInjector.getCurrentTimeMillis();
+                mLastTimeChangeRealtime = mInjector.getElapsedRealtimeMillis();
+            }
+
             while (true) {
                 int result = mInjector.waitForAlarm();
                 final long nowRTC = mInjector.getCurrentTimeMillis();
@@ -4470,10 +4477,9 @@ public class AlarmManagerService extends SystemService {
                         expectedClockTime = lastTimeChangeClockTime
                                 + (nowELAPSED - mLastTimeChangeRealtime);
                     }
-                    if (lastTimeChangeClockTime == 0 || nowRTC < (expectedClockTime - 1000)
+                    if (nowRTC < (expectedClockTime - 1000)
                             || nowRTC > (expectedClockTime + 1000)) {
-                        // The change is by at least +/- 1000 ms (or this is the first change),
-                        // let's do it!
+                        // The change is by at least +/- 1000 ms, let's do it!
                         if (DEBUG_BATCH) {
                             Slog.v(TAG, "Time changed notification from kernel; rebatching");
                         }
@@ -4521,8 +4527,9 @@ public class AlarmManagerService extends SystemService {
                             final int[] userIds =
                                     mUserWakeupStore.getUserIdsToWakeup(nowELAPSED);
                             for (int i = 0; i < userIds.length; i++) {
-                                if (!mActivityManagerInternal.startUserInBackground(
-                                        userIds[i])) {
+                                if (mActivityManagerInternal.isUserRunning(userIds[i], 0)
+                                        || !mActivityManagerInternal.startUserInBackground(
+                                                userIds[i])) {
                                     mUserWakeupStore.removeUserWakeup(userIds[i]);
                                 }
                             }
@@ -4925,7 +4932,6 @@ public class AlarmManagerService extends SystemService {
             sdFilter.addAction(Intent.ACTION_EXTERNAL_APPLICATIONS_UNAVAILABLE);
             sdFilter.addAction(Intent.ACTION_USER_STOPPED);
             if (mStartUserBeforeScheduledAlarms) {
-                sdFilter.addAction(Intent.ACTION_LOCKED_BOOT_COMPLETED);
                 sdFilter.addAction(Intent.ACTION_USER_REMOVED);
             }
             sdFilter.addAction(Intent.ACTION_UID_REMOVED);
@@ -4935,10 +4941,14 @@ public class AlarmManagerService extends SystemService {
 
         @Override
         public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+            if (action == null) {
+                return;
+            }
             final int uid = intent.getIntExtra(Intent.EXTRA_UID, -1);
             synchronized (mLock) {
                 String pkgList[] = null;
-                switch (intent.getAction()) {
+                switch (action) {
                     case Intent.ACTION_QUERY_PACKAGE_RESTART:
                         pkgList = intent.getStringArrayExtra(Intent.EXTRA_PACKAGES);
                         for (String packageName : pkgList) {
@@ -4956,14 +4966,6 @@ public class AlarmManagerService extends SystemService {
                             mAllowWhileIdleHistory.removeForUser(userHandle);
                             mAllowWhileIdleCompatHistory.removeForUser(userHandle);
                             mTemporaryQuotaReserve.removeForUser(userHandle);
-                        }
-                        return;
-                    case Intent.ACTION_LOCKED_BOOT_COMPLETED:
-                        final int handle = intent.getIntExtra(Intent.EXTRA_USER_HANDLE, -1);
-                        if (handle >= 0) {
-                            if (mStartUserBeforeScheduledAlarms) {
-                                mUserWakeupStore.onUserStarted(handle);
-                            }
                         }
                         return;
                     case Intent.ACTION_USER_REMOVED:
@@ -5139,38 +5141,6 @@ public class AlarmManagerService extends SystemService {
         public void removeAlarmsForUid(int uid) {
             synchronized (mLock) {
                 removeForStoppedLocked(uid);
-            }
-        }
-
-        @Override
-        public void handleUidCachedChanged(int uid, boolean cached) {
-            if (mUseFrozenStateToDropListenerAlarms) {
-                // Use ActivityManager#UidFrozenStateChangedCallback instead.
-                return;
-            }
-            if (!CompatChanges.isChangeEnabled(EXACT_LISTENER_ALARMS_DROPPED_ON_CACHED, uid)) {
-                return;
-            }
-            // Apps can quickly get frozen after being cached, breaking the exactness guarantee on
-            // listener alarms. So going forward, the contract of exact listener alarms explicitly
-            // states that they will be removed as soon as the app goes out of lifecycle. We still
-            // allow a short grace period for quick shuffling of proc-states that may happen
-            // unexpectedly when switching between different lifecycles and is generally hard for
-            // apps to avoid.
-
-            final long delay;
-            synchronized (mLock) {
-                delay = mConstants.CACHED_LISTENER_REMOVAL_DELAY;
-            }
-            final Integer uidObj = uid;
-
-            if (cached && !mHandler.hasEqualMessages(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED,
-                    uidObj)) {
-                mHandler.sendMessageDelayed(
-                        mHandler.obtainMessage(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED, uidObj),
-                        delay);
-            } else {
-                mHandler.removeEqualMessages(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED, uidObj);
             }
         }
     };
@@ -5366,6 +5336,18 @@ public class AlarmManagerService extends SystemService {
         public void deliverLocked(Alarm alarm, long nowELAPSED) {
             final long workSourceToken = ThreadLocalWorkSource.setUid(
                     getAlarmAttributionUid(alarm));
+
+            if (Flags.acquireWakelockBeforeSend()) {
+                // Acquire the wakelock before starting the app. This needs to be done to avoid
+                // random stalls in the receiving app in case a suspend attempt is already in
+                // progress. See b/391413964 for an incident where this was found to happen.
+                if (mBroadcastRefCount == 0) {
+                    setWakelockWorkSource(alarm.workSource, alarm.creatorUid, alarm.statsTag, true);
+                    mWakeLock.acquire();
+                    mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 1, 0).sendToTarget();
+                }
+            }
+
             try {
                 if (alarm.operation != null) {
                     // PendingIntent alarm
@@ -5387,6 +5369,11 @@ public class AlarmManagerService extends SystemService {
                         // to do any wakelock or stats tracking, so we have nothing
                         // left to do here but go on to the next thing.
                         mSendFinishCount++;
+                        if (Flags.acquireWakelockBeforeSend() && mBroadcastRefCount == 0) {
+                            // No other alarms are in-flight and this dispatch failed. We will
+                            // acquire the wakelock again before the next dispatch.
+                            mWakeLock.release();
+                        }
                         return;
                     }
                 } else {
@@ -5424,6 +5411,11 @@ public class AlarmManagerService extends SystemService {
                         // stats management to do.  It threw before we posted the delayed
                         // timeout message, so we're done here.
                         mListenerFinishCount++;
+                        if (Flags.acquireWakelockBeforeSend() && mBroadcastRefCount == 0) {
+                            // No other alarms are in-flight and this dispatch failed. We will
+                            // acquire the wakelock again before the next dispatch.
+                            mWakeLock.release();
+                        }
                         return;
                     }
                 }
@@ -5431,14 +5423,16 @@ public class AlarmManagerService extends SystemService {
                 ThreadLocalWorkSource.restore(workSourceToken);
             }
 
-            // The alarm is now in flight; now arrange wakelock and stats tracking
             if (DEBUG_WAKELOCK) {
                 Slog.d(TAG, "mBroadcastRefCount -> " + (mBroadcastRefCount + 1));
             }
-            if (mBroadcastRefCount == 0) {
-                setWakelockWorkSource(alarm.workSource, alarm.creatorUid, alarm.statsTag, true);
-                mWakeLock.acquire();
-                mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 1, 0).sendToTarget();
+            if (!Flags.acquireWakelockBeforeSend()) {
+                // The alarm is now in flight; now arrange wakelock and stats tracking
+                if (mBroadcastRefCount == 0) {
+                    setWakelockWorkSource(alarm.workSource, alarm.creatorUid, alarm.statsTag, true);
+                    mWakeLock.acquire();
+                    mHandler.obtainMessage(AlarmHandler.REPORT_ALARMS_ACTIVE, 1, 0).sendToTarget();
+                }
             }
             final InFlight inflight = new InFlight(AlarmManagerService.this, alarm, nowELAPSED);
             mInFlight.add(inflight);

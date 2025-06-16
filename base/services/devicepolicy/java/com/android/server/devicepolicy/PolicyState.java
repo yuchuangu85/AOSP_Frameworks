@@ -40,7 +40,6 @@ final class PolicyState<V> {
     private static final String TAG = "PolicyState";
     private static final String TAG_ADMIN_POLICY_ENTRY = "admin-policy-entry";
 
-    private static final String TAG_POLICY_DEFINITION_ENTRY = "policy-definition-entry";
     private static final String TAG_RESOLVED_VALUE_ENTRY = "resolved-value-entry";
     private static final String TAG_ENFORCING_ADMIN_ENTRY = "enforcing-admin-entry";
     private static final String TAG_POLICY_VALUE_ENTRY = "policy-value-entry";
@@ -224,10 +223,6 @@ final class PolicyState<V> {
     }
 
     void saveToXml(TypedXmlSerializer serializer) throws IOException {
-        serializer.startTag(/* namespace= */ null, TAG_POLICY_DEFINITION_ENTRY);
-        mPolicyDefinition.saveToXml(serializer);
-        serializer.endTag(/* namespace= */ null, TAG_POLICY_DEFINITION_ENTRY);
-
         if (mCurrentResolvedPolicy != null) {
             serializer.startTag(/* namespace= */ null, TAG_RESOLVED_VALUE_ENTRY);
             mPolicyDefinition.savePolicyValueToXml(
@@ -254,11 +249,9 @@ final class PolicyState<V> {
     }
 
     @Nullable
-    static <V> PolicyState<V> readFromXml(TypedXmlPullParser parser)
+    static <V> PolicyState<V> readFromXml(
+            PolicyDefinition<V> policyDefinition, TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
-
-        PolicyDefinition<V> policyDefinition = null;
-
         PolicyValue<V> currentResolvedPolicy = null;
 
         LinkedHashMap<EnforcingAdmin, PolicyValue<V>> policiesSetByAdmins = new LinkedHashMap<>();
@@ -297,13 +290,6 @@ final class PolicyState<V> {
                                 + "definition " + policyDefinition) + ", EnforcingAdmin is: "
                                 + (admin == null ? "null" : admin) + ", value is : "
                                 + (value == null ? "null" : value));
-                    }
-                    break;
-                case TAG_POLICY_DEFINITION_ENTRY:
-                    policyDefinition = PolicyDefinition.readFromXml(parser);
-                    if (policyDefinition == null) {
-                        Slogf.wtf(TAG, "Error Parsing TAG_POLICY_DEFINITION_ENTRY, "
-                                + "PolicyDefinition is null");
                     }
                     break;
 

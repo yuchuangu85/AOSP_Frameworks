@@ -18,12 +18,17 @@
 #undef LOG_TAG
 #define LOG_TAG "SurfaceFlinger"
 
-#include "LayerSnapshot.h"
+#include <PowerAdvisor/Workload.h>
+#include <aidl/android/hardware/graphics/composer3/Composition.h>
+#include <gui/LayerState.h>
+
 #include "Layer.h"
+#include "LayerSnapshot.h"
 
 namespace android::surfaceflinger::frontend {
 
 using namespace ftl::flag_operators;
+using namespace aidl::android::hardware::graphics::composer3;
 
 namespace {
 
@@ -36,7 +41,7 @@ void updateSurfaceDamage(const RequestedLayerState& requested, bool hasReadyFram
     if (forceFullDamage) {
         outSurfaceDamageRegion = Region::INVALID_REGION;
     } else {
-        outSurfaceDamageRegion = requested.surfaceDamageRegion;
+        outSurfaceDamageRegion = requested.getSurfaceDamageRegion();
     }
 }
 
@@ -174,8 +179,12 @@ bool LayerSnapshot::hasBlur() const {
     return backgroundBlurRadius > 0 || blurRegions.size() > 0;
 }
 
+bool LayerSnapshot::hasOutline() const {
+    return borderSettings.strokeWidth > 0;
+}
+
 bool LayerSnapshot::hasEffect() const {
-    return fillsColor() || drawShadows() || hasBlur();
+    return fillsColor() || drawShadows() || hasBlur() || hasOutline();
 }
 
 bool LayerSnapshot::hasSomethingToDraw() const {
@@ -248,8 +257,10 @@ std::string LayerSnapshot::getIsVisibleReason() const {
         reason << " buffer=" << externalTexture->getId() << " frame=" << frameNumber;
     if (fillsColor() || color.a > 0.0f) reason << " color{" << color << "}";
     if (drawShadows()) reason << " shadowSettings.length=" << shadowSettings.length;
+    if (hasOutline()) reason << "borderSettings=" << borderSettings.toString();
     if (backgroundBlurRadius > 0) reason << " backgroundBlurRadius=" << backgroundBlurRadius;
     if (blurRegions.size() > 0) reason << " blurRegions.size()=" << blurRegions.size();
+    if (contentDirty) reason << " contentDirty";
     return reason.str();
 }
 
@@ -299,7 +310,11 @@ std::ostream& operator<<(std::ostream& out, const LayerSnapshot& obj) {
             out << rootId << ",";
         }
     }
-    out << "] " << obj.name << "\n    " << (obj.isVisible ? "visible" : "invisible")
+    out << "] ";
+    if (obj.isSecure) {
+        out << "(Secure) ";
+    }
+    out << obj.name << "\n    " << (obj.isVisible ? "visible" : "invisible")
         << " reason=" << obj.getIsVisibleReason();
 
     if (!obj.geomLayerBounds.isEmpty()) {
@@ -321,6 +336,10 @@ std::ostream& operator<<(std::ostream& out, const LayerSnapshot& obj) {
         out << " touchableRegion={" << touchableRegion.left << "," << touchableRegion.top << ","
             << touchableRegion.bottom << "," << touchableRegion.right << "}"
             << "}";
+    }
+
+    if (obj.edgeExtensionEffect.hasEffect()) {
+        out << obj.edgeExtensionEffect;
     }
     return out;
 }
@@ -355,13 +374,14 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
                           uint32_t displayRotationFlags) {
     clientChanges = requested.what;
     changes = requested.changes;
-    contentDirty = requested.what & layer_state_t::CONTENT_DIRTY;
-    hasReadyFrame = requested.autoRefresh;
+    autoRefresh = requested.autoRefresh;
+    contentDirty = requested.what & layer_state_t::CONTENT_DIRTY || autoRefresh;
+    hasReadyFrame = autoRefresh;
     sidebandStreamHasFrame = requested.hasSidebandStreamFrame();
     updateSurfaceDamage(requested, requested.hasReadyFrame(), forceFullDamage, surfaceDamage);
 
     if (forceUpdate || requested.what & layer_state_t::eTransparentRegionChanged) {
-        transparentRegionHint = requested.transparentRegion;
+        transparentRegionHint = requested.getTransparentRegion();
     }
     if (forceUpdate || requested.what & layer_state_t::eFlagsChanged) {
         layerOpaqueFlagSet =
@@ -395,6 +415,9 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
     if (forceUpdate || requested.what & layer_state_t::eShadowRadiusChanged) {
         shadowSettings.length = requested.shadowRadius;
     }
+    if (forceUpdate || requested.what & layer_state_t::eBorderSettingsChanged) {
+        borderSettings = requested.borderSettings;
+    }
     if (forceUpdate || requested.what & layer_state_t::eFrameRateSelectionPriority) {
         frameRateSelectionPriority = requested.frameRateSelectionPriority;
     }
@@ -406,6 +429,13 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
     }
     if (forceUpdate || requested.what & layer_state_t::eCropChanged) {
         geomCrop = requested.crop;
+    }
+    if (forceUpdate || requested.what & layer_state_t::ePictureProfileHandleChanged) {
+        pictureProfileHandle = requested.pictureProfileHandle;
+    }
+    if (forceUpdate || requested.what & layer_state_t::eAppContentPriorityChanged) {
+        // TODO(b/337330263): Also consider the system-determined priority of the app
+        pictureProfilePriority = int64_t(requested.appContentPriority) + INT_MAX;
     }
 
     if (forceUpdate || requested.what & layer_state_t::eDefaultFrameRateCompatibilityChanged) {
@@ -425,15 +455,7 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
     }
 
     if (forceUpdate || requested.what & layer_state_t::eInputInfoChanged) {
-        if (requested.windowInfoHandle) {
-            inputInfo = *requested.windowInfoHandle->getInfo();
-        } else {
-            inputInfo = {};
-            // b/271132344 revisit this and see if we can always use the layers uid/pid
-            inputInfo.name = requested.name;
-            inputInfo.ownerUid = requested.ownerUid;
-            inputInfo.ownerPid = requested.ownerPid;
-        }
+        inputInfo = requested.getWindowInfo();
         inputInfo.id = static_cast<int32_t>(uniqueSequence);
         touchCropId = requested.touchCropId;
     }
@@ -492,8 +514,10 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
         requested.what &
                 (layer_state_t::eBufferChanged | layer_state_t::eDataspaceChanged |
                  layer_state_t::eApiChanged | layer_state_t::eShadowRadiusChanged |
-                 layer_state_t::eBlurRegionsChanged | layer_state_t::eStretchChanged)) {
-        forceClientComposition = shadowSettings.length > 0 || stretchEffect.hasEffect();
+                 layer_state_t::eBlurRegionsChanged | layer_state_t::eStretchChanged |
+                 layer_state_t::eEdgeExtensionChanged | layer_state_t::eBorderSettingsChanged)) {
+        forceClientComposition = shadowSettings.length > 0 || stretchEffect.hasEffect() ||
+                edgeExtensionEffect.hasEffect() || borderSettings.strokeWidth > 0;
     }
 
     if (forceUpdate ||
@@ -506,6 +530,56 @@ void LayerSnapshot::merge(const RequestedLayerState& requested, bool forceUpdate
         contentOpaque = isContentOpaque();
         isOpaque = contentOpaque && !roundedCorner.hasRoundedCorners() && color.a == 1.f;
         blendMode = getBlendMode(requested);
+    }
+
+    if (forceUpdate || requested.what & layer_state_t::eLutsChanged) {
+        luts = requested.luts;
+    }
+}
+
+char LayerSnapshot::classifyCompositionForDebug(
+        const compositionengine::LayerFE::HwcLayerDebugState& hwcState) const {
+    if (!isVisible) {
+        return '.';
+    }
+
+    switch (hwcState.lastCompositionType) {
+        case Composition::INVALID:
+            return 'i';
+        case Composition::SOLID_COLOR:
+            return 'c';
+        case Composition::CURSOR:
+            return 'u';
+        case Composition::SIDEBAND:
+            return 'd';
+        case Composition::DISPLAY_DECORATION:
+            return 'a';
+        case Composition::REFRESH_RATE_INDICATOR:
+            return 'r';
+        case Composition::CLIENT:
+        case Composition::DEVICE:
+            break;
+    }
+
+    char code = '.'; // Default to invisible
+    if (hasBlur()) {
+        code = 'l'; // Blur
+    } else if (hasProtectedContent) {
+        code = 'p'; // Protected content
+    } else if (roundedCorner.hasRoundedCorners()) {
+        code = 'r'; // Rounded corners
+    } else if (drawShadows()) {
+        code = 's'; // Shadow
+    } else if (fillsColor()) {
+        code = 'c'; // Solid color
+    } else if (hasBufferOrSidebandStream()) {
+        code = 'b';
+    }
+
+    if (hwcState.lastCompositionType == Composition::CLIENT) {
+        return static_cast<char>(std::toupper(code));
+    } else {
+        return code;
     }
 }
 

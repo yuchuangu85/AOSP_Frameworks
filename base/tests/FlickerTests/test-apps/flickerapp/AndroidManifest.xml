@@ -21,6 +21,15 @@
               android:targetSdkVersion="35"/>
 
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.MANAGE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.INSTANT_APP_FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
+    <uses-permission android:name="android.permission.ACCESS_SURFACE_FLINGER" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS" />
+    <uses-permission android:name="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
     <application android:allowBackup="false"
                  android:supportsRtl="true">
@@ -30,7 +39,6 @@
             android:value="true" />
         <activity android:name=".SimpleActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.SimpleActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="SimpleActivity"
                   android:exported="true">
             <intent-filter>
@@ -40,7 +48,6 @@
         </activity>
         <activity android:name=".ImeActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.ImeActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="ImeActivity"
                   android:exported="true">
             <intent-filter>
@@ -49,7 +56,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".ImeActivityAutoFocus"
-                  android:theme="@style/CutoutShortEdges"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.ImeActivityAutoFocus"
                   android:windowSoftInputMode="stateVisible"
                   android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
@@ -72,7 +78,6 @@
         </activity>
         <activity android:name=".SeamlessRotationActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.SeamlessRotationActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
                   android:showWhenLocked="true"
                   android:label="SeamlessActivity"
@@ -83,7 +88,6 @@
             </intent-filter>
         </activity>
         <activity android:name=".NonResizeableActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:resizeableActivity="false"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.NonResizeableActivity"
                   android:label="NonResizeableActivity"
@@ -106,6 +110,30 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".NonResizeableFixedAspectRatioPortraitActivity"
+            android:theme="@style/CutoutNever"
+            android:resizeableActivity="false"
+            android:screenOrientation="portrait"
+            android:minAspectRatio="1.77"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.NonResizeableFixedAspectRatioPortraitActivity"
+            android:label="NonResizeableFixedAspectRatioPortraitActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity android:name=".StartMediaProjectionActivity"
+            android:theme="@style/CutoutNever"
+            android:resizeableActivity="false"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.StartMediaProjectionActivity"
+            android:label="StartMediaProjectionActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
         <activity android:name=".PortraitImmersiveActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.PortraitImmersiveActivity"
                   android:immersive="true"
@@ -123,6 +151,7 @@
         <activity android:name=".LaunchTransparentActivity"
                   android:resizeableActivity="false"
                   android:screenOrientation="portrait"
+                  android:minAspectRatio="1.77"
                   android:theme="@style/OptOutEdgeToEdge"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.LaunchTransparentActivity"
                   android:label="LaunchTransparentActivity"
@@ -140,7 +169,6 @@
         </activity>
         <activity android:name=".LaunchNewActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.LaunchNewActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:configChanges="orientation|screenSize"
                   android:label="LaunchNewActivity"
                   android:exported="true">
@@ -151,7 +179,6 @@
         </activity>
         <activity android:name=".LaunchNewTaskActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.LaunchNewTaskActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:configChanges="orientation|screenSize"
                   android:label="LaunchNewTaskActivity"
                   android:exported="true">
@@ -173,7 +200,6 @@
         </activity>
         <activity android:name=".PortraitOnlyActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.PortraitOnlyActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:screenOrientation="portrait"
                   android:configChanges="orientation|screenSize"
                   android:exported="true">
@@ -185,7 +211,6 @@
         <activity android:name=".ImeEditorPopupDialogActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.ImeEditorPopupDialogActivity"
                   android:configChanges="orientation|screenSize"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="ImeEditorPopupDialogActivity"
                   android:exported="true">
             <intent-filter>
@@ -195,7 +220,6 @@
         </activity>
         <activity android:name=".ShowWhenLockedActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.ShowWhenLockedActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:configChanges="orientation|screenSize"
                   android:label="ShowWhenLockedActivity"
                   android:showWhenLocked="true"
@@ -207,7 +231,6 @@
         </activity>
         <activity android:name=".NotificationActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.NotificationActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:configChanges="orientation|screenSize"
                   android:label="NotificationActivity"
                   android:exported="true">
@@ -220,7 +243,6 @@
             android:name=".ActivityEmbeddingMainActivity"
             android:label="ActivityEmbedding Main"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="true">
             <intent-filter>
@@ -232,7 +254,6 @@
             android:name=".ActivityEmbeddingTrampolineActivity"
             android:label="ActivityEmbedding Trampoline"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false">
         </activity>
@@ -240,7 +261,6 @@
             android:name=".ActivityEmbeddingSecondaryActivity"
             android:label="ActivityEmbedding Secondary"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:supportsPictureInPicture="true"
             android:exported="false"/>
@@ -248,21 +268,18 @@
             android:name=".ActivityEmbeddingThirdActivity"
             android:label="ActivityEmbedding Third"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false"/>
         <activity
             android:name=".ActivityEmbeddingAlwaysExpandActivity"
             android:label="ActivityEmbedding AlwaysExpand"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false"/>
         <activity
             android:name=".ActivityEmbeddingPlaceholderPrimaryActivity"
             android:label="ActivityEmbedding Placeholder Primary"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false">
         </activity>
@@ -270,7 +287,6 @@
             android:name=".ActivityEmbeddingPlaceholderSecondaryActivity"
             android:label="ActivityEmbedding Placeholder Secondary"
             android:taskAffinity="com.android.server.wm.flicker.testapp.ActivityEmbedding"
-            android:theme="@style/CutoutShortEdges"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="false"/>
         <activity android:name=".MailActivity"
@@ -300,7 +316,6 @@
                   android:supportsPictureInPicture="true"
                   android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.PipActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:launchMode="singleTop"
                   android:label="PipActivity"
                   android:exported="true">
@@ -313,12 +328,32 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".BottomHalfPipLaunchingActivity"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.BottomHalfPipLaunchingActivity"
+            android:label="BottomHalfPipLaunchingActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".BottomHalfPipActivity"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
+            android:taskAffinity="com.android.server.wm.flicker.testapp.BottomHalfPipLaunchingActivity"
+            android:theme="@style/TranslucentTheme"
+            android:label="BottomHalfPipActivity"
+            android:exported="true">
+        </activity>
         <activity android:name=".SplitScreenActivity"
                   android:resizeableActivity="true"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.SplitScreenActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="SplitScreenPrimaryActivity"
-                  android:exported="true">
+                  android:exported="true"
+                  android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -327,9 +362,9 @@
         <activity android:name=".SplitScreenSecondaryActivity"
                   android:resizeableActivity="true"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.SplitScreenSecondaryActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="SplitScreenSecondaryActivity"
-                  android:exported="true">
+                  android:exported="true"
+                  android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -339,7 +374,6 @@
         </activity>
         <activity android:name=".SendNotificationActivity"
                   android:taskAffinity="com.android.server.wm.flicker.testapp.SendNotificationActivity"
-                  android:theme="@style/CutoutShortEdges"
                   android:label="SendNotificationActivity"
                   android:exported="true">
             <intent-filter>
@@ -351,7 +385,6 @@
             android:name=".LaunchBubbleActivity"
             android:label="LaunchBubbleActivity"
             android:exported="true"
-            android:theme="@style/CutoutShortEdges"
             android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
@@ -363,7 +396,6 @@
             android:name=".BubbleActivity"
             android:label="BubbleActivity"
             android:exported="false"
-            android:theme="@style/CutoutShortEdges"
             android:resizeableActivity="true"/>
         <activity
             android:name=".TransferSplashscreenActivity"
@@ -403,6 +435,11 @@
             <meta-data
                 android:name="android.voice_interaction"
                 android:resource="@xml/interaction_service"/>
+        </service>
+        <service android:name="com.android.wm.shell.flicker.utils.MediaProjectionService"
+            android:foregroundServiceType="mediaProjection"
+            android:label="WMShellTestsMediaProjectionService"
+            android:enabled="true">
         </service>
     </application>
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION"/>

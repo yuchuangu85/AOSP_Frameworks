@@ -102,6 +102,7 @@ import android.provider.DeviceConfig;
 import android.service.voice.IVoiceInteractionSession;
 import android.util.Pair;
 import android.util.Size;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.RemoteAnimationAdapter;
 import android.window.TaskFragmentOrganizerToken;
@@ -344,7 +345,8 @@ public class ActivityStarterTests extends WindowTestsBase {
                     .setResultTo(resultTo)
                     .setRequestCode(requestCode)
                     .setReason("testLaunchActivityPermissionDenied")
-                    .setActivityOptions(new SafeActivityOptions(options))
+                    .setActivityOptions(new SafeActivityOptions(
+                            options, Binder.getCallingPid(), Binder.getCallingUid()))
                     .execute();
             verify(options, times(1)).abort();
         }
@@ -357,12 +359,6 @@ public class ActivityStarterTests extends WindowTestsBase {
     private ActivityStarter prepareStarter(@Intent.Flags int launchFlags,
             boolean mockGetRootTask) {
         return prepareStarter(launchFlags, mockGetRootTask, LAUNCH_MULTIPLE);
-    }
-
-    private void setupImeWindow() {
-        final WindowState imeWindow = createWindow(null, W_INPUT_METHOD,
-                "mImeWindow", CURRENT_IME_UID);
-        mDisplayContent.mInputMethodWindow = imeWindow;
     }
 
     /**
@@ -468,7 +464,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         optionStarter
                 .setReason("testCreateTaskLayout")
                 .setActivityInfo(info)
-                .setActivityOptions(new SafeActivityOptions(options))
+                .setActivityOptions(new SafeActivityOptions(
+                        options, Binder.getCallingPid(), Binder.getCallingUid()))
                 .execute();
 
         // verify that values are passed to the modifier. Values are passed thrice -- two for
@@ -774,7 +771,8 @@ public class ActivityStarterTests extends WindowTestsBase {
                 .setCaller(caller)
                 .setCallingUid(UNIMPORTANT_UID)
                 .setRealCallingUid(UNIMPORTANT_UID2)
-                .setActivityOptions(new SafeActivityOptions(options))
+                .setActivityOptions(new SafeActivityOptions(
+                        options, Binder.getCallingPid(), Binder.getCallingUid()))
                 .setOutActivity(outActivity);
 
         final int result = starter.setReason("testPinnedSingleInstanceAborted").execute();
@@ -799,7 +797,7 @@ public class ActivityStarterTests extends WindowTestsBase {
         // Create adjacent tasks and put one activity under it
         final Task parent = new TaskBuilder(mSupervisor).build();
         final Task adjacentParent = new TaskBuilder(mSupervisor).build();
-        parent.setAdjacentTaskFragment(adjacentParent);
+        parent.setAdjacentTaskFragments(new TaskFragment.AdjacentSet(parent, adjacentParent));
         final ActivityRecord activity = new ActivityBuilder(mAtm)
                 .setParentTask(parent)
                 .setCreateTask(true).build();
@@ -810,7 +808,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         prepareStarter(FLAG_ACTIVITY_NEW_TASK, false /* mockGetRootTask */)
                 .setReason("testAdjustLaunchTargetWithAdjacentTask")
                 .setIntent(activity.intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Verify the activity will be launched into the original parent
@@ -882,7 +881,8 @@ public class ActivityStarterTests extends WindowTestsBase {
                 .setLaunchDisplayId(secondaryDisplay.mDisplayId);
         final int result = starter.setReason("testDeliverIntentToTopActivityOfNonTopDisplay")
                 .setIntent(topActivityOnSecondaryDisplay.intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Ensure result is delivering intent to top.
@@ -927,7 +927,8 @@ public class ActivityStarterTests extends WindowTestsBase {
                 .setLaunchDisplayId(secondaryDisplay.mDisplayId);
         final int result = starter.setReason("testBringTaskToFrontOnSecondaryDisplay")
                 .setIntent(singleTaskActivity.intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Ensure result is moving existing task to front.
@@ -939,6 +940,93 @@ public class ActivityStarterTests extends WindowTestsBase {
         verify(mActivityMetricsLogger).notifyActivityLaunched(any() /* launchingState */,
                 eq(result), eq(false) /* newActivityCreated */, eq(singleTaskActivity),
                 notNull() /* options */);
+    }
+
+
+    /**
+     * This test ensures that activity launch on a secondary display is allowed if the activity did
+     * not opt out from showing on remote devices.
+     */
+    @Test
+    public void testStartActivityOnVirtualDisplay() {
+        final ActivityStarter starter = prepareStarter(FLAG_ACTIVITY_NEW_TASK,
+                false /* mockGetRootTask */);
+        starter.mRequest.activityInfo.flags |= ActivityInfo.FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES;
+
+        // Create a virtual display at bottom.
+        final TestDisplayContent secondaryDisplay =
+                new TestDisplayContent.Builder(mAtm, 1000, 1500)
+                        .setType(Display.TYPE_VIRTUAL)
+                        .setPosition(POSITION_BOTTOM).build();
+        final TaskDisplayArea secondaryTaskContainer = secondaryDisplay.getDefaultTaskDisplayArea();
+        final Task stack = secondaryTaskContainer.createRootTask(
+                WINDOWING_MODE_FULLSCREEN, ACTIVITY_TYPE_STANDARD, true /* onTop */);
+
+        // Create an activity record on the top of secondary display.
+        final ActivityRecord topActivityOnSecondaryDisplay = createSingleTaskActivityOn(stack);
+
+        // Put an activity on default display as the top focused activity.
+        new ActivityBuilder(mAtm).setCreateTask(true).build();
+
+        // Start activity with the same intent as {@code topActivityOnSecondaryDisplay}
+        // on secondary display.
+        final ActivityOptions options = ActivityOptions.makeBasic()
+                .setLaunchDisplayId(secondaryDisplay.mDisplayId);
+        final int result = starter.setReason("testStartActivityOnVirtualDisplay")
+                .setIntent(topActivityOnSecondaryDisplay.intent)
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
+                .execute();
+
+        // Ensure result is delivering intent to top.
+        assertEquals(START_DELIVERED_TO_TOP, result);
+
+        // Ensure secondary display only creates one stack.
+        verify(secondaryTaskContainer, times(1)).createRootTask(anyInt(), anyInt(), anyBoolean());
+    }
+
+    /**
+     * This test ensures that activity launch on a secondary display is disallowed if the activity
+     * opted out from showing on remote devices.
+     */
+    @EnableFlags(android.companion.virtualdevice.flags.Flags
+            .FLAG_ENFORCE_REMOTE_DEVICE_OPT_OUT_ON_ALL_VIRTUAL_DISPLAYS)
+    @Test
+    public void testStartOptedOutActivityOnVirtualDisplay() {
+        final ActivityStarter starter = prepareStarter(FLAG_ACTIVITY_NEW_TASK,
+                false /* mockGetRootTask */);
+        starter.mRequest.activityInfo.flags &= ~ActivityInfo.FLAG_CAN_DISPLAY_ON_REMOTE_DEVICES;
+
+        // Create a virtual display at bottom.
+        final TestDisplayContent secondaryDisplay =
+                new TestDisplayContent.Builder(mAtm, 1000, 1500)
+                        .setType(Display.TYPE_VIRTUAL)
+                        .setPosition(POSITION_BOTTOM).build();
+        final TaskDisplayArea secondaryTaskContainer = secondaryDisplay.getDefaultTaskDisplayArea();
+        final Task stack = secondaryTaskContainer.createRootTask(
+                WINDOWING_MODE_FULLSCREEN, ACTIVITY_TYPE_STANDARD, true /* onTop */);
+
+        // Create an activity record on the top of secondary display.
+        final ActivityRecord topActivityOnSecondaryDisplay = createSingleTaskActivityOn(stack);
+
+        // Put an activity on default display as the top focused activity.
+        new ActivityBuilder(mAtm).setCreateTask(true).build();
+
+        // Start activity with the same intent as {@code topActivityOnSecondaryDisplay}
+        // on secondary display.
+        final ActivityOptions options = ActivityOptions.makeBasic()
+                .setLaunchDisplayId(secondaryDisplay.mDisplayId);
+        final int result = starter.setReason("testStartOptedOutActivityOnVirtualDisplay")
+                .setIntent(topActivityOnSecondaryDisplay.intent)
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
+                .execute();
+
+        // Ensure result is canceled.
+        assertEquals(START_CANCELED, result);
+
+        // Ensure secondary display only creates one stack.
+        verify(secondaryTaskContainer, times(1)).createRootTask(anyInt(), anyInt(), anyBoolean());
     }
 
     @Test
@@ -1013,7 +1101,8 @@ public class ActivityStarterTests extends WindowTestsBase {
                 .setLaunchDisplayId(secondaryDisplay.mDisplayId);
         starter.setReason("testReparentTopFocusedActivityToSecondaryDisplay")
                 .setIntent(topActivity.intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Ensure the activity is moved to secondary display.
@@ -1035,7 +1124,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         options.setFreezeRecentTasksReordering();
 
         starter.setReason("testFreezeTaskListActivityOption")
-                .setActivityOptions(new SafeActivityOptions(options))
+                .setActivityOptions(new SafeActivityOptions(options,
+                        Binder.getCallingPid(), Binder.getCallingUid()))
                 .execute();
 
         verify(recentTasks, times(1)).setFreezeTaskListReordering();
@@ -1057,7 +1147,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         options.setFreezeRecentTasksReordering();
 
         starter.setReason("testFreezeTaskListActivityOptionFailedStart")
-                .setActivityOptions(new SafeActivityOptions(options))
+                .setActivityOptions(new SafeActivityOptions(options,
+                        Binder.getCallingPid(), Binder.getCallingUid()))
                 .execute();
 
         // Simulate a failed start
@@ -1131,7 +1222,7 @@ public class ActivityStarterTests extends WindowTestsBase {
 
     @Test
     public void testRecycleTaskWakeUpWhenDreaming() {
-        doNothing().when(mWm.mAtmService.mTaskSupervisor).wakeUp(anyString());
+        doNothing().when(mWm.mAtmService.mTaskSupervisor).wakeUp(anyInt(), anyString());
         doReturn(true).when(mWm.mAtmService).isDreaming();
         final ActivityStarter starter = prepareStarter(0 /* flags */);
         final ActivityRecord target = new ActivityBuilder(mAtm).setCreateTask(true).build();
@@ -1146,7 +1237,7 @@ public class ActivityStarterTests extends WindowTestsBase {
         assertTrue(target.currentLaunchCanTurnScreenOn());
         // In real case, dream activity has a higher priority (TaskDisplayArea#getPriority) that
         // will be put at a higher z-order. So it relies on wakeUp() to be dismissed.
-        verify(mWm.mAtmService.mTaskSupervisor).wakeUp(anyString());
+        verify(mWm.mAtmService.mTaskSupervisor).wakeUp(eq(target.getDisplayId()), anyString());
     }
 
     @Test
@@ -1158,7 +1249,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         final ActivityRecord[] outActivity = new ActivityRecord[1];
 
         // Activity must not land on split-screen task if currently not in split-screen mode.
-        starter.setActivityOptions(options.toBundle())
+        starter.setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .setReason("testTargetTaskInSplitScreen")
                 .setOutActivity(outActivity).execute();
         assertThat(outActivity[0].inMultiWindowMode()).isFalse();
@@ -1175,6 +1267,34 @@ public class ActivityStarterTests extends WindowTestsBase {
     }
 
     @Test
+    public void testLaunchAdjacentDisabled() {
+        final ActivityStarter starter =
+                prepareStarter(FLAG_ACTIVITY_LAUNCH_ADJACENT, false /* mockGetRootTask */);
+        final ActivityRecord top = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final ActivityOptions options = ActivityOptions.makeBasic();
+        final ActivityRecord[] outActivity = new ActivityRecord[1];
+
+        // Activity must not land on split-screen task if currently not in split-screen mode.
+        starter.setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
+                .setReason("testLaunchAdjacentDisabled")
+                .setOutActivity(outActivity).execute();
+        assertThat(outActivity[0].inMultiWindowMode()).isFalse();
+
+        // Move activity to split-screen-primary task and make sure it has the focus.
+        TestSplitOrganizer splitOrg = new TestSplitOrganizer(mAtm, top.getDisplayContent());
+        top.getRootTask().reparent(splitOrg.mPrimary, POSITION_BOTTOM);
+        top.getRootTask().moveToFront("testLaunchAdjacentDisabled");
+        top.getRootTask().setLaunchAdjacentDisabled(true);
+
+        // Ensure activity does not launch into split-screen-secondary when launch adjacent is
+        // disabled
+        startActivityInner(starter, outActivity[0], top, options, null /* inTask */,
+                null /* taskFragment*/);
+        assertThat(outActivity[0].isDescendantOf(splitOrg.mSecondary)).isFalse();
+    }
+
+    @Test
     public void testTransientLaunchWithKeyguard() {
         final ActivityStarter starter = prepareStarter(0 /* flags */);
         final ActivityRecord target = new ActivityBuilder(mAtm).setCreateTask(true).build();
@@ -1184,7 +1304,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         doReturn(true).when(keyguard).isKeyguardOccluded(anyInt());
         registerTestTransitionPlayer();
         starter.setReason("testTransientLaunchWithKeyguard")
-                .setActivityOptions(ActivityOptions.makeBasic().setTransientLaunch().toBundle())
+                .setActivityOptions(ActivityOptions.makeBasic().setTransientLaunch().toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .setIntent(target.intent)
                 .execute();
         final TransitionController controller = mRootWindowContainer.mTransitionController;
@@ -1361,7 +1482,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         intent.setComponent(ActivityBuilder.getDefaultComponent());
         starter.setReason("testLaunchCookie_newTask")
                 .setIntent(intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Verify the cookie is set
@@ -1373,7 +1495,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         newOptions.setLaunchCookie(newCookie);
         starter.setReason("testLaunchCookie_existingTask")
                 .setIntent(intent)
-                .setActivityOptions(newOptions.toBundle())
+                .setActivityOptions(newOptions.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Verify the cookie is updated
@@ -1399,7 +1522,8 @@ public class ActivityStarterTests extends WindowTestsBase {
         final ActivityOptions options = ActivityOptions.makeRemoteAnimation(adaptor);
         starter.setReason("testRemoteAnimation_existingTask")
                 .setIntent(intent)
-                .setActivityOptions(options.toBundle())
+                .setActivityOptions(options.toBundle(),
+                        Binder.getCallingPid(), Binder.getCallingUid())
                 .execute();
 
         // Verify the remote animation is updated.
@@ -1512,16 +1636,18 @@ public class ActivityStarterTests extends WindowTestsBase {
         assertTrue(activityTop.isVisible());
         assertTrue(activityTop.isVisibleRequested());
 
+        final ActivityRecord[] outActivity = new ActivityRecord[1];
         final ActivityStarter starter = prepareStarter(FLAG_ACTIVITY_REORDER_TO_FRONT
                         | FLAG_ACTIVITY_NEW_TASK, false /* mockGetRootTask */);
         starter.mStartActivity = activityBot;
         task.inRecents = true;
-        starter.setInTask(task);
+        starter.setInTask(task).setOutActivity(outActivity);
         starter.getIntent().setComponent(activityBot.mActivityComponent);
         final int result = starter.setReason("testRecordActivityMovement").execute();
 
         assertEquals(START_DELIVERED_TO_TOP, result);
         assertNotNull(starter.mMovedToTopActivity);
+        assertEquals(activityBot, outActivity[0]);
 
         final ActivityStarter starter2 = prepareStarter(FLAG_ACTIVITY_REORDER_TO_FRONT
                         | FLAG_ACTIVITY_NEW_TASK, false /* mockGetRootTask */);

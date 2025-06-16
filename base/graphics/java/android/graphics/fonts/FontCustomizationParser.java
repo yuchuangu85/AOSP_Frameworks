@@ -43,6 +43,7 @@ import java.util.Map;
  *
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class FontCustomizationParser {
     private static final String TAG = "FontCustomizationParser";
 
@@ -182,10 +183,8 @@ public class FontCustomizationParser {
 
             // For ignoring the customization, consume the new-locale-family element but don't
             // register any customizations.
-            if (com.android.text.flags.Flags.vendorCustomLocaleFallback()) {
-                outCustomization.add(new FontConfig.Customization.LocaleFallback(
-                        Locale.forLanguageTag(lang), intOp, family));
-            }
+            outCustomization.add(new FontConfig.Customization.LocaleFallback(
+                    Locale.forLanguageTag(lang), intOp, family));
         } else {
             throw new IllegalArgumentException("Unknown customizationType=" + customizationType);
         }

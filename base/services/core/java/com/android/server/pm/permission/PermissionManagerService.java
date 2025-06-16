@@ -37,6 +37,7 @@ import android.Manifest;
 import android.annotation.AppIdInt;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SpecialUsers.CanBeALL;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
@@ -265,6 +266,17 @@ public class PermissionManagerService extends IPermissionManager.Stub {
                 persistentDeviceId, mPermissionManagerServiceImpl::checkUidPermission);
     }
 
+    @Override
+    @Context.PermissionRequestState
+    public int getPermissionRequestState(@NonNull String packageName,
+            @NonNull String permissionName, int deviceId) {
+        Objects.requireNonNull(permissionName, "permission can't be null.");
+        Objects.requireNonNull(packageName, "package name can't be null.");
+
+        return mPermissionManagerServiceImpl.getPermissionRequestState(packageName, permissionName,
+                deviceId, getPersistentDeviceId(deviceId));
+    }
+
     private String getPersistentDeviceId(int deviceId) {
         if (deviceId == Context.DEVICE_ID_DEFAULT) {
             return VirtualDeviceManager.PERSISTENT_DEVICE_ID_DEFAULT;
@@ -274,7 +286,9 @@ public class PermissionManagerService extends IPermissionManager.Stub {
             mVirtualDeviceManagerInternal =
                     LocalServices.getService(VirtualDeviceManagerInternal.class);
         }
-        return mVirtualDeviceManagerInternal.getPersistentIdForDevice(deviceId);
+        return mVirtualDeviceManagerInternal == null
+                ? VirtualDeviceManager.PERSISTENT_DEVICE_ID_DEFAULT
+                : mVirtualDeviceManagerInternal.getPersistentIdForDevice(deviceId);
     }
 
     @Override
@@ -752,7 +766,7 @@ public class PermissionManagerService extends IPermissionManager.Stub {
         @Override
         public void onPackageUninstalled(@NonNull String packageName, int appId,
                 @NonNull PackageState packageState, @Nullable AndroidPackage pkg,
-                @NonNull List<AndroidPackage> sharedUserPkgs, @UserIdInt int userId) {
+                @NonNull List<AndroidPackage> sharedUserPkgs, @CanBeALL @UserIdInt int userId) {
             if (userId != UserHandle.USER_ALL) {
                 final int[] userIds = getAllUserIds();
                 if (!ArrayUtils.contains(userIds, userId)) {
@@ -1244,6 +1258,7 @@ public class PermissionManagerService extends IPermissionManager.Stub {
             final boolean hasChain = attributionChainId != ATTRIBUTION_CHAIN_ID_NONE;
             AttributionSource current = attributionSource;
             AttributionSource next = null;
+            AttributionSource prev = null;
             // We consider the chain trusted if the start node has UPDATE_APP_OPS_STATS, and
             // every attributionSource in the chain is registered with the system.
             final boolean isChainStartTrusted = !hasChain || checkPermission(context,
@@ -1310,6 +1325,22 @@ public class PermissionManagerService extends IPermissionManager.Stub {
                         selfAccess, singleReceiverFromDatasource, attributedOp,
                         proxyAttributionFlags, proxiedAttributionFlags, attributionChainId);
 
+                if (startDataDelivery && opMode != AppOpsManager.MODE_ALLOWED) {
+                    // Current failed the perm check, so if we are part-way through an attr chain,
+                    // we need to clean up the already started proxy op higher up the chain.  Note,
+                    // proxy ops are verified two by two, which means we have to clear the 2nd next
+                    // from the previous iteration (since it is actually curr.next which failed
+                    // to pass the perm check).
+                    if (prev != null) {
+                        final var cutAttrSourceState = prev.asState();
+                        if (cutAttrSourceState.next.length > 0) {
+                            cutAttrSourceState.next[0].next = new AttributionSourceState[0];
+                        }
+                        finishDataDelivery(context, attributedOp,
+                                cutAttrSourceState, fromDatasource);
+                    }
+                }
+
                 switch (opMode) {
                     case AppOpsManager.MODE_ERRORED: {
                         if (permission.equals(Manifest.permission.BLUETOOTH_CONNECT)) {
@@ -1335,6 +1366,8 @@ public class PermissionManagerService extends IPermissionManager.Stub {
                     return PermissionChecker.PERMISSION_GRANTED;
                 }
 
+                // an attribution we have already possibly started an op for
+                prev = current;
                 current = next;
             }
         }
@@ -1508,8 +1541,19 @@ public class PermissionManagerService extends IPermissionManager.Stub {
                 }
                 final AttributionSource resolvedAttributionSource =
                         accessorSource.withPackageName(resolvedAccessorPackageName);
-                final int opMode = appOpsManager.unsafeCheckOpRawNoThrow(op,
-                        resolvedAttributionSource);
+                // Avoid checking the first attr in the chain in some cases for consistency with
+                // checks for data delivery.
+                // In particular, for chains of 2 or more, when skipProxyOperation is true, the
+                // for data delivery implementation does not actually check the first link in the
+                // chain. If the attribution is just a singleReceiverFromDatasource, this
+                // exemption does not apply, since it does not go through proxyOp flow, and the top
+                // of the chain is actually removed above.
+                // Skipping the check avoids situations where preflight checks fail since the data
+                // source itself does not have the op (e.g. audioserver).
+                final int opMode = (skipProxyOperation && !singleReceiverFromDatasource) ?
+                        AppOpsManager.MODE_ALLOWED :
+                        appOpsManager.unsafeCheckOpRawNoThrow(op, resolvedAttributionSource);
+
                 final AttributionSource next = accessorSource.getNext();
                 if (!selfAccess && opMode == AppOpsManager.MODE_ALLOWED && next != null) {
                     final String resolvedNextPackageName = resolvePackageName(context, next);
@@ -1639,7 +1683,7 @@ public class PermissionManagerService extends IPermissionManager.Stub {
                     }
                 }
                 int result = Math.max(checkedOpResult, notedOpResult);
-                // TODO(b/302609140): Remove extra logging after this issue is diagnosed.
+                // TODO(b/333931259): Remove extra logging after this issue is diagnosed.
                 if (op == OP_BLUETOOTH_CONNECT && result == MODE_ERRORED) {
                     if (result == checkedOpResult) {
                         Slog.e(LOG_TAG, "BLUETOOTH_CONNECT permission hard denied as"
@@ -1666,8 +1710,8 @@ public class PermissionManagerService extends IPermissionManager.Stub {
 
             // handle overflow
             if (attributionChainId < 0) {
-                attributionChainId = 0;
                 sAttributionChainIds.set(0);
+                attributionChainId = sAttributionChainIds.incrementAndGet();
             }
             return attributionChainId;
         }

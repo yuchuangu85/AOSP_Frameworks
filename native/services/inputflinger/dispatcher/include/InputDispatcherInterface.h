@@ -24,6 +24,7 @@
 #include <android/os/InputEventInjectionSync.h>
 #include <gui/InputApplication.h>
 #include <gui/WindowInfo.h>
+#include <input/DisplayTopologyGraph.h>
 #include <input/InputDevice.h>
 #include <input/InputTransport.h>
 #include <unordered_map>
@@ -147,7 +148,7 @@ public:
      * Returns true on success.  False if the window did not actually have an active touch gesture.
      */
     virtual bool transferTouchGesture(const sp<IBinder>& fromToken, const sp<IBinder>& toToken,
-                                      bool isDragDrop) = 0;
+                                      bool isDragDrop, bool transferEntireGesture) = 0;
 
     /**
      * Transfer a touch gesture to the provided channel, no matter where the current touch is.
@@ -227,10 +228,11 @@ public:
     virtual void cancelCurrentTouch() = 0;
 
     /*
-     * Updates key repeat configuration timeout and delay.
+     * Updates whether key repeat is enabled and key repeat configuration timeout and delay.
      */
     virtual void setKeyRepeatConfiguration(std::chrono::nanoseconds timeout,
-                                           std::chrono::nanoseconds delay) = 0;
+                                           std::chrono::nanoseconds delay,
+                                           bool keyRepeatEnabled) = 0;
 
     /*
      * Determine if a pointer from a device is being dispatched to the given window.
@@ -242,6 +244,11 @@ public:
      * Notify the dispatcher that the state of the input method connection changed.
      */
     virtual void setInputMethodConnectionIsActive(bool isActive) = 0;
+
+    /*
+     * Notify the dispatcher of the latest DisplayTopology.
+     */
+    virtual void setDisplayTopology(const DisplayTopologyGraph& displayTopologyGraph) = 0;
 };
 
 } // namespace android

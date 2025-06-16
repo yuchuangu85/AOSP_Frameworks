@@ -34,7 +34,9 @@ import com.android.settingslib.widget.TwoTargetPreference;
  * Preference class that supports being disabled by a user restriction
  * set by a device admin.
  */
-public class RestrictedPreference extends TwoTargetPreference {
+public class RestrictedPreference extends TwoTargetPreference implements
+        RestrictedPreferenceHelperProvider {
+
     RestrictedPreferenceHelper mHelper;
 
     public RestrictedPreference(Context context, AttributeSet attrs,
@@ -64,6 +66,11 @@ public class RestrictedPreference extends TwoTargetPreference {
     public RestrictedPreference(Context context, String packageName, int uid) {
         this(context, null, TypedArrayUtils.getAttr(context, R.attr.preferenceStyle,
                 android.R.attr.preferenceStyle), 0, packageName, uid);
+    }
+
+    @Override
+    public @NonNull RestrictedPreferenceHelper getRestrictedPreferenceHelper() {
+        return mHelper;
     }
 
     @Override
@@ -100,12 +107,25 @@ public class RestrictedPreference extends TwoTargetPreference {
     /**
      * Checks if the given setting is subject to Enhanced Confirmation Mode restrictions for this
      * package. Marks the preference as disabled if so.
+     * TODO b/390196024: remove this and update all callers to use the "settingEnabled" version
      * @param settingIdentifier The key identifying the setting
      * @param packageName the package to check the settingIdentifier for
      */
     public void checkEcmRestrictionAndSetDisabled(@NonNull String settingIdentifier,
             @NonNull String packageName) {
-        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName);
+        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName, false);
+    }
+
+    /**
+     * Checks if the given setting is subject to Enhanced Confirmation Mode restrictions for this
+     * package. Marks the preference as disabled if so.
+     * @param settingIdentifier The key identifying the setting
+     * @param packageName the package to check the settingIdentifier for
+     * @param settingEnabled Whether the setting in question is enabled
+     */
+    public void checkEcmRestrictionAndSetDisabled(@NonNull String settingIdentifier,
+            @NonNull String packageName, boolean settingEnabled) {
+        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName, settingEnabled);
     }
 
     @Override

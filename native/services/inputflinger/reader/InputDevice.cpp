@@ -136,6 +136,8 @@ void InputDevice::dump(std::string& dump, const std::string& eventHubDevStr) {
     } else {
         dump += "<none>\n";
     }
+    dump += StringPrintf(INDENT2 "SysfsRootPath:     %s\n",
+                         mSysfsRootPath.empty() ? "<none>" : mSysfsRootPath.c_str());
     dump += StringPrintf(INDENT2 "HasMic:     %s\n", toString(mHasMic));
     dump += StringPrintf(INDENT2 "Sources: %s\n",
                          inputEventSourceToString(deviceInfo.getSources()).c_str());
@@ -194,6 +196,10 @@ void InputDevice::addEmptyEventHubDevice(int32_t eventHubId) {
 
     DevicePair& devicePair = mDevices[eventHubId];
     devicePair.second = createMappers(*devicePair.first, readerConfig);
+
+    if (mSysfsRootPath.empty()) {
+        mSysfsRootPath = devicePair.first->getSysfsRootPath();
+    }
 
     // Must change generation to flag this device as changed
     bumpGeneration();
@@ -364,6 +370,18 @@ std::list<NotifyArgs> InputDevice::configureInternal(nsecs_t when,
             // Whether a device is enabled can depend on the display association,
             // so update the enabled state when there is a change in display info.
             out += updateEnableState(when, readerConfig, forceEnable);
+        }
+
+        if (!changes.any() || changes.test(InputReaderConfiguration::Change::KEY_REMAPPING)) {
+            const bool isFullKeyboard =
+                    (mSources & AINPUT_SOURCE_KEYBOARD) == AINPUT_SOURCE_KEYBOARD &&
+                    mKeyboardType == KeyboardType::ALPHABETIC;
+            if (isFullKeyboard) {
+                for_each_subdevice([&readerConfig](auto& context) {
+                    context.setKeyRemapping(readerConfig.keyRemapping);
+                });
+                bumpGeneration();
+            }
         }
     }
     return out;
@@ -679,22 +697,6 @@ int32_t InputDevice::getMetaState() {
     return result;
 }
 
-void InputDevice::updateMetaState(int32_t keyCode) {
-    first_in_mappers<bool>([keyCode](InputMapper& mapper) {
-        if (sourcesMatchMask(mapper.getSources(), AINPUT_SOURCE_KEYBOARD) &&
-            mapper.updateMetaState(keyCode)) {
-            return std::make_optional(true);
-        }
-        return std::optional<bool>();
-    });
-}
-
-void InputDevice::addKeyRemapping(int32_t fromKeyCode, int32_t toKeyCode) {
-    for_each_subdevice([fromKeyCode, toKeyCode](auto& context) {
-        context.addKeyRemapping(fromKeyCode, toKeyCode);
-    });
-}
-
 void InputDevice::bumpGeneration() {
     mGeneration = mContext->bumpGeneration();
 }
@@ -725,6 +727,15 @@ size_t InputDevice::getMapperCount() {
     return count;
 }
 
+std::optional<HardwareProperties> InputDevice::getTouchpadHardwareProperties() {
+    std::optional<HardwareProperties> result = first_in_mappers<HardwareProperties>(
+            [](InputMapper& mapper) -> std::optional<HardwareProperties> {
+                return mapper.getTouchpadHardwareProperties();
+            });
+
+    return result;
+}
+
 void InputDevice::updateLedState(bool reset) {
     for_each_mapper([reset](InputMapper& mapper) { mapper.updateLedState(reset); });
 }
@@ -738,6 +749,14 @@ void InputDevice::setKeyboardType(KeyboardType keyboardType) {
         mKeyboardType = keyboardType;
         bumpGeneration();
     }
+}
+
+bool InputDevice::setKernelWakeEnabled(bool enabled) {
+    bool success = false;
+    for_each_subdevice([&enabled, &success](InputDeviceContext& context) {
+        success |= context.setKernelWakeEnabled(enabled);
+    });
+    return success;
 }
 
 InputDeviceContext::InputDeviceContext(InputDevice& device, int32_t eventHubId)

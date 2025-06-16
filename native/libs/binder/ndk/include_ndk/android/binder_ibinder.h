@@ -219,6 +219,50 @@ typedef binder_status_t (*AIBinder_onDump)(AIBinder* binder, int fd, const char*
 void AIBinder_Class_setOnDump(AIBinder_Class* clazz, AIBinder_onDump onDump) __INTRODUCED_IN(29);
 
 /**
+ * Associates a mapping of transaction codes(transaction_code_t) to function names for the given
+ * class.
+ *
+ * Trace messages will use the provided names instead of bare integer codes when set. If not set by
+ * this function, trace messages will only be identified by the bare code. This should be called one
+ * time during clazz initialization. clazz is defined using AIBinder_Class_define and
+ * transactionCodeToFunctionMap should have same scope as clazz. Resetting/clearing the
+ * transactionCodeToFunctionMap is not allowed. Passing null for either clazz or
+ * transactionCodeToFunctionMap will abort.
+ *
+ * Available since API level 36.
+ *
+ * \param clazz class which should use this transaction to code function map.
+ * \param transactionCodeToFunctionMap array of function names indexed by transaction code.
+ * Transaction codes start from 1, functions with transaction code 1 will correspond to index 0 in
+ * transactionCodeToFunctionMap. When defining methods, transaction codes are expected to be
+ * contiguous, and this is required for maximum memory efficiency.
+ * You can use nullptr if certain transaction codes are not used. Lifetime should be same as clazz.
+ * \param length number of elements in the transactionCodeToFunctionMap
+ */
+void AIBinder_Class_setTransactionCodeToFunctionNameMap(AIBinder_Class* clazz,
+                                                        const char** transactionCodeToFunctionMap,
+                                                        size_t length) __INTRODUCED_IN(36);
+
+/**
+ * Get function name associated with transaction code for given class
+ *
+ * This function returns function name associated with provided transaction code for given class.
+ * AIBinder_Class_setTransactionCodeToFunctionNameMap should be called first to associate function
+ * to transaction code mapping.
+ *
+ * Available since API level 36.
+ *
+ * \param clazz class for which function name is requested
+ * \param transactionCode transaction_code_t for which function name is requested.
+ *
+ * \return function name in form of const char* if transaction code is valid for given class.
+ * The value returned is valid for the lifetime of clazz. if transaction code is invalid or
+ * transactionCodeToFunctionMap is not set, nullptr is returned.
+ */
+const char* AIBinder_Class_getFunctionName(AIBinder_Class* clazz, transaction_code_t code)
+        __INTRODUCED_IN(36);
+
+/**
  * This tells users of this class not to use a transaction header. By default, libbinder_ndk users
  * read/write transaction headers implicitly (in the SDK, this must be manually written by
  * android.os.Parcel#writeInterfaceToken, and it is read/checked with
@@ -374,6 +418,9 @@ binder_status_t AIBinder_unlinkToDeath(AIBinder* binder, AIBinder_DeathRecipient
  *
  * This can be used with higher-level system services to determine the caller's identity and check
  * permissions.
+ *
+ * Warning do not use this as a security identifier! PID is unreliable as it may be re-used. This
+ * should mostly be used for debugging.
  *
  * Available since API level 29.
  *
@@ -771,7 +818,7 @@ const char* AIBinder_Class_getDescriptor(const AIBinder_Class* clazz) __INTRODUC
  * This provides a per-process-unique total ordering of binders where a null
  * AIBinder* object is considered to be before all other binder objects.
  * For instance, two binders refer to the same object in a local or remote
- * process when both AIBinder_lt(a, b) and AIBinder(b, a) are false. This API
+ * process when both AIBinder_lt(a, b) and AIBinder_lt(b, a) are false. This API
  * might be used to insert and lookup binders in binary search trees.
  *
  * AIBinder* pointers themselves actually also create a per-process-unique total

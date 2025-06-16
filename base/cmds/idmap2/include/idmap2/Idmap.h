@@ -17,22 +17,24 @@
 /*
  * # idmap file format (current version)
  *
- * idmap                      := header data*
+ * idmap                      := header constraints_count constraint* data*
  * header                     := magic version target_crc overlay_crc fulfilled_policies
  *                               enforce_overlayable target_path overlay_path overlay_name
  *                               debug_info
- * data                       := data_header target_entry* target_inline_entry*
-                                 target_inline_entry_value* config* overlay_entry* string_pool
+ * constraints                := constraint_type constraint_value
+ * data                       := data_header target_entries target_inline_entries
+                                 target_inline_entry_value* config* overlay_entries string_pool
  * data_header                := target_entry_count target_inline_entry_count
                                  target_inline_entry_value_count config_count overlay_entry_count
  *                               string_pool_index
- * target_entry               := target_id overlay_id
- * target_inline_entry        := target_id start_value_index value_count
+ * target_entries             := target_id* overlay_id*
+ * target_inline_entries      := target_id* target_inline_value_header*
+ * target_inline_value_header := start_value_index value_count
  * target_inline_entry_value  := config_index Res_value::size padding(1) Res_value::type
  *                               Res_value::value
  * config                     := target_id Res_value::size padding(1) Res_value::type
  *                               Res_value::value
- * overlay_entry              := overlay_id target_id
+ * overlay_entries            := overlay_id* target_id*
  *
  * debug_info                       := string
  * enforce_overlayable              := <uint32_t>
@@ -66,6 +68,9 @@
  * value_type                       := <uint8_t>
  * value_data                       := <uint32_t>
  * version                          := <uint32_t>
+ * constraints_count                := <uint32_t>
+ * constraint_type                  := <uint32_t>
+ * constraint_value                 := <uint32_t>
  */
 
 #ifndef IDMAP2_INCLUDE_IDMAP2_IDMAP_H_
@@ -75,6 +80,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "android-base/macros.h"
@@ -170,6 +176,33 @@ class IdmapHeader {
   friend Idmap;
   DISALLOW_COPY_AND_ASSIGN(IdmapHeader);
 };
+
+struct IdmapConstraint {
+  // Constraint type can be android::kOverlayConstraintTypeDisplayId or
+  // android::kOverlayConstraintTypeDeviceId
+  uint32_t constraint_type;
+  uint32_t constraint_value;
+
+  bool operator==(const IdmapConstraint&) const = default;
+};
+
+struct IdmapConstraints {
+  static std::unique_ptr<const IdmapConstraints> FromBinaryStream(std::istream& stream);
+
+  struct Hash {
+    static std::size_t operator()(const IdmapConstraint& constraint) {
+      return std::hash<int>()(constraint.constraint_type) * 31
+              + std::hash<int>()(constraint.constraint_value);
+    }
+  };
+
+  bool operator == (const IdmapConstraints& constraints) const = default;
+
+  void accept(Visitor* v) const;
+
+  std::unordered_set<IdmapConstraint, Hash> constraints;
+};
+
 class IdmapData {
  public:
   class Header {
@@ -285,10 +318,14 @@ class Idmap {
   static Result<std::unique_ptr<const Idmap>> FromContainers(
       const TargetResourceContainer& target, const OverlayResourceContainer& overlay,
       const std::string& overlay_name, const PolicyBitmask& fulfilled_policies,
-      bool enforce_overlayable);
+      bool enforce_overlayable, std::unique_ptr<const IdmapConstraints>&& constraints);
 
   const std::unique_ptr<const IdmapHeader>& GetHeader() const {
     return header_;
+  }
+
+  const std::unique_ptr<const IdmapConstraints>& GetConstraints() const {
+    return constraints_;
   }
 
   const std::vector<std::unique_ptr<const IdmapData>>& GetData() const {
@@ -301,6 +338,7 @@ class Idmap {
   Idmap() = default;
 
   std::unique_ptr<const IdmapHeader> header_;
+  std::unique_ptr<const IdmapConstraints> constraints_;
   std::vector<std::unique_ptr<const IdmapData>> data_;
 
   DISALLOW_COPY_AND_ASSIGN(Idmap);
@@ -311,6 +349,7 @@ class Visitor {
   virtual ~Visitor() = default;
   virtual void visit(const Idmap& idmap) = 0;
   virtual void visit(const IdmapHeader& header) = 0;
+  virtual void visit(const IdmapConstraints& constraints) = 0;
   virtual void visit(const IdmapData& data) = 0;
   virtual void visit(const IdmapData::Header& header) = 0;
 };

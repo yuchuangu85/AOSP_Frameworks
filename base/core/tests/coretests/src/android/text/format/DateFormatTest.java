@@ -25,8 +25,8 @@ import android.compat.testing.PlatformCompatChangeRule;
 import android.icu.text.DateFormatSymbols;
 import android.platform.test.annotations.Presubmit;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import libcore.junit.util.compat.CoreCompatChangeRule.DisableCompatChanges;
 import libcore.junit.util.compat.CoreCompatChangeRule.EnableCompatChanges;
@@ -74,8 +74,9 @@ public class DateFormatTest {
         DateFormatSymbols dfs = DateFormat.getIcuDateFormatSymbols(Locale.US);
         assertEquals("AM", dfs.getAmPmStrings()[0]);
         assertEquals("PM", dfs.getAmPmStrings()[1]);
-        assertEquals("a", dfs.getAmpmNarrowStrings()[0]);
-        assertEquals("p", dfs.getAmpmNarrowStrings()[1]);
+        // getAmpmNarrowStrings() is a @CorePlatformApi that we should stop using in framework
+        // assertEquals("a", dfs.getAmpmNarrowStrings()[0]);
+        // assertEquals("p", dfs.getAmpmNarrowStrings()[1]);
     }
 
     @Test

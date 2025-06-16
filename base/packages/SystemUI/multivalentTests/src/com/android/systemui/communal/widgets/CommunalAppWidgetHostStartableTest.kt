@@ -18,31 +18,34 @@ package com.android.systemui.communal.widgets
 
 import android.appwidget.AppWidgetProviderInfo
 import android.content.pm.UserInfo
-import android.graphics.Bitmap
-import android.os.UserHandle
-import android.provider.Settings
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.platform.test.annotations.EnableFlags
+import android.platform.test.flag.junit.FlagsParameterization
 import androidx.test.filters.SmallTest
 import com.android.systemui.Flags.FLAG_COMMUNAL_HUB
+import com.android.systemui.Flags.FLAG_GLANCEABLE_HUB_V2
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.communal.data.repository.fakeCommunalWidgetRepository
+import com.android.systemui.communal.domain.interactor.CommunalInteractor
 import com.android.systemui.communal.domain.interactor.communalInteractor
-import com.android.systemui.communal.shared.model.CommunalWidgetContentModel
+import com.android.systemui.communal.domain.interactor.communalSettingsInteractor
+import com.android.systemui.communal.domain.interactor.setCommunalEnabled
+import com.android.systemui.communal.domain.interactor.setCommunalV2ConfigEnabled
+import com.android.systemui.communal.shared.model.FakeGlanceableHubMultiUserHelper
+import com.android.systemui.communal.shared.model.fakeGlanceableHubMultiUserHelper
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.flags.Flags
 import com.android.systemui.flags.fakeFeatureFlagsClassic
 import com.android.systemui.keyguard.data.repository.fakeKeyguardRepository
+import com.android.systemui.keyguard.domain.interactor.keyguardInteractor
 import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testDispatcher
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.settings.fakeUserTracker
 import com.android.systemui.testKosmos
 import com.android.systemui.user.data.repository.fakeUserRepository
-import com.android.systemui.util.mockito.mock
+import com.android.systemui.user.domain.interactor.userLockedInteractor
 import com.android.systemui.util.mockito.whenever
-import com.android.systemui.util.settings.fakeSettings
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -51,40 +54,70 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mock
 import org.mockito.Mockito.never
+import org.mockito.Mockito.spy
 import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4
+import platform.test.runner.parameterized.Parameters
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
-@RunWith(AndroidJUnit4::class)
-class CommunalAppWidgetHostStartableTest : SysuiTestCase() {
+@RunWith(ParameterizedAndroidJunit4::class)
+@EnableFlags(FLAG_COMMUNAL_HUB)
+class CommunalAppWidgetHostStartableTest(flags: FlagsParameterization) : SysuiTestCase() {
     private val kosmos = testKosmos()
 
     @Mock private lateinit var appWidgetHost: CommunalAppWidgetHost
     @Mock private lateinit var communalWidgetHost: CommunalWidgetHost
 
+    private lateinit var widgetManager: GlanceableHubWidgetManager
+    private lateinit var helper: FakeGlanceableHubMultiUserHelper
+
     private lateinit var appWidgetIdToRemove: MutableSharedFlow<Int>
 
+    private lateinit var communalInteractorSpy: CommunalInteractor
     private lateinit var underTest: CommunalAppWidgetHostStartable
+
+    init {
+        mSetFlagsRule.setFlagsParameterization(flags)
+    }
+
+    companion object {
+        private val MAIN_USER_INFO = UserInfo(0, "primary", UserInfo.FLAG_MAIN)
+        private val USER_INFO_WORK = UserInfo(10, "work", UserInfo.FLAG_PROFILE)
+
+        @JvmStatic
+        @Parameters(name = "{0}")
+        fun getParams(): List<FlagsParameterization> {
+            return FlagsParameterization.allCombinationsOf(FLAG_GLANCEABLE_HUB_V2)
+        }
+    }
 
     @Before
     fun setUp() {
         MockitoAnnotations.initMocks(this)
         kosmos.fakeUserRepository.setUserInfos(listOf(MAIN_USER_INFO, USER_INFO_WORK))
         kosmos.fakeFeatureFlagsClassic.set(Flags.COMMUNAL_SERVICE_ENABLED, true)
-        mSetFlagsRule.enableFlags(FLAG_COMMUNAL_HUB)
+        kosmos.setCommunalV2ConfigEnabled(true)
 
+        widgetManager = kosmos.mockGlanceableHubWidgetManager
+        helper = kosmos.fakeGlanceableHubMultiUserHelper
         appWidgetIdToRemove = MutableSharedFlow()
         whenever(appWidgetHost.appWidgetIdToRemove).thenReturn(appWidgetIdToRemove)
+        communalInteractorSpy = spy(kosmos.communalInteractor)
 
         underTest =
             CommunalAppWidgetHostStartable(
-                appWidgetHost,
-                communalWidgetHost,
-                kosmos.communalInteractor,
-                kosmos.fakeUserTracker,
+                { appWidgetHost },
+                { communalWidgetHost },
+                { communalInteractorSpy },
+                { kosmos.communalSettingsInteractor },
+                { kosmos.keyguardInteractor },
+                { kosmos.fakeUserTracker },
                 kosmos.applicationCoroutineScope,
                 kosmos.testDispatcher,
+                { widgetManager },
+                helper,
+                kosmos.userLockedInteractor,
             )
     }
 
@@ -172,26 +205,23 @@ class CommunalAppWidgetHostStartableTest : SysuiTestCase() {
         with(kosmos) {
             testScope.runTest {
                 // Set up communal widgets
-                val widget1 =
-                    mock<CommunalWidgetContentModel.Available> {
-                        whenever(this.appWidgetId).thenReturn(1)
-                    }
-                val widget2 =
-                    mock<CommunalWidgetContentModel.Available> {
-                        whenever(this.appWidgetId).thenReturn(2)
-                    }
-                val widget3 =
-                    mock<CommunalWidgetContentModel.Available> {
-                        whenever(this.appWidgetId).thenReturn(3)
-                    }
-                fakeCommunalWidgetRepository.setCommunalWidgets(listOf(widget1, widget2, widget3))
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 1)
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 2)
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 3)
 
                 underTest.start()
 
                 // Assert communal widgets has 3
                 val communalWidgets by
                     collectLastValue(fakeCommunalWidgetRepository.communalWidgets)
-                assertThat(communalWidgets).containsExactly(widget1, widget2, widget3)
+                assertThat(communalWidgets).hasSize(3)
+
+                val widget1 = communalWidgets!![0]
+                val widget2 = communalWidgets!![1]
+                val widget3 = communalWidgets!![2]
+                assertThat(widget1.appWidgetId).isEqualTo(1)
+                assertThat(widget2.appWidgetId).isEqualTo(2)
+                assertThat(widget3.appWidgetId).isEqualTo(3)
 
                 // Report app widget 1 to remove and assert widget removed
                 appWidgetIdToRemove.emit(1)
@@ -216,18 +246,26 @@ class CommunalAppWidgetHostStartableTest : SysuiTestCase() {
                     selectedUserIndex = 0,
                 )
                 // One work widget, one pending work widget, and one personal widget.
-                val widget1 = createWidgetForUser(1, USER_INFO_WORK.id)
-                val widget2 = createPendingWidgetForUser(2, USER_INFO_WORK.id)
-                val widget3 = createWidgetForUser(3, MAIN_USER_INFO.id)
-                val widgets = listOf(widget1, widget2, widget3)
-                fakeCommunalWidgetRepository.setCommunalWidgets(widgets)
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 1, userId = USER_INFO_WORK.id)
+                fakeCommunalWidgetRepository.addPendingWidget(
+                    appWidgetId = 2,
+                    userId = USER_INFO_WORK.id,
+                )
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 3, userId = MAIN_USER_INFO.id)
 
                 underTest.start()
                 runCurrent()
 
                 val communalWidgets by
                     collectLastValue(fakeCommunalWidgetRepository.communalWidgets)
-                assertThat(communalWidgets).containsExactly(widget1, widget2, widget3)
+                assertThat(communalWidgets).hasSize(3)
+
+                val widget1 = communalWidgets!![0]
+                val widget2 = communalWidgets!![1]
+                val widget3 = communalWidgets!![2]
+                assertThat(widget1.appWidgetId).isEqualTo(1)
+                assertThat(widget2.appWidgetId).isEqualTo(2)
+                assertThat(widget3.appWidgetId).isEqualTo(3)
 
                 // Unlock the device and remove work profile.
                 fakeKeyguardRepository.setKeyguardShowing(false)
@@ -246,47 +284,68 @@ class CommunalAppWidgetHostStartableTest : SysuiTestCase() {
             }
         }
 
-    private suspend fun setCommunalAvailable(available: Boolean) =
+    @Test
+    fun removeNotLockscreenWidgets_whenCommunalIsAvailable() =
         with(kosmos) {
-            fakeKeyguardRepository.setIsEncryptedOrLockdown(false)
-            fakeUserRepository.setSelectedUserInfo(MAIN_USER_INFO)
-            fakeKeyguardRepository.setKeyguardShowing(true)
-            val settingsValue = if (available) 1 else 0
-            fakeSettings.putIntForUser(
-                Settings.Secure.GLANCEABLE_HUB_ENABLED,
-                settingsValue,
-                MAIN_USER_INFO.id
-            )
+            testScope.runTest {
+                // Communal is available
+                setCommunalAvailable(true)
+                kosmos.fakeUserTracker.set(
+                    userInfos = listOf(MAIN_USER_INFO),
+                    selectedUserIndex = 0,
+                )
+                fakeCommunalWidgetRepository.addWidget(
+                    appWidgetId = 1,
+                    userId = MAIN_USER_INFO.id,
+                    category = AppWidgetProviderInfo.WIDGET_CATEGORY_NOT_KEYGUARD,
+                )
+                fakeCommunalWidgetRepository.addWidget(appWidgetId = 2, userId = MAIN_USER_INFO.id)
+                fakeCommunalWidgetRepository.addWidget(
+                    appWidgetId = 3,
+                    userId = MAIN_USER_INFO.id,
+                    category = AppWidgetProviderInfo.WIDGET_CATEGORY_NOT_KEYGUARD,
+                )
+
+                underTest.start()
+                runCurrent()
+
+                val communalWidgets by
+                    collectLastValue(fakeCommunalWidgetRepository.communalWidgets)
+                assertThat(communalWidgets).hasSize(1)
+                assertThat(communalWidgets!![0].appWidgetId).isEqualTo(2)
+
+                verify(communalInteractorSpy).deleteWidget(1)
+                verify(communalInteractorSpy).deleteWidget(3)
+            }
         }
 
-    private fun createWidgetForUser(
-        appWidgetId: Int,
-        userId: Int
-    ): CommunalWidgetContentModel.Available =
-        mock<CommunalWidgetContentModel.Available> {
-            whenever(this.appWidgetId).thenReturn(appWidgetId)
-            val providerInfo = mock<AppWidgetProviderInfo>()
-            whenever(providerInfo.profile).thenReturn(UserHandle(userId))
-            whenever(this.providerInfo).thenReturn(providerInfo)
+    @Test
+    fun onStartHeadlessSystemUser_registerWidgetManager_whenCommunalIsAvailable() =
+        with(kosmos) {
+            testScope.runTest {
+                helper.setIsInHeadlessSystemUser(true)
+                underTest.start()
+                runCurrent()
+                verify(widgetManager, never()).register()
+                verify(widgetManager, never()).unregister()
+
+                // Binding to the service does not require keyguard showing
+                setCommunalAvailable(true, setKeyguardShowing = false)
+                fakeKeyguardRepository.setIsEncryptedOrLockdown(false)
+                runCurrent()
+                verify(widgetManager).register()
+
+                setCommunalAvailable(false)
+                runCurrent()
+                verify(widgetManager).unregister()
+            }
         }
 
-    private fun createPendingWidgetForUser(
-        appWidgetId: Int,
-        userId: Int,
-        priority: Int = 0,
-        packageName: String = "",
-        icon: Bitmap? = null,
-    ): CommunalWidgetContentModel.Pending =
-        CommunalWidgetContentModel.Pending(
-            appWidgetId = appWidgetId,
-            priority = priority,
-            packageName = packageName,
-            icon = icon,
-            user = UserHandle(userId),
-        )
-
-    private companion object {
-        val MAIN_USER_INFO = UserInfo(0, "primary", UserInfo.FLAG_MAIN)
-        val USER_INFO_WORK = UserInfo(10, "work", UserInfo.FLAG_PROFILE)
-    }
+    private fun setCommunalAvailable(available: Boolean, setKeyguardShowing: Boolean = true) =
+        with(kosmos) {
+            setCommunalEnabled(available)
+            if (setKeyguardShowing) {
+                fakeKeyguardRepository.setKeyguardShowing(true)
+            }
+        }
 }

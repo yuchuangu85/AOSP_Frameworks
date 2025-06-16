@@ -114,15 +114,11 @@ cc_defaults {
         "libbase",
         "libharfbuzz_ng",
         "libminikin",
-        "server_configurable_flags",
-        "libaconfig_storage_read_api_cc"
     ],
 
     static_libs: [
         "libui-types",
     ],
-
-    whole_static_libs: ["hwui_flags_cc_lib"],
 
     target: {
         android: {
@@ -143,8 +139,13 @@ cc_defaults {
                 "libandroidfw",
                 "libcrypto",
                 "libsync",
+                "libgui",
                 "libui",
                 "aconfig_text_flags_c_lib",
+                "aconfig_view_accessibility_flags_c_lib",
+                "server_configurable_flags",
+                "libaconfig_storage_read_api_cc",
+                "libgraphicsenv",
             ],
             static_libs: [
                 "libEGL_blobCache",
@@ -155,12 +156,24 @@ cc_defaults {
                 "libstatssocket_lazy",
                 "libtonemap",
             ],
+            whole_static_libs: [
+                "hwui_flags_cc_lib",
+                "libsurfaceflingerflags",
+            ],
         },
         host: {
             static_libs: [
                 "libandroidfw",
                 "libhostgraphics",
                 "libutils",
+            ],
+        },
+        host_linux: {
+            shared_libs: [
+                "libaconfig_storage_read_api_cc",
+            ],
+            whole_static_libs: [
+                "hwui_flags_cc_lib",
             ],
         },
     },
@@ -203,6 +216,9 @@ java_sdk_library {
     visibility: [
         "//frameworks/base", // Framework
     ],
+    impl_library_visibility: [
+        "//frameworks/base/ravenwood",
+    ],
 
     srcs: [
         ":framework-graphics-srcs",
@@ -224,6 +240,14 @@ java_sdk_library {
     },
     // TODO: remove this
     unsafe_ignore_missing_latest_api: true,
+}
+
+filegroup {
+    name: "framework-graphics-ravenwood-policies",
+    srcs: [
+        "framework-graphics-ravenwood-policies.txt",
+    ],
+    visibility: ["//frameworks/base/ravenwood"],
 }
 
 filegroup {
@@ -355,6 +379,7 @@ cc_defaults {
         "jni/AnimatedImageDrawable.cpp",
         "jni/Bitmap.cpp",
         "jni/BitmapRegionDecoder.cpp",
+        "jni/RuntimeXfermode.cpp",
         "jni/BufferUtils.cpp",
         "jni/HardwareBufferHelpers.cpp",
         "jni/BitmapFactory.cpp",
@@ -384,6 +409,7 @@ cc_defaults {
         "jni/ScopedParcel.cpp",
         "jni/Shader.cpp",
         "jni/RenderEffect.cpp",
+        "jni/RuntimeEffectUtils.cpp",
         "jni/Typeface.cpp",
         "jni/Utils.cpp",
         "jni/YuvToJpegEncoder.cpp",
@@ -419,7 +445,6 @@ cc_defaults {
     ],
 
     static_libs: [
-        "libnativehelper_lazy",
         "libziparchive_for_incfs",
     ],
 
@@ -446,6 +471,7 @@ cc_defaults {
             ],
             static_libs: [
                 "libgif",
+                "libnativehelper_lazy",
                 "libstatslog_hwui",
                 "libstatspull_lazy",
                 "libstatssocket_lazy",
@@ -453,6 +479,10 @@ cc_defaults {
         },
         linux: {
             srcs: ["platform/linux/utils/SharedLib.cpp"],
+            shared_libs: [
+                "libbinder",
+                "libbinder_ndk",
+            ],
         },
         darwin: {
             srcs: ["platform/darwin/utils/SharedLib.cpp"],
@@ -464,6 +494,7 @@ cc_defaults {
             ],
             static_libs: [
                 "libandroidfw",
+                "libnativehelper_jvm",
             ],
         },
     },
@@ -498,6 +529,13 @@ genrule {
     out: [
         "statslog_hwui.cpp",
     ],
+}
+
+genrule {
+    name: "statslog-hwui-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module hwui --javaPackage com.android.os.coregraphics --javaClass HwuiStatsLog",
+    out: ["com/android/os/coregraphics/HwuiStatsLog.java"],
 }
 
 // ------------------------
@@ -571,6 +609,7 @@ cc_defaults {
         "utils/Color.cpp",
         "utils/LinearAllocator.cpp",
         "utils/StringUtils.cpp",
+        "utils/StatsUtils.cpp",
         "utils/TypefaceUtils.cpp",
         "utils/VectorDrawableUtils.cpp",
         "AnimationContext.cpp",
@@ -736,6 +775,7 @@ cc_defaults {
 
 cc_test {
     name: "hwui_unit_tests",
+    test_config: "tests/unit/AndroidTest.xml",
     defaults: [
         "hwui_test_defaults",
         "android_graphics_apex",
@@ -761,6 +801,7 @@ cc_test {
         "tests/unit/CommonPoolTests.cpp",
         "tests/unit/DamageAccumulatorTests.cpp",
         "tests/unit/DeferredLayerUpdaterTests.cpp",
+        "tests/unit/DrawTextFunctorTest.cpp",
         "tests/unit/EglManagerTests.cpp",
         "tests/unit/FatVectorTests.cpp",
         "tests/unit/GraphicsStatsServiceTests.cpp",
@@ -803,6 +844,7 @@ cc_test {
 
 cc_benchmark {
     name: "hwuimacro",
+    test_config: "tests/macrobench/AndroidTest.xml",
     defaults: ["hwui_test_defaults"],
 
     static_libs: ["libhwui"],
@@ -822,6 +864,7 @@ cc_benchmark {
 
 cc_benchmark {
     name: "hwuimicro",
+    test_config: "tests/microbench/AndroidTest.xml",
     defaults: ["hwui_test_defaults"],
 
     static_libs: ["libhwui_static"],

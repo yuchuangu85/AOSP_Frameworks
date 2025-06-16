@@ -129,7 +129,7 @@ public final class ArrayMap<K, V> implements Map<K, V> {
             return ContainerHelpers.binarySearch(hashes, N, hash);
         } catch (ArrayIndexOutOfBoundsException e) {
             if (CONCURRENT_MODIFICATION_EXCEPTIONS) {
-                throw new ConcurrentModificationException();
+                throw new ConcurrentModificationException(e);
             } else {
                 throw e; // the cache is poisoned at this point, there's not much we can do
             }
@@ -649,7 +649,6 @@ public final class ArrayMap<K, V> implements Map<K, V> {
         }
         if (index > 0 && mHashes[index-1] > hash) {
             RuntimeException e = new RuntimeException("here");
-            e.fillInStackTrace();
             Log.w(TAG, "New hash " + hash
                     + " is before end of array hash " + mHashes[index-1]
                     + " at index " + index + (DEBUG ? " key " + key : ""), e);

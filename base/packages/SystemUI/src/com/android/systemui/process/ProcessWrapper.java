@@ -16,6 +16,7 @@
 
 package com.android.systemui.process;
 
+import android.app.ActivityManager;
 import android.os.Process;
 import android.os.UserHandle;
 
@@ -26,14 +27,25 @@ import javax.inject.Inject;
  * providing a mockable target around these details.
  */
 public class ProcessWrapper {
+    private final ActivityManager mActivityManager;
+
     @Inject
-    public ProcessWrapper() {}
+    public ProcessWrapper(ActivityManager activityManager) {
+        mActivityManager = activityManager;
+    }
 
     /**
      * Returns {@code true} if System User is running the current process.
      */
     public boolean isSystemUser() {
         return myUserHandle().isSystem();
+    }
+
+    /**
+     * Returns {@code true} if the foreground user or profile is running the current process.
+     */
+    public boolean isForegroundUserOrProfile() {
+        return mActivityManager.isProfileForeground(myUserHandle());
     }
 
     /**

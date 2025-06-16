@@ -17,19 +17,33 @@
 package com.android.systemui.communal.data.repository
 
 import android.app.admin.devicePolicyManager
+import android.content.res.mainResources
+import com.android.systemui.Flags
 import com.android.systemui.broadcast.broadcastDispatcher
+import com.android.systemui.communal.shared.model.CommunalBackgroundType
 import com.android.systemui.flags.featureFlagsClassic
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.testDispatcher
 import com.android.systemui.util.settings.fakeSettings
 
+val Kosmos.communalDefaultBackground: CommunalBackgroundType by
+    Kosmos.Fixture {
+        if (Flags.glanceableHubBlurredBackground()) {
+            CommunalBackgroundType.BLUR
+        } else {
+            CommunalBackgroundType.ANIMATED
+        }
+    }
+
 val Kosmos.communalSettingsRepository: CommunalSettingsRepository by
     Kosmos.Fixture {
         CommunalSettingsRepositoryImpl(
             bgDispatcher = testDispatcher,
+            resources = mainResources,
             featureFlagsClassic = featureFlagsClassic,
             secureSettings = fakeSettings,
             broadcastDispatcher = broadcastDispatcher,
             devicePolicyManager = devicePolicyManager,
+            defaultBackgroundType = communalDefaultBackground,
         )
     }

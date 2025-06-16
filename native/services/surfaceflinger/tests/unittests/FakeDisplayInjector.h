@@ -19,24 +19,27 @@
 #include <gmock/gmock.h>
 
 #include "TestableSurfaceFlinger.h"
-#include "mock/DisplayHardware/MockPowerAdvisor.h"
+#include "mock/PowerAdvisor/MockPowerAdvisor.h"
 #include "mock/system/window/MockNativeWindow.h"
 
 namespace android {
 
+static constexpr uint8_t kDefaultPort = 255u;
+
 using FakeDisplayDeviceInjector = TestableSurfaceFlinger::FakeDisplayDeviceInjector;
+using android::adpf::mock::PowerAdvisor;
 using android::hardware::graphics::composer::hal::HWDisplayId;
-using android::Hwc2::mock::PowerAdvisor;
 
 struct FakeDisplayInjectorArgs {
-    PhysicalDisplayId displayId = PhysicalDisplayId::fromPort(255u);
+    PhysicalDisplayId displayId = PhysicalDisplayId::fromPort(kDefaultPort);
+    uint8_t port = kDefaultPort;
     HWDisplayId hwcDisplayId = 0;
     bool isPrimary = true;
 };
 
 class FakeDisplayInjector {
 public:
-    FakeDisplayInjector(TestableSurfaceFlinger& flinger, Hwc2::mock::PowerAdvisor& powerAdvisor,
+    FakeDisplayInjector(TestableSurfaceFlinger& flinger, PowerAdvisor& powerAdvisor,
                         sp<mock::NativeWindow> nativeWindow)
           : mFlinger(flinger), mPowerAdvisor(powerAdvisor), mNativeWindow(nativeWindow) {}
 
@@ -73,7 +76,7 @@ public:
                                       .build());
 
         auto injector = FakeDisplayDeviceInjector(mFlinger, compositionDisplay,
-                                                  ui::DisplayConnectionType::Internal,
+                                                  ui::DisplayConnectionType::Internal, args.port,
                                                   args.hwcDisplayId, args.isPrimary);
 
         injector.setNativeWindow(mNativeWindow);
@@ -89,7 +92,7 @@ public:
     }
 
     TestableSurfaceFlinger& mFlinger;
-    Hwc2::mock::PowerAdvisor& mPowerAdvisor;
+    PowerAdvisor& mPowerAdvisor;
     sp<mock::NativeWindow> mNativeWindow;
 };
 

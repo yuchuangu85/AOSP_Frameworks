@@ -270,7 +270,7 @@ void* Loader::open(egl_connection_t* cnx) {
         hnd = attempt_to_load_updated_driver(cnx);
 
         // If updated driver apk is set but fail to load, abort here.
-        LOG_ALWAYS_FATAL_IF(android::GraphicsEnv::getInstance().getDriverNamespace(),
+        LOG_ALWAYS_FATAL_IF(android::GraphicsEnv::getInstance().getDriverNamespace() && !hnd,
                             "couldn't find an OpenGL ES implementation from %s",
                             android::GraphicsEnv::getInstance().getDriverPath().c_str());
     }
@@ -548,6 +548,10 @@ static void* load_angle(const char* kind, android_namespace_t* ns) {
                 .flags = ANDROID_DLEXT_USE_NAMESPACE,
                 .library_namespace = ns,
         };
+        auto prop = base::GetProperty("debug.angle.libs.suffix", "");
+        if (!prop.empty()) {
+            name = std::string("lib") + kind + "_" + prop + ".so";
+        }
         so = do_android_dlopen_ext(name.c_str(), RTLD_LOCAL | RTLD_NOW, &dlextinfo);
     }
 
@@ -599,6 +603,9 @@ Loader::driver_t* Loader::attempt_to_load_angle(egl_connection_t* cnx) {
     driver_t* hnd = nullptr;
 
     // ANGLE doesn't ship with GLES library, and thus we skip GLES driver.
+    // b/370113081: if there is no libEGL_angle.so in namespace ns, libEGL_angle.so in system
+    // partition will be loaded instead. If there is no libEGL_angle.so in system partition, no
+    // angle libs are loaded, and app that sets to use ANGLE will crash.
     void* dso = load_angle("EGL", ns);
     if (dso) {
         initialize_api(dso, cnx, EGL);

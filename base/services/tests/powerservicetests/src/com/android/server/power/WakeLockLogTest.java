@@ -25,6 +25,9 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.PowerManager;
+import android.os.Process;
+
+import com.android.server.power.WakeLockLog.TagData;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -54,13 +57,16 @@ public class WakeLockLogTest {
 
         when(mPackageManager.getPackagesForUid(101)).thenReturn(new String[]{ "some.package1" });
         when(mPackageManager.getPackagesForUid(102)).thenReturn(new String[]{ "some.package2" });
+        when(mPackageManager.getPackagesForUid(Process.SYSTEM_UID))
+                .thenReturn(new String[]{ "some.package3" });
     }
 
     @Test
     public void testAddTwoItems_withNoEventTimeSupplied() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
         when(injectorSpy.currentTimeMillis()).thenReturn(1000L);
         log.onWakeLockAcquired("TagPartial", 101,
@@ -70,22 +76,29 @@ public class WakeLockLogTest {
         log.onWakeLockAcquired("TagFull", 102,
                 PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, -1);
 
+        when(injectorSpy.currentTimeMillis()).thenReturn(1250L);
+        log.onWakeLockAcquired("TagSystem", 1000,
+                PowerManager.FULL_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP, -1);
+
         assertEquals("Wake Lock Log\n"
                         + "  01-01 00:00:01.000 - 101 (some.package1) - ACQ TagPartial "
                         + "(partial,on-after-release)\n"
                         + "  01-01 00:00:01.150 - 102 (some.package2) - ACQ TagFull "
                         + "(full,acq-causes-wake)\n"
+                        + "  01-01 00:00:01.250 - 1000 (" + WakeLockLog.SYSTEM_PACKAGE_NAME + ")"
+                        + " - ACQ TagSystem (full,acq-causes-wake)\n"
                         + "  -\n"
-                        + "  Events: 2, Time-Resets: 0\n"
-                        + "  Buffer, Bytes used: 6\n",
+                        + "  Events: 3, Time-Resets: 0\n"
+                        + "  Buffer, Bytes used: 9\n",
                 dumpLog(log, false));
     }
 
     @Test
     public void testAddTwoItems() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101,
@@ -108,8 +121,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddTwoItemsWithTimeReset() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101, PowerManager.PARTIAL_WAKE_LOCK, 1000L);
@@ -127,9 +141,10 @@ public class WakeLockLogTest {
 
     @Test
     public void testAddTwoItemsWithTagOverwrite() {
-        final int tagDatabaseSize = 2;
+        final int tagDatabaseSize = 1;
+        final int tagStartingSize = 1;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101, PowerManager.PARTIAL_WAKE_LOCK, 1000L);
@@ -148,8 +163,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddFourItemsWithRingBufferOverflow() {
         final int tagDatabaseSize = 6;
+        final int tagStartingSize = 2;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         // Wake lock 1 acquired - log size = 3
@@ -197,8 +213,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemWithBadTag() {
         final int tagDatabaseSize = 6;
+        final int tagStartingSize = 2;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         // Bad tag means it wont get written
@@ -215,8 +232,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemWithReducedTagName() {
         final int tagDatabaseSize = 6;
+        final int tagStartingSize = 2;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("*job*/com.one.two.3hree/.one..Last", 101,
@@ -233,9 +251,10 @@ public class WakeLockLogTest {
 
     @Test
     public void testAddAcquireAndReleaseWithRepeatTagName() {
-        final int tagDatabaseSize = 6;
+        final int tagDatabaseSize = 5;
+        final int tagStartingSize = 5;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("HowdyTag", 101, PowerManager.PARTIAL_WAKE_LOCK, 1000L);
@@ -254,8 +273,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddAcquireAndReleaseWithTimeTravel() {
         final int tagDatabaseSize = 6;
+        final int tagStartingSize = 2;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("HowdyTag", 101, PowerManager.PARTIAL_WAKE_LOCK, 1100L);
@@ -274,8 +294,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddSystemWakelock() {
         final int tagDatabaseSize = 6;
+        final int tagStartingSize = 2;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101,
@@ -293,8 +314,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemWithNoPackageName() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         when(mPackageManager.getPackagesForUid(101)).thenReturn(null);
@@ -313,8 +335,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemWithMultiplePackageNames() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         when(mPackageManager.getPackagesForUid(101)).thenReturn(
@@ -335,8 +358,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemsWithRepeatOwnerUid_UsesCache() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 20;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101,
@@ -366,8 +390,9 @@ public class WakeLockLogTest {
     @Test
     public void testAddItemsWithRepeatOwnerUid_SavedAcquisitions_UsesCache() {
         final int tagDatabaseSize = 128;
+        final int tagStartingSize = 16;
         final int logSize = 10;
-        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, logSize));
+        TestInjector injectorSpy = spy(new TestInjector(tagDatabaseSize, tagStartingSize, logSize));
         WakeLockLog log = new WakeLockLog(injectorSpy, mContext);
 
         log.onWakeLockAcquired("TagPartial", 101,
@@ -411,6 +436,34 @@ public class WakeLockLogTest {
         verify(mPackageManager, times(1)).getPackagesForUid(101);
     }
 
+    @Test
+    public void testTagDatabaseGrowsBeyondStartingSize() {
+        final int tagDatabaseSize = 3;
+        final int tagStartingSize = 1;
+        final int logSize = 10;
+        // start with size = 1 and max size
+        TestInjector injector = new TestInjector(tagDatabaseSize, tagStartingSize, logSize);
+        WakeLockLog.TagDatabase td = new WakeLockLog.TagDatabase(injector);
+
+        // Add one
+        TagData data1 = td.findOrCreateTag("Tagname1", 1001, /* shouldCreate= */ true);
+        assertEquals(0, td.getTagIndex(data1));
+
+        // Check that it grows by adding 1 more
+        TagData data2 = td.findOrCreateTag("Tagname2", 1001, /* shouldCreate= */ true);
+        assertEquals(1, td.getTagIndex(data2));
+
+        // Lets add the last one to fill up the DB to maxSize
+        TagData data3 = td.findOrCreateTag("Tagname3", 1001, /* shouldCreate= */ true);
+        assertEquals(2, td.getTagIndex(data3));
+
+        // Adding a fourth one should replace the oldest one (Tagname1)
+        TagData data4 = td.findOrCreateTag("Tagname4", 1001, /* shouldCreate= */ true);
+        assertEquals(0, td.getTagIndex(data4));
+        assertEquals(tagDatabaseSize, td.getTagIndex(data1));
+
+    }
+
     private String dumpLog(WakeLockLog log, boolean includeTagDb) {
         StringWriter sw = new StringWriter();
         PrintWriter pw = new PrintWriter(sw);
@@ -420,16 +473,23 @@ public class WakeLockLogTest {
 
     public static class TestInjector extends WakeLockLog.Injector {
         private final int mTagDatabaseSize;
+        private final int mTagStartingSize;
         private final int mLogSize;
 
-        public TestInjector(int tagDatabaseSize, int logSize) {
+        public TestInjector(int tagDatabaseSize, int tagStartingSize, int logSize) {
             mTagDatabaseSize = tagDatabaseSize;
+            mTagStartingSize = tagStartingSize;
             mLogSize = logSize;
         }
 
         @Override
         public int getTagDatabaseSize() {
             return mTagDatabaseSize;
+        }
+
+        @Override
+        public int getTagDatabaseStartingSize() {
+            return mTagStartingSize;
         }
 
         @Override

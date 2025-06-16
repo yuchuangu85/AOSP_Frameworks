@@ -20,6 +20,7 @@
 #include "Display/DisplayModeController.h"
 #include "Display/DisplaySnapshot.h"
 #include "DisplayHardware/HWComposer.h"
+#include "DisplayHardware/Hal.h"
 #include "DisplayIdentificationTestHelpers.h"
 #include "FpsOps.h"
 #include "mock/DisplayHardware/MockComposer.h"
@@ -66,11 +67,12 @@ public:
                     setVsyncEnabled(kHwcDisplayId, hal::IComposerClient::Vsync::DISABLE));
         EXPECT_CALL(*mComposerHal, onHotplugConnect(kHwcDisplayId));
 
-        const auto infoOpt = mComposer->onHotplug(kHwcDisplayId, hal::Connection::CONNECTED);
+        const auto infoOpt =
+                mComposer->onHotplug(kHwcDisplayId, HWComposer::HotplugEvent::Connected);
         ASSERT_TRUE(infoOpt);
 
         mDisplayId = infoOpt->id;
-        mDisplaySnapshotOpt.emplace(mDisplayId, ui::DisplayConnectionType::Internal,
+        mDisplaySnapshotOpt.emplace(mDisplayId, infoOpt->port, ui::DisplayConnectionType::Internal,
                                     makeModes(kMode60, kMode90, kMode120), ui::ColorModes{},
                                     std::nullopt);
 
@@ -103,7 +105,7 @@ protected:
 
         EXPECT_CALL(*mComposerHal,
                     setActiveConfigWithConstraints(kHwcDisplayId, hwcModeId, constraints, _))
-                .WillOnce(DoAll(SetArgPointee<3>(timeline), Return(hal::V2_4::Error::NONE)));
+                .WillOnce(DoAll(SetArgPointee<3>(timeline), Return(hal::Error::NONE)));
 
         return constraints;
     }
@@ -183,7 +185,8 @@ TEST_F(DisplayModeControllerTest, initiateModeChange) REQUIRES(kMainThreadContex
     hal::VsyncPeriodChangeTimeline timeline;
     const auto constraints = expectModeSet(modeRequest, timeline);
 
-    EXPECT_TRUE(mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
+    EXPECT_EQ(DisplayModeController::ModeChangeResult::Changed,
+              mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
     EXPECT_DISPLAY_MODE_REQUEST(kDesiredMode90, mDmc.getPendingMode(mDisplayId));
 
     mDmc.clearDesiredMode(mDisplayId);
@@ -210,7 +213,8 @@ TEST_F(DisplayModeControllerTest, initiateDisplayModeSwitch) FTL_FAKE_GUARD(kMai
     hal::VsyncPeriodChangeTimeline timeline;
     auto constraints = expectModeSet(modeRequest, timeline);
 
-    EXPECT_TRUE(mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
+    EXPECT_EQ(DisplayModeController::ModeChangeResult::Changed,
+              mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
     EXPECT_DISPLAY_MODE_REQUEST(kDesiredMode90, mDmc.getPendingMode(mDisplayId));
 
     // No action since a mode switch has already been initiated.
@@ -223,7 +227,8 @@ TEST_F(DisplayModeControllerTest, initiateDisplayModeSwitch) FTL_FAKE_GUARD(kMai
     constexpr bool kSubsequent = true;
     constraints = expectModeSet(modeRequest, timeline, kSubsequent);
 
-    EXPECT_TRUE(mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
+    EXPECT_EQ(DisplayModeController::ModeChangeResult::Changed,
+              mDmc.initiateModeChange(mDisplayId, std::move(modeRequest), constraints, timeline));
     EXPECT_DISPLAY_MODE_REQUEST(kDesiredMode120, mDmc.getPendingMode(mDisplayId));
 
     mDmc.clearDesiredMode(mDisplayId);

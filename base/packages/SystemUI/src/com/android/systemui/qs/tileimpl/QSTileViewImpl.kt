@@ -93,6 +93,7 @@ constructor(
         @VisibleForTesting internal const val TILE_STATE_RES_PREFIX = "tile_states_"
         @VisibleForTesting internal const val LONG_PRESS_EFFECT_WIDTH_SCALE = 1.1f
         @VisibleForTesting internal const val LONG_PRESS_EFFECT_HEIGHT_SCALE = 1.2f
+        internal val EMPTY_RECT = Rect()
     }
 
     private val icon: QSIconViewImpl = QSIconViewImpl(context)
@@ -106,7 +107,9 @@ constructor(
         set(value) {
             if (field == value) return
             field = value
-            updateHeight()
+            if (longPressEffect?.state != QSLongPressEffect.State.RUNNING_BACKWARDS_FROM_CANCEL) {
+                updateHeight()
+            }
         }
 
     override var squishinessFraction: Float = 1f
@@ -123,12 +126,12 @@ constructor(
     private val overlayColorActive =
         Utils.applyAlpha(
             /* alpha= */ 0.11f,
-            Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive)
+            Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive),
         )
     private val overlayColorInactive =
         Utils.applyAlpha(
             /* alpha= */ 0.08f,
-            Utils.getColorAttrDefaultColor(context, R.attr.onShadeInactive)
+            Utils.getColorAttrDefaultColor(context, R.attr.onShadeInactive),
         )
 
     private val colorLabelActive = Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive)
@@ -185,10 +188,7 @@ constructor(
     private var lastState = INVALID
     private var lastIconTint = 0
     private val launchableViewDelegate =
-        LaunchableViewDelegate(
-            this,
-            superSetVisibility = { super.setVisibility(it) },
-        )
+        LaunchableViewDelegate(this, superSetVisibility = { super.setVisibility(it) })
     private var lastDisabledByPolicy = false
 
     private val locInScreen = IntArray(2)
@@ -350,6 +350,10 @@ constructor(
 
         initialLongPressProperties?.width = width
         finalLongPressProperties?.width = LONG_PRESS_EFFECT_WIDTH_SCALE * width
+
+        val deltaW = (LONG_PRESS_EFFECT_WIDTH_SCALE - 1f) * width
+        paddingForLaunch.left = -deltaW.toInt() / 2
+        paddingForLaunch.right = deltaW.toInt() / 2
     }
 
     private fun maybeUpdateLongPressEffectHeight(height: Float) {
@@ -357,6 +361,10 @@ constructor(
 
         initialLongPressProperties?.height = height
         finalLongPressProperties?.height = LONG_PRESS_EFFECT_HEIGHT_SCALE * height
+
+        val deltaH = (LONG_PRESS_EFFECT_HEIGHT_SCALE - 1f) * height
+        paddingForLaunch.top = -deltaH.toInt() / 2
+        paddingForLaunch.bottom = deltaH.toInt() / 2
     }
 
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
@@ -372,13 +380,6 @@ constructor(
     }
 
     private fun updateHeight() {
-        // TODO(b/332900989): Find a more robust way of resetting the tile if not reset by the
-        //  launch animation.
-        if (!haveLongPressPropertiesBeenReset && longPressEffect != null) {
-            // The launch animation of a long-press effect did not reset the long-press effect so
-            // we must do it here
-            resetLongPressEffectProperties()
-        }
         val actualHeight =
             if (heightOverride != HeightOverrideable.NO_OVERRIDE) {
                 heightOverride
@@ -407,17 +408,20 @@ constructor(
     }
 
     override fun init(tile: QSTile) {
-        val expandable = Expandable.fromView(this)
         if (longPressEffect != null) {
             isHapticFeedbackEnabled = false
             longPressEffect.qsTile = tile
-            longPressEffect.expandable = expandable
+            longPressEffect.createExpandableFromView(this)
             initLongPressEffectCallback()
             init(
                 { _: View -> longPressEffect.onTileClick() },
-                null, // Haptics and long-clicks will be handled by the [QSLongPressEffect]
+                { _: View ->
+                    longPressEffect.onTileLongClick()
+                    true
+                }, // Haptics and long-clicks are handled by [QSLongPressEffect]
             )
         } else {
+            val expandable = Expandable.fromView(this)
             init(
                 { _: View? -> tile.click(expandable) },
                 { _: View? ->
@@ -432,12 +436,14 @@ constructor(
         longPressEffect?.callback =
             object : QSLongPressEffect.Callback {
 
-                override fun onPrepareForLaunch() {
-                    prepareForLaunch()
-                }
-
                 override fun onResetProperties() {
                     resetLongPressEffectProperties()
+                }
+
+                override fun onEffectFinishedReversing() {
+                    // The long-press effect properties finished at the same starting point.
+                    // This is the same as if the properties were reset
+                    haveLongPressPropertiesBeenReset = true
                 }
 
                 override fun onStartAnimator() {
@@ -463,10 +469,10 @@ constructor(
                     }
                 }
 
-                override fun onReverseAnimator() {
+                override fun onReverseAnimator(playHaptics: Boolean) {
                     longPressEffectAnimator?.let {
                         val pausedProgress = it.animatedFraction
-                        longPressEffect?.playReverseHaptics(pausedProgress)
+                        if (playHaptics) longPressEffect?.playReverseHaptics(pausedProgress)
                         it.reverse()
                     }
                 }
@@ -577,9 +583,18 @@ constructor(
                     AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK.id,
                     resources.getString(
                         R.string.accessibility_tile_disabled_by_policy_action_description
-                    )
+                    ),
                 )
             )
+        } else {
+            if (isLongClickable) {
+                info.addAction(
+                    AccessibilityNodeInfo.AccessibilityAction(
+                        AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK.id,
+                        resources.getString(R.string.accessibility_long_click_tile),
+                    )
+                )
+            }
         }
         if (!TextUtils.isEmpty(accessibilityClass)) {
             info.className =
@@ -591,14 +606,6 @@ constructor(
             if (Switch::class.java.name == accessibilityClass) {
                 info.isChecked = tileState
                 info.isCheckable = true
-                if (isLongClickable) {
-                    info.addAction(
-                        AccessibilityNodeInfo.AccessibilityAction(
-                            AccessibilityNodeInfo.AccessibilityAction.ACTION_LONG_CLICK.id,
-                            resources.getString(R.string.accessibility_long_click_tile)
-                        )
-                    )
-                }
             }
         }
         if (position != INVALID) {
@@ -639,7 +646,6 @@ constructor(
     }
 
     // HANDLE STATE CHANGES RELATED METHODS
-
     protected open fun handleStateChanged(state: QSTile.State) {
         val allowAnimations = animationsEnabled()
         isClickable = state.state != Tile.STATE_UNAVAILABLE
@@ -709,35 +715,35 @@ constructor(
                 state.spec,
                 state.state,
                 state.disabledByPolicy,
-                getBackgroundColorForState(state.state, state.disabledByPolicy)
+                getBackgroundColorForState(state.state, state.disabledByPolicy),
             )
             if (allowAnimations) {
                 singleAnimator.setValues(
                     colorValuesHolder(
                         BACKGROUND_NAME,
                         backgroundColor,
-                        getBackgroundColorForState(state.state, state.disabledByPolicy)
+                        getBackgroundColorForState(state.state, state.disabledByPolicy),
                     ),
                     colorValuesHolder(
                         LABEL_NAME,
                         label.currentTextColor,
-                        getLabelColorForState(state.state, state.disabledByPolicy)
+                        getLabelColorForState(state.state, state.disabledByPolicy),
                     ),
                     colorValuesHolder(
                         SECONDARY_LABEL_NAME,
                         secondaryLabel.currentTextColor,
-                        getSecondaryLabelColorForState(state.state, state.disabledByPolicy)
+                        getSecondaryLabelColorForState(state.state, state.disabledByPolicy),
                     ),
                     colorValuesHolder(
                         CHEVRON_NAME,
                         chevronView.imageTintList?.defaultColor ?: 0,
-                        getChevronColorForState(state.state, state.disabledByPolicy)
+                        getChevronColorForState(state.state, state.disabledByPolicy),
                     ),
                     colorValuesHolder(
                         OVERLAY_NAME,
                         backgroundOverlayColor,
-                        getOverlayColorForState(state.state)
-                    )
+                        getOverlayColorForState(state.state),
+                    ),
                 )
                 singleAnimator.start()
             } else {
@@ -746,7 +752,7 @@ constructor(
                     getLabelColorForState(state.state, state.disabledByPolicy),
                     getSecondaryLabelColorForState(state.state, state.disabledByPolicy),
                     getChevronColorForState(state.state, state.disabledByPolicy),
-                    getOverlayColorForState(state.state)
+                    getOverlayColorForState(state.state),
                 )
             }
         }
@@ -761,11 +767,22 @@ constructor(
         lastIconTint = icon.getColor(state)
 
         // Long-press effects
+        updateLongPressEffect(state.handlesLongClick)
+    }
+
+    private fun updateLongPressEffect(handlesLongClick: Boolean) {
+        // The long press effect in the tile can't be updated if it is still running
         if (
-            state.handlesLongClick &&
-                longPressEffect?.initializeEffect(longPressEffectDuration) == true
-        ) {
+            longPressEffect?.state != QSLongPressEffect.State.IDLE &&
+                longPressEffect?.state != QSLongPressEffect.State.CLICKED
+        )
+            return
+
+        longPressEffect.qsTile?.state?.handlesLongClick = handlesLongClick
+        if (handlesLongClick && longPressEffect.initializeEffect(longPressEffectDuration)) {
             showRippleEffect = false
+            longPressEffect.qsTile?.state?.state = lastState // Store the tile's state
+            longPressEffect.resetState()
             initializeLongPressProperties(measuredHeight, measuredWidth)
         } else {
             // Long-press effects might have been enabled before but the new state does not
@@ -896,12 +913,13 @@ constructor(
     }
 
     override fun onActivityLaunchAnimationEnd() {
+        longPressEffect?.resetState()
         if (longPressEffect != null && !haveLongPressPropertiesBeenReset) {
             resetLongPressEffectProperties()
         }
     }
 
-    fun prepareForLaunch() {
+    private fun prepareForLaunch() {
         val startingHeight = initialLongPressProperties?.height?.toInt() ?: 0
         val startingWidth = initialLongPressProperties?.width?.toInt() ?: 0
         val deltaH = finalLongPressProperties?.height?.minus(startingHeight)?.toInt() ?: 0
@@ -912,7 +930,12 @@ constructor(
         paddingForLaunch.bottom = deltaH / 2
     }
 
-    override fun getPaddingForLaunchAnimation(): Rect = paddingForLaunch
+    override fun getPaddingForLaunchAnimation(): Rect =
+        if (longPressEffect?.state == QSLongPressEffect.State.LONG_CLICKED) {
+            paddingForLaunch
+        } else {
+            EMPTY_RECT
+        }
 
     fun updateLongPressEffectProperties(effectProgress: Float) {
         if (!isLongClickable || longPressEffect == null) return
@@ -1043,6 +1066,7 @@ constructor(
                 getOverlayColorForState(Tile.STATE_ACTIVE),
                 Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive),
             )
+        prepareForLaunch()
     }
 
     private fun changeCornerRadius(radius: Float) {
@@ -1060,12 +1084,17 @@ constructor(
             backgroundColor,
             label.currentTextColor,
             secondaryLabel.currentTextColor,
-            chevronView.imageTintList?.defaultColor ?: 0
+            chevronView.imageTintList?.defaultColor ?: 0,
         )
 
     inner class StateChangeRunnable(private val state: QSTile.State) : Runnable {
         override fun run() {
-            traceSection("QSTileViewImpl#handleStateChanged") { handleStateChanged(state) }
+            var traceTag = "QSTileViewImpl#handleStateChanged"
+            if (!state.spec.isNullOrEmpty()) {
+                traceTag += ":"
+                traceTag += state.spec
+            }
+            traceSection(traceTag.take(Trace.MAX_SECTION_NAME_LEN)) { handleStateChanged(state) }
         }
 
         // We want all instances of this runnable to be equal to each other, so they can be used to

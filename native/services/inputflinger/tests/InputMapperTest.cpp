@@ -26,9 +26,11 @@
 namespace android {
 
 using testing::_;
+using testing::NiceMock;
 using testing::Return;
+using testing::ReturnRef;
 
-void InputMapperUnitTest::SetUpWithBus(int bus) {
+void InputMapperUnitTest::SetUp(int bus, bool isExternal) {
     mFakePolicy = sp<FakeInputReaderPolicy>::make();
 
     EXPECT_CALL(mMockInputReaderContext, getPolicy()).WillRepeatedly(Return(mFakePolicy.get()));
@@ -43,30 +45,25 @@ void InputMapperUnitTest::SetUpWithBus(int bus) {
     EXPECT_CALL(mMockEventHub, getConfiguration(EVENTHUB_ID)).WillRepeatedly([&](int32_t) {
         return mPropertyMap;
     });
-}
 
-void InputMapperUnitTest::createDevice() {
-    mDevice = std::make_unique<InputDevice>(&mMockInputReaderContext, DEVICE_ID,
-                                            /*generation=*/2, mIdentifier);
-    mDevice->addEmptyEventHubDevice(EVENTHUB_ID);
+    mDevice =
+            std::make_unique<NiceMock<MockInputDevice>>(&mMockInputReaderContext, DEVICE_ID,
+                                                        /*generation=*/2, mIdentifier, isExternal);
+    ON_CALL((*mDevice), getConfiguration).WillByDefault(ReturnRef(mPropertyMap));
     mDeviceContext = std::make_unique<InputDeviceContext>(*mDevice, EVENTHUB_ID);
-    std::list<NotifyArgs> args =
-            mDevice->configure(systemTime(), mReaderConfiguration, /*changes=*/{});
-    ASSERT_THAT(args, testing::ElementsAre(testing::VariantWith<NotifyDeviceResetArgs>(_)));
 }
 
 void InputMapperUnitTest::setupAxis(int axis, bool valid, int32_t min, int32_t max,
-                                    int32_t resolution) {
-    EXPECT_CALL(mMockEventHub, getAbsoluteAxisInfo(EVENTHUB_ID, axis, _))
-            .WillRepeatedly([=](int32_t, int32_t, RawAbsoluteAxisInfo* outAxisInfo) {
-                outAxisInfo->valid = valid;
-                outAxisInfo->minValue = min;
-                outAxisInfo->maxValue = max;
-                outAxisInfo->flat = 0;
-                outAxisInfo->fuzz = 0;
-                outAxisInfo->resolution = resolution;
-                return valid ? OK : -1;
-            });
+                                    int32_t resolution, int32_t flat, int32_t fuzz) {
+    EXPECT_CALL(mMockEventHub, getAbsoluteAxisInfo(EVENTHUB_ID, axis))
+            .WillRepeatedly(Return(valid ? std::optional<RawAbsoluteAxisInfo>{{
+                                                   .minValue = min,
+                                                   .maxValue = max,
+                                                   .flat = flat,
+                                                   .fuzz = fuzz,
+                                                   .resolution = resolution,
+                                           }}
+                                         : std::nullopt));
 }
 
 void InputMapperUnitTest::expectScanCodes(bool present, std::set<int> scanCodes) {
@@ -90,6 +87,13 @@ void InputMapperUnitTest::setKeyCodeState(KeyState state, std::set<int> keyCodes
     }
 }
 
+void InputMapperUnitTest::setSwitchState(int32_t state, std::set<int32_t> switchCodes) {
+    for (const auto& switchCode : switchCodes) {
+        EXPECT_CALL(mMockEventHub, getSwitchState(EVENTHUB_ID, switchCode))
+                .WillRepeatedly(testing::Return(static_cast<int>(state)));
+    }
+}
+
 std::list<NotifyArgs> InputMapperUnitTest::process(int32_t type, int32_t code, int32_t value) {
     nsecs_t when = systemTime(SYSTEM_TIME_MONOTONIC);
     return process(when, type, code, value);
@@ -97,9 +101,14 @@ std::list<NotifyArgs> InputMapperUnitTest::process(int32_t type, int32_t code, i
 
 std::list<NotifyArgs> InputMapperUnitTest::process(nsecs_t when, int32_t type, int32_t code,
                                                    int32_t value) {
+    return process(when, when, type, code, value);
+}
+
+std::list<NotifyArgs> InputMapperUnitTest::process(nsecs_t when, nsecs_t readTime, int32_t type,
+                                                   int32_t code, int32_t value) {
     RawEvent event;
     event.when = when;
-    event.readTime = when;
+    event.readTime = readTime;
     event.deviceId = mMapper->getDeviceContext().getEventHubId();
     event.type = type;
     event.code = code;
@@ -177,8 +186,10 @@ void InputMapperTest::setDisplayInfoAndReconfigure(ui::LogicalDisplayId displayI
                                                    const std::string& uniqueId,
                                                    std::optional<uint8_t> physicalPort,
                                                    ViewportType viewportType) {
-    mFakePolicy->addDisplayViewport(displayId, width, height, orientation, /* isActive= */ true,
-                                    uniqueId, physicalPort, viewportType);
+    DisplayViewport viewport =
+            createViewport(displayId, width, height, orientation, /* isActive= */ true, uniqueId,
+                           physicalPort, viewportType);
+    mFakePolicy->addDisplayViewport(viewport);
     configureDevice(InputReaderConfiguration::Change::DISPLAY_INFO);
 }
 

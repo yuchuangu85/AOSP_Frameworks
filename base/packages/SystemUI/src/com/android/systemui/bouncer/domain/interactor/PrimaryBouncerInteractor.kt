@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.Trace
 import android.util.Log
 import android.view.View
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.keyguard.KeyguardSecurityModel
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.systemui.DejankUtils
@@ -42,6 +43,7 @@ import com.android.systemui.keyguard.data.repository.TrustRepository
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.res.R
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.shared.system.SysUiStatsLog
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor
@@ -53,7 +55,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
 
 /**
  * Encapsulates business logic for interacting with the lock-screen primary (pin/pattern/password)
@@ -71,7 +72,7 @@ constructor(
     private val primaryBouncerCallbackInteractor: PrimaryBouncerCallbackInteractor,
     private val falsingCollector: FalsingCollector,
     private val dismissCallbackRegistry: DismissCallbackRegistry,
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val keyguardUpdateMonitor: KeyguardUpdateMonitor,
     private val trustRepository: TrustRepository,
     @Application private val applicationScope: CoroutineScope,
@@ -134,7 +135,7 @@ constructor(
     // TODO(b/243695312): Encapsulate all of the show logic for the bouncer.
     /** Show the bouncer if necessary and set the relevant states. */
     @JvmOverloads
-    fun show(isScrimmed: Boolean) {
+    fun show(isScrimmed: Boolean, reason: String): Boolean {
         // When the scene container framework is enabled, instead of calling this, call
         // SceneInteractor#changeScene(Scenes.Bouncer, ...).
         SceneContainerFlag.assertInLegacyMode()
@@ -144,46 +145,51 @@ constructor(
                 TAG,
                 "PrimaryBouncerInteractor#show is being called before the " +
                     "primaryBouncerDelegate is set. Let's exit early so we don't " +
-                    "set the wrong primaryBouncer state."
+                    "set the wrong primaryBouncer state.",
             )
-            return
+            return false
         }
 
-        // Reset some states as we show the bouncer.
-        repository.setKeyguardAuthenticatedBiometrics(null)
-        repository.setPrimaryStartingToHide(false)
+        try {
+            Trace.beginSection("KeyguardBouncer#show")
+            // Reset some states as we show the bouncer.
+            repository.setKeyguardAuthenticatedBiometrics(null)
+            repository.setPrimaryStartingToHide(false)
 
-        val resumeBouncer =
-            (isBouncerShowing() || repository.primaryBouncerShowingSoon.value) &&
-                needsFullscreenBouncer()
+            val resumeBouncer =
+                (isBouncerShowing() || repository.primaryBouncerShowingSoon.value) &&
+                    needsFullscreenBouncer()
 
-        Trace.beginSection("KeyguardBouncer#show")
-        repository.setPrimaryScrimmed(isScrimmed)
-        if (isScrimmed) {
-            setPanelExpansion(KeyguardBouncerConstants.EXPANSION_VISIBLE)
+            repository.setPrimaryScrimmed(isScrimmed)
+            if (isScrimmed) {
+                setPanelExpansion(KeyguardBouncerConstants.EXPANSION_VISIBLE)
+            }
+
+            // In this special case, we want to hide the bouncer and show it again. We want to emit
+            // show(true) again so that we can reinflate the new view.
+            if (resumeBouncer) {
+                repository.setPrimaryShow(false)
+            }
+
+            if (primaryBouncerView.delegate?.showNextSecurityScreenOrFinish() == true) {
+                // Keyguard is done.
+                return false
+            }
+
+            Log.i(TAG, "Show primary bouncer requested, reason: $reason")
+            repository.setPrimaryShowingSoon(true)
+            if (usePrimaryBouncerPassiveAuthDelay()) {
+                Log.d(TAG, "delay bouncer, passive auth may succeed")
+                mainHandler.postDelayed(showRunnable, passiveAuthBouncerDelay)
+            } else {
+                DejankUtils.postAfterTraversal(showRunnable)
+            }
+            keyguardStateController.notifyPrimaryBouncerShowing(true)
+            primaryBouncerCallbackInteractor.dispatchStartingToShow()
+            return true
+        } finally {
+            Trace.endSection()
         }
-
-        // In this special case, we want to hide the bouncer and show it again. We want to emit
-        // show(true) again so that we can reinflate the new view.
-        if (resumeBouncer) {
-            repository.setPrimaryShow(false)
-        }
-
-        if (primaryBouncerView.delegate?.showNextSecurityScreenOrFinish() == true) {
-            // Keyguard is done.
-            return
-        }
-
-        repository.setPrimaryShowingSoon(true)
-        if (usePrimaryBouncerPassiveAuthDelay()) {
-            Log.d(TAG, "delay bouncer, passive auth may succeed")
-            mainHandler.postDelayed(showRunnable, passiveAuthBouncerDelay)
-        } else {
-            DejankUtils.postAfterTraversal(showRunnable)
-        }
-        keyguardStateController.notifyPrimaryBouncerShowing(true)
-        primaryBouncerCallbackInteractor.dispatchStartingToShow()
-        Trace.endSection()
     }
 
     /** Sets the correct bouncer states to hide the bouncer. */
@@ -192,7 +198,7 @@ constructor(
         if (isFullyShowing()) {
             SysUiStatsLog.write(
                 SysUiStatsLog.KEYGUARD_BOUNCER_STATE_CHANGED,
-                SysUiStatsLog.KEYGUARD_BOUNCER_STATE_CHANGED__STATE__HIDDEN
+                SysUiStatsLog.KEYGUARD_BOUNCER_STATE_CHANGED__STATE__HIDDEN,
             )
             dismissCallbackRegistry.notifyDismissCancelled()
         }
@@ -218,7 +224,7 @@ constructor(
     fun setPanelExpansion(expansion: Float) {
         val oldExpansion = repository.panelExpansionAmount.value
         val expansionChanged = oldExpansion != expansion
-        if (repository.primaryBouncerStartingDisappearAnimation.value == null) {
+        if (!repository.isPrimaryBouncerStartingDisappearAnimation()) {
             repository.setPanelExpansion(expansion)
         }
 
@@ -267,7 +273,7 @@ constructor(
      */
     fun setDismissAction(
         onDismissAction: ActivityStarter.OnDismissAction?,
-        cancelAction: Runnable?
+        cancelAction: Runnable?,
     ) {
         repository.bouncerDismissActionModel =
             if (onDismissAction != null && cancelAction != null) {
@@ -290,7 +296,9 @@ constructor(
 
     /** Tell the bouncer that bouncer is requested when device is already authenticated */
     fun notifyUserRequestedBouncerWhenAlreadyAuthenticated(userId: Int) {
-        applicationScope.launch { repository.setKeyguardAuthenticatedPrimaryAuth(userId) }
+        applicationScope.launch {
+            repository.setUserRequestedBouncerWhenAlreadyAuthenticated(userId)
+        }
     }
 
     /** Tell the bouncer that keyguard is authenticated with biometrics. */
@@ -337,7 +345,7 @@ constructor(
     fun isFullyShowing(): Boolean {
         return (repository.primaryBouncerShowingSoon.value || isBouncerShowing()) &&
             repository.panelExpansionAmount.value == KeyguardBouncerConstants.EXPANSION_VISIBLE &&
-            repository.primaryBouncerStartingDisappearAnimation.value == null
+            !repository.isPrimaryBouncerStartingDisappearAnimation()
     }
 
     /** Returns whether bouncer is scrimmed. */
@@ -354,7 +362,7 @@ constructor(
 
     /** Return whether bouncer is animating away. */
     fun isAnimatingAway(): Boolean {
-        return repository.primaryBouncerStartingDisappearAnimation.value != null
+        return repository.isPrimaryBouncerStartingDisappearAnimation()
     }
 
     /** Return whether bouncer will dismiss with actions */

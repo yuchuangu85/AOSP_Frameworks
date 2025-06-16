@@ -20,6 +20,7 @@ import android.content.ComponentName;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Process;
+import android.os.UserHandle;
 import android.service.notification.Condition;
 import android.service.notification.IConditionProvider;
 import android.service.notification.ZenModeConfig;
@@ -58,6 +59,9 @@ public class ZenModeConditions implements ConditionProviders.Callback {
         if (mConditionProviders.isSystemProviderEnabled(ZenModeConfig.EVENT_PATH)) {
             mConditionProviders.addSystemProvider(new EventConditionProvider());
         }
+        if (mConditionProviders.isSystemProviderEnabled(ZenModeConfig.CUSTOM_MANUAL_PATH)) {
+            mConditionProviders.addSystemProvider(new CustomManualConditionProvider());
+        }
         mConditionProviders.setCallback(this);
     }
 
@@ -79,7 +83,7 @@ public class ZenModeConditions implements ConditionProviders.Callback {
         for (ZenRule automaticRule : config.automaticRules.values()) {
             if (automaticRule.component != null) {
                 evaluateRule(automaticRule, current, trigger, processSubscriptions, false);
-                updateSnoozing(automaticRule);
+                automaticRule.reconsiderConditionOverride();
             }
         }
 
@@ -99,34 +103,30 @@ public class ZenModeConditions implements ConditionProviders.Callback {
     }
 
     @Override
-    public void onBootComplete() {
-        // noop
-    }
-
-    @Override
-    public void onUserSwitched() {
-        // noop
-    }
-
-    @Override
     public void onServiceAdded(ComponentName component) {
         if (DEBUG) Log.d(TAG, "onServiceAdded " + component);
         final int callingUid = Binder.getCallingUid();
         mHelper.setConfig(mHelper.getConfig(), component,
-                callingUid == Process.SYSTEM_UID ? ZenModeConfig.UPDATE_ORIGIN_SYSTEM_OR_SYSTEMUI
-                        : ZenModeConfig.UPDATE_ORIGIN_APP,
+                callingUid == Process.SYSTEM_UID ? ZenModeConfig.ORIGIN_SYSTEM
+                        : ZenModeConfig.ORIGIN_APP,
                 "zmc.onServiceAdded:" + component, callingUid);
     }
 
     @Override
-    public void onConditionChanged(Uri id, Condition condition) {
+    public void onConditionChanged(Uri id, Condition condition, int callingUid) {
         if (DEBUG) Log.d(TAG, "onConditionChanged " + id + " " + condition);
         ZenModeConfig config = mHelper.getConfig();
         if (config == null) return;
-        final int callingUid = Binder.getCallingUid();
-        mHelper.setAutomaticZenRuleState(id, condition,
-                callingUid == Process.SYSTEM_UID ? ZenModeConfig.UPDATE_ORIGIN_SYSTEM_OR_SYSTEMUI
-                        : ZenModeConfig.UPDATE_ORIGIN_APP,
+        if (!Flags.fixCallingUidFromCps()) {
+            // Old behavior: overwrite with known-bad callingUid (always system_server).
+            callingUid = Binder.getCallingUid();
+        }
+
+        // This change is known to be for UserHandle.CURRENT because ConditionProviders for
+        // background users are not bound.
+        mHelper.setAutomaticZenRuleStateFromConditionProvider(UserHandle.CURRENT, id, condition,
+                callingUid == Process.SYSTEM_UID ? ZenModeConfig.ORIGIN_SYSTEM
+                        : ZenModeConfig.ORIGIN_APP,
                 callingUid);
     }
 
@@ -154,7 +154,7 @@ public class ZenModeConditions implements ConditionProviders.Callback {
         }
         // empty rule? disable and bail early
         if (rule.component == null && rule.enabler == null) {
-            if (!android.app.Flags.modesUi() || (android.app.Flags.modesUi() && !isManual)) {
+            if (!isManual) {
                 Log.w(TAG, "No component found for automatic rule: " + rule.conditionId);
                 rule.enabled = false;
             }
@@ -183,14 +183,5 @@ public class ZenModeConditions implements ConditionProviders.Callback {
             if (rule.condition != null && DEBUG) Log.d(TAG, "Found existing condition for: "
                     + rule.conditionId);
         }
-    }
-
-    private boolean updateSnoozing(ZenRule rule) {
-        if (rule != null && rule.snoozing && !rule.isTrueOrUnknown()) {
-            rule.snoozing = false;
-            if (DEBUG) Log.d(TAG, "Snoozing reset for " + rule.conditionId);
-            return true;
-        }
-        return false;
     }
 }

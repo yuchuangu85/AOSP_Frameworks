@@ -18,35 +18,40 @@
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="app_label" msgid="4470785958457506021">"مدیر دستگاه مرتبط"</string>
     <string name="confirmation_title" msgid="2244241995958340998">"‏به برنامه &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه داده شود به &lt;strong&gt;<xliff:g id="DEVICE_NAME">%2$s</xliff:g>&lt;/strong&gt; دسترسی پیدا کند؟"</string>
+    <string name="message_discovery_soft_timeout" msgid="473346859407859161">"مطمئن شوید <xliff:g id="DISCOVERY_METHOD">%2$s</xliff:g> در این <xliff:g id="DEVICE_TYPE">%1$s</xliff:g> روشن باشد و <xliff:g id="PROFILE_NAME">%3$s</xliff:g> را نزدیک نگه دارید."</string>
+    <string name="message_discovery_hard_timeout" msgid="677514663495711424">"دستگاهی پیدا نشد. لطفاً بعداً دوباره امتحان کنید."</string>
+    <string name="discovery_bluetooth" msgid="5693557668470016164">"بلوتوث"</string>
+    <string name="discovery_wifi" msgid="1551782459721758773">"Wi-Fi"</string>
+    <string name="discovery_mixed" msgid="7071466134150760127">"‏بلوتوث و Wi-Fi"</string>
     <string name="profile_name_watch" msgid="576290739483672360">"ساعت"</string>
-    <string name="chooser_title_non_profile" msgid="6035023914517087400">"‏انتخاب دستگاه برای مدیریت کردن با &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt;"</string>
+    <string name="chooser_title_non_profile" msgid="6035023914517087400">"‏انتخاب دستگاه برای مدیریت شدن توسط &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt;"</string>
     <string name="chooser_title" msgid="2235819929238267637">"انتخاب <xliff:g id="PROFILE_NAME">%1$s</xliff:g> برای راه‌اندازی"</string>
-    <string name="summary_watch" msgid="7962014927042971830">"به این برنامه اجازه داده می‌شود اطلاعاتی مثل نام تماس‌گیرنده را همگام‌سازی کند و به این اجازه‌ها در <xliff:g id="DEVICE_NAME">%1$s</xliff:g> شما دسترسی داشته باشد"</string>
+    <string name="single_device_title" msgid="4199861437545438606">"درحال یافتن <xliff:g id="PROFILE_NAME">%1$s</xliff:g>"</string>
+    <string name="summary_watch" msgid="8134580124808507407">"به این برنامه اجازه داده می‌شود اطلاعاتی مثل نام تماس‌گیرنده را همگام‌سازی کند و به این اجازه‌ها در <xliff:g id="DEVICE_TYPE">%1$s</xliff:g> شما دسترسی داشته باشد"</string>
     <string name="confirmation_title_glasses" msgid="8288346850537727333">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه داده شود &lt;strong&gt;<xliff:g id="DEVICE_NAME">%2$s</xliff:g>&lt;/strong&gt; را مدیریت کند؟"</string>
     <string name="profile_name_glasses" msgid="3506504967216601277">"دستگاه"</string>
-    <string name="summary_glasses" msgid="2872254734959842579">"این برنامه مجاز می‌شود به این اجازه‌ها در <xliff:g id="DEVICE_NAME">%1$s</xliff:g> شما دسترسی پیدا کند"</string>
-    <string name="title_app_streaming" msgid="2270331024626446950">"‏اجازه دادن به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; برای دسترسی به اطلاعات تلفن"</string>
-    <string name="title_app_streaming_with_mirroring" msgid="3364582597581570658">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه می‌دهید برنامه‌های تلفنتان را جاری‌سازی کند؟"</string>
-    <string name="summary_app_streaming" msgid="295548145144086753">"‏‫%1$s به هرچیزی که در تلفن نمایان است یا پخش می‌شود، ازجمله صداها، عکس‌ها، گذرواژه‌ها، و پیام‌ها دسترسی خواهد داشت.&lt;br/&gt;&lt;br/&gt;تا زمانی که دسترسی به این اجازه را حذف نکنید، %1$s می‌تواند برنامه‌ها را جاری‌سازی کند."</string>
-    <string name="helper_title_app_streaming" msgid="4151687003439969765">"سرویس‌های بین‌دستگاهی"</string>
-    <string name="helper_summary_app_streaming" msgid="2396773196949578425">"<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DISPLAY_NAME">%2$s</xliff:g> اجازه می‌خواهد برنامه‌ها را بین دستگاه‌های شما جاری‌سازی کند"</string>
-    <string name="helper_summary_app_streaming_with_mirroring" msgid="6138581029144467467">"<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DISPLAY_NAME">%2$s</xliff:g> برای نمایش و جاری‌سازی برنامه‌ها بین دستگاه‌های شما اجازه می‌خواهد"</string>
+    <string name="summary_glasses" msgid="5469208629679579157">"این برنامه قادر خواهد بود به این اجازه‌ها در <xliff:g id="DEVICE_TYPE">%1$s</xliff:g> شما دسترسی پیدا کند"</string>
+    <string name="title_app_streaming" msgid="1047090167914857893">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه می‌دهید برنامه‌ها و ویژگی‌های سیستم <xliff:g id="DEVICE_TYPE">%2$s</xliff:g> را در &lt;strong&gt;<xliff:g id="DEVICE_NAME">%3$s</xliff:g>&lt;/strong&gt; جاری‌سازی کند؟"</string>
+    <string name="summary_app_streaming" msgid="7990244299655610920">"‏‫<xliff:g id="APP_NAME_0">%1$s</xliff:g> به هرچیزی که در <xliff:g id="DEVICE_TYPE">%2$s</xliff:g> شما نمایان است یا پخش می‌شود، ازجمله صداها، عکس‌ها، اطلاعات پرداخت، گذرواژه‌ها، و پیام‌ها دسترسی خواهد داشت.&lt;br/&gt;&lt;br/&gt;تا زمانی‌که دسترسی به این اجازه را حذف نکنید، <xliff:g id="APP_NAME_1">%1$s</xliff:g> می‌تواند برنامه‌ها را در <xliff:g id="DEVICE_NAME">%3$s</xliff:g> جاری‌سازی کند."</string>
+    <string name="helper_summary_app_streaming" msgid="1872657107404139828">"‫<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DEVICE_NAME">%2$s</xliff:g> اجازه می‌خواهد برنامه‌ها و ویژگی‌های سیستم را از <xliff:g id="DEVICE_TYPE">%3$s</xliff:g> شما جاری‌سازی کند"</string>
     <string name="title_automotive_projection" msgid="3296005598978412847"></string>
     <string name="summary_automotive_projection" msgid="8683801274662496164"></string>
-    <string name="title_computer" msgid="4693714143506569253">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه دسترسی به این اطلاعات در دستگاهتان داده شود"</string>
+    <string name="title_computer" msgid="4782923323932440751">"‏اجازه دادن به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; برای دسترسی به این اطلاعات در <xliff:g id="DEVICE_TYPE">%2$s</xliff:g> شما"</string>
     <string name="summary_computer" msgid="3798467601598297062"></string>
-    <string name="helper_title_computer" msgid="4671071173916176037">"‏خدمات Google Play"</string>
-    <string name="helper_summary_computer" msgid="8774832742608187072">"<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DISPLAY_NAME">%2$s</xliff:g> اجازه می‌خواهد به عکس‌ها، رسانه‌ها، و اعلان‌های تلفن شما دسترسی پیدا کند"</string>
-    <string name="title_nearby_device_streaming" msgid="7269956847378799794">"‏به &lt;strong&gt;<xliff:g id="DEVICE_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه داده شود این اقدام را انجام دهد؟"</string>
-    <string name="title_nearby_device_streaming_with_mirroring" msgid="242855799919611657">"‏به &lt;strong&gt;<xliff:g id="DEVICE_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه می‌دهید برنامه‌های تلفنتان و ویژگی‌های سیستم را جاری‌سازی کند؟"</string>
-    <string name="summary_nearby_device_streaming" msgid="4039565463149145573">"‏‫%1$s به هرچیزی که در تلفن نمایان است یا پخش می‌شود، ازجمله صداها، عکس‌ها، اطلاعات پرداخت، گذرواژه‌ها، و پیام‌ها دسترسی خواهد داشت.&lt;br/&gt;&lt;br/&gt;تا زمانی که دسترسی به این اجازه را حذف نکنید، %1$s می‌تواند برنامه‌ها و ویژگی‌های سیستم را جاری‌سازی کند."</string>
-    <string name="helper_summary_nearby_device_streaming" msgid="2063965070936844876">"<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DEVICE_NAME">%2$s</xliff:g> اجازه می‌خواهد تا برنامه‌ها و دیگر ویژگی‌های سیستم را در دستگاه‌های اطراف جاری‌سازی کند."</string>
+    <string name="helper_summary_computer" msgid="2298803016482139668">"‫<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DEVICE_NAME">%2$s</xliff:g> اجازه می‌خواهد به عکس‌ها، رسانه‌ها، و اعلان‌های <xliff:g id="DEVICE_TYPE">%3$s</xliff:g> شما دسترسی پیدا کند"</string>
+    <string name="title_nearby_device_streaming" msgid="2727103756701741359">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه می‌دهید برنامه‌های <xliff:g id="DEVICE_TYPE">%2$s</xliff:g> را در &lt;strong&gt;<xliff:g id="DEVICE_NAME">%3$s</xliff:g>&lt;/strong&gt; جاری‌سازی کند؟"</string>
+    <string name="summary_nearby_device_streaming" msgid="70434958004946884">"‏‫<xliff:g id="APP_NAME_0">%1$s</xliff:g> به هرچیزی که در <xliff:g id="DEVICE_NAME_1">%3$s</xliff:g> شما نمایان است یا پخش می‌شود، ازجمله صداها، عکس‌ها، اطلاعات پرداخت، گذرواژه‌ها، و پیام‌ها دسترسی خواهد داشت.&lt;br/&gt;&lt;br/&gt;تا زمانی‌که دسترسی به این اجازه را حذف نکنید، <xliff:g id="APP_NAME_2">%1$s</xliff:g> می‌تواند برنامه‌ها را در <xliff:g id="DEVICE_NAME_3">%3$s</xliff:g> جاری‌سازی کند."</string>
+    <string name="helper_summary_nearby_device_streaming" msgid="4712712177819370967">"‫<xliff:g id="APP_NAME">%1$s</xliff:g> ازطرف <xliff:g id="DEVICE_NAME">%2$s</xliff:g> اجازه می‌خواهد برنامه‌ها را از <xliff:g id="DEVICE_TYPE">%3$s</xliff:g> شما جاری‌سازی کند"</string>
+    <string name="title_virtual_device" msgid="6556338763070329395">"‏به &lt;strong&gt;<xliff:g id="APP_NAME">%1$s</xliff:g>&lt;/strong&gt; اجازه می‌دهید صدا و ویژگی‌های سیستم را بین <xliff:g id="DEVICE_TYPE">%3$s</xliff:g> و &lt;strong&gt;<xliff:g id="DEVICE_NAME">%2$s</xliff:g>&lt;/strong&gt; جاری‌سازی کند؟"</string>
+    <string name="summary_virtual_device" msgid="3502592544171322817">"‏‫«<xliff:g id="APP_NAME_0">%2$s</xliff:g>» به هرچیزی که در <xliff:g id="DEVICE_NAME_1">%3$s</xliff:g> پخش می‌شود دسترسی خواهد داشت.&lt;br/&gt;&lt;br/&gt;تا زمانی‌که دسترسی به این اجازه را برندارید، «<xliff:g id="APP_NAME_2">%2$s</xliff:g>» می‌تواند به جاری‌سازی صدا در <xliff:g id="DEVICE_NAME_3">%3$s</xliff:g> ادامه دهد."</string>
     <string name="profile_name_generic" msgid="6851028682723034988">"دستگاه"</string>
     <string name="summary_generic" msgid="1761976003668044801">"این برنامه مجاز می‌شود اطلاعتی مثل نام شخصی را که تماس می‌گیرد بین تلفن شما و دستگاه انتخاب‌شده همگام‌سازی کند"</string>
     <string name="consent_yes" msgid="8344487259618762872">"اجازه دادن"</string>
     <string name="consent_no" msgid="2640796915611404382">"اجازه ندادن"</string>
     <string name="consent_cancel" msgid="5655005528379285841">"لغو"</string>
     <string name="consent_back" msgid="2560683030046918882">"برگشتن"</string>
+    <string name="downward_arrow_action" msgid="2327165938832076333">"پیمایش به‌پایین فهرست"</string>
+    <string name="downward_arrow" msgid="2292427714411156088">"جهت‌نمای پایین"</string>
     <string name="permission_expand" msgid="893185038020887411">"ازهم بازکردن <xliff:g id="PERMISSION_TYPE">%1$s</xliff:g>"</string>
     <string name="permission_collapse" msgid="3320833884220844084">"جمع کردن <xliff:g id="PERMISSION_TYPE">%1$s</xliff:g>"</string>
     <string name="permission_sync_confirmation_title" msgid="4409622174437248702">"‏به برنامه‌های موجود در &lt;strong&gt;<xliff:g id="COMPANION_DEVICE_NAME">%1$s</xliff:g>&lt;/strong&gt; همان اجازه‌های &lt;strong&gt;<xliff:g id="PRIMARY_DEVICE_NAME">%2$s</xliff:g>&lt;/strong&gt; داده شود؟"</string>
@@ -62,8 +67,6 @@
     <string name="permission_media_routing_control" msgid="5498639511586715253">"تغییر دادن خروجی رسانه"</string>
     <string name="permission_storage" msgid="6831099350839392343">"عکس‌ها و رسانه‌ها"</string>
     <string name="permission_notifications" msgid="4099418516590632909">"اعلان‌ها"</string>
-    <string name="permission_app_streaming" msgid="6009695219091526422">"برنامه‌ها"</string>
-    <string name="permission_nearby_device_streaming" msgid="1023325519477349499">"جاری‌سازی"</string>
     <string name="permission_phone_summary" msgid="8246321093970051702">"برقراری و مدیریت تماس‌های تلفنی"</string>
     <string name="permission_call_logs_summary" msgid="7545243592757693321">"خواندن و نوشتن گزارش تماس تلفنی"</string>
     <string name="permission_sms_summary" msgid="8499509535410068616">"ارسال و مشاهده پیامک‌ها"</string>
@@ -73,10 +76,10 @@
     <string name="permission_nearby_devices_summary" msgid="1306752848196464817">"پیدا کردن، تعیین موقعیت نسبی، و متصل شدن به دستگاه‌های اطراف"</string>
     <string name="permission_notification_listener_access_summary" msgid="7856071768185367749">"خواندن همه اعلان‌ها، شامل اطلاعاتی مثل مخاطبین، پیام‌ها، و عکس‌ها"</string>
     <string name="permission_notifications_summary" msgid="2272810466047367030">"‏• خواندن همه اعلان‌ها، شامل اطلاعاتی مثل مخاطبین، پیام‌ها، و عکس‌ها&lt;br/&gt;• ارسال اعلان&lt;br/&gt;&lt;br/&gt;هرزمان بخواهید می‌توانید این توانایی برنامه برای خواندن و ارسال اعلان را در «تنظیمات > اعلان‌ها» مدیریت کنید."</string>
-    <string name="permission_app_streaming_summary" msgid="606923325679670624">"جاری‌سازی برنامه‌های تلفن"</string>
     <string name="permission_storage_summary" msgid="3918240895519506417"></string>
-    <string name="permission_nearby_device_streaming_summary" msgid="8280824871197081246">"برنامه‌ها و دیگر ویژگی‌های سیستم را از تلفن شما جاری‌سازی می‌کند"</string>
     <string name="permission_media_routing_control_summary" msgid="2714631092321412250">"دسترسی به فهرست دستگاه‌های دردسترس و کنترل اینکه کدام دستگاه صدا یا ویدیو را از برنامه‌های دیگر جاری‌سازی یا پخش کند"</string>
     <string name="device_type" product="default" msgid="8268703872070046263">"تلفن"</string>
     <string name="device_type" product="tablet" msgid="5038791954983067774">"رایانه لوحی"</string>
+    <string name="device_type" product="tv" msgid="5355611506659405636">"تلویزیون"</string>
+    <string name="device_type" product="device" msgid="1526125965802507189">"دستگاه"</string>
 </resources>

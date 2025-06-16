@@ -4,11 +4,60 @@ package: "com.android.graphics.surfaceflinger.flags"
 container: "system"
 
 flag {
-    name: "adpf_gpu_sf"
-    namespace: "game"
-    description: "Guards use of the sending ADPF GPU duration hint and load hints from SurfaceFlinger to Power HAL"
-    bug: "284324521"
+  name: "adpf_fmq_sf"
+  namespace: "game"
+  description: "Guards use of the ADPF FMQ system specifically for SurfaceFlinger"
+  bug: "315894228"
+  is_fixed_read_only: true
+} # adpf_fmq_sf
+
+flag {
+  name: "adpf_gpu_sf"
+  namespace: "game"
+  description: "Guards use of the sending ADPF GPU duration hint and load hints from SurfaceFlinger to Power HAL"
+  bug: "284324521"
 } # adpf_gpu_sf
+
+flag {
+  name: "adpf_native_session_manager"
+  namespace: "game"
+  description: "Controls ADPF SessionManager being enabled in SF"
+  bug: "367803904"
+} # adpf_sessionmanager
+
+flag {
+  name: "arr_setframerate_api"
+  namespace: "core_graphics"
+  description: "New SDK Surface#setFrameRate API and Surface.FrameRateParams for Android 16"
+  bug: "356987016"
+  is_fixed_read_only: true
+  is_exported: true
+} # arr_setframerate_api
+
+flag {
+  name: "arr_setframerate_gte_enum"
+  namespace: "core_graphics"
+  description: "Exposes GTE (greater than or equal to) enum for Android 16"
+  bug: "380949716"
+  is_fixed_read_only: true
+} # arr_setframerate_gte_enum
+
+flag {
+  name: "arr_surfacecontrol_setframerate_api"
+  namespace: "core_graphics"
+  description: "New SDK SurfaceControl.Transaction#setFrameRate API for Android 16"
+  bug: "356987016"
+  is_fixed_read_only: true
+  is_exported: true
+} # arr_surfacecontrol_setframerate_api
+
+flag {
+  name: "begone_bright_hlg"
+  namespace: "core_graphics"
+  description: "Caps HLG brightness relative to SDR"
+  bug: "362510107"
+  is_fixed_read_only: true
+} # begone_bright_hlg
 
 flag {
   name: "ce_fence_promise"
@@ -21,18 +70,48 @@ flag {
   }
  } # ce_fence_promise
 
- flag {
-   name: "commit_not_composited"
-   namespace: "core_graphics"
-   description: "mark frames as non janky if the transaction resulted in no composition"
-   bug: "340633280"
-   is_fixed_read_only: true
-   metadata {
-     purpose: PURPOSE_BUGFIX
-   }
-  } # commit_not_composited
+flag {
+  name: "commit_not_composited"
+  namespace: "core_graphics"
+  description: "mark frames as non janky if the transaction resulted in no composition"
+  bug: "340633280"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # commit_not_composited
 
- flag {
+flag {
+  name: "connected_display_hdr"
+  namespace: "core_graphics"
+  description: "enable connected display hdr capability"
+  bug: "374182788"
+  is_fixed_read_only: true
+} # connected_display_hdr
+
+flag {
+  name: "correct_dpi_with_display_size"
+  namespace: "core_graphics"
+  description: "indicate whether missing or likely incorrect dpi should be corrected using the display size."
+  bug: "328425848"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # correct_dpi_with_display_size
+
+flag {
+  name: "deprecate_frame_tracker"
+  namespace: "core_graphics"
+  description: "Deprecate using FrameTracker to accumulate and provide FrameStats"
+  bug: "241394120"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # deprecate_frame_tracker
+
+flag {
   name: "deprecate_vsync_sf"
   namespace: "core_graphics"
   description: "Depracate eVsyncSourceSurfaceFlinger and use vsync_app everywhere"
@@ -43,7 +122,7 @@ flag {
   }
 } # deprecate_vsync_sf
 
- flag {
+flag {
   name: "detached_mirror"
   namespace: "window_surfaces"
   description: "Ignore local transform when mirroring a partial hierarchy"
@@ -53,6 +132,25 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 } # detached_mirror
+
+flag {
+  name: "display_config_error_hal"
+  namespace: "core_graphics"
+  description: "Report HAL display configuration errors like modeset failure or link training failure"
+  bug: "374184110"
+  is_fixed_read_only: true
+} # display_config_error_hal
+
+flag {
+  name: "filter_frames_before_trace_starts"
+  namespace: "core_graphics"
+  description: "Do not trace FrameTimeline events for frames started before the trace started"
+  bug: "364194637"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # filter_frames_before_trace_starts
 
 flag {
   name: "flush_buffer_slots_to_uncache"
@@ -85,6 +183,30 @@ flag {
 } # frame_rate_category_mrr
 
 flag {
+  name: "graphite_renderengine_preview_rollout"
+  namespace: "core_graphics"
+  description: "R/W flag to enable Skia's Graphite Vulkan backend in RenderEngine, IF it is already compiled with force_compile_graphite_renderengine, AND the debug.renderengine.graphite_preview_optin sysprop is set to true."
+  bug: "293371537"
+} # graphite_renderengine_preview_rollout
+
+flag {
+  name: "hdcp_negotiation"
+  namespace: "core_graphics"
+  description: "detect secure layers to start HDCP negotiation"
+  bug: "375340594"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # hdcp_negotiation
+
+flag {
+  name: "increase_missed_frame_jank_threshold"
+  namespace: "core_graphics"
+  description: "Increase the jank threshold to 4 milliseconds"
+  bug: "342265411"
+} # increase_missed_frame_jank_threshold
+
+flag {
   name: "latch_unsignaled_with_auto_refresh_changed"
   namespace: "core_graphics"
   description: "Ignore eAutoRefreshChanged with latch unsignaled"
@@ -96,12 +218,38 @@ flag {
 } # latch_unsignaled_with_auto_refresh_changed
 
 flag {
-    name: "local_tonemap_screenshots"
-    namespace: "core_graphics"
-    description: "Enables local tonemapping when capturing screenshots"
-    bug: "329464641"
-    is_fixed_read_only: true
+  name: "local_tonemap_screenshots"
+  namespace: "core_graphics"
+  description: "Enables local tonemapping when capturing screenshots"
+  bug: "329464641"
+  is_fixed_read_only: true
 } # local_tonemap_screenshots
+
+flag {
+  name: "monitor_buffer_fences"
+  namespace: "core_graphics"
+  description: "Monitors fences for each buffer"
+  bug: "360932099"
+} # monitor_buffer_fences
+
+flag {
+  name: "no_vsyncs_on_screen_off"
+  namespace: "core_graphics"
+  description: "Stop vsync / Choreographer callbacks to apps when the screen is off"
+  bug: "331636736"
+  is_fixed_read_only: true
+} # no_vsyncs_on_screen_off
+
+flag {
+  name: "reject_dupe_layerstacks"
+  namespace: "window_surfaces"
+  description: "Reject duplicate layerstacks for displays"
+  bug: "370358572"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+ } # reject_dupe_layerstacks
 
 flag {
   name: "single_hop_screenshot"
@@ -113,6 +261,40 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
  } # single_hop_screenshot
+
+flag {
+  name: "skip_invisible_windows_in_input"
+  namespace: "window_surfaces"
+  description: "Only send visible windows to input list"
+  bug: "305254099"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+ } # skip_invisible_windows_in_input
+
+flag {
+  name: "stable_edid_ids"
+  namespace: "core_graphics"
+  description: "Guard use of the new stable EDID-based display IDs system."
+  bug: "352320847"
+  is_fixed_read_only: true
+} # stable_edid_ids
+
+flag {
+  name: "synced_resolution_switch"
+  namespace: "core_graphics"
+  description: "Synchronize resolution modeset with framebuffer resizing"
+  bug: "355427258"
+} # synced_resolution_switch
+
+flag {
+  name: "true_hdr_screenshots"
+  namespace: "core_graphics"
+  description: "Enables screenshotting display content in HDR, sans tone mapping"
+  bug: "329470026"
+  is_fixed_read_only: true
+} # true_hdr_screenshots
 
  flag {
   name: "override_trusted_overlay"
@@ -126,6 +308,14 @@ flag {
 } # override_trusted_overlay
 
 flag {
+  name: "view_set_requested_frame_rate_mrr"
+  namespace: "core_graphics"
+  description: "Enable to use frame rate category NoPreference with fixed frame rate vote on MRR devices"
+  bug: "352206100"
+  is_fixed_read_only: true
+} # view_set_requested_frame_rate_mrr
+
+flag {
   name: "vrr_bugfix_24q4"
   namespace: "core_graphics"
   description: "bug fixes for VRR"
@@ -135,5 +325,33 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 } # vrr_bugfix_24q4
+
+flag {
+  name: "vrr_bugfix_dropped_frame"
+  namespace: "core_graphics"
+  description: "bug fix for VRR dropped frame"
+  bug: "343603085"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+} # vrr_bugfix_dropped_frame
+
+flag {
+  name: "vsync_predictor_recovery"
+  namespace: "core_graphics"
+  description: "Recover the vsync predictor from bad vsync model"
+  bug: "385059265"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+ } # vsync_predictor_recovery
+
+flag {
+  name: "window_blur_kawase2"
+  namespace: "core_graphics"
+  description: "Flag for using Kawase2 algorithm for window blur"
+  bug: "353826438"
+} # window_blur_kawase2
 
 # IMPORTANT - please keep alphabetize to reduce merge conflicts

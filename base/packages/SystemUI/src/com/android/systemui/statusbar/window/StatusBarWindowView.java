@@ -22,6 +22,7 @@ import static android.view.MotionEvent.ACTION_UP;
 import static android.view.WindowInsets.Type.systemBars;
 
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Insets;
 import android.util.AttributeSet;
 import android.view.DisplayCutout;
@@ -30,8 +31,17 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.widget.FrameLayout;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import com.android.systemui.Flags;
+import com.android.systemui.compose.ComposeInitializer;
+import com.android.systemui.statusbar.core.StatusBarRootModernization;
+import com.android.systemui.statusbar.data.repository.StatusBarConfigurationController;
+
 /**
- * Status bar view.
+ * Status bar view
+ * We now extend WindowRootView so that we can host Compose views
  */
 public class StatusBarWindowView extends FrameLayout {
 
@@ -44,9 +54,46 @@ public class StatusBarWindowView extends FrameLayout {
 
     private float mTouchDownY = 0;
 
+    @Nullable private StatusBarConfigurationController mConfigurationController;
+
     public StatusBarWindowView(Context context, AttributeSet attrs) {
         super(context, attrs);
         setClipChildren(false);
+    }
+
+    @Override
+    public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+
+        if (StatusBarRootModernization.isEnabled()) {
+            ComposeInitializer.INSTANCE.onAttachedToWindow(this);
+        }
+    }
+
+    @Override
+    public void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+
+        if (StatusBarRootModernization.isEnabled()) {
+            ComposeInitializer.INSTANCE.onDetachedFromWindow(this);
+        }
+    }
+
+    /**
+     * Sets the {@link StatusBarConfigurationController} that is associated with the display that
+     * this view is attached to.
+     */
+    public void setStatusBarConfigurationController(
+            @NonNull StatusBarConfigurationController configurationController) {
+        mConfigurationController = configurationController;
+    }
+
+    @Override
+    protected void onConfigurationChanged(Configuration newConfig) {
+        StatusBarConfigurationController configurationController = mConfigurationController;
+        if (configurationController != null) {
+            configurationController.onConfigurationChanged(newConfig);
+        }
     }
 
     @Override
@@ -71,9 +118,15 @@ public class StatusBarWindowView extends FrameLayout {
      * bound of the status bar view, in order for the touch event to be correctly dispatched down,
      * we jot down the position Y of the initial touch down event, offset it to 0 in the y-axis,
      * and calculate the movement based on first touch down position.
+     *
+     * TODO(b/391894499): Remove this doc once Flags.statusBarWindowNoCustomTouch() is rolled out.
      */
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (Flags.statusBarWindowNoCustomTouch()) {
+            return super.dispatchTouchEvent(ev);
+        }
+
         if (ev.getAction() == ACTION_DOWN && ev.getRawY() > getHeight()) {
             mTouchDownY = ev.getRawY();
             ev.setLocation(ev.getRawX(), mTopInset);
@@ -89,8 +142,8 @@ public class StatusBarWindowView extends FrameLayout {
         final int count = getChildCount();
         for (int i = 0; i < count; i++) {
             View child = getChildAt(i);
-            if (child.getLayoutParams() instanceof LayoutParams) {
-                LayoutParams lp = (LayoutParams) child.getLayoutParams();
+            if (child.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) child.getLayoutParams();
                 if (lp.rightMargin != mRightInset || lp.leftMargin != mLeftInset
                         || lp.topMargin != mTopInset) {
                     lp.rightMargin = mRightInset;

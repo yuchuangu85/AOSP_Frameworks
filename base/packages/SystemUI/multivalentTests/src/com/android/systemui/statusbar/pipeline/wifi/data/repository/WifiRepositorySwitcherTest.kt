@@ -22,8 +22,6 @@ import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.demomode.DemoMode
 import com.android.systemui.demomode.DemoModeController
-import com.android.systemui.flags.FakeFeatureFlagsClassic
-import com.android.systemui.flags.Flags
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.table.TableLogBuffer
 import com.android.systemui.statusbar.connectivity.WifiPickerTrackerFactory
@@ -31,6 +29,7 @@ import com.android.systemui.statusbar.pipeline.wifi.data.repository.demo.DemoMod
 import com.android.systemui.statusbar.pipeline.wifi.data.repository.demo.DemoWifiRepository
 import com.android.systemui.statusbar.pipeline.wifi.data.repository.demo.model.FakeWifiEventModel
 import com.android.systemui.statusbar.pipeline.wifi.data.repository.prod.WifiRepositoryImpl
+import com.android.systemui.user.data.repository.FakeUserRepository
 import com.android.systemui.util.concurrency.FakeExecutor
 import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.kotlinArgumentCaptor
@@ -39,7 +38,6 @@ import com.android.systemui.util.mockito.whenever
 import com.android.systemui.util.time.FakeSystemClock
 import com.android.wifitrackerlib.WifiPickerTracker
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -53,7 +51,6 @@ import org.mockito.Mock
 import org.mockito.Mockito
 import org.mockito.MockitoAnnotations
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @Suppress("EXPERIMENTAL_IS_NOT_ENABLED")
 @SmallTest
 @RunWith(AndroidJUnit4::class)
@@ -73,11 +70,7 @@ class WifiRepositorySwitcherTest : SysuiTestCase() {
     private val demoModelFlow = MutableStateFlow<FakeWifiEventModel?>(null)
 
     private val mainExecutor = FakeExecutor(FakeSystemClock())
-    private val featureFlags =
-        FakeFeatureFlagsClassic().also {
-            it.set(Flags.INSTANT_TETHER, true)
-            it.set(Flags.WIFI_SECONDARY_NETWORKS, true)
-        }
+    private val userRepository = FakeUserRepository()
 
     private val testDispatcher = UnconfinedTestDispatcher()
     private val testScope = TestScope(testDispatcher)
@@ -89,11 +82,13 @@ class WifiRepositorySwitcherTest : SysuiTestCase() {
         // Never start in demo mode
         whenever(demoModeController.isInDemoMode).thenReturn(false)
 
-        whenever(wifiPickerTrackerFactory.create(any(), any(), any())).thenReturn(wifiPickerTracker)
+        whenever(wifiPickerTrackerFactory.create(any(), any(), any(), any()))
+            .thenReturn(wifiPickerTracker)
 
         realImpl =
             WifiRepositoryImpl(
-                featureFlags,
+                mContext,
+                userRepository,
                 testScope.backgroundScope,
                 mainExecutor,
                 testDispatcher,
@@ -105,11 +100,7 @@ class WifiRepositorySwitcherTest : SysuiTestCase() {
 
         whenever(demoModeWifiDataSource.wifiEvents).thenReturn(demoModelFlow)
 
-        demoImpl =
-            DemoWifiRepository(
-                demoModeWifiDataSource,
-                testScope.backgroundScope,
-            )
+        demoImpl = DemoWifiRepository(demoModeWifiDataSource, testScope.backgroundScope)
 
         underTest =
             WifiRepositorySwitcher(

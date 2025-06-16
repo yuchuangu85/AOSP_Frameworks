@@ -65,21 +65,21 @@ public class KeyCombinationManager {
      *       };
      *  </pre>
      */
-    abstract static class TwoKeysCombinationRule {
+    public abstract static class TwoKeysCombinationRule {
         private int mKeyCode1;
         private int mKeyCode2;
 
-        TwoKeysCombinationRule(int keyCode1, int keyCode2) {
+        public TwoKeysCombinationRule(int keyCode1, int keyCode2) {
             mKeyCode1 = keyCode1;
             mKeyCode2 = keyCode2;
         }
 
-        boolean preCondition() {
+        public boolean preCondition() {
             return true;
         }
 
         boolean shouldInterceptKey(int keyCode) {
-            return preCondition() && (keyCode == mKeyCode1 || keyCode == mKeyCode2);
+            return (keyCode == mKeyCode1 || keyCode == mKeyCode2) && preCondition();
         }
 
         boolean shouldInterceptKeys(SparseLongArray downTimes) {
@@ -94,12 +94,12 @@ public class KeyCombinationManager {
         }
 
         // The excessive delay before it dispatching to client.
-        long getKeyInterceptDelayMs() {
+        public long getKeyInterceptDelayMs() {
             return COMBINE_KEY_DELAY_MILLIS;
         }
 
-        abstract void execute();
-        abstract void cancel();
+        public abstract void execute();
+        public abstract void cancel();
 
         @Override
         public String toString() {
@@ -128,18 +128,18 @@ public class KeyCombinationManager {
         }
     }
 
-    KeyCombinationManager(Handler handler) {
+    public KeyCombinationManager(Handler handler) {
         mHandler = handler;
     }
 
-    void addRule(TwoKeysCombinationRule rule) {
+    public void addRule(TwoKeysCombinationRule rule) {
         if (mRules.contains(rule)) {
             throw new IllegalArgumentException("Rule : " + rule + " already exists.");
         }
         mRules.add(rule);
     }
 
-    void removeRule(TwoKeysCombinationRule rule) {
+    public void removeRule(TwoKeysCombinationRule rule) {
         mRules.remove(rule);
     }
 
@@ -148,19 +148,19 @@ public class KeyCombinationManager {
      * to a window.
      * Return true if any active rule could be triggered by the key event, otherwise false.
      */
-    boolean interceptKey(KeyEvent event, boolean interactive) {
+    public boolean interceptKey(KeyEvent event, boolean isDefaultDisplayInteractive) {
         synchronized (mLock) {
-            return interceptKeyLocked(event, interactive);
+            return interceptKeyLocked(event, isDefaultDisplayInteractive);
         }
     }
 
-    private boolean interceptKeyLocked(KeyEvent event, boolean interactive) {
+    private boolean interceptKeyLocked(KeyEvent event, boolean isDefaultDisplayInteractive) {
         final boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
         final int keyCode = event.getKeyCode();
         final int count = mActiveRules.size();
         final long eventTime = event.getEventTime();
 
-        if (interactive && down) {
+        if (isDefaultDisplayInteractive && down) {
             if (mDownTimes.size() > 0) {
                 if (count > 0
                         && eventTime > mDownTimes.valueAt(0) + COMBINE_KEY_DELAY_MILLIS) {
@@ -226,7 +226,7 @@ public class KeyCombinationManager {
     /**
      * Return the interceptTimeout to tell InputDispatcher when is ready to deliver to window.
      */
-    long getKeyInterceptTimeout(int keyCode) {
+    public long getKeyInterceptTimeout(int keyCode) {
         synchronized (mLock) {
             if (mDownTimes.get(keyCode) == 0) {
                 return 0;
@@ -246,7 +246,7 @@ public class KeyCombinationManager {
     /**
      * True if the key event had been handled.
      */
-    boolean isKeyConsumed(KeyEvent event) {
+    public boolean isKeyConsumed(KeyEvent event) {
         synchronized (mLock) {
             if ((event.getFlags() & KeyEvent.FLAG_FALLBACK) != 0) {
                 return false;
@@ -258,7 +258,7 @@ public class KeyCombinationManager {
     /**
      * True if power key is the candidate.
      */
-    boolean isPowerKeyIntercepted() {
+    public boolean isPowerKeyIntercepted() {
         synchronized (mLock) {
             if (forAllActiveRules((rule) -> rule.shouldInterceptKey(KEYCODE_POWER))) {
                 // return false if only if power key pressed.
@@ -294,7 +294,7 @@ public class KeyCombinationManager {
         return false;
     }
 
-    void dump(String prefix, PrintWriter pw) {
+    public void dump(String prefix, PrintWriter pw) {
         pw.println(prefix + "KeyCombination rules:");
         forAllRules(mRules, (rule)-> {
             pw.println(prefix + "  " + rule);

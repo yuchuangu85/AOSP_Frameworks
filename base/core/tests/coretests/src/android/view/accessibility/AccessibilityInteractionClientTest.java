@@ -20,14 +20,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.MockitoAnnotations.initMocks;
 
 import android.os.Bundle;
 import android.os.RemoteException;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import libcore.util.EmptyArray;
 
@@ -74,7 +74,7 @@ public class AccessibilityInteractionClientTest {
                 MOCK_CONNECTION_ID, windowId, accessibilityNodeId, true, 0, null);
         assertEquals("Node got lost along the way", nodeFromConnection, node);
 
-        verifyZeroInteractions(mMockCache);
+        verifyNoMoreInteractions(mMockCache);
     }
 
     @Test

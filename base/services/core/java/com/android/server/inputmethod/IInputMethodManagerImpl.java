@@ -71,13 +71,26 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
     @Retention(SOURCE)
     @Target({METHOD})
     @interface PermissionVerified {
+        /**
+         * The name of the permission that is verified, if precisely one permission is required.
+         * If more than one permission is required, specify either {@link #allOf()} instead.
+         *
+         * <p>If specified, {@link #allOf()} must both be {@code null}.</p>
+         */
         String value() default "";
+
+        /**
+         * Specifies a list of permission names that are all required.
+         *
+         * <p>If specified, {@link #value()} must both be {@code null}.</p>
+         */
+        String[] allOf() default {};
     }
 
     @BinderThread
     interface Callback {
-        void addClient(IInputMethodClient client, IRemoteInputConnection inputConnection,
-                int selfReportedDisplayId);
+        void addClient(@NonNull IInputMethodClient client,
+                @NonNull IRemoteInputConnection inputConnection, int selfReportedDisplayId);
 
         InputMethodInfo getCurrentInputMethodInfoAsUser(@UserIdInt int userId);
 
@@ -103,11 +116,11 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
         boolean showSoftInput(IInputMethodClient client, IBinder windowToken,
                 @Nullable ImeTracker.Token statsToken, @InputMethodManager.ShowFlags int flags,
                 @MotionEvent.ToolType int lastClickToolType, ResultReceiver resultReceiver,
-                @SoftInputShowHideReason int reason);
+                @SoftInputShowHideReason int reason, boolean async);
 
         boolean hideSoftInput(IInputMethodClient client, IBinder windowToken,
                 @Nullable ImeTracker.Token statsToken, @InputMethodManager.HideFlags int flags,
-                ResultReceiver resultReceiver, @SoftInputShowHideReason int reason);
+                ResultReceiver resultReceiver, @SoftInputShowHideReason int reason, boolean async);
 
         @PermissionVerified(Manifest.permission.TEST_INPUT_METHOD)
         void hideSoftInputFromServerForTest();
@@ -119,7 +132,8 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
                 @Nullable EditorInfo editorInfo, IRemoteInputConnection inputConnection,
                 IRemoteAccessibilityInputConnection remoteAccessibilityInputConnection,
                 int unverifiedTargetSdkVersion, @UserIdInt int userId,
-                @NonNull ImeOnBackInvokedDispatcher imeDispatcher, int startInputSeq);
+                @NonNull ImeOnBackInvokedDispatcher imeDispatcher, boolean imeRequestedVisible,
+                int startInputSeq, boolean useAsyncShowHideMethod);
 
         InputBindResult startInputOrWindowGainedFocus(
                 @StartInputReason int startInputReason, IInputMethodClient client,
@@ -128,15 +142,25 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
                 @Nullable EditorInfo editorInfo, IRemoteInputConnection inputConnection,
                 IRemoteAccessibilityInputConnection remoteAccessibilityInputConnection,
                 int unverifiedTargetSdkVersion, @UserIdInt int userId,
-                @NonNull ImeOnBackInvokedDispatcher imeDispatcher);
+                @NonNull ImeOnBackInvokedDispatcher imeDispatcher, boolean imeRequestedVisible);
 
         void showInputMethodPickerFromClient(IInputMethodClient client, int auxiliarySubtypeMode);
 
-        @PermissionVerified(Manifest.permission.WRITE_SECURE_SETTINGS)
+        @PermissionVerified(allOf = {
+                Manifest.permission.INTERACT_ACROSS_USERS_FULL,
+                Manifest.permission.WRITE_SECURE_SETTINGS})
         void showInputMethodPickerFromSystem(int auxiliarySubtypeMode, int displayId);
 
         @PermissionVerified(Manifest.permission.TEST_INPUT_METHOD)
         boolean isInputMethodPickerShownForTest();
+
+        @PermissionVerified(allOf = {
+                Manifest.permission.INTERACT_ACROSS_USERS_FULL,
+                Manifest.permission.WRITE_SECURE_SETTINGS})
+        void onImeSwitchButtonClickFromSystem(int displayId);
+
+        @PermissionVerified(Manifest.permission.TEST_INPUT_METHOD)
+        boolean shouldShowImeSwitcherButtonForTest();
 
         InputMethodSubtype getCurrentInputMethodSubtype(@UserIdInt int userId);
 
@@ -150,8 +174,10 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
 
         void reportPerceptibleAsync(IBinder windowToken, boolean perceptible);
 
-        @PermissionVerified(Manifest.permission.INTERNAL_SYSTEM_WINDOW)
-        void removeImeSurface();
+        @PermissionVerified(allOf = {
+                Manifest.permission.INTERACT_ACROSS_USERS_FULL,
+                Manifest.permission.INTERNAL_SYSTEM_WINDOW})
+        void removeImeSurface(int displayId);
 
         void removeImeSurfaceFromWindowAsync(IBinder windowToken);
 
@@ -216,9 +242,9 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
     }
 
     @Override
-    public void addClient(IInputMethodClient client, IRemoteInputConnection inputmethod,
-            int untrustedDisplayId) {
-        mCallback.addClient(client, inputmethod, untrustedDisplayId);
+    public void addClient(@NonNull IInputMethodClient client,
+            @NonNull IRemoteInputConnection fallbackInputConnection, int untrustedDisplayId) {
+        mCallback.addClient(client, fallbackInputConnection, untrustedDisplayId);
     }
 
     @Override
@@ -268,17 +294,17 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
     public boolean showSoftInput(IInputMethodClient client, IBinder windowToken,
             @NonNull ImeTracker.Token statsToken, @InputMethodManager.ShowFlags int flags,
             @MotionEvent.ToolType int lastClickToolType, ResultReceiver resultReceiver,
-            @SoftInputShowHideReason int reason) {
+            @SoftInputShowHideReason int reason, boolean async) {
         return mCallback.showSoftInput(client, windowToken, statsToken, flags, lastClickToolType,
-                resultReceiver, reason);
+                resultReceiver, reason, async);
     }
 
     @Override
     public boolean hideSoftInput(IInputMethodClient client, IBinder windowToken,
             @NonNull ImeTracker.Token statsToken, @InputMethodManager.HideFlags int flags,
-            ResultReceiver resultReceiver, @SoftInputShowHideReason int reason) {
+            ResultReceiver resultReceiver, @SoftInputShowHideReason int reason, boolean async) {
         return mCallback.hideSoftInput(client, windowToken, statsToken, flags, resultReceiver,
-                reason);
+                reason, async);
     }
 
     @EnforcePermission(Manifest.permission.TEST_INPUT_METHOD)
@@ -298,11 +324,11 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
             IRemoteInputConnection inputConnection,
             IRemoteAccessibilityInputConnection remoteAccessibilityInputConnection,
             int unverifiedTargetSdkVersion, @UserIdInt int userId,
-            @NonNull ImeOnBackInvokedDispatcher imeDispatcher) {
+            @NonNull ImeOnBackInvokedDispatcher imeDispatcher, boolean imeRequestedVisible) {
         return mCallback.startInputOrWindowGainedFocus(
                 startInputReason, client, windowToken, startInputFlags, softInputMode,
                 windowFlags, editorInfo, inputConnection, remoteAccessibilityInputConnection,
-                unverifiedTargetSdkVersion, userId, imeDispatcher);
+                unverifiedTargetSdkVersion, userId, imeDispatcher, imeRequestedVisible);
     }
 
     @Override
@@ -314,11 +340,13 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
             IRemoteInputConnection inputConnection,
             IRemoteAccessibilityInputConnection remoteAccessibilityInputConnection,
             int unverifiedTargetSdkVersion, @UserIdInt int userId,
-            @NonNull ImeOnBackInvokedDispatcher imeDispatcher, int startInputSeq) {
+            @NonNull ImeOnBackInvokedDispatcher imeDispatcher, boolean imeRequestedVisible,
+            int startInputSeq, boolean useAsyncShowHideMethod) {
         mCallback.startInputOrWindowGainedFocusAsync(
                 startInputReason, client, windowToken, startInputFlags, softInputMode,
                 windowFlags, editorInfo, inputConnection, remoteAccessibilityInputConnection,
-                unverifiedTargetSdkVersion, userId, imeDispatcher, startInputSeq);
+                unverifiedTargetSdkVersion, userId, imeDispatcher, imeRequestedVisible,
+                startInputSeq, useAsyncShowHideMethod);
     }
 
     @Override
@@ -327,13 +355,14 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
         mCallback.showInputMethodPickerFromClient(client, auxiliarySubtypeMode);
     }
 
-    @EnforcePermission(Manifest.permission.WRITE_SECURE_SETTINGS)
+    @EnforcePermission(allOf = {
+            Manifest.permission.WRITE_SECURE_SETTINGS,
+            Manifest.permission.INTERACT_ACROSS_USERS_FULL})
     @Override
     public void showInputMethodPickerFromSystem(int auxiliarySubtypeMode, int displayId) {
         super.showInputMethodPickerFromSystem_enforcePermission();
 
         mCallback.showInputMethodPickerFromSystem(auxiliarySubtypeMode, displayId);
-
     }
 
     @EnforcePermission(Manifest.permission.TEST_INPUT_METHOD)
@@ -342,6 +371,24 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
         super.isInputMethodPickerShownForTest_enforcePermission();
 
         return mCallback.isInputMethodPickerShownForTest();
+    }
+
+    @EnforcePermission(allOf = {
+            Manifest.permission.WRITE_SECURE_SETTINGS,
+            Manifest.permission.INTERACT_ACROSS_USERS_FULL})
+    @Override
+    public void onImeSwitchButtonClickFromSystem(int displayId) {
+        super.onImeSwitchButtonClickFromSystem_enforcePermission();
+
+        mCallback.onImeSwitchButtonClickFromSystem(displayId);
+    }
+
+    @EnforcePermission(Manifest.permission.TEST_INPUT_METHOD)
+    @Override
+    public boolean shouldShowImeSwitcherButtonForTest() {
+        super.shouldShowImeSwitcherButtonForTest_enforcePermission();
+
+        return mCallback.shouldShowImeSwitcherButtonForTest();
     }
 
     @Override
@@ -367,16 +414,18 @@ final class IInputMethodManagerImpl extends IInputMethodManager.Stub {
     }
 
     @Override
-    public void reportPerceptibleAsync(IBinder windowToken, boolean perceptible) {
+    public void reportPerceptibleAsync(@NonNull IBinder windowToken, boolean perceptible) {
         mCallback.reportPerceptibleAsync(windowToken, perceptible);
     }
 
-    @EnforcePermission(Manifest.permission.INTERNAL_SYSTEM_WINDOW)
+    @EnforcePermission(allOf = {
+            Manifest.permission.INTERNAL_SYSTEM_WINDOW,
+            Manifest.permission.INTERACT_ACROSS_USERS_FULL})
     @Override
-    public void removeImeSurface() {
+    public void removeImeSurface(int displayId) {
         super.removeImeSurface_enforcePermission();
 
-        mCallback.removeImeSurface();
+        mCallback.removeImeSurface(displayId);
     }
 
     @Override

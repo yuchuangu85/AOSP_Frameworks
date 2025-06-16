@@ -27,6 +27,7 @@
 
 #include "DamageAccumulator.h"
 #include "Debug.h"
+#include "FeatureFlags.h"
 #include "Properties.h"
 #include "TreeInfo.h"
 #include "VectorDrawable.h"
@@ -186,7 +187,7 @@ void RenderNode::pushLayerUpdate(TreeInfo& info) {
     // If we are not a layer OR we cannot be rendered (eg, view was detached)
     // we need to destroy any Layers we may have had previously
     if (CC_LIKELY(layerType != LayerType::RenderLayer) || CC_UNLIKELY(!isRenderable()) ||
-        CC_UNLIKELY(properties().getWidth() == 0) || CC_UNLIKELY(properties().getHeight() == 0) ||
+        CC_UNLIKELY(properties().getWidth() <= 0) || CC_UNLIKELY(properties().getHeight() <= 0) ||
         CC_UNLIKELY(!properties().fitsOnLayer())) {
         if (CC_UNLIKELY(hasLayer())) {
             this->setLayerSurface(nullptr);
@@ -398,20 +399,32 @@ void RenderNode::syncDisplayList(TreeObserver& observer, TreeInfo* info) {
     deleteDisplayList(observer, info);
     mDisplayList = std::move(mStagingDisplayList);
     if (mDisplayList) {
-        WebViewSyncData syncData{.applyForceDark = shouldEnableForceDark(info)};
+        WebViewSyncData syncData{.applyForceDark = shouldEnableForceDark(info) ||
+                                                   (info && isForceInvertDark(*info))};
         mDisplayList.syncContents(syncData);
         handleForceDark(info);
     }
 }
 
-inline bool RenderNode::shouldEnableForceDark(TreeInfo* info) {
-    return CC_UNLIKELY(
-            info &&
-            (!info->disableForceDark ||
-             info->forceDarkType == android::uirenderer::ForceDarkType::FORCE_INVERT_COLOR_DARK));
+// Return true if the tree should use the force invert feature that inverts
+// the entire tree to darken it.
+inline bool RenderNode::isForceInvertDark(TreeInfo& info) {
+    return CC_UNLIKELY(info.forceDarkType ==
+                       android::uirenderer::ForceDarkType::FORCE_INVERT_COLOR_DARK);
 }
 
-void RenderNode::handleForceDark(android::uirenderer::TreeInfo *info) {
+// Return true if the tree should use the force dark feature that selectively
+// darkens light nodes on the tree.
+inline bool RenderNode::shouldEnableForceDark(TreeInfo* info) {
+    return CC_UNLIKELY(info && !info->disableForceDark);
+}
+
+void RenderNode::handleForceDark(TreeInfo *info) {
+    if (CC_UNLIKELY(view_accessibility_flags::force_invert_color() && info &&
+                    isForceInvertDark(*info))) {
+        mDisplayList.applyColorTransform(ColorTransform::Invert);
+        return;
+    }
     if (!shouldEnableForceDark(info)) {
         return;
     }
@@ -421,13 +434,7 @@ void RenderNode::handleForceDark(android::uirenderer::TreeInfo *info) {
         children.push_back(node);
     });
     if (mDisplayList.hasText()) {
-        if (mDisplayList.hasFill()) {
-            // Handle a special case for custom views that draw both text and background in the
-            // same RenderNode, which would otherwise be altered to white-on-white text.
-            usage = UsageHint::Container;
-        } else {
-            usage = UsageHint::Foreground;
-        }
+        usage = UsageHint::Foreground;
     }
     if (usage == UsageHint::Unknown) {
         if (children.size() > 1) {

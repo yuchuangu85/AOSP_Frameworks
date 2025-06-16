@@ -16,6 +16,7 @@
 package com.android.systemui
 
 import android.app.ActivityManager
+import android.app.DreamManager
 import android.app.admin.DevicePolicyManager
 import android.app.trust.TrustManager
 import android.hardware.fingerprint.FingerprintManager
@@ -32,7 +33,10 @@ import com.android.keyguard.KeyguardViewController
 import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.biometrics.AuthController
 import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor
+import com.android.systemui.camera.CameraGestureHelper
 import com.android.systemui.communal.domain.interactor.CommunalInteractor
+import com.android.systemui.communal.domain.interactor.CommunalSceneInteractor
+import com.android.systemui.communal.domain.interactor.CommunalSettingsInteractor
 import com.android.systemui.demomode.DemoModeController
 import com.android.systemui.dump.DumpManager
 import com.android.systemui.keyguard.ScreenLifecycle
@@ -43,6 +47,7 @@ import com.android.systemui.log.dagger.BiometricLog
 import com.android.systemui.log.dagger.BroadcastDispatcherLog
 import com.android.systemui.log.dagger.FaceAuthLog
 import com.android.systemui.log.dagger.SceneFrameworkLog
+import com.android.systemui.media.NotificationMediaManager
 import com.android.systemui.media.controls.ui.controller.MediaHierarchyManager
 import com.android.systemui.model.SysUiState
 import com.android.systemui.plugins.ActivityStarter
@@ -53,11 +58,11 @@ import com.android.systemui.shared.system.ActivityManagerWrapper
 import com.android.systemui.statusbar.LockscreenShadeTransitionController
 import com.android.systemui.statusbar.NotificationListener
 import com.android.systemui.statusbar.NotificationLockscreenUserManager
-import com.android.systemui.statusbar.NotificationMediaManager
 import com.android.systemui.statusbar.NotificationShadeDepthController
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import com.android.systemui.statusbar.notification.NotificationWakeUpCoordinator
 import com.android.systemui.statusbar.notification.collection.NotifCollection
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager
 import com.android.systemui.statusbar.notification.logging.NotificationPanelLogger
 import com.android.systemui.statusbar.notification.stack.AmbientState
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayoutController
@@ -70,7 +75,6 @@ import com.android.systemui.statusbar.phone.ScreenOffAnimationController
 import com.android.systemui.statusbar.phone.ScrimController
 import com.android.systemui.statusbar.phone.SystemUIDialogManager
 import com.android.systemui.statusbar.policy.DeviceProvisionedController
-import com.android.systemui.statusbar.policy.HeadsUpManager
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.statusbar.policy.ZenModeController
 import com.android.systemui.statusbar.window.StatusBarWindowController
@@ -94,6 +98,7 @@ data class TestMocksModule(
     @get:Provides val demoModeController: DemoModeController = mock(),
     @get:Provides val deviceProvisionedController: DeviceProvisionedController = mock(),
     @get:Provides val dozeParameters: DozeParameters = mock(),
+    @get:Provides val dreamManager: DreamManager = mock(),
     @get:Provides val dumpManager: DumpManager = mock(),
     @get:Provides val fingerprintManager: FingerprintManager = mock(),
     @get:Provides val headsUpManager: HeadsUpManager = mock(),
@@ -132,11 +137,14 @@ data class TestMocksModule(
     @get:Provides val systemUIDialogManager: SystemUIDialogManager = mock(),
     @get:Provides val deviceEntryIconTransitions: Set<DeviceEntryIconTransition> = emptySet(),
     @get:Provides val communalInteractor: CommunalInteractor = mock(),
+    @get:Provides val communalSceneInteractor: CommunalSceneInteractor = mock(),
+    @get:Provides val communalSettingsInteractor: CommunalSettingsInteractor = mock(),
     @get:Provides val sceneLogger: SceneLogger = mock(),
     @get:Provides val trustManager: TrustManager = mock(),
     @get:Provides val primaryBouncerInteractor: PrimaryBouncerInteractor = mock(),
     @get:Provides val keyguardStateController: KeyguardStateController = mock(),
     @get:Provides val globalSettings: GlobalSettings = mock(),
+    @get:Provides val cameraGestureHelper: CameraGestureHelper = mock(),
 
     // log buffers
     @get:[Provides BroadcastDispatcherLog]
@@ -165,7 +173,7 @@ data class TestMocksModule(
     interface Bindings {
         @Binds
         fun bindStatusBarStateController(
-            sysuiStatusBarStateController: SysuiStatusBarStateController,
+            sysuiStatusBarStateController: SysuiStatusBarStateController
         ): StatusBarStateController
     }
 }

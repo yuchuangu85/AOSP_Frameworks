@@ -16,17 +16,19 @@
 
 package com.android.systemui.qs.tiles;
 
+import static com.android.systemui.accessibility.hearingaid.HearingDevicesUiEventLogger.LAUNCH_SOURCE_QS_TILE;
+
 import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.service.quicksettings.Tile;
+import android.widget.Button;
 
 import androidx.annotation.Nullable;
 
 import com.android.internal.logging.MetricsLogger;
-import com.android.systemui.Flags;
 import com.android.systemui.accessibility.hearingaid.HearingDevicesChecker;
 import com.android.systemui.accessibility.hearingaid.HearingDevicesDialogManager;
 import com.android.systemui.animation.Expandable;
@@ -96,7 +98,7 @@ public class HearingDevicesTile extends QSTileImpl<BooleanState> {
 
     @Override
     protected void handleClick(@Nullable Expandable expandable) {
-        mUiHandler.post(() -> mDialogManager.showDialog(expandable));
+        mUiHandler.post(() -> mDialogManager.showDialog(expandable, LAUNCH_SOURCE_QS_TILE));
     }
 
     @Override
@@ -104,7 +106,7 @@ public class HearingDevicesTile extends QSTileImpl<BooleanState> {
         checkIfRestrictionEnforcedByAdminOnly(state, UserManager.DISALLOW_BLUETOOTH);
 
         state.label = mContext.getString(R.string.quick_settings_hearing_devices_label);
-        state.icon = ResourceIcon.get(R.drawable.qs_hearing_devices_icon);
+        state.icon = maybeLoadResourceIcon(R.drawable.qs_hearing_devices_icon);
         state.forceExpandIcon = true;
 
         boolean isBonded = mDevicesChecker.isAnyPairedHearingDevice();
@@ -122,6 +124,7 @@ public class HearingDevicesTile extends QSTileImpl<BooleanState> {
             state.state = Tile.STATE_INACTIVE;
             state.secondaryLabel = "";
         }
+        state.expandedAccessibilityClassName = Button.class.getName();
     }
 
     @Nullable
@@ -133,10 +136,5 @@ public class HearingDevicesTile extends QSTileImpl<BooleanState> {
     @Override
     public CharSequence getTileLabel() {
         return mContext.getString(R.string.quick_settings_hearing_devices_label);
-    }
-
-    @Override
-    public boolean isAvailable() {
-        return Flags.hearingAidsQsTileDialog();
     }
 }

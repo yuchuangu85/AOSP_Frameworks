@@ -282,6 +282,12 @@ class ShortcutLauncher extends ShortcutPackageItem {
             for (int j = 0; j < idSize; j++) {
                 ShortcutService.writeTagValue(out, TAG_PIN, ids.valueAt(j));
             }
+            if (ShortcutService.DEBUG_REBOOT) {
+                Slog.d(TAG, "Persist shortcut ids pinned by "
+                    + getPackageName() + " from "
+                    + up.userId + "@" + up.packageName + " ids=["
+                    + String.join(", ", ids) + "]");
+            }
             out.endTag(null, TAG_PACKAGE);
         }
 
@@ -447,7 +453,7 @@ class ShortcutLauncher extends ShortcutPackageItem {
     @Override
     protected File getShortcutPackageItemFile() {
         final File path = new File(mShortcutUser.mService.injectUserDataPath(
-                mShortcutUser.getUserId()), ShortcutUser.DIRECTORY_LUANCHERS);
+                mShortcutUser.getUserId()), ShortcutUser.DIRECTORY_LAUNCHERS);
         // Package user id and owner id can have different values for ShortcutLaunchers. Adding
         // user Id to the file name to create a unique path. Owner id is used in the root path.
         final String fileName = getPackageName() + getPackageUserId() + ".xml";

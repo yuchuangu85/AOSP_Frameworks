@@ -23,10 +23,14 @@
 
 #include <vibratorservice/VibratorManagerHalWrapper.h>
 
-using android::hardware::vibrator::CompositeEffect;
-using android::hardware::vibrator::CompositePrimitive;
-using android::hardware::vibrator::Effect;
-using android::hardware::vibrator::EffectStrength;
+#include "test_mocks.h"
+
+using aidl::android::hardware::vibrator::CompositeEffect;
+using aidl::android::hardware::vibrator::CompositePrimitive;
+using aidl::android::hardware::vibrator::Effect;
+using aidl::android::hardware::vibrator::EffectStrength;
+using aidl::android::hardware::vibrator::IVibrationSession;
+using aidl::android::hardware::vibrator::VibrationSessionConfig;
 
 using std::chrono::milliseconds;
 
@@ -35,27 +39,16 @@ using namespace testing;
 
 // -------------------------------------------------------------------------------------------------
 
-class MockHalController : public vibrator::HalController {
-public:
-    MockHalController() = default;
-    virtual ~MockHalController() = default;
-
-    MOCK_METHOD(bool, init, (), (override));
-    MOCK_METHOD(void, tryReconnect, (), (override));
-};
-
-// -------------------------------------------------------------------------------------------------
-
 class VibratorManagerHalWrapperLegacyTest : public Test {
 public:
     void SetUp() override {
-        mMockController = std::make_shared<StrictMock<MockHalController>>();
+        mMockController = std::make_shared<StrictMock<vibrator::MockHalController>>();
         mWrapper = std::make_unique<vibrator::LegacyManagerHalWrapper>(mMockController);
         ASSERT_NE(mWrapper, nullptr);
     }
 
 protected:
-    std::shared_ptr<StrictMock<MockHalController>> mMockController = nullptr;
+    std::shared_ptr<StrictMock<vibrator::MockHalController>> mMockController = nullptr;
     std::unique_ptr<vibrator::ManagerHalWrapper> mWrapper = nullptr;
 };
 
@@ -120,4 +113,13 @@ TEST_F(VibratorManagerHalWrapperLegacyTest, TestSyncedOperationsUnsupported) {
     ASSERT_TRUE(mWrapper->prepareSynced(vibratorIds).isUnsupported());
     ASSERT_TRUE(mWrapper->triggerSynced([]() {}).isUnsupported());
     ASSERT_TRUE(mWrapper->cancelSynced().isUnsupported());
+}
+
+TEST_F(VibratorManagerHalWrapperLegacyTest, TestSessionOperationsUnsupported) {
+    std::vector<int32_t> vibratorIds;
+    vibratorIds.push_back(0);
+    VibrationSessionConfig config;
+
+    ASSERT_TRUE(mWrapper->startSession(vibratorIds, config, []() {}).isUnsupported());
+    ASSERT_TRUE(mWrapper->clearSessions().isUnsupported());
 }

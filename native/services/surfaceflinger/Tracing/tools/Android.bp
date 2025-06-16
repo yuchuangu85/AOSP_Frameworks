@@ -27,7 +27,9 @@ cc_binary {
     defaults: [
         "libsurfaceflinger_mocks_defaults",
         "librenderengine_deps",
+        "poweradvisor_deps",
         "surfaceflinger_defaults",
+        "libsurfaceflinger_common_deps",
     ],
     srcs: [
         ":libsurfaceflinger_sources",

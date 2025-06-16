@@ -48,7 +48,7 @@
     <string name="wifi_security_psk_sae" msgid="8135104122179904684">"WPA2/WPA3-Personal"</string>
     <string name="wifi_security_none_owe" msgid="5241745828327404101">"କିଛି ନାହିଁ/Enhanced Open"</string>
     <string name="wifi_security_owe" msgid="3343421403561657809">"Enhanced Open"</string>
-    <string name="wifi_security_eap_suiteb" msgid="415842785991698142">"WPA3-Enterprise 192-ବିଟ୍"</string>
+    <string name="wifi_security_eap_suiteb" msgid="415842785991698142">"WPA3-Enterprise 192-ବିଟ"</string>
     <string name="wifi_remembered" msgid="3266709779723179188">"ସେଭ୍‌ ହୋଇଗଲା"</string>
     <string name="wifi_disconnected" msgid="7054450256284661757">"ବିଛିନ୍ନ କରାଯାଇଛି"</string>
     <string name="wifi_disabled_generic" msgid="2651916945380294607">"ଅକ୍ଷମ ହୋଇଛି"</string>
@@ -82,7 +82,7 @@
     <string name="speed_label_very_fast" msgid="8215718029533182439">"ଅତି ଦ୍ରୁତ"</string>
     <string name="wifi_passpoint_expired" msgid="6540867261754427561">"ମିଆଦ ଶେଷ ହୋଇଯାଇଛି"</string>
     <string name="preference_summary_default_combination" msgid="2644094566845577901">"<xliff:g id="STATE">%1$s</xliff:g> / <xliff:g id="DESCRIPTION">%2$s</xliff:g>"</string>
-    <string name="bluetooth_disconnected" msgid="7739366554710388701">"ବିଛିନ୍ନ ହେଲା"</string>
+    <string name="bluetooth_disconnected" msgid="7739366554710388701">"ଡିସକନେକ୍ଟ ହୋଇଛି"</string>
     <string name="bluetooth_disconnecting" msgid="7638892134401574338">"ବିଚ୍ଛିନ୍ନ କରୁଛି…"</string>
     <string name="bluetooth_connecting" msgid="5871702668260192755">"କନେକ୍ଟ ହେଉଛି…"</string>
     <string name="bluetooth_connected" msgid="8065345572198502293">"ସଂଯୁକ୍ତ ହେଲା<xliff:g id="ACTIVE_DEVICE">%1$s</xliff:g>"</string>
@@ -110,15 +110,26 @@
     <string name="bluetooth_hearing_aid_left_active" msgid="8330226430756799572">"ସକ୍ରିୟ (କେବଳ ବାମ)"</string>
     <string name="bluetooth_hearing_aid_right_active" msgid="2244728507170385397">"ସକ୍ରିୟ (କେବଳ ଡାହାଣ)"</string>
     <string name="bluetooth_hearing_aid_left_and_right_active" msgid="4294571497939983181">"ସକ୍ରିୟ (ବାମ ଏବଂ ଡାହାଣ)"</string>
+    <string name="bluetooth_hearing_device_ambient_error" msgid="6035857289108813878">"ପରିପାର୍ଶ୍ୱକୁ ଅପଡେଟ କରାଯାଇପାରିଲା ନାହିଁ"</string>
     <string name="bluetooth_active_media_only_battery_level" msgid="7772517511061834073">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ)। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
     <string name="bluetooth_active_media_only_battery_level_untethered" msgid="7444753133664620926">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ)। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> ବେଟେରୀ।"</string>
-    <string name="bluetooth_battery_level_lea_support" msgid="5968584103507988820">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ)। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_battery_level" msgid="2820003593899467676">"ଅତିଥି ଡିଭାଇସ। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_battery_level_untethered" msgid="5404013822067644960">"ଅତିଥି ଡିଭାଇସ। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_media_only_battery_level" msgid="7928347900623812299">"ଅତିଥି ଡିଭାଇସ (କେବଳ ମିଡିଆ)। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_media_only_battery_level_untethered" msgid="4458143141394300892">"ଅତିଥି ଡିଭାଇସ (କେବଳ ମିଡିଆ)। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_battery_level_lea_support" msgid="5968584103507988820">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ)। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
     <string name="bluetooth_battery_level_untethered_lea_support" msgid="803110681688633362">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ)। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> ବେଟେରୀ।"</string>
     <string name="bluetooth_battery_level_untethered_left_lea_support" msgid="7707464334346454950">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ)। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
-    <string name="bluetooth_battery_level_untethered_right_lea_support" msgid="8941549024377771038">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ)। ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_battery_level_untethered_right_lea_support" msgid="8941549024377771038">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ)। ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
     <string name="bluetooth_no_battery_level_lea_support" msgid="5721725041048434075">"କନେକ୍ଟ କରାଯାଇଛି (ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ)"</string>
+    <string name="bluetooth_guest_battery_level_lea_support" msgid="8098327939585013928">"ଅତିଥି ଡିଭାଇସ (ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ)। <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_battery_level_untethered_lea_support" msgid="3701035025565668360">"ଅତିଥି ଡିଭାଇସ (ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ)। ବାମ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, ଡାହାଣ: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> ବେଟେରୀ।"</string>
+    <string name="bluetooth_guest_no_battery_level_lea_support" msgid="2977038548753103470">"ଅତିଥି ଡିଭାଇସ (ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ)"</string>
     <string name="bluetooth_active_media_only_no_battery_level" msgid="71106861912593126">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ)"</string>
-    <string name="bluetooth_saved_device_lea_support" msgid="7231323139968285768">"ଅଡିଓ ସେୟାରିଂକୁ ସମର୍ଥନ କରେ"</string>
+    <string name="bluetooth_guest_no_battery_level" msgid="9122974160381136920">"ଅତିଥି ଡିଭାଇସ"</string>
+    <string name="bluetooth_guest_media_only_no_battery_level" msgid="7666347601796705721">"ଅତିଥି ଡିଭାଇସ (କେବଳ ମିଡିଆ)"</string>
+    <string name="bluetooth_saved_device_lea_support" msgid="7231323139968285768">"ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ"</string>
+    <string name="bluetooth_guest_saved_device_lea_support" msgid="5621291599518569876">"ଅତିଥି ଡିଭାଇସ। ଅଡିଓ ସେୟାରିଂକୁ ସପୋର୍ଟ କରେ"</string>
     <string name="bluetooth_hearing_aid_media_only_left_active" msgid="1632152540901488645">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ), କେବଳ ବାମ"</string>
     <string name="bluetooth_hearing_aid_media_only_right_active" msgid="3854140683042617230">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ), କେବଳ ଡାହାଣ"</string>
     <string name="bluetooth_hearing_aid_media_only_left_and_right_active" msgid="1299913413062528417">"ସକ୍ରିୟ (କେବଳ ମିଡିଆ), ବାମ ଏବଂ ଡାହାଣ"</string>
@@ -128,7 +139,7 @@
     <string name="bluetooth_profile_hid" msgid="2969922922664315866">"ଇନପୁଟ ଡିଭାଇସ"</string>
     <string name="bluetooth_profile_pan" msgid="1006235139308318188">"ଇଣ୍ଟରନେଟ ଆକ୍ସେସ"</string>
     <string name="bluetooth_profile_pbap" msgid="2103406516858653017">"କଣ୍ଟାକ୍ଟ ଓ କଲ ଇତିହାସକୁ ଆକ୍ସେସ କରିବା ପାଇଁ ଅନୁମତି ଦିଅନ୍ତୁ"</string>
-    <string name="bluetooth_profile_pbap_summary" msgid="402819589201138227">"ସୂଚନାକୁ କଲ ଘୋଷଣା ଏବଂ ଆହୁରି ଅଧିକ ପାଇଁ ବ୍ୟବହାର କରାଯିବ"</string>
+    <string name="bluetooth_profile_pbap_summary" msgid="402819589201138227">"ସୂଚନାକୁ କଲ ଘୋଷଣା ଏବଂ ଆହୁରି ଅନେକ କିଛି ପାଇଁ ବ୍ୟବହାର କରାଯିବ"</string>
     <string name="bluetooth_profile_pan_nap" msgid="7871974753822470050">"ଇଣ୍ଟର୍‌ନେଟ୍‌ ସଂଯୋଗ ଶେୟାରିଙ୍ଗ"</string>
     <string name="bluetooth_profile_map" msgid="8907204701162107271">"ଟେକ୍ସଟ୍ ମେସେଜ୍"</string>
     <string name="bluetooth_profile_sap" msgid="8304170950447934386">"SIM ଆକ୍ସେସ"</string>
@@ -357,6 +368,9 @@
     <string name="enhanced_connectivity_summary" msgid="1576414159820676330">"ଏନହାନ୍ସଡ୍ କନେକ୍ଟିଭିଟି ଫିଚର୍ ସକ୍ଷମ କରିଥାଏ।"</string>
     <string name="enable_terminal_title" msgid="3834790541986303654">"ସ୍ଥାନୀୟ ଟର୍ମିନାଲ୍‌"</string>
     <string name="enable_terminal_summary" msgid="2481074834856064500">"ସ୍ଥାନୀୟ ଶେଲ୍‌କୁ ଆକ‌ସେସ୍‌ ଦେଉଥିବା ଟର୍ମିନଲ୍‌ ଆପ୍‌କୁ ସକ୍ଷମ କରନ୍ତୁ"</string>
+    <string name="enable_linux_terminal_title" msgid="5076044866895670637">"Linux ଡେଭେଲପମେଣ୍ଟର ପରିବେଶ"</string>
+    <string name="enable_linux_terminal_summary" msgid="2029479880888108902">"(ପରୀକ୍ଷାମୂଳକ) Androidରେ Linux ଟର୍ମିନାଲ ଚଲାନ୍ତୁ"</string>
+    <string name="disable_linux_terminal_disclaimer" msgid="3054320531778388231">"ଯଦି ଆପଣ ଅକ୍ଷମ କରନ୍ତି, ତେବେ Linux ଟର୍ମିନାଲ ଡାଟା ଖାଲି ହୋଇଯିବ"</string>
     <string name="hdcp_checking_title" msgid="3155692785074095986">"HDCP ଯାଞ୍ଚ"</string>
     <string name="hdcp_checking_dialog_title" msgid="7691060297616217781">"HDCPର ଯାଞ୍ଚ ଗତିବିଧି ସେଟ୍‍ କରନ୍ତୁ"</string>
     <string name="debug_debugging_category" msgid="535341063709248842">"ଡିବଗ୍‌ କରୁଛି"</string>
@@ -372,6 +386,7 @@
     <string name="debug_hw_drawing_category" msgid="5830815169336975162">"ହାର୍ଡୱେର୍‌ ଆକ୍ସଲରେଟେଡ୍ ରେଣ୍ଡରିଙ୍ଗ"</string>
     <string name="media_category" msgid="8122076702526144053">"ମିଡିଆ"</string>
     <string name="debug_monitoring_category" msgid="1597387133765424994">"ମନିଟରିଙ୍ଗ"</string>
+    <string name="window_management_category" msgid="2015535427098365170">"ୱିଣ୍ଡୋ ପରିଚାଳନା"</string>
     <string name="strict_mode" msgid="889864762140862437">"କଡ଼ା ମୋଡ୍ ସକ୍ଷମ କରାଯାଇଛି"</string>
     <string name="strict_mode_summary" msgid="1838248687233554654">"ମୁଖ୍ୟ ଥ୍ରେଡ୍‌ରେ ଆପ୍‌ ଦୀର୍ଘ ସମୟ କାର୍ଯ୍ୟ କଲେ ସ୍କ୍ରୀନ୍‌ ଫ୍ଲାଶ୍ କରନ୍ତୁ"</string>
     <string name="pointer_location" msgid="7516929526199520173">"ପଏଣ୍ଟର୍‌ ଲୋକେସନ୍‌"</string>
@@ -380,6 +395,8 @@
     <string name="show_touches_summary" msgid="3692861665994502193">"ଟାପ୍ ପାଇଁ ଭିଜୁଆଲ୍ ମତାମତ ଦେଖାନ୍ତୁ"</string>
     <string name="show_key_presses" msgid="6360141722735900214">"ଦବାଯାଇଥିବା କୀ ଦେଖାନ୍ତୁ"</string>
     <string name="show_key_presses_summary" msgid="725387457373015024">"ଦବାଯାଇଥିବା ଫିଜିକାଲ କୀ ପାଇଁ ଭିଜୁଆଲ ମତାମତ ଦେଖାନ୍ତୁ"</string>
+    <string name="touchpad_visualizer" msgid="3707916068870825115">"ଟଚପେଡ ଇନପୁଟ ଦେଖାନ୍ତୁ"</string>
+    <string name="touchpad_visualizer_summary" msgid="4056080018119847449">"ଟଚପେଡ ଇନପୁଟ ଡାଟା ଏବଂ ଚିହ୍ନଟ କରାଯାଇଥିବା ଜେଶ୍ଚରକୁ ଡିସପ୍ଲେ କରୁଥିବା ସ୍କ୍ରିନ ଓଭରଲେ"</string>
     <string name="show_screen_updates" msgid="2078782895825535494">"ସର୍ଫେସ୍‌ ଅପଡେଟ୍‌ ଦେଖାନ୍ତୁ"</string>
     <string name="show_screen_updates_summary" msgid="2126932969682087406">"ସମଗ୍ର ୱିଣ୍ଡୋ ପୃଷ୍ଠ ଅପଡେଟ୍‌ ହେବା ବେଳେ ସେଗୁଡ଼ିକ ଫ୍ଲାସ୍‌ କରନ୍ତୁ"</string>
     <string name="show_hw_screen_updates" msgid="2021286231267747506">"ଭ୍ୟୁ ଅପଡେଟ୍‌ଗୁଡ଼ିକୁ ଦେଖାନ୍ତୁ"</string>
@@ -408,10 +425,17 @@
     <string name="enable_gpu_debug_layers_summary" msgid="4921521407377170481">"ଡିବଗ୍‌ ଆପ୍‌ଗୁଡ଼ିକ ପାଇଁ GPU ଡିବଗ୍‌ ଲେୟର୍‌ ଲୋଡ୍ କରିବାର ଅନୁମତି ଦିଅନ୍ତୁ"</string>
     <string name="enable_verbose_vendor_logging" msgid="1196698788267682072">"ଭର୍ବୋସ ଭେଣ୍ଡର୍ ଲଗିଂ ସକ୍ଷମ କରନ୍ତୁ"</string>
     <string name="enable_verbose_vendor_logging_summary" msgid="5426292185780393708">"ବଗ୍ ରିପୋର୍ଟଗୁଡ଼ିକରେ ଅତିରିକ୍ତ ଡିଭାଇସ୍-ନିର୍ଦ୍ଦିଷ୍ଟ ଲଗଗୁଡ଼ିକ ସାମିଲ କରନ୍ତୁ, ଯେଉଁଥିରେ ବ୍ୟକ୍ତିଗତ ସୂଚନା ଥାଇପାରେ, ଯାହା ଅଧିକ ବ୍ୟାଟେରୀ ଏବଂ/କିମ୍ବା ଅଧିକ ଷ୍ଟୋରେଜ୍ ବ୍ୟବହାର କରିପାରେ।"</string>
+    <string name="enable_verbose_vendor_logging_checkbox" msgid="3864578373293835530">"ଗୋଟିଏ ଦିନ ପରେ ଅକ୍ଷମ କରନ୍ତୁ"</string>
+    <string name="verbose_vendor_logging_notification_title" msgid="6811217272559843592">"ଭର୍ବୋସ ଭେଣ୍ଡର ଲଗିଂ ସମାପ୍ତ ହୋଇଯାଇଛି"</string>
+    <string name="verbose_vendor_logging_notification_summary" msgid="5226524769774370942">"ଗୋଟିଏ ଦିନ ପାଇଁ ସକ୍ଷମ କରାଯାଇଛି"</string>
+    <string name="verbose_vendor_logging_notification_action" msgid="1190831050259046071">"ଆଉ ଗୋଟିଏ ଦିନ ପାଇଁ ସକ୍ଷମ କରନ୍ତୁ"</string>
+    <string name="verbose_vendor_logging_preference_summary_will_disable" msgid="6175431593394522553">"ଗୋଟିଏ ଦିନ ପରେ ଅକ୍ଷମ ହେବ"</string>
+    <string name="verbose_vendor_logging_preference_summary_on" msgid="9017757242481762036">"ଅନିର୍ଦ୍ଦିଷ୍ଟ ସମୟ ପାଇଁ ସକ୍ଷମ କରାଯାଇଛି"</string>
     <string name="window_animation_scale_title" msgid="5236381298376812508">"ୱିଣ୍ଡୋ ଆନିମେସନ୍‌ ସ୍କେଲ୍‌"</string>
     <string name="transition_animation_scale_title" msgid="1278477690695439337">"ଟ୍ରାଞ୍ଜିସନ୍‌ ଆନିମେସନ୍‌ ସ୍କେଲ୍‌"</string>
     <string name="animator_duration_scale_title" msgid="7082913931326085176">"ଆନିମେଟର୍‌ ଅବଧି ସ୍କେଲ୍‌"</string>
     <string name="overlay_display_devices_title" msgid="5411894622334469607">"ସେକେଣ୍ଡାରୀ ଡିସ୍‌ପ୍ଲେ ସିମୁଲେଟ୍ କରନ୍ତୁ"</string>
+    <string name="shade_display_awareness_title" msgid="8000009404669495876">"ସେଡ ଡିସପ୍ଲେ ସ୍ଥିତି"</string>
     <string name="debug_applications_category" msgid="5394089406638954196">"ଆପ୍ସ"</string>
     <string name="immediately_destroy_activities" msgid="1826287490705167403">"କାର୍ଯ୍ୟକଳାପଗୁଡ଼ିକୁ ରଖନ୍ତୁ ନାହିଁ"</string>
     <string name="immediately_destroy_activities_summary" msgid="6289590341144557614">"ୟୁଜର୍ ଏହାକୁ ଛାଡ଼ିବା କ୍ଷଣି ସମସ୍ତ କାର୍ଯ୍ୟକଳାପ ନଷ୍ଟ କରିଦିଅନ୍ତୁ"</string>
@@ -425,7 +449,6 @@
     <string name="force_resizable_activities" msgid="7143612144399959606">"ୱିଣ୍ଡୋ ହିସାବରେ କାର୍ଯ୍ୟକଳାପର ଆକାର ବଦଳାନ୍ତୁ"</string>
     <string name="force_resizable_activities_summary" msgid="2490382056981583062">"ମାନିଫେଷ୍ଟ ମୂଲ୍ୟ ଯାହା ହୋଇଥାଉ ନା କାହିଁକି, ଏକାଧିକ-ୱିଣ୍ଡୋ ପାଇଁ ସମସ୍ତ କାର୍ଯ୍ୟକଳାପକୁ ରିସାଇଜ କରନ୍ତୁ।"</string>
     <string name="enable_freeform_support" msgid="7599125687603914253">"ଫ୍ରିଫର୍ମ ୱିଣ୍ଡୋକୁ ସକ୍ଷମ କରନ୍ତୁ"</string>
-    <string name="enable_freeform_support_summary" msgid="1822862728719276331">"ପରୀକ୍ଷାମୂଳକ ଫ୍ରିଫର୍ମ ୱିଣ୍ଡୋଗୁଡ଼ିକ ପାଇଁ ସପୋର୍ଟକୁ ସକ୍ଷମ କରନ୍ତୁ।"</string>
     <string name="local_backup_password_title" msgid="4631017948933578709">"ଡେସ୍କଟପ ବେକଅପ ପାସୱାର୍ଡ"</string>
     <string name="local_backup_password_summary_none" msgid="7646898032616361714">"ଡେସ୍କଟପ୍‌ର ସମ୍ପୂର୍ଣ୍ଣ ବ୍ୟାକଅପ୍‌ଗୁଡ଼ିକ ବର୍ତ୍ତମାନ ସୁରକ୍ଷିତ ନୁହେଁ"</string>
     <string name="local_backup_password_summary_change" msgid="1707357670383995567">"ଡେସ୍କଟପ୍‌ର ସମ୍ପୂର୍ଣ୍ଣ ବ୍ୟାକ୍‌ଅପ୍‌ ପାଇଁ ପାସ୍‌ୱର୍ଡ ବଦଳାଇବା କିମ୍ୱା କାଢ଼ିଦେବା ନିମନ୍ତେ ଟାପ୍‌ କରନ୍ତୁ"</string>
@@ -458,6 +481,9 @@
     <string name="select_webview_provider_title" msgid="3917815648099445503">"ୱେବ୍‌ଭ୍ୟୁ ପ୍ରୟୋଗ"</string>
     <string name="select_webview_provider_dialog_title" msgid="2444261109877277714">"WebView କାର୍ଯ୍ୟକାରିତାକୁ ସେଟ୍‍ କରନ୍ତୁ"</string>
     <string name="select_webview_provider_toast_text" msgid="8512254949169359848">"ଏହି ପସନ୍ଦ ଆଉ ମାନ୍ୟ ନାହିଁ। ପୁଣିଥରେ ଚେଷ୍ଟା କରନ୍ତୁ।"</string>
+    <string name="webview_launch_devtools_title" msgid="8009687433555367112">"WebView DevTools"</string>
+    <string name="webview_launch_devtools_no_package" msgid="3182544553665113721">"WebView ମିଳିଲା ନାହିଁ।"</string>
+    <string name="webview_launch_devtools_no_activity" msgid="4066006313619617140">"DevTools ଲଞ୍ଚ କରାଯାଇପାରିଲା ନାହିଁ।"</string>
     <string name="picture_color_mode" msgid="1013807330552931903">"ପିକ୍‌ଚର୍‌ ରଙ୍ଗ ମୋଡ୍"</string>
     <string name="picture_color_mode_desc" msgid="151780973768136200">"sRGB ବ୍ୟବହାର କରନ୍ତୁ"</string>
     <string name="daltonizer_mode_disabled" msgid="403424372812399228">"ଅକ୍ଷମ ହୋଇଛି"</string>
@@ -466,7 +492,7 @@
     <string name="daltonizer_mode_protanomaly" msgid="7805583306666608440">"ପ୍ରୋଟାନୋମାଲି (ଲାଲ୍‌-ସବୁଜ)"</string>
     <string name="daltonizer_mode_tritanomaly" msgid="7135266249220732267">"Tritanomaly (ନୀଳ-ହଳଦିଆ)"</string>
     <string name="accessibility_display_daltonizer_preference_title" msgid="1810693571332381974">"ରଙ୍ଗ ସଂଶୋଧନ"</string>
-    <string name="accessibility_display_daltonizer_preference_subtitle" msgid="1522101114585266455">"ଆପଣ ଏସବୁ କରିବାକୁ ଚାହିଁଲେ ରଙ୍ଗ ସଂଶୋଧନ ଉପଯୋଗୀ ହୋଇପାରିବ:&lt;br/&gt; &lt;ol&gt; &lt;li&gt;&amp;nbsp;ଆହୁରି ସଠିକ୍ ଭାବେ ରଙ୍ଗଗୁଡ଼ିକ ଦେଖିବା&lt;/li&gt; &lt;li&gt;&amp;nbsp;ଆପଣଙ୍କୁ ଫୋକସ କରିବାରେ ସାହାଯ୍ୟ କରିବା ପାଇଁ ରଙ୍ଗଗୁଡ଼ିକୁ କାଢ଼ିବା&lt;/li&gt; &lt;/ol&gt;"</string>
+    <string name="accessibility_display_daltonizer_preference_subtitle" msgid="1522101114585266455">"ଆପଣ ଏସବୁ କରିବାକୁ ଚାହିଁଲେ ରଙ୍ଗ ସଂଶୋଧନ ଉପଯୋଗୀ ହୋଇପାରିବ:&lt;br/&gt; &lt;ol&gt; &lt;li&gt;&amp;nbsp;ଆହୁରି ସଠିକ ଭାବେ ରଙ୍ଗଗୁଡ଼ିକ ଦେଖିବା&lt;/li&gt; &lt;li&gt;&amp;nbsp;ଆପଣଙ୍କୁ ଫୋକସ କରିବାରେ ସାହାଯ୍ୟ କରିବା ପାଇଁ ରଙ୍ଗଗୁଡ଼ିକୁ କାଢ଼ିବା&lt;/li&gt; &lt;/ol&gt;"</string>
     <string name="daltonizer_type_overridden" msgid="4509604753672535721">"<xliff:g id="TITLE">%1$s</xliff:g> ଦ୍ୱାରା ଓଭର୍‌ରାଇଡ୍‌ କରାଯାଇଛି"</string>
     <string name="power_remaining_settings_home_page" msgid="4885165789445462557">"<xliff:g id="PERCENTAGE">%1$s</xliff:g> - <xliff:g id="TIME_STRING">%2$s</xliff:g>"</string>
     <string name="power_charging_on_hold_settings_home_page" msgid="7690464049464805856">"<xliff:g id="LEVEL">%1$s</xliff:g> - ବେଟେରୀକୁ ସୁରକ୍ଷିତ ରଖିବା ପାଇଁ ଚାର୍ଜିଂ ହୋଲ୍ଡରେ ଅଛି"</string>
@@ -490,7 +516,7 @@
     <string name="power_charging" msgid="6727132649743436802">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATE">%2$s</xliff:g>"</string>
     <string name="power_remaining_charging_duration_only" msgid="8085099012811384899">"ପୂର୍ଣ୍ଣ ହେବାକୁ ଆଉ <xliff:g id="TIME">%1$s</xliff:g> ବାକି ଅଛି"</string>
     <string name="power_charging_duration" msgid="6127154952524919719">"<xliff:g id="LEVEL">%1$s</xliff:g> - ପୂର୍ଣ୍ଣ ହେବାକୁ ଆଉ <xliff:g id="TIME">%2$s</xliff:g> ବାକି ଅଛି"</string>
-    <string name="power_charging_limited" msgid="8202147604844938236">"<xliff:g id="LEVEL">%1$s</xliff:g> - ଚାର୍ଜିଂକୁ ଅପ୍ଟିମାଇଜ କରାଯାଇଛି"</string>
+    <string name="power_charging_limited" msgid="4144004473976005214">"<xliff:g id="LEVEL">%1$s</xliff:g> - ବେଟେରୀକୁ ସୁରକ୍ଷିତ ରଖିବା ପାଇଁ ଚାର୍ଜିଂ ହୋଲ୍ଡରେ ଅଛି"</string>
     <string name="power_charging_future_paused" msgid="1809543660923642799">"<xliff:g id="LEVEL">%1$s</xliff:g> ‑ ଚାର୍ଜିଂ"</string>
     <string name="power_fast_charging_duration_v2" msgid="3797735998640359490">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATUS">%2$s</xliff:g> - <xliff:g id="TIME">%3$s</xliff:g> ସୁଦ୍ଧା ସମ୍ପୂର୍ଣ୍ଣ ଚାର୍ଜ ହେବ"</string>
     <string name="power_charging_duration_v2" msgid="2938998284074003248">"<xliff:g id="LEVEL">%1$s</xliff:g> • <xliff:g id="TIME">%2$s</xliff:g> ସୁଦ୍ଧା ସମ୍ପୂର୍ଣ୍ଣ ଭାବେ ଚାର୍ଜ ହୋଇଯିବ"</string>
@@ -511,7 +537,9 @@
     <string name="battery_info_status_charging_fast_v2" msgid="1825439848151256589">"ଫାଷ୍ଟ ଚାର୍ଜିଂ"</string>
     <string name="disabled_by_admin_summary_text" msgid="5343911767402923057">"ଆଡ୍‌ମିନ୍‌ ଦ୍ୱାରା ନିୟନ୍ତ୍ରିତ"</string>
     <string name="disabled_by_app_ops_text" msgid="8373595926549098012">"ପ୍ରତିବନ୍ଧିତ ସେଟିଂ ଦ୍ୱାରା ନିୟନ୍ତ୍ରଣ କରାଯାଇଛି"</string>
+    <string name="disabled_in_phone_call_text" msgid="6568931334337318320">"କଲ କରିବାବେଳେ ଉପଲବ୍ଧ ନଥାଏ"</string>
     <string name="disabled" msgid="8017887509554714950">"ଅକ୍ଷମ ହୋଇଛି"</string>
+    <string name="enabled" msgid="3997122818554810678">"ସକ୍ଷମ କରାଯାଇଛି"</string>
     <string name="external_source_trusted" msgid="1146522036773132905">"ଅନୁମତି ଦିଆଯାଇଛି"</string>
     <string name="external_source_untrusted" msgid="5037891688911672227">"ଅନୁମତି ନାହିଁ"</string>
     <string name="install_other_apps" msgid="3232595082023199454">"ଅଜଣା ଆପ ଇନଷ୍ଟଲ କରନ୍ତୁ"</string>
@@ -557,6 +585,8 @@
     <string name="alarms_and_reminders_title" msgid="8819933264635406032">"ଆଲାରାମ୍ ଏବଂ ରିମାଇଣ୍ଡରଗୁଡ଼ିକ"</string>
     <string name="alarms_and_reminders_footer_title" msgid="6302587438389079695">"ଏହି ଆପକୁ ଆଲାରାମ୍ ସେଟ୍ କରିବାକୁ ଏବଂ ସମୟ-ସମ୍ବେଦନଶୀଳ କାର୍ଯ୍ୟଗୁଡ଼ିକୁ ସିଡୁଲ୍ କରିବାକୁ ଅନୁମତି ଦିଅନ୍ତୁ। ଏହା ଆପକୁ ପୃଷ୍ଠପଟରେ ଚାଲିବାକୁ ଦେଇଥାଏ, ଯାହା ଅଧିକ ବ୍ୟାଟେରୀ ବ୍ୟବହାର କରିପାରେ।\n\nଯଦି ଏହି ଅନୁମତି ବନ୍ଦ ଅଛି, ତେବେ ଏହି ଆପ୍ ଦ୍ୱାରା ସିଡୁଲ୍ କରାଯାଇଥିବା ପୂର୍ବରୁ ଥିବା ଆଲାରାମ୍ ଏବଂ ସମୟ-ଆଧାରିତ ଇଭେଣ୍ଟଗୁଡ଼ିକ କାମ କରିବ ନାହିଁ।"</string>
     <string name="keywords_alarms_and_reminders" msgid="6633360095891110611">"ସିଡୁଲ୍, ଆଲାରାମ୍, ରିମାଇଣ୍ଡର୍, ଘଣ୍ଟା"</string>
+    <string name="zen_mode_do_not_disturb_name" msgid="6798711401734798283">"ବିରକ୍ତ କରନ୍ତୁ ନାହିଁ"</string>
+    <string name="zen_mode_settings_title" msgid="7374070457626419755">"ବିରକ୍ତ କରନ୍ତୁ ନାହିଁ"</string>
     <string name="zen_mode_enable_dialog_turn_on" msgid="6418297231575050426">"ଚାଲୁ କରନ୍ତୁ"</string>
     <string name="zen_mode_settings_turn_on_dialog_title" msgid="2760567063190790696">"\"ବିରକ୍ତ କରନ୍ତୁ ନାହିଁ\" ଅନ୍ କରନ୍ତୁ"</string>
     <string name="zen_mode_settings_summary_off" msgid="3832876036123504076">"କଦାପି ନୁହେଁ"</string>
@@ -569,15 +599,19 @@
     <string name="zen_mode_duration_settings_title" msgid="1553451650289651489">"ଅବଧି"</string>
     <string name="zen_mode_duration_always_prompt_title" msgid="3212996860498119555">"ପ୍ରତ୍ୟେକ ଥର ପଚାରନ୍ତୁ"</string>
     <string name="zen_mode_forever" msgid="3339224497605461291">"ଆପଣ ବନ୍ଦ ନକରିବା ପର୍ଯ୍ୟନ୍ତ"</string>
+    <string name="zen_mode_starred_contacts_empty_name" msgid="933552939706125937">"(କୌଣସି ନାମ ନାହିଁ)"</string>
     <string name="time_unit_just_now" msgid="3006134267292728099">"ଏହିକ୍ଷଣି"</string>
     <string name="media_transfer_this_device_name" msgid="2357329267148436433">"ଏହି ଫୋନ"</string>
     <string name="media_transfer_this_device_name_tablet" msgid="2975593806278422086">"ଏହି ଟାବଲେଟ"</string>
-    <!-- no translation found for media_transfer_this_device_name_tv (5285685336836896535) -->
-    <skip />
+    <string name="media_transfer_this_device_name_desktop" msgid="7912386128141470452">"ଏହି କମ୍ପ୍ୟୁଟର (ଇଣ୍ଟର୍ନଲ)"</string>
+    <string name="media_transfer_this_device_name_tv" msgid="8508713779441163887">"ଏହି ଟିଭି"</string>
     <string name="media_transfer_dock_speaker_device_name" msgid="2856219597113881950">"ଡକ ସ୍ପିକର"</string>
     <string name="media_transfer_external_device_name" msgid="2588672258721846418">"ଏକ୍ସଟର୍ନଲ ଡିଭାଇସ"</string>
     <string name="media_transfer_default_device_name" msgid="4315604017399871828">"କନେକ୍ଟ କରାଯାଇଥିବା ଡିଭାଇସ"</string>
     <string name="media_transfer_this_phone" msgid="7194341457812151531">"ଏହି ଫୋନ୍"</string>
+    <string name="media_transfer_digital_line_name" msgid="312091711951124301">"S/PDIF"</string>
+    <string name="media_transfer_analog_line_name" msgid="1841163866716302104">"ଆନାଲଗ"</string>
+    <string name="media_transfer_aux_line_name" msgid="894135835967856689">"AUX"</string>
     <string name="media_output_status_unknown_error" msgid="5098565887497902222">"ଏହି ଡିଭାଇସରେ ପ୍ଲେ କରାଯାଇପାରିବ ନାହିଁ"</string>
     <string name="media_output_status_require_premium" msgid="8411255800047014822">"ସ୍ୱିଚ କରିବା ପାଇଁ ଆକାଉଣ୍ଟକୁ ଅପଗ୍ରେଡ କରନ୍ତୁ"</string>
     <string name="media_output_status_not_support_downloads" msgid="4523828729240373315">"ଏଠାରେ ଡାଉନଲୋଡଗୁଡ଼ିକୁ ପ୍ଲେ କରାଯାଇପାରିବ ନାହିଁ"</string>
@@ -585,20 +619,20 @@
     <string name="media_output_status_device_in_low_power_mode" msgid="8184631698321758451">"ଏଠାରେ ପ୍ଲେ କରିବା ପାଇଁ ଡିଭାଇସକୁ ସକ୍ରିୟ କରନ୍ତୁ"</string>
     <string name="media_output_status_unauthorized" msgid="5880222828273853838">"ପ୍ଲେ କରିବା ପାଇଁ ଡିଭାଇସକୁ ଅନୁମୋଦନ କରାଯାଇନାହିଁ"</string>
     <string name="media_output_status_track_unsupported" msgid="5576313219317709664">"ଏଠାରେ ମିଡିଆ ପ୍ଲେ କରାଯାଇପାରିବ ନାହିଁ"</string>
-    <string name="tv_media_transfer_connected" msgid="5145011475885290725">"କନେକ୍ଟ କରାଯାଇଛି"</string>
+    <string name="tv_media_transfer_connected" msgid="5145011475885290725">"କନେକ୍ଟ ହୋଇଛି"</string>
     <string name="tv_media_transfer_arc_fallback_title" msgid="3674360098755328601">"HDMI ARC"</string>
     <string name="tv_media_transfer_earc_fallback_title" msgid="3098685494578519940">"HDMI eARC"</string>
     <string name="tv_media_transfer_arc_subtitle" msgid="1040017851325069082">"ARC ମାଧ୍ୟମରେ କନେକ୍ଟ କରାଯାଇଛି"</string>
     <string name="tv_media_transfer_earc_subtitle" msgid="645191413103303077">"eARC ମାଧ୍ୟମରେ କନେକ୍ଟ କରାଯାଇଛି"</string>
-    <string name="tv_media_transfer_default" msgid="5403053145185843843">"ଟିଭିର ଡିଫଲ୍ଟ ଅଡିଓ ଆଉଟପୁଟ"</string>
-    <string name="tv_media_transfer_hdmi" msgid="692569220956829921">"HDMI ଆଉଟପୁଟ"</string>
-    <string name="tv_media_transfer_internal_speakers" msgid="8181494402866565865">"ଇଣ୍ଟର୍ନଲ ସ୍ପିକର"</string>
+    <string name="tv_media_transfer_internal_speakers" msgid="4662765121700213785">"ବିଲ୍ଟ-ଇନ ସ୍ପିକର"</string>
+    <string name="tv_media_transfer_hdmi_title" msgid="6715658310934507444">"ଟିଭି ଅଡିଓ"</string>
     <string name="profile_connect_timeout_subtext" msgid="4043408193005851761">"ସଂଯୋଗ କରିବାରେ ସମସ୍ୟା ହେଉଛି। ଡିଭାଇସ୍ ବନ୍ଦ କରି ପୁଣି ଚାଲୁ କରନ୍ତୁ"</string>
+    <string name="bluetooth_key_missing_subtext" msgid="1003639333895028298">"କନେକ୍ଟ କରାଯାଇପାରିବ ନାହିଁ"</string>
     <string name="media_transfer_wired_device_name" msgid="4447880899964056007">"ତାରଯୁକ୍ତ ଅଡିଓ ଡିଭାଇସ୍"</string>
     <string name="help_label" msgid="3528360748637781274">"ସାହାଯ୍ୟ ଓ ମତାମତ"</string>
     <string name="storage_category" msgid="2287342585424631813">"ଷ୍ଟୋରେଜ"</string>
     <string name="shared_data_title" msgid="1017034836800864953">"ସେୟାର୍ କରାଯାଇଥିବା ଡାଟା"</string>
-    <string name="shared_data_summary" msgid="5516326713822885652">"ସେୟାର୍ କରାଯାଇଥିବା ଡାଟା ଦେଖନ୍ତୁ ଏବଂ ଏହାକୁ ପରିବର୍ତ୍ତନ କରନ୍ତୁ"</string>
+    <string name="shared_data_summary" msgid="5516326713822885652">"ସେୟାର ହୋଇଥିବା ଡାଟା ଭ୍ୟୁ କରନ୍ତୁ ଏବଂ ପରିବର୍ତ୍ତନ କରନ୍ତୁ"</string>
     <string name="shared_data_no_blobs_text" msgid="3108114670341737434">"ଏହି ଉପଯୋଗକର୍ତ୍ତାଙ୍କ ପାଇଁ କୌଣସି ସେୟାର୍ କରାଯାଇଥିବା ଡାଟା ନାହିଁ।"</string>
     <string name="shared_data_query_failure_text" msgid="3489828881998773687">"ସେୟାର୍ କରାଯାଇଥିବା ଡାଟା ଫେଚ୍ କରିବା ସମୟରେ ଏକ ତ୍ରୁଟି ହୋଇଥିଲା। ପୁଣି ଚେଷ୍ଟା କରନ୍ତୁ।"</string>
     <string name="blob_id_text" msgid="8680078988996308061">"ସେୟାର୍ କରାଯାଇଥିବା ଡାଟା ID: <xliff:g id="BLOB_ID">%d</xliff:g>"</string>
@@ -674,7 +708,12 @@
     <string name="cached_apps_freezer_disabled" msgid="4816382260660472042">"ଅକ୍ଷମ କରାଯାଇଛି"</string>
     <string name="cached_apps_freezer_enabled" msgid="8866703500183051546">"ସକ୍ଷମ କରାଯାଇଛି"</string>
     <string name="cached_apps_freezer_reboot_dialog_text" msgid="695330563489230096">"ଏହି ପରିବର୍ତ୍ତନ ଲାଗୁ କରିବା ପାଇଁ ଆପଣଙ୍କ ଡିଭାଇସକୁ ନିଶ୍ଚିତ ରୂପେ ରିବୁଟ୍ କରାଯିବା ଆବଶ୍ୟକ। ବର୍ତ୍ତମାନ ରିବୁଟ୍ କରନ୍ତୁ କିମ୍ବା ବାତିଲ କରନ୍ତୁ।"</string>
-    <string name="media_transfer_wired_usb_device_name" msgid="7699141088423210903">"ତାରଯୁକ୍ତ ହେଡଫୋନ୍"</string>
+    <string name="media_transfer_wired_headphone_name" msgid="8698668536022665254">"ତାରଯୁକ୍ତ ହେଡଫୋନ"</string>
+    <string name="media_transfer_headphone_name" msgid="1157798825650178478">"ୱାୟାର୍ଡ ଅଡିଓ"</string>
+    <string name="media_transfer_usb_audio_name" msgid="1789292056757821355">"USB ଅଡିଓ"</string>
+    <string name="media_transfer_wired_device_mic_name" msgid="7115192790725088698">"ୱାୟାର୍ଡ ମାଇକ୍ରୋଫୋନ"</string>
+    <string name="media_transfer_usb_device_mic_name" msgid="7171789543226269822">"USB ମାଇକ୍ରୋଫୋନ"</string>
+    <string name="media_transfer_bt_device_mic_name" msgid="1870669402238687618">"BT ମାଇକ୍ରୋଫୋନ"</string>
     <string name="wifi_hotspot_switch_on_text" msgid="9212273118217786155">"ଚାଲୁ ଅଛି"</string>
     <string name="wifi_hotspot_switch_off_text" msgid="7245567251496959764">"ବନ୍ଦ ଅଛି"</string>
     <string name="carrier_network_change_mode" msgid="4257621815706644026">"କେରିଅର୍‍ ନେଟ୍‌ୱର୍କ ବଦଳୁଛି"</string>

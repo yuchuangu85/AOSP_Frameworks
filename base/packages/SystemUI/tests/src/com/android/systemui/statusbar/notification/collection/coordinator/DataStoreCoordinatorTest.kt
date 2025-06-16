@@ -26,17 +26,15 @@ import com.android.systemui.statusbar.notification.collection.NotificationEntry
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder
 import com.android.systemui.statusbar.notification.collection.listbuilder.NotifSection
 import com.android.systemui.statusbar.notification.collection.listbuilder.OnAfterRenderListListener
-import com.android.systemui.statusbar.notification.collection.render.NotifStackController
-import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.withArgCaptor
 import com.google.common.truth.Truth.assertThat
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.Mock
-import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyNoMoreInteractions
-import org.mockito.MockitoAnnotations.initMocks
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.verifyNoMoreInteractions
 
 @SmallTest
 @RunWith(AndroidJUnit4::class)
@@ -47,14 +45,12 @@ class DataStoreCoordinatorTest : SysuiTestCase() {
 
     private lateinit var entry: NotificationEntry
 
-    @Mock private lateinit var pipeline: NotifPipeline
-    @Mock private lateinit var notifLiveDataStoreImpl: NotifLiveDataStoreImpl
-    @Mock private lateinit var stackController: NotifStackController
-    @Mock private lateinit var section: NotifSection
+    private val pipeline: NotifPipeline = mock()
+    private val notifLiveDataStoreImpl: NotifLiveDataStoreImpl = mock()
+    private val section: NotifSection = mock()
 
     @Before
     fun setUp() {
-        initMocks(this)
         entry = NotificationEntryBuilder().setSection(section).build()
         coordinator = DataStoreCoordinator(notifLiveDataStoreImpl)
         coordinator.attach(pipeline)
@@ -65,7 +61,7 @@ class DataStoreCoordinatorTest : SysuiTestCase() {
 
     @Test
     fun testUpdateDataStore_withOneEntry() {
-        afterRenderListListener.onAfterRenderList(listOf(entry), stackController)
+        afterRenderListListener.onAfterRenderList(listOf(entry))
         verify(notifLiveDataStoreImpl).setActiveNotifList(eq(listOf(entry)))
         verifyNoMoreInteractions(notifLiveDataStoreImpl)
     }
@@ -76,31 +72,34 @@ class DataStoreCoordinatorTest : SysuiTestCase() {
             listOf(
                 notificationEntry("foo", 1),
                 notificationEntry("foo", 2),
-                GroupEntryBuilder().setSummary(
-                    notificationEntry("bar", 1)
-                ).setChildren(
-                    listOf(
-                        notificationEntry("bar", 2),
-                        notificationEntry("bar", 3),
-                        notificationEntry("bar", 4)
+                GroupEntryBuilder()
+                    .setSummary(notificationEntry("bar", 1))
+                    .setChildren(
+                        listOf(
+                            notificationEntry("bar", 2),
+                            notificationEntry("bar", 3),
+                            notificationEntry("bar", 4),
+                        )
                     )
-                ).setSection(section).build(),
-                notificationEntry("baz", 1)
-            ),
-            stackController
+                    .setSection(section)
+                    .build(),
+                notificationEntry("baz", 1),
+            )
         )
         val list: List<NotificationEntry> = withArgCaptor {
             verify(notifLiveDataStoreImpl).setActiveNotifList(capture())
         }
-        assertThat(list.map { it.key }).containsExactly(
-            "0|foo|1|null|0",
-            "0|foo|2|null|0",
-            "0|bar|1|null|0",
-            "0|bar|2|null|0",
-            "0|bar|3|null|0",
-            "0|bar|4|null|0",
-            "0|baz|1|null|0"
-        ).inOrder()
+        assertThat(list.map { it.key })
+            .containsExactly(
+                "0|foo|1|null|0",
+                "0|foo|2|null|0",
+                "0|bar|1|null|0",
+                "0|bar|2|null|0",
+                "0|bar|3|null|0",
+                "0|bar|4|null|0",
+                "0|baz|1|null|0",
+            )
+            .inOrder()
         verifyNoMoreInteractions(notifLiveDataStoreImpl)
     }
 
@@ -109,7 +108,7 @@ class DataStoreCoordinatorTest : SysuiTestCase() {
 
     @Test
     fun testUpdateDataStore_withZeroEntries_whenNewPipelineEnabled() {
-        afterRenderListListener.onAfterRenderList(listOf(), stackController)
+        afterRenderListListener.onAfterRenderList(listOf())
         verify(notifLiveDataStoreImpl).setActiveNotifList(eq(listOf()))
         verifyNoMoreInteractions(notifLiveDataStoreImpl)
     }

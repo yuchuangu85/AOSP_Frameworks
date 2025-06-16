@@ -16,11 +16,11 @@
 
 package com.android.server.backup.utils;
 
-import static com.android.server.backup.BackupManagerService.MORE_DEBUG;
 import static com.android.server.backup.BackupManagerService.TAG;
 import static com.android.server.backup.UserBackupManagerService.PACKAGE_MANAGER_SENTINEL;
 import static com.android.server.backup.UserBackupManagerService.SETTINGS_PACKAGE;
 import static com.android.server.backup.UserBackupManagerService.SHARED_BACKUP_AGENT_PACKAGE;
+import static com.android.server.backup.UserBackupManagerService.TELEPHONY_PROVIDER_PACKAGE;
 import static com.android.server.backup.UserBackupManagerService.WALLPAPER_PACKAGE;
 import static com.android.server.pm.PackageManagerService.PLATFORM_PACKAGE_NAME;
 
@@ -45,6 +45,7 @@ import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
+import com.android.server.backup.BackupManagerService;
 import com.android.server.backup.SetUtils;
 import com.android.server.backup.transport.BackupTransportClient;
 import com.android.server.backup.transport.TransportConnection;
@@ -74,6 +75,12 @@ public class BackupEligibilityRules {
     private static final Set<String> systemPackagesAllowedForNonSystemUsers = SetUtils.union(
             systemPackagesAllowedForProfileUser,
             Sets.newArraySet(WALLPAPER_PACKAGE, SETTINGS_PACKAGE));
+
+    static {
+        if (UserManager.isHeadlessSystemUserMode()) {
+            systemPackagesAllowedForNonSystemUsers.add(TELEPHONY_PROVIDER_PACKAGE);
+        }
+    }
 
     private final PackageManager mPackageManager;
     private final PackageManagerInternal mPackageManagerInternal;
@@ -406,8 +413,8 @@ public class BackupEligibilityRules {
         // partition will be signed with the device's platform certificate, so on
         // different phones the same system app will have different signatures.)
         if ((target.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) != 0) {
-            if (MORE_DEBUG) {
-                Slog.v(TAG, "System app " + target.packageName + " - skipping sig check");
+            if (BackupManagerService.DEBUG) {
+                Slog.d(TAG, "System app " + target.packageName + " - skipping sig check");
             }
             return true;
         }
@@ -424,10 +431,8 @@ public class BackupEligibilityRules {
             return false;
         }
 
-        if (DEBUG) {
-            Slog.v(TAG, "signaturesMatch(): stored=" + Arrays.toString(storedSigs)
+        Slog.d(TAG, "signaturesMatch(): stored=" + Arrays.toString(storedSigs)
                     + " device=" + Arrays.toString(signingInfo.getApkContentsSigners()));
-        }
 
         final int nStored = storedSigs.length;
         if (nStored == 1) {

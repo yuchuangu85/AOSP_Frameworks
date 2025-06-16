@@ -28,6 +28,8 @@ using android::base::StringPrintf;
 using dist_proc::aggregation::KllQuantile;
 using std::chrono_literals::operator""ms;
 
+namespace {
+
 // Convert the provided nanoseconds into hundreds of microseconds.
 // Use hundreds of microseconds (as opposed to microseconds) to preserve space.
 static inline int64_t ns2hus(nsecs_t nanos) {
@@ -73,6 +75,8 @@ static std::chrono::milliseconds getSlowEventMinReportingInterval() {
                                               DEFAULT_SLOW_EVENT_MIN_REPORTING_INTERVAL.count()));
     return std::chrono::milliseconds(std::stoi(millis));
 }
+
+} // namespace
 
 namespace android::inputdispatcher {
 
@@ -125,6 +129,9 @@ void LatencyAggregator::processTimeline(const InputEventTimeline& timeline) {
     processSlowEvent(timeline);
 }
 
+// This version of LatencyAggregator doesn't push any atoms
+void LatencyAggregator::pushLatencyStatistics() {}
+
 void LatencyAggregator::processStatistics(const InputEventTimeline& timeline) {
     std::scoped_lock lock(mLock);
     // Before we do any processing, check that we have not yet exceeded MAX_SIZE
@@ -134,7 +141,9 @@ void LatencyAggregator::processStatistics(const InputEventTimeline& timeline) {
     mNumSketchEventsProcessed++;
 
     std::array<std::unique_ptr<KllQuantile>, SketchIndex::SIZE>& sketches =
-            timeline.isDown ? mDownSketches : mMoveSketches;
+            timeline.inputEventActionType == InputEventActionType::MOTION_ACTION_DOWN
+            ? mDownSketches
+            : mMoveSketches;
 
     // Process common ones first
     const nsecs_t eventToRead = timeline.readTime - timeline.eventTime;
@@ -242,7 +251,9 @@ void LatencyAggregator::processSlowEvent(const InputEventTimeline& timeline) {
         const nsecs_t consumeToGpuComplete = gpuCompletedTime - connectionTimeline.consumeTime;
         const nsecs_t gpuCompleteToPresent = presentTime - gpuCompletedTime;
 
-        android::util::stats_write(android::util::SLOW_INPUT_EVENT_REPORTED, timeline.isDown,
+        android::util::stats_write(android::util::SLOW_INPUT_EVENT_REPORTED,
+                                   timeline.inputEventActionType ==
+                                           InputEventActionType::MOTION_ACTION_DOWN,
                                    static_cast<int32_t>(ns2us(eventToRead)),
                                    static_cast<int32_t>(ns2us(readToDeliver)),
                                    static_cast<int32_t>(ns2us(deliverToConsume)),

@@ -38,11 +38,7 @@ protected:
 
     void SetUp() {
         GLTest::SetUp();
-        sp<IGraphicBufferProducer> producer;
-        BufferQueue::createBufferQueue(&producer, &mConsumer);
-        mST = new GLConsumer(mConsumer, TEX_ID, GLConsumer::TEXTURE_EXTERNAL,
-                true, false);
-        mSTC = new Surface(producer);
+        std::tie(mST, mSTC) = GLConsumer::create(TEX_ID, GLConsumer::TEXTURE_EXTERNAL, true, false);
         mANW = mSTC;
         ASSERT_EQ(NO_ERROR, native_window_set_usage(mANW.get(), TEST_PRODUCER_USAGE_BITS));
         mTextureRenderer = new TextureRenderer(TEX_ID, mST);
@@ -63,7 +59,6 @@ protected:
         mTextureRenderer->drawTexture();
     }
 
-    sp<IGraphicBufferConsumer> mConsumer;
     sp<GLConsumer> mST;
     sp<Surface> mSTC;
     sp<ANativeWindow> mANW;

@@ -17,6 +17,7 @@
 package com.android.systemui.doze;
 
 import static android.hardware.biometrics.BiometricAuthenticator.TYPE_FINGERPRINT;
+import static android.hardware.biometrics.Flags.screenOffUnlockUdfps;
 
 import static com.android.systemui.doze.DozeLog.REASON_SENSOR_QUICK_PICKUP;
 import static com.android.systemui.doze.DozeLog.REASON_SENSOR_UDFPS_LONG_PRESS;
@@ -48,6 +49,7 @@ import com.android.internal.R;
 import com.android.internal.logging.UiEvent;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.logging.UiEventLoggerImpl;
+import com.android.systemui.Flags;
 import com.android.systemui.biometrics.AuthController;
 import com.android.systemui.plugins.SensorManagerPlugin;
 import com.android.systemui.statusbar.phone.DozeParameters;
@@ -92,6 +94,7 @@ import java.util.function.Consumer;
 public class DozeSensors {
     private static final String TAG = "DozeSensors";
     private static final UiEventLogger UI_EVENT_LOGGER = new UiEventLoggerImpl();
+    private static final String KEY_DOZE_PULSE_ON_AUTH = "doze_pulse_on_auth";
 
     private final AsyncSensorManager mSensorManager;
     private final AmbientDisplayConfiguration mConfig;
@@ -239,7 +242,7 @@ public class DozeSensors {
                 ),
                 new TriggerSensor(
                         findSensor(config.udfpsLongPressSensorType()),
-                        "doze_pulse_on_auth",
+                        KEY_DOZE_PULSE_ON_AUTH,
                         true /* settingDef */,
                         udfpsLongPressConfigured(),
                         DozeLog.REASON_SENSOR_UDFPS_LONG_PRESS,
@@ -247,15 +250,15 @@ public class DozeSensors {
                         true /* touchscreen */,
                         false /* ignoresSetting */,
                         dozeParameters.longPressUsesProx(),
-                        false /* immediatelyReRegister */,
-                        true /* requiresAod */
+                        screenOffUnlockUdfps() /* immediatelyReRegister */,
+                        !screenOffUnlockUdfps() /* requiresAod */
                 ),
                 new PluginSensor(
                         new SensorManagerPlugin.Sensor(TYPE_WAKE_DISPLAY),
                         Settings.Secure.DOZE_WAKE_DISPLAY_GESTURE,
                         mConfig.wakeScreenGestureAvailable()
                           && mConfig.alwaysOnEnabled(
-                                  mSelectedUserInteractor.getSelectedUserId(true)),
+                                  mSelectedUserInteractor.getSelectedUserId()),
                         DozeLog.REASON_SENSOR_WAKE_UP_PRESENCE,
                         false /* reports touch coordinates */,
                         false /* touchscreen */
@@ -296,7 +299,7 @@ public class DozeSensors {
 
     private boolean udfpsLongPressConfigured() {
         return mUdfpsEnrolled
-                && (mConfig.alwaysOnEnabled(mSelectedUserInteractor.getSelectedUserId(true))
+                && (mConfig.alwaysOnEnabled(mSelectedUserInteractor.getSelectedUserId())
                 || mScreenOffUdfpsEnabled);
     }
 
@@ -419,6 +422,18 @@ public class DozeSensors {
                     && (!s.mRequiresTouchscreen || mListeningTouchScreenSensors)
                     && (!s.mRequiresProx || mListeningProxSensors)
                     && (!s.mRequiresAod || mListeningAodOnlySensors);
+
+            //AOD might be turned off in visual because of BetterySaver or isAlwaysOnSuppressed(),
+            //but AOD isn't really turned off, in these cases, udfpsLongPressSensor should be
+            //unregistered.
+            if (!mListeningAodOnlySensors && KEY_DOZE_PULSE_ON_AUTH.equals(s.mSetting)) {
+                if (mConfig.alwaysOnEnabled(mSelectedUserInteractor.getSelectedUserId())
+                        && !mConfig.screenOffUdfpsEnabled(
+                        mSelectedUserInteractor.getSelectedUserId())) {
+                    listen = false;
+                }
+            }
+
             s.setListening(listen);
             if (listen) {
                 anyListening = true;
@@ -426,7 +441,11 @@ public class DozeSensors {
         }
 
         if (!anyListening) {
-            mSecureSettings.unregisterContentObserverSync(mSettingsObserver);
+            if (Flags.registerContentObserversAsync()) {
+                mSecureSettings.unregisterContentObserverAsync(mSettingsObserver);
+            } else {
+                mSecureSettings.unregisterContentObserverSync(mSettingsObserver);
+            }
         } else if (!mSettingRegistered) {
             for (TriggerSensor s : mTriggerSensors) {
                 s.registerSettingsObserver(mSettingsObserver);
@@ -472,7 +491,7 @@ public class DozeSensors {
     private final ContentObserver mSettingsObserver = new ContentObserver(mHandler) {
         @Override
         public void onChange(boolean selfChange, Collection<Uri> uris, int flags, int userId) {
-            if (userId != mSelectedUserInteractor.getSelectedUserId(true)) {
+            if (userId != mSelectedUserInteractor.getSelectedUserId()) {
                 return;
             }
             for (TriggerSensor s : mTriggerSensors) {
@@ -698,13 +717,13 @@ public class DozeSensors {
         }
 
         protected boolean enabledBySetting() {
-            if (!mConfig.enabled(mSelectedUserInteractor.getSelectedUserId(true))) {
+            if (!mConfig.enabled(mSelectedUserInteractor.getSelectedUserId())) {
                 return false;
             } else if (TextUtils.isEmpty(mSetting)) {
                 return true;
             }
             return mSecureSettings.getIntForUser(mSetting, mSettingDefault ? 1 : 0,
-                    mSelectedUserInteractor.getSelectedUserId(true)) != 0;
+                    mSelectedUserInteractor.getSelectedUserId()) != 0;
         }
 
         @Override
@@ -750,8 +769,13 @@ public class DozeSensors {
 
         public void registerSettingsObserver(ContentObserver settingsObserver) {
             if (mConfigured && !TextUtils.isEmpty(mSetting)) {
-                mSecureSettings.registerContentObserverForUserSync(
-                        mSetting, mSettingsObserver, UserHandle.USER_ALL);
+                if (Flags.registerContentObserversAsync()) {
+                    mSecureSettings.registerContentObserverForUserAsync(
+                            mSetting, mSettingsObserver, UserHandle.USER_ALL);
+                } else {
+                    mSecureSettings.registerContentObserverForUserSync(
+                            mSetting, mSettingsObserver, UserHandle.USER_ALL);
+                }
             }
         }
 

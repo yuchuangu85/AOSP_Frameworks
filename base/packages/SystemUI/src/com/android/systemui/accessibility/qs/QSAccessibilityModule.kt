@@ -19,6 +19,7 @@ package com.android.systemui.accessibility.qs
 import com.android.systemui.Flags
 import com.android.systemui.qs.QsEventLogger
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.qs.shared.model.TileCategory
 import com.android.systemui.qs.tileimpl.QSTileImpl
 import com.android.systemui.qs.tiles.ColorCorrectionTile
 import com.android.systemui.qs.tiles.ColorInversionTile
@@ -28,36 +29,40 @@ import com.android.systemui.qs.tiles.HearingDevicesTile
 import com.android.systemui.qs.tiles.NightDisplayTile
 import com.android.systemui.qs.tiles.OneHandedModeTile
 import com.android.systemui.qs.tiles.ReduceBrightColorsTile
-import com.android.systemui.qs.tiles.base.interactor.QSTileAvailabilityInteractor
-import com.android.systemui.qs.tiles.base.viewmodel.QSTileViewModelFactory
-import com.android.systemui.qs.tiles.impl.colorcorrection.domain.ColorCorrectionTileMapper
+import com.android.systemui.qs.tiles.base.domain.interactor.QSTileAvailabilityInteractor
+import com.android.systemui.qs.tiles.base.shared.model.QSTileConfig
+import com.android.systemui.qs.tiles.base.shared.model.QSTileUIConfig
+import com.android.systemui.qs.tiles.base.ui.viewmodel.QSTileViewModel
+import com.android.systemui.qs.tiles.base.ui.viewmodel.QSTileViewModelFactory
+import com.android.systemui.qs.tiles.base.ui.viewmodel.StubQSTileViewModel
 import com.android.systemui.qs.tiles.impl.colorcorrection.domain.interactor.ColorCorrectionTileDataInteractor
 import com.android.systemui.qs.tiles.impl.colorcorrection.domain.interactor.ColorCorrectionUserActionInteractor
 import com.android.systemui.qs.tiles.impl.colorcorrection.domain.model.ColorCorrectionTileModel
-import com.android.systemui.qs.tiles.impl.fontscaling.domain.FontScalingTileMapper
+import com.android.systemui.qs.tiles.impl.colorcorrection.ui.mapper.ColorCorrectionTileMapper
 import com.android.systemui.qs.tiles.impl.fontscaling.domain.interactor.FontScalingTileDataInteractor
 import com.android.systemui.qs.tiles.impl.fontscaling.domain.interactor.FontScalingTileUserActionInteractor
 import com.android.systemui.qs.tiles.impl.fontscaling.domain.model.FontScalingTileModel
-import com.android.systemui.qs.tiles.impl.inversion.domain.ColorInversionTileMapper
+import com.android.systemui.qs.tiles.impl.fontscaling.ui.mapper.FontScalingTileMapper
+import com.android.systemui.qs.tiles.impl.hearingdevices.domain.interactor.HearingDevicesTileDataInteractor
+import com.android.systemui.qs.tiles.impl.hearingdevices.domain.interactor.HearingDevicesTileUserActionInteractor
+import com.android.systemui.qs.tiles.impl.hearingdevices.domain.model.HearingDevicesTileModel
+import com.android.systemui.qs.tiles.impl.hearingdevices.ui.mapper.HearingDevicesTileMapper
 import com.android.systemui.qs.tiles.impl.inversion.domain.interactor.ColorInversionTileDataInteractor
 import com.android.systemui.qs.tiles.impl.inversion.domain.interactor.ColorInversionUserActionInteractor
 import com.android.systemui.qs.tiles.impl.inversion.domain.model.ColorInversionTileModel
+import com.android.systemui.qs.tiles.impl.inversion.ui.mapper.ColorInversionTileMapper
 import com.android.systemui.qs.tiles.impl.night.domain.interactor.NightDisplayTileDataInteractor
 import com.android.systemui.qs.tiles.impl.night.domain.interactor.NightDisplayTileUserActionInteractor
 import com.android.systemui.qs.tiles.impl.night.domain.model.NightDisplayTileModel
-import com.android.systemui.qs.tiles.impl.night.ui.NightDisplayTileMapper
+import com.android.systemui.qs.tiles.impl.night.ui.mapper.NightDisplayTileMapper
 import com.android.systemui.qs.tiles.impl.onehanded.domain.OneHandedModeTileDataInteractor
 import com.android.systemui.qs.tiles.impl.onehanded.domain.OneHandedModeTileUserActionInteractor
 import com.android.systemui.qs.tiles.impl.onehanded.domain.model.OneHandedModeTileModel
-import com.android.systemui.qs.tiles.impl.onehanded.ui.OneHandedModeTileMapper
+import com.android.systemui.qs.tiles.impl.onehanded.ui.mapper.OneHandedModeTileMapper
 import com.android.systemui.qs.tiles.impl.reducebrightness.domain.interactor.ReduceBrightColorsTileDataInteractor
 import com.android.systemui.qs.tiles.impl.reducebrightness.domain.interactor.ReduceBrightColorsTileUserActionInteractor
 import com.android.systemui.qs.tiles.impl.reducebrightness.domain.model.ReduceBrightColorsTileModel
-import com.android.systemui.qs.tiles.impl.reducebrightness.ui.ReduceBrightColorsTileMapper
-import com.android.systemui.qs.tiles.viewmodel.QSTileConfig
-import com.android.systemui.qs.tiles.viewmodel.QSTileUIConfig
-import com.android.systemui.qs.tiles.viewmodel.QSTileViewModel
-import com.android.systemui.qs.tiles.viewmodel.StubQSTileViewModel
+import com.android.systemui.qs.tiles.impl.reducebrightness.ui.mapper.ReduceBrightColorsTileMapper
 import com.android.systemui.res.R
 import dagger.Binds
 import dagger.Module
@@ -120,42 +125,49 @@ interface QSAccessibilityModule {
     @IntoMap
     @StringKey(COLOR_CORRECTION_TILE_SPEC)
     fun provideColorCorrectionAvailabilityInteractor(
-            impl: ColorCorrectionTileDataInteractor
+        impl: ColorCorrectionTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     @Binds
     @IntoMap
     @StringKey(COLOR_INVERSION_TILE_SPEC)
     fun provideColorInversionAvailabilityInteractor(
-            impl: ColorCorrectionTileDataInteractor
+        impl: ColorCorrectionTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     @Binds
     @IntoMap
     @StringKey(FONT_SCALING_TILE_SPEC)
     fun provideFontScalingAvailabilityInteractor(
-            impl: FontScalingTileDataInteractor
+        impl: FontScalingTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     @Binds
     @IntoMap
     @StringKey(REDUCE_BRIGHTNESS_TILE_SPEC)
     fun provideReduceBrightnessAvailabilityInteractor(
-            impl: ReduceBrightColorsTileDataInteractor
+        impl: ReduceBrightColorsTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     @Binds
     @IntoMap
     @StringKey(ONE_HANDED_TILE_SPEC)
     fun provideOneHandedAvailabilityInteractor(
-            impl: OneHandedModeTileDataInteractor
+        impl: OneHandedModeTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     @Binds
     @IntoMap
     @StringKey(NIGHT_DISPLAY_TILE_SPEC)
     fun provideNightDisplayAvailabilityInteractor(
-            impl: NightDisplayTileDataInteractor
+        impl: NightDisplayTileDataInteractor
+    ): QSTileAvailabilityInteractor
+
+    @Binds
+    @IntoMap
+    @StringKey(HEARING_DEVICES_TILE_SPEC)
+    fun provideHearingDevicesAvailabilityInteractor(
+        impl: HearingDevicesTileDataInteractor
     ): QSTileAvailabilityInteractor
 
     companion object {
@@ -165,6 +177,7 @@ interface QSAccessibilityModule {
         const val REDUCE_BRIGHTNESS_TILE_SPEC = "reduce_brightness"
         const val ONE_HANDED_TILE_SPEC = "onehanded"
         const val NIGHT_DISPLAY_TILE_SPEC = "night"
+        const val HEARING_DEVICES_TILE_SPEC = "hearing_devices"
 
         @Provides
         @IntoMap
@@ -178,6 +191,7 @@ interface QSAccessibilityModule {
                         labelRes = R.string.quick_settings_color_correction_label,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.ACCESSIBILITY,
             )
 
         /** Inject ColorCorrectionTile into tileViewModelMap in QSModule */
@@ -188,7 +202,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<ColorCorrectionTileModel>,
             mapper: ColorCorrectionTileMapper,
             stateInteractor: ColorCorrectionTileDataInteractor,
-            userActionInteractor: ColorCorrectionUserActionInteractor
+            userActionInteractor: ColorCorrectionUserActionInteractor,
         ): QSTileViewModel =
             factory.create(
                 TileSpec.create(COLOR_CORRECTION_TILE_SPEC),
@@ -209,6 +223,7 @@ interface QSAccessibilityModule {
                         labelRes = R.string.quick_settings_inversion_label,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.ACCESSIBILITY,
             )
 
         /** Inject ColorInversionTile into tileViewModelMap in QSModule */
@@ -219,7 +234,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<ColorInversionTileModel>,
             mapper: ColorInversionTileMapper,
             stateInteractor: ColorInversionTileDataInteractor,
-            userActionInteractor: ColorInversionUserActionInteractor
+            userActionInteractor: ColorInversionUserActionInteractor,
         ): QSTileViewModel =
             factory.create(
                 TileSpec.create(COLOR_INVERSION_TILE_SPEC),
@@ -240,6 +255,7 @@ interface QSAccessibilityModule {
                         labelRes = R.string.quick_settings_font_scaling_label,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.DISPLAY,
             )
 
         /** Inject FontScaling Tile into tileViewModelMap in QSModule */
@@ -250,7 +266,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<FontScalingTileModel>,
             mapper: FontScalingTileMapper,
             stateInteractor: FontScalingTileDataInteractor,
-            userActionInteractor: FontScalingTileUserActionInteractor
+            userActionInteractor: FontScalingTileUserActionInteractor,
         ): QSTileViewModel =
             factory.create(
                 TileSpec.create(FONT_SCALING_TILE_SPEC),
@@ -271,6 +287,7 @@ interface QSAccessibilityModule {
                         labelRes = com.android.internal.R.string.reduce_bright_colors_feature_name,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.DISPLAY,
             )
 
         /**
@@ -284,7 +301,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<ReduceBrightColorsTileModel>,
             mapper: ReduceBrightColorsTileMapper,
             stateInteractor: ReduceBrightColorsTileDataInteractor,
-            userActionInteractor: ReduceBrightColorsTileUserActionInteractor
+            userActionInteractor: ReduceBrightColorsTileUserActionInteractor,
         ): QSTileViewModel =
             if (Flags.qsNewTilesFuture())
                 factory.create(
@@ -307,6 +324,7 @@ interface QSAccessibilityModule {
                         labelRes = R.string.quick_settings_onehanded_label,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.ACCESSIBILITY,
             )
 
         /** Inject One Handed Mode Tile into tileViewModelMap in QSModule. */
@@ -317,7 +335,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<OneHandedModeTileModel>,
             mapper: OneHandedModeTileMapper,
             stateInteractor: OneHandedModeTileDataInteractor,
-            userActionInteractor: OneHandedModeTileUserActionInteractor
+            userActionInteractor: OneHandedModeTileUserActionInteractor,
         ): QSTileViewModel =
             if (Flags.qsNewTilesFuture())
                 factory.create(
@@ -340,6 +358,7 @@ interface QSAccessibilityModule {
                         labelRes = R.string.quick_settings_night_display_label,
                     ),
                 instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.DISPLAY,
             )
 
         /**
@@ -353,7 +372,7 @@ interface QSAccessibilityModule {
             factory: QSTileViewModelFactory.Static<NightDisplayTileModel>,
             mapper: NightDisplayTileMapper,
             stateInteractor: NightDisplayTileDataInteractor,
-            userActionInteractor: NightDisplayTileUserActionInteractor
+            userActionInteractor: NightDisplayTileUserActionInteractor,
         ): QSTileViewModel =
             if (Flags.qsNewTilesFuture())
                 factory.create(
@@ -363,5 +382,43 @@ interface QSAccessibilityModule {
                     mapper,
                 )
             else StubQSTileViewModel
+
+        @Provides
+        @IntoMap
+        @StringKey(HEARING_DEVICES_TILE_SPEC)
+        fun provideHearingDevicesTileConfig(uiEventLogger: QsEventLogger): QSTileConfig =
+            QSTileConfig(
+                tileSpec = TileSpec.create(HEARING_DEVICES_TILE_SPEC),
+                uiConfig =
+                    QSTileUIConfig.Resource(
+                        iconRes = R.drawable.qs_hearing_devices_icon,
+                        labelRes = R.string.quick_settings_hearing_devices_label,
+                    ),
+                instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.ACCESSIBILITY,
+            )
+
+        /**
+         * Inject HearingDevices Tile into tileViewModelMap in QSModule. The tile is hidden behind a
+         * flag.
+         */
+        @Provides
+        @IntoMap
+        @StringKey(HEARING_DEVICES_TILE_SPEC)
+        fun provideHearingDevicesTileViewModel(
+            factory: QSTileViewModelFactory.Static<HearingDevicesTileModel>,
+            mapper: HearingDevicesTileMapper,
+            stateInteractor: HearingDevicesTileDataInteractor,
+            userActionInteractor: HearingDevicesTileUserActionInteractor,
+        ): QSTileViewModel {
+            return if (Flags.qsNewTilesFuture()) {
+                factory.create(
+                    TileSpec.create(HEARING_DEVICES_TILE_SPEC),
+                    userActionInteractor,
+                    stateInteractor,
+                    mapper,
+                )
+            } else StubQSTileViewModel
+        }
     }
 }

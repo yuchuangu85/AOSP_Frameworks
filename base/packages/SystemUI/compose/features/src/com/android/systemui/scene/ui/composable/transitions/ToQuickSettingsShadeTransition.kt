@@ -16,41 +16,26 @@
 
 package com.android.systemui.scene.ui.composable.transitions
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.ui.unit.IntSize
-import com.android.compose.animation.scene.Edge
 import com.android.compose.animation.scene.TransitionBuilder
-import com.android.compose.animation.scene.UserActionDistance
-import com.android.compose.animation.scene.UserActionDistanceScope
+import com.android.compose.animation.scene.reveal.ContainerRevealHaptics
+import com.android.compose.animation.scene.reveal.verticalContainerReveal
+import com.android.mechanics.behavior.VerticalExpandContainerSpec
+import com.android.systemui.qs.ui.composable.QuickSettingsShade
 import com.android.systemui.shade.ui.composable.OverlayShade
-import com.android.systemui.shade.ui.composable.Shade
 import kotlin.time.Duration.Companion.milliseconds
 
 fun TransitionBuilder.toQuickSettingsShadeTransition(
     durationScale: Double = 1.0,
+    shadeExpansionMotion: VerticalExpandContainerSpec,
+    revealHaptics: ContainerRevealHaptics,
 ) {
     spec = tween(durationMillis = (DefaultDuration * durationScale).inWholeMilliseconds.toInt())
-    swipeSpec =
-        spring(
-            stiffness = Spring.StiffnessMediumLow,
-            visibilityThreshold = Shade.Dimensions.ScrimVisibilityThreshold,
-        )
-    distance =
-        object : UserActionDistance {
-            override fun UserActionDistanceScope.absoluteDistance(
-                fromSceneSize: IntSize,
-                orientation: Orientation,
-            ): Float {
-                return fromSceneSize.height.toFloat() * 2 / 3f
-            }
-        }
 
-    translate(OverlayShade.Elements.Panel, Edge.Top)
+    verticalContainerReveal(QuickSettingsShade.Elements.Panel, shadeExpansionMotion, revealHaptics)
 
     fractionRange(end = .5f) { fade(OverlayShade.Elements.Scrim) }
+    fractionRange(start = .5f) { fade(QuickSettingsShade.Elements.StatusBar) }
 }
 
 private val DefaultDuration = 300.milliseconds

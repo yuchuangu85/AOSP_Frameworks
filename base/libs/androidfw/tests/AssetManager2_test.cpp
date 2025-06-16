@@ -23,6 +23,7 @@
 #include "androidfw/ResourceUtils.h"
 #include "data/appaslib/R.h"
 #include "data/basic/R.h"
+#include "data/flagged/R.h"
 #include "data/lib_one/R.h"
 #include "data/lib_two/R.h"
 #include "data/libclient/R.h"
@@ -32,6 +33,7 @@
 namespace app = com::android::app;
 namespace appaslib = com::android::appaslib::app;
 namespace basic = com::android::basic;
+namespace flagged = com::android::flagged;
 namespace lib_one = com::android::lib_one;
 namespace lib_two = com::android::lib_two;
 namespace libclient = com::android::libclient;
@@ -87,6 +89,10 @@ class AssetManager2Test : public ::testing::Test {
 
     overlayable_assets_ = ApkAssets::Load("overlayable/overlayable.apk");
     ASSERT_THAT(overlayable_assets_, NotNull());
+
+    flagged_assets_ = ApkAssets::Load("flagged/flagged.apk");
+    ASSERT_THAT(app_assets_, NotNull());
+
     chdir(original_path.c_str());
   }
 
@@ -104,6 +110,7 @@ class AssetManager2Test : public ::testing::Test {
   AssetManager2::ApkAssetsPtr app_assets_;
   AssetManager2::ApkAssetsPtr overlay_assets_;
   AssetManager2::ApkAssetsPtr overlayable_assets_;
+  AssetManager2::ApkAssetsPtr flagged_assets_;
 };
 
 TEST_F(AssetManager2Test, FindsResourceFromSingleApkAssets) {
@@ -113,7 +120,7 @@ TEST_F(AssetManager2Test, FindsResourceFromSingleApkAssets) {
   desired_config.language[1] = 'e';
 
   AssetManager2 assetmanager;
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_});
 
   auto value = assetmanager.GetResource(basic::R::string::test1);
@@ -137,7 +144,7 @@ TEST_F(AssetManager2Test, FindsResourceFromMultipleApkAssets) {
   desired_config.language[1] = 'e';
 
   AssetManager2 assetmanager;
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_, basic_de_fr_assets_});
 
   auto value = assetmanager.GetResource(basic::R::string::test1);
@@ -466,10 +473,10 @@ TEST_F(AssetManager2Test, ResolveDeepIdReference) {
 TEST_F(AssetManager2Test, DensityOverride) {
   AssetManager2 assetmanager;
   assetmanager.SetApkAssets({basic_assets_, basic_xhdpi_assets_, basic_xxhdpi_assets_});
-  assetmanager.SetConfigurations({{
+  assetmanager.SetConfigurations({{{
     .density = ResTable_config::DENSITY_XHIGH,
     .sdkVersion = 21,
-  }});
+  }}});
 
   auto value = assetmanager.GetResource(basic::R::string::density, false /*may_be_bag*/);
   ASSERT_TRUE(value.has_value());
@@ -621,7 +628,7 @@ TEST_F(AssetManager2Test, GetResourceLocales) {
   AssetManager2 assetmanager;
   assetmanager.SetApkAssets({system_assets_, basic_de_fr_assets_});
 
-  std::set<std::string> locales = assetmanager.GetResourceLocales();
+  auto locales = assetmanager.GetResourceLocales();
 
   // We expect the locale sv from the system assets, and de and fr from basic_de_fr assets.
   EXPECT_EQ(3u, locales.size());
@@ -721,7 +728,7 @@ TEST_F(AssetManager2Test, GetLastPathWithoutEnablingReturnsEmpty) {
   ResTable_config desired_config;
 
   AssetManager2 assetmanager;
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_});
   assetmanager.SetResourceResolutionLoggingEnabled(false);
 
@@ -736,7 +743,7 @@ TEST_F(AssetManager2Test, GetLastPathWithoutResolutionReturnsEmpty) {
   ResTable_config desired_config;
 
   AssetManager2 assetmanager;
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_});
 
   auto result = assetmanager.GetLastResourceResolution();
@@ -751,7 +758,7 @@ TEST_F(AssetManager2Test, GetLastPathWithSingleApkAssets) {
 
   AssetManager2 assetmanager;
   assetmanager.SetResourceResolutionLoggingEnabled(true);
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_});
 
   auto value = assetmanager.GetResource(basic::R::string::test1);
@@ -774,7 +781,7 @@ TEST_F(AssetManager2Test, GetLastPathWithMultipleApkAssets) {
 
   AssetManager2 assetmanager;
   assetmanager.SetResourceResolutionLoggingEnabled(true);
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_, basic_de_fr_assets_});
 
   auto value = assetmanager.GetResource(basic::R::string::test1);
@@ -796,7 +803,7 @@ TEST_F(AssetManager2Test, GetLastPathAfterDisablingReturnsEmpty) {
 
   AssetManager2 assetmanager;
   assetmanager.SetResourceResolutionLoggingEnabled(true);
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({basic_assets_});
 
   auto value = assetmanager.GetResource(basic::R::string::test1);
@@ -817,7 +824,7 @@ TEST_F(AssetManager2Test, GetOverlayablesToString) {
 
   AssetManager2 assetmanager;
   assetmanager.SetResourceResolutionLoggingEnabled(true);
-  assetmanager.SetConfigurations({desired_config});
+  assetmanager.SetConfigurations({{desired_config}});
   assetmanager.SetApkAssets({overlayable_assets_});
 
   const auto map = assetmanager.GetOverlayableMapForPackage(0x7f);
@@ -854,6 +861,14 @@ TEST_F(AssetManager2Test, GetApkAssets) {
   EXPECT_EQ(1, overlayable_assets_->getStrongCount());
   EXPECT_EQ(1, overlay_assets_->getStrongCount());
   EXPECT_EQ(1, lib_one_assets_->getStrongCount());
+}
+
+TEST_F(AssetManager2Test, GetFlaggedAssets) {
+  AssetManager2 assetmanager;
+  assetmanager.SetApkAssets({flagged_assets_});
+  auto value = assetmanager.GetResource(flagged::R::xml::flagged, false, 0);
+  ASSERT_TRUE(value.has_value());
+  EXPECT_TRUE(value->entry_flags & ResTable_entry::FLAG_USES_FEATURE_FLAGS);
 }
 
 }  // namespace android

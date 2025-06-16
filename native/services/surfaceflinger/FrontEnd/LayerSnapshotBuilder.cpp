@@ -16,6 +16,8 @@
 
 // #define LOG_NDEBUG 0
 #define ATRACE_TAG ATRACE_TAG_GRAPHICS
+#include "FrontEnd/LayerSnapshot.h"
+#include "ui/Transform.h"
 #undef LOG_TAG
 #define LOG_TAG "SurfaceFlinger"
 
@@ -23,8 +25,9 @@
 #include <optional>
 
 #include <common/FlagManager.h>
+#include <common/trace.h>
 #include <ftl/small_map.h>
-#include <gui/TraceUtils.h>
+#include <math/vec2.h>
 #include <ui/DisplayMap.h>
 #include <ui/FloatRect.h>
 
@@ -116,7 +119,7 @@ ui::Transform getInputTransform(const LayerSnapshot& snapshot) {
  * that's already included.
  */
 std::pair<FloatRect, bool> getInputBounds(const LayerSnapshot& snapshot, bool fillParentBounds) {
-    FloatRect inputBounds = snapshot.croppedBufferSize.toFloatRect();
+    FloatRect inputBounds = snapshot.croppedBufferSize;
     if (snapshot.hasBufferOrSidebandStream() && snapshot.croppedBufferSize.isValid() &&
         snapshot.localTransform.getType() != ui::Transform::IDENTITY) {
         inputBounds = snapshot.localTransform.transform(inputBounds);
@@ -220,7 +223,7 @@ void handleDropInputMode(LayerSnapshot& snapshot, const LayerSnapshot& parentSna
     }
 
     // Check if the parent has cropped the buffer
-    Rect bufferSize = snapshot.croppedBufferSize;
+    FloatRect bufferSize = snapshot.croppedBufferSize;
     if (!bufferSize.isValid()) {
         snapshot.inputInfo.inputConfig |= gui::WindowInfo::InputConfig::DROP_INPUT_IF_OBSCURED;
         return;
@@ -275,26 +278,9 @@ void updateVisibility(LayerSnapshot& snapshot, bool visible) {
     const bool visibleForInput =
             snapshot.hasInputInfo() ? snapshot.canReceiveInput() : snapshot.isVisible;
     snapshot.inputInfo.setInputConfig(gui::WindowInfo::InputConfig::NOT_VISIBLE, !visibleForInput);
+
     LLOGV(snapshot.sequence, "updating visibility %s %s", visible ? "true" : "false",
           snapshot.getDebugString().c_str());
-}
-
-bool needsInputInfo(const LayerSnapshot& snapshot, const RequestedLayerState& requested) {
-    if (requested.potentialCursor) {
-        return false;
-    }
-
-    if (snapshot.inputInfo.token != nullptr) {
-        return true;
-    }
-
-    if (snapshot.hasBufferOrSidebandStream()) {
-        return true;
-    }
-
-    return requested.windowInfoHandle &&
-            requested.windowInfoHandle->getInfo()->inputConfig.test(
-                    gui::WindowInfo::InputConfig::NO_INPUT_CHANNEL);
 }
 
 void updateMetadata(LayerSnapshot& snapshot, const RequestedLayerState& requested,
@@ -317,11 +303,23 @@ void updateMetadata(LayerSnapshot& snapshot, const RequestedLayerState& requeste
     }
 }
 
+void updateMetadataAndGameMode(LayerSnapshot& snapshot, const RequestedLayerState& requested,
+                               const LayerSnapshotBuilder::Args& args,
+                               const LayerSnapshot& parentSnapshot) {
+    snapshot.gameMode = requested.metadata.has(gui::METADATA_GAME_MODE) ? requested.gameMode
+                                                                        : parentSnapshot.gameMode;
+    updateMetadata(snapshot, requested, args);
+    if (args.includeMetadata) {
+        snapshot.layerMetadata = parentSnapshot.layerMetadata;
+        snapshot.layerMetadata.merge(requested.metadata);
+    }
+}
+
 void clearChanges(LayerSnapshot& snapshot) {
     snapshot.changes.clear();
     snapshot.clientChanges = 0;
-    snapshot.contentDirty = false;
-    snapshot.hasReadyFrame = false;
+    snapshot.contentDirty = snapshot.autoRefresh;
+    snapshot.hasReadyFrame = snapshot.autoRefresh;
     snapshot.sidebandStreamHasFrame = false;
     snapshot.surfaceDamage.clear();
 }
@@ -352,6 +350,7 @@ LayerSnapshot LayerSnapshotBuilder::getRootSnapshot() {
     snapshot.geomLayerBounds = getMaxDisplayBounds({});
     snapshot.roundedCorner = RoundedCornerState();
     snapshot.stretchEffect = {};
+    snapshot.edgeExtensionEffect = {};
     snapshot.outputFilter.layerStack = ui::DEFAULT_LAYER_STACK;
     snapshot.outputFilter.toInternalDisplay = false;
     snapshot.isSecure = false;
@@ -387,7 +386,7 @@ bool LayerSnapshotBuilder::tryFastUpdate(const Args& args) {
 
     // There are only content changes which do not require any child layer snapshots to be updated.
     ALOGV("%s", __func__);
-    ATRACE_NAME("FastPath");
+    SFTRACE_NAME("FastPath");
 
     uint32_t primaryDisplayRotationFlags = getPrimaryDisplayRotationFlags(args.displays);
     if (forceUpdate || args.displayChanges) {
@@ -421,7 +420,7 @@ bool LayerSnapshotBuilder::tryFastUpdate(const Args& args) {
 }
 
 void LayerSnapshotBuilder::updateSnapshots(const Args& args) {
-    ATRACE_NAME("UpdateSnapshots");
+    SFTRACE_NAME("UpdateSnapshots");
     LayerSnapshot rootSnapshot = args.rootSnapshot;
     if (args.parentCrop) {
         rootSnapshot.geomLayerBounds = *args.parentCrop;
@@ -448,15 +447,14 @@ void LayerSnapshotBuilder::updateSnapshots(const Args& args) {
     if (args.root.getLayer()) {
         // The hierarchy can have a root layer when used for screenshots otherwise, it will have
         // multiple children.
-        LayerHierarchy::ScopedAddToTraversalPath addChildToPath(root, args.root.getLayer()->id,
-                                                                LayerHierarchy::Variant::Attached);
-        updateSnapshotsInHierarchy(args, args.root, root, rootSnapshot, /*depth=*/0);
+        LayerHierarchy::TraversalPath childPath =
+                root.makeChild(args.root.getLayer()->id, LayerHierarchy::Variant::Attached);
+        updateSnapshotsInHierarchy(args, args.root, childPath, rootSnapshot, /*depth=*/0);
     } else {
         for (auto& [childHierarchy, variant] : args.root.mChildren) {
-            LayerHierarchy::ScopedAddToTraversalPath addChildToPath(root,
-                                                                    childHierarchy->getLayer()->id,
-                                                                    variant);
-            updateSnapshotsInHierarchy(args, *childHierarchy, root, rootSnapshot, /*depth=*/0);
+            LayerHierarchy::TraversalPath childPath =
+                    root.makeChild(childHierarchy->getLayer()->id, variant);
+            updateSnapshotsInHierarchy(args, *childHierarchy, childPath, rootSnapshot, /*depth=*/0);
         }
     }
 
@@ -521,7 +519,7 @@ void LayerSnapshotBuilder::update(const Args& args) {
 
 const LayerSnapshot& LayerSnapshotBuilder::updateSnapshotsInHierarchy(
         const Args& args, const LayerHierarchy& hierarchy,
-        LayerHierarchy::TraversalPath& traversalPath, const LayerSnapshot& parentSnapshot,
+        const LayerHierarchy::TraversalPath& traversalPath, const LayerSnapshot& parentSnapshot,
         int depth) {
     LLOG_ALWAYS_FATAL_WITH_TRACE_IF(depth > 50,
                                     "Cycle detected in LayerSnapshotBuilder. See "
@@ -548,14 +546,14 @@ const LayerSnapshot& LayerSnapshotBuilder::updateSnapshotsInHierarchy(
         updateSnapshot(*snapshot, args, *layer, parentSnapshot, traversalPath);
     }
 
+    bool childHasValidFrameRate = false;
     for (auto& [childHierarchy, variant] : hierarchy.mChildren) {
-        LayerHierarchy::ScopedAddToTraversalPath addChildToPath(traversalPath,
-                                                                childHierarchy->getLayer()->id,
-                                                                variant);
+        LayerHierarchy::TraversalPath childPath =
+                traversalPath.makeChild(childHierarchy->getLayer()->id, variant);
         const LayerSnapshot& childSnapshot =
-                updateSnapshotsInHierarchy(args, *childHierarchy, traversalPath, *snapshot,
-                                           depth + 1);
-        updateFrameRateFromChildSnapshot(*snapshot, childSnapshot, args);
+                updateSnapshotsInHierarchy(args, *childHierarchy, childPath, *snapshot, depth + 1);
+        updateFrameRateFromChildSnapshot(*snapshot, childSnapshot, *childHierarchy->getLayer(),
+                                         args, &childHasValidFrameRate);
     }
 
     return *snapshot;
@@ -662,9 +660,10 @@ void LayerSnapshotBuilder::updateRelativeState(LayerSnapshot& snapshot,
     }
 }
 
-void LayerSnapshotBuilder::updateFrameRateFromChildSnapshot(LayerSnapshot& snapshot,
-                                                            const LayerSnapshot& childSnapshot,
-                                                            const Args& args) {
+void LayerSnapshotBuilder::updateFrameRateFromChildSnapshot(
+        LayerSnapshot& snapshot, const LayerSnapshot& childSnapshot,
+        const RequestedLayerState& /* requestedChildState */, const Args& args,
+        bool* outChildHasValidFrameRate) {
     if (args.forceUpdate == ForceUpdateFlags::NONE &&
         !args.layerLifecycleManager.getGlobalChanges().any(
                 RequestedLayerState::Changes::Hierarchy) &&
@@ -674,7 +673,7 @@ void LayerSnapshotBuilder::updateFrameRateFromChildSnapshot(LayerSnapshot& snaps
     }
 
     using FrameRateCompatibility = scheduler::FrameRateCompatibility;
-    if (snapshot.frameRate.isValid()) {
+    if (snapshot.inheritedFrameRate.isValid() || *outChildHasValidFrameRate) {
         // we already have a valid framerate.
         return;
     }
@@ -691,13 +690,18 @@ void LayerSnapshotBuilder::updateFrameRateFromChildSnapshot(LayerSnapshot& snaps
     const auto layerVotedWithExactCompatibility = childSnapshot.frameRate.vote.rate.isValid() &&
             childSnapshot.frameRate.vote.type == FrameRateCompatibility::Exact;
 
-    bool childHasValidFrameRate = layerVotedWithDefaultCompatibility || layerVotedWithNoVote ||
+    *outChildHasValidFrameRate |= layerVotedWithDefaultCompatibility || layerVotedWithNoVote ||
             layerVotedWithCategory || layerVotedWithExactCompatibility;
 
     // If we don't have a valid frame rate, but the children do, we set this
     // layer as NoVote to allow the children to control the refresh rate
-    if (childHasValidFrameRate) {
-        snapshot.frameRate = scheduler::LayerInfo::FrameRate(Fps(), FrameRateCompatibility::NoVote);
+    static const auto noVote =
+            scheduler::LayerInfo::FrameRate(Fps(), FrameRateCompatibility::NoVote);
+    if (*outChildHasValidFrameRate) {
+        snapshot.frameRate = noVote;
+        snapshot.changes |= RequestedLayerState::Changes::FrameRate;
+    } else if (snapshot.frameRate != snapshot.inheritedFrameRate) {
+        snapshot.frameRate = snapshot.inheritedFrameRate;
         snapshot.changes |= RequestedLayerState::Changes::FrameRate;
     }
 }
@@ -721,10 +725,12 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
     if (args.displayChanges) snapshot.changes |= RequestedLayerState::Changes::Geometry;
     snapshot.reachablilty = LayerSnapshot::Reachablilty::Reachable;
     snapshot.clientChanges |= (parentSnapshot.clientChanges & layer_state_t::AFFECTS_CHILDREN);
+    // mark the content as dirty if the parent state changes can dirty the child's content (for
+    // example alpha)
+    snapshot.contentDirty |= (snapshot.clientChanges & layer_state_t::CONTENT_DIRTY) != 0;
     snapshot.isHiddenByPolicyFromParent = parentSnapshot.isHiddenByPolicyFromParent ||
             parentSnapshot.invalidTransform || requested.isHiddenByPolicy() ||
             (args.excludeLayerIds.find(path.id) != args.excludeLayerIds.end());
-
     const bool forceUpdate = args.forceUpdate == ForceUpdateFlags::ALL ||
             snapshot.clientChanges & layer_state_t::eReparent ||
             snapshot.changes.any(RequestedLayerState::Changes::Visibility |
@@ -762,6 +768,12 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
                                  RequestedLayerState::Changes::Input)) {
             updateInput(snapshot, requested, parentSnapshot, path, args);
         }
+        if (forceUpdate ||
+            (args.includeMetadata &&
+             snapshot.changes.any(RequestedLayerState::Changes::Metadata |
+                                  RequestedLayerState::Changes::Geometry))) {
+            updateMetadataAndGameMode(snapshot, requested, args, parentSnapshot);
+        }
         return;
     }
 
@@ -791,6 +803,32 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
                 : parentSnapshot.stretchEffect;
     }
 
+    if (forceUpdate ||
+        (snapshot.clientChanges | parentSnapshot.clientChanges) &
+                layer_state_t::eEdgeExtensionChanged) {
+        if (requested.edgeExtensionParameters.extendLeft ||
+            requested.edgeExtensionParameters.extendRight ||
+            requested.edgeExtensionParameters.extendTop ||
+            requested.edgeExtensionParameters.extendBottom) {
+            // This is the root layer to which the extension is applied
+            snapshot.edgeExtensionEffect =
+                    EdgeExtensionEffect(requested.edgeExtensionParameters.extendLeft,
+                                        requested.edgeExtensionParameters.extendRight,
+                                        requested.edgeExtensionParameters.extendTop,
+                                        requested.edgeExtensionParameters.extendBottom);
+        } else if (parentSnapshot.clientChanges & layer_state_t::eEdgeExtensionChanged) {
+            // Extension is inherited
+            snapshot.edgeExtensionEffect = parentSnapshot.edgeExtensionEffect;
+        } else {
+            // There is no edge extension
+            snapshot.edgeExtensionEffect.reset();
+        }
+        if (snapshot.edgeExtensionEffect.hasEffect()) {
+            snapshot.clientChanges |= layer_state_t::eEdgeExtensionChanged;
+            snapshot.changes |= RequestedLayerState::Changes::Geometry;
+        }
+    }
+
     if (forceUpdate || snapshot.clientChanges & layer_state_t::eColorTransformChanged) {
         if (!parentSnapshot.colorTransformIsIdentity) {
             snapshot.colorTransform = parentSnapshot.colorTransform * requested.colorTransform;
@@ -801,15 +839,10 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
         }
     }
 
-    if (forceUpdate || snapshot.changes.test(RequestedLayerState::Changes::GameMode)) {
-        snapshot.gameMode = requested.metadata.has(gui::METADATA_GAME_MODE)
-                ? requested.gameMode
-                : parentSnapshot.gameMode;
-        updateMetadata(snapshot, requested, args);
-        if (args.includeMetadata) {
-            snapshot.layerMetadata = parentSnapshot.layerMetadata;
-            snapshot.layerMetadata.merge(requested.metadata);
-        }
+    if (forceUpdate ||
+        snapshot.changes.any(RequestedLayerState::Changes::Metadata |
+                             RequestedLayerState::Changes::Hierarchy)) {
+        updateMetadataAndGameMode(snapshot, requested, args, parentSnapshot);
     }
 
     if (forceUpdate || snapshot.clientChanges & layer_state_t::eFixedTransformHintChanged ||
@@ -886,9 +919,14 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
         updateLayerBounds(snapshot, requested, parentSnapshot, primaryDisplayRotationFlags);
     }
 
+    if (snapshot.edgeExtensionEffect.hasEffect()) {
+        updateBoundsForEdgeExtension(snapshot);
+    }
+
     if (forceUpdate || snapshot.clientChanges & layer_state_t::eCornerRadiusChanged ||
         snapshot.changes.any(RequestedLayerState::Changes::Geometry |
-                             RequestedLayerState::Changes::BufferUsageFlags)) {
+                             RequestedLayerState::Changes::BufferUsageFlags) ||
+        snapshot.clientChanges & layer_state_t::eClientDrawnCornerRadiusChanged) {
         updateRoundedCorner(snapshot, requested, parentSnapshot, args);
     }
 
@@ -898,14 +936,28 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
     }
 
     if (forceUpdate ||
+        snapshot.clientChanges &
+                (layer_state_t::eBorderSettingsChanged | layer_state_t::eAlphaChanged)) {
+        snapshot.borderSettings = requested.borderSettings;
+
+        // Multiply outline alpha by snapshot alpha.
+        uint32_t c = static_cast<uint32_t>(snapshot.borderSettings.color);
+        float alpha = snapshot.alpha * (c >> 24) / 255.0f;
+        uint32_t a = static_cast<uint32_t>(alpha * 255 + 0.5f);
+        snapshot.borderSettings.color = static_cast<int32_t>((c & ~0xff000000) | (a << 24));
+    }
+
+    if (forceUpdate ||
         snapshot.changes.any(RequestedLayerState::Changes::Geometry |
                              RequestedLayerState::Changes::Input)) {
         updateInput(snapshot, requested, parentSnapshot, path, args);
     }
 
     // computed snapshot properties
-    snapshot.forceClientComposition =
-            snapshot.shadowSettings.length > 0 || snapshot.stretchEffect.hasEffect();
+    snapshot.forceClientComposition = snapshot.shadowSettings.length > 0 ||
+            snapshot.stretchEffect.hasEffect() || snapshot.edgeExtensionEffect.hasEffect() ||
+            snapshot.borderSettings.strokeWidth > 0;
+
     snapshot.contentOpaque = snapshot.isContentOpaque();
     snapshot.isOpaque = snapshot.contentOpaque && !snapshot.roundedCorner.hasRoundedCorners() &&
             snapshot.color.a == 1.f;
@@ -928,19 +980,27 @@ void LayerSnapshotBuilder::updateRoundedCorner(LayerSnapshot& snapshot,
     }
     snapshot.roundedCorner = RoundedCornerState();
     RoundedCornerState parentRoundedCorner;
-    if (parentSnapshot.roundedCorner.hasRoundedCorners()) {
+    if (parentSnapshot.roundedCorner.hasRequestedRadius()) {
         parentRoundedCorner = parentSnapshot.roundedCorner;
         ui::Transform t = snapshot.localTransform.inverse();
         parentRoundedCorner.cropRect = t.transform(parentRoundedCorner.cropRect);
         parentRoundedCorner.radius.x *= t.getScaleX();
         parentRoundedCorner.radius.y *= t.getScaleY();
+        parentRoundedCorner.requestedRadius.x *= t.getScaleX();
+        parentRoundedCorner.requestedRadius.y *= t.getScaleY();
     }
 
-    FloatRect layerCropRect = snapshot.croppedBufferSize.toFloatRect();
-    const vec2 radius(requested.cornerRadius, requested.cornerRadius);
-    RoundedCornerState layerSettings(layerCropRect, radius);
-    const bool layerSettingsValid = layerSettings.hasRoundedCorners() && !layerCropRect.isEmpty();
-    const bool parentRoundedCornerValid = parentRoundedCorner.hasRoundedCorners();
+    FloatRect layerCropRect = snapshot.croppedBufferSize;
+    const vec2 requestedRadius(requested.cornerRadius, requested.cornerRadius);
+    const vec2 clientDrawnRadius(requested.clientDrawnCornerRadius,
+                                 requested.clientDrawnCornerRadius);
+    RoundedCornerState layerSettings;
+    layerSettings.cropRect = layerCropRect;
+    layerSettings.requestedRadius = requestedRadius;
+    layerSettings.clientDrawnRadius = clientDrawnRadius;
+
+    const bool layerSettingsValid = layerSettings.hasRequestedRadius() && !layerCropRect.isEmpty();
+    const bool parentRoundedCornerValid = parentRoundedCorner.hasRequestedRadius();
     if (layerSettingsValid && parentRoundedCornerValid) {
         // If the parent and the layer have rounded corner settings, use the parent settings if
         // the parent crop is entirely inside the layer crop. This has limitations and cause
@@ -958,6 +1018,39 @@ void LayerSnapshotBuilder::updateRoundedCorner(LayerSnapshot& snapshot,
     } else if (parentRoundedCornerValid) {
         snapshot.roundedCorner = parentRoundedCorner;
     }
+
+    if (snapshot.roundedCorner.requestedRadius.x == requested.clientDrawnCornerRadius) {
+        // If the client drawn radius matches the requested radius, then surfaceflinger
+        // does not need to draw rounded corners for this layer
+        snapshot.roundedCorner.radius = vec2(0.f, 0.f);
+    } else {
+        snapshot.roundedCorner.radius = snapshot.roundedCorner.requestedRadius;
+    }
+}
+
+/**
+ * According to the edges that we are requested to extend, we increase the bounds to the maximum
+ * extension allowed by the crop (parent crop + requested crop). The animation that called
+ * Transition#setEdgeExtensionEffect is in charge of setting the requested crop.
+ * @param snapshot
+ */
+void LayerSnapshotBuilder::updateBoundsForEdgeExtension(LayerSnapshot& snapshot) {
+    EdgeExtensionEffect& effect = snapshot.edgeExtensionEffect;
+
+    if (effect.extendsEdge(LEFT)) {
+        snapshot.geomLayerBounds.left = snapshot.geomLayerCrop.left;
+    }
+    if (effect.extendsEdge(RIGHT)) {
+        snapshot.geomLayerBounds.right = snapshot.geomLayerCrop.right;
+    }
+    if (effect.extendsEdge(TOP)) {
+        snapshot.geomLayerBounds.top = snapshot.geomLayerCrop.top;
+    }
+    if (effect.extendsEdge(BOTTOM)) {
+        snapshot.geomLayerBounds.bottom = snapshot.geomLayerCrop.bottom;
+    }
+
+    snapshot.transformedBounds = snapshot.geomLayerTransform.transform(snapshot.geomLayerBounds);
 }
 
 void LayerSnapshotBuilder::updateLayerBounds(LayerSnapshot& snapshot,
@@ -999,23 +1092,24 @@ void LayerSnapshotBuilder::updateLayerBounds(LayerSnapshot& snapshot,
     FloatRect parentBounds = parentSnapshot.geomLayerBounds;
     parentBounds = snapshot.localTransform.inverse().transform(parentBounds);
     snapshot.geomLayerBounds =
-            (requested.externalTexture) ? snapshot.bufferSize.toFloatRect() : parentBounds;
+            requested.externalTexture ? snapshot.bufferSize.toFloatRect() : parentBounds;
+    snapshot.geomLayerCrop = parentBounds;
     if (!requested.crop.isEmpty()) {
-        snapshot.geomLayerBounds = snapshot.geomLayerBounds.intersect(requested.crop.toFloatRect());
+        snapshot.geomLayerCrop = snapshot.geomLayerCrop.intersect(requested.crop);
     }
-    snapshot.geomLayerBounds = snapshot.geomLayerBounds.intersect(parentBounds);
+    snapshot.geomLayerBounds = snapshot.geomLayerBounds.intersect(snapshot.geomLayerCrop);
     snapshot.transformedBounds = snapshot.geomLayerTransform.transform(snapshot.geomLayerBounds);
     const Rect geomLayerBoundsWithoutTransparentRegion =
             RequestedLayerState::reduce(Rect(snapshot.geomLayerBounds),
-                                        requested.transparentRegion);
+                                        requested.getTransparentRegion());
     snapshot.transformedBoundsWithoutTransparentRegion =
             snapshot.geomLayerTransform.transform(geomLayerBoundsWithoutTransparentRegion);
     snapshot.parentTransform = parentSnapshot.geomLayerTransform;
 
-    // Subtract the transparent region and snap to the bounds
-    const Rect bounds =
-            RequestedLayerState::reduce(snapshot.croppedBufferSize, requested.transparentRegion);
     if (requested.potentialCursor) {
+        // Subtract the transparent region and snap to the bounds
+        const Rect bounds = RequestedLayerState::reduce(Rect(snapshot.croppedBufferSize),
+                                                        requested.getTransparentRegion());
         snapshot.cursorFrame = snapshot.geomLayerTransform.transform(bounds);
     }
 }
@@ -1049,22 +1143,14 @@ void LayerSnapshotBuilder::updateInput(LayerSnapshot& snapshot,
                                        const Args& args) {
     using InputConfig = gui::WindowInfo::InputConfig;
 
-    if (requested.windowInfoHandle) {
-        snapshot.inputInfo = *requested.windowInfoHandle->getInfo();
-    } else {
-        snapshot.inputInfo = {};
-        // b/271132344 revisit this and see if we can always use the layers uid/pid
-        snapshot.inputInfo.name = requested.name;
-        snapshot.inputInfo.ownerUid = gui::Uid{requested.ownerUid};
-        snapshot.inputInfo.ownerPid = gui::Pid{requested.ownerPid};
-    }
+    snapshot.inputInfo = requested.getWindowInfo();
     snapshot.touchCropId = requested.touchCropId;
 
     snapshot.inputInfo.id = static_cast<int32_t>(snapshot.uniqueSequence);
     snapshot.inputInfo.displayId =
             ui::LogicalDisplayId{static_cast<int32_t>(snapshot.outputFilter.layerStack.id)};
     snapshot.inputInfo.touchOcclusionMode = requested.hasInputInfo()
-            ? requested.windowInfoHandle->getInfo()->touchOcclusionMode
+            ? requested.getWindowInfo().touchOcclusionMode
             : parentSnapshot.inputInfo.touchOcclusionMode;
     snapshot.inputInfo.canOccludePresentation = parentSnapshot.inputInfo.canOccludePresentation ||
             (requested.flags & layer_state_t::eCanOccludePresentation);
@@ -1084,7 +1170,7 @@ void LayerSnapshotBuilder::updateInput(LayerSnapshot& snapshot,
     }
 
     updateVisibility(snapshot, snapshot.isVisible);
-    if (!needsInputInfo(snapshot, requested)) {
+    if (!requested.needsInputInfo()) {
         return;
     }
 
@@ -1094,8 +1180,8 @@ void LayerSnapshotBuilder::updateInput(LayerSnapshot& snapshot,
     bool noValidDisplay = !displayInfoOpt.has_value();
     auto displayInfo = displayInfoOpt.value_or(sDefaultInfo);
 
-    if (!requested.windowInfoHandle) {
-        snapshot.inputInfo.inputConfig = InputConfig::NO_INPUT_CHANNEL;
+    if (!requested.hasInputInfo()) {
+        snapshot.inputInfo.inputConfig |= InputConfig::NO_INPUT_CHANNEL;
     }
     fillInputFrameInfo(snapshot.inputInfo, displayInfo.transform, snapshot);
 
@@ -1132,15 +1218,30 @@ void LayerSnapshotBuilder::updateInput(LayerSnapshot& snapshot,
         snapshot.inputInfo.inputConfig |= InputConfig::TRUSTED_OVERLAY;
     }
 
-    snapshot.inputInfo.contentSize = snapshot.croppedBufferSize.getSize();
+    snapshot.inputInfo.contentSize = {snapshot.croppedBufferSize.getHeight(),
+                                      snapshot.croppedBufferSize.getWidth()};
 
-    // If the layer is a clone, we need to crop the input region to cloned root to prevent
-    // touches from going outside the cloned area.
+    snapshot.inputInfo.cloneLayerStackTransform.reset();
+
     if (path.isClone()) {
         snapshot.inputInfo.inputConfig |= InputConfig::CLONE;
         // Cloned layers shouldn't handle watch outside since their z order is not determined by
         // WM or the client.
         snapshot.inputInfo.inputConfig.clear(InputConfig::WATCH_OUTSIDE_TOUCH);
+
+        // Compute the transform that maps the clone's display to the layer stack space of the
+        // cloned window.
+        const LayerSnapshot* clonedSnapshot = getSnapshot(path.getClonedFrom());
+        if (clonedSnapshot != nullptr) {
+            const auto& [clonedInputBounds, s] =
+                    getInputBounds(*clonedSnapshot, /*fillParentBounds=*/false);
+            ui::Transform inputToLayer;
+            inputToLayer.set(clonedInputBounds.left, clonedInputBounds.top);
+            const ui::Transform& layerToLayerStack = getInputTransform(*clonedSnapshot);
+            const auto& displayToInput = snapshot.inputInfo.transform;
+            snapshot.inputInfo.cloneLayerStackTransform =
+                    layerToLayerStack * inputToLayer * displayToInput;
+        }
     }
 }
 
@@ -1178,10 +1279,29 @@ void LayerSnapshotBuilder::forEachVisibleSnapshot(const Visitor& visitor) {
     }
 }
 
+void LayerSnapshotBuilder::forEachSnapshot(const Visitor& visitor,
+                                           const ConstPredicate& predicate) {
+    for (int i = 0; i < mNumInterestingSnapshots; i++) {
+        std::unique_ptr<LayerSnapshot>& snapshot = mSnapshots.at((size_t)i);
+        if (!predicate(*snapshot)) continue;
+        visitor(snapshot);
+    }
+}
+
+void LayerSnapshotBuilder::forEachSnapshot(const ConstVisitor& visitor) const {
+    for (auto& snapshot : mSnapshots) {
+        visitor(*snapshot);
+    }
+}
+
 void LayerSnapshotBuilder::forEachInputSnapshot(const ConstVisitor& visitor) const {
     for (int i = mNumInterestingSnapshots - 1; i >= 0; i--) {
         LayerSnapshot& snapshot = *mSnapshots[(size_t)i];
         if (!snapshot.hasInputInfo()) continue;
+        if (FlagManager::getInstance().skip_invisible_windows_in_input() &&
+            snapshot.inputInfo.inputConfig.test(gui::WindowInfo::InputConfig::NOT_VISIBLE)) {
+            continue;
+        }
         visitor(snapshot);
     }
 }

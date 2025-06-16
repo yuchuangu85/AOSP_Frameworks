@@ -32,7 +32,7 @@ import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.text.TextUtils;
 import android.util.Log;
-import android.widget.Switch;
+import android.widget.Button;
 
 import androidx.annotation.VisibleForTesting;
 
@@ -43,7 +43,8 @@ import com.android.settingslib.bluetooth.BluetoothUtils;
 import com.android.settingslib.bluetooth.CachedBluetoothDevice;
 import com.android.settingslib.satellite.SatelliteDialogUtils;
 import com.android.systemui.animation.Expandable;
-import com.android.systemui.bluetooth.qsdialog.BluetoothTileDialogViewModel;
+import com.android.systemui.bluetooth.qsdialog.BluetoothDetailsContentViewModel;
+import com.android.systemui.bluetooth.qsdialog.BluetoothDetailsViewModel;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.flags.FeatureFlags;
@@ -51,18 +52,23 @@ import com.android.systemui.flags.Flags;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
+import com.android.systemui.plugins.qs.TileDetailsViewModel;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
 import com.android.systemui.qs.QsEventLogger;
+import com.android.systemui.qs.flags.QsInCompose;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.policy.BluetoothController;
 
+import dagger.Lazy;
+
 import kotlinx.coroutines.Job;
 
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 import javax.inject.Inject;
 
@@ -81,7 +87,7 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
 
     private final Executor mExecutor;
 
-    private final BluetoothTileDialogViewModel mDialogViewModel;
+    private final Lazy<BluetoothDetailsContentViewModel> mDetailsContentViewModel;
 
     private final FeatureFlags mFeatureFlags;
     @Nullable
@@ -101,7 +107,7 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
             QSLogger qsLogger,
             BluetoothController bluetoothController,
             FeatureFlags featureFlags,
-            BluetoothTileDialogViewModel dialogViewModel
+            Lazy<BluetoothDetailsContentViewModel> detailsContentViewModel
     ) {
         super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
                 statusBarStateController, activityStarter, qsLogger);
@@ -109,42 +115,52 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
         mController.observe(getLifecycle(), mCallback);
         mExecutor = new HandlerExecutor(mainHandler);
         mFeatureFlags = featureFlags;
-        mDialogViewModel = dialogViewModel;
+        mDetailsContentViewModel = detailsContentViewModel;
     }
 
     @Override
     public BooleanState newTileState() {
-        return new BooleanState();
+        BooleanState s = new BooleanState();
+        s.handlesSecondaryClick = true;
+        return s;
     }
 
     @Override
     protected void handleClick(@Nullable Expandable expandable) {
-        if (com.android.internal.telephony.flags.Flags.oemEnabledSatelliteFlag()) {
-            if (mClickJob != null && !mClickJob.isCompleted()) {
-                return;
-            }
-            mClickJob = SatelliteDialogUtils.mayStartSatelliteWarningDialog(
-                    mContext, this, TYPE_IS_BLUETOOTH, isAllowClick -> {
-                        if (!isAllowClick) {
-                            return null;
-                        }
-                        handleClickEvent(expandable);
-                        return null;
-                    });
+        handleClickWithSatelliteCheck(() -> handleClickEvent(expandable));
+    }
+
+    @Override
+    public boolean getDetailsViewModel(Consumer<TileDetailsViewModel> callback) {
+        handleClickWithSatelliteCheck(() ->
+                callback.accept(new BluetoothDetailsViewModel(() -> {
+                    longClick(null);
+                    return null;
+                }, mDetailsContentViewModel.get()))
+        );
+        return true;
+    }
+
+    private void handleClickWithSatelliteCheck(Runnable clickCallback) {
+        if (mClickJob != null && !mClickJob.isCompleted()) {
             return;
         }
-        handleClickEvent(expandable);
+        mClickJob = SatelliteDialogUtils.mayStartSatelliteWarningDialog(
+                mContext, this, TYPE_IS_BLUETOOTH, isAllowClick -> {
+                    if (!isAllowClick) {
+                        return null;
+                    }
+                    clickCallback.run();
+                    return null;
+                });
     }
 
     private void handleClickEvent(@Nullable Expandable expandable) {
         if (mFeatureFlags.isEnabled(Flags.BLUETOOTH_QS_TILE_DIALOG)) {
-            mDialogViewModel.showDialog(expandable);
+            mDetailsContentViewModel.get().showDialog(expandable);
         } else {
             // Secondary clicks are header clicks, just toggle.
-            final boolean isEnabled = mState.value;
-            // Immediately enter transient enabling state when turning bluetooth on.
-            refreshState(isEnabled ? null : ARG_SHOW_TRANSIENT_ENABLING);
-            mController.setBluetoothEnabled(!isEnabled);
+            toggleBluetooth();
         }
     }
 
@@ -160,9 +176,7 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
                     new Intent(Settings.ACTION_BLUETOOTH_SETTINGS), 0);
             return;
         }
-        if (!mState.value) {
-            mController.setBluetoothEnabled(true);
-        }
+        toggleBluetooth();
     }
 
     @Override
@@ -183,11 +197,18 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
     protected void handleUpdateState(BooleanState state, Object arg) {
         checkIfRestrictionEnforcedByAdminOnly(state, UserManager.DISALLOW_BLUETOOTH);
         final boolean transientEnabling = arg == ARG_SHOW_TRANSIENT_ENABLING;
-        final boolean enabled = transientEnabling || mController.isBluetoothEnabled();
+        final boolean transientDisabling =
+                QsInCompose.isEnabled() && arg == ARG_SHOW_TRANSIENT_DISABLING;
+        final boolean enabled =
+                transientEnabling || (mController.isBluetoothEnabled() && !transientDisabling);
         final boolean connected = mController.isBluetoothConnected();
         final boolean connecting = mController.isBluetoothConnecting();
-        state.isTransient = transientEnabling || connecting ||
-                mController.getBluetoothState() == BluetoothAdapter.STATE_TURNING_ON;
+        state.isTransient = transientEnabling || transientDisabling || connecting
+                || mController.getBluetoothState() == BluetoothAdapter.STATE_TURNING_ON;
+        if (QsInCompose.isEnabled()) {
+            state.isTransient = state.isTransient
+                    || mController.getBluetoothState() == BluetoothAdapter.STATE_TURNING_OFF;
+        }
         if (!enabled || !connected || state.isTransient) {
             stopListeningToStaleDeviceMetadata();
         }
@@ -195,14 +216,15 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
         state.value = enabled;
         state.label = mContext.getString(R.string.quick_settings_bluetooth_label);
         state.secondaryLabel = TextUtils.emptyIfNull(
-                getSecondaryLabel(enabled, connecting, connected, state.isTransient));
+                getSecondaryLabel(enabled, connecting, connected,
+                        state.isTransient && transientEnabling));
         state.contentDescription = mContext.getString(
                 R.string.accessibility_quick_settings_bluetooth);
         state.stateDescription = "";
 
         if (enabled) {
             if (connected) {
-                state.icon = ResourceIcon.get(R.drawable.qs_bluetooth_icon_on);
+                state.icon = maybeLoadResourceIcon(R.drawable.qs_bluetooth_icon_on);
                 if (!TextUtils.isEmpty(mController.getConnectedDeviceName())) {
                     state.label = mController.getConnectedDeviceName();
                 }
@@ -210,22 +232,32 @@ public class BluetoothTile extends QSTileImpl<BooleanState> {
                         mContext.getString(R.string.accessibility_bluetooth_name, state.label)
                                 + ", " + state.secondaryLabel;
             } else if (state.isTransient) {
-                state.icon = ResourceIcon.get(
-                        R.drawable.qs_bluetooth_icon_search);
+                state.icon = maybeLoadResourceIcon(R.drawable.qs_bluetooth_icon_search);
                 state.stateDescription = state.secondaryLabel;
             } else {
-                state.icon =
-                        ResourceIcon.get(R.drawable.qs_bluetooth_icon_off);
+                state.icon = maybeLoadResourceIcon(R.drawable.qs_bluetooth_icon_off);
                 state.stateDescription = mContext.getString(R.string.accessibility_not_connected);
             }
             state.state = Tile.STATE_ACTIVE;
         } else {
-            state.icon = ResourceIcon.get(R.drawable.qs_bluetooth_icon_off);
+            state.icon = maybeLoadResourceIcon(R.drawable.qs_bluetooth_icon_off);
             state.state = Tile.STATE_INACTIVE;
         }
 
-        state.expandedAccessibilityClassName = Switch.class.getName();
+        state.expandedAccessibilityClassName = Button.class.getName();
         state.forceExpandIcon = mFeatureFlags.isEnabled(Flags.BLUETOOTH_QS_TILE_DIALOG);
+    }
+
+    private void toggleBluetooth() {
+        final boolean isEnabled = mState.value;
+        if (QsInCompose.isEnabled()) {
+            // Immediately enter transient enabling state when toggling bluetooth state.
+            refreshState(isEnabled ? ARG_SHOW_TRANSIENT_DISABLING : ARG_SHOW_TRANSIENT_ENABLING);
+        } else {
+            // Immediately enter transient enabling state when turning bluetooth on.
+            refreshState(isEnabled ? ARG_SHOW_TRANSIENT_DISABLING : null);
+        }
+        mController.setBluetoothEnabled(!isEnabled);
     }
 
     /**

@@ -1182,6 +1182,7 @@ public class ValueAnimator extends Animator implements AnimationHandler.Animatio
         // If end has already been requested, through a previous end() or cancel() call, no-op
         // until animation starts again.
         if (mAnimationEndRequested) {
+            consumePendingEndListeners(true /* notifyListeners */);
             return;
         }
 
@@ -1211,6 +1212,10 @@ public class ValueAnimator extends Animator implements AnimationHandler.Animatio
             initAnimation();
         }
         animateValue(shouldPlayBackward(mRepeatCount, mReversing) ? 0f : 1f);
+        if (mAnimationEndRequested) {
+            consumePendingEndListeners(true /* notifyListeners */);
+            return;
+        }
         endAnimation();
     }
 
@@ -1281,14 +1286,20 @@ public class ValueAnimator extends Animator implements AnimationHandler.Animatio
         return true;
     }
 
+    private void endAnimation() {
+        endAnimation(false /* fromLastFrame */);
+    }
+
     /**
      * Called internally to end an animation by removing it from the animations list. Must be
      * called on the UI thread.
      */
-    private void endAnimation() {
+    private void endAnimation(boolean fromLastFrame) {
         if (mAnimationEndRequested) {
             return;
         }
+        final boolean postNotifyEndListener = sPostNotifyEndListenerEnabled && mListeners != null
+                && fromLastFrame && getScaledDuration() > 0;
         removeAnimationCallback();
 
         mAnimationEndRequested = true;
@@ -1301,15 +1312,25 @@ public class ValueAnimator extends Animator implements AnimationHandler.Animatio
         mLastFrameTime = -1;
         mFirstFrameTime = -1;
         mStartTime = -1;
-        mRunning = false;
-        mStarted = false;
-        notifyEndListeners(mReversing);
-        // mReversing needs to be reset *after* notifying the listeners for the end callbacks.
-        mReversing = false;
+        // If postNotifyEndListener is false (most cases), then it is the same as calling
+        // completeEndAnimation directly.
+        notifyEndListenersFromEndAnimation(mReversing, postNotifyEndListener);
         if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {
             Trace.asyncTraceEnd(Trace.TRACE_TAG_VIEW, getNameForTrace(),
                     System.identityHashCode(this));
         }
+    }
+
+    @Override
+    void completeEndAnimation(boolean isReversing, String notifyListenerTraceName) {
+        // The mRunning and mStarted are reset here because isStarted() and isRunning()
+        // can be true before notifying the end listeners. When notifying the end listeners,
+        // isStarted() and isRunning() should be false.
+        mRunning = false;
+        mStarted = false;
+        super.completeEndAnimation(isReversing, notifyListenerTraceName);
+        // mReversing needs to be reset *after* notifying the listeners for the end callbacks.
+        mReversing = false;
     }
 
     /**
@@ -1563,7 +1584,7 @@ public class ValueAnimator extends Animator implements AnimationHandler.Animatio
         boolean finished = animateBasedOnTime(currentTime);
 
         if (finished) {
-            endAnimation();
+            endAnimation(true /* fromLastFrame */);
         }
         return finished;
     }

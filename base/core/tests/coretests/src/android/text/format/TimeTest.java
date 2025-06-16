@@ -20,13 +20,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 import android.util.Log;
 import android.util.TimeFormatException;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 import androidx.test.filters.Suppress;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -34,6 +35,7 @@ import org.junit.runner.RunWith;
 @Presubmit
 @SmallTest
 @RunWith(AndroidJUnit4.class)
+@DisabledOnRavenwood(blockedBy = Time.class)
 public class TimeTest {
 
     @Test

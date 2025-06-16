@@ -27,17 +27,14 @@ import com.android.systemui.brightness.shared.model.LinearBrightness
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testScope
-import com.android.systemui.log.table.TableLogBuffer
+import com.android.systemui.log.table.logcatTableLogBuffer
 import com.android.systemui.testKosmos
-import com.android.systemui.util.mockito.mock
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class ScreenBrightnessInteractorTest : SysuiTestCase() {
@@ -49,7 +46,7 @@ class ScreenBrightnessInteractorTest : SysuiTestCase() {
             ScreenBrightnessInteractor(
                 screenBrightnessRepository,
                 applicationCoroutineScope,
-                mock<TableLogBuffer>()
+                logcatTableLogBuffer(this, "screenBrightness"),
             )
         }
 
@@ -112,7 +109,7 @@ class ScreenBrightnessInteractorTest : SysuiTestCase() {
                     BrightnessUtils.convertGammaToLinearFloat(
                         gammaBrightness,
                         min.floatValue,
-                        max.floatValue
+                        max.floatValue,
                     )
                 assertThat(temporaryBrightness!!.floatValue)
                     .isWithin(1e-5f)
@@ -136,7 +133,7 @@ class ScreenBrightnessInteractorTest : SysuiTestCase() {
                     BrightnessUtils.convertGammaToLinearFloat(
                         gammaBrightness,
                         min.floatValue,
-                        max.floatValue
+                        max.floatValue,
                     )
                 assertThat(brightness!!.floatValue).isWithin(1e-5f).of(expectedBrightness)
             }

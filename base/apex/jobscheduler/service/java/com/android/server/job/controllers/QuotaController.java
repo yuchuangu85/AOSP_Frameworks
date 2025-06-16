@@ -40,6 +40,9 @@ import android.app.job.JobInfo;
 import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManagerInternal;
 import android.app.usage.UsageStatsManagerInternal.UsageEventListener;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.Disabled;
+import android.compat.annotation.Overridable;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
@@ -50,6 +53,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.provider.DeviceConfig;
@@ -70,6 +74,7 @@ import com.android.internal.util.ArrayUtils;
 import com.android.server.AppSchedulingModuleThread;
 import com.android.server.LocalServices;
 import com.android.server.PowerAllowlistInternal;
+import com.android.server.compat.PlatformCompat;
 import com.android.server.job.ConstantsProto;
 import com.android.server.job.Flags;
 import com.android.server.job.JobSchedulerService;
@@ -99,10 +104,10 @@ import java.util.function.Predicate;
  * the number of jobs or sessions that can run within the window. Regardless of bucket, apps will
  * not be allowed to run more than 20 jobs within the past 10 minutes.
  *
- * Jobs are throttled while an app is not in a foreground state. All jobs are allowed to run
- * freely when an app enters the foreground state and are restricted when the app leaves the
- * foreground state. However, jobs that are started while the app is in the TOP state do not count
- * towards any quota and are not restricted regardless of the app's state change.
+ * Jobs are throttled while an app is not in a TOP or BOUND_TOP state. All jobs are allowed to run
+ * freely when an app enters the TOP or BOUND_TOP state and are restricted when the app leaves those
+ * states. However, jobs that are started while the app is in the TOP state do not count towards any
+ * quota and are not restricted regardless of the app's state change.
  *
  * Jobs will not be throttled when the device is charging. The device is considered to be charging
  * once the {@link BatteryManager#ACTION_CHARGING} intent has been broadcast.
@@ -121,6 +126,9 @@ public final class QuotaController extends StateController {
     private static final String ALARM_TAG_CLEANUP = "*job.cleanup*";
     private static final String ALARM_TAG_QUOTA_CHECK = "*job.quota_check*";
 
+    private static final String TRACE_QUOTA_STATE_CHANGED_TAG = "QuotaStateChanged:";
+    private static final String TRACE_QUOTA_STATE_CHANGED_DELIMITER = "#";
+
     private static final int SYSTEM_APP_CHECK_FLAGS =
             PackageManager.MATCH_DIRECT_BOOT_AWARE | PackageManager.MATCH_DIRECT_BOOT_UNAWARE
                     | PackageManager.GET_PERMISSIONS | PackageManager.MATCH_KNOWN_PACKAGES;
@@ -128,6 +136,36 @@ public final class QuotaController extends StateController {
     private static int hashLong(long val) {
         return (int) (val ^ (val >>> 32));
     }
+
+    /**
+     * When enabled this change id overrides the default quota policy enforcement to the jobs
+     * running in the foreground process state.
+     */
+    // TODO: b/379681266 - Might need some refactoring for a better app-compat strategy.
+    @VisibleForTesting
+    @ChangeId
+    @Disabled // Disabled by default
+    @Overridable // The change can be overridden in user build
+    static final long OVERRIDE_QUOTA_ENFORCEMENT_TO_FGS_JOBS = 341201311L;
+
+    /**
+     * When enabled this change id overrides the default quota policy enforcement policy
+     * the jobs started when app was in the TOP state.
+     */
+    @VisibleForTesting
+    @ChangeId
+    @Disabled // Disabled by default
+    @Overridable // The change can be overridden in user build.
+    static final long OVERRIDE_QUOTA_ENFORCEMENT_TO_TOP_STARTED_JOBS = 374323858L;
+
+    /**
+     * When enabled this change id overrides the default quota parameters adjustment.
+     */
+    @VisibleForTesting
+    @ChangeId
+    @Disabled // Disabled by default
+    @Overridable // The change can be overridden in user build.
+    static final long OVERRIDE_QUOTA_ADJUST_DEFAULT_CONSTANTS = 378129159L;
 
     @VisibleForTesting
     static class ExecutionStats {
@@ -332,13 +370,13 @@ public final class QuotaController extends StateController {
 
     /** How much time each app will have to run jobs within their standby bucket window. */
     private final long[] mAllowedTimePerPeriodMs = new long[]{
-            QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS,
+            QcConstants.DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS,
             QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_WORKING_MS,
             QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_FREQUENT_MS,
             QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_RARE_MS,
             0, // NEVER
             QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS,
-            QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS
+            QcConstants.DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS
     };
 
     /**
@@ -394,13 +432,13 @@ public final class QuotaController extends StateController {
      * minutes to run its jobs.
      */
     private final long[] mBucketPeriodsMs = new long[]{
-            QcConstants.DEFAULT_WINDOW_SIZE_ACTIVE_MS,
-            QcConstants.DEFAULT_WINDOW_SIZE_WORKING_MS,
-            QcConstants.DEFAULT_WINDOW_SIZE_FREQUENT_MS,
+            QcConstants.DEFAULT_LEGACY_WINDOW_SIZE_ACTIVE_MS,
+            QcConstants.DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS,
+            QcConstants.DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS,
             QcConstants.DEFAULT_WINDOW_SIZE_RARE_MS,
             0, // NEVER
             QcConstants.DEFAULT_WINDOW_SIZE_RESTRICTED_MS,
-            QcConstants.DEFAULT_WINDOW_SIZE_EXEMPTED_MS
+            QcConstants.DEFAULT_LEGACY_WINDOW_SIZE_EXEMPTED_MS
     };
 
     /** The maximum period any bucket can have. */
@@ -454,7 +492,7 @@ public final class QuotaController extends StateController {
      */
     private final long[] mEJLimitsMs = new long[]{
             QcConstants.DEFAULT_EJ_LIMIT_ACTIVE_MS,
-            QcConstants.DEFAULT_EJ_LIMIT_WORKING_MS,
+            QcConstants.DEFAULT_LEGACY_EJ_LIMIT_WORKING_MS,
             QcConstants.DEFAULT_EJ_LIMIT_FREQUENT_MS,
             QcConstants.DEFAULT_EJ_LIMIT_RARE_MS,
             0, // NEVER
@@ -466,6 +504,9 @@ public final class QuotaController extends StateController {
 
     private long mEjLimitAdditionSpecialMs = QcConstants.DEFAULT_EJ_LIMIT_ADDITION_SPECIAL_MS;
 
+    private long mAllowedTimePeriodAdditionaInstallerMs =
+            QcConstants.DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS;
+
     /**
      * The period of time used to calculate expedited job sessions. Apps can only have expedited job
      * sessions totalling {@link #mEJLimitsMs}[bucket within this period of time (without factoring
@@ -476,7 +517,8 @@ public final class QuotaController extends StateController {
     /**
      * Length of time used to split an app's top time into chunks.
      */
-    private long mEJTopAppTimeChunkSizeMs = QcConstants.DEFAULT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS;
+    private long mEJTopAppTimeChunkSizeMs =
+            QcConstants.DEFAULT_LEGACY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS;
 
     /**
      * How much EJ quota to give back to an app based on the number of top app time chunks it had.
@@ -486,7 +528,7 @@ public final class QuotaController extends StateController {
     /**
      * How much EJ quota to give back to an app based on each non-top user interaction.
      */
-    private long mEJRewardInteractionMs = QcConstants.DEFAULT_EJ_REWARD_INTERACTION_MS;
+    private long mEJRewardInteractionMs = QcConstants.DEFAULT_LEGACY_EJ_REWARD_INTERACTION_MS;
 
     /**
      * How much EJ quota to give back to an app based on each notification seen event.
@@ -498,19 +540,13 @@ public final class QuotaController extends StateController {
 
     private long mEJGracePeriodTopAppMs = QcConstants.DEFAULT_EJ_GRACE_PERIOD_TOP_APP_MS;
 
-    private long mQuotaBumpAdditionalDurationMs =
-            QcConstants.DEFAULT_QUOTA_BUMP_ADDITIONAL_DURATION_MS;
-    private int mQuotaBumpAdditionalJobCount = QcConstants.DEFAULT_QUOTA_BUMP_ADDITIONAL_JOB_COUNT;
-    private int mQuotaBumpAdditionalSessionCount =
-            QcConstants.DEFAULT_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT;
-    private long mQuotaBumpWindowSizeMs = QcConstants.DEFAULT_QUOTA_BUMP_WINDOW_SIZE_MS;
-    private int mQuotaBumpLimit = QcConstants.DEFAULT_QUOTA_BUMP_LIMIT;
-
     /**
      * List of system apps with the {@link android.Manifest.permission#INSTALL_PACKAGES} permission
      * granted for each user.
      */
     private final SparseSetArray<String> mSystemInstallers = new SparseSetArray<>();
+
+    private final PlatformCompat mPlatformCompat;
 
     /** An app has reached its quota. The message should contain a {@link UserPackage} object. */
     @VisibleForTesting
@@ -563,16 +599,30 @@ public final class QuotaController extends StateController {
         PowerAllowlistInternal pai = LocalServices.getService(PowerAllowlistInternal.class);
         pai.registerTempAllowlistChangeListener(new TempAllowlistTracker());
 
+        mPlatformCompat = (PlatformCompat)
+                ServiceManager.getService(Context.PLATFORM_COMPAT_SERVICE);
+        if (Flags.adjustQuotaDefaultConstants()) {
+            mPlatformCompat.registerListener(OVERRIDE_QUOTA_ADJUST_DEFAULT_CONSTANTS,
+                    (packageName) -> handleQuotaDefaultConstantsCompatChange());
+        }
+
         try {
             ActivityManager.getService().registerUidObserver(new QcUidObserver(),
                     ActivityManager.UID_OBSERVER_PROCSTATE,
                     ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE, null);
+            if (Flags.enforceQuotaPolicyToFgsJobs()) {
+                ActivityManager.getService().registerUidObserver(new QcUidObserver(),
+                        ActivityManager.UID_OBSERVER_PROCSTATE,
+                        ActivityManager.PROCESS_STATE_BOUND_TOP, null);
+            }
             ActivityManager.getService().registerUidObserver(new QcUidObserver(),
                     ActivityManager.UID_OBSERVER_PROCSTATE,
                     ActivityManager.PROCESS_STATE_TOP, null);
         } catch (RemoteException e) {
             // ignored; both services live in system_server
         }
+
+        processQuotaConstantsAdjustment();
     }
 
     @Override
@@ -619,7 +669,10 @@ public final class QuotaController extends StateController {
         }
 
         final int uid = jobStatus.getSourceUid();
-        if (mTopAppCache.get(uid)) {
+        if ((!Flags.enforceQuotaPolicyToTopStartedJobs()
+                || mPlatformCompat.isChangeEnabledByUid(
+                        OVERRIDE_QUOTA_ENFORCEMENT_TO_TOP_STARTED_JOBS, uid))
+                && mTopAppCache.get(uid)) {
             if (DEBUG) {
                 Slog.d(TAG, jobStatus.toShortString() + " is top started job");
             }
@@ -656,7 +709,11 @@ public final class QuotaController extends StateController {
                 timer.stopTrackingJob(jobStatus);
             }
         }
-        mTopStartedJobs.remove(jobStatus);
+        if (!Flags.enforceQuotaPolicyToTopStartedJobs()
+                || mPlatformCompat.isChangeEnabledByUid(
+                        OVERRIDE_QUOTA_ENFORCEMENT_TO_TOP_STARTED_JOBS, jobStatus.getSourceUid())) {
+            mTopStartedJobs.remove(jobStatus);
+        }
     }
 
     @Override
@@ -767,7 +824,13 @@ public final class QuotaController extends StateController {
 
     /** @return true if the job was started while the app was in the TOP state. */
     private boolean isTopStartedJobLocked(@NonNull final JobStatus jobStatus) {
-        return mTopStartedJobs.contains(jobStatus);
+        if (!Flags.enforceQuotaPolicyToTopStartedJobs()
+                || mPlatformCompat.isChangeEnabledByUid(
+                        OVERRIDE_QUOTA_ENFORCEMENT_TO_TOP_STARTED_JOBS, jobStatus.getSourceUid())) {
+            return mTopStartedJobs.contains(jobStatus);
+        }
+
+        return false;
     }
 
     /** Returns the maximum amount of time this job could run for. */
@@ -791,7 +854,9 @@ public final class QuotaController extends StateController {
                     || isTopStartedJobLocked(jobStatus)
                     || isUidInForeground(jobStatus.getSourceUid());
             final boolean isJobImportant = jobStatus.getEffectivePriority() >= JobInfo.PRIORITY_HIGH
-                    || (jobStatus.getFlags() & JobInfo.FLAG_IMPORTANT_WHILE_FOREGROUND) != 0;
+                    || (!android.app.job.Flags.ignoreImportantWhileForeground()
+                            && (jobStatus.getFlags()
+                                    & JobInfo.FLAG_IMPORTANT_WHILE_FOREGROUND) != 0);
             if (isInPrivilegedState && isJobImportant) {
                 return mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS;
             }
@@ -1053,6 +1118,19 @@ public final class QuotaController extends StateController {
         return baseLimitMs;
     }
 
+    private long getAllowedTimePerPeriodMsLocked(final int userId, @NonNull final String pkgName,
+            final int standbyBucket) {
+        final long baseLimitMs = mAllowedTimePerPeriodMs[standbyBucket];
+        if (Flags.adjustQuotaDefaultConstants()
+                && !isCompatOverridedForQuotaConstantAdjustment()
+                && Flags.additionalQuotaForSystemInstaller()
+                && standbyBucket == EXEMPTED_INDEX
+                && mSystemInstallers.contains(userId, pkgName)) {
+            return baseLimitMs + mAllowedTimePeriodAdditionaInstallerMs;
+        }
+        return baseLimitMs;
+    }
+
     /**
      * Returns the amount of time, in milliseconds, until the package would have reached its
      * duration quota, assuming it has a job counting towards its quota the entire time. This takes
@@ -1070,27 +1148,28 @@ public final class QuotaController extends StateController {
 
         List<TimedEvent> events = mTimingEvents.get(userId, packageName);
         final ExecutionStats stats = getExecutionStatsLocked(userId, packageName, standbyBucket);
+        final long allowedTimePerPeriodMs =
+                getAllowedTimePerPeriodMsLocked(userId, packageName, standbyBucket);
         if (events == null || events.size() == 0) {
             // Regular ACTIVE case. Since the bucket size equals the allowed time, the app jobs can
             // essentially run until they reach the maximum limit.
-            if (stats.windowSizeMs == mAllowedTimePerPeriodMs[standbyBucket]) {
+            if (stats.windowSizeMs == allowedTimePerPeriodMs) {
                 return mMaxExecutionTimeMs;
             }
-            return mAllowedTimePerPeriodMs[standbyBucket];
+            return allowedTimePerPeriodMs;
         }
 
         final long startWindowElapsed = nowElapsed - stats.windowSizeMs;
         final long startMaxElapsed = nowElapsed - MAX_PERIOD_MS;
-        final long allowedTimePerPeriodMs = mAllowedTimePerPeriodMs[standbyBucket];
         final long allowedTimeRemainingMs = allowedTimePerPeriodMs - stats.executionTimeInWindowMs;
         final long maxExecutionTimeRemainingMs =
                 mMaxExecutionTimeMs - stats.executionTimeInMaxPeriodMs;
 
         // Regular ACTIVE case. Since the bucket size equals the allowed time, the app jobs can
         // essentially run until they reach the maximum limit.
-        if (stats.windowSizeMs == mAllowedTimePerPeriodMs[standbyBucket]) {
+        if (stats.windowSizeMs == allowedTimePerPeriodMs) {
             return calculateTimeUntilQuotaConsumedLocked(
-                    events, startMaxElapsed, maxExecutionTimeRemainingMs, false);
+                    events, startMaxElapsed, maxExecutionTimeRemainingMs);
         }
 
         // Need to check both max time and period time in case one is less than the other.
@@ -1099,9 +1178,9 @@ public final class QuotaController extends StateController {
         // bucket value.
         return Math.min(
                 calculateTimeUntilQuotaConsumedLocked(
-                        events, startMaxElapsed, maxExecutionTimeRemainingMs, false),
+                        events, startMaxElapsed, maxExecutionTimeRemainingMs),
                 calculateTimeUntilQuotaConsumedLocked(
-                        events, startWindowElapsed, allowedTimeRemainingMs, true));
+                        events, startWindowElapsed, allowedTimeRemainingMs));
     }
 
     /**
@@ -1111,36 +1190,12 @@ public final class QuotaController extends StateController {
      * @param deadSpaceMs        How much time can be allowed to count towards the quota
      */
     private long calculateTimeUntilQuotaConsumedLocked(@NonNull List<TimedEvent> sessions,
-            final long windowStartElapsed, long deadSpaceMs, boolean allowQuotaBumps) {
+            final long windowStartElapsed, long deadSpaceMs) {
         long timeUntilQuotaConsumedMs = 0;
         long start = windowStartElapsed;
-        int numQuotaBumps = 0;
-        final long quotaBumpWindowStartElapsed =
-                sElapsedRealtimeClock.millis() - mQuotaBumpWindowSizeMs;
         final int numSessions = sessions.size();
-        if (allowQuotaBumps) {
-            for (int i = numSessions - 1; i >= 0; --i) {
-                TimedEvent event = sessions.get(i);
-
-                if (event instanceof QuotaBump) {
-                    if (event.getEndTimeElapsed() >= quotaBumpWindowStartElapsed
-                            && numQuotaBumps++ < mQuotaBumpLimit) {
-                        deadSpaceMs += mQuotaBumpAdditionalDurationMs;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
         for (int i = 0; i < numSessions; ++i) {
-            TimedEvent event = sessions.get(i);
-
-            if (event instanceof QuotaBump) {
-                continue;
-            }
-
-            TimingSession session = (TimingSession) event;
-
+            TimingSession session = (TimingSession) sessions.get(i);
             if (session.endTimeElapsed < windowStartElapsed) {
                 // Outside of window. Ignore.
                 continue;
@@ -1252,7 +1307,8 @@ public final class QuotaController extends StateController {
             appStats[standbyBucket] = stats;
         }
         if (refreshStatsIfOld) {
-            final long bucketAllowedTimeMs = mAllowedTimePerPeriodMs[standbyBucket];
+            final long bucketAllowedTimeMs =
+                    getAllowedTimePerPeriodMsLocked(userId, packageName, standbyBucket);
             final long bucketWindowSizeMs = mBucketPeriodsMs[standbyBucket];
             final int jobCountLimit = mMaxBucketJobCounts[standbyBucket];
             final int sessionCountLimit = mMaxBucketSessionCounts[standbyBucket];
@@ -1325,41 +1381,15 @@ public final class QuotaController extends StateController {
         final long startWindowElapsed = nowElapsed - stats.windowSizeMs;
         final long startMaxElapsed = nowElapsed - MAX_PERIOD_MS;
         int sessionCountInWindow = 0;
-        int numQuotaBumps = 0;
-        final long quotaBumpWindowStartElapsed = nowElapsed - mQuotaBumpWindowSizeMs;
         // The minimum time between the start time and the beginning of the events that were
         // looked at --> how much time the stats will be valid for.
         long emptyTimeMs = Long.MAX_VALUE;
         // Sessions are non-overlapping and in order of occurrence, so iterating backwards will get
         // the most recent ones.
         final int loopStart = events.size() - 1;
-        // Process QuotaBumps first to ensure the limits are properly adjusted.
-        for (int i = loopStart; i >= 0; --i) {
-            TimedEvent event = events.get(i);
-
-            if (event.getEndTimeElapsed() < quotaBumpWindowStartElapsed
-                    || numQuotaBumps >= mQuotaBumpLimit) {
-                break;
-            }
-
-            if (event instanceof QuotaBump) {
-                stats.allowedTimePerPeriodMs += mQuotaBumpAdditionalDurationMs;
-                stats.jobCountLimit += mQuotaBumpAdditionalJobCount;
-                stats.sessionCountLimit += mQuotaBumpAdditionalSessionCount;
-                emptyTimeMs = Math.min(emptyTimeMs,
-                        event.getEndTimeElapsed() - quotaBumpWindowStartElapsed);
-                numQuotaBumps++;
-            }
-        }
         TimingSession lastSeenTimingSession = null;
         for (int i = loopStart; i >= 0; --i) {
-            TimedEvent event = events.get(i);
-
-            if (event instanceof QuotaBump) {
-                continue;
-            }
-
-            TimingSession session = (TimingSession) event;
+            TimingSession session = (TimingSession) events.get(i);
 
             // Window management.
             if (startWindowElapsed < session.endTimeElapsed) {
@@ -1464,6 +1494,24 @@ public final class QuotaController extends StateController {
         }
     }
 
+    void handleQuotaDefaultConstantsCompatChange() {
+        synchronized (mLock) {
+            final boolean isCompatEnabled = isCompatOverridedForQuotaConstantAdjustment();
+            mQcConstants.adjustDefaultBucketWindowSizes(isCompatEnabled);
+            mQcConstants.adjustDefaultEjLimits(isCompatEnabled);
+            mQcConstants.mShouldReevaluateConstraints = true;
+            onConstantsUpdatedLocked();
+        }
+    }
+
+    void processQuotaConstantsAdjustment() {
+        if (Flags.adjustQuotaDefaultConstants()
+                && !isCompatOverridedForQuotaConstantAdjustment()) {
+            mQcConstants.adjustDefaultBucketWindowSizes(false);
+            mQcConstants.adjustDefaultEjLimits(false);
+        }
+    }
+
     @VisibleForTesting
     void incrementJobCountLocked(final int userId, @NonNull final String packageName, int count) {
         final long now = sElapsedRealtimeClock.millis();
@@ -1487,6 +1535,11 @@ public final class QuotaController extends StateController {
                 stats.bgJobCountInWindow += count;
             }
         }
+    }
+
+    private boolean isCompatOverridedForQuotaConstantAdjustment() {
+        return mPlatformCompat.isChangeEnabledByPackageName(
+                OVERRIDE_QUOTA_ADJUST_DEFAULT_CONSTANTS, "android", UserHandle.USER_SYSTEM);
     }
 
     private void incrementTimingSessionCountLocked(final int userId,
@@ -1846,9 +1899,10 @@ public final class QuotaController extends StateController {
         final boolean isUnderJobCountQuota = isUnderJobCountQuotaLocked(stats);
         final boolean isUnderTimingSessionCountQuota = isUnderSessionCountQuotaLocked(stats);
         final long remainingEJQuota = getRemainingEJExecutionTimeLocked(userId, packageName);
-
+        final long allowedTimePerPeriosMs =
+                getAllowedTimePerPeriodMsLocked(userId, packageName, standbyBucket);
         final boolean inRegularQuota =
-                stats.executionTimeInWindowMs < mAllowedTimePerPeriodMs[standbyBucket]
+                stats.executionTimeInWindowMs < allowedTimePerPeriosMs
                         && stats.executionTimeInMaxPeriodMs < mMaxExecutionTimeMs
                         && isUnderJobCountQuota
                         && isUnderTimingSessionCountQuota;
@@ -2049,28 +2103,6 @@ public final class QuotaController extends StateController {
                     bgJobCount);
 
             proto.end(token);
-        }
-    }
-
-    @VisibleForTesting
-    static final class QuotaBump implements TimedEvent {
-        // Event timestamp in elapsed realtime timebase.
-        public final long eventTimeElapsed;
-
-        QuotaBump(long eventElapsed) {
-            this.eventTimeElapsed = eventElapsed;
-        }
-
-        @Override
-        public long getEndTimeElapsed() {
-            return eventTimeElapsed;
-        }
-
-        @Override
-        public void dump(IndentingPrintWriter pw) {
-            pw.print("Quota bump @ ");
-            pw.print(eventTimeElapsed);
-            pw.println();
         }
     }
 
@@ -2523,21 +2555,6 @@ public final class QuotaController extends StateController {
                 updateStandbyBucket(userId, packageName, bucketIndex);
             });
         }
-
-        @Override
-        public void triggerTemporaryQuotaBump(String packageName, @UserIdInt int userId) {
-            synchronized (mLock) {
-                List<TimedEvent> events = mTimingEvents.get(userId, packageName);
-                if (events == null || events.size() == 0) {
-                    // If the app hasn't run any jobs, there's no point giving it a quota bump.
-                    return;
-                }
-                events.add(new QuotaBump(sElapsedRealtimeClock.millis()));
-                invalidateAllExecutionStatsLocked(userId, packageName);
-            }
-            // Update jobs out of band.
-            mHandler.obtainMessage(MSG_CHECK_PACKAGE, userId, 0, packageName).sendToTarget();
-        }
     }
 
     @VisibleForTesting
@@ -2706,6 +2723,17 @@ public final class QuotaController extends StateController {
         }
     }
 
+    @VisibleForTesting
+    int getProcessStateQuotaFreeThreshold(int uid) {
+        if (Flags.enforceQuotaPolicyToFgsJobs()
+                && !mPlatformCompat.isChangeEnabledByUid(
+                        OVERRIDE_QUOTA_ENFORCEMENT_TO_FGS_JOBS, uid)) {
+            return ActivityManager.PROCESS_STATE_BOUND_TOP;
+        }
+
+        return ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE;
+    }
+
     private class QcHandler extends Handler {
 
         QcHandler(Looper looper) {
@@ -2727,11 +2755,12 @@ public final class QuotaController extends StateController {
                         if (timeRemainingMs <= 50) {
                             // Less than 50 milliseconds left. Start process of shutting down jobs.
                             if (DEBUG) Slog.d(TAG, pkg + " has reached its quota.");
-                            if (Trace.isTagEnabled(Trace.TRACE_TAG_SYSTEM_SERVER)) {
-                                Trace.instantForTrack(Trace.TRACE_TAG_SYSTEM_SERVER,
-                                        JobSchedulerService.TRACE_TRACK_NAME,
-                                        pkg + "#" + MSG_REACHED_TIME_QUOTA);
-                            }
+                            final StringBuilder traceMsg = new StringBuilder();
+                            traceMsg.append(TRACE_QUOTA_STATE_CHANGED_TAG)
+                                    .append(pkg)
+                                    .append(TRACE_QUOTA_STATE_CHANGED_DELIMITER)
+                                    .append(MSG_REACHED_TIME_QUOTA);
+                            Trace.instant(Trace.TRACE_TAG_POWER, traceMsg.toString());
                             mStateChangedListener.onControllerStateChanged(
                                     maybeUpdateConstraintForPkgLocked(
                                             sElapsedRealtimeClock.millis(),
@@ -2760,11 +2789,12 @@ public final class QuotaController extends StateController {
                                 pkg.userId, pkg.packageName);
                         if (timeRemainingMs <= 0) {
                             if (DEBUG) Slog.d(TAG, pkg + " has reached its EJ quota.");
-                            if (Trace.isTagEnabled(Trace.TRACE_TAG_SYSTEM_SERVER)) {
-                                Trace.instantForTrack(Trace.TRACE_TAG_SYSTEM_SERVER,
-                                        JobSchedulerService.TRACE_TRACK_NAME,
-                                        pkg + "#" + MSG_REACHED_EJ_TIME_QUOTA);
-                            }
+                            final StringBuilder traceMsg = new StringBuilder();
+                            traceMsg.append(TRACE_QUOTA_STATE_CHANGED_TAG)
+                                    .append(pkg)
+                                    .append(TRACE_QUOTA_STATE_CHANGED_DELIMITER)
+                                    .append(MSG_REACHED_EJ_TIME_QUOTA);
+                            Trace.instant(Trace.TRACE_TAG_POWER, traceMsg.toString());
                             mStateChangedListener.onControllerStateChanged(
                                     maybeUpdateConstraintForPkgLocked(
                                             sElapsedRealtimeClock.millis(),
@@ -2789,11 +2819,12 @@ public final class QuotaController extends StateController {
                             Slog.d(TAG, pkg + " has reached its count quota.");
                         }
 
-                        if (Trace.isTagEnabled(Trace.TRACE_TAG_SYSTEM_SERVER)) {
-                            Trace.instantForTrack(Trace.TRACE_TAG_SYSTEM_SERVER,
-                                    JobSchedulerService.TRACE_TRACK_NAME,
-                                    pkg + "#" + MSG_REACHED_COUNT_QUOTA);
-                        }
+                        final StringBuilder traceMsg = new StringBuilder();
+                        traceMsg.append(TRACE_QUOTA_STATE_CHANGED_TAG)
+                                .append(pkg)
+                                .append(TRACE_QUOTA_STATE_CHANGED_DELIMITER)
+                                .append(MSG_REACHED_COUNT_QUOTA);
+                        Trace.instant(Trace.TRACE_TAG_POWER, traceMsg.toString());
 
                         mStateChangedListener.onControllerStateChanged(
                                 maybeUpdateConstraintForPkgLocked(
@@ -2832,15 +2863,15 @@ public final class QuotaController extends StateController {
                                 mTopAppCache.put(uid, true);
                                 mTopAppGraceCache.delete(uid);
                                 if (mForegroundUids.get(uid)) {
-                                    // Went from FGS to TOP. We don't need to reprocess timers or
-                                    // jobs.
+                                    // Went from a process state with quota free to TOP. We don't
+                                    // need to reprocess timers or jobs.
                                     break;
                                 }
                                 mForegroundUids.put(uid, true);
                                 isQuotaFree = true;
                             } else {
                                 final boolean reprocess;
-                                if (procState <= ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE) {
+                                if (procState <= getProcessStateQuotaFreeThreshold(uid)) {
                                     reprocess = !mForegroundUids.get(uid);
                                     mForegroundUids.put(uid, true);
                                     isQuotaFree = true;
@@ -3008,7 +3039,6 @@ public final class QuotaController extends StateController {
         mQcConstants.mRateLimitingConstantsUpdated = false;
         mQcConstants.mExecutionPeriodConstantsUpdated = false;
         mQcConstants.mEJLimitConstantsUpdated = false;
-        mQcConstants.mQuotaBumpConstantsUpdated = false;
     }
 
     @Override
@@ -3035,7 +3065,6 @@ public final class QuotaController extends StateController {
         private boolean mRateLimitingConstantsUpdated = false;
         private boolean mExecutionPeriodConstantsUpdated = false;
         private boolean mEJLimitConstantsUpdated = false;
-        private boolean mQuotaBumpConstantsUpdated = false;
 
         /** Prefix to use with all constant keys in order to "sub-namespace" the keys. */
         private static final String QC_CONSTANT_PREFIX = "qc_";
@@ -3063,6 +3092,9 @@ public final class QuotaController extends StateController {
         @VisibleForTesting
         static final String KEY_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS =
                 QC_CONSTANT_PREFIX + "allowed_time_per_period_restricted_ms";
+        @VisibleForTesting
+        static final String KEY_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                QC_CONSTANT_PREFIX + "allowed_time_per_period_addition_installer_ms";
         @VisibleForTesting
         static final String KEY_IN_QUOTA_BUFFER_MS =
                 QC_CONSTANT_PREFIX + "in_quota_buffer_ms";
@@ -3183,25 +3215,12 @@ public final class QuotaController extends StateController {
         @VisibleForTesting
         static final String KEY_EJ_GRACE_PERIOD_TOP_APP_MS =
                 QC_CONSTANT_PREFIX + "ej_grace_period_top_app_ms";
-        @VisibleForTesting
-        static final String KEY_QUOTA_BUMP_ADDITIONAL_DURATION_MS =
-                QC_CONSTANT_PREFIX + "quota_bump_additional_duration_ms";
-        @VisibleForTesting
-        static final String KEY_QUOTA_BUMP_ADDITIONAL_JOB_COUNT =
-                QC_CONSTANT_PREFIX + "quota_bump_additional_job_count";
-        @VisibleForTesting
-        static final String KEY_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT =
-                QC_CONSTANT_PREFIX + "quota_bump_additional_session_count";
-        @VisibleForTesting
-        static final String KEY_QUOTA_BUMP_WINDOW_SIZE_MS =
-                QC_CONSTANT_PREFIX + "quota_bump_window_size_ms";
-        @VisibleForTesting
-        static final String KEY_QUOTA_BUMP_LIMIT =
-                QC_CONSTANT_PREFIX + "quota_bump_limit";
 
-        private static final long DEFAULT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
+        // Legacy default time each app will have to run jobs within EXEMPTED bucket
+        private static final long DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
                 10 * 60 * 1000L; // 10 minutes
-        private static final long DEFAULT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
+        // Legacy default time each app will have to run jobs within ACTIVE bucket
+        private static final long DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
                 10 * 60 * 1000L; // 10 minutes
         private static final long DEFAULT_ALLOWED_TIME_PER_PERIOD_WORKING_MS =
                 10 * 60 * 1000L; // 10 minutes
@@ -3211,16 +3230,51 @@ public final class QuotaController extends StateController {
                 10 * 60 * 1000L; // 10 minutes
         private static final long DEFAULT_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS =
                 10 * 60 * 1000L; // 10 minutes
+        private static final long DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                10 * 60 * 1000L; // 10 minutes
+
+        // Current default time each app will have to run jobs within EXEMPTED bucket
+        private static final long DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
+                20 * 60 * 1000L; // 20 minutes
+        // Current default time each app will have to run jobs within ACTIVE bucket
+        private static final long DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
+                20 * 60 * 1000L; // 20 minutes
+        private static final long DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                20 * 60 * 1000L; // 20 minutes
+
         private static final long DEFAULT_IN_QUOTA_BUFFER_MS =
                 30 * 1000L; // 30 seconds
-        private static final long DEFAULT_WINDOW_SIZE_EXEMPTED_MS =
-                DEFAULT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS; // EXEMPT apps can run jobs at any time
-        private static final long DEFAULT_WINDOW_SIZE_ACTIVE_MS =
-                DEFAULT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS; // ACTIVE apps can run jobs at any time
-        private static final long DEFAULT_WINDOW_SIZE_WORKING_MS =
+        // Legacy default window size for EXEMPTED bucket
+        // EXEMPT apps can run jobs at any time
+        private static final long DEFAULT_LEGACY_WINDOW_SIZE_EXEMPTED_MS =
+                DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS;
+        // Legacy default window size for ACTIVE bucket
+        // ACTIVE apps can run jobs at any time
+        private static final long DEFAULT_LEGACY_WINDOW_SIZE_ACTIVE_MS =
+                DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS;
+        // Legacy default window size for WORKING bucket
+        private static final long DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS =
                 2 * 60 * 60 * 1000L; // 2 hours
-        private static final long DEFAULT_WINDOW_SIZE_FREQUENT_MS =
+        // Legacy default window size for FREQUENT bucket
+        private static final long DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS =
                 8 * 60 * 60 * 1000L; // 8 hours
+
+        private static final long DEFAULT_CURRENT_WINDOW_SIZE_EXEMPTED_MS =
+                20 * 60 * 1000L; // 20 minutes.
+        private static final long DEFAULT_CURRENT_WINDOW_SIZE_ACTIVE_MS =
+                30 * 60 * 1000L; // 30 minutes.
+        private static final long DEFAULT_CURRENT_WINDOW_SIZE_WORKING_MS =
+                4 * 60 * 60 * 1000L; // 4 hours
+        private static final long DEFAULT_CURRENT_WINDOW_SIZE_FREQUENT_MS =
+                12 * 60 * 60 * 1000L; // 12 hours
+
+        // Latest default window size for EXEMPTED bucket.
+        private static final long DEFAULT_LATEST_WINDOW_SIZE_EXEMPTED_MS =
+                40 * 60 * 1000L; // 40 minutes.
+        // Latest default window size for ACTIVE bucket.
+        private static final long DEFAULT_LATEST_WINDOW_SIZE_ACTIVE_MS =
+                60 * 60 * 1000L; // 60 minutes.
+
         private static final long DEFAULT_WINDOW_SIZE_RARE_MS =
                 24 * 60 * 60 * 1000L; // 24 hours
         private static final long DEFAULT_WINDOW_SIZE_RESTRICTED_MS =
@@ -3234,9 +3288,9 @@ public final class QuotaController extends StateController {
                 75; // 75/window = 450/hr = 1/session
         private static final int DEFAULT_MAX_JOB_COUNT_ACTIVE = DEFAULT_MAX_JOB_COUNT_EXEMPTED;
         private static final int DEFAULT_MAX_JOB_COUNT_WORKING = // 120/window = 60/hr = 12/session
-                (int) (60.0 * DEFAULT_WINDOW_SIZE_WORKING_MS / HOUR_IN_MILLIS);
+                (int) (60.0 * DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS / HOUR_IN_MILLIS);
         private static final int DEFAULT_MAX_JOB_COUNT_FREQUENT = // 200/window = 25/hr = 25/session
-                (int) (25.0 * DEFAULT_WINDOW_SIZE_FREQUENT_MS / HOUR_IN_MILLIS);
+                (int) (25.0 * DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS / HOUR_IN_MILLIS);
         private static final int DEFAULT_MAX_JOB_COUNT_RARE = // 48/window = 2/hr = 16/session
                 (int) (2.0 * DEFAULT_WINDOW_SIZE_RARE_MS / HOUR_IN_MILLIS);
         private static final int DEFAULT_MAX_JOB_COUNT_RESTRICTED = 10;
@@ -3257,36 +3311,37 @@ public final class QuotaController extends StateController {
         // TODO(267949143): set a different limit for headless system apps
         private static final long DEFAULT_EJ_LIMIT_EXEMPTED_MS = 60 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_LIMIT_ACTIVE_MS = 30 * MINUTE_IN_MILLIS;
-        private static final long DEFAULT_EJ_LIMIT_WORKING_MS = DEFAULT_EJ_LIMIT_ACTIVE_MS;
+        private static final long DEFAULT_LEGACY_EJ_LIMIT_WORKING_MS = DEFAULT_EJ_LIMIT_ACTIVE_MS;
+        private static final long DEFAULT_CURRENT_EJ_LIMIT_WORKING_MS = 15 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_LIMIT_FREQUENT_MS = 10 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_LIMIT_RARE_MS = DEFAULT_EJ_LIMIT_FREQUENT_MS;
         private static final long DEFAULT_EJ_LIMIT_RESTRICTED_MS = 5 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_LIMIT_ADDITION_SPECIAL_MS = 15 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_LIMIT_ADDITION_INSTALLER_MS = 30 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_WINDOW_SIZE_MS = 24 * HOUR_IN_MILLIS;
-        private static final long DEFAULT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS = 30 * SECOND_IN_MILLIS;
+        private static final long DEFAULT_LEGACY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS =
+                30 * SECOND_IN_MILLIS;
+        private static final long DEFAULT_CURRENT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS =
+                5 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_REWARD_TOP_APP_MS = 10 * SECOND_IN_MILLIS;
-        private static final long DEFAULT_EJ_REWARD_INTERACTION_MS = 15 * SECOND_IN_MILLIS;
+        private static final long DEFAULT_LEGACY_EJ_REWARD_INTERACTION_MS = 15 * SECOND_IN_MILLIS;
+        private static final long DEFAULT_CURRENT_EJ_REWARD_INTERACTION_MS = 5 * SECOND_IN_MILLIS;
         private static final long DEFAULT_EJ_REWARD_NOTIFICATION_SEEN_MS = 0;
         private static final long DEFAULT_EJ_GRACE_PERIOD_TEMP_ALLOWLIST_MS = 3 * MINUTE_IN_MILLIS;
         private static final long DEFAULT_EJ_GRACE_PERIOD_TOP_APP_MS = 1 * MINUTE_IN_MILLIS;
-        private static final long DEFAULT_QUOTA_BUMP_ADDITIONAL_DURATION_MS = 1 * MINUTE_IN_MILLIS;
-        private static final int DEFAULT_QUOTA_BUMP_ADDITIONAL_JOB_COUNT = 2;
-        private static final int DEFAULT_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT = 1;
-        private static final long DEFAULT_QUOTA_BUMP_WINDOW_SIZE_MS = 8 * HOUR_IN_MILLIS;
-        private static final int DEFAULT_QUOTA_BUMP_LIMIT = 8;
 
         /**
          * How much time each app in the exempted bucket will have to run jobs within their standby
          * bucket window.
          */
         public long ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
-                DEFAULT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS;
+                DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS;
         /**
          * How much time each app in the active bucket will have to run jobs within their standby
          * bucket window.
          */
-        public long ALLOWED_TIME_PER_PERIOD_ACTIVE_MS = DEFAULT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS;
+        public long ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
+                DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS;
         /**
          * How much time each app in the working set bucket will have to run jobs within their
          * standby bucket window.
@@ -3321,28 +3376,28 @@ public final class QuotaController extends StateController {
          * expected to run only {@link #ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS} within the past
          * WINDOW_SIZE_MS.
          */
-        public long WINDOW_SIZE_EXEMPTED_MS = DEFAULT_WINDOW_SIZE_EXEMPTED_MS;
+        public long WINDOW_SIZE_EXEMPTED_MS = DEFAULT_LEGACY_WINDOW_SIZE_EXEMPTED_MS;
 
         /**
          * The quota window size of the particular standby bucket. Apps in this standby bucket are
          * expected to run only {@link #ALLOWED_TIME_PER_PERIOD_ACTIVE_MS} within the past
          * WINDOW_SIZE_MS.
          */
-        public long WINDOW_SIZE_ACTIVE_MS = DEFAULT_WINDOW_SIZE_ACTIVE_MS;
+        public long WINDOW_SIZE_ACTIVE_MS = DEFAULT_LEGACY_WINDOW_SIZE_ACTIVE_MS;
 
         /**
          * The quota window size of the particular standby bucket. Apps in this standby bucket are
          * expected to run only {@link #ALLOWED_TIME_PER_PERIOD_WORKING_MS} within the past
          * WINDOW_SIZE_MS.
          */
-        public long WINDOW_SIZE_WORKING_MS = DEFAULT_WINDOW_SIZE_WORKING_MS;
+        public long WINDOW_SIZE_WORKING_MS = DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS;
 
         /**
          * The quota window size of the particular standby bucket. Apps in this standby bucket are
          * expected to run only {@link #ALLOWED_TIME_PER_PERIOD_FREQUENT_MS} within the past
          * WINDOW_SIZE_MS.
          */
-        public long WINDOW_SIZE_FREQUENT_MS = DEFAULT_WINDOW_SIZE_FREQUENT_MS;
+        public long WINDOW_SIZE_FREQUENT_MS = DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS;
 
         /**
          * The quota window size of the particular standby bucket. Apps in this standby bucket are
@@ -3503,7 +3558,7 @@ public final class QuotaController extends StateController {
          * standby bucket can only have expedited job sessions totalling EJ_LIMIT (without factoring
          * in any rewards or free EJs).
          */
-        public long EJ_LIMIT_WORKING_MS = DEFAULT_EJ_LIMIT_WORKING_MS;
+        public long EJ_LIMIT_WORKING_MS = DEFAULT_LEGACY_EJ_LIMIT_WORKING_MS;
 
         /**
          * The total expedited job session limit of the particular standby bucket. Apps in this
@@ -3537,6 +3592,9 @@ public final class QuotaController extends StateController {
          */
         public long EJ_LIMIT_ADDITION_INSTALLER_MS = DEFAULT_EJ_LIMIT_ADDITION_INSTALLER_MS;
 
+        public long ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS;
+
         /**
          * The period of time used to calculate expedited job sessions. Apps can only have expedited
          * job sessions totalling EJ_LIMIT_<bucket>_MS within this period of time (without factoring
@@ -3547,7 +3605,7 @@ public final class QuotaController extends StateController {
         /**
          * Length of time used to split an app's top time into chunks.
          */
-        public long EJ_TOP_APP_TIME_CHUNK_SIZE_MS = DEFAULT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS;
+        public long EJ_TOP_APP_TIME_CHUNK_SIZE_MS = DEFAULT_LEGACY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS;
 
         /**
          * How much EJ quota to give back to an app based on the number of top app time chunks it
@@ -3558,7 +3616,7 @@ public final class QuotaController extends StateController {
         /**
          * How much EJ quota to give back to an app based on each non-top user interaction.
          */
-        public long EJ_REWARD_INTERACTION_MS = DEFAULT_EJ_REWARD_INTERACTION_MS;
+        public long EJ_REWARD_INTERACTION_MS = DEFAULT_LEGACY_EJ_REWARD_INTERACTION_MS;
 
         /**
          * How much EJ quota to give back to an app based on each notification seen event.
@@ -3576,35 +3634,100 @@ public final class QuotaController extends StateController {
          */
         public long EJ_GRACE_PERIOD_TOP_APP_MS = DEFAULT_EJ_GRACE_PERIOD_TOP_APP_MS;
 
-        /**
-         * How much additional session duration to give an app for each accepted quota bump.
-         */
-        public long QUOTA_BUMP_ADDITIONAL_DURATION_MS = DEFAULT_QUOTA_BUMP_ADDITIONAL_DURATION_MS;
+        void adjustDefaultBucketWindowSizes(boolean useLegacyQuotaConstants) {
+            if (useLegacyQuotaConstants) {
+                ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
+                        DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS;
+                ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
+                        DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS;
+                ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                        DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS;
 
-        /**
-         * How many additional regular jobs to give an app for each accepted quota bump.
-         */
-        public int QUOTA_BUMP_ADDITIONAL_JOB_COUNT = DEFAULT_QUOTA_BUMP_ADDITIONAL_JOB_COUNT;
+                WINDOW_SIZE_EXEMPTED_MS = DEFAULT_LEGACY_WINDOW_SIZE_EXEMPTED_MS;
+                WINDOW_SIZE_ACTIVE_MS = DEFAULT_LEGACY_WINDOW_SIZE_ACTIVE_MS;
+                WINDOW_SIZE_WORKING_MS = DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS;
+                WINDOW_SIZE_FREQUENT_MS = DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS;
+            } else {
+                ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS = Flags.tuneQuotaWindowDefaultParameters()
+                        ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS :
+                        DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS;
+                ALLOWED_TIME_PER_PERIOD_ACTIVE_MS = Flags.tuneQuotaWindowDefaultParameters()
+                        ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS :
+                        DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS;
+                ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                        Flags.tuneQuotaWindowDefaultParameters()
+                                ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS :
+                                DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS;
 
-        /**
-         * How many additional sessions to give an app for each accepted quota bump.
-         */
-        public int QUOTA_BUMP_ADDITIONAL_SESSION_COUNT =
-                DEFAULT_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT;
+                WINDOW_SIZE_EXEMPTED_MS = Flags.tuneQuotaWindowDefaultParameters()
+                        ? DEFAULT_LATEST_WINDOW_SIZE_EXEMPTED_MS :
+                        DEFAULT_CURRENT_WINDOW_SIZE_EXEMPTED_MS;
+                WINDOW_SIZE_ACTIVE_MS = Flags.tuneQuotaWindowDefaultParameters()
+                        ? DEFAULT_LATEST_WINDOW_SIZE_ACTIVE_MS :
+                        DEFAULT_CURRENT_WINDOW_SIZE_ACTIVE_MS;
+                WINDOW_SIZE_WORKING_MS = DEFAULT_CURRENT_WINDOW_SIZE_WORKING_MS;
+                WINDOW_SIZE_FREQUENT_MS = DEFAULT_CURRENT_WINDOW_SIZE_FREQUENT_MS;
+            }
 
-        /**
-         * The rolling window size within which to accept and apply quota bump events.
-         */
-        public long QUOTA_BUMP_WINDOW_SIZE_MS = DEFAULT_QUOTA_BUMP_WINDOW_SIZE_MS;
+            mAllowedTimePerPeriodMs[EXEMPTED_INDEX] = Math.min(MAX_PERIOD_MS,
+                    Math.max(MINUTE_IN_MILLIS, ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS));
+            mAllowedTimePerPeriodMs[ACTIVE_INDEX] = Math.min(MAX_PERIOD_MS,
+                    Math.max(MINUTE_IN_MILLIS, ALLOWED_TIME_PER_PERIOD_ACTIVE_MS));
 
-        /**
-         * The maximum number of quota bumps to accept and apply within the
-         * {@link #QUOTA_BUMP_WINDOW_SIZE_MS window}.
-         */
-        public int QUOTA_BUMP_LIMIT = DEFAULT_QUOTA_BUMP_LIMIT;
+            mBucketPeriodsMs[EXEMPTED_INDEX] = Math.max(
+                    mAllowedTimePerPeriodMs[EXEMPTED_INDEX],
+                    Math.min(MAX_PERIOD_MS, WINDOW_SIZE_EXEMPTED_MS));
+            mBucketPeriodsMs[ACTIVE_INDEX] = Math.max(
+                    mAllowedTimePerPeriodMs[ACTIVE_INDEX],
+                    Math.min(MAX_PERIOD_MS, WINDOW_SIZE_ACTIVE_MS));
+            mBucketPeriodsMs[WORKING_INDEX] = Math.max(
+                    mAllowedTimePerPeriodMs[WORKING_INDEX],
+                    Math.min(MAX_PERIOD_MS, WINDOW_SIZE_WORKING_MS));
+            mBucketPeriodsMs[FREQUENT_INDEX] = Math.max(
+                    mAllowedTimePerPeriodMs[FREQUENT_INDEX],
+                    Math.min(MAX_PERIOD_MS, WINDOW_SIZE_FREQUENT_MS));
+
+            mAllowedTimePeriodAdditionaInstallerMs =
+                    Math.min(mBucketPeriodsMs[EXEMPTED_INDEX]
+                                    - mAllowedTimePerPeriodMs[EXEMPTED_INDEX],
+                            ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS);
+        }
+
+        void adjustDefaultEjLimits(boolean useLegacyQuotaConstants) {
+            EJ_LIMIT_WORKING_MS = useLegacyQuotaConstants ? DEFAULT_LEGACY_EJ_LIMIT_WORKING_MS
+                    : DEFAULT_CURRENT_EJ_LIMIT_WORKING_MS;
+            EJ_TOP_APP_TIME_CHUNK_SIZE_MS = useLegacyQuotaConstants
+                    ? DEFAULT_LEGACY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS :
+                    DEFAULT_CURRENT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS;
+            EJ_REWARD_INTERACTION_MS = useLegacyQuotaConstants
+                    ? DEFAULT_LEGACY_EJ_REWARD_INTERACTION_MS
+                    : DEFAULT_CURRENT_EJ_REWARD_INTERACTION_MS;
+
+            // The limit must be in the range [15 minutes, active limit].
+            mEJLimitsMs[WORKING_INDEX] = Math.max(15 * MINUTE_IN_MILLIS,
+                        Math.min(mEJLimitsMs[ACTIVE_INDEX], EJ_LIMIT_WORKING_MS));
+
+            // Limit interaction reward to be in the range [5 seconds, 15 minutes] per event.
+            mEJRewardInteractionMs = Math.min(15 * MINUTE_IN_MILLIS,
+                        Math.max(5 * SECOND_IN_MILLIS, EJ_REWARD_INTERACTION_MS));
+
+            // Limit chunking to be in the range [1 millisecond, 15 minutes] per event.
+            long newChunkSizeMs = Math.min(15 * MINUTE_IN_MILLIS,
+                    Math.max(1, EJ_TOP_APP_TIME_CHUNK_SIZE_MS));
+            mEJTopAppTimeChunkSizeMs = newChunkSizeMs;
+            if (mEJTopAppTimeChunkSizeMs < mEJRewardTopAppMs) {
+                // Not making chunk sizes and top rewards to be the upper/lower
+                // limits of the other to allow trying different policies. Just log
+                // the discrepancy.
+                Slog.w(TAG, "EJ top app time chunk less than reward: "
+                        + mEJTopAppTimeChunkSizeMs + " vs " + mEJRewardTopAppMs);
+            }
+        }
 
         public void processConstantLocked(@NonNull DeviceConfig.Properties properties,
                 @NonNull String key) {
+            final boolean isCompatEnabled = isCompatOverridedForQuotaConstantAdjustment();
+
             switch (key) {
                 case KEY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS:
                 case KEY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS:
@@ -3612,6 +3735,7 @@ public final class QuotaController extends StateController {
                 case KEY_ALLOWED_TIME_PER_PERIOD_FREQUENT_MS:
                 case KEY_ALLOWED_TIME_PER_PERIOD_RARE_MS:
                 case KEY_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS:
+                case KEY_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS:
                 case KEY_IN_QUOTA_BUFFER_MS:
                 case KEY_MAX_EXECUTION_TIME_MS:
                 case KEY_WINDOW_SIZE_ACTIVE_MS:
@@ -3637,14 +3761,6 @@ public final class QuotaController extends StateController {
                 case KEY_EJ_LIMIT_ADDITION_INSTALLER_MS:
                 case KEY_EJ_WINDOW_SIZE_MS:
                     updateEJLimitConstantsLocked();
-                    break;
-
-                case KEY_QUOTA_BUMP_ADDITIONAL_DURATION_MS:
-                case KEY_QUOTA_BUMP_ADDITIONAL_JOB_COUNT:
-                case KEY_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT:
-                case KEY_QUOTA_BUMP_WINDOW_SIZE_MS:
-                case KEY_QUOTA_BUMP_LIMIT:
-                    updateQuotaBumpConstantsLocked();
                     break;
 
                 case KEY_MAX_JOB_COUNT_EXEMPTED:
@@ -3779,7 +3895,10 @@ public final class QuotaController extends StateController {
                 case KEY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS:
                     // We don't need to re-evaluate execution stats or constraint status for this.
                     EJ_TOP_APP_TIME_CHUNK_SIZE_MS =
-                            properties.getLong(key, DEFAULT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS);
+                            properties.getLong(key,
+                                    Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_EJ_TOP_APP_TIME_CHUNK_SIZE_MS :
+                                    DEFAULT_LEGACY_EJ_TOP_APP_TIME_CHUNK_SIZE_MS);
                     // Limit chunking to be in the range [1 millisecond, 15 minutes] per event.
                     long newChunkSizeMs = Math.min(15 * MINUTE_IN_MILLIS,
                             Math.max(1, EJ_TOP_APP_TIME_CHUNK_SIZE_MS));
@@ -3815,7 +3934,10 @@ public final class QuotaController extends StateController {
                 case KEY_EJ_REWARD_INTERACTION_MS:
                     // We don't need to re-evaluate execution stats or constraint status for this.
                     EJ_REWARD_INTERACTION_MS =
-                            properties.getLong(key, DEFAULT_EJ_REWARD_INTERACTION_MS);
+                            properties.getLong(key,
+                                    Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_EJ_REWARD_INTERACTION_MS :
+                                    DEFAULT_LEGACY_EJ_REWARD_INTERACTION_MS);
                     // Limit interaction reward to be in the range [5 seconds, 15 minutes] per
                     // event.
                     mEJRewardInteractionMs = Math.min(15 * MINUTE_IN_MILLIS,
@@ -3854,13 +3976,15 @@ public final class QuotaController extends StateController {
             }
             mExecutionPeriodConstantsUpdated = true;
 
+            final boolean isCompatEnabled = isCompatOverridedForQuotaConstantAdjustment();
+
             // Query the values as an atomic set.
             final DeviceConfig.Properties properties = DeviceConfig.getProperties(
                     DeviceConfig.NAMESPACE_JOB_SCHEDULER,
                     KEY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS, KEY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS,
                     KEY_ALLOWED_TIME_PER_PERIOD_WORKING_MS, KEY_ALLOWED_TIME_PER_PERIOD_FREQUENT_MS,
                     KEY_ALLOWED_TIME_PER_PERIOD_RARE_MS, KEY_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS,
-                    KEY_IN_QUOTA_BUFFER_MS,
+                    KEY_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS, KEY_IN_QUOTA_BUFFER_MS,
                     KEY_MAX_EXECUTION_TIME_MS,
                     KEY_WINDOW_SIZE_EXEMPTED_MS, KEY_WINDOW_SIZE_ACTIVE_MS,
                     KEY_WINDOW_SIZE_WORKING_MS,
@@ -3868,10 +3992,14 @@ public final class QuotaController extends StateController {
                     KEY_WINDOW_SIZE_RESTRICTED_MS);
             ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS =
                     properties.getLong(KEY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS,
-                            DEFAULT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS);
+                            Flags.tuneQuotaWindowDefaultParameters()
+                                    ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS :
+                                    DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_EXEMPTED_MS);
             ALLOWED_TIME_PER_PERIOD_ACTIVE_MS =
                     properties.getLong(KEY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS,
-                            DEFAULT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS);
+                            Flags.tuneQuotaWindowDefaultParameters()
+                                    ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS :
+                                    DEFAULT_LEGACY_ALLOWED_TIME_PER_PERIOD_ACTIVE_MS);
             ALLOWED_TIME_PER_PERIOD_WORKING_MS =
                     properties.getLong(KEY_ALLOWED_TIME_PER_PERIOD_WORKING_MS,
                             DEFAULT_ALLOWED_TIME_PER_PERIOD_WORKING_MS);
@@ -3884,19 +4012,39 @@ public final class QuotaController extends StateController {
             ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS =
                     properties.getLong(KEY_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS,
                             DEFAULT_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS);
+            ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS =
+                    properties.getLong(KEY_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS,
+                            Flags.tuneQuotaWindowDefaultParameters()
+                                    ? DEFAULT_CURRENT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS
+                                    : DEFAULT_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS);
             IN_QUOTA_BUFFER_MS = properties.getLong(KEY_IN_QUOTA_BUFFER_MS,
                     DEFAULT_IN_QUOTA_BUFFER_MS);
             MAX_EXECUTION_TIME_MS = properties.getLong(KEY_MAX_EXECUTION_TIME_MS,
                     DEFAULT_MAX_EXECUTION_TIME_MS);
             WINDOW_SIZE_EXEMPTED_MS = properties.getLong(KEY_WINDOW_SIZE_EXEMPTED_MS,
-                    DEFAULT_WINDOW_SIZE_EXEMPTED_MS);
+                    (Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                            && Flags.tuneQuotaWindowDefaultParameters())
+                            ? DEFAULT_LATEST_WINDOW_SIZE_EXEMPTED_MS :
+                            (Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_WINDOW_SIZE_EXEMPTED_MS :
+                                    DEFAULT_LEGACY_WINDOW_SIZE_EXEMPTED_MS));
             WINDOW_SIZE_ACTIVE_MS = properties.getLong(KEY_WINDOW_SIZE_ACTIVE_MS,
-                    DEFAULT_WINDOW_SIZE_ACTIVE_MS);
+                    (Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                            && Flags.tuneQuotaWindowDefaultParameters())
+                            ? DEFAULT_LATEST_WINDOW_SIZE_ACTIVE_MS :
+                            (Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_WINDOW_SIZE_ACTIVE_MS :
+                                    DEFAULT_LEGACY_WINDOW_SIZE_ACTIVE_MS));
             WINDOW_SIZE_WORKING_MS =
-                    properties.getLong(KEY_WINDOW_SIZE_WORKING_MS, DEFAULT_WINDOW_SIZE_WORKING_MS);
+                    properties.getLong(KEY_WINDOW_SIZE_WORKING_MS,
+                            Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_WINDOW_SIZE_WORKING_MS :
+                                    DEFAULT_LEGACY_WINDOW_SIZE_WORKING_MS);
             WINDOW_SIZE_FREQUENT_MS =
                     properties.getLong(KEY_WINDOW_SIZE_FREQUENT_MS,
-                            DEFAULT_WINDOW_SIZE_FREQUENT_MS);
+                            Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                                    ? DEFAULT_CURRENT_WINDOW_SIZE_FREQUENT_MS :
+                                    DEFAULT_LEGACY_WINDOW_SIZE_FREQUENT_MS);
             WINDOW_SIZE_RARE_MS = properties.getLong(KEY_WINDOW_SIZE_RARE_MS,
                     DEFAULT_WINDOW_SIZE_RARE_MS);
             WINDOW_SIZE_RESTRICTED_MS =
@@ -3999,6 +4147,18 @@ public final class QuotaController extends StateController {
                 mBucketPeriodsMs[RESTRICTED_INDEX] = newRestrictedPeriodMs;
                 mShouldReevaluateConstraints = true;
             }
+
+            if (Flags.additionalQuotaForSystemInstaller()) {
+                // The additions must be in the range
+                // [0 minutes, exempted window size - active limit].
+                long newAdditionInstallerMs = Math.max(0,
+                        Math.min(mBucketPeriodsMs[EXEMPTED_INDEX] - newAllowedTimeExemptedMs,
+                                ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS));
+                if (mAllowedTimePeriodAdditionaInstallerMs != newAdditionInstallerMs) {
+                    mAllowedTimePeriodAdditionaInstallerMs = newAdditionInstallerMs;
+                    mShouldReevaluateConstraints = true;
+                }
+            }
         }
 
         private void updateRateLimitingConstantsLocked() {
@@ -4053,6 +4213,8 @@ public final class QuotaController extends StateController {
             }
             mEJLimitConstantsUpdated = true;
 
+            final boolean isCompatEnabled = isCompatOverridedForQuotaConstantAdjustment();
+
             // Query the values as an atomic set.
             final DeviceConfig.Properties properties = DeviceConfig.getProperties(
                     DeviceConfig.NAMESPACE_JOB_SCHEDULER,
@@ -4067,7 +4229,9 @@ public final class QuotaController extends StateController {
             EJ_LIMIT_ACTIVE_MS = properties.getLong(
                     KEY_EJ_LIMIT_ACTIVE_MS, DEFAULT_EJ_LIMIT_ACTIVE_MS);
             EJ_LIMIT_WORKING_MS = properties.getLong(
-                    KEY_EJ_LIMIT_WORKING_MS, DEFAULT_EJ_LIMIT_WORKING_MS);
+                    KEY_EJ_LIMIT_WORKING_MS, Flags.adjustQuotaDefaultConstants() && !isCompatEnabled
+                            ? DEFAULT_CURRENT_EJ_LIMIT_WORKING_MS :
+                            DEFAULT_LEGACY_EJ_LIMIT_WORKING_MS);
             EJ_LIMIT_FREQUENT_MS = properties.getLong(
                     KEY_EJ_LIMIT_FREQUENT_MS, DEFAULT_EJ_LIMIT_FREQUENT_MS);
             EJ_LIMIT_RARE_MS = properties.getLong(
@@ -4145,65 +4309,6 @@ public final class QuotaController extends StateController {
             }
         }
 
-        private void updateQuotaBumpConstantsLocked() {
-            if (mQuotaBumpConstantsUpdated) {
-                return;
-            }
-            mQuotaBumpConstantsUpdated = true;
-
-            // Query the values as an atomic set.
-            final DeviceConfig.Properties properties = DeviceConfig.getProperties(
-                    DeviceConfig.NAMESPACE_JOB_SCHEDULER,
-                    KEY_QUOTA_BUMP_ADDITIONAL_DURATION_MS,
-                    KEY_QUOTA_BUMP_ADDITIONAL_JOB_COUNT, KEY_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT,
-                    KEY_QUOTA_BUMP_WINDOW_SIZE_MS, KEY_QUOTA_BUMP_LIMIT);
-            QUOTA_BUMP_ADDITIONAL_DURATION_MS = properties.getLong(
-                    KEY_QUOTA_BUMP_ADDITIONAL_DURATION_MS,
-                    DEFAULT_QUOTA_BUMP_ADDITIONAL_DURATION_MS);
-            QUOTA_BUMP_ADDITIONAL_JOB_COUNT = properties.getInt(
-                    KEY_QUOTA_BUMP_ADDITIONAL_JOB_COUNT, DEFAULT_QUOTA_BUMP_ADDITIONAL_JOB_COUNT);
-            QUOTA_BUMP_ADDITIONAL_SESSION_COUNT = properties.getInt(
-                    KEY_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT,
-                    DEFAULT_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT);
-            QUOTA_BUMP_WINDOW_SIZE_MS = properties.getLong(
-                    KEY_QUOTA_BUMP_WINDOW_SIZE_MS, DEFAULT_QUOTA_BUMP_WINDOW_SIZE_MS);
-            QUOTA_BUMP_LIMIT = properties.getInt(
-                    KEY_QUOTA_BUMP_LIMIT, DEFAULT_QUOTA_BUMP_LIMIT);
-
-            // The window must be in the range [1 hour, 24 hours].
-            long newWindowSizeMs = Math.max(HOUR_IN_MILLIS,
-                    Math.min(MAX_PERIOD_MS, QUOTA_BUMP_WINDOW_SIZE_MS));
-            if (mQuotaBumpWindowSizeMs != newWindowSizeMs) {
-                mQuotaBumpWindowSizeMs = newWindowSizeMs;
-                mShouldReevaluateConstraints = true;
-            }
-            // The limit must be nonnegative.
-            int newLimit = Math.max(0, QUOTA_BUMP_LIMIT);
-            if (mQuotaBumpLimit != newLimit) {
-                mQuotaBumpLimit = newLimit;
-                mShouldReevaluateConstraints = true;
-            }
-            // The job count must be nonnegative.
-            int newJobAddition = Math.max(0, QUOTA_BUMP_ADDITIONAL_JOB_COUNT);
-            if (mQuotaBumpAdditionalJobCount != newJobAddition) {
-                mQuotaBumpAdditionalJobCount = newJobAddition;
-                mShouldReevaluateConstraints = true;
-            }
-            // The session count must be nonnegative.
-            int newSessionAddition = Math.max(0, QUOTA_BUMP_ADDITIONAL_SESSION_COUNT);
-            if (mQuotaBumpAdditionalSessionCount != newSessionAddition) {
-                mQuotaBumpAdditionalSessionCount = newSessionAddition;
-                mShouldReevaluateConstraints = true;
-            }
-            // The additional duration must be in the range [0, 10 minutes].
-            long newAdditionalDuration = Math.max(0,
-                    Math.min(10 * MINUTE_IN_MILLIS, QUOTA_BUMP_ADDITIONAL_DURATION_MS));
-            if (mQuotaBumpAdditionalDurationMs != newAdditionalDuration) {
-                mQuotaBumpAdditionalDurationMs = newAdditionalDuration;
-                mShouldReevaluateConstraints = true;
-            }
-        }
-
         private void dump(IndentingPrintWriter pw) {
             pw.println();
             pw.println("QuotaController:");
@@ -4220,6 +4325,8 @@ public final class QuotaController extends StateController {
                     .println();
             pw.print(KEY_ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS,
                     ALLOWED_TIME_PER_PERIOD_RESTRICTED_MS).println();
+            pw.print(KEY_ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS,
+                    ALLOWED_TIME_PER_PERIOD_ADDITION_INSTALLER_MS).println();
             pw.print(KEY_IN_QUOTA_BUFFER_MS, IN_QUOTA_BUFFER_MS).println();
             pw.print(KEY_WINDOW_SIZE_EXEMPTED_MS, WINDOW_SIZE_EXEMPTED_MS).println();
             pw.print(KEY_WINDOW_SIZE_ACTIVE_MS, WINDOW_SIZE_ACTIVE_MS).println();
@@ -4265,15 +4372,6 @@ public final class QuotaController extends StateController {
             pw.print(KEY_EJ_GRACE_PERIOD_TEMP_ALLOWLIST_MS,
                     EJ_GRACE_PERIOD_TEMP_ALLOWLIST_MS).println();
             pw.print(KEY_EJ_GRACE_PERIOD_TOP_APP_MS, EJ_GRACE_PERIOD_TOP_APP_MS).println();
-
-            pw.print(KEY_QUOTA_BUMP_ADDITIONAL_DURATION_MS,
-                    QUOTA_BUMP_ADDITIONAL_DURATION_MS).println();
-            pw.print(KEY_QUOTA_BUMP_ADDITIONAL_JOB_COUNT,
-                    QUOTA_BUMP_ADDITIONAL_JOB_COUNT).println();
-            pw.print(KEY_QUOTA_BUMP_ADDITIONAL_SESSION_COUNT,
-                    QUOTA_BUMP_ADDITIONAL_SESSION_COUNT).println();
-            pw.print(KEY_QUOTA_BUMP_WINDOW_SIZE_MS, QUOTA_BUMP_WINDOW_SIZE_MS).println();
-            pw.print(KEY_QUOTA_BUMP_LIMIT, QUOTA_BUMP_LIMIT).println();
 
             pw.decreaseIndent();
         }
@@ -4405,6 +4503,11 @@ public final class QuotaController extends StateController {
     }
 
     @VisibleForTesting
+    long getAllowedTimePeriodAdditionInstallerMs() {
+        return mAllowedTimePeriodAdditionaInstallerMs;
+    }
+
+    @VisibleForTesting
     long getEjLimitAdditionSpecialMs() {
         return mEjLimitAdditionSpecialMs;
     }
@@ -4492,37 +4595,23 @@ public final class QuotaController extends StateController {
         return mQcConstants;
     }
 
-    @VisibleForTesting
-    long getQuotaBumpAdditionDurationMs() {
-        return mQuotaBumpAdditionalDurationMs;
-    }
-
-    @VisibleForTesting
-    int getQuotaBumpAdditionJobCount() {
-        return mQuotaBumpAdditionalJobCount;
-    }
-
-    @VisibleForTesting
-    int getQuotaBumpAdditionSessionCount() {
-        return mQuotaBumpAdditionalSessionCount;
-    }
-
-    @VisibleForTesting
-    int getQuotaBumpLimit() {
-        return mQuotaBumpLimit;
-    }
-
-    @VisibleForTesting
-    long getQuotaBumpWindowSizeMs() {
-        return mQuotaBumpWindowSizeMs;
-    }
-
     //////////////////////////// DATA DUMP //////////////////////////////
 
     @NeverCompile // Avoid size overhead of debugging code.
     @Override
     public void dumpControllerStateLocked(final IndentingPrintWriter pw,
             final Predicate<JobStatus> predicate) {
+        pw.println("Aconfig Flags:");
+        pw.println("    " + Flags.FLAG_ADJUST_QUOTA_DEFAULT_CONSTANTS
+                + ": " + Flags.adjustQuotaDefaultConstants());
+        pw.println("    " + Flags.FLAG_ENFORCE_QUOTA_POLICY_TO_FGS_JOBS
+                + ": " + Flags.enforceQuotaPolicyToFgsJobs());
+        pw.println("    " + Flags.FLAG_ENFORCE_QUOTA_POLICY_TO_TOP_STARTED_JOBS
+                + ": " + Flags.enforceQuotaPolicyToTopStartedJobs());
+        pw.println("    " + Flags.FLAG_ADDITIONAL_QUOTA_FOR_SYSTEM_INSTALLER
+                + ": " + Flags.additionalQuotaForSystemInstaller());
+        pw.println();
+
         pw.println("Current elapsed time: " + sElapsedRealtimeClock.millis());
         pw.println();
 

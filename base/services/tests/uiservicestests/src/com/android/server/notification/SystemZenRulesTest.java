@@ -69,6 +69,8 @@ public class SystemZenRulesTest extends UiServiceTestCase {
                 R.string.zen_mode_trigger_summary_range_symbol_combination, "%1$s-%2$s");
         mContext.getOrCreateTestableResources().addOverride(
                 R.string.zen_mode_trigger_summary_divider_text, ",");
+        mContext.getOrCreateTestableResources().addOverride(
+                R.string.zen_mode_trigger_summary_combined, "%1$s,%2$s");
     }
 
     @Test
@@ -206,5 +208,41 @@ public class SystemZenRulesTest extends UiServiceTestCase {
                 Calendar.FRIDAY, Calendar.SATURDAY};
         assertThat(getTriggerDescriptionForScheduleTime(mContext, scheduleInfo))
                 .isEqualTo("Mon,Wed,Fri-Sat,10:00 AM-4:00 PM");
+    }
+
+    @Test
+    public void getDaysOfWeekShort_summarizesDays() {
+        ScheduleInfo scheduleInfo = new ScheduleInfo();
+        scheduleInfo.startHour = 10;
+        scheduleInfo.endHour = 16;
+        scheduleInfo.days = new int[] {Calendar.MONDAY, Calendar.TUESDAY,
+                Calendar.WEDNESDAY, Calendar.THURSDAY, Calendar.FRIDAY};
+
+        assertThat(SystemZenRules.getDaysOfWeekShort(mContext, scheduleInfo))
+                .isEqualTo("Mon-Fri");
+    }
+
+    @Test
+    public void getDaysOfWeekFull_summarizesDays() {
+        ScheduleInfo scheduleInfo = new ScheduleInfo();
+        scheduleInfo.startHour = 10;
+        scheduleInfo.endHour = 16;
+        scheduleInfo.days = new int[] {Calendar.MONDAY, Calendar.TUESDAY,
+                Calendar.WEDNESDAY, Calendar.THURSDAY, Calendar.FRIDAY};
+
+        assertThat(SystemZenRules.getDaysOfWeekFull(mContext, scheduleInfo))
+                .isEqualTo("Monday to Friday");
+    }
+
+    @Test
+    public void getTimeSummary_onlyTime() {
+        ScheduleInfo scheduleInfo = new ScheduleInfo();
+        scheduleInfo.startHour = 11;
+        scheduleInfo.endHour = 15;
+        scheduleInfo.days = new int[] {Calendar.MONDAY, Calendar.TUESDAY,
+                Calendar.WEDNESDAY, Calendar.THURSDAY, Calendar.FRIDAY};
+
+        assertThat(SystemZenRules.getTimeSummary(mContext, scheduleInfo))
+                .isEqualTo("11:00 AM-3:00 PM");
     }
 }

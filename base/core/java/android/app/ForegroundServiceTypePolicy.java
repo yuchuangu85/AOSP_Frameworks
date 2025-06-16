@@ -49,11 +49,14 @@ import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.app.compat.CompatChanges;
 import android.app.role.RoleManager;
+import android.companion.virtual.VirtualDevice;
+import android.companion.virtual.VirtualDeviceManager;
 import android.compat.Compatibility;
 import android.compat.annotation.ChangeId;
 import android.compat.annotation.Disabled;
 import android.compat.annotation.EnabledAfter;
 import android.compat.annotation.Overridable;
+import android.content.AttributionSource;
 import android.content.Context;
 import android.content.PermissionChecker;
 import android.content.pm.PackageManager;
@@ -62,10 +65,12 @@ import android.content.pm.ServiceInfo.ForegroundServiceType;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.health.connect.HealthPermissions;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.permission.PermissionCheckerManager;
+import android.permission.PermissionManager;
 import android.provider.DeviceConfig;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -398,6 +403,7 @@ public abstract class ForegroundServiceTypePolicy {
                 new RegularPermission(Manifest.permission.NFC),
                 new RegularPermission(Manifest.permission.TRANSMIT_IR),
                 new RegularPermission(Manifest.permission.UWB_RANGING),
+                new RegularPermission(Manifest.permission.RANGING),
                 new UsbDevicePermission(),
                 new UsbAccessoryPermission(),
             }, false),
@@ -483,21 +489,35 @@ public abstract class ForegroundServiceTypePolicy {
      */
     public static final @NonNull ForegroundServiceTypePolicyInfo FGS_TYPE_POLICY_HEALTH =
             new ForegroundServiceTypePolicyInfo(
-            FOREGROUND_SERVICE_TYPE_HEALTH,
-            ForegroundServiceTypePolicyInfo.INVALID_CHANGE_ID,
-            ForegroundServiceTypePolicyInfo.INVALID_CHANGE_ID,
-            new ForegroundServiceTypePermissions(new ForegroundServiceTypePermission[] {
-                new RegularPermission(Manifest.permission.FOREGROUND_SERVICE_HEALTH)
-            }, true),
-            new ForegroundServiceTypePermissions(new ForegroundServiceTypePermission[] {
-                new RegularPermission(Manifest.permission.ACTIVITY_RECOGNITION),
-                new RegularPermission(Manifest.permission.BODY_SENSORS),
-                new RegularPermission(Manifest.permission.HIGH_SAMPLING_RATE_SENSORS),
-            }, false),
-            FGS_TYPE_PERM_ENFORCEMENT_FLAG_HEALTH /* permissionEnforcementFlag */,
-            true /* permissionEnforcementFlagDefaultValue */,
-            false /* foregroundOnlyPermission */
-    );
+                    FOREGROUND_SERVICE_TYPE_HEALTH,
+                    ForegroundServiceTypePolicyInfo.INVALID_CHANGE_ID,
+                    ForegroundServiceTypePolicyInfo.INVALID_CHANGE_ID,
+                    new ForegroundServiceTypePermissions(
+                            new ForegroundServiceTypePermission[] {
+                                new RegularPermission(Manifest.permission.FOREGROUND_SERVICE_HEALTH)
+                            },
+                            true),
+                    new ForegroundServiceTypePermissions(getAllowedHealthPermissions(), false),
+                    FGS_TYPE_PERM_ENFORCEMENT_FLAG_HEALTH /* permissionEnforcementFlag */,
+                    true /* permissionEnforcementFlagDefaultValue */,
+                    false /* foregroundOnlyPermission */);
+
+    /** Returns the permissions needed for the policy of the health foreground service type. */
+    private static ForegroundServiceTypePermission[] getAllowedHealthPermissions() {
+        final ArrayList<ForegroundServiceTypePermission> permissions = new ArrayList<>();
+        permissions.add(new RegularPermission(Manifest.permission.ACTIVITY_RECOGNITION));
+        permissions.add(new RegularPermission(Manifest.permission.HIGH_SAMPLING_RATE_SENSORS));
+
+        if (android.permission.flags.Flags.replaceBodySensorPermissionEnabled()) {
+            permissions.add(new RegularPermission(HealthPermissions.READ_HEART_RATE));
+            permissions.add(new RegularPermission(HealthPermissions.READ_SKIN_TEMPERATURE));
+            permissions.add(new RegularPermission(HealthPermissions.READ_OXYGEN_SATURATION));
+        } else {
+            permissions.add(new RegularPermission(Manifest.permission.BODY_SENSORS));
+        }
+
+        return permissions.toArray(new ForegroundServiceTypePermission[permissions.size()]);
+    }
 
     /**
      * The policy for the {@link ServiceInfo#FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING}.
@@ -1158,17 +1178,48 @@ public abstract class ForegroundServiceTypePolicy {
         @PackageManager.PermissionResult
         public int checkPermission(@NonNull Context context, int callerUid, int callerPid,
                 String packageName, boolean allowWhileInUse) {
-            return checkPermission(context, mName, callerUid, callerPid, packageName,
-                    allowWhileInUse);
+            int permissionResult = checkPermission(context, mName, callerUid, callerPid,
+                    packageName, allowWhileInUse, Context.DEVICE_ID_DEFAULT);
+
+            if (permissionResult == PERMISSION_GRANTED
+                    || !PermissionManager.DEVICE_AWARE_PERMISSIONS.contains(mName)) {
+                return permissionResult;
+            }
+
+            // For device aware permissions, check if the permission is granted on any other
+            // active virtual device
+            VirtualDeviceManager vdm = context.getSystemService(VirtualDeviceManager.class);
+            if (vdm == null) {
+                return permissionResult;
+            }
+
+            final List<VirtualDevice> virtualDevices = vdm.getVirtualDevices();
+            for (int i = 0, size = virtualDevices.size(); i < size; i++) {
+                final VirtualDevice virtualDevice = virtualDevices.get(i);
+                int resolvedDeviceId = PermissionManager.resolveDeviceIdForPermissionCheck(
+                        context, virtualDevice.getDeviceId(), mName);
+                // we already checked on the default device context
+                if (resolvedDeviceId == Context.DEVICE_ID_DEFAULT) {
+                    continue;
+                }
+                permissionResult = checkPermission(context, mName, callerUid, callerPid,
+                        packageName, allowWhileInUse, resolvedDeviceId);
+                if (permissionResult == PERMISSION_GRANTED) {
+                    break;
+                }
+            }
+
+            return permissionResult;
         }
 
         @SuppressLint("AndroidFrameworkRequiresPermission")
         @PackageManager.PermissionResult
         int checkPermission(@NonNull Context context, @NonNull String name, int callerUid,
-                int callerPid, String packageName, boolean allowWhileInUse) {
+                int callerPid, String packageName, boolean allowWhileInUse, int deviceId) {
+            final AttributionSource attributionSource = new AttributionSource(callerUid,
+                    packageName, null /*attributionTag*/, deviceId);
             @PermissionCheckerManager.PermissionResult final int result =
-                    PermissionChecker.checkPermissionForPreflight(context, name,
-                            callerPid, callerUid, packageName);
+                    PermissionChecker.checkPermissionForPreflight(context, name, attributionSource);
             if (result == PERMISSION_HARD_DENIED) {
                 // If the user didn't grant this permission at all.
                 return PERMISSION_DENIED;
@@ -1180,7 +1231,7 @@ public abstract class ForegroundServiceTypePolicy {
                         ? PERMISSION_GRANTED : PERMISSION_DENIED;
             }
             final AppOpsManager appOpsManager = context.getSystemService(AppOpsManager.class);
-            final int mode = appOpsManager.unsafeCheckOpRawNoThrow(opCode, callerUid, packageName);
+            final int mode = appOpsManager.unsafeCheckOpRawNoThrow(opCode, attributionSource);
             switch (mode) {
                 case MODE_ALLOWED:
                     // The appop is just allowed, plain and simple.

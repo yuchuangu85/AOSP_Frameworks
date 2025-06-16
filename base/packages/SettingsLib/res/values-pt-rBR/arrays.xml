@@ -206,19 +206,19 @@
   </string-array>
   <string-array name="window_animation_scale_entries">
     <item msgid="2675263395797191850">"Animação desligada"</item>
-    <item msgid="5790132543372767872">"Escala da animação 0,5 x"</item>
-    <item msgid="2529692189302148746">"Escala da animação 1x"</item>
+    <item msgid="5790132543372767872">"Escala de animação 0,5 x"</item>
+    <item msgid="2529692189302148746">"Escala de animação 1x"</item>
     <item msgid="8072785072237082286">"Escala de animação 1,5 x"</item>
-    <item msgid="3531560925718232560">"Escala da animação 2x"</item>
+    <item msgid="3531560925718232560">"Escala de animação 2x"</item>
     <item msgid="4542853094898215187">"Escala de animação 5 x"</item>
     <item msgid="5643881346223901195">"Escala de animação 10 x"</item>
   </string-array>
   <string-array name="transition_animation_scale_entries">
     <item msgid="3376676813923486384">"Animação desligada"</item>
-    <item msgid="753422683600269114">"Escala da animação 0,5 x"</item>
-    <item msgid="3695427132155563489">"Escala da animação 1x"</item>
+    <item msgid="753422683600269114">"Escala de animação 0,5 x"</item>
+    <item msgid="3695427132155563489">"Escala de animação 1x"</item>
     <item msgid="9032615844198098981">"Escala de animação 1,5 x"</item>
-    <item msgid="8473868962499332073">"Escala da animação 2x"</item>
+    <item msgid="8473868962499332073">"Escala de animação 2x"</item>
     <item msgid="4403482320438668316">"Escala de animação 5 x"</item>
     <item msgid="169579387974966641">"Escala de animação 10 x"</item>
   </string-array>
@@ -287,5 +287,23 @@
     <item msgid="2646486108212979598">"1"</item>
     <item msgid="3753634915787796632">"2"</item>
     <item msgid="4779928470672877922">"3"</item>
+  </string-array>
+  <string-array name="shade_display_awareness_entries">
+    <item msgid="816770658383209617">"Somente a tela do dispositivo (padrão)"</item>
+    <item msgid="9161645858025071955">"Tela externa"</item>
+    <item msgid="23651860565814477">"Toque mais recente na barra de status"</item>
+    <item msgid="7521112827893653392">"Com base no foco"</item>
+  </string-array>
+  <string-array name="shade_display_awareness_summaries">
+    <item msgid="2964753205732912921">"Mostrar sombra apenas na tela do dispositivo"</item>
+    <item msgid="1955398604822147783">"Mostrar sombra em uma única tela externa"</item>
+    <item msgid="391477482416751568">"Mostrar sombra na tela que teve a última interação na barra de status"</item>
+    <item msgid="1746820128097981528">"Mostrar sombra na última tela focada"</item>
+  </string-array>
+  <string-array name="shade_display_awareness_values">
+    <item msgid="3055776101992426514">"default_display"</item>
+    <item msgid="774789415968826925">"any_external_display"</item>
+    <item msgid="7880769915418638436">"status_bar_latest_touch"</item>
+    <item msgid="4313165186636015195">"focused_display"</item>
   </string-array>
 </resources>

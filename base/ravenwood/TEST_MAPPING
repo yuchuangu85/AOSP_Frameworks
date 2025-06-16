@@ -1,44 +1,158 @@
-// Keep the following two TEST_MAPPINGs in sync:
-// frameworks/base/ravenwood/TEST_MAPPING
-// frameworks/base/tools/hoststubgen/TEST_MAPPING
 {
   "presubmit": [
     { "name": "tiny-framework-dump-test" },
     { "name": "hoststubgentest" },
+    { "name": "ravenhelpertest" },
+    { "name": "hoststubgen-test-tiny-test" },
     { "name": "hoststubgen-invoke-test" },
-    {
-      "name": "RavenwoodMockitoTest_device"
-    },
-    {
-      "name": "RavenwoodBivalentTest_device"
-    },
+    { "name": "RavenwoodMockitoTest_device" },
+    { "name": "RavenwoodBivalentTest_device" },
+    { "name": "RavenwoodBivalentTest_device_ravenizer" },
+
+    { "name": "RavenwoodBivalentInstTest_nonself_inst" },
+    { "name": "RavenwoodBivalentInstTest_self_inst_device" },
+
     // The sysui tests should match vendor/unbundled_google/packages/SystemUIGoogle/TEST_MAPPING
     {
-      "name": "SystemUIGoogleTests",
-      "options": [
-        {
-          "exclude-annotation": "org.junit.Ignore"
-        },
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        }
-      ]
+      "name": "SystemUIGoogleTests"
     }
   ],
   "presubmit-large": [
     {
-      "name": "SystemUITests",
-      "options": [
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        },
-        {
-          "exclude-annotation": "org.junit.Ignore"
-        }
-      ]
+      "name": "SystemUITests"
     }
   ],
   "ravenwood-presubmit": [
+    // AUTO-GENERATED-START
+    // DO NOT MODIFY MANUALLY
+    // Use scripts/update-test-mapping.sh to update it.
+    {
+      "name": "AdServicesSharedLibrariesUnitTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "android.test.mock.ravenwood.tests",
+      "host": true
+    },
+    {
+      "name": "CarLibHostUnitTest",
+      "keywords": ["automotive_code_coverage"],
+      "host": true
+    },
+    {
+      "name": "CarServiceHostUnitTest",
+      "keywords": ["automotive_code_coverage"],
+      "host": true
+    },
+    {
+      "name": "CarSystemUIRavenTests",
+      "keywords": ["automotive_code_coverage"],
+      "host": true
+    },
+    {
+      "name": "CtsAccountManagerTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsAppTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsContentTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsDatabaseTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsDeviceConfigTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsGraphicsTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsIcuTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsInputMethodTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsOsTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsProtoTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsResourcesTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsTextTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "CtsUtilTestCasesRavenwood",
+      "host": true
+    },
+    {
+      "name": "FrameworksCoreSystemPropertiesTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "FrameworksCoreTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "FrameworksInputMethodSystemServerTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "FrameworksServicesTestsRavenwood_Compat",
+      "host": true
+    },
+    {
+      "name": "FrameworksServicesTestsRavenwood_Uri",
+      "host": true
+    },
+    {
+      "name": "FrameworksUtilTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "InternalTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "PowerStatsTestsRavenwood",
+      "host": true
+    },
+    {
+      "name": "RavenwoodBivalentInstTest_nonself_inst",
+      "host": true
+    },
+    {
+      "name": "RavenwoodBivalentInstTest_self_inst",
+      "host": true
+    },
+    {
+      "name": "RavenwoodBivalentTest",
+      "host": true
+    },
+    {
+      "name": "RavenwoodCoreTest",
+      "host": true
+    },
+    {
+      "name": "RavenwoodCoreTest-light",
+      "host": true
+    },
     {
       "name": "RavenwoodMinimumTest",
       "host": true
@@ -48,16 +162,29 @@
       "host": true
     },
     {
-      "name": "CtsUtilTestCasesRavenwood",
+      "name": "RavenwoodResApkTest",
       "host": true
     },
     {
-      "name": "RavenwoodCoreTest",
+      "name": "RavenwoodRuntimeTest",
       "host": true
     },
     {
-      "name": "RavenwoodBivalentTest",
+      "name": "RavenwoodServicesTest",
+      "host": true
+    },
+    {
+      "name": "UinputTestsRavenwood",
       "host": true
     }
+    // AUTO-GENERATED-END
+  ],
+  "ravenwood-postsubmit": [
+    // We haven't maintained SystemUiRavenTests, and as a result, it's been demoted already.
+    // Disable it until we fix the issues: b/319647875
+    // {
+    //   "name": "SystemUiRavenTests",
+    //   "host": true
+    // }
   ]
 }

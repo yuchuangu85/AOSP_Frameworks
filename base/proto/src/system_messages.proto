@@ -206,7 +206,7 @@ message SystemMessage {
 
     // Inform that DND settings have changed on OS upgrade
     // Package: android
-    NOTE_ZEN_UPGRADE = 48;
+    NOTE_ZEN_UPGRADE = 48  [deprecated = true];
 
     // Notification to suggest automatic battery saver.
     // Package: android
@@ -310,6 +310,14 @@ message SystemMessage {
     // Package: android
     NOTE_USB_UVC = 75;
 
+    // Inform the user about adaptive notifications
+    // Package: com.android.systemui
+    NOTE_ADAPTIVE_NOTIFICATIONS = 76;
+
+    // Warn the user that the device's Headless System User Mode status doesn't match the build's.
+    // Package: android
+    NOTE_WRONG_HSUM_STATUS = 77;
+
     // ADD_NEW_IDS_ABOVE_THIS_LINE
     // Legacy IDs with arbitrary values appear below
     // Legacy IDs existed as stable non-conflicting constants prior to the O release
@@ -412,5 +420,9 @@ message SystemMessage {
     // Notify the user that accessibility floating menu is hidden.
     // Package: com.android.systemui
     NOTE_A11Y_FLOATING_MENU_HIDDEN = 1009;
+
+    // Notify the hearing aid user that input device can be changed to builtin device or hearing device.
+    // Package: android
+    NOTE_HEARING_DEVICE_INPUT_SWITCH = 1012;
   }
 }

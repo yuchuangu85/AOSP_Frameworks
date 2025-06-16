@@ -192,6 +192,7 @@ import java.lang.ref.WeakReference;
  * top-level content is desired, and finally calling {@link Surface#unlockCanvasAndPost(Canvas)}.
  * </p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class RenderNode {
 
     // Use a Holder to allow static initialization in the boot image.
@@ -279,7 +280,8 @@ public final class RenderNode {
          * @hide
          */
         default void positionChanged(long frameNumber, int left, int top, int right, int bottom,
-                int clipLeft, int clipTop, int clipRight, int clipBottom) {
+                int clipLeft, int clipTop, int clipRight, int clipBottom,
+                int nodeWidth, int nodeHeight) {
             positionChanged(frameNumber, left, top, right, bottom);
         }
 
@@ -304,11 +306,12 @@ public final class RenderNode {
          * @hide */
         static boolean callPositionChanged2(WeakReference<PositionUpdateListener> weakListener,
                 long frameNumber, int left, int top, int right, int bottom,
-                int clipLeft, int clipTop, int clipRight, int clipBottom) {
+                int clipLeft, int clipTop, int clipRight, int clipBottom,
+                int nodeWidth, int nodeHeight) {
             final PositionUpdateListener listener = weakListener.get();
             if (listener != null) {
                 listener.positionChanged(frameNumber, left, top, right, bottom, clipLeft,
-                        clipTop, clipRight, clipBottom);
+                        clipTop, clipRight, clipBottom, nodeWidth, nodeHeight);
                 return true;
             } else {
                 return false;
@@ -401,10 +404,11 @@ public final class RenderNode {
 
         @Override
         public void positionChanged(long frameNumber, int left, int top, int right, int bottom,
-                int clipLeft, int clipTop, int clipRight, int clipBottom) {
+                int clipLeft, int clipTop, int clipRight, int clipBottom,
+                int nodeWidth, int nodeHeight) {
             for (PositionUpdateListener pul : mListeners) {
                 pul.positionChanged(frameNumber, left, top, right, bottom, clipLeft, clipTop,
-                        clipRight, clipBottom);
+                        clipRight, clipBottom, nodeWidth, nodeHeight);
             }
         }
 

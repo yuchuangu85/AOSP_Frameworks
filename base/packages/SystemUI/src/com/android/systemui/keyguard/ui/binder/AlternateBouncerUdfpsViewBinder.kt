@@ -21,38 +21,40 @@ import android.content.res.ColorStateList
 import android.view.View
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import com.android.app.tracing.coroutines.launch
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.keyguard.ui.view.DeviceEntryIconView
 import com.android.systemui.keyguard.ui.viewmodel.AlternateBouncerUdfpsIconViewModel
 import com.android.systemui.lifecycle.repeatWhenAttached
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 
-@ExperimentalCoroutinesApi
 object AlternateBouncerUdfpsViewBinder {
 
     /** Updates UI for the UDFPS icon on the alternate bouncer. */
     @JvmStatic
-    fun bind(
-        view: DeviceEntryIconView,
-        viewModel: AlternateBouncerUdfpsIconViewModel,
-    ) {
-        if (DeviceEntryUdfpsRefactor.isUnexpectedlyInLegacyMode()) {
-            return
-        }
+    fun bind(view: DeviceEntryIconView, viewModel: AlternateBouncerUdfpsIconViewModel) {
         val fgIconView = view.iconView
         val bgView = view.bgView
 
         view.repeatWhenAttached {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 view.alpha = 0f
+
                 launch("$TAG#viewModel.accessibilityDelegateHint") {
                     viewModel.accessibilityDelegateHint.collect { hint ->
                         view.accessibilityHintType = hint
+                        if (hint != DeviceEntryIconView.AccessibilityHintType.NONE) {
+                            view.setOnClickListener { viewModel.onTapped() }
+                        } else {
+                            view.setOnClickListener(null)
+                        }
                     }
                 }
 
-                launch("$TAG#viewModel.alpha") { viewModel.alpha.collect { view.alpha = it } }
+                if (SceneContainerFlag.isEnabled) {
+                    view.alpha = 1f
+                } else {
+                    launch("$TAG#viewModel.alpha") { viewModel.alpha.collect { view.alpha = it } }
+                }
             }
         }
 
@@ -61,7 +63,7 @@ object AlternateBouncerUdfpsViewBinder {
                 viewModel.fgViewModel.collect { fgViewModel ->
                     fgIconView.setImageState(
                         view.getIconState(fgViewModel.type, fgViewModel.useAodVariant),
-                        /* merge */ false
+                        /* merge */ false,
                     )
                     fgIconView.imageTintList = ColorStateList.valueOf(fgViewModel.tint)
                     fgIconView.setPadding(

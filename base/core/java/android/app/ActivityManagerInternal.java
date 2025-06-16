@@ -23,6 +23,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.PermissionMethod;
 import android.annotation.PermissionName;
+import android.annotation.SpecialUsers.CanBeALL;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager.ProcessCapability;
 import android.app.ActivityManager.RestrictionLevel;
@@ -44,6 +45,8 @@ import android.os.PowerExemptionManager.ReasonCode;
 import android.os.PowerExemptionManager.TempAllowListType;
 import android.os.TransactionTooLargeException;
 import android.os.WorkSource;
+import android.os.instrumentation.IOffsetCallback;
+import android.os.instrumentation.MethodDescriptor;
 import android.util.ArraySet;
 import android.util.Pair;
 
@@ -55,6 +58,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.function.BiFunction;
 
 /**
@@ -137,6 +141,15 @@ public abstract class ActivityManagerInternal {
      */
     public abstract boolean startIsolatedProcess(String entryPoint, String[] mainArgs,
             String processName, String abiOverride, int uid, Runnable crashHandler);
+
+    /**
+     * Called when a user is being deleted. This can happen during normal device usage
+     * or just at startup, when partially removed users are purged. Any state persisted by the
+     * ActivityManager should be purged now.
+     *
+     * @param userId The user being cleaned up.
+     */
+    public abstract void onUserRemoving(@UserIdInt int userId);
 
     /**
      * Called when a user has been deleted. This can happen during normal device usage
@@ -279,14 +292,14 @@ public abstract class ActivityManagerInternal {
     public abstract boolean canStartMoreUsers();
 
     /**
-     * Sets the user switcher message for switching from {@link android.os.UserHandle#SYSTEM}.
+     * Sets the user switcher message for switching from a user.
      */
-    public abstract void setSwitchingFromSystemUserMessage(String switchingFromSystemUserMessage);
+    public abstract void setSwitchingFromUserMessage(@UserIdInt int user, @Nullable String message);
 
     /**
-     * Sets the user switcher message for switching to {@link android.os.UserHandle#SYSTEM}.
+     * Sets the user switcher message for switching to a user.
      */
-    public abstract void setSwitchingToSystemUserMessage(String switchingToSystemUserMessage);
+    public abstract void setSwitchingToUserMessage(@UserIdInt int user, @Nullable String message);
 
     /**
      * Returns maximum number of users that can run simultaneously.
@@ -482,6 +495,11 @@ public abstract class ActivityManagerInternal {
      */
     public static final int OOM_ADJ_REASON_FOLLOW_UP = 23;
 
+    /**
+     * Oom Adj Reason: Update after oom adjuster configuration has changed.
+     */
+    public static final int OOM_ADJ_REASON_RECONFIGURATION = 24;
+
     @IntDef(prefix = {"OOM_ADJ_REASON_"}, value = {
         OOM_ADJ_REASON_NONE,
         OOM_ADJ_REASON_ACTIVITY,
@@ -507,6 +525,7 @@ public abstract class ActivityManagerInternal {
         OOM_ADJ_REASON_RESTRICTION_CHANGE,
         OOM_ADJ_REASON_COMPONENT_DISABLED,
         OOM_ADJ_REASON_FOLLOW_UP,
+        OOM_ADJ_REASON_RECONFIGURATION,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface OomAdjReason {}
@@ -960,6 +979,17 @@ public abstract class ActivityManagerInternal {
             @Nullable VoiceInteractionManagerProvider provider);
 
     /**
+     * Get whether or not the previous user's packages will be killed before the user is
+     * stopped during a user switch.
+     *
+     * <p> The primary use case of this method is for {@link com.android.server.SystemService}
+     * classes to call this API in their
+     * {@link com.android.server.SystemService#onUserSwitching} method implementation to prevent
+     * restarting any of the previous user's processes that will be killed during the user switch.
+     */
+    public abstract boolean isEarlyPackageKillEnabledForUserSwitch(int fromUserId, int toUserId);
+
+    /**
      * Sets whether the current foreground user (and its profiles) should be stopped after switched
      * out.
      */
@@ -1138,6 +1168,33 @@ public abstract class ActivityManagerInternal {
     public abstract void stopForegroundServiceDelegate(@NonNull ServiceConnection connection);
 
     /**
+     * Notifies that a media foreground service associated with a media session has
+     * transitioned to a "user-disengaged" state.
+     * Upon receiving this notification, service may be removed from the foreground state. It
+     * should only be called by {@link com.android.server.media.MediaSessionService}
+     *
+     * @param packageName The package name of the app running the media foreground service.
+     * @param userId The user ID associated with the foreground service.
+     * @param notificationId The ID of the media notification associated with the foreground
+     *                      service.
+     */
+    public abstract void notifyInactiveMediaForegroundService(@NonNull String packageName,
+            @UserIdInt int userId, int notificationId);
+
+    /**
+     * Notifies that a media service associated with a media session has transitioned to a
+     * "user-engaged" state. Upon receiving this notification, service will transition to the
+     * foreground state. It should only be called by
+     * {@link com.android.server.media.MediaSessionService}
+     *
+     * @param packageName The package name of the app running the media service.
+     * @param userId The user ID associated with the service.
+     * @param notificationId The ID of the media notification associated with the service.
+     */
+    public abstract void notifyActiveMediaForegroundService(@NonNull String packageName,
+            @UserIdInt int userId, int notificationId);
+
+    /**
      * Same as {@link android.app.IActivityManager#startProfile(int userId)}, but it would succeed
      * even if the profile is disabled - it should only be called by
      * {@link com.android.server.devicepolicy.DevicePolicyManagerService} when starting a profile
@@ -1268,6 +1325,28 @@ public abstract class ActivityManagerInternal {
     public abstract boolean shouldDelayHomeLaunch(int userId);
 
     /**
+     * Used to track when a process is frozen or unfrozen.
+     */
+    public interface FrozenProcessListener {
+        /**
+         * Called when a process is frozen.
+         */
+        void onProcessFrozen(int pid);
+
+        /**
+         * Called when a process is unfrozen.
+         */
+        void onProcessUnfrozen(int pid);
+    }
+
+    /**
+     * Register the frozen process event listener callback. The same listener may be reused for
+     * multiple pids. Listeners are dropped when the process dies.
+     */
+    public abstract void addFrozenProcessListener(int pid, @NonNull Executor executor,
+            @NonNull FrozenProcessListener listener);
+
+    /**
      * Add a startup timestamp to the most recent start of the specified process.
      *
      * @param key The {@link ApplicationStartInfo} start timestamp key of the timestamp to add.
@@ -1287,6 +1366,23 @@ public abstract class ActivityManagerInternal {
      * watchdog reset.
      * @hide
      */
-    public abstract void killApplicationSync(String pkgName, int appId, int userId,
-            String reason, int exitInfoReason);
+    public abstract void killApplicationSync(String pkgName, int appId,
+            @CanBeALL @UserIdInt int userId, String reason, int exitInfoReason);
+
+    /**
+     * Queries the offset data for a given method on a process.
+     * @hide
+     */
+    public abstract void getExecutableMethodFileOffsets(@NonNull String processName,
+            int pid, int uid, @NonNull MethodDescriptor methodDescriptor,
+            @NonNull IOffsetCallback callback);
+
+    /**
+     * Add a creator token for all embedded intents (stored as extra) of the given intent.
+     *
+     * @param intent The given intent
+     * @param creatorPackage the package name of the creator app.
+     * @hide
+     */
+    public abstract void addCreatorToken(Intent intent, String creatorPackage);
 }

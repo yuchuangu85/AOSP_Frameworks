@@ -33,6 +33,38 @@ using android::String8;
 using android::binder::Status;
 using android::binder::unique_fd;
 
+static void checkCString(const char* str) {
+    for (size_t i = 0; i < 3; i++) {
+        Parcel p;
+
+        for (size_t j = 0; j < i; j++) p.writeInt32(3);
+
+        p.writeCString(str);
+        int32_t pos = p.dataPosition();
+
+        p.setDataPosition(0);
+
+        for (size_t j = 0; j < i; j++) p.readInt32();
+        const char* str2 = p.readCString();
+
+        ASSERT_EQ(std::string(str), str2);
+        ASSERT_EQ(pos, p.dataPosition());
+    }
+}
+
+TEST(Parcel, TestReadCString) {
+    // we should remove the *CString APIs, but testing them until
+    // they are deleted.
+    checkCString("");
+    checkCString("a");
+    checkCString("\n");
+    checkCString("32");
+    checkCString("321");
+    checkCString("3210");
+    checkCString("3210b");
+    checkCString("123434");
+}
+
 TEST(Parcel, NonNullTerminatedString8) {
     String8 kTestString = String8("test-is-good");
 
@@ -163,6 +195,17 @@ TEST(Parcel, AppendPlainDataPartial) {
 
     p2.setDataPosition(0);
     ASSERT_EQ(2, p2.readInt32());
+}
+
+TEST(Parcel, AppendWithBadDataPos) {
+    Parcel p1;
+    p1.writeInt32(1);
+    p1.writeInt32(1);
+    Parcel p2;
+    p2.setDataCapacity(8);
+    p2.setDataPosition(10000);
+
+    EXPECT_EQ(android::BAD_VALUE, p2.appendFrom(&p1, 0, 8));
 }
 
 TEST(Parcel, HasBinders) {

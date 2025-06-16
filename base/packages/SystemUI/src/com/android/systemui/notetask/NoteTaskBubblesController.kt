@@ -27,6 +27,7 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.log.DebugLogger.debugLog
+import com.android.wm.shell.bubbles.Bubble
 import com.android.wm.shell.bubbles.Bubbles
 import java.util.Optional
 import javax.inject.Inject
@@ -48,7 +49,7 @@ open class NoteTaskBubblesController
 @Inject
 constructor(
     @Application private val context: Context,
-    @Background private val bgDispatcher: CoroutineDispatcher
+    @Background private val bgDispatcher: CoroutineDispatcher,
 ) {
 
     private val serviceConnector: ServiceConnector<INoteTaskBubblesService> =
@@ -57,7 +58,7 @@ constructor(
             Intent(context, NoteTaskBubblesService::class.java),
             Context.BIND_AUTO_CREATE or Context.BIND_WAIVE_PRIORITY or Context.BIND_NOT_VISIBLE,
             UserHandle.USER_SYSTEM,
-            INoteTaskBubblesService.Stub::asInterface
+            INoteTaskBubblesService.Stub::asInterface,
         )
 
     /** Returns whether notes app bubble is supported. */
@@ -75,15 +76,16 @@ constructor(
             }
         }
 
-    /** Calls the [Bubbles.showOrHideAppBubble] API as [UserHandle.USER_SYSTEM]. */
-    open suspend fun showOrHideAppBubble(
+    /** Calls the [Bubbles.showOrHideNoteBubble] API as [UserHandle.USER_SYSTEM]. */
+    open suspend fun showOrHideNoteBubble(
         intent: Intent,
         userHandle: UserHandle,
-        icon: Icon
+        icon: Icon,
+        bubbleExpandBehavior: NoteTaskBubbleExpandBehavior,
     ) {
         withContext(bgDispatcher) {
             serviceConnector
-                .post { it.showOrHideAppBubble(intent, userHandle, icon) }
+                .post { it.showOrHideNoteBubble(intent, userHandle, icon, bubbleExpandBehavior) }
                 .whenComplete { _, error ->
                     if (error != null) {
                         debugLog(error = error) {
@@ -117,19 +119,31 @@ constructor(
             return object : INoteTaskBubblesService.Stub() {
                 override fun areBubblesAvailable() = mOptionalBubbles.isPresent
 
-                override fun showOrHideAppBubble(
+                override fun showOrHideNoteBubble(
                     intent: Intent,
                     userHandle: UserHandle,
-                    icon: Icon
+                    icon: Icon,
+                    bubbleExpandBehavior: NoteTaskBubbleExpandBehavior,
                 ) {
                     mOptionalBubbles.ifPresentOrElse(
-                        { bubbles -> bubbles.showOrHideAppBubble(intent, userHandle, icon) },
+                        { bubbles ->
+                            if (
+                                bubbleExpandBehavior ==
+                                    NoteTaskBubbleExpandBehavior.KEEP_IF_EXPANDED &&
+                                    bubbles.isBubbleExpanded(
+                                        Bubble.getNoteBubbleKeyForApp(intent.`package`, userHandle)
+                                    )
+                            ) {
+                                return@ifPresentOrElse
+                            }
+                            bubbles.showOrHideNoteBubble(intent, userHandle, icon)
+                        },
                         {
                             debugLog {
                                 "Failed to show or hide bubble for intent $intent," +
                                     "user $user, and icon $icon as bubble is empty."
                             }
-                        }
+                        },
                     )
                 }
             }

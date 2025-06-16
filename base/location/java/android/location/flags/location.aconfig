@@ -2,10 +2,33 @@ package: "android.location.flags"
 container: "system"
 
 flag {
+    name: "deprecate_provider_request_apis"
+    namespace: "location"
+    description: "Deprecates LocationManager ProviderChanged APIs"
+    bug: "361811782"
+    is_exported: true
+}
+
+flag {
+    name: "keep_gnss_stationary_throttling"
+    namespace: "location"
+    description: "Keeps stationary throttling for the GNSS provider even if the disable_stationary_throttling flag is true."
+    bug: "354000147"
+}
+
+flag {
+    name: "disable_stationary_throttling"
+    namespace: "location"
+    description: "Disables stationary throttling for all providers"
+    bug: "354000147"
+}
+
+flag {
     name: "new_geocoder"
     namespace: "location"
     description: "Flag for new Geocoder APIs"
     bug: "229872126"
+    is_exported: true
 }
 
 flag {
@@ -35,6 +58,7 @@ flag {
     namespace: "location"
     description: "Flag for making geoid heights available via the Altitude HAL"
     bug: "304375846"
+    is_exported: true
 }
 
 flag {
@@ -42,13 +66,7 @@ flag {
     namespace: "location"
     description: "Flag for GNSS API for NavIC L1"
     bug: "302199306"
-}
-
-flag {
-    name: "gnss_call_stop_before_set_position_mode"
-    namespace: "location"
-    description: "Flag for calling stop() before setPositionMode()"
-    bug: "306874828"
+    is_exported: true
 }
 
 flag {
@@ -56,6 +74,7 @@ flag {
     namespace: "location"
     description: "Flag for GnssMeasurementRequest WorkSource API"
     bug: "295235160"
+    is_exported: true
 }
 
 flag {
@@ -80,6 +99,16 @@ flag {
 }
 
 flag {
+    name: "use_legacy_ntp_time"
+    namespace: "location"
+    description: "Flag for switching to legacy NtpNetworkTimeHelper"
+    bug: "368034558"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
     name: "subscriptions_changed_listener_thread"
     namespace: "location"
     description: "Flag for running onSubscriptionsChangedListener on FgThread"
@@ -94,4 +123,109 @@ flag {
     namespace: "location"
     description: "Flag for GNSS configuration from resource"
     bug: "317734846"
+}
+
+flag {
+    name: "enable_ni_supl_message_injection_by_carrier_config_bugfix"
+    namespace: "location"
+    description: "Flag for enabling NI SUPL message injection by carrier config"
+    bug: "242105192"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+    is_exported: true
+}
+
+flag {
+    name: "enable_ni_supl_message_injection_by_carrier_config"
+    namespace: "location"
+    description: "Flag for enabling NI SUPL message injection by carrier config"
+    bug: "242105192"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "population_density_provider"
+    namespace: "location"
+    description: "Flag for enabling the population density provider"
+    bug: "376198890"
+}
+
+flag {
+    name: "density_based_coarse_locations"
+    namespace: "location"
+    description: "Flag for gating the density-based coarse locations"
+    bug: "376198890"
+}
+
+flag {
+    name: "gnss_assistance_interface"
+    namespace: "location"
+    description: "Flag for GNSS assistance interface"
+    bug: "209078566"
+    is_exported: true
+}
+
+flag {
+    name: "update_min_location_request_interval"
+    namespace: "location"
+    description: "Flag for updating the default logic for the minimal interval for location request"
+    bug: "397444378"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "gnss_location_provider_overlay_2025_devices"
+    namespace: "location"
+    description: "Flag for GNSS location provider overlay for 2025 devices"
+    bug: "398254728"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "limit_fused_gps"
+    namespace: "location"
+    description: "Limits when GPS can be used for fused location requests"
+    bug: "401885179"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "fix_is_in_emergency_anr"
+    namespace: "location"
+    description: "Avoid calling IPC with a lock to avoid deadlock"
+    bug: "355384257"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "gnss_assistance_interface_jni"
+    namespace: "location"
+    description: "Flag for GNSS assistance interface JNI"
+    bug: "209078566"
+}
+
+flag {
+    name: "service_watcher_unstable_fallback"
+    namespace: "location"
+    description: "Flag for service watcher to fallback on an unstable service"
+    bug: "402997842"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "missing_attribution_tags_in_overlay"
+    namespace: "location"
+    description: "Adds missing attribution tags in the Fused and Gnss overlay"
+    bug: "403337028"
 }

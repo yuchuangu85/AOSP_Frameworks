@@ -39,6 +39,7 @@ using android::idmap2::BinaryStreamVisitor;
 using android::idmap2::CommandLineOptions;
 using android::idmap2::Error;
 using android::idmap2::Idmap;
+using android::idmap2::IdmapConstraints;
 using android::idmap2::OverlayResourceContainer;
 using android::idmap2::Result;
 using android::idmap2::TargetResourceContainer;
@@ -99,7 +100,7 @@ Result<Unit> CreateMultiple(const std::vector<std::string>& args) {
 
   std::vector<std::string> idmap_paths;
   for (const std::string& overlay_apk_path : overlay_apk_paths) {
-    const std::string idmap_path = Idmap::CanonicalIdmapPathFor(idmap_dir, overlay_apk_path);
+    std::string idmap_path = Idmap::CanonicalIdmapPathFor(idmap_dir, overlay_apk_path);
     const uid_t uid = getuid();
     if (!UidHasWriteAccessToPath(uid, idmap_path)) {
       LOG(WARNING) << "uid " << uid << "does not have write access to " << idmap_path.c_str();
@@ -111,12 +112,15 @@ Result<Unit> CreateMultiple(const std::vector<std::string>& args) {
                 !ignore_overlayable)) {
       const auto overlay = OverlayResourceContainer::FromPath(overlay_apk_path);
       if (!overlay) {
-        LOG(WARNING) << "failed to load apk " << overlay_apk_path.c_str();
+        LOG(WARNING) << "failed to load apk " << overlay_apk_path;
         continue;
       }
 
+      // TODO(b/371801644): Add command-line support for RRO constraints.
+      auto constraints = std::make_unique<const IdmapConstraints>();
       const auto idmap =
-          Idmap::FromContainers(**target, **overlay, "", fulfilled_policies, !ignore_overlayable);
+          Idmap::FromContainers(**target, **overlay, "", fulfilled_policies, !ignore_overlayable,
+                                std::move(constraints));
       if (!idmap) {
         LOG(WARNING) << "failed to create idmap";
         continue;
@@ -138,7 +142,7 @@ Result<Unit> CreateMultiple(const std::vector<std::string>& args) {
       }
     }
 
-    idmap_paths.emplace_back(idmap_path);
+    idmap_paths.emplace_back(std::move(idmap_path));
   }
 
   for (const std::string& idmap_path : idmap_paths) {

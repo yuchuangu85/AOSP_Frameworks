@@ -33,15 +33,21 @@ import android.app.ActivityThread;
 import android.content.res.Configuration;
 import android.os.IBinder;
 import android.os.RemoteException;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.view.IWindowManager;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.window.flags.Flags;
+
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 /**
  * Tests for {@link WindowTokenClientController}.
@@ -52,6 +58,12 @@ import org.mockito.MockitoAnnotations;
 @SmallTest
 @Presubmit
 public class WindowTokenClientControllerTest {
+
+    @Rule
+    public final MockitoRule mockito = MockitoJUnit.rule();
+
+    @Rule
+    public SetFlagsRule setFlagsRule = new SetFlagsRule();
 
     @Mock
     private IWindowManager mWindowManagerService;
@@ -67,7 +79,6 @@ public class WindowTokenClientControllerTest {
 
     @Before
     public void setup() {
-        MockitoAnnotations.initMocks(this);
         mController = spy(WindowTokenClientController.createInstanceForTesting());
         doReturn(mWindowManagerService).when(mController).getWindowManagerService();
         mWindowContextInfo = new WindowContextInfo(mConfiguration, DEFAULT_DISPLAY);
@@ -157,6 +168,23 @@ public class WindowTokenClientControllerTest {
         verify(mWindowManagerService).detachWindowContext(mWindowTokenClient);
     }
 
+    @EnableFlags(Flags.FLAG_TRACK_SYSTEM_UI_CONTEXT_BEFORE_WMS)
+    @Test
+    public void testAttachToDisplayContent_keepTrackWithoutWMS() {
+        // WMS is not initialized
+        doReturn(null).when(mController).getWindowManagerService();
+
+        assertFalse(mController.attachToDisplayContent(mWindowTokenClient, DEFAULT_DISPLAY));
+
+        // Can report config change
+        mController.onWindowContextInfoChanged(mWindowTokenClient, mWindowContextInfo);
+
+        verify(mWindowTokenClient).onConfigurationChanged(mConfiguration, DEFAULT_DISPLAY);
+
+        // No crash to detach even if WMS is not initialized.
+        mController.detachIfNeeded(mWindowTokenClient);
+    }
+
     @Test
     public void testAttachToWindowToken() throws RemoteException {
         doReturn(null).when(mWindowManagerService).attachWindowContextToWindowToken(
@@ -237,5 +265,26 @@ public class WindowTokenClientControllerTest {
         mController.onWindowContextWindowRemoved(mWindowTokenClient);
 
         verify(mWindowTokenClient).onWindowTokenRemoved();
+    }
+
+    @Test
+    public void testOnWindowConfigurationChanged_propagatedToCorrectToken() throws RemoteException {
+        doReturn(mWindowContextInfo).when(mWindowManagerService)
+                .attachWindowContextToDisplayContent(any(), any(), anyInt());
+
+        mController.onWindowConfigurationChanged(mWindowTokenClient, mConfiguration,
+                DEFAULT_DISPLAY + 1);
+
+        // Not propagated before attaching
+        verify(mWindowTokenClient, never()).onConfigurationChanged(mConfiguration,
+                DEFAULT_DISPLAY + 1);
+
+        assertTrue(mController.attachToDisplayContent(mWindowTokenClient, DEFAULT_DISPLAY));
+
+        mController.onWindowConfigurationChanged(mWindowTokenClient, mConfiguration,
+                DEFAULT_DISPLAY + 1);
+
+        // Now that's attached, propagating it.
+        verify(mWindowTokenClient).postOnConfigurationChanged(mConfiguration, DEFAULT_DISPLAY + 1);
     }
 }

@@ -54,10 +54,23 @@ public:
      * @param position The new position of the mouse cursor on the logical display
      */
     virtual void notifyPointerDisplayIdChanged(ui::LogicalDisplayId displayId,
-                                               const FloatPoint& position) = 0;
+                                               const vec2& position) = 0;
 
     /* Returns true if any InputConnection is currently active. */
     virtual bool isInputMethodConnectionActive() = 0;
+
+    /* Notifies that mouse cursor faded due to typing. */
+    virtual void notifyMouseCursorFadedOnTyping() = 0;
+
+    /**
+     * Give accessibility a chance to filter motion event by pointer devices.
+     * The return values denotes the delta x and y after filtering it.
+     *
+     * This call happens on the input hot path and it is extremely performance sensitive.
+     * This also must not call back into native code.
+     */
+    virtual std::optional<vec2> filterPointerMotionForAccessibility(
+            const vec2& current, const vec2& delta, const ui::LogicalDisplayId& displayId) = 0;
 };
 
 } // namespace android

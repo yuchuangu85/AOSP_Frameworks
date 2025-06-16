@@ -72,9 +72,9 @@ public abstract class MirrorWindowControl {
     private final Point mControlPosition = new Point();
     private final WindowManager mWindowManager;
 
-    MirrorWindowControl(Context context) {
+    MirrorWindowControl(Context context, WindowManager windowManager) {
         mContext = context;
-        mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
+        mWindowManager = windowManager;
     }
 
     public void setWindowDelegate(@Nullable MirrorWindowDelegate windowDelegate) {

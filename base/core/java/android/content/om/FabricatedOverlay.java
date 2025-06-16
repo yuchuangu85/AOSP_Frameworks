@@ -476,6 +476,31 @@ public class FabricatedOverlay {
         return entry;
     }
 
+    @NonNull
+    private static FabricatedOverlayInternalEntry generateFabricatedOverlayInternalEntry(
+            @NonNull String resourceName, float dimensionValue,
+            @TypedValue.ComplexDimensionUnit int dimensionUnit, @Nullable String configuration) {
+        final FabricatedOverlayInternalEntry entry = new FabricatedOverlayInternalEntry();
+        entry.resourceName = resourceName;
+        entry.dataType = TypedValue.TYPE_DIMENSION;
+        Preconditions.checkArgumentInRange(dimensionUnit,
+                TypedValue.COMPLEX_UNIT_PX, TypedValue.COMPLEX_UNIT_MM, "dimensionUnit");
+        entry.data = TypedValue.createComplexDimension(dimensionValue, dimensionUnit);
+        entry.configuration = configuration;
+        return entry;
+    }
+
+    @NonNull
+    private static FabricatedOverlayInternalEntry generateFabricatedOverlayInternalEntry(
+            @NonNull String resourceName, float value, @Nullable String configuration) {
+        final FabricatedOverlayInternalEntry entry = new FabricatedOverlayInternalEntry();
+        entry.resourceName = resourceName;
+        entry.dataType = TypedValue.TYPE_FLOAT;
+        entry.data = Float.floatToIntBits(value);
+        entry.configuration = configuration;
+        return entry;
+    }
+
     /**
      * Sets the resource value in the fabricated overlay for the integer-like types with the
      * configuration.
@@ -585,5 +610,46 @@ public class FabricatedOverlay {
         ensureValidResourceName(resourceName);
         mOverlay.entries.add(
                 generateFabricatedOverlayInternalEntry(resourceName, value, configuration));
+    }
+
+    /**
+     * Sets the resource value in the fabricated overlay for the dimension type with the
+     * configuration.
+     *
+     * @param resourceName name of the target resource to overlay (in the form
+     *     [package]:type/entry)
+     * @param dimensionValue the float representing the dimension value
+     * @param dimensionUnit the integer representing the dimension unit
+     * @param configuration The string representation of the config this overlay is enabled for
+     */
+    @FlaggedApi(android.content.res.Flags.FLAG_DIMENSION_FRRO)
+    public void setResourceValue(
+            @NonNull String resourceName,
+            float dimensionValue,
+            @TypedValue.ComplexDimensionUnit int dimensionUnit,
+            @Nullable String configuration) {
+        ensureValidResourceName(resourceName);
+        mOverlay.entries.add(generateFabricatedOverlayInternalEntry(resourceName, dimensionValue,
+                dimensionUnit, configuration));
+    }
+
+    /**
+     * Sets the resource value in the fabricated overlay for the float type with the
+     * configuration.
+     *
+     * @param resourceName name of the target resource to overlay (in the form
+     *     [package]:type/entry)
+     * @param value the float representing the new value
+     * @param configuration The string representation of the config this overlay is enabled for
+     * @throws IllegalArgumentException If the resource name is invalid
+     */
+    @FlaggedApi(android.content.res.Flags.FLAG_DIMENSION_FRRO)
+    public void setResourceValue(
+            @NonNull String resourceName,
+            float value,
+            @Nullable String configuration) {
+        ensureValidResourceName(resourceName);
+        mOverlay.entries.add(generateFabricatedOverlayInternalEntry(resourceName, value,
+                configuration));
     }
 }

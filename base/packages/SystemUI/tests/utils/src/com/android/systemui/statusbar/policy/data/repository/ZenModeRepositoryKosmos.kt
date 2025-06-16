@@ -16,8 +16,9 @@
 
 package com.android.systemui.statusbar.policy.data.repository
 
+import com.android.settingslib.notification.data.repository.FakeZenModeRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.Kosmos.Fixture
 
-val Kosmos.zenModeRepository by Fixture { fakeZenModeRepository }
+var Kosmos.zenModeRepository by Fixture { fakeZenModeRepository }
 val Kosmos.fakeZenModeRepository by Fixture { FakeZenModeRepository() }

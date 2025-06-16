@@ -41,12 +41,11 @@ import android.view.Display;
 import android.view.IInputFilter;
 import android.view.IRemoteAnimationFinishedCallback;
 import android.view.IWindow;
-import android.view.InputChannel;
 import android.view.MagnificationSpec;
 import android.view.RemoteAnimationTarget;
+import android.view.Surface;
 import android.view.SurfaceControl;
 import android.view.SurfaceControlViewHost;
-import android.view.WindowInfo;
 import android.view.WindowManager.DisplayImePolicy;
 import android.view.inputmethod.ImeTracker;
 import android.window.ScreenCapture;
@@ -55,7 +54,6 @@ import android.window.ScreenCapture.ScreenshotHardwareBuffer;
 import com.android.internal.policy.KeyInterceptionInfo;
 import com.android.server.input.InputManagerService;
 import com.android.server.policy.WindowManagerPolicy;
-import com.android.server.wallpaper.WallpaperCropper.WallpaperCropUtils;
 import com.android.server.wm.SensitiveContentPackages.PackageInfo;
 
 import java.lang.annotation.Retention;
@@ -153,31 +151,37 @@ public abstract class WindowManagerInternal {
         }
     }
 
+    /** Interface for clients to receive callbacks related to window change. */
+    public interface WindowFocusChangeListener {
+        /**
+         * Notify on focus changed.
+         *
+         * @param focusedWindowToken the token of the newly focused window.
+         */
+        void focusChanged(@NonNull IBinder focusedWindowToken);
+    }
+
+    /**
+     * Registers a listener to be notified about window focus changes.
+     *
+     * @param listener the {@link WindowFocusChangeListener} to register.
+     */
+    public abstract void registerWindowFocusChangeListener(WindowFocusChangeListener listener);
+
+    /**
+     * Unregisters a listener that was registered via {@link #registerWindowFocusChangeListener}.
+     *
+     * @param listener the {@link WindowFocusChangeListener} to unregister.
+     */
+    public abstract void unregisterWindowFocusChangeListener(WindowFocusChangeListener listener);
+
     /**
      * Interface to receive a callback when the windows reported for
      * accessibility changed.
      */
     public interface WindowsForAccessibilityCallback {
-
         /**
-         * Called when the windows for accessibility changed. This is called if
-         * {@link com.android.server.accessibility.Flags.FLAG_COMPUTE_WINDOW_CHANGES_ON_A11Y_V2} is
-         * false.
-         *
-         * @param forceSend Send the windows for accessibility even if they haven't changed.
-         * @param topFocusedDisplayId The display Id which has the top focused window.
-         * @param topFocusedWindowToken The window token of top focused window.
-         * @param windows The windows for accessibility.
-         */
-        void onWindowsForAccessibilityChanged(boolean forceSend, int topFocusedDisplayId,
-                IBinder topFocusedWindowToken, @NonNull List<WindowInfo> windows);
-
-        /**
-         * Called when the windows for accessibility changed. This is called if
-         * {@link com.android.server.accessibility.Flags.FLAG_COMPUTE_WINDOW_CHANGES_ON_A11Y_V2} is
-         * true.
-         * TODO(b/322444245): Remove screenSize parameter by getting it from
-         *  DisplayManager#getDisplay(int).getRealSize() on the a11y side.
+         * Called when the windows for accessibility changed.
          *
          * @param forceSend Send the windows for accessibility even if they haven't changed.
          * @param topFocusedDisplayId The display Id which has the top focused window.
@@ -241,6 +245,22 @@ public abstract class WindowManagerInternal {
      * as an abstract class so a listener only needs to implement the methods of its interest.
      */
     public static abstract class AppTransitionListener {
+
+        /**
+         * The display this listener is interested in. If it is INVALID_DISPLAY, then which display
+         * should be notified depends on the dispatcher.
+         */
+        public final int mTargetDisplayId;
+
+        /** Let transition controller decide which display should receive the callbacks. */
+        public AppTransitionListener() {
+            this(Display.INVALID_DISPLAY);
+        }
+
+        /** It will listen the transition on the given display. */
+        public AppTransitionListener(int displayId) {
+            mTargetDisplayId = displayId;
+        }
 
         /**
          * Called when an app transition is being setup and about to be executed.
@@ -348,8 +368,10 @@ public abstract class WindowManagerInternal {
          *
          * @param windowToken The window token
          * @param imeVisible {@code true} if the IME should be shown, {@code false} to hide
+         * @param statsToken the token tracking the current IME request.
          */
-        void onImeRequestedChanged(IBinder windowToken, boolean imeVisible);
+        void onImeRequestedChanged(IBinder windowToken, boolean imeVisible,
+                @NonNull ImeTracker.Token statsToken);
     }
 
     /**
@@ -358,10 +380,10 @@ public abstract class WindowManagerInternal {
     public interface IDragDropCallback {
         default CompletableFuture<Boolean> registerInputChannel(
                 DragState state, Display display, InputManagerService service,
-                InputChannel source) {
+                IBinder sourceInputChannelToken) {
             return state.register(display)
                 .thenApply(unused ->
-                    service.startDragAndDrop(source, state.getInputChannel()));
+                    service.startDragAndDrop(sourceInputChannelToken, state.getInputToken()));
         }
 
         /**
@@ -672,15 +694,10 @@ public abstract class WindowManagerInternal {
      * <p>Only {@link com.android.server.inputmethod.InputMethodManagerService} is the expected and
      * tested caller of this method.</p>
      *
-     * @param imeToken token to track the active input method. Corresponding IME windows can be
-     *                 identified by checking {@link android.view.WindowManager.LayoutParams#token}.
-     *                 Note that there is no guarantee that the corresponding window is already
-     *                 created
      * @param imeTargetWindowToken token to identify the target window that the IME is associated
      *                             with
      */
-    public abstract void updateInputMethodTargetWindow(@NonNull IBinder imeToken,
-            @NonNull IBinder imeTargetWindowToken);
+    public abstract void updateInputMethodTargetWindow(@NonNull IBinder imeTargetWindowToken);
 
     /**
       * Returns true when the hardware keyboard is available.
@@ -754,12 +771,6 @@ public abstract class WindowManagerInternal {
     public abstract void setWallpaperCropHints(IBinder windowToken, SparseArray<Rect> cropHints);
 
     /**
-     * Transmits the {@link WallpaperCropUtils} instance to {@link WallpaperController}.
-     * {@link WallpaperCropUtils} contains the helpers to properly position the wallpaper.
-     */
-    public abstract void setWallpaperCropUtils(WallpaperCropUtils wallpaperCropUtils);
-
-    /**
      * Returns {@code true} if a Window owned by {@code uid} has focus.
      */
     public abstract boolean isUidFocused(int uid);
@@ -817,6 +828,16 @@ public abstract class WindowManagerInternal {
     public abstract Context getTopFocusedDisplayUiContext();
 
     /**
+     * Sets the rotation of a non-default display.
+     *
+     * @param displayId The id of the display
+     * @param rotation The new rotation value.
+     * @param caller The requester of the rotation change, used for bookkeeping.
+     */
+    public abstract void setNonDefaultDisplayRotation(int displayId, @Surface.Rotation int rotation,
+            @NonNull String caller);
+
+    /**
      * Sets whether the relevant display content can host the relevant home activity and wallpaper.
      *
      * @param displayUniqueId The unique ID of the display. Note that the display may not yet be
@@ -834,6 +855,18 @@ public abstract class WindowManagerInternal {
      * and can also be set via {@link VirtualDisplayConfig.Builder#setHomeSupported}.</p>
      */
     public abstract boolean isHomeSupportedOnDisplay(int displayId);
+
+    /**
+     * Sets whether the relevant display content ignores fixed orientation, aspect ratio
+     * and resizability of apps.
+     *
+     * @param displayUniqueId The unique ID of the display. Note that the display may not yet be
+     *   created, but whenever it is, this property will be applied.
+     * @param displayType The type of the display, e.g. {@link Display#TYPE_VIRTUAL}.
+     * @param enabled Whether app is universal resizable on this display.
+     */
+    public abstract void setIgnoreActivitySizeRestrictionsOnDisplay(
+            @NonNull String displayUniqueId, int displayType, boolean enabled);
 
     /**
      * Removes any settings relevant to the given display.
@@ -965,16 +998,6 @@ public abstract class WindowManagerInternal {
             this.imeSurfaceParentName = imeSurfaceParentName;
         }
     }
-
-    /**
-     * Sets by the {@link com.android.server.inputmethod.InputMethodManagerService} to monitor
-     * the visibility change of the IME targeted windows.
-     *
-     * @see ImeTargetChangeListener#onImeTargetOverlayVisibilityChanged
-     * @see ImeTargetChangeListener#onImeInputTargetVisibilityChanged
-     */
-    public abstract void setInputMethodTargetChangeListener(
-            @NonNull ImeTargetChangeListener listener);
 
     /**
      * Moves the {@link WindowToken} {@code binder} to the display specified by {@code displayId}.
@@ -1131,6 +1154,15 @@ public abstract class WindowManagerInternal {
      * Returns an instance of {@link ScreenshotHardwareBuffer} containing the current
      * screenshot.
      */
-    public abstract ScreenshotHardwareBuffer takeAssistScreenshot(
-            Set<Integer> windowTypesToExclude);
+    public abstract ScreenshotHardwareBuffer takeAssistScreenshot();
+
+    /**
+     * Returns an instance of {@link ScreenshotHardwareBuffer} containing the current
+     * screenshot, excluding layers that are not appropriate to pass to contextual search
+     * services - such as the cursor or any current contextual search window.
+     *
+     * @param uid the UID of the contextual search application. System alert windows belonging
+     * to this UID will be excluded from the screenshot.
+     */
+    public abstract ScreenshotHardwareBuffer takeContextualSearchScreenshot(int uid);
 }

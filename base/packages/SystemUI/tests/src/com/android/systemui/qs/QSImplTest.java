@@ -36,7 +36,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
@@ -51,6 +51,7 @@ import android.widget.FrameLayout;
 
 import androidx.compose.ui.platform.ComposeView;
 import androidx.lifecycle.Lifecycle;
+import androidx.lifecycle.LifecycleOwner;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
@@ -531,7 +532,7 @@ public class QSImplTest extends SysuiTestCase {
         other.onComponentCreated(mQsComponent, null);
 
         assertThat((View) other.getView().findViewById(R.id.qs_footer_actions)).isNull();
-        verifyZeroInteractions(mFooterActionsViewModel, mFooterActionsViewModelFactory);
+        verifyNoMoreInteractions(mFooterActionsViewModel, mFooterActionsViewModelFactory);
     }
 
     @Test
@@ -552,6 +553,30 @@ public class QSImplTest extends SysuiTestCase {
 
         when(mStatusBarStateController.getCurrentOrUpcomingState()).thenReturn(KEYGUARD);
         assertThat(mUnderTest.isKeyguardState()).isFalse();
+    }
+
+    @Test
+    public void testHeaderBounds() {
+        int left = 20;
+        int top = 30;
+        int right = 200;
+        int bottom = 100;
+        setHeaderBounds(left, top, right, bottom);
+
+        assertThat(mUnderTest.getHeaderLeft()).isEqualTo(left);
+        assertThat(mUnderTest.getHeaderTop()).isEqualTo(top);
+        assertThat(mUnderTest.getHeaderBottom()).isEqualTo(bottom);
+        assertThat(mUnderTest.getHeaderHeight()).isEqualTo(bottom - top);
+    }
+
+    @Test
+    public void testHeaderBoundsOnScreen() {
+        Rect bounds = new Rect(0, 10, 100, 200);
+        setHeaderBoundsOnScreen(bounds);
+
+        Rect out = new Rect();
+        mUnderTest.getHeaderBoundsOnScreen(out);
+        assertThat(out).isEqualTo(bounds);
     }
 
     private QSImpl instantiate() {
@@ -587,7 +612,8 @@ public class QSImplTest extends SysuiTestCase {
         when(mQSContainerImplController.getView()).thenReturn(mContainer);
         when(mQSPanelController.getTileLayout()).thenReturn(mQQsTileLayout);
         when(mQuickQSPanelController.getTileLayout()).thenReturn(mQsTileLayout);
-        when(mFooterActionsViewModelFactory.create(any())).thenReturn(mFooterActionsViewModel);
+        when(mFooterActionsViewModelFactory.create(any(LifecycleOwner.class)))
+                .thenReturn(mFooterActionsViewModel);
     }
 
     private void setUpMedia() {
@@ -671,5 +697,20 @@ public class QSImplTest extends SysuiTestCase {
 
     private void setIsSmallScreen() {
         mUnderTest.setIsNotificationPanelFullWidth(true);
+    }
+
+    private void setHeaderBounds(int left, int top, int right, int bottom) {
+        when(mHeader.getLeft()).thenReturn(left);
+        when(mHeader.getTop()).thenReturn(top);
+        when(mHeader.getRight()).thenReturn(right);
+        when(mHeader.getBottom()).thenReturn(bottom);
+    }
+
+    private void setHeaderBoundsOnScreen(Rect rect) {
+        doAnswer(invocation -> {
+            Rect bounds = invocation.getArgument(/* index= */ 0);
+            bounds.set(rect);
+            return null;
+        }).when(mHeader).getBoundsOnScreen(any(Rect.class));
     }
 }

@@ -50,8 +50,8 @@ class FlagsVisitor : public xml::Visitor {
 
  private:
   bool ShouldRemove(std::unique_ptr<xml::Node>& node) {
-    if (const auto* el = NodeCast<Element>(node.get())) {
-      auto* attr = el->FindAttribute(xml::kSchemaAndroid, "featureFlag");
+    if (auto* el = NodeCast<Element>(node.get())) {
+      auto* attr = el->FindAttribute(xml::kSchemaAndroid, xml::kAttrFeatureFlag);
       if (attr == nullptr) {
         return false;
       }
@@ -63,12 +63,22 @@ class FlagsVisitor : public xml::Visitor {
         flag_name = flag_name.substr(1);
       }
 
-      if (auto it = feature_flag_values_.find(std::string(flag_name));
-          it != feature_flag_values_.end()) {
-        if (it->second.has_value()) {
-          if (options_.remove_disabled_elements) {
+      if (auto it = feature_flag_values_.find(flag_name); it != feature_flag_values_.end()) {
+        if (it->second.enabled.has_value()) {
+          if (options_.flags_must_be_readonly && !it->second.read_only) {
+            diagnostics_->Error(android::DiagMessage(node->line_number)
+                                << "attribute 'android:featureFlag' has flag '" << flag_name
+                                << "' which must be readonly but is not");
+            has_error_ = true;
+            return false;
+          }
+          if (options_.remove_disabled_elements && it->second.read_only) {
             // Remove if flag==true && attr=="!flag" (negated) OR flag==false && attr=="flag"
-            return *it->second == negated;
+            bool remove = *it->second.enabled == negated;
+            if (!remove) {
+              el->RemoveAttribute(xml::kSchemaAndroid, xml::kAttrFeatureFlag);
+            }
+            return remove;
           }
         } else if (options_.flags_must_have_value) {
           diagnostics_->Error(android::DiagMessage(node->line_number)

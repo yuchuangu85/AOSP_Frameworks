@@ -47,7 +47,6 @@ import android.util.MathUtils;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.TypedValue;
-import android.view.Display;
 import android.view.DisplayInfo;
 import android.view.MagnificationSpec;
 import android.view.View;
@@ -65,6 +64,7 @@ import com.android.server.LocalServices;
 import com.android.server.accessibility.AccessibilityManagerService;
 import com.android.server.accessibility.AccessibilityTraceManager;
 import com.android.server.accessibility.Flags;
+import com.android.server.input.InputManagerInternal;
 import com.android.server.wm.WindowManagerInternal;
 
 import java.util.ArrayList;
@@ -120,6 +120,8 @@ public class FullScreenMagnificationController implements
     private final MagnificationThumbnailFeatureFlag mMagnificationThumbnailFeatureFlag;
     @NonNull private final Supplier<MagnificationThumbnail> mThumbnailSupplier;
     @NonNull private final Supplier<Boolean> mMagnificationConnectionStateSupplier;
+
+    private boolean mIsPointerMotionFilterInstalled = false;
 
     /**
      * This class implements {@link WindowManagerInternal.MagnificationCallbacks} and holds
@@ -397,7 +399,7 @@ public class FullScreenMagnificationController implements
                             mCurrentMagnificationSpec.offsetX, mCurrentMagnificationSpec.offsetY)) {
                         sendSpecToAnimation(mCurrentMagnificationSpec, null);
                     }
-                    onMagnificationChangedLocked();
+                    onMagnificationChangedLocked(/* isScaleTransient= */ false);
                 }
                 magnified.recycle();
             }
@@ -475,8 +477,16 @@ public class FullScreenMagnificationController implements
             return mIdOfLastServiceToMagnify;
         }
 
+        /**
+         * This is invoked whenever magnification change happens.
+         *
+         * @param isScaleTransient represents that if the scale is being changed and the changed
+         *                         value may be short lived and be updated again soon.
+         *                         Calling the method usually notifies input manager to update the
+         *                         cursor scale, but setting this value {@code true} prevents it.
+         */
         @GuardedBy("mLock")
-        void onMagnificationChangedLocked() {
+        void onMagnificationChangedLocked(boolean isScaleTransient) {
             final float scale = getScale();
             final float centerX = getCenterX();
             final float centerY = getCenterY();
@@ -498,6 +508,10 @@ public class FullScreenMagnificationController implements
                 updateThumbnail(scale, centerX, centerY);
             } else {
                 hideThumbnail();
+            }
+
+            if (!isScaleTransient) {
+                notifyScaleForInput(mDisplayId, scale);
             }
         }
 
@@ -612,8 +626,9 @@ public class FullScreenMagnificationController implements
          * Directly Zooms out the scale to 1f with animating the transition. This method is
          * triggered only by service automatically, such as when user context changed.
          */
+        @GuardedBy("mLock")
         void zoomOutFromService() {
-            setScaleAndCenter(1.0f, Float.NaN, Float.NaN,
+            setScaleAndCenter(1.0f, Float.NaN, Float.NaN, /* isScaleTransient= */ false,
                     transformToStubCallback(true),
                     AccessibilityManagerService.MAGNIFICATION_GESTURE_HANDLER_ID);
             mZoomedOutFromService = true;
@@ -641,7 +656,7 @@ public class FullScreenMagnificationController implements
             setActivated(false);
             if (changed) {
                 spec.clear();
-                onMagnificationChangedLocked();
+                onMagnificationChangedLocked(/* isScaleTransient= */ false);
             }
             mIdOfLastServiceToMagnify = INVALID_SERVICE_ID;
             sendSpecToAnimation(spec, animationCallback);
@@ -652,7 +667,7 @@ public class FullScreenMagnificationController implements
         }
 
         @GuardedBy("mLock")
-        boolean setScale(float scale, float pivotX, float pivotY,
+        boolean setScale(float scale, float pivotX, float pivotY, boolean isScaleTransient,
                 boolean animate, int id) {
             if (!mRegistered) {
                 return false;
@@ -675,19 +690,20 @@ public class FullScreenMagnificationController implements
             final float centerX = normPivotX + offsetX;
             final float centerY = normPivotY + offsetY;
             mIdOfLastServiceToMagnify = id;
-            return setScaleAndCenter(scale, centerX, centerY, transformToStubCallback(animate), id);
+            return setScaleAndCenter(scale, centerX, centerY, isScaleTransient,
+                    transformToStubCallback(animate), id);
         }
 
         @GuardedBy("mLock")
         boolean setScaleAndCenter(float scale, float centerX, float centerY,
-                MagnificationAnimationCallback animationCallback, int id) {
+                boolean isScaleTransient, MagnificationAnimationCallback animationCallback,
+                int id) {
             if (!mRegistered) {
                 return false;
             }
-            // If the border implementation is on system ui side but the connection is not
+            // The border implementation is on system ui side but the connection is not
             // established, the fullscreen magnification should not work.
-            if (com.android.window.flags.Flags.alwaysDrawMagnificationFullscreenBorder()
-                    && !mMagnificationConnectionStateSupplier.get()) {
+            if (!mMagnificationConnectionStateSupplier.get()) {
                 return false;
             }
             if (DEBUG) {
@@ -697,7 +713,7 @@ public class FullScreenMagnificationController implements
                                 + animationCallback + ", id = " + id + ")");
             }
             boolean changed = setActivated(true);
-            changed |= updateMagnificationSpecLocked(scale, centerX, centerY);
+            changed |= updateMagnificationSpecLocked(scale, centerX, centerY, isScaleTransient);
             sendSpecToAnimation(mCurrentMagnificationSpec, animationCallback);
             if (isActivated() && (id != INVALID_SERVICE_ID)) {
                 mIdOfLastServiceToMagnify = id;
@@ -774,7 +790,9 @@ public class FullScreenMagnificationController implements
          * @return {@code true} if the magnification spec changed or {@code false}
          *         otherwise
          */
-        boolean updateMagnificationSpecLocked(float scale, float centerX, float centerY) {
+        @GuardedBy("mLock")
+        boolean updateMagnificationSpecLocked(float scale, float centerX, float centerY,
+                boolean isScaleTransient) {
             // Handle defaults.
             if (Float.isNaN(centerX)) {
                 centerX = getCenterX();
@@ -802,7 +820,7 @@ public class FullScreenMagnificationController implements
             changed |= updateCurrentSpecWithOffsetsLocked(nonNormOffsetX, nonNormOffsetY);
 
             if (changed) {
-                onMagnificationChangedLocked();
+                onMagnificationChangedLocked(isScaleTransient);
             }
 
             return changed;
@@ -814,10 +832,18 @@ public class FullScreenMagnificationController implements
                 return;
             }
 
-            final float nonNormOffsetX = mCurrentMagnificationSpec.offsetX - offsetX;
-            final float nonNormOffsetY = mCurrentMagnificationSpec.offsetY - offsetY;
-            if (updateCurrentSpecWithOffsetsLocked(nonNormOffsetX, nonNormOffsetY)) {
-                onMagnificationChangedLocked();
+            setOffset(mCurrentMagnificationSpec.offsetX - offsetX,
+                    mCurrentMagnificationSpec.offsetY - offsetY, id);
+        }
+
+        @GuardedBy("mLock")
+        void setOffset(float offsetX, float offsetY, int id) {
+            if (!mRegistered) {
+                return;
+            }
+
+            if (updateCurrentSpecWithOffsetsLocked(offsetX, offsetY)) {
+                onMagnificationChangedLocked(/* isScaleTransient= */ false);
             }
             if (id != INVALID_SERVICE_ID) {
                 mIdOfLastServiceToMagnify = id;
@@ -862,7 +888,7 @@ public class FullScreenMagnificationController implements
                             }
                             synchronized (mLock) {
                                 mCurrentMagnificationSpec.setTo(lastSpecSent);
-                                onMagnificationChangedLocked();
+                                onMagnificationChangedLocked(/* isScaleTransient= */ false);
                             }
                         }
                     });
@@ -956,6 +982,7 @@ public class FullScreenMagnificationController implements
                         context,
                         traceManager,
                         LocalServices.getService(WindowManagerInternal.class),
+                        LocalServices.getService(InputManagerInternal.class),
                         new Handler(context.getMainLooper()),
                         context.getResources().getInteger(R.integer.config_longAnimTime)),
                 lock,
@@ -1048,6 +1075,7 @@ public class FullScreenMagnificationController implements
             if (display.register()) {
                 mDisplays.put(displayId, display);
                 mScreenStateObserver.registerIfNecessary();
+                configurePointerMotionFilter(true);
             }
         }
     }
@@ -1131,7 +1159,10 @@ public class FullScreenMagnificationController implements
             }
 
             if (isAlwaysOnMagnificationEnabled()) {
-                zoomOutFromService(displayId);
+                if (!mControllerCtx.getContext().getResources().getBoolean(
+                        R.bool.config_magnification_keep_zoom_level_when_context_changed)) {
+                    zoomOutFromService(displayId);
+                }
             } else {
                 reset(displayId, true);
             }
@@ -1462,20 +1493,24 @@ public class FullScreenMagnificationController implements
      * @param scale the target scale, must be >= 1
      * @param pivotX the screen-relative X coordinate around which to scale
      * @param pivotY the screen-relative Y coordinate around which to scale
+     * @param isScaleTransient {@code true} if the scale is for a short time and potentially changed
+     *                         soon. {@code false} otherwise.
      * @param animate {@code true} to animate the transition, {@code false}
      *                to transition immediately
      * @param id the ID of the service requesting the change
      * @return {@code true} if the magnification spec changed, {@code false} if
      *         the spec did not change
      */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
     public boolean setScale(int displayId, float scale, float pivotX, float pivotY,
-            boolean animate, int id) {
+            boolean isScaleTransient, boolean animate, int id) {
         synchronized (mLock) {
             final DisplayMagnification display = mDisplays.get(displayId);
             if (display == null) {
                 return false;
             }
-            return display.setScale(scale, pivotX, pivotY, animate, id);
+            return display.setScale(scale, pivotX, pivotY, isScaleTransient, animate, id);
         }
     }
 
@@ -1494,6 +1529,8 @@ public class FullScreenMagnificationController implements
      * @return {@code true} if the magnification spec changed, {@code false} if
      * the spec did not change
      */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
     public boolean setCenter(int displayId, float centerX, float centerY, boolean animate, int id) {
         synchronized (mLock) {
             final DisplayMagnification display = mDisplays.get(displayId);
@@ -1501,7 +1538,7 @@ public class FullScreenMagnificationController implements
                 return false;
             }
             return display.setScaleAndCenter(Float.NaN, centerX, centerY,
-                    animate ? STUB_ANIMATION_CALLBACK : null, id);
+                    /* isScaleTransient= */ false, animate ? STUB_ANIMATION_CALLBACK : null, id);
         }
     }
 
@@ -1524,7 +1561,32 @@ public class FullScreenMagnificationController implements
      */
     public boolean setScaleAndCenter(int displayId, float scale, float centerX, float centerY,
             boolean animate, int id) {
-        return setScaleAndCenter(displayId, scale, centerX, centerY,
+        return setScaleAndCenter(displayId, scale, centerX, centerY, /* isScaleTransient= */ false,
+                transformToStubCallback(animate), id);
+    }
+
+    /**
+     * Sets the scale and center of the magnified region, optionally
+     * animating the transition. If animation is disabled, the transition
+     * is immediate.
+     *
+     * @param displayId        The logical display id.
+     * @param scale            the target scale, or {@link Float#NaN} to leave unchanged
+     * @param centerX          the screen-relative X coordinate around which to
+     *                         center and scale, or {@link Float#NaN} to leave unchanged
+     * @param centerY          the screen-relative Y coordinate around which to
+     *                         center and scale, or {@link Float#NaN} to leave unchanged
+     * @param isScaleTransient {@code true} if the scale is for a short time and potentially changed
+     *                         soon. {@code false} otherwise.
+     * @param animate          {@code true} to animate the transition, {@code false}
+     *                         to transition immediately
+     * @param id               the ID of the service requesting the change
+     * @return {@code true} if the magnification spec changed, {@code false} if
+     * the spec did not change
+     */
+    public boolean setScaleAndCenter(int displayId, float scale, float centerX, float centerY,
+            boolean isScaleTransient, boolean animate, int id) {
+        return setScaleAndCenter(displayId, scale, centerX, centerY, isScaleTransient,
                 transformToStubCallback(animate), id);
     }
 
@@ -1539,20 +1601,47 @@ public class FullScreenMagnificationController implements
      *                center and scale, or {@link Float#NaN} to leave unchanged
      * @param centerY the screen-relative Y coordinate around which to
      *                center and scale, or {@link Float#NaN} to leave unchanged
+     * @param isScaleTransient {@code true} if the scale is for a short time and potentially changed
+     *                         soon. {@code false} otherwise.
      * @param animationCallback Called when the animation result is valid.
      *                           {@code null} to transition immediately
      * @param id the ID of the service requesting the change
      * @return {@code true} if the magnification spec changed, {@code false} if
      *         the spec did not change
      */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
     public boolean setScaleAndCenter(int displayId, float scale, float centerX, float centerY,
-            MagnificationAnimationCallback animationCallback, int id) {
+            boolean isScaleTransient, MagnificationAnimationCallback animationCallback, int id) {
         synchronized (mLock) {
             final DisplayMagnification display = mDisplays.get(displayId);
             if (display == null) {
                 return false;
             }
-            return display.setScaleAndCenter(scale, centerX, centerY, animationCallback, id);
+            return display.setScaleAndCenter(scale, centerX, centerY, isScaleTransient,
+                    animationCallback, id);
+        }
+    }
+
+    /**
+     * Sets the offset of the magnified region.
+     *
+     * @param displayId The logical display id.
+     * @param offsetX   the offset of the magnified region in the X coordinate, in current
+     *                  screen pixels.
+     * @param offsetY   the offset of the magnified region in the Y coordinate, in current
+     *                  screen pixels.
+     * @param id        the ID of the service requesting the change
+     */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
+    public void setOffset(int displayId, float offsetX, float offsetY, int id) {
+        synchronized (mLock) {
+            final DisplayMagnification display = mDisplays.get(displayId);
+            if (display == null) {
+                return;
+            }
+            display.setOffset(offsetX, offsetY, id);
         }
     }
 
@@ -1567,6 +1656,8 @@ public class FullScreenMagnificationController implements
      *                screen pixels.
      * @param id      the ID of the service requesting the change
      */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
     public void offsetMagnifiedRegion(int displayId, float offsetX, float offsetY, int id) {
         synchronized (mLock) {
             final DisplayMagnification display = mDisplays.get(displayId);
@@ -1634,9 +1725,12 @@ public class FullScreenMagnificationController implements
      * <strong>if scale is >= {@link MagnificationConstants.PERSISTED_SCALE_MIN_VALUE}</strong>.
      * We assume if the scale is < {@link MagnificationConstants.PERSISTED_SCALE_MIN_VALUE}, there
      * will be no obvious magnification effect.
+     * Only the value of the default display is persisted in user's settings.
      */
     public void persistScale(int displayId) {
-        final float scale = getScale(Display.DEFAULT_DISPLAY);
+        final float scale = getScale(displayId);
+        notifyScaleForInput(displayId, scale);
+
         if (scale < MagnificationConstants.PERSISTED_SCALE_MIN_VALUE) {
             return;
         }
@@ -1662,6 +1756,8 @@ public class FullScreenMagnificationController implements
      *
      * @param displayId The logical display id.
      */
+    @SuppressWarnings("GuardedBy")
+    // errorprone cannot recognize an inner class guarded by an outer class member.
     private void zoomOutFromService(int displayId) {
         synchronized (mLock) {
             final DisplayMagnification display = mDisplays.get(displayId);
@@ -1684,6 +1780,20 @@ public class FullScreenMagnificationController implements
                 return false;
             }
             return display.isZoomedOutFromService();
+        }
+    }
+
+    /**
+     * Notifies input manager that magnification scale changed non-transiently
+     * so that pointer cursor is scaled as well.
+     *
+     * @param displayId The logical display id.
+     * @param scale     The new scale factor.
+     */
+    public void notifyScaleForInput(int displayId, float scale) {
+        if (Flags.magnificationEnlargePointerBugfix()) {
+            mControllerCtx.getInputManager()
+                    .setAccessibilityPointerIconScaleFactor(displayId, scale);
         }
     }
 
@@ -1808,6 +1918,7 @@ public class FullScreenMagnificationController implements
         }
         if (!hasRegister) {
             mScreenStateObserver.unregister();
+            configurePointerMotionFilter(false);
         }
     }
 
@@ -1821,6 +1932,22 @@ public class FullScreenMagnificationController implements
         synchronized (mLock) {
             mMagnificationInfoChangedCallbacks.remove(callback);
         }
+    }
+
+    private void configurePointerMotionFilter(boolean enabled) {
+        if (!Flags.enableMagnificationFollowsMouseWithPointerMotionFilter()) {
+            return;
+        }
+        if (enabled == mIsPointerMotionFilterInstalled) {
+            return;
+        }
+        if (!enabled) {
+            mControllerCtx.getInputManager().registerAccessibilityPointerMotionFilter(null);
+        } else {
+            mControllerCtx.getInputManager().registerAccessibilityPointerMotionFilter(
+                    new FullScreenMagnificationPointerMotionEventFilter(this));
+        }
+        mIsPointerMotionFilterInstalled = enabled;
     }
 
     private boolean traceEnabled() {
@@ -2163,6 +2290,7 @@ public class FullScreenMagnificationController implements
         private final Context mContext;
         private final AccessibilityTraceManager mTrace;
         private final WindowManagerInternal mWindowManager;
+        private final InputManagerInternal mInputManager;
         private final Handler mHandler;
         private final Long mAnimationDuration;
 
@@ -2172,11 +2300,13 @@ public class FullScreenMagnificationController implements
         public ControllerContext(@NonNull Context context,
                 @NonNull AccessibilityTraceManager traceManager,
                 @NonNull WindowManagerInternal windowManager,
+                @NonNull InputManagerInternal inputManager,
                 @NonNull Handler handler,
                 long animationDuration) {
             mContext = context;
             mTrace = traceManager;
             mWindowManager = windowManager;
+            mInputManager = inputManager;
             mHandler = handler;
             mAnimationDuration = animationDuration;
         }
@@ -2203,6 +2333,14 @@ public class FullScreenMagnificationController implements
         @NonNull
         public WindowManagerInternal getWindowManager() {
             return mWindowManager;
+        }
+
+        /**
+         * @return InputManagerInternal
+         */
+        @NonNull
+        public InputManagerInternal getInputManager() {
+            return mInputManager;
         }
 
         /**

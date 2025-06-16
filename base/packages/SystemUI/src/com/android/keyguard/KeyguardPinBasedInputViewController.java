@@ -16,12 +16,16 @@
 
 package com.android.keyguard;
 
+import static android.view.accessibility.AccessibilityEvent.TYPE_VIEW_FOCUSED;
+
+import static com.android.internal.widget.flags.Flags.hideLastCharWithPhysicalInput;
 import static com.android.systemui.Flags.pinInputFieldStyledFocusState;
 import static com.android.systemui.util.kotlin.JavaAdapterKt.collectFlow;
 
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.hardware.input.InputManager;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -34,18 +38,20 @@ import com.android.internal.util.LatencyTracker;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
 import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.classifier.FalsingCollector;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.res.R;
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 
 public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinBasedInputView>
-        extends KeyguardAbsKeyInputViewController<T> {
+        extends KeyguardAbsKeyInputViewController<T> implements InputManager.InputDeviceListener {
 
-    private final LiftToActivateListener mLiftToActivateListener;
     private final FalsingCollector mFalsingCollector;
     private final KeyguardKeyboardInteractor mKeyguardKeyboardInteractor;
     protected PasswordTextView mPasswordEntry;
+    private Boolean mShowAnimations;
+    private InputManager mInputManager;
 
     private final OnKeyListener mOnKeyListener = (v, keyCode, event) -> {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
@@ -71,19 +77,66 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
             KeyguardSecurityCallback keyguardSecurityCallback,
             KeyguardMessageAreaController.Factory messageAreaControllerFactory,
             LatencyTracker latencyTracker,
-            LiftToActivateListener liftToActivateListener,
             EmergencyButtonController emergencyButtonController,
             FalsingCollector falsingCollector,
             FeatureFlags featureFlags,
             SelectedUserInteractor selectedUserInteractor,
-            KeyguardKeyboardInteractor keyguardKeyboardInteractor) {
+            KeyguardKeyboardInteractor keyguardKeyboardInteractor,
+            BouncerHapticPlayer bouncerHapticPlayer,
+            UserActivityNotifier userActivityNotifier,
+            InputManager inputManager) {
         super(view, keyguardUpdateMonitor, securityMode, lockPatternUtils, keyguardSecurityCallback,
                 messageAreaControllerFactory, latencyTracker, falsingCollector,
-                emergencyButtonController, featureFlags, selectedUserInteractor);
-        mLiftToActivateListener = liftToActivateListener;
+                emergencyButtonController, featureFlags, selectedUserInteractor,
+                bouncerHapticPlayer, userActivityNotifier);
         mFalsingCollector = falsingCollector;
         mKeyguardKeyboardInteractor = keyguardKeyboardInteractor;
         mPasswordEntry = mView.findViewById(mView.getPasswordTextViewId());
+        mInputManager = inputManager;
+        mShowAnimations = null;
+    }
+
+    private void updateAnimations(Boolean showAnimations) {
+        if (!hideLastCharWithPhysicalInput()) return;
+
+        if (showAnimations == null) {
+            showAnimations = !mLockPatternUtils
+                .isPinEnhancedPrivacyEnabled(mSelectedUserInteractor.getSelectedUserId());
+        }
+        if (mShowAnimations != null && showAnimations.equals(mShowAnimations)) return;
+        mShowAnimations = showAnimations;
+
+        for (NumPadKey button : mView.getButtons()) {
+            button.setAnimationEnabled(mShowAnimations);
+        }
+        mPasswordEntry.setShowPassword(mShowAnimations);
+    }
+
+    @Override
+    public void onInputDeviceAdded(int deviceId) {
+        if (!hideLastCharWithPhysicalInput()) return;
+
+        // If we were showing animations before maybe the new device is a keyboard.
+        if (mShowAnimations) {
+            updateAnimations(null);
+        }
+    }
+
+    @Override
+    public void onInputDeviceRemoved(int deviceId) {
+        if (!hideLastCharWithPhysicalInput()) return;
+
+        // If we were hiding animations because of a keyboard the keyboard may have been unplugged.
+        if (!mShowAnimations) {
+            updateAnimations(null);
+        }
+    }
+
+    @Override
+    public void onInputDeviceChanged(int deviceId) {
+        if (!hideLastCharWithPhysicalInput()) return;
+
+        updateAnimations(null);
     }
 
     @Override
@@ -92,7 +145,13 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
 
         boolean showAnimations = !mLockPatternUtils
                 .isPinEnhancedPrivacyEnabled(mSelectedUserInteractor.getSelectedUserId());
-        mPasswordEntry.setShowPassword(showAnimations);
+        if (hideLastCharWithPhysicalInput()) {
+            mInputManager.registerInputDeviceListener(this, null);
+            updateAnimations(showAnimations);
+        } else {
+            mPasswordEntry.setShowPassword(showAnimations);
+        }
+
         for (NumPadKey button : mView.getButtons()) {
             button.setOnTouchListener((v, event) -> {
                 if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
@@ -100,13 +159,25 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
                 }
                 return false;
             });
-            button.setAnimationEnabled(showAnimations);
+            if (!hideLastCharWithPhysicalInput()) {
+                button.setAnimationEnabled(showAnimations);
+            }
+            button.setBouncerHapticHelper(mBouncerHapticPlayer);
         }
         mPasswordEntry.setOnKeyListener(mOnKeyListener);
         mPasswordEntry.setUserActivityListener(this::onUserInput);
 
         View deleteButton = mView.findViewById(R.id.delete_button);
-        deleteButton.setOnTouchListener(mActionButtonTouchListener);
+        if (mBouncerHapticPlayer.isEnabled()) {
+            deleteButton.setOnTouchListener((View view, MotionEvent event) -> {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    mBouncerHapticPlayer.playDeleteKeyPressFeedback();
+                }
+                return false;
+            });
+        } else {
+            deleteButton.setOnTouchListener(mActionButtonTouchListener);
+        }
         deleteButton.setOnClickListener(v -> {
             // check for time-based lockouts
             if (mPasswordEntry.isEnabled()) {
@@ -118,19 +189,24 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
             if (mPasswordEntry.isEnabled()) {
                 mView.resetPasswordText(true /* animate */, true /* announce */);
             }
-            mView.doHapticKeyClick();
+            if (mBouncerHapticPlayer.isEnabled()) {
+                mBouncerHapticPlayer.playDeleteKeyLongPressedFeedback();
+            } else {
+                mView.doHapticKeyClick();
+            }
             return true;
         });
 
         View okButton = mView.findViewById(R.id.key_enter);
         if (okButton != null) {
-            okButton.setOnTouchListener(mActionButtonTouchListener);
+            if (!mBouncerHapticPlayer.isEnabled()) {
+                okButton.setOnTouchListener(mActionButtonTouchListener);
+            }
             okButton.setOnClickListener(v -> {
                 if (mPasswordEntry.isEnabled()) {
                     verifyPasswordAndUnlock();
                 }
             });
-            okButton.setOnHoverListener(mLiftToActivateListener);
         }
         if (pinInputFieldStyledFocusState()) {
             collectFlow(mPasswordEntry, mKeyguardKeyboardInteractor.isAnyKeyboardConnected(),
@@ -148,6 +224,8 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
             layoutParams.height = (int) getResources().getDimension(
                     R.dimen.keyguard_pin_field_height);
         }
+
+        mPasswordEntry.sendAccessibilityEvent(TYPE_VIEW_FOCUSED);
     }
 
     private void setKeyboardBasedFocusOutline(boolean isAnyKeyboardConnected) {
@@ -171,8 +249,13 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
     protected void onViewDetached() {
         super.onViewDetached();
 
+        if (hideLastCharWithPhysicalInput()) {
+            mInputManager.unregisterInputDeviceListener(this);
+        }
+
         for (NumPadKey button : mView.getButtons()) {
             button.setOnTouchListener(null);
+            button.setBouncerHapticHelper(null);
         }
     }
 

@@ -25,6 +25,7 @@
 
 #include <map>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace android {
@@ -220,6 +221,12 @@ public:
     // internal only
     LIBBINDER_EXPORTED const std::unique_ptr<RpcState>& state() { return mRpcBinderState; }
 
+    /**
+     * Sets the session-specific root object. This is the object that will be used to attach
+     * the IAccessor binder to the RpcSession when a binder is set up via accessor.
+     */
+    LIBBINDER_EXPORTED void setSessionSpecificRoot(const sp<IBinder>& sessionSpecificRoot);
+
 private:
     friend sp<RpcSession>;
     friend RpcServer;
@@ -285,9 +292,14 @@ private:
     // join on thread passed to preJoinThreadOwnership
     static void join(sp<RpcSession>&& session, PreJoinSetupResult&& result);
 
-    [[nodiscard]] status_t setupClient(
-            const std::function<status_t(const std::vector<uint8_t>& sessionId, bool incoming)>&
-                    connectAndInit);
+    // This is a workaround to support move-only functors.
+    // TODO: use std::move_only_function when it becomes available.
+    template <typename Fn,
+              // Fn must be a callable type taking (const std::vector<uint8_t>&, bool) and returning
+              // status_t
+              typename = std::enable_if_t<
+                      std::is_invocable_r_v<status_t, Fn, const std::vector<uint8_t>&, bool>>>
+    [[nodiscard]] status_t setupClient(Fn&& connectAndInit);
     [[nodiscard]] status_t setupSocketClient(const RpcSocketAddress& address);
     [[nodiscard]] status_t setupOneSocketConnection(const RpcSocketAddress& address,
                                                     const std::vector<uint8_t>& sessionId,

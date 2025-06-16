@@ -61,7 +61,6 @@ import android.graphics.drawable.Drawable;
 import android.hardware.display.DisplayManager;
 import android.hardware.graphics.common.DisplayDecorationSupport;
 import android.os.Handler;
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.testing.TestableLooper.RunWithLooper;
 import android.util.PathParser;
@@ -78,6 +77,7 @@ import android.view.WindowMetrics;
 import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.keyguard.KeyguardUpdateMonitor;
@@ -121,7 +121,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @RunWithLooper
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @SmallTest
 public class ScreenDecorationsTest extends SysuiTestCase {
 
@@ -179,16 +179,17 @@ public class ScreenDecorationsTest extends SysuiTestCase {
     private List<DecorProvider> mMockCutoutList;
     private final CameraProtectionLoader mCameraProtectionLoader =
             new CameraProtectionLoaderImpl(mContext);
+    private Handler mMainHandler;
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
 
-        Handler mainHandler = new Handler(TestableLooper.get(this).getLooper());
+        mMainHandler = new Handler(TestableLooper.get(this).getLooper());
         mSecureSettings = new FakeSettings();
         mExecutor = new FakeExecutor(new FakeSystemClock());
         mThreadFactory = new FakeThreadFactory(mExecutor);
-        mThreadFactory.setHandler(mainHandler);
+        mThreadFactory.setHandler(mMainHandler);
 
         mWindowManager = mock(WindowManager.class);
         WindowMetrics metrics = mContext.getSystemService(WindowManager.class)
@@ -207,26 +208,26 @@ public class ScreenDecorationsTest extends SysuiTestCase {
         when(mMockTypedArray.length()).thenReturn(0);
         mPrivacyDotTopLeftDecorProvider = spy(new PrivacyDotCornerDecorProviderImpl(
                 R.id.privacy_dot_top_left_container,
-                DisplayCutout.BOUNDS_POSITION_TOP,
-                DisplayCutout.BOUNDS_POSITION_LEFT,
+                BOUNDS_POSITION_TOP,
+                BOUNDS_POSITION_LEFT,
                 R.layout.privacy_dot_top_left));
 
         mPrivacyDotTopRightDecorProvider = spy(new PrivacyDotCornerDecorProviderImpl(
                 R.id.privacy_dot_top_right_container,
-                DisplayCutout.BOUNDS_POSITION_TOP,
-                DisplayCutout.BOUNDS_POSITION_RIGHT,
+                BOUNDS_POSITION_TOP,
+                BOUNDS_POSITION_RIGHT,
                 R.layout.privacy_dot_top_right));
 
         mPrivacyDotBottomLeftDecorProvider = spy(new PrivacyDotCornerDecorProviderImpl(
                 R.id.privacy_dot_bottom_left_container,
-                DisplayCutout.BOUNDS_POSITION_BOTTOM,
-                DisplayCutout.BOUNDS_POSITION_LEFT,
+                BOUNDS_POSITION_BOTTOM,
+                BOUNDS_POSITION_LEFT,
                 R.layout.privacy_dot_bottom_left));
 
         mPrivacyDotBottomRightDecorProvider = spy(new PrivacyDotCornerDecorProviderImpl(
                 R.id.privacy_dot_bottom_right_container,
-                DisplayCutout.BOUNDS_POSITION_BOTTOM,
-                DisplayCutout.BOUNDS_POSITION_RIGHT,
+                BOUNDS_POSITION_BOTTOM,
+                BOUNDS_POSITION_RIGHT,
                 R.layout.privacy_dot_bottom_right));
 
         // Default no cutout
@@ -247,10 +248,10 @@ public class ScreenDecorationsTest extends SysuiTestCase {
 
         mScreenDecorations = spy(new ScreenDecorations(mContext, mSecureSettings,
                 mCommandRegistry, mUserTracker, mDisplayTracker, mDotViewController,
-                mThreadFactory,
                 mPrivacyDotDecorProviderFactory, mFaceScanningProviderFactory,
                 new ScreenDecorationsLogger(logcatLogBuffer("TestLogBuffer")),
-                mFakeFacePropertyRepository, mJavaAdapter, mCameraProtectionLoader) {
+                mFakeFacePropertyRepository, mJavaAdapter, mCameraProtectionLoader,
+                mWindowManager, mMainHandler, mExecutor) {
             @Override
             public void start() {
                 super.start();
@@ -1262,9 +1263,10 @@ public class ScreenDecorationsTest extends SysuiTestCase {
         ScreenDecorations screenDecorations = new ScreenDecorations(mContext,
                 mSecureSettings, mCommandRegistry, mUserTracker, mDisplayTracker,
                 mDotViewController,
-                mThreadFactory, mPrivacyDotDecorProviderFactory, mFaceScanningProviderFactory,
+                mPrivacyDotDecorProviderFactory, mFaceScanningProviderFactory,
                 new ScreenDecorationsLogger(logcatLogBuffer("TestLogBuffer")),
-                mFakeFacePropertyRepository, mJavaAdapter, mCameraProtectionLoader);
+                mFakeFacePropertyRepository, mJavaAdapter, mCameraProtectionLoader,
+                mWindowManager, mMainHandler, mExecutor);
         screenDecorations.start();
         when(mContext.getDisplay()).thenReturn(mDisplay);
         when(mDisplay.getDisplayInfo(any())).thenAnswer(new Answer<Boolean>() {

@@ -17,8 +17,6 @@
 #ifndef SF_SKIAVKRENDERENGINE_H_
 #define SF_SKIAVKRENDERENGINE_H_
 
-#include <vk/GrVkBackendContext.h>
-
 #include "SkiaRenderEngine.h"
 #include "VulkanInterface.h"
 #include "compat/SkiaGpuContext.h"
@@ -83,7 +81,7 @@ protected:
     SkiaRenderEngine::Contexts createContexts() override;
     bool supportsProtectedContentImpl() const override;
     bool useProtectedContextImpl(GrProtected isProtected) override;
-    void appendBackendSpecificInfoToDump(std::string& result) override;
+    virtual void appendBackendSpecificInfoToDump(std::string& result) override;
 
     // TODO: b/300533018 - refactor this to be non-static
     static VulkanInterface& getVulkanInterface(bool protectedContext);

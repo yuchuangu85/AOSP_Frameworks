@@ -1,13 +1,33 @@
 {
   "presubmit": [
     {
-      "name": "MediaProjectionTests",
+      "name": "MediaProjectionTests"
+    },
+    {
+      "name": "CtsMediaProjectionTestCases"
+    },
+    {
+      "name": "CtsMediaProjectionSDK33TestCases"
+    },
+    {
+      "name": "CtsMediaProjectionSDK34TestCases"
+    },
+    {
+      "name": "CtsMediaAudioTestCases",
       "options": [
         {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
+          "include-filter": "android.media.audio.cts.RemoteSubmixTest"
         },
         {
-          "exclude-annotation": "org.junit.Ignore"
+          "include-filter": "android.media.audio.cts.AudioPlaybackCaptureTest"
+        }
+      ]
+    },
+    {
+      "name": "CtsStatsdAtomHostTestCases",
+      "options": [
+        {
+          "include-filter": "android.cts.statsdatom.media.projection.MediaProjectionAtomsTests"
         }
       ]
     }

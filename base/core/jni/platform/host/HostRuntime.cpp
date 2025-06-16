@@ -17,8 +17,12 @@
 #include <android-base/logging.h>
 #include <android-base/properties.h>
 #include <android/graphics/jni_runtime.h>
+#include <android_runtime/AndroidRuntime.h>
+#include <jni_wrappers.h>
 #include <nativehelper/JNIHelp.h>
+#include <nativehelper/ScopedUtfChars.h>
 #include <nativehelper/jni_macros.h>
+#include <unicode/locid.h>
 #include <unicode/putil.h>
 #include <unicode/udata.h>
 
@@ -27,9 +31,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "android_view_InputDevice.h"
-#include "core_jni_helpers.h"
-#include "jni.h"
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -37,8 +38,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #endif
-
-#include <iostream>
 
 using namespace std;
 
@@ -49,20 +48,15 @@ using namespace std;
  * (see AndroidRuntime.cpp).
  */
 
-static JavaVM* javaVM;
-static jclass bridge;
-static jclass layoutLog;
-static jmethodID getLogId;
-static jmethodID logMethodId;
-
+extern int register_android_media_ImageReader(JNIEnv* env);
+extern int register_android_media_PublicFormatUtils(JNIEnv* env);
 extern int register_android_os_Binder(JNIEnv* env);
-extern int register_libcore_util_NativeAllocationRegistry_Delegate(JNIEnv* env);
+extern int register_libcore_util_NativeAllocationRegistry(JNIEnv* env);
 
 typedef void (*FreeFunction)(void*);
 
-static void NativeAllocationRegistry_Delegate_nativeApplyFreeFunction(JNIEnv*, jclass,
-                                                                      jlong freeFunction,
-                                                                      jlong ptr) {
+static void NativeAllocationRegistry_applyFreeFunction(JNIEnv*, jclass, jlong freeFunction,
+                                                       jlong ptr) {
     void* nativePtr = reinterpret_cast<void*>(static_cast<uintptr_t>(ptr));
     FreeFunction nativeFreeFunction =
             reinterpret_cast<FreeFunction>(static_cast<uintptr_t>(freeFunction));
@@ -70,12 +64,12 @@ static void NativeAllocationRegistry_Delegate_nativeApplyFreeFunction(JNIEnv*, j
 }
 
 static JNINativeMethod gMethods[] = {
-        NATIVE_METHOD(NativeAllocationRegistry_Delegate, nativeApplyFreeFunction, "(JJ)V"),
+        NATIVE_METHOD(NativeAllocationRegistry, applyFreeFunction, "(JJ)V"),
 };
 
-int register_libcore_util_NativeAllocationRegistry_Delegate(JNIEnv* env) {
-    return jniRegisterNativeMethods(env, "libcore/util/NativeAllocationRegistry_Delegate", gMethods,
-                                    NELEM(gMethods));
+int register_libcore_util_NativeAllocationRegistry(JNIEnv* env) {
+    return android::RegisterMethodsOrDie(env, "libcore/util/NativeAllocationRegistry", gMethods,
+                                         NELEM(gMethods));
 }
 
 namespace android {
@@ -95,8 +89,8 @@ extern int register_android_os_MessageQueue(JNIEnv* env);
 extern int register_android_os_Parcel(JNIEnv* env);
 extern int register_android_os_SystemClock(JNIEnv* env);
 extern int register_android_os_SystemProperties(JNIEnv* env);
-extern int register_android_os_Trace(JNIEnv* env);
 extern int register_android_text_AndroidCharacter(JNIEnv* env);
+extern int register_android_text_Hyphenator(JNIEnv* env);
 extern int register_android_util_EventLog(JNIEnv* env);
 extern int register_android_util_Log(JNIEnv* env);
 extern int register_android_util_jar_StrictJarFile(JNIEnv* env);
@@ -104,6 +98,7 @@ extern int register_android_view_KeyCharacterMap(JNIEnv* env);
 extern int register_android_view_KeyEvent(JNIEnv* env);
 extern int register_android_view_InputDevice(JNIEnv* env);
 extern int register_android_view_MotionEvent(JNIEnv* env);
+extern int register_android_view_Surface(JNIEnv* env);
 extern int register_android_view_ThreadedRenderer(JNIEnv* env);
 extern int register_android_graphics_HardwareBufferRenderer(JNIEnv* env);
 extern int register_android_view_VelocityTracker(JNIEnv* env);
@@ -121,9 +116,11 @@ struct RegJNIRec {
 static const std::unordered_map<std::string, RegJNIRec> gRegJNIMap = {
         {"android.animation.PropertyValuesHolder",
          REG_JNI(register_android_animation_PropertyValuesHolder)},
-#ifdef __linux__
         {"android.content.res.ApkAssets", REG_JNI(register_android_content_res_ApkAssets)},
         {"android.content.res.AssetManager", REG_JNI(register_android_content_AssetManager)},
+        {"android.content.res.StringBlock", REG_JNI(register_android_content_StringBlock)},
+        {"android.content.res.XmlBlock", REG_JNI(register_android_content_XmlBlock)},
+#ifdef __linux__
         {"android.database.CursorWindow", REG_JNI(register_android_database_CursorWindow)},
         {"android.database.sqlite.SQLiteConnection",
          REG_JNI(register_android_database_SQLiteConnection)},
@@ -132,8 +129,8 @@ static const std::unordered_map<std::string, RegJNIRec> gRegJNIMap = {
         {"android.database.sqlite.SQLiteRawStatement",
          REG_JNI(register_android_database_SQLiteRawStatement)},
 #endif
-        {"android.content.res.StringBlock", REG_JNI(register_android_content_StringBlock)},
-        {"android.content.res.XmlBlock", REG_JNI(register_android_content_XmlBlock)},
+        {"android.media.ImageReader", REG_JNI(register_android_media_ImageReader)},
+        {"android.media.PublicFormatUtils", REG_JNI(register_android_media_PublicFormatUtils)},
 #ifdef __linux__
         {"android.os.Binder", REG_JNI(register_android_os_Binder)},
         {"android.os.FileObserver", REG_JNI(register_android_os_FileObserver)},
@@ -142,8 +139,8 @@ static const std::unordered_map<std::string, RegJNIRec> gRegJNIMap = {
 #endif
         {"android.os.SystemClock", REG_JNI(register_android_os_SystemClock)},
         {"android.os.SystemProperties", REG_JNI(register_android_os_SystemProperties)},
-        {"android.os.Trace", REG_JNI(register_android_os_Trace)},
         {"android.text.AndroidCharacter", REG_JNI(register_android_text_AndroidCharacter)},
+        {"android.text.Hyphenator", REG_JNI(register_android_text_Hyphenator)},
         {"android.util.EventLog", REG_JNI(register_android_util_EventLog)},
         {"android.util.Log", REG_JNI(register_android_util_Log)},
         {"android.util.jar.StrictJarFile", REG_JNI(register_android_util_jar_StrictJarFile)},
@@ -151,11 +148,12 @@ static const std::unordered_map<std::string, RegJNIRec> gRegJNIMap = {
         {"android.view.KeyEvent", REG_JNI(register_android_view_KeyEvent)},
         {"android.view.InputDevice", REG_JNI(register_android_view_InputDevice)},
         {"android.view.MotionEvent", REG_JNI(register_android_view_MotionEvent)},
+        {"android.view.Surface", REG_JNI(register_android_view_Surface)},
         {"android.view.VelocityTracker", REG_JNI(register_android_view_VelocityTracker)},
         {"com.android.internal.util.VirtualRefBasePtr",
          REG_JNI(register_com_android_internal_util_VirtualRefBasePtr)},
-        {"libcore.util.NativeAllocationRegistry_Delegate",
-         REG_JNI(register_libcore_util_NativeAllocationRegistry_Delegate)},
+        {"libcore.util.NativeAllocationRegistry",
+         REG_JNI(register_libcore_util_NativeAllocationRegistry)},
 };
 
 static int register_jni_procs(const std::unordered_map<std::string, RegJNIRec>& jniRegMap,
@@ -166,26 +164,7 @@ static int register_jni_procs(const std::unordered_map<std::string, RegJNIRec>& 
         }
     }
 
-    if (register_android_graphics_classes(env) < 0) {
-        return -1;
-    }
-
     return 0;
-}
-
-int AndroidRuntime::registerNativeMethods(JNIEnv* env, const char* className,
-                                          const JNINativeMethod* gMethods, int numMethods) {
-    return jniRegisterNativeMethods(env, className, gMethods, numMethods);
-}
-
-JNIEnv* AndroidRuntime::getJNIEnv() {
-    JNIEnv* env;
-    if (javaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) return nullptr;
-    return env;
-}
-
-JavaVM* AndroidRuntime::getJavaVM() {
-    return javaVM;
 }
 
 static vector<string> parseCsv(const string& csvString) {
@@ -196,29 +175,6 @@ static vector<string> parseCsv(const string& csvString) {
         result.push_back(segment);
     }
     return result;
-}
-
-void LayoutlibLogger(base::LogId, base::LogSeverity severity, const char* tag, const char* file,
-                     unsigned int line, const char* message) {
-    JNIEnv* env = AndroidRuntime::getJNIEnv();
-    jint logPrio = severity;
-    jstring tagString = env->NewStringUTF(tag);
-    jstring messageString = env->NewStringUTF(message);
-
-    jobject bridgeLog = env->CallStaticObjectMethod(bridge, getLogId);
-
-    env->CallVoidMethod(bridgeLog, logMethodId, logPrio, tagString, messageString);
-
-    env->DeleteLocalRef(tagString);
-    env->DeleteLocalRef(messageString);
-    env->DeleteLocalRef(bridgeLog);
-}
-
-void LayoutlibAborter(const char* abort_message) {
-    // Layoutlib should not call abort() as it would terminate Studio.
-    // Throw an exception back to Java instead.
-    JNIEnv* env = AndroidRuntime::getJNIEnv();
-    jniThrowRuntimeException(env, "The Android framework has encountered a fatal error");
 }
 
 // This method has been copied/adapted from system/core/init/property_service.cpp
@@ -309,62 +265,88 @@ static void* mmapFile(const char* dataFilePath) {
 #endif
 }
 
-static bool init_icu(const char* dataPath) {
-    void* addr = mmapFile(dataPath);
+// returns result from java.lang.System.getProperty
+static string getJavaProperty(JNIEnv* env, const char* property_name,
+                              const char* defaultValue = "") {
+    jclass system = FindClassOrDie(env, "java/lang/System");
+    jmethodID getPropertyMethod =
+            GetStaticMethodIDOrDie(env, system, "getProperty",
+                                   "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+
+    auto jString = (jstring)env->CallStaticObjectMethod(system, getPropertyMethod,
+                                                        env->NewStringUTF(property_name),
+                                                        env->NewStringUTF(defaultValue));
+    ScopedUtfChars chars(env, jString);
+    return string(chars.c_str());
+}
+
+static void loadIcuData(JNIEnv* env, string icuPath) {
+    void* addr = mmapFile(icuPath.c_str());
+    if (addr == nullptr) {
+        jniThrowRuntimeException(env, "Failed to map the ICU data file.");
+    }
     UErrorCode err = U_ZERO_ERROR;
     udata_setCommonData(addr, &err);
     if (err != U_ZERO_ERROR) {
-        return false;
+        jniThrowRuntimeException(env,
+                                 format("udata_setCommonData failed with error code {}",
+                                        u_errorName(err))
+                                         .c_str());
     }
-    return true;
 }
 
-// Creates an array of InputDevice from key character map files
-static void init_keyboard(JNIEnv* env, const vector<string>& keyboardPaths) {
-    jclass inputDevice = FindClassOrDie(env, "android/view/InputDevice");
-    jobjectArray inputDevicesArray =
-            env->NewObjectArray(keyboardPaths.size(), inputDevice, nullptr);
-    int keyboardId = 1;
-
-    for (const string& path : keyboardPaths) {
-        base::Result<std::shared_ptr<KeyCharacterMap>> charMap =
-                KeyCharacterMap::load(path, KeyCharacterMap::Format::BASE);
-
-        InputDeviceInfo info = InputDeviceInfo();
-        info.initialize(keyboardId, 0, 0, InputDeviceIdentifier(),
-                        "keyboard " + std::to_string(keyboardId), true, false,
-                        ui::LogicalDisplayId::DEFAULT);
-        info.setKeyboardType(AINPUT_KEYBOARD_TYPE_ALPHABETIC);
-        info.setKeyCharacterMap(*charMap);
-
-        jobject inputDeviceObj = android_view_InputDevice_create(env, info);
-        if (inputDeviceObj) {
-            env->SetObjectArrayElement(inputDevicesArray, keyboardId - 1, inputDeviceObj);
-            env->DeleteLocalRef(inputDeviceObj);
+// Loads the ICU data file from the location specified in properties.
+// First try specified in the system property ro.icu.data.path,
+// then fallback to java property icu.data.path
+static void loadIcuData() {
+    JNIEnv* env = AndroidRuntime::getJNIEnv();
+    string icuPath = base::GetProperty("ro.icu.data.path", "");
+    if (!icuPath.empty()) {
+        loadIcuData(env, icuPath);
+    } else {
+        // fallback to read from java.lang.System.getProperty
+        string icuPathFromJava = getJavaProperty(env, "icu.data.path");
+        if (!icuPathFromJava.empty()) {
+            loadIcuData(env, icuPathFromJava);
         }
-        keyboardId++;
     }
 
-    if (bridge == nullptr) {
-        bridge = FindClassOrDie(env, "com/android/layoutlib/bridge/Bridge");
-        bridge = MakeGlobalRefOrDie(env, bridge);
+    // Check for the ICU default locale property. In Libcore, the default ICU
+    // locale is set when ICU.setDefaultLocale is called, which is called by
+    // Libcore's implemenentation of Java's Locale.setDefault. The default
+    // locale is used in cases such as when ucol_open(NULL, ...) is called, for
+    // example in SQLite's 'COLLATE UNICODE'.
+    string icuLocaleDefault = getJavaProperty(env, "icu.locale.default");
+    if (!icuLocaleDefault.empty()) {
+        UErrorCode status = U_ZERO_ERROR;
+        icu::Locale locale = icu::Locale::forLanguageTag(icuLocaleDefault.c_str(), status);
+        if (U_SUCCESS(status)) {
+            icu::Locale::setDefault(locale, status);
+        }
+        if (U_FAILURE(status)) {
+            fprintf(stderr, "Failed to set the ICU default locale to '%s' (error code %d)\n",
+                    icuLocaleDefault.c_str(), status);
+        }
     }
-    jmethodID setInputManager = GetStaticMethodIDOrDie(env, bridge, "setInputManager",
-                                                       "([Landroid/view/InputDevice;)V");
-    env->CallStaticVoidMethod(bridge, setInputManager, inputDevicesArray);
-    env->DeleteLocalRef(inputDevicesArray);
 }
 
-} // namespace android
+static int register_android_core_classes(JNIEnv* env) {
+    string nativesClassesString = getJavaProperty(env, "core_native_classes");
+    vector<string> classesToRegister = parseCsv(nativesClassesString);
 
-using namespace android;
+    if (register_jni_procs(gRegJNIMap, classesToRegister, env) < 0) {
+        return JNI_ERR;
+    }
+
+    return 0;
+}
 
 // Called right before aborting by LOG_ALWAYS_FATAL. Print the pending exception.
 void abort_handler(const char* abort_message) {
     ALOGE("About to abort the process...");
 
-    JNIEnv* env = NULL;
-    if (javaVM->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+    JNIEnv* env = AndroidRuntime::getJNIEnv();
+    if (env == nullptr) {
         ALOGE("vm->GetEnv() failed");
         return;
     }
@@ -375,107 +357,106 @@ void abort_handler(const char* abort_message) {
     ALOGE("Aborting because: %s", abort_message);
 }
 
+// ------------------ Host implementation of AndroidRuntime ------------------
+
+/*static*/ JavaVM* AndroidRuntime::mJavaVM;
+
+/*static*/ int AndroidRuntime::registerNativeMethods(JNIEnv* env, const char* className,
+                                                     const JNINativeMethod* gMethods,
+                                                     int numMethods) {
+    return jniRegisterNativeMethods(env, className, gMethods, numMethods);
+}
+
+/*static*/ JNIEnv* AndroidRuntime::getJNIEnv() {
+    JNIEnv* env;
+    JavaVM* vm = AndroidRuntime::getJavaVM();
+    if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        return nullptr;
+    }
+    return env;
+}
+
+/*static*/ JavaVM* AndroidRuntime::getJavaVM() {
+    return mJavaVM;
+}
+
+/*static*/ int AndroidRuntime::startReg(JNIEnv* env) {
+    if (register_android_core_classes(env) < 0) {
+        return JNI_ERR;
+    }
+    if (register_android_graphics_classes(env) < 0) {
+        return JNI_ERR;
+    }
+    return 0;
+}
+
+void AndroidRuntime::onVmCreated(JNIEnv* env) {
+    env->GetJavaVM(&mJavaVM);
+}
+
+void AndroidRuntime::onStarted() {
+    property_initialize_ro_cpu_abilist();
+    loadIcuData();
+
+    // Use English locale for number format to ensure correct parsing of floats when using strtof
+    setlocale(LC_NUMERIC, "en_US.UTF-8");
+}
+
+void AndroidRuntime::start(const char* className, const Vector<String8>& options, bool zygote) {
+    JNIEnv* env = AndroidRuntime::getJNIEnv();
+
+    auto method_binding_format = getJavaProperty(env, "method_binding_format");
+
+    setJniMethodFormat(method_binding_format);
+
+    // Register native functions.
+    if (startReg(env) < 0) {
+        ALOGE("Unable to register all android native methods\n");
+    }
+    onStarted();
+}
+
+AndroidRuntime::AndroidRuntime(char* argBlockStart, const size_t argBlockLength)
+      : mExitWithoutCleanup(false), mArgBlockStart(argBlockStart), mArgBlockLength(argBlockLength) {
+    init_android_graphics();
+}
+
+AndroidRuntime::~AndroidRuntime() {}
+
+// Version of AndroidRuntime to run on host
+class HostRuntime : public AndroidRuntime {
+public:
+    HostRuntime() : AndroidRuntime(nullptr, 0) {}
+
+    void onVmCreated(JNIEnv* env) override {
+        AndroidRuntime::onVmCreated(env);
+        // initialize logging, so ANDROD_LOG_TAGS env variable is respected
+        android::base::InitLogging(nullptr, android::base::StderrLogger, abort_handler);
+    }
+
+    void onStarted() override {
+        AndroidRuntime::onStarted();
+    }
+};
+
+} // namespace android
+
+using namespace android;
+
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
-    javaVM = vm;
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
         return JNI_ERR;
     }
 
-    __android_log_set_aborter(abort_handler);
+    string useBaseHostRuntime = getJavaProperty(env, "use_base_native_hostruntime", "true");
+    if (useBaseHostRuntime == "true") {
+        Vector<String8> args;
+        HostRuntime runtime;
 
-    init_android_graphics();
-
-    // Configuration is stored as java System properties.
-    // Get a reference to System.getProperty
-    jclass system = FindClassOrDie(env, "java/lang/System");
-    jmethodID getPropertyMethod =
-            GetStaticMethodIDOrDie(env, system, "getProperty",
-                                   "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
-
-    // Java system properties that contain LayoutLib config. The initial values in the map
-    // are the default values if the property is not specified.
-    std::unordered_map<std::string, std::string> systemProperties =
-            {{"core_native_classes", ""},
-             {"register_properties_during_load", ""},
-             {"icu.data.path", ""},
-             {"use_bridge_for_logging", ""},
-             {"keyboard_paths", ""}};
-
-    for (auto& [name, defaultValue] : systemProperties) {
-        jstring propertyString =
-                (jstring)env->CallStaticObjectMethod(system, getPropertyMethod,
-                                                     env->NewStringUTF(name.c_str()),
-                                                     env->NewStringUTF(defaultValue.c_str()));
-        const char* propertyChars = env->GetStringUTFChars(propertyString, 0);
-        systemProperties[name] = string(propertyChars);
-        env->ReleaseStringUTFChars(propertyString, propertyChars);
-    }
-    // Get the names of classes that need to register their native methods
-    vector<string> classesToRegister = parseCsv(systemProperties["core_native_classes"]);
-
-    if (systemProperties["register_properties_during_load"] == "true") {
-        // Set the system properties first as they could be used in the static initialization of
-        // other classes
-        if (register_android_os_SystemProperties(env) < 0) {
-            return JNI_ERR;
-        }
-        classesToRegister.erase(find(classesToRegister.begin(), classesToRegister.end(),
-                                     "android.os.SystemProperties"));
-        bridge = FindClassOrDie(env, "com/android/layoutlib/bridge/Bridge");
-        bridge = MakeGlobalRefOrDie(env, bridge);
-        jmethodID setSystemPropertiesMethod =
-                GetStaticMethodIDOrDie(env, bridge, "setSystemProperties", "()V");
-        env->CallStaticVoidMethod(bridge, setSystemPropertiesMethod);
-        property_initialize_ro_cpu_abilist();
-    }
-
-    if (register_jni_procs(gRegJNIMap, classesToRegister, env) < 0) {
-        return JNI_ERR;
-    }
-
-    if (!systemProperties["icu.data.path"].empty()) {
-        // Set the location of ICU data
-        bool icuInitialized = init_icu(systemProperties["icu.data.path"].c_str());
-        if (!icuInitialized) {
-            return JNI_ERR;
-        }
-    }
-
-    if (systemProperties["use_bridge_for_logging"] == "true") {
-        layoutLog = FindClassOrDie(env, "com/android/ide/common/rendering/api/ILayoutLog");
-        layoutLog = MakeGlobalRefOrDie(env, layoutLog);
-        logMethodId = GetMethodIDOrDie(env, layoutLog, "logAndroidFramework",
-                                       "(ILjava/lang/String;Ljava/lang/String;)V");
-        if (bridge == nullptr) {
-            bridge = FindClassOrDie(env, "com/android/layoutlib/bridge/Bridge");
-            bridge = MakeGlobalRefOrDie(env, bridge);
-        }
-        getLogId = GetStaticMethodIDOrDie(env, bridge, "getLog",
-                                          "()Lcom/android/ide/common/rendering/api/ILayoutLog;");
-        android::base::SetLogger(LayoutlibLogger);
-        android::base::SetAborter(LayoutlibAborter);
-    } else {
-        // initialize logging, so ANDROD_LOG_TAGS env variable is respected
-        android::base::InitLogging(nullptr, android::base::StderrLogger);
-    }
-
-    // Use English locale for number format to ensure correct parsing of floats when using strtof
-    setlocale(LC_NUMERIC, "en_US.UTF-8");
-
-    if (!systemProperties["keyboard_paths"].empty()) {
-        vector<string> keyboardPaths = parseCsv(systemProperties["keyboard_paths"]);
-        init_keyboard(env, keyboardPaths);
-    } else {
-        fprintf(stderr, "Skip initializing keyboard\n");
+        runtime.onVmCreated(env);
+        runtime.start("HostRuntime", args, false);
     }
 
     return JNI_VERSION_1_6;
-}
-
-JNIEXPORT void JNI_OnUnload(JavaVM* vm, void*) {
-    JNIEnv* env = nullptr;
-    vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-    env->DeleteGlobalRef(bridge);
-    env->DeleteGlobalRef(layoutLog);
 }

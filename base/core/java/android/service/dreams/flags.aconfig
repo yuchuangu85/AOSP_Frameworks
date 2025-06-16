@@ -47,3 +47,48 @@ flag {
     purpose: PURPOSE_BUGFIX
   }
 }
+
+flag {
+    name: "start_and_stop_dozing_in_background"
+    namespace: "systemui"
+    description: "Move the start-dozing and stop-dozing operation to the background"
+    bug: "330287187"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "publish_preview_state_to_overlay"
+    namespace: "systemui"
+    description: "send preview information from dream to overlay"
+    bug: "333734282"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "cleanup_dream_settings_on_uninstall"
+    namespace: "systemui"
+    description: "Cleans up dream settings if dream package is uninstalled."
+    bug: "338210427"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "allow_dream_when_postured"
+    namespace: "systemui"
+    description: "Allow dreaming when device is stationary and upright"
+    bug: "383208131"
+}
+
+flag {
+    name: "dreams_v2"
+    namespace: "systemui"
+    description: "Enables various improvements to the dream experience "
+        "such as new triggers and various bug fixes"
+    bug: "403579494"
+}

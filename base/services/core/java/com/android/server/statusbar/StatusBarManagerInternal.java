@@ -20,6 +20,8 @@ import android.annotation.Nullable;
 import android.app.ITransientNotificationCallback;
 import android.content.ComponentName;
 import android.hardware.fingerprint.IUdfpsRefreshRateRequestCallback;
+import android.inputmethodservice.InputMethodService.BackDispositionMode;
+import android.inputmethodservice.InputMethodService.ImeWindowVisibility;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.UserHandle;
@@ -31,9 +33,12 @@ import com.android.internal.statusbar.LetterboxDetails;
 import com.android.internal.view.AppearanceRegion;
 import com.android.server.notification.NotificationDelegate;
 
+import java.io.FileDescriptor;
+
 public interface StatusBarManagerInternal {
     void setNotificationDelegate(NotificationDelegate delegate);
-    void showScreenPinningRequest(int taskId);
+    /** Show a screen pinning request for a specific task. */
+    void showScreenPinningRequest(int taskId, int userId);
     void showAssistDisclosure();
 
     void preloadRecentApps();
@@ -51,18 +56,15 @@ public interface StatusBarManagerInternal {
     void toggleKeyboardShortcutsMenu(int deviceId);
 
     /**
-     * Used by InputMethodManagerService to notify the IME status.
+     * Sets the new IME window status.
      *
-     * @param displayId The display to which the IME is bound to.
-     * @param token The IME token.
-     * @param vis Bit flags about the IME visibility.
-     *            (e.g. {@link android.inputmethodservice.InputMethodService#IME_ACTIVE})
-     * @param backDisposition Bit flags about the IME back disposition.
-     *         (e.g. {@link android.inputmethodservice.InputMethodService#BACK_DISPOSITION_DEFAULT})
-     * @param showImeSwitcher {@code true} when the IME switcher button should be shown.
+     * @param displayId The id of the display to which the IME is bound.
+     * @param vis The IME window visibility.
+     * @param backDisposition The IME back disposition mode.
+     * @param showImeSwitcher Whether the IME Switcher button should be shown.
      */
-    void setImeWindowStatus(int displayId, IBinder token, int vis,
-            int backDisposition, boolean showImeSwitcher);
+    void setImeWindowStatus(int displayId, @ImeWindowVisibility int vis,
+            @BackDispositionMode int backDisposition, boolean showImeSwitcher);
 
     /**
      * See {@link android.app.StatusBarManager#setIcon(String, int, int, String)}.
@@ -113,6 +115,11 @@ public interface StatusBarManagerInternal {
 
     void startAssist(Bundle args);
     void onCameraLaunchGestureDetected(int source);
+
+    /**
+     * Notifies SysUI that the wallet launch gesture has been detected.
+     */
+    void onWalletLaunchGestureDetected();
     void setDisableFlags(int displayId, int flags, String cause);
     void toggleSplitScreen();
     void appTransitionFinished(int displayId);
@@ -137,7 +144,7 @@ public interface StatusBarManagerInternal {
      *
      * @param hidesStatusBar whether it is being hidden
      */
-    void setTopAppHidesStatusBar(boolean hidesStatusBar);
+    void setTopAppHidesStatusBar(int displayId, boolean hidesStatusBar);
 
     boolean showShutdownUi(boolean isReboot, String requestString);
 
@@ -150,29 +157,34 @@ public interface StatusBarManagerInternal {
 
     /**
      * Notify System UI that the system get into or exit immersive mode.
+     * @param displayId The changed display Id.
      * @param rootDisplayAreaId The changed display area Id.
      * @param isImmersiveMode {@code true} if the display area get into immersive mode.
+     * @param windowType The window type of the controlling window.
      */
-    void immersiveModeChanged(int rootDisplayAreaId, boolean isImmersiveMode);
+    void immersiveModeChanged(int displayId, int rootDisplayAreaId, boolean isImmersiveMode,
+            int windowType);
 
     /**
      * Show a rotation suggestion that a user may approve to rotate the screen.
      *
      * @param rotation rotation suggestion
      */
-    void onProposedRotationChanged(int rotation, boolean isValid);
+    void onProposedRotationChanged(int displayId, int rotation, boolean isValid);
 
     /**
-     * Notifies System UI that the display is ready to show system decorations.
+     * Notifies System UI that the system decorations should be added on the display.
      *
      * @param displayId display ID
      */
-    void onDisplayReady(int displayId);
+    void onDisplayAddSystemDecorations(int displayId);
 
     /**
-     * Notifies System UI whether the recents animation is running.
+     * Notifies System UI that the system decorations should be removed from the display.
+     *
+     * @param displayId display ID
      */
-    void onRecentsAnimationStateChanged(boolean running);
+    void onDisplayRemoveSystemDecorations(int displayId);
 
     /** @see com.android.internal.statusbar.IStatusBar#onSystemBarAttributesChanged */
     void onSystemBarAttributesChanged(int displayId, @Appearance int appearance,
@@ -271,4 +283,7 @@ public interface StatusBarManagerInternal {
      * Called when requested to enter desktop from a focused app.
      */
     void moveFocusedTaskToDesktop(int displayId);
+
+    /** Passes through the given shell commands to SystemUI */
+    void passThroughShellCommand(String[] args, FileDescriptor fd);
 }

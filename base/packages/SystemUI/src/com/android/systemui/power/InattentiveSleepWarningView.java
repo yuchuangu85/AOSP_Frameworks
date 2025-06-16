@@ -28,7 +28,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
-
 import com.android.systemui.res.R;
 
 /**
@@ -41,9 +40,9 @@ public class InattentiveSleepWarningView extends FrameLayout {
     private Animator mFadeOutAnimator;
     private boolean mDismissing;
 
-    InattentiveSleepWarningView(Context context) {
+    InattentiveSleepWarningView(Context context, WindowManager windowManager) {
         super(context);
-        mWindowManager = mContext.getSystemService(WindowManager.class);
+        mWindowManager = windowManager;
 
         final LayoutInflater layoutInflater = LayoutInflater.from(mContext);
         layoutInflater.inflate(R.layout.inattentive_sleep_warning, this, true /* attachToRoot */);

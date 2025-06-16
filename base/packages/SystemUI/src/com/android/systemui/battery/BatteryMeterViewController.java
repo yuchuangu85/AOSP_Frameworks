@@ -34,7 +34,6 @@ import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.flags.Flags;
-import com.android.systemui.res.R;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.phone.StatusBarLocation;
 import com.android.systemui.statusbar.phone.ui.StatusBarIconController;
@@ -47,7 +46,10 @@ import java.io.PrintWriter;
 
 import javax.inject.Inject;
 
-/** Controller for {@link BatteryMeterView}. **/
+/**
+ * Controller for {@link BatteryMeterView}.
+ * @deprecated once [NewStatusBarIcons] is rolled out, this class is no longer needed
+ */
 public class BatteryMeterViewController extends ViewController<BatteryMeterView> {
     private final ConfigurationController mConfigurationController;
     private final TunerService mTunerService;
@@ -153,8 +155,6 @@ public class BatteryMeterViewController extends ViewController<BatteryMeterView>
         mBatteryController = batteryController;
 
         mView.setBatteryEstimateFetcher(mBatteryController::getEstimatedTimeRemainingString);
-        mView.setDisplayShieldEnabled(
-                getContext().getResources().getBoolean(R.bool.flag_battery_shield_icon));
 
         mSlotBattery = getResources().getString(com.android.internal.R.string.status_bar_battery);
         mSettingObserver = new SettingObserver(mMainHandler);

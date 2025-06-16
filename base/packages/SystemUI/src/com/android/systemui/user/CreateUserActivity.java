@@ -116,7 +116,7 @@ public class CreateUserActivity extends Activity {
         return mCreateUserDialogController.createDialog(
                 this,
                 this::startActivity,
-                (mUserCreator.isMultipleAdminEnabled() && mUserCreator.isUserAdmin()
+                (mUserCreator.canCreateAdminUser() && mUserCreator.isUserAdmin()
                         && !isKeyguardShowing),
                 this::addUserNow,
                 this::finish
@@ -147,7 +147,7 @@ public class CreateUserActivity extends Activity {
         super.onDestroy();
     }
 
-    private void addUserNow(String userName, Drawable userIcon, Boolean isAdmin) {
+    private void addUserNow(String userName, Drawable userIcon, String iconPath, Boolean isAdmin) {
         mSetupUserDialog.dismiss();
         userName = (userName == null || userName.trim().isEmpty())
                 ? getString(com.android.settingslib.R.string.user_new_user_name)

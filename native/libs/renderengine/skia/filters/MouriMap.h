@@ -62,15 +62,21 @@ class MouriMap {
 public:
     MouriMap();
     // Apply the MouriMap tonemmaping operator to the input.
-    // The HDR/SDR ratio describes the luminace range of the input. 1.0 means SDR. Anything larger
-    // then 1.0 means that there is headroom above the SDR region.
-    sk_sp<SkShader> mouriMap(SkiaGpuContext* context, sk_sp<SkShader> input, float hdrSdrRatio);
+    // The inputMultiplier informs how to interpret the luminance encoding of the input.
+    // For a fixed point input, this is necessary to interpret what "1.0" means for the input
+    // pixels, so that the luminance can be scaled appropriately, such that the operator can
+    // transform SDR values to be within 1.0. For a floating point input, "1.0" always means SDR,
+    // so the caller must pass 1.0.
+    // The target HDR/SDR ratio describes the luminance range of the output.
+    sk_sp<SkShader> mouriMap(SkiaGpuContext* context, sk_sp<SkShader> input, float inputMultiplier,
+                             float targetHdrSdrRatio);
 
 private:
     sk_sp<SkImage> downchunk(SkiaGpuContext* context, sk_sp<SkShader> input,
                              float hdrSdrRatio) const;
     sk_sp<SkImage> blur(SkiaGpuContext* context, SkImage* input) const;
-    sk_sp<SkShader> tonemap(sk_sp<SkShader> input, SkImage* localLux, float hdrSdrRatio) const;
+    sk_sp<SkShader> tonemap(sk_sp<SkShader> input, SkImage* localLux, float hdrSdrRatio,
+                            float targetHdrSdrRatio) const;
     const sk_sp<SkRuntimeEffect> mCrosstalkAndChunk16x16;
     const sk_sp<SkRuntimeEffect> mChunk8x8;
     const sk_sp<SkRuntimeEffect> mBlur;

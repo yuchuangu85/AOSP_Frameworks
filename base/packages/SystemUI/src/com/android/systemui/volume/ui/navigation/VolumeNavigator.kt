@@ -22,6 +22,7 @@ import android.provider.Settings
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.unit.dp
 import com.android.internal.logging.UiEventLogger
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
@@ -39,7 +40,6 @@ import com.android.systemui.volume.panel.ui.viewmodel.VolumePanelViewModel
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
@@ -48,7 +48,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class VolumeNavigator
 @Inject
@@ -89,7 +88,7 @@ constructor(
             VolumePanelRoute.SETTINGS_VOLUME_PANEL ->
                 activityStarter.startActivity(
                     /* intent= */ Intent(Settings.Panel.ACTION_VOLUME),
-                    /* dismissShade= */ true
+                    /* dismissShade= */ true,
                 )
             VolumePanelRoute.SYSTEM_UI_VOLUME_PANEL ->
                 volumePanelFactory.create(aboveStatusBar = true, view = null)
@@ -122,6 +121,9 @@ constructor(
                     remember(coroutineScope) { viewModelFactory.create(coroutineScope) }
                 )
             },
+            isDraggable = false,
+            // TODO(b/337205027) change maxWidth
+            maxWidth = 800.dp,
         )
     }
 }

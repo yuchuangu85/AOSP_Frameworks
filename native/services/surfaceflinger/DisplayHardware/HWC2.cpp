@@ -31,6 +31,9 @@
 #include <ui/Fence.h>
 #include <ui/FloatRect.h>
 #include <ui/GraphicBuffer.h>
+#include <ui/PictureProfileHandle.h>
+
+#include "DisplayHardware/Hal.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -41,6 +44,9 @@ using aidl::android::hardware::graphics::composer3::Color;
 using aidl::android::hardware::graphics::composer3::Composition;
 using AidlCapability = aidl::android::hardware::graphics::composer3::Capability;
 using aidl::android::hardware::graphics::composer3::DisplayCapability;
+using aidl::android::hardware::graphics::composer3::DisplayLuts;
+using aidl::android::hardware::graphics::composer3::LutProperties;
+using aidl::android::hardware::graphics::composer3::Luts;
 using aidl::android::hardware::graphics::composer3::OverlayProperties;
 
 namespace android {
@@ -50,6 +56,7 @@ using android::FloatRect;
 using android::GraphicBuffer;
 using android::HdrCapabilities;
 using android::HdrMetadata;
+using android::PictureProfileHandle;
 using android::Rect;
 using android::Region;
 using android::sp;
@@ -432,11 +439,8 @@ Error Display::setActiveConfigWithConstraints(hal::HWConfigId configId,
     // FIXME (b/319505580): At least the first config set on an external display must be
     // `setActiveConfig`, so skip over the block that calls `setActiveConfigWithConstraints`
     // for simplicity.
-    const bool connected_display = FlagManager::getInstance().connected_display();
-
     if (isVsyncPeriodSwitchSupported() &&
-        (!connected_display ||
-         getConnectionType().value_opt() != ui::DisplayConnectionType::External)) {
+        getConnectionType().value_opt() != ui::DisplayConnectionType::External) {
         Hwc2::IComposerClient::VsyncPeriodChangeConstraints hwc2Constraints;
         hwc2Constraints.desiredTimeNanos = constraints.desiredTimeNanos;
         hwc2Constraints.seamlessRequired = constraints.seamlessRequired;
@@ -607,6 +611,47 @@ Error Display::getClientTargetProperty(
     return static_cast<Error>(error);
 }
 
+Error Display::getRequestedLuts(LayerLuts* outLuts,
+                                LutFileDescriptorMapper& lutFileDescriptorMapper) {
+    std::vector<Hwc2::Layer> layerIds;
+    std::vector<DisplayLuts::LayerLut> tmpLuts;
+    const auto error = static_cast<Error>(mComposer.getRequestedLuts(mId, &layerIds, &tmpLuts));
+    if (error != Error::NONE) {
+        return error;
+    }
+
+    uint32_t numElements = layerIds.size();
+    outLuts->clear();
+    for (uint32_t i = 0; i < numElements; ++i) {
+        auto layer = getLayerById(layerIds[i]);
+        if (layer) {
+            auto& layerLut = tmpLuts[i];
+            if (layerLut.luts.pfd.get() >= 0 && layerLut.luts.offsets.has_value()) {
+                const auto& offsets = layerLut.luts.offsets.value();
+                std::vector<std::pair<int32_t, LutProperties>> lutOffsetsAndProperties;
+                lutOffsetsAndProperties.reserve(offsets.size());
+                std::transform(offsets.begin(), offsets.end(), layerLut.luts.lutProperties.begin(),
+                               std::back_inserter(lutOffsetsAndProperties),
+                               [](int32_t i, LutProperties j) { return std::make_pair(i, j); });
+                outLuts->emplace_or_replace(layer.get(), lutOffsetsAndProperties);
+                lutFileDescriptorMapper.emplace_or_replace(layer.get(),
+                                                           ::android::base::unique_fd(
+                                                                   layerLut.luts.pfd.release()));
+            } else {
+                ALOGE("getRequestedLuts: invalid luts on layer %" PRIu64 " found"
+                      " on display %" PRIu64 ". pfd.get()=%d, offsets.has_value()=%d",
+                      layerIds[i], mId, layerLut.luts.pfd.get(), layerLut.luts.offsets.has_value());
+            }
+        } else {
+            ALOGE("getRequestedLuts: invalid layer %" PRIu64 " found"
+                  " on display %" PRIu64,
+                  layerIds[i], mId);
+        }
+    }
+
+    return Error::NONE;
+}
+
 Error Display::getDisplayDecorationSupport(
         std::optional<aidl::android::hardware::graphics::common::DisplayDecorationSupport>*
                 support) {
@@ -616,6 +661,27 @@ Error Display::getDisplayDecorationSupport(
 
 Error Display::setIdleTimerEnabled(std::chrono::milliseconds timeout) {
     const auto error = mComposer.setIdleTimerEnabled(mId, timeout);
+    return static_cast<Error>(error);
+}
+
+Error Display::getMaxLayerPictureProfiles(int32_t* outMaxProfiles) {
+    const auto error = mComposer.getMaxLayerPictureProfiles(mId, outMaxProfiles);
+    return static_cast<Error>(error);
+}
+
+Error Display::setPictureProfileHandle(const PictureProfileHandle& handle) {
+    const auto error = mComposer.setDisplayPictureProfileId(mId, handle.getId());
+    return static_cast<Error>(error);
+}
+
+Error Display::startHdcpNegotiation(const aidl::android::hardware::drm::HdcpLevels& levels) {
+    const auto error = mComposer.startHdcpNegotiation(mId, levels);
+    return static_cast<Error>(error);
+}
+
+Error Display::getLuts(const std::vector<sp<GraphicBuffer>>& buffers,
+                       std::vector<aidl::android::hardware::graphics::composer3::Luts>* outLuts) {
+    const auto error = mComposer.getLuts(mId, buffers, outLuts);
     return static_cast<Error>(error);
 }
 
@@ -660,6 +726,11 @@ void Display::loadDisplayCapabilities() {
         }
     });
 }
+
+void Display::setPhysicalSizeInMm(std::optional<ui::Size> size) {
+    mPhysicalSize = size;
+}
+
 } // namespace impl
 
 // Layer methods
@@ -1034,6 +1105,23 @@ Error Layer::setBlockingRegion(const Region& region) {
     mBlockingRegion = region;
     const auto hwcRects = convertRegionToHwcRects(region);
     const auto intError = mComposer.setLayerBlockingRegion(mDisplay->getId(), mId, hwcRects);
+    return static_cast<Error>(intError);
+}
+
+Error Layer::setLuts(aidl::android::hardware::graphics::composer3::Luts& luts) {
+    if (CC_UNLIKELY(!mDisplay)) {
+        return Error::BAD_DISPLAY;
+    }
+    const auto intError = mComposer.setLayerLuts(mDisplay->getId(), mId, luts);
+    return static_cast<Error>(intError);
+}
+
+Error Layer::setPictureProfileHandle(const PictureProfileHandle& handle) {
+    if (CC_UNLIKELY(!mDisplay)) {
+        return Error::BAD_DISPLAY;
+    }
+    const auto intError =
+            mComposer.setLayerPictureProfileId(mDisplay->getId(), mId, handle.getId());
     return static_cast<Error>(intError);
 }
 

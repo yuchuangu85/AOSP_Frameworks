@@ -16,22 +16,24 @@
 
 package com.android.systemui.statusbar.notification.footer.ui.viewmodel
 
-import com.android.systemui.dagger.SysUISingleton
+import android.content.Intent
+import android.provider.Settings
+import com.android.internal.jank.InteractionJankMonitor
 import com.android.systemui.res.R
 import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import com.android.systemui.shared.notifications.domain.interactor.NotificationSettingsInteractor
+import com.android.systemui.statusbar.notification.NotificationActivityStarter.SettingsIntent
 import com.android.systemui.statusbar.notification.domain.interactor.ActiveNotificationsInteractor
 import com.android.systemui.statusbar.notification.domain.interactor.SeenNotificationsInteractor
-import com.android.systemui.statusbar.notification.footer.shared.FooterViewRefactor
+import com.android.systemui.statusbar.notification.emptyshade.shared.ModesEmptyShadeFix
 import com.android.systemui.statusbar.notification.footer.ui.view.FooterView
 import com.android.systemui.util.kotlin.sample
 import com.android.systemui.util.ui.AnimatableEvent
 import com.android.systemui.util.ui.AnimatedValue
 import com.android.systemui.util.ui.toAnimatedValueFlow
-import dagger.Module
-import dagger.Provides
-import java.util.Optional
-import javax.inject.Provider
+import com.android.systemui.window.domain.interactor.WindowRootViewBlurInteractor
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -40,11 +42,14 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 
 /** ViewModel for [FooterView]. */
-class FooterViewModel(
+class FooterViewModel
+@AssistedInject
+constructor(
     activeNotificationsInteractor: ActiveNotificationsInteractor,
     notificationSettingsInteractor: NotificationSettingsInteractor,
     seenNotificationsInteractor: SeenNotificationsInteractor,
     shadeInteractor: ShadeInteractor,
+    windowRootViewBlurInteractor: WindowRootViewBlurInteractor,
 ) {
     /** A message to show instead of the footer buttons. */
     val message: FooterMessageViewModel =
@@ -80,7 +85,7 @@ class FooterViewModel(
                         combine(
                                 shadeInteractor.isShadeFullyExpanded,
                                 shadeInteractor.isShadeTouchable,
-                                ::Pair
+                                ::Pair,
                             )
                             .onStart { emit(Pair(false, false)) }
                     ) { clearAllButtonVisible, (isShadeFullyExpanded, animationsEnabled) ->
@@ -90,16 +95,45 @@ class FooterViewModel(
                     .toAnimatedValueFlow(),
         )
 
+    // Settings buttons are not visible when the message is.
+    val settingsButtonVisible: Flow<Boolean> = message.isVisible.map { !it }
+    val historyButtonVisible: Flow<Boolean> = message.isVisible.map { !it }
+
     val manageButtonShouldLaunchHistory =
         notificationSettingsInteractor.isNotificationHistoryEnabled
 
+    val manageOrHistoryButtonClick: Flow<SettingsIntent> by lazy {
+        if (ModesEmptyShadeFix.isUnexpectedlyInLegacyMode()) {
+            flowOf(SettingsIntent(Intent(Settings.ACTION_NOTIFICATION_SETTINGS)))
+        } else {
+            notificationSettingsInteractor.isNotificationHistoryEnabled.map {
+                isNotificationHistoryEnabled ->
+                if (isNotificationHistoryEnabled) {
+                    SettingsIntent.forNotificationHistory(
+                        cujType = InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_HISTORY_BUTTON
+                    )
+                } else {
+                    SettingsIntent.forNotificationSettings(
+                        cujType = InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_HISTORY_BUTTON
+                    )
+                }
+            }
+        }
+    }
+
+    val isBlurSupported = windowRootViewBlurInteractor.isBlurCurrentlySupported
+
     private val manageOrHistoryButtonText: Flow<Int> =
-        manageButtonShouldLaunchHistory.map { shouldLaunchHistory ->
+        notificationSettingsInteractor.isNotificationHistoryEnabled.map { shouldLaunchHistory ->
             if (shouldLaunchHistory) R.string.manage_notifications_history_text
             else R.string.manage_notifications_text
         }
 
-    /** The button for managing notification settings or opening notification history. */
+    /**
+     * The button for managing notification settings or opening notification history. This is
+     * replaced by two separate buttons in the redesign. These are currently static, and therefore
+     * not modeled here, but if that changes we can also add them as FooterButtonViewModels.
+     */
     val manageOrHistoryButton: FooterButtonViewModel =
         FooterButtonViewModel(
             labelId = manageOrHistoryButtonText,
@@ -110,29 +144,9 @@ class FooterViewModel(
                     AnimatedValue.NotAnimating(!messageVisible)
                 },
         )
-}
 
-@Module
-object FooterViewModelModule {
-    @Provides
-    @SysUISingleton
-    fun provideOptional(
-        activeNotificationsInteractor: Provider<ActiveNotificationsInteractor>,
-        notificationSettingsInteractor: Provider<NotificationSettingsInteractor>,
-        seenNotificationsInteractor: Provider<SeenNotificationsInteractor>,
-        shadeInteractor: Provider<ShadeInteractor>,
-    ): Optional<FooterViewModel> {
-        return if (FooterViewRefactor.isEnabled) {
-            Optional.of(
-                FooterViewModel(
-                    activeNotificationsInteractor.get(),
-                    notificationSettingsInteractor.get(),
-                    seenNotificationsInteractor.get(),
-                    shadeInteractor.get()
-                )
-            )
-        } else {
-            Optional.empty()
-        }
+    @AssistedFactory
+    interface Factory {
+        fun create(): FooterViewModel
     }
 }

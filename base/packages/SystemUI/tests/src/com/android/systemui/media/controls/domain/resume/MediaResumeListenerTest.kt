@@ -38,7 +38,6 @@ import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.domain.pipeline.RESUME_MEDIA_TIMEOUT
 import com.android.systemui.media.controls.shared.model.MediaData
 import com.android.systemui.media.controls.shared.model.MediaDeviceData
-import com.android.systemui.media.controls.util.MediaFlags
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.tuner.TunerService
 import com.android.systemui.util.concurrency.FakeExecutor
@@ -93,7 +92,6 @@ class MediaResumeListenerTest : SysuiTestCase() {
     @Mock private lateinit var mockContext: Context
     @Mock private lateinit var pendingIntent: PendingIntent
     @Mock private lateinit var dumpManager: DumpManager
-    @Mock private lateinit var mediaFlags: MediaFlags
 
     @Captor lateinit var callbackCaptor: ArgumentCaptor<ResumeMediaBrowser.Callback>
     @Captor lateinit var actionCaptor: ArgumentCaptor<Runnable>
@@ -110,7 +108,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         Settings.Global.getInt(
             context.contentResolver,
             Settings.Global.SHOW_MEDIA_ON_QUICK_SETTINGS,
-            1
+            1,
         )
     private var originalResumeSetting =
         Settings.Secure.getInt(context.contentResolver, Settings.Secure.MEDIA_CONTROLS_RESUME, 0)
@@ -122,7 +120,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         Settings.Global.putInt(
             context.contentResolver,
             Settings.Global.SHOW_MEDIA_ON_QUICK_SETTINGS,
-            1
+            1,
         )
         Settings.Secure.putInt(context.contentResolver, Settings.Secure.MEDIA_CONTROLS_RESUME, 1)
 
@@ -138,7 +136,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         whenever(mockContext.packageManager).thenReturn(context.packageManager)
         whenever(mockContext.contentResolver).thenReturn(context.contentResolver)
         whenever(mockContext.userId).thenReturn(context.userId)
-        whenever(mediaFlags.isRemoteResumeAllowed()).thenReturn(false)
+        whenever(mockContext.resources).thenReturn(context.resources)
 
         executor = FakeExecutor(clock)
         resumeListener =
@@ -152,7 +150,6 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 resumeBrowserFactory,
                 dumpManager,
                 clock,
-                mediaFlags,
             )
         resumeListener.setManager(mediaDataManager)
         mediaDataManager.addListener(resumeListener)
@@ -161,7 +158,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
             MediaTestUtils.emptyMediaData.copy(
                 song = TITLE,
                 packageName = PACKAGE_NAME,
-                token = token
+                token = token,
             )
     }
 
@@ -170,12 +167,12 @@ class MediaResumeListenerTest : SysuiTestCase() {
         Settings.Global.putInt(
             context.contentResolver,
             Settings.Global.SHOW_MEDIA_ON_QUICK_SETTINGS,
-            originalQsSetting
+            originalQsSetting,
         )
         Settings.Secure.putInt(
             context.contentResolver,
             Settings.Secure.MEDIA_CONTROLS_RESUME,
-            originalResumeSetting
+            originalResumeSetting,
         )
     }
 
@@ -195,7 +192,6 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 resumeBrowserFactory,
                 dumpManager,
                 clock,
-                mediaFlags,
             )
         listener.setManager(mediaDataManager)
         verify(broadcastDispatcher, never())
@@ -210,7 +206,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
     @Test
     fun testOnLoad_checksForResume_noService() {
         // When media data is loaded that has not been checked yet, and does not have a MBS
-        resumeListener.onMediaDataLoaded(KEY, null, data)
+        onMediaDataLoaded(KEY, null, data)
 
         // Then we report back to the manager
         verify(mediaDataManager).setResumeAction(KEY, null)
@@ -223,8 +219,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         whenever(resumeBrowser.testConnection()).thenAnswer { callbackCaptor.value.onError() }
 
         // When media data is loaded that has not been checked yet, and does not have a MBS
-        resumeListener.onMediaDataLoaded(KEY, null, data)
-        executor.runAllReady()
+        onMediaDataLoaded(KEY, null, data)
 
         // Then we report back to the manager
         verify(mediaDataManager).setResumeAction(eq(KEY), eq(null))
@@ -234,7 +229,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
     fun testOnLoad_localCast_doesNotCheck() {
         // When media data is loaded that has not been checked yet, and is a local cast
         val dataCast = data.copy(playbackLocation = MediaData.PLAYBACK_CAST_LOCAL)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCast)
+        onMediaDataLoaded(KEY, null, dataCast, false)
 
         // Then we do not take action
         verify(mediaDataManager, never()).setResumeAction(any(), any())
@@ -244,33 +239,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
     fun testOnload_remoteCast_doesNotCheck() {
         // When media data is loaded that has not been checked yet, and is a remote cast
         val dataRcn = data.copy(playbackLocation = MediaData.PLAYBACK_CAST_REMOTE)
-        resumeListener.onMediaDataLoaded(KEY, null, dataRcn)
-
-        // Then we do not take action
-        verify(mediaDataManager, never()).setResumeAction(any(), any())
-    }
-
-    @Test
-    fun testOnLoad_localCast_remoteResumeAllowed_doesCheck() {
-        // If local cast media is allowed to resume
-        whenever(mediaFlags.isRemoteResumeAllowed()).thenReturn(true)
-
-        // When media data is loaded that has not been checked yet, and is a local cast
-        val dataCast = data.copy(playbackLocation = MediaData.PLAYBACK_CAST_LOCAL)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCast)
-
-        // Then we report back to the manager
-        verify(mediaDataManager).setResumeAction(KEY, null)
-    }
-
-    @Test
-    fun testOnLoad_remoteCast_remoteResumeAllowed_doesCheck() {
-        // If local cast media is allowed to resume
-        whenever(mediaFlags.isRemoteResumeAllowed()).thenReturn(true)
-
-        // When media data is loaded that has not been checked yet, and is a remote cast
-        val dataRcn = data.copy(playbackLocation = MediaData.PLAYBACK_CAST_REMOTE)
-        resumeListener.onMediaDataLoaded(KEY, null, dataRcn)
+        onMediaDataLoaded(KEY, null, dataRcn, resume = false)
 
         // Then we do not take action
         verify(mediaDataManager, never()).setResumeAction(any(), any())
@@ -288,10 +257,9 @@ class MediaResumeListenerTest : SysuiTestCase() {
 
         // When media data is loaded that has not been checked yet, and does have a MBS
         val dataCopy = data.copy(resumeAction = null, hasCheckedForResume = false)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCopy)
+        onMediaDataLoaded(KEY, null, dataCopy)
 
         // Then we test whether the service is valid
-        executor.runAllReady()
         verify(mediaDataManager).setResumeAction(eq(KEY), eq(null))
         verify(resumeBrowser).testConnection()
 
@@ -307,7 +275,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
     fun testOnLoad_doesNotCheckAgain() {
         // When a media data is loaded that has been checked already
         var dataCopy = data.copy(hasCheckedForResume = true)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCopy)
+        onMediaDataLoaded(KEY, null, dataCopy, resume = false)
 
         // Then we should not check it again
         verify(resumeBrowser, never()).testConnection()
@@ -320,17 +288,15 @@ class MediaResumeListenerTest : SysuiTestCase() {
         setUpMbsWithValidResolveInfo()
         resumeListener.onMediaDataLoaded(KEY, null, data)
 
-        // We notify the manager to set a null action
-        verify(mediaDataManager).setResumeAction(KEY, null)
-
         // If we then get another update from the app before the first check completes
         assertThat(executor.numPending()).isEqualTo(1)
         var dataWithCheck = data.copy(hasCheckedForResume = true)
         resumeListener.onMediaDataLoaded(KEY, null, dataWithCheck)
 
         // We do not try to start another check
-        assertThat(executor.numPending()).isEqualTo(1)
+        executor.runAllReady()
         verify(mediaDataManager).setResumeAction(KEY, null)
+        verify(resumeBrowserFactory, times(1)).create(any(), any(), anyInt())
     }
 
     @Test
@@ -354,7 +320,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 any(),
                 any(),
                 anyInt(),
-                any()
+                any(),
             )
 
         // When we get an unlock event
@@ -363,6 +329,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         resumeListener.userUnlockReceiver.onReceive(context, intent)
 
         // Then we should attempt to find recent media for each saved component
+        executor.runAllReady()
         verify(resumeBrowser, times(3)).findRecentMedia()
 
         // Then since the mock service found media, the manager should be informed
@@ -382,10 +349,9 @@ class MediaResumeListenerTest : SysuiTestCase() {
 
         // When media data is loaded that has not been checked yet, and does have a MBS
         val dataCopy = data.copy(resumeAction = null, hasCheckedForResume = false)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCopy)
+        onMediaDataLoaded(KEY, null, dataCopy)
 
         // Then we test whether the service is valid and set the resume action
-        executor.runAllReady()
         verify(mediaDataManager).setResumeAction(eq(KEY), eq(null))
         verify(resumeBrowser).testConnection()
         verify(mediaDataManager, times(2)).setResumeAction(eq(KEY), capture(actionCaptor))
@@ -444,7 +410,6 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 resumeBrowserFactory,
                 dumpManager,
                 clock,
-                mediaFlags,
             )
         resumeListener.setManager(mediaDataManager)
         mediaDataManager.addListener(resumeListener)
@@ -455,6 +420,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         resumeListener.userUnlockReceiver.onReceive(mockContext, intent)
 
         // We add its resume controls
+        executor.runAllReady()
         verify(resumeBrowser).findRecentMedia()
         verify(mediaDataManager)
             .addResumptionControls(anyInt(), any(), any(), any(), any(), any(), eq(PACKAGE_NAME))
@@ -477,7 +443,6 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 resumeBrowserFactory,
                 dumpManager,
                 clock,
-                mediaFlags,
             )
         resumeListener.setManager(mediaDataManager)
         mediaDataManager.addListener(resumeListener)
@@ -520,14 +485,13 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 resumeBrowserFactory,
                 dumpManager,
                 clock,
-                mediaFlags,
             )
         resumeListener.setManager(mediaDataManager)
         mediaDataManager.addListener(resumeListener)
 
         // When media data is loaded that has not been checked yet, and does have a MBS
         val dataCopy = data.copy(resumeAction = null, hasCheckedForResume = false)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCopy)
+        onMediaDataLoaded(KEY, null, dataCopy)
 
         // Then we store the new lastPlayed time
         verify(sharedPrefsEditor).putString(any(), (capture(componentCaptor)))
@@ -546,10 +510,9 @@ class MediaResumeListenerTest : SysuiTestCase() {
     fun testOnMediaDataLoaded_newKeyDifferent_oldMediaBrowserDisconnected() {
         setUpMbsWithValidResolveInfo()
 
-        resumeListener.onMediaDataLoaded(key = KEY, oldKey = null, data)
-        executor.runAllReady()
+        onMediaDataLoaded(key = KEY, oldKey = null, data)
 
-        resumeListener.onMediaDataLoaded(key = "newKey", oldKey = KEY, data)
+        onMediaDataLoaded(key = "newKey", oldKey = KEY, data)
 
         verify(resumeBrowser).disconnect()
     }
@@ -561,8 +524,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         // Set up mocks to return with an error
         whenever(resumeBrowser.testConnection()).thenAnswer { callbackCaptor.value.onError() }
 
-        resumeListener.onMediaDataLoaded(key = KEY, oldKey = null, data)
-        executor.runAllReady()
+        onMediaDataLoaded(key = KEY, oldKey = null, data)
 
         // Ensure we disconnect the browser
         verify(resumeBrowser).disconnect()
@@ -579,8 +541,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
             callbackCaptor.value.addTrack(description, component, resumeBrowser)
         }
 
-        resumeListener.onMediaDataLoaded(key = KEY, oldKey = null, data)
-        executor.runAllReady()
+        onMediaDataLoaded(key = KEY, oldKey = null, data)
 
         // Ensure we disconnect the browser
         verify(resumeBrowser).disconnect()
@@ -598,8 +559,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
 
         // Load media data that will require us to get the resume action
         val dataCopy = data.copy(resumeAction = null, hasCheckedForResume = false)
-        resumeListener.onMediaDataLoaded(KEY, null, dataCopy)
-        executor.runAllReady()
+        onMediaDataLoaded(KEY, null, dataCopy)
         verify(mediaDataManager, times(2)).setResumeAction(eq(KEY), capture(actionCaptor))
 
         // Set up our factory to return a new browser so we can verify we disconnected the old one
@@ -634,6 +594,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
         // When the first user unlocks and we query their recent media
         userCallbackCaptor.value.onUserChanged(firstUserId, context)
         resumeListener.userUnlockReceiver.onReceive(context, unlockIntent)
+        executor.runAllReady()
         whenever(resumeBrowser.userId).thenReturn(userIdCaptor.value)
         verify(resumeBrowser, times(3)).findRecentMedia()
 
@@ -650,7 +611,7 @@ class MediaResumeListenerTest : SysuiTestCase() {
                 eq(token),
                 eq(PACKAGE_NAME),
                 eq(pendingIntent),
-                eq(PACKAGE_NAME)
+                eq(PACKAGE_NAME),
             )
     }
 
@@ -687,5 +648,17 @@ class MediaResumeListenerTest : SysuiTestCase() {
         whenever(pm.queryIntentServicesAsUser(any(), anyInt(), anyInt())).thenReturn(resumeInfo)
         whenever(pm.resolveServiceAsUser(any(), anyInt(), anyInt())).thenReturn(resolveInfo)
         whenever(pm.getApplicationLabel(any())).thenReturn(PACKAGE_NAME)
+    }
+
+    private fun onMediaDataLoaded(
+        key: String,
+        oldKey: String?,
+        data: MediaData,
+        resume: Boolean = true,
+    ) {
+        resumeListener.onMediaDataLoaded(key, oldKey, data)
+        if (resume) {
+            assertThat(executor.runAllReady()).isEqualTo(1)
+        }
     }
 }

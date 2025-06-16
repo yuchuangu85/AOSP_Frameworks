@@ -19,7 +19,9 @@ import android.view.View
 import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.unfold.data.repository.UnfoldTransitionRepository
+import com.android.systemui.unfold.data.repository.UnfoldTransitionStatus
 import com.android.systemui.unfold.data.repository.UnfoldTransitionStatus.TransitionFinished
 import com.android.systemui.unfold.data.repository.UnfoldTransitionStatus.TransitionInProgress
 import com.android.systemui.unfold.data.repository.UnfoldTransitionStatus.TransitionStarted
@@ -41,11 +43,14 @@ class UnfoldTransitionInteractor
 @Inject
 constructor(
     private val repository: UnfoldTransitionRepository,
-    private val configurationInteractor: ConfigurationInteractor,
+    @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
 ) {
     /** Returns availability of fold/unfold transitions on the device */
     val isAvailable: Boolean
         get() = repository.isAvailable
+
+    /** Flow of latest [UnfoldTransitionStatus] changes */
+    val unfoldTransitionStatus: Flow<UnfoldTransitionStatus> = repository.transitionStatus
 
     /**
      * This mapping emits 1 when the device is completely unfolded and 0.0 when the device is

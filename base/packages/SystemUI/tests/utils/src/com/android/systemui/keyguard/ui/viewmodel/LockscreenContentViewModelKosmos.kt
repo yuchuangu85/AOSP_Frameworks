@@ -17,22 +17,35 @@
 package com.android.systemui.keyguard.ui.viewmodel
 
 import com.android.systemui.biometrics.authController
+import com.android.systemui.deviceentry.domain.interactor.deviceEntryInteractor
 import com.android.systemui.keyguard.domain.interactor.keyguardBlueprintInteractor
 import com.android.systemui.keyguard.domain.interactor.keyguardClockInteractor
+import com.android.systemui.keyguard.domain.interactor.keyguardTransitionInteractor
+import com.android.systemui.keyguard.shared.transition.KeyguardTransitionAnimationCallback
+import com.android.systemui.keyguard.shared.transition.keyguardTransitionAnimationCallbackDelegator
 import com.android.systemui.kosmos.Kosmos
-import com.android.systemui.kosmos.applicationCoroutineScope
-import com.android.systemui.shade.domain.interactor.shadeInteractor
+import com.android.systemui.kosmos.Kosmos.Fixture
+import com.android.systemui.shade.domain.interactor.shadeModeInteractor
 import com.android.systemui.unfold.domain.interactor.unfoldTransitionInteractor
 
-val Kosmos.lockscreenContentViewModel by
-    Kosmos.Fixture {
-        LockscreenContentViewModel(
-            clockInteractor = keyguardClockInteractor,
-            interactor = keyguardBlueprintInteractor,
-            authController = authController,
-            longPress = keyguardLongPressViewModel,
-            shadeInteractor = shadeInteractor,
-            applicationScope = applicationCoroutineScope,
-            unfoldTransitionInteractor = unfoldTransitionInteractor,
-        )
+val Kosmos.lockscreenContentViewModelFactory by Fixture {
+    object : LockscreenContentViewModel.Factory {
+        override fun create(
+            keyguardTransitionAnimationCallback: KeyguardTransitionAnimationCallback
+        ): LockscreenContentViewModel {
+            return LockscreenContentViewModel(
+                clockInteractor = keyguardClockInteractor,
+                interactor = keyguardBlueprintInteractor,
+                authController = authController,
+                touchHandling = keyguardTouchHandlingViewModel,
+                shadeModeInteractor = shadeModeInteractor,
+                unfoldTransitionInteractor = unfoldTransitionInteractor,
+                deviceEntryInteractor = deviceEntryInteractor,
+                transitionInteractor = keyguardTransitionInteractor,
+                keyguardTransitionAnimationCallbackDelegator =
+                    keyguardTransitionAnimationCallbackDelegator,
+                keyguardTransitionAnimationCallback = keyguardTransitionAnimationCallback,
+            )
+        }
     }
+}

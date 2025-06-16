@@ -51,7 +51,6 @@ public final class ScreenOffBrightnessStrategyTest {
         DisplayBrightnessState expectedDisplayBrightnessState =
                 new DisplayBrightnessState.Builder()
                         .setBrightness(PowerManager.BRIGHTNESS_OFF_FLOAT)
-                        .setSdrBrightness(PowerManager.BRIGHTNESS_OFF_FLOAT)
                         .setBrightnessReason(brightnessReason)
                         .setDisplayBrightnessStrategyName(mScreenOffBrightnessModeStrategy
                                 .getName())
@@ -59,7 +58,8 @@ public final class ScreenOffBrightnessStrategyTest {
         DisplayBrightnessState updatedDisplayBrightnessState =
                 mScreenOffBrightnessModeStrategy.updateBrightness(
                         new StrategyExecutionRequest(displayPowerRequest, 0.2f,
-                                /* userSetBrightnessChanged= */ false));
+                                /* userSetBrightnessChanged= */ false,
+                                /* isStylusBeingUsed */ false));
         assertEquals(updatedDisplayBrightnessState, expectedDisplayBrightnessState);
     }
 }

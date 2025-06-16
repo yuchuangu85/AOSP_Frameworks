@@ -16,6 +16,7 @@
 
 package com.android.server.notification;
 
+import android.annotation.Nullable;
 import android.app.NotificationManager;
 import android.content.ComponentName;
 import android.media.AudioManager;
@@ -23,18 +24,16 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.RemoteException;
 import android.provider.Settings.Global;
-import android.service.notification.Condition;
 import android.service.notification.IConditionProvider;
 import android.service.notification.NotificationListenerService;
 import android.service.notification.ZenModeConfig;
+import android.service.notification.ZenModeConfig.ConfigOrigin;
 import android.service.notification.ZenModeDiff;
 import android.util.LocalLog;
-import android.util.Log;
-import android.util.Slog;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.PrintWriter;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.List;
 
 public class ZenLog {
@@ -61,6 +60,8 @@ public class ZenLog {
     private static final int TYPE_RECORD_CALLER = 19;
     private static final int TYPE_CHECK_REPEAT_CALLER = 20;
     private static final int TYPE_ALERT_ON_UPDATED_INTERCEPT = 21;
+    private static final int TYPE_APPLY_DEVICE_EFFECT = 22;
+    private static final int TYPE_SCHEDULE_APPLY_DEVICE_EFFECT = 23;
 
     public static void traceIntercepted(NotificationRecord record, String reason) {
         append(TYPE_INTERCEPTED, record.getKey() + "," + reason);
@@ -120,16 +121,17 @@ public class ZenLog {
         append(TYPE_UNSUBSCRIBE, uri + "," + subscribeResult(provider, e));
     }
 
-    public static void traceConfig(String reason, ComponentName triggeringComponent,
-            ZenModeConfig oldConfig, ZenModeConfig newConfig, int callingUid) {
+    public static void traceConfig(@ConfigOrigin int origin, String reason,
+            @Nullable ComponentName triggeringComponent, ZenModeConfig oldConfig,
+            ZenModeConfig newConfig, int callingUid) {
         ZenModeDiff.ConfigDiff diff = new ZenModeDiff.ConfigDiff(oldConfig, newConfig);
-        if (diff == null || !diff.hasDiff()) {
-            append(TYPE_CONFIG, reason + " no changes");
+        if (!diff.hasDiff()) {
+            append(TYPE_CONFIG, reason + " (" + originToString(origin) + ") no changes");
         } else {
-            append(TYPE_CONFIG, reason
-                    + " - " + triggeringComponent + " : " + callingUid
-                    + ",\n" + (newConfig != null ? newConfig.toString() : null)
-                    + ",\n" + diff);
+            append(TYPE_CONFIG, reason + " (" + originToString(origin) + ") from uid " + callingUid
+                    + (triggeringComponent != null ? " - " + triggeringComponent : "") + ",\n"
+                    + (newConfig != null ? newConfig.toString() : null) + ",\n"
+                    + diff);
         }
     }
 
@@ -138,8 +140,9 @@ public class ZenLog {
     }
 
     public static void traceEffectsSuppressorChanged(List<ComponentName> oldSuppressors,
-            List<ComponentName> newSuppressors, long suppressedEffects) {
-        append(TYPE_SUPPRESSOR_CHANGED, "suppressed effects:" + suppressedEffects + ","
+            List<ComponentName> newSuppressors, long oldSuppressedEffects, long suppressedEffects) {
+        append(TYPE_SUPPRESSOR_CHANGED, "suppressed effects:"
+                + oldSuppressedEffects + "->" + suppressedEffects + ","
                 + componentListToString(oldSuppressors) + "->"
                 + componentListToString(newSuppressors));
     }
@@ -173,6 +176,14 @@ public class ZenLog {
                 + ", given uri=" + hasUri);
     }
 
+    public static void traceApplyDeviceEffect(String effect, boolean newValue) {
+        append(TYPE_APPLY_DEVICE_EFFECT, effect + " -> " + newValue);
+    }
+
+    public static void traceScheduleApplyDeviceEffect(String effect, boolean scheduledValue) {
+        append(TYPE_SCHEDULE_APPLY_DEVICE_EFFECT, effect + " -> " + scheduledValue);
+    }
+
     private static String subscribeResult(IConditionProvider provider, RemoteException e) {
         return provider == null ? "no provider" : e != null ? e.getMessage() : "ok";
     }
@@ -196,6 +207,8 @@ public class ZenLog {
             case TYPE_RECORD_CALLER: return "record_caller";
             case TYPE_CHECK_REPEAT_CALLER: return "check_repeat_caller";
             case TYPE_ALERT_ON_UPDATED_INTERCEPT: return "alert_on_updated_intercept";
+            case TYPE_APPLY_DEVICE_EFFECT: return "apply_device_effect";
+            case TYPE_SCHEDULE_APPLY_DEVICE_EFFECT: return "schedule_device_effect";
             default: return "unknown";
         }
     }
@@ -232,7 +245,22 @@ public class ZenLog {
         }
     }
 
-    private static String componentToString(ComponentName component) {
+    private static String originToString(@ConfigOrigin int origin) {
+        return switch (origin) {
+            case ZenModeConfig.ORIGIN_UNKNOWN -> "ORIGIN_UNKNOWN";
+            case ZenModeConfig.ORIGIN_INIT -> "ORIGIN_INIT";
+            case ZenModeConfig.ORIGIN_INIT_USER -> "ORIGIN_INIT_USER";
+            case ZenModeConfig.ORIGIN_USER_IN_SYSTEMUI -> "ORIGIN_USER_IN_SYSTEMUI";
+            case ZenModeConfig.ORIGIN_APP -> "ORIGIN_APP";
+            case ZenModeConfig.ORIGIN_SYSTEM -> "ORIGIN_SYSTEM";
+            case ZenModeConfig.ORIGIN_RESTORE_BACKUP -> "ORIGIN_RESTORE_BACKUP";
+            case ZenModeConfig.ORIGIN_USER_IN_APP -> "ORIGIN_USER_IN_APP";
+            default -> origin + "??";
+        };
+    }
+
+    @Nullable
+    private static String componentToString(@Nullable ComponentName component) {
         return component != null ? component.toShortString() : null;
     }
 
@@ -271,6 +299,16 @@ public class ZenLog {
         synchronized (STATE_CHANGES) {
             pw.printf(prefix  + "State Changes:\n");
             STATE_CHANGES.dump(prefix, pw);
+        }
+    }
+
+    @VisibleForTesting(/* otherwise = VisibleForTesting.NONE */)
+    public static void clear() {
+        synchronized (INTERCEPTION_EVENTS) {
+            INTERCEPTION_EVENTS.clear();
+        }
+        synchronized (STATE_CHANGES) {
+            STATE_CHANGES.clear();
         }
     }
 }

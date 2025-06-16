@@ -22,6 +22,7 @@ import android.content.Context
 import android.os.UserHandle
 import androidx.lifecycle.DefaultLifecycleObserver
 import com.android.launcher3.icons.IconFactory
+import com.android.systemui.coroutines.newTracingContext
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.mediaprojection.appselector.data.ActivityTaskManagerLabelLoader
 import com.android.systemui.mediaprojection.appselector.data.ActivityTaskManagerThumbnailLoader
@@ -122,8 +123,10 @@ interface MediaProjectionAppSelectorModule {
         @Provides
         @MediaProjectionAppSelector
         @MediaProjectionAppSelectorScope
-        fun bindConfigurationController(context: Context): ConfigurationController =
-            ConfigurationControllerImpl(context)
+        fun bindConfigurationController(
+            context: Context,
+            configurationControlleFactory: ConfigurationControllerImpl.Factory
+        ): ConfigurationController = configurationControlleFactory.create(context)
 
         @Provides fun bindIconFactory(context: Context): IconFactory = IconFactory.obtain(context)
 
@@ -131,7 +134,11 @@ interface MediaProjectionAppSelectorModule {
         @MediaProjectionAppSelector
         @MediaProjectionAppSelectorScope
         fun provideCoroutineScope(@Application applicationScope: CoroutineScope): CoroutineScope =
-            CoroutineScope(applicationScope.coroutineContext + SupervisorJob())
+            CoroutineScope(
+                applicationScope.coroutineContext +
+                    SupervisorJob() +
+                    newTracingContext("MediaProjectionAppSelectorScope")
+            )
     }
 }
 

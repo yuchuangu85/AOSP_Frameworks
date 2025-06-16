@@ -19,100 +19,38 @@ package com.android.compose.animation.scene
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.pointer.PointerEvent
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.node.DelegatingNode
-import androidx.compose.ui.node.ModifierNodeElement
-import androidx.compose.ui.node.PointerInputModifierNode
-import androidx.compose.ui.unit.IntSize
+import com.android.compose.animation.scene.content.Content
+import com.android.compose.gesture.nestedDraggable
 
 /**
  * Configures the swipeable behavior of a [SceneTransitionLayout] depending on the current state.
  */
 @Stable
-internal fun Modifier.swipeToScene(
-    draggableHandler: DraggableHandlerImpl,
-    swipeDetector: SwipeDetector
-): Modifier {
-    return this.then(SwipeToSceneElement(draggableHandler, swipeDetector))
+internal fun Modifier.swipeToScene(draggableHandler: DraggableHandler): Modifier {
+    val contentForSwipes = draggableHandler.contentForSwipes()
+    val enabled = draggableHandler.enabled(contentForSwipes)
+    return this.nestedDraggable(
+        draggable = draggableHandler,
+        orientation = draggableHandler.orientation,
+        overscrollEffect = draggableHandler.overscrollEffect,
+        enabled = enabled,
+        nestedDragsEnabled = enabled && contentForSwipes.areNestedSwipesAllowed(),
+    )
 }
 
-private data class SwipeToSceneElement(
-    val draggableHandler: DraggableHandlerImpl,
-    val swipeDetector: SwipeDetector
-) : ModifierNodeElement<SwipeToSceneNode>() {
-    override fun create(): SwipeToSceneNode = SwipeToSceneNode(draggableHandler, swipeDetector)
-
-    override fun update(node: SwipeToSceneNode) {
-        node.draggableHandler = draggableHandler
-    }
+internal fun DraggableHandler.enabled(contentForSwipes: Content = contentForSwipes()): Boolean {
+    return isDrivingTransition || contentForSwipes.shouldEnableSwipes(orientation)
 }
 
-private class SwipeToSceneNode(
-    draggableHandler: DraggableHandlerImpl,
-    swipeDetector: SwipeDetector,
-) : DelegatingNode(), PointerInputModifierNode {
-    private val delegate =
-        delegate(
-            MultiPointerDraggableNode(
-                orientation = draggableHandler.orientation,
-                enabled = ::enabled,
-                startDragImmediately = ::startDragImmediately,
-                onDragStarted = draggableHandler::onDragStarted,
-                swipeDetector = swipeDetector,
-            )
-        )
+private fun DraggableHandler.contentForSwipes(): Content {
+    return layoutImpl.contentForUserActions()
+}
 
-    private var _draggableHandler = draggableHandler
-    var draggableHandler: DraggableHandlerImpl
-        get() = _draggableHandler
-        set(value) {
-            if (_draggableHandler != value) {
-                _draggableHandler = value
-
-                // Make sure to update the delegate orientation. Note that this will automatically
-                // reset the underlying pointer input handler, so previous gestures will be
-                // cancelled.
-                delegate.orientation = value.orientation
-            }
-        }
-
-    override fun onPointerEvent(
-        pointerEvent: PointerEvent,
-        pass: PointerEventPass,
-        bounds: IntSize,
-    ) = delegate.onPointerEvent(pointerEvent, pass, bounds)
-
-    override fun onCancelPointerInput() = delegate.onCancelPointerInput()
-
-    private fun enabled(): Boolean {
-        return draggableHandler.isDrivingTransition ||
-            currentScene().shouldEnableSwipes(delegate.orientation)
+/** Whether swipe should be enabled in the given [orientation]. */
+private fun Content.shouldEnableSwipes(orientation: Orientation): Boolean {
+    if (userActions.isEmpty()) {
+        return false
     }
 
-    private fun currentScene(): Scene {
-        val layoutImpl = draggableHandler.layoutImpl
-        return layoutImpl.scene(layoutImpl.state.transitionState.currentScene)
-    }
-
-    /** Whether swipe should be enabled in the given [orientation]. */
-    private fun Scene.shouldEnableSwipes(orientation: Orientation): Boolean {
-        return userActions.keys.any { it is Swipe && it.direction.orientation == orientation }
-    }
-
-    private fun startDragImmediately(startedPosition: Offset): Boolean {
-        // Immediately start the drag if the user can't swipe in the other direction and the gesture
-        // handler can intercept it.
-        return !canOppositeSwipe() && draggableHandler.shouldImmediatelyIntercept(startedPosition)
-    }
-
-    private fun canOppositeSwipe(): Boolean {
-        val oppositeOrientation =
-            when (draggableHandler.orientation) {
-                Orientation.Vertical -> Orientation.Horizontal
-                Orientation.Horizontal -> Orientation.Vertical
-            }
-        return currentScene().shouldEnableSwipes(oppositeOrientation)
-    }
+    return userActions.keys.any { it is Swipe.Resolved && it.direction.orientation == orientation }
 }

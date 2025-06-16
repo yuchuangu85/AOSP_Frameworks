@@ -60,6 +60,7 @@ import android.os.Handler;
 import android.os.PowerManager;
 import android.platform.test.annotations.DisableFlags;
 
+import android.platform.test.annotations.EnableFlags;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
@@ -75,7 +76,7 @@ import com.android.systemui.statusbar.notification.interruption.NotificationInte
 import com.android.systemui.statusbar.notification.interruption.NotificationInterruptStateProviderImpl.NotificationInterruptEvent;
 import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.util.FakeEventLog;
 import com.android.systemui.util.settings.FakeGlobalSettings;
@@ -241,6 +242,50 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
 
         // THEN this entry shouldn't HUN
         assertThat(mNotifInterruptionStateProvider.shouldHeadsUp(entry)).isFalse();
+    }
+
+    @Test
+    @EnableFlags(android.service.notification.Flags.FLAG_NOTIFICATION_SILENT_FLAG)
+    public void testShouldNotHeadsUp_silentNotification() {
+        // GIVEN state for "heads up when awake" is true
+        ensureStateForHeadsUpWhenAwake();
+
+        // WHEN the alert for a grouped notification is suppressed
+        // see {@link android.app.Notification#GROUP_ALERT_CHILDREN}
+        NotificationEntry entry = new NotificationEntryBuilder()
+            .setPkg("a")
+            .setOpPkg("a")
+            .setTag("a")
+            .setNotification(new Notification.Builder(getContext(), "a")
+                .setSilent(true)
+                .build())
+            .setImportance(IMPORTANCE_DEFAULT)
+            .build();
+
+        // THEN this entry shouldn't HUN
+        assertThat(mNotifInterruptionStateProvider.shouldHeadsUp(entry)).isFalse();
+    }
+
+    @Test
+    @EnableFlags(android.service.notification.Flags.FLAG_NOTIFICATION_SILENT_FLAG)
+    public void testShouldNotHeadsUp_silentNotificationFalse() {
+        // GIVEN state for "heads up when awake" is true
+        ensureStateForHeadsUpWhenAwake();
+
+        // WHEN the alert for a grouped notification is suppressed
+        // see {@link android.app.Notification#GROUP_ALERT_CHILDREN}
+        NotificationEntry entry = new NotificationEntryBuilder()
+            .setPkg("a")
+            .setOpPkg("a")
+            .setTag("a")
+            .setNotification(new Notification.Builder(getContext(), "a")
+                .setSilent(false)
+                .build())
+            .setImportance(IMPORTANCE_HIGH)
+            .build();
+
+        // THEN this entry shouldn't HUN
+        assertThat(mNotifInterruptionStateProvider.shouldHeadsUp(entry)).isTrue();
     }
 
     @Test
@@ -682,6 +727,26 @@ public class NotificationInterruptStateProviderImplTest extends SysuiTestCase {
                 NotificationInterruptEvent.FSI_SUPPRESSED_SUPPRESSIVE_BUBBLE_METADATA.getId());
         assertThat(fakeUiEvent.uid).isEqualTo(entry.getSbn().getUid());
         assertThat(fakeUiEvent.packageName).isEqualTo(entry.getSbn().getPackageName());
+    }
+
+    @Test
+    @EnableFlags(android.service.notification.Flags.FLAG_NOTIFICATION_SILENT_FLAG)
+    public void testShouldNotFullScreen_silentNotification() {
+        Notification n = new Notification.Builder(getContext(), "a")
+            .setContentTitle("title")
+            .setContentText("content text")
+            .setFullScreenIntent(mPendingIntent, true)
+            .setSilent(true)
+            .build();
+        NotificationEntry entry = createNotification(IMPORTANCE_HIGH, n);
+
+        assertThat(mNotifInterruptionStateProvider.getFullScreenIntentDecision(entry))
+            .isEqualTo(FullScreenIntentDecision.NO_FSI_SUPPRESSIVE_SILENT_NOTIFICATION);
+        assertThat(mNotifInterruptionStateProvider.shouldLaunchFullScreenIntentWhenAdded(entry))
+            .isFalse();
+        verify(mLogger).logNoFullscreen(entry, "NO_FSI_SUPPRESSIVE_SILENT_NOTIFICATION");
+        verify(mLogger, never()).logFullscreen(any(), any());
+        verify(mLogger, never()).logNoFullscreenWarning(any(), any());
     }
 
     @Test

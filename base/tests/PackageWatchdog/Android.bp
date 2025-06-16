@@ -26,22 +26,37 @@ android_test {
     name: "PackageWatchdogTest",
     srcs: ["src/**/*.java"],
     static_libs: [
-        "junit",
-        "mockito-target-extended-minus-junit4",
+        "PlatformProperties",
+        "androidx.test.rules",
+        "androidx.test.runner",
         "flag-junit",
         "frameworks-base-testutils",
-        "androidx.test.rules",
-        "PlatformProperties",
+        "junit",
+        "mockito-target-extended-minus-junit4",
         "services.core",
         "services.net",
         "truth",
-    ],
-    libs: ["android.test.runner"],
+    ] + select(soong_config_variable("ANDROID", "release_crashrecovery_module"), {
+        "true": [
+            "service-crashrecovery-pre-jarjar",
+            "framework-crashrecovery.impl",
+        ],
+        default: [],
+    }),
+    libs: ["android.test.runner.stubs.system"],
     jni_libs: [
         // mockito-target-extended dependencies
         "libdexmakerjvmtiagent",
         "libstaticjvmtiagent",
     ],
     platform_apis: true,
-    test_suites: ["device-tests"],
+    test_suites: [
+        "device-tests",
+        "mts-crashrecovery",
+    ],
+    min_sdk_version: "36",
+
+    // Test coverage system runs on different devices. Need to
+    // compile for all architecture.
+    compile_multilib: "both",
 }

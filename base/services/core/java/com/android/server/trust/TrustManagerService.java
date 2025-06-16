@@ -16,10 +16,12 @@
 
 package com.android.server.trust;
 
+import static android.security.Flags.shouldTrustManagerListenForPrimaryAuth;
 import static android.service.trust.GrantTrustResult.STATUS_UNLOCKED_BY_GRANT;
 import static android.service.trust.TrustAgentService.FLAG_GRANT_TRUST_TEMPORARY_AND_RENEWABLE;
 
 import android.Manifest;
+import android.annotation.EnforcePermission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
@@ -59,6 +61,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PersistableBundle;
+import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -82,9 +85,14 @@ import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.content.PackageMonitor;
 import com.android.internal.infra.AndroidFuture;
+import com.android.internal.policy.IDeviceLockedStateListener;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.widget.LockPatternUtils;
+import com.android.internal.widget.LockSettingsInternal;
+import com.android.internal.widget.LockSettingsStateListener;
+import com.android.server.LocalServices;
 import com.android.server.SystemService;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.servicewatcher.CurrentUserServiceSupplier;
 import com.android.server.servicewatcher.ServiceWatcher;
 import com.android.server.utils.Slogf;
@@ -99,6 +107,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.IntStream;
 
 /**
  * Manages trust agents and trust listeners.
@@ -159,12 +168,14 @@ public class TrustManagerService extends SystemService {
 
     /* package */ final TrustArchive mArchive = new TrustArchive();
     private final Context mContext;
+    private final LockSettingsInternal mLockSettings;
     private final LockPatternUtils mLockPatternUtils;
     private final KeyStoreAuthorization mKeyStoreAuthorization;
     private final UserManager mUserManager;
     private final ActivityManager mActivityManager;
     private FingerprintManager mFingerprintManager;
     private FaceManager mFaceManager;
+    private UserManagerInternal mUserManagerInternal;
 
     private enum TrustState {
         // UNTRUSTED means that TrustManagerService is currently *not* giving permission for the
@@ -245,10 +256,28 @@ public class TrustManagerService extends SystemService {
             new SparseArray<>();
     private final SparseArray<TrustableTimeoutAlarmListener>
             mIdleTrustableTimeoutAlarmListenerForUser = new SparseArray<>();
+
+    private final RemoteCallbackList<IDeviceLockedStateListener>
+            mDeviceLockedStateListeners = new RemoteCallbackList<>();
+
     private AlarmManager mAlarmManager;
     private final Object mAlarmLock = new Object();
 
     private final StrongAuthTracker mStrongAuthTracker;
+
+    // Used to subscribe to device credential auth attempts.
+    private final LockSettingsStateListener mLockSettingsStateListener =
+            new LockSettingsStateListener() {
+                @Override
+                public void onAuthenticationSucceeded(int userId) {
+                    mHandler.obtainMessage(MSG_DISPATCH_UNLOCK_ATTEMPT, 1, userId).sendToTarget();
+                }
+
+                @Override
+                public void onAuthenticationFailed(int userId) {
+                    mHandler.obtainMessage(MSG_DISPATCH_UNLOCK_ATTEMPT, 0, userId).sendToTarget();
+                }
+            };
 
     private boolean mTrustAgentsCanRun = false;
     private int mCurrentUser = UserHandle.USER_SYSTEM;
@@ -294,6 +323,7 @@ public class TrustManagerService extends SystemService {
         mHandler = createHandler(injector.getLooper());
         mUserManager = (UserManager) mContext.getSystemService(Context.USER_SERVICE);
         mActivityManager = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+        mLockSettings = LocalServices.getService(LockSettingsInternal.class);
         mLockPatternUtils = injector.getLockPatternUtils();
         mKeyStoreAuthorization = injector.getKeyStoreAuthorization();
         mStrongAuthTracker = new StrongAuthTracker(context, injector.getLooper());
@@ -315,6 +345,9 @@ public class TrustManagerService extends SystemService {
             checkNewAgents();
             mPackageMonitor.register(mContext, mHandler.getLooper(), UserHandle.ALL, true);
             mReceiver.register(mContext);
+            if (shouldTrustManagerListenForPrimaryAuth()) {
+                mLockSettings.registerLockSettingsStateListener(mLockSettingsStateListener);
+            }
             mLockPatternUtils.registerStrongAuthTracker(mStrongAuthTracker);
             mFingerprintManager = mContext.getSystemService(FingerprintManager.class);
             mFaceManager = mContext.getSystemService(FaceManager.class);
@@ -323,37 +356,35 @@ public class TrustManagerService extends SystemService {
             refreshAgentList(UserHandle.USER_ALL);
             refreshDeviceLockedForUser(UserHandle.USER_ALL);
 
-            if (android.security.Flags.significantPlaces()) {
-                mSignificantPlaceServiceWatcher = ServiceWatcher.create(mContext, TAG,
-                        CurrentUserServiceSupplier.create(
-                                mContext,
-                                TrustManager.ACTION_BIND_SIGNIFICANT_PLACE_PROVIDER,
-                                null,
-                                null,
-                                null),
-                        new ServiceWatcher.ServiceListener<>() {
-                            @Override
-                            public void onBind(IBinder binder,
-                                    CurrentUserServiceSupplier.BoundServiceInfo service)
-                                    throws RemoteException {
-                                ISignificantPlaceProvider.Stub.asInterface(binder)
-                                        .setSignificantPlaceProviderManager(
-                                                new ISignificantPlaceProviderManager.Stub() {
-                                                    @Override
-                                                    public void setInSignificantPlace(
-                                                            boolean inSignificantPlace) {
-                                                        mIsInSignificantPlace = inSignificantPlace;
-                                                    }
-                                                });
-                            }
+            mSignificantPlaceServiceWatcher = ServiceWatcher.create(mContext, TAG,
+                    CurrentUserServiceSupplier.create(
+                            mContext,
+                            TrustManager.ACTION_BIND_SIGNIFICANT_PLACE_PROVIDER,
+                            null,
+                            null,
+                            null),
+                    new ServiceWatcher.ServiceListener<>() {
+                        @Override
+                        public void onBind(IBinder binder,
+                                CurrentUserServiceSupplier.BoundServiceInfo service)
+                                throws RemoteException {
+                            ISignificantPlaceProvider.Stub.asInterface(binder)
+                                    .setSignificantPlaceProviderManager(
+                                            new ISignificantPlaceProviderManager.Stub() {
+                                                @Override
+                                                public void setInSignificantPlace(
+                                                        boolean inSignificantPlace) {
+                                                    mIsInSignificantPlace = inSignificantPlace;
+                                                }
+                                            });
+                        }
 
-                            @Override
-                            public void onUnbind() {
-                                mIsInSignificantPlace = false;
-                            }
-                        });
-                mSignificantPlaceServiceWatcher.register();
-            }
+                        @Override
+                        public void onUnbind() {
+                            mIsInSignificantPlace = false;
+                        }
+                    });
+            mSignificantPlaceServiceWatcher.register();
         } else if (phase == SystemService.PHASE_BOOT_COMPLETED) {
             maybeEnableFactoryTrustAgents(UserHandle.USER_SYSTEM);
         }
@@ -1026,12 +1057,7 @@ public class TrustManagerService extends SystemService {
                 continue;
             }
 
-            final boolean trusted;
-            if (android.security.Flags.fixUnlockedDeviceRequiredKeysV2()) {
-                trusted = getUserTrustStateInner(id) == TrustState.TRUSTED;
-            } else {
-                trusted = aggregateIsTrusted(id);
-            }
+            final boolean trusted = getUserTrustStateInner(id) == TrustState.TRUSTED;
             boolean showingKeyguard = true;
             boolean biometricAuthenticated = false;
             boolean currentUserIsUnlocked = false;
@@ -1046,6 +1072,8 @@ public class TrustManagerService extends SystemService {
                     Log.w(TAG, "Unable to check keyguard lock state", e);
                 }
                 currentUserIsUnlocked = unlockedUser == id;
+            } else if (isVisibleBackgroundUser(id)) {
+                showingKeyguard = !mUserManager.isUserUnlocked(id);
             }
             final boolean deviceLocked = secure && showingKeyguard && !trusted
                     && !biometricAuthenticated;
@@ -1067,6 +1095,7 @@ public class TrustManagerService extends SystemService {
         if (changed) {
             notifyTrustAgentsOfDeviceLockState(userId, locked);
             notifyKeystoreOfDeviceLockState(userId, locked);
+            notifyDeviceLockedListenersForUser(userId, locked);
             // Also update the user's profiles who have unified challenge, since they
             // share the same unlocked state (see {@link #isDeviceLocked(int)})
             for (int profileHandle : mUserManager.getEnabledProfileIds(userId)) {
@@ -1075,6 +1104,16 @@ public class TrustManagerService extends SystemService {
                 }
             }
         }
+    }
+
+    private boolean isVisibleBackgroundUser(int userId) {
+        if (!mUserManager.isVisibleBackgroundUsersSupported()) {
+            return false;
+        }
+        if (mUserManagerInternal == null) {
+            mUserManagerInternal = LocalServices.getService(UserManagerInternal.class);
+        }
+        return mUserManagerInternal.isVisibleBackgroundFullUser(userId);
     }
 
     private void notifyTrustAgentsOfDeviceLockState(int userId, boolean isLocked) {
@@ -1092,19 +1131,15 @@ public class TrustManagerService extends SystemService {
 
     private void notifyKeystoreOfDeviceLockState(int userId, boolean isLocked) {
         if (isLocked) {
-            if (android.security.Flags.fixUnlockedDeviceRequiredKeysV2()) {
-                // A profile with unified challenge is unlockable not by its own biometrics and
-                // trust agents, but rather by those of the parent user.  Therefore, when protecting
-                // the profile's UnlockedDeviceRequired keys, we must use the parent's list of
-                // biometric SIDs and weak unlock methods, not the profile's.
-                int authUserId = mLockPatternUtils.isProfileWithUnifiedChallenge(userId)
-                        ? resolveProfileParent(userId) : userId;
+            // A profile with unified challenge is unlockable not by its own biometrics and
+            // trust agents, but rather by those of the parent user.  Therefore, when protecting
+            // the profile's UnlockedDeviceRequired keys, we must use the parent's list of
+            // biometric SIDs and weak unlock methods, not the profile's.
+            int authUserId = mLockPatternUtils.isProfileWithUnifiedChallenge(userId)
+                    ? resolveProfileParent(userId) : userId;
 
-                mKeyStoreAuthorization.onDeviceLocked(userId, getBiometricSids(authUserId),
-                        isWeakUnlockMethodEnabled(authUserId));
-            } else {
-                mKeyStoreAuthorization.onDeviceLocked(userId, getBiometricSids(userId), false);
-            }
+            mKeyStoreAuthorization.onDeviceLocked(userId, getBiometricSids(authUserId),
+                    isWeakUnlockMethodEnabled(authUserId));
         } else {
             // Notify Keystore that the device is now unlocked for the user.  Note that for unlocks
             // with LSKF, this is redundant with the call from LockSettingsService which provides
@@ -1868,14 +1903,35 @@ public class TrustManagerService extends SystemService {
             }
         }
 
+        @EnforcePermission(Manifest.permission.ACCESS_FINE_LOCATION)
         @Override
         public boolean isInSignificantPlace() {
-            if (android.security.Flags.significantPlaces()) {
-                mSignificantPlaceServiceWatcher.runOnBinder(
-                        binder -> ISignificantPlaceProvider.Stub.asInterface(binder)
-                                .onSignificantPlaceCheck());
-            }
+            super.isInSignificantPlace_enforcePermission();
+
+            mSignificantPlaceServiceWatcher.runOnBinder(
+                    binder -> ISignificantPlaceProvider.Stub.asInterface(binder)
+                            .onSignificantPlaceCheck());
             return mIsInSignificantPlace;
+        }
+
+        @EnforcePermission(Manifest.permission.SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE)
+        @Override
+        public void registerDeviceLockedStateListener(IDeviceLockedStateListener listener,
+                int deviceId) {
+            super.registerDeviceLockedStateListener_enforcePermission();
+            if (deviceId != Context.DEVICE_ID_DEFAULT) {
+                // Virtual devices are considered insecure.
+                return;
+            }
+            mDeviceLockedStateListeners.register(listener,
+                    Integer.valueOf(UserHandle.getUserId(Binder.getCallingUid())));
+        }
+
+        @EnforcePermission(Manifest.permission.SUBSCRIBE_TO_KEYGUARD_LOCKED_STATE)
+        @Override
+        public void unregisterDeviceLockedStateListener(IDeviceLockedStateListener listener) {
+            super.unregisterDeviceLockedStateListener_enforcePermission();
+            mDeviceLockedStateListeners.unregister(listener);
         }
 
         private void enforceReportPermission() {
@@ -1999,6 +2055,7 @@ public class TrustManagerService extends SystemService {
                     }
 
                     notifyKeystoreOfDeviceLockState(userId, locked);
+                    notifyDeviceLockedListenersForUser(userId, locked);
 
                     if (locked) {
                         try {
@@ -2463,6 +2520,28 @@ public class TrustManagerService extends SystemService {
                 agentInfo.agent.setUntrustable();
             }
             updateTrust(mUserId, 0 /* flags */);
+        }
+    }
+
+    private void notifyDeviceLockedListenersForUser(int userId, boolean locked) {
+        synchronized (mDeviceLockedStateListeners) {
+            int numListeners = mDeviceLockedStateListeners.beginBroadcast();
+            try {
+                IntStream.range(0, numListeners).forEach(i -> {
+                    try {
+                        Integer uid = (Integer) mDeviceLockedStateListeners.getBroadcastCookie(i);
+                        if (userId == uid.intValue()) {
+                            mDeviceLockedStateListeners.getBroadcastItem(i)
+                                    .onDeviceLockedStateChanged(locked);
+                        }
+                    } catch (RemoteException re) {
+                        Log.i(TAG, "Service died", re);
+                    }
+                });
+
+            } finally {
+                mDeviceLockedStateListeners.finishBroadcast();
+            }
         }
     }
 }

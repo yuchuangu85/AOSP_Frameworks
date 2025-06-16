@@ -112,7 +112,8 @@ final class IInputMethodInvoker {
     }
 
     @AnyThread
-    void initializeInternal(IBinder token, IInputMethodPrivilegedOperations privilegedOperations,
+    void initializeInternal(@NonNull IBinder token,
+            @NonNull IInputMethodPrivilegedOperations privilegedOperations,
             @InputMethodNavButtonFlags int navigationBarFlags) {
         final IInputMethod.InitParams params = new IInputMethod.InitParams();
         params.token = token;
@@ -204,9 +205,11 @@ final class IInputMethodInvoker {
     boolean showSoftInput(IBinder showInputToken, @NonNull ImeTracker.Token statsToken,
             @InputMethod.ShowFlags int flags, ResultReceiver resultReceiver) {
         try {
+            ImeTracker.forLogging().onProgress(statsToken, ImeTracker.PHASE_SERVER_IME_INVOKER);
             mTarget.showSoftInput(showInputToken, statsToken, flags, resultReceiver);
         } catch (RemoteException e) {
             logRemoteException(e);
+            ImeTracker.forLogging().onFailed(statsToken, ImeTracker.PHASE_SERVER_IME_INVOKER);
             return false;
         }
         return true;
@@ -217,9 +220,11 @@ final class IInputMethodInvoker {
     boolean hideSoftInput(IBinder hideInputToken, @NonNull ImeTracker.Token statsToken,
             int flags, ResultReceiver resultReceiver) {
         try {
+            ImeTracker.forLogging().onProgress(statsToken, ImeTracker.PHASE_SERVER_IME_INVOKER);
             mTarget.hideSoftInput(hideInputToken, statsToken, flags, resultReceiver);
         } catch (RemoteException e) {
             logRemoteException(e);
+            ImeTracker.forLogging().onFailed(statsToken, ImeTracker.PHASE_SERVER_IME_INVOKER);
             return false;
         }
         return true;

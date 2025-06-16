@@ -50,6 +50,7 @@ import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.IndentingPrintWriter;
+import android.util.PrintWriterPrinter;
 
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.XmlUtils;
@@ -72,9 +73,6 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 class ActiveAdmin {
-
-    private final int userId;
-    public final boolean isPermissionBased;
 
     private static final String TAG_DISABLE_KEYGUARD_FEATURES = "disable-keyguard-features";
     private static final String TAG_TEST_ONLY_ADMIN = "test-only-admin";
@@ -182,6 +180,7 @@ class ActiveAdmin {
     private static final String TAG_CREDENTIAL_MANAGER_POLICY = "credential-manager-policy";
     private static final String TAG_DIALER_PACKAGE = "dialer_package";
     private static final String TAG_SMS_PACKAGE = "sms_package";
+    private static final String TAG_PROVISIONING_CONTEXT = "provisioning-context";
 
     // If the ActiveAdmin is a permission-based admin, then info will be null because the
     // permission-based admin is not mapped to a device administrator component.
@@ -359,22 +358,12 @@ class ActiveAdmin {
     int mWifiMinimumSecurityLevel = DevicePolicyManager.WIFI_SECURITY_OPEN;
     String mDialerPackage;
     String mSmsPackage;
+    private String mProvisioningContext;
+    private static final int PROVISIONING_CONTEXT_LENGTH_LIMIT = 1000;
 
     ActiveAdmin(DeviceAdminInfo info, boolean isParent) {
-        this.userId = -1;
         this.info = info;
         this.isParent = isParent;
-        this.isPermissionBased = false;
-    }
-
-    ActiveAdmin(int userId, boolean permissionBased) {
-        if (permissionBased == false) {
-            throw new IllegalArgumentException("Can only pass true for permissionBased admin");
-        }
-        this.userId = userId;
-        this.isPermissionBased = permissionBased;
-        this.isParent = false;
-        this.info = null;
     }
 
     ActiveAdmin getParentActiveAdmin() {
@@ -391,17 +380,28 @@ class ActiveAdmin {
     }
 
     int getUid() {
-        if (isPermissionBased) {
-            return -1;
-        }
         return info.getActivityInfo().applicationInfo.uid;
     }
 
     public UserHandle getUserHandle() {
-        if (isPermissionBased) {
-            return UserHandle.of(userId);
-        }
         return UserHandle.of(UserHandle.getUserId(info.getActivityInfo().applicationInfo.uid));
+    }
+
+    /**
+     * Stores metadata about context of setting an active admin
+     * @param provisioningContext some metadata, for example test method name
+     */
+    public void setProvisioningContext(@Nullable String provisioningContext) {
+        if (Flags.provisioningContextParameter()
+                && !TextUtils.isEmpty(provisioningContext)
+                && !provisioningContext.isBlank()) {
+            if (provisioningContext.length() > PROVISIONING_CONTEXT_LENGTH_LIMIT) {
+                mProvisioningContext = provisioningContext.substring(
+                        0, PROVISIONING_CONTEXT_LENGTH_LIMIT);
+            } else {
+                mProvisioningContext = provisioningContext;
+            }
+        }
     }
 
     void writeToXml(TypedXmlSerializer out)
@@ -693,6 +693,12 @@ class ActiveAdmin {
         }
         if (!TextUtils.isEmpty(mSmsPackage)) {
             writeAttributeValueToXml(out, TAG_SMS_PACKAGE, mSmsPackage);
+        }
+
+        if (Flags.provisioningContextParameter() && !TextUtils.isEmpty(mProvisioningContext)) {
+            out.startTag(null, TAG_PROVISIONING_CONTEXT);
+            out.attribute(null, ATTR_VALUE, mProvisioningContext);
+            out.endTag(null, TAG_PROVISIONING_CONTEXT);
         }
     }
 
@@ -1006,6 +1012,9 @@ class ActiveAdmin {
                 mDialerPackage = parser.getAttributeValue(null, ATTR_VALUE);
             } else if (TAG_SMS_PACKAGE.equals(tag)) {
                 mSmsPackage = parser.getAttributeValue(null, ATTR_VALUE);
+            } else if (Flags.provisioningContextParameter()
+                    && TAG_PROVISIONING_CONTEXT.equals(tag)) {
+                mProvisioningContext = parser.getAttributeValue(null, ATTR_VALUE);
             } else {
                 Slogf.w(LOG_TAG, "Unknown admin tag: %s", tag);
                 XmlUtils.skipCurrentTag(parser);
@@ -1296,31 +1305,6 @@ class ActiveAdmin {
         pw.print("encryptionRequested=");
         pw.println(encryptionRequested);
 
-        if (!Flags.dumpsysPolicyEngineMigrationEnabled()) {
-            pw.print("disableCamera=");
-            pw.println(disableCamera);
-
-            pw.print("disableScreenCapture=");
-            pw.println(disableScreenCapture);
-
-            pw.print("requireAutoTime=");
-            pw.println(requireAutoTime);
-
-            if (permittedInputMethods != null) {
-                pw.print("permittedInputMethods=");
-                pw.println(permittedInputMethods);
-            }
-
-            pw.println("userRestrictions:");
-            UserRestrictionsUtils.dumpRestrictions(pw, "  ", userRestrictions);
-        }
-
-        if (!Flags.policyEngineMigrationV2Enabled()
-                || !Flags.dumpsysPolicyEngineMigrationEnabled()) {
-            pw.print("mUsbDataSignaling=");
-            pw.println(mUsbDataSignalingEnabled);
-        }
-
         pw.print("disableCallerId=");
         pw.println(disableCallerId);
 
@@ -1496,5 +1480,17 @@ class ActiveAdmin {
         pw.println(mDialerPackage);
         pw.print("mSmsPackage=");
         pw.println(mSmsPackage);
+
+        if (Flags.provisioningContextParameter()) {
+            pw.print("mProvisioningContext=");
+            pw.println(mProvisioningContext);
+        }
+
+        if (info != null) {
+            pw.println("DeviceAdminInfo:");
+            pw.increaseIndent();
+            info.dump(new PrintWriterPrinter(pw), "");
+            pw.decreaseIndent();
+        }
     }
 }

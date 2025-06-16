@@ -19,6 +19,7 @@ package com.android.server.powerstats;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.hardware.power.stats.Channel;
 import android.hardware.power.stats.EnergyConsumer;
 import android.hardware.power.stats.EnergyConsumerResult;
@@ -37,6 +38,7 @@ import android.os.IPowerStatsService;
 import android.os.Looper;
 import android.os.PowerMonitor;
 import android.os.PowerMonitorReadings;
+import android.os.Process;
 import android.os.ResultReceiver;
 import android.os.UserHandle;
 import android.power.PowerStatsInternal;
@@ -62,6 +64,7 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 
@@ -82,7 +85,8 @@ public class PowerStatsService extends SystemService {
     private static final String METER_CACHE_FILENAME = "meterCache";
     private static final String MODEL_CACHE_FILENAME = "modelCache";
     private static final String RESIDENCY_CACHE_FILENAME = "residencyCache";
-    private static final long MAX_POWER_MONITOR_AGE_MILLIS = 30_000;
+    private static final long MAX_POWER_MONITOR_AGE_MILLIS = 20_000;
+    private static final long MAX_FINE_POWER_MONITOR_AGE_MILLIS = 250;
 
     static final String KEY_POWER_MONITOR_API_ENABLED = "power_monitor_api_enabled";
 
@@ -202,24 +206,38 @@ public class PowerStatsService extends SystemService {
         IntervalRandomNoiseGenerator createIntervalRandomNoiseGenerator() {
             return new IntervalRandomNoiseGenerator(INTERVAL_RANDOM_NOISE_GENERATION_ALPHA);
         }
+
+        boolean checkFinePowerMonitorsPermission(Context context, int callingUid) {
+            return context.checkPermission(android.Manifest.permission.ACCESS_FINE_POWER_MONITORS,
+                    Process.INVALID_PID, callingUid) == PackageManager.PERMISSION_GRANTED;
+        }
     }
 
     private final IBinder mService = new IPowerStatsService.Stub() {
 
         @Override
-        public void getSupportedPowerMonitors(ResultReceiver resultReceiver) {
+        public void getSupportedPowerMonitors(@NonNull ResultReceiver resultReceiver) {
+            if (Flags.verifyNonNullArguments()) {
+                Objects.requireNonNull(resultReceiver);
+            }
             getHandler().post(() -> getSupportedPowerMonitorsImpl(resultReceiver));
         }
 
         @Override
-        public void getPowerMonitorReadings(int[] powerMonitorIds, ResultReceiver resultReceiver) {
+        public void getPowerMonitorReadings(@NonNull int[] powerMonitorIds,
+                @NonNull ResultReceiver resultReceiver) {
+            if (Flags.verifyNonNullArguments()) {
+                Objects.requireNonNull(powerMonitorIds);
+                Objects.requireNonNull(resultReceiver);
+            }
             int callingUid = Binder.getCallingUid();
             getHandler().post(() ->
                     getPowerMonitorReadingsImpl(powerMonitorIds, resultReceiver, callingUid));
         }
 
         @Override
-        protected void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+        protected void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter pw,
+                @Nullable String[] args) {
             if (!DumpUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
             if (mPowerStatsLogger == null) {
@@ -263,6 +281,11 @@ public class PowerStatsService extends SystemService {
         }
     };
 
+    @VisibleForTesting
+    IPowerStatsService getIPowerStatsServiceForTest() {
+        return (IPowerStatsService) mService;
+    }
+
     private class DeviceConfigListener implements DeviceConfig.OnPropertiesChangedListener {
         public Executor mExecutor = new HandlerExecutor(getHandler());
 
@@ -289,10 +312,20 @@ public class PowerStatsService extends SystemService {
     @Override
     public void onStart() {
         if (getPowerStatsHal().isInitialized()) {
-            mPowerStatsInternal = new LocalService();
-            publishLocalService(PowerStatsInternal.class, mPowerStatsInternal);
+            publishLocalService(PowerStatsInternal.class, getPowerStatsInternal());
         }
         publishBinderService(Context.POWER_STATS_SERVICE, mService);
+    }
+
+    /**
+     * Returns the PowerStatsInternal associated with this service, maybe creating it if needed.
+     */
+    @VisibleForTesting
+    public PowerStatsInternal getPowerStatsInternal() {
+        if (mPowerStatsInternal == null) {
+            mPowerStatsInternal = new LocalService();
+        }
+        return mPowerStatsInternal;
     }
 
     private void onSystemServicesReady() {
@@ -441,7 +474,13 @@ public class PowerStatsService extends SystemService {
 
     private void getEnergyConsumedAsync(CompletableFuture<EnergyConsumerResult[]> future,
             int[] energyConsumerIds) {
-        EnergyConsumerResult[] results = getPowerStatsHal().getEnergyConsumed(energyConsumerIds);
+        EnergyConsumerResult[] results;
+        try {
+            results = getPowerStatsHal().getEnergyConsumed(energyConsumerIds);
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+            return;
+        }
 
         // STOPSHIP(253292374): Remove once missing EnergyConsumer results issue is resolved.
         EnergyConsumer[] energyConsumers = getEnergyConsumerInfo();
@@ -508,12 +547,20 @@ public class PowerStatsService extends SystemService {
 
     private void getStateResidencyAsync(CompletableFuture<StateResidencyResult[]> future,
             int[] powerEntityIds) {
-        future.complete(getPowerStatsHal().getStateResidency(powerEntityIds));
+        try {
+            future.complete(getPowerStatsHal().getStateResidency(powerEntityIds));
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+        }
     }
 
     private void readEnergyMeterAsync(CompletableFuture<EnergyMeasurement[]> future,
             int[] channelIds) {
-        future.complete(getPowerStatsHal().readEnergyMeter(channelIds));
+        try {
+            future.complete(getPowerStatsHal().readEnergyMeter(channelIds));
+        } catch (Exception e) {
+            future.completeExceptionally(e);
+        }
     }
 
     private static class PowerMonitorState {
@@ -532,6 +579,7 @@ public class PowerStatsService extends SystemService {
     private boolean mPowerMonitorApiEnabled = true;
     private volatile PowerMonitor[] mPowerMonitors;
     private PowerMonitorState[] mPowerMonitorStates;
+    private PowerMonitorState[] mFinePowerMonitorStates;
     private IntervalRandomNoiseGenerator mIntervalRandomNoiseGenerator;
 
     private void setPowerMonitorApiEnabled(boolean powerMonitorApiEnabled) {
@@ -539,6 +587,7 @@ public class PowerStatsService extends SystemService {
             mPowerMonitorApiEnabled = powerMonitorApiEnabled;
             mPowerMonitors = null;
             mPowerMonitorStates = null;
+            mFinePowerMonitorStates = null;
         }
     }
 
@@ -559,6 +608,7 @@ public class PowerStatsService extends SystemService {
             if (!mPowerMonitorApiEnabled) {
                 mPowerMonitors = new PowerMonitor[0];
                 mPowerMonitorStates = new PowerMonitorState[0];
+                mFinePowerMonitorStates = new PowerMonitorState[0];
                 return;
             }
 
@@ -589,6 +639,7 @@ public class PowerStatsService extends SystemService {
             }
             mPowerMonitors = monitors.toArray(new PowerMonitor[monitors.size()]);
             mPowerMonitorStates = states.toArray(new PowerMonitorState[monitors.size()]);
+            mFinePowerMonitorStates = states.toArray(new PowerMonitorState[monitors.size()]);
         }
     }
 
@@ -671,24 +722,38 @@ public class PowerStatsService extends SystemService {
             ResultReceiver resultReceiver, int callingUid) {
         ensurePowerMonitors();
 
+        @PowerMonitorReadings.PowerMonitorGranularity int granularity =
+                mInjector.checkFinePowerMonitorsPermission(mContext, callingUid)
+                        ? PowerMonitorReadings.GRANULARITY_FINE
+                        : PowerMonitorReadings.GRANULARITY_UNSPECIFIED;
+
+        PowerMonitorState[] allPowerMonitorStates;
+        long maxAge;
+        if (granularity == PowerMonitorReadings.GRANULARITY_FINE) {
+            allPowerMonitorStates = mFinePowerMonitorStates;
+            maxAge = MAX_FINE_POWER_MONITOR_AGE_MILLIS;
+        } else {
+            allPowerMonitorStates = mPowerMonitorStates;
+            maxAge = MAX_POWER_MONITOR_AGE_MILLIS;
+        }
+
         long earliestTimestamp = Long.MAX_VALUE;
         PowerMonitorState[] powerMonitorStates = new PowerMonitorState[powerMonitorIndices.length];
         for (int i = 0; i < powerMonitorIndices.length; i++) {
             int index = powerMonitorIndices[i];
-            if (index < 0 || index >= mPowerMonitorStates.length) {
+            if (index < 0 || index >= allPowerMonitorStates.length) {
                 resultReceiver.send(IPowerStatsService.RESULT_UNSUPPORTED_POWER_MONITOR, null);
                 return;
             }
 
-            powerMonitorStates[i] = mPowerMonitorStates[index];
-            if (mPowerMonitorStates[index] != null
-                    && mPowerMonitorStates[index].timestampMs < earliestTimestamp) {
-                earliestTimestamp = mPowerMonitorStates[index].timestampMs;
+            powerMonitorStates[i] = allPowerMonitorStates[index];
+            if (allPowerMonitorStates[index] != null
+                    && allPowerMonitorStates[index].timestampMs < earliestTimestamp) {
+                earliestTimestamp = allPowerMonitorStates[index].timestampMs;
             }
         }
 
-        if (earliestTimestamp == 0
-                || mClock.elapsedRealtime() - earliestTimestamp > MAX_POWER_MONITOR_AGE_MILLIS) {
+        if (earliestTimestamp == 0 || mClock.elapsedRealtime() - earliestTimestamp > maxAge) {
             updateEnergyConsumers(powerMonitorStates);
             updateEnergyMeasurements(powerMonitorStates);
             mIntervalRandomNoiseGenerator.refresh();
@@ -726,6 +791,7 @@ public class PowerStatsService extends SystemService {
         Bundle result = new Bundle();
         result.putLongArray(IPowerStatsService.KEY_ENERGY, energy);
         result.putLongArray(IPowerStatsService.KEY_TIMESTAMPS, timestamps);
+        result.putInt(IPowerStatsService.KEY_GRANULARITY, granularity);
         resultReceiver.send(IPowerStatsService.RESULT_SUCCESS, result);
     }
 

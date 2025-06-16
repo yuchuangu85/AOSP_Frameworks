@@ -26,21 +26,19 @@ import static android.app.AppOpsManager.OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUD
 import static android.app.AppOpsManager.OP_RECORD_AUDIO;
 import static android.app.AppOpsManager.OP_WIFI_SCAN;
 import static android.app.AppOpsManager.UID_STATE_BACKGROUND;
-import static android.app.AppOpsManager.UID_STATE_CACHED;
 import static android.app.AppOpsManager.UID_STATE_FOREGROUND;
 import static android.app.AppOpsManager.UID_STATE_FOREGROUND_SERVICE;
 import static android.app.AppOpsManager.UID_STATE_MAX_LAST_NON_RESTRICTED;
 import static android.app.AppOpsManager.UID_STATE_TOP;
-
-import static com.android.server.appop.AppOpsUidStateTracker.processStateToUidState;
+import static android.permission.flags.Flags.delayUidStateChangesFromCapabilityUpdates;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -62,7 +60,6 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.quality.Strictness;
 
 import java.util.PriorityQueue;
 
@@ -92,7 +89,6 @@ public class AppOpsUidStateTrackerTest {
     public void setUp() {
         mSession = ExtendedMockito.mockitoSession()
                 .initMocks(this)
-                .strictness(Strictness.LENIENT)
                 .startMocking();
         mConstants.TOP_STATE_SETTLE_TIME = 10 * 1000L;
         mConstants.FG_SERVICE_STATE_SETTLE_TIME = 5 * 1000L;
@@ -325,6 +321,10 @@ public class AppOpsUidStateTrackerTest {
                 .backgroundState()
                 .update();
 
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+        assertEquals(MODE_IGNORED,
+                mIntf.evalMode(UID, OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUDIO, MODE_FOREGROUND));
+
         procStateBuilder(UID)
                 .backgroundState()
                 .microphoneCapability()
@@ -342,10 +342,23 @@ public class AppOpsUidStateTrackerTest {
                 .microphoneCapability()
                 .update();
 
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED,
+                mIntf.evalMode(UID, OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUDIO, MODE_FOREGROUND));
+
         procStateBuilder(UID)
                 .backgroundState()
                 .update();
 
+        if (delayUidStateChangesFromCapabilityUpdates()) {
+            mClock.advanceTime(mConstants.BG_STATE_SETTLE_TIME - 1);
+            assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+            assertEquals(MODE_ALLOWED,
+                    mIntf.evalMode(UID, OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUDIO,
+                            MODE_FOREGROUND));
+
+            mClock.advanceTime(1);
+        }
         assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
         assertEquals(MODE_IGNORED,
                 mIntf.evalMode(UID, OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUDIO, MODE_FOREGROUND));
@@ -356,6 +369,8 @@ public class AppOpsUidStateTrackerTest {
         procStateBuilder(UID)
                 .backgroundState()
                 .update();
+
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
 
         procStateBuilder(UID)
                 .backgroundState()
@@ -372,10 +387,18 @@ public class AppOpsUidStateTrackerTest {
                 .cameraCapability()
                 .update();
 
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
+
         procStateBuilder(UID)
                 .backgroundState()
                 .update();
 
+        if (delayUidStateChangesFromCapabilityUpdates()) {
+            mClock.advanceTime(mConstants.BG_STATE_SETTLE_TIME - 1);
+            assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
+
+            mClock.advanceTime(1);
+        }
         assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
     }
 
@@ -384,6 +407,9 @@ public class AppOpsUidStateTrackerTest {
         procStateBuilder(UID)
                 .backgroundState()
                 .update();
+
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_FINE_LOCATION, MODE_FOREGROUND));
 
         procStateBuilder(UID)
                 .backgroundState()
@@ -401,12 +427,52 @@ public class AppOpsUidStateTrackerTest {
                 .locationCapability()
                 .update();
 
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_FINE_LOCATION, MODE_FOREGROUND));
+
         procStateBuilder(UID)
                 .backgroundState()
                 .update();
 
+        if (delayUidStateChangesFromCapabilityUpdates()) {
+            mClock.advanceTime(mConstants.BG_STATE_SETTLE_TIME - 1);
+            assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
+            assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_FINE_LOCATION, MODE_FOREGROUND));
+
+            mClock.advanceTime(1);
+        }
         assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
         assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_FINE_LOCATION, MODE_FOREGROUND));
+    }
+
+    @Test
+    public void testProcStateChangesAndStaysUnrestrictedAndCapabilityRemoved() {
+        assumeTrue(delayUidStateChangesFromCapabilityUpdates());
+
+        procStateBuilder(UID)
+                .topState()
+                .microphoneCapability()
+                .cameraCapability()
+                .locationCapability()
+                .update();
+
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
+
+        procStateBuilder(UID)
+                .foregroundState()
+                .update();
+
+        mClock.advanceTime(mConstants.TOP_STATE_SETTLE_TIME - 1);
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
+        assertEquals(MODE_ALLOWED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
+
+        mClock.advanceTime(1);
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_RECORD_AUDIO, MODE_FOREGROUND));
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_CAMERA, MODE_FOREGROUND));
+        assertEquals(MODE_IGNORED, mIntf.evalMode(UID, OP_COARSE_LOCATION, MODE_FOREGROUND));
     }
 
     @Test
@@ -519,221 +585,6 @@ public class AppOpsUidStateTrackerTest {
     }
 
     @Test
-    public void testUidStateChangedCallbackCachedToBackground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY,
-                ActivityManager.PROCESS_STATE_RECEIVER);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackCachedToForeground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY,
-                ActivityManager.PROCESS_STATE_BOUND_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackCachedToForegroundService() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY,
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackCachedToTop() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY,
-                ActivityManager.PROCESS_STATE_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackBackgroundToCached() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_RECEIVER,
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackBackgroundToForeground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_RECEIVER,
-                ActivityManager.PROCESS_STATE_BOUND_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackBackgroundToForegroundService() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_RECEIVER,
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackBackgroundToTop() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_RECEIVER,
-                ActivityManager.PROCESS_STATE_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundToCached() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_BOUND_TOP,
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundToBackground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_BOUND_TOP,
-                ActivityManager.PROCESS_STATE_RECEIVER);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundToForegroundService() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_BOUND_TOP,
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundToTop() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_BOUND_TOP,
-                ActivityManager.PROCESS_STATE_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundServiceToCached() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundServiceToBackground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
-                ActivityManager.PROCESS_STATE_RECEIVER);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundServiceToForeground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
-                ActivityManager.PROCESS_STATE_BOUND_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundServiceToTop() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
-                ActivityManager.PROCESS_STATE_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackTopToCached() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_TOP,
-                ActivityManager.PROCESS_STATE_CACHED_ACTIVITY);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackTopToBackground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_TOP,
-                ActivityManager.PROCESS_STATE_RECEIVER);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackTopToForeground() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_TOP,
-                ActivityManager.PROCESS_STATE_BOUND_TOP);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackTopToForegroundService() {
-        testUidStateChangedCallback(
-                ActivityManager.PROCESS_STATE_TOP,
-                ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE);
-    }
-
-    @Test
-    public void testUidStateChangedCallbackCachedToNonexistent() {
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .cachedState()
-                .update();
-
-        procStateBuilder(UID)
-                .nonExistentState()
-                .update();
-
-        verify(cb, never()).onUidStateChanged(anyInt(), anyInt(), anyBoolean());
-    }
-
-    @Test
-    public void testUidStateChangedCallbackBackgroundToNonexistent() {
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .backgroundState()
-                .update();
-
-        procStateBuilder(UID)
-                .nonExistentState()
-                .update();
-
-        verify(cb, atLeastOnce()).onUidStateChanged(eq(UID), eq(UID_STATE_CACHED), eq(false));
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundToNonexistent() {
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .foregroundState()
-                .update();
-
-        procStateBuilder(UID)
-                .nonExistentState()
-                .update();
-
-        verify(cb, atLeastOnce()).onUidStateChanged(eq(UID), eq(UID_STATE_CACHED), eq(true));
-    }
-
-    @Test
-    public void testUidStateChangedCallbackForegroundServiceToNonexistent() {
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .foregroundServiceState()
-                .update();
-
-        procStateBuilder(UID)
-                .nonExistentState()
-                .update();
-
-        verify(cb, atLeastOnce()).onUidStateChanged(eq(UID), eq(UID_STATE_CACHED), eq(true));
-    }
-
-    @Test
-    public void testUidStateChangedCallbackTopToNonexistent() {
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .topState()
-                .update();
-
-        procStateBuilder(UID)
-                .nonExistentState()
-                .update();
-
-        verify(cb, atLeastOnce()).onUidStateChanged(eq(UID), eq(UID_STATE_CACHED), eq(true));
-    }
-
-    @Test
     public void testUidStateChangedBackgroundThenForegroundImmediately() {
         procStateBuilder(UID)
             .topState()
@@ -810,32 +661,6 @@ public class AppOpsUidStateTrackerTest {
         assertEquals(UID_STATE_TOP, mIntf.getUidState(UID));
     }
 
-    public void testUidStateChangedCallback(int initialState, int finalState) {
-        int initialUidState = processStateToUidState(initialState);
-        int finalUidState = processStateToUidState(finalState);
-        boolean foregroundChange = initialUidState <= UID_STATE_MAX_LAST_NON_RESTRICTED
-                        != finalUidState <= UID_STATE_MAX_LAST_NON_RESTRICTED;
-        boolean finalUidStateIsBackgroundAndLessImportant =
-                finalUidState > UID_STATE_MAX_LAST_NON_RESTRICTED
-                        && finalUidState > initialUidState;
-
-        UidStateChangedCallback cb = addUidStateChangeCallback();
-
-        procStateBuilder(UID)
-                .setState(initialState)
-                .update();
-
-        procStateBuilder(UID)
-                .setState(finalState)
-                .update();
-
-        if (finalUidStateIsBackgroundAndLessImportant) {
-            mClock.advanceTime(mConstants.TOP_STATE_SETTLE_TIME + 1);
-        }
-
-        verify(cb, atLeastOnce())
-                .onUidStateChanged(eq(UID), eq(finalUidState), eq(foregroundChange));
-    }
 
     private UidStateChangedCallback addUidStateChangeCallback() {
         UidStateChangedCallback cb =

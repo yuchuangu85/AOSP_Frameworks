@@ -17,6 +17,7 @@
 package com.android.server.power.stats;
 
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
 import android.app.usage.NetworkStatsManager;
@@ -40,15 +41,29 @@ import com.android.internal.os.PowerProfile;
 import com.android.internal.power.EnergyConsumerStats;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Queue;
-import java.util.concurrent.Future;
 
 /**
  * Mocks a BatteryStatsImpl object.
  */
 public class MockBatteryStatsImpl extends BatteryStatsImpl {
+    public static final BatteryHistoryDirectory.Compressor PASS_THROUGH_COMPRESSOR =
+            new BatteryHistoryDirectory.Compressor() {
+                @Override
+                public void compress(OutputStream stream, byte[] data) throws IOException {
+                    stream.write(data);
+                }
+
+                @Override
+                public void uncompress(byte[] data, InputStream stream) throws IOException {
+                    readFully(data, stream);
+                }
+            };
     public boolean mForceOnBattery;
     // The mNetworkStats will be used for both wifi and mobile categories
     private NetworkStats mNetworkStats;
@@ -65,28 +80,37 @@ public class MockBatteryStatsImpl extends BatteryStatsImpl {
     }
 
     MockBatteryStatsImpl(Clock clock, File historyDirectory) {
-        this(clock, historyDirectory, new Handler(Looper.getMainLooper()));
+        this(clock, historyDirectory, new Handler(Looper.getMainLooper()), mockPowerProfile());
     }
 
-    MockBatteryStatsImpl(Clock clock, File historyDirectory, Handler handler) {
-        this(DEFAULT_CONFIG, clock, historyDirectory, handler, new PowerStatsUidResolver());
-    }
-
-    MockBatteryStatsImpl(BatteryStatsConfig config, Clock clock, File historyDirectory) {
-        this(config, clock, historyDirectory, new Handler(Looper.getMainLooper()),
-                new PowerStatsUidResolver());
+    MockBatteryStatsImpl(Clock clock, File historyDirectory, Handler handler,
+            PowerProfile powerProfile) {
+        this(DEFAULT_CONFIG, clock, new MonotonicClock(0, clock), historyDirectory, handler,
+                powerProfile, new PowerStatsUidResolver());
     }
 
     MockBatteryStatsImpl(BatteryStatsConfig config, Clock clock, File historyDirectory,
             Handler handler, PowerStatsUidResolver powerStatsUidResolver) {
-        super(config, clock, new MonotonicClock(0, clock), historyDirectory, handler,
+        this(config, clock, new MonotonicClock(0, clock), historyDirectory, handler,
+                mockPowerProfile(), powerStatsUidResolver);
+    }
+
+    MockBatteryStatsImpl(BatteryStatsConfig config, Clock clock, MonotonicClock monotonicClock,
+            File historyDirectory, Handler handler, PowerProfile powerProfile,
+            PowerStatsUidResolver powerStatsUidResolver) {
+        super(config, clock, monotonicClock, historyDirectory,
+                historyDirectory != null ? new BatteryHistoryDirectory(
+                        new File(historyDirectory, "battery-history"),
+                        config.getMaxHistorySizeBytes(), PASS_THROUGH_COMPRESSOR) : null,
+                handler,
                 mock(PlatformIdleStateCallback.class), mock(EnergyStatsRetriever.class),
-                mock(UserInfoProvider.class), mock(PowerProfile.class),
+                mock(UserInfoProvider.class), powerProfile,
                 new CpuScalingPolicies(new SparseArray<>(), new SparseArray<>()),
                 powerStatsUidResolver, mock(FrameworkStatsLogger.class),
                 mock(BatteryStatsHistory.TraceDelegate.class),
                 mock(BatteryStatsHistory.EventLogger.class));
-        setMaxHistoryBuffer(128 * 1024);
+        mConstants.MAX_HISTORY_BUFFER = 128 * 1024;
+        mConstants.onChange();
 
         setExternalStatsSyncLocked(mExternalStatsSync);
         informThatAllExternalStatsAreFlushed();
@@ -95,6 +119,12 @@ public class MockBatteryStatsImpl extends BatteryStatsImpl {
 
         mCpuUidFreqTimeReader = mock(KernelCpuUidFreqTimeReader.class);
         mKernelWakelockReader = null;
+    }
+
+    private static PowerProfile mockPowerProfile() {
+        PowerProfile powerProfile = mock(PowerProfile.class);
+        when(powerProfile.getNumDisplays()).thenReturn(1);
+        return powerProfile;
     }
 
     public void initMeasuredEnergyStats(String[] customBucketNames) {
@@ -157,12 +187,6 @@ public class MockBatteryStatsImpl extends BatteryStatsImpl {
     protected NetworkStats readWifiNetworkStatsLocked(
             @NonNull NetworkStatsManager networkStatsManager) {
         return mNetworkStats;
-    }
-
-    public MockBatteryStatsImpl setPowerProfile(PowerProfile powerProfile) {
-        mPowerProfile = powerProfile;
-        setTestCpuScalingPolicies();
-        return this;
     }
 
     public MockBatteryStatsImpl setTestCpuScalingPolicies() {
@@ -245,20 +269,6 @@ public class MockBatteryStatsImpl extends BatteryStatsImpl {
     }
 
     @GuardedBy("this")
-    public MockBatteryStatsImpl setMaxHistoryFiles(int maxHistoryFiles) {
-        mConstants.MAX_HISTORY_FILES = maxHistoryFiles;
-        mConstants.onChange();
-        return this;
-    }
-
-    @GuardedBy("this")
-    public MockBatteryStatsImpl setMaxHistoryBuffer(int maxHistoryBuffer) {
-        mConstants.MAX_HISTORY_BUFFER = maxHistoryBuffer;
-        mConstants.onChange();
-        return this;
-    }
-
-    @GuardedBy("this")
     public MockBatteryStatsImpl setPerUidModemModel(int perUidModemModel) {
         mConstants.PER_UID_MODEM_MODEL = perUidModemModel;
         mConstants.onChange();
@@ -284,43 +294,38 @@ public class MockBatteryStatsImpl extends BatteryStatsImpl {
     protected void updateBatteryPropertiesLocked() {
     }
 
+    @Override
+    protected NetworkStats networkStatsDelta(NetworkStats stats, NetworkStats oldStats) {
+        return NetworkStatsTestUtils.networkStatsDelta(stats, oldStats);
+    }
+
     public static class DummyExternalStatsSync implements ExternalStatsSync {
         public int flags = 0;
 
         @Override
-        public Future<?> scheduleSync(String reason, int flags) {
-            return null;
+        public void scheduleSync(String reason, int flags) {
         }
 
         @Override
-        public Future<?> scheduleCleanupDueToRemovedUser(int userId) {
-            return null;
+        public void scheduleCleanupDueToRemovedUser(int userId) {
         }
 
         @Override
-        public Future<?> scheduleCpuSyncDueToRemovedUid(int uid) {
-            return null;
+        public void scheduleCpuSyncDueToRemovedUid(int uid) {
         }
 
         @Override
-        public Future<?> scheduleSyncDueToScreenStateChange(int flag, boolean onBattery,
+        public void scheduleSyncDueToScreenStateChange(int flag, boolean onBattery,
                 boolean onBatteryScreenOff, int screenState, int[] perDisplayScreenStates) {
             flags |= flag;
-            return null;
         }
 
         @Override
-        public Future<?> scheduleCpuSyncDueToWakelockChange(long delayMillis) {
-            return null;
+        public void scheduleCpuSyncDueToWakelockChange(long delayMillis) {
         }
 
         @Override
         public void cancelCpuSyncDueToWakelockChange() {
-        }
-
-        @Override
-        public Future<?> scheduleSyncDueToBatteryLevelChange(long delayMillis) {
-            return null;
         }
 
         @Override

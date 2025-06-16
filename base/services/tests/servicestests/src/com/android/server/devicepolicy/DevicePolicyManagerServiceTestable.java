@@ -24,6 +24,7 @@ import android.app.PendingIntent;
 import android.app.admin.DevicePolicyManagerInternal;
 import android.app.admin.DevicePolicyManagerLiteInternal;
 import android.app.backup.IBackupManager;
+import android.app.supervision.SupervisionManagerInternal;
 import android.app.usage.UsageStatsManagerInternal;
 import android.content.Context;
 import android.content.Intent;
@@ -60,6 +61,7 @@ import com.android.server.wm.ActivityTaskManagerInternal;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -325,6 +327,11 @@ public class DevicePolicyManagerServiceTestable extends DevicePolicyManagerServi
         }
 
         @Override
+        List<String> roleManagerGetRoleHoldersAsUser(String role, UserHandle userHandle) {
+            return services.roleManagerForMock.getRoleHoldersAsUser(role, userHandle);
+        }
+
+        @Override
         PendingIntent pendingIntentGetActivityAsUser(Context context, int requestCode,
                 Intent intent, int flags, Bundle options, UserHandle user) {
             return null;
@@ -481,6 +488,11 @@ public class DevicePolicyManagerServiceTestable extends DevicePolicyManagerServi
         @Override
         public Context createContextAsUser(UserHandle user) {
             return context;
+        }
+
+        @Override
+        SupervisionManagerInternal getSupervisionManager() {
+            return services.supervisionManagerInternal;
         }
     }
 

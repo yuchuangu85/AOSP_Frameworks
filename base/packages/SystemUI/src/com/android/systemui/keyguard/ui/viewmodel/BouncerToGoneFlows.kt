@@ -18,27 +18,26 @@ package com.android.systemui.keyguard.ui.viewmodel
 
 import com.android.app.animation.Interpolators.EMPHASIZED_ACCELERATE
 import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor
+import com.android.systemui.bouncer.shared.flag.ComposeBouncerFlags
 import com.android.systemui.keyguard.domain.interactor.KeyguardDismissActionInteractor
 import com.android.systemui.keyguard.shared.model.Edge
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.keyguard.shared.model.KeyguardState.GONE
+import com.android.systemui.keyguard.shared.model.KeyguardState.PRIMARY_BOUNCER
 import com.android.systemui.keyguard.shared.model.ScrimAlpha
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
-import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import dagger.Lazy
 import javax.inject.Inject
 import kotlin.time.Duration
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 
 /** ALTERNATE and PRIMARY bouncers common animations */
-@OptIn(ExperimentalCoroutinesApi::class)
 class BouncerToGoneFlows
 @Inject
 constructor(
@@ -50,7 +49,7 @@ constructor(
 ) {
     /** Common fade for scrim alpha values during *BOUNCER->GONE */
     fun scrimAlpha(duration: Duration, fromState: KeyguardState): Flow<ScrimAlpha> {
-        return if (SceneContainerFlag.isEnabled) {
+        return if (ComposeBouncerFlags.isEnabled) {
             keyguardDismissActionInteractor
                 .get()
                 .willAnimateDismissActionOnLockscreen
@@ -75,9 +74,12 @@ constructor(
         return animationFlow
             .setup(
                 duration = duration,
-                // TODO(b/330311871): from can be PRIMARY_BOUNCER which would be a scene -> scene
-                //  transition
-                edge = Edge.create(from = from, to = Scenes.Gone)
+                edge =
+                    if (from == PRIMARY_BOUNCER) {
+                        Edge.INVALID
+                    } else {
+                        Edge.create(from = from, to = Scenes.Gone)
+                    }
             )
             .setupWithoutSceneContainer(
                 edge = Edge.create(from = from, to = GONE),
@@ -105,9 +107,12 @@ constructor(
             animationFlow
                 .setup(
                     duration = duration,
-                    // TODO(b/330311871): from can be PRIMARY_BOUNCER which would be a scene ->
-                    //  scene transition
-                    edge = Edge.create(from = fromState, to = Scenes.Gone),
+                    edge =
+                        if (fromState == PRIMARY_BOUNCER) {
+                            Edge.INVALID
+                        } else {
+                            Edge.create(from = fromState, to = Scenes.Gone)
+                        }
                 )
                 .setupWithoutSceneContainer(
                     edge = Edge.create(from = fromState, to = GONE),

@@ -25,6 +25,7 @@ import android.app.AppOpsManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.content.res.TypedArray;
+import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
 import android.util.AttributeSet;
@@ -35,19 +36,19 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.preference.PreferenceManager;
 import androidx.preference.PreferenceViewHolder;
 import androidx.preference.SwitchPreferenceCompat;
 
-import com.android.settingslib.utils.BuildCompatUtils;
-
 /**
  * Version of SwitchPreferenceCompat that can be disabled by a device admin
  * using a user restriction.
  */
-public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
-    RestrictedPreferenceHelper mHelper;
+public class RestrictedSwitchPreference extends SwitchPreferenceCompat implements
+        RestrictedPreferenceHelperProvider {
+    private final RestrictedPreferenceHelper mHelper;
     AppOpsManager mAppOpsManager;
     boolean mUseAdditionalSummary = false;
     CharSequence mRestrictedSwitchSummary;
@@ -99,6 +100,11 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
         this(context, null);
     }
 
+    @Override
+    public @NonNull RestrictedPreferenceHelper getRestrictedPreferenceHelper() {
+        return mHelper;
+    }
+
     @VisibleForTesting
     public void setAppOps(AppOpsManager appOps) {
         mAppOpsManager = appOps;
@@ -121,13 +127,7 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
 
         CharSequence switchSummary;
         if (mRestrictedSwitchSummary == null) {
-            switchSummary = isChecked()
-                    ? getUpdatableEnterpriseString(
-                            getContext(), ENABLED_BY_ADMIN_SWITCH_SUMMARY,
-                            com.android.settingslib.widget.restricted.R.string.enabled_by_admin)
-                    : getUpdatableEnterpriseString(
-                            getContext(), DISABLED_BY_ADMIN_SWITCH_SUMMARY,
-                            com.android.settingslib.widget.restricted.R.string.disabled_by_admin);
+            switchSummary = getRestrictedSwitchSummary();
         } else {
             switchSummary = mRestrictedSwitchSummary;
         }
@@ -142,7 +142,7 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
             final TextView additionalSummaryView = (TextView) holder.findViewById(
                     R.id.additional_summary);
             if (additionalSummaryView != null) {
-                if (isDisabledByAdmin()) {
+                if (isDisabledByAdmin() && switchSummary != null) {
                     additionalSummaryView.setText(switchSummary);
                     additionalSummaryView.setVisibility(View.VISIBLE);
                 } else {
@@ -152,7 +152,7 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
         } else {
             final TextView summaryView = (TextView) holder.findViewById(android.R.id.summary);
             if (summaryView != null) {
-                if (isDisabledByAdmin()) {
+                if (isDisabledByAdmin() && switchSummary != null) {
                     summaryView.setText(switchSummary);
                     summaryView.setVisibility(View.VISIBLE);
                 }
@@ -164,12 +164,27 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
 
     private static String getUpdatableEnterpriseString(
             Context context, String updatableStringId, int resId) {
-        if (!BuildCompatUtils.isAtLeastT()) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return context.getString(resId);
         }
         return context.getSystemService(DevicePolicyManager.class).getResources().getString(
                 updatableStringId,
                 () -> context.getString(resId));
+    }
+
+    private @Nullable String getRestrictedSwitchSummary() {
+        if (mHelper.isRestrictionEnforcedByAdvancedProtection()) {
+            // Advanced Protection doesn't set the summary string, it keeps the current summary.
+            return null;
+        }
+
+        return isChecked()
+                ? getUpdatableEnterpriseString(
+                        getContext(), ENABLED_BY_ADMIN_SWITCH_SUMMARY,
+                        com.android.settingslib.widget.restricted.R.string.enabled_by_admin)
+                : getUpdatableEnterpriseString(
+                        getContext(), DISABLED_BY_ADMIN_SWITCH_SUMMARY,
+                        com.android.settingslib.widget.restricted.R.string.disabled_by_admin);
     }
 
     @Override
@@ -202,10 +217,23 @@ public class RestrictedSwitchPreference extends SwitchPreferenceCompat {
      * package. Marks the preference as disabled if so.
      * @param settingIdentifier The key identifying the setting
      * @param packageName the package to check the settingIdentifier for
+     * @param settingEnabled Whether the setting in question is enabled
      */
     public void checkEcmRestrictionAndSetDisabled(@NonNull String settingIdentifier,
-            @NonNull  String packageName) {
-        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName);
+            @NonNull String packageName, boolean settingEnabled) {
+        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName, settingEnabled);
+    }
+
+    /**
+     * Checks if the given setting is subject to Enhanced Confirmation Mode restrictions for this
+     * package. Marks the preference as disabled if so.
+     * TODO b/390196024: remove this and update all callers to use the "settingEnabled" version
+     * @param settingIdentifier The key identifying the setting
+     * @param packageName the package to check the settingIdentifier for
+     */
+    public void checkEcmRestrictionAndSetDisabled(@NonNull String settingIdentifier,
+            @NonNull String packageName) {
+        mHelper.checkEcmRestrictionAndSetDisabled(settingIdentifier, packageName, false);
     }
 
     @Override

@@ -17,6 +17,7 @@
 package com.android.systemui.mediaprojection.data.repository
 
 import android.app.ActivityManager.RunningTaskInfo
+import android.media.projection.StopReason
 import com.android.systemui.mediaprojection.data.model.MediaProjectionState
 import kotlinx.coroutines.flow.Flow
 
@@ -27,8 +28,14 @@ interface MediaProjectionRepository {
     suspend fun switchProjectedTask(task: RunningTaskInfo)
 
     /** Stops the currently active projection. */
-    suspend fun stopProjecting()
+    suspend fun stopProjecting(@StopReason stopReason: Int)
 
     /** Represents the current [MediaProjectionState]. */
     val mediaProjectionState: Flow<MediaProjectionState>
+
+    /**
+     * Emits each time a call ends but media projection is still active and media projection was
+     * starting during the call.
+     */
+    val projectionStartedDuringCallAndActivePostCallEvent: Flow<Unit>
 }

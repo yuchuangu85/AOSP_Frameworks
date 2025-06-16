@@ -17,16 +17,18 @@
 package com.android.server.wm;
 
 import static com.android.internal.util.Preconditions.checkArgument;
-import static com.android.server.wm.ActivityTaskManagerDebugConfig.DEBUG_ACTIVITY_STARTS;
 import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_ATM;
 import static com.android.server.wm.ActivityTaskManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.ActivityTaskManagerService.ACTIVITY_BG_START_GRACE_PERIOD_MS;
 import static com.android.server.wm.ActivityTaskManagerService.APP_SWITCH_ALLOW;
 import static com.android.server.wm.ActivityTaskManagerService.APP_SWITCH_DISALLOW;
+import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_BOUND_BY_FOREGROUND;
 import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_FOREGROUND;
 import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_GRACE_PERIOD;
 import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_PERMISSION;
+import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_TOKEN;
 import static com.android.server.wm.BackgroundActivityStartController.BAL_ALLOW_VISIBLE_WINDOW;
+import static com.android.window.flags.Flags.balImprovedMetrics;
 
 import static java.util.Objects.requireNonNull;
 
@@ -45,11 +47,9 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.IntArray;
-import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.server.wm.BackgroundActivityStartController.BalVerdict;
-import com.android.window.flags.Flags;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -97,59 +97,78 @@ class BackgroundLaunchProcessController {
         mBackgroundActivityStartCallback = callback;
     }
 
+    record BalCheckConfiguration(
+            boolean isCheckingForFgsStart,
+            boolean checkVisibility,
+            boolean checkOtherExemptions,
+            long gracePeriod
+    ) {
+    }
+
+    /**
+     * Check configuration for foreground service starts.
+     *
+     * The check executes all parts of the BAL checks and uses the same grace period,
+     * so FGS is allowed whenever BAL is allowed.
+     */
+    static final BalCheckConfiguration CHECK_FOR_FGS_START = new BalCheckConfiguration(
+            /* isCheckingForFgsStarts */ true,
+            /* checkVisibility */ true,
+            /* checkOtherExemptions */ true,
+            ACTIVITY_BG_START_GRACE_PERIOD_MS);
+
     BalVerdict areBackgroundActivityStartsAllowed(
             int pid, int uid, String packageName,
-            int appSwitchState, boolean isCheckingForFgsStart,
+            int appSwitchState, BalCheckConfiguration checkConfiguration,
             boolean hasActivityInVisibleTask, boolean hasBackgroundActivityStartPrivileges,
             long lastStopAppSwitchesTime, long lastActivityLaunchTime,
             long lastActivityFinishTime) {
         // Allow if the proc is instrumenting with background activity starts privs.
-        if (hasBackgroundActivityStartPrivileges) {
-            return new BalVerdict(BAL_ALLOW_PERMISSION, /*background*/ true,
+        if (checkConfiguration.checkOtherExemptions && hasBackgroundActivityStartPrivileges) {
+            return new BalVerdict(BAL_ALLOW_PERMISSION, /*background*/
                     "process instrumenting with background activity starts privileges");
         }
-        // Allow if the flag was explicitly set.
-        if (isBackgroundStartAllowedByToken(uid, packageName, isCheckingForFgsStart)) {
-            return new BalVerdict(BAL_ALLOW_PERMISSION, /*background*/ true,
-                    "process allowed by token");
+        // Allow if the token is explicitly allowed.
+        if (checkConfiguration.checkOtherExemptions) {
+            BalVerdict tokenVerdict = isBackgroundStartAllowedByToken(uid,
+                    packageName, checkConfiguration.isCheckingForFgsStart);
+            if (tokenVerdict.allows()) {
+                if (!balImprovedMetrics()) {
+                    return new BalVerdict(BAL_ALLOW_PERMISSION, tokenVerdict.toString());
+                }
+                return tokenVerdict;
+            }
         }
         // Allow if the caller is bound by a UID that's currently foreground.
         // But still respect the appSwitchState.
-        boolean allowBoundByForegroundUid =
-                Flags.balRespectAppSwitchStateWhenCheckBoundByForegroundUid()
-                ? appSwitchState != APP_SWITCH_DISALLOW && isBoundByForegroundUid()
-                : isBoundByForegroundUid();
-        if (allowBoundByForegroundUid) {
-            return new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, /*background*/ false,
+        if (checkConfiguration.checkVisibility && appSwitchState != APP_SWITCH_DISALLOW
+                && isBoundByForegroundUid()) {
+            return new BalVerdict(balImprovedMetrics() ? BAL_ALLOW_BOUND_BY_FOREGROUND
+                    : BAL_ALLOW_VISIBLE_WINDOW, /*background*/
                     "process bound by foreground uid");
         }
         // Allow if the caller has an activity in any foreground task.
-        if (hasActivityInVisibleTask && appSwitchState != APP_SWITCH_DISALLOW) {
-            return new BalVerdict(BAL_ALLOW_FOREGROUND, /*background*/ false,
+        if (checkConfiguration.checkOtherExemptions && hasActivityInVisibleTask
+                && appSwitchState != APP_SWITCH_DISALLOW) {
+            return new BalVerdict(BAL_ALLOW_FOREGROUND, /*background*/
                     "process has activity in foreground task");
         }
 
         // If app switching is not allowed, we ignore all the start activity grace period
         // exception so apps cannot start itself in onPause() after pressing home button.
-        if (appSwitchState == APP_SWITCH_ALLOW) {
+        if (checkConfiguration.checkOtherExemptions && appSwitchState == APP_SWITCH_ALLOW) {
             // Allow if any activity in the caller has either started or finished very recently, and
             // it must be started or finished after last stop app switches time.
-            final long now = SystemClock.uptimeMillis();
-            if (now - lastActivityLaunchTime < ACTIVITY_BG_START_GRACE_PERIOD_MS
-                    || now - lastActivityFinishTime < ACTIVITY_BG_START_GRACE_PERIOD_MS) {
-                // If activity is started and finished before stop app switch time, we should not
-                // let app to be able to start background activity even it's in grace period.
-                if (lastActivityLaunchTime > lastStopAppSwitchesTime
-                        || lastActivityFinishTime > lastStopAppSwitchesTime) {
-                    return new BalVerdict(BAL_ALLOW_GRACE_PERIOD, /*background*/ true,
-                            "within " + ACTIVITY_BG_START_GRACE_PERIOD_MS + "ms grace period");
+            if (lastActivityLaunchTime > lastStopAppSwitchesTime
+                    || lastActivityFinishTime > lastStopAppSwitchesTime) {
+                final long now = SystemClock.uptimeMillis();
+                long timeSinceLastStartOrFinish = now - Math.max(lastActivityLaunchTime,
+                        lastActivityFinishTime);
+                if (timeSinceLastStartOrFinish < checkConfiguration.gracePeriod) {
+                    return new BalVerdict(BAL_ALLOW_GRACE_PERIOD, /*background*/
+                            "within " + checkConfiguration.gracePeriod + "ms grace period ("
+                                    + timeSinceLastStartOrFinish + "ms)");
                 }
-                if (DEBUG_ACTIVITY_STARTS) {
-                    Slog.d(TAG, "[Process(" + pid + ")] Activity start within "
-                            + ACTIVITY_BG_START_GRACE_PERIOD_MS
-                            + "ms grace period but also within stop app switch window");
-                }
-
             }
         }
         return BalVerdict.BLOCK;
@@ -160,42 +179,53 @@ class BackgroundLaunchProcessController {
      * isCheckingForFgsStart is false, we ask the callback if the start is allowed for these tokens,
      * otherwise if there is no callback we allow.
      */
-    private boolean isBackgroundStartAllowedByToken(int uid, String packageName,
+    private BalVerdict isBackgroundStartAllowedByToken(int uid, String packageName,
             boolean isCheckingForFgsStart) {
         synchronized (this) {
             if (mBackgroundStartPrivileges == null
                     || mBackgroundStartPrivileges.isEmpty()) {
                 // no tokens to allow anything
-                return false;
+                return BalVerdict.BLOCK;
             }
             if (isCheckingForFgsStart) {
                 // check if any token allows foreground service starts
                 for (int i = mBackgroundStartPrivileges.size(); i-- > 0; ) {
                     if (mBackgroundStartPrivileges.valueAt(i).allowsBackgroundFgsStarts()) {
-                        return true;
+                        return new BalVerdict(BAL_ALLOW_TOKEN, "process allowed by token");
                     }
                 }
-                return false;
+                return BalVerdict.BLOCK;
             }
             if (mBackgroundActivityStartCallback == null) {
                 // without a callback just check if any token allows background activity starts
                 for (int i = mBackgroundStartPrivileges.size(); i-- > 0; ) {
                     if (mBackgroundStartPrivileges.valueAt(i)
                             .allowsBackgroundActivityStarts()) {
-                        return true;
+                        return new BalVerdict(BAL_ALLOW_TOKEN, "process allowed by token");
                     }
                 }
-                return false;
+                return BalVerdict.BLOCK;
             }
             List<IBinder> binderTokens = getOriginatingTokensThatAllowBal();
             if (binderTokens.isEmpty()) {
                 // no tokens to allow anything
-                return false;
+                return BalVerdict.BLOCK;
             }
 
             // The callback will decide.
-            return mBackgroundActivityStartCallback.isActivityStartAllowed(
+            BackgroundActivityStartCallback.BackgroundActivityStartCallbackResult
+                    activityStartAllowed = mBackgroundActivityStartCallback.isActivityStartAllowed(
                     binderTokens, uid, packageName);
+            if (!activityStartAllowed.allowed()) {
+                return BalVerdict.BLOCK;
+            }
+            if (activityStartAllowed.token() == null) {
+                return new BalVerdict(BAL_ALLOW_TOKEN,
+                        "process allowed by callback (token ignored) tokens: " + binderTokens);
+            }
+            return new BalVerdict(BAL_ALLOW_TOKEN,
+                    "process allowed by callback (token: " + activityStartAllowed.token()
+                            + ") tokens: " + binderTokens);
         }
     }
 

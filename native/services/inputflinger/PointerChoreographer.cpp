@@ -17,10 +17,13 @@
 #define LOG_TAG "PointerChoreographer"
 
 #include <android-base/logging.h>
+#include <android/configuration.h>
 #include <com_android_input_flags.h>
+#include <algorithm>
 #if defined(__ANDROID__)
 #include <gui/SurfaceComposerClient.h>
 #endif
+#include <input/InputFlags.h>
 #include <input/Keyboard.h>
 #include <input/PrintTools.h>
 #include <unordered_set>
@@ -28,45 +31,14 @@
 #include "PointerChoreographer.h"
 
 #define INDENT "  "
+#define INDENT2 "    "
 
 namespace android {
 
 namespace {
 
-bool isFromMouse(const NotifyMotionArgs& args) {
-    return isFromSource(args.source, AINPUT_SOURCE_MOUSE) &&
-            args.pointerProperties[0].toolType == ToolType::MOUSE;
-}
-
-bool isFromTouchpad(const NotifyMotionArgs& args) {
-    return isFromSource(args.source, AINPUT_SOURCE_MOUSE) &&
-            args.pointerProperties[0].toolType == ToolType::FINGER;
-}
-
-bool isFromDrawingTablet(const NotifyMotionArgs& args) {
-    return isFromSource(args.source, AINPUT_SOURCE_MOUSE | AINPUT_SOURCE_STYLUS) &&
-            isStylusToolType(args.pointerProperties[0].toolType);
-}
-
-bool isHoverAction(int32_t action) {
-    return action == AMOTION_EVENT_ACTION_HOVER_ENTER ||
-            action == AMOTION_EVENT_ACTION_HOVER_MOVE || action == AMOTION_EVENT_ACTION_HOVER_EXIT;
-}
-
-bool isStylusHoverEvent(const NotifyMotionArgs& args) {
-    return isStylusEvent(args.source, args.pointerProperties) && isHoverAction(args.action);
-}
-
-bool isMouseOrTouchpad(uint32_t sources) {
-    // Check if this is a mouse or touchpad, but not a drawing tablet.
-    return isFromSource(sources, AINPUT_SOURCE_MOUSE_RELATIVE) ||
-            (isFromSource(sources, AINPUT_SOURCE_MOUSE) &&
-             !isFromSource(sources, AINPUT_SOURCE_STYLUS));
-}
-
-inline void notifyPointerDisplayChange(
-        std::optional<std::tuple<ui::LogicalDisplayId, FloatPoint>> change,
-        PointerChoreographerPolicyInterface& policy) {
+inline void notifyPointerDisplayChange(std::optional<std::tuple<ui::LogicalDisplayId, vec2>> change,
+                                       PointerChoreographerPolicyInterface& policy) {
     if (!change) {
         return;
     }
@@ -97,6 +69,33 @@ std::unordered_set<ui::LogicalDisplayId> getPrivacySensitiveDisplaysFromWindowIn
         }
     }
     return privacySensitiveDisplays;
+}
+
+vec2 calculatePositionOnDestinationViewport(const DisplayViewport& destinationViewport,
+                                            float pointerOffset,
+                                            DisplayTopologyPosition sourceBoundary) {
+    // destination is opposite of the source boundary
+    switch (sourceBoundary) {
+        case DisplayTopologyPosition::RIGHT:
+            return {0, pointerOffset}; // left edge
+        case DisplayTopologyPosition::TOP:
+            return {pointerOffset, destinationViewport.logicalBottom}; // bottom edge
+        case DisplayTopologyPosition::LEFT:
+            return {destinationViewport.logicalRight, pointerOffset}; // right edge
+        case DisplayTopologyPosition::BOTTOM:
+            return {pointerOffset, 0}; // top edge
+    }
+}
+
+// The standardised medium display density for which 1 px  = 1 dp
+constexpr int32_t DENSITY_MEDIUM = ACONFIGURATION_DENSITY_MEDIUM;
+
+inline float pxToDp(int px, int dpi) {
+    return static_cast<float>(px * DENSITY_MEDIUM) / static_cast<float>(dpi);
+}
+
+inline int dpToPx(float dp, int dpi) {
+    return static_cast<int>((dp * dpi) / DENSITY_MEDIUM);
 }
 
 } // namespace
@@ -134,38 +133,36 @@ PointerChoreographer::PointerChoreographer(
         }),
         mNextListener(listener),
         mPolicy(policy),
-        mDefaultMouseDisplayId(ui::LogicalDisplayId::DEFAULT),
+        mCurrentMouseDisplayId(ui::LogicalDisplayId::INVALID),
         mNotifiedPointerDisplayId(ui::LogicalDisplayId::INVALID),
         mShowTouchesEnabled(false),
         mStylusPointerIconEnabled(false),
+        mPointerMotionFilterEnabled(false),
         mCurrentFocusedDisplay(ui::LogicalDisplayId::DEFAULT),
+        mIsWindowInfoListenerRegistered(false),
+        mWindowInfoListener(sp<PointerChoreographerDisplayInfoListener>::make(this)),
         mRegisterListener(registerListener),
         mUnregisterListener(unregisterListener) {}
 
 PointerChoreographer::~PointerChoreographer() {
-    std::scoped_lock _l(mLock);
-    if (mWindowInfoListener == nullptr) {
-        return;
+    if (mIsWindowInfoListenerRegistered) {
+        mUnregisterListener(mWindowInfoListener);
+        mIsWindowInfoListenerRegistered = false;
     }
     mWindowInfoListener->onPointerChoreographerDestroyed();
-    mUnregisterListener(mWindowInfoListener);
 }
 
 void PointerChoreographer::notifyInputDevicesChanged(const NotifyInputDevicesChangedArgs& args) {
     PointerDisplayChange pointerDisplayChange;
 
     { // acquire lock
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
 
         mInputDeviceInfos = args.inputDeviceInfos;
         pointerDisplayChange = updatePointerControllersLocked();
     } // release lock
 
     notifyPointerDisplayChange(pointerDisplayChange, mPolicy);
-    mNextListener.notify(args);
-}
-
-void PointerChoreographer::notifyConfigurationChanged(const NotifyConfigurationChangedArgs& args) {
     mNextListener.notify(args);
 }
 
@@ -195,32 +192,44 @@ void PointerChoreographer::fadeMouseCursorOnKeyPress(const android::NotifyKeyArg
         return;
     }
 
-    std::scoped_lock _l(mLock);
+    std::scoped_lock _l(getLock());
     ui::LogicalDisplayId targetDisplay = args.displayId;
     if (targetDisplay == ui::LogicalDisplayId::INVALID) {
         targetDisplay = mCurrentFocusedDisplay;
     }
     auto it = mMousePointersByDisplay.find(targetDisplay);
     if (it != mMousePointersByDisplay.end()) {
+        mPolicy.notifyMouseCursorFadedOnTyping();
         it->second->fade(PointerControllerInterface::Transition::GRADUAL);
     }
 }
 
 NotifyMotionArgs PointerChoreographer::processMotion(const NotifyMotionArgs& args) {
-    std::scoped_lock _l(mLock);
+    NotifyMotionArgs newArgs(args);
+    PointerDisplayChange pointerDisplayChange;
+    { // acquire lock
+        std::scoped_lock _l(getLock());
+        if (isFromMouse(args.source, args.pointerProperties[0].toolType)) {
+            newArgs = processMouseEventLocked(args);
+            pointerDisplayChange = calculatePointerDisplayChangeToNotify();
+        } else if (isFromTouchpad(args.source, args.pointerProperties[0].toolType)) {
+            newArgs = processTouchpadEventLocked(args);
+            pointerDisplayChange = calculatePointerDisplayChangeToNotify();
+        } else if (isFromDrawingTablet(args.source, args.pointerProperties[0].toolType)) {
+            processDrawingTabletEventLocked(args);
+        } else if (mStylusPointerIconEnabled &&
+                   isStylusHoverEvent(args.source, args.pointerProperties, args.action)) {
+            processStylusHoverEventLocked(args);
+        } else if (isFromSource(args.source, AINPUT_SOURCE_TOUCHSCREEN)) {
+            processTouchscreenAndStylusEventLocked(args);
+        }
+    } // release lock
 
-    if (isFromMouse(args)) {
-        return processMouseEventLocked(args);
-    } else if (isFromTouchpad(args)) {
-        return processTouchpadEventLocked(args);
-    } else if (isFromDrawingTablet(args)) {
-        processDrawingTabletEventLocked(args);
-    } else if (mStylusPointerIconEnabled && isStylusHoverEvent(args)) {
-        processStylusHoverEventLocked(args);
-    } else if (isFromSource(args.source, AINPUT_SOURCE_TOUCHSCREEN)) {
-        processTouchscreenAndStylusEventLocked(args);
+    if (pointerDisplayChange) {
+        // pointer display may have changed if mouse crossed display boundary
+        notifyPointerDisplayChange(pointerDisplayChange, mPolicy);
     }
-    return args;
+    return newArgs;
 }
 
 NotifyMotionArgs PointerChoreographer::processMouseEventLocked(const NotifyMotionArgs& args) {
@@ -237,24 +246,18 @@ NotifyMotionArgs PointerChoreographer::processMouseEventLocked(const NotifyMotio
     if (MotionEvent::isValidCursorPosition(args.xCursorPosition, args.yCursorPosition)) {
         // This is an absolute mouse device that knows about the location of the cursor on the
         // display, so set the cursor position to the specified location.
-        const auto [x, y] = pc.getPosition();
-        const float deltaX = args.xCursorPosition - x;
-        const float deltaY = args.yCursorPosition - y;
+        const auto position = pc.getPosition();
+        const float deltaX = args.xCursorPosition - position.x;
+        const float deltaY = args.yCursorPosition - position.y;
         newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X, deltaX);
         newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y, deltaY);
         pc.setPosition(args.xCursorPosition, args.yCursorPosition);
     } else {
         // This is a relative mouse, so move the cursor by the specified amount.
-        const float deltaX = args.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X);
-        const float deltaY = args.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y);
-        pc.move(deltaX, deltaY);
-        const auto [x, y] = pc.getPosition();
-        newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_X, x);
-        newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_Y, y);
-        newArgs.xCursorPosition = x;
-        newArgs.yCursorPosition = y;
+        processPointerDeviceMotionEventLocked(/*byref*/ newArgs, /*byref*/ pc);
     }
-    if (canUnfadeOnDisplay(displayId)) {
+    // Note displayId may have changed if the cursor moved to a different display
+    if (canUnfadeOnDisplay(newArgs.displayId)) {
         pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
     }
     return newArgs;
@@ -268,35 +271,116 @@ NotifyMotionArgs PointerChoreographer::processTouchpadEventLocked(const NotifyMo
     newArgs.displayId = displayId;
     if (args.getPointerCount() == 1 && args.classification == MotionClassification::NONE) {
         // This is a movement of the mouse pointer.
-        const float deltaX = args.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X);
-        const float deltaY = args.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y);
-        pc.move(deltaX, deltaY);
-        if (canUnfadeOnDisplay(displayId)) {
-            pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
-        }
-
-        const auto [x, y] = pc.getPosition();
-        newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_X, x);
-        newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_Y, y);
-        newArgs.xCursorPosition = x;
-        newArgs.yCursorPosition = y;
+        processPointerDeviceMotionEventLocked(/*byref*/ newArgs, /*byref*/ pc);
     } else {
         // This is a trackpad gesture with fake finger(s) that should not move the mouse pointer.
-        if (canUnfadeOnDisplay(displayId)) {
-            pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
-        }
-
-        const auto [x, y] = pc.getPosition();
+        const auto position = pc.getPosition();
         for (uint32_t i = 0; i < newArgs.getPointerCount(); i++) {
             newArgs.pointerCoords[i].setAxisValue(AMOTION_EVENT_AXIS_X,
-                                                  args.pointerCoords[i].getX() + x);
+                                                  args.pointerCoords[i].getX() + position.x);
             newArgs.pointerCoords[i].setAxisValue(AMOTION_EVENT_AXIS_Y,
-                                                  args.pointerCoords[i].getY() + y);
+                                                  args.pointerCoords[i].getY() + position.y);
         }
-        newArgs.xCursorPosition = x;
-        newArgs.yCursorPosition = y;
+        newArgs.xCursorPosition = position.x;
+        newArgs.yCursorPosition = position.y;
+    }
+
+    // Note displayId may have changed if the cursor moved to a different display
+    if (canUnfadeOnDisplay(newArgs.displayId)) {
+        pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
     }
     return newArgs;
+}
+
+void PointerChoreographer::processPointerDeviceMotionEventLocked(NotifyMotionArgs& newArgs,
+                                                                 PointerControllerInterface& pc) {
+    const float deltaX = newArgs.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_X);
+    const float deltaY = newArgs.pointerCoords[0].getAxisValue(AMOTION_EVENT_AXIS_RELATIVE_Y);
+    vec2 filteredDelta =
+            filterPointerMotionForAccessibilityLocked(pc.getPosition(), vec2{deltaX, deltaY},
+                                                      newArgs.displayId);
+    vec2 unconsumedDelta = pc.move(filteredDelta.x, filteredDelta.y);
+    if (InputFlags::connectedDisplaysCursorEnabled() &&
+        (std::abs(unconsumedDelta.x) > 0 || std::abs(unconsumedDelta.y) > 0)) {
+        handleUnconsumedDeltaLocked(pc, unconsumedDelta);
+        // pointer may have moved to a different viewport
+        newArgs.displayId = pc.getDisplayId();
+    }
+
+    const auto position = pc.getPosition();
+    newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_X, position.x);
+    newArgs.pointerCoords[0].setAxisValue(AMOTION_EVENT_AXIS_Y, position.y);
+    newArgs.xCursorPosition = position.x;
+    newArgs.yCursorPosition = position.y;
+}
+
+void PointerChoreographer::handleUnconsumedDeltaLocked(PointerControllerInterface& pc,
+                                                       const vec2& unconsumedDelta) {
+    // Display topology is in rotated coordinate space and Pointer controller returns and expects
+    // values in the un-rotated coordinate space. So we need to transform delta and cursor position
+    // back to the rotated coordinate space to lookup adjacent display in the display topology.
+    const auto& sourceDisplayTransform = pc.getDisplayTransform();
+    const vec2 rotatedUnconsumedDelta =
+            transformWithoutTranslation(sourceDisplayTransform, unconsumedDelta);
+    const vec2 cursorPosition = pc.getPosition();
+    const vec2 rotatedCursorPosition = sourceDisplayTransform.transform(cursorPosition);
+
+    // To find out the boundary that cursor is crossing we are checking delta in x and y direction
+    // respectively. This prioritizes x direction over y.
+    // In practise, majority of cases we only have non-zero values in either x or y coordinates,
+    // except sometimes near the corners.
+    // In these cases this behaviour is not noticeable. We also do not apply unconsumed delta on
+    // the destination display for the same reason.
+    DisplayTopologyPosition sourceBoundary;
+    float cursorOffset = 0.0f;
+    if (rotatedUnconsumedDelta.x > 0) {
+        sourceBoundary = DisplayTopologyPosition::RIGHT;
+        cursorOffset = rotatedCursorPosition.y;
+    } else if (rotatedUnconsumedDelta.x < 0) {
+        sourceBoundary = DisplayTopologyPosition::LEFT;
+        cursorOffset = rotatedCursorPosition.y;
+    } else if (rotatedUnconsumedDelta.y > 0) {
+        sourceBoundary = DisplayTopologyPosition::BOTTOM;
+        cursorOffset = rotatedCursorPosition.x;
+    } else {
+        sourceBoundary = DisplayTopologyPosition::TOP;
+        cursorOffset = rotatedCursorPosition.x;
+    }
+
+    const ui::LogicalDisplayId sourceDisplayId = pc.getDisplayId();
+    std::optional<std::pair<const DisplayViewport*, float /*offset*/>> destination =
+            findDestinationDisplayLocked(sourceDisplayId, sourceBoundary, cursorOffset);
+    if (!destination.has_value()) {
+        // No matching adjacent display
+        return;
+    }
+
+    const DisplayViewport& destinationViewport = *destination->first;
+    const float destinationOffset = destination->second;
+    if (mMousePointersByDisplay.find(destinationViewport.displayId) !=
+        mMousePointersByDisplay.end()) {
+        LOG(FATAL) << "A cursor already exists on destination display"
+                   << destinationViewport.displayId;
+    }
+    mCurrentMouseDisplayId = destinationViewport.displayId;
+    auto pcNode = mMousePointersByDisplay.extract(sourceDisplayId);
+    pcNode.key() = destinationViewport.displayId;
+    mMousePointersByDisplay.insert(std::move(pcNode));
+
+    // Before updating the viewport and moving the cursor to appropriate location in the destination
+    // viewport, we need to temporarily hide the cursor. This will prevent it from appearing at the
+    // center of the display in any intermediate frames.
+    pc.fade(PointerControllerInterface::Transition::IMMEDIATE);
+    pc.setDisplayViewport(destinationViewport);
+    vec2 destinationPosition =
+            calculatePositionOnDestinationViewport(destinationViewport, destinationOffset,
+                                                   sourceBoundary);
+
+    // Transform position back to un-rotated coordinate space before sending it to controller
+    destinationPosition = pc.getDisplayTransform().inverse().transform(destinationPosition.x,
+                                                                       destinationPosition.y);
+    pc.setPosition(destinationPosition.x, destinationPosition.y);
+    pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
 }
 
 void PointerChoreographer::processDrawingTabletEventLocked(const android::NotifyMotionArgs& args) {
@@ -367,7 +451,8 @@ void PointerChoreographer::processTouchscreenAndStylusEventLocked(const NotifyMo
     const uint8_t actionIndex = MotionEvent::getActionIndex(args.action);
     std::array<uint32_t, MAX_POINTER_ID + 1> idToIndex;
     BitSet32 idBits;
-    if (maskedAction != AMOTION_EVENT_ACTION_UP && maskedAction != AMOTION_EVENT_ACTION_CANCEL) {
+    if (maskedAction != AMOTION_EVENT_ACTION_UP && maskedAction != AMOTION_EVENT_ACTION_CANCEL &&
+        maskedAction != AMOTION_EVENT_ACTION_HOVER_EXIT) {
         for (size_t i = 0; i < args.getPointerCount(); i++) {
             if (maskedAction == AMOTION_EVENT_ACTION_POINTER_UP && actionIndex == i) {
                 continue;
@@ -392,6 +477,14 @@ void PointerChoreographer::processStylusHoverEventLocked(const NotifyMotionArgs&
                      << args.dump();
     }
 
+    // Fade the mouse pointer on the display if there is one when the stylus starts hovering.
+    if (args.action == AMOTION_EVENT_ACTION_HOVER_ENTER) {
+        if (const auto it = mMousePointersByDisplay.find(args.displayId);
+            it != mMousePointersByDisplay.end()) {
+            it->second->fade(PointerControllerInterface::Transition::GRADUAL);
+        }
+    }
+
     // Get the stylus pointer controller for the device, or create one if it doesn't exist.
     auto [it, controllerAdded] =
             mStylusPointersByDevice.try_emplace(args.deviceId,
@@ -409,7 +502,8 @@ void PointerChoreographer::processStylusHoverEventLocked(const NotifyMotionArgs&
         // TODO(b/315815559): Do not fade and reset the icon if the hover exit will be followed
         //   immediately by a DOWN event.
         pc.fade(PointerControllerInterface::Transition::IMMEDIATE);
-        pc.updatePointerIcon(PointerIconStyle::TYPE_NOT_SPECIFIED);
+        pc.updatePointerIcon(mShowTouchesEnabled ? PointerIconStyle::TYPE_SPOT_HOVER
+                                                 : PointerIconStyle::TYPE_NOT_SPECIFIED);
     } else if (canUnfadeOnDisplay(args.displayId)) {
         pc.unfade(PointerControllerInterface::Transition::IMMEDIATE);
     }
@@ -434,7 +528,7 @@ void PointerChoreographer::notifyDeviceReset(const NotifyDeviceResetArgs& args) 
 }
 
 void PointerChoreographer::processDeviceReset(const NotifyDeviceResetArgs& args) {
-    std::scoped_lock _l(mLock);
+    std::scoped_lock _l(getLock());
     mTouchPointersByDevice.erase(args.deviceId);
     mStylusPointersByDevice.erase(args.deviceId);
     mDrawingTabletPointersByDevice.erase(args.deviceId);
@@ -442,23 +536,25 @@ void PointerChoreographer::processDeviceReset(const NotifyDeviceResetArgs& args)
 }
 
 void PointerChoreographer::onControllerAddedOrRemovedLocked() {
-    if (!com::android::input::flags::hide_pointer_indicators_for_secure_windows()) {
-        return;
-    }
     bool requireListener = !mTouchPointersByDevice.empty() || !mMousePointersByDisplay.empty() ||
             !mDrawingTabletPointersByDevice.empty() || !mStylusPointersByDevice.empty();
 
-    if (requireListener && mWindowInfoListener == nullptr) {
-        mWindowInfoListener = sp<PointerChoreographerDisplayInfoListener>::make(this);
-        mWindowInfoListener->setInitialDisplayInfos(mRegisterListener(mWindowInfoListener));
-        onPrivacySensitiveDisplaysChangedLocked(mWindowInfoListener->getPrivacySensitiveDisplays());
-    } else if (!requireListener && mWindowInfoListener != nullptr) {
+    // PointerChoreographer uses Listener's lock which is already held by caller
+    base::ScopedLockAssertion assumeLocked(mWindowInfoListener->mLock);
+
+    if (requireListener && !mIsWindowInfoListenerRegistered) {
+        mIsWindowInfoListenerRegistered = true;
+        mWindowInfoListener->setInitialDisplayInfosLocked(mRegisterListener(mWindowInfoListener));
+        onPrivacySensitiveDisplaysChangedLocked(
+                mWindowInfoListener->getPrivacySensitiveDisplaysLocked());
+    } else if (!requireListener && mIsWindowInfoListenerRegistered) {
+        mIsWindowInfoListenerRegistered = false;
         mUnregisterListener(mWindowInfoListener);
-        mWindowInfoListener = nullptr;
-    } else if (requireListener && mWindowInfoListener != nullptr) {
+    } else if (requireListener) {
         // controller may have been added to an existing privacy sensitive display, we need to
         // update all controllers again
-        onPrivacySensitiveDisplaysChangedLocked(mWindowInfoListener->getPrivacySensitiveDisplays());
+        onPrivacySensitiveDisplaysChangedLocked(
+                mWindowInfoListener->getPrivacySensitiveDisplaysLocked());
     }
 }
 
@@ -495,7 +591,7 @@ void PointerChoreographer::onPrivacySensitiveDisplaysChangedLocked(
 void PointerChoreographer::notifyPointerCaptureChanged(
         const NotifyPointerCaptureChangedArgs& args) {
     if (args.request.isEnable()) {
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
         for (const auto& [_, mousePointerController] : mMousePointersByDisplay) {
             mousePointerController->fade(PointerControllerInterface::Transition::IMMEDIATE);
         }
@@ -503,19 +599,34 @@ void PointerChoreographer::notifyPointerCaptureChanged(
     mNextListener.notify(args);
 }
 
-void PointerChoreographer::onPrivacySensitiveDisplaysChanged(
-        const std::unordered_set<ui::LogicalDisplayId>& privacySensitiveDisplays) {
-    std::scoped_lock _l(mLock);
-    onPrivacySensitiveDisplaysChangedLocked(privacySensitiveDisplays);
+void PointerChoreographer::setDisplayTopology(const DisplayTopologyGraph& displayTopologyGraph) {
+    PointerDisplayChange pointerDisplayChange;
+    { // acquire lock
+        std::scoped_lock _l(getLock());
+        mTopology = displayTopologyGraph;
+
+        // make primary display default mouse display, if it was not set or
+        // the existing display was removed
+        if (mCurrentMouseDisplayId == ui::LogicalDisplayId::INVALID ||
+            mTopology.graph.find(mCurrentMouseDisplayId) == mTopology.graph.end()) {
+            mCurrentMouseDisplayId = mTopology.primaryDisplayId;
+            pointerDisplayChange = updatePointerControllersLocked();
+        }
+    } // release lock
+
+    notifyPointerDisplayChange(pointerDisplayChange, mPolicy);
 }
 
 void PointerChoreographer::dump(std::string& dump) {
-    std::scoped_lock _l(mLock);
+    std::scoped_lock _l(getLock());
 
     dump += "PointerChoreographer:\n";
-    dump += StringPrintf("show touches: %s\n", mShowTouchesEnabled ? "true" : "false");
-    dump += StringPrintf("stylus pointer icon enabled: %s\n",
+    dump += StringPrintf(INDENT "Show Touches Enabled: %s\n",
+                         mShowTouchesEnabled ? "true" : "false");
+    dump += StringPrintf(INDENT "Stylus PointerIcon Enabled: %s\n",
                          mStylusPointerIconEnabled ? "true" : "false");
+    dump += StringPrintf(INDENT "Accessibility Pointer Motion Filter Enabled: %s\n",
+                         mPointerMotionFilterEnabled ? "true" : "false");
 
     dump += INDENT "MousePointerControllers:\n";
     for (const auto& [displayId, mousePointerController] : mMousePointersByDisplay) {
@@ -537,6 +648,8 @@ void PointerChoreographer::dump(std::string& dump) {
         std::string pointerControllerDump = addLinePrefix(drawingTabletController->dump(), INDENT);
         dump += INDENT + std::to_string(deviceId) + " : " + pointerControllerDump;
     }
+    dump += INDENT "DisplayTopologyGraph:\n";
+    dump += addLinePrefix(mTopology.dump(), INDENT2);
     dump += "\n";
 }
 
@@ -552,7 +665,25 @@ const DisplayViewport* PointerChoreographer::findViewportByIdLocked(
 
 ui::LogicalDisplayId PointerChoreographer::getTargetMouseDisplayLocked(
         ui::LogicalDisplayId associatedDisplayId) const {
-    return associatedDisplayId.isValid() ? associatedDisplayId : mDefaultMouseDisplayId;
+    if (!InputFlags::connectedDisplaysCursorAndAssociatedDisplayCursorBugfixEnabled()) {
+        if (associatedDisplayId.isValid()) {
+            return associatedDisplayId;
+        }
+        return mCurrentMouseDisplayId.isValid() ? mCurrentMouseDisplayId
+                                                : ui::LogicalDisplayId::DEFAULT;
+    }
+    // Associated display is not included in the topology, return this associated display.
+    if (associatedDisplayId.isValid() &&
+        mTopology.graph.find(associatedDisplayId) == mTopology.graph.end()) {
+        return associatedDisplayId;
+    }
+    if (mCurrentMouseDisplayId.isValid()) {
+        return mCurrentMouseDisplayId;
+    }
+    if (mTopology.primaryDisplayId.isValid()) {
+        return mTopology.primaryDisplayId;
+    }
+    return ui::LogicalDisplayId::DEFAULT;
 }
 
 std::pair<ui::LogicalDisplayId, PointerControllerInterface&>
@@ -577,6 +708,10 @@ InputDeviceInfo* PointerChoreographer::findInputDeviceLocked(DeviceId deviceId) 
 
 bool PointerChoreographer::canUnfadeOnDisplay(ui::LogicalDisplayId displayId) {
     return mDisplaysWithPointersHidden.find(displayId) == mDisplaysWithPointersHidden.end();
+}
+
+std::mutex& PointerChoreographer::getLock() const {
+    return mWindowInfoListener->mLock;
 }
 
 PointerChoreographer::PointerDisplayChange PointerChoreographer::updatePointerControllersLocked() {
@@ -641,7 +776,7 @@ PointerChoreographer::PointerDisplayChange PointerChoreographer::updatePointerCo
     std::erase_if(mDrawingTabletPointersByDevice, [&drawingTabletDevicesToKeep](const auto& pair) {
         return drawingTabletDevicesToKeep.find(pair.first) == drawingTabletDevicesToKeep.end();
     });
-    std::erase_if(mMouseDevices, [&](DeviceId id) REQUIRES(mLock) {
+    std::erase_if(mMouseDevices, [&](DeviceId id) REQUIRES(getLock()) {
         return std::find_if(mInputDeviceInfos.begin(), mInputDeviceInfos.end(),
                             [id](const auto& info) { return info.getId() == id; }) ==
                 mInputDeviceInfos.end();
@@ -656,8 +791,9 @@ PointerChoreographer::PointerDisplayChange PointerChoreographer::updatePointerCo
 PointerChoreographer::PointerDisplayChange
 PointerChoreographer::calculatePointerDisplayChangeToNotify() {
     ui::LogicalDisplayId displayIdToNotify = ui::LogicalDisplayId::INVALID;
-    FloatPoint cursorPosition = {0, 0};
-    if (const auto it = mMousePointersByDisplay.find(mDefaultMouseDisplayId);
+    vec2 cursorPosition = {0, 0};
+    if (const auto it =
+                mMousePointersByDisplay.find(getTargetMouseDisplayLocked(mCurrentMouseDisplayId));
         it != mMousePointersByDisplay.end()) {
         const auto& pointerController = it->second;
         // Use the displayId from the pointerController, because it accurately reflects whether
@@ -674,12 +810,16 @@ PointerChoreographer::calculatePointerDisplayChangeToNotify() {
 }
 
 void PointerChoreographer::setDefaultMouseDisplayId(ui::LogicalDisplayId displayId) {
+    if (InputFlags::connectedDisplaysCursorEnabled()) {
+        // In connected displays scenario, default mouse display will only be updated from topology.
+        return;
+    }
     PointerDisplayChange pointerDisplayChange;
 
     { // acquire lock
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
 
-        mDefaultMouseDisplayId = displayId;
+        mCurrentMouseDisplayId = displayId;
         pointerDisplayChange = updatePointerControllersLocked();
     } // release lock
 
@@ -690,7 +830,7 @@ void PointerChoreographer::setDisplayViewports(const std::vector<DisplayViewport
     PointerDisplayChange pointerDisplayChange;
 
     { // acquire lock
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
         for (const auto& viewport : viewports) {
             const ui::LogicalDisplayId displayId = viewport.displayId;
             if (const auto it = mMousePointersByDisplay.find(displayId);
@@ -719,7 +859,7 @@ void PointerChoreographer::setDisplayViewports(const std::vector<DisplayViewport
 
 std::optional<DisplayViewport> PointerChoreographer::getViewportForPointerDevice(
         ui::LogicalDisplayId associatedDisplayId) {
-    std::scoped_lock _l(mLock);
+    std::scoped_lock _l(getLock());
     const ui::LogicalDisplayId resolvedDisplayId = getTargetMouseDisplayLocked(associatedDisplayId);
     if (const auto viewport = findViewportByIdLocked(resolvedDisplayId); viewport) {
         return *viewport;
@@ -727,8 +867,8 @@ std::optional<DisplayViewport> PointerChoreographer::getViewportForPointerDevice
     return std::nullopt;
 }
 
-FloatPoint PointerChoreographer::getMouseCursorPosition(ui::LogicalDisplayId displayId) {
-    std::scoped_lock _l(mLock);
+vec2 PointerChoreographer::getMouseCursorPosition(ui::LogicalDisplayId displayId) {
+    std::scoped_lock _l(getLock());
     const ui::LogicalDisplayId resolvedDisplayId = getTargetMouseDisplayLocked(displayId);
     if (auto it = mMousePointersByDisplay.find(resolvedDisplayId);
         it != mMousePointersByDisplay.end()) {
@@ -741,7 +881,7 @@ void PointerChoreographer::setShowTouchesEnabled(bool enabled) {
     PointerDisplayChange pointerDisplayChange;
 
     { // acquire lock
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
         if (mShowTouchesEnabled == enabled) {
             return;
         }
@@ -756,7 +896,7 @@ void PointerChoreographer::setStylusPointerIconEnabled(bool enabled) {
     PointerDisplayChange pointerDisplayChange;
 
     { // acquire lock
-        std::scoped_lock _l(mLock);
+        std::scoped_lock _l(getLock());
         if (mStylusPointerIconEnabled == enabled) {
             return;
         }
@@ -770,7 +910,7 @@ void PointerChoreographer::setStylusPointerIconEnabled(bool enabled) {
 bool PointerChoreographer::setPointerIcon(
         std::variant<std::unique_ptr<SpriteIcon>, PointerIconStyle> icon,
         ui::LogicalDisplayId displayId, DeviceId deviceId) {
-    std::scoped_lock _l(mLock);
+    std::scoped_lock _l(getLock());
     if (deviceId < 0) {
         LOG(WARNING) << "Invalid device id " << deviceId << ". Cannot set pointer icon.";
         return false;
@@ -793,6 +933,13 @@ bool PointerChoreographer::setPointerIcon(
     if (isFromSource(sources, AINPUT_SOURCE_STYLUS)) {
         auto it = mStylusPointersByDevice.find(deviceId);
         if (it != mStylusPointersByDevice.end()) {
+            if (mShowTouchesEnabled) {
+                // If an app doesn't override the icon for the hovering stylus, show the hover icon.
+                auto* style = std::get_if<PointerIconStyle>(&icon);
+                if (style != nullptr && *style == PointerIconStyle::TYPE_NOT_SPECIFIED) {
+                    *style = PointerIconStyle::TYPE_SPOT_HOVER;
+                }
+            }
             setIconForController(icon, *it->second);
             return true;
         }
@@ -814,7 +961,7 @@ bool PointerChoreographer::setPointerIcon(
 }
 
 void PointerChoreographer::setPointerIconVisibility(ui::LogicalDisplayId displayId, bool visible) {
-    std::scoped_lock lock(mLock);
+    std::scoped_lock lock(getLock());
     if (visible) {
         mDisplaysWithPointersHidden.erase(displayId);
         // We do not unfade the icons here, because we don't know when the last event happened.
@@ -836,14 +983,19 @@ void PointerChoreographer::setPointerIconVisibility(ui::LogicalDisplayId display
 }
 
 void PointerChoreographer::setFocusedDisplay(ui::LogicalDisplayId displayId) {
-    std::scoped_lock lock(mLock);
+    std::scoped_lock lock(getLock());
     mCurrentFocusedDisplay = displayId;
+}
+
+void PointerChoreographer::setAccessibilityPointerMotionFilterEnabled(bool enabled) {
+    std::scoped_lock _l(getLock());
+    mPointerMotionFilterEnabled = enabled;
 }
 
 PointerChoreographer::ControllerConstructor PointerChoreographer::getMouseControllerConstructor(
         ui::LogicalDisplayId displayId) {
     std::function<std::shared_ptr<PointerControllerInterface>()> ctor =
-            [this, displayId]() REQUIRES(mLock) {
+            [this, displayId]() REQUIRES(getLock()) {
                 auto pc = mPolicy.createPointerController(
                         PointerControllerInterface::ControllerType::MOUSE);
                 if (const auto viewport = findViewportByIdLocked(displayId); viewport) {
@@ -857,7 +1009,7 @@ PointerChoreographer::ControllerConstructor PointerChoreographer::getMouseContro
 PointerChoreographer::ControllerConstructor PointerChoreographer::getStylusControllerConstructor(
         ui::LogicalDisplayId displayId) {
     std::function<std::shared_ptr<PointerControllerInterface>()> ctor =
-            [this, displayId]() REQUIRES(mLock) {
+            [this, displayId]() REQUIRES(getLock()) {
                 auto pc = mPolicy.createPointerController(
                         PointerControllerInterface::ControllerType::STYLUS);
                 if (const auto viewport = findViewportByIdLocked(displayId); viewport) {
@@ -868,35 +1020,98 @@ PointerChoreographer::ControllerConstructor PointerChoreographer::getStylusContr
     return ConstructorDelegate(std::move(ctor));
 }
 
+std::optional<std::pair<const DisplayViewport*, float /*offsetPx*/>>
+PointerChoreographer::findDestinationDisplayLocked(const ui::LogicalDisplayId sourceDisplayId,
+                                                   const DisplayTopologyPosition sourceBoundary,
+                                                   int32_t sourceCursorOffsetPx) const {
+    const auto& sourceNode = mTopology.graph.find(sourceDisplayId);
+    if (sourceNode == mTopology.graph.end()) {
+        // Topology is likely out of sync with viewport info, wait for it to be updated
+        LOG(WARNING) << "Source display missing from topology " << sourceDisplayId;
+        return std::nullopt;
+    }
+    for (const DisplayTopologyAdjacentDisplay& adjacentDisplay : sourceNode->second) {
+        if (adjacentDisplay.position != sourceBoundary) {
+            continue;
+        }
+        const DisplayViewport* adjacentViewport = findViewportByIdLocked(adjacentDisplay.displayId);
+        if (adjacentViewport == nullptr) {
+            // Topology is likely out of sync with viewport info, wait for them to be updated
+            LOG(WARNING) << "Cannot find viewport for adjacent display "
+                         << adjacentDisplay.displayId << "of source display " << sourceDisplayId;
+            continue;
+        }
+        // As displays can have different densities we need to do all calculations in
+        // density-independent-pixels a.k.a. dp values.
+        const int sourceDensity = mTopology.displaysDensity.at(sourceDisplayId);
+        const int adjacentDisplayDensity = mTopology.displaysDensity.at(adjacentDisplay.displayId);
+        const float sourceCursorOffsetDp = pxToDp(sourceCursorOffsetPx, sourceDensity);
+        const int32_t edgeSizePx = sourceBoundary == DisplayTopologyPosition::TOP ||
+                        sourceBoundary == DisplayTopologyPosition::BOTTOM
+                ? (adjacentViewport->logicalRight - adjacentViewport->logicalLeft)
+                : (adjacentViewport->logicalBottom - adjacentViewport->logicalTop);
+        const float adjacentEdgeSizeDp = pxToDp(edgeSizePx, adjacentDisplayDensity);
+        // Target position must be within target display boundary.
+        // Cursor should also be able to cross displays when only display corners are touching and
+        // there may be zero overlapping pixels. To accommodate this we have margin of one pixel
+        // around the end of the overlapping edge.
+        if (sourceCursorOffsetDp >= adjacentDisplay.offsetDp &&
+            sourceCursorOffsetDp <= adjacentDisplay.offsetDp + adjacentEdgeSizeDp) {
+            const int destinationOffsetPx =
+                    dpToPx(sourceCursorOffsetDp - adjacentDisplay.offsetDp, adjacentDisplayDensity);
+            return std::make_pair(adjacentViewport, destinationOffsetPx);
+        }
+    }
+    return std::nullopt;
+}
+
+vec2 PointerChoreographer::filterPointerMotionForAccessibilityLocked(
+        const vec2& current, const vec2& delta, const ui::LogicalDisplayId& displayId) {
+    if (!mPointerMotionFilterEnabled) {
+        return delta;
+    }
+    std::optional<vec2> filterResult =
+            mPolicy.filterPointerMotionForAccessibility(current, delta, displayId);
+    if (!filterResult.has_value()) {
+        // Disable filter when there's any error.
+        mPointerMotionFilterEnabled = false;
+        return delta;
+    }
+    return *filterResult;
+}
+
+// --- PointerChoreographer::PointerChoreographerDisplayInfoListener ---
+
 void PointerChoreographer::PointerChoreographerDisplayInfoListener::onWindowInfosChanged(
         const gui::WindowInfosUpdate& windowInfosUpdate) {
-    std::scoped_lock _l(mListenerLock);
+    std::scoped_lock _l(mLock);
     if (mPointerChoreographer == nullptr) {
         return;
     }
     auto newPrivacySensitiveDisplays =
             getPrivacySensitiveDisplaysFromWindowInfos(windowInfosUpdate.windowInfos);
+
+    // PointerChoreographer uses Listener's lock.
+    base::ScopedLockAssertion assumeLocked(mPointerChoreographer->getLock());
     if (newPrivacySensitiveDisplays != mPrivacySensitiveDisplays) {
         mPrivacySensitiveDisplays = std::move(newPrivacySensitiveDisplays);
-        mPointerChoreographer->onPrivacySensitiveDisplaysChanged(mPrivacySensitiveDisplays);
+        mPointerChoreographer->onPrivacySensitiveDisplaysChangedLocked(mPrivacySensitiveDisplays);
     }
 }
 
-void PointerChoreographer::PointerChoreographerDisplayInfoListener::setInitialDisplayInfos(
+void PointerChoreographer::PointerChoreographerDisplayInfoListener::setInitialDisplayInfosLocked(
         const std::vector<gui::WindowInfo>& windowInfos) {
-    std::scoped_lock _l(mListenerLock);
     mPrivacySensitiveDisplays = getPrivacySensitiveDisplaysFromWindowInfos(windowInfos);
 }
 
 std::unordered_set<ui::LogicalDisplayId /*displayId*/>
-PointerChoreographer::PointerChoreographerDisplayInfoListener::getPrivacySensitiveDisplays() {
-    std::scoped_lock _l(mListenerLock);
+PointerChoreographer::PointerChoreographerDisplayInfoListener::getPrivacySensitiveDisplaysLocked() {
     return mPrivacySensitiveDisplays;
 }
 
 void PointerChoreographer::PointerChoreographerDisplayInfoListener::
         onPointerChoreographerDestroyed() {
-    std::scoped_lock _l(mListenerLock);
+    std::scoped_lock _l(mLock);
     mPointerChoreographer = nullptr;
 }
 

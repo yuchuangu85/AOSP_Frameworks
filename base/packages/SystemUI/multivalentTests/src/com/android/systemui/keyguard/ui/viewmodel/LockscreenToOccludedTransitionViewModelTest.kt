@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.keyguard.ui.viewmodel
 
 import android.platform.test.flag.junit.FlagsParameterization
@@ -38,12 +36,12 @@ import com.android.systemui.keyguard.shared.model.TransitionState
 import com.android.systemui.keyguard.shared.model.TransitionStep
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.res.R
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.shade.ShadeTestUtil
 import com.android.systemui.shade.shadeTestUtil
 import com.android.systemui.testKosmos
 import com.google.common.collect.Range
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -89,9 +87,12 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
     }
 
     @Test
-    fun lockscreenFadeOut() =
+    fun lockscreenFadeOut_shadeNotExpanded() =
         testScope.runTest {
             val values by collectValues(underTest.lockscreenAlpha)
+            shadeExpanded(false)
+            runCurrent()
+
             repository.sendTransitionSteps(
                 steps =
                     listOf(
@@ -104,10 +105,34 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
                     ),
                 testScope = testScope,
             )
-            // Only 5 values should be present, since the dream overlay runs for a small fraction
-            // of the overall animation time
             assertThat(values.size).isEqualTo(5)
-            values.forEach { assertThat(it).isIn(Range.closed(0f, 1f)) }
+            assertThat(values[0]).isEqualTo(1f)
+            assertThat(values[1]).isEqualTo(1f)
+            assertThat(values[2]).isIn(Range.open(0f, 1f))
+            assertThat(values[3]).isIn(Range.open(0f, 1f))
+            assertThat(values[4]).isEqualTo(0f)
+        }
+
+    @Test
+    fun lockscreenFadeOut_shadeExpanded() =
+        testScope.runTest {
+            val values by collectValues(underTest.lockscreenAlpha)
+            shadeExpanded(true)
+            runCurrent()
+
+            repository.sendTransitionSteps(
+                steps =
+                    listOf(
+                        step(0f, TransitionState.STARTED), // Should start running here...
+                        step(0f),
+                        step(.1f),
+                        step(.4f),
+                        step(.7f), // ...up to here
+                        step(1f),
+                    ),
+                testScope = testScope,
+            )
+            values.forEach { assertThat(it).isEqualTo(0f) }
         }
 
     @Test
@@ -115,7 +140,7 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
         testScope.runTest {
             configurationRepository.setDimensionPixelSize(
                 R.dimen.lockscreen_to_occluded_transition_lockscreen_translation_y,
-                100
+                100,
             )
             val values by collectValues(underTest.lockscreenTranslationY)
             repository.sendTransitionSteps(
@@ -138,7 +163,7 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
         testScope.runTest {
             configurationRepository.setDimensionPixelSize(
                 R.dimen.lockscreen_to_occluded_transition_lockscreen_translation_y,
-                100
+                100,
             )
             val values by collectValues(underTest.lockscreenTranslationY)
             repository.sendTransitionSteps(
@@ -151,11 +176,13 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
                     ),
                 testScope = testScope,
             )
-            assertThat(values.size).isEqualTo(3)
+            assertThat(values.size).isEqualTo(if (SceneContainerFlag.isEnabled) 2 else 3)
             values.forEach { assertThat(it).isIn(Range.closed(0f, 100f)) }
 
-            // Cancel will reset the translation
-            assertThat(values[2]).isEqualTo(0)
+            // When the scene framework is not enabled, cancel will reset the translation
+            if (!SceneContainerFlag.isEnabled) {
+                assertThat(values.last()).isEqualTo(0f)
+            }
         }
 
     @Test
@@ -171,7 +198,7 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
                     listOf(
                         step(0f, TransitionState.STARTED),
                         step(.5f),
-                        step(1f, TransitionState.FINISHED)
+                        step(1f, TransitionState.FINISHED),
                     ),
                 testScope = testScope,
             )
@@ -201,6 +228,25 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
             assertThat(actual).isEqualTo(0f)
         }
 
+    @Test
+    fun deviceEntryParentViewAlpha_shadeNotExpanded_onCancel() =
+        testScope.runTest {
+            val actual by collectLastValue(underTest.deviceEntryParentViewAlpha)
+            shadeExpanded(false)
+            runCurrent()
+
+            // START transition
+            repository.sendTransitionStep(step(0f, TransitionState.STARTED))
+            assertThat(actual).isEqualTo(1f)
+
+            // WHEN transition is canceled
+            repository.sendTransitionStep(step(1f, TransitionState.CANCELED))
+
+            // THEN alpha updates according to whether the scene framework is enabled (CANCELED is
+            // ignored when the scene framework is enabled).
+            assertThat(actual).isEqualTo(if (SceneContainerFlag.isEnabled) 1f else 0f)
+        }
+
     private fun step(
         value: Float,
         state: TransitionState = TransitionState.RUNNING,
@@ -210,7 +256,7 @@ class LockscreenToOccludedTransitionViewModelTest(flags: FlagsParameterization) 
             to = KeyguardState.OCCLUDED,
             value = value,
             transitionState = state,
-            ownerName = "LockscreenToOccludedTransitionViewModelTest"
+            ownerName = "LockscreenToOccludedTransitionViewModelTest",
         )
     }
 

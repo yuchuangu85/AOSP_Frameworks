@@ -18,7 +18,6 @@ package com.android.systemui.doze;
 
 import static com.android.systemui.doze.DozeMachine.State.DOZE;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD_PAUSED;
-import static com.android.systemui.Flags.dozeuiSchedulingAlarmsBackgroundExecution;
 
 import android.app.AlarmManager;
 import android.content.Context;
@@ -26,6 +25,8 @@ import android.os.Handler;
 import android.os.SystemClock;
 import android.text.format.Formatter;
 import android.util.Log;
+
+import androidx.annotation.AnyThread;
 
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
@@ -55,7 +56,7 @@ public class DozeUi implements DozeMachine.Part {
     private final DozeParameters mDozeParameters;
     private final DozeLog mDozeLog;
     private final DelayableExecutor mBgExecutor;
-    private long mLastTimeTickElapsed = 0;
+    private volatile long mLastTimeTickElapsed = 0;
     // If time tick is scheduled and there's not a pending runnable to cancel:
     private volatile boolean mTimeTickScheduled;
     private final Runnable mCancelTimeTickerRunnable =  new Runnable() {
@@ -82,13 +83,7 @@ public class DozeUi implements DozeMachine.Part {
         mBgExecutor = bgExecutor;
         mCanAnimateTransition = !params.getDisplayNeedsBlanking();
         mDozeParameters = params;
-        if (dozeuiSchedulingAlarmsBackgroundExecution()) {
-            mTimeTicker = new AlarmTimeout(alarmManager, this::onTimeTick, "doze_time_tick",
-                    bgHandler);
-        } else {
-            mTimeTicker = new AlarmTimeout(alarmManager, this::onTimeTick, "doze_time_tick",
-                    handler);
-        }
+        mTimeTicker = new AlarmTimeout(alarmManager, this::onTimeTick, "doze_time_tick", bgHandler);
         mDozeLog = dozeLog;
     }
 
@@ -182,7 +177,7 @@ public class DozeUi implements DozeMachine.Part {
         mTimeTickScheduled = true;
 
         long time = System.currentTimeMillis();
-        long delta = roundToNextMinute(time) - System.currentTimeMillis();
+        long delta = roundToNextMinute(time) - time;
         boolean scheduled = mTimeTicker.schedule(delta, AlarmTimeout.MODE_RESCHEDULE_IF_SCHEDULED);
         if (scheduled) {
             mDozeLog.traceTimeTickScheduled(time, time + delta);
@@ -218,13 +213,12 @@ public class DozeUi implements DozeMachine.Part {
         return calendar.getTimeInMillis();
     }
 
+    @AnyThread
     private void onTimeTick() {
         verifyLastTimeTick();
 
-        mHost.dozeTimeTick();
-
         // Keep wakelock until a frame has been pushed.
-        mHandler.post(mWakeLock.wrap(() -> {}));
+        mHandler.post(mWakeLock.wrap(mHost::dozeTimeTick));
 
         mTimeTickScheduled = false;
         scheduleTimeTick();

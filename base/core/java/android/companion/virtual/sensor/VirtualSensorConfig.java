@@ -17,17 +17,27 @@
 package android.companion.virtual.sensor;
 
 
+import static android.hardware.Sensor.REPORTING_MODE_CONTINUOUS;
+import static android.hardware.Sensor.REPORTING_MODE_ONE_SHOT;
+import static android.hardware.Sensor.REPORTING_MODE_ON_CHANGE;
+import static android.hardware.Sensor.REPORTING_MODE_SPECIAL_TRIGGER;
+
+import android.annotation.FlaggedApi;
+import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
+import android.companion.virtualdevice.flags.Flags;
 import android.hardware.Sensor;
 import android.hardware.SensorDirectChannel;
 import android.os.Parcel;
 import android.os.Parcelable;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.Objects;
 
 
@@ -42,9 +52,20 @@ import java.util.Objects;
 public final class VirtualSensorConfig implements Parcelable {
     private static final String TAG = "VirtualSensorConfig";
 
+    // Defined in sensors.h
+    private static final int FLAG_WAKE_UP_SENSOR = 1;
+
+    // Mask for the reporting mode, bit 2, 3, 4.
+    private static final int REPORTING_MODE_MASK = 0xE;
+    private static final int REPORTING_MODE_SHIFT = 1;
+
+    // Mask for indication bit of sensor additional information support, bit 6.
+    static final int ADDITIONAL_INFO_MASK = 0x40;
+
     // Mask for direct mode highest rate level, bit 7, 8, 9.
     private static final int DIRECT_REPORT_MASK = 0x380;
     private static final int DIRECT_REPORT_SHIFT = 7;
+
 
     // Mask for supported direct channel, bit 10, 11
     private static final int DIRECT_CHANNEL_SHIFT = 10;
@@ -61,6 +82,17 @@ public final class VirtualSensorConfig implements Parcelable {
     private final int mMaxDelay;
 
     private final int mFlags;
+
+    /** @hide */
+    @IntDef(prefix = "REPORTING_MODE_", value = {
+            REPORTING_MODE_CONTINUOUS,
+            REPORTING_MODE_ON_CHANGE,
+            REPORTING_MODE_ONE_SHOT,
+            REPORTING_MODE_SPECIAL_TRIGGER
+    })
+
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ReportingMode {}
 
     private VirtualSensorConfig(int type, @NonNull String name, @Nullable String vendor,
             float maximumRange, float resolution, float power, int minDelay, int maxDelay,
@@ -193,8 +225,7 @@ public final class VirtualSensorConfig implements Parcelable {
     @SensorDirectChannel.RateLevel
     public int getHighestDirectReportRateLevel() {
         int rateLevel = ((mFlags & DIRECT_REPORT_MASK) >> DIRECT_REPORT_SHIFT);
-        return rateLevel <= SensorDirectChannel.RATE_VERY_FAST
-                ? rateLevel : SensorDirectChannel.RATE_VERY_FAST;
+        return Math.min(rateLevel, SensorDirectChannel.RATE_VERY_FAST);
     }
 
     /**
@@ -212,6 +243,40 @@ public final class VirtualSensorConfig implements Parcelable {
             memoryTypes |= SensorDirectChannel.TYPE_HARDWARE_BUFFER;
         }
         return memoryTypes;
+    }
+
+    /**
+     * Returns whether the sensor is a wake-up sensor.
+     *
+     * @see Builder#setWakeUpSensor(boolean)
+     * @see Sensor#isWakeUpSensor()
+     */
+    @FlaggedApi(Flags.FLAG_DEVICE_AWARE_DISPLAY_POWER)
+    public boolean isWakeUpSensor() {
+        return (mFlags & FLAG_WAKE_UP_SENSOR) > 0;
+    }
+
+    /**
+     * Returns whether the sensor supports additional information.
+     *
+     * @see Builder#setAdditionalInfoSupported(boolean)
+     * @see Sensor#isAdditionalInfoSupported()
+     * @see android.hardware.SensorAdditionalInfo
+     */
+    @FlaggedApi(Flags.FLAG_VIRTUAL_SENSOR_ADDITIONAL_INFO)
+    public boolean isAdditionalInfoSupported() {
+        return (mFlags & ADDITIONAL_INFO_MASK) > 0;
+    }
+
+    /**
+     * Returns the reporting mode of this sensor.
+     *
+     * @see Builder#setReportingMode(int)
+     * @see Sensor#getReportingMode()
+     */
+    @FlaggedApi(Flags.FLAG_DEVICE_AWARE_DISPLAY_POWER)
+    public @ReportingMode int getReportingMode() {
+        return ((mFlags & REPORTING_MODE_MASK) >> REPORTING_MODE_SHIFT);
     }
 
     /**
@@ -381,6 +446,64 @@ public final class VirtualSensorConfig implements Parcelable {
                         "Only TYPE_MEMORY_FILE direct channels can be supported for virtual "
                                 + "sensors.");
             }
+            return this;
+        }
+
+        /**
+         * Sets whether this sensor is a wake up sensor.
+         *
+         * @see Sensor#isWakeUpSensor()
+         */
+        @FlaggedApi(Flags.FLAG_DEVICE_AWARE_DISPLAY_POWER)
+        @NonNull
+        public VirtualSensorConfig.Builder setWakeUpSensor(boolean wakeUpSensor) {
+            if (wakeUpSensor) {
+                mFlags |= FLAG_WAKE_UP_SENSOR;
+            } else {
+                mFlags &= ~FLAG_WAKE_UP_SENSOR;
+            }
+            return this;
+        }
+
+        /**
+         * Sets whether this sensor supports sensor additional information.
+         *
+         * @see Sensor#isAdditionalInfoSupported()
+         * @see android.hardware.SensorAdditionalInfo
+         * @see VirtualSensorAdditionalInfo
+         */
+        @FlaggedApi(Flags.FLAG_VIRTUAL_SENSOR_ADDITIONAL_INFO)
+        @NonNull
+        public VirtualSensorConfig.Builder setAdditionalInfoSupported(
+                boolean additionalInfoSupported) {
+            if (additionalInfoSupported) {
+                mFlags |= ADDITIONAL_INFO_MASK;
+            } else {
+                mFlags &= ~ADDITIONAL_INFO_MASK;
+            }
+            return this;
+        }
+
+        /**
+         * Sets the reporting mode of this sensor.
+         *
+         * @throws IllegalArgumentException if the reporting mode is not one of
+         *   {@link Sensor#REPORTING_MODE_CONTINUOUS}, {@link Sensor#REPORTING_MODE_ON_CHANGE},
+         *   {@link Sensor#REPORTING_MODE_ONE_SHOT}, or
+         *   {@link Sensor#REPORTING_MODE_SPECIAL_TRIGGER}.
+         *
+         * @see Sensor#getReportingMode()
+         */
+        @FlaggedApi(Flags.FLAG_DEVICE_AWARE_DISPLAY_POWER)
+        @NonNull
+        public VirtualSensorConfig.Builder setReportingMode(@ReportingMode int reportingMode) {
+            if (reportingMode != REPORTING_MODE_CONTINUOUS
+                    && reportingMode != REPORTING_MODE_ON_CHANGE
+                    && reportingMode != REPORTING_MODE_ONE_SHOT
+                    && reportingMode != REPORTING_MODE_SPECIAL_TRIGGER) {
+                throw new IllegalArgumentException("Invalid reporting mode: " + reportingMode);
+            }
+            mFlags |= reportingMode << REPORTING_MODE_SHIFT;
             return this;
         }
     }

@@ -64,8 +64,15 @@
         app:layout_constraintBottom_toBottomOf="@+id/album_art" />
 
     <Constraint
+        android:id="@+id/action_button_guideline"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:orientation="vertical"
+        app:layout_constraintGuide_end="@dimen/qs_media_session_collapsed_legacy_guideline" />
+
+    <Constraint
         android:id="@+id/header_title"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginTop="20dp"
         android:layout_marginStart="@dimen/qs_media_padding"
@@ -87,13 +94,11 @@
         app:layout_constraintEnd_toStartOf="@id/header_artist"
         app:layout_constraintTop_toTopOf="@id/header_artist"
         app:layout_constraintBottom_toBottomOf="@id/header_artist"
-        app:layout_constraintVertical_bias="0"
-        app:layout_constraintHorizontal_bias="0"
-        app:layout_constraintHorizontal_chainStyle="packed" />
+        app:layout_constraintVertical_bias="0" />
 
     <Constraint
         android:id="@+id/header_artist"
-        android:layout_width="wrap_content"
+        android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_marginEnd="@dimen/qs_media_padding"
         android:layout_marginBottom="@dimen/qs_media_padding"
@@ -102,6 +107,8 @@
         app:layout_constrainedWidth="true"
         app:layout_constraintStart_toEndOf="@id/media_explicit_indicator"
         app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintHorizontal_weight="1"
+        app:layout_constraintHorizontal_chainStyle="spread_inside"
         app:layout_constraintVertical_bias="0" />
 
     <Constraint

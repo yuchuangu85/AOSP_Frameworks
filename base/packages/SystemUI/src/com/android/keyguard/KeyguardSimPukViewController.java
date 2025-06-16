@@ -25,6 +25,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Color;
+import android.hardware.input.InputManager;
 import android.telephony.PinResult;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
@@ -38,6 +39,7 @@ import com.android.internal.util.LatencyTracker;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
 import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.classifier.FalsingCollector;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.res.R;
@@ -88,15 +90,19 @@ public class KeyguardSimPukViewController
             SecurityMode securityMode, LockPatternUtils lockPatternUtils,
             KeyguardSecurityCallback keyguardSecurityCallback,
             KeyguardMessageAreaController.Factory messageAreaControllerFactory,
-            LatencyTracker latencyTracker, LiftToActivateListener liftToActivateListener,
+            LatencyTracker latencyTracker,
             TelephonyManager telephonyManager, FalsingCollector falsingCollector,
             EmergencyButtonController emergencyButtonController, FeatureFlags featureFlags,
             SelectedUserInteractor selectedUserInteractor,
-            KeyguardKeyboardInteractor keyguardKeyboardInteractor) {
+            KeyguardKeyboardInteractor keyguardKeyboardInteractor,
+            BouncerHapticPlayer bouncerHapticPlayer,
+            UserActivityNotifier userActivityNotifier,
+            InputManager inputManager) {
         super(view, keyguardUpdateMonitor, securityMode, lockPatternUtils, keyguardSecurityCallback,
-                messageAreaControllerFactory, latencyTracker, liftToActivateListener,
+                messageAreaControllerFactory, latencyTracker,
                 emergencyButtonController, falsingCollector, featureFlags, selectedUserInteractor,
-                keyguardKeyboardInteractor);
+                keyguardKeyboardInteractor, bouncerHapticPlayer, userActivityNotifier, inputManager
+        );
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
         mTelephonyManager = telephonyManager;
         mSimImageView = mView.findViewById(R.id.keyguard_sim);

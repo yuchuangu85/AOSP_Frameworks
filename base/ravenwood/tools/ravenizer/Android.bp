@@ -1,0 +1,24 @@
+package {
+    // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "frameworks_base_license"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
+    default_applicable_licenses: ["frameworks_base_license"],
+}
+
+java_binary_host {
+    name: "ravenizer",
+    main_class: "com.android.platform.test.ravenwood.ravenizer.RavenizerMain",
+    srcs: ["src/**/*.kt"],
+    static_libs: [
+        "hoststubgen-lib",
+        "ravenwood-junit-for-ravenizer",
+    ],
+    java_resources: [
+        ":ravenizer-standard-options",
+        ":ravenwood-standard-annotations",
+        ":ravenwood-common-policies",
+    ],
+    visibility: ["//visibility:public"],
+}

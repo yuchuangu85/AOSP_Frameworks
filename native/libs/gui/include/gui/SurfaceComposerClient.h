@@ -35,19 +35,24 @@
 #include <ui/BlurRegion.h>
 #include <ui/ConfigStoreTypes.h>
 #include <ui/DisplayedFrameStats.h>
+#include <ui/EdgeExtensionEffect.h>
 #include <ui/FrameStats.h>
 #include <ui/GraphicTypes.h>
+#include <ui/PictureProfileHandle.h>
 #include <ui/PixelFormat.h>
 #include <ui/Rotation.h>
 #include <ui/StaticDisplayInfo.h>
 
+#include <android/gui/BnJankListener.h>
 #include <android/gui/ISurfaceComposerClient.h>
 
+#include <gui/BufferReleaseChannel.h>
 #include <gui/CpuConsumer.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/ITransactionCompletedListener.h>
 #include <gui/LayerState.h>
 #include <gui/SurfaceControl.h>
+#include <gui/TransactionState.h>
 #include <gui/WindowInfosListenerReporter.h>
 #include <math/vec3.h>
 
@@ -294,6 +299,10 @@ public:
     static status_t removeHdrLayerInfoListener(const sp<IBinder>& displayToken,
                                                const sp<gui::IHdrLayerInfoListener>& listener);
 
+    static status_t addActivePictureListener(const sp<gui::IActivePictureListener>& listener);
+
+    static status_t removeActivePictureListener(const sp<gui::IActivePictureListener>& listener);
+
     /*
      * Sends a power boost to the composer. This function is asynchronous.
      *
@@ -337,6 +346,15 @@ public:
     static std::optional<aidl::android::hardware::graphics::common::DisplayDecorationSupport>
     getDisplayDecorationSupport(const sp<IBinder>& displayToken);
 
+    /**
+     * Returns how many picture profiles are supported by the display.
+     *
+     * displayToken
+     *      The token of the display.
+     */
+    static status_t getMaxLayerPictureProfiles(const sp<IBinder>& displayToken,
+                                               int32_t* outMaxProfiles);
+
     // ------------------------------------------------------------------------
     // surface creation / destruction
 
@@ -377,6 +395,7 @@ public:
 
     static const std::string kEmpty;
     static sp<IBinder> createVirtualDisplay(const std::string& displayName, bool isSecure,
+                                            bool optimizeForPower = true,
                                             const std::string& uniqueId = kEmpty,
                                             float requestedRefreshRate = 0);
 
@@ -424,63 +443,16 @@ public:
         virtual ~PresentationCallbackRAII();
     };
 
-    class Transaction : public Parcelable {
+    class Transaction {
     private:
         static sp<IBinder> sApplyToken;
         static std::mutex sApplyTokenMutex;
         void releaseBufferIfOverwriting(const layer_state_t& state);
-        static void mergeFrameTimelineInfo(FrameTimelineInfo& t, const FrameTimelineInfo& other);
         // Tracks registered callbacks
         sp<TransactionCompletedListener> mTransactionCompletedListener = nullptr;
 
-    protected:
-        std::unordered_map<sp<IBinder>, ComposerState, IBinderHash> mComposerStates;
-        SortedVector<DisplayState> mDisplayStates;
-        std::unordered_map<sp<ITransactionCompletedListener>, CallbackInfo, TCLHash>
-                mListenerCallbacks;
-        std::vector<client_cache_t> mUncacheBuffers;
+        TransactionState mState;
 
-        // We keep track of the last MAX_MERGE_HISTORY_LENGTH merged transaction ids.
-        // Ordered most recently merged to least recently merged.
-        static const size_t MAX_MERGE_HISTORY_LENGTH = 10u;
-        std::vector<uint64_t> mMergedTransactionIds;
-
-        uint64_t mId;
-
-        uint32_t mTransactionNestCount = 0;
-        bool mAnimation = false;
-        bool mEarlyWakeupStart = false;
-        bool mEarlyWakeupEnd = false;
-
-        // Indicates that the Transaction may contain buffers that should be cached. The reason this
-        // is only a guess is that buffers can be removed before cache is called. This is only a
-        // hint that at some point a buffer was added to this transaction before apply was called.
-        bool mMayContainBuffer = false;
-
-        // mDesiredPresentTime is the time in nanoseconds that the client would like the transaction
-        // to be presented. When it is not possible to present at exactly that time, it will be
-        // presented after the time has passed.
-        //
-        // If the client didn't pass a desired presentation time, mDesiredPresentTime will be
-        // populated to the time setBuffer was called, and mIsAutoTimestamp will be set to true.
-        //
-        // Desired present times that are more than 1 second in the future may be ignored.
-        // When a desired present time has already passed, the transaction will be presented as soon
-        // as possible.
-        //
-        // Transactions from the same process are presented in the same order that they are applied.
-        // The desired present time does not affect this ordering.
-        int64_t mDesiredPresentTime = 0;
-        bool mIsAutoTimestamp = true;
-
-        // The vsync id provided by Choreographer.getVsyncId and the input event id
-        FrameTimelineInfo mFrameTimelineInfo;
-
-        // If not null, transactions will be queued up using this token otherwise a common token
-        // per process will be used.
-        sp<IBinder> mApplyToken = nullptr;
-
-        InputWindowCommands mInputWindowCommands;
         int mStatus = NO_ERROR;
 
         layer_state_t* getLayerState(const sp<SurfaceControl>& sc);
@@ -490,23 +462,29 @@ public:
         void registerSurfaceControlForCallback(const sp<SurfaceControl>& sc);
         void setReleaseBufferCallback(BufferData*, ReleaseBufferCallback);
 
+    protected:
+        // Accessed in tests.
+        explicit Transaction(Transaction const& other) = default;
+        std::unordered_map<sp<ITransactionCompletedListener>, CallbackInfo, TCLHash>
+                mListenerCallbacks;
+
     public:
         Transaction();
-        virtual ~Transaction() = default;
-        Transaction(Transaction const& other);
+        Transaction(Transaction&& other);
+        Transaction& operator=(Transaction&& other) = default;
 
         // Factory method that creates a new Transaction instance from the parcel.
         static std::unique_ptr<Transaction> createFromParcel(const Parcel* parcel);
 
-        status_t writeToParcel(Parcel* parcel) const override;
-        status_t readFromParcel(const Parcel* parcel) override;
+        status_t writeToParcel(Parcel* parcel) const;
+        status_t readFromParcel(const Parcel* parcel);
 
         // Clears the contents of the transaction without applying it.
         void clear();
 
         // Returns the current id of the transaction.
         // The id is updated every time the transaction is applied.
-        uint64_t getId();
+        uint64_t getId() const;
 
         std::vector<uint64_t> getMergedTransactionIds();
 
@@ -545,7 +523,13 @@ public:
         Transaction& setMatrix(const sp<SurfaceControl>& sc,
                 float dsdx, float dtdx, float dtdy, float dsdy);
         Transaction& setCrop(const sp<SurfaceControl>& sc, const Rect& crop);
+        Transaction& setCrop(const sp<SurfaceControl>& sc, const FloatRect& crop);
         Transaction& setCornerRadius(const sp<SurfaceControl>& sc, float cornerRadius);
+        // Sets the client drawn corner radius for the layer. If both a corner radius and a client
+        // radius are sent to SF, the client radius will be used. This indicates that the corner
+        // radius is drawn by the client and not SurfaceFlinger.
+        Transaction& setClientDrawnCornerRadius(const sp<SurfaceControl>& sc,
+                                                float clientDrawnCornerRadius);
         Transaction& setBackgroundBlurRadius(const sp<SurfaceControl>& sc,
                                              int backgroundBlurRadius);
         Transaction& setBlurRegions(const sp<SurfaceControl>& sc,
@@ -597,6 +581,11 @@ public:
         Transaction& setExtendedRangeBrightness(const sp<SurfaceControl>& sc,
                                                 float currentBufferRatio, float desiredRatio);
         Transaction& setDesiredHdrHeadroom(const sp<SurfaceControl>& sc, float desiredRatio);
+        Transaction& setLuts(const sp<SurfaceControl>& sc, base::unique_fd&& lutFd,
+                             const std::vector<int32_t>& offsets,
+                             const std::vector<int32_t>& dimensions,
+                             const std::vector<int32_t>& sizes,
+                             const std::vector<int32_t>& samplingKeys);
         Transaction& setCachingHint(const sp<SurfaceControl>& sc, gui::CachingHint cachingHint);
         Transaction& setHdrMetadata(const sp<SurfaceControl>& sc, const HdrMetadata& hdrMetadata);
         Transaction& setSurfaceDamageRegion(const sp<SurfaceControl>& sc,
@@ -675,7 +664,8 @@ public:
         // ONLY FOR BLAST ADAPTER
         Transaction& notifyProducerDisconnect(const sp<SurfaceControl>& sc);
 
-        Transaction& setInputWindowInfo(const sp<SurfaceControl>& sc, const gui::WindowInfo& info);
+        Transaction& setInputWindowInfo(const sp<SurfaceControl>& sc,
+                                        sp<gui::WindowInfoHandle> info);
         Transaction& setFocusedWindow(const gui::FocusRequest& request);
 
         Transaction& addWindowInfosReportedListener(
@@ -688,6 +678,8 @@ public:
         Transaction& setGeometry(const sp<SurfaceControl>& sc,
                 const Rect& source, const Rect& dst, int transform);
         Transaction& setShadowRadius(const sp<SurfaceControl>& sc, float cornerRadius);
+
+        Transaction& setBorderSettings(const sp<SurfaceControl>& sc, gui::BorderSettings settings);
 
         Transaction& setFrameRate(const sp<SurfaceControl>& sc, float frameRate,
                                   int8_t compatibility, int8_t changeFrameRateStrategy);
@@ -743,10 +735,39 @@ public:
         Transaction& setStretchEffect(const sp<SurfaceControl>& sc,
                                       const StretchEffect& stretchEffect);
 
+        /**
+         * Provides the edge extension effect configured on a container that the
+         * surface is rendered within.
+         * @param sc target surface the edge extension should be applied to
+         * @param effect the corresponding EdgeExtensionParameters to be applied
+         *    to the surface.
+         * @return The transaction being constructed
+         */
+        Transaction& setEdgeExtensionEffect(const sp<SurfaceControl>& sc,
+                                            const gui::EdgeExtensionParameters& effect);
+
         Transaction& setBufferCrop(const sp<SurfaceControl>& sc, const Rect& bufferCrop);
         Transaction& setDestinationFrame(const sp<SurfaceControl>& sc,
                                          const Rect& destinationFrame);
         Transaction& setDropInputMode(const sp<SurfaceControl>& sc, gui::DropInputMode mode);
+
+        Transaction& setBufferReleaseChannel(
+                const sp<SurfaceControl>& sc,
+                const std::shared_ptr<gui::BufferReleaseChannel::ProducerEndpoint>& channel);
+
+        /**
+         * Configures a surface control to use picture processing hardware, configured as specified
+         * by the picture profile, to enhance the quality of all subsequent buffer contents.
+         */
+        Transaction& setPictureProfileHandle(const sp<SurfaceControl>& sc,
+                                             const PictureProfileHandle& pictureProfileHandle);
+
+        /**
+         * Configures the relative importance of the contents of the layer with respect to the app's
+         * user experience. A lower priority value will give the layer preferred access to limited
+         * resources, such as picture processing, over a layer with a higher priority value.
+         */
+        Transaction& setContentPriority(const sp<SurfaceControl>& sc, int32_t contentPriority);
 
         status_t setDisplaySurface(const sp<IBinder>& token,
                 const sp<IGraphicBufferProducer>& bufferProducer);
@@ -784,6 +805,7 @@ public:
         static void setDefaultApplyToken(sp<IBinder> applyToken);
 
         static status_t sendSurfaceFlushJankDataTransaction(const sp<SurfaceControl>& sc);
+        void enableDebugLogCallPoints();
     };
 
     status_t clearLayerFrameStats(const sp<IBinder>& token) const;
@@ -864,11 +886,81 @@ public:
 
 // ---------------------------------------------------------------------------
 
-class JankDataListener : public VirtualLightRefBase {
+class JankDataListener;
+
+// Acts as a representative listener to the composer for a single layer and
+// forwards any received jank data to multiple listeners. Will remove itself
+// from the composer only once the last listener is removed.
+class JankDataListenerFanOut : public gui::BnJankListener {
 public:
-    virtual ~JankDataListener() = 0;
-    virtual void onJankDataAvailable(const std::vector<JankData>& jankData) = 0;
+    JankDataListenerFanOut(int32_t layerId) : mLayerId(layerId) {}
+
+    binder::Status onJankData(const std::vector<gui::JankData>& jankData) override;
+
+    static status_t addListener(sp<SurfaceControl> sc, sp<JankDataListener> listener);
+    static status_t removeListener(sp<JankDataListener> listener);
+
+private:
+    std::vector<sp<JankDataListener>> getActiveListeners();
+    bool removeListeners(const std::vector<wp<JankDataListener>>& listeners);
+    int64_t updateAndGetRemovalVSync();
+
+    struct WpJDLHash {
+        std::size_t operator()(const wp<JankDataListener>& listener) const {
+            return std::hash<JankDataListener*>{}(listener.unsafe_get());
+        }
+    };
+
+    std::mutex mMutex;
+    std::unordered_set<wp<JankDataListener>, WpJDLHash> mListeners GUARDED_BY(mMutex);
+    int32_t mLayerId;
+    int64_t mRemoveAfter = -1;
+
+    static std::mutex sFanoutInstanceMutex;
+    static std::unordered_map<int32_t, sp<JankDataListenerFanOut>> sFanoutInstances;
 };
+
+// Base class for client listeners interested in jank classification data from
+// the composer. Subclasses should override onJankDataAvailable and call the add
+// and removal methods to receive jank data.
+class JankDataListener : public virtual RefBase {
+public:
+    JankDataListener() {}
+    virtual ~JankDataListener();
+
+    virtual bool onJankDataAvailable(const std::vector<gui::JankData>& jankData) = 0;
+
+    status_t addListener(sp<SurfaceControl> sc) {
+        if (mLayerId != -1) {
+            removeListener(0);
+            mLayerId = -1;
+        }
+
+        int32_t layerId = sc->getLayerId();
+        status_t status =
+                JankDataListenerFanOut::addListener(std::move(sc),
+                                                    sp<JankDataListener>::fromExisting(this));
+        if (status == OK) {
+            mLayerId = layerId;
+        }
+        return status;
+    }
+
+    status_t removeListener(int64_t afterVsync) {
+        mRemoveAfter = std::max(static_cast<int64_t>(0), afterVsync);
+        return JankDataListenerFanOut::removeListener(sp<JankDataListener>::fromExisting(this));
+    }
+
+    status_t flushJankData();
+
+    friend class JankDataListenerFanOut;
+
+private:
+    int32_t mLayerId = -1;
+    int64_t mRemoveAfter = -1;
+};
+
+// ---------------------------------------------------------------------------
 
 class TransactionCompletedListener : public BnTransactionCompletedListener {
 public:
@@ -904,7 +996,6 @@ protected:
 
     std::unordered_map<CallbackId, CallbackTranslation, CallbackIdHash> mCallbacks
             GUARDED_BY(mMutex);
-    std::multimap<int32_t, sp<JankDataListener>> mJankListeners GUARDED_BY(mMutex);
     std::unordered_map<ReleaseCallbackId, ReleaseBufferCallback, ReleaseBufferCallbackIdHash>
             mReleaseBufferCallbacks GUARDED_BY(mMutex);
 
@@ -927,14 +1018,10 @@ public:
             const std::unordered_set<sp<SurfaceControl>, SurfaceComposerClient::SCHash>&
                     surfaceControls,
             CallbackId::Type callbackType);
-    CallbackId addCallbackFunctionLocked(
-            const TransactionCompletedCallback& callbackFunction,
-            const std::unordered_set<sp<SurfaceControl>, SurfaceComposerClient::SCHash>&
-                    surfaceControls,
-            CallbackId::Type callbackType) REQUIRES(mMutex);
 
-    void addSurfaceControlToCallbacks(SurfaceComposerClient::CallbackInfo& callbackInfo,
-                                      const sp<SurfaceControl>& surfaceControl);
+    void addSurfaceControlToCallbacks(
+            const sp<SurfaceControl>& surfaceControl,
+            const std::unordered_set<CallbackId, CallbackIdHash>& callbackIds);
 
     void addQueueStallListener(std::function<void(const std::string&)> stallListener, void* id);
     void removeQueueStallListener(void *id);
@@ -942,18 +1029,6 @@ public:
     sp<SurfaceComposerClient::PresentationCallbackRAII> addTrustedPresentationCallback(
             TrustedPresentationCallback tpc, int id, void* context);
     void clearTrustedPresentationCallback(int id);
-
-    /*
-     * Adds a jank listener to be informed about SurfaceFlinger's jank classification for a specific
-     * surface. Jank classifications arrive as part of the transaction callbacks about previous
-     * frames submitted to this Surface.
-     */
-    void addJankListener(const sp<JankDataListener>& listener, sp<SurfaceControl> surfaceControl);
-
-    /**
-     * Removes a jank listener previously added to addJankCallback.
-     */
-    void removeJankListener(const sp<JankDataListener>& listener);
 
     void addSurfaceStatsListener(void* context, void* cookie, sp<SurfaceControl> surfaceControl,
                 SurfaceStatsCallback listener);

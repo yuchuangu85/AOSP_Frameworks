@@ -16,7 +16,9 @@
 
 package android.inputmethodservice;
 
-import static android.inputmethodservice.InputMethodService.ENABLE_HIDE_IME_CAPTION_BAR;
+import static android.app.StatusBarManager.NAVBAR_BACK_DISMISS_IME;
+import static android.app.StatusBarManager.NAVBAR_IME_SWITCHER_BUTTON_VISIBLE;
+import static android.app.StatusBarManager.NAVBAR_IME_VISIBLE;
 import static android.view.WindowInsets.Type.captionBar;
 import static android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
 
@@ -24,7 +26,6 @@ import android.animation.ValueAnimator;
 import android.annotation.FloatRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.app.StatusBarManager;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Rect;
@@ -42,6 +43,8 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController.Appearance;
 import android.view.animation.Interpolator;
 import android.view.animation.PathInterpolator;
+import android.view.inputmethod.Flags;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
 import com.android.internal.inputmethod.InputMethodNavButtonFlags;
@@ -145,7 +148,8 @@ final class NavigationBarController {
         return mImpl.toDebugString();
     }
 
-    private static final class Impl implements Callback, Window.DecorCallback {
+    private static final class Impl implements Callback, Window.DecorCallback,
+            NavigationBarView.ButtonClickListener {
         private static final int DEFAULT_COLOR_ADAPT_TRANSITION_TIME = 1700;
 
         // Copied from com.android.systemui.animation.Interpolators#LEGACY_DECELERATE
@@ -165,6 +169,9 @@ final class NavigationBarController {
         Insets mLastInsets;
 
         private boolean mShouldShowImeSwitcherWhenImeIsShown;
+
+        /** Whether a custom IME Switcher button should be visible. */
+        private boolean mCustomImeSwitcherButtonRequestedVisible;
 
         @Appearance
         private int mAppearance;
@@ -229,18 +236,23 @@ final class NavigationBarController {
                             systemInsets.bottom, Gravity.BOTTOM));
                     mLastInsets = systemInsets;
                 } else {
-                    decorView.addView(mNavigationBarFrame);
+                    // If systemInsets are null, the DecorView is not attached to the window yet.
+                    // Use the final captionBar height as the initial one, otherwise it resolves to
+                    // match parent, and can lead to full size IME insets.
+                    final int height = getImeCaptionBarHeight(true /* imeDrawsImeNavBar */);
+                    decorView.addView(mNavigationBarFrame, new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, height, Gravity.BOTTOM));
                 }
                 final NavigationBarView navigationBarView = mNavigationBarFrame.findViewByPredicate(
                         NavigationBarView.class::isInstance);
                 if (navigationBarView != null) {
                     // TODO(b/213337792): Support InputMethodService#setBackDisposition().
-                    // TODO(b/213337792): Set NAVIGATION_HINT_IME_SHOWN only when necessary.
-                    final int hints = StatusBarManager.NAVIGATION_HINT_BACK_ALT
+                    // TODO(b/213337792): Set NAVBAR_IME_VISIBLE only when necessary.
+                    final int flags = NAVBAR_BACK_DISMISS_IME | NAVBAR_IME_VISIBLE
                             | (mShouldShowImeSwitcherWhenImeIsShown
-                                    ? StatusBarManager.NAVIGATION_HINT_IME_SWITCHER_SHOWN
-                                    : 0);
-                    navigationBarView.setNavigationIconHints(hints);
+                                    ? NAVBAR_IME_SWITCHER_BUTTON_VISIBLE : 0);
+                    navigationBarView.setNavbarFlags(flags);
+                    navigationBarView.prepareNavButtons(this);
                 }
             } else {
                 mNavigationBarFrame.setLayoutParams(new FrameLayout.LayoutParams(
@@ -257,15 +269,18 @@ final class NavigationBarController {
             setIconTintInternal(calculateTargetDarkIntensity(mAppearance,
                     mDrawLegacyNavigationBarBackground));
 
-            if (ENABLE_HIDE_IME_CAPTION_BAR) {
-                mNavigationBarFrame.setOnApplyWindowInsetsListener((view, insets) -> {
-                    if (mNavigationBarFrame != null) {
-                        boolean visible = insets.isVisible(captionBar());
-                        mNavigationBarFrame.setVisibility(visible ? View.VISIBLE : View.GONE);
-                    }
-                    return view.onApplyWindowInsets(insets);
-                });
-            }
+            mNavigationBarFrame.setOnApplyWindowInsetsListener((view, insets) -> {
+                if (mNavigationBarFrame != null) {
+                    // The IME window receives IME-specific captionBar insets, representing the
+                    // IME navigation bar.
+                    boolean visible = insets.isVisible(captionBar());
+                    mNavigationBarFrame.setVisibility(visible ? View.VISIBLE : View.GONE);
+                    checkCustomImeSwitcherButtonRequestedVisible(
+                            mShouldShowImeSwitcherWhenImeIsShown, mImeDrawsImeNavBar,
+                            !visible /* imeNavBarNotVisible */);
+                }
+                return view.onApplyWindowInsets(insets);
+            });
         }
 
         private void uninstallNavigationBarFrameIfNecessary() {
@@ -276,9 +291,7 @@ final class NavigationBarController {
             if (parent instanceof ViewGroup) {
                 ((ViewGroup) parent).removeView(mNavigationBarFrame);
             }
-            if (ENABLE_HIDE_IME_CAPTION_BAR) {
-                mNavigationBarFrame.setOnApplyWindowInsetsListener(null);
-            }
+            mNavigationBarFrame.setOnApplyWindowInsetsListener(null);
             mNavigationBarFrame = null;
         }
 
@@ -455,7 +468,7 @@ final class NavigationBarController {
             final Insets systemInsets = getSystemInsets();
             if (systemInsets != null) {
                 if (!Objects.equals(systemInsets, mLastInsets)) {
-                    mNavigationBarFrame.setLayoutParams(new NavigationBarFrame.LayoutParams(
+                    mNavigationBarFrame.setLayoutParams(new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             systemInsets.bottom, Gravity.BOTTOM));
                     mLastInsets = systemInsets;
@@ -470,9 +483,6 @@ final class NavigationBarController {
                             > decor.indexOfChild(mNavigationBarFrame)) {
                         decor.bringChildToFront(mNavigationBarFrame);
                     }
-                }
-                if (!ENABLE_HIDE_IME_CAPTION_BAR) {
-                    mNavigationBarFrame.setVisibility(View.VISIBLE);
                 }
             }
         }
@@ -494,32 +504,31 @@ final class NavigationBarController {
                     mShouldShowImeSwitcherWhenImeIsShown;
             mShouldShowImeSwitcherWhenImeIsShown = shouldShowImeSwitcherWhenImeIsShown;
 
-            if (ENABLE_HIDE_IME_CAPTION_BAR) {
-                mService.mWindow.getWindow().getDecorView().getWindowInsetsController()
-                        .setImeCaptionBarInsetsHeight(getImeCaptionBarHeight());
-            }
+            mService.mWindow.getWindow().getDecorView().getWindowInsetsController()
+                    .setImeCaptionBarInsetsHeight(getImeCaptionBarHeight(imeDrawsImeNavBar));
 
             if (imeDrawsImeNavBar) {
                 installNavigationBarFrameIfNecessary();
-                if (mNavigationBarFrame == null) {
-                    return;
+                if (mNavigationBarFrame != null && mShouldShowImeSwitcherWhenImeIsShown
+                        != prevShouldShowImeSwitcherWhenImeIsShown) {
+                    final NavigationBarView navigationBarView = mNavigationBarFrame
+                            .findViewByPredicate(NavigationBarView.class::isInstance);
+                    if (navigationBarView != null) {
+                        // TODO(b/213337792): Support InputMethodService#setBackDisposition().
+                        // TODO(b/213337792): Set NAVBAR_IME_VISIBLE only when necessary.
+                        final int flags = NAVBAR_BACK_DISMISS_IME | NAVBAR_IME_VISIBLE
+                                | (mShouldShowImeSwitcherWhenImeIsShown
+                                ? NAVBAR_IME_SWITCHER_BUTTON_VISIBLE : 0);
+                        navigationBarView.setNavbarFlags(flags);
+                    }
                 }
-                if (mShouldShowImeSwitcherWhenImeIsShown
-                        == prevShouldShowImeSwitcherWhenImeIsShown) {
-                    return;
-                }
-                final NavigationBarView navigationBarView = mNavigationBarFrame.findViewByPredicate(
-                        NavigationBarView.class::isInstance);
-                if (navigationBarView == null) {
-                    return;
-                }
-                final int hints = StatusBarManager.NAVIGATION_HINT_BACK_ALT
-                        | (shouldShowImeSwitcherWhenImeIsShown
-                                ? StatusBarManager.NAVIGATION_HINT_IME_SWITCHER_SHOWN : 0);
-                navigationBarView.setNavigationIconHints(hints);
             } else {
                 uninstallNavigationBarFrameIfNecessary();
             }
+
+            // Check custom IME Switcher button visibility after (un)installing nav bar frame.
+            checkCustomImeSwitcherButtonRequestedVisible(shouldShowImeSwitcherWhenImeIsShown,
+                    imeDrawsImeNavBar, !isShown() /* imeNavBarNotVisible */);
         }
 
         @Override
@@ -592,11 +601,24 @@ final class NavigationBarController {
             return drawLegacyNavigationBarBackground;
         }
 
+        @Override
+        public void onImeSwitchButtonClick(View v) {
+            mService.onImeSwitchButtonClickFromClient();
+        }
+
+        @Override
+        public boolean onImeSwitchButtonLongClick(View v) {
+            v.getContext().getSystemService(InputMethodManager.class).showInputMethodPicker();
+            return true;
+        }
+
         /**
          * Returns the height of the IME caption bar if this should be shown, or {@code 0} instead.
+         *
+         * @param imeDrawsImeNavBar whether the IME should show the IME navigation bar.
          */
-        private int getImeCaptionBarHeight() {
-            return mImeDrawsImeNavBar
+        private int getImeCaptionBarHeight(boolean imeDrawsImeNavBar) {
+            return imeDrawsImeNavBar
                     ? mService.getResources().getDimensionPixelSize(
                             com.android.internal.R.dimen.navigation_bar_frame_height)
                     : 0;
@@ -608,12 +630,41 @@ final class NavigationBarController {
                     && mNavigationBarFrame.getVisibility() == View.VISIBLE;
         }
 
+        /**
+         * Checks if a custom IME Switcher button should be requested visible, and notifies the IME
+         * when this state changes. This is only {@code true} when the IME Switcher button is
+         * requested visible, and the navigation bar is not requested visible.
+         *
+         * @param buttonVisible       whether the IME Switcher button is requested visible.
+         * @param shouldDrawImeNavBar whether the IME navigation bar should be drawn.
+         * @param imeNavBarNotVisible whether the IME navigation bar is not requested visible. This
+         *                            will be {@code true} if it is requested hidden or not
+         *                            installed.
+         */
+        private void checkCustomImeSwitcherButtonRequestedVisible(boolean buttonVisible,
+                boolean shouldDrawImeNavBar, boolean imeNavBarNotVisible) {
+            if (!Flags.imeSwitcherRevampApi()) {
+                return;
+            }
+            // The system nav bar will be hidden when the IME is shown and the config is set.
+            final boolean navBarNotVisible = shouldDrawImeNavBar ? imeNavBarNotVisible
+                    : mService.getResources().getBoolean(
+                            com.android.internal.R.bool.config_hideNavBarForKeyboard);
+            final boolean visible = buttonVisible && navBarNotVisible;
+            if (visible != mCustomImeSwitcherButtonRequestedVisible) {
+                mCustomImeSwitcherButtonRequestedVisible = visible;
+                mService.onCustomImeSwitcherButtonRequestedVisible(visible);
+            }
+        }
+
         @Override
         public String toDebugString() {
             return "{mImeDrawsImeNavBar=" + mImeDrawsImeNavBar
                     + " mNavigationBarFrame=" + mNavigationBarFrame
                     + " mShouldShowImeSwitcherWhenImeIsShown="
                     + mShouldShowImeSwitcherWhenImeIsShown
+                    + " mCustomImeSwitcherButtonRequestedVisible="
+                    + mCustomImeSwitcherButtonRequestedVisible
                     + " mAppearance=0x" + Integer.toHexString(mAppearance)
                     + " mDarkIntensity=" + mDarkIntensity
                     + " mDrawLegacyNavigationBarBackground=" + mDrawLegacyNavigationBarBackground

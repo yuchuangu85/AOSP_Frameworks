@@ -136,6 +136,31 @@ impl TryFrom<i32> for Stability {
     }
 }
 
+/// Same as `Stability`, but in the form of a trait. Used when the stability should be encoded in
+/// the type.
+///
+/// When/if the `adt_const_params` Rust feature is stabilized, this could be replace by using
+/// `Stability` directly with const generics.
+pub trait StabilityType {
+    /// The `Stability` represented by this type.
+    const VALUE: Stability;
+}
+
+/// `Stability::Local`.
+#[derive(Debug)]
+pub enum LocalStabilityType {}
+/// `Stability::Vintf`.
+#[derive(Debug)]
+pub enum VintfStabilityType {}
+
+impl StabilityType for LocalStabilityType {
+    const VALUE: Stability = Stability::Local;
+}
+
+impl StabilityType for VintfStabilityType {
+    const VALUE: Stability = Stability::Vintf;
+}
+
 /// A local service that can be remotable via Binder.
 ///
 /// An object that implement this interface made be made into a Binder service
@@ -182,8 +207,10 @@ pub const LAST_CALL_TRANSACTION: TransactionCode = sys::LAST_CALL_TRANSACTION;
 /// Corresponds to TF_ONE_WAY -- an asynchronous call.
 pub const FLAG_ONEWAY: TransactionFlags = sys::FLAG_ONEWAY;
 /// Corresponds to TF_CLEAR_BUF -- clear transaction buffers after call is made.
+#[cfg(not(android_ndk))]
 pub const FLAG_CLEAR_BUF: TransactionFlags = sys::FLAG_CLEAR_BUF;
 /// Set to the vendor flag if we are building for the VNDK, 0 otherwise
+#[cfg(not(android_ndk))]
 pub const FLAG_PRIVATE_LOCAL: TransactionFlags = sys::FLAG_PRIVATE_LOCAL;
 
 /// Internal interface of binder local or remote objects for making
@@ -196,7 +223,7 @@ pub trait IBinderInternal: IBinder {
     fn is_binder_alive(&self) -> bool;
 
     /// Indicate that the service intends to receive caller security contexts.
-    #[cfg(not(android_vndk))]
+    #[cfg(not(any(android_vndk, android_ndk)))]
     fn set_requesting_sid(&mut self, enable: bool);
 
     /// Dump this object to the given file handle
@@ -321,7 +348,6 @@ impl InterfaceClass {
                 panic!("Expected non-null class pointer from AIBinder_Class_define!");
             }
             sys::AIBinder_Class_setOnDump(class, Some(I::on_dump));
-            sys::AIBinder_Class_setHandleShellCommand(class, None);
             class
         };
         InterfaceClass(ptr)
@@ -689,7 +715,7 @@ unsafe impl<T, V: AsNative<T>> AsNative<T> for Option<V> {
 pub struct BinderFeatures {
     /// Indicates that the service intends to receive caller security contexts. This must be true
     /// for `ThreadState::with_calling_sid` to work.
-    #[cfg(not(android_vndk))]
+    #[cfg(not(any(android_vndk, android_ndk)))]
     pub set_requesting_sid: bool,
     // Ensure that clients include a ..BinderFeatures::default() to preserve backwards compatibility
     // when new fields are added. #[non_exhaustive] doesn't work because it prevents struct
@@ -768,14 +794,14 @@ macro_rules! declare_binder_interface {
         $interface:path[$descriptor:expr] {
             native: $native:ident($on_transact:path),
             proxy: $proxy:ident,
-            $(async: $async_interface:ident,)?
+            $(async: $async_interface:ident $(($try_into_local_async:ident))?,)?
         }
     } => {
         $crate::declare_binder_interface! {
             $interface[$descriptor] {
                 native: $native($on_transact),
                 proxy: $proxy {},
-                $(async: $async_interface,)?
+                $(async: $async_interface $(($try_into_local_async))?,)?
                 stability: $crate::binder_impl::Stability::default(),
             }
         }
@@ -785,7 +811,7 @@ macro_rules! declare_binder_interface {
         $interface:path[$descriptor:expr] {
             native: $native:ident($on_transact:path),
             proxy: $proxy:ident,
-            $(async: $async_interface:ident,)?
+            $(async: $async_interface:ident $(($try_into_local_async:ident))?,)?
             stability: $stability:expr,
         }
     } => {
@@ -793,7 +819,7 @@ macro_rules! declare_binder_interface {
             $interface[$descriptor] {
                 native: $native($on_transact),
                 proxy: $proxy {},
-                $(async: $async_interface,)?
+                $(async: $async_interface $(($try_into_local_async))?,)?
                 stability: $stability,
             }
         }
@@ -805,7 +831,7 @@ macro_rules! declare_binder_interface {
             proxy: $proxy:ident {
                 $($fname:ident: $fty:ty = $finit:expr),*
             },
-            $(async: $async_interface:ident,)?
+            $(async: $async_interface:ident $(($try_into_local_async:ident))?,)?
         }
     } => {
         $crate::declare_binder_interface! {
@@ -814,7 +840,7 @@ macro_rules! declare_binder_interface {
                 proxy: $proxy {
                     $($fname: $fty = $finit),*
                 },
-                $(async: $async_interface,)?
+                $(async: $async_interface $(($try_into_local_async))?,)?
                 stability: $crate::binder_impl::Stability::default(),
             }
         }
@@ -826,7 +852,7 @@ macro_rules! declare_binder_interface {
             proxy: $proxy:ident {
                 $($fname:ident: $fty:ty = $finit:expr),*
             },
-            $(async: $async_interface:ident,)?
+            $(async: $async_interface:ident $(($try_into_local_async:ident))?,)?
             stability: $stability:expr,
         }
     } => {
@@ -838,7 +864,7 @@ macro_rules! declare_binder_interface {
                 proxy: $proxy {
                     $($fname: $fty = $finit),*
                 },
-                $(async: $async_interface,)?
+                $(async: $async_interface $(($try_into_local_async))?,)?
                 stability: $stability,
             }
         }
@@ -854,7 +880,7 @@ macro_rules! declare_binder_interface {
                 $($fname:ident: $fty:ty = $finit:expr),*
             },
 
-            $( async: $async_interface:ident, )?
+            $(async: $async_interface:ident $(($try_into_local_async:ident))?,)?
 
             stability: $stability:expr,
         }
@@ -891,8 +917,12 @@ macro_rules! declare_binder_interface {
         impl $native {
             /// Create a new binder service.
             pub fn new_binder<T: $interface + Sync + Send + 'static>(inner: T, features: $crate::BinderFeatures) -> $crate::Strong<dyn $interface> {
+                #[cfg(not(android_ndk))]
                 let mut binder = $crate::binder_impl::Binder::new_with_stability($native(Box::new(inner)), $stability);
-                #[cfg(not(android_vndk))]
+                #[cfg(android_ndk)]
+                let mut binder = $crate::binder_impl::Binder::new($native(Box::new(inner)));
+
+                #[cfg(not(any(android_vndk, android_ndk)))]
                 $crate::binder_impl::IBinderInternal::set_requesting_sid(&mut binder, features.set_requesting_sid);
                 $crate::Strong::new(Box::new(binder))
             }
@@ -1043,6 +1073,24 @@ macro_rules! declare_binder_interface {
                 }
 
                 if ibinder.associate_class(<$native as $crate::binder_impl::Remotable>::get_class()) {
+                    let service: std::result::Result<$crate::binder_impl::Binder<$native>, $crate::StatusCode> =
+                        std::convert::TryFrom::try_from(ibinder.clone());
+                    $(
+                    // This part is only generated if the user of the macro specifies that the
+                    // trait has an `try_into_local_async` implementation.
+                    if let Ok(service) = service {
+                        if let Some(async_service) = $native::$try_into_local_async(service) {
+                            // We were able to associate with our expected class,
+                            // the service is local, and the local service is async.
+                            return Ok(async_service);
+                        }
+                        // The service is local but not async. Fall back to treating it as a
+                        // remote service. This means that calls to this local service have an
+                        // extra performance cost due to serialization, but async handle to
+                        // non-async server is considered a rare case, so this is okay.
+                    }
+                    )?
+                    // Treat service as remote.
                     return Ok($crate::Strong::new(Box::new(<$proxy as $crate::binder_impl::Proxy>::from_binder(ibinder)?)));
                 }
 
@@ -1112,6 +1160,12 @@ macro_rules! declare_binder_enum {
             pub const fn enum_values() -> [Self; $size] {
                 [$(Self::$name),*]
             }
+
+            #[inline(always)]
+            #[allow(missing_docs)]
+            pub const fn get(&self) -> $backing {
+                self.0
+            }
         }
 
         impl std::fmt::Debug for $enum {
@@ -1153,5 +1207,45 @@ macro_rules! declare_binder_enum {
                 Ok(v.map(|v| v.into_iter().map(Self).collect()))
             }
         }
+
+        impl std::ops::BitOr for $enum {
+            type Output = Self;
+            fn bitor(self, rhs: Self) -> Self {
+                Self(self.0 | rhs.0)
+            }
+        }
+
+        impl std::ops::BitOrAssign for $enum {
+            fn bitor_assign(&mut self, rhs: Self) {
+                self.0 = self.0 | rhs.0;
+            }
+        }
+
+        impl std::ops::BitAnd for $enum {
+            type Output = Self;
+            fn bitand(self, rhs: Self) -> Self {
+                Self(self.0 & rhs.0)
+            }
+        }
+
+        impl std::ops::BitAndAssign for $enum {
+            fn bitand_assign(&mut self, rhs: Self) {
+                self.0 = self.0 & rhs.0;
+            }
+        }
+
+        impl std::ops::BitXor for $enum {
+            type Output = Self;
+            fn bitxor(self, rhs: Self) -> Self {
+                Self(self.0 ^ rhs.0)
+            }
+        }
+
+        impl std::ops::BitXorAssign for $enum {
+            fn bitxor_assign(&mut self, rhs: Self) {
+                self.0 = self.0 ^ rhs.0;
+            }
+        }
+
     };
 }

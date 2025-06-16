@@ -110,15 +110,26 @@
     <string name="bluetooth_hearing_aid_left_active" msgid="8330226430756799572">"Active (left only)"</string>
     <string name="bluetooth_hearing_aid_right_active" msgid="2244728507170385397">"Active (right only)"</string>
     <string name="bluetooth_hearing_aid_left_and_right_active" msgid="4294571497939983181">"Active (left and right)"</string>
+    <string name="bluetooth_hearing_device_ambient_error" msgid="6035857289108813878">"Couldn’t update surroundings"</string>
     <string name="bluetooth_active_media_only_battery_level" msgid="7772517511061834073">"Active (media only). <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
     <string name="bluetooth_active_media_only_battery_level_untethered" msgid="7444753133664620926">"Active (media only). L: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, R: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_battery_level" msgid="2820003593899467676">"Guest device. <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_battery_level_untethered" msgid="5404013822067644960">"Guest device. L: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, R: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_media_only_battery_level" msgid="7928347900623812299">"Guest device (media only). <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_media_only_battery_level_untethered" msgid="4458143141394300892">"Guest device (media only). L: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, R: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> battery."</string>
     <string name="bluetooth_battery_level_lea_support" msgid="5968584103507988820">"Connected (supports audio sharing). <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
     <string name="bluetooth_battery_level_untethered_lea_support" msgid="803110681688633362">"Connected (supports audio sharing). L: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, R: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> battery."</string>
     <string name="bluetooth_battery_level_untethered_left_lea_support" msgid="7707464334346454950">"Connected (supports audio sharing). Left: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
     <string name="bluetooth_battery_level_untethered_right_lea_support" msgid="8941549024377771038">"Connected (supports audio sharing). Right: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
     <string name="bluetooth_no_battery_level_lea_support" msgid="5721725041048434075">"Connected (supports audio sharing)"</string>
+    <string name="bluetooth_guest_battery_level_lea_support" msgid="8098327939585013928">"Guest device (supports audio sharing). <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE">%1$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_battery_level_untethered_lea_support" msgid="3701035025565668360">"Guest device (supports audio sharing). L: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_0">%1$s</xliff:g>, R: <xliff:g id="BATTERY_LEVEL_AS_PERCENTAGE_1">%2$s</xliff:g> battery."</string>
+    <string name="bluetooth_guest_no_battery_level_lea_support" msgid="2977038548753103470">"Guest device (supports audio sharing)"</string>
     <string name="bluetooth_active_media_only_no_battery_level" msgid="71106861912593126">"Active (media only)"</string>
+    <string name="bluetooth_guest_no_battery_level" msgid="9122974160381136920">"Guest device"</string>
+    <string name="bluetooth_guest_media_only_no_battery_level" msgid="7666347601796705721">"Guest device (media only)"</string>
     <string name="bluetooth_saved_device_lea_support" msgid="7231323139968285768">"Supports audio sharing"</string>
+    <string name="bluetooth_guest_saved_device_lea_support" msgid="5621291599518569876">"Guest device. Supports audio sharing"</string>
     <string name="bluetooth_hearing_aid_media_only_left_active" msgid="1632152540901488645">"Active (media only), left only"</string>
     <string name="bluetooth_hearing_aid_media_only_right_active" msgid="3854140683042617230">"Active (media only), right only"</string>
     <string name="bluetooth_hearing_aid_media_only_left_and_right_active" msgid="1299913413062528417">"Active (media only), left and right"</string>
@@ -357,6 +368,9 @@
     <string name="enhanced_connectivity_summary" msgid="1576414159820676330">"Enables the Enhanced Connectivity feature."</string>
     <string name="enable_terminal_title" msgid="3834790541986303654">"Local terminal"</string>
     <string name="enable_terminal_summary" msgid="2481074834856064500">"Enable terminal app that offers local shell access"</string>
+    <string name="enable_linux_terminal_title" msgid="5076044866895670637">"Linux development environment"</string>
+    <string name="enable_linux_terminal_summary" msgid="2029479880888108902">"(Experimental) Run Linux terminal on Android"</string>
+    <string name="disable_linux_terminal_disclaimer" msgid="3054320531778388231">"If you disable, Linux terminal data will be cleared"</string>
     <string name="hdcp_checking_title" msgid="3155692785074095986">"HDCP checking"</string>
     <string name="hdcp_checking_dialog_title" msgid="7691060297616217781">"Set HDCP checking behavior"</string>
     <string name="debug_debugging_category" msgid="535341063709248842">"Debugging"</string>
@@ -372,6 +386,7 @@
     <string name="debug_hw_drawing_category" msgid="5830815169336975162">"Hardware accelerated rendering"</string>
     <string name="media_category" msgid="8122076702526144053">"Media"</string>
     <string name="debug_monitoring_category" msgid="1597387133765424994">"Monitoring"</string>
+    <string name="window_management_category" msgid="2015535427098365170">"Window Management"</string>
     <string name="strict_mode" msgid="889864762140862437">"Strict mode enabled"</string>
     <string name="strict_mode_summary" msgid="1838248687233554654">"Flash screen when apps do long operations on main thread"</string>
     <string name="pointer_location" msgid="7516929526199520173">"Pointer location"</string>
@@ -380,6 +395,8 @@
     <string name="show_touches_summary" msgid="3692861665994502193">"Show visual feedback for taps"</string>
     <string name="show_key_presses" msgid="6360141722735900214">"Show key presses"</string>
     <string name="show_key_presses_summary" msgid="725387457373015024">"Show visual feedback for physical key presses"</string>
+    <string name="touchpad_visualizer" msgid="3707916068870825115">"Show touchpad input"</string>
+    <string name="touchpad_visualizer_summary" msgid="4056080018119847449">"Screen overlay displaying touchpad input data and recognized gestures"</string>
     <string name="show_screen_updates" msgid="2078782895825535494">"Show surface updates"</string>
     <string name="show_screen_updates_summary" msgid="2126932969682087406">"Flash entire window surfaces when they update"</string>
     <string name="show_hw_screen_updates" msgid="2021286231267747506">"Show view updates"</string>
@@ -408,10 +425,17 @@
     <string name="enable_gpu_debug_layers_summary" msgid="4921521407377170481">"Allow loading GPU debug layers for debug apps"</string>
     <string name="enable_verbose_vendor_logging" msgid="1196698788267682072">"Enable verbose vendor logging"</string>
     <string name="enable_verbose_vendor_logging_summary" msgid="5426292185780393708">"Include additional device-specific vendor logs in bug reports, which may contain private information, use more battery, and/or use more storage."</string>
+    <string name="enable_verbose_vendor_logging_checkbox" msgid="3864578373293835530">"Disable after one day"</string>
+    <string name="verbose_vendor_logging_notification_title" msgid="6811217272559843592">"Verbose vendor logging has ended"</string>
+    <string name="verbose_vendor_logging_notification_summary" msgid="5226524769774370942">"Enabled for one day"</string>
+    <string name="verbose_vendor_logging_notification_action" msgid="1190831050259046071">"Enable for one more day"</string>
+    <string name="verbose_vendor_logging_preference_summary_will_disable" msgid="6175431593394522553">"Disables after one day"</string>
+    <string name="verbose_vendor_logging_preference_summary_on" msgid="9017757242481762036">"Enabled indefinitely"</string>
     <string name="window_animation_scale_title" msgid="5236381298376812508">"Window animation scale"</string>
     <string name="transition_animation_scale_title" msgid="1278477690695439337">"Transition animation scale"</string>
     <string name="animator_duration_scale_title" msgid="7082913931326085176">"Animator duration scale"</string>
     <string name="overlay_display_devices_title" msgid="5411894622334469607">"Simulate secondary displays"</string>
+    <string name="shade_display_awareness_title" msgid="8000009404669495876">"Shade display position"</string>
     <string name="debug_applications_category" msgid="5394089406638954196">"Apps"</string>
     <string name="immediately_destroy_activities" msgid="1826287490705167403">"Don’t keep activities"</string>
     <string name="immediately_destroy_activities_summary" msgid="6289590341144557614">"Destroy every activity as soon as the user leaves it"</string>
@@ -425,7 +449,6 @@
     <string name="force_resizable_activities" msgid="7143612144399959606">"Force activities to be resizable"</string>
     <string name="force_resizable_activities_summary" msgid="2490382056981583062">"Make all activities resizable for multi-window, regardless of manifest values."</string>
     <string name="enable_freeform_support" msgid="7599125687603914253">"Enable freeform windows"</string>
-    <string name="enable_freeform_support_summary" msgid="1822862728719276331">"Enable support for experimental freeform windows."</string>
     <string name="local_backup_password_title" msgid="4631017948933578709">"Desktop backup password"</string>
     <string name="local_backup_password_summary_none" msgid="7646898032616361714">"Desktop full backups aren’t currently protected"</string>
     <string name="local_backup_password_summary_change" msgid="1707357670383995567">"Tap to change or remove the password for desktop full backups"</string>
@@ -458,6 +481,9 @@
     <string name="select_webview_provider_title" msgid="3917815648099445503">"WebView implementation"</string>
     <string name="select_webview_provider_dialog_title" msgid="2444261109877277714">"Set WebView implementation"</string>
     <string name="select_webview_provider_toast_text" msgid="8512254949169359848">"This choice is no longer valid. Try again."</string>
+    <string name="webview_launch_devtools_title" msgid="8009687433555367112">"WebView DevTools"</string>
+    <string name="webview_launch_devtools_no_package" msgid="3182544553665113721">"WebView package not found."</string>
+    <string name="webview_launch_devtools_no_activity" msgid="4066006313619617140">"Could not launch DevTools."</string>
     <string name="picture_color_mode" msgid="1013807330552931903">"Picture color mode"</string>
     <string name="picture_color_mode_desc" msgid="151780973768136200">"Use sRGB"</string>
     <string name="daltonizer_mode_disabled" msgid="403424372812399228">"Disabled"</string>
@@ -490,7 +516,7 @@
     <string name="power_charging" msgid="6727132649743436802">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATE">%2$s</xliff:g>"</string>
     <string name="power_remaining_charging_duration_only" msgid="8085099012811384899">"<xliff:g id="TIME">%1$s</xliff:g> left until full"</string>
     <string name="power_charging_duration" msgid="6127154952524919719">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="TIME">%2$s</xliff:g> left until full"</string>
-    <string name="power_charging_limited" msgid="8202147604844938236">"<xliff:g id="LEVEL">%1$s</xliff:g> - Charging optimized"</string>
+    <string name="power_charging_limited" msgid="4144004473976005214">"<xliff:g id="LEVEL">%1$s</xliff:g> - Charging on hold to protect battery"</string>
     <string name="power_charging_future_paused" msgid="1809543660923642799">"<xliff:g id="LEVEL">%1$s</xliff:g> - Charging"</string>
     <string name="power_fast_charging_duration_v2" msgid="3797735998640359490">"<xliff:g id="LEVEL">%1$s</xliff:g> - <xliff:g id="STATUS">%2$s</xliff:g> - Full by <xliff:g id="TIME">%3$s</xliff:g>"</string>
     <string name="power_charging_duration_v2" msgid="2938998284074003248">"<xliff:g id="LEVEL">%1$s</xliff:g> - Fully charged by <xliff:g id="TIME">%2$s</xliff:g>"</string>
@@ -511,7 +537,9 @@
     <string name="battery_info_status_charging_fast_v2" msgid="1825439848151256589">"Fast charging"</string>
     <string name="disabled_by_admin_summary_text" msgid="5343911767402923057">"Controlled by admin"</string>
     <string name="disabled_by_app_ops_text" msgid="8373595926549098012">"Controlled by Restricted Setting"</string>
+    <string name="disabled_in_phone_call_text" msgid="6568931334337318320">"Unavailable during calls"</string>
     <string name="disabled" msgid="8017887509554714950">"Disabled"</string>
+    <string name="enabled" msgid="3997122818554810678">"Enabled"</string>
     <string name="external_source_trusted" msgid="1146522036773132905">"Allowed"</string>
     <string name="external_source_untrusted" msgid="5037891688911672227">"Not allowed"</string>
     <string name="install_other_apps" msgid="3232595082023199454">"Install unknown apps"</string>
@@ -557,6 +585,8 @@
     <string name="alarms_and_reminders_title" msgid="8819933264635406032">"Alarms &amp; reminders"</string>
     <string name="alarms_and_reminders_footer_title" msgid="6302587438389079695">"Allow this app to set alarms and schedule time-sensitive actions. This lets the app run in the background, which may use more battery.\n\nIf this permission is off, existing alarms and time-based events scheduled by this app won’t work."</string>
     <string name="keywords_alarms_and_reminders" msgid="6633360095891110611">"schedule, alarm, reminder, clock"</string>
+    <string name="zen_mode_do_not_disturb_name" msgid="6798711401734798283">"Do Not Disturb"</string>
+    <string name="zen_mode_settings_title" msgid="7374070457626419755">"Do Not Disturb"</string>
     <string name="zen_mode_enable_dialog_turn_on" msgid="6418297231575050426">"Turn on"</string>
     <string name="zen_mode_settings_turn_on_dialog_title" msgid="2760567063190790696">"Turn on Do Not Disturb"</string>
     <string name="zen_mode_settings_summary_off" msgid="3832876036123504076">"Never"</string>
@@ -569,15 +599,19 @@
     <string name="zen_mode_duration_settings_title" msgid="1553451650289651489">"Duration"</string>
     <string name="zen_mode_duration_always_prompt_title" msgid="3212996860498119555">"Ask every time"</string>
     <string name="zen_mode_forever" msgid="3339224497605461291">"Until you turn off"</string>
+    <string name="zen_mode_starred_contacts_empty_name" msgid="933552939706125937">"(No name)"</string>
     <string name="time_unit_just_now" msgid="3006134267292728099">"Just now"</string>
     <string name="media_transfer_this_device_name" msgid="2357329267148436433">"This phone"</string>
     <string name="media_transfer_this_device_name_tablet" msgid="2975593806278422086">"This tablet"</string>
-    <!-- no translation found for media_transfer_this_device_name_tv (5285685336836896535) -->
-    <skip />
+    <string name="media_transfer_this_device_name_desktop" msgid="7912386128141470452">"This computer (internal)"</string>
+    <string name="media_transfer_this_device_name_tv" msgid="8508713779441163887">"This TV"</string>
     <string name="media_transfer_dock_speaker_device_name" msgid="2856219597113881950">"Dock speaker"</string>
     <string name="media_transfer_external_device_name" msgid="2588672258721846418">"External Device"</string>
     <string name="media_transfer_default_device_name" msgid="4315604017399871828">"Connected device"</string>
     <string name="media_transfer_this_phone" msgid="7194341457812151531">"This phone"</string>
+    <string name="media_transfer_digital_line_name" msgid="312091711951124301">"S/PDIF"</string>
+    <string name="media_transfer_analog_line_name" msgid="1841163866716302104">"Analog"</string>
+    <string name="media_transfer_aux_line_name" msgid="894135835967856689">"AUX"</string>
     <string name="media_output_status_unknown_error" msgid="5098565887497902222">"Cant play on this device"</string>
     <string name="media_output_status_require_premium" msgid="8411255800047014822">"Upgrade account to switch"</string>
     <string name="media_output_status_not_support_downloads" msgid="4523828729240373315">"Cant play downloads here"</string>
@@ -590,10 +624,10 @@
     <string name="tv_media_transfer_earc_fallback_title" msgid="3098685494578519940">"HDMI eARC"</string>
     <string name="tv_media_transfer_arc_subtitle" msgid="1040017851325069082">"Connected via ARC"</string>
     <string name="tv_media_transfer_earc_subtitle" msgid="645191413103303077">"Connected via eARC"</string>
-    <string name="tv_media_transfer_default" msgid="5403053145185843843">"TV default"</string>
-    <string name="tv_media_transfer_hdmi" msgid="692569220956829921">"HDMI output"</string>
-    <string name="tv_media_transfer_internal_speakers" msgid="8181494402866565865">"Internal speakers"</string>
+    <string name="tv_media_transfer_internal_speakers" msgid="4662765121700213785">"Built-in speaker"</string>
+    <string name="tv_media_transfer_hdmi_title" msgid="6715658310934507444">"TV Audio"</string>
     <string name="profile_connect_timeout_subtext" msgid="4043408193005851761">"Problem connecting. Turn device off &amp; back on"</string>
+    <string name="bluetooth_key_missing_subtext" msgid="1003639333895028298">"Can’t connect"</string>
     <string name="media_transfer_wired_device_name" msgid="4447880899964056007">"Wired audio device"</string>
     <string name="help_label" msgid="3528360748637781274">"Help and feedback"</string>
     <string name="storage_category" msgid="2287342585424631813">"Storage"</string>
@@ -674,7 +708,12 @@
     <string name="cached_apps_freezer_disabled" msgid="4816382260660472042">"Disabled"</string>
     <string name="cached_apps_freezer_enabled" msgid="8866703500183051546">"Enabled"</string>
     <string name="cached_apps_freezer_reboot_dialog_text" msgid="695330563489230096">"Your device must be rebooted for this change to apply. Reboot now or cancel."</string>
-    <string name="media_transfer_wired_usb_device_name" msgid="7699141088423210903">"Wired headphone"</string>
+    <string name="media_transfer_wired_headphone_name" msgid="8698668536022665254">"Wired headphone"</string>
+    <string name="media_transfer_headphone_name" msgid="1157798825650178478">"Wired audio"</string>
+    <string name="media_transfer_usb_audio_name" msgid="1789292056757821355">"USB audio"</string>
+    <string name="media_transfer_wired_device_mic_name" msgid="7115192790725088698">"Wired microphone"</string>
+    <string name="media_transfer_usb_device_mic_name" msgid="7171789543226269822">"USB microphone"</string>
+    <string name="media_transfer_bt_device_mic_name" msgid="1870669402238687618">"BT microphone"</string>
     <string name="wifi_hotspot_switch_on_text" msgid="9212273118217786155">"On"</string>
     <string name="wifi_hotspot_switch_off_text" msgid="7245567251496959764">"Off"</string>
     <string name="carrier_network_change_mode" msgid="4257621815706644026">"Carrier network changing"</string>

@@ -16,6 +16,8 @@
 
 package com.android.server.rollback;
 
+import static android.crashrecovery.flags.Flags.deprecateFlagsAndSettingsResets;
+
 import static com.android.server.rollback.RollbackManagerServiceImpl.sendFailure;
 
 import android.Manifest;
@@ -27,7 +29,6 @@ import android.annotation.WorkerThread;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentSender;
-import android.content.pm.Flags;
 import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
@@ -52,7 +53,7 @@ import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
 import com.android.server.LocalServices;
-import com.android.server.RescueParty;
+import com.android.server.crashrecovery.CrashRecoveryAdaptor;
 import com.android.server.pm.pkg.AndroidPackage;
 
 import java.io.File;
@@ -623,8 +624,10 @@ class Rollback {
                 parentSession.addChildSessionId(sessionId);
             }
 
-            // Clear flags.
-            RescueParty.resetDeviceConfigForPackages(packageNames);
+            if (!deprecateFlagsAndSettingsResets()) {
+                // Clear flags.
+                CrashRecoveryAdaptor.rescuePartyResetDeviceConfigForPackages(packageNames);
+            }
 
             Consumer<Intent> onResult = result -> {
                 mHandler.post(() -> {
@@ -961,9 +964,7 @@ class Rollback {
         ipw.println("-stateDescription: " + mStateDescription);
         ipw.println("-timestamp: " + getTimestamp());
         ipw.println("-rollbackLifetimeMillis: " + getRollbackLifetimeMillis());
-        if (Flags.recoverabilityDetection()) {
-            ipw.println("-rollbackImpactLevel: " + info.getRollbackImpactLevel());
-        }
+        ipw.println("-rollbackImpactLevel: " + info.getRollbackImpactLevel());
         ipw.println("-isStaged: " + isStaged());
         ipw.println("-originalSessionId: " + getOriginalSessionId());
         ipw.println("-packages:");

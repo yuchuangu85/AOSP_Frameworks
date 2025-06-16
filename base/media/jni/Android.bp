@@ -25,8 +25,6 @@ cc_library_shared {
     min_sdk_version: "",
 
     srcs: [
-        "android_media_ImageWriter.cpp",
-        "android_media_ImageReader.cpp",
         "android_media_JetPlayer.cpp",
         "android_media_MediaCrypto.cpp",
         "android_media_MediaCodec.cpp",
@@ -42,7 +40,6 @@ cc_library_shared {
         "android_media_MediaProfiles.cpp",
         "android_media_MediaRecorder.cpp",
         "android_media_MediaSync.cpp",
-        "android_media_PublicFormatUtils.cpp",
         "android_media_ResampleInputStream.cpp",
         "android_media_Streams.cpp",
         "android_media_SyncParams.cpp",
@@ -64,7 +61,6 @@ cc_library_shared {
         "libbinder",
         "libmedia",
         "libmedia_codeclist",
-        "libmedia_jni_utils",
         "libmedia_omx",
         "libmediametrics",
         "libmediadrm",
@@ -79,7 +75,6 @@ cc_library_shared {
         "libcamera_client",
         "libmtp",
         "libpiex",
-        "libprocessgroup",
         "libandroidfw",
         "libhidlallocatorutils",
         "libhidlbase",
@@ -93,7 +88,7 @@ cc_library_shared {
         "android.hidl.memory@1.0",
         "android.hidl.token@1.0-utils",
         "android.hardware.drm-V1-ndk",
-        "android.hardware.tv.tuner-V2-ndk",
+        "android.hardware.tv.tuner-V3-ndk",
     ],
 
     header_libs: [
@@ -105,6 +100,7 @@ cc_library_shared {
         "libgrallocusage",
         "libmedia_midiiowrapper",
         "android.companion.virtualdevice.flags-aconfig-cc",
+        "android.media.codec-aconfig-cc",
         "android.media.playback.flags-aconfig-cc",
     ],
 
@@ -133,38 +129,6 @@ cc_library_shared {
 }
 
 cc_library_shared {
-    name: "libmedia_jni_utils",
-    srcs: [
-        ":libgui_frame_event_aidl",
-        "android_media_Utils.cpp",
-    ],
-
-    header_libs: [
-        "libgui_headers",
-    ],
-
-    shared_libs: [
-        "liblog",
-        "libui",
-        "libutils",
-    ],
-
-    include_dirs: [
-        "system/media/camera/include",
-    ],
-
-    export_include_dirs: ["."],
-
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-Wno-error=deprecated-declarations",
-        "-Wunused",
-        "-Wunreachable-code",
-    ],
-}
-
-cc_library_shared {
     name: "libmedia_tv_tuner",
     min_sdk_version: "",
     srcs: [
@@ -181,7 +145,7 @@ cc_library_shared {
 
     shared_libs: [
         "android.hardware.graphics.bufferqueue@2.0",
-        "android.hardware.tv.tuner-V2-ndk",
+        "android.hardware.tv.tuner-V3-ndk",
         "libbinder_ndk",
         "libandroid_runtime",
         "libcutils",

@@ -17,15 +17,31 @@
 package com.android.systemui.statusbar.chips.call.domain.interactor
 
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.statusbar.phone.ongoingcall.StatusBarChipsModernization
 import com.android.systemui.statusbar.phone.ongoingcall.data.repository.OngoingCallRepository
+import com.android.systemui.statusbar.phone.ongoingcall.domain.interactor.OngoingCallInteractor
+import com.android.systemui.statusbar.phone.ongoingcall.shared.model.OngoingCallModel
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 
 /** Interactor for the ongoing phone call chip shown in the status bar. */
 @SysUISingleton
 class CallChipInteractor
 @Inject
 constructor(
+    @Application private val scope: CoroutineScope,
+    ongoingCallInteractor: OngoingCallInteractor,
     repository: OngoingCallRepository,
 ) {
-    val ongoingCallState = repository.ongoingCallState
+    val ongoingCallState: StateFlow<OngoingCallModel> =
+        (if (StatusBarChipsModernization.isEnabled) {
+                ongoingCallInteractor.ongoingCallState
+            } else {
+                repository.ongoingCallState
+            })
+            .stateIn(scope, SharingStarted.Lazily, OngoingCallModel.NoCall)
 }

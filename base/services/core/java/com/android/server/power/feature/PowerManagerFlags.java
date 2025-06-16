@@ -16,6 +16,8 @@
 
 package com.android.server.power.feature;
 
+import android.os.Build;
+import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.util.Slog;
 
@@ -35,14 +37,48 @@ public class PowerManagerFlags {
             Flags.FLAG_ENABLE_EARLY_SCREEN_TIMEOUT_DETECTOR,
             Flags::enableEarlyScreenTimeoutDetector);
 
+    private final FlagState mEnableScreenTimeoutPolicyListenerApi = new FlagState(
+            Flags.FLAG_ENABLE_SCREEN_TIMEOUT_POLICY_LISTENER_API,
+            Flags::enableScreenTimeoutPolicyListenerApi
+    );
+
     private final FlagState mImproveWakelockLatency = new FlagState(
             Flags.FLAG_IMPROVE_WAKELOCK_LATENCY,
             Flags::improveWakelockLatency
     );
 
+    private final FlagState mPerDisplayWakeByTouch = new FlagState(
+            Flags.FLAG_PER_DISPLAY_WAKE_BY_TOUCH,
+            Flags::perDisplayWakeByTouch
+    );
+
+    private final FlagState mFrameworkWakelockInfo =
+            new FlagState(Flags.FLAG_FRAMEWORK_WAKELOCK_INFO, Flags::frameworkWakelockInfo);
+
+    private final FlagState mPolicyReasonInDisplayPowerRequest = new FlagState(
+            Flags.FLAG_POLICY_REASON_IN_DISPLAY_POWER_REQUEST,
+            Flags::policyReasonInDisplayPowerRequest
+    );
+
+    private final FlagState mMoveWscLoggingToNotifier =
+            new FlagState(Flags.FLAG_MOVE_WSC_LOGGING_TO_NOTIFIER, Flags::moveWscLoggingToNotifier);
+
+    private final FlagState mWakelockAttributionViaWorkchain =
+            new FlagState(Flags.FLAG_WAKELOCK_ATTRIBUTION_VIA_WORKCHAIN,
+                    Flags::wakelockAttributionViaWorkchain);
+
+    private final FlagState mDisableFrozenProcessWakelocks =
+            new FlagState(Flags.FLAG_DISABLE_FROZEN_PROCESS_WAKELOCKS,
+                    Flags::disableFrozenProcessWakelocks);
+
     /** Returns whether early-screen-timeout-detector is enabled on not. */
     public boolean isEarlyScreenTimeoutDetectorEnabled() {
         return mEarlyScreenTimeoutDetectorFlagState.isEnabled();
+    }
+
+    /** Returns whether screen timeout policy listener APIs are enabled on not. */
+    public boolean isScreenTimeoutPolicyListenerApiEnabled() {
+        return mEnableScreenTimeoutPolicyListenerApi.isEnabled();
     }
 
     /**
@@ -53,6 +89,49 @@ public class PowerManagerFlags {
     }
 
     /**
+     * @return Whether per-display wake by touch is enabled or not.
+     */
+    public boolean isPerDisplayWakeByTouchEnabled() {
+        return mPerDisplayWakeByTouch.isEnabled();
+    }
+
+    /**
+     * @return Whether FrameworkWakelockInfo atom logging is enabled or not.
+     */
+    public boolean isFrameworkWakelockInfoEnabled() {
+        return mFrameworkWakelockInfo.isEnabled();
+    }
+
+    /**
+     * @return Whether the wakefulness reason is populated in DisplayPowerRequest.
+     */
+    public boolean isPolicyReasonInDisplayPowerRequestEnabled() {
+        return mPolicyReasonInDisplayPowerRequest.isEnabled();
+    }
+
+    /**
+     * @return Whether we move WakelockStateChanged atom logging to Notifier (enabled) or leave it
+     *     in BatteryStatsImpl (disabled).
+     */
+    public boolean isMoveWscLoggingToNotifierEnabled() {
+        return mMoveWscLoggingToNotifier.isEnabled();
+    }
+
+    /**
+     * @return Whether the wakelock attribution via workchain is enabled
+     */
+    public boolean isWakelockAttributionViaWorkchainEnabled() {
+        return mWakelockAttributionViaWorkchain.isEnabled();
+    }
+
+    /**
+     * @return Whether the feature to disable the frozen process wakelocks is enabled
+     */
+    public boolean isDisableFrozenProcessWakelocksEnabled() {
+        return mDisableFrozenProcessWakelocks.isEnabled();
+    }
+
+    /**
      * dumps all flagstates
      * @param pw printWriter
      */
@@ -60,6 +139,11 @@ public class PowerManagerFlags {
         pw.println("PowerManagerFlags:");
         pw.println(" " + mEarlyScreenTimeoutDetectorFlagState);
         pw.println(" " + mImproveWakelockLatency);
+        pw.println(" " + mPerDisplayWakeByTouch);
+        pw.println(" " + mFrameworkWakelockInfo);
+        pw.println(" " + mMoveWscLoggingToNotifier);
+        pw.println(" " + mWakelockAttributionViaWorkchain);
+        pw.println(" " + mDisableFrozenProcessWakelocks);
     }
 
     private static class FlagState {
@@ -82,12 +166,21 @@ public class PowerManagerFlags {
                 }
                 return mEnabled;
             }
-            mEnabled = mFlagFunction.get();
+            mEnabled = flagOrSystemProperty(mFlagFunction, mName);
             if (DEBUG) {
                 Slog.d(TAG, mName + ": mEnabled. Flag value = " + mEnabled);
             }
             mEnabledSet = true;
             return mEnabled;
+        }
+
+        private boolean flagOrSystemProperty(Supplier<Boolean> flagFunction, String flagName) {
+            boolean flagValue = flagFunction.get();
+            if (Build.IS_ENG || Build.IS_USERDEBUG) {
+                return SystemProperties.getBoolean("persist.sys." + flagName + "-override",
+                        flagValue);
+            }
+            return flagValue;
         }
 
         @Override

@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+#define EGL_EGLEXT_PROTOTYPES
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+
 #include <gui/BufferQueue.h>
 #include <surfacetexture/ImageConsumer.h>
 #include <surfacetexture/SurfaceTexture.h>
@@ -64,8 +68,7 @@ sp<GraphicBuffer> ImageConsumer::dequeueBuffer(int* outSlotid, android_dataspace
         // Wait on the producer fence for the buffer to be ready.
         err = fenceWait(item.mFence->get(), fencePassThroughHandle);
         if (err != OK) {
-            st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer, EGL_NO_DISPLAY,
-                                   EGL_NO_SYNC_KHR);
+            st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer);
             return nullptr;
         }
     }
@@ -79,8 +82,7 @@ sp<GraphicBuffer> ImageConsumer::dequeueBuffer(int* outSlotid, android_dataspace
         err = createFence(st.mUseFenceSync, &mImageSlots[slot].eglFence(), &display,
                           &releaseFenceId, fencePassThroughHandle);
         if (OK != err) {
-            st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer, EGL_NO_DISPLAY,
-                                   EGL_NO_SYNC_KHR);
+            st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer);
             return nullptr;
         }
 
@@ -91,17 +93,40 @@ sp<GraphicBuffer> ImageConsumer::dequeueBuffer(int* outSlotid, android_dataspace
                                                     releaseFence);
             if (err != OK) {
                 IMG_LOGE("dequeueImage: error adding release fence: %s (%d)", strerror(-err), err);
-                st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer, EGL_NO_DISPLAY,
-                                       EGL_NO_SYNC_KHR);
+                st.releaseBufferLocked(slot, st.mSlots[slot].mGraphicBuffer);
                 return nullptr;
             }
         }
 
         // Finally release the old buffer.
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)
+        EGLSyncKHR previousFence = mImageSlots[st.mCurrentTexture].eglFence();
+        if (previousFence != EGL_NO_SYNC_KHR) {
+            // Most platforms will be using native fences, so it's unlikely that we'll ever have to
+            // process an eglFence. Ideally we can remove this code eventually. In the mean time, do
+            // our best to wait for it so the buffer stays valid, otherwise return an error to the
+            // caller.
+            //
+            // EGL_SYNC_FLUSH_COMMANDS_BIT_KHR so that we don't wait forever on a fence that hasn't
+            // shown up on the GPU yet.
+            EGLint result = eglClientWaitSyncKHR(display, previousFence,
+                                                 EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, 1000000000);
+            if (result == EGL_FALSE) {
+                IMG_LOGE("dequeueBuffer: error %#x waiting for fence", eglGetError());
+            } else if (result == EGL_TIMEOUT_EXPIRED_KHR) {
+                IMG_LOGE("dequeueBuffer: timeout waiting for fence");
+            }
+            eglDestroySyncKHR(display, previousFence);
+        }
+
+        status_t status = st.releaseBufferLocked(st.mCurrentTexture,
+                                                 st.mSlots[st.mCurrentTexture].mGraphicBuffer);
+#else
         status_t status =
                 st.releaseBufferLocked(st.mCurrentTexture,
                                        st.mSlots[st.mCurrentTexture].mGraphicBuffer, display,
                                        mImageSlots[st.mCurrentTexture].eglFence());
+#endif
         if (status < NO_ERROR) {
             IMG_LOGE("dequeueImage: failed to release buffer: %s (%d)", strerror(-status), status);
             err = status;

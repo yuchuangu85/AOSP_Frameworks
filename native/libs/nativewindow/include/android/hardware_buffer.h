@@ -175,6 +175,14 @@ enum AHardwareBuffer_Format {
     AHARDWAREBUFFER_FORMAT_YCbCr_P010               = 0x36,
 
     /**
+     * YUV P210 format.
+     * Must have an even width and height. Can be accessed in OpenGL
+     * shaders through an external sampler. Does not support mip-maps
+     * cube-maps or multi-layered textures.
+     */
+    AHARDWAREBUFFER_FORMAT_YCbCr_P210               = 0x3c,
+
+    /**
      * Corresponding formats:
      *   Vulkan: VK_FORMAT_R8_UNORM
      *   OpenGL ES: GR_GL_R8
@@ -326,7 +334,7 @@ enum AHardwareBuffer_UsageFlags {
      * COMPOSER_OVERLAY, the system will try to prioritize the buffer receiving
      * an overlay plane & avoid caching it in intermediate composition buffers.
      */
-    AHARDWAREBUFFER_USAGE_FRONT_BUFFER = 1UL << 32,
+    AHARDWAREBUFFER_USAGE_FRONT_BUFFER = 1ULL << 32,
 
     AHARDWAREBUFFER_USAGE_VENDOR_0  = 1ULL << 28,
     AHARDWAREBUFFER_USAGE_VENDOR_1  = 1ULL << 29,

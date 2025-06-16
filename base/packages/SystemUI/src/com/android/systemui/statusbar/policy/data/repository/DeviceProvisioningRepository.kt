@@ -15,7 +15,7 @@
  */
 package com.android.systemui.statusbar.policy.data.repository
 
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.statusbar.policy.DeviceProvisionedController
 import dagger.Binds
 import dagger.Module
@@ -31,6 +31,13 @@ interface DeviceProvisioningRepository {
      * @see android.provider.Settings.Global.DEVICE_PROVISIONED
      */
     val isDeviceProvisioned: Flow<Boolean>
+
+    /**
+     * Whether this device has been provisioned.
+     *
+     * @see android.provider.Settings.Global.DEVICE_PROVISIONED
+     */
+    fun isDeviceProvisioned(): Boolean
 }
 
 @Module
@@ -48,11 +55,15 @@ constructor(
         val listener =
             object : DeviceProvisionedController.DeviceProvisionedListener {
                 override fun onDeviceProvisionedChanged() {
-                    trySend(deviceProvisionedController.isDeviceProvisioned)
+                    trySend(isDeviceProvisioned())
                 }
             }
         deviceProvisionedController.addCallback(listener)
-        trySend(deviceProvisionedController.isDeviceProvisioned)
+        trySend(isDeviceProvisioned())
         awaitClose { deviceProvisionedController.removeCallback(listener) }
+    }
+
+    override fun isDeviceProvisioned(): Boolean {
+        return deviceProvisionedController.isDeviceProvisioned
     }
 }

@@ -61,6 +61,7 @@ import android.view.DisplayAdjustments;
 
 import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.os.DebugStore;
 import com.android.internal.util.ArrayUtils;
 
 import dalvik.system.BaseDexClassLoader;
@@ -106,6 +107,9 @@ final class ServiceConnectionLeaked extends AndroidRuntimeException {
 public final class LoadedApk {
     static final String TAG = "LoadedApk";
     static final boolean DEBUG = false;
+
+    private static final boolean DEBUG_STORE_ENABLED =
+            com.android.internal.os.Flags.debugStoreEnabled();
 
     @UnsupportedAppUsage
     private final ActivityThread mActivityThread;
@@ -1129,6 +1133,10 @@ public final class LoadedApk {
 
     @UnsupportedAppUsage
     public ClassLoader getClassLoader() {
+        ClassLoader ret = mClassLoader;
+        if (ret != null) {
+            return ret;
+        }
         synchronized (mLock) {
             if (mClassLoader == null) {
                 createOrUpdateClassLoaderLocked(null /*addedPaths*/);
@@ -1478,7 +1486,7 @@ public final class LoadedApk {
                         + " package " + mPackageName + ": " + e.toString(), e);
                 }
             }
-            mActivityThread.mAllApplications.add(app);
+            mActivityThread.addApplication(app);
             mApplication = app;
             if (!allowDuplicateInstances) {
                 synchronized (sApplications) {
@@ -1627,6 +1635,18 @@ public final class LoadedApk {
         }
     }
 
+    IIntentReceiver findRegisteredReceiverDispatcher(BroadcastReceiver r, Context context) {
+        synchronized (mReceivers) {
+            final ArrayMap<BroadcastReceiver, LoadedApk.ReceiverDispatcher> map =
+                    mReceivers.get(context);
+            if (map != null) {
+                final LoadedApk.ReceiverDispatcher rd = map.get(r);
+                return rd == null ? null : rd.getIIntentReceiver();
+            }
+            return null;
+        }
+    }
+
     public IIntentReceiver forgetReceiverDispatcher(Context context,
             BroadcastReceiver r) {
         synchronized (mReceivers) {
@@ -1648,7 +1668,6 @@ public final class LoadedApk {
                         }
                         RuntimeException ex = new IllegalArgumentException(
                                 "Originally unregistered here:");
-                        ex.fillInStackTrace();
                         rd.setUnregisterLocation(ex);
                         holder.put(r, rd);
                     }
@@ -1801,6 +1820,12 @@ public final class LoadedApk {
                         Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
                                 "broadcastReceiveReg: " + intent.getAction());
                     }
+                    long debugStoreId = -1;
+                    if (DEBUG_STORE_ENABLED) {
+                        debugStoreId =
+                                DebugStore.recordBroadcastReceiveReg(
+                                        intent, System.identityHashCode(this));
+                    }
 
                     try {
                         ClassLoader cl = mReceiver.getClass().getClassLoader();
@@ -1822,6 +1847,10 @@ public final class LoadedApk {
                             throw new RuntimeException(
                                     "Error receiving broadcast " + intent
                                             + " in " + mReceiver, e);
+                        }
+                    } finally {
+                        if (DEBUG_STORE_ENABLED) {
+                            DebugStore.recordEventEnd(debugStoreId);
                         }
                     }
 
@@ -1848,7 +1877,6 @@ public final class LoadedApk {
             mInstrumentation = instrumentation;
             mRegistered = registered;
             mLocation = new IntentReceiverLeaked(null);
-            mLocation.fillInStackTrace();
         }
 
         void validate(Context context, Handler activityThread) {
@@ -1988,7 +2016,6 @@ public final class LoadedApk {
                         }
                         RuntimeException ex = new IllegalArgumentException(
                                 "Originally unbound here:");
-                        ex.fillInStackTrace();
                         sd.setUnbindLocation(ex);
                         holder.put(c, sd);
                     }
@@ -2064,7 +2091,6 @@ public final class LoadedApk {
             mActivityThread = activityThread;
             mActivityExecutor = null;
             mLocation = new ServiceConnectionLeaked(null);
-            mLocation.fillInStackTrace();
             mFlags = flags;
         }
 
@@ -2076,7 +2102,6 @@ public final class LoadedApk {
             mActivityThread = null;
             mActivityExecutor = activityExecutor;
             mLocation = new ServiceConnectionLeaked(null);
-            mLocation.fillInStackTrace();
             mFlags = flags;
         }
 

@@ -29,7 +29,7 @@ import static android.window.DisplayAreaOrganizer.FEATURE_WINDOWED_MAGNIFICATION
 import static android.window.DisplayAreaOrganizer.FEATURE_WINDOWING_LAYER;
 import static android.window.DisplayAreaOrganizer.KEY_ROOT_DISPLAY_AREA_ID;
 
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_WINDOW_ORGANIZER;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_WINDOW_ORGANIZER;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -42,7 +42,7 @@ import android.window.WindowContainerToken;
 
 import com.android.internal.annotations.Keep;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.server.policy.WindowManagerPolicy;
 
 import java.util.ArrayList;

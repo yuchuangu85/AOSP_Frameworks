@@ -19,18 +19,23 @@ package com.android.server.wm;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
 import static android.view.WindowManager.TRANSIT_CLOSE;
+import static android.view.WindowManager.TRANSIT_CLOSE_PREPARE_BACK_NAVIGATION;
 import static android.view.WindowManager.TRANSIT_FIRST_CUSTOM;
 import static android.view.WindowManager.TRANSIT_OPEN;
+import static android.view.WindowManager.TRANSIT_PREPARE_BACK_NAVIGATION;
 import static android.view.WindowManager.TRANSIT_TO_BACK;
 import static android.view.WindowManager.TRANSIT_TO_FRONT;
 
+import android.hardware.HardwareBuffer;
 import android.os.Trace;
 import android.util.ArrayMap;
 import android.view.WindowManager;
 import android.window.TaskSnapshot;
 
 import java.io.PrintWriter;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.function.Consumer;
 
 /**
  * Integrates common functionality from TaskSnapshotController and ActivitySnapshotController.
@@ -39,11 +44,30 @@ class SnapshotController {
     private final SnapshotPersistQueue mSnapshotPersistQueue;
     final TaskSnapshotController mTaskSnapshotController;
     final ActivitySnapshotController mActivitySnapshotController;
+    private final WindowManagerService mService;
+    private final ArrayList<WeakReference<HardwareBuffer>> mObsoleteSnapshots = new ArrayList<>();
 
     SnapshotController(WindowManagerService wms) {
+        mService = wms;
         mSnapshotPersistQueue = new SnapshotPersistQueue();
         mTaskSnapshotController = new TaskSnapshotController(wms, mSnapshotPersistQueue);
         mActivitySnapshotController = new ActivitySnapshotController(wms, mSnapshotPersistQueue);
+        final Consumer<HardwareBuffer> releaser = hb -> {
+            mService.mH.post(() -> {
+                synchronized (mService.mGlobalLock) {
+                    if (hb.isClosed()) {
+                        return;
+                    }
+                    if (mService.mAtmService.getTransitionController().inTransition()) {
+                        mObsoleteSnapshots.add(new WeakReference<>(hb));
+                    } else {
+                        hb.close();
+                    }
+                }
+            });
+        };
+        mTaskSnapshotController.setSnapshotReleaser(releaser);
+        mActivitySnapshotController.setSnapshotReleaser(releaser);
     }
 
     void systemReady() {
@@ -66,11 +90,6 @@ class SnapshotController {
 
     void notifyAppVisibilityChanged(ActivityRecord appWindowToken, boolean visible) {
         mActivitySnapshotController.notifyAppVisibilityChanged(appWindowToken, visible);
-    }
-
-    // For legacy transition, which won't support activity snapshot
-    void onTransitionStarting(DisplayContent displayContent) {
-        mTaskSnapshotController.handleClosingApps(displayContent.mClosingApps);
     }
 
     // For shell transition, record snapshots before transaction start.
@@ -171,6 +190,7 @@ class SnapshotController {
         final boolean isTransitionClose = isTransitionClose(type);
         if (!isTransitionOpen && !isTransitionClose && type < TRANSIT_FIRST_CUSTOM
                 || (changeInfos.isEmpty())) {
+            closeObsoleteSnapshots();
             return;
         }
         Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "SnapshotController_analysis");
@@ -186,26 +206,41 @@ class SnapshotController {
         }
         mActivitySnapshotController.handleTransitionFinish(windows);
         mActivitySnapshotController.endSnapshotProcess();
-        // Remove task snapshot if it is visible at the end of transition.
+        // Remove task snapshot if it is visible at the end of transition, except for PiP.
         for (int i = changeInfos.size() - 1; i >= 0; --i) {
             final WindowContainer wc = changeInfos.get(i).mContainer;
             final Task task = wc.asTask();
-            if (task != null && wc.isVisibleRequested()) {
+            if (task != null && wc.isVisibleRequested() && !task.inPinnedWindowingMode()) {
                 final TaskSnapshot snapshot = mTaskSnapshotController.getSnapshot(task.mTaskId,
-                        task.mUserId, false /* restoreFromDisk */, false /* isLowResolution */);
+                        false /* isLowResolution */);
                 if (snapshot != null) {
                     mTaskSnapshotController.removeAndDeleteSnapshot(task.mTaskId, task.mUserId);
                 }
             }
         }
+        closeObsoleteSnapshots();
         Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
     }
 
+    private void closeObsoleteSnapshots() {
+        if (mObsoleteSnapshots.isEmpty()) {
+            return;
+        }
+        for (int i = mObsoleteSnapshots.size() - 1; i >= 0; --i) {
+            final HardwareBuffer hb = mObsoleteSnapshots.remove(i).get();
+            if (hb != null && !hb.isClosed()) {
+                hb.close();
+            }
+        }
+    }
+
     private static boolean isTransitionOpen(int type) {
-        return type == TRANSIT_OPEN || type == TRANSIT_TO_FRONT;
+        return type == TRANSIT_OPEN || type == TRANSIT_TO_FRONT
+                || type == TRANSIT_PREPARE_BACK_NAVIGATION;
     }
     private static boolean isTransitionClose(int type) {
-        return type == TRANSIT_CLOSE || type == TRANSIT_TO_BACK;
+        return type == TRANSIT_CLOSE || type == TRANSIT_TO_BACK
+                || type == TRANSIT_CLOSE_PREPARE_BACK_NAVIGATION;
     }
 
     void dump(PrintWriter pw, String prefix) {

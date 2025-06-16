@@ -22,6 +22,7 @@
 
 #include <cinttypes>
 
+#include <com_android_graphics_libgui_flags.h>
 #include <ftl/enum.h>
 #include <ftl/flags.h>
 #include <gui/BufferItem.h>
@@ -46,14 +47,19 @@
 
 namespace android {
 
-VirtualDisplaySurface::VirtualDisplaySurface(HWComposer& hwc, VirtualDisplayId displayId,
+VirtualDisplaySurface::VirtualDisplaySurface(HWComposer& hwc,
+                                             VirtualDisplayIdVariant virtualIdVariant,
                                              const sp<IGraphicBufferProducer>& sink,
                                              const sp<IGraphicBufferProducer>& bqProducer,
                                              const sp<IGraphicBufferConsumer>& bqConsumer,
                                              const std::string& name)
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+      : ConsumerBase(bqProducer, bqConsumer),
+#else
       : ConsumerBase(bqConsumer),
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
         mHwc(hwc),
-        mDisplayId(displayId),
+        mVirtualIdVariant(virtualIdVariant),
         mDisplayName(name),
         mSource{},
         mDefaultOutputFormat(HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED),
@@ -114,7 +120,7 @@ VirtualDisplaySurface::~VirtualDisplaySurface() {
 }
 
 status_t VirtualDisplaySurface::beginFrame(bool mustRecompose) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return NO_ERROR;
     }
 
@@ -128,7 +134,7 @@ status_t VirtualDisplaySurface::beginFrame(bool mustRecompose) {
 }
 
 status_t VirtualDisplaySurface::prepareFrame(CompositionType compositionType) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return NO_ERROR;
     }
 
@@ -176,7 +182,10 @@ status_t VirtualDisplaySurface::prepareFrame(CompositionType compositionType) {
 }
 
 status_t VirtualDisplaySurface::advanceFrame(float hdrSdrRatio) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    const auto halVirtualDisplayId = ftl::match(
+            mVirtualIdVariant, [](HalVirtualDisplayId id) { return ftl::Optional(id); },
+            [](auto) { return ftl::Optional<HalVirtualDisplayId>(); });
+    if (!halVirtualDisplayId) {
         return NO_ERROR;
     }
 
@@ -207,11 +216,8 @@ status_t VirtualDisplaySurface::advanceFrame(float hdrSdrRatio) {
     VDS_LOGV("%s: fb=%d(%p) out=%d(%p)", __func__, mFbProducerSlot, fbBuffer.get(),
              mOutputProducerSlot, outBuffer.get());
 
-    const auto halDisplayId = HalVirtualDisplayId::tryCast(mDisplayId);
-    LOG_FATAL_IF(!halDisplayId);
-    // At this point we know the output buffer acquire fence,
-    // so update HWC state with it.
-    mHwc.setOutputBuffer(*halDisplayId, mOutputFence, outBuffer);
+    // At this point we know the output buffer acquire fence, so update HWC state with it.
+    mHwc.setOutputBuffer(*halVirtualDisplayId, mOutputFence, outBuffer);
 
     status_t result = NO_ERROR;
     if (fbBuffer != nullptr) {
@@ -222,7 +228,7 @@ status_t VirtualDisplaySurface::advanceFrame(float hdrSdrRatio) {
             hwcBuffer = fbBuffer; // HWC hasn't previously seen this buffer in this slot
         }
         // TODO: Correctly propagate the dataspace from GL composition
-        result = mHwc.setClientTarget(*halDisplayId, mFbProducerSlot, mFbFence, hwcBuffer,
+        result = mHwc.setClientTarget(*halVirtualDisplayId, mFbProducerSlot, mFbFence, hwcBuffer,
                                       ui::Dataspace::UNKNOWN, hdrSdrRatio);
     }
 
@@ -230,8 +236,8 @@ status_t VirtualDisplaySurface::advanceFrame(float hdrSdrRatio) {
 }
 
 void VirtualDisplaySurface::onFrameCommitted() {
-    const auto halDisplayId = HalVirtualDisplayId::tryCast(mDisplayId);
-    if (!halDisplayId) {
+    const auto halDisplayId = asHalDisplayId(mVirtualIdVariant);
+    if (!halDisplayId.has_value()) {
         return;
     }
 
@@ -245,8 +251,7 @@ void VirtualDisplaySurface::onFrameCommitted() {
         Mutex::Autolock lock(mMutex);
         int sslot = mapProducer2SourceSlot(SOURCE_SCRATCH, mFbProducerSlot);
         VDS_LOGV("%s: release scratch sslot=%d", __func__, sslot);
-        addReleaseFenceLocked(sslot, mProducerBuffers[mFbProducerSlot],
-                retireFence);
+        addReleaseFenceLocked(sslot, mProducerBuffers[mFbProducerSlot], retireFence);
         releaseBufferLocked(sslot, mProducerBuffers[mFbProducerSlot]);
     }
 
@@ -294,7 +299,7 @@ const sp<Fence>& VirtualDisplaySurface::getClientTargetAcquireFence() const {
 
 status_t VirtualDisplaySurface::requestBuffer(int pslot,
         sp<GraphicBuffer>* outBuf) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return mSource[SOURCE_SINK]->requestBuffer(pslot, outBuf);
     }
 
@@ -316,7 +321,7 @@ status_t VirtualDisplaySurface::setAsyncMode(bool async) {
 
 status_t VirtualDisplaySurface::dequeueBuffer(Source source,
         PixelFormat format, uint64_t usage, int* sslot, sp<Fence>* fence) {
-    LOG_ALWAYS_FATAL_IF(GpuVirtualDisplayId::tryCast(mDisplayId).has_value());
+    LOG_ALWAYS_FATAL_IF(isBackedByGpu());
 
     status_t result =
             mSource[source]->dequeueBuffer(sslot, fence, mSinkBufferWidth, mSinkBufferHeight,
@@ -368,7 +373,7 @@ status_t VirtualDisplaySurface::dequeueBuffer(int* pslot, sp<Fence>* fence, uint
                                               PixelFormat format, uint64_t usage,
                                               uint64_t* outBufferAge,
                                               FrameEventHistoryDelta* outTimestamps) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return mSource[SOURCE_SINK]->dequeueBuffer(pslot, fence, w, h, format, usage, outBufferAge,
                                                    outTimestamps);
     }
@@ -454,7 +459,7 @@ status_t VirtualDisplaySurface::attachBuffer(int*, const sp<GraphicBuffer>&) {
 
 status_t VirtualDisplaySurface::queueBuffer(int pslot,
         const QueueBufferInput& input, QueueBufferOutput* output) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return mSource[SOURCE_SINK]->queueBuffer(pslot, input, output);
     }
 
@@ -512,7 +517,7 @@ status_t VirtualDisplaySurface::queueBuffer(int pslot,
 
 status_t VirtualDisplaySurface::cancelBuffer(int pslot,
         const sp<Fence>& fence) {
-    if (GpuVirtualDisplayId::tryCast(mDisplayId)) {
+    if (isBackedByGpu()) {
         return mSource[SOURCE_SINK]->cancelBuffer(mapProducer2SourceSlot(SOURCE_SINK, pslot), fence);
     }
 
@@ -616,7 +621,10 @@ void VirtualDisplaySurface::resetPerFrameState() {
 }
 
 status_t VirtualDisplaySurface::refreshOutputBuffer() {
-    LOG_ALWAYS_FATAL_IF(GpuVirtualDisplayId::tryCast(mDisplayId).has_value());
+    const auto halVirtualDisplayId = ftl::match(
+            mVirtualIdVariant, [](HalVirtualDisplayId id) { return ftl::Optional(id); },
+            [](auto) { return ftl::Optional<HalVirtualDisplayId>(); });
+    LOG_ALWAYS_FATAL_IF(!halVirtualDisplayId);
 
     if (mOutputProducerSlot >= 0) {
         mSource[SOURCE_SINK]->cancelBuffer(
@@ -635,12 +643,14 @@ status_t VirtualDisplaySurface::refreshOutputBuffer() {
     // until after GPU calls queueBuffer(). So here we just set the buffer
     // (for use in HWC prepare) but not the fence; we'll call this again with
     // the proper fence once we have it.
-    const auto halDisplayId = HalVirtualDisplayId::tryCast(mDisplayId);
-    LOG_FATAL_IF(!halDisplayId);
-    result = mHwc.setOutputBuffer(*halDisplayId, Fence::NO_FENCE,
+    result = mHwc.setOutputBuffer(*halVirtualDisplayId, Fence::NO_FENCE,
                                   mProducerBuffers[mOutputProducerSlot]);
 
     return result;
+}
+
+bool VirtualDisplaySurface::isBackedByGpu() const {
+    return std::holds_alternative<GpuVirtualDisplayId>(mVirtualIdVariant);
 }
 
 // This slot mapping function is its own inverse, so two copies are unnecessary.

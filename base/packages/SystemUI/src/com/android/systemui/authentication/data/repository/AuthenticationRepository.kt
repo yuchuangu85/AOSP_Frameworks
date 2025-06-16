@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.authentication.data.repository
 
 import android.annotation.UserIdInt
 import android.app.admin.DevicePolicyManager
 import android.content.IntentFilter
 import android.os.UserHandle
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.internal.widget.LockPatternUtils
 import com.android.internal.widget.LockscreenCredential
 import com.android.keyguard.KeyguardSecurityModel
@@ -32,11 +31,11 @@ import com.android.systemui.authentication.shared.model.AuthenticationMethodMode
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel.Pin
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel.Sim
 import com.android.systemui.authentication.shared.model.AuthenticationResultModel
+import com.android.systemui.bouncer.shared.flag.ComposeBouncerFlags
 import com.android.systemui.broadcast.BroadcastDispatcher
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
-import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.statusbar.pipeline.mobile.data.repository.MobileConnectionsRepository
 import com.android.systemui.user.data.repository.UserRepository
 import com.android.systemui.util.kotlin.onSubscriberAdded
@@ -47,7 +46,6 @@ import java.util.function.Function
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,7 +55,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Defines interface for classes that can access authentication-related application state. */
@@ -178,6 +175,16 @@ interface AuthenticationRepository {
      * profile of an organization-owned device.
      */
     @UserIdInt suspend fun getProfileWithMinFailedUnlockAttemptsForWipe(): Int
+
+    /**
+     * Returns the device policy enforced maximum time to lock the device, in milliseconds. When the
+     * device goes to sleep, this is the maximum time the device policy allows to wait before
+     * locking the device, despite what the user setting might be set to.
+     */
+    suspend fun getMaximumTimeToLock(): Long
+
+    /** Returns `true` if the power button should instantly lock the device, `false` otherwise. */
+    suspend fun getPowerButtonInstantlyLocks(): Boolean
 }
 
 @SysUISingleton
@@ -205,7 +212,8 @@ constructor(
 
     override val isAutoConfirmFeatureEnabled: StateFlow<Boolean> =
         refreshingFlow(
-            initialValue = false,
+            initialValue =
+                lockPatternUtils.isAutoPinConfirmEnabled(userRepository.getSelectedUserInfo().id),
             getFreshValue = lockPatternUtils::isAutoPinConfirmEnabled,
         )
 
@@ -254,7 +262,7 @@ constructor(
     override val hasLockoutOccurred: StateFlow<Boolean> = _hasLockoutOccurred.asStateFlow()
 
     init {
-        if (SceneContainerFlag.isEnabled) {
+        if (ComposeBouncerFlags.isComposeBouncerOrSceneContainerEnabled()) {
             // Hydrate failedAuthenticationAttempts initially and whenever the selected user
             // changes.
             applicationScope.launch {
@@ -288,6 +296,7 @@ constructor(
     override suspend fun reportAuthenticationAttempt(isSuccessful: Boolean) {
         withContext(backgroundDispatcher) {
             if (isSuccessful) {
+                lockPatternUtils.userPresent(selectedUserId)
                 lockPatternUtils.reportSuccessfulPasswordAttempt(selectedUserId)
                 _hasLockoutOccurred.value = false
             } else {
@@ -320,6 +329,19 @@ constructor(
     override suspend fun getProfileWithMinFailedUnlockAttemptsForWipe(): Int {
         return withContext(backgroundDispatcher) {
             devicePolicyManager.getProfileWithMinimumFailedPasswordsForWipe(selectedUserId)
+        }
+    }
+
+    override suspend fun getMaximumTimeToLock(): Long {
+        return withContext(backgroundDispatcher) {
+            devicePolicyManager.getMaximumTimeToLock(/* admin= */ null, selectedUserId)
+        }
+    }
+
+    /** Returns `true` if the power button should instantly lock the device, `false` otherwise. */
+    override suspend fun getPowerButtonInstantlyLocks(): Boolean {
+        return withContext(backgroundDispatcher) {
+            lockPatternUtils.getPowerButtonInstantlyLocks(selectedUserId)
         }
     }
 

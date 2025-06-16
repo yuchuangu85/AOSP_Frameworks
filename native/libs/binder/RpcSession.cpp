@@ -164,7 +164,7 @@ status_t RpcSession::setupUnixDomainSocketBootstrapClient(unique_fd bootstrapFd)
         status_t status = mBootstrapTransport->interruptableWriteFully(mShutdownTrigger.get(), &iov,
                                                                        1, std::nullopt, &fds);
         if (status != OK) {
-            ALOGE("Failed to send fd over bootstrap transport: %s", strerror(-status));
+            ALOGE("Failed to send fd over bootstrap transport: %s", statusToString(status).c_str());
             return status;
         }
 
@@ -188,7 +188,9 @@ status_t RpcSession::setupInetClient(const char* addr, unsigned int port) {
 }
 
 status_t RpcSession::setupPreconnectedClient(unique_fd fd, std::function<unique_fd()>&& request) {
-    return setupClient([&](const std::vector<uint8_t>& sessionId, bool incoming) -> status_t {
+    return setupClient([&, fd = std::move(fd),
+                        request = std::move(request)](const std::vector<uint8_t>& sessionId,
+                                                      bool incoming) mutable -> status_t {
         if (!fd.ok()) {
             fd = request();
             if (!fd.ok()) return BAD_VALUE;
@@ -476,8 +478,10 @@ sp<RpcServer> RpcSession::server() {
     return server;
 }
 
-status_t RpcSession::setupClient(const std::function<status_t(const std::vector<uint8_t>& sessionId,
-                                                              bool incoming)>& connectAndInit) {
+template <typename Fn,
+          typename /* = std::enable_if_t<std::is_invocable_r_v<
+                      status_t, Fn, const std::vector<uint8_t>&, bool>> */>
+status_t RpcSession::setupClient(Fn&& connectAndInit) {
     {
         RpcMutexLockGuard _l(mMutex);
         LOG_ALWAYS_FATAL_IF(mStartedSetup, "Must only setup session once");
@@ -589,6 +593,21 @@ status_t RpcSession::setupSocketClient(const RpcSocketAddress& addr) {
 status_t RpcSession::setupOneSocketConnection(const RpcSocketAddress& addr,
                                               const std::vector<uint8_t>& sessionId,
                                               bool incoming) {
+    RpcTransportFd transportFd;
+    status_t status = singleSocketConnection(addr, mShutdownTrigger, &transportFd);
+    if (status != OK) return status;
+
+    return initAndAddConnection(std::move(transportFd), sessionId, incoming);
+}
+
+status_t singleSocketConnection(const RpcSocketAddress& addr,
+                                const std::unique_ptr<FdTrigger>& shutdownTrigger,
+                                RpcTransportFd* outFd) {
+    LOG_ALWAYS_FATAL_IF(outFd == nullptr,
+                        "There is no reason to call this function without an outFd");
+    LOG_ALWAYS_FATAL_IF(shutdownTrigger == nullptr,
+                        "FdTrigger argument is required so we don't get stuck in the connect call "
+                        "if the server process shuts down.");
     for (size_t tries = 0; tries < 5; tries++) {
         if (tries > 0) usleep(10000);
 
@@ -620,7 +639,7 @@ status_t RpcSession::setupOneSocketConnection(const RpcSocketAddress& addr,
             if (connErrno == EAGAIN || connErrno == EINPROGRESS) {
                 // For non-blocking sockets, connect() may return EAGAIN (for unix domain socket) or
                 // EINPROGRESS (for others). Call poll() and getsockopt() to get the error.
-                status_t pollStatus = mShutdownTrigger->triggerablePoll(transportFd, POLLOUT);
+                status_t pollStatus = shutdownTrigger->triggerablePoll(transportFd, POLLOUT);
                 if (pollStatus != OK) {
                     ALOGE("Could not POLLOUT after connect() on non-blocking socket: %s",
                           statusToString(pollStatus).c_str());
@@ -654,7 +673,8 @@ status_t RpcSession::setupOneSocketConnection(const RpcSocketAddress& addr,
         LOG_RPC_DETAIL("Socket at %s client with fd %d", addr.toString().c_str(),
                        transportFd.fd.get());
 
-        return initAndAddConnection(std::move(transportFd), sessionId, incoming);
+        *outFd = std::move(transportFd);
+        return OK;
     }
 
     ALOGE("Ran out of retries to connect to %s", addr.toString().c_str());
@@ -799,6 +819,14 @@ bool RpcSession::setForServer(const wp<RpcServer>& server, const wp<EventListene
     mEventListener = eventListener;
     mSessionSpecificRootObject = sessionSpecificRoot;
     return true;
+}
+
+void RpcSession::setSessionSpecificRoot(const sp<IBinder>& sessionSpecificRoot) {
+    LOG_ALWAYS_FATAL_IF(mSessionSpecificRootObject != nullptr,
+                        "Session specific root object already set");
+    LOG_ALWAYS_FATAL_IF(mForServer != nullptr,
+                        "Session specific root object cannot be set for a server");
+    mSessionSpecificRootObject = sessionSpecificRoot;
 }
 
 sp<RpcSession::RpcConnection> RpcSession::assignIncomingConnectionToThisThread(

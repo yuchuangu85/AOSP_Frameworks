@@ -177,10 +177,13 @@ public class SettingsBackupTest {
                     Settings.Global.DESK_UNDOCK_SOUND,
                     Settings.Global.DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT,
                     Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS,
+                    Settings.Global.DEVELOPMENT_OVERRIDE_DESKTOP_MODE_FEATURES,
+                    Settings.Global.DEVELOPMENT_OVERRIDE_DESKTOP_EXPERIENCE_FEATURES,
                     Settings.Global.DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES,
                     Settings.Global.DEVELOPMENT_FORCE_RTL,
                     Settings.Global.DEVELOPMENT_ENABLE_NON_RESIZABLE_MULTI_WINDOW,
                     Settings.Global.DEVELOPMENT_RENDER_SHADOWS_IN_COMPOSITOR,
+                    Settings.Global.DEVELOPMENT_SHADE_DISPLAY_AWARENESS,
                     Settings.Global.DEVELOPMENT_WM_DISPLAY_SETTINGS_PATH,
                     Settings.Global.DEVICE_DEMO_MODE,
                     Settings.Global.DEVICE_IDLE_CONSTANTS,
@@ -562,7 +565,9 @@ public class SettingsBackupTest {
                     Settings.Global.WATCHDOG_TIMEOUT_MILLIS,
                     Settings.Global.MANAGED_PROVISIONING_DEFER_PROVISIONING_TO_ROLE_HOLDER,
                     Settings.Global.REVIEW_PERMISSIONS_NOTIFICATION_STATE,
-                    Settings.Global.ENABLE_BACK_ANIMATION, // Temporary for T, dev option only
+                    Settings.Global.HEARING_DEVICE_LOCAL_AMBIENT_VOLUME, // cache per hearing device
+                    Settings.Global.HEARING_DEVICE_LOCAL_NOTIFICATION, // cache per hearing device
+                    Settings.Global.REDACT_OTP_NOTIFICATIONS_FROM_UNTRUSTED_LISTENERS,
                     Settings.Global.Wearable.COMBINED_LOCATION_ENABLE,
                     Settings.Global.Wearable.HAS_PAY_TOKENS,
                     Settings.Global.Wearable.GMS_CHECKIN_TIMEOUT_MIN,
@@ -628,14 +633,16 @@ public class SettingsBackupTest {
                     Settings.Global.Wearable.CUSTOM_COLOR_BACKGROUND,
                     Settings.Global.Wearable.PHONE_SWITCHING_STATUS,
                     Settings.Global.Wearable.TETHER_CONFIG_STATE,
-                    Settings.Global.Wearable.PHONE_SWITCHING_SUPPORTED,
                     Settings.Global.Wearable.WEAR_MEDIA_CONTROLS_PACKAGE,
                     Settings.Global.Wearable.WEAR_MEDIA_SESSIONS_PACKAGE,
                     Settings.Global.Wearable.WEAR_POWER_ANOMALY_SERVICE_ENABLED,
-                    Settings.Global.Wearable.CONNECTIVITY_KEEP_DATA_ON);
+                    Settings.Global.Wearable.CONNECTIVITY_KEEP_DATA_ON,
+                    Settings.Global.Wearable.PHONE_SWITCHING_REQUEST_SOURCE,
+                    Settings.Global.Wearable.WEAR_SYSTEM_STATUS_TRAY_CONFIGURATION);
 
     private static final Set<String> BACKUP_DENY_LIST_SECURE_SETTINGS =
              newHashSet(
+                 Settings.Secure.AAPM_USB_DATA_PROTECTION,
                  Settings.Secure.ACCESSIBILITY_SOFT_KEYBOARD_MODE,
                  Settings.Secure.ACCESSIBILITY_SPEAK_PASSWORD, // Deprecated since O.
                  Settings.Secure.ALLOW_PRIMARY_GAIA_ACCOUNT_REMOVAL_FOR_TESTS,
@@ -676,6 +683,7 @@ public class SettingsBackupTest {
                  Settings.Secure.CAMERA_LIFT_TRIGGER_ENABLED, // Candidate for backup?
                  Settings.Secure.CARRIER_APPS_HANDLED,
                  Settings.Secure.CMAS_ADDITIONAL_BROADCAST_PKG,
+                 Settings.Secure.COMPAT_UI_EDUCATION_SHOWING,
                  Settings.Secure.COMPLETED_CATEGORY_PREFIX,
                  Settings.Secure.CONNECTIVITY_RELEASE_PENDING_INTENT_DELAY_MS,
                  Settings.Secure.CONTENT_CAPTURE_ENABLED,
@@ -684,6 +692,7 @@ public class SettingsBackupTest {
                  Settings.Secure.DEFAULT_DEVICE_INPUT_METHOD,
                  Settings.Secure.DEVICE_PAIRED,
                  Settings.Secure.DIALER_DEFAULT_APPLICATION,
+                 Settings.Secure.DISABLE_ADAPTIVE_AUTH_LIMIT_LOCK,
                  Settings.Secure.DISABLED_PRINT_SERVICES,
                  Settings.Secure.DISABLE_SECURE_WINDOWS,
                  Settings.Secure.DISABLED_SYSTEM_INPUT_METHODS,
@@ -742,15 +751,12 @@ public class SettingsBackupTest {
                  Settings.Secure.SECURE_FRP_MODE,
                  Settings.Secure.SEARCH_WEB_RESULTS_OVERRIDE_LIMIT,
                  Settings.Secure.SELECTED_INPUT_METHOD_SUBTYPE,
-                 Settings.Secure.SELECTED_SPELL_CHECKER,  // Intentionally removed in Q
-                 Settings.Secure.SELECTED_SPELL_CHECKER_SUBTYPE,  // Intentionally removed in Q
                  Settings.Secure.SETTINGS_CLASSNAME,
                  Settings.Secure.SHOW_NOTE_ABOUT_NOTIFICATION_HIDING, // candidate?
                  Settings.Secure.SHOW_ROTATION_SUGGESTIONS,
                  Settings.Secure.SKIP_FIRST_USE_HINTS, // candidate?
                  Settings.Secure.SLEEP_TIMEOUT,
                  Settings.Secure.SMS_DEFAULT_APPLICATION,
-                 Settings.Secure.SPELL_CHECKER_ENABLED,  // Intentionally removed in Q
                  Settings.Secure.TRUST_AGENTS_INITIALIZED,
                  Settings.Secure.KNOWN_TRUST_AGENTS_INITIALIZED,
                  Settings.Secure.TV_APP_USES_NON_SYSTEM_INPUTS,
@@ -802,7 +808,9 @@ public class SettingsBackupTest {
                  Settings.Secure.DND_CONFIGS_MIGRATED,
                  Settings.Secure.NAVIGATION_MODE_RESTORE,
                  Settings.Secure.V_TO_U_RESTORE_ALLOWLIST,
-                 Settings.Secure.V_TO_U_RESTORE_DENYLIST);
+                 Settings.Secure.V_TO_U_RESTORE_DENYLIST,
+                 Settings.Secure.REDACT_OTP_NOTIFICATION_WHILE_CONNECTED_TO_WIFI,
+                 Settings.Secure.OTP_NOTIFICATION_REDACTION_LOCK_TIME);
 
     @Test
     public void systemSettingsBackedUpOrDenied() {
@@ -901,8 +909,8 @@ public class SettingsBackupTest {
                         Settings.System.EGG_MODE, // I am the lolrus
                         Settings.System.END_BUTTON_BEHAVIOR, // bug?
                         Settings.System.DEFAULT_DEVICE_FONT_SCALE, // Non configurable
-                        Settings.System
-                                .HIDE_ROTATION_LOCK_TOGGLE_FOR_ACCESSIBILITY,
+                        Settings.System.HIDE_ROTATION_LOCK_TOGGLE_FOR_ACCESSIBILITY,
+                        Settings.System.INPUT_GAIN_INDEX_SETTINGS,
                         // candidate for backup?
                         Settings.System.LOCKSCREEN_DISABLED, // ?
                         Settings.System.MEDIA_BUTTON_RECEIVER, // candidate for backup?
@@ -917,6 +925,7 @@ public class SettingsBackupTest {
                         Settings.System.SHOW_GTALK_SERVICE_STATUS, // candidate for backup?
                         Settings.System.SHOW_TOUCHES,
                         Settings.System.SHOW_KEY_PRESSES,
+                        Settings.System.TOUCHPAD_VISUALIZER,
                         Settings.System.SHOW_ROTARY_INPUT,
                         Settings.System.SIP_ADDRESS_ONLY, // value, not a setting
                         Settings.System.SIP_ALWAYS, // value, not a setting
@@ -941,7 +950,9 @@ public class SettingsBackupTest {
                         Settings.System.WEAR_ACCESSIBILITY_GESTURE_ENABLED_DURING_OOBE,
                         Settings.System.WEAR_TTS_PREWARM_ENABLED,
                         Settings.System.SCREEN_AUTO_BRIGHTNESS_ADJ,
-                        Settings.System.MULTI_AUDIO_FOCUS_ENABLED // form-factor/OEM specific
+                        Settings.System.MULTI_AUDIO_FOCUS_ENABLED, // form-factor/OEM specific
+                        // Potentially disruptive to on-boarding flow on new devices
+                        Settings.System.TOUCHPAD_SYSTEM_GESTURES
                 );
         if (!Flags.backUpSmoothDisplayAndForcePeakRefreshRate()) {
             settings.add(Settings.System.MIN_REFRESH_RATE);

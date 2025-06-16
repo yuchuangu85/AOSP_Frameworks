@@ -1,37 +1,15 @@
+# proto-file: build/make/tools/aconfig/aconfig_protos/protos/aconfig.proto
+# proto-message: flag_declarations
+# Project link: http://gantry/projects/android_platform_windowing_sdk
+
 package: "com.android.window.flags"
 container: "system"
-
-# Project link: https://gantry.corp.google.com/projects/android_platform_windowing_sdk/changes
-
-# Using a fixed read only flag because there are ClientTransaction scheduling before
-# WindowManagerService creation.
-flag {
-    namespace: "windowing_sdk"
-    name: "bundle_client_transaction_flag"
-    description: "To bundle multiple ClientTransactionItems into one ClientTransaction"
-    bug: "260873529"
-    is_fixed_read_only: true
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "activity_embedding_overlay_presentation_flag"
-    description: "Whether the overlay presentation feature is enabled"
-    bug: "293370683"
-}
 
 flag {
     namespace: "windowing_sdk"
     name: "task_fragment_system_organizer_flag"
     description: "Whether the TaskFragment system organizer feature is enabled"
     bug: "284050041"
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "fullscreen_dim_flag"
-    description: "Whether to allow showing fullscreen dim on ActivityEmbedding split"
-    bug: "293797706"
 }
 
 flag {
@@ -52,26 +30,11 @@ flag {
 
 flag {
     namespace: "windowing_sdk"
-    name: "activity_window_info_flag"
-    description: "To dispatch ActivityWindowInfo through ClientTransaction"
-    bug: "287582673"
-    is_fixed_read_only: true
-}
-
-flag {
-    namespace: "windowing_sdk"
     name: "untrusted_embedding_state_sharing"
     is_exported: true
     description: "Feature flag to enable state sharing in untrusted embedding when apps opt in."
     bug: "293647332"
     is_fixed_read_only: true
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "embedded_activity_back_nav_flag"
-    description: "Refines embedded activity back navigation behavior"
-    bug: "293642394"
 }
 
 flag {
@@ -85,100 +48,9 @@ flag {
 
 flag {
     namespace: "windowing_sdk"
-    name: "enable_wm_extensions_for_all_flag"
-    description: "Whether to enable WM Extensions for all devices"
-    bug: "306666082"
-    is_fixed_read_only: true
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "window_token_config_thread_safe"
-    description: "Ensure the Configuration pre/post changed is thread safe"
-    bug: "334285008"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "always_defer_transition_when_apply_wct"
-    description: "Report error when defer transition fails when it should not"
-    bug: "335562144"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "window_session_relayout_info"
-    description: "Pass an out RelayoutInfo instead of Bundle to fix the Parcel recycle bug"
-    bug: "335601427"
-    is_fixed_read_only: true
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "fix_pip_restore_to_overlay"
-    description: "Restore exit-pip activity back to ActivityEmbedding overlay"
-    bug: "297887697"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
     name: "activity_embedding_animation_customization_flag"
     description: "Whether the animation customization feature for AE is enabled"
     bug: "293658614"
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "insets_control_changed_item"
-    description: "Pass insetsControlChanged through ClientTransaction to fix the racing"
-    bug: "339380439"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "insets_control_seq"
-    description: "Add seqId to InsetsControls to ensure the stale update is ignored"
-    bug: "339380439"
-    is_fixed_read_only: true
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
-    namespace: "windowing_sdk"
-     name: "move_animation_options_to_change"
-     description: "Move AnimationOptions from TransitionInfo to each Change"
-     bug: "327332488"
-     metadata {
-         purpose: PURPOSE_BUGFIX
-     }
-}
-
-flag {
-    namespace: "windowing_sdk"
-    name: "disable_object_pool"
-    description: "Whether to disable object pool and let the GC handle lifecycle items"
-    bug: "311089192"
-    is_fixed_read_only: true
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
 }
 
 flag {
@@ -194,11 +66,129 @@ flag {
 
 flag {
     namespace: "windowing_sdk"
-    name: "fix_no_container_update_without_resize"
-    description: "Fix the containers not being updated when the Task is brought to front and has the same configuration"
-    bug: "344721335"
+    name: "touch_pass_through_opt_in"
+    description: "Requires apps to opt-in to overlay pass through touches and provide APIs to opt-in"
+    bug: "358129114"
+    is_exported: true
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "activity_embedding_support_for_connected_displays"
+    description: "Enables activity embedding support for connected displays, including enabling AE optimization for Settings."
+    bug: "369438353"
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "activity_embedding_delay_task_fragment_finish_for_activity_launch"
+    description: "Fixes a race condition that we finish the TaskFragment too early when there is a pending activity launch."
+    bug: "390452023"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "wlinfo_oncreate"
+    description: "Makes WindowLayoutInfo accessible without racing in the Activity#onCreate()"
+    bug: "337820752"
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "better_support_non_match_parent_activity"
+    description: "Relax the assumption of non-match parent activity"
+    bug: "356277166"
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "track_system_ui_context_before_wms"
+    description: "Keep track of SystemUiContext before WMS is initialized"
+    bug: "384428048"
     is_fixed_read_only: true
     metadata {
         purpose: PURPOSE_BUGFIX
     }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "condense_configuration_change_for_simple_mode"
+    description: "Condense configuration change for simple mode"
+    bug: "356738240"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "car_framework"
+    name: "safe_region_letterboxing"
+    description: "Enables letterboxing for a safe region"
+    bug: "380132497"
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "fix_layout_existing_task"
+    description: "Layout the existing task to ensure the bounds are updated."
+    bug: "390291971"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "cleanup_dispatch_pending_transactions_remote_exception"
+    description: "Refactor to cleanup for RemoteException from dispatchPendingTransactions"
+    bug: "323801078"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "support_widget_intents_on_connected_display"
+    description: "Launch widget intents on originating display"
+    bug: "358368849"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "exclude_task_from_recents"
+    description: "Enables WCT to set whether the task should be excluded from the Recents list"
+    bug: "404726350"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "fix_view_root_call_trace"
+    description: "Do not set mAdded=true unless #setView finished successfully"
+    bug: "385705687"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    namespace: "windowing_sdk"
+    name: "activity_embedding_metrics"
+    description: "Metrics for Activity Embedding usage in WM Extensions"
+    bug: "399465821"
 }

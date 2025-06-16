@@ -32,14 +32,12 @@ import com.android.systemui.kosmos.testScope
 import com.android.systemui.testKosmos
 import com.android.systemui.volume.data.repository.TestAudioDevicesFactory
 import com.android.systemui.volume.data.repository.audioRepository
-import com.android.systemui.volume.data.repository.audioSharingRepository
 import com.android.systemui.volume.domain.model.AudioOutputDevice
 import com.android.systemui.volume.localMediaController
 import com.android.systemui.volume.localMediaRepository
 import com.android.systemui.volume.mediaControllerRepository
 import com.android.systemui.volume.panel.component.mediaoutput.domain.interactor.TestMediaDevicesFactory
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
@@ -52,7 +50,6 @@ import org.mockito.kotlin.whenever
 
 private const val builtInDeviceName = "This phone"
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 @SmallTest
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
@@ -221,33 +218,5 @@ class AudioOutputInteractorTest : SysuiTestCase() {
     private companion object {
 
         val testIcon = TestStubDrawable()
-    }
-
-    @Test
-    fun inAudioSharing_returnTrue() {
-        with(kosmos) {
-            testScope.runTest {
-                audioSharingRepository.setInAudioSharing(true)
-
-                val inAudioSharing by collectLastValue(underTest.isInAudioSharing)
-                runCurrent()
-
-                assertThat(inAudioSharing).isTrue()
-            }
-        }
-    }
-
-    @Test
-    fun notInAudioSharing_returnFalse() {
-        with(kosmos) {
-            testScope.runTest {
-                audioSharingRepository.setInAudioSharing(false)
-
-                val inAudioSharing by collectLastValue(underTest.isInAudioSharing)
-                runCurrent()
-
-                assertThat(inAudioSharing).isFalse()
-            }
-        }
     }
 }

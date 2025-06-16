@@ -29,7 +29,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.os.CancellationSignal;
@@ -37,7 +37,7 @@ import android.platform.test.annotations.Presubmit;
 import android.view.WindowInsetsController.OnControllableInsetsChangedListener;
 import android.view.animation.LinearInterpolator;
 
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -230,7 +230,7 @@ public class PendingInsetsControllerTest {
         InsetsController secondController = mock(InsetsController.class);
         mPendingInsetsController.replayAndAttach(secondController);
         verify(mReplayedController).show(eq(systemBars()));
-        verifyZeroInteractions(secondController);
+        verifyNoMoreInteractions(secondController);
     }
 
     @Test

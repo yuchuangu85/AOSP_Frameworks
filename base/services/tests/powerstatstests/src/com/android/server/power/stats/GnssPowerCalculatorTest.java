@@ -21,7 +21,6 @@ import static com.google.common.truth.Truth.assertThat;
 import android.os.BatteryConsumer;
 import android.os.Process;
 import android.os.UidBatteryConsumer;
-import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -36,16 +35,12 @@ import org.junit.runner.RunWith;
 @SmallTest
 @SuppressWarnings("GuardedBy")
 public class GnssPowerCalculatorTest {
-    @Rule(order = 0)
-    public final RavenwoodRule mRavenwood = new RavenwoodRule.Builder()
-            .setProvideMainThread(true)
-            .build();
     private static final double PRECISION = 0.00001;
 
     private static final int APP_UID = Process.FIRST_APPLICATION_UID + 42;
     private static final int APP_UID2 = Process.FIRST_APPLICATION_UID + 222;
 
-    @Rule(order = 1)
+    @Rule(order = 0)
     public final BatteryUsageStatsRule mStatsRule = new BatteryUsageStatsRule()
             .setAveragePower(PowerProfile.POWER_GPS_ON, 360.0)
             .setAveragePower(PowerProfile.POWER_GPS_SIGNAL_QUALITY_BASED,
@@ -68,20 +63,14 @@ public class GnssPowerCalculatorTest {
                 .isEqualTo(1000);
         assertThat(consumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(0.1);
-        assertThat(consumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
 
         BatteryConsumer deviceConsumer = mStatsRule.getDeviceBatteryConsumer();
         assertThat(deviceConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(0.1);
-        assertThat(deviceConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
 
         BatteryConsumer appsConsumer = mStatsRule.getAppsBatteryConsumer();
         assertThat(appsConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(0.1);
-        assertThat(appsConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
     }
 
     @Test
@@ -107,27 +96,19 @@ public class GnssPowerCalculatorTest {
                 .isEqualTo(1000);
         assertThat(consumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(2.77777);
-        assertThat(consumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
 
         UidBatteryConsumer consumer2 = mStatsRule.getUidBatteryConsumer(APP_UID2);
         assertThat(consumer2.getUsageDurationMillis(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isEqualTo(2000);
         assertThat(consumer2.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(5.55555);
-        assertThat(consumer2.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
 
         BatteryConsumer deviceConsumer = mStatsRule.getDeviceBatteryConsumer();
         assertThat(deviceConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(8.333333);
-        assertThat(deviceConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
 
         BatteryConsumer appsConsumer = mStatsRule.getAppsBatteryConsumer();
         assertThat(appsConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_GNSS))
                 .isWithin(PRECISION).of(8.333333);
-        assertThat(appsConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_GNSS))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
     }
 }

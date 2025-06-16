@@ -16,22 +16,25 @@
 
 package com.android.internal.pm.pkg.component;
 
+import static android.provider.flags.Flags.newStoragePublicApi;
 import static com.android.internal.pm.pkg.parsing.ParsingUtils.ANDROID_RES_NAMESPACE;
 
+import android.aconfig.DeviceProtos;
 import android.aconfig.nano.Aconfig;
 import android.aconfig.nano.Aconfig.parsed_flag;
 import android.aconfig.nano.Aconfig.parsed_flags;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.res.Flags;
-import android.content.res.XmlResourceParser;
 import android.os.Environment;
 import android.os.Process;
+import android.os.flagging.AconfigPackage;
 import android.util.ArrayMap;
 import android.util.Slog;
 import android.util.Xml;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.pm.pkg.parsing.ParsingPackage;
 import com.android.modules.utils.TypedXmlPullParser;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -40,8 +43,9 @@ import org.xmlpull.v1.XmlPullParserException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.List;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * A class that manages a cache of all device feature flags and their default + override values.
@@ -52,33 +56,50 @@ import java.util.Map;
  * @hide
  */
 public class AconfigFlags {
+    private static final boolean DEBUG = false;
     private static final String LOG_TAG = "AconfigFlags";
+    private static final String OVERRIDE_PREFIX = "device_config_overrides/";
+    private static final String STAGED_PREFIX = "staged/";
 
-    private static final List<String> sTextProtoFilesOnDevice = List.of(
-            "/system/etc/aconfig_flags.pb",
-            "/system_ext/etc/aconfig_flags.pb",
-            "/product/etc/aconfig_flags.pb",
-            "/vendor/etc/aconfig_flags.pb");
-
-    private final ArrayMap<String, Boolean> mFlagValues = new ArrayMap<>();
+    private final Map<String, Boolean> mFlagValues = new ArrayMap<>();
+    private final Map<String, AconfigPackage> mAconfigPackages = new ConcurrentHashMap<>();
 
     public AconfigFlags() {
         if (!Flags.manifestFlagging()) {
-            Slog.v(LOG_TAG, "Feature disabled, skipped all loading");
+            if (DEBUG) {
+                Slog.v(LOG_TAG, "Feature disabled, skipped all loading");
+            }
             return;
         }
-        for (String fileName : sTextProtoFilesOnDevice) {
-            try (var inputStream = new FileInputStream(fileName)) {
-                loadAconfigDefaultValues(inputStream.readAllBytes());
-            } catch (IOException e) {
-                Slog.e(LOG_TAG, "Failed to read Aconfig values from " + fileName, e);
+
+        if (useNewStorage()) {
+            Slog.i(LOG_TAG, "Using new flag storage");
+        } else {
+            Slog.i(LOG_TAG, "Using OLD proto flag storage");
+            final var defaultFlagProtoFiles =
+                    (Process.myUid() == Process.SYSTEM_UID) ? DeviceProtos.parsedFlagsProtoPaths()
+                            : Arrays.asList(DeviceProtos.PATHS);
+            for (String fileName : defaultFlagProtoFiles) {
+                final File protoFile = new File(fileName);
+                if (!protoFile.isFile() || !protoFile.canRead()) {
+                    continue;
+                }
+                try (var inputStream = new FileInputStream(protoFile)) {
+                    loadAconfigDefaultValues(inputStream.readAllBytes());
+                } catch (IOException e) {
+                    Slog.w(LOG_TAG, "Failed to read Aconfig values from " + fileName, e);
+                }
+            }
+            if (Process.myUid() == Process.SYSTEM_UID) {
+                // Server overrides are only accessible to the system, no need to even try loading
+                // them in user processes.
+                loadServerOverrides();
             }
         }
-        if (Process.myUid() == Process.SYSTEM_UID) {
-            // Server overrides are only accessible to the system, no need to even try loading them
-            // in user processes.
-            loadServerOverrides();
-        }
+    }
+
+    private static boolean useNewStorage() {
+        return newStoragePublicApi() && Flags.useNewAconfigStorage();
     }
 
     private void loadServerOverrides() {
@@ -103,6 +124,9 @@ public class AconfigFlags {
 
         final var settingsFile = new File(Environment.getUserSystemDirectory(0),
                 "settings_config.xml");
+        if (!settingsFile.isFile() || !settingsFile.canRead()) {
+            return;
+        }
         try (var inputStream = new FileInputStream(settingsFile)) {
             TypedXmlPullParser parser = Xml.resolvePullParser(inputStream);
             if (parser.next() != XmlPullParser.END_TAG && "settings".equals(parser.getName())) {
@@ -126,19 +150,17 @@ public class AconfigFlags {
                     if (!"false".equalsIgnoreCase(value) && !"true".equalsIgnoreCase(value)) {
                         continue;
                     }
-                    final var overridePrefix = "device_config_overrides/";
-                    final var stagedPrefix = "staged/";
                     String separator = "/";
                     String prefix = "default";
                     int priority = 0;
-                    if (name.startsWith(overridePrefix)) {
-                        prefix = overridePrefix;
-                        name = name.substring(overridePrefix.length());
+                    if (name.startsWith(OVERRIDE_PREFIX)) {
+                        prefix = OVERRIDE_PREFIX;
+                        name = name.substring(OVERRIDE_PREFIX.length());
                         separator = ":";
                         priority = 20;
-                    } else if (name.startsWith(stagedPrefix)) {
-                        prefix = stagedPrefix;
-                        name = name.substring(stagedPrefix.length());
+                    } else if (name.startsWith(STAGED_PREFIX)) {
+                        prefix = STAGED_PREFIX;
+                        name = name.substring(STAGED_PREFIX.length());
                         separator = "*";
                         priority = 10;
                     }
@@ -151,12 +173,19 @@ public class AconfigFlags {
                     if (!mFlagValues.containsKey(flagPackageAndName)) {
                         continue;
                     }
-                    Slog.d(LOG_TAG, "Found " + prefix
-                            + " Aconfig flag value for " + flagPackageAndName + " = " + value);
+                    if (DEBUG) {
+                        Slog.d(LOG_TAG, "Found " + prefix
+                                + " Aconfig flag value in settings for " + flagPackageAndName
+                                + " = " + value);
+                    }
                     final Integer currentPriority = flagPriority.get(flagPackageAndName);
                     if (currentPriority != null && currentPriority >= priority) {
-                        Slog.i(LOG_TAG, "Skipping " + prefix + " flag " + flagPackageAndName
-                                + " because of the existing one with priority " + currentPriority);
+                        if (DEBUG) {
+                            Slog.d(LOG_TAG, "Skipping " + prefix + " flag "
+                                    + flagPackageAndName
+                                    + " in settings because of existing one with priority "
+                                    + currentPriority);
+                        }
                         continue;
                     }
                     flagPriority.put(flagPackageAndName, priority);
@@ -164,7 +193,7 @@ public class AconfigFlags {
                 }
             }
         } catch (IOException | XmlPullParserException e) {
-            Slog.e(LOG_TAG, "Failed to read Aconfig values from settings_config.xml", e);
+            Slog.w(LOG_TAG, "Failed to read Aconfig values from settings_config.xml", e);
         }
     }
 
@@ -181,8 +210,6 @@ public class AconfigFlags {
         for (parsed_flag flag : parsedFlags.parsedFlag) {
             String flagPackageAndName = flag.package_ + "." + flag.name;
             boolean flagValue = (flag.state == Aconfig.ENABLED);
-            Slog.v(LOG_TAG, "Read Aconfig default flag value "
-                    + flagPackageAndName + " = " + flagValue);
             mFlagValues.put(flagPackageAndName, flagValue);
         }
     }
@@ -194,21 +221,96 @@ public class AconfigFlags {
      */
     @Nullable
     public Boolean getFlagValue(@NonNull String flagPackageAndName) {
-        Boolean value = mFlagValues.get(flagPackageAndName);
-        Slog.d(LOG_TAG, "Aconfig flag value for " + flagPackageAndName + " = " + value);
+        if (useNewStorage()) {
+            return getFlagValueFromNewStorage(flagPackageAndName);
+        } else {
+            Boolean value = mFlagValues.get(flagPackageAndName);
+            if (DEBUG) {
+                Slog.v(LOG_TAG, "Aconfig flag value for " + flagPackageAndName + " = " + value);
+            }
+            return value;
+        }
+    }
+
+    private Boolean getFlagValueFromNewStorage(String flagPackageAndName) {
+        // We still need to check mFlagValues in case addFlagValuesForTesting() was called for
+        // testing purposes.
+        if (!mFlagValues.isEmpty() && mFlagValues.containsKey(flagPackageAndName)) {
+            Boolean value = mFlagValues.get(flagPackageAndName);
+            if (DEBUG) {
+                Slog.v(
+                        LOG_TAG,
+                        "Aconfig flag value (FOR TESTING) for "
+                                + flagPackageAndName
+                                + " = "
+                                + value);
+            }
+            return value;
+        }
+
+        int index = flagPackageAndName.lastIndexOf('.');
+        if (index < 0) {
+            Slog.e(LOG_TAG, "Unable to parse package name from " + flagPackageAndName);
+            return null;
+        }
+        String flagPackage = flagPackageAndName.substring(0, index);
+        String flagName = flagPackageAndName.substring(index + 1);
+        Boolean value = null;
+        AconfigPackage aconfigPackage = mAconfigPackages.computeIfAbsent(flagPackage, p -> {
+            try {
+                return AconfigPackage.load(p);
+            } catch (Exception e) {
+                Slog.e(LOG_TAG, "Failed to load aconfig package " + p, e);
+                return null;
+            }
+        });
+        if (aconfigPackage != null) {
+            // Default value is false for when the flag is not found.
+            // Note: Unlike with the old storage, with AconfigPackage, we don't have a way to
+            // know if the flag is not found or if it's found but the value is false.
+            try {
+                value = aconfigPackage.getBooleanFlagValue(flagName, false);
+            } catch (Exception e) {
+                Slog.e(LOG_TAG, "Failed to read Aconfig flag value for " + flagPackageAndName, e);
+                return null;
+            }
+        }
+        if (DEBUG) {
+            Slog.v(LOG_TAG, "Aconfig flag value for " + flagPackageAndName + " = " + value);
+        }
         return value;
     }
 
     /**
      * Check if the element in {@code parser} should be skipped because of the feature flag.
+     * @param pkg The package being parsed
      * @param parser XML parser object currently parsing an element
      * @return true if the element is disabled because of its feature flag
      */
-    public boolean skipCurrentElement(@NonNull XmlResourceParser parser) {
+    public boolean skipCurrentElement(@Nullable ParsingPackage pkg, @NonNull XmlPullParser parser) {
+        return skipCurrentElement(pkg, parser, /* allowNoNamespace= */ false);
+    }
+
+    /**
+     * Check if the element in {@code parser} should be skipped because of the feature flag.
+     * @param pkg The package being parsed
+     * @param parser XML parser object currently parsing an element
+     * @param allowNoNamespace Whether to allow namespace null
+     * @return true if the element is disabled because of its feature flag
+     */
+    public boolean skipCurrentElement(
+        @Nullable ParsingPackage pkg,
+        @NonNull XmlPullParser parser,
+        boolean allowNoNamespace
+    ) {
         if (!Flags.manifestFlagging()) {
             return false;
         }
         String featureFlag = parser.getAttributeValue(ANDROID_RES_NAMESPACE, "featureFlag");
+        // If allow no namespace, make another attempt to parse feature flag with null namespace.
+        if (featureFlag == null && allowNoNamespace) {
+            featureFlag = parser.getAttributeValue(null, "featureFlag");
+        }
         if (featureFlag == null) {
             return false;
         }
@@ -218,19 +320,25 @@ public class AconfigFlags {
             negated = true;
             featureFlag = featureFlag.substring(1).strip();
         }
-        final Boolean flagValue = getFlagValue(featureFlag);
+        Boolean flagValue = getFlagValue(featureFlag);
+        boolean isUndefined = false;
         if (flagValue == null) {
-            Slog.w(LOG_TAG, "Skipping element " + parser.getName()
-                    + " due to unknown feature flag " + featureFlag);
-            return true;
+            isUndefined = true;
+            flagValue = false;
         }
-        // Skip if flag==false && attr=="flag" OR flag==true && attr=="!flag" (negated)
+        boolean shouldSkip = false;
         if (flagValue == negated) {
-            Slog.v(LOG_TAG, "Skipping element " + parser.getName()
-                    + " behind feature flag " + featureFlag + " = " + flagValue);
-            return true;
+            // Skip if flag==false && attr=="flag" OR flag==true && attr=="!flag" (negated)
+            shouldSkip = true;
         }
-        return false;
+        if (pkg != null && android.content.pm.Flags.includeFeatureFlagsInPackageCacher()) {
+            if (isUndefined) {
+                pkg.addFeatureFlag(featureFlag, null);
+            } else {
+                pkg.addFeatureFlag(featureFlag, flagValue);
+            }
+        }
+        return shouldSkip;
     }
 
     /**

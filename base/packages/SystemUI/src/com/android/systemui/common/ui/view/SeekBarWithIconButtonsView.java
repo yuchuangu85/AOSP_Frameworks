@@ -179,6 +179,14 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
     }
 
     /**
+     * Only for testing. Get mSeekBarListener to the seekbar.
+     */
+    @VisibleForTesting
+    public SeekBarChangeListener getSeekBarChangeListener() {
+        return mSeekBarListener;
+    }
+
+    /**
      * Only for testing. Get {@link #mSeekbar} in the layout.
      */
     @VisibleForTesting
@@ -278,7 +286,8 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
 
         /**
          * Notification that the user interaction with SeekBarWithIconButtonsView is finalized. This
-         * would be triggered after user ends dragging on the slider or clicks icon buttons.
+         * would be triggered after user ends dragging on the slider or clicks icon buttons. This is
+         * not called if the progress change was not initiated by the user.
          *
          * @param seekBar The SeekBar in which the user ends interaction with
          * @param control The last user interacted control unit. It would be
@@ -289,8 +298,10 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
         void onUserInteractionFinalized(SeekBar seekBar, @ControlUnitType int control);
     }
 
-    private class SeekBarChangeListener implements SeekBar.OnSeekBarChangeListener {
+    @VisibleForTesting
+    public class SeekBarChangeListener implements SeekBar.OnSeekBarChangeListener {
         private OnSeekBarWithIconButtonsChangeListener mOnSeekBarChangeListener = null;
+        private boolean mSeekByTouch = false;
 
         @Override
         public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -308,6 +319,18 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
                             seekBar, OnSeekBarWithIconButtonsChangeListener.ControlUnitType.BUTTON);
                 } else {
                     mOnSeekBarChangeListener.onProgressChanged(seekBar, progress, fromUser);
+                    if (!mSeekByTouch && fromUser) {
+                        // Accessibility users could change the progress of the seekbar without
+                        // touching the seekbar or clicking the buttons. In this, {@code fromUser}
+                        // will be true, and we will consider the interaction to be finished.
+                        // The seekbar progress could be changed when {@code fromUser} is false
+                        // when magnification scale is set by pinch-to-zoom, keyboard control, or
+                        // other services. In this case, we don't need to take finalized actions
+                        // for the progress change.
+                        mOnSeekBarChangeListener.onUserInteractionFinalized(
+                                seekBar,
+                                OnSeekBarWithIconButtonsChangeListener.ControlUnitType.SLIDER);
+                    }
                 }
             }
             updateIconViewIfNeeded(progress);
@@ -315,6 +338,7 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
 
         @Override
         public void onStartTrackingTouch(SeekBar seekBar) {
+            mSeekByTouch = true;
             if (mOnSeekBarChangeListener != null) {
                 mOnSeekBarChangeListener.onStartTrackingTouch(seekBar);
             }
@@ -322,6 +346,7 @@ public class SeekBarWithIconButtonsView extends LinearLayout {
 
         @Override
         public void onStopTrackingTouch(SeekBar seekBar) {
+            mSeekByTouch = false;
             if (mOnSeekBarChangeListener != null) {
                 mOnSeekBarChangeListener.onStopTrackingTouch(seekBar);
                 mOnSeekBarChangeListener.onUserInteractionFinalized(

@@ -17,7 +17,7 @@
 #ifndef ANDROID_OS_VIBRATOR_MANAGER_HAL_CONTROLLER_H
 #define ANDROID_OS_VIBRATOR_MANAGER_HAL_CONTROLLER_H
 
-#include <android/hardware/vibrator/IVibratorManager.h>
+#include <aidl/android/hardware/vibrator/IVibratorManager.h>
 #include <vibratorservice/VibratorHalController.h>
 #include <vibratorservice/VibratorManagerHalWrapper.h>
 #include <unordered_map>
@@ -62,6 +62,10 @@ public:
     HalResult<void> prepareSynced(const std::vector<int32_t>& ids) override final;
     HalResult<void> triggerSynced(const std::function<void()>& completionCallback) override final;
     HalResult<void> cancelSynced() override final;
+    HalResult<std::shared_ptr<IVibrationSession>> startSession(
+            const std::vector<int32_t>& ids, const VibrationSessionConfig& config,
+            const std::function<void()>& completionCallback) override final;
+    HalResult<void> clearSessions() override final;
 
 private:
     Connector mConnector;

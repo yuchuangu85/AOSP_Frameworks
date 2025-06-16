@@ -47,6 +47,8 @@ import android.view.WindowInsets.Type.InsetsType;
 import android.view.WindowInsetsAnimation;
 import android.view.WindowInsetsAnimation.Bounds;
 import android.view.WindowManager;
+import android.view.inputmethod.Flags;
+import android.view.inputmethod.ImeTracker;
 import android.view.inputmethod.InputMethodManager;
 
 import com.android.internal.R;
@@ -111,25 +113,33 @@ class InsetsPolicy {
             abortTransient();
         }
         mFocusedWin = focusedWin;
+        final @InsetsType int[] requestedVisibleTypes =
+                {focusedWin != null ? focusedWin.getRequestedVisibleTypes() : 0};
         final WindowState notificationShade = mPolicy.getNotificationShade();
         final WindowState topApp = mPolicy.getTopFullscreenOpaqueWindow();
         final InsetsControlTarget statusControlTarget =
-                getStatusControlTarget(focusedWin, false /* fake */);
+                getStatusControlTarget(focusedWin, false /* fake */, requestedVisibleTypes);
         mFakeStatusControlTarget = statusControlTarget == mTransientControlTarget
-                ? getStatusControlTarget(focusedWin, true /* fake */)
+                ? getStatusControlTarget(focusedWin, true /* fake */, requestedVisibleTypes)
                 : statusControlTarget == notificationShade
-                        ? getStatusControlTarget(topApp, true /* fake */)
+                        ? getStatusControlTarget(topApp, true /* fake */, requestedVisibleTypes)
                         : null;
         final InsetsControlTarget navControlTarget =
-                getNavControlTarget(focusedWin, false /* fake */);
+                getNavControlTarget(focusedWin, false /* fake */, requestedVisibleTypes);
         mFakeNavControlTarget = navControlTarget == mTransientControlTarget
-                ? getNavControlTarget(focusedWin, true /* fake */)
+                ? getNavControlTarget(focusedWin, true /* fake */, requestedVisibleTypes)
                 : navControlTarget == notificationShade
-                        ? getNavControlTarget(topApp, true /* fake */)
+                        ? getNavControlTarget(topApp, true /* fake */, requestedVisibleTypes)
                         : null;
         mStateController.onBarControlTargetChanged(
                 statusControlTarget, mFakeStatusControlTarget,
                 navControlTarget, mFakeNavControlTarget);
+
+        if (statusControlTarget == mDisplayContent.mRemoteInsetsControlTarget
+                && navControlTarget == mDisplayContent.mRemoteInsetsControlTarget) {
+            notifyRemoteInsetsController(focusedWin, requestedVisibleTypes[0]);
+        }
+
         mStatusBar.updateVisibility(statusControlTarget, Type.statusBars());
         mNavBar.updateVisibility(navControlTarget, Type.navigationBars());
     }
@@ -180,12 +190,12 @@ class InsetsPolicy {
 
     @VisibleForTesting
     InsetsControlTarget getTransientControlTarget() {
-        return  mTransientControlTarget;
+        return mTransientControlTarget;
     }
 
     @VisibleForTesting
     InsetsControlTarget getPermanentControlTarget() {
-        return  mPermanentControlTarget;
+        return mPermanentControlTarget;
     }
 
     void hideTransient() {
@@ -219,6 +229,7 @@ class InsetsPolicy {
             state = originalState;
         }
         state = adjustVisibilityForIme(target, state, state == originalState);
+        state = mPolicy.replaceInsetsSourcesIfNeeded(state, state == originalState);
         return adjustInsetsForRoundedCorners(target.mToken, state, state == originalState);
     }
 
@@ -256,16 +267,13 @@ class InsetsPolicy {
      * We also need to exclude certain types of insets source for client within specific windowing
      * modes.
      *
-     * @param attrs the LayoutParams of the target
-     * @param windowingMode the windowing mode of the target
-     * @param isAlwaysOnTop is the target always on top
-     * @param state the input inset state containing all the sources
+     * @param target the target on which the policy is applied
+     * @param state  the input inset state containing all the sources
      * @return The state stripped of the necessary information.
      */
-    InsetsState enforceInsetsPolicyForTarget(WindowManager.LayoutParams attrs,
-            @WindowConfiguration.WindowingMode int windowingMode, boolean isAlwaysOnTop,
-            InsetsState state) {
+    InsetsState enforceInsetsPolicyForTarget(WindowState target, InsetsState state) {
         final InsetsState originalState = state;
+        final WindowManager.LayoutParams attrs = target.mAttrs;
 
         // The caller should not receive the visible insets provided by itself.
         if (attrs.type == TYPE_INPUT_METHOD) {
@@ -314,12 +322,17 @@ class InsetsPolicy {
             }
         }
 
+        final @WindowConfiguration.WindowingMode int windowingMode = target.getWindowingMode();
         if (WindowConfiguration.isFloating(windowingMode)
-                || (windowingMode == WINDOWING_MODE_MULTI_WINDOW && isAlwaysOnTop)) {
+                || (windowingMode == WINDOWING_MODE_MULTI_WINDOW && target.isAlwaysOnTop())) {
             // Keep frames, caption, and IME.
             int types = WindowInsets.Type.captionBar();
             if (windowingMode != WINDOWING_MODE_PINNED) {
-                types |= WindowInsets.Type.ime();
+                if (!Flags.refactorInsetsController() || (mDisplayContent != null
+                        && target == mDisplayContent.getImeInputTarget()
+                        && (WindowInsets.Type.ime() & target.getRequestedVisibleTypes()) != 0)) {
+                    types |= WindowInsets.Type.ime();
+                }
             }
             final InsetsState newState = new InsetsState();
             newState.set(state, types);
@@ -383,22 +396,6 @@ class InsetsPolicy {
                 state.addSource(navSource);
             }
             return state;
-        } else if (w.mActivityRecord != null && w.mActivityRecord.mImeInsetsFrozenUntilStartInput) {
-            // During switching tasks with gestural navigation, before the next IME input target
-            // starts the input, we should adjust and freeze the last IME visibility of the window
-            // in case delivering obsoleted IME insets state during transitioning.
-            final InsetsSource originalImeSource = originalState.peekSource(ID_IME);
-
-            if (originalImeSource != null) {
-                final boolean imeVisibility = w.isRequestedVisible(Type.ime());
-                final InsetsState state = copyState
-                        ? new InsetsState(originalState)
-                        : originalState;
-                final InsetsSource imeSource = new InsetsSource(originalImeSource);
-                imeSource.setVisible(imeVisibility);
-                state.addSource(imeSource);
-                return state;
-            }
         } else if (w.mImeInsetsConsumed) {
             // Set the IME source (if there is one) to be invisible if it has been consumed.
             final InsetsSource originalImeSource = originalState.peekSource(ID_IME);
@@ -408,6 +405,22 @@ class InsetsPolicy {
                         : originalState;
                 final InsetsSource imeSource = new InsetsSource(originalImeSource);
                 imeSource.setVisible(false);
+                state.addSource(imeSource);
+                return state;
+            }
+        } else if (Flags.refactorInsetsController()
+                && (w.mMergedExcludeInsetsTypes & WindowInsets.Type.ime()) != 0) {
+            // In some cases (e.g. split screen from when the IME was requested and the animation
+            // actually starts) the insets should not be send, unless the flag is unset.
+            final InsetsSource originalImeSource = originalState.peekSource(ID_IME);
+            if (originalImeSource != null && originalImeSource.isVisible()) {
+                final InsetsState state = copyState
+                        ? new InsetsState(originalState)
+                        : originalState;
+                final InsetsSource imeSource = new InsetsSource(originalImeSource);
+                // Setting the height to zero, pretending we're in floating mode
+                imeSource.setFrame(0, 0, 0, 0);
+                imeSource.setVisibleFrame(imeSource.getFrame());
                 state.addSource(imeSource);
                 return state;
             }
@@ -433,8 +446,9 @@ class InsetsPolicy {
         return originalState;
     }
 
-    void onRequestedVisibleTypesChanged(InsetsControlTarget caller) {
-        mStateController.onRequestedVisibleTypesChanged(caller);
+    void onRequestedVisibleTypesChanged(InsetsTarget caller, @InsetsType int changedTypes,
+            @Nullable ImeTracker.Token statsToken) {
+        mStateController.onRequestedVisibleTypesChanged(caller, changedTypes, statsToken);
         checkAbortTransient(caller);
         updateBarControlTarget(mFocusedWin);
     }
@@ -447,7 +461,7 @@ class InsetsPolicy {
      *
      * @param caller who changed the insets state.
      */
-    private void checkAbortTransient(InsetsControlTarget caller) {
+    private void checkAbortTransient(InsetsTarget caller) {
         if (mShowingTransientTypes == 0) {
             return;
         }
@@ -456,7 +470,7 @@ class InsetsPolicy {
                 mStateController.getFakeControllingTypes(caller);
         final @InsetsType int abortTypes =
                 (fakeControllingTypes & caller.getRequestedVisibleTypes())
-                | (isImeVisible ? Type.navigationBars() : 0);
+                        | (isImeVisible ? Type.navigationBars() : 0);
         mShowingTransientTypes &= ~abortTypes;
         if (abortTypes != 0) {
             mDisplayContent.setLayoutNeeded();
@@ -491,6 +505,18 @@ class InsetsPolicy {
     }
 
     private @Nullable InsetsControlTarget getStatusControlTarget(@Nullable WindowState focusedWin,
+            boolean fake, @InsetsType int[] requestedVisibleTypes) {
+        final InsetsControlTarget target = getStatusControlTargetInner(focusedWin, fake);
+        if (remoteInsetsControllerControlsSystemBars(target)) {
+            requestedVisibleTypes[0] = (requestedVisibleTypes[0] & ~Type.statusBars()) | (
+                    target.getRequestedVisibleTypes() & Type.statusBars());
+            return mDisplayContent.mRemoteInsetsControlTarget;
+        }
+        return target;
+    }
+
+    private @Nullable InsetsControlTarget getStatusControlTargetInner(
+            @Nullable WindowState focusedWin,
             boolean fake) {
         if (!fake && isTransient(Type.statusBars())) {
             return mTransientControlTarget;
@@ -499,13 +525,6 @@ class InsetsPolicy {
         if (focusedWin == notificationShade) {
             // Notification shade has control anyways, no reason to force anything.
             return focusedWin;
-        }
-        if (remoteInsetsControllerControlsSystemBars(focusedWin)) {
-            ComponentName component = focusedWin.mActivityRecord != null
-                    ? focusedWin.mActivityRecord.mActivityComponent : null;
-            mDisplayContent.mRemoteInsetsControlTarget.topFocusedWindowChanged(
-                    component, focusedWin.getRequestedVisibleTypes());
-            return mDisplayContent.mRemoteInsetsControlTarget;
         }
         if (areTypesForciblyShowing(Type.statusBars())) {
             // Status bar is forcibly shown. We don't want the client to control the status bar, and
@@ -539,6 +558,17 @@ class InsetsPolicy {
     }
 
     private @Nullable InsetsControlTarget getNavControlTarget(@Nullable WindowState focusedWin,
+            boolean fake, @InsetsType int[] requestedVisibleTypes) {
+        final InsetsControlTarget target = getNavControlTargetInner(focusedWin, fake);
+        if (remoteInsetsControllerControlsSystemBars(target)) {
+            requestedVisibleTypes[0] = (requestedVisibleTypes[0] & ~Type.navigationBars()) | (
+                    target.getRequestedVisibleTypes() & Type.navigationBars());
+            return mDisplayContent.mRemoteInsetsControlTarget;
+        }
+        return target;
+    }
+
+    private @Nullable InsetsControlTarget getNavControlTargetInner(@Nullable WindowState focusedWin,
             boolean fake) {
         final WindowState imeWin = mDisplayContent.mInputMethodWindow;
         if (imeWin != null && imeWin.isVisible() && !mHideNavBarForKeyboard) {
@@ -559,13 +589,6 @@ class InsetsPolicy {
                 // Navigation bar has control if it is focused.
                 return focusedWin;
             }
-        }
-        if (remoteInsetsControllerControlsSystemBars(focusedWin)) {
-            ComponentName component = focusedWin.mActivityRecord != null
-                    ? focusedWin.mActivityRecord.mActivityComponent : null;
-            mDisplayContent.mRemoteInsetsControlTarget.topFocusedWindowChanged(
-                    component, focusedWin.getRequestedVisibleTypes());
-            return mDisplayContent.mRemoteInsetsControlTarget;
         }
         if (areTypesForciblyShowing(Type.navigationBars())) {
             // Navigation bar is forcibly shown. We don't want the client to control the navigation
@@ -589,12 +612,25 @@ class InsetsPolicy {
         return focusedWin;
     }
 
+    private void notifyRemoteInsetsController(@Nullable WindowState win,
+            @InsetsType int requestVisibleTypes) {
+        if (win == null) {
+            return;
+        }
+        ComponentName component = win.mActivityRecord != null
+                ? win.mActivityRecord.mActivityComponent : null;
+
+        mDisplayContent.mRemoteInsetsControlTarget.topFocusedWindowChanged(
+                component, requestVisibleTypes);
+    }
+
     boolean areTypesForciblyShowing(@InsetsType int types) {
         return (mForcedShowingTypes & types) == types;
     }
 
-    void updateSystemBars(WindowState win, boolean inSplitScreenMode, boolean inFreeformMode) {
-        mForcedShowingTypes = (inSplitScreenMode || inFreeformMode)
+    void updateSystemBars(WindowState win, boolean inSplitScreenMode,
+            boolean inNonFullscreenFreeformMode) {
+        mForcedShowingTypes = (inSplitScreenMode || inNonFullscreenFreeformMode)
                 ? (Type.statusBars() | Type.navigationBars())
                 : forceShowingNavigationBars(win)
                         ? Type.navigationBars()
@@ -623,8 +659,8 @@ class InsetsPolicy {
      * Determines whether the remote insets controller should take control of system bars for all
      * windows.
      */
-    boolean remoteInsetsControllerControlsSystemBars(@Nullable WindowState focusedWin) {
-        if (focusedWin == null) {
+    boolean remoteInsetsControllerControlsSystemBars(@Nullable InsetsControlTarget target) {
+        if (!(target instanceof WindowState win)) {
             return false;
         }
 
@@ -638,8 +674,8 @@ class InsetsPolicy {
         // If necessary, auto can control application windows when
         // config_remoteInsetsControllerControlsSystemBars is set to true. This is useful in cases
         // where we want to dictate system bar inset state for applications.
-        return focusedWin.getAttrs().type >= WindowManager.LayoutParams.FIRST_APPLICATION_WINDOW
-                && focusedWin.getAttrs().type <= WindowManager.LayoutParams.LAST_APPLICATION_WINDOW;
+        return win.mAttrs.type >= WindowManager.LayoutParams.FIRST_APPLICATION_WINDOW
+                && win.mAttrs.type <= WindowManager.LayoutParams.LAST_APPLICATION_WINDOW;
     }
 
     private void dispatchTransientSystemBarsVisibilityChanged(
@@ -686,7 +722,7 @@ class InsetsPolicy {
     private class BarWindow {
 
         private final int mId;
-        private  @StatusBarManager.WindowVisibleState int mState =
+        private @StatusBarManager.WindowVisibleState int mState =
                 StatusBarManager.WINDOW_STATE_SHOWING;
 
         BarWindow(int id) {
@@ -755,8 +791,6 @@ class InsetsPolicy {
         private final Handler mHandler;
         private final String mName;
 
-        private boolean mInsetsAnimationRunning;
-
         Host(Handler handler, String name) {
             mHandler = handler;
             mName = name;
@@ -768,11 +802,13 @@ class InsetsPolicy {
         }
 
         @Override
-        public void notifyInsetsChanged() { }
+        public void notifyInsetsChanged() {
+        }
 
         @Override
         public void dispatchWindowInsetsAnimationPrepare(
-                @NonNull WindowInsetsAnimation animation) { }
+                @NonNull WindowInsetsAnimation animation) {
+        }
 
         @Override
         public Bounds dispatchWindowInsetsAnimationStart(
@@ -790,7 +826,8 @@ class InsetsPolicy {
 
         @Override
         public void dispatchWindowInsetsAnimationEnd(
-                @NonNull WindowInsetsAnimation animation) { }
+                @NonNull WindowInsetsAnimation animation) {
+        }
 
         @Override
         public void applySurfaceParams(SyncRtSurfaceTransactionApplier.SurfaceParams... p) {
@@ -803,7 +840,8 @@ class InsetsPolicy {
         }
 
         @Override
-        public void updateRequestedVisibleTypes(int types) { }
+        public void updateRequestedVisibleTypes(int types, @Nullable ImeTracker.Token statsToken) {
+        }
 
         @Override
         public boolean hasAnimationCallbacks() {
@@ -811,7 +849,8 @@ class InsetsPolicy {
         }
 
         @Override
-        public void setSystemBarsAppearance(int appearance, int mask) { }
+        public void setSystemBarsAppearance(int appearance, int mask) {
+        }
 
         @Override
         public int getSystemBarsAppearance() {
@@ -819,7 +858,8 @@ class InsetsPolicy {
         }
 
         @Override
-        public void setSystemBarsBehavior(int behavior) { }
+        public void setSystemBarsBehavior(int behavior) {
+        }
 
         @Override
         public int getSystemBarsBehavior() {
@@ -832,10 +872,12 @@ class InsetsPolicy {
         }
 
         @Override
-        public void addOnPreDrawRunnable(Runnable r) { }
+        public void addOnPreDrawRunnable(Runnable r) {
+        }
 
         @Override
-        public void postInsetsAnimationCallback(Runnable r) { }
+        public void postInsetsAnimationCallback(Runnable r) {
+        }
 
         @Override
         public InputMethodManager getInputMethodManager() {
@@ -857,11 +899,6 @@ class InsetsPolicy {
         @Override
         public IBinder getWindowToken() {
             return null;
-        }
-
-        @Override
-        public void notifyAnimationRunningStateChanged(boolean running) {
-            mInsetsAnimationRunning = running;
         }
     }
 }

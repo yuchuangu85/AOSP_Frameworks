@@ -22,9 +22,10 @@ import static android.permission.flags.Flags.FLAG_SENSITIVE_NOTIFICATION_APP_PRO
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doCallRealMethod;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -32,10 +33,13 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.role.RoleManager;
+import android.companion.AssociationRequest;
 import android.content.pm.PackageManagerInternal;
 import android.media.projection.MediaProjectionInfo;
 import android.media.projection.MediaProjectionManager;
 import android.os.Process;
+import android.os.RemoteException;
 import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
@@ -65,6 +69,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
+import java.util.List;
 import java.util.Set;
 
 @SmallTest
@@ -114,6 +119,9 @@ public class SensitiveContentProtectionManagerServiceNotificationTest {
     private PackageManagerInternal mPackageManagerInternal;
 
     @Mock
+    private RoleManager mRoleManager;
+
+    @Mock
     private StatusBarNotification mNotification1;
 
     @Mock
@@ -137,9 +145,17 @@ public class SensitiveContentProtectionManagerServiceNotificationTest {
 
         mSensitiveContentProtectionManagerService.mNotificationListener =
                 spy(mSensitiveContentProtectionManagerService.mNotificationListener);
-        doCallRealMethod()
-                .when(mSensitiveContentProtectionManagerService.mNotificationListener)
-                .onListenerConnected();
+
+        // Unexpected NLS interactions when registered cause test flakes. For purposes of this test,
+        // the test will control any NLS calls.
+        try {
+            doNothing().when(mSensitiveContentProtectionManagerService.mNotificationListener)
+                    .registerAsSystemService(any(), any(), anyInt());
+            doNothing().when(mSensitiveContentProtectionManagerService.mNotificationListener)
+                    .unregisterAsSystemService();
+        } catch (RemoteException e) {
+            // Intra-process call, should never happen.
+        }
 
         // Setup RankingMap and two possilbe rankings
         when(mSensitiveRanking.hasSensitiveContent()).thenReturn(true);
@@ -151,7 +167,8 @@ public class SensitiveContentProtectionManagerServiceNotificationTest {
         setupSensitiveNotification();
 
         mSensitiveContentProtectionManagerService.init(mProjectionManager, mWindowManager,
-                mPackageManagerInternal, new ArraySet<>(Set.of(EXEMPTED_SCREEN_RECORDER_PACKAGE)));
+                mPackageManagerInternal, mRoleManager,
+                new ArraySet<>(Set.of(EXEMPTED_SCREEN_RECORDER_PACKAGE)));
 
         // Obtain useful mMediaProjectionCallback
         verify(mProjectionManager).addCallback(mMediaProjectionCallbackCaptor.capture(), any());
@@ -302,6 +319,18 @@ public class SensitiveContentProtectionManagerServiceNotificationTest {
     private MediaProjectionInfo createExemptMediaProjectionInfo() {
         return new MediaProjectionInfo(
                 EXEMPTED_SCREEN_RECORDER_PACKAGE, Process.myUserHandle(), null);
+    }
+
+    @Test
+    public void mediaProjectionOnStart_verifyExemptedAppStreamingPackage() {
+        MediaProjectionInfo mediaProjectionInfo = createMediaProjectionInfo();
+        when(mRoleManager.getRoleHoldersAsUser(AssociationRequest.DEVICE_PROFILE_APP_STREAMING,
+                mediaProjectionInfo.getUserHandle())).thenReturn(
+                List.of(mediaProjectionInfo.getPackageName()));
+
+        mMediaProjectionCallbackCaptor.getValue().onStart(mediaProjectionInfo);
+
+        verify(mWindowManager, never()).addBlockScreenCaptureForApps(mPackageInfoCaptor.capture());
     }
 
     @Test

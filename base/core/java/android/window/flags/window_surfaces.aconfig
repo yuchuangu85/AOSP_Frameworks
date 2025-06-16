@@ -13,14 +13,6 @@ flag {
 
 flag {
     namespace: "window_surfaces"
-    name: "explicit_refresh_rate_hints"
-    description: "Performance related hints during transitions"
-    is_fixed_read_only: true
-    bug: "300019131"
-}
-
-flag {
-    namespace: "window_surfaces"
     name: "delete_capture_display"
     description: "Delete uses of ScreenCapture#captureDisplay"
     is_fixed_read_only: true
@@ -33,14 +25,6 @@ flag {
     description: "Whether to allow system activity to disable ActivityRecordInputSink"
     is_fixed_read_only: true
     bug: "262477923"
-}
-
-flag {
-    namespace: "window_surfaces"
-    name: "secure_window_state"
-    description: "Move SC secure flag to WindowState level"
-    is_fixed_read_only: true
-    bug: "308662081"
 }
 
 flag {
@@ -104,4 +88,41 @@ flag {
     description: "Set VRI SC properties in the client instead of system server"
     is_fixed_read_only: true
     bug: "308662081"
+}
+
+flag {
+  name: "ignore_corner_radius_and_shadows"
+  namespace: "window_surfaces"
+  description: "Ignore the corner radius and shadows of a SurfaceControl"
+  bug: "375624570"
+  is_fixed_read_only: true
+} # ignore_corner_radius_and_shadows
+
+flag {
+  name: "enable_border_settings"
+  namespace: "window_surfaces"
+  description: "Enable SurfaceControl outline settings."
+  bug: "367464660"
+  is_fixed_read_only: true
+}
+
+flag {
+    name: "jank_api"
+    namespace: "window_surfaces"
+    description: "Adds the jank data listener to AttachedSurfaceControl"
+    is_fixed_read_only: true
+    is_exported: true
+    bug: "293949943"
+}
+
+flag {
+    namespace: "window_surfaces"
+    name: "fix_hide_overlay_api"
+    description: "Application that calls setHideOverlayWindows() shouldn't hide its own windows, this flag gate the fix of this issue."
+    is_fixed_read_only: true
+    is_exported: true
+    bug: "359424300"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }

@@ -20,15 +20,10 @@ package com.android.systemui.scene.shared.flag
 
 import com.android.systemui.Flags.FLAG_SCENE_CONTAINER
 import com.android.systemui.Flags.sceneContainer
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
 import com.android.systemui.flags.FlagToken
 import com.android.systemui.flags.RefactorFlagUtils
-import com.android.systemui.keyguard.KeyguardBottomAreaRefactor
 import com.android.systemui.keyguard.KeyguardWmStateRefactor
-import com.android.systemui.keyguard.MigrateClocksToBlueprint
-import com.android.systemui.keyguard.shared.ComposeLockscreen
-import com.android.systemui.statusbar.notification.shared.NotificationsHeadsUpRefactor
-import com.android.systemui.statusbar.phone.PredictiveBackSysUiFlag
+import com.android.systemui.statusbar.notification.shared.NotificationThrottleHun
 
 /** Helper for reading or using the scene container flag state. */
 object SceneContainerFlag {
@@ -39,13 +34,9 @@ object SceneContainerFlag {
     inline val isEnabled
         get() =
             sceneContainer() && // mainAconfigFlag
-            ComposeLockscreen.isEnabled &&
-                KeyguardBottomAreaRefactor.isEnabled &&
                 KeyguardWmStateRefactor.isEnabled &&
-                MigrateClocksToBlueprint.isEnabled &&
-                NotificationsHeadsUpRefactor.isEnabled &&
-                PredictiveBackSysUiFlag.isEnabled &&
-                DeviceEntryUdfpsRefactor.isEnabled
+                NotificationThrottleHun.isEnabled
+
     // NOTE: Changes should also be made in getSecondaryFlags and @EnableSceneContainer
 
     /** The main aconfig flag. */
@@ -54,13 +45,8 @@ object SceneContainerFlag {
     /** The set of secondary flags which must be enabled for scene container to work properly */
     inline fun getSecondaryFlags(): Sequence<FlagToken> =
         sequenceOf(
-            ComposeLockscreen.token,
-            KeyguardBottomAreaRefactor.token,
             KeyguardWmStateRefactor.token,
-            MigrateClocksToBlueprint.token,
-            NotificationsHeadsUpRefactor.token,
-            PredictiveBackSysUiFlag.token,
-            DeviceEntryUdfpsRefactor.token,
+            NotificationThrottleHun.token,
             // NOTE: Changes should also be made in isEnabled and @EnableSceneContainer
         )
 
@@ -91,12 +77,25 @@ object SceneContainerFlag {
     @JvmStatic
     inline fun assertInLegacyMode() = RefactorFlagUtils.assertInLegacyMode(isEnabled, DESCRIPTION)
 
+    /**
+     * Called to ensure the new code is only run when the flag is enabled. This will throw an
+     * exception if the flag is disabled to ensure that the refactor author catches issues in
+     * testing.
+     */
+    @JvmStatic
+    @Deprecated("Avoid crashing.", ReplaceWith("if (this.isUnexpectedlyInLegacyMode()) return"))
+    inline fun unsafeAssertInNewMode() =
+        RefactorFlagUtils.unsafeAssertInNewMode(isEnabled, DESCRIPTION)
+
     /** Returns a developer-readable string that describes the current requirement list. */
     @JvmStatic
     fun requirementDescription(): String {
         return buildString {
-            getAllRequirements().forEach { requirement ->
-                append('\n')
+            getAllRequirements().forEachIndexed { index, requirement ->
+                if (index > 0) {
+                    append('\n')
+                }
+
                 append(if (requirement.isEnabled) "    [MET]" else "[NOT MET]")
                 append(" ${requirement.name}")
             }

@@ -30,6 +30,8 @@ import static com.android.server.pm.PackageManagerService.TAG;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SpecialUsers.CanBeALL;
+import android.annotation.UserIdInt;
 import android.content.pm.PackageManager;
 import android.content.pm.parsing.ApkLiteParseUtils;
 import android.content.pm.parsing.PackageLite;
@@ -256,11 +258,13 @@ final class RemovePackageHelper {
      * Make sure this flag is set for partially installed apps. If not it's meaningless to
      * delete a partially installed application.
      */
-    public void clearPackageStateForUserLIF(PackageSetting ps, int userId, int flags) {
+    public void clearPackageStateForUserLIF(PackageSetting ps, @CanBeALL @UserIdInt int userId,
+            int flags) {
         final String packageName = ps.getPackageName();
-        // Step 1: always destroy app profiles.
-        mAppDataHelper.destroyAppProfilesLIF(packageName);
-
+        // Step 1: always destroy app profiles except when explicitly preserved
+        if ((flags & Installer.FLAG_CLEAR_APP_DATA_KEEP_ART_PROFILES) == 0) {
+            mAppDataHelper.destroyAppProfilesLIF(packageName);
+        }
         final AndroidPackage pkg;
         final SharedUserSetting sus;
         synchronized (mPm.mLock) {
@@ -277,7 +281,8 @@ final class RemovePackageHelper {
             resolvedPkg = PackageImpl.buildFakeForDeletion(packageName, ps.getVolumeUuid());
         }
 
-        int appDataDeletionFlags = FLAG_STORAGE_DE | FLAG_STORAGE_CE | FLAG_STORAGE_EXTERNAL;
+        int appDataDeletionFlags = FLAG_STORAGE_DE | FLAG_STORAGE_CE | FLAG_STORAGE_EXTERNAL
+                | (flags & Installer.FLAG_CLEAR_APP_DATA_KEEP_ART_PROFILES);
         // Personal data is preserved if the DELETE_KEEP_DATA flag is on
         if ((flags & PackageManager.DELETE_KEEP_DATA) != 0) {
             if ((flags & PackageManager.DELETE_ARCHIVE) != 0) {
@@ -292,8 +297,10 @@ final class RemovePackageHelper {
         // Step 2: destroy app data.
         mAppDataHelper.destroyAppDataLIF(resolvedPkg, userId, appDataDeletionFlags);
         if (userId != UserHandle.USER_ALL) {
-            ps.setCeDataInode(-1, userId);
-            ps.setDeDataInode(-1, userId);
+            synchronized (mPm.mLock) {
+                ps.setCeDataInode(-1, userId);
+                ps.setDeDataInode(-1, userId);
+            }
         }
 
         final PreferredActivityHelper preferredActivityHelper = new PreferredActivityHelper(mPm,
@@ -366,13 +373,13 @@ final class RemovePackageHelper {
      * This method deletes the package from internal data structures such as mPackages / mSettings.
      *
      * @param targetUserId indicates the target user of the deletion. It equals to
-     *                     {@link UserHandle.USER_ALL} if the deletion was initiated for all users,
+     *                     {@link UserHandle#USER_ALL} if the deletion was initiated for all users,
      *                     otherwise it equals to the specific user id that the deletion was meant
      *                     for.
      */
     @GuardedBy("mPm.mInstallLock")
-    public void removePackageDataLIF(final PackageSetting deletedPs, int targetUserId,
-            @NonNull int[] allUserHandles,
+    public void removePackageDataLIF(final PackageSetting deletedPs,
+            @CanBeALL @UserIdInt int targetUserId, @NonNull int[] allUserHandles,
             @NonNull PackageRemovedInfo outInfo, int flags, boolean writeSettings) {
         String packageName = deletedPs.getPackageName();
         if (DEBUG_REMOVE) Slog.d(TAG, "removePackageDataLI: " + deletedPs);
@@ -425,12 +432,21 @@ final class RemovePackageHelper {
             }
             final boolean isArchive = (flags & PackageManager.DELETE_ARCHIVE) != 0;
             final long currentTimeMillis = System.currentTimeMillis();
-            for (int userId : outInfo.mRemovedUsers) {
-                if (DEBUG_REMOVE) {
-                    final boolean wasInstalled = deletedPs.getInstalled(userId);
-                    Slog.d(TAG, "    user " + userId + ": " + wasInstalled + " => " + false);
+            synchronized (mPm.mLock) {
+                for (int userId : outInfo.mRemovedUsers) {
+                    if (DEBUG_REMOVE) {
+                        final boolean wasInstalled = deletedPs.getInstalled(userId);
+                        Slog.d(TAG, "    user " + userId + ": " + wasInstalled + " => " + false);
+                    }
+                    deletedPs.setInstalled(/* installed= */ false, userId);
                 }
-                deletedPs.setInstalled(/* installed= */ false, userId);
+
+                // Preserve split apk information for downgrade check with DELETE_KEEP_DATA and
+                // archived app cases
+                if (deletedPkg != null && deletedPkg.getSplitNames() != null) {
+                    deletedPs.setSplitNames(deletedPkg.getSplitNames());
+                    deletedPs.setSplitRevisionCodes(deletedPkg.getSplitRevisionCodes());
+                }
             }
         }
 
@@ -441,17 +457,19 @@ final class RemovePackageHelper {
             if (DEBUG_REMOVE) {
                 Slog.d(TAG, "Propagating install state across downgrade");
             }
-            for (int userId : allUserHandles) {
-                final boolean installed = ArrayUtils.contains(outInfo.mOrigUsers, userId);
-                if (DEBUG_REMOVE) {
-                    Slog.d(TAG, "    user " + userId + " => " + installed);
-                }
-                if (installed != deletedPs.getInstalled(userId)) {
-                    installedStateChanged = true;
-                }
-                deletedPs.setInstalled(installed, userId);
-                if (installed) {
-                    deletedPs.setUninstallReason(UNINSTALL_REASON_UNKNOWN, userId);
+            synchronized (mPm.mLock) {
+                for (int userId : allUserHandles) {
+                    final boolean installed = ArrayUtils.contains(outInfo.mOrigUsers, userId);
+                    if (DEBUG_REMOVE) {
+                        Slog.d(TAG, "    user " + userId + " => " + installed);
+                    }
+                    if (installed != deletedPs.getInstalled(userId)) {
+                        installedStateChanged = true;
+                    }
+                    deletedPs.setInstalled(installed, userId);
+                    if (installed) {
+                        deletedPs.setUninstallReason(UNINSTALL_REASON_UNKNOWN, userId);
+                    }
                 }
             }
         }
@@ -467,7 +485,8 @@ final class RemovePackageHelper {
         }
     }
 
-    private static boolean shouldDeletePackageSetting(PackageSetting deletedPs, int userId,
+    private static boolean shouldDeletePackageSetting(PackageSetting deletedPs,
+                                                      @CanBeALL @UserIdInt int userId,
                                                       int[] allUserHandles, int flags) {
         if ((flags & PackageManager.DELETE_KEEP_DATA) != 0) {
             return false;

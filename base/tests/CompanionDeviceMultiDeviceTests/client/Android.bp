@@ -40,12 +40,11 @@ android_test {
         "mobly-snippet-lib",
     ],
     libs: [
-        "android.test.base",
-        "android.test.runner",
+        "android.test.base.stubs.system",
+        "android.test.runner.stubs.system",
     ],
 
     optimize: {
-        proguard_compatibility: true,
         proguard_flags_files: ["proguard.flags"],
     },
 }

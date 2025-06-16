@@ -30,6 +30,8 @@ import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.deviceentry.data.repository.FaceWakeUpTriggersConfigModule
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryFaceAuthInteractor
 import com.android.systemui.deviceentry.domain.interactor.SystemUIDeviceEntryFaceAuthInteractor
+import com.android.systemui.dump.DumpManager
+import com.android.systemui.keyguard.data.repository.PulseExpansionRepository
 import com.android.systemui.keyguard.ui.composable.blueprint.DefaultBlueprintModule
 import com.android.systemui.scene.SceneContainerFrameworkModule
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
@@ -49,7 +51,6 @@ import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
@@ -70,11 +71,17 @@ import kotlinx.coroutines.test.runTest
 interface SysUITestModule {
 
     @Binds fun bindTestableContext(sysuiTestableContext: SysuiTestableContext): TestableContext
+
     @Binds fun bindContext(testableContext: TestableContext): Context
+
     @Binds @Application fun bindAppContext(context: Context): Context
+
     @Binds @Application fun bindAppResources(resources: Resources): Resources
+
     @Binds @Main fun bindMainResources(resources: Resources): Resources
+
     @Binds fun bindBroadcastDispatcher(fake: FakeBroadcastDispatcher): BroadcastDispatcher
+
     @Binds @SysUISingleton fun bindsShadeInteractor(sii: ShadeInteractorImpl): ShadeInteractor
 
     @Binds
@@ -108,7 +115,7 @@ interface SysUITestModule {
         @Provides
         fun provideBaseShadeInteractor(
             sceneContainerOn: Provider<ShadeInteractorSceneContainerImpl>,
-            sceneContainerOff: Provider<ShadeInteractorLegacyImpl>
+            sceneContainerOff: Provider<ShadeInteractorLegacyImpl>,
         ): BaseShadeInteractor {
             return if (SceneContainerFlag.isEnabled) {
                 sceneContainerOn.get()
@@ -125,6 +132,12 @@ interface SysUITestModule {
         ): SceneDataSourceDelegator {
             return SceneDataSourceDelegator(applicationScope, config)
         }
+
+        @Provides
+        @SysUISingleton
+        fun providesPulseExpansionRepository(dumpManager: DumpManager): PulseExpansionRepository {
+            return PulseExpansionRepository(dumpManager)
+        }
     }
 }
 
@@ -134,7 +147,6 @@ interface SysUITestComponent<out T> {
     val underTest: T
 }
 
-@OptIn(ExperimentalCoroutinesApi::class)
 fun <T : SysUITestComponent<*>> T.runTest(block: suspend T.() -> Unit): Unit =
     testScope.runTest {
         // Access underTest immediately to force Dagger to instantiate it prior to the test running
@@ -143,7 +155,6 @@ fun <T : SysUITestComponent<*>> T.runTest(block: suspend T.() -> Unit): Unit =
         block()
     }
 
-@OptIn(ExperimentalCoroutinesApi::class)
 fun SysUITestComponent<*>.runCurrent() = testScope.runCurrent()
 
 fun <T> SysUITestComponent<*>.collectLastValue(

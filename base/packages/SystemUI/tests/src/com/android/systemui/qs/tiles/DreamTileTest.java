@@ -16,6 +16,12 @@
 
 package com.android.systemui.qs.tiles;
 
+import static android.platform.test.flag.junit.FlagsParameterization.allCombinationsOf;
+
+import static com.android.systemui.Flags.FLAG_QS_CUSTOM_TILE_CLICK_GUARANTEED_BUG_FIX;
+
+import static com.google.common.truth.Truth.assertThat;
+
 import static junit.framework.TestCase.assertEquals;
 import static junit.framework.TestCase.assertFalse;
 import static junit.framework.TestCase.assertTrue;
@@ -32,12 +38,12 @@ import android.content.Intent;
 import android.content.pm.UserInfo;
 import android.os.Handler;
 import android.os.RemoteException;
+import android.platform.test.flag.junit.FlagsParameterization;
 import android.provider.Settings;
 import android.service.dreams.IDreamManager;
 import android.service.quicksettings.Tile;
 import android.testing.TestableLooper;
 
-import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.logging.MetricsLogger;
@@ -45,15 +51,16 @@ import com.android.systemui.SysuiTestCase;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.classifier.FalsingManagerFake;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
 import com.android.systemui.qs.QsEventLogger;
+import com.android.systemui.qs.flags.QsInCompose;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.res.R;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.util.settings.FakeSettings;
-import com.android.systemui.util.settings.SecureSettings;
 
 import org.junit.After;
 import org.junit.Before;
@@ -63,10 +70,20 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-@RunWith(AndroidJUnit4.class)
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4;
+import platform.test.runner.parameterized.Parameters;
+
+import java.util.List;
+
+@RunWith(ParameterizedAndroidJunit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 @SmallTest
 public class DreamTileTest extends SysuiTestCase {
+
+    @Parameters(name = "{0}")
+    public static List<FlagsParameterization> getParams() {
+        return allCombinationsOf(FLAG_QS_CUSTOM_TILE_CLICK_GUARANTEED_BUG_FIX);
+    }
 
     @Mock
     private ActivityStarter mActivityStarter;
@@ -91,7 +108,7 @@ public class DreamTileTest extends SysuiTestCase {
 
     private DreamTile mTile;
 
-    private SecureSettings mSecureSettings;
+    private FakeSettings mSecureSettings;
 
     private static final ComponentName COLORS_DREAM_COMPONENT_NAME = new ComponentName(
             "com.android.dreams", ".Colors");
@@ -100,6 +117,11 @@ public class DreamTileTest extends SysuiTestCase {
 
     private final String mExpectedTileLabel = mContext.getResources().getString(
             R.string.quick_settings_screensaver_label);
+
+    public DreamTileTest(FlagsParameterization flags) {
+        super();
+        mSetFlagsRule.setFlagsParameterization(flags);
+    }
 
     @Before
     public void setUp() throws Exception {
@@ -246,14 +268,31 @@ public class DreamTileTest extends SysuiTestCase {
         dockIntent.putExtra(Intent.EXTRA_DOCK_STATE, Intent.EXTRA_DOCK_STATE_DESK);
         receiver.onReceive(mContext, dockIntent);
         mTestableLooper.processAllMessages();
-        assertEquals(QSTileImpl.ResourceIcon.get(R.drawable.ic_qs_screen_saver),
+        assertEquals(createExpectedIcon(R.drawable.ic_qs_screen_saver),
                 dockedTile.getState().icon);
 
         dockIntent.putExtra(Intent.EXTRA_DOCK_STATE, Intent.EXTRA_DOCK_STATE_UNDOCKED);
         receiver.onReceive(mContext, dockIntent);
         mTestableLooper.processAllMessages();
-        assertEquals(QSTileImpl.ResourceIcon.get(R.drawable.ic_qs_screen_saver_undocked),
+        assertEquals(createExpectedIcon(R.drawable.ic_qs_screen_saver_undocked),
                 dockedTile.getState().icon);
+
+        destroyTile(dockedTile);
+    }
+
+    @Test
+    public void testHandleUserSwitch() {
+        final DreamTile dockedTile = constructTileForTest(true, false);
+        dockedTile.handleSetListening(true);
+
+        final int oldUserId = mUserTracker.getUserId();
+        assertThat(dockedTile.mDreamSettingObserver.getCurrentUser()).isEqualTo(oldUserId);
+        assertThat(dockedTile.mEnabledSettingObserver.getCurrentUser()).isEqualTo(oldUserId);
+
+        final int newUserId = 1337;
+        dockedTile.handleUserSwitch(newUserId);
+        assertThat(dockedTile.mDreamSettingObserver.getCurrentUser()).isEqualTo(newUserId);
+        assertThat(dockedTile.mEnabledSettingObserver.getCurrentUser()).isEqualTo(newUserId);
 
         destroyTile(dockedTile);
     }
@@ -266,6 +305,14 @@ public class DreamTileTest extends SysuiTestCase {
     private void destroyTile(QSTileImpl<?> tile) {
         tile.destroy();
         mTestableLooper.processAllMessages();
+    }
+
+    private QSTile.Icon createExpectedIcon(int resId) {
+        if (QsInCompose.isEnabled()) {
+            return new QSTileImpl.DrawableIconWithRes(mContext.getDrawable(resId), resId);
+        } else {
+            return QSTileImpl.ResourceIcon.get(resId);
+        }
     }
 
     private DreamTile constructTileForTest(boolean dreamSupported,

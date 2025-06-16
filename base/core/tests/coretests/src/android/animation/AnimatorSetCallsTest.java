@@ -20,6 +20,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.util.PollingCheck;
 import android.view.View;
 
@@ -35,6 +37,9 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+
 
 @MediumTest
 public class AnimatorSetCallsTest {
@@ -445,6 +450,94 @@ public class AnimatorSetCallsTest {
 
         // Make sure that the UI thread hasn't been destroyed by a stack overflow...
         mActivity.runOnUiThread(() -> {});
+    }
+
+    @Test
+    public void startAfterSeek() throws Throwable {
+        ArrayList<Float> values = new ArrayList<>();
+        AtomicReference<CountDownLatch> drawLatch = new AtomicReference<>(new CountDownLatch(1));
+
+        mActivity.runOnUiThread(() -> {
+            mAnimator.setDuration(300);
+            mAnimator.setInterpolator(null);
+            View view = (View) mAnimator.getTarget();
+            view.getViewTreeObserver().addOnDrawListener(() -> {
+                values.add(view.getTranslationX());
+                drawLatch.get().countDown();
+            });
+            mSet1.setCurrentPlayTime(150);
+        });
+
+        assertTrue(drawLatch.get().await(1, TimeUnit.SECONDS));
+        drawLatch.set(new CountDownLatch(1));
+
+        mActivity.runOnUiThread(() -> {
+            assertEquals(1, values.size());
+            assertEquals(50f, values.get(0), 0.01f);
+            mSet1.start();
+        });
+
+        assertTrue(drawLatch.get().await(1, TimeUnit.SECONDS));
+
+        mActivity.runOnUiThread(() -> {
+            assertTrue(values.size() >= 2);
+            float lastValue = values.get(0);
+            for (int i = 1; i < values.size(); i++) {
+                assertTrue(values.get(i) >= lastValue);
+                lastValue = values.get(i);
+            }
+        });
+    }
+
+    @Test
+    public void testCancelOnPendingEndListener() throws Throwable {
+        testPendingEndListener(AnimatorSet::cancel);
+    }
+
+    @Test
+    public void testEndOnPendingEndListener() throws Throwable {
+        testPendingEndListener(animatorSet -> {
+            // This verifies that isRunning() and isStarted() are true at last frame.
+            // Then the end() should invoke the end callback immediately.
+            if (animatorSet.isRunning() && animatorSet.isStarted()) {
+                animatorSet.end();
+            }
+        });
+    }
+
+    private void testPendingEndListener(Consumer<AnimatorSet> finishOnLastFrame) throws Throwable {
+        final CountDownLatch endLatch = new CountDownLatch(1);
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final boolean[] endCalledImmediately = new boolean[2];
+        final AnimatorSet set = new AnimatorSet();
+        final ValueAnimatorTests.MyListener asListener = new ValueAnimatorTests.MyListener();
+        final ValueAnimatorTests.MyListener vaListener = new ValueAnimatorTests.MyListener();
+        final ValueAnimator va = new ValueAnimator();
+        va.setFloatValues(0f, 1f);
+        va.setDuration(30);
+        va.addUpdateListener(animation -> {
+            if (animation.getAnimatedFraction() == 1f) {
+                handler.post(() -> {
+                    finishOnLastFrame.accept(set);
+                    endCalledImmediately[0] = vaListener.endCalled;
+                    endCalledImmediately[1] = asListener.endCalled;
+                    endLatch.countDown();
+                });
+            }
+        });
+        set.addListener(asListener);
+        va.addListener(vaListener);
+        set.play(va);
+
+        ValueAnimator.setPostNotifyEndListenerEnabled(true);
+        try {
+            handler.post(set::start);
+            assertTrue(endLatch.await(1, TimeUnit.SECONDS));
+            assertTrue(endCalledImmediately[0]);
+            assertTrue(endCalledImmediately[1]);
+        } finally {
+            ValueAnimator.setPostNotifyEndListenerEnabled(false);
+        }
     }
 
     private void waitForOnUiThread(PollingCheck.PollingCheckCondition condition) {

@@ -17,18 +17,18 @@
 package com.android.systemui.scene
 
 import com.android.systemui.CoreStartable
-import com.android.systemui.bouncer.shared.flag.ComposeBouncerFlagsModule
 import com.android.systemui.notifications.ui.composable.NotificationsShadeSessionModule
 import com.android.systemui.scene.domain.SceneDomainModule
 import com.android.systemui.scene.domain.interactor.WindowRootViewVisibilityInteractor
 import com.android.systemui.scene.domain.resolver.HomeSceneFamilyResolverModule
-import com.android.systemui.scene.domain.resolver.NotifShadeSceneFamilyResolverModule
-import com.android.systemui.scene.domain.resolver.QuickSettingsSceneFamilyResolverModule
+import com.android.systemui.scene.domain.startable.KeyguardStateCallbackStartable
 import com.android.systemui.scene.domain.startable.SceneContainerStartable
 import com.android.systemui.scene.domain.startable.ScrimStartable
+import com.android.systemui.scene.domain.startable.StatusBarStartable
+import com.android.systemui.scene.shared.model.Overlays
 import com.android.systemui.scene.shared.model.SceneContainerConfig
 import com.android.systemui.scene.shared.model.Scenes
-import com.android.systemui.shade.shared.flag.DualShade
+import com.android.systemui.scene.ui.composable.SceneContainerTransitions
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -39,24 +39,22 @@ import dagger.multibindings.IntoMap
 @Module(
     includes =
         [
-            BouncerSceneModule::class,
+            BouncerOverlayModule::class,
             CommunalSceneModule::class,
-            ComposeBouncerFlagsModule::class,
+            DreamSceneModule::class,
             EmptySceneModule::class,
             GoneSceneModule::class,
             LockscreenSceneModule::class,
             QuickSettingsSceneModule::class,
             ShadeSceneModule::class,
-            QuickSettingsShadeSceneModule::class,
-            NotificationsShadeSceneModule::class,
+            QuickSettingsShadeOverlayModule::class,
+            NotificationsShadeOverlayModule::class,
             NotificationsShadeSessionModule::class,
             SceneDomainModule::class,
 
             // List SceneResolver modules for supported SceneFamilies
             HomeSceneFamilyResolverModule::class,
-            NotifShadeSceneFamilyResolverModule::class,
-            QuickSettingsSceneFamilyResolverModule::class,
-        ],
+        ]
 )
 interface SceneContainerFrameworkModule {
 
@@ -69,6 +67,16 @@ interface SceneContainerFrameworkModule {
     @IntoMap
     @ClassKey(ScrimStartable::class)
     fun scrimStartable(impl: ScrimStartable): CoreStartable
+
+    @Binds
+    @IntoMap
+    @ClassKey(StatusBarStartable::class)
+    fun statusBarStartable(impl: StatusBarStartable): CoreStartable
+
+    @Binds
+    @IntoMap
+    @ClassKey(KeyguardStateCallbackStartable::class)
+    fun keyguardStateCallbackStartable(impl: KeyguardStateCallbackStartable): CoreStartable
 
     @Binds
     @IntoMap
@@ -88,27 +96,28 @@ interface SceneContainerFrameworkModule {
                     listOfNotNull(
                         Scenes.Gone,
                         Scenes.Communal,
+                        Scenes.Dream,
                         Scenes.Lockscreen,
-                        Scenes.Bouncer,
-                        Scenes.QuickSettings.takeUnless { DualShade.isEnabled },
-                        Scenes.QuickSettingsShade.takeIf { DualShade.isEnabled },
-                        Scenes.NotificationsShade.takeIf { DualShade.isEnabled },
-                        Scenes.Shade.takeUnless { DualShade.isEnabled },
+                        Scenes.QuickSettings,
+                        Scenes.Shade,
                     ),
                 initialSceneKey = Scenes.Lockscreen,
+                overlayKeys =
+                    listOfNotNull(
+                        Overlays.NotificationsShade,
+                        Overlays.QuickSettingsShade,
+                        Overlays.Bouncer,
+                    ),
                 navigationDistances =
                     mapOf(
-                            Scenes.Gone to 0,
-                            Scenes.Lockscreen to 0,
-                            Scenes.Communal to 1,
-                            Scenes.NotificationsShade to 2.takeIf { DualShade.isEnabled },
-                            Scenes.Shade to 2.takeUnless { DualShade.isEnabled },
-                            Scenes.QuickSettingsShade to 3.takeIf { DualShade.isEnabled },
-                            Scenes.QuickSettings to 3.takeUnless { DualShade.isEnabled },
-                            Scenes.Bouncer to 4,
-                        )
-                        .filterValues { it != null }
-                        .mapValues { checkNotNull(it.value) }
+                        Scenes.Gone to 0,
+                        Scenes.Lockscreen to 0,
+                        Scenes.Communal to 1,
+                        Scenes.Dream to 2,
+                        Scenes.Shade to 3,
+                        Scenes.QuickSettings to 4,
+                    ),
+                transitionsBuilder = SceneContainerTransitions(),
             )
         }
     }

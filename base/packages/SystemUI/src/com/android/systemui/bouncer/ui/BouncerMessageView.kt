@@ -17,11 +17,14 @@
 package com.android.systemui.bouncer.ui
 
 import android.content.Context
+import android.graphics.Typeface
 import android.util.AttributeSet
 import android.widget.LinearLayout
 import com.android.keyguard.BouncerKeyguardMessageArea
 import com.android.keyguard.KeyguardMessageArea
 import com.android.keyguard.KeyguardMessageAreaController
+import com.android.systemui.Flags
+import com.android.systemui.FontStyles
 import com.android.systemui.res.R
 
 class BouncerMessageView : LinearLayout {
@@ -37,10 +40,20 @@ class BouncerMessageView : LinearLayout {
     var secondaryMessageView: BouncerKeyguardMessageArea? = null
     var primaryMessage: KeyguardMessageAreaController<KeyguardMessageArea>? = null
     var secondaryMessage: KeyguardMessageAreaController<KeyguardMessageArea>? = null
+
     override fun onFinishInflate() {
         super.onFinishInflate()
         primaryMessageView = findViewById(R.id.bouncer_primary_message_area)
         secondaryMessageView = findViewById(R.id.bouncer_secondary_message_area)
+
+        if (Flags.bouncerUiRevamp2()) {
+            primaryMessageView?.apply {
+                typeface = Typeface.create(FontStyles.GSF_TITLE_LARGE_EMPHASIZED, Typeface.NORMAL)
+            }
+            secondaryMessageView?.apply {
+                typeface = Typeface.create(FontStyles.GSF_TITLE_MEDIUM_EMPHASIZED, Typeface.NORMAL)
+            }
+        }
     }
 
     fun init(factory: KeyguardMessageAreaController.Factory) {

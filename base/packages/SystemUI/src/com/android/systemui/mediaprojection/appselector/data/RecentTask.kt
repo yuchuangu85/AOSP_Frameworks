@@ -18,9 +18,9 @@ package com.android.systemui.mediaprojection.appselector.data
 
 import android.annotation.ColorInt
 import android.annotation.UserIdInt
-import android.app.ActivityManager.RecentTaskInfo
+import android.app.TaskInfo
 import android.content.ComponentName
-import com.android.wm.shell.util.SplitBounds
+import com.android.wm.shell.shared.split.SplitBounds
 
 data class RecentTask(
     val taskId: Int,
@@ -34,7 +34,7 @@ data class RecentTask(
     val splitBounds: SplitBounds?,
 ) {
     constructor(
-        taskInfo: RecentTaskInfo,
+        taskInfo: TaskInfo,
         isForegroundTask: Boolean,
         userType: UserType,
         splitBounds: SplitBounds? = null

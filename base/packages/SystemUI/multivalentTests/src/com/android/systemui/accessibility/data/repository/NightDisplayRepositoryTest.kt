@@ -26,7 +26,9 @@ import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.dagger.NightDisplayListenerModule
-import com.android.systemui.kosmos.Kosmos
+import com.android.systemui.kosmos.testDispatcher
+import com.android.systemui.kosmos.testScope
+import com.android.systemui.testKosmos
 import com.android.systemui.user.utils.UserScopedService
 import com.android.systemui.util.mockito.argumentCaptor
 import com.android.systemui.util.mockito.eq
@@ -37,9 +39,6 @@ import com.android.systemui.util.settings.fakeSettings
 import com.android.systemui.utils.leaks.FakeLocationController
 import com.google.common.truth.Truth.assertThat
 import java.time.LocalTime
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -47,11 +46,10 @@ import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers
 import org.mockito.Mockito.verify
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class NightDisplayRepositoryTest : SysuiTestCase() {
-    private val kosmos = Kosmos()
+    private val kosmos = testKosmos()
     private val testUser = UserHandle.of(1)!!
     private val testStartTime = LocalTime.MIDNIGHT
     private val testEndTime = LocalTime.NOON
@@ -71,8 +69,8 @@ class NightDisplayRepositoryTest : SysuiTestCase() {
         }
     private val globalSettings = kosmos.fakeGlobalSettings
     private val secureSettings = kosmos.fakeSettings
-    private val testDispatcher = StandardTestDispatcher()
-    private val scope = TestScope(testDispatcher)
+    private val testDispatcher = kosmos.testDispatcher
+    private val scope = kosmos.testScope
     private val userScopedColorDisplayManager =
         mock<UserScopedService<ColorDisplayManager>> {
             whenever(forUser(eq(testUser))).thenReturn(colorDisplayManager)

@@ -19,8 +19,9 @@
 
 #include <system/window.h>
 
-#include <gui/ConsumerBase.h>
+#include <com_android_graphics_libgui_flags.h>
 #include <gui/BufferQueue.h>
+#include <gui/ConsumerBase.h>
 
 #include <utils/Vector.h>
 
@@ -30,6 +31,7 @@ namespace android {
 class BufferQueue;
 class GraphicBuffer;
 class String8;
+class Surface;
 
 /**
  * CpuConsumer is a BufferQueue consumer endpoint that allows direct CPU
@@ -91,8 +93,24 @@ class CpuConsumer : public ConsumerBase
 
     // Create a new CPU consumer. The maxLockedBuffers parameter specifies
     // how many buffers can be locked for user access at the same time.
-    CpuConsumer(const sp<IGraphicBufferConsumer>& bq,
-            size_t maxLockedBuffers, bool controlledByApp = false);
+    static std::tuple<sp<CpuConsumer>, sp<Surface>> create(size_t maxLockedBuffers,
+                                                           bool controlledByApp = false,
+                                                           bool isConsumerSurfaceFlinger = false);
+    static sp<CpuConsumer> create(const sp<IGraphicBufferConsumer>& bq, size_t maxLockedBuffers,
+                                  bool controlledByApp = false)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+    CpuConsumer(size_t maxLockedBuffers, bool controlledByApp = false,
+                bool isConsumerSurfaceFlinger = false);
+
+    CpuConsumer(const sp<IGraphicBufferConsumer>& bq, size_t maxLockedBuffers,
+                bool controlledByApp = false)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+#else
+    CpuConsumer(const sp<IGraphicBufferConsumer>& bq, size_t maxLockedBuffers,
+                bool controlledByApp = false);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
 
     // Gets the next graphics buffer from the producer and locks it for CPU use,
     // filling out the passed-in locked buffer structure with the native pointer

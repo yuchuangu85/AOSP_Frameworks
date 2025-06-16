@@ -16,10 +16,12 @@
 
 package com.android.server;
 
-import static android.app.Flags.modesApi;
+import static android.app.Flags.enableCurrentModeTypeBinderCache;
 import static android.app.Flags.enableNightModeBinderCache;
 import static android.app.UiModeManager.ContrastUtils.CONTRAST_DEFAULT_VALUE;
 import static android.app.UiModeManager.DEFAULT_PRIORITY;
+import static android.app.UiModeManager.FORCE_INVERT_TYPE_DARK;
+import static android.app.UiModeManager.FORCE_INVERT_TYPE_OFF;
 import static android.app.UiModeManager.MODE_ATTENTION_THEME_OVERLAY_OFF;
 import static android.app.UiModeManager.MODE_NIGHT_AUTO;
 import static android.app.UiModeManager.MODE_NIGHT_CUSTOM;
@@ -32,11 +34,12 @@ import static android.app.UiModeManager.PROJECTION_TYPE_AUTOMOTIVE;
 import static android.app.UiModeManager.PROJECTION_TYPE_NONE;
 import static android.os.UserHandle.USER_SYSTEM;
 import static android.os.UserHandle.getCallingUserId;
-import static android.os.UserManager.isVisibleBackgroundUsersEnabled;
+import static android.provider.Settings.Secure.ACCESSIBILITY_FORCE_INVERT_COLOR_ENABLED;
 import static android.provider.Settings.Secure.CONTRAST_LEVEL;
 import static android.util.TimeUtils.isTimeBetween;
 
 import static com.android.internal.util.FunctionalUtils.ignoreRemoteException;
+import static com.android.server.pm.UserManagerService.enforceCurrentUserIfVisibleBackgroundEnabled;
 
 import android.annotation.IntRange;
 import android.annotation.NonNull;
@@ -44,6 +47,7 @@ import android.annotation.Nullable;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.ActivityTaskManager;
+import android.app.ActivityThread;
 import android.app.AlarmManager;
 import android.app.IOnProjectionStateChangedListener;
 import android.app.IUiModeManager;
@@ -55,6 +59,7 @@ import android.app.PendingIntent;
 import android.app.StatusBarManager;
 import android.app.UiModeManager;
 import android.app.UiModeManager.AttentionModeThemeOverlayType;
+import android.app.UiModeManager.ForceInvertType;
 import android.app.UiModeManager.NightModeCustomReturnType;
 import android.app.UiModeManager.NightModeCustomType;
 import android.content.BroadcastReceiver;
@@ -92,6 +97,7 @@ import android.service.vr.IVrStateCallbacks;
 import android.util.ArraySet;
 import android.util.Slog;
 import android.util.SparseArray;
+import android.util.SparseIntArray;
 
 import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
@@ -100,7 +106,6 @@ import com.android.internal.app.DisableCarModeActivity;
 import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
 import com.android.internal.notification.SystemNotificationChannels;
 import com.android.internal.util.DumpUtils;
-import com.android.server.pm.UserManagerService;
 import com.android.server.twilight.TwilightListener;
 import com.android.server.twilight.TwilightManager;
 import com.android.server.twilight.TwilightState;
@@ -139,7 +144,7 @@ final class UiModeManagerService extends SystemService {
 
     private int mLastBroadcastState = Intent.EXTRA_DOCK_STATE_UNDOCKED;
 
-    private final NightMode mNightMode = new NightMode(){
+    private final IntProperty mNightMode = new IntProperty(){
         private int mNightModeValue = UiModeManager.MODE_NIGHT_NO;
 
         @Override
@@ -193,7 +198,22 @@ final class UiModeManagerService extends SystemService {
     // flag set by resource, whether to night mode change for normal all or not.
     private boolean mNightModeLocked = false;
 
-    int mCurUiMode = 0;
+    private final IntProperty mCurUiMode = new IntProperty(){
+        private int mCurrentModeTypeValue = 0;
+
+        @Override
+        public int get() {
+            return mCurrentModeTypeValue;
+        }
+
+        @Override
+        public void set(int mode) {
+            mCurrentModeTypeValue = mode;
+            if (enableCurrentModeTypeBinderCache()) {
+                UiModeManager.invalidateCurrentModeTypeCache();
+            }
+        }
+    };
     private int mSetUiMode = 0;
     private boolean mHoldingConfiguration = false;
     private int mCurrentUser;
@@ -240,6 +260,9 @@ final class UiModeManagerService extends SystemService {
 
     @GuardedBy("mLock")
     private final SparseArray<Float> mContrasts = new SparseArray<>();
+
+    @GuardedBy("mLock")
+    private final SparseIntArray mForceInvertStates = new SparseIntArray();
 
     public UiModeManagerService(Context context) {
         this(context, /* setupWizardComplete= */ false, /* tm= */ null, new Injector());
@@ -392,8 +415,32 @@ final class UiModeManagerService extends SystemService {
         @Override
         public void onChange(boolean selfChange, Uri uri) {
             updateSystemProperties();
+            updateForceInvertStates();
         }
     };
+
+    private final ContentObserver mForceInvertStateObserver = new ContentObserver(mHandler) {
+        @Override
+        public void onChange(boolean selfChange, Uri uri) {
+            updateForceInvertStates();
+        }
+    };
+
+    private void updateForceInvertStates() {
+        if (!android.view.accessibility.Flags.forceInvertColor()) {
+            return;
+        }
+
+        synchronized (mLock) {
+            if (updateForceInvertStateLocked()) {
+                int forceInvertState = getForceInvertStateLocked();
+                mUiModeManagerCallbacks.get(mCurrentUser, new RemoteCallbackList<>())
+                        .broadcast(ignoreRemoteException(
+                                callback ->
+                                        callback.notifyForceInvertStateChanged(forceInvertState)));
+            }
+        }
+    }
 
     private final ContentObserver mContrastObserver = new ContentObserver(mHandler) {
         @Override
@@ -426,6 +473,11 @@ final class UiModeManagerService extends SystemService {
     @VisibleForTesting
     void setDreamsDisabledByAmbientModeSuppression(boolean disabledByAmbientModeSuppression) {
         mDreamsDisabledByAmbientModeSuppression = disabledByAmbientModeSuppression;
+    }
+
+    @VisibleForTesting
+    void setCurrentUser(int currentUserId) {
+        mCurrentUser = currentUserId;
     }
 
     @Override
@@ -462,9 +514,17 @@ final class UiModeManagerService extends SystemService {
                 mCarModeEnabled = mDockState == Intent.EXTRA_DOCK_STATE_CAR;
                 registerVrStateListener();
                 // register listeners
+                // LINT.IfChange(fi_cb)
                 context.getContentResolver()
                         .registerContentObserver(Secure.getUriFor(Secure.UI_NIGHT_MODE),
                                 false, mDarkThemeObserver, 0);
+                if (android.view.accessibility.Flags.forceInvertColor()) {
+                    context.getContentResolver()
+                            .registerContentObserver(
+                                    Secure.getUriFor(ACCESSIBILITY_FORCE_INVERT_COLOR_ENABLED),
+                                    false, mForceInvertStateObserver, UserHandle.USER_ALL);
+                }
+                // LINT.ThenChange(/core/java/android/view/ViewRootImpl.java:fi_cb)
                 context.getContentResolver().registerContentObserver(
                         Secure.getUriFor(Secure.CONTRAST_LEVEL), false,
                         mContrastObserver, UserHandle.USER_ALL);
@@ -811,7 +871,7 @@ final class UiModeManagerService extends SystemService {
             final long ident = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
-                    return mCurUiMode & Configuration.UI_MODE_TYPE_MASK;
+                    return mCurUiMode.get() & Configuration.UI_MODE_TYPE_MASK;
                 }
             } finally {
                 Binder.restoreCallingIdentity(ident);
@@ -849,9 +909,9 @@ final class UiModeManagerService extends SystemService {
                     throw new IllegalArgumentException("Unknown mode: " + mode);
             }
 
-            final int user = UserHandle.getCallingUserId();
-            enforceValidCallingUser(user);
+            enforceCurrentUserIfVisibleBackgroundEnabled();
 
+            final int user = UserHandle.getCallingUserId();
             final long ident = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
@@ -865,8 +925,6 @@ final class UiModeManagerService extends SystemService {
                                 ? customModeType
                                 : MODE_NIGHT_CUSTOM_TYPE_UNKNOWN;
                         mNightMode.set(mode);
-                        //deactivates AttentionMode if user toggles DarkTheme
-                        mAttentionModeThemeOverlay = MODE_ATTENTION_THEME_OVERLAY_OFF;
                         resetNightModeOverrideLocked();
                         persistNightMode(user);
                         // on screen off will update configuration instead
@@ -901,7 +959,7 @@ final class UiModeManagerService extends SystemService {
 
         @android.annotation.EnforcePermission(android.Manifest.permission.MODIFY_DAY_NIGHT_MODE)
         @Override
-        public  @NightModeCustomReturnType int getNightModeCustomType() {
+        public @NightModeCustomReturnType int getNightModeCustomType() {
             getNightModeCustomType_enforcePermission();
             synchronized (mLock) {
                 return mNightModeCustomType;
@@ -914,7 +972,7 @@ final class UiModeManagerService extends SystemService {
                 @AttentionModeThemeOverlayType int attentionModeThemeOverlayType) {
             setAttentionModeThemeOverlay_enforcePermission();
 
-            enforceValidCallingUser(UserHandle.getCallingUserId());
+            enforceCurrentUserIfVisibleBackgroundEnabled();
 
             synchronized (mLock) {
                 if (mAttentionModeThemeOverlay != attentionModeThemeOverlayType) {
@@ -989,15 +1047,16 @@ final class UiModeManagerService extends SystemService {
 
         @Override
         public boolean setNightModeActivatedForCustomMode(int modeNightCustomType, boolean active) {
-            return setNightModeActivatedForModeInternal(modeNightCustomType, active);
+            return setNightModeActivatedForModeInternal(modeNightCustomType, active, false);
         }
 
         @Override
         public boolean setNightModeActivated(boolean active) {
-            return setNightModeActivatedForModeInternal(mNightModeCustomType, active);
+            return setNightModeActivatedForModeInternal(mNightModeCustomType, active, true);
         }
 
-        private boolean setNightModeActivatedForModeInternal(int modeCustomType, boolean active) {
+        private boolean setNightModeActivatedForModeInternal(int modeCustomType,
+            boolean active, boolean isUserInteraction) {
             if (getContext().checkCallingOrSelfPermission(
                     android.Manifest.permission.MODIFY_DAY_NIGHT_MODE)
                     != PackageManager.PERMISSION_GRANTED) {
@@ -1005,16 +1064,16 @@ final class UiModeManagerService extends SystemService {
                 return false;
             }
             final int user = Binder.getCallingUserHandle().getIdentifier();
-            enforceValidCallingUser(user);
-
             if (user != mCurrentUser && getContext().checkCallingOrSelfPermission(
                     android.Manifest.permission.INTERACT_ACROSS_USERS)
                     != PackageManager.PERMISSION_GRANTED) {
                 Slog.e(TAG, "Target user is not current user,"
                         + " INTERACT_ACROSS_USERS permission is required");
                 return false;
-
             }
+
+            enforceCurrentUserIfVisibleBackgroundEnabled();
+
             // Store the last requested bedtime night mode state so that we don't need to notify
             // anyone if the user decides to switch to the night mode to bedtime.
             if (modeCustomType == MODE_NIGHT_CUSTOM_TYPE_BEDTIME) {
@@ -1033,12 +1092,15 @@ final class UiModeManagerService extends SystemService {
                         mOverrideNightModeOn = active;
                         mOverrideNightModeUser = mCurrentUser;
                         persistNightModeOverrides(mCurrentUser);
-                    } else if (mNightMode.get() == UiModeManager.MODE_NIGHT_NO
-                            && active) {
+                    } else if (mNightMode.get() == UiModeManager.MODE_NIGHT_NO && active) {
                         mNightMode.set(UiModeManager.MODE_NIGHT_YES);
-                    } else if (mNightMode.get() == UiModeManager.MODE_NIGHT_YES
-                            && !active) {
+                    } else if (mNightMode.get() == UiModeManager.MODE_NIGHT_YES && !active) {
                         mNightMode.set(UiModeManager.MODE_NIGHT_NO);
+                    }
+
+                    if (isUserInteraction) {
+                        // deactivates AttentionMode if user toggles DarkTheme
+                        mAttentionModeThemeOverlay = MODE_ATTENTION_THEME_OVERLAY_OFF;
                     }
                     updateConfigurationLocked();
                     applyConfigurationExternallyLocked();
@@ -1063,9 +1125,10 @@ final class UiModeManagerService extends SystemService {
                 Slog.e(TAG, "Set custom time start, requires MODIFY_DAY_NIGHT_MODE permission");
                 return;
             }
-            final int user = UserHandle.getCallingUserId();
-            enforceValidCallingUser(user);
 
+            enforceCurrentUserIfVisibleBackgroundEnabled();
+
+            final int user = UserHandle.getCallingUserId();
             final long ident = Binder.clearCallingIdentity();
             try {
                 LocalTime newTime = LocalTime.ofNanoOfDay(time * 1000);
@@ -1093,9 +1156,10 @@ final class UiModeManagerService extends SystemService {
                 Slog.e(TAG, "Set custom time end, requires MODIFY_DAY_NIGHT_MODE permission");
                 return;
             }
-            final int user = UserHandle.getCallingUserId();
-            enforceValidCallingUser(user);
 
+            enforceCurrentUserIfVisibleBackgroundEnabled();
+
+            final int user = UserHandle.getCallingUserId();
             final long ident = Binder.clearCallingIdentity();
             try {
                 LocalTime newTime = LocalTime.ofNanoOfDay(time * 1000);
@@ -1116,7 +1180,7 @@ final class UiModeManagerService extends SystemService {
             assertLegit(callingPackage);
             assertSingleProjectionType(projectionType);
             enforceProjectionTypePermissions(projectionType);
-            enforceValidCallingUser(getCallingUserId());
+            enforceCurrentUserIfVisibleBackgroundEnabled();
 
             synchronized (mLock) {
                 if (mProjectionHolders == null) {
@@ -1162,7 +1226,7 @@ final class UiModeManagerService extends SystemService {
             assertLegit(callingPackage);
             assertSingleProjectionType(projectionType);
             enforceProjectionTypePermissions(projectionType);
-            enforceValidCallingUser(getCallingUserId());
+            enforceCurrentUserIfVisibleBackgroundEnabled();
 
             return releaseProjectionUnchecked(projectionType, callingPackage);
         }
@@ -1204,7 +1268,7 @@ final class UiModeManagerService extends SystemService {
                 return;
             }
 
-            enforceValidCallingUser(getCallingUserId());
+            enforceCurrentUserIfVisibleBackgroundEnabled();
 
             synchronized (mLock) {
                 if (mProjectionListeners == null) {
@@ -1251,33 +1315,15 @@ final class UiModeManagerService extends SystemService {
                 return getContrastLocked();
             }
         }
-    };
 
-    // This method validates whether calling user is valid in visible background users
-    // feature. Valid user is the current user or the system or in the same profile group as
-    // the current user.
-    private void enforceValidCallingUser(int userId) {
-        if (!isVisibleBackgroundUsersEnabled()) {
-            return;
-        }
-        if (LOG) {
-            Slog.d(TAG, "enforceValidCallingUser: userId=" + userId
-                    + " isSystemUser=" + (userId == USER_SYSTEM) + " current user=" + mCurrentUser
-                    + " callingPid=" + Binder.getCallingPid()
-                    + " callingUid=" + mInjector.getCallingUid());
-        }
-        long ident = Binder.clearCallingIdentity();
-        try {
-            if (userId != USER_SYSTEM && userId != mCurrentUser
-                    && !UserManagerService.getInstance().isSameProfileGroup(userId, mCurrentUser)) {
-                throw new SecurityException(
-                        "Calling user is not valid for level-1 compatibility in MUMD. "
-                                + "callingUserId=" + userId + " currentUserId=" + mCurrentUser);
+        @Override
+        @ForceInvertType
+        public int getForceInvertState() {
+            synchronized (mLock) {
+                return getForceInvertStateLocked();
             }
-        } finally {
-            Binder.restoreCallingIdentity(ident);
         }
-    }
+    };
 
     private void enforceProjectionTypePermissions(@UiModeManager.ProjectionType int p) {
         if ((p & PROJECTION_TYPE_AUTOMOTIVE) != 0) {
@@ -1357,6 +1403,76 @@ final class UiModeManagerService extends SystemService {
             }
             return removed;
         }
+    }
+
+    /**
+     * Return the force invert for the current user. If not cached, fetch it from the settings.
+     */
+    @GuardedBy("mLock")
+    @ForceInvertType
+    private int getForceInvertStateLocked() {
+        if (mForceInvertStates.indexOfKey(mCurrentUser) < 0 && mSystemReady) {
+            updateForceInvertStateLocked();
+        }
+        return mForceInvertStates.get(mCurrentUser, FORCE_INVERT_TYPE_OFF);
+    }
+
+    /**
+     * Read the force invert setting for the current user and update {@link #mForceInvertStates}
+     * if the contrast changed. Returns true if {@link #mForceInvertStates} was updated.
+     */
+    @GuardedBy("mLock")
+    private boolean updateForceInvertStateLocked() {
+        int forceInvertState = getForceInvertStateInternal();
+        if (mForceInvertStates.get(mCurrentUser, Integer.MIN_VALUE) != forceInvertState) {
+            mForceInvertStates.put(mCurrentUser, forceInvertState);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns the current state of force invert, which modifies the display colors to
+     * enhance visibility based on the system's dark theme settings and app-specific configurations.
+     *
+     * <p>This method is for informational purposes only. The application does not need to
+     * implement any special handling for force invert; the system applies it automatically.
+     * If you want to prevent force invert from affecting your app, ensure you have defined
+     * both light and dark themes. Force invert is not applied to apps that already adapt
+     * to the user's system theme preference.</p>
+     *
+     * @return The current force invert state, represented by a {@code ForceDarkType} constant.
+     *
+     * @hide
+     */
+    private int getForceInvertStateInternal() {
+        if (!android.view.accessibility.Flags.forceInvertColor()) {
+            return FORCE_INVERT_TYPE_OFF;
+        }
+
+        if (!isSystemInDarkTheme()) {
+            return FORCE_INVERT_TYPE_OFF;
+        }
+
+        if (!isForceInvert()) {
+            return FORCE_INVERT_TYPE_OFF;
+        }
+
+        return FORCE_INVERT_TYPE_DARK;
+    }
+
+    private boolean isSystemInDarkTheme() {
+        Context sysUiContext = ActivityThread.currentActivityThread().getSystemUiContext();
+        int sysUiNightMode = sysUiContext.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        return sysUiNightMode == Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    private boolean isForceInvert() {
+        return Settings.Secure.getIntForUser(
+                getContext().getContentResolver(),
+                Settings.Secure.ACCESSIBILITY_FORCE_INVERT_COLOR_ENABLED,
+                /* def= */ 0, mCurrentUser) == 1;
     }
 
     /**
@@ -1519,7 +1635,7 @@ final class UiModeManagerService extends SystemService {
             pw.print(" mCarModeEnableFlags="); pw.print(mCarModeEnableFlags);
             pw.print(" mEnableCarDockLaunch="); pw.println(mEnableCarDockLaunch);
 
-            pw.print("  mCurUiMode=0x"); pw.print(Integer.toHexString(mCurUiMode));
+            pw.print("  mCurUiMode=0x"); pw.print(Integer.toHexString(mCurUiMode.get()));
             pw.print(" mUiModeLocked="); pw.print(mUiModeLocked);
             pw.print(" mSetUiMode=0x"); pw.println(Integer.toHexString(mSetUiMode));
 
@@ -1772,7 +1888,7 @@ final class UiModeManagerService extends SystemService {
                     + "; uiMode=" + uiMode);
         }
 
-        mCurUiMode = uiMode;
+        mCurUiMode.set(uiMode);
         if (!mHoldingConfiguration && (!mWaitForDeviceInactive || mPowerSave)) {
             mConfiguration.uiMode = uiMode;
         }
@@ -1919,7 +2035,7 @@ final class UiModeManagerService extends SystemService {
         boolean keepScreenOn = mCharging &&
                 ((mCarModeEnabled && mCarModeKeepsScreenOn &&
                 (mCarModeEnableFlags & UiModeManager.ENABLE_CAR_MODE_ALLOW_SLEEP) == 0) ||
-                (mCurUiMode == Configuration.UI_MODE_TYPE_DESK && mDeskModeKeepsScreenOn));
+                (mCurUiMode.get() == Configuration.UI_MODE_TYPE_DESK && mDeskModeKeepsScreenOn));
         if (keepScreenOn != mWakeLock.isHeld()) {
             if (keepScreenOn) {
                 mWakeLock.acquire();
@@ -1969,6 +2085,14 @@ final class UiModeManagerService extends SystemService {
         sendConfigurationAndStartDreamOrDockAppLocked(category);
     }
 
+    private boolean shouldStartDockApp(Context context, Intent homeIntent) {
+        if (mWatch && !mSetupWizardComplete) {
+            // Do not ever start dock app when setup is not complete on a watch.
+            return false;
+        }
+        return Sandman.shouldStartDockApp(context, homeIntent);
+    }
+
     private void sendConfigurationAndStartDreamOrDockAppLocked(String category) {
         // Update the configuration but don't send it yet.
         mHoldingConfiguration = false;
@@ -1985,7 +2109,7 @@ final class UiModeManagerService extends SystemService {
             // activity manager take care of both the start and config
             // change.
             Intent homeIntent = buildHomeIntent(category);
-            if (Sandman.shouldStartDockApp(getContext(), homeIntent)) {
+            if (shouldStartDockApp(getContext(), homeIntent)) {
                 try {
                     int result = ActivityTaskManager.getService().startActivityWithConfig(
                             null, getContext().getBasePackageName(),
@@ -2075,23 +2199,25 @@ final class UiModeManagerService extends SystemService {
 
     private void updateComputedNightModeLocked(boolean activate) {
         boolean newComputedValue = activate;
+        boolean appliedOverrides = false;
         if (mNightMode.get() != MODE_NIGHT_YES && mNightMode.get() != UiModeManager.MODE_NIGHT_NO) {
             if (mOverrideNightModeOn && !newComputedValue) {
                 newComputedValue = true;
             } else if (mOverrideNightModeOff && newComputedValue) {
                 newComputedValue = false;
             }
+            appliedOverrides = true;
         }
 
-        if (modesApi()) {
-            // Computes final night mode values based on Attention Mode.
-            mComputedNightMode = switch (mAttentionModeThemeOverlay) {
-                case (UiModeManager.MODE_ATTENTION_THEME_OVERLAY_NIGHT) -> true;
-                case (UiModeManager.MODE_ATTENTION_THEME_OVERLAY_DAY) -> false;
-                default -> newComputedValue; // case OFF
-            };
-        } else {
-            mComputedNightMode = newComputedValue;
+        // Computes final night mode values based on Attention Mode.
+        mComputedNightMode = switch (mAttentionModeThemeOverlay) {
+            case (UiModeManager.MODE_ATTENTION_THEME_OVERLAY_NIGHT) -> true;
+            case (UiModeManager.MODE_ATTENTION_THEME_OVERLAY_DAY) -> false;
+            default -> newComputedValue; // case OFF
+        };
+
+        if (appliedOverrides) {
+            return;
         }
 
         if (mNightMode.get() != MODE_NIGHT_AUTO || (mTwilightManager != null
@@ -2346,11 +2472,12 @@ final class UiModeManagerService extends SystemService {
     }
 
     /**
-     * Interface to contain the value for system night mode. We make the night mode accessible
-     * through this class to ensure that the reassignment of this value invalidates the cache.
+     * Interface to contain the value for an integral property. We make the property
+     * accessible through this class to ensure that the reassignment of this value invalidates the
+     * cache.
      */
-    private interface NightMode {
+    private interface IntProperty {
         int get();
-        void set(int mode);
+        void set(int value);
     }
 }

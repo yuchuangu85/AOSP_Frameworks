@@ -17,42 +17,67 @@
 
 package com.android.systemui.keyguard.ui.binder
 
-import android.content.Context
 import android.view.View
 import androidx.core.view.isInvisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import com.android.app.tracing.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.keyguard.shared.model.ClockSizeSetting
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardPreviewSmartspaceViewModel
 import com.android.systemui.lifecycle.repeatWhenAttached
+import com.android.systemui.plugins.clocks.ClockPreviewConfig
 
 /** Binder for the small clock view, large clock view and smartspace. */
 object KeyguardPreviewSmartspaceViewBinder {
 
     @JvmStatic
+    fun bind(parentView: View, viewModel: KeyguardPreviewSmartspaceViewModel) {
+        if (com.android.systemui.shared.Flags.clockReactiveSmartspaceLayout()) {
+            val largeDateView =
+                parentView.findViewById<View>(
+                    com.android.systemui.shared.R.id.date_smartspace_view_large
+                )
+            val smallDateView =
+                parentView.findViewById<View>(com.android.systemui.shared.R.id.date_smartspace_view)
+            parentView.repeatWhenAttached {
+                repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    launch("$TAG#viewModel.selectedClockSize") {
+                        viewModel.previewingClockSize.collect {
+                            when (it) {
+                                ClockSizeSetting.DYNAMIC -> {
+                                    smallDateView?.visibility = View.GONE
+                                    largeDateView?.visibility = View.VISIBLE
+                                }
+
+                                ClockSizeSetting.SMALL -> {
+                                    smallDateView?.visibility = View.VISIBLE
+                                    largeDateView?.visibility = View.GONE
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @JvmStatic
     fun bind(
-        previewContext: Context,
         smartspace: View,
-        splitShadePreview: Boolean,
         viewModel: KeyguardPreviewSmartspaceViewModel,
+        clockPreviewConfig: ClockPreviewConfig,
     ) {
         smartspace.repeatWhenAttached {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch("$TAG#viewModel.selectedClockSize") {
-                    viewModel.selectedClockSize.collect {
+                    viewModel.previewingClockSize.collect {
                         val topPadding =
                             when (it) {
                                 ClockSizeSetting.DYNAMIC ->
-                                    viewModel.getLargeClockSmartspaceTopPadding(
-                                        splitShadePreview,
-                                        previewContext,
-                                    )
+                                    viewModel.getLargeClockSmartspaceTopPadding(clockPreviewConfig)
+
                                 ClockSizeSetting.SMALL ->
-                                    viewModel.getSmallClockSmartspaceTopPadding(
-                                        splitShadePreview,
-                                        previewContext,
-                                    )
+                                    viewModel.getSmallClockSmartspaceTopPadding(clockPreviewConfig)
                             }
                         smartspace.setTopPadding(topPadding)
                     }

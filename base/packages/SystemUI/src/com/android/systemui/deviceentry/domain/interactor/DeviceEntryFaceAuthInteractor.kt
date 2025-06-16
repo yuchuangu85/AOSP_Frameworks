@@ -19,6 +19,7 @@ package com.android.systemui.deviceentry.domain.interactor
 import com.android.systemui.CoreStartable
 import com.android.systemui.deviceentry.shared.model.FaceAuthenticationStatus
 import com.android.systemui.deviceentry.shared.model.FaceDetectionStatus
+import com.android.systemui.log.table.TableLogBuffer
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -60,18 +61,29 @@ interface DeviceEntryFaceAuthInteractor : CoreStartable {
     fun unregisterListener(listener: FaceAuthenticationListener)
 
     fun onUdfpsSensorTouched()
+
     fun onAssistantTriggeredOnLockScreen()
+
     fun onDeviceLifted()
-    fun onQsExpansionStared()
+
+    fun onShadeExpansionStarted()
+
     fun onNotificationPanelClicked()
+
     fun onSwipeUpOnBouncer()
+
     fun onPrimaryBouncerUserInput()
+
     fun onAccessibilityAction()
+
     fun onWalletLaunched()
+
     fun onDeviceUnfolded()
 
     /** Whether face auth is considered class 3 */
     fun isFaceAuthStrong(): Boolean
+
+    suspend fun hydrateTableLogBuffer(tableLogBuffer: TableLogBuffer)
 }
 
 /**
@@ -84,17 +96,17 @@ interface DeviceEntryFaceAuthInteractor : CoreStartable {
  */
 interface FaceAuthenticationListener {
     /** Receive face isAuthenticated updates */
-    fun onAuthenticatedChanged(isAuthenticated: Boolean)
+    fun onAuthenticatedChanged(isAuthenticated: Boolean) = Unit
 
     /** Receive face authentication status updates */
-    fun onAuthenticationStatusChanged(status: FaceAuthenticationStatus)
+    fun onAuthenticationStatusChanged(status: FaceAuthenticationStatus) = Unit
 
     /** Receive status updates whenever face detection runs */
-    fun onDetectionStatusChanged(status: FaceDetectionStatus)
+    fun onDetectionStatusChanged(status: FaceDetectionStatus) = Unit
 
-    fun onLockoutStateChanged(isLockedOut: Boolean)
+    fun onLockoutStateChanged(isLockedOut: Boolean) = Unit
 
-    fun onRunningStateChanged(isRunning: Boolean)
+    fun onRunningStateChanged(isRunning: Boolean) = Unit
 
-    fun onAuthEnrollmentStateChanged(enrolled: Boolean)
+    fun onAuthEnrollmentStateChanged(enrolled: Boolean) = Unit
 }

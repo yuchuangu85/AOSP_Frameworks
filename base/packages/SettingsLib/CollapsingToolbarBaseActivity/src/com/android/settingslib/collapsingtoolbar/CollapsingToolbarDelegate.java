@@ -20,7 +20,10 @@ import static android.text.Layout.HYPHENATION_FREQUENCY_NORMAL_FAST;
 
 import android.app.ActionBar;
 import android.app.Activity;
+import android.content.Context;
 import android.content.res.Configuration;
+import android.content.res.TypedArray;
+import android.graphics.drawable.Drawable;
 import android.graphics.text.LineBreakConfig;
 import android.os.Build;
 import android.util.Log;
@@ -30,13 +33,17 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.Toolbar;
 
+import androidx.annotation.DrawableRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.coordinatorlayout.widget.CoordinatorLayout;
 
+import com.android.settingslib.widget.SettingsThemeHelper;
+
 import com.google.android.material.appbar.AppBarLayout;
 import com.google.android.material.appbar.CollapsingToolbarLayout;
+import com.google.android.material.button.MaterialButton;
 
 /**
  * A delegate that allows to use the collapsing toolbar layout in hosts that doesn't want/need to
@@ -75,13 +82,25 @@ public class CollapsingToolbarDelegate {
     private AppBarLayout mAppBarLayout;
     @NonNull
     private Toolbar mToolbar;
+    @Nullable
+    private MaterialButton mActionButton;
     @NonNull
     private FrameLayout mContentFrameLayout;
     @NonNull
     private final HostCallback mHostCallback;
 
+    private boolean mUseCollapsingToolbar;
+
+    private boolean mIsExpressiveTheme;
+
     public CollapsingToolbarDelegate(@NonNull HostCallback hostCallback) {
+        this(hostCallback, /* useCollapsingToolbar= */ true);
+    }
+
+    public CollapsingToolbarDelegate(@NonNull HostCallback hostCallback,
+            boolean useCollapsingToolbar) {
         mHostCallback = hostCallback;
+        mUseCollapsingToolbar = useCollapsingToolbar;
     }
 
     /** Method to call that creates the root view of the collapsing toolbar. */
@@ -94,13 +113,37 @@ public class CollapsingToolbarDelegate {
     @SuppressWarnings("RestrictTo")
     View onCreateView(@NonNull LayoutInflater inflater, @Nullable ViewGroup container,
             Activity activity) {
-        final View view =
-                inflater.inflate(R.layout.collapsing_toolbar_base_layout, container, false);
+        int layoutId;
+        boolean useCollapsingToolbar =
+                mUseCollapsingToolbar || Build.VERSION.SDK_INT < Build.VERSION_CODES.S;
+        Context context = (activity != null) ? activity : inflater.getContext();
+        mIsExpressiveTheme = SettingsThemeHelper.isExpressiveTheme(context);
+        if (useCollapsingToolbar) {
+            layoutId = mIsExpressiveTheme
+                    ? R.layout.settingslib_expressive_collapsing_toolbar_base_layout
+                    : R.layout.collapsing_toolbar_base_layout;
+        } else {
+            layoutId = R.layout.non_collapsing_toolbar_base_layout;
+        }
+
+        final View view = inflater.inflate(layoutId, container, false);
         if (view instanceof CoordinatorLayout) {
             mCoordinatorLayout = (CoordinatorLayout) view;
         }
         mCollapsingToolbarLayout = view.findViewById(R.id.collapsing_toolbar);
         mAppBarLayout = view.findViewById(R.id.app_bar);
+
+        if (!useCollapsingToolbar) {
+            // In the non-collapsing toolbar layout, we need to set the background of the app bar to
+            // the same as the activity background so that it covers the items extending above the
+            // bounds of the list for edge-to-edge.
+            TypedArray ta = container.getContext().obtainStyledAttributes(new int[] {
+                    android.R.attr.windowBackground});
+            Drawable background = ta.getDrawable(0);
+            ta.recycle();
+            mAppBarLayout.setBackground(background);
+        }
+
         if (mCollapsingToolbarLayout != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             mCollapsingToolbarLayout.setLineSpacingMultiplier(TOOLBAR_LINE_SPACING_MULTIPLIER);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -115,6 +158,7 @@ public class CollapsingToolbarDelegate {
         }
         autoSetCollapsingToolbarLayoutScrolling();
         mContentFrameLayout = view.findViewById(R.id.content_frame);
+        mActionButton = view.findViewById(R.id.action_button);
         if (activity instanceof AppCompatActivity) {
             Log.d(TAG, "onCreateView: from AppCompatActivity and sub-class.");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -130,6 +174,9 @@ public class CollapsingToolbarDelegate {
             if (actionBar != null) {
                 actionBar.setDisplayHomeAsUpEnabled(true);
                 actionBar.setHomeButtonEnabled(true);
+                if (mIsExpressiveTheme) {
+                    actionBar.setHomeAsUpIndicator(R.drawable.settingslib_expressive_icon_back);
+                }
                 actionBar.setDisplayShowTitleEnabled(true);
             }
         }
@@ -149,6 +196,9 @@ public class CollapsingToolbarDelegate {
         if (actionBar != null) {
             actionBar.setDisplayHomeAsUpEnabled(true);
             actionBar.setHomeButtonEnabled(true);
+            if (mIsExpressiveTheme) {
+                actionBar.setHomeAsUpIndicator(R.drawable.settingslib_expressive_icon_back);
+            }
             actionBar.setDisplayShowTitleEnabled(true);
         }
     }
@@ -163,8 +213,47 @@ public class CollapsingToolbarDelegate {
         if (actionBar != null) {
             actionBar.setDisplayHomeAsUpEnabled(true);
             actionBar.setHomeButtonEnabled(true);
+            if (mIsExpressiveTheme) {
+                actionBar.setHomeAsUpIndicator(R.drawable.settingslib_expressive_icon_back);
+            }
             actionBar.setDisplayShowTitleEnabled(true);
         }
+    }
+
+    /**
+     * Show/Hide the action button on the Toolbar.
+     * @param enabled true to show the button, otherwise it's hidden.
+     */
+    public void setActionButtonEnabled(boolean enabled) {
+        if (mActionButton == null) {
+            return;
+        }
+        int visibility = enabled ? View.VISIBLE : View.GONE;
+        mActionButton.setVisibility(visibility);
+    }
+
+    /** Set the icon to the action button */
+    public void setActionButtonIcon(@NonNull Context context, @DrawableRes int drawableRes) {
+        if (mActionButton == null) {
+            return;
+        }
+        mActionButton.setIcon(context.getResources().getDrawable(drawableRes, context.getTheme()));
+    }
+
+    /** Set the text to the action button */
+    public void setActionButtonText(@Nullable CharSequence text) {
+        if (mActionButton == null) {
+            return;
+        }
+        mActionButton.setText(text);
+    }
+
+    /** Set the OnClick listener to the action button */
+    public void setActionButtonOnClickListener(@Nullable View.OnClickListener listener) {
+        if (mActionButton == null) {
+            return;
+        }
+        mActionButton.setOnClickListener(listener);
     }
 
     /** Return an instance of CoordinatorLayout. */

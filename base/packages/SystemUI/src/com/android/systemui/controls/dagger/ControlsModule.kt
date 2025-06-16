@@ -48,10 +48,12 @@ import com.android.systemui.controls.ui.ControlsUiControllerImpl
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.qs.QsEventLogger
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.qs.shared.model.TileCategory
 import com.android.systemui.qs.tileimpl.QSTileImpl
 import com.android.systemui.qs.tiles.DeviceControlsTile
-import com.android.systemui.qs.tiles.viewmodel.QSTileConfig
-import com.android.systemui.qs.tiles.viewmodel.QSTileUIConfig
+import com.android.systemui.qs.tiles.base.shared.model.QSTileConfig
+import com.android.systemui.qs.tiles.base.shared.model.QSTileUIConfig
+import com.android.systemui.res.R
 import dagger.Binds
 import dagger.BindsOptionalOf
 import dagger.Module
@@ -86,15 +88,16 @@ abstract class ControlsModule {
         @IntoMap
         @StringKey(DEVICE_CONTROLS_SPEC)
         fun provideDeviceControlsTileConfig(uiEventLogger: QsEventLogger): QSTileConfig =
-                QSTileConfig(
-                        tileSpec = TileSpec.create(DEVICE_CONTROLS_SPEC),
-                        uiConfig =
-                        QSTileUIConfig.Resource(
-                                iconRes = com.android.systemui.res.R.drawable.controls_icon,
-                                labelRes = com.android.systemui.res.R.string.quick_controls_title
-                        ),
-                        instanceId = uiEventLogger.getNewInstanceId(),
-                )
+            QSTileConfig(
+                tileSpec = TileSpec.create(DEVICE_CONTROLS_SPEC),
+                uiConfig =
+                    QSTileUIConfig.Resource(
+                        iconRes = R.drawable.controls_icon,
+                        labelRes = R.string.quick_controls_title,
+                    ),
+                instanceId = uiEventLogger.getNewInstanceId(),
+                category = TileCategory.UTILITIES,
+            )
     }
 
     @Binds
@@ -115,12 +118,12 @@ abstract class ControlsModule {
 
     @Binds
     abstract fun provideSettingsManager(
-            manager: ControlsSettingsRepositoryImpl
+        manager: ControlsSettingsRepositoryImpl
     ): ControlsSettingsRepository
 
     @Binds
     abstract fun provideDialogManager(
-            manager: ControlsSettingsDialogManagerImpl
+        manager: ControlsSettingsDialogManagerImpl
     ): ControlsSettingsDialogManager
 
     @Binds
@@ -141,8 +144,7 @@ abstract class ControlsModule {
         repository: SelectedComponentRepositoryImpl
     ): SelectedComponentRepository
 
-    @BindsOptionalOf
-    abstract fun optionalPersistenceWrapper(): ControlsFavoritePersistenceWrapper
+    @BindsOptionalOf abstract fun optionalPersistenceWrapper(): ControlsFavoritePersistenceWrapper
 
     @BindsOptionalOf
     abstract fun provideControlsTileResourceConfiguration(): ControlsTileResourceConfiguration
@@ -157,23 +159,17 @@ abstract class ControlsModule {
     @Binds
     @IntoMap
     @ClassKey(ControlsFavoritingActivity::class)
-    abstract fun provideControlsFavoritingActivity(
-        activity: ControlsFavoritingActivity
-    ): Activity
+    abstract fun provideControlsFavoritingActivity(activity: ControlsFavoritingActivity): Activity
 
     @Binds
     @IntoMap
     @ClassKey(ControlsEditingActivity::class)
-    abstract fun provideControlsEditingActivity(
-        activity: ControlsEditingActivity
-    ): Activity
+    abstract fun provideControlsEditingActivity(activity: ControlsEditingActivity): Activity
 
     @Binds
     @IntoMap
     @ClassKey(ControlsRequestDialog::class)
-    abstract fun provideControlsRequestDialog(
-        activity: ControlsRequestDialog
-    ): Activity
+    abstract fun provideControlsRequestDialog(activity: ControlsRequestDialog): Activity
 
     @Binds
     @IntoMap

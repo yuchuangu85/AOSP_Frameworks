@@ -87,8 +87,10 @@ import com.android.systemui.qs.footer.domain.model.SecurityButtonConfig;
 import com.android.systemui.res.R;
 import com.android.systemui.security.data.model.SecurityModel;
 import com.android.systemui.settings.UserTracker;
+import com.android.systemui.shade.ShadeDisplayAware;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
 import com.android.systemui.statusbar.policy.SecurityController;
+import com.android.systemui.supervision.shared.DeprecateDpmSupervisionApis;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -177,7 +179,7 @@ public class QSSecurityFooterUtils implements DialogInterface.OnClickListener {
 
     @Inject
     QSSecurityFooterUtils(
-            @Application Context context, DevicePolicyManager devicePolicyManager,
+            @ShadeDisplayAware Context context, DevicePolicyManager devicePolicyManager,
             UserTracker userTracker, @Main Handler mainHandler, ActivityStarter activityStarter,
             SecurityController securityController, @Background Looper bgLooper,
             DialogTransitionAnimator dialogTransitionAnimator) {
@@ -584,8 +586,17 @@ public class QSSecurityFooterUtils implements DialogInterface.OnClickListener {
         View dialogView = LayoutInflater.from(quickSettingsContext)
                 .inflate(R.layout.quick_settings_footer_dialog_parental_controls, null, false);
 
-        DeviceAdminInfo info = mSecurityController.getDeviceAdminInfo();
-        Drawable icon = mSecurityController.getIcon(info);
+        Drawable icon;
+        CharSequence label;
+        if (DeprecateDpmSupervisionApis.isEnabled()) {
+            icon = mSecurityController.getIcon();
+            label = mSecurityController.getLabel();
+        } else {
+            DeviceAdminInfo info = mSecurityController.getDeviceAdminInfo();
+            icon = mSecurityController.getIcon(info);
+            label = mSecurityController.getLabel(info);
+        }
+
         if (icon != null) {
             ImageView imageView = (ImageView) dialogView.findViewById(R.id.parental_controls_icon);
             imageView.setImageDrawable(icon);
@@ -593,7 +604,7 @@ public class QSSecurityFooterUtils implements DialogInterface.OnClickListener {
 
         TextView parentalControlsTitle =
                 (TextView) dialogView.findViewById(R.id.parental_controls_title);
-        parentalControlsTitle.setText(mSecurityController.getLabel(info));
+        parentalControlsTitle.setText(label);
 
         return dialogView;
     }

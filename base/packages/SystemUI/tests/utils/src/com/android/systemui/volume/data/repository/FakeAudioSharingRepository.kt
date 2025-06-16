@@ -16,16 +16,65 @@
 
 package com.android.systemui.volume.data.repository
 
+import com.android.settingslib.bluetooth.CachedBluetoothDevice
 import com.android.settingslib.volume.data.repository.AudioSharingRepository
-import kotlinx.coroutines.flow.Flow
+import com.android.settingslib.volume.data.repository.GroupIdToVolumes
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class FakeAudioSharingRepository : AudioSharingRepository {
+    private var mutableAvailable: Boolean = false
     private val mutableInAudioSharing: MutableStateFlow<Boolean> = MutableStateFlow(false)
+    private val mutablePrimaryGroupId: MutableStateFlow<Int> =
+        MutableStateFlow(TEST_GROUP_ID_INVALID)
+    private val mutableSecondaryGroupId: MutableStateFlow<Int> =
+        MutableStateFlow(TEST_GROUP_ID_INVALID)
+    private val mutablePrimaryDevice: MutableStateFlow<CachedBluetoothDevice?> =
+        MutableStateFlow(null)
+    private val mutableSecondaryDevice: MutableStateFlow<CachedBluetoothDevice?> =
+        MutableStateFlow(null)
+    private val mutableVolumeMap: MutableStateFlow<GroupIdToVolumes> = MutableStateFlow(emptyMap())
 
-    override val inAudioSharing: Flow<Boolean> = mutableInAudioSharing
+    override val inAudioSharing: StateFlow<Boolean> = mutableInAudioSharing
+    override val primaryGroupId: StateFlow<Int> = mutablePrimaryGroupId
+    override val secondaryGroupId: StateFlow<Int> = mutableSecondaryGroupId
+    override val primaryDevice: StateFlow<CachedBluetoothDevice?> = mutablePrimaryDevice
+    override val secondaryDevice: StateFlow<CachedBluetoothDevice?> = mutableSecondaryDevice
+    override val volumeMap: StateFlow<GroupIdToVolumes> = mutableVolumeMap
+
+    override suspend fun audioSharingAvailable(): Boolean = mutableAvailable
+
+    override suspend fun setSecondaryVolume(volume: Int) {}
+
+    fun setAudioSharingAvailable(available: Boolean) {
+        mutableAvailable = available
+    }
 
     fun setInAudioSharing(state: Boolean) {
         mutableInAudioSharing.value = state
+    }
+
+    fun setPrimaryGroupId(groupId: Int) {
+        mutablePrimaryGroupId.value = groupId
+    }
+
+    fun setSecondaryGroupId(groupId: Int) {
+        mutableSecondaryGroupId.value = groupId
+    }
+
+    fun setPrimaryDevice(device: CachedBluetoothDevice?) {
+        mutablePrimaryDevice.value = device
+    }
+
+    fun setSecondaryDevice(device: CachedBluetoothDevice?) {
+        mutableSecondaryDevice.value = device
+    }
+
+    fun setVolumeMap(volumeMap: GroupIdToVolumes) {
+        mutableVolumeMap.value = volumeMap
+    }
+
+    private companion object {
+        const val TEST_GROUP_ID_INVALID = -1
     }
 }

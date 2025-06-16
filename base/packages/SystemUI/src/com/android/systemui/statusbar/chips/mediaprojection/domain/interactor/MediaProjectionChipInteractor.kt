@@ -17,19 +17,26 @@
 package com.android.systemui.statusbar.chips.mediaprojection.domain.interactor
 
 import android.content.pm.PackageManager
+import android.media.projection.StopReason
+import com.android.app.tracing.coroutines.launchTraced as launch
+import com.android.systemui.Flags
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.log.LogBuffer
+import com.android.systemui.log.core.LogLevel
+import com.android.systemui.mediaprojection.MediaProjectionUtils.packageHasCastingCapabilities
 import com.android.systemui.mediaprojection.data.model.MediaProjectionState
 import com.android.systemui.mediaprojection.data.repository.MediaProjectionRepository
+import com.android.systemui.statusbar.chips.StatusBarChipLogTags.pad
+import com.android.systemui.statusbar.chips.StatusBarChipsLog
 import com.android.systemui.statusbar.chips.mediaprojection.domain.model.ProjectionChipModel
-import com.android.systemui.util.Utils
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 /**
  * Interactor for media projection events, used to show chips in the status bar for share-to-app and
@@ -45,20 +52,57 @@ constructor(
     @Application private val scope: CoroutineScope,
     private val mediaProjectionRepository: MediaProjectionRepository,
     private val packageManager: PackageManager,
+    @StatusBarChipsLog private val logger: LogBuffer,
 ) {
+    val projectionStartedDuringCallAndActivePostCallEvent: Flow<Unit> =
+        mediaProjectionRepository.projectionStartedDuringCallAndActivePostCallEvent
+
     val projection: StateFlow<ProjectionChipModel> =
         mediaProjectionRepository.mediaProjectionState
             .map { state ->
                 when (state) {
-                    is MediaProjectionState.NotProjecting -> ProjectionChipModel.NotProjecting
+                    is MediaProjectionState.NotProjecting -> {
+                        logger.log(TAG, LogLevel.INFO, {}, { "State: NotProjecting" })
+                        ProjectionChipModel.NotProjecting
+                    }
                     is MediaProjectionState.Projecting -> {
-                        val type =
-                            if (isProjectionToOtherDevice(state.hostPackage)) {
-                                ProjectionChipModel.Type.CAST_TO_OTHER_DEVICE
+                        val receiver =
+                            if (packageHasCastingCapabilities(packageManager, state.hostPackage)) {
+                                ProjectionChipModel.Receiver.CastToOtherDevice
                             } else {
-                                ProjectionChipModel.Type.SHARE_TO_APP
+                                ProjectionChipModel.Receiver.ShareToApp
                             }
-                        ProjectionChipModel.Projecting(type, state)
+                        val contentType =
+                            if (Flags.statusBarShowAudioOnlyProjectionChip()) {
+                                when (state) {
+                                    is MediaProjectionState.Projecting.EntireScreen,
+                                    is MediaProjectionState.Projecting.SingleTask ->
+                                        ProjectionChipModel.ContentType.Screen
+                                    is MediaProjectionState.Projecting.NoScreen ->
+                                        ProjectionChipModel.ContentType.Audio
+                                }
+                            } else {
+                                ProjectionChipModel.ContentType.Screen
+                            }
+
+                        logger.log(
+                            TAG,
+                            LogLevel.INFO,
+                            {
+                                bool1 = receiver == ProjectionChipModel.Receiver.CastToOtherDevice
+                                bool2 = contentType == ProjectionChipModel.ContentType.Screen
+                                str1 = state.hostPackage
+                                str2 = state.hostDeviceName
+                            },
+                            {
+                                "State: Projecting(" +
+                                    "receiver=${if (bool1) "CastToOtherDevice" else "ShareToApp"} " +
+                                    "contentType=${if (bool2) "Screen" else "Audio"} " +
+                                    "hostPackage=$str1 " +
+                                    "hostDevice=$str2)"
+                            },
+                        )
+                        ProjectionChipModel.Projecting(receiver, contentType, state)
                     }
                 }
             }
@@ -66,19 +110,10 @@ constructor(
 
     /** Stops the currently active projection. */
     fun stopProjecting() {
-        scope.launch { mediaProjectionRepository.stopProjecting() }
+        scope.launch { mediaProjectionRepository.stopProjecting(StopReason.STOP_PRIVACY_CHIP) }
     }
 
-    /**
-     * Returns true iff projecting to the given [packageName] means that we're projecting to a
-     * *different* device (as opposed to projecting to some application on *this* device).
-     */
-    private fun isProjectionToOtherDevice(packageName: String?): Boolean {
-        // The [isHeadlessRemoteDisplayProvider] check approximates whether a projection is to a
-        // different device or the same device, because headless remote display packages are the
-        // only kinds of packages that do cast-to-other-device. This isn't exactly perfect,
-        // because it means that any projection by those headless remote display packages will be
-        // marked as going to a different device, even if that isn't always true. See b/321078669.
-        return Utils.isHeadlessRemoteDisplayProvider(packageManager, packageName)
+    companion object {
+        private val TAG = "MediaProjection".pad()
     }
 }

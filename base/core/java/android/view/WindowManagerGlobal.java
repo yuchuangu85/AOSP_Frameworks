@@ -17,6 +17,8 @@
 package android.view;
 
 import static android.view.Display.INVALID_DISPLAY;
+import static android.view.WindowManager.LayoutParams.LAST_APPLICATION_WINDOW;
+import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_OPT_OUT_EDGE_TO_EDGE;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 
 import android.animation.ValueAnimator;
@@ -26,6 +28,7 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.content.res.TypedArray;
 import android.graphics.HardwareRenderer;
 import android.os.Binder;
 import android.os.Build;
@@ -45,7 +48,9 @@ import android.window.ITrustedPresentationListener;
 import android.window.InputTransferToken;
 import android.window.TrustedPresentationThresholds;
 
+import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.policy.PhoneWindow;
 import com.android.internal.util.FastPrintWriter;
 
 import java.io.FileDescriptor;
@@ -53,6 +58,7 @@ import java.io.FileOutputStream;
 import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.WeakHashMap;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -142,6 +148,13 @@ public final class WindowManagerGlobal {
 
     @UnsupportedAppUsage
     private final ArrayList<View> mViews = new ArrayList<View>();
+    /**
+     * The {@link ListenerGroup} that is associated to {@link #mViews}.
+     * @hide
+     */
+    @GuardedBy("mLock")
+    private final ListenerGroup<List<View>> mWindowViewsListenerGroup =
+            new ListenerGroup<>(new ArrayList<>());
     @UnsupportedAppUsage
     private final ArrayList<ViewRootImpl> mRoots = new ArrayList<ViewRootImpl>();
     @UnsupportedAppUsage
@@ -314,6 +327,32 @@ public final class WindowManagerGlobal {
         }
     }
 
+    /**
+     * Adds a listener that will be notified whenever {@link #getWindowViews()} changes. The
+     * current value is provided immediately using the provided {@link Executor}. If this
+     * {@link Consumer} was registered previously, then this is a no op.
+     */
+    public void addWindowViewsListener(@NonNull Executor executor,
+            @NonNull Consumer<List<View>> consumer) {
+        synchronized (mLock) {
+            if (mWindowViewsListenerGroup.isConsumerPresent(consumer)) {
+                return;
+            }
+            mWindowViewsListenerGroup.addListener(executor, consumer);
+        }
+    }
+
+    /**
+     * Removes a listener that was registered in
+     * {@link #addWindowViewsListener(Executor, Consumer)}. If it was not registered previously,
+     * then this is a no op.
+     */
+    public void removeWindowViewsListener(@NonNull Consumer<List<View>> consumer) {
+        synchronized (mLock) {
+            mWindowViewsListenerGroup.removeListener(consumer);
+        }
+    }
+
     public View getWindowView(IBinder windowToken) {
         synchronized (mLock) {
             final int numViews = mViews.size();
@@ -356,17 +395,26 @@ public final class WindowManagerGlobal {
         }
 
         final WindowManager.LayoutParams wparams = (WindowManager.LayoutParams) params;
+        final Context context = view.getContext();
         if (parentWindow != null) {
             parentWindow.adjustLayoutParamsForSubWindow(wparams);
         } else {
             // If there's no parent, then hardware acceleration for this view is
             // set from the application's hardware acceleration setting.
-            final Context context = view.getContext();
             if (context != null
                     && (context.getApplicationInfo().flags
                     & ApplicationInfo.FLAG_HARDWARE_ACCELERATED) != 0) {
                 wparams.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
             }
+        }
+
+        if (context != null && wparams.type > LAST_APPLICATION_WINDOW) {
+            final TypedArray styles = context.obtainStyledAttributes(R.styleable.Window);
+            if (PhoneWindow.isOptingOutEdgeToEdgeEnforcement(
+                    context.getApplicationInfo(), true /* local */, styles)) {
+                wparams.privateFlags |= PRIVATE_FLAG_OPT_OUT_EDGE_TO_EDGE;
+            }
+            styles.recycle();
         }
 
         ViewRootImpl root;
@@ -440,7 +488,9 @@ public final class WindowManagerGlobal {
             // do this last because it fires off messages to start doing things
             try {
                 root.setView(view, wparams, panelParentView, userId);
+                mWindowViewsListenerGroup.accept(getWindowViews());
             } catch (RuntimeException e) {
+                Log.e(TAG, "Couldn't add view: " + view, e);
                 final int viewIndex = (index >= 0) ? index : (mViews.size() - 1);
                 // BadTokenException or InvalidDisplayException, clean up.
                 if (viewIndex >= 0) {
@@ -560,6 +610,7 @@ public final class WindowManagerGlobal {
                 mDyingViews.remove(view);
             }
             allViewsRemoved = mRoots.isEmpty();
+            mWindowViewsListenerGroup.accept(getWindowViews());
         }
 
         // If we don't have any views anymore in our process, we no longer need the

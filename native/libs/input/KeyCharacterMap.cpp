@@ -84,15 +84,15 @@ static String8 toString(const char16_t* chars, size_t numChars) {
 
 KeyCharacterMap::KeyCharacterMap(const std::string& filename) : mLoadFileName(filename) {}
 
-base::Result<std::shared_ptr<KeyCharacterMap>> KeyCharacterMap::load(const std::string& filename,
+base::Result<std::unique_ptr<KeyCharacterMap>> KeyCharacterMap::load(const std::string& filename,
                                                                      Format format) {
     Tokenizer* tokenizer;
     status_t status = Tokenizer::open(String8(filename.c_str()), &tokenizer);
     if (status) {
         return Errorf("Error {} opening key character map file {}.", status, filename.c_str());
     }
-    std::shared_ptr<KeyCharacterMap> map =
-            std::shared_ptr<KeyCharacterMap>(new KeyCharacterMap(filename));
+    std::unique_ptr<KeyCharacterMap> map =
+            std::unique_ptr<KeyCharacterMap>(new KeyCharacterMap(filename));
     if (!map.get()) {
         ALOGE("Error allocating key character map.");
         return Errorf("Error allocating key character map.");
@@ -317,19 +317,8 @@ bool KeyCharacterMap::getEvents(int32_t deviceId, const char16_t* chars, size_t 
     return true;
 }
 
-void KeyCharacterMap::addKeyRemapping(int32_t fromKeyCode, int32_t toKeyCode) {
-    if (fromKeyCode == toKeyCode) {
-        mKeyRemapping.erase(fromKeyCode);
-#if DEBUG_MAPPING
-        ALOGD("addKeyRemapping: Cleared remapping forKeyCode=%d ~ Result Successful.", fromKeyCode);
-#endif
-        return;
-    }
-    mKeyRemapping.insert_or_assign(fromKeyCode, toKeyCode);
-#if DEBUG_MAPPING
-    ALOGD("addKeyRemapping: fromKeyCode=%d, toKeyCode=%d ~ Result Successful.", fromKeyCode,
-          toKeyCode);
-#endif
+void KeyCharacterMap::setKeyRemapping(const std::map<int32_t, int32_t>& keyRemapping) {
+    mKeyRemapping = keyRemapping;
 }
 
 status_t KeyCharacterMap::mapKey(int32_t scanCode, int32_t usageCode, int32_t* outKeyCode) const {
@@ -374,6 +363,17 @@ int32_t KeyCharacterMap::applyKeyRemapping(int32_t fromKeyCode) const {
     ALOGD("applyKeyRemapping: keyCode=%d ~ replacement keyCode=%d.", fromKeyCode, toKeyCode);
 #endif
     return toKeyCode;
+}
+
+std::vector<int32_t> KeyCharacterMap::findKeyCodesMappedToKeyCode(int32_t toKeyCode) const {
+    std::vector<int32_t> fromKeyCodes;
+
+    for (const auto& [from, to] : mKeyRemapping) {
+        if (toKeyCode == to) {
+            fromKeyCodes.push_back(from);
+        }
+    }
+    return fromKeyCodes;
 }
 
 std::pair<int32_t, int32_t> KeyCharacterMap::applyKeyBehavior(int32_t fromKeyCode,
@@ -615,7 +615,7 @@ std::unique_ptr<KeyCharacterMap> KeyCharacterMap::readFromParcel(Parcel* parcel)
         ALOGE("%s: Null parcel", __func__);
         return nullptr;
     }
-    std::string loadFileName = parcel->readCString();
+    std::string loadFileName = parcel->readString8().c_str();
     std::unique_ptr<KeyCharacterMap> map =
             std::make_unique<KeyCharacterMap>(KeyCharacterMap(loadFileName));
     map->mType = static_cast<KeyCharacterMap::KeyboardType>(parcel->readInt32());
@@ -704,7 +704,7 @@ void KeyCharacterMap::writeToParcel(Parcel* parcel) const {
         ALOGE("%s: Null parcel", __func__);
         return;
     }
-    parcel->writeCString(mLoadFileName.c_str());
+    parcel->writeString8(String8(mLoadFileName.c_str()));
     parcel->writeInt32(static_cast<int32_t>(mType));
     parcel->writeBool(mLayoutOverlayApplied);
 

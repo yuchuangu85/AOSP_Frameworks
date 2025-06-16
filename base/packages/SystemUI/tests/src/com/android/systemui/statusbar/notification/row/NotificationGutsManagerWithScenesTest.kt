@@ -63,31 +63,44 @@ import com.android.systemui.statusbar.NotificationEntryHelper
 import com.android.systemui.statusbar.NotificationPresenter
 import com.android.systemui.statusbar.notification.AssistantFeedbackController
 import com.android.systemui.statusbar.notification.NotificationActivityStarter
+import com.android.systemui.statusbar.notification.collection.NotificationEntry
 import com.android.systemui.statusbar.notification.collection.provider.HighPriorityProvider
+import com.android.systemui.statusbar.notification.collection.provider.mockHighPriorityProvider
 import com.android.systemui.statusbar.notification.domain.interactor.activeNotificationsInteractor
+import com.android.systemui.statusbar.notification.headsup.mockHeadsUpManager
 import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier
+import com.android.systemui.statusbar.notification.promoted.domain.interactor.PackageDemotionInteractor
+import com.android.systemui.statusbar.notification.row.icon.appIconProvider
+import com.android.systemui.statusbar.notification.row.icon.notificationIconStyleProvider
+import com.android.systemui.statusbar.notification.shared.NotificationBundleUi
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer
 import com.android.systemui.statusbar.notificationLockscreenUserManager
 import com.android.systemui.statusbar.policy.deviceProvisionedController
-import com.android.systemui.statusbar.policy.headsUpManager
 import com.android.systemui.testKosmos
 import com.android.systemui.util.kotlin.JavaAdapter
 import com.android.systemui.wmshell.BubblesManager
 import java.util.Optional
-import junit.framework.Assert
 import kotlin.test.assertEquals
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
+import org.junit.Assert
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.ArgumentCaptor
-import org.mockito.ArgumentMatchers
 import org.mockito.Mock
-import org.mockito.Mockito
-import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 import org.mockito.invocation.InvocationOnMock
+import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
+import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.doNothing
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+import org.mockito.kotlin.spy
+import org.mockito.kotlin.times
+import org.mockito.kotlin.verify
+import org.mockito.kotlin.whenever
 
 /** Tests for [NotificationGutsManager] with the scene container enabled. */
 @SmallTest
@@ -99,7 +112,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         NotificationChannel(
             TEST_CHANNEL_ID,
             TEST_CHANNEL_ID,
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_DEFAULT,
         )
 
     private val kosmos = testKosmos()
@@ -119,8 +132,10 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
     private val shadeController = kosmos.shadeControllerSceneImpl
     private val notificationLockscreenUserManager = kosmos.notificationLockscreenUserManager
     private val statusBarStateController = kosmos.statusBarStateController
-    private val headsUpManager = kosmos.headsUpManager
+    private val headsUpManager = kosmos.mockHeadsUpManager
     private val activityStarter = kosmos.activityStarter
+    private val appIconProvider = kosmos.appIconProvider
+    private val iconStyleProvider = kosmos.notificationIconStyleProvider
     private val userManager = kosmos.userManager
     private val activeNotificationsInteractor = kosmos.activeNotificationsInteractor
     private val sceneInteractor = kosmos.sceneInteractor
@@ -135,6 +150,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
     @Mock private lateinit var notificationManager: INotificationManager
     @Mock private lateinit var shortcutManager: ShortcutManager
     @Mock private lateinit var channelEditorDialogController: ChannelEditorDialogController
+    @Mock private lateinit var packageDemotionInteractor: PackageDemotionInteractor
     @Mock private lateinit var peopleNotificationIdentifier: PeopleNotificationIdentifier
     @Mock private lateinit var contextTracker: UserContextProvider
     @Mock private lateinit var bubblesManager: BubblesManager
@@ -146,7 +162,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         MockitoAnnotations.initMocks(this)
         allowTestableLooperAsMainThread()
         helper = NotificationTestHelper(mContext, mDependency)
-        Mockito.`when`(accessibilityManager.isTouchExplorationEnabled).thenReturn(false)
+        whenever(accessibilityManager.isTouchExplorationEnabled).thenReturn(false)
         windowRootViewVisibilityInteractor =
             WindowRootViewVisibilityInteractor(
                 testScope.backgroundScope,
@@ -167,11 +183,14 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
                 accessibilityManager,
                 highPriorityProvider,
                 notificationManager,
+                appIconProvider,
+                iconStyleProvider,
                 userManager,
                 peopleSpaceWidgetManager,
                 launcherApps,
                 shortcutManager,
                 channelEditorDialogController,
+                packageDemotionInteractor,
                 contextTracker,
                 assistantFeedbackController,
                 Optional.of(bubblesManager),
@@ -185,12 +204,12 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
                 deviceProvisionedController,
                 metricsLogger,
                 headsUpManager,
-                activityStarter
+                activityStarter,
             )
         gutsManager.setUpWithPresenter(
             presenter,
             notificationListContainer,
-            onSettingsClickListener
+            onSettingsClickListener,
         )
         gutsManager.setNotificationActivityStarter(notificationActivityStarter)
         gutsManager.start()
@@ -198,51 +217,41 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
 
     @Test
     fun testOpenAndCloseGuts() {
-        val guts = Mockito.spy(NotificationGuts(mContext))
-        Mockito.`when`(guts.post(ArgumentMatchers.any())).thenAnswer { invocation: InvocationOnMock
-            ->
+        val guts = spy(NotificationGuts(mContext))
+        whenever(guts.post(any())).thenAnswer { invocation: InvocationOnMock ->
             handler.post((invocation.arguments[0] as Runnable))
             null
         }
 
         // Test doesn't support animation since the guts view is not attached.
-        Mockito.doNothing()
-            .`when`(guts)
-            .openControls(
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.any(Runnable::class.java)
-            )
+        doNothing()
+            .whenever(guts)
+            .openControls(any<Int>(), any<Int>(), any<Boolean>(), any<Runnable>())
         val realRow = createTestNotificationRow()
         val menuItem = createTestMenuItem(realRow)
-        val row = Mockito.spy(realRow)
-        Mockito.`when`(row!!.windowToken).thenReturn(Binder())
-        Mockito.`when`(row.guts).thenReturn(guts)
+        val row = spy(realRow)
+        whenever(row!!.windowToken).thenReturn(Binder())
+        whenever(row.guts).thenReturn(guts)
         Assert.assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
         assertEquals(View.INVISIBLE.toLong(), guts.visibility.toLong())
         executor.runAllReady()
-        verify(guts)
-            .openControls(
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.any(Runnable::class.java)
-            )
-        verify(headsUpManager).setGutsShown(realRow!!.entry, true)
+        verify(guts).openControls(any<Int>(), any<Int>(), any<Boolean>(), any<Runnable>())
+        if (NotificationBundleUi.isEnabled) {
+            verify(kosmos.mockHeadsUpManager).setGutsShown(any<NotificationEntry>(), eq(true))
+        } else {
+            verify(headsUpManager).setGutsShown(realRow!!.entry, true)
+        }
         assertEquals(View.VISIBLE.toLong(), guts.visibility.toLong())
         gutsManager.closeAndSaveGuts(false, false, true, 0, 0, false)
         verify(guts)
-            .closeControls(
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean()
-            )
-        verify(row, Mockito.times(1)).setGutsView(ArgumentMatchers.any())
+            .closeControls(any<Boolean>(), any<Boolean>(), any<Int>(), any<Int>(), any<Boolean>())
+        verify(row, times(1)).setGutsView(any())
         executor.runAllReady()
-        verify(headsUpManager).setGutsShown(realRow.entry, false)
+        if (NotificationBundleUi.isEnabled) {
+            verify(kosmos.mockHeadsUpManager).setGutsShown(any<NotificationEntry>(), eq(false))
+        } else {
+            verify(headsUpManager).setGutsShown(realRow!!.entry, false)
+        }
     }
 
     @Test
@@ -250,7 +259,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         // First, start out lockscreen or shade as not visible
         setIsLockscreenOrShadeVisible(false)
         testScope.testScheduler.runCurrent()
-        val guts = Mockito.mock(NotificationGuts::class.java)
+        val guts = mock<NotificationGuts>()
         gutsManager.exposedGuts = guts
 
         // WHEN the lockscreen or shade becomes visible
@@ -258,15 +267,9 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         testScope.testScheduler.runCurrent()
 
         // THEN the guts are not closed
-        verify(guts, Mockito.never()).removeCallbacks(ArgumentMatchers.any())
-        verify(guts, Mockito.never())
-            .closeControls(
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean()
-            )
+        verify(guts, never()).removeCallbacks(any())
+        verify(guts, never())
+            .closeControls(any<Boolean>(), any<Boolean>(), any<Int>(), any<Int>(), any<Boolean>())
     }
 
     @Test
@@ -274,7 +277,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         // First, start out lockscreen or shade as visible
         setIsLockscreenOrShadeVisible(true)
         testScope.testScheduler.runCurrent()
-        val guts = Mockito.mock(NotificationGuts::class.java)
+        val guts = mock<NotificationGuts>()
         gutsManager.exposedGuts = guts
 
         // WHEN the lockscreen or shade is no longer visible
@@ -282,14 +285,14 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         testScope.testScheduler.runCurrent()
 
         // THEN the guts are closed
-        verify(guts).removeCallbacks(ArgumentMatchers.any())
+        verify(guts).removeCallbacks(anyOrNull())
         verify(guts)
             .closeControls(
-                /* leavebehinds= */ ArgumentMatchers.eq(true),
-                /* controls= */ ArgumentMatchers.eq(true),
-                /* x= */ ArgumentMatchers.anyInt(),
-                /* y= */ ArgumentMatchers.anyInt(),
-                /* force= */ ArgumentMatchers.eq(true)
+                /* leavebehinds= */ eq(true),
+                /* controls= */ eq(true),
+                /* x= */ any<Int>(),
+                /* y= */ any<Int>(),
+                /* force= */ eq(true),
             )
     }
 
@@ -304,95 +307,29 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         testScope.testScheduler.runCurrent()
 
         // THEN the list container is reset
-        verify(notificationListContainer)
-            .resetExposedMenuView(ArgumentMatchers.anyBoolean(), ArgumentMatchers.anyBoolean())
-    }
-
-    @Test
-    fun testChangeDensityOrFontScale() {
-        val guts = Mockito.spy(NotificationGuts(mContext))
-        Mockito.`when`(guts.post(ArgumentMatchers.any())).thenAnswer { invocation: InvocationOnMock
-            ->
-            handler.post((invocation.arguments[0] as Runnable))
-            null
-        }
-
-        // Test doesn't support animation since the guts view is not attached.
-        Mockito.doNothing()
-            .`when`(guts)
-            .openControls(
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.any(Runnable::class.java)
-            )
-        val realRow = createTestNotificationRow()
-        val menuItem = createTestMenuItem(realRow)
-        val row = Mockito.spy(realRow)
-        Mockito.`when`(row!!.windowToken).thenReturn(Binder())
-        Mockito.`when`(row.guts).thenReturn(guts)
-        Mockito.doNothing().`when`(row).ensureGutsInflated()
-        val realEntry = realRow!!.entry
-        val entry = Mockito.spy(realEntry)
-        Mockito.`when`(entry.row).thenReturn(row)
-        Mockito.`when`(entry.getGuts()).thenReturn(guts)
-        Assert.assertTrue(gutsManager.openGutsInternal(row, 0, 0, menuItem))
-        executor.runAllReady()
-        verify(guts)
-            .openControls(
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.any(Runnable::class.java)
-            )
-
-        // called once by mGutsManager.bindGuts() in mGutsManager.openGuts()
-        verify(row).setGutsView(ArgumentMatchers.any())
-        row.onDensityOrFontScaleChanged()
-        gutsManager.onDensityOrFontScaleChanged(entry)
-        executor.runAllReady()
-        gutsManager.closeAndSaveGuts(false, false, false, 0, 0, false)
-        verify(guts)
-            .closeControls(
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyBoolean(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.anyBoolean()
-            )
-
-        // called again by mGutsManager.bindGuts(), in mGutsManager.onDensityOrFontScaleChanged()
-        verify(row, Mockito.times(2)).setGutsView(ArgumentMatchers.any())
+        verify(notificationListContainer).resetExposedMenuView(any<Boolean>(), any<Boolean>())
     }
 
     @Test
     fun testAppOpsSettingsIntent_camera() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_CAMERA)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.lastValue.action)
     }
 
     @Test
     fun testAppOpsSettingsIntent_mic() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_RECORD_AUDIO)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.lastValue.action)
     }
 
     @Test
@@ -400,30 +337,22 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_CAMERA)
         ops.add(AppOpsManager.OP_RECORD_AUDIO)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Intent.ACTION_MANAGE_APP_PERMISSIONS, captor.lastValue.action)
     }
 
     @Test
     fun testAppOpsSettingsIntent_overlay() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_SYSTEM_ALERT_WINDOW)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Settings.ACTION_MANAGE_APP_OVERLAY_PERMISSION, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Settings.ACTION_MANAGE_APP_OVERLAY_PERMISSION, captor.lastValue.action)
     }
 
     @Test
@@ -432,15 +361,11 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         ops.add(AppOpsManager.OP_CAMERA)
         ops.add(AppOpsManager.OP_RECORD_AUDIO)
         ops.add(AppOpsManager.OP_SYSTEM_ALERT_WINDOW)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.lastValue.action)
     }
 
     @Test
@@ -448,15 +373,11 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_CAMERA)
         ops.add(AppOpsManager.OP_SYSTEM_ALERT_WINDOW)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.lastValue.action)
     }
 
     @Test
@@ -464,116 +385,156 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
         val ops = ArraySet<Int>()
         ops.add(AppOpsManager.OP_RECORD_AUDIO)
         ops.add(AppOpsManager.OP_SYSTEM_ALERT_WINDOW)
-        gutsManager.startAppOpsSettingsActivity("", 0, ops, null)
-        val captor = ArgumentCaptor.forClass(Intent::class.java)
-        verify(notificationActivityStarter, Mockito.times(1))
-            .startNotificationGutsIntent(
-                captor.capture(),
-                ArgumentMatchers.anyInt(),
-                ArgumentMatchers.any()
-            )
-        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.value.action)
+        gutsManager.startAppOpsSettingsActivity("", 0, ops, mock<ExpandableNotificationRow>())
+        val captor = argumentCaptor<Intent>()
+        verify(notificationActivityStarter, times(1))
+            .startNotificationGutsIntent(captor.capture(), any<Int>(), any())
+        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, captor.lastValue.action)
     }
 
     @Test
     @Throws(Exception::class)
     fun testInitializeNotificationInfoView_highPriority() {
-        val notificationInfoView = Mockito.mock(NotificationInfo::class.java)
-        val row = Mockito.spy(helper.createRow())
-        val entry = row.entry
+        val notificationInfoView = mock<NotificationInfo>()
+        val row = createTestNotificationRow()
+        val entry = row!!.entry
         NotificationEntryHelper.modifyRanking(entry)
             .setUserSentiment(Ranking.USER_SENTIMENT_NEGATIVE)
             .setImportance(NotificationManager.IMPORTANCE_HIGH)
             .build()
-        Mockito.`when`(row.getIsNonblockable()).thenReturn(false)
-        Mockito.`when`(highPriorityProvider.isHighPriority(entry)).thenReturn(true)
+
+        whenever(highPriorityProvider.isHighPriority(entry)).thenReturn(true)
+        whenever(kosmos.mockHighPriorityProvider.isHighPriority(entry)).thenReturn(true)
         val statusBarNotification = entry.sbn
-        gutsManager.initializeNotificationInfo(row, notificationInfoView)
+
+        gutsManager.initializeNotificationInfo(
+            row,
+            statusBarNotification,
+            entry.ranking,
+            notificationInfoView,
+        )
         verify(notificationInfoView)
             .bindNotification(
-                ArgumentMatchers.any(PackageManager::class.java),
-                ArgumentMatchers.any(INotificationManager::class.java),
-                ArgumentMatchers.eq(onUserInteractionCallback),
-                ArgumentMatchers.eq(channelEditorDialogController),
-                ArgumentMatchers.eq(statusBarNotification.packageName),
-                ArgumentMatchers.any(NotificationChannel::class.java),
-                ArgumentMatchers.eq(entry),
-                ArgumentMatchers.any(NotificationInfo.OnSettingsClickListener::class.java),
-                ArgumentMatchers.any(NotificationInfo.OnAppSettingsClickListener::class.java),
-                ArgumentMatchers.any(UiEventLogger::class.java),
-                ArgumentMatchers.eq(true),
-                ArgumentMatchers.eq(false),
-                ArgumentMatchers.eq(true), /* wasShownHighPriority */
-                ArgumentMatchers.eq(assistantFeedbackController),
-                ArgumentMatchers.any(MetricsLogger::class.java)
+                any<PackageManager>(),
+                any<INotificationManager>(),
+                eq(appIconProvider),
+                eq(iconStyleProvider),
+                eq(onUserInteractionCallback),
+                eq(channelEditorDialogController),
+                eq(packageDemotionInteractor),
+                eq(statusBarNotification.packageName),
+                eq(entry.ranking),
+                eq(statusBarNotification),
+                if (NotificationBundleUi.isEnabled) eq(null) else eq(entry),
+                if (NotificationBundleUi.isEnabled) eq(row.entryAdapter) else eq(null),
+                any<NotificationInfo.OnSettingsClickListener>(),
+                any<NotificationInfo.OnAppSettingsClickListener>(),
+                any<NotificationInfo.OnFeedbackClickListener>(),
+                any<UiEventLogger>(),
+                eq(true),
+                eq(false),
+                eq(false),
+                eq(true),
+                eq(assistantFeedbackController),
+                any<MetricsLogger>(),
+                any<View.OnClickListener>(),
             )
     }
 
     @Test
     @Throws(Exception::class)
     fun testInitializeNotificationInfoView_PassesAlongProvisionedState() {
-        val notificationInfoView = Mockito.mock(NotificationInfo::class.java)
-        val row = Mockito.spy(helper.createRow())
+        val notificationInfoView = mock<NotificationInfo>()
+        val row = createTestNotificationRow()
         NotificationEntryHelper.modifyRanking(row.entry)
             .setUserSentiment(Ranking.USER_SENTIMENT_NEGATIVE)
             .build()
-        Mockito.`when`(row.getIsNonblockable()).thenReturn(false)
         val statusBarNotification = row.entry.sbn
         val entry = row.entry
-        gutsManager.initializeNotificationInfo(row, notificationInfoView)
+
+        gutsManager.initializeNotificationInfo(
+            row,
+            statusBarNotification,
+            entry.ranking,
+            notificationInfoView,
+        )
         verify(notificationInfoView)
             .bindNotification(
-                ArgumentMatchers.any(PackageManager::class.java),
-                ArgumentMatchers.any(INotificationManager::class.java),
-                ArgumentMatchers.eq(onUserInteractionCallback),
-                ArgumentMatchers.eq(channelEditorDialogController),
-                ArgumentMatchers.eq(statusBarNotification.packageName),
-                ArgumentMatchers.any(NotificationChannel::class.java),
-                ArgumentMatchers.eq(entry),
-                ArgumentMatchers.any(NotificationInfo.OnSettingsClickListener::class.java),
-                ArgumentMatchers.any(NotificationInfo.OnAppSettingsClickListener::class.java),
-                ArgumentMatchers.any(UiEventLogger::class.java),
-                ArgumentMatchers.eq(true),
-                ArgumentMatchers.eq(false),
-                ArgumentMatchers.eq(false), /* wasShownHighPriority */
-                ArgumentMatchers.eq(assistantFeedbackController),
-                ArgumentMatchers.any(MetricsLogger::class.java)
+                any<PackageManager>(),
+                any<INotificationManager>(),
+                eq(appIconProvider),
+                eq(iconStyleProvider),
+                eq(onUserInteractionCallback),
+                eq(channelEditorDialogController),
+                eq(packageDemotionInteractor),
+                eq(statusBarNotification.packageName),
+                eq(entry.ranking),
+                eq(statusBarNotification),
+                if (NotificationBundleUi.isEnabled) eq(null) else eq(entry),
+                if (NotificationBundleUi.isEnabled) eq(row.entryAdapter) else eq(null),
+                any<NotificationInfo.OnSettingsClickListener>(),
+                any<NotificationInfo.OnAppSettingsClickListener>(),
+                any<NotificationInfo.OnFeedbackClickListener>(),
+                any<UiEventLogger>(),
+                eq(true),
+                eq(false),
+                eq(false), /* wasShownHighPriority */
+                eq(false),
+                eq(assistantFeedbackController),
+                any<MetricsLogger>(),
+                any<View.OnClickListener>(),
             )
     }
 
     @Test
     @Throws(Exception::class)
     fun testInitializeNotificationInfoView_withInitialAction() {
-        val notificationInfoView = Mockito.mock(NotificationInfo::class.java)
-        val row = Mockito.spy(helper.createRow())
+        val notificationInfoView = mock<NotificationInfo>()
+        val row = spy(helper.createRow())
         NotificationEntryHelper.modifyRanking(row.entry)
             .setUserSentiment(Ranking.USER_SENTIMENT_NEGATIVE)
             .build()
-        Mockito.`when`(row.getIsNonblockable()).thenReturn(false)
+        whenever(row.canViewBeDismissed()).thenReturn(true)
         val statusBarNotification = row.entry.sbn
         val entry = row.entry
-        gutsManager.initializeNotificationInfo(row, notificationInfoView)
+        val entryAdapter = kosmos.entryAdapterFactory.create(entry)
+        row.entryAdapter = entryAdapter
+
+        gutsManager.initializeNotificationInfo(
+            row,
+            statusBarNotification,
+            entry.ranking,
+            notificationInfoView,
+        )
         verify(notificationInfoView)
             .bindNotification(
-                ArgumentMatchers.any(PackageManager::class.java),
-                ArgumentMatchers.any(INotificationManager::class.java),
-                ArgumentMatchers.eq(onUserInteractionCallback),
-                ArgumentMatchers.eq(channelEditorDialogController),
-                ArgumentMatchers.eq(statusBarNotification.packageName),
-                ArgumentMatchers.any(NotificationChannel::class.java),
-                ArgumentMatchers.eq(entry),
-                ArgumentMatchers.any(NotificationInfo.OnSettingsClickListener::class.java),
-                ArgumentMatchers.any(NotificationInfo.OnAppSettingsClickListener::class.java),
-                ArgumentMatchers.any(UiEventLogger::class.java),
-                ArgumentMatchers.eq(true),
-                ArgumentMatchers.eq(false),
-                ArgumentMatchers.eq(false), /* wasShownHighPriority */
-                ArgumentMatchers.eq(assistantFeedbackController),
-                ArgumentMatchers.any(MetricsLogger::class.java)
+                any<PackageManager>(),
+                any<INotificationManager>(),
+                eq(appIconProvider),
+                eq(iconStyleProvider),
+                eq(onUserInteractionCallback),
+                eq(channelEditorDialogController),
+                eq(packageDemotionInteractor),
+                eq(statusBarNotification.packageName),
+                eq(entry.ranking),
+                eq(statusBarNotification),
+                if (NotificationBundleUi.isEnabled) eq(null) else eq(entry),
+                if (NotificationBundleUi.isEnabled) eq(entryAdapter) else eq(null),
+                any<NotificationInfo.OnSettingsClickListener>(),
+                any<NotificationInfo.OnAppSettingsClickListener>(),
+                any<NotificationInfo.OnFeedbackClickListener>(),
+                any<UiEventLogger>(),
+                eq(true),
+                eq(false),
+                eq(true), /* wasShownHighPriority */
+                eq(false),
+                eq(assistantFeedbackController),
+                any<MetricsLogger>(),
+                any<View.OnClickListener>(),
             )
     }
 
-    private fun createTestNotificationRow(): ExpandableNotificationRow? {
+    private fun createTestNotificationRow(): ExpandableNotificationRow {
         val nb =
             Notification.Builder(mContext, testNotificationChannel.id)
                 .setContentTitle("foo")
@@ -581,16 +542,10 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
                 .setColor(Color.RED)
                 .setFlag(Notification.FLAG_CAN_COLORIZE, true)
                 .setSmallIcon(R.drawable.sym_def_app_icon)
-        return try {
-            val row = helper.createRow(nb.build())
-            NotificationEntryHelper.modifyRanking(row.entry)
-                .setChannel(testNotificationChannel)
-                .build()
-            row
-        } catch (e: Exception) {
-            org.junit.Assert.fail()
-            null
-        }
+        val row = helper.createRow(nb.build())
+        NotificationEntryHelper.modifyRanking(row.entry).setChannel(testNotificationChannel).build()
+        row.entryAdapter = kosmos.entryAdapterFactory.create(row.entry)
+        return row
     }
 
     private fun setIsLockscreenOrShadeVisible(isVisible: Boolean) {
@@ -598,7 +553,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
             if (isVisible) {
                 Scenes.Lockscreen
             } else {
-                Scenes.Bouncer
+                Scenes.Communal
             }
         sceneInteractor.changeScene(key, "test")
         sceneInteractor.setTransitionState(
@@ -612,7 +567,7 @@ class NotificationGutsManagerWithScenesTest : SysuiTestCase() {
     ): NotificationMenuRowPlugin.MenuItem {
         val menuRow: NotificationMenuRowPlugin =
             NotificationMenuRow(mContext, peopleNotificationIdentifier)
-        menuRow.createMenu(row, row!!.entry.sbn)
+        menuRow.createMenu(row)
         val menuItem = menuRow.getLongpressMenuItem(mContext)
         Assert.assertNotNull(menuItem)
         return menuItem

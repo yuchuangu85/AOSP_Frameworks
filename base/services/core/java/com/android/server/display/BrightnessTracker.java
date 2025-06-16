@@ -16,6 +16,9 @@
 
 package com.android.server.display;
 
+import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
+import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
@@ -130,6 +133,8 @@ public class BrightnessTracker {
     private static final int MSG_START_SENSOR_LISTENER = 3;
     private static final int MSG_SHOULD_COLLECT_COLOR_SAMPLE_CHANGED = 4;
     private static final int MSG_SENSOR_CHANGED = 5;
+    private static final int MSG_START_DISPLAY_LISTENER = 6;
+    private static final int MSG_STOP_DISPLAY_LISTENER = 7;
 
     private static final SimpleDateFormat FORMAT = new SimpleDateFormat("MM-dd HH:mm:ss.SSS");
 
@@ -159,7 +164,9 @@ public class BrightnessTracker {
     private SensorListener mSensorListener;
     private Sensor mLightSensor;
     private SettingsObserver mSettingsObserver;
-    private DisplayListener mDisplayListener;
+    private final DisplayListener mDisplayListener = new DisplayListener();
+    private boolean mDisplayListenerRegistered;
+    private boolean mIsDisplayActive;
     private boolean mSensorRegistered;
     private boolean mColorSamplingEnabled;
     private int mNoFramesToSample;
@@ -231,6 +238,8 @@ public class BrightnessTracker {
 
         mSettingsObserver = new SettingsObserver(mBgHandler);
         mInjector.registerBrightnessModeObserver(mContentResolver, mSettingsObserver);
+        startDisplayListener();
+        mIsDisplayActive = isDisplayActive();
         startSensorListener();
 
         final IntentFilter intentFilter = new IntentFilter();
@@ -260,6 +269,7 @@ public class BrightnessTracker {
             Slog.d(TAG, "Stop");
         }
         mBgHandler.removeMessages(MSG_BACKGROUND_START);
+        stopDisplayListener();
         stopSensorListener();
         mInjector.unregisterSensorListener(mContext, mSensorListener);
         mInjector.unregisterBrightnessModeObserver(mContext, mSettingsObserver);
@@ -443,6 +453,11 @@ public class BrightnessTracker {
     private void handleSensorChanged(Sensor lightSensor) {
         if (mLightSensor != lightSensor) {
             mLightSensor = lightSensor;
+            if (lightSensor != null) {
+                mBgHandler.sendEmptyMessage(MSG_START_DISPLAY_LISTENER);
+            } else {
+                mBgHandler.sendEmptyMessage(MSG_STOP_DISPLAY_LISTENER);
+            }
             stopSensorListener();
             // Attempt to restart the sensor listener. It will check to see if it should be running
             // so there is no need to also check here.
@@ -455,6 +470,7 @@ public class BrightnessTracker {
                 && mLightSensor != null
                 && mAmbientBrightnessStatsTracker != null
                 && mInjector.isInteractive(mContext)
+                && mIsDisplayActive
                 && mInjector.isBrightnessModeAutomatic(mContentResolver)) {
             mAmbientBrightnessStatsTracker.start();
             mSensorRegistered = true;
@@ -782,6 +798,7 @@ public class BrightnessTracker {
 
     public void dump(final PrintWriter pw) {
         pw.println("BrightnessTracker state:");
+        pw.println("------------------------");
         synchronized (mDataCollectionLock) {
             pw.println("  mStarted=" + mStarted);
             pw.println("  mLightSensor=" + mLightSensor);
@@ -824,11 +841,14 @@ public class BrightnessTracker {
         pw.println("  mColorSamplingEnabled=" + mColorSamplingEnabled);
         pw.println("  mNoFramesToSample=" + mNoFramesToSample);
         pw.println("  mFrameRate=" + mFrameRate);
+        pw.println("  mIsDisplayActive=" + mIsDisplayActive);
+        pw.println("  mDisplayListenerRegistered=" + mDisplayListenerRegistered);
     }
 
     private void enableColorSampling() {
         if (!mInjector.isBrightnessModeAutomatic(mContentResolver)
                 || !mInjector.isInteractive(mContext)
+                || !mIsDisplayActive
                 || mColorSamplingEnabled
                 || !mShouldCollectColorSample) {
             return;
@@ -859,10 +879,6 @@ public class BrightnessTracker {
                         + mNoFramesToSample + " frames, success=" + mColorSamplingEnabled);
             }
         }
-        if (mColorSamplingEnabled && mDisplayListener == null) {
-            mDisplayListener = new DisplayListener();
-            mInjector.registerDisplayListener(mContext, mDisplayListener, mBgHandler);
-        }
     }
 
     private void disableColorSampling() {
@@ -871,10 +887,6 @@ public class BrightnessTracker {
         }
         mInjector.enableColorSampling(/* enable= */ false, /* noFrames= */ 0);
         mColorSamplingEnabled = false;
-        if (mDisplayListener != null) {
-            mInjector.unRegisterDisplayListener(mContext, mDisplayListener);
-            mDisplayListener = null;
-        }
         if (DEBUG) {
             Slog.i(TAG, "turning off color sampling");
         }
@@ -912,6 +924,25 @@ public class BrightnessTracker {
         }
     }
 
+    private boolean isDisplayActive() {
+        return Display.isActiveState(mInjector.getDisplayState(mContext));
+    }
+
+    private void startDisplayListener() {
+        if (!mDisplayListenerRegistered && mLightSensor != null && mInjector.isInteractive(mContext)
+                && mInjector.isBrightnessModeAutomatic(mContentResolver)) {
+            mInjector.registerDisplayListener(mContext, mDisplayListener, mBgHandler);
+            mDisplayListenerRegistered = true;
+        }
+    }
+
+    private void stopDisplayListener() {
+        if (mDisplayListenerRegistered) {
+            mInjector.unregisterDisplayListener(mContext, mDisplayListener);
+            mDisplayListenerRegistered = false;
+        }
+    }
+
     private final class SensorListener implements SensorEventListener {
         @Override
         public void onSensorChanged(SensorEvent event) {
@@ -940,6 +971,15 @@ public class BrightnessTracker {
         public void onDisplayChanged(int displayId) {
             if (displayId == Display.DEFAULT_DISPLAY) {
                 updateColorSampling();
+                boolean isDisplayActive = isDisplayActive();
+                if (mIsDisplayActive != isDisplayActive) {
+                    mIsDisplayActive = isDisplayActive;
+                    if (isDisplayActive) {
+                        mBgHandler.obtainMessage(MSG_START_SENSOR_LISTENER).sendToTarget();
+                    } else {
+                        mBgHandler.obtainMessage(MSG_STOP_SENSOR_LISTENER).sendToTarget();
+                    }
+                }
             }
         }
     }
@@ -955,8 +995,10 @@ public class BrightnessTracker {
                 Slog.v(TAG, "settings change " + uri);
             }
             if (mInjector.isBrightnessModeAutomatic(mContentResolver)) {
+                mBgHandler.sendEmptyMessage(MSG_START_DISPLAY_LISTENER);
                 mBgHandler.obtainMessage(MSG_START_SENSOR_LISTENER).sendToTarget();
             } else {
+                mBgHandler.sendEmptyMessage(MSG_STOP_DISPLAY_LISTENER);
                 mBgHandler.obtainMessage(MSG_STOP_SENSOR_LISTENER).sendToTarget();
             }
         }
@@ -979,8 +1021,10 @@ public class BrightnessTracker {
                     batteryLevelChanged(level, scale);
                 }
             } else if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                mBgHandler.sendEmptyMessage(MSG_STOP_DISPLAY_LISTENER);
                 mBgHandler.obtainMessage(MSG_STOP_SENSOR_LISTENER).sendToTarget();
             } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                mBgHandler.sendEmptyMessage(MSG_START_DISPLAY_LISTENER);
                 mBgHandler.obtainMessage(MSG_START_SENSOR_LISTENER).sendToTarget();
             }
         }
@@ -1022,7 +1066,12 @@ public class BrightnessTracker {
                 case MSG_SENSOR_CHANGED:
                     handleSensorChanged((Sensor) msg.obj);
                     break;
-
+                case MSG_START_DISPLAY_LISTENER:
+                    startDisplayListener();
+                    break;
+                case MSG_STOP_DISPLAY_LISTENER:
+                    stopDisplayListener();
+                    break;
             }
         }
     }
@@ -1135,6 +1184,14 @@ public class BrightnessTracker {
         }
 
         public RootTaskInfo getFocusedStack() throws RemoteException {
+            if (UserManager.isVisibleBackgroundUsersEnabled()) {
+                // In MUMD (Multiple Users on Multiple Displays) system, the top most focused stack
+                // could be on the secondary display with a user signed on its display so get the
+                // root task info only on the default display.
+                return ActivityTaskManager.getService().getRootTaskInfoOnDisplay(
+                        WINDOWING_MODE_FULLSCREEN, ACTIVITY_TYPE_UNDEFINED,
+                        Display.DEFAULT_DISPLAY);
+            }
             return ActivityTaskManager.getService().getFocusedRootTaskInfo();
         }
 
@@ -1148,6 +1205,12 @@ public class BrightnessTracker {
 
         public boolean isInteractive(Context context) {
             return context.getSystemService(PowerManager.class).isInteractive();
+        }
+
+        public int getDisplayState(Context context) {
+            final DisplayManager displayManager = context.getSystemService(DisplayManager.class);
+            Display display = displayManager.getDisplay(Display.DEFAULT_DISPLAY);
+            return display.getState();
         }
 
         public int getNightDisplayColorTemperature(Context context) {
@@ -1207,7 +1270,7 @@ public class BrightnessTracker {
             displayManager.registerDisplayListener(listener, handler);
         }
 
-        public void unRegisterDisplayListener(Context context,
+        public void unregisterDisplayListener(Context context,
                 DisplayManager.DisplayListener listener) {
             final DisplayManager displayManager = context.getSystemService(DisplayManager.class);
             displayManager.unregisterDisplayListener(listener);

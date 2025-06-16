@@ -35,7 +35,19 @@ import android.telephony.SignalStrength;
 
 interface IBatteryStats {
     /** @hide */
+    const int RESULT_OK = 0;
+
+    /** @hide */
+    const int RESULT_RUNTIME_EXCEPTION = 1;
+
+    /** @hide */
+    const int RESULT_SECURITY_EXCEPTION = 2;
+
+    /** @hide */
     const String KEY_UID_SNAPSHOTS = "uid_snapshots";
+
+    /** @hide */
+    const String KEY_EXCEPTION_MESSAGE = "exception";
 
     // These first methods are also called by native code, so must
     // be kept in sync with frameworks/native/libs/binder/include_batterystats/batterystats/IBatteryStats.h
@@ -144,9 +156,9 @@ interface IBatteryStats {
     @EnforcePermission("UPDATE_DEVICE_STATS")
     void noteGpsSignalQuality(int signalLevel);
     @EnforcePermission("UPDATE_DEVICE_STATS")
-    void noteScreenState(int state);
+    void noteScreenState(int displayId, int state, int reason);
     @EnforcePermission("UPDATE_DEVICE_STATS")
-    void noteScreenBrightness(int brightness);
+    void noteScreenBrightness(int displayId, int brightness);
     @EnforcePermission("UPDATE_DEVICE_STATS")
     void noteUserActivity(int uid, int event);
     @EnforcePermission("UPDATE_DEVICE_STATS")

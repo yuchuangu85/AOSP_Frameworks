@@ -18,6 +18,7 @@ package com.android.server.accessibility.magnification;
 
 import static android.view.MotionEvent.ACTION_CANCEL;
 import static android.view.MotionEvent.ACTION_DOWN;
+import static android.view.MotionEvent.ACTION_HOVER_MOVE;
 import static android.view.MotionEvent.ACTION_UP;
 
 import static org.mockito.ArgumentMatchers.eq;
@@ -25,6 +26,8 @@ import static org.mockito.Mockito.verify;
 import static org.testng.AssertJUnit.assertTrue;
 
 import android.annotation.NonNull;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.provider.Settings;
 import android.view.InputDevice;
 import android.view.MotionEvent;
@@ -34,6 +37,7 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.server.accessibility.AccessibilityTraceManager;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
@@ -44,6 +48,9 @@ import org.mockito.MockitoAnnotations;
  */
 @RunWith(AndroidJUnit4.class)
 public class MagnificationGestureHandlerTest {
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     private TestMagnificationGestureHandler mMgh;
     private static final int DISPLAY_0 = 0;
@@ -77,6 +84,34 @@ public class MagnificationGestureHandlerTest {
             assertTrue(mMgh.mIsInternalMethodCalled);
         } finally {
             downEvent.recycle();
+        }
+    }
+
+    @Test
+    public void onMotionEvent_isFromMouse_handleMouseOrStylusEvent() {
+        final MotionEvent mouseEvent = MotionEvent.obtain(0, 0, ACTION_HOVER_MOVE, 0, 0, 0);
+        mouseEvent.setSource(InputDevice.SOURCE_MOUSE);
+
+        mMgh.onMotionEvent(mouseEvent, mouseEvent, /* policyFlags= */ 0);
+
+        try {
+            assertTrue(mMgh.mIsHandleMouseOrStylusEventCalled);
+        } finally {
+            mouseEvent.recycle();
+        }
+    }
+
+    @Test
+    public void onMotionEvent_isFromStylus_handleMouseOrStylusEvent() {
+        final MotionEvent stylusEvent = MotionEvent.obtain(0, 0, ACTION_HOVER_MOVE, 0, 0, 0);
+        stylusEvent.setSource(InputDevice.SOURCE_STYLUS);
+
+        mMgh.onMotionEvent(stylusEvent, stylusEvent, /* policyFlags= */ 0);
+
+        try {
+            assertTrue(mMgh.mIsHandleMouseOrStylusEventCalled);
+        } finally {
+            stylusEvent.recycle();
         }
     }
 
@@ -125,6 +160,7 @@ public class MagnificationGestureHandlerTest {
     private static class TestMagnificationGestureHandler extends MagnificationGestureHandler {
 
         boolean mIsInternalMethodCalled = false;
+        boolean mIsHandleMouseOrStylusEventCalled = false;
 
         TestMagnificationGestureHandler(int displayId, boolean detectSingleFingerTripleTap,
                 boolean detectTwoFingerTripleTap,
@@ -132,6 +168,11 @@ public class MagnificationGestureHandlerTest {
                 @NonNull Callback callback) {
             super(displayId, detectSingleFingerTripleTap, detectTwoFingerTripleTap,
                     detectShortcutTrigger, trace, callback);
+        }
+
+        @Override
+        void handleMouseOrStylusEvent(MotionEvent event, MotionEvent rawEvent, int policyFlags) {
+            mIsHandleMouseOrStylusEventCalled = true;
         }
 
         @Override

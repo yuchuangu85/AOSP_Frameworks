@@ -29,10 +29,10 @@
 #include <SkString.h>
 #include <SkSurface.h>
 #include <SkTileMode.h>
+#include <common/trace.h>
 #include <include/gpu/GpuTypes.h>
 #include <include/gpu/ganesh/SkSurfaceGanesh.h>
 #include <log/log.h>
-#include <utils/Trace.h>
 
 namespace android {
 namespace renderengine {
@@ -70,7 +70,7 @@ static sk_sp<SkImage> makeImage(SkSurface* surface, SkRuntimeShaderBuilder* buil
     paint.setShader(std::move(shader));
     paint.setBlendMode(SkBlendMode::kSrc);
     surface->getCanvas()->drawPaint(paint);
-    return surface->makeImageSnapshot();
+    return surface->makeTemporaryImage();
 }
 
 sk_sp<SkImage> KawaseBlurFilter::generate(SkiaGpuContext* context, const uint32_t blurRadius,

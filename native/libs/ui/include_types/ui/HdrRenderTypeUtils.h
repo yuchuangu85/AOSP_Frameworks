@@ -36,7 +36,7 @@ enum class HdrRenderType {
  */
 inline HdrRenderType getHdrRenderType(ui::Dataspace dataspace,
                                       std::optional<ui::PixelFormat> pixelFormat,
-                                      float hdrSdrRatio = 1.f) {
+                                      float hdrSdrRatio = 1.f, bool hasHdrMetadata = false) {
     const auto transfer = dataspace & HAL_DATASPACE_TRANSFER_MASK;
     const auto range = dataspace & HAL_DATASPACE_RANGE_MASK;
 
@@ -49,7 +49,8 @@ inline HdrRenderType getHdrRenderType(ui::Dataspace dataspace,
                                                                      HAL_DATASPACE_RANGE_EXTENDED);
 
     if ((dataspace == BT2020_LINEAR_EXT || dataspace == ui::Dataspace::V0_SCRGB) &&
-        pixelFormat.has_value() && pixelFormat.value() == ui::PixelFormat::RGBA_FP16) {
+        pixelFormat.has_value() && pixelFormat.value() == ui::PixelFormat::RGBA_FP16 &&
+        hasHdrMetadata) {
         return HdrRenderType::GENERIC_HDR;
     }
 
@@ -59,6 +60,26 @@ inline HdrRenderType getHdrRenderType(ui::Dataspace dataspace,
     }
 
     return HdrRenderType::SDR;
+}
+
+/**
+ * Returns the maximum headroom allowed for this content under "idealized"
+ * display conditions (low surround luminance, high-enough display brightness).
+ *
+ * TODO: take into account hdr metadata, but square it with the fact that some
+ * HLG content has CTA.861-3 metadata
+ */
+inline float getIdealizedMaxHeadroom(ui::Dataspace dataspace) {
+    const auto transfer = dataspace & HAL_DATASPACE_TRANSFER_MASK;
+
+    switch (transfer) {
+        case HAL_DATASPACE_TRANSFER_ST2084:
+            return 10000.0f / 203.0f;
+        case HAL_DATASPACE_TRANSFER_HLG:
+            return 1000.0f / 203.0f;
+        default:
+            return 1.0f;
+    }
 }
 
 } // namespace android

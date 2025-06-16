@@ -19,7 +19,7 @@ package com.android.systemui.qs.pipeline.domain.autoaddable
 import android.content.Context
 import android.hardware.display.ColorDisplayManager
 import android.hardware.display.NightDisplayListener
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.dagger.NightDisplayListenerModule
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.qs.pipeline.domain.model.AutoAddSignal
@@ -27,6 +27,7 @@ import com.android.systemui.qs.pipeline.domain.model.AutoAddTracking
 import com.android.systemui.qs.pipeline.domain.model.AutoAddable
 import com.android.systemui.qs.pipeline.shared.TileSpec
 import com.android.systemui.qs.tiles.NightDisplayTile
+import com.android.systemui.shade.ShadeDisplayAware
 import javax.inject.Inject
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -42,7 +43,7 @@ class NightDisplayAutoAddable
 @Inject
 constructor(
     private val nightDisplayListenerBuilder: NightDisplayListenerModule.Builder,
-    context: Context,
+    @ShadeDisplayAware context: Context,
 ) : AutoAddable {
 
     private val enabled = ColorDisplayManager.isNightDisplayAvailable(context)

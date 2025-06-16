@@ -25,6 +25,9 @@ import android.app.Notification.VISIBILITY_PUBLIC
 import android.app.NotificationChannel
 import android.app.NotificationManager.IMPORTANCE_HIGH
 import android.app.NotificationManager.VISIBILITY_NO_OVERRIDE
+import android.app.role.OnRoleHoldersChangedListener
+import android.app.role.RoleManager
+import android.companion.AssociationRequest
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionInfo
 import android.media.projection.MediaProjectionManager
@@ -73,7 +76,6 @@ import org.mockito.Mock
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verifyNoMoreInteractions
-import org.mockito.Mockito.verifyZeroInteractions
 import org.mockito.MockitoAnnotations
 import org.mockito.MockitoSession
 import org.mockito.quality.Strictness
@@ -90,6 +92,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
     @Mock private lateinit var activityManager: IActivityManager
     @Mock private lateinit var mediaProjectionManager: MediaProjectionManager
     @Mock private lateinit var packageManager: PackageManager
+    @Mock private lateinit var roleManager: RoleManager
     @Mock private lateinit var telephonyManager: TelephonyManager
     @Mock private lateinit var listener1: Runnable
     @Mock private lateinit var listener2: Runnable
@@ -99,6 +102,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
     private lateinit var executor: FakeExecutor
     private lateinit var globalSettings: FakeGlobalSettings
     private lateinit var mediaProjectionCallback: MediaProjectionManager.Callback
+    private lateinit var roleHolderCallback: OnRoleHoldersChangedListener
     private lateinit var controller: SensitiveNotificationProtectionControllerImpl
     private lateinit var mediaProjectionInfo: MediaProjectionInfo
 
@@ -118,14 +122,14 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.getPackageUidAsUser(
                     TEST_PROJECTION_PACKAGE_NAME,
-                    UserHandle.CURRENT.identifier
+                    UserHandle.CURRENT.identifier,
                 )
             )
             .thenReturn(TEST_PROJECTION_PACKAGE_UID)
         whenever(
                 packageManager.getPackageUidAsUser(
                     BUGREPORT_PACKAGE_NAME,
-                    UserHandle.CURRENT.identifier
+                    UserHandle.CURRENT.identifier,
                 )
             )
             .thenReturn(BUGREPORT_PACKAGE_UID)
@@ -135,7 +139,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.getPackageUidAsUser(
                     mContext.packageName,
-                    UserHandle.CURRENT.identifier
+                    UserHandle.CURRENT.identifier,
                 )
             )
             .thenReturn(mContext.applicationInfo.uid)
@@ -156,9 +160,10 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 activityManager,
                 packageManager,
                 telephonyManager,
+                roleManager,
                 mockExecutorHandler(executor),
                 executor,
-                logger
+                logger,
             )
 
         // Process pending work (getting global setting and list of exemptions)
@@ -167,6 +172,9 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         // Obtain useful MediaProjectionCallback
         mediaProjectionCallback = withArgCaptor {
             verify(mediaProjectionManager).addCallback(capture(), any())
+        }
+        roleHolderCallback = withArgCaptor {
+            verify(roleManager).addOnRoleHoldersChangedListenerAsUser(any(), capture(), any())
         }
     }
 
@@ -207,7 +215,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         mediaProjectionCallback.onStart(mediaProjectionInfo)
 
         controller.registerSensitiveStateListener(listener1)
-        verifyZeroInteractions(listener1)
+        verifyNoMoreInteractions(listener1)
 
         mediaProjectionCallback.onStop(mediaProjectionInfo)
 
@@ -308,7 +316,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.checkPermission(
                     android.Manifest.permission.RECORD_SENSITIVE_CONTENT,
-                    mediaProjectionInfo.packageName
+                    mediaProjectionInfo.packageName,
                 )
             )
             .thenReturn(PackageManager.PERMISSION_GRANTED)
@@ -323,7 +331,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.checkPermission(
                     android.Manifest.permission.RECORD_SENSITIVE_CONTENT,
-                    mediaProjectionInfo.packageName
+                    mediaProjectionInfo.packageName,
                 )
             )
             .thenReturn(PackageManager.PERMISSION_GRANTED)
@@ -335,6 +343,25 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
     @Test
     fun isSensitiveStateActive_projectionActive_bugReportHandlerExempt_false() {
         setShareFullScreenViaBugReportHandler()
+        mediaProjectionCallback.onStart(mediaProjectionInfo)
+
+        assertFalse(controller.isSensitiveStateActive)
+    }
+
+    @Test
+    fun isSensitiveStateActive_projectionActive_appStreamingRoleHolderExempt_false() {
+        setShareFullScreen()
+        whenever(
+                roleManager.getRoleHoldersAsUser(
+                    AssociationRequest.DEVICE_PROFILE_APP_STREAMING,
+                    mediaProjectionInfo.userHandle,
+                )
+            )
+            .thenReturn(listOf(TEST_PROJECTION_PACKAGE_NAME))
+        roleHolderCallback.onRoleHoldersChanged(
+            AssociationRequest.DEVICE_PROFILE_APP_STREAMING,
+            mediaProjectionInfo.userHandle,
+        )
         mediaProjectionCallback.onStart(mediaProjectionInfo)
 
         assertFalse(controller.isSensitiveStateActive)
@@ -450,7 +477,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.checkPermission(
                     android.Manifest.permission.RECORD_SENSITIVE_CONTENT,
-                    mediaProjectionInfo.packageName
+                    mediaProjectionInfo.packageName,
                 )
             )
             .thenReturn(PackageManager.PERMISSION_GRANTED)
@@ -467,7 +494,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         whenever(
                 packageManager.checkPermission(
                     android.Manifest.permission.RECORD_SENSITIVE_CONTENT,
-                    mediaProjectionInfo.packageName
+                    mediaProjectionInfo.packageName,
                 )
             )
             .thenReturn(PackageManager.PERMISSION_GRANTED)
@@ -529,7 +556,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(false),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__START),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
 
@@ -542,7 +569,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(false),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__STOP),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
     }
@@ -560,7 +587,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__START),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
 
@@ -573,7 +600,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__STOP),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
     }
@@ -591,7 +618,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__START),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
 
@@ -604,7 +631,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(TEST_PROJECTION_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__STOP),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
     }
@@ -624,7 +651,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(mContext.applicationInfo.uid),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__START),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
 
@@ -637,7 +664,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(mContext.applicationInfo.uid),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__STOP),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
     }
@@ -655,7 +682,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(BUGREPORT_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__START),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
 
@@ -668,7 +695,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
                 eq(BUGREPORT_PACKAGE_UID),
                 eq(true),
                 eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__STATE__STOP),
-                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI)
+                eq(FrameworkStatsLog.SENSITIVE_CONTENT_MEDIA_PROJECTION_SESSION__SOURCE__SYS_UI),
             )
         }
     }
@@ -758,7 +785,7 @@ class SensitiveNotificationProtectionControllerTest : SysuiTestCase() {
         return setupNotificationEntry(
             packageName,
             overrideVisibility = true,
-            overrideChannelVisibility = true
+            overrideChannelVisibility = true,
         )
     }
 

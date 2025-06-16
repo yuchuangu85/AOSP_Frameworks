@@ -53,7 +53,7 @@ import com.android.systemui.statusbar.StatusBarStateControllerImpl;
 import com.android.systemui.statusbar.notification.NotificationWakeUpCoordinator;
 import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -88,7 +88,6 @@ public class DozeServiceHostTest extends SysuiTestCase {
     @Mock private PowerManager mPowerManager;
     @Mock private WakefulnessLifecycle mWakefullnessLifecycle;
     @Mock private CentralSurfaces mCentralSurfaces;
-    @Mock private NotificationIconAreaController mNotificationIconAreaController;
     @Mock private NotificationShadeWindowViewController mNotificationShadeWindowViewController;
     @Mock private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
     @Mock private ShadeLockscreenInteractor mShadeLockscreenInteractor;
@@ -106,7 +105,7 @@ public class DozeServiceHostTest extends SysuiTestCase {
                 mHeadsUpManager, mBatteryController, mScrimController,
                 () -> mBiometricUnlockController, () -> mAssistManager, mDozeScrimController,
                 mKeyguardUpdateMonitor, mPulseExpansionHandler, mNotificationShadeWindowController,
-                mNotificationWakeUpCoordinator, mAuthController, mNotificationIconAreaController,
+                mNotificationWakeUpCoordinator, mAuthController,
                 mShadeLockscreenInteractor, mDozeInteractor);
 
         mDozeServiceHost.initialize(

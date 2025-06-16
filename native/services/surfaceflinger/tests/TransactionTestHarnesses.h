@@ -16,7 +16,7 @@
 #ifndef ANDROID_TRANSACTION_TEST_HARNESSES
 #define ANDROID_TRANSACTION_TEST_HARNESSES
 
-#include <common/FlagManager.h>
+#include <com_android_graphics_libgui_flags.h>
 #include <ui/DisplayState.h>
 
 #include "LayerTransactionTest.h"
@@ -48,15 +48,29 @@ public:
 
                 ui::DisplayMode displayMode;
                 SurfaceComposerClient::getActiveDisplayMode(displayToken, &displayMode);
-                const ui::Size& resolution = displayMode.resolution;
+                ui::Size resolution = displayMode.resolution;
+                if (displayState.orientation == ui::Rotation::Rotation90 ||
+                    displayState.orientation == ui::Rotation::Rotation270) {
+                    std::swap(resolution.width, resolution.height);
+                }
 
                 sp<IBinder> vDisplay;
+
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+                sp<BufferItemConsumer> itemConsumer = sp<BufferItemConsumer>::make(
+                        // Sample usage bits from screenrecord
+                        GRALLOC_USAGE_HW_VIDEO_ENCODER | GRALLOC_USAGE_SW_READ_OFTEN);
+                sp<BufferListener> listener = sp<BufferListener>::make(this);
+                itemConsumer->setFrameAvailableListener(listener);
+                itemConsumer->setName(String8("Virtual disp consumer (TransactionTest)"));
+                itemConsumer->setDefaultBufferSize(resolution.getWidth(), resolution.getHeight());
+#else
                 sp<IGraphicBufferProducer> producer;
                 sp<IGraphicBufferConsumer> consumer;
                 sp<BufferItemConsumer> itemConsumer;
                 BufferQueue::createBufferQueue(&producer, &consumer);
 
-                consumer->setConsumerName(String8("Virtual disp consumer"));
+                consumer->setConsumerName(String8("Virtual disp consumer (TransactionTest)"));
                 consumer->setDefaultBufferSize(resolution.getWidth(), resolution.getHeight());
 
                 itemConsumer = sp<BufferItemConsumer>::make(consumer,
@@ -65,6 +79,7 @@ public:
                                                                     GRALLOC_USAGE_SW_READ_OFTEN);
                 sp<BufferListener> listener = sp<BufferListener>::make(this);
                 itemConsumer->setFrameAvailableListener(listener);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
 
                 static const std::string kDisplayName("VirtualDisplay");
                 vDisplay = SurfaceComposerClient::createVirtualDisplay(kDisplayName,
@@ -76,15 +91,16 @@ public:
                         SurfaceComposerClient::getDefault()->mirrorDisplay(displayId);
 
                 SurfaceComposerClient::Transaction t;
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+                t.setDisplaySurface(vDisplay,
+                                    itemConsumer->getSurface()->getIGraphicBufferProducer());
+#else
                 t.setDisplaySurface(vDisplay, producer);
-                t.setDisplayProjection(vDisplay, displayState.orientation,
-                                       Rect(displayState.layerStackSpaceRect), Rect(resolution));
-                if (FlagManager::getInstance().ce_fence_promise()) {
-                    t.setDisplayLayerStack(vDisplay, layerStack);
-                    t.setLayerStack(mirrorSc, layerStack);
-                } else {
-                    t.setDisplayLayerStack(vDisplay, ui::DEFAULT_LAYER_STACK);
-                }
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+                t.setDisplayProjection(vDisplay, ui::Rotation::Rotation0, Rect(resolution),
+                                       Rect(resolution));
+                t.setDisplayLayerStack(vDisplay, layerStack);
+                t.setLayerStack(mirrorSc, layerStack);
                 t.apply();
                 SurfaceComposerClient::Transaction().apply(true);
 
@@ -104,10 +120,8 @@ public:
                 // CompositionEngine::present may attempt to be called on the same
                 // display multiple times. The layerStack is set to invalid here so
                 // that the display is ignored if that scenario occurs.
-                if (FlagManager::getInstance().ce_fence_promise()) {
-                    t.setLayerStack(mirrorSc, ui::INVALID_LAYER_STACK);
-                    t.apply(true);
-                }
+                t.setLayerStack(mirrorSc, ui::INVALID_LAYER_STACK);
+                t.apply(true);
                 SurfaceComposerClient::destroyVirtualDisplay(vDisplay);
                 return sc;
         }

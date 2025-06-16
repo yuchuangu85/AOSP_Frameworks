@@ -23,13 +23,12 @@
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
 
     <application android:label="SilkFX"
-         android:theme="@style/Theme.UsefulDefault">
+         android:theme="@android:style/Theme.Material">
 
         <activity android:name=".Main"
              android:label="SilkFX Demos"
              android:banner="@drawable/background1"
-             android:exported="true"
-             android:theme="@style/Theme.UsefulDefault">
+             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.DEFAULT"/>
@@ -70,6 +69,11 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+
+        <activity android:name=".hdr.LutTestActivity"
+            android:theme="@style/Theme.LutTestTheme"
+            android:label="Lut Test Examples"
+            android:exported="true"/>
 
     </application>
 </manifest>

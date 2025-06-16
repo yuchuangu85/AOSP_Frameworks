@@ -34,11 +34,16 @@ struct TouchedWindow {
     InputTarget::DispatchMode dispatchMode = InputTarget::DispatchMode::AS_IS;
     ftl::Flags<InputTarget::Flags> targetFlags;
 
+    // If another window has transferred touches to this window, and wants to continue sending the
+    // rest of the gesture to this window, store the token of the originating (transferred-from)
+    // window here.
+    sp<IBinder> forwardingWindowToken;
+
     // Hovering
     bool hasHoveringPointers() const;
     bool hasHoveringPointers(DeviceId deviceId) const;
     bool hasHoveringPointer(DeviceId deviceId, int32_t pointerId) const;
-    void addHoveringPointer(DeviceId deviceId, const PointerProperties& pointer);
+    void addHoveringPointer(DeviceId deviceId, const PointerProperties& pointer, float x, float y);
     void removeHoveringPointer(DeviceId deviceId, int32_t pointerId);
 
     // Touching
@@ -69,6 +74,15 @@ struct TouchedWindow {
     void clearHoveringPointers(DeviceId deviceId);
     std::string dump() const;
 
+    struct HoveringPointer {
+        PointerProperties properties;
+        float x;
+        float y;
+    };
+
+    std::vector<DeviceId> eraseHoveringPointersIf(
+            std::function<bool(const PointerProperties&, float x, float y)> condition);
+
 private:
     struct DeviceState {
         std::vector<PointerProperties> touchingPointers;
@@ -78,7 +92,7 @@ private:
         // NOTE: This is not initialized in case of HOVER entry/exit and DISPATCH_AS_OUTSIDE
         // scenario.
         std::optional<nsecs_t> downTimeInTarget;
-        std::vector<PointerProperties> hoveringPointers;
+        std::vector<HoveringPointer> hoveringPointers;
 
         bool hasPointers() const { return !touchingPointers.empty() || !hoveringPointers.empty(); };
     };

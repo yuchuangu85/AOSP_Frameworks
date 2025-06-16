@@ -17,6 +17,9 @@
 package com.android.systemui.bouncer.domain.interactor
 
 import android.app.StatusBarManager.SESSION_KEYGUARD
+import com.android.app.tracing.FlowTracing.traceAsCounter
+import com.android.app.tracing.coroutines.asyncTraced as async
+import com.android.compose.animation.scene.ObservableTransitionState
 import com.android.compose.animation.scene.SceneKey
 import com.android.internal.logging.UiEventLogger
 import com.android.systemui.authentication.domain.interactor.AuthenticationInteractor
@@ -25,25 +28,35 @@ import com.android.systemui.authentication.shared.model.AuthenticationMethodMode
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel.Pattern
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel.Pin
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel.Sim
+import com.android.systemui.authentication.shared.model.BouncerInputSide
 import com.android.systemui.bouncer.data.repository.BouncerRepository
 import com.android.systemui.bouncer.shared.logging.BouncerUiEvent
 import com.android.systemui.classifier.FalsingClassifier
 import com.android.systemui.classifier.domain.interactor.FalsingInteractor
+import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryFaceAuthInteractor
 import com.android.systemui.log.SessionTracker
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.scene.domain.interactor.SceneBackInteractor
+import com.android.systemui.scene.domain.interactor.SceneInteractor
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.scene.shared.model.Overlays
 import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.utils.coroutines.flow.flatMapLatestConflated
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 
 /** Encapsulates business logic and application state accessing use-cases. */
@@ -59,7 +72,9 @@ constructor(
     private val powerInteractor: PowerInteractor,
     private val uiEventLogger: UiEventLogger,
     private val sessionTracker: SessionTracker,
+    sceneInteractor: SceneInteractor,
     sceneBackInteractor: SceneBackInteractor,
+    @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
 ) {
     private val _onIncorrectBouncerInput = MutableSharedFlow<Unit>()
     val onIncorrectBouncerInput: SharedFlow<Unit> = _onIncorrectBouncerInput
@@ -78,8 +93,47 @@ constructor(
         authenticationInteractor.isPinEnhancedPrivacyEnabled
 
     /** Whether the user switcher should be displayed within the bouncer UI on large screens. */
-    val isUserSwitcherVisible: Boolean
-        get() = repository.isUserSwitcherVisible
+    val isUserSwitcherVisible: Flow<Boolean> =
+        authenticationInteractor.authenticationMethod.map { authMethod ->
+            when (authMethod) {
+                Sim -> false
+                else -> repository.isUserSwitcherEnabledInConfig
+            }
+        }
+
+    /**
+     * Whether one handed bouncer mode is supported on large screen devices. This allows user to
+     * double tap on the half of the screen to bring the bouncer input to that side of the screen.
+     */
+    val isOneHandedModeSupported: Flow<Boolean> =
+        combine(
+            isUserSwitcherVisible,
+            authenticationInteractor.authenticationMethod,
+            configurationInteractor.onAnyConfigurationChange,
+        ) { userSwitcherVisible, authMethod, _ ->
+            userSwitcherVisible ||
+                (repository.isOneHandedBouncerSupportedInConfig && (authMethod !is Password))
+        }
+
+    /**
+     * Preferred side of the screen where the input area on the bouncer should be. This is
+     * applicable for large screen devices (foldables and tablets).
+     */
+    val preferredBouncerInputSide: Flow<BouncerInputSide?> =
+        combine(
+            configurationInteractor.onAnyConfigurationChange,
+            repository.preferredBouncerInputSide,
+        ) { _, _ ->
+            // always read the setting as that can change outside of this
+            // repository (tests/manual testing)
+            val preferredInputSide = repository.getPreferredInputSideSetting()
+            when {
+                preferredInputSide != null -> preferredInputSide
+                repository.isUserSwitcherEnabledInConfig -> BouncerInputSide.RIGHT
+                repository.isOneHandedBouncerSupportedInConfig -> BouncerInputSide.LEFT
+                else -> null
+            }
+        }
 
     private val _onImeHiddenByUser = MutableSharedFlow<Unit>()
     /** Emits a [Unit] each time the IME (keyboard) is hidden by the user. */
@@ -93,11 +147,40 @@ constructor(
             }
             .map {}
 
+    /** X coordinate of the last recorded touch position on the lockscreen. */
+    val lastRecordedLockscreenTouchPosition = repository.lastRecordedLockscreenTouchPosition
+
+    /** Value between 0-1 that specifies by how much the bouncer UI should be scaled down. */
+    val scale: StateFlow<Float> = repository.scale.asStateFlow()
+
     /** The scene to show when bouncer is dismissed. */
     val dismissDestination: Flow<SceneKey> =
-        sceneBackInteractor.backScene
-            .filter { it != Scenes.Bouncer }
-            .map { it ?: Scenes.Lockscreen }
+        sceneBackInteractor.backScene.map { it ?: Scenes.Lockscreen }
+
+    /** The amount [0-1] that the Bouncer Overlay has been transitioned to. */
+    val bouncerExpansion: Flow<Float> =
+        if (SceneContainerFlag.isEnabled) {
+                sceneInteractor.transitionState.flatMapLatestConflated { state ->
+                    when (state) {
+                        is ObservableTransitionState.Idle ->
+                            flowOf(if (Overlays.Bouncer in state.currentOverlays) 1f else 0f)
+                        is ObservableTransitionState.Transition ->
+                            if (state.toContent == Overlays.Bouncer) {
+                                state.progress
+                            } else if (state.fromContent == Overlays.Bouncer) {
+                                state.progress.map { progress -> 1 - progress }
+                            } else {
+                                state.currentOverlays().map {
+                                    if (Overlays.Bouncer in it) 1f else 0f
+                                }
+                            }
+                    }
+                }
+            } else {
+                flowOf()
+            }
+            .distinctUntilChanged()
+            .traceAsCounter("bouncer_expansion") { (it * 100f).toInt() }
 
     /** Notifies that the user has places down a pointer, not necessarily dragging just yet. */
     fun onDown() {
@@ -127,6 +210,37 @@ constructor(
                 /* reason= */ "empty pattern input",
             )
         )
+    }
+
+    /** Update the preferred input side for the bouncer. */
+    fun setPreferredBouncerInputSide(inputSide: BouncerInputSide) {
+        repository.setPreferredBouncerInputSide(inputSide)
+    }
+
+    /**
+     * Record the x coordinate of the last touch position on the lockscreen. This will be used to
+     * determine which side of the bouncer the input area should be shown.
+     */
+    fun recordKeyguardTouchPosition(x: Float) {
+        // todo (b/375245685) investigate why this is not working as expected when it is
+        //  wired up with SBKVM
+        repository.recordLockscreenTouchPosition(x)
+    }
+
+    fun onBackEventProgressed(progress: Float) {
+        // this is applicable only for compose bouncer without flexiglass
+        SceneContainerFlag.assertInLegacyMode()
+        repository.scale.value = (mapBackEventProgressToScale(progress))
+    }
+
+    fun onBackEventCancelled() {
+        // this is applicable only for compose bouncer without flexiglass
+        SceneContainerFlag.assertInLegacyMode()
+        repository.scale.value = DEFAULT_SCALE
+    }
+
+    fun resetScale() {
+        repository.scale.value = DEFAULT_SCALE
     }
 
     /**
@@ -180,7 +294,7 @@ constructor(
             } else if (authResult == AuthenticationResult.FAILED) {
                 uiEventLogger.log(
                     BouncerUiEvent.BOUNCER_PASSWORD_FAILURE,
-                    sessionTracker.getSessionId(SESSION_KEYGUARD)
+                    sessionTracker.getSessionId(SESSION_KEYGUARD),
                 )
             }
         }
@@ -191,5 +305,16 @@ constructor(
     /** Notifies that the input method editor (software keyboard) has been hidden by the user. */
     suspend fun onImeHiddenByUser() {
         _onImeHiddenByUser.emit(Unit)
+    }
+
+    private fun mapBackEventProgressToScale(progress: Float): Float {
+        // TODO(b/263819310): Update the interpolator to match spec.
+        return MIN_BACK_SCALE + (1 - MIN_BACK_SCALE) * (1 - progress)
+    }
+
+    companion object {
+        // How much the view scales down to during back gestures.
+        private const val MIN_BACK_SCALE: Float = 0.9f
+        private const val DEFAULT_SCALE: Float = 1.0f
     }
 }

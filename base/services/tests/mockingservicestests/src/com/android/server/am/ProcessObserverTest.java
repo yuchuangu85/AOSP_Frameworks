@@ -42,6 +42,8 @@ import android.os.Binder;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.platform.test.annotations.EnableFlags;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.Log;
 
 import androidx.test.filters.MediumTest;
@@ -56,6 +58,7 @@ import com.android.server.wm.ActivityTaskManagerService;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.mockito.Mock;
@@ -78,6 +81,8 @@ public class ProcessObserverTest {
     @Rule
     public final ApplicationExitInfoTest.ServiceThreadRule
             mServiceThreadRule = new ApplicationExitInfoTest.ServiceThreadRule();
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     private Context mContext;
     private HandlerThread mHandlerThread;
@@ -193,7 +198,7 @@ public class ProcessObserverTest {
 
     private ProcessRecord makeActiveProcessRecord(ApplicationInfo ai)
             throws Exception {
-        final IApplicationThread thread = mock(IApplicationThread.class);
+        final ApplicationThreadDeferred thread = mock(ApplicationThreadDeferred.class);
         final IBinder threadBinder = new Binder();
         doReturn(threadBinder).when(thread).asBinder();
         doAnswer((invocation) -> {
@@ -215,7 +220,7 @@ public class ProcessObserverTest {
                 any(), any(), any(),
                 any(), any(),
                 any(), any(),
-                any(), any(),
+                any(), any(), any(),
                 anyLong(), anyLong());
         final ProcessRecord r = spy(new ProcessRecord(mAms, ai, ai.processName, ai.uid));
         r.setPid(myPid());
@@ -239,6 +244,7 @@ public class ProcessObserverTest {
      * Verify that a process start event is dispatched to process observers.
      */
     @Test
+    @EnableFlags(android.app.Flags.FLAG_ENABLE_PROCESS_OBSERVER_BROADCAST_ON_PROCESS_STARTED)
     public void testNormal() throws Exception {
         ProcessRecord app = startProcess();
         verify(mProcessObserver).onProcessStarted(
@@ -263,7 +269,7 @@ public class ProcessObserverTest {
                 null, null,
                 null,
                 null, null, null,
-                null, null, null,
+                null, null, null, null,
                 0, 0);
         return app;
     }

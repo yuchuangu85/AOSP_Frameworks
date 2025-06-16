@@ -17,16 +17,12 @@
 package com.android.systemui.scene.ui.composable.transitions
 
 import androidx.compose.animation.core.tween
-import com.android.compose.animation.scene.Edge
 import com.android.compose.animation.scene.TransitionBuilder
-import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.communal.ui.compose.AllElements
 
 fun TransitionBuilder.lockscreenToCommunalTransition() {
-    spec = tween(durationMillis = 500)
+    spec = tween(durationMillis = 1000)
 
-    // Translate lockscreen to the left.
-    translate(Scenes.Lockscreen.rootElementKey, Edge.Left)
-
-    // Translate communal from the right.
-    translate(Scenes.Communal.rootElementKey, Edge.Right)
+    // Fade all communal hub elements in.
+    fade(AllElements)
 }

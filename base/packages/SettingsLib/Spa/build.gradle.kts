@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-import com.android.build.api.dsl.CommonExtension
 import com.android.build.gradle.BaseExtension
 import com.android.build.gradle.api.AndroidBasePlugin
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.compose.compiler) apply false
     alias(libs.plugins.kotlin.android) apply false
 }
 
@@ -29,7 +28,7 @@ val androidTop: String = File(rootDir, "../../../../..").canonicalPath
 
 allprojects {
     extra["androidTop"] = androidTop
-    extra["jetpackComposeVersion"] = "1.7.0-beta02"
+    extra["jetpackComposeVersion"] = "1.8.0-rc01"
 }
 
 subprojects {
@@ -37,11 +36,11 @@ subprojects {
 
     plugins.withType<AndroidBasePlugin> {
         configure<BaseExtension> {
-            compileSdkVersion(34)
+            compileSdkVersion(36)
 
             defaultConfig {
                 minSdk = 21
-                targetSdk = 35
+                targetSdk = 36
             }
         }
 
@@ -49,25 +48,6 @@ subprojects {
             toolchain {
                 languageVersion.set(JavaLanguageVersion.of(libs.versions.jvm.get()))
             }
-        }
-    }
-
-    afterEvaluate {
-        plugins.withType<AndroidBasePlugin> {
-            the(CommonExtension::class).apply {
-                if (buildFeatures.compose == true) {
-                    composeOptions {
-                        kotlinCompilerExtensionVersion = libs.versions.compose.compiler.get()
-                    }
-                }
-            }
-        }
-    }
-
-    tasks.withType<KotlinCompile> {
-        kotlinOptions {
-            jvmTarget = libs.versions.jvm.get()
-            freeCompilerArgs = listOf("-Xjvm-default=all")
         }
     }
 }

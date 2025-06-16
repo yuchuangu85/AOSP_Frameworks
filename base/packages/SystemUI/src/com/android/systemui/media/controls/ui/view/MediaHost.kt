@@ -20,10 +20,12 @@ import android.graphics.Rect
 import android.util.ArraySet
 import android.view.View
 import android.view.View.OnAttachStateChangeListener
+import com.android.systemui.Flags.mediaControlsUmoInflationInBackground
 import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.shared.model.MediaData
 import com.android.systemui.media.controls.shared.model.SmartspaceMediaData
 import com.android.systemui.media.controls.ui.controller.MediaCarouselController
+import com.android.systemui.media.controls.ui.controller.MediaCarouselControllerLogger
 import com.android.systemui.media.controls.ui.controller.MediaHierarchyManager
 import com.android.systemui.media.controls.ui.controller.MediaHostStatesManager
 import com.android.systemui.media.controls.ui.controller.MediaLocation
@@ -40,10 +42,12 @@ class MediaHost(
     private val mediaDataManager: MediaDataManager,
     private val mediaHostStatesManager: MediaHostStatesManager,
     private val mediaCarouselController: MediaCarouselController,
+    private val debugLogger: MediaCarouselControllerLogger,
 ) : MediaHostState by state {
     lateinit var hostView: UniqueObjectHostView
     var location: Int = -1
         private set
+
     private var visibleChangedListeners: ArraySet<(Boolean) -> Unit> = ArraySet()
 
     private val tmpLocationOnScreen: IntArray = intArrayOf(0, 0)
@@ -90,8 +94,10 @@ class MediaHost(
                 data: MediaData,
                 immediately: Boolean,
                 receivedSmartspaceCardLatency: Int,
-                isSsReactivated: Boolean
+                isSsReactivated: Boolean,
             ) {
+                if (mediaControlsUmoInflationInBackground()) return
+
                 if (immediately) {
                     updateViewVisibility()
                 }
@@ -100,7 +106,7 @@ class MediaHost(
             override fun onSmartspaceMediaDataLoaded(
                 key: String,
                 data: SmartspaceMediaData,
-                shouldPrioritize: Boolean
+                shouldPrioritize: Boolean,
             ) {
                 updateViewVisibility()
             }
@@ -170,7 +176,7 @@ class MediaHost(
                         input.widthMeasureSpec =
                             View.MeasureSpec.makeMeasureSpec(
                                 View.MeasureSpec.getSize(input.widthMeasureSpec),
-                                View.MeasureSpec.EXACTLY
+                                View.MeasureSpec.EXACTLY,
                             )
                     }
                     // This will trigger a state change that ensures that we now have a state
@@ -202,6 +208,7 @@ class MediaHost(
      * the visibility has changed
      */
     fun updateViewVisibility() {
+        val oldState = state.visible
         state.visible =
             if (mediaCarouselController.isLockedAndHidden()) {
                 false
@@ -211,8 +218,9 @@ class MediaHost(
                 mediaDataManager.hasAnyMediaOrRecommendation()
             }
         val newVisibility = if (visible) View.VISIBLE else View.GONE
-        if (newVisibility != hostView.visibility) {
+        if (oldState != state.visible || newVisibility != hostView.visibility) {
             hostView.visibility = newVisibility
+            debugLogger.logMediaHostVisibility(location, visible, oldState)
             visibleChangedListeners.forEach { it.invoke(visible) }
         }
     }
@@ -287,6 +295,15 @@ class MediaHost(
                 changedListener?.invoke()
             }
 
+        override var disableScrolling: Boolean = false
+            set(value) {
+                if (field == value) {
+                    return
+                }
+                field = value
+                changedListener?.invoke()
+            }
+
         private var lastDisappearHash = disappearParameters.hashCode()
 
         /** A listener for all changes. This won't be copied over when invoking [copy] */
@@ -303,6 +320,7 @@ class MediaHost(
             mediaHostState.visible = visible
             mediaHostState.disappearParameters = disappearParameters.deepCopy()
             mediaHostState.falsingProtectionNeeded = falsingProtectionNeeded
+            mediaHostState.disableScrolling = disableScrolling
             return mediaHostState
         }
 
@@ -331,6 +349,9 @@ class MediaHost(
             if (!disappearParameters.equals(other.disappearParameters)) {
                 return false
             }
+            if (disableScrolling != other.disableScrolling) {
+                return false
+            }
             return true
         }
 
@@ -342,6 +363,7 @@ class MediaHost(
             result = 31 * result + showsOnlyActiveMedia.hashCode()
             result = 31 * result + if (visible) 1 else 2
             result = 31 * result + disappearParameters.hashCode()
+            result = 31 * result + disableScrolling.hashCode()
             return result
         }
     }
@@ -399,6 +421,13 @@ interface MediaHostState {
      * propagated
      */
     var disappearParameters: DisappearParameters
+
+    /**
+     * Whether scrolling should be disabled for this host, meaning that when there are multiple
+     * media sessions, it will not be possible to scroll between media sessions or swipe away the
+     * entire media carousel. The first media session will always be shown.
+     */
+    var disableScrolling: Boolean
 
     /** Get a copy of this view state, deepcopying all appropriate members */
     fun copy(): MediaHostState

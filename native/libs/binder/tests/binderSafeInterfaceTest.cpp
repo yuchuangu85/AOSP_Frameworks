@@ -40,6 +40,8 @@
 #include <sys/eventfd.h>
 #include <sys/prctl.h>
 
+#include <gmock/gmock.h>
+
 using namespace std::chrono_literals; // NOLINT - google-build-using-namespace
 using android::binder::unique_fd;
 
@@ -222,6 +224,7 @@ public:
         SetDeathToken = IBinder::FIRST_CALL_TRANSACTION,
         ReturnsNoMemory,
         LogicalNot,
+        LogicalNotVector,
         ModifyEnum,
         IncrementFlattenable,
         IncrementLightFlattenable,
@@ -249,6 +252,7 @@ public:
 
     // These are ordered according to their corresponding methods in SafeInterface::ParcelHandler
     virtual status_t logicalNot(bool a, bool* notA) const = 0;
+    virtual status_t logicalNot(const std::vector<bool>& a, std::vector<bool>* notA) const = 0;
     virtual status_t modifyEnum(TestEnum a, TestEnum* b) const = 0;
     virtual status_t increment(const TestFlattenable& a, TestFlattenable* aPlusOne) const = 0;
     virtual status_t increment(const TestLightFlattenable& a,
@@ -288,7 +292,14 @@ public:
     }
     status_t logicalNot(bool a, bool* notA) const override {
         ALOG(LOG_INFO, getLogTag(), "%s", __PRETTY_FUNCTION__);
-        return callRemote<decltype(&ISafeInterfaceTest::logicalNot)>(Tag::LogicalNot, a, notA);
+        using Signature = status_t (ISafeInterfaceTest::*)(bool, bool*) const;
+        return callRemote<Signature>(Tag::LogicalNot, a, notA);
+    }
+    status_t logicalNot(const std::vector<bool>& a, std::vector<bool>* notA) const override {
+        ALOG(LOG_INFO, getLogTag(), "%s", __PRETTY_FUNCTION__);
+        using Signature = status_t (ISafeInterfaceTest::*)(const std::vector<bool>&,
+                                                           std::vector<bool>*) const;
+        return callRemote<Signature>(Tag::LogicalNotVector, a, notA);
     }
     status_t modifyEnum(TestEnum a, TestEnum* b) const override {
         ALOG(LOG_INFO, getLogTag(), "%s", __PRETTY_FUNCTION__);
@@ -406,6 +417,14 @@ public:
         *notA = !a;
         return NO_ERROR;
     }
+    status_t logicalNot(const std::vector<bool>& a, std::vector<bool>* notA) const override {
+        ALOG(LOG_INFO, getLogTag(), "%s", __PRETTY_FUNCTION__);
+        notA->clear();
+        for (bool value : a) {
+            notA->push_back(!value);
+        }
+        return NO_ERROR;
+    }
     status_t modifyEnum(TestEnum a, TestEnum* b) const override {
         ALOG(LOG_INFO, getLogTag(), "%s", __PRETTY_FUNCTION__);
         *b = (a == TestEnum::INITIAL) ? TestEnum::FINAL : TestEnum::INVALID;
@@ -513,7 +532,13 @@ public:
                 return callLocal(data, reply, &ISafeInterfaceTest::returnsNoMemory);
             }
             case ISafeInterfaceTest::Tag::LogicalNot: {
-                return callLocal(data, reply, &ISafeInterfaceTest::logicalNot);
+                using Signature = status_t (ISafeInterfaceTest::*)(bool a, bool* notA) const;
+                return callLocal<Signature>(data, reply, &ISafeInterfaceTest::logicalNot);
+            }
+            case ISafeInterfaceTest::Tag::LogicalNotVector: {
+                using Signature = status_t (ISafeInterfaceTest::*)(const std::vector<bool>& a,
+                                                                   std::vector<bool>* notA) const;
+                return callLocal<Signature>(data, reply, &ISafeInterfaceTest::logicalNot);
             }
             case ISafeInterfaceTest::Tag::ModifyEnum: {
                 return callLocal(data, reply, &ISafeInterfaceTest::modifyEnum);
@@ -639,6 +664,15 @@ TEST_F(SafeInterfaceTest, TestLogicalNot) {
     ASSERT_EQ(!b, notB);
 }
 
+TEST_F(SafeInterfaceTest, TestLogicalNotVector) {
+    const std::vector<bool> a = {true, false, true};
+    std::vector<bool> notA;
+    status_t result = mSafeInterfaceTest->logicalNot(a, &notA);
+    ASSERT_EQ(NO_ERROR, result);
+    std::vector<bool> expected = {false, true, false};
+    ASSERT_THAT(notA, testing::ContainerEq(expected));
+}
+
 TEST_F(SafeInterfaceTest, TestModifyEnum) {
     const TestEnum a = TestEnum::INITIAL;
     TestEnum b = TestEnum::INVALID;
@@ -755,7 +789,7 @@ TEST_F(SafeInterfaceTest, TestCallMeBack) {
         std::optional<int32_t> waitForCallback() {
             std::unique_lock<decltype(mMutex)> lock(mMutex);
             bool success =
-                    mCondition.wait_for(lock, 100ms, [&]() { return static_cast<bool>(mValue); });
+                    mCondition.wait_for(lock, 1000ms, [&]() { return static_cast<bool>(mValue); });
             return success ? mValue : std::nullopt;
         }
 
@@ -824,7 +858,13 @@ TEST_F(SafeInterfaceTest, TestIncrementTwo) {
     ASSERT_EQ(b + 1, bPlusOne);
 }
 
-extern "C" int main(int argc, char **argv) {
+} // namespace tests
+} // namespace android
+
+int main(int argc, char** argv) {
+    using namespace android;
+    using namespace android::tests;
+
     testing::InitGoogleTest(&argc, argv);
 
     if (fork() == 0) {
@@ -841,6 +881,3 @@ extern "C" int main(int argc, char **argv) {
 
     return RUN_ALL_TESTS();
 }
-
-} // namespace tests
-} // namespace android

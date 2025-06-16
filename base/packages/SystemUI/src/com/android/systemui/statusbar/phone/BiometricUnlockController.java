@@ -17,6 +17,7 @@
 package com.android.systemui.statusbar.phone;
 
 import static android.app.StatusBarManager.SESSION_KEYGUARD;
+import static android.service.dreams.Flags.dreamsV2;
 
 import android.annotation.IntDef;
 import android.content.res.Resources;
@@ -53,12 +54,15 @@ import com.android.systemui.keyguard.WakefulnessLifecycle;
 import com.android.systemui.keyguard.domain.interactor.BiometricUnlockInteractor;
 import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor;
 import com.android.systemui.keyguard.shared.model.BiometricUnlockSource;
+import com.android.systemui.keyguard.shared.model.Edge;
 import com.android.systemui.keyguard.shared.model.KeyguardState;
+import com.android.systemui.keyguard.shared.model.TransitionState;
 import com.android.systemui.keyguard.shared.model.TransitionStep;
 import com.android.systemui.log.SessionTracker;
+import com.android.systemui.media.NotificationMediaManager;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.res.R;
-import com.android.systemui.statusbar.NotificationMediaManager;
+import com.android.systemui.scene.shared.model.Scenes;
 import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.systemui.statusbar.VibratorHelper;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
@@ -67,8 +71,6 @@ import com.android.systemui.util.kotlin.JavaAdapter;
 import com.android.systemui.util.time.SystemClock;
 
 import dagger.Lazy;
-
-import kotlinx.coroutines.ExperimentalCoroutinesApi;
 
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
@@ -83,7 +85,6 @@ import javax.inject.Inject;
 /**
  * Controller which coordinates all the biometric unlocking actions with the UI.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 public class BiometricUnlockController extends KeyguardUpdateMonitorCallback implements Dumpable {
     private static final long BIOMETRIC_WAKELOCK_TIMEOUT_MS = 15 * 1000;
@@ -275,7 +276,8 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
             DozeScrimController dozeScrimController,
             KeyguardViewMediator keyguardViewMediator,
             NotificationShadeWindowController notificationShadeWindowController,
-            KeyguardStateController keyguardStateController, Handler handler,
+            KeyguardStateController keyguardStateController,
+            @Main Handler handler,
             KeyguardUpdateMonitor keyguardUpdateMonitor,
             @Main Resources resources,
             KeyguardBypassController keyguardBypassController,
@@ -327,14 +329,17 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
         mSelectedUserInteractor = selectedUserInteractor;
         mKeyguardTransitionInteractor = keyguardTransitionInteractor;
         javaAdapter.alwaysCollectFlow(
-                keyguardTransitionInteractor.getStartedKeyguardTransitionStep(),
-                this::consumeTransitionStepOnStartedKeyguardState);
+                keyguardTransitionInteractor.transition(
+                        /* edge */ Edge.create(Scenes.Gone, null),
+                        /* edgeWithoutSceneContainer */ Edge.create(
+                                KeyguardState.GONE, (KeyguardState) null)),
+                this::consumeFromGoneTransitions);
         dumpManager.registerDumpable(this);
     }
 
     @VisibleForTesting
-    protected void consumeTransitionStepOnStartedKeyguardState(TransitionStep transitionStep) {
-        if (transitionStep.getFrom() == KeyguardState.GONE) {
+    protected void consumeFromGoneTransitions(TransitionStep transitionStep) {
+        if (transitionStep.getTransitionState() == TransitionState.STARTED) {
             mBiometricUnlockInteractor.setBiometricUnlockState(MODE_NONE, null);
         }
     }
@@ -363,10 +368,12 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
 
     private void releaseBiometricWakeLock() {
         if (mWakeLock != null) {
+            Trace.beginSection("release wake-and-unlock");
             mHandler.removeCallbacks(mReleaseBiometricWakeLockRunnable);
             mLogger.i("releasing biometric wakelock");
             mWakeLock.release();
             mWakeLock = null;
+            Trace.endSection();
         }
     }
 
@@ -392,7 +399,7 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
             }
             mWakeLock = mPowerManager.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK, BIOMETRIC_WAKE_LOCK_NAME);
-            Trace.beginSection("acquiring wake-and-unlock");
+            Trace.beginSection("acquire wake-and-unlock");
             mWakeLock.acquire();
             Trace.endSection();
             mLogger.i("biometric acquired, grabbing biometric wakelock");
@@ -406,14 +413,13 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
     public void onBiometricDetected(int userId, BiometricSourceType biometricSourceType,
             boolean isStrongBiometric) {
         Trace.beginSection("BiometricUnlockController#onBiometricDetected");
-        if (mUpdateMonitor.isGoingToSleep()) {
-            Trace.endSection();
-            return;
+        if (!mUpdateMonitor.isGoingToSleep()) {
+            startWakeAndUnlock(
+                    MODE_SHOW_BOUNCER,
+                    BiometricUnlockSource.Companion.fromBiometricSourceType(biometricSourceType)
+            );
         }
-        startWakeAndUnlock(
-                MODE_SHOW_BOUNCER,
-                BiometricUnlockSource.Companion.fromBiometricSourceType(biometricSourceType)
-        );
+        Trace.endSection();
     }
 
     @Override
@@ -445,6 +451,7 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
         } else {
             mLogger.d("onBiometricUnlocked aborted by bypass controller");
         }
+        Trace.endSection();
     }
 
     /**
@@ -473,6 +480,7 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
             @WakeAndUnlockMode int mode,
             BiometricUnlockSource biometricUnlockSource
     ) {
+        Trace.beginSection("BiometricUnlockController#startWakeAndUnlock");
         mLogger.logStartWakeAndUnlock(mode);
         boolean wasDeviceInteractive = mUpdateMonitor.isDeviceInteractive();
         mMode = mode;
@@ -495,9 +503,7 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
                         "android.policy:BIOMETRIC"
                 );
             }
-            Trace.beginSection("release wake-and-unlock");
             releaseBiometricWakeLock();
-            Trace.endSection();
         };
 
         final boolean wakeInKeyguard = mMode == MODE_WAKE_AND_UNLOCK_FROM_DREAM
@@ -522,7 +528,8 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
                 break;
             case MODE_SHOW_BOUNCER:
                 Trace.beginSection("MODE_SHOW_BOUNCER");
-                mKeyguardViewController.showPrimaryBouncer(true);
+                mKeyguardViewController.showPrimaryBouncer(true,
+                        "BiometricUnlockController#MODE_SHOW_BOUNCER");
                 Trace.endSection();
                 break;
             case MODE_WAKE_AND_UNLOCK_FROM_DREAM:
@@ -656,6 +663,9 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
         final boolean deviceDreaming = mUpdateMonitor.isDreaming();
         final boolean bypass = mKeyguardBypassController.getBypassEnabled()
                 || mAuthController.isUdfpsFingerDown();
+        final boolean isBouncerShowing = mKeyguardViewController.primaryBouncerIsOrWillBeShowing()
+                || mKeyguardTransitionInteractor.getCurrentState()
+                    == KeyguardState.ALTERNATE_BOUNCER;
 
         logCalculateModeForPassiveAuth(unlockingAllowed, deviceInteractive, isKeyguardShowing,
                 deviceDreaming, bypass, isStrongBiometric);
@@ -679,15 +689,14 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
             }
         }
         if (unlockingAllowed && deviceDreaming) {
-            return bypass ? MODE_WAKE_AND_UNLOCK_FROM_DREAM : MODE_ONLY_WAKE;
+            final boolean wakeAndUnlock = bypass || (dreamsV2() && isBouncerShowing);
+            return wakeAndUnlock ? MODE_WAKE_AND_UNLOCK_FROM_DREAM : MODE_ONLY_WAKE;
         }
         if (unlockingAllowed && mKeyguardStateController.isOccluded()) {
             return MODE_UNLOCK_COLLAPSING;
         }
         if (isKeyguardShowing) {
-            if ((mKeyguardViewController.primaryBouncerIsOrWillBeShowing()
-                    || mKeyguardTransitionInteractor.getCurrentState()
-                    == KeyguardState.ALTERNATE_BOUNCER) && unlockingAllowed) {
+            if (isBouncerShowing && unlockingAllowed) {
                 return MODE_DISMISS_BOUNCER;
             } else if (unlockingAllowed && bypass) {
                 return MODE_UNLOCK_COLLAPSING;
@@ -743,7 +752,7 @@ public class BiometricUnlockController extends KeyguardUpdateMonitorCallback imp
                     BiometricUnlockSource.Companion.fromBiometricSourceType(biometricSourceType)
             );
         } else if (biometricSourceType == BiometricSourceType.FINGERPRINT
-                && mUpdateMonitor.isUdfpsSupported()) {
+                && mUpdateMonitor.isOpticalUdfpsSupported()) {
             long currUptimeMillis = mSystemClock.uptimeMillis();
             if (currUptimeMillis - mLastFpFailureUptimeMillis < mConsecutiveFpFailureThreshold) {
                 mNumConsecutiveFpFailures += 1;

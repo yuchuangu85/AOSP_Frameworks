@@ -19,11 +19,15 @@ package android.media;
 import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_DEFAULT;
 import static android.companion.virtual.VirtualDeviceParams.POLICY_TYPE_AUDIO;
 import static android.content.Context.DEVICE_ID_DEFAULT;
-import static android.media.audio.Flags.autoPublicVolumeApiHardening;
-import static android.media.audio.Flags.automaticBtDeviceType;
+import static android.media.audio.Flags.FLAG_DEPRECATE_STREAM_BT_SCO;
 import static android.media.audio.Flags.FLAG_FOCUS_EXCLUSIVE_WITH_RECORDING;
 import static android.media.audio.Flags.FLAG_FOCUS_FREEZE_TEST_API;
+import static android.media.audio.Flags.FLAG_REGISTER_VOLUME_CALLBACK_API_HARDENING;
 import static android.media.audio.Flags.FLAG_SUPPORTED_DEVICE_TYPES_API;
+import static android.media.audio.Flags.FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT;
+import static android.media.audio.Flags.autoPublicVolumeApiHardening;
+import static android.media.audio.Flags.cacheGetStreamMinMaxVolume;
+import static android.media.audio.Flags.cacheGetStreamVolume;
 import static android.media.audiopolicy.Flags.FLAG_ENABLE_FADE_MANAGER_CONFIGURATION;
 
 import android.Manifest;
@@ -51,6 +55,7 @@ import android.compat.annotation.ChangeId;
 import android.compat.annotation.EnabledSince;
 import android.compat.annotation.Overridable;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.AttributionSource;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -61,7 +66,7 @@ import android.media.audiopolicy.AudioPolicy;
 import android.media.audiopolicy.AudioPolicy.AudioPolicyFocusListener;
 import android.media.audiopolicy.AudioProductStrategy;
 import android.media.audiopolicy.AudioVolumeGroup;
-import android.media.audiopolicy.AudioVolumeGroupChangeHandler;
+import android.media.audiopolicy.IAudioVolumeChangeDispatcher;
 import android.media.projection.MediaProjection;
 import android.media.session.MediaController;
 import android.media.session.MediaSession;
@@ -72,6 +77,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.IpcDataCache;
 import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
@@ -84,6 +90,7 @@ import android.util.ArrayMap;
 import android.util.IntArray;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Slog;
 import android.view.KeyEvent;
 
 import com.android.internal.annotations.GuardedBy;
@@ -122,8 +129,6 @@ public class AudioManager {
     private static final String TAG = "AudioManager";
     private static final boolean DEBUG = false;
     private static final AudioPortEventHandler sAudioPortEventHandler = new AudioPortEventHandler();
-    private static final AudioVolumeGroupChangeHandler sAudioAudioVolumeGroupChangedHandler =
-            new AudioVolumeGroupChangeHandler();
 
     private static WeakReference<Context> sContext;
 
@@ -403,8 +408,10 @@ public class AudioManager {
     /** Used to identify the volume of audio streams for notifications */
     public static final int STREAM_NOTIFICATION = AudioSystem.STREAM_NOTIFICATION;
     /** @hide Used to identify the volume of audio streams for phone calls when connected
-     *        to bluetooth */
+     *        to bluetooth
+     *  @deprecated use {@link #STREAM_VOICE_CALL} instead */
     @SystemApi
+    @FlaggedApi(FLAG_DEPRECATE_STREAM_BT_SCO)
     public static final int STREAM_BLUETOOTH_SCO = AudioSystem.STREAM_BLUETOOTH_SCO;
     /** @hide Used to identify the volume of audio streams for enforced system sounds
      *        in certain countries (e.g camera in Japan) */
@@ -893,6 +900,30 @@ public class AudioManager {
      */
     public static final int USE_DEFAULT_STREAM_TYPE = Integer.MIN_VALUE;
 
+    /** @hide */
+    @IntDef(flag = false, prefix = "DEVICE_STATE", value = {
+            DEVICE_CONNECTION_STATE_DISCONNECTED,
+            DEVICE_CONNECTION_STATE_CONNECTED}
+            )
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DeviceConnectionState {}
+
+    /**
+     * @hide The device connection state for disconnected devices.
+     */
+    @SystemApi
+    @SuppressLint("UnflaggedApi") // b/373465238
+    @RequiresPermission(Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public static final int DEVICE_CONNECTION_STATE_DISCONNECTED = 0;
+
+    /**
+     * @hide The device connection state for connected devices.
+     */
+    @SystemApi
+    @SuppressLint("UnflaggedApi") // b/373465238
+    @RequiresPermission(Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public static final int DEVICE_CONNECTION_STATE_CONNECTED = 1;
+
     private static IAudioService sService;
 
     /**
@@ -1026,7 +1057,7 @@ public class AudioManager {
      * <p>This method has no effect if the device implements a fixed volume policy
      * as indicated by {@link #isVolumeFixed()}.
      * <p>From N onward, ringer mode adjustments that would toggle Do Not Disturb are not allowed
-     * unless the app has been granted Do Not Disturb Access.
+     * unless the app has been granted Notification Policy Access.
      * See {@link NotificationManager#isNotificationPolicyAccessGranted()}.
      *
      * @param streamType The stream type to adjust. One of {@link #STREAM_VOICE_CALL},
@@ -1134,7 +1165,7 @@ public class AudioManager {
         final IAudioService service = getService();
         try {
             service.setMasterMute(mute, flags, getContext().getOpPackageName(),
-                    UserHandle.getCallingUserId(), getContext().getAttributionTag());
+                    getContext().getUserId(), getContext().getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1201,6 +1232,102 @@ public class AudioManager {
     }
 
     /**
+     * API string for caching the min volume for each stream
+     * @hide
+     **/
+    public static final String VOLUME_MIN_CACHING_API = "getStreamMinVolume";
+    /**
+     * API string for caching the max volume for each stream
+     * @hide
+     **/
+    public static final String VOLUME_MAX_CACHING_API = "getStreamMaxVolume";
+    /**
+     * API string for caching the volume for each stream
+     * @hide
+     **/
+    public static final String VOLUME_CACHING_API = "getStreamVolume";
+    private static final int VOLUME_CACHING_SIZE = 16;
+
+    private final IpcDataCache.QueryHandler<VolumeCacheQuery, Integer> mVolQuery =
+            new IpcDataCache.QueryHandler<>() {
+                @Override
+                public Integer apply(VolumeCacheQuery query) {
+                    final IAudioService service = getService();
+                    try {
+                        return switch (query.queryCommand) {
+                            case QUERY_VOL_MIN -> service.getStreamMinVolume(query.stream);
+                            case QUERY_VOL_MAX -> service.getStreamMaxVolume(query.stream);
+                            case QUERY_VOL -> service.getStreamVolume(query.stream);
+                            default -> {
+                                Log.w(TAG, "Not a valid volume cache query: " + query);
+                                yield null;
+                            }
+                        };
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                }
+
+            };
+
+    private final IpcDataCache<VolumeCacheQuery, Integer> mVolMinCache =
+            new IpcDataCache<>(VOLUME_CACHING_SIZE, IpcDataCache.MODULE_SYSTEM,
+                    VOLUME_MIN_CACHING_API, VOLUME_MIN_CACHING_API, mVolQuery);
+
+    private final IpcDataCache<VolumeCacheQuery, Integer> mVolMaxCache =
+            new IpcDataCache<>(VOLUME_CACHING_SIZE, IpcDataCache.MODULE_SYSTEM,
+                    VOLUME_MAX_CACHING_API, VOLUME_MAX_CACHING_API, mVolQuery);
+
+    private final IpcDataCache<VolumeCacheQuery, Integer> mVolCache =
+            new IpcDataCache<>(VOLUME_CACHING_SIZE, IpcDataCache.MODULE_SYSTEM,
+                    VOLUME_CACHING_API, VOLUME_CACHING_API, mVolQuery);
+
+    /**
+     * Used to invalidate the cache for the given API
+     * @hide
+     **/
+    public static void clearVolumeCache(String api) {
+        if (cacheGetStreamMinMaxVolume() && (VOLUME_MAX_CACHING_API.equals(api)
+                || VOLUME_MIN_CACHING_API.equals(api))) {
+            IpcDataCache.invalidateCache(IpcDataCache.MODULE_SYSTEM, api);
+        } else if (cacheGetStreamVolume() && VOLUME_CACHING_API.equals(api)) {
+            IpcDataCache.invalidateCache(IpcDataCache.MODULE_SYSTEM, api);
+        } else {
+            Log.w(TAG, "invalid clearVolumeCache for api " + api);
+        }
+    }
+
+    private static final int QUERY_VOL_MIN = 1;
+    private static final int QUERY_VOL_MAX = 2;
+    private static final int QUERY_VOL = 3;
+    /** @hide */
+    @IntDef(prefix = "QUERY_VOL", value = {
+            QUERY_VOL_MIN,
+            QUERY_VOL_MAX,
+            QUERY_VOL}
+    )
+    @Retention(RetentionPolicy.SOURCE)
+    private @interface QueryVolCommand {}
+
+    private record VolumeCacheQuery(int stream, @QueryVolCommand int queryCommand) {
+        private String queryVolCommandToString() {
+            return switch (queryCommand) {
+                case QUERY_VOL_MIN -> "getStreamMinVolume";
+                case QUERY_VOL_MAX -> "getStreamMaxVolume";
+                case QUERY_VOL -> "getStreamVolume";
+                default -> "invalid command";
+            };
+        }
+
+        @NonNull
+        @Override
+        public String toString() {
+            return TextUtils.formatSimple("VolumeCacheQuery(stream=%d, queryCommand=%s)", stream,
+                    queryVolCommandToString());
+        }
+    }
+
+    /**
      * Returns the maximum volume index for a particular stream.
      *
      * @param streamType The stream type whose maximum volume index is returned.
@@ -1208,6 +1335,9 @@ public class AudioManager {
      * @see #getStreamVolume(int)
      */
     public int getStreamMaxVolume(int streamType) {
+        if (cacheGetStreamMinMaxVolume()) {
+            return mVolMaxCache.query(new VolumeCacheQuery(streamType, QUERY_VOL_MAX));
+        }
         final IAudioService service = getService();
         try {
             return service.getStreamMaxVolume(streamType);
@@ -1241,6 +1371,9 @@ public class AudioManager {
      */
     @TestApi
     public int getStreamMinVolumeInt(int streamType) {
+        if (cacheGetStreamMinMaxVolume()) {
+            return mVolMinCache.query(new VolumeCacheQuery(streamType, QUERY_VOL_MIN));
+        }
         final IAudioService service = getService();
         try {
             return service.getStreamMinVolume(streamType);
@@ -1258,6 +1391,9 @@ public class AudioManager {
      * @see #setStreamVolume(int, int, int)
      */
     public int getStreamVolume(int streamType) {
+        if (cacheGetStreamVolume()) {
+            return mVolCache.query(new VolumeCacheQuery(streamType, QUERY_VOL));
+        }
         final IAudioService service = getService();
         try {
             return service.getStreamVolume(streamType);
@@ -1378,7 +1514,7 @@ public class AudioManager {
      * <p>This method has no effect if the device implements a fixed volume policy
      * as indicated by {@link #isVolumeFixed()}.
      * * <p>From N onward, ringer mode adjustments that would toggle Do Not Disturb are not allowed
-     * unless the app has been granted Do Not Disturb Access.
+     * unless the app has been granted Notification Policy Access.
      * See {@link NotificationManager#isNotificationPolicyAccessGranted()}.
      * @param ringerMode The ringer mode, one of {@link #RINGER_MODE_NORMAL},
      *            {@link #RINGER_MODE_SILENT}, or {@link #RINGER_MODE_VIBRATE}.
@@ -1402,7 +1538,7 @@ public class AudioManager {
      * <p>This method has no effect if the device implements a fixed volume policy
      * as indicated by {@link #isVolumeFixed()}.
      * <p>From N onward, volume adjustments that would toggle Do Not Disturb are not allowed unless
-     * the app has been granted Do Not Disturb Access.
+     * the app has been granted Notification Policy Access.
      * See {@link NotificationManager#isNotificationPolicyAccessGranted()}.
      * @param streamType The stream whose volume index should be set.
      * @param index The volume index to set. See
@@ -1916,10 +2052,16 @@ public class AudioManager {
     @Deprecated public void setSpeakerphoneOn(boolean on) {
         final IAudioService service = getService();
         try {
-            service.setSpeakerphoneOn(mICallBack, on);
+            service.setSpeakerphoneOn(mICallBack, on, getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    private AttributionSource getAttributionSource() {
+        Context context = getContext();
+        return (context != null)
+                     ? context.getAttributionSource() : AttributionSource.myAttributionSource();
     }
 
     /**
@@ -3087,7 +3229,8 @@ public class AudioManager {
         final IAudioService service = getService();
         try {
             service.startBluetoothSco(mICallBack,
-                    getContext().getApplicationInfo().targetSdkVersion);
+                    getContext().getApplicationInfo().targetSdkVersion,
+                    getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -3112,7 +3255,7 @@ public class AudioManager {
     public void startBluetoothScoVirtualCall() {
         final IAudioService service = getService();
         try {
-            service.startBluetoothScoVirtualCall(mICallBack);
+            service.startBluetoothScoVirtualCall(mICallBack, getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -3132,7 +3275,7 @@ public class AudioManager {
     @Deprecated public void stopBluetoothSco() {
         final IAudioService service = getService();
         try {
-            service.stopBluetoothSco(mICallBack);
+            service.stopBluetoothSco(mICallBack,  getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -3244,7 +3387,7 @@ public class AudioManager {
         final IAudioService service = getService();
         try {
             service.setMicrophoneMute(on, getContext().getOpPackageName(),
-                    UserHandle.getCallingUserId(), getContext().getAttributionTag());
+                    getContext().getUserId(), getContext().getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -4069,8 +4212,10 @@ public class AudioManager {
     private boolean delegateSoundEffectToVdm(@SystemSoundEffect int effectType) {
         if (hasCustomPolicyVirtualDeviceContext()) {
             VirtualDeviceManager vdm = getVirtualDeviceManager();
-            vdm.playSoundEffect(mOriginalContextDeviceId, effectType);
-            return true;
+            if (vdm != null) {
+                vdm.playSoundEffect(mOriginalContextDeviceId, effectType);
+                return true;
+            }
         }
         return false;
     }
@@ -4281,7 +4426,7 @@ public class AudioManager {
                                     final OnAudioFocusChangeListener listener =
                                             fri.mRequest.getOnAudioFocusChangeListener();
                                     if (listener != null) {
-                                        Log.d(TAG, "dispatching onAudioFocusChange("
+                                        Slog.i(TAG, "dispatching onAudioFocusChange("
                                                 + msg.arg1 + ") to " + msg.obj);
                                         listener.onAudioFocusChange(msg.arg1);
                                     }
@@ -4564,8 +4709,8 @@ public class AudioManager {
      *     when the request is flagged with {@link #AUDIOFOCUS_FLAG_DELAY_OK}.
      * @param requestAttributes non null {@link AudioAttributes} describing the main reason for
      *     requesting audio focus.
-     * @param durationHint use {@link #AUDIOFOCUS_GAIN_TRANSIENT} to indicate this focus request
-     *      is temporary, and focus will be abandonned shortly. Examples of transient requests are
+     * @param focusReqType use {@link #AUDIOFOCUS_GAIN_TRANSIENT} to indicate this focus request
+     *      is temporary, and focus will be abandoned shortly. Examples of transient requests are
      *      for the playback of driving directions, or notifications sounds.
      *      Use {@link #AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK} to indicate also that it's ok for
      *      the previous focus owner to keep playing if it ducks its audio output.
@@ -4590,13 +4735,13 @@ public class AudioManager {
     @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
     public int requestAudioFocus(OnAudioFocusChangeListener l,
             @NonNull AudioAttributes requestAttributes,
-            int durationHint,
+            int focusReqType,
             int flags) throws IllegalArgumentException {
         if (flags != (flags & AUDIOFOCUS_FLAGS_APPS)) {
             throw new IllegalArgumentException("Invalid flags 0x"
                     + Integer.toHexString(flags).toUpperCase());
         }
-        return requestAudioFocus(l, requestAttributes, durationHint,
+        return requestAudioFocus(l, requestAttributes, focusReqType,
                 flags & AUDIOFOCUS_FLAGS_APPS,
                 null /* no AudioPolicy*/);
     }
@@ -4611,7 +4756,7 @@ public class AudioManager {
      *     {@link #requestAudioFocus(OnAudioFocusChangeListener, AudioAttributes, int, int)}
      * @param requestAttributes non null {@link AudioAttributes} describing the main reason for
      *     requesting audio focus.
-     * @param durationHint see the description of the same parameter in
+     * @param focusReqType see the description of the same parameter in
      *     {@link #requestAudioFocus(OnAudioFocusChangeListener, AudioAttributes, int, int)}
      * @param flags 0 or a combination of {link #AUDIOFOCUS_FLAG_DELAY_OK},
      *     {@link #AUDIOFOCUS_FLAG_PAUSES_ON_DUCKABLE_LOSS}, and {@link #AUDIOFOCUS_FLAG_LOCK}.
@@ -4633,14 +4778,14 @@ public class AudioManager {
     })
     public int requestAudioFocus(OnAudioFocusChangeListener l,
             @NonNull AudioAttributes requestAttributes,
-            int durationHint,
+            int focusReqType,
             int flags,
             AudioPolicy ap) throws IllegalArgumentException {
         // parameter checking
         if (requestAttributes == null) {
             throw new IllegalArgumentException("Illegal null AudioAttributes argument");
         }
-        if (!AudioFocusRequest.isValidFocusGain(durationHint)) {
+        if (!AudioFocusRequest.isValidFocusGain(focusReqType)) {
             throw new IllegalArgumentException("Invalid duration hint");
         }
         if (flags != (flags & AUDIOFOCUS_FLAGS_SYSTEM)) {
@@ -4661,7 +4806,7 @@ public class AudioManager {
                     "Illegal null audio policy when locking audio focus");
         }
 
-        final AudioFocusRequest afr = new AudioFocusRequest.Builder(durationHint)
+        final AudioFocusRequest afr = new AudioFocusRequest.Builder(focusReqType)
                 .setOnAudioFocusChangeListenerInt(l, null /* no Handler for this legacy API */)
                 .setAudioAttributes(requestAttributes)
                 .setAcceptsDelayedFocusGain((flags & AUDIOFOCUS_FLAG_DELAY_OK)
@@ -4712,7 +4857,7 @@ public class AudioManager {
             focusReceiver = addClientIdToFocusReceiverLocked(clientFakeId);
         }
 
-        return handleExternalAudioPolicyWaitIfNeeded(clientFakeId, focusReceiver);
+        return handleExternalAudioPolicyWaitIfNeeded(clientFakeId, focusReceiver, afr);
     }
 
     /**
@@ -4925,7 +5070,7 @@ public class AudioManager {
             focusReceiver = addClientIdToFocusReceiverLocked(clientId);
         }
 
-        return handleExternalAudioPolicyWaitIfNeeded(clientId, focusReceiver);
+        return handleExternalAudioPolicyWaitIfNeeded(clientId, focusReceiver, afr);
     }
 
     @GuardedBy("mFocusRequestsLock")
@@ -4941,11 +5086,20 @@ public class AudioManager {
     }
 
     private @FocusRequestResult int handleExternalAudioPolicyWaitIfNeeded(String clientId,
-            BlockingFocusResultReceiver focusReceiver) {
+            BlockingFocusResultReceiver focusReceiver, @NonNull AudioFocusRequest afr) {
         focusReceiver.waitForResult(EXT_FOCUS_POLICY_TIMEOUT_MS);
-        if (DEBUG && !focusReceiver.receivedResult()) {
-            Log.e(TAG, "handleExternalAudioPolicyWaitIfNeeded"
-                    + " response from ext policy timed out, denying request");
+        if (!focusReceiver.receivedResult()) {
+            if (DEBUG) {
+                Log.e(TAG, "handleExternalAudioPolicyWaitIfNeeded"
+                        + " response from ext policy timed out, denying request");
+            }
+            try {
+                // To prevent from orphan focus holder, cleanup
+                abandonAudioFocus(afr.getOnAudioFocusChangeListener());
+            } catch (Exception e) {
+                Log.e(TAG, "handleExternalAudioPolicyWaitIfNeeded failed to abandon audio"
+                        +" focus after time out, error: " + e.getMessage());
+            }
         }
 
         synchronized (mFocusRequestsLock) {
@@ -5022,16 +5176,16 @@ public class AudioManager {
      * to identify this use case.
      * @param streamType use STREAM_RING for focus requests when ringing, VOICE_CALL for
      *    the establishment of the call
-     * @param durationHint the type of focus request. AUDIOFOCUS_GAIN_TRANSIENT is recommended so
+     * @param focusReqType the type of focus request. AUDIOFOCUS_GAIN_TRANSIENT is recommended so
      *    media applications resume after a call
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    public void requestAudioFocusForCall(int streamType, int durationHint) {
+    public void requestAudioFocusForCall(int streamType, int focusReqType) {
         final IAudioService service = getService();
         try {
             service.requestAudioFocus(new AudioAttributes.Builder()
                         .setInternalLegacyStreamType(streamType).build(),
-                    durationHint, mICallBack, null,
+                    focusReqType, mICallBack, null,
                     AudioSystem.IN_VOICE_COMM_FOCUS_ID,
                     getContext().getOpPackageName(),
                     getContext().getAttributionTag(),
@@ -6120,6 +6274,11 @@ public class AudioManager {
      */
     public static final int DEVICE_OUT_BLE_BROADCAST = AudioSystem.DEVICE_OUT_BLE_BROADCAST;
     /** @hide
+     * The audio output device code for a wireless speaker group supporting multichannel content.
+     */
+    public static final int DEVICE_OUT_MULTICHANNEL_GROUP =
+            AudioSystem.DEVICE_OUT_MULTICHANNEL_GROUP;
+    /** @hide
      * This is not used as a returned value from {@link #getDevicesForStream}, but could be
      *  used in the future in a set method to select whatever default device is chosen by the
      *  platform-specific implementation.
@@ -6314,7 +6473,14 @@ public class AudioManager {
     /**
      * @hide
      * Get the audio devices that would be used for the routing of the given audio attributes.
-     * @param attributes the {@link AudioAttributes} for which the routing is being queried
+     * @param attributes the {@link AudioAttributes} for which the routing is being queried.
+     *   For queries about output devices (playback use cases), a valid usage must be specified in
+     *   the audio attributes via AudioAttributes.Builder.setUsage(). The capture preset MUST NOT
+     *   be changed from default.
+     *   For queries about input devices (capture use case), a valid capture preset MUST be
+     *   specified in the audio attributes via AudioAttributes.Builder.setCapturePreset(). If a
+     *   capture preset is present, then this has precedence over any usage or content type also
+     *   present in the audio attrirutes.
      * @return an empty list if there was an issue with the request, a list of audio devices
      *   otherwise (typically one device, except for duplicated paths).
      */
@@ -6493,24 +6659,30 @@ public class AudioManager {
      * @hide
      * Volume behavior for an audio device where a software attenuation is applied
      * @see #setDeviceVolumeBehavior(AudioDeviceAttributes, int)
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_VARIABLE} instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_VARIABLE = 0;
     /**
      * @hide
      * Volume behavior for an audio device where the volume is always set to provide no attenuation
      *     nor gain (e.g. unit gain).
      * @see #setDeviceVolumeBehavior(AudioDeviceAttributes, int)
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_FULL} instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_FULL = 1;
     /**
      * @hide
      * Volume behavior for an audio device where the volume is either set to muted, or to provide
      *     no attenuation nor gain (e.g. unit gain).
      * @see #setDeviceVolumeBehavior(AudioDeviceAttributes, int)
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_FIXED} instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_FIXED = 2;
     /**
      * @hide
@@ -6518,8 +6690,10 @@ public class AudioManager {
      *     the volume is kept synchronized between the host and the device itself through a
      *     device-specific protocol such as BT AVRCP.
      * @see #setDeviceVolumeBehavior(AudioDeviceAttributes, int)
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_ABSOLUTE} instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_ABSOLUTE = 3;
     /**
      * @hide
@@ -6529,8 +6703,11 @@ public class AudioManager {
      *     normal vs in phone call).
      * @see #setMode(int)
      * @see #setDeviceVolumeBehavior(AudioDeviceAttributes, int)
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE}
+     * instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE = 4;
 
     /**
@@ -6538,8 +6715,11 @@ public class AudioManager {
      * A variant of {@link #DEVICE_VOLUME_BEHAVIOR_ABSOLUTE} where the host cannot reliably set
      * the volume percentage of the audio device. Specifically, {@link #setStreamVolume} will have
      * no effect, or an unreliable effect.
+     * @deprecated use {@link AudioDeviceVolumeManager#DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY}
+     * instead
      */
     @SystemApi
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public static final int DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY = 5;
 
     /** @hide */
@@ -6554,49 +6734,6 @@ public class AudioManager {
     @Retention(RetentionPolicy.SOURCE)
     public @interface DeviceVolumeBehavior {}
 
-    /** @hide */
-    @IntDef({
-            DEVICE_VOLUME_BEHAVIOR_UNSET,
-            DEVICE_VOLUME_BEHAVIOR_VARIABLE,
-            DEVICE_VOLUME_BEHAVIOR_FULL,
-            DEVICE_VOLUME_BEHAVIOR_FIXED,
-            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE,
-            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE,
-            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY,
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface DeviceVolumeBehaviorState {}
-
-    /**
-     * Variants of absolute volume behavior that are set in {@link AudioDeviceVolumeManager}.
-     * @hide
-     */
-    @IntDef({
-            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE,
-            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY,
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface AbsoluteDeviceVolumeBehavior {}
-
-    /**
-     * @hide
-     * Throws IAE on an invalid volume behavior value
-     * @param volumeBehavior behavior value to check
-     */
-    public static void enforceValidVolumeBehavior(int volumeBehavior) {
-        switch (volumeBehavior) {
-            case DEVICE_VOLUME_BEHAVIOR_VARIABLE:
-            case DEVICE_VOLUME_BEHAVIOR_FULL:
-            case DEVICE_VOLUME_BEHAVIOR_FIXED:
-            case DEVICE_VOLUME_BEHAVIOR_ABSOLUTE:
-            case DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE:
-            case DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_ADJUST_ONLY:
-                return;
-            default:
-                throw new IllegalArgumentException("Illegal volume behavior " + volumeBehavior);
-        }
-    }
-
     /**
      * @hide
      * Sets the volume behavior for an audio output device.
@@ -6607,17 +6744,21 @@ public class AudioManager {
      * @see #DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE
      * @param device the device to be affected
      * @param deviceVolumeBehavior one of the device behaviors
+     *
+     * @deprecated use
+     * {@link AudioDeviceVolumeManager#setDeviceVolumeBehavior(AudioDeviceAttributes, int)} instead
      */
     @SystemApi
     @RequiresPermission(anyOf = {
             Manifest.permission.MODIFY_AUDIO_ROUTING,
             Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED
     })
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public void setDeviceVolumeBehavior(@NonNull AudioDeviceAttributes device,
             @DeviceVolumeBehavior int deviceVolumeBehavior) {
         // verify arguments (validity of device type is enforced in server)
         Objects.requireNonNull(device);
-        enforceValidVolumeBehavior(deviceVolumeBehavior);
+        AudioDeviceVolumeManager.enforceValidVolumeBehavior(deviceVolumeBehavior);
         // communicate with service
         final IAudioService service = getService();
         try {
@@ -6644,6 +6785,8 @@ public class AudioManager {
      * Returns the volume device behavior for the given audio device
      * @param device the audio device
      * @return the volume behavior for the device
+     * @deprecated use
+     * {@link AudioDeviceVolumeManager#getDeviceVolumeBehavior(AudioDeviceAttributes)} instead
      */
     @SystemApi
     @RequiresPermission(anyOf = {
@@ -6651,6 +6794,7 @@ public class AudioManager {
             Manifest.permission.QUERY_AUDIO_STATE,
             Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED
     })
+    @FlaggedApi(FLAG_UNIFY_ABSOLUTE_VOLUME_MANAGEMENT)
     public @DeviceVolumeBehavior
     int getDeviceVolumeBehavior(@NonNull AudioDeviceAttributes device) {
         // verify arguments (validity of device type is enforced in server)
@@ -6670,29 +6814,6 @@ public class AudioManager {
     }
 
     /**
-     * @hide
-     * Returns {@code true} if the volume device behavior is {@link #DEVICE_VOLUME_BEHAVIOR_FULL}.
-     */
-    @TestApi
-    @RequiresPermission(anyOf = {
-            Manifest.permission.MODIFY_AUDIO_ROUTING,
-            Manifest.permission.QUERY_AUDIO_STATE,
-            Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED
-    })
-    public boolean isFullVolumeDevice() {
-        final AudioAttributes attributes = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .build();
-        final List<AudioDeviceAttributes> devices = getDevicesForAttributes(attributes);
-        for (AudioDeviceAttributes device : devices) {
-            if (getDeviceVolumeBehavior(device) == DEVICE_VOLUME_BEHAVIOR_FULL) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
      * Indicate wired accessory connection state change.
      * @param device type of device connected/disconnected (AudioManager.DEVICE_OUT_xxx)
      * @param state  new connection state: 1 connected, 0 disconnected
@@ -6707,14 +6828,16 @@ public class AudioManager {
     }
 
     /**
+     * @hide
      * Indicate wired accessory connection state change and attributes.
-     * @param state      new connection state: 1 connected, 0 disconnected
      * @param attributes attributes of the connected device
-     * {@hide}
+     * @param state      new connection state
      */
-    @UnsupportedAppUsage
+    @SystemApi
+    @SuppressLint("UnflaggedApi") // b/373465238
     @RequiresPermission(Manifest.permission.MODIFY_AUDIO_ROUTING)
-    public void setWiredDeviceConnectionState(AudioDeviceAttributes attributes, int state) {
+    public void setWiredDeviceConnectionState(@NonNull AudioDeviceAttributes attributes,
+            @DeviceConnectionState int state) {
         final IAudioService service = getService();
         try {
             service.setWiredDeviceConnectionState(attributes, state,
@@ -6975,6 +7098,27 @@ public class AudioManager {
     public void notifyVolumeControllerVisible(IVolumeController controller, boolean visible) {
         try {
             getService().notifyVolumeControllerVisible(controller, visible);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Test method for enabling/disabling the volume controller long press timeout for checking
+     * whether two consecutive volume adjustments should be treated as a volume long press.
+     *
+     * <p>Used only for testing
+     *
+     * @param enable true for enabling, otherwise will be disabled (test mode)
+     *
+     * @hide
+     **/
+    @TestApi
+    @SuppressLint("UnflaggedApi") // @TestApi without associated feature.
+    @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
+    public void setVolumeControllerLongPressTimeoutEnabled(boolean enable) {
+        try {
+            getService().setVolumeControllerLongPressTimeoutEnabled(enable);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -7276,41 +7420,6 @@ public class AudioManager {
     /**
      * @hide
      * Sets the audio device type of a Bluetooth device given its MAC address
-     */
-    @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
-    public void setBluetoothAudioDeviceCategory_legacy(@NonNull String address, boolean isBle,
-            @AudioDeviceCategory int btAudioDeviceType) {
-        if (automaticBtDeviceType()) {
-            // do nothing
-            return;
-        }
-        try {
-            getService().setBluetoothAudioDeviceCategory_legacy(address, isBle, btAudioDeviceType);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * @hide
-     * Gets the audio device type of a Bluetooth device given its MAC address
-     */
-    @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
-    @AudioDeviceCategory
-    public int getBluetoothAudioDeviceCategory_legacy(@NonNull String address, boolean isBle) {
-        if (automaticBtDeviceType()) {
-            return AUDIO_DEVICE_CATEGORY_UNKNOWN;
-        }
-        try {
-            return getService().getBluetoothAudioDeviceCategory_legacy(address, isBle);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * @hide
-     * Sets the audio device type of a Bluetooth device given its MAC address
      *
      * @return {@code true} if the device type was set successfully. If the
      *         audio device type was automatically identified this method will
@@ -7319,9 +7428,6 @@ public class AudioManager {
     @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
     public boolean setBluetoothAudioDeviceCategory(@NonNull String address,
             @AudioDeviceCategory int btAudioDeviceCategory) {
-        if (!automaticBtDeviceType()) {
-            return false;
-        }
         try {
             return getService().setBluetoothAudioDeviceCategory(address, btAudioDeviceCategory);
         } catch (RemoteException e) {
@@ -7336,9 +7442,6 @@ public class AudioManager {
     @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
     @AudioDeviceCategory
     public int getBluetoothAudioDeviceCategory(@NonNull String address) {
-        if (!automaticBtDeviceType()) {
-            return AUDIO_DEVICE_CATEGORY_UNKNOWN;
-        }
         try {
             return getService().getBluetoothAudioDeviceCategory(address);
         } catch (RemoteException e) {
@@ -7353,9 +7456,6 @@ public class AudioManager {
      */
     @RequiresPermission(Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
     public boolean isBluetoothAudioDeviceCategoryFixed(@NonNull String address) {
-        if (!automaticBtDeviceType()) {
-            return false;
-        }
         try {
             return getService().isBluetoothAudioDeviceCategoryFixed(address);
         } catch (RemoteException e) {
@@ -7427,6 +7527,21 @@ public class AudioManager {
     public void setVolumePolicy(VolumePolicy policy) {
         try {
             getService().setVolumePolicy(policy);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Queries the volume policy
+     * @return the volume policy currently in use
+     */
+    @TestApi
+    @SuppressLint("UnflaggedApi") // @TestApi without associated feature.
+    public @NonNull VolumePolicy getVolumePolicy() {
+        try {
+            return getService().getVolumePolicy();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -7979,15 +8094,15 @@ public class AudioManager {
             ArrayList<AudioDevicePort> ports_A, ArrayList<AudioDevicePort> ports_B, int flags) {
 
         ArrayList<AudioDevicePort> delta_ports = new ArrayList<AudioDevicePort>();
-
-        AudioDevicePort cur_port = null;
         for (int cur_index = 0; cur_index < ports_B.size(); cur_index++) {
             boolean cur_port_found = false;
-            cur_port = ports_B.get(cur_index);
+            AudioDevicePort cur_port = ports_B.get(cur_index);
             for (int prev_index = 0;
                  prev_index < ports_A.size() && !cur_port_found;
                  prev_index++) {
-                cur_port_found = (cur_port.id() == ports_A.get(prev_index).id());
+                // Do not compare devices by port ID as these change when the native
+                // audio server restarts
+                cur_port_found = cur_port.isSameAs(ports_A.get(prev_index));
             }
 
             if (!cur_port_found) {
@@ -8118,7 +8233,7 @@ public class AudioManager {
      * @hide
      */
     public static MicrophoneInfo microphoneInfoFromAudioDeviceInfo(AudioDeviceInfo deviceInfo) {
-        int deviceType = deviceInfo.getType();
+        @AudioDeviceInfo.AudioDeviceType int deviceType = deviceInfo.getType();
         int micLocation = (deviceType == AudioDeviceInfo.TYPE_BUILTIN_MIC
                 || deviceType == AudioDeviceInfo.TYPE_TELEPHONY) ? MicrophoneInfo.LOCATION_MAINBODY
                 : deviceType == AudioDeviceInfo.TYPE_UNKNOWN ? MicrophoneInfo.LOCATION_UNKNOWN
@@ -8333,12 +8448,9 @@ public class AudioManager {
          * Callback method called when the mediaserver dies
          */
         public void onServiceDied() {
-            synchronized (mDeviceCallbacks) {
-                broadcastDeviceListChange_sync(null);
-            }
+           // Nothing to do here
         }
     }
-
 
     /**
      * @hide
@@ -8380,9 +8492,13 @@ public class AudioManager {
     /**
      * @hide
      * Registers a callback for notification of audio server state changes.
-     * @param executor {@link Executor} to handle the callbacks
-     * @param stateCallback the callback to receive the audio server state changes
-     *        To remove the callabck, pass a null reference for both executor and stateCallback.
+     * @param executor {@link Executor} to handle the callbacks. Must be non null.
+     * @param stateCallback the callback to receive the audio server state changes.
+     *                      Must be non null. To remove the callabck,
+     *                      call {@link #clearAudioServerStateCallback()}
+     * @throws IllegalArgumentException If a null argument is specified.
+     * @throws IllegalStateException If a callback is already registered
+     * *
      */
     @SystemApi
     public void setAudioServerStateCallback(@NonNull Executor executor,
@@ -8644,9 +8760,13 @@ public class AudioManager {
         }
     }
 
+    //====================================================================
+    // Notification of volume group changes
     /**
+     * Callback to receive updates on volume group changes, register using
+     * {@link AudioManager#registerVolumeGroupCallback(Executor, AudioVolumeCallback)}.
+     *
      * @hide
-     * Callback registered by client to be notified upon volume group change.
      */
     @SystemApi
     public abstract static class VolumeGroupCallback {
@@ -8657,33 +8777,68 @@ public class AudioManager {
         public void onAudioVolumeGroupChanged(int group, int flags) {}
     }
 
-   /**
-    * @hide
-    * Register an audio volume group change listener.
-    * @param callback the {@link VolumeGroupCallback} to register
-    */
+    /**
+     * Register an audio volume group change listener.
+     *
+     * @param executor {@link Executor} to handle the callbacks
+     * @param callback the callback to receive the audio volume group changes
+     * @throws SecurityException if the caller doesn't have the required permission.
+     *
+     * @hide
+     */
     @SystemApi
-    public void registerVolumeGroupCallback(
-            @NonNull Executor executor,
+    @FlaggedApi(FLAG_REGISTER_VOLUME_CALLBACK_API_HARDENING)
+    @RequiresPermission("Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED")
+    public void registerVolumeGroupCallback(@NonNull Executor executor,
             @NonNull VolumeGroupCallback callback) {
-        Preconditions.checkNotNull(executor, "executor must not be null");
-        Preconditions.checkNotNull(callback, "volume group change cb must not be null");
-        sAudioAudioVolumeGroupChangedHandler.init();
-        // TODO: make use of executor
-        sAudioAudioVolumeGroupChangedHandler.registerListener(callback);
+        mVolumeChangedListenerMgr.addListener(executor, callback, "registerVolumeGroupCallback",
+                () -> new AudioVolumeChangeDispatcherStub());
     }
 
-   /**
-    * @hide
-    * Unregister an audio volume group change listener.
-    * @param callback the {@link VolumeGroupCallback} to unregister
-    */
+    /**
+     * Unregister an audio volume group change listener.
+     *
+     * @param callback the {@link VolumeGroupCallback} to unregister
+     *
+     * @hide
+     */
     @SystemApi
-    public void unregisterVolumeGroupCallback(
-            @NonNull VolumeGroupCallback callback) {
-        Preconditions.checkNotNull(callback, "volume group change cb must not be null");
-        sAudioAudioVolumeGroupChangedHandler.unregisterListener(callback);
+    @FlaggedApi(FLAG_REGISTER_VOLUME_CALLBACK_API_HARDENING)
+    @RequiresPermission("Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED")
+    public void unregisterVolumeGroupCallback(@NonNull VolumeGroupCallback callback) {
+        mVolumeChangedListenerMgr.removeListener(callback, "unregisterVolumeGroupCallback");
     }
+
+    /**
+     * Manages the VolumeGroupCallback listeners and the AudioVolumeChangeDispatcherStub
+     */
+    private final CallbackUtil.LazyListenerManager<VolumeGroupCallback> mVolumeChangedListenerMgr =
+            new CallbackUtil.LazyListenerManager();
+
+    final class AudioVolumeChangeDispatcherStub extends IAudioVolumeChangeDispatcher.Stub
+            implements CallbackUtil.DispatcherStub {
+
+        @Override
+        public void register(boolean register) {
+            try {
+                if (register) {
+                    getService().registerAudioVolumeCallback(this);
+                } else {
+                    getService().unregisterAudioVolumeCallback(this);
+                }
+            } catch (RemoteException e) {
+                e.rethrowFromSystemServer();
+            }
+        }
+
+        @Override
+        public void onAudioVolumeGroupChanged(int group, int flags) {
+            mVolumeChangedListenerMgr.callListeners((listener) ->
+                    listener.onAudioVolumeGroupChanged(group, flags));
+        }
+    }
+
+    //====================================================================
 
     /**
      * Return if an asset contains haptic channels or not.
@@ -8811,7 +8966,7 @@ public class AudioManager {
      * <p>This method has no effect if the device implements a fixed volume policy
      * as indicated by {@link #isVolumeFixed()}.
      * <p>From N onward, ringer mode adjustments that would toggle Do Not Disturb are not allowed
-     * unless the app has been granted Do Not Disturb Access.
+     * unless the app has been granted Notification Policy Access.
      * See {@link NotificationManager#isNotificationPolicyAccessGranted()}.
      * <p>This API checks if the caller has the necessary permissions based on the provided
      * component name, uid, and pid values.
@@ -8852,7 +9007,7 @@ public class AudioManager {
      * <p>This method has no effect if the device implements a fixed volume policy
      * as indicated by {@link #isVolumeFixed()}.
      * <p>From N onward, volume adjustments that would toggle Do Not Disturb are not allowed unless
-     * the app has been granted Do Not Disturb Access.
+     * the app has been granted Notification Policy Access.
      * See {@link NotificationManager#isNotificationPolicyAccessGranted()}.
      * <p>This API checks if the caller has the necessary permissions based on the provided
      * component name, uid, and pid values.
@@ -8976,7 +9131,8 @@ public class AudioManager {
                 Log.w(TAG, "setCommunicationDevice: device not found: " + device);
                 return false;
             }
-            return getService().setCommunicationDevice(mICallBack, device.getId());
+            return getService().setCommunicationDevice(mICallBack, device.getId(),
+                    getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -8988,7 +9144,7 @@ public class AudioManager {
      */
     public void clearCommunicationDevice() {
         try {
-            getService().setCommunicationDevice(mICallBack, 0);
+            getService().setCommunicationDevice(mICallBack, 0, getAttributionSource());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -10110,6 +10266,24 @@ public class AudioManager {
 
     /**
      * @hide
+     * Blocks until permission updates have propagated through the audio system.
+     * Only useful in tests, where adoptShellPermissions can change the permission state of
+     * an app without the app being killed.
+     */
+    @TestApi
+    @SuppressWarnings("UnflaggedApi") // @TestApi without associated feature.
+    public void permissionUpdateBarrier() {
+        final IAudioService service = getService();
+        try {
+            service.permissionUpdateBarrier();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+
+    /**
+     * @hide
      * Return the list of independent stream types for volume control.
      * A stream type is considered independent when the volume changes of that type do not
      * affect any other independent volume control stream type.
@@ -10185,6 +10359,23 @@ public class AudioManager {
         final IAudioService service = getService();
         try {
             return service.shouldNotificationSoundPlay(Objects.requireNonNull(aa));
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Enable strict audio hardening (background) enforcement, regardless of release or temporary
+     * exemptions for debugging purposes.
+     * Enforced hardening can be found in the audio dumpsys with the API being restricted and the
+     * level of restriction which was encountered.
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED)
+    public void setEnableHardening(boolean shouldEnable) {
+        final IAudioService service = getService();
+        try {
+            service.setEnableHardening(shouldEnable);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

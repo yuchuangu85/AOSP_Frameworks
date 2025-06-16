@@ -24,10 +24,11 @@
 #include <sys/timerfd.h>
 #include <sys/unistd.h>
 
+#include <common/FlagManager.h>
+#include <common/trace.h>
 #include <ftl/concat.h>
 #include <ftl/enum.h>
 #include <log/log.h>
-#include <utils/Trace.h>
 
 #include <scheduler/Timer.h>
 
@@ -155,8 +156,10 @@ bool Timer::dispatch() {
     setDebugState(DebugState::Running);
     struct sched_param param = {0};
     param.sched_priority = 2;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
-        ALOGW("Failed to set SCHED_FIFO on dispatch thread");
+    if (!FlagManager::getInstance().disable_sched_fifo_sf_sched()) {
+        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
+            ALOGW("Failed to set SCHED_FIFO on dispatch thread");
+        }
     }
 
     if (pthread_setname_np(pthread_self(), "TimerDispatch") != 0) {
@@ -188,9 +191,9 @@ bool Timer::dispatch() {
         int nfds = epoll_wait(mEpollFd, events, DispatchType::MAX_DISPATCH_TYPE, -1);
 
         setDebugState(DebugState::Running);
-        if (ATRACE_ENABLED()) {
+        if (SFTRACE_ENABLED()) {
             ftl::Concat trace("TimerIteration #", iteration++);
-            ATRACE_NAME(trace.c_str());
+            SFTRACE_NAME(trace.c_str());
         }
 
         if (nfds == -1) {

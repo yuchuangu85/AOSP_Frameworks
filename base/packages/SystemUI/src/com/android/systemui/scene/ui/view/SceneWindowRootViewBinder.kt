@@ -29,59 +29,85 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.repeatOnLifecycle
+import com.android.compose.animation.scene.OverlayKey
 import com.android.compose.animation.scene.SceneKey
 import com.android.compose.theme.PlatformTheme
 import com.android.internal.policy.ScreenDecorationsUtils
 import com.android.systemui.common.ui.compose.windowinsets.CutoutLocation
 import com.android.systemui.common.ui.compose.windowinsets.DisplayCutout
 import com.android.systemui.common.ui.compose.windowinsets.ScreenDecorProvider
+import com.android.systemui.lifecycle.WindowLifecycleState
 import com.android.systemui.lifecycle.repeatWhenAttached
+import com.android.systemui.lifecycle.setSnapshotBinding
+import com.android.systemui.lifecycle.viewModel
+import com.android.systemui.qs.ui.adapter.QSSceneAdapter
 import com.android.systemui.res.R
-import com.android.systemui.scene.shared.flag.SceneContainerFlag
-import com.android.systemui.scene.shared.model.Scene
 import com.android.systemui.scene.shared.model.SceneContainerConfig
 import com.android.systemui.scene.shared.model.SceneDataSourceDelegator
-import com.android.systemui.scene.ui.composable.ComposableScene
+import com.android.systemui.scene.ui.composable.Overlay
+import com.android.systemui.scene.ui.composable.Scene
 import com.android.systemui.scene.ui.composable.SceneContainer
 import com.android.systemui.scene.ui.viewmodel.SceneContainerViewModel
 import com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer
+import javax.inject.Provider
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 object SceneWindowRootViewBinder {
 
     /** Binds between the view and view-model pertaining to a specific scene container. */
     fun bind(
         view: ViewGroup,
-        viewModel: SceneContainerViewModel,
+        viewModelFactory: SceneContainerViewModel.Factory,
+        motionEventHandlerReceiver: (SceneContainerViewModel.MotionEventHandler?) -> Unit,
         windowInsets: StateFlow<WindowInsets?>,
         containerConfig: SceneContainerConfig,
         sharedNotificationContainer: SharedNotificationContainer,
         scenes: Set<Scene>,
+        overlays: Set<Overlay>,
         onVisibilityChangedInternal: (isVisible: Boolean) -> Unit,
         dataSourceDelegator: SceneDataSourceDelegator,
+        qsSceneAdapter: Provider<QSSceneAdapter>,
+        sceneJankMonitorFactory: SceneJankMonitor.Factory,
     ) {
         val unsortedSceneByKey: Map<SceneKey, Scene> = scenes.associateBy { scene -> scene.key }
-        val sortedSceneByKey: Map<SceneKey, Scene> = buildMap {
-            containerConfig.sceneKeys.forEach { sceneKey ->
-                val scene =
-                    checkNotNull(unsortedSceneByKey[sceneKey]) {
-                        "Scene not found for key \"$sceneKey\"!"
-                    }
+        val sortedSceneByKey: Map<SceneKey, Scene> =
+            LinkedHashMap<SceneKey, Scene>(containerConfig.sceneKeys.size).apply {
+                containerConfig.sceneKeys.forEach { sceneKey ->
+                    val scene =
+                        checkNotNull(unsortedSceneByKey[sceneKey]) {
+                            "Scene not found for key \"$sceneKey\"!"
+                        }
 
-                put(sceneKey, scene)
+                    put(sceneKey, scene)
+                }
             }
-        }
+
+        val unsortedOverlayByKey: Map<OverlayKey, Overlay> =
+            overlays.associateBy { overlay -> overlay.key }
+        val sortedOverlayByKey: Map<OverlayKey, Overlay> =
+            LinkedHashMap<OverlayKey, Overlay>(containerConfig.overlayKeys.size).apply {
+                containerConfig.overlayKeys.forEach { overlayKey ->
+                    val overlay =
+                        checkNotNull(unsortedOverlayByKey[overlayKey]) {
+                            "Overlay not found for key \"$overlayKey\"!"
+                        }
+
+                    put(overlayKey, overlay)
+                }
+            }
 
         view.repeatWhenAttached {
-            lifecycleScope.launch {
-                repeatOnLifecycle(Lifecycle.State.CREATED) {
+            view.viewModel(
+                traceName = "SceneWindowRootViewBinder",
+                minWindowLifecycleState = WindowLifecycleState.ATTACHED,
+                factory = { viewModelFactory.create(view, motionEventHandlerReceiver) },
+            ) { viewModel ->
+                try {
                     view.setViewTreeOnBackPressedDispatcherOwner(
                         object : OnBackPressedDispatcherOwner {
                             override val onBackPressedDispatcher =
@@ -102,7 +128,11 @@ object SceneWindowRootViewBinder {
                                 viewModel = viewModel,
                                 windowInsets = windowInsets,
                                 sceneByKey = sortedSceneByKey,
+                                overlayByKey = sortedOverlayByKey,
                                 dataSourceDelegator = dataSourceDelegator,
+                                qsSceneAdapter = qsSceneAdapter,
+                                containerConfig = containerConfig,
+                                sceneJankMonitorFactory = sceneJankMonitorFactory,
                             )
                             .also { it.id = R.id.scene_container_root_composable }
                     )
@@ -114,22 +144,17 @@ object SceneWindowRootViewBinder {
                     //  the SceneContainerView. This SharedNotificationContainer should contain NSSL
                     //  due to the NotificationStackScrollLayoutSection (legacy) or
                     //  NotificationSection (scene container) moving it there.
-                    if (SceneContainerFlag.isEnabled) {
-                        (sharedNotificationContainer.parent as? ViewGroup)?.removeView(
-                            sharedNotificationContainer
-                        )
-                        view.addView(sharedNotificationContainer)
-                    }
+                    (sharedNotificationContainer.parent as? ViewGroup)?.removeView(
+                        sharedNotificationContainer
+                    )
+                    view.addView(sharedNotificationContainer)
 
-                    launch {
-                        viewModel.isVisible.collect { isVisible ->
-                            onVisibilityChangedInternal(isVisible)
-                        }
-                    }
+                    view.setSnapshotBinding { onVisibilityChangedInternal(viewModel.isVisible) }
+                    awaitCancellation()
+                } finally {
+                    // Here when destroyed.
+                    view.removeAllViews()
                 }
-
-                // Here when destroyed.
-                view.removeAllViews()
             }
         }
     }
@@ -140,20 +165,28 @@ object SceneWindowRootViewBinder {
         viewModel: SceneContainerViewModel,
         windowInsets: StateFlow<WindowInsets?>,
         sceneByKey: Map<SceneKey, Scene>,
+        overlayByKey: Map<OverlayKey, Overlay>,
         dataSourceDelegator: SceneDataSourceDelegator,
+        qsSceneAdapter: Provider<QSSceneAdapter>,
+        containerConfig: SceneContainerConfig,
+        sceneJankMonitorFactory: SceneJankMonitor.Factory,
     ): View {
         return ComposeView(context).apply {
             setContent {
                 PlatformTheme {
                     ScreenDecorProvider(
                         displayCutout = displayCutoutFromWindowInsets(scope, context, windowInsets),
-                        screenCornerRadius = ScreenDecorationsUtils.getWindowCornerRadius(context)
+                        screenCornerRadius = ScreenDecorationsUtils.getWindowCornerRadius(context),
                     ) {
                         SceneContainer(
                             viewModel = viewModel,
-                            sceneByKey =
-                                sceneByKey.mapValues { (_, scene) -> scene as ComposableScene },
+                            sceneByKey = sceneByKey,
+                            overlayByKey = overlayByKey,
+                            initialSceneKey = containerConfig.initialSceneKey,
+                            transitionsBuilder = containerConfig.transitionsBuilder,
                             dataSourceDelegator = dataSourceDelegator,
+                            qsSceneAdapter = qsSceneAdapter,
+                            sceneJankMonitorFactory = sceneJankMonitorFactory,
                         )
                     }
                 }
@@ -183,14 +216,7 @@ object SceneWindowRootViewBinder {
                         else -> CutoutLocation.CENTER
                     }
                 val viewDisplayCutout = it?.displayCutout
-                DisplayCutout(
-                    left,
-                    top,
-                    right,
-                    bottom,
-                    location,
-                    viewDisplayCutout,
-                )
+                DisplayCutout(left, top, right, bottom, location, viewDisplayCutout)
             }
             .stateIn(scope, SharingStarted.WhileSubscribed(), DisplayCutout())
 

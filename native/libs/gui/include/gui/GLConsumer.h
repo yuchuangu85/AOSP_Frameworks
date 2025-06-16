@@ -20,6 +20,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
+#include <com_android_graphics_libgui_flags.h>
 #include <gui/BufferQueueDefs.h>
 #include <gui/ConsumerBase.h>
 
@@ -82,12 +83,39 @@ public:
     // If the constructor without the tex parameter is used, the GLConsumer is
     // created in a detached state, and attachToContext must be called before
     // calls to updateTexImage.
-    GLConsumer(const sp<IGraphicBufferConsumer>& bq,
-            uint32_t tex, uint32_t texureTarget, bool useFenceSync,
-            bool isControlledByApp);
+    static std::tuple<sp<GLConsumer>, sp<Surface>> create(uint32_t tex, uint32_t textureTarget,
+                                                          bool useFenceSync,
+                                                          bool isControlledByApp);
+    static std::tuple<sp<GLConsumer>, sp<Surface>> create(uint32_t textureTarget, bool useFenceSync,
+                                                          bool isControlledByApp);
+    static sp<GLConsumer> create(const sp<IGraphicBufferConsumer>& bq, uint32_t tex,
+                                 uint32_t textureTarget, bool useFenceSync, bool isControlledByApp)
+            __attribute((deprecated(
+                    "Prefer create functions that create their own surface and consumer.")));
+    static sp<GLConsumer> create(const sp<IGraphicBufferConsumer>& bq, uint32_t textureTarget,
+                                 bool useFenceSync, bool isControlledByApp)
+            __attribute((deprecated(
+                    "Prefer create functions that create their own surface and consumer.")));
 
-    GLConsumer(const sp<IGraphicBufferConsumer>& bq, uint32_t texureTarget,
-            bool useFenceSync, bool isControlledByApp);
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
+    GLConsumer(uint32_t tex, uint32_t textureTarget, bool useFenceSync, bool isControlledByApp);
+
+    GLConsumer(uint32_t textureTarget, bool useFenceSync, bool isControlledByApp);
+
+    GLConsumer(const sp<IGraphicBufferConsumer>& bq, uint32_t tex, uint32_t textureTarget,
+               bool useFenceSync, bool isControlledByApp)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+
+    GLConsumer(const sp<IGraphicBufferConsumer>& bq, uint32_t textureTarget, bool useFenceSync,
+               bool isControlledByApp)
+            __attribute((deprecated("Prefer ctors that create their own surface and consumer.")));
+#else
+    GLConsumer(const sp<IGraphicBufferConsumer>& bq, uint32_t tex, uint32_t textureTarget,
+               bool useFenceSync, bool isControlledByApp);
+
+    GLConsumer(const sp<IGraphicBufferConsumer>& bq, uint32_t textureTarget, bool useFenceSync,
+               bool isControlledByApp);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
 
     // updateTexImage acquires the most recently queued buffer, and sets the
     // image contents of the target texture to it.
@@ -252,26 +280,28 @@ protected:
     virtual status_t acquireBufferLocked(BufferItem *item, nsecs_t presentWhen,
             uint64_t maxFrameNumber = 0) override;
 
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_UNLIMITED_SLOTS)
+    virtual void onSlotCountChanged(int slotCount) override;
+#endif
     // releaseBufferLocked overrides the ConsumerBase method to update the
     // mEglSlots array in addition to the ConsumerBase.
-    virtual status_t releaseBufferLocked(int slot,
-            const sp<GraphicBuffer> graphicBuffer,
-            EGLDisplay display, EGLSyncKHR eglFence) override;
+#if !COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)
+    virtual status_t releaseBufferLocked(int slot, const sp<GraphicBuffer> graphicBuffer,
+                                         EGLDisplay display = EGL_NO_DISPLAY,
+                                         EGLSyncKHR eglFence = EGL_NO_SYNC_KHR) override;
 
     status_t releaseBufferLocked(int slot,
             const sp<GraphicBuffer> graphicBuffer, EGLSyncKHR eglFence) {
         return releaseBufferLocked(slot, graphicBuffer, mEglDisplay, eglFence);
     }
+#endif
 
     struct PendingRelease {
-        PendingRelease() : isPending(false), currentTexture(-1),
-                graphicBuffer(), display(nullptr), fence(nullptr) {}
+        PendingRelease() : isPending(false), currentTexture(-1), graphicBuffer() {}
 
         bool isPending;
         int currentTexture;
         sp<GraphicBuffer> graphicBuffer;
-        EGLDisplay display;
-        EGLSyncKHR fence;
     };
 
     // This releases the buffer in the slot referenced by mCurrentTexture,
@@ -451,16 +481,18 @@ private:
     // EGLSlot contains the information and object references that
     // GLConsumer maintains about a BufferQueue buffer slot.
     struct EglSlot {
+#if !COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)
         EglSlot() : mEglFence(EGL_NO_SYNC_KHR) {}
-
+#endif
         // mEglImage is the EGLImage created from mGraphicBuffer.
         sp<EglImage> mEglImage;
-
+#if !COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)
         // mFence is the EGL sync object that must signal before the buffer
         // associated with this buffer slot may be dequeued. It is initialized
         // to EGL_NO_SYNC_KHR when the buffer is created and (optionally, based
         // on a compile-time option) set to a new sync object in updateTexImage.
         EGLSyncKHR mEglFence;
+#endif
     };
 
     // mEglDisplay is the EGLDisplay with which this GLConsumer is currently
@@ -482,8 +514,11 @@ private:
     // slot that has not yet been used. The buffer allocated to a slot will also
     // be replaced if the requested buffer usage or geometry differs from that
     // of the buffer allocated to a slot.
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_UNLIMITED_SLOTS)
+    std::vector<EglSlot> mEglSlots;
+#else
     EglSlot mEglSlots[BufferQueueDefs::NUM_BUFFER_SLOTS];
-
+#endif
     // mCurrentTexture is the buffer slot index of the buffer that is currently
     // bound to the OpenGL texture. It is initialized to INVALID_BUFFER_SLOT,
     // indicating that no buffer slot is currently bound to the texture. Note,

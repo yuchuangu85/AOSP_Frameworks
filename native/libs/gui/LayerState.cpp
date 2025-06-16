@@ -17,11 +17,11 @@
 #define LOG_TAG "LayerState"
 
 #include <cinttypes>
-#include <cmath>
 
 #include <android/gui/ISurfaceComposerClient.h>
 #include <android/native_window.h>
 #include <binder/Parcel.h>
+#include <com_android_graphics_libgui_flags.h>
 #include <gui/FrameRateUtils.h>
 #include <gui/IGraphicBufferProducer.h>
 #include <gui/LayerState.h>
@@ -55,6 +55,28 @@ namespace android {
 using gui::FocusRequest;
 using gui::WindowInfoHandle;
 
+namespace {
+bool isSameWindowHandle(const sp<WindowInfoHandle>& lhs, const sp<WindowInfoHandle>& rhs) {
+    if (lhs == rhs) {
+        return true;
+    }
+
+    if (!lhs || !rhs) {
+        return false;
+    }
+
+    return *lhs->getInfo() == *rhs->getInfo();
+};
+
+bool isSameSurfaceControl(const sp<SurfaceControl>& lhs, const sp<SurfaceControl>& rhs) {
+    if (lhs == rhs) {
+        return true;
+    }
+
+    return SurfaceControl::isSameSurface(lhs, rhs);
+};
+} // namespace
+
 layer_state_t::layer_state_t()
       : surface(nullptr),
         layerId(-1),
@@ -66,13 +88,13 @@ layer_state_t::layer_state_t()
         mask(0),
         reserved(0),
         cornerRadius(0.0f),
+        clientDrawnCornerRadius(0.0f),
         backgroundBlurRadius(0),
         color(0),
         bufferTransform(0),
         transformToDisplayInverse(false),
-        crop(Rect::INVALID_RECT),
+        crop({0, 0, -1, -1}),
         dataspace(ui::Dataspace::UNKNOWN),
-        surfaceDamageRegion(),
         api(-1),
         colorTransform(mat4()),
         bgColor(0),
@@ -92,7 +114,9 @@ layer_state_t::layer_state_t()
         trustedOverlay(gui::TrustedOverlay::UNSET),
         bufferCrop(Rect::INVALID_RECT),
         destinationFrame(Rect::INVALID_RECT),
-        dropInputMode(gui::DropInputMode::NONE) {
+        dropInputMode(gui::DropInputMode::NONE),
+        pictureProfileHandle(PictureProfileHandle::NONE),
+        appContentPriority(0) {
     matrix.dsdx = matrix.dtdy = 1.0f;
     matrix.dsdy = matrix.dtdx = 0.0f;
     hdrMetadata.validTypes = 0;
@@ -110,20 +134,25 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.writeUint32, flags);
     SAFE_PARCEL(output.writeUint32, mask);
     SAFE_PARCEL(matrix.write, output);
-    SAFE_PARCEL(output.write, crop);
-    SAFE_PARCEL(SurfaceControl::writeNullableToParcel, output, relativeLayerSurfaceControl);
-    SAFE_PARCEL(SurfaceControl::writeNullableToParcel, output, parentSurfaceControlForChild);
+    SAFE_PARCEL(output.writeFloat, crop.top);
+    SAFE_PARCEL(output.writeFloat, crop.left);
+    SAFE_PARCEL(output.writeFloat, crop.bottom);
+    SAFE_PARCEL(output.writeFloat, crop.right);
+    SAFE_PARCEL(SurfaceControl::writeNullableToParcel, output,
+                mNotDefCmpState.relativeLayerSurfaceControl);
+    SAFE_PARCEL(SurfaceControl::writeNullableToParcel, output,
+                mNotDefCmpState.parentSurfaceControlForChild);
     SAFE_PARCEL(output.writeFloat, color.r);
     SAFE_PARCEL(output.writeFloat, color.g);
     SAFE_PARCEL(output.writeFloat, color.b);
     SAFE_PARCEL(output.writeFloat, color.a);
-    SAFE_PARCEL(windowInfoHandle->writeToParcel, &output);
-    SAFE_PARCEL(output.write, transparentRegion);
+    SAFE_PARCEL(mNotDefCmpState.windowInfoHandle->writeToParcel, &output);
+    SAFE_PARCEL(output.write, mNotDefCmpState.transparentRegion);
     SAFE_PARCEL(output.writeUint32, bufferTransform);
     SAFE_PARCEL(output.writeBool, transformToDisplayInverse);
     SAFE_PARCEL(output.writeUint32, static_cast<uint32_t>(dataspace));
     SAFE_PARCEL(output.write, hdrMetadata);
-    SAFE_PARCEL(output.write, surfaceDamageRegion);
+    SAFE_PARCEL(output.write, mNotDefCmpState.surfaceDamageRegion);
     SAFE_PARCEL(output.writeInt32, api);
 
     if (sidebandStream) {
@@ -135,6 +164,7 @@ status_t layer_state_t::write(Parcel& output) const
 
     SAFE_PARCEL(output.write, colorTransform.asArray(), 16 * sizeof(float));
     SAFE_PARCEL(output.writeFloat, cornerRadius);
+    SAFE_PARCEL(output.writeFloat, clientDrawnCornerRadius);
     SAFE_PARCEL(output.writeUint32, backgroundBlurRadius);
     SAFE_PARCEL(output.writeParcelable, metadata);
     SAFE_PARCEL(output.writeFloat, bgColor.r);
@@ -150,6 +180,7 @@ status_t layer_state_t::write(Parcel& output) const
         SAFE_PARCEL(output.writeParcelableVector, listener.callbackIds);
     }
     SAFE_PARCEL(output.writeFloat, shadowRadius);
+    SAFE_PARCEL(output.writeParcelable, borderSettings);
     SAFE_PARCEL(output.writeInt32, frameRateSelectionPriority);
     SAFE_PARCEL(output.writeFloat, frameRate);
     SAFE_PARCEL(output.writeByte, frameRateCompatibility);
@@ -177,6 +208,7 @@ status_t layer_state_t::write(Parcel& output) const
     }
 
     SAFE_PARCEL(output.write, stretchEffect);
+    SAFE_PARCEL(output.writeParcelable, edgeExtensionParameters);
     SAFE_PARCEL(output.write, bufferCrop);
     SAFE_PARCEL(output.write, destinationFrame);
     SAFE_PARCEL(output.writeInt32, static_cast<uint32_t>(trustedOverlay));
@@ -193,6 +225,23 @@ status_t layer_state_t::write(Parcel& output) const
     SAFE_PARCEL(output.writeFloat, currentHdrSdrRatio);
     SAFE_PARCEL(output.writeFloat, desiredHdrSdrRatio);
     SAFE_PARCEL(output.writeInt32, static_cast<int32_t>(cachingHint));
+
+    const bool hasBufferReleaseChannel = (bufferReleaseChannel != nullptr);
+    SAFE_PARCEL(output.writeBool, hasBufferReleaseChannel);
+    if (hasBufferReleaseChannel) {
+        SAFE_PARCEL(output.writeParcelable, *bufferReleaseChannel);
+    }
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS_APPLY_PICTURE_PROFILES
+    SAFE_PARCEL(output.writeInt64, pictureProfileHandle.getId());
+    SAFE_PARCEL(output.writeInt32, appContentPriority);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS_APPLY_PICTURE_PROFILES
+
+    const bool hasLuts = (luts != nullptr);
+    SAFE_PARCEL(output.writeBool, hasLuts);
+    if (hasLuts) {
+        SAFE_PARCEL(output.writeParcelable, *luts);
+    }
+
     return NO_ERROR;
 }
 
@@ -211,10 +260,15 @@ status_t layer_state_t::read(const Parcel& input)
     SAFE_PARCEL(input.readUint32, &mask);
 
     SAFE_PARCEL(matrix.read, input);
-    SAFE_PARCEL(input.read, crop);
+    SAFE_PARCEL(input.readFloat, &crop.top);
+    SAFE_PARCEL(input.readFloat, &crop.left);
+    SAFE_PARCEL(input.readFloat, &crop.bottom);
+    SAFE_PARCEL(input.readFloat, &crop.right);
 
-    SAFE_PARCEL(SurfaceControl::readNullableFromParcel, input, &relativeLayerSurfaceControl);
-    SAFE_PARCEL(SurfaceControl::readNullableFromParcel, input, &parentSurfaceControlForChild);
+    SAFE_PARCEL(SurfaceControl::readNullableFromParcel, input,
+                &mNotDefCmpState.relativeLayerSurfaceControl);
+    SAFE_PARCEL(SurfaceControl::readNullableFromParcel, input,
+                &mNotDefCmpState.parentSurfaceControlForChild);
 
     float tmpFloat = 0;
     SAFE_PARCEL(input.readFloat, &tmpFloat);
@@ -226,9 +280,9 @@ status_t layer_state_t::read(const Parcel& input)
     SAFE_PARCEL(input.readFloat, &tmpFloat);
     color.a = tmpFloat;
 
-    SAFE_PARCEL(windowInfoHandle->readFromParcel, &input);
+    SAFE_PARCEL(mNotDefCmpState.windowInfoHandle->readFromParcel, &input);
 
-    SAFE_PARCEL(input.read, transparentRegion);
+    SAFE_PARCEL(input.read, mNotDefCmpState.transparentRegion);
     SAFE_PARCEL(input.readUint32, &bufferTransform);
     SAFE_PARCEL(input.readBool, &transformToDisplayInverse);
 
@@ -237,7 +291,7 @@ status_t layer_state_t::read(const Parcel& input)
     dataspace = static_cast<ui::Dataspace>(tmpUint32);
 
     SAFE_PARCEL(input.read, hdrMetadata);
-    SAFE_PARCEL(input.read, surfaceDamageRegion);
+    SAFE_PARCEL(input.read, mNotDefCmpState.surfaceDamageRegion);
     SAFE_PARCEL(input.readInt32, &api);
 
     bool tmpBool = false;
@@ -248,6 +302,7 @@ status_t layer_state_t::read(const Parcel& input)
 
     SAFE_PARCEL(input.read, &colorTransform, 16 * sizeof(float));
     SAFE_PARCEL(input.readFloat, &cornerRadius);
+    SAFE_PARCEL(input.readFloat, &clientDrawnCornerRadius);
     SAFE_PARCEL(input.readUint32, &backgroundBlurRadius);
     SAFE_PARCEL(input.readParcelable, &metadata);
 
@@ -274,6 +329,8 @@ status_t layer_state_t::read(const Parcel& input)
         listeners.emplace_back(listener, callbackIds);
     }
     SAFE_PARCEL(input.readFloat, &shadowRadius);
+    SAFE_PARCEL(input.readParcelable, &borderSettings);
+
     SAFE_PARCEL(input.readInt32, &frameRateSelectionPriority);
     SAFE_PARCEL(input.readFloat, &frameRate);
     SAFE_PARCEL(input.readByte, &frameRateCompatibility);
@@ -306,6 +363,7 @@ status_t layer_state_t::read(const Parcel& input)
     }
 
     SAFE_PARCEL(input.read, stretchEffect);
+    SAFE_PARCEL(input.readParcelable, &edgeExtensionParameters);
     SAFE_PARCEL(input.read, bufferCrop);
     SAFE_PARCEL(input.read, destinationFrame);
     uint32_t trustedOverlayInt;
@@ -336,6 +394,28 @@ status_t layer_state_t::read(const Parcel& input)
     int32_t tmpInt32;
     SAFE_PARCEL(input.readInt32, &tmpInt32);
     cachingHint = static_cast<gui::CachingHint>(tmpInt32);
+
+    bool hasBufferReleaseChannel;
+    SAFE_PARCEL(input.readBool, &hasBufferReleaseChannel);
+    if (hasBufferReleaseChannel) {
+        bufferReleaseChannel = std::make_shared<gui::BufferReleaseChannel::ProducerEndpoint>();
+        SAFE_PARCEL(input.readParcelable, bufferReleaseChannel.get());
+    }
+#if COM_ANDROID_GRAPHICS_LIBGUI_FLAGS_APPLY_PICTURE_PROFILES
+    int64_t pictureProfileId;
+    SAFE_PARCEL(input.readInt64, &pictureProfileId);
+    pictureProfileHandle = PictureProfileHandle(pictureProfileId);
+    SAFE_PARCEL(input.readInt32, &appContentPriority);
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS_APPLY_PICTURE_PROFILES
+
+    bool hasLuts;
+    SAFE_PARCEL(input.readBool, &hasLuts);
+    if (hasLuts) {
+        luts = std::make_shared<gui::DisplayLuts>();
+        SAFE_PARCEL(input.readParcelable, luts.get());
+    } else {
+        luts = nullptr;
+    }
 
     return NO_ERROR;
 }
@@ -531,7 +611,7 @@ void layer_state_t::merge(const layer_state_t& other) {
     }
     if (other.what & eTransparentRegionChanged) {
         what |= eTransparentRegionChanged;
-        transparentRegion = other.transparentRegion;
+        mNotDefCmpState.transparentRegion = other.mNotDefCmpState.transparentRegion;
     }
     if (other.what & eFlagsChanged) {
         what |= eFlagsChanged;
@@ -547,6 +627,10 @@ void layer_state_t::merge(const layer_state_t& other) {
         what |= eCornerRadiusChanged;
         cornerRadius = other.cornerRadius;
     }
+    if (other.what & eClientDrawnCornerRadiusChanged) {
+        what |= eClientDrawnCornerRadiusChanged;
+        clientDrawnCornerRadius = other.clientDrawnCornerRadius;
+    }
     if (other.what & eBackgroundBlurRadiusChanged) {
         what |= eBackgroundBlurRadiusChanged;
         backgroundBlurRadius = other.backgroundBlurRadius;
@@ -559,11 +643,13 @@ void layer_state_t::merge(const layer_state_t& other) {
         what |= eRelativeLayerChanged;
         what &= ~eLayerChanged;
         z = other.z;
-        relativeLayerSurfaceControl = other.relativeLayerSurfaceControl;
+        mNotDefCmpState.relativeLayerSurfaceControl =
+                other.mNotDefCmpState.relativeLayerSurfaceControl;
     }
     if (other.what & eReparent) {
         what |= eReparent;
-        parentSurfaceControlForChild = other.parentSurfaceControlForChild;
+        mNotDefCmpState.parentSurfaceControlForChild =
+                other.mNotDefCmpState.parentSurfaceControlForChild;
     }
     if (other.what & eBufferTransformChanged) {
         what |= eBufferTransformChanged;
@@ -609,7 +695,7 @@ void layer_state_t::merge(const layer_state_t& other) {
     }
     if (other.what & eSurfaceDamageRegionChanged) {
         what |= eSurfaceDamageRegionChanged;
-        surfaceDamageRegion = other.surfaceDamageRegion;
+        mNotDefCmpState.surfaceDamageRegion = other.mNotDefCmpState.surfaceDamageRegion;
     }
     if (other.what & eApiChanged) {
         what |= eApiChanged;
@@ -628,7 +714,8 @@ void layer_state_t::merge(const layer_state_t& other) {
     }
     if (other.what & eInputInfoChanged) {
         what |= eInputInfoChanged;
-        windowInfoHandle = new WindowInfoHandle(*other.windowInfoHandle);
+        mNotDefCmpState.windowInfoHandle =
+                sp<WindowInfoHandle>::make(*other.mNotDefCmpState.windowInfoHandle);
     }
     if (other.what & eBackgroundColorChanged) {
         what |= eBackgroundColorChanged;
@@ -642,6 +729,14 @@ void layer_state_t::merge(const layer_state_t& other) {
     if (other.what & eShadowRadiusChanged) {
         what |= eShadowRadiusChanged;
         shadowRadius = other.shadowRadius;
+    }
+    if (other.what & eBorderSettingsChanged) {
+        what |= eBorderSettingsChanged;
+        borderSettings = other.borderSettings;
+    }
+    if (other.what & eLutsChanged) {
+        what |= eLutsChanged;
+        luts = other.luts;
     }
     if (other.what & eDefaultFrameRateCompatibilityChanged) {
         what |= eDefaultFrameRateCompatibilityChanged;
@@ -682,6 +777,10 @@ void layer_state_t::merge(const layer_state_t& other) {
         what |= eStretchChanged;
         stretchEffect = other.stretchEffect;
     }
+    if (other.what & eEdgeExtensionChanged) {
+        what |= eEdgeExtensionChanged;
+        edgeExtensionParameters = other.edgeExtensionParameters;
+    }
     if (other.what & eBufferCropChanged) {
         what |= eBufferCropChanged;
         bufferCrop = other.bufferCrop;
@@ -712,6 +811,20 @@ void layer_state_t::merge(const layer_state_t& other) {
     if (other.what & eFlushJankData) {
         what |= eFlushJankData;
     }
+    if (other.what & eBufferReleaseChannelChanged) {
+        what |= eBufferReleaseChannelChanged;
+        bufferReleaseChannel = other.bufferReleaseChannel;
+    }
+    if (com_android_graphics_libgui_flags_apply_picture_profiles()) {
+        if (other.what & ePictureProfileHandleChanged) {
+            what |= ePictureProfileHandleChanged;
+            pictureProfileHandle = other.pictureProfileHandle;
+        }
+        if (other.what & eAppContentPriorityChanged) {
+            what |= eAppContentPriorityChanged;
+            appContentPriority = other.appContentPriority;
+        }
+    }
     if ((other.what & what) != other.what) {
         ALOGE("Unmerged SurfaceComposer Transaction properties. LayerState::merge needs updating? "
               "other.what=0x%" PRIX64 " what=0x%" PRIX64 " unmerged flags=0x%" PRIX64,
@@ -729,7 +842,8 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF(diff, eAlphaChanged, other, color.a);
     CHECK_DIFF(diff, eMatrixChanged, other, matrix);
     if (other.what & eTransparentRegionChanged &&
-        (!transparentRegion.hasSameRects(other.transparentRegion))) {
+        (!mNotDefCmpState.transparentRegion.hasSameRects(
+                other.mNotDefCmpState.transparentRegion))) {
         diff |= eTransparentRegionChanged;
     }
     if (other.what & eFlagsChanged) {
@@ -738,6 +852,7 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     }
     CHECK_DIFF(diff, eLayerStackChanged, other, layerStack);
     CHECK_DIFF(diff, eCornerRadiusChanged, other, cornerRadius);
+    CHECK_DIFF(diff, eClientDrawnCornerRadiusChanged, other, clientDrawnCornerRadius);
     CHECK_DIFF(diff, eBackgroundBlurRadiusChanged, other, backgroundBlurRadius);
     if (other.what & eBlurRegionsChanged) diff |= eBlurRegionsChanged;
     if (other.what & eRelativeLayerChanged) {
@@ -745,8 +860,8 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
         diff &= ~eLayerChanged;
     }
     if (other.what & eReparent &&
-        !SurfaceControl::isSameSurface(parentSurfaceControlForChild,
-                                       other.parentSurfaceControlForChild)) {
+        !SurfaceControl::isSameSurface(mNotDefCmpState.parentSurfaceControlForChild,
+                                       other.mNotDefCmpState.parentSurfaceControlForChild)) {
         diff |= eReparent;
     }
     CHECK_DIFF(diff, eBufferTransformChanged, other, bufferTransform);
@@ -760,7 +875,8 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF(diff, eCachingHintChanged, other, cachingHint);
     CHECK_DIFF(diff, eHdrMetadataChanged, other, hdrMetadata);
     if (other.what & eSurfaceDamageRegionChanged &&
-        (!surfaceDamageRegion.hasSameRects(other.surfaceDamageRegion))) {
+        (!mNotDefCmpState.surfaceDamageRegion.hasSameRects(
+                other.mNotDefCmpState.surfaceDamageRegion))) {
         diff |= eSurfaceDamageRegionChanged;
     }
     CHECK_DIFF(diff, eApiChanged, other, api);
@@ -772,6 +888,7 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF2(diff, eBackgroundColorChanged, other, bgColor, bgColorDataspace);
     if (other.what & eMetadataChanged) diff |= eMetadataChanged;
     CHECK_DIFF(diff, eShadowRadiusChanged, other, shadowRadius);
+    CHECK_DIFF(diff, eBorderSettingsChanged, other, borderSettings);
     CHECK_DIFF(diff, eDefaultFrameRateCompatibilityChanged, other, defaultFrameRateCompatibility);
     CHECK_DIFF(diff, eFrameRateSelectionPriority, other, frameRateSelectionPriority);
     CHECK_DIFF3(diff, eFrameRateChanged, other, frameRate, frameRateCompatibility,
@@ -783,6 +900,7 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF(diff, eAutoRefreshChanged, other, autoRefresh);
     CHECK_DIFF(diff, eTrustedOverlayChanged, other, trustedOverlay);
     CHECK_DIFF(diff, eStretchChanged, other, stretchEffect);
+    CHECK_DIFF(diff, eEdgeExtensionChanged, other, edgeExtensionParameters);
     CHECK_DIFF(diff, eBufferCropChanged, other, bufferCrop);
     CHECK_DIFF(diff, eDestinationFrameChanged, other, destinationFrame);
     if (other.what & eProducerDisconnect) diff |= eProducerDisconnect;
@@ -790,6 +908,11 @@ uint64_t layer_state_t::diff(const layer_state_t& other) const {
     CHECK_DIFF(diff, eColorChanged, other, color.rgb);
     CHECK_DIFF(diff, eColorSpaceAgnosticChanged, other, colorSpaceAgnostic);
     CHECK_DIFF(diff, eDimmingEnabledChanged, other, dimmingEnabled);
+    if (other.what & eBufferReleaseChannelChanged) diff |= eBufferReleaseChannelChanged;
+    if (other.what & eLutsChanged) diff |= eLutsChanged;
+    CHECK_DIFF(diff, ePictureProfileHandleChanged, other, pictureProfileHandle);
+    CHECK_DIFF(diff, eAppContentPriorityChanged, other, appContentPriority);
+
     return diff;
 }
 
@@ -815,6 +938,38 @@ status_t layer_state_t::matrix22_t::read(const Parcel& input) {
     SAFE_PARCEL(input.readFloat, &dtdy);
     SAFE_PARCEL(input.readFloat, &dsdy);
     return NO_ERROR;
+}
+void layer_state_t::updateTransparentRegion(const Region& transparentRegion) {
+    what |= eTransparentRegionChanged;
+    mNotDefCmpState.transparentRegion = transparentRegion;
+}
+void layer_state_t::updateSurfaceDamageRegion(const Region& surfaceDamageRegion) {
+    what |= eSurfaceDamageRegionChanged;
+    mNotDefCmpState.surfaceDamageRegion = surfaceDamageRegion;
+}
+void layer_state_t::updateRelativeLayer(const sp<SurfaceControl>& relativeTo, int32_t z) {
+    what |= layer_state_t::eRelativeLayerChanged;
+    what &= ~layer_state_t::eLayerChanged;
+    mNotDefCmpState.relativeLayerSurfaceControl = relativeTo;
+    this->z = z;
+}
+void layer_state_t::updateParentLayer(const sp<SurfaceControl>& newParent) {
+    what |= layer_state_t::eReparent;
+    mNotDefCmpState.parentSurfaceControlForChild =
+            newParent ? newParent->getParentingLayer() : nullptr;
+}
+void layer_state_t::updateInputWindowInfo(sp<gui::WindowInfoHandle>&& info) {
+    what |= eInputInfoChanged;
+    mNotDefCmpState.windowInfoHandle = std::move(info);
+}
+
+bool layer_state_t::NotDefaultComparableState::operator==(
+        const NotDefaultComparableState& rhs) const {
+    return transparentRegion.hasSameRects(rhs.transparentRegion) &&
+            surfaceDamageRegion.hasSameRects(rhs.surfaceDamageRegion) &&
+            isSameWindowHandle(windowInfoHandle, rhs.windowInfoHandle) &&
+            isSameSurfaceControl(relativeLayerSurfaceControl, rhs.relativeLayerSurfaceControl) &&
+            isSameSurfaceControl(parentSurfaceControlForChild, rhs.parentSurfaceControlForChild);
 }
 
 // ------------------------------- InputWindowCommands ----------------------------------------
@@ -867,88 +1022,6 @@ status_t InputWindowCommands::read(const Parcel& input) {
 
 // ----------------------------------------------------------------------------
 
-namespace gui {
-
-status_t CaptureArgs::writeToParcel(Parcel* output) const {
-    SAFE_PARCEL(output->writeInt32, static_cast<int32_t>(pixelFormat));
-    SAFE_PARCEL(output->write, sourceCrop);
-    SAFE_PARCEL(output->writeFloat, frameScaleX);
-    SAFE_PARCEL(output->writeFloat, frameScaleY);
-    SAFE_PARCEL(output->writeBool, captureSecureLayers);
-    SAFE_PARCEL(output->writeInt32, uid);
-    SAFE_PARCEL(output->writeInt32, static_cast<int32_t>(dataspace));
-    SAFE_PARCEL(output->writeBool, allowProtected);
-    SAFE_PARCEL(output->writeBool, grayscale);
-    SAFE_PARCEL(output->writeInt32, excludeHandles.size());
-    for (auto& excludeHandle : excludeHandles) {
-        SAFE_PARCEL(output->writeStrongBinder, excludeHandle);
-    }
-    SAFE_PARCEL(output->writeBool, hintForSeamlessTransition);
-    return NO_ERROR;
-}
-
-status_t CaptureArgs::readFromParcel(const Parcel* input) {
-    int32_t value = 0;
-    SAFE_PARCEL(input->readInt32, &value);
-    pixelFormat = static_cast<ui::PixelFormat>(value);
-    SAFE_PARCEL(input->read, sourceCrop);
-    SAFE_PARCEL(input->readFloat, &frameScaleX);
-    SAFE_PARCEL(input->readFloat, &frameScaleY);
-    SAFE_PARCEL(input->readBool, &captureSecureLayers);
-    SAFE_PARCEL(input->readInt32, &uid);
-    SAFE_PARCEL(input->readInt32, &value);
-    dataspace = static_cast<ui::Dataspace>(value);
-    SAFE_PARCEL(input->readBool, &allowProtected);
-    SAFE_PARCEL(input->readBool, &grayscale);
-    int32_t numExcludeHandles = 0;
-    SAFE_PARCEL_READ_SIZE(input->readInt32, &numExcludeHandles, input->dataSize());
-    excludeHandles.reserve(numExcludeHandles);
-    for (int i = 0; i < numExcludeHandles; i++) {
-        sp<IBinder> binder;
-        SAFE_PARCEL(input->readStrongBinder, &binder);
-        excludeHandles.emplace(binder);
-    }
-    SAFE_PARCEL(input->readBool, &hintForSeamlessTransition);
-    return NO_ERROR;
-}
-
-status_t DisplayCaptureArgs::writeToParcel(Parcel* output) const {
-    SAFE_PARCEL(CaptureArgs::writeToParcel, output);
-
-    SAFE_PARCEL(output->writeStrongBinder, displayToken);
-    SAFE_PARCEL(output->writeUint32, width);
-    SAFE_PARCEL(output->writeUint32, height);
-    return NO_ERROR;
-}
-
-status_t DisplayCaptureArgs::readFromParcel(const Parcel* input) {
-    SAFE_PARCEL(CaptureArgs::readFromParcel, input);
-
-    SAFE_PARCEL(input->readStrongBinder, &displayToken);
-    SAFE_PARCEL(input->readUint32, &width);
-    SAFE_PARCEL(input->readUint32, &height);
-    return NO_ERROR;
-}
-
-status_t LayerCaptureArgs::writeToParcel(Parcel* output) const {
-    SAFE_PARCEL(CaptureArgs::writeToParcel, output);
-
-    SAFE_PARCEL(output->writeStrongBinder, layerHandle);
-    SAFE_PARCEL(output->writeBool, childrenOnly);
-    return NO_ERROR;
-}
-
-status_t LayerCaptureArgs::readFromParcel(const Parcel* input) {
-    SAFE_PARCEL(CaptureArgs::readFromParcel, input);
-
-    SAFE_PARCEL(input->readStrongBinder, &layerHandle);
-
-    SAFE_PARCEL(input->readBool, &childrenOnly);
-    return NO_ERROR;
-}
-
-}; // namespace gui
-
 ReleaseCallbackId BufferData::generateReleaseCallbackId() const {
     uint64_t bufferId;
     if (buffer) {
@@ -998,13 +1071,13 @@ status_t BufferData::readFromParcel(const Parcel* input) {
     bool tmpBool = false;
     SAFE_PARCEL(input->readBool, &tmpBool);
     if (tmpBool) {
-        buffer = new GraphicBuffer();
+        buffer = sp<GraphicBuffer>::make();
         SAFE_PARCEL(input->read, *buffer);
     }
 
     SAFE_PARCEL(input->readBool, &tmpBool);
     if (tmpBool) {
-        acquireFence = new Fence();
+        acquireFence = sp<Fence>::make();
         SAFE_PARCEL(input->read, *acquireFence);
     }
 
@@ -1031,8 +1104,8 @@ status_t BufferData::readFromParcel(const Parcel* input) {
 }
 
 status_t TrustedPresentationListener::writeToParcel(Parcel* parcel) const {
-    SAFE_PARCEL(parcel->writeStrongBinder, callbackInterface);
-    SAFE_PARCEL(parcel->writeInt32, callbackId);
+    SAFE_PARCEL(parcel->writeStrongBinder, mState.callbackInterface);
+    SAFE_PARCEL(parcel->writeInt32, mState.callbackId);
     return NO_ERROR;
 }
 
@@ -1040,9 +1113,9 @@ status_t TrustedPresentationListener::readFromParcel(const Parcel* parcel) {
     sp<IBinder> tmpBinder = nullptr;
     SAFE_PARCEL(parcel->readNullableStrongBinder, &tmpBinder);
     if (tmpBinder) {
-        callbackInterface = checked_interface_cast<ITransactionCompletedListener>(tmpBinder);
+        mState.callbackInterface = checked_interface_cast<ITransactionCompletedListener>(tmpBinder);
     }
-    SAFE_PARCEL(parcel->readInt32, &callbackId);
+    SAFE_PARCEL(parcel->readInt32, &mState.callbackId);
     return NO_ERROR;
 }
 

@@ -29,6 +29,7 @@ import static org.testng.Assert.assertTrue;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.platform.test.annotations.Presubmit;
 import android.view.KeyEvent;
 
 import androidx.test.filters.SmallTest;
@@ -45,7 +46,7 @@ import java.util.concurrent.TimeUnit;
  * Build/Install/Run:
  *  atest KeyCombinationManagerTests
  */
-
+@Presubmit
 @SmallTest
 public class KeyCombinationManagerTests {
     private KeyCombinationManager mKeyCombinationManager;
@@ -71,12 +72,12 @@ public class KeyCombinationManagerTests {
                 new KeyCombinationManager.TwoKeysCombinationRule(KEYCODE_VOLUME_DOWN,
                         KEYCODE_POWER) {
                     @Override
-                    void execute() {
+                    public void execute() {
                         mAction1Triggered.countDown();
                     }
 
                     @Override
-                    void cancel() {
+                    public void cancel() {
                     }
                 });
 
@@ -85,21 +86,21 @@ public class KeyCombinationManagerTests {
                 new KeyCombinationManager.TwoKeysCombinationRule(KEYCODE_VOLUME_DOWN,
                         KEYCODE_VOLUME_UP) {
                     @Override
-                    boolean preCondition() {
+                    public boolean preCondition() {
                         return mPreCondition;
                     }
 
                     @Override
-                    void execute() {
+                    public void execute() {
                         mAction2Triggered.countDown();
                     }
 
                     @Override
-                    void cancel() {
+                    public void cancel() {
                     }
 
                     @Override
-                    long getKeyInterceptDelayMs() {
+                    public long getKeyInterceptDelayMs() {
                         return 0;
                     }
                 });
@@ -115,12 +116,12 @@ public class KeyCombinationManagerTests {
                     };
 
                     @Override
-                    void execute() {
+                    public void execute() {
                         mHandler.postDelayed(mAction, SCHEDULE_TIME);
                     }
 
                     @Override
-                    void cancel() {
+                    public void cancel() {
                         mHandler.removeCallbacks(mAction);
                     }
                 });
@@ -235,12 +236,12 @@ public class KeyCombinationManagerTests {
                 new KeyCombinationManager.TwoKeysCombinationRule(KEYCODE_VOLUME_DOWN,
                         KEYCODE_POWER) {
                     @Override
-                    void execute() {
+                    public void execute() {
                         mAction1Triggered.countDown();
                     }
 
                     @Override
-                    void cancel() {
+                    public void cancel() {
                     }
                 };
 

@@ -20,6 +20,8 @@ import static android.Manifest.permission.BIND_DREAM_SERVICE;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_ASSISTANT;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_DREAM;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
+import static android.service.dreams.Flags.allowDreamWhenPostured;
+import static android.service.dreams.Flags.cleanupDreamSettingsOnUninstall;
 import static android.service.dreams.Flags.dreamHandlesBeingObscured;
 
 import static com.android.server.wm.ActivityInterceptorCallback.DREAM_MANAGER_ORDERED_ID;
@@ -64,12 +66,15 @@ import android.provider.Settings;
 import android.service.dreams.DreamManagerInternal;
 import android.service.dreams.DreamService;
 import android.service.dreams.IDreamManager;
+import android.text.TextUtils;
 import android.util.Slog;
+import android.util.SparseArray;
 import android.view.Display;
 
 import com.android.internal.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.content.PackageMonitor;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.logging.UiEventLoggerImpl;
 import com.android.internal.util.DumpUtils;
@@ -86,6 +91,7 @@ import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -105,12 +111,13 @@ public final class DreamManagerService extends SystemService {
 
     /** Constants for the when to activate dreams. */
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef({DREAM_ON_DOCK, DREAM_ON_CHARGE, DREAM_ON_DOCK_OR_CHARGE})
+    @IntDef({DREAM_DISABLED, DREAM_ON_DOCK, DREAM_ON_CHARGE, DREAM_ON_POSTURED})
     public @interface WhenToDream {}
-    private static final int DREAM_DISABLED = 0x0;
-    private static final int DREAM_ON_DOCK = 0x1;
-    private static final int DREAM_ON_CHARGE = 0x2;
-    private static final int DREAM_ON_DOCK_OR_CHARGE = 0x3;
+
+    private static final int DREAM_DISABLED = 0;
+    private static final int DREAM_ON_DOCK = 1 << 0;
+    private static final int DREAM_ON_CHARGE = 1 << 1;
+    private static final int DREAM_ON_POSTURED = 1 << 2;
 
     private final Object mLock = new Object();
 
@@ -132,6 +139,7 @@ public final class DreamManagerService extends SystemService {
     private final boolean mDreamsEnabledByDefaultConfig;
     private final boolean mDreamsActivatedOnChargeByDefault;
     private final boolean mDreamsActivatedOnDockByDefault;
+    private final boolean mDreamsActivatedOnPosturedByDefault;
     private final boolean mKeepDreamingWhenUnpluggingDefault;
     private final boolean mDreamsDisabledByAmbientModeSuppressionConfig;
 
@@ -147,6 +155,7 @@ public final class DreamManagerService extends SystemService {
     @WhenToDream private int mWhenToDream;
     private boolean mIsDocked;
     private boolean mIsCharging;
+    private boolean mIsPostured;
 
     // A temporary dream component that, when present, takes precedence over user configured dream
     // component.
@@ -155,6 +164,10 @@ public final class DreamManagerService extends SystemService {
     private ComponentName mDreamOverlayServiceName;
 
     private final AmbientDisplayConfiguration mDozeConfig;
+
+    /** Stores {@link PerUserPackageMonitor} to monitor dream uninstalls. */
+    private final SparseArray<PackageMonitor> mPackageMonitors = new SparseArray<>();
+
     private final ActivityInterceptorCallback mActivityInterceptorCallback =
             new ActivityInterceptorCallback() {
                 @Nullable
@@ -218,6 +231,15 @@ public final class DreamManagerService extends SystemService {
         }
     }
 
+    private final class PerUserPackageMonitor extends PackageMonitor {
+        @Override
+        public void onPackageRemoved(String packageName, int uid) {
+            super.onPackageRemoved(packageName, uid);
+            final int userId = getChangingUserId();
+            updateDreamOnPackageRemoved(packageName, userId);
+        }
+    }
+
     public DreamManagerService(Context context) {
         this(context, new DreamHandler(FgThread.get().getLooper()));
     }
@@ -252,6 +274,8 @@ public final class DreamManagerService extends SystemService {
                 com.android.internal.R.bool.config_dreamsActivatedOnSleepByDefault);
         mDreamsActivatedOnDockByDefault = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_dreamsActivatedOnDockByDefault);
+        mDreamsActivatedOnPosturedByDefault = mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_dreamsActivatedOnPosturedByDefault);
         mSettingsObserver = new SettingsObserver(mHandler);
         mKeepDreamingWhenUnpluggingDefault = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_keepDreamingWhenUnplugging);
@@ -310,6 +334,9 @@ public final class DreamManagerService extends SystemService {
                             Settings.Secure.SCREENSAVER_ACTIVATE_ON_DOCK),
                     false, mSettingsObserver, UserHandle.USER_ALL);
             mContext.getContentResolver().registerContentObserver(Settings.Secure.getUriFor(
+                            Settings.Secure.SCREENSAVER_ACTIVATE_ON_POSTURED),
+                    false, mSettingsObserver, UserHandle.USER_ALL);
+            mContext.getContentResolver().registerContentObserver(Settings.Secure.getUriFor(
                             Settings.Secure.SCREENSAVER_ENABLED),
                     false, mSettingsObserver, UserHandle.USER_ALL);
 
@@ -333,6 +360,37 @@ public final class DreamManagerService extends SystemService {
         });
     }
 
+    @Override
+    public void onUserStarting(@NonNull TargetUser user) {
+        super.onUserStarting(user);
+        if (cleanupDreamSettingsOnUninstall()) {
+            mHandler.post(() -> {
+                final int userId = user.getUserIdentifier();
+                if (!mPackageMonitors.contains(userId)) {
+                    final PackageMonitor monitor = new PerUserPackageMonitor();
+                    monitor.register(mContext, UserHandle.of(userId), mHandler);
+                    mPackageMonitors.put(userId, monitor);
+                } else {
+                    Slog.w(TAG, "Package monitor already registered for " + userId);
+                }
+            });
+        }
+    }
+
+    @Override
+    public void onUserStopping(@NonNull TargetUser user) {
+        super.onUserStopping(user);
+        if (cleanupDreamSettingsOnUninstall()) {
+            mHandler.post(() -> {
+                final PackageMonitor monitor = mPackageMonitors.removeReturnOld(
+                        user.getUserIdentifier());
+                if (monitor != null) {
+                    monitor.unregister();
+                }
+            });
+        }
+    }
+
     private void dumpInternal(PrintWriter pw) {
         synchronized (mLock) {
             pw.println("DREAM MANAGER (dumpsys dreams)");
@@ -343,6 +401,8 @@ public final class DreamManagerService extends SystemService {
             pw.println("mDreamsEnabledSetting=" + mDreamsEnabledSetting);
             pw.println("mDreamsActivatedOnDockByDefault=" + mDreamsActivatedOnDockByDefault);
             pw.println("mDreamsActivatedOnChargeByDefault=" + mDreamsActivatedOnChargeByDefault);
+            pw.println("mDreamsActivatedOnPosturedByDefault="
+                    + mDreamsActivatedOnPosturedByDefault);
             pw.println("mIsDocked=" + mIsDocked);
             pw.println("mIsCharging=" + mIsCharging);
             pw.println("mWhenToDream=" + mWhenToDream);
@@ -360,15 +420,28 @@ public final class DreamManagerService extends SystemService {
         synchronized (mLock) {
             final ContentResolver resolver = mContext.getContentResolver();
 
-            final int activateWhenCharging = (Settings.Secure.getIntForUser(resolver,
+            mWhenToDream = DREAM_DISABLED;
+
+            if ((Settings.Secure.getIntForUser(resolver,
                     Settings.Secure.SCREENSAVER_ACTIVATE_ON_SLEEP,
                     mDreamsActivatedOnChargeByDefault ? 1 : 0,
-                    UserHandle.USER_CURRENT) != 0) ? DREAM_ON_CHARGE : DREAM_DISABLED;
-            final int activateWhenDocked = (Settings.Secure.getIntForUser(resolver,
+                    UserHandle.USER_CURRENT) != 0)) {
+                mWhenToDream |= DREAM_ON_CHARGE;
+            }
+
+            if (Settings.Secure.getIntForUser(resolver,
                     Settings.Secure.SCREENSAVER_ACTIVATE_ON_DOCK,
                     mDreamsActivatedOnDockByDefault ? 1 : 0,
-                    UserHandle.USER_CURRENT) != 0) ? DREAM_ON_DOCK : DREAM_DISABLED;
-            mWhenToDream = activateWhenCharging + activateWhenDocked;
+                    UserHandle.USER_CURRENT) != 0) {
+                mWhenToDream |= DREAM_ON_DOCK;
+            }
+
+            if (Settings.Secure.getIntForUser(resolver,
+                    Settings.Secure.SCREENSAVER_ACTIVATE_ON_POSTURED,
+                    mDreamsActivatedOnPosturedByDefault ? 1 : 0,
+                    UserHandle.USER_CURRENT) != 0) {
+                mWhenToDream |= DREAM_ON_POSTURED;
+            }
 
             mDreamsEnabledSetting = (Settings.Secure.getIntForUser(resolver,
                     Settings.Secure.SCREENSAVER_ENABLED,
@@ -422,6 +495,34 @@ public final class DreamManagerService extends SystemService {
         }
     }
 
+    @VisibleForTesting
+    boolean dreamConditionActiveInternal() {
+        synchronized (mLock) {
+            return dreamConditionActiveInternalLocked();
+        }
+    }
+
+    private boolean dreamConditionActiveInternalLocked() {
+        if ((mWhenToDream & DREAM_ON_CHARGE) == DREAM_ON_CHARGE) {
+            return mIsCharging;
+        }
+
+        if ((mWhenToDream & DREAM_ON_DOCK) == DREAM_ON_DOCK) {
+            return mIsDocked;
+        }
+
+        if ((mWhenToDream & DREAM_ON_POSTURED) == DREAM_ON_POSTURED) {
+            return mIsPostured;
+        }
+
+        return false;
+    }
+
+    @VisibleForTesting
+    boolean dreamsEnabled() {
+        return mDreamsEnabledSetting;
+    }
+
     /** Whether dreaming can start given user settings and the current dock/charge state. */
     private boolean canStartDreamingInternal(boolean isScreenOn) {
         synchronized (mLock) {
@@ -451,15 +552,9 @@ public final class DreamManagerService extends SystemService {
                 return false;
             }
 
-            if ((mWhenToDream & DREAM_ON_CHARGE) == DREAM_ON_CHARGE) {
-                return mIsCharging;
-            }
-
-            if ((mWhenToDream & DREAM_ON_DOCK) == DREAM_ON_DOCK) {
-                return mIsDocked;
-            }
-
-            return false;
+            // All dream prerequisites fulfilled, check if device state matches "when to dream"
+            // setting.
+            return dreamConditionActiveInternalLocked();
         }
     }
 
@@ -543,19 +638,23 @@ public final class DreamManagerService extends SystemService {
     }
 
     private void startDozingInternal(IBinder token, int screenState,
-            @Display.StateReason int reason, int screenBrightness) {
-        if (DEBUG) {
-            Slog.d(TAG, "Dream requested to start dozing: " + token
-                    + ", screenState=" + screenState
-                    + ", screenBrightness=" + screenBrightness);
-        }
+            @Display.StateReason int reason, float screenBrightnessFloat, int screenBrightnessInt,
+            boolean useNormalBrightnessForDoze) {
+        Slog.d(TAG, "Dream requested to start dozing: " + token
+                + ", screenState=" + Display.stateToString(screenState)
+                + ", reason=" + Display.stateReasonToString(reason)
+                + ", screenBrightnessFloat=" + screenBrightnessFloat
+                + ", screenBrightnessInt=" + screenBrightnessInt
+                + ", useNormalBrightnessForDoze=" + useNormalBrightnessForDoze);
 
         synchronized (mLock) {
             if (mCurrentDream != null && mCurrentDream.token == token && mCurrentDream.canDoze) {
                 mCurrentDream.dozeScreenState = screenState;
-                mCurrentDream.dozeScreenBrightness = screenBrightness;
+                mCurrentDream.dozeScreenBrightness = screenBrightnessInt;
+                mCurrentDream.dozeScreenBrightnessFloat = screenBrightnessFloat;
                 mPowerManagerInternal.setDozeOverrideFromDreamManager(
-                        screenState, reason, screenBrightness);
+                        screenState, reason, screenBrightnessFloat, screenBrightnessInt,
+                        useNormalBrightnessForDoze);
                 if (!mCurrentDream.isDozing) {
                     mCurrentDream.isDozing = true;
                     mDozeWakeLock.acquire();
@@ -576,7 +675,9 @@ public final class DreamManagerService extends SystemService {
                 mPowerManagerInternal.setDozeOverrideFromDreamManager(
                         Display.STATE_UNKNOWN,
                         Display.STATE_REASON_DREAM_MANAGER,
-                        PowerManager.BRIGHTNESS_DEFAULT);
+                        PowerManager.BRIGHTNESS_INVALID_FLOAT,
+                        PowerManager.BRIGHTNESS_DEFAULT,
+                        /* useNormalBrightnessForDoze= */ false);
             }
         }
     }
@@ -591,6 +692,15 @@ public final class DreamManagerService extends SystemService {
         }
     }
 
+    @VisibleForTesting
+    void setDevicePosturedInternal(boolean isPostured) {
+        Slog.d(TAG, "Device postured: " + isPostured);
+        synchronized (mLock) {
+            mIsPostured = isPostured;
+            mHandler.post(() -> mPowerManagerInternal.setDevicePostured(isPostured));
+        }
+    }
+
     /**
      * If doze is true, returns the doze component for the user.
      * Otherwise, returns the system dream component, if present.
@@ -599,7 +709,7 @@ public final class DreamManagerService extends SystemService {
     private ComponentName chooseDreamForUser(boolean doze, int userId) {
         if (doze) {
             ComponentName dozeComponent = getDozeComponent(userId);
-            return validateDream(dozeComponent) ? dozeComponent : null;
+            return validateDream(dozeComponent, userId) ? dozeComponent : null;
         }
 
         if (mSystemDreamComponent != null) {
@@ -610,11 +720,11 @@ public final class DreamManagerService extends SystemService {
         return dreams != null && dreams.length != 0 ? dreams[0] : null;
     }
 
-    private boolean validateDream(ComponentName component) {
+    private boolean validateDream(ComponentName component, int userId) {
         if (component == null) return false;
-        final ServiceInfo serviceInfo = getServiceInfo(component);
+        final ServiceInfo serviceInfo = getServiceInfo(component, userId);
         if (serviceInfo == null) {
-            Slog.w(TAG, "Dream " + component + " does not exist");
+            Slog.w(TAG, "Dream " + component + " does not exist on user " + userId);
             return false;
         } else if (serviceInfo.applicationInfo.targetSdkVersion >= Build.VERSION_CODES.LOLLIPOP
                 && !BIND_DREAM_SERVICE.equals(serviceInfo.permission)) {
@@ -641,7 +751,7 @@ public final class DreamManagerService extends SystemService {
         List<ComponentName> validComponents = new ArrayList<>();
         if (components != null) {
             for (ComponentName component : components) {
-                if (validateDream(component)) {
+                if (validateDream(component, userId)) {
                     validComponents.add(component);
                 }
             }
@@ -656,6 +766,30 @@ public final class DreamManagerService extends SystemService {
             }
         }
         return validComponents.toArray(new ComponentName[validComponents.size()]);
+    }
+
+    private void updateDreamOnPackageRemoved(String packageName, int userId) {
+        final ComponentName[] componentNames = componentsFromString(
+                Settings.Secure.getStringForUser(mContext.getContentResolver(),
+                        Settings.Secure.SCREENSAVER_COMPONENTS,
+                        userId));
+        if (componentNames != null) {
+            // Filter out any components in the removed package.
+            final ComponentName[] filteredComponents =
+                    Arrays.stream(componentNames)
+                            .filter((componentName -> !isSamePackage(packageName, componentName)))
+                            .toArray(ComponentName[]::new);
+            if (filteredComponents.length != componentNames.length) {
+                setDreamComponentsForUser(userId, filteredComponents);
+            }
+        }
+    }
+
+    private static boolean isSamePackage(String packageName, ComponentName componentName) {
+        if (packageName == null || componentName == null) {
+            return false;
+        }
+        return TextUtils.equals(componentName.getPackageName(), packageName);
     }
 
     private void setDreamComponentsForUser(int userId, ComponentName[] componentNames) {
@@ -712,9 +846,10 @@ public final class DreamManagerService extends SystemService {
         return userId == mainUserId;
     }
 
-    private ServiceInfo getServiceInfo(ComponentName name) {
+    private ServiceInfo getServiceInfo(ComponentName name, int userId) {
+        final Context userContext = mContext.createContextAsUser(UserHandle.of(userId), 0);
         try {
-            return name != null ? mContext.getPackageManager().getServiceInfo(name,
+            return name != null ? userContext.getPackageManager().getServiceInfo(name,
                     PackageManager.MATCH_DEBUG_TRIAGED_MISSING) : null;
         } catch (NameNotFoundException e) {
             return null;
@@ -807,7 +942,7 @@ public final class DreamManagerService extends SystemService {
 
     private void writePulseGestureEnabled() {
         ComponentName name = getDozeComponent();
-        boolean dozeEnabled = validateDream(name);
+        boolean dozeEnabled = validateDream(name, ActivityManager.getCurrentUser());
         LocalServices.getService(InputManagerInternal.class).setPulseGestureEnabled(dozeEnabled);
     }
 
@@ -817,7 +952,10 @@ public final class DreamManagerService extends SystemService {
         }
         StringBuilder names = new StringBuilder();
         for (ComponentName componentName : componentNames) {
-            if (names.length() > 0) {
+            if (componentName == null) {
+                continue;
+            }
+            if (!names.isEmpty()) {
                 names.append(',');
             }
             names.append(componentName.flattenToString());
@@ -1079,9 +1217,7 @@ public final class DreamManagerService extends SystemService {
         }
 
         @Override // Binder call
-        public void startDozing(
-                IBinder token, int screenState, @Display.StateReason int reason,
-                int screenBrightness) {
+        public void finishSelfOneway(IBinder token, boolean immediate) {
             // Requires no permission, called by Dream from an arbitrary process.
             if (token == null) {
                 throw new IllegalArgumentException("token must not be null");
@@ -1089,7 +1225,45 @@ public final class DreamManagerService extends SystemService {
 
             final long ident = Binder.clearCallingIdentity();
             try {
-                startDozingInternal(token, screenState, reason, screenBrightness);
+                finishSelfInternal(token, immediate);
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+
+        @Override // Binder call
+        public void startDozing(
+                IBinder token, int screenState, @Display.StateReason int reason,
+                float screenBrightnessFloat, int screeBrightnessInt,
+                boolean useNormalBrightnessForDoze) {
+            // Requires no permission, called by Dream from an arbitrary process.
+            if (token == null) {
+                throw new IllegalArgumentException("token must not be null");
+            }
+
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                startDozingInternal(token, screenState, reason, screenBrightnessFloat,
+                        screeBrightnessInt, useNormalBrightnessForDoze);
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+
+        @Override // Binder call
+        public void startDozingOneway(
+                IBinder token, int screenState, @Display.StateReason int reason,
+                float screenBrightnessFloat, int screeBrightnessInt,
+                boolean useNormalBrightnessForDoze) {
+            // Requires no permission, called by Dream from an arbitrary process.
+            if (token == null) {
+                throw new IllegalArgumentException("token must not be null");
+            }
+
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                startDozingInternal(token, screenState, reason, screenBrightnessFloat,
+                        screeBrightnessInt, useNormalBrightnessForDoze);
             } finally {
                 Binder.restoreCallingIdentity(ident);
             }
@@ -1175,6 +1349,37 @@ public final class DreamManagerService extends SystemService {
             }
         }
 
+        @Override
+        public void setDevicePostured(boolean isPostured) {
+            if (!allowDreamWhenPostured()) {
+                return;
+            }
+
+            checkPermission(android.Manifest.permission.WRITE_DREAM_STATE);
+
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                setDevicePosturedInternal(isPostured);
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+
+        @Override
+        public void setScreensaverEnabled(boolean enabled) {
+            checkPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS);
+            final UserHandle userHandle = getCallingUserHandle();
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                Settings.Secure.putIntForUser(mContext.getContentResolver(),
+                        Settings.Secure.SCREENSAVER_ENABLED, enabled ? 1 : 0,
+                        userHandle.getIdentifier());
+                mPowerManagerInternal.updateSettings();
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+
         boolean canLaunchDreamActivity(String dreamPackageName, String packageName,
                 int callingUid) {
             if (dreamPackageName == null || packageName == null) {
@@ -1219,6 +1424,11 @@ public final class DreamManagerService extends SystemService {
         }
 
         @Override
+        public boolean dreamConditionActive() {
+            return dreamConditionActiveInternal();
+        }
+
+        @Override
         public void requestDream() {
             requestDreamInternal();
         }
@@ -1246,6 +1456,7 @@ public final class DreamManagerService extends SystemService {
         public boolean isWaking = false;
         public int dozeScreenState = Display.STATE_UNKNOWN;
         public int dozeScreenBrightness = PowerManager.BRIGHTNESS_DEFAULT;
+        public float dozeScreenBrightnessFloat = PowerManager.BRIGHTNESS_INVALID_FLOAT;
 
         DreamRecord(ComponentName name, int userId, boolean isPreview, boolean canDoze) {
             this.name = name;
@@ -1266,6 +1477,7 @@ public final class DreamManagerService extends SystemService {
                     + ", isWaking=" + isWaking
                     + ", dozeScreenState=" + dozeScreenState
                     + ", dozeScreenBrightness=" + dozeScreenBrightness
+                    + ", dozeScreenBrightnessFloat=" + dozeScreenBrightnessFloat
                     + '}';
         }
     }

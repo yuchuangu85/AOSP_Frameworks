@@ -18,7 +18,7 @@ package com.android.server.wm;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_PAUSE;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_STOP;
 
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_STATES;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_STATES;
 
 import android.annotation.NonNull;
 import android.app.servertransaction.RefreshCallbackItem;
@@ -27,7 +27,7 @@ import android.content.res.Configuration;
 import android.os.Handler;
 import android.os.RemoteException;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.internal.util.ArrayUtils;
 
 import java.util.ArrayList;
@@ -75,46 +75,53 @@ class ActivityRefresher {
         }
 
         final boolean cycleThroughStop =
-                mWmService.mLetterboxConfiguration
+                mWmService.mAppCompatConfiguration
                         .isCameraCompatRefreshCycleThroughStopEnabled()
-                        && !activity.mLetterboxUiController
-                        .shouldRefreshActivityViaPauseForCameraCompat();
+                        && !activity.mAppCompatController.getCameraOverrides()
+                            .shouldRefreshActivityViaPauseForCameraCompat();
 
-        activity.mLetterboxUiController.setIsRefreshRequested(true);
+        activity.mAppCompatController.getCameraOverrides().setIsRefreshRequested(true);
         ProtoLog.v(WM_DEBUG_STATES,
                 "Refreshing activity for freeform camera compatibility treatment, "
                         + "activityRecord=%s", activity);
-        final RefreshCallbackItem refreshCallbackItem = RefreshCallbackItem.obtain(
-                activity.token, cycleThroughStop ? ON_STOP : ON_PAUSE);
-        final ResumeActivityItem resumeActivityItem = ResumeActivityItem.obtain(
+        final RefreshCallbackItem refreshCallbackItem =
+                new RefreshCallbackItem(activity.token, cycleThroughStop ? ON_STOP : ON_PAUSE);
+        final ResumeActivityItem resumeActivityItem = new ResumeActivityItem(
                 activity.token, /* isForward */ false, /* shouldSendCompatFakeFocus */ false);
+        boolean isSuccessful;
         try {
-            activity.mAtmService.getLifecycleManager().scheduleTransactionAndLifecycleItems(
+            isSuccessful = activity.mAtmService.getLifecycleManager().scheduleTransactionItems(
                     activity.app.getThread(), refreshCallbackItem, resumeActivityItem);
+        } catch (RemoteException e) {
+            isSuccessful = false;
+        }
+        if (isSuccessful) {
             mHandler.postDelayed(() -> {
                 synchronized (mWmService.mGlobalLock) {
                     onActivityRefreshed(activity);
                 }
             }, REFRESH_CALLBACK_TIMEOUT_MS);
-        } catch (RemoteException e) {
-            activity.mLetterboxUiController.setIsRefreshRequested(false);
+        } else {
+            activity.mAppCompatController.getCameraOverrides().setIsRefreshRequested(false);
+
         }
     }
 
     boolean isActivityRefreshing(@NonNull ActivityRecord activity) {
-        return activity.mLetterboxUiController.isRefreshRequested();
+        return activity.mAppCompatController.getCameraOverrides().isRefreshRequested();
     }
 
     void onActivityRefreshed(@NonNull ActivityRecord activity) {
         // TODO(b/333060789): can we tell that refresh did not happen by observing the activity
         //  state?
-        activity.mLetterboxUiController.setIsRefreshRequested(false);
+        activity.mAppCompatController.getCameraOverrides().setIsRefreshRequested(false);
     }
 
     private boolean shouldRefreshActivity(@NonNull ActivityRecord activity,
             @NonNull Configuration newConfig, @NonNull Configuration lastReportedConfig) {
-        return mWmService.mLetterboxConfiguration.isCameraCompatRefreshEnabled()
-                && activity.mLetterboxUiController.shouldRefreshActivityForCameraCompat()
+        return mWmService.mAppCompatConfiguration.isCameraCompatRefreshEnabled()
+                && activity.mAppCompatController.getCameraOverrides()
+                    .shouldRefreshActivityForCameraCompat()
                 && ArrayUtils.find(mEvaluators.toArray(), evaluator ->
                 ((Evaluator) evaluator)
                         .shouldRefreshActivity(activity, newConfig, lastReportedConfig)) != null;

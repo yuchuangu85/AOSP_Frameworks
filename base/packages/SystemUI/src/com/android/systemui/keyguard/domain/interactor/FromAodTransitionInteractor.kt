@@ -17,8 +17,12 @@
 package com.android.systemui.keyguard.domain.interactor
 
 import android.animation.ValueAnimator
+import android.util.Log
 import com.android.app.animation.Interpolators
-import com.android.app.tracing.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
+import com.android.systemui.communal.domain.interactor.CommunalSceneInteractor
+import com.android.systemui.communal.domain.interactor.CommunalSettingsInteractor
+import com.android.systemui.communal.shared.model.CommunalScenes
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
@@ -35,8 +39,7 @@ import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
 
 @SysUISingleton
@@ -44,6 +47,7 @@ class FromAodTransitionInteractor
 @Inject
 constructor(
     override val transitionRepository: KeyguardTransitionRepository,
+    override val internalTransitionInteractor: InternalKeyguardTransitionInteractor,
     transitionInteractor: KeyguardTransitionInteractor,
     @Background private val scope: CoroutineScope,
     @Background bgDispatcher: CoroutineDispatcher,
@@ -52,6 +56,9 @@ constructor(
     powerInteractor: PowerInteractor,
     keyguardOcclusionInteractor: KeyguardOcclusionInteractor,
     val deviceEntryRepository: DeviceEntryRepository,
+    private val wakeToGoneInteractor: KeyguardWakeDirectlyToGoneInteractor,
+    private val communalSettingsInteractor: CommunalSettingsInteractor,
+    private val communalSceneInteractor: CommunalSceneInteractor,
 ) :
     TransitionInteractor(
         fromState = KeyguardState.AOD,
@@ -70,43 +77,39 @@ constructor(
         listenForTransitionToCamera(scope, keyguardInteractor)
     }
 
-    private val canDismissLockscreen: Flow<Boolean> =
-        combine(
-            keyguardInteractor.isKeyguardShowing,
-            keyguardInteractor.isKeyguardDismissible,
-            keyguardInteractor.biometricUnlockState,
-        ) { isKeyguardShowing, isKeyguardDismissible, biometricUnlockState ->
-            (isWakeAndUnlock(biometricUnlockState.mode) ||
-                (!isKeyguardShowing && isKeyguardDismissible))
-        }
+    private fun canDismissLockscreen(): Boolean {
+        return isWakeAndUnlock(keyguardInteractor.biometricUnlockState.value.mode) ||
+            (!keyguardInteractor.isKeyguardShowing.value &&
+                keyguardInteractor.isKeyguardDismissible.value)
+    }
 
     /**
      * Listen for the signal that we're waking up and figure what state we need to transition to.
      */
+    @OptIn(FlowPreview::class)
     private fun listenForAodToAwake() {
         // Use PowerInteractor's wakefulness, which is the earliest wake signal available. We
         // have all of the information we need at this time to make a decision about where to
         // transition.
         scope.launch("$TAG#listenForAodToAwake") {
             powerInteractor.detailedWakefulness
-                .filterRelevantKeyguardStateAnd { wakefulness -> wakefulness.isAwake() }
                 .debounce(50L)
+                .filterRelevantKeyguardStateAnd { wakefulness -> wakefulness.isAwake() }
                 .sample(
-                    startedKeyguardTransitionStep,
-                    keyguardInteractor.biometricUnlockState,
-                    keyguardInteractor.primaryBouncerShowing,
-                    keyguardInteractor.isKeyguardOccluded,
-                    canDismissLockscreen,
+                    transitionInteractor.startedKeyguardTransitionStep,
+                    wakeToGoneInteractor.canWakeDirectlyToGone,
                 )
                 .collect {
                     (
-                        _,
+                        detailedWakefulness,
                         startedStep,
-                        biometricUnlockState,
-                        primaryBouncerShowing,
-                        isKeyguardOccludedLegacy,
-                        canDismissLockscreen,
+                        canWakeDirectlyToGone,
                     ) ->
+                    val isKeyguardOccludedLegacy = keyguardInteractor.isKeyguardOccluded.value
+                    val biometricUnlockMode = keyguardInteractor.biometricUnlockState.value.mode
+                    val primaryBouncerShowing = keyguardInteractor.primaryBouncerShowing.value
+                    val autoOpenCommunal = communalSettingsInteractor.autoOpenEnabled.value
+
                     if (!maybeHandleInsecurePowerGesture()) {
                         val shouldTransitionToLockscreen =
                             if (KeyguardWmStateRefactor.isEnabled) {
@@ -114,12 +117,12 @@ constructor(
                                 // needed. Also, don't react to wake and unlock events, as we'll be
                                 // receiving a call to #dismissAod() shortly when the authentication
                                 // completes.
-                                !maybeStartTransitionToOccludedOrInsecureCamera() &&
-                                    !isWakeAndUnlock(biometricUnlockState.mode) &&
-                                    !primaryBouncerShowing
+                                !maybeStartTransitionToOccludedOrInsecureCamera { state, reason ->
+                                    startTransitionTo(state, ownerReason = reason)
+                                } && !isWakeAndUnlock(biometricUnlockMode) && !primaryBouncerShowing
                             } else {
                                 !isKeyguardOccludedLegacy &&
-                                    !isWakeAndUnlock(biometricUnlockState.mode) &&
+                                    !isWakeAndUnlock(biometricUnlockMode) &&
                                     !primaryBouncerShowing
                             }
 
@@ -129,13 +132,29 @@ constructor(
                             !KeyguardWmStateRefactor.isEnabled && isKeyguardOccludedLegacy
 
                         val shouldTransitionToGone =
-                            (!KeyguardWmStateRefactor.isEnabled && canDismissLockscreen) ||
-                                (KeyguardWmStateRefactor.isEnabled &&
-                                    !deviceEntryRepository.isLockscreenEnabled())
+                            (!KeyguardWmStateRefactor.isEnabled && canDismissLockscreen()) ||
+                                (KeyguardWmStateRefactor.isEnabled && canWakeDirectlyToGone)
+
+                        // Avoid transitioning to communal automatically if the device is waking
+                        // up due to motion.
+                        val shouldTransitionToCommunal =
+                            communalSettingsInteractor.isV2FlagEnabled() &&
+                                autoOpenCommunal &&
+                                !detailedWakefulness.isAwakeFromMotionOrLift() &&
+                                !isKeyguardOccludedLegacy
 
                         if (shouldTransitionToGone) {
+                            // TODO(b/360368320): Adapt for scene framework
+                            if (SceneContainerFlag.isEnabled) return@collect
                             startTransitionTo(
                                 toState = KeyguardState.GONE,
+                                modeOnCanceled = TransitionModeOnCanceled.REVERSE,
+                                ownerReason = "canWakeDirectlyToGone = true",
+                            )
+                        } else if (shouldTransitionToCommunal) {
+                            communalSceneInteractor.changeScene(
+                                CommunalScenes.Communal,
+                                "listen for aod to communal",
                             )
                         } else if (shouldTransitionToLockscreen) {
                             val modeOnCanceled =
@@ -150,7 +169,7 @@ constructor(
                             startTransitionTo(
                                 toState = KeyguardState.LOCKSCREEN,
                                 modeOnCanceled = modeOnCanceled,
-                                ownerReason = "listen for aod to awake"
+                                ownerReason = "listen for aod to awake",
                             )
                         } else if (shouldTransitionToOccluded) {
                             startTransitionTo(
@@ -179,11 +198,7 @@ constructor(
                 .filterRelevantKeyguardStateAnd { isOccluded -> isOccluded }
                 .collect {
                     if (!maybeHandleInsecurePowerGesture()) {
-                        startTransitionTo(
-                            toState = KeyguardState.OCCLUDED,
-                            modeOnCanceled = TransitionModeOnCanceled.RESET,
-                            ownerReason = "isOccluded = true",
-                        )
+                        Log.i(TAG, "Ignoring change to isOccluded to prevent errant AOD->OCCLUDED")
                     }
                 }
         }
@@ -197,7 +212,10 @@ constructor(
         if (SceneContainerFlag.isEnabled) return
         scope.launch("$TAG#listenForAodToPrimaryBouncer") {
             keyguardInteractor.primaryBouncerShowing
-                .filterRelevantKeyguardStateAnd { primaryBouncerShowing -> primaryBouncerShowing }
+                .filterRelevantKeyguardStateAnd { primaryBouncerShowing ->
+                    !isWakeAndUnlock(keyguardInteractor.biometricUnlockState.value.mode) &&
+                        primaryBouncerShowing
+                }
                 .collect { startTransitionTo(KeyguardState.PRIMARY_BOUNCER) }
         }
     }
@@ -215,7 +233,10 @@ constructor(
             interpolator = Interpolators.LINEAR
             duration =
                 when (toState) {
+                    KeyguardState.GONE -> TO_GONE_DURATION
                     KeyguardState.LOCKSCREEN -> TO_LOCKSCREEN_DURATION
+                    KeyguardState.OCCLUDED -> TO_OCCLUDED_DURATION
+                    KeyguardState.PRIMARY_BOUNCER -> TO_PRIMARY_BOUNCER_DURATION
                     else -> DEFAULT_DURATION
                 }.inWholeMilliseconds
         }
@@ -224,9 +245,9 @@ constructor(
     companion object {
         private const val TAG = "FromAodTransitionInteractor"
         private val DEFAULT_DURATION = 500.milliseconds
-        val TO_LOCKSCREEN_DURATION = 500.milliseconds
         val TO_GONE_DURATION = DEFAULT_DURATION
-        val TO_OCCLUDED_DURATION = DEFAULT_DURATION
+        val TO_LOCKSCREEN_DURATION = 500.milliseconds
+        val TO_OCCLUDED_DURATION = 550.milliseconds
         val TO_PRIMARY_BOUNCER_DURATION = DEFAULT_DURATION
     }
 }

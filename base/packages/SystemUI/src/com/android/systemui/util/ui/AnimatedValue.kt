@@ -13,20 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.util.ui
 
 import com.android.systemui.util.ui.AnimatedValue.Animating
 import com.android.systemui.util.ui.AnimatedValue.NotAnimating
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.transformLatest
 
 /**
  * A state comprised of a [value] of type [T] paired with a boolean indicating whether or not the
- * [value] [isAnimating] in the UI.
+ * value [isAnimating][isAnimating] in the UI.
  */
 sealed interface AnimatedValue<out T> {
 

@@ -16,20 +16,23 @@
 
 package com.android.systemui.keyguard.ui.viewmodel
 
+import android.util.LayoutDirection
 import com.android.app.animation.Interpolators.EMPHASIZED
 import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.keyguard.dagger.GlanceableHubBlurComponent
 import com.android.systemui.keyguard.domain.interactor.FromLockscreenTransitionInteractor
 import com.android.systemui.keyguard.shared.model.Edge
 import com.android.systemui.keyguard.shared.model.KeyguardState.GLANCEABLE_HUB
 import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.StateToValue
+import com.android.systemui.keyguard.ui.transitions.GlanceableHubTransition
 import com.android.systemui.res.R
 import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.shade.ShadeDisplayAware
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -39,23 +42,25 @@ import kotlinx.coroutines.flow.map
  * Breaks down LOCKSCREEN->GLANCEABLE_HUB transition into discrete steps for corresponding views to
  * consume.
  */
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class LockscreenToGlanceableHubTransitionViewModel
 @Inject
 constructor(
-    configurationInteractor: ConfigurationInteractor,
+    @ShadeDisplayAware configurationInteractor: ConfigurationInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
-) {
+    private val blurFactory: GlanceableHubBlurComponent.Factory,
+) : GlanceableHubTransition {
+
     private val transitionAnimation =
         animationFlow
             .setup(
                 duration = FromLockscreenTransitionInteractor.TO_GLANCEABLE_HUB_DURATION,
                 edge = Edge.create(from = LOCKSCREEN, to = Scenes.Communal),
             )
-            .setupWithoutSceneContainer(
-                edge = Edge.create(from = LOCKSCREEN, to = GLANCEABLE_HUB),
-            )
+            .setupWithoutSceneContainer(edge = Edge.create(from = LOCKSCREEN, to = GLANCEABLE_HUB))
+
+    override val windowBlurRadius: Flow<Float> =
+        blurFactory.create(transitionAnimation).getBlurProvider().enterBlurRadius
 
     val keyguardAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
@@ -71,7 +76,10 @@ constructor(
 
     val keyguardTranslationX: Flow<StateToValue> =
         configurationInteractor
-            .dimensionPixelSize(R.dimen.lockscreen_to_hub_transition_lockscreen_translation_x)
+            .directionalDimensionPixelSize(
+                LayoutDirection.LTR,
+                R.dimen.lockscreen_to_hub_transition_lockscreen_translation_x,
+            )
             .flatMapLatest { translatePx: Int ->
                 transitionAnimation.sharedFlowWithState(
                     duration = FromLockscreenTransitionInteractor.TO_GLANCEABLE_HUB_DURATION,
@@ -82,13 +90,15 @@ constructor(
                     onFinish = { 0f },
                     onCancel = { 0f },
                     interpolator = EMPHASIZED,
-                    name = "LOCKSCREEN->GLANCEABLE_HUB: keyguardTranslationX"
+                    name = "LOCKSCREEN->GLANCEABLE_HUB: keyguardTranslationX",
                 )
             }
 
     val notificationAlpha: Flow<Float> = keyguardAlpha
 
     val shortcutsAlpha: Flow<Float> = keyguardAlpha
+
+    val statusBarAlpha: Flow<Float> = keyguardAlpha
 
     val notificationTranslationX: Flow<Float> =
         keyguardTranslationX.map { it.value }.filterNotNull()

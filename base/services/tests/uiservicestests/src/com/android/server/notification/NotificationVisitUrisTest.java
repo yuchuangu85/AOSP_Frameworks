@@ -37,13 +37,14 @@ import android.os.Parcel;
 import android.platform.test.annotations.EnableFlags;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.Log;
+import android.util.proto.ProtoOutputStream;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.RemoteViews;
 
 import androidx.annotation.NonNull;
 import androidx.test.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import com.android.internal.config.sysui.SystemUiSystemPropertiesFlags;
 import com.android.server.UiServiceTestCase;
@@ -88,7 +89,7 @@ import java.util.stream.Stream;
 import javax.annotation.Nullable;
 
 @RunWith(AndroidJUnit4.class)
-@EnableFlags(Flags.FLAG_VISIT_PERSON_URI)
+@EnableFlags({Flags.FLAG_API_RICH_ONGOING})
 public class NotificationVisitUrisTest extends UiServiceTestCase {
     @Rule
     public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
@@ -105,7 +106,7 @@ public class NotificationVisitUrisTest extends UiServiceTestCase {
     private static final ImmutableSet<Class<?>> UNUSABLE_TYPES =
             ImmutableSet.of(Consumer.class, IBinder.class, MediaSession.Token.class, Parcel.class,
                     PrintWriter.class, Resources.Theme.class, View.class,
-                    LayoutInflater.Factory2.class);
+                    LayoutInflater.Factory2.class, ProtoOutputStream.class);
 
     // Maximum number of times we allow generating the same class recursively.
     // E.g. new RemoteViews.addView(new RemoteViews()) but stop there.

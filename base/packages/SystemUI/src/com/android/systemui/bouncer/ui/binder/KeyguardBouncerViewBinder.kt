@@ -22,23 +22,26 @@ import android.view.ViewGroup
 import android.window.OnBackAnimationCallback
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.keyguard.KeyguardMessageAreaController
 import com.android.keyguard.KeyguardSecurityContainerController
 import com.android.keyguard.KeyguardSecurityModel
 import com.android.keyguard.KeyguardSecurityView
 import com.android.keyguard.dagger.KeyguardBouncerComponent
+import com.android.systemui.biometrics.plugins.AuthContextPlugins
 import com.android.systemui.bouncer.domain.interactor.BouncerMessageInteractor
 import com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.EXPANSION_VISIBLE
 import com.android.systemui.bouncer.ui.BouncerViewDelegate
 import com.android.systemui.bouncer.ui.viewmodel.KeyguardBouncerViewModel
+import com.android.systemui.keyguard.ui.viewmodel.GlanceableHubToPrimaryBouncerTransitionViewModel
 import com.android.systemui.keyguard.ui.viewmodel.PrimaryBouncerToGoneTransitionViewModel
 import com.android.systemui.lifecycle.repeatWhenAttached
 import com.android.systemui.log.BouncerLogger
 import com.android.systemui.plugins.ActivityStarter
+import com.android.systemui.plugins.AuthContextPlugin
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.launch
 
 /** Binds the bouncer container to its view model. */
 object KeyguardBouncerViewBinder {
@@ -47,11 +50,14 @@ object KeyguardBouncerViewBinder {
         view: ViewGroup,
         viewModel: KeyguardBouncerViewModel,
         primaryBouncerToGoneTransitionViewModel: PrimaryBouncerToGoneTransitionViewModel,
+        glanceableHubToPrimaryBouncerTransitionViewModel:
+            GlanceableHubToPrimaryBouncerTransitionViewModel,
         componentFactory: KeyguardBouncerComponent.Factory,
         messageAreaControllerFactory: KeyguardMessageAreaController.Factory,
         bouncerMessageInteractor: BouncerMessageInteractor,
         bouncerLogger: BouncerLogger,
         selectedUserInteractor: SelectedUserInteractor,
+        plugins: AuthContextPlugins?,
     ) {
         // Builds the KeyguardSecurityContainerController from bouncer view group.
         val securityContainerController: KeyguardSecurityContainerController =
@@ -94,7 +100,7 @@ object KeyguardBouncerViewBinder {
 
                 override fun setDismissAction(
                     onDismissAction: ActivityStarter.OnDismissAction?,
-                    cancelAction: Runnable?
+                    cancelAction: Runnable?,
                 ) {
                     securityContainerController.setOnDismissAction(onDismissAction, cancelAction)
                 }
@@ -130,7 +136,20 @@ object KeyguardBouncerViewBinder {
                                         /* turningOff= */ false
                                     )
                                     securityContainerController.setInitialMessage()
-                                    securityContainerController.appear()
+                                    // Delay bouncer appearing animation when opening it from the
+                                    // glanceable hub in landscape, until after orientation changes
+                                    // to portrait. This prevents bouncer from showing in landscape
+                                    // layout, if bouncer rotation is not allowed.
+                                    if (
+                                        glanceableHubToPrimaryBouncerTransitionViewModel
+                                            .willDelayAppearAnimation(
+                                                securityContainerController.isLandscapeOrientation
+                                            )
+                                    ) {
+                                        securityContainerController.setupForDelayedAppear()
+                                    } else {
+                                        securityContainerController.appear()
+                                    }
                                     securityContainerController.onResume(
                                         KeyguardSecurityView.SCREEN_ON
                                     )
@@ -138,7 +157,7 @@ object KeyguardBouncerViewBinder {
                                     it.bindMessageView(
                                         bouncerMessageInteractor,
                                         messageAreaControllerFactory,
-                                        bouncerLogger
+                                        bouncerLogger,
                                     )
                                 }
                             } else {
@@ -148,6 +167,13 @@ object KeyguardBouncerViewBinder {
                                 securityContainerController.cancelDismissAction()
                                 securityContainerController.reset()
                                 securityContainerController.onPause()
+                            }
+                            plugins?.apply {
+                                if (isShowing) {
+                                    notifyBouncerShowing(view)
+                                } else {
+                                    notifyBouncerGone()
+                                }
                             }
                         }
                     }
@@ -181,7 +207,6 @@ object KeyguardBouncerViewBinder {
                             .filter { it == EXPANSION_VISIBLE }
                             .collect {
                                 securityContainerController.onResume(KeyguardSecurityView.SCREEN_ON)
-                                view.announceForAccessibility(securityContainerController.title)
                             }
                     }
 
@@ -209,7 +234,7 @@ object KeyguardBouncerViewBinder {
                             securityContainerController.showMessage(
                                 it.message,
                                 it.colorStateList,
-                                /* animated= */ true
+                                /* animated= */ true,
                             )
                             viewModel.onMessageShown()
                         }
@@ -233,8 +258,19 @@ object KeyguardBouncerViewBinder {
                     awaitCancellation()
                 } finally {
                     viewModel.setBouncerViewDelegate(null)
+                    plugins?.notifyBouncerGone()
                 }
             }
         }
     }
+}
+
+private suspend fun AuthContextPlugins.notifyBouncerShowing(view: View) = use { plugin ->
+    plugin.onShowingSensitiveSurface(
+        AuthContextPlugin.SensitiveSurface.LockscreenBouncer(view = view)
+    )
+}
+
+private fun AuthContextPlugins.notifyBouncerGone() = useInBackground { plugin ->
+    plugin.onHidingSensitiveSurface(AuthContextPlugin.SensitiveSurface.LockscreenBouncer())
 }

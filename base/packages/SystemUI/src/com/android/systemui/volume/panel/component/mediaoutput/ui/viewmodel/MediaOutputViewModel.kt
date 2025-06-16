@@ -17,7 +17,9 @@
 package com.android.systemui.volume.panel.component.mediaoutput.ui.viewmodel
 
 import android.content.Context
+import android.graphics.Color as GraphicsColor
 import com.android.internal.logging.UiEventLogger
+import com.android.systemui.Flags
 import com.android.systemui.animation.Expandable
 import com.android.systemui.common.shared.model.Color
 import com.android.systemui.common.shared.model.Icon
@@ -32,14 +34,12 @@ import com.android.systemui.volume.panel.shared.model.filterData
 import com.android.systemui.volume.panel.ui.VolumePanelUiEvent
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 /** Models the UI of the Media Output Volume Panel component. */
-@OptIn(ExperimentalCoroutinesApi::class)
 @VolumePanelScope
 class MediaOutputViewModel
 @Inject
@@ -75,19 +75,34 @@ constructor(
                         }
                     }
                 ConnectedDeviceViewModel(
-                    label,
-                    if (mediaOutputModel.isInAudioSharing) {
-                        context.getString(R.string.audio_sharing_description)
-                    } else {
-                        mediaOutputModel.device.name
-                    },
+                    label = label,
+                    labelColor =
+                        if (Flags.volumeRedesign()) {
+                            Color.Resource(com.android.internal.R.color.materialColorOnSurface)
+                        } else {
+                            Color.Resource(
+                                com.android.internal.R.color.materialColorOnSurfaceVariant
+                            )
+                        },
+                    deviceName =
+                        if (mediaOutputModel.isInAudioSharing) {
+                            context.getString(R.string.audio_sharing_description)
+                        } else {
+                            mediaOutputModel.device
+                                .takeIf { it !is AudioOutputDevice.Unknown }
+                                ?.name ?: context.getString(R.string.media_seamless_other_device)
+                        },
+                    deviceNameColor =
+                        if (mediaOutputModel.canOpenAudioSwitcher) {
+                            Color.Resource(com.android.internal.R.color.materialColorOnSurface)
+                        } else {
+                            Color.Resource(
+                                com.android.internal.R.color.materialColorOnSurfaceVariant
+                            )
+                        },
                 )
             }
-            .stateIn(
-                coroutineScope,
-                SharingStarted.Eagerly,
-                null,
-            )
+            .stateIn(coroutineScope, SharingStarted.Eagerly, null)
 
     val deviceIconViewModel: StateFlow<DeviceIconViewModel?> =
         mediaOutputComponentInteractor.mediaOutputModel
@@ -107,37 +122,64 @@ constructor(
                     DeviceIconViewModel.IsPlaying(
                         icon = icon,
                         iconColor =
-                            Color.Attribute(com.android.internal.R.attr.materialColorSurface),
+                            if (mediaOutputModel.canOpenAudioSwitcher) {
+                                if (Flags.volumeRedesign()) {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorOnPrimary
+                                    )
+                                } else {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorSurface
+                                    )
+                                }
+                            } else {
+                                Color.Resource(
+                                    com.android.internal.R.color.materialColorSurfaceContainerHighest
+                                )
+                            },
                         backgroundColor =
-                            Color.Attribute(com.android.internal.R.attr.materialColorSecondary),
+                            if (mediaOutputModel.canOpenAudioSwitcher) {
+                                if (Flags.volumeRedesign()) {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorPrimary
+                                    )
+                                } else {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorSecondary
+                                    )
+                                }
+                            } else {
+                                Color.Resource(com.android.internal.R.color.materialColorOutline)
+                            },
                     )
                 } else {
                     DeviceIconViewModel.IsNotPlaying(
                         icon = icon,
                         iconColor =
-                            Color.Attribute(
-                                com.android.internal.R.attr.materialColorOnSurfaceVariant
-                            ),
-                        backgroundColor =
-                            Color.Attribute(com.android.internal.R.attr.materialColorSurface),
+                            if (mediaOutputModel.canOpenAudioSwitcher) {
+                                if (Flags.volumeRedesign()) {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorPrimary
+                                    )
+                                } else {
+                                    Color.Resource(
+                                        com.android.internal.R.color.materialColorOnSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                Color.Resource(com.android.internal.R.color.materialColorOutline)
+                            },
+                        backgroundColor = Color.Loaded(GraphicsColor.TRANSPARENT),
                     )
                 }
             }
-            .stateIn(
-                coroutineScope,
-                SharingStarted.Eagerly,
-                null,
-            )
+            .stateIn(coroutineScope, SharingStarted.Eagerly, null)
 
     val enabled: StateFlow<Boolean> =
         mediaOutputComponentInteractor.mediaOutputModel
             .filterData()
-            .map { !it.isInAudioSharing }
-            .stateIn(
-                coroutineScope,
-                SharingStarted.Eagerly,
-                true,
-            )
+            .map { it.canOpenAudioSwitcher }
+            .stateIn(coroutineScope, SharingStarted.Eagerly, true)
 
     fun onBarClick(expandable: Expandable?) {
         uiEventLogger.log(VolumePanelUiEvent.VOLUME_PANEL_MEDIA_OUTPUT_CLICKED)
@@ -145,7 +187,7 @@ constructor(
             mediaOutputComponentInteractor.mediaOutputModel.value
         actionsInteractor.onBarClick(
             (result as? Result.Data<MediaOutputComponentModel>)?.data,
-            expandable
+            expandable,
         )
     }
 }

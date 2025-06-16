@@ -24,13 +24,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.res.ResourcesCompat
+import com.android.compose.animation.scene.ContentScope
 import com.android.compose.animation.scene.ElementKey
-import com.android.compose.animation.scene.SceneScope
 import com.android.systemui.animation.view.LaunchableImageView
 import com.android.systemui.keyguard.ui.binder.KeyguardIndicationAreaBinder
 import com.android.systemui.keyguard.ui.binder.KeyguardQuickAffordanceViewBinder
@@ -38,10 +39,8 @@ import com.android.systemui.keyguard.ui.view.KeyguardIndicationArea
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardIndicationAreaViewModel
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardQuickAffordanceViewModel
 import com.android.systemui.keyguard.ui.viewmodel.KeyguardQuickAffordancesCombinedViewModel
-import com.android.systemui.plugins.FalsingManager
 import com.android.systemui.res.R
 import com.android.systemui.statusbar.KeyguardIndicationController
-import com.android.systemui.statusbar.VibratorHelper
 import javax.inject.Inject
 import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.flow.Flow
@@ -50,10 +49,9 @@ class BottomAreaSection
 @Inject
 constructor(
     private val viewModel: KeyguardQuickAffordancesCombinedViewModel,
-    private val falsingManager: FalsingManager,
-    private val vibratorHelper: VibratorHelper,
     private val indicationController: KeyguardIndicationController,
     private val indicationAreaViewModel: KeyguardIndicationAreaViewModel,
+    private val keyguardQuickAffordanceViewBinder: KeyguardQuickAffordanceViewBinder,
 ) {
     /**
      * Renders a single lockscreen shortcut.
@@ -63,48 +61,38 @@ constructor(
      *   shortcut is placed along the edges of the display.
      */
     @Composable
-    fun SceneScope.Shortcut(
+    fun ContentScope.Shortcut(
         isStart: Boolean,
         applyPadding: Boolean,
         modifier: Modifier = Modifier,
     ) {
-        MovableElement(
+        Element(
             key = if (isStart) StartButtonElementKey else EndButtonElementKey,
             modifier = modifier,
         ) {
-            content {
-                Shortcut(
-                    viewId = if (isStart) R.id.start_button else R.id.end_button,
-                    viewModel = if (isStart) viewModel.startButton else viewModel.endButton,
-                    transitionAlpha = viewModel.transitionAlpha,
-                    falsingManager = falsingManager,
-                    vibratorHelper = vibratorHelper,
-                    indicationController = indicationController,
-                    modifier =
-                        if (applyPadding) {
-                            Modifier.shortcutPadding()
-                        } else {
-                            Modifier
-                        }
-                )
-            }
+            Shortcut(
+                viewId = if (isStart) R.id.start_button else R.id.end_button,
+                viewModel = if (isStart) viewModel.startButton else viewModel.endButton,
+                transitionAlpha = viewModel.transitionAlpha,
+                indicationController = indicationController,
+                binder = keyguardQuickAffordanceViewBinder,
+                modifier =
+                    if (applyPadding) {
+                        Modifier.shortcutPadding()
+                    } else {
+                        Modifier
+                    },
+            )
         }
     }
 
     @Composable
-    fun SceneScope.IndicationArea(
-        modifier: Modifier = Modifier,
-    ) {
-        MovableElement(
-            key = IndicationAreaElementKey,
-            modifier = modifier.shortcutPadding(),
-        ) {
-            content {
-                IndicationArea(
-                    indicationAreaViewModel = indicationAreaViewModel,
-                    indicationController = indicationController,
-                )
-            }
+    fun ContentScope.IndicationArea(modifier: Modifier = Modifier) {
+        Element(key = IndicationAreaElementKey, modifier = modifier.indicationAreaPadding()) {
+            IndicationArea(
+                indicationAreaViewModel = indicationAreaViewModel,
+                indicationController = indicationController,
+            )
         }
     }
 
@@ -121,9 +109,8 @@ constructor(
         @IdRes viewId: Int,
         viewModel: Flow<KeyguardQuickAffordanceViewModel>,
         transitionAlpha: Flow<Float>,
-        falsingManager: FalsingManager,
-        vibratorHelper: VibratorHelper,
         indicationController: KeyguardIndicationController,
+        binder: KeyguardQuickAffordanceViewBinder,
         modifier: Modifier = Modifier,
     ) {
         val (binding, setBinding) = mutableStateOf<KeyguardQuickAffordanceViewBinder.Binding?>(null)
@@ -142,26 +129,20 @@ constructor(
                             ResourcesCompat.getDrawable(
                                 context.resources,
                                 R.drawable.keyguard_bottom_affordance_bg,
-                                context.theme
+                                context.theme,
                             )
                         foreground =
                             ResourcesCompat.getDrawable(
                                 context.resources,
                                 R.drawable.keyguard_bottom_affordance_selected_border,
-                                context.theme
+                                context.theme,
                             )
                         visibility = View.INVISIBLE
                         setPadding(padding, padding, padding, padding)
                     }
 
                 setBinding(
-                    KeyguardQuickAffordanceViewBinder.bind(
-                        view,
-                        viewModel,
-                        transitionAlpha,
-                        falsingManager,
-                        vibratorHelper,
-                    ) {
+                    binder.bind(view, viewModel, transitionAlpha) {
                         indicationController.showTransientIndication(it)
                     }
                 )
@@ -170,10 +151,7 @@ constructor(
             },
             onRelease = { binding?.destroy() },
             modifier =
-                modifier.size(
-                    width = shortcutSizeDp().width,
-                    height = shortcutSizeDp().height,
-                )
+                modifier.size(width = shortcutSizeDp().width, height = shortcutSizeDp().height),
         )
     }
 
@@ -183,11 +161,13 @@ constructor(
         indicationController: KeyguardIndicationController,
         modifier: Modifier = Modifier,
     ) {
-        val (disposable, setDisposable) = mutableStateOf<DisposableHandle?>(null)
+        val (disposable, setDisposable) = remember { mutableStateOf<DisposableHandle?>(null) }
 
         AndroidView(
             factory = { context ->
                 val view = KeyguardIndicationArea(context, null)
+                view.isFocusable = true
+                view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
                 setDisposable(
                     KeyguardIndicationAreaBinder.bind(
                         view = view,
@@ -208,6 +188,11 @@ constructor(
                 horizontal = dimensionResource(R.dimen.keyguard_affordance_horizontal_offset)
             )
             .padding(bottom = dimensionResource(R.dimen.keyguard_affordance_vertical_offset))
+    }
+
+    @Composable
+    private fun Modifier.indicationAreaPadding(): Modifier {
+        return this.padding(bottom = dimensionResource(R.dimen.keyguard_indication_margin_bottom))
     }
 }
 

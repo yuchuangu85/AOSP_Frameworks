@@ -39,16 +39,16 @@ import androidx.dynamicanimation.animation.DynamicAnimation
 import androidx.dynamicanimation.animation.SpringForce.DAMPING_RATIO_LOW_BOUNCY
 import androidx.dynamicanimation.animation.SpringForce.STIFFNESS_LOW
 import com.android.wm.shell.R
-import com.android.wm.shell.common.bubbles.DismissCircleView
-import com.android.wm.shell.common.bubbles.DismissView
 import com.android.wm.shell.shared.animation.PhysicsAnimator
+import com.android.wm.shell.shared.bubbles.DismissCircleView
+import com.android.wm.shell.shared.bubbles.DismissView
 
 /**
  * View that handles interactions between DismissCircleView and BubbleStackView.
  *
  * @note [setup] method should be called after initialisation
  */
-class DragToInteractView(context: Context) : FrameLayout(context) {
+class DragToInteractView(context: Context, windowManager: WindowManager) : FrameLayout(context) {
     /**
      * The configuration is used to provide module specific resource ids
      *
@@ -86,8 +86,7 @@ class DragToInteractView(context: Context) : FrameLayout(context) {
 
     private val spring = PhysicsAnimator.SpringConfig(STIFFNESS_LOW, DAMPING_RATIO_LOW_BOUNCY)
     private val INTERACT_SCRIM_FADE_MS = 200L
-    private var wm: WindowManager =
-        context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private var wm: WindowManager = windowManager
     private var gradientDrawable: GradientDrawable? = null
 
     private val GRADIENT_ALPHA: IntProperty<GradientDrawable> =

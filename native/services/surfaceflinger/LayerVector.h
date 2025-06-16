@@ -46,13 +46,11 @@ public:
 
     // Sorts layer by layer-stack, Z order, and finally creation order (sequence).
     int do_compare(const void* lhs, const void* rhs) const override;
-
     using Visitor = std::function<void(Layer*)>;
-    void traverseInReverseZOrder(StateSet stateSet, const Visitor& visitor) const;
-    void traverseInZOrder(StateSet stateSet, const Visitor& visitor) const;
-    void traverse(const Visitor& visitor) const;
+
 private:
-    const StateSet mStateSet;
+    // FIXME: This is set but not used anywhere.
+    [[maybe_unused]] const StateSet mStateSet;
 };
 }
 

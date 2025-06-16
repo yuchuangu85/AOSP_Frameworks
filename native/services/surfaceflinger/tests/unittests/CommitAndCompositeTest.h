@@ -22,8 +22,8 @@
 
 #include "TestableSurfaceFlinger.h"
 #include "mock/DisplayHardware/MockComposer.h"
-#include "mock/DisplayHardware/MockPowerAdvisor.h"
 #include "mock/MockTimeStats.h"
+#include "mock/PowerAdvisor/MockPowerAdvisor.h"
 #include "mock/system/window/MockNativeWindow.h"
 
 namespace android {
@@ -33,11 +33,11 @@ struct CommitAndCompositeTest : testing::Test {
     void SetUp() override {
         mFlinger.setupMockScheduler({.displayId = DEFAULT_DISPLAY_ID});
         mComposer = new Hwc2::mock::Composer();
-        mPowerAdvisor = new Hwc2::mock::PowerAdvisor();
+        mPowerAdvisor = new adpf::mock::PowerAdvisor();
         mFlinger.setupRenderEngine(std::unique_ptr<renderengine::RenderEngine>(mRenderEngine));
         mFlinger.setupTimeStats(std::shared_ptr<TimeStats>(mTimeStats));
         mFlinger.setupComposer(std::unique_ptr<Hwc2::Composer>(mComposer));
-        mFlinger.setupPowerAdvisor(std::unique_ptr<Hwc2::PowerAdvisor>(mPowerAdvisor));
+        mFlinger.setupPowerAdvisor(std::unique_ptr<adpf::PowerAdvisor>(mPowerAdvisor));
 
         constexpr bool kIsPrimary = true;
         FakeHwcDisplayInjector(DEFAULT_DISPLAY_ID, hal::DisplayType::PHYSICAL, kIsPrimary)
@@ -54,8 +54,8 @@ struct CommitAndCompositeTest : testing::Test {
                 compositionengine::impl::createDisplay(mFlinger.getCompositionEngine(),
                                                        std::move(compostionEngineDisplayArgs));
         mDisplay = FakeDisplayDeviceInjector(mFlinger, compositionDisplay,
-                                             ui::DisplayConnectionType::Internal, HWC_DISPLAY,
-                                             kIsPrimary)
+                                             ui::DisplayConnectionType::Internal,
+                                             DEFAULT_DISPLAY_PORT, HWC_DISPLAY, kIsPrimary)
                            .setDisplaySurface(mDisplaySurface)
                            .setNativeWindow(mNativeWindow)
                            .setPowerMode(hal::PowerMode::ON)
@@ -68,7 +68,9 @@ struct CommitAndCompositeTest : testing::Test {
     using FakeDisplayDeviceInjector = TestableSurfaceFlinger::FakeDisplayDeviceInjector;
 
     static constexpr hal::HWDisplayId HWC_DISPLAY = FakeHwcDisplayInjector::DEFAULT_HWC_DISPLAY_ID;
-    static constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID = PhysicalDisplayId::fromPort(42u);
+    static constexpr uint8_t DEFAULT_DISPLAY_PORT = 42u;
+    static constexpr PhysicalDisplayId DEFAULT_DISPLAY_ID =
+            PhysicalDisplayId::fromPort(DEFAULT_DISPLAY_PORT);
     static constexpr int DEFAULT_DISPLAY_WIDTH = 1920;
     static constexpr int DEFAULT_DISPLAY_HEIGHT = 1024;
 
@@ -79,7 +81,7 @@ struct CommitAndCompositeTest : testing::Test {
             sp<compositionengine::mock::DisplaySurface>::make();
     sp<mock::NativeWindow> mNativeWindow = sp<mock::NativeWindow>::make();
     mock::TimeStats* mTimeStats = new mock::TimeStats();
-    Hwc2::mock::PowerAdvisor* mPowerAdvisor = nullptr;
+    adpf::mock::PowerAdvisor* mPowerAdvisor = nullptr;
     Hwc2::mock::Composer* mComposer = nullptr;
 };
 

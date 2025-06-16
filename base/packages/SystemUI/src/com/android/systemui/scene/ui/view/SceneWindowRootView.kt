@@ -5,51 +5,56 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
-import com.android.systemui.scene.shared.model.Scene
+import com.android.systemui.qs.ui.adapter.QSSceneAdapter
 import com.android.systemui.scene.shared.model.SceneContainerConfig
 import com.android.systemui.scene.shared.model.SceneDataSourceDelegator
+import com.android.systemui.scene.ui.composable.Overlay
+import com.android.systemui.scene.ui.composable.Scene
 import com.android.systemui.scene.ui.viewmodel.SceneContainerViewModel
 import com.android.systemui.shade.TouchLogger
 import com.android.systemui.statusbar.notification.stack.ui.view.SharedNotificationContainer
+import javax.inject.Provider
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /** A root view of the main SysUI window that supports scenes. */
-class SceneWindowRootView(
-    context: Context,
-    attrs: AttributeSet?,
-) :
-    WindowRootView(
-        context,
-        attrs,
-    ) {
+class SceneWindowRootView(context: Context, attrs: AttributeSet?) : WindowRootView(context, attrs) {
 
-    private lateinit var viewModel: SceneContainerViewModel
-
+    private var motionEventHandler: SceneContainerViewModel.MotionEventHandler? = null
     // TODO(b/298525212): remove once Compose exposes window inset bounds.
     private val windowInsets: MutableStateFlow<WindowInsets?> = MutableStateFlow(null)
 
     fun init(
-        viewModel: SceneContainerViewModel,
+        viewModelFactory: SceneContainerViewModel.Factory,
         containerConfig: SceneContainerConfig,
         sharedNotificationContainer: SharedNotificationContainer,
         scenes: Set<Scene>,
+        overlays: Set<Overlay>,
         layoutInsetController: LayoutInsetsController,
         sceneDataSourceDelegator: SceneDataSourceDelegator,
+        qsSceneAdapter: Provider<QSSceneAdapter>,
+        sceneJankMonitorFactory: SceneJankMonitor.Factory,
+        windowRootViewKeyEventHandler: WindowRootViewKeyEventHandler,
     ) {
-        this.viewModel = viewModel
         setLayoutInsetsController(layoutInsetController)
         SceneWindowRootViewBinder.bind(
             view = this@SceneWindowRootView,
-            viewModel = viewModel,
+            viewModelFactory = viewModelFactory,
+            motionEventHandlerReceiver = { motionEventHandler ->
+                this.motionEventHandler = motionEventHandler
+            },
             windowInsets = windowInsets,
             containerConfig = containerConfig,
             sharedNotificationContainer = sharedNotificationContainer,
             scenes = scenes,
+            overlays = overlays,
             onVisibilityChangedInternal = { isVisible ->
                 super.setVisibility(if (isVisible) View.VISIBLE else View.INVISIBLE)
             },
             dataSourceDelegator = sceneDataSourceDelegator,
+            qsSceneAdapter = qsSceneAdapter,
+            sceneJankMonitorFactory = sceneJankMonitorFactory,
         )
+        setWindowRootViewKeyEventHandler(windowRootViewKeyEventHandler)
     }
 
     override fun setVisibility(visibility: Int) {
@@ -64,11 +69,16 @@ class SceneWindowRootView(
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        viewModel.onMotionEvent(ev)
+        motionEventHandler?.onMotionEvent(ev)
         return super.dispatchTouchEvent(ev).also {
             TouchLogger.logDispatchTouch(TAG, ev, it)
-            viewModel.onMotionEventComplete()
+            motionEventHandler?.onMotionEventComplete()
         }
+    }
+
+    override fun onTouchEvent(event: MotionEvent?): Boolean {
+        event?.let { motionEventHandler?.onEmptySpaceMotionEvent(it) }
+        return super.onTouchEvent(event)
     }
 
     companion object {

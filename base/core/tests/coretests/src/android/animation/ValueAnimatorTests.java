@@ -18,6 +18,8 @@ package android.animation;
 
 import static android.test.MoreAsserts.assertNotEqual;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNotNull;
@@ -30,9 +32,9 @@ import android.os.SystemClock;
 import android.view.Choreographer;
 import android.view.animation.LinearInterpolator;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.MediumTest;
 import androidx.test.rule.ActivityTestRule;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
@@ -42,6 +44,7 @@ import org.junit.runner.RunWith;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @RunWith(AndroidJUnit4.class)
 @MediumTest
@@ -892,6 +895,80 @@ public class ValueAnimatorTests {
     }
 
     @Test
+    public void testPostNotifyEndListener() throws Throwable {
+        ValueAnimator.setPostNotifyEndListenerEnabled(true);
+        final CountDownLatch latch = new CountDownLatch(1);
+        final long[] lastAnimFrameId = new long[1];
+        final long[] endAnimCallbackId = new long[1];
+        try {
+            a1.addUpdateListener(animator -> {
+                if (animator.getAnimatedFraction() == 1f) {
+                    lastAnimFrameId[0] = Choreographer.getInstance().getVsyncId();
+                }
+            });
+            a1.addListener(new MyListener() {
+                @Override
+                public void onAnimationEnd(Animator animation) {
+                    super.onAnimationEnd(animation);
+                    endAnimCallbackId[0] = Choreographer.getInstance().getVsyncId();
+                    latch.countDown();
+                }
+            });
+            mActivityRule.runOnUiThread(() -> a1.start());
+            assertTrue(latch.await(1, TimeUnit.SECONDS));
+            assertThat(endAnimCallbackId[0]).isGreaterThan(lastAnimFrameId[0]);
+        } finally {
+            ValueAnimator.setPostNotifyEndListenerEnabled(false);
+        }
+    }
+
+    @Test
+    public void testCancelOnPendingEndListener() throws Throwable {
+        testPendingEndListener(ValueAnimator::cancel);
+    }
+
+    @Test
+    public void testEndOnPendingEndListener() throws Throwable {
+        testPendingEndListener(animator -> {
+            // This verifies that isRunning() and isStarted() are true at last frame.
+            // Then the end() should invoke the end callback immediately.
+            if (animator.isRunning() && animator.isStarted()) {
+                animator.end();
+            }
+        });
+    }
+
+    private void testPendingEndListener(Consumer<ValueAnimator> finishOnLastFrame)
+            throws Throwable {
+        final boolean[] endCalledImmediately = new boolean[1];
+        final CountDownLatch endLatch = new CountDownLatch(1);
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final MyListener listener = new MyListener();
+        final ValueAnimator va = new ValueAnimator();
+        va.setFloatValues(0f, 1f);
+        va.setDuration(30);
+        va.addUpdateListener(animation -> {
+            if (animation.getAnimatedFraction() == 1f) {
+                handler.post(() -> {
+                    finishOnLastFrame.accept(va);
+                    endCalledImmediately[0] = listener.endCalled;
+                    endLatch.countDown();
+                });
+            }
+        });
+        va.addListener(listener);
+
+        ValueAnimator.setPostNotifyEndListenerEnabled(true);
+        try {
+            handler.post(va::start);
+            assertThat(endLatch.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThat(endCalledImmediately[0]).isTrue();
+        } finally {
+            ValueAnimator.setPostNotifyEndListenerEnabled(false);
+        }
+    }
+
+    @Test
     public void testZeroDuration() throws Throwable {
         // Run two animators with zero duration, with one running forward and the other one
         // backward. Check that the animations start and finish with the correct end fractions.
@@ -1152,6 +1229,7 @@ public class ValueAnimatorTests {
             assertEquals(A1_START_VALUE, a1.getAnimatedValue());
         });
     }
+
     class MyUpdateListener implements ValueAnimator.AnimatorUpdateListener {
         boolean wasRunning = false;
         long firstRunningFrameTime = -1;
@@ -1177,7 +1255,7 @@ public class ValueAnimatorTests {
         }
     }
 
-    class MyListener implements Animator.AnimatorListener {
+    static class MyListener implements Animator.AnimatorListener {
         boolean startCalled = false;
         boolean cancelCalled = false;
         boolean endCalled = false;

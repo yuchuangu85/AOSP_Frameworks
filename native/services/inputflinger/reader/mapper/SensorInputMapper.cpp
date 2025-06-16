@@ -133,9 +133,8 @@ std::list<NotifyArgs> SensorInputMapper::reconfigure(nsecs_t when,
                           .test(InputDeviceClass::SENSOR))) {
                 continue;
             }
-            RawAbsoluteAxisInfo rawAxisInfo;
-            getAbsoluteAxisInfo(abs, &rawAxisInfo);
-            if (rawAxisInfo.valid) {
+            if (std::optional<RawAbsoluteAxisInfo> rawAxisInfo = getAbsoluteAxisInfo(abs);
+                rawAxisInfo) {
                 AxisInfo axisInfo;
                 // Axis doesn't need to be mapped, as sensor mapper doesn't generate any motion
                 // input events
@@ -146,7 +145,7 @@ std::list<NotifyArgs> SensorInputMapper::reconfigure(nsecs_t when,
                 if (ret.ok()) {
                     InputDeviceSensorType sensorType = (*ret).first;
                     int32_t sensorDataIndex = (*ret).second;
-                    const Axis& axis = createAxis(axisInfo, rawAxisInfo);
+                    const Axis& axis = createAxis(axisInfo, rawAxisInfo.value());
                     parseSensorConfiguration(sensorType, abs, sensorDataIndex, axis);
 
                     mAxes.insert({abs, axis});
@@ -213,7 +212,7 @@ SensorInputMapper::Sensor SensorInputMapper::createSensor(InputDeviceSensorType 
     // One input device can only have 1 sensor for each sensor Type.
     InputDeviceSensorInfo sensorInfo(identifier.name, std::to_string(identifier.vendor),
                                      identifier.version, sensorType,
-                                     InputDeviceSensorAccuracy::ACCURACY_HIGH,
+                                     InputDeviceSensorAccuracy::HIGH,
                                      /*maxRange=*/axis.max, /*resolution=*/axis.scale,
                                      /*power=*/config.getFloat(prefix + ".power").value_or(0.0f),
                                      /*minDelay=*/config.getInt(prefix + ".minDelay").value_or(0),
@@ -236,9 +235,8 @@ void SensorInputMapper::processHardWareTimestamp(nsecs_t evTime, int32_t mscTime
     // else calculate difference between previous and current MSC_TIMESTAMP
     if (mPrevMscTime == 0) {
         mHardwareTimestamp = evTime;
-        if (DEBUG_SENSOR_EVENT_DETAILS) {
-            ALOGD("Initialize hardware timestamp = %" PRId64, mHardwareTimestamp);
-        }
+        ALOGD_IF(DEBUG_SENSOR_EVENT_DETAILS, "Initialize hardware timestamp = %" PRId64,
+                 mHardwareTimestamp);
     } else {
         // Calculate the difference between current msc_timestamp and
         // previous msc_timestamp, including when msc_timestamp wraps around.
@@ -331,11 +329,10 @@ void SensorInputMapper::flushSensor(InputDeviceSensorType sensorType) {
 bool SensorInputMapper::enableSensor(InputDeviceSensorType sensorType,
                                      std::chrono::microseconds samplingPeriod,
                                      std::chrono::microseconds maxBatchReportLatency) {
-    if (DEBUG_SENSOR_EVENT_DETAILS) {
-        ALOGD("Enable Sensor %s samplingPeriod %lld maxBatchReportLatency %lld",
-              ftl::enum_string(sensorType).c_str(), samplingPeriod.count(),
-              maxBatchReportLatency.count());
-    }
+    ALOGD_IF(DEBUG_SENSOR_EVENT_DETAILS,
+             "Enable Sensor %s samplingPeriod %lld maxBatchReportLatency %lld",
+             ftl::enum_string(sensorType).c_str(), samplingPeriod.count(),
+             maxBatchReportLatency.count());
 
     if (!setSensorEnabled(sensorType, /*enabled=*/true)) {
         return false;
@@ -356,9 +353,7 @@ bool SensorInputMapper::enableSensor(InputDeviceSensorType sensorType,
 }
 
 void SensorInputMapper::disableSensor(InputDeviceSensorType sensorType) {
-    if (DEBUG_SENSOR_EVENT_DETAILS) {
-        ALOGD("Disable Sensor %s", ftl::enum_string(sensorType).c_str());
-    }
+    ALOGD_IF(DEBUG_SENSOR_EVENT_DETAILS, "Disable Sensor %s", ftl::enum_string(sensorType).c_str());
 
     if (!setSensorEnabled(sensorType, /*enabled=*/false)) {
         return;
@@ -390,15 +385,12 @@ std::list<NotifyArgs> SensorInputMapper::sync(nsecs_t when, bool force) {
         }
 
         nsecs_t timestamp = mHasHardwareTimestamp ? mHardwareTimestamp : when;
-        if (DEBUG_SENSOR_EVENT_DETAILS) {
-            ALOGD("Sensor %s timestamp %" PRIu64 " values [%f %f %f]",
-                  ftl::enum_string(sensorType).c_str(), timestamp, values[0], values[1], values[2]);
-        }
+        ALOGD_IF(DEBUG_SENSOR_EVENT_DETAILS, "Sensor %s timestamp %" PRIu64 " values [%f %f %f]",
+                 ftl::enum_string(sensorType).c_str(), timestamp, values[0], values[1], values[2]);
         if (sensor.lastSampleTimeNs.has_value() &&
             timestamp - sensor.lastSampleTimeNs.value() < sensor.samplingPeriod.count()) {
-            if (DEBUG_SENSOR_EVENT_DETAILS) {
-                ALOGD("Sensor %s Skip a sample.", ftl::enum_string(sensorType).c_str());
-            }
+            ALOGD_IF(DEBUG_SENSOR_EVENT_DETAILS, "Sensor %s Skip a sample.",
+                     ftl::enum_string(sensorType).c_str());
         } else {
             // Convert to Android unit
             convertFromLinuxToAndroid(values, sensorType);

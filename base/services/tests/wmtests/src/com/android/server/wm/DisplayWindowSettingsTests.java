@@ -37,11 +37,12 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.eq;
 
 import android.annotation.NonNull;
 import android.app.WindowConfiguration;
 import android.content.ContentResolver;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
 import android.provider.Settings;
 import android.view.Display;
@@ -51,12 +52,16 @@ import android.view.Surface;
 import androidx.test.filters.SmallTest;
 
 import com.android.server.LocalServices;
+import com.android.server.UiThread;
+import com.android.server.notification.NotificationManagerInternal;
 import com.android.server.policy.WindowManagerPolicy;
 import com.android.server.wm.DisplayWindowSettings.SettingsProvider.SettingsEntry;
+import com.android.window.flags.Flags;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -111,6 +116,17 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
         mDisplayWindowSettings.applySettingsToDisplayLocked(mPrimaryDisplay);
 
         assertEquals(WindowConfiguration.WINDOWING_MODE_FULLSCREEN,
+                mPrimaryDisplay.getDefaultTaskDisplayArea().getWindowingMode());
+    }
+
+    @Test
+    public void testPrimaryDisplayUnchanged_whenWindowingModeAlreadySet_NoFreeformSupport() {
+        mPrimaryDisplay.getDefaultTaskDisplayArea().setWindowingMode(
+                WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW);
+
+        mDisplayWindowSettings.applySettingsToDisplayLocked(mPrimaryDisplay);
+
+        assertEquals(WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW,
                 mPrimaryDisplay.getDefaultTaskDisplayArea().getWindowingMode());
     }
 
@@ -233,6 +249,19 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
         mWm.clearForcedDisplaySize(mSecondaryDisplay.getDisplayId());
         assertEquals(mSecondaryDisplay.mInitialDisplayWidth, mSecondaryDisplay.mBaseDisplayWidth);
         assertEquals(mSecondaryDisplay.mInitialDisplayHeight, mSecondaryDisplay.mBaseDisplayHeight);
+
+        // Forced size can be cleared even if the initial display size is smaller than max width.
+        final int maxWidth = mSecondaryDisplay.mInitialDisplayWidth - 20;
+        mSecondaryDisplay.setMaxUiWidth(maxWidth);
+        assertEquals(maxWidth, mSecondaryDisplay.mBaseDisplayWidth);
+        mSecondaryDisplay.setForcedSize(maxWidth - 10, maxWidth + 10);
+        assertNotEquals(maxWidth, mSecondaryDisplay.mBaseDisplayHeight);
+        assertTrue(mSecondaryDisplay.mIsSizeForced);
+
+        mWm.clearForcedDisplaySize(mSecondaryDisplay.mDisplayId);
+        assertFalse(mSecondaryDisplay.mIsSizeForced);
+        assertEquals(maxWidth, mSecondaryDisplay.mBaseDisplayWidth);
+        assertEquals(0, mSettingsProvider.getSettings(originalInfo).mForcedWidth);
     }
 
     @Test
@@ -246,6 +275,29 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
         mWm.clearForcedDisplayDensityForUser(mSecondaryDisplay.getDisplayId(), 0 /* userId */);
         assertEquals(mSecondaryDisplay.mInitialDisplayDensity,
                 mSecondaryDisplay.mBaseDisplayDensity);
+    }
+
+    @EnableFlags(Flags.FLAG_ENABLE_PERSISTING_DISPLAY_SIZE_FOR_CONNECTED_DISPLAYS)
+    @Test
+    public void testSetForcedDensityRatio() {
+        DisplayInfo info = new DisplayInfo(mDisplayInfo);
+        info.logicalDensityDpi = 300;
+        info.type = Display.TYPE_EXTERNAL;
+        mSecondaryDisplay = createNewDisplay(info);
+        mDisplayWindowSettings.setForcedDensityRatio(mSecondaryDisplay.getDisplayInfo(),
+                2.0f /* ratio */);
+        mDisplayWindowSettings.applySettingsToDisplayLocked(mSecondaryDisplay);
+
+        assertEquals((int) (mSecondaryDisplay.mInitialDisplayDensity * 2.0f),
+                mSecondaryDisplay.mBaseDisplayDensity);
+
+        mWm.clearForcedDisplayDensityForUser(mSecondaryDisplay.getDisplayId(),
+                0 /* userId */);
+
+        assertEquals(mSecondaryDisplay.mInitialDisplayDensity,
+                mSecondaryDisplay.mBaseDisplayDensity);
+        assertEquals(mSecondaryDisplay.mForcedDisplayDensityRatio,
+                0.0f, 0.001);
     }
 
     @Test
@@ -298,6 +350,16 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
     public void testPublicDisplayDefaultToMoveToPrimary() {
         assertEquals(REMOVE_CONTENT_MODE_MOVE_TO_PRIMARY,
                 mDisplayWindowSettings.getRemoveContentModeLocked(mSecondaryDisplay));
+
+        // Sets the remove-content-mode and make sure the mode is updated.
+        mDisplayWindowSettings.setRemoveContentModeLocked(mSecondaryDisplay,
+                REMOVE_CONTENT_MODE_DESTROY);
+        final int removeContentMode = mDisplayWindowSettings.getRemoveContentModeLocked(
+                mSecondaryDisplay);
+        assertEquals(REMOVE_CONTENT_MODE_DESTROY, removeContentMode);
+
+        doReturn(removeContentMode).when(mSecondaryDisplay).getRemoveContentMode();
+        assertTrue(mSecondaryDisplay.shouldDestroyContentOnRemove());
     }
 
     @Test
@@ -331,6 +393,30 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
     @Test
     public void testSecondaryDisplayDefaultToNotShowSystemDecors() {
         assertFalse(mDisplayWindowSettings.shouldShowSystemDecorsLocked(mSecondaryDisplay));
+    }
+
+    @Test
+    @EnableFlags(com.android.server.display.feature.flags.Flags
+            .FLAG_ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT)
+    public void testSetShouldShowSystemDecorsNotifyNotificationManager() {
+        final NotificationManagerInternal notificationManager = Mockito.mock(
+                NotificationManagerInternal.class);
+        LocalServices.addService(NotificationManagerInternal.class, notificationManager);
+        try {
+            // First show the decoration because setting false is noop if the decoration has already
+            // been hidden.
+            mDisplayWindowSettings.setShouldShowSystemDecorsLocked(
+                    mSecondaryDisplay, /* shouldShow= */ true);
+
+            mDisplayWindowSettings.setShouldShowSystemDecorsLocked(
+                    mSecondaryDisplay, /* shouldShow= */ false);
+
+            waitHandlerIdle(UiThread.getHandler());
+            Mockito.verify(notificationManager).onDisplayRemoveSystemDecorations(
+                    mSecondaryDisplay.mDisplayId);
+        } finally {
+            LocalServices.removeServiceForTest(NotificationManagerInternal.class);
+        }
     }
 
     @Test
@@ -482,6 +568,12 @@ public class DisplayWindowSettingsTests extends WindowTestsBase {
         // Verify that newly created displays are created with correct rotation settings
         assertFalse(dcDontIgnoreOrientation.getIgnoreOrientationRequest());
         assertTrue(dcIgnoreOrientation.getIgnoreOrientationRequest());
+
+        // Verify that once ignore-orientation-request has been set, it can be turned off by
+        // applying default value, e.g. the same display switches from large size to small size.
+        settingsEntry2.mIgnoreOrientationRequest = null;
+        mDisplayWindowSettings.applyRotationSettingsToDisplayLocked(dcIgnoreOrientation);
+        assertFalse(dcIgnoreOrientation.getIgnoreOrientationRequest());
     }
 
     @Test

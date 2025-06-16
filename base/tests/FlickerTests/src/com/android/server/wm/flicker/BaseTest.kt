@@ -23,9 +23,11 @@ import android.tools.flicker.junit.FlickerBuilderProvider
 import android.tools.flicker.legacy.FlickerBuilder
 import android.tools.flicker.legacy.LegacyFlickerTest
 import android.tools.traces.component.ComponentNameMatcher
+import android.tools.traces.executeShellCommand
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.launcher3.tapl.LauncherInstrumentation
+import com.android.wm.shell.Flags
 import org.junit.Assume
 import org.junit.AssumptionViolatedException
 import org.junit.Test
@@ -44,9 +46,15 @@ constructor(
 ) {
     init {
         tapl.setExpectedRotationCheckEnabled(true)
+        executeShellCommand(
+            "settings put system hide_rotation_lock_toggle_for_accessibility 1"
+        )
     }
 
     private val logTag = this::class.java.simpleName
+
+    protected val usesTaskbar: Boolean
+        get() = flicker.scenario.isTablet || Flags.enableTaskbarOnPhones()
 
     /** Specification of the test transition to execute */
     abstract val transition: FlickerBuilder.() -> Unit
@@ -87,7 +95,7 @@ constructor(
     @Presubmit
     @Test
     open fun navBarLayerIsVisibleAtStartAndEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarLayerIsVisibleAtStartAndEnd()
     }
 
@@ -100,7 +108,7 @@ constructor(
     @Presubmit
     @Test
     open fun navBarLayerPositionAtStartAndEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarLayerPositionAtStartAndEnd()
     }
 
@@ -112,7 +120,7 @@ constructor(
     @Presubmit
     @Test
     open fun navBarWindowIsAlwaysVisible() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         Assume.assumeFalse(flicker.scenario.isLandscapeOrSeascapeAtStart)
         flicker.navBarWindowIsAlwaysVisible()
     }
@@ -126,32 +134,28 @@ constructor(
     @Presubmit
     @Test
     open fun navBarWindowIsVisibleAtStartAndEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarWindowIsVisibleAtStartAndEnd()
     }
 
     /**
      * Checks that the [ComponentNameMatcher.TASK_BAR] window is visible at the start and end of the
      * transition
-     *
-     * Note: Large screen only
      */
     @Presubmit
     @Test
     open fun taskBarLayerIsVisibleAtStartAndEnd() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         flicker.taskBarLayerIsVisibleAtStartAndEnd()
     }
 
     /**
      * Checks that the [ComponentNameMatcher.TASK_BAR] window is visible during the whole transition
-     *
-     * Note: Large screen only
      */
     @Presubmit
     @Test
     open fun taskBarWindowIsAlwaysVisible() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         flicker.taskBarWindowIsAlwaysVisible()
     }
 

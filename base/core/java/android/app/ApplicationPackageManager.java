@@ -16,6 +16,7 @@
 
 package android.app;
 
+import static android.app.PropertyInvalidatedCache.MODULE_SYSTEM;
 import static android.app.admin.DevicePolicyResources.Drawables.Style.SOLID_COLORED;
 import static android.app.admin.DevicePolicyResources.Drawables.Style.SOLID_NOT_COLORED;
 import static android.app.admin.DevicePolicyResources.Drawables.WORK_PROFILE_ICON;
@@ -77,6 +78,7 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.content.pm.SharedLibraryInfo;
 import android.content.pm.SuspendDialogInfo;
+import android.content.pm.SystemFeaturesCache;
 import android.content.pm.VerifierDeviceIdentity;
 import android.content.pm.VersionedPackage;
 import android.content.pm.dex.ArtManager;
@@ -112,6 +114,8 @@ import android.os.storage.VolumeInfo;
 import android.permission.PermissionControllerManager;
 import android.permission.PermissionManager;
 import android.provider.Settings;
+import android.ravenwood.annotation.RavenwoodKeepPartialClass;
+import android.ravenwood.annotation.RavenwoodReplace;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -126,9 +130,9 @@ import android.util.Slog;
 import android.util.Xml;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.os.SomeArgs;
+import com.android.internal.pm.RoSystemFeatures;
 import com.android.internal.util.UserIcons;
 
 import dalvik.system.VMRuntime;
@@ -157,6 +161,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /** @hide */
+@RavenwoodKeepPartialClass
 public class ApplicationPackageManager extends PackageManager {
     private static final String TAG = "ApplicationPackageManager";
     private static final boolean DEBUG_ICONS = false;
@@ -194,6 +199,8 @@ public class ApplicationPackageManager extends PackageManager {
     @NonNull
     @GuardedBy("mPackageMonitorCallbacks")
     private final ArraySet<IRemoteCallback> mPackageMonitorCallbacks = new ArraySet<>();
+
+    private final boolean mUseSystemFeaturesCache;
 
     UserManager getUserManager() {
         if (mUserManager == null) {
@@ -295,13 +302,23 @@ public class ApplicationPackageManager extends PackageManager {
 
     @Override
     public Intent getLaunchIntentForPackage(String packageName) {
+        return getLaunchIntentForPackage(packageName, false);
+    }
+
+    @Override
+    @Nullable
+    public Intent getLaunchIntentForPackage(@NonNull String packageName,
+            boolean includeDirectBootUnaware) {
+        ResolveInfoFlags queryFlags = ResolveInfoFlags.of(
+                includeDirectBootUnaware ? MATCH_DIRECT_BOOT_AWARE | MATCH_DIRECT_BOOT_UNAWARE : 0);
+
         // First see if the package has an INFO activity; the existence of
         // such an activity is implied to be the desired front-door for the
         // overall package (such as if it has multiple launcher entries).
         Intent intentToResolve = new Intent(Intent.ACTION_MAIN);
         intentToResolve.addCategory(Intent.CATEGORY_INFO);
         intentToResolve.setPackage(packageName);
-        List<ResolveInfo> ris = queryIntentActivities(intentToResolve, 0);
+        List<ResolveInfo> ris = queryIntentActivities(intentToResolve, queryFlags);
 
         // Otherwise, try to find a main launcher activity.
         if (ris == null || ris.size() <= 0) {
@@ -309,7 +326,7 @@ public class ApplicationPackageManager extends PackageManager {
             intentToResolve.removeCategory(Intent.CATEGORY_INFO);
             intentToResolve.addCategory(Intent.CATEGORY_LAUNCHER);
             intentToResolve.setPackage(packageName);
-            ris = queryIntentActivities(intentToResolve, 0);
+            ris = queryIntentActivities(intentToResolve, queryFlags);
         }
         if (ris == null || ris.size() <= 0) {
             return null;
@@ -778,43 +795,24 @@ public class ApplicationPackageManager extends PackageManager {
     }
 
     /**
+     * The API and cache name for hasSystemFeature.
+     */
+    private static final String HAS_SYSTEM_FEATURE_API = "has_system_feature";
+
+    /**
      * Identifies a single hasSystemFeature query.
      */
-    @Immutable
-    private static final class HasSystemFeatureQuery {
-        public final String name;
-        public final int version;
-        public HasSystemFeatureQuery(String n, int v) {
-            name = n;
-            version = v;
-        }
-        @Override
-        public String toString() {
-            return String.format("HasSystemFeatureQuery(name=\"%s\", version=%d)",
-                    name, version);
-        }
-        @Override
-        public boolean equals(@Nullable Object o) {
-            if (o instanceof HasSystemFeatureQuery) {
-                HasSystemFeatureQuery r = (HasSystemFeatureQuery) o;
-                return Objects.equals(name, r.name) &&  version == r.version;
-            } else {
-                return false;
-            }
-        }
-        @Override
-        public int hashCode() {
-            return Objects.hashCode(name) * 13 + version;
-        }
-    }
+    private record HasSystemFeatureQuery(String name, int version) {}
 
     // Make this cache relatively large.  There are many system features and
     // none are ever invalidated.  MPTS tests suggests that the cache should
     // hold at least 150 entries.
     private final static PropertyInvalidatedCache<HasSystemFeatureQuery, Boolean>
-            mHasSystemFeatureCache =
-            new PropertyInvalidatedCache<HasSystemFeatureQuery, Boolean>(
-                256, "cache_key.has_system_feature") {
+            mHasSystemFeatureCache = new PropertyInvalidatedCache<>(
+                new PropertyInvalidatedCache.Args(MODULE_SYSTEM)
+                .api(HAS_SYSTEM_FEATURE_API).maxEntries(SDK_FEATURE_COUNT).isolateUids(false),
+                HAS_SYSTEM_FEATURE_API, null) {
+
                 @Override
                 public Boolean recompute(HasSystemFeatureQuery query) {
                     try {
@@ -828,12 +826,24 @@ public class ApplicationPackageManager extends PackageManager {
 
     @Override
     public boolean hasSystemFeature(String name, int version) {
+        // We check for system features in the following order:
+        //    * Build time-defined system features (constant, very efficient)
+        //    * SDK-defined system features (cached at process start, very efficient)
+        //    * IPC-retrieved system features (lazily cached, requires per-feature IPC)
+        // TODO(b/375000483): Refactor all of this logic, including flag queries, into
+        // the SystemFeaturesCache class after initial rollout and validation.
+        Boolean maybeHasSystemFeature = RoSystemFeatures.maybeHasFeature(name, version);
+        if (maybeHasSystemFeature != null) {
+            return maybeHasSystemFeature;
+        }
+        if (mUseSystemFeaturesCache) {
+            maybeHasSystemFeature =
+                    SystemFeaturesCache.getInstance().maybeHasFeature(name, version);
+            if (maybeHasSystemFeature != null) {
+                return maybeHasSystemFeature;
+            }
+        }
         return mHasSystemFeatureCache.query(new HasSystemFeatureQuery(name, version));
-    }
-
-    /** @hide */
-    public void disableHasSystemFeatureCache() {
-        mHasSystemFeatureCache.disableLocal();
     }
 
     /** @hide */
@@ -1023,6 +1033,33 @@ public class ApplicationPackageManager extends PackageManager {
         }
     }
 
+    @Override
+    public void setPageSizeAppCompatFlagsSettingsOverride(String packageName, boolean enabled) {
+        try {
+            mPM.setPageSizeAppCompatFlagsSettingsOverride(packageName, enabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    @Override
+    public boolean isPageSizeCompatEnabled(String packageName) {
+        try {
+            return mPM.isPageSizeCompatEnabled(packageName);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    @Override
+    public String getPageSizeCompatWarningMessage(String packageName) {
+        try {
+            return mPM.getPageSizeCompatWarningMessage(packageName);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
     private static List<byte[]> encodeCertificates(List<Certificate> certs) throws
             CertificateEncodingException {
         if (certs == null) {
@@ -1123,12 +1160,16 @@ public class ApplicationPackageManager extends PackageManager {
         }
     }
 
-    private static final String CACHE_KEY_PACKAGES_FOR_UID_PROPERTY =
-            "cache_key.get_packages_for_uid";
-    private static final PropertyInvalidatedCache<Integer, GetPackagesForUidResult>
-            mGetPackagesForUidCache =
-            new PropertyInvalidatedCache<Integer, GetPackagesForUidResult>(
-                32, CACHE_KEY_PACKAGES_FOR_UID_PROPERTY) {
+    private static final String CACHE_KEY_PACKAGES_FOR_UID_API = "get_packages_for_uid";
+
+    /** @hide */
+    @VisibleForTesting
+    public static final PropertyInvalidatedCache<Integer, GetPackagesForUidResult>
+            sGetPackagesForUidCache = new PropertyInvalidatedCache<>(
+                new PropertyInvalidatedCache.Args(MODULE_SYSTEM)
+                .maxEntries(1024).api(CACHE_KEY_PACKAGES_FOR_UID_API).cacheNulls(true),
+                CACHE_KEY_PACKAGES_FOR_UID_API, null) {
+
                 @Override
                 public GetPackagesForUidResult recompute(Integer uid) {
                     try {
@@ -1147,17 +1188,17 @@ public class ApplicationPackageManager extends PackageManager {
 
     @Override
     public String[] getPackagesForUid(int uid) {
-        return mGetPackagesForUidCache.query(uid).value();
+        return sGetPackagesForUidCache.query(uid).value();
     }
 
     /** @hide */
     public static void disableGetPackagesForUidCache() {
-        mGetPackagesForUidCache.disableLocal();
+        sGetPackagesForUidCache.disableLocal();
     }
 
     /** @hide */
     public static void invalidateGetPackagesForUidCache() {
-        PropertyInvalidatedCache.invalidateCache(CACHE_KEY_PACKAGES_FOR_UID_PROPERTY);
+        sGetPackagesForUidCache.invalidateCache();
     }
 
     @Override
@@ -1728,6 +1769,19 @@ public class ApplicationPackageManager extends PackageManager {
         }
     }
 
+    /** @hide **/
+    @Override
+    public ProviderInfo resolveContentProviderForUid(@NonNull String authority,
+            ComponentInfoFlags flags, int callingUid) {
+        try {
+            return mPM.resolveContentProviderForUid(authority,
+                updateFlagsForComponent(flags.getValue(), getUserId(), null), getUserId(),
+                callingUid);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
     @Override
     public List<ProviderInfo> queryContentProviders(String processName, int uid, int flags) {
         return queryContentProviders(processName, uid, ComponentInfoFlags.of(flags));
@@ -1820,7 +1874,6 @@ public class ApplicationPackageManager extends PackageManager {
 
                 if (false) {
                     RuntimeException e = new RuntimeException("here");
-                    e.fillInStackTrace();
                     Log.w(TAG, "Getting drawable 0x" + Integer.toHexString(resId)
                                     + " from package " + packageName
                                     + ": app scale=" + r.getCompatibilityInfo().applicationScale
@@ -2163,6 +2216,7 @@ public class ApplicationPackageManager extends PackageManager {
     }
 
     @UnsupportedAppUsage
+    @RavenwoodReplace(reason = "<cinit> crashes due to unsupported class PropertyInvalidatedCache")
     static void configurationChanged() {
         synchronized (sSync) {
             sIconCache.clear();
@@ -2170,10 +2224,33 @@ public class ApplicationPackageManager extends PackageManager {
         }
     }
 
+    private static void configurationChanged$ravenwood() {
+        /* no-op */
+    }
+
     @UnsupportedAppUsage
     protected ApplicationPackageManager(ContextImpl context, IPackageManager pm) {
         mContext = context;
         mPM = pm;
+        mUseSystemFeaturesCache = isSystemFeaturesCacheEnabledAndAvailable();
+    }
+
+    private static boolean isSystemFeaturesCacheEnabledAndAvailable() {
+        if (!android.content.pm.Flags.cacheSdkSystemFeatures()) {
+            return false;
+        }
+        if (!com.android.internal.os.Flags.applicationSharedMemoryEnabled()) {
+            return false;
+        }
+        if (ActivityThread.isSystem() && !SystemFeaturesCache.hasInstance()) {
+            // There are a handful of utility "system" processes that are neither system_server nor
+            // bound as applications. For these processes, we don't have access to application
+            // shared memory or the dependent system features cache.
+            // TODO(b/400713460): Revisit this exception after deprecating these command-like
+            // system processes.
+            return false;
+        }
+        return true;
     }
 
     /**

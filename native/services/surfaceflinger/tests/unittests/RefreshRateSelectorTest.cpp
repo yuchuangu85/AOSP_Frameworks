@@ -100,7 +100,9 @@ struct TestableRefreshRateSelector : RefreshRateSelector {
     const std::vector<Fps>& knownFrameRates() const { return mKnownFrameRates; }
 
     using RefreshRateSelector::GetRankedFrameRatesCache;
-    auto& mutableGetRankedRefreshRatesCache() { return mGetRankedFrameRatesCache; }
+    auto& mutableGetRankedRefreshRatesCache() NO_THREAD_SAFETY_ANALYSIS {
+        return mGetRankedFrameRatesCache;
+    }
 
     auto getRankedFrameRates(const std::vector<LayerRequirement>& layers,
                              GlobalSignals signals = {}, Fps pacesetterFps = {}) const {
@@ -138,7 +140,9 @@ struct TestableRefreshRateSelector : RefreshRateSelector {
         return setPolicy(policy);
     }
 
-    const auto& getPrimaryFrameRates() const { return mPrimaryFrameRates; }
+    const auto& getPrimaryFrameRates() const NO_THREAD_SAFETY_ANALYSIS {
+        return mPrimaryFrameRates;
+    }
 };
 
 class RefreshRateSelectorTest : public testing::TestWithParam<Config::FrameRateOverride> {
@@ -1562,7 +1566,7 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_30_60
             // When frame rates get an equal score, the lower is chosen, unless there are Max votes.
             {0_Hz, FrameRateCategory::High, 90_Hz},
             {0_Hz, FrameRateCategory::Normal, 60_Hz},
-            {0_Hz, FrameRateCategory::Low, 30_Hz},
+            {0_Hz, FrameRateCategory::Low, 60_Hz},
             {0_Hz, FrameRateCategory::NoPreference, 60_Hz},
 
             // Cases that have both desired frame rate and frame rate category requirements.
@@ -1603,6 +1607,77 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_30_60
 
         EXPECT_EQ(testCase.expectedFrameRate,
                   selector.getBestFrameRateMode(layers).modePtr->getPeakFps())
+                << "Did not get expected frame rate for frameRate="
+                << to_string(testCase.desiredFrameRate)
+                << " category=" << ftl::enum_string(testCase.frameRateCategory);
+    }
+}
+
+TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_120_vrr) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    SET_FLAG_FOR_TEST(flags::vrr_config, true);
+    // Device with VRR config mode
+    auto selector = createSelector(kVrrMode_120, kModeId120);
+
+    struct Case {
+        // Params
+        Fps desiredFrameRate = 0_Hz;
+        FrameRateCategory frameRateCategory = FrameRateCategory::Default;
+
+        // Expected result
+        Fps expectedFrameRate = 0_Hz;
+    };
+
+    // Prepare a table with the vote and the expected refresh rate
+    const std::initializer_list<Case> testCases = {
+            // Cases that only have frame rate category requirements, but no desired frame rate.
+            // When frame rates get an equal score, the lower is chosen, unless there are Max votes.
+            {0_Hz, FrameRateCategory::High, 120_Hz},
+            {0_Hz, FrameRateCategory::Normal, 60_Hz},
+            {0_Hz, FrameRateCategory::Low, 48_Hz},
+            {0_Hz, FrameRateCategory::NoPreference, 120_Hz},
+
+            // Cases that have both desired frame rate and frame rate category requirements.
+            {24_Hz, FrameRateCategory::High, 120_Hz},
+            {30_Hz, FrameRateCategory::High, 120_Hz},
+            {12_Hz, FrameRateCategory::Normal, 60_Hz},
+            {24_Hz, FrameRateCategory::Low, 48_Hz},
+            {30_Hz, FrameRateCategory::NoPreference, 30_Hz},
+
+            // Cases that only have desired frame rate.
+            {30_Hz, FrameRateCategory::Default, 30_Hz},
+    };
+
+    for (auto testCase : testCases) {
+        std::vector<LayerRequirement> layers;
+        ALOGI("**** %s: Testing desiredFrameRate=%s, frameRateCategory=%s", __func__,
+              to_string(testCase.desiredFrameRate).c_str(),
+              ftl::enum_string(testCase.frameRateCategory).c_str());
+
+        if (testCase.desiredFrameRate.isValid()) {
+            std::stringstream ss;
+            ss << to_string(testCase.desiredFrameRate) << "ExplicitDefault";
+            LayerRequirement layer = {.name = ss.str(),
+                                      .vote = LayerVoteType::ExplicitDefault,
+                                      .desiredRefreshRate = testCase.desiredFrameRate,
+                                      .weight = 1.f};
+            layers.push_back(layer);
+        }
+
+        if (testCase.frameRateCategory != FrameRateCategory::Default) {
+            std::stringstream ss;
+            ss << "ExplicitCategory (" << ftl::enum_string(testCase.frameRateCategory) << ")";
+            LayerRequirement layer = {.name = ss.str(),
+                                      .vote = LayerVoteType::ExplicitCategory,
+                                      .frameRateCategory = testCase.frameRateCategory,
+                                      .weight = 1.f};
+            layers.push_back(layer);
+        }
+
+        EXPECT_EQ(testCase.expectedFrameRate, selector.getBestFrameRateMode(layers).fps)
                 << "Did not get expected frame rate for frameRate="
                 << to_string(testCase.desiredFrameRate)
                 << " category=" << ftl::enum_string(testCase.frameRateCategory);
@@ -1766,6 +1841,43 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_60_12
     }
 }
 
+TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_vrrHighHintTouch_primaryRangeIsSingleRate) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    SET_FLAG_FOR_TEST(flags::vrr_config, true);
+
+    auto selector = createSelector(kVrrMode_120, kModeId120);
+    selector.setActiveMode(kModeId120, 60_Hz);
+
+    // Change primary physical range to be single rate, which on VRR device should not affect
+    // fps scoring.
+    EXPECT_EQ(SetPolicyResult::Changed,
+              selector.setDisplayManagerPolicy({kModeId120, {120_Hz, 120_Hz}}));
+
+    std::vector<LayerRequirement> layers = {{.weight = 1.f}, {.weight = 1.f}};
+    layers[0].vote = LayerVoteType::ExplicitCategory;
+    layers[0].frameRateCategory = FrameRateCategory::HighHint;
+    layers[0].name = "ExplicitCategory HighHint";
+
+    auto actualRankedFrameRates = selector.getRankedFrameRates(layers);
+    // Expect late touch boost from HighHint.
+    EXPECT_EQ(120_Hz, actualRankedFrameRates.ranking.front().frameRateMode.fps);
+    EXPECT_EQ(kModeId120, actualRankedFrameRates.ranking.front().frameRateMode.modePtr->getId());
+    EXPECT_TRUE(actualRankedFrameRates.consideredSignals.touch);
+
+    layers[1].vote = LayerVoteType::ExplicitExactOrMultiple;
+    layers[1].desiredRefreshRate = 30_Hz;
+    layers[1].name = "ExplicitExactOrMultiple 30Hz";
+
+    actualRankedFrameRates = selector.getRankedFrameRates(layers);
+    // Expect late touch boost from HighHint.
+    EXPECT_EQ(120_Hz, actualRankedFrameRates.ranking.front().frameRateMode.fps);
+    EXPECT_EQ(kModeId120, actualRankedFrameRates.ranking.front().frameRateMode.modePtr->getId());
+    EXPECT_TRUE(actualRankedFrameRates.consideredSignals.touch);
+}
+
 TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_HighHint) {
     auto selector = createSelector(makeModes(kMode24, kMode30, kMode60, kMode120), kModeId60);
 
@@ -1884,7 +1996,7 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_HighH
     // Gets touch boost
     EXPECT_EQ(120_Hz, actualRankedFrameRates.ranking.front().frameRateMode.fps);
     EXPECT_EQ(kModeId120, actualRankedFrameRates.ranking.front().frameRateMode.modePtr->getId());
-    EXPECT_FALSE(actualRankedFrameRates.consideredSignals.touch);
+    EXPECT_TRUE(actualRankedFrameRates.consideredSignals.touch);
 }
 
 TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_TouchBoost) {
@@ -1978,7 +2090,7 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_Touch
     lr2.name = "Max";
     actualRankedFrameRates = selector.getRankedFrameRates(layers, {.touch = true});
     EXPECT_FRAME_RATE_MODE(kMode120, 120_Hz, actualRankedFrameRates.ranking.front().frameRateMode);
-    EXPECT_FALSE(actualRankedFrameRates.consideredSignals.touch);
+    EXPECT_TRUE(actualRankedFrameRates.consideredSignals.touch);
 
     lr1.vote = LayerVoteType::ExplicitCategory;
     lr1.frameRateCategory = FrameRateCategory::Normal;
@@ -1998,6 +2110,46 @@ TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_Touch
     actualRankedFrameRates = selector.getRankedFrameRates(layers, {.touch = true});
     EXPECT_FRAME_RATE_MODE(kMode60, 60_Hz, actualRankedFrameRates.ranking.front().frameRateMode);
     EXPECT_FALSE(actualRankedFrameRates.consideredSignals.touch);
+}
+
+TEST_P(RefreshRateSelectorTest, getBestFrameRateMode_withFrameRateCategory_touchBoost_twoUids_arr) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    SET_FLAG_FOR_TEST(flags::vrr_config, true);
+    // Device with VRR config mode
+    auto selector = createSelector(kVrrMode_120, kModeId120);
+
+    std::vector<LayerRequirement> layers = {{.ownerUid = 1234, .weight = 1.f},
+                                            {.ownerUid = 5678, .weight = 1.f}};
+    auto& lr1 = layers[0];
+    auto& lr2 = layers[1];
+
+    lr1.vote = LayerVoteType::ExplicitCategory;
+    lr1.frameRateCategory = FrameRateCategory::Normal;
+    lr1.name = "ExplicitCategory Normal";
+    lr2.vote = LayerVoteType::ExplicitDefault;
+    lr2.desiredRefreshRate = 30_Hz;
+    lr2.name = "30Hz ExplicitDefault";
+    auto actualRankedFrameRates = selector.getRankedFrameRates(layers, {.touch = true});
+    // No global touch boost, for example a game that uses setFrameRate(30, default compatibility).
+    // However see 60 due to Normal vote.
+    EXPECT_FRAME_RATE_MODE(kVrrMode120TE240, 60_Hz,
+                           actualRankedFrameRates.ranking.front().frameRateMode);
+    EXPECT_FALSE(actualRankedFrameRates.consideredSignals.touch);
+
+    lr1.vote = LayerVoteType::ExplicitCategory;
+    lr1.frameRateCategory = FrameRateCategory::HighHint;
+    lr1.name = "ExplicitCategory HighHint";
+    lr2.vote = LayerVoteType::ExplicitDefault;
+    lr2.desiredRefreshRate = 30_Hz;
+    lr2.name = "30Hz ExplicitDefault";
+    // Gets touch boost because the touched (HighHint) app is different from the 30 Default app.
+    actualRankedFrameRates = selector.getRankedFrameRates(layers, {.touch = true});
+    EXPECT_FRAME_RATE_MODE(kVrrMode120TE240, 120_Hz,
+                           actualRankedFrameRates.ranking.front().frameRateMode);
+    EXPECT_TRUE(actualRankedFrameRates.consideredSignals.touch);
 }
 
 TEST_P(RefreshRateSelectorTest,
@@ -2140,14 +2292,14 @@ TEST_P(RefreshRateSelectorTest,
             // These layers may switch modes because smoothSwitchOnly=false.
             {FrameRateCategory::Default, false, 120_Hz, kModeId120},
             {FrameRateCategory::NoPreference, false, 120_Hz, kModeId120},
-            {FrameRateCategory::Low, false, 30_Hz, kModeId60},
+            {FrameRateCategory::Low, false, 60_Hz, kModeId60},
             {FrameRateCategory::Normal, false, 60_Hz, kModeId60},
             {FrameRateCategory::High, false, 120_Hz, kModeId120},
 
             // These layers cannot change mode due to smoothSwitchOnly, and will definitely use
             // active mode (120Hz).
             {FrameRateCategory::NoPreference, true, 120_Hz, kModeId120},
-            {FrameRateCategory::Low, true, 40_Hz, kModeId120},
+            {FrameRateCategory::Low, true, 120_Hz, kModeId120},
             {FrameRateCategory::Normal, true, 120_Hz, kModeId120},
             {FrameRateCategory::High, true, 120_Hz, kModeId120},
     };
@@ -2207,13 +2359,13 @@ TEST_P(RefreshRateSelectorTest,
             {FrameRateCategory::Default, false, 120_Hz},
             // TODO(b/266481656): Once this bug is fixed, NoPreference should be a lower frame rate.
             {FrameRateCategory::NoPreference, false, 120_Hz},
-            {FrameRateCategory::Low, false, 30_Hz},
+            {FrameRateCategory::Low, false, 48_Hz},
             {FrameRateCategory::Normal, false, 60_Hz},
             {FrameRateCategory::High, false, 120_Hz},
             {FrameRateCategory::Default, true, 120_Hz},
             // TODO(b/266481656): Once this bug is fixed, NoPreference should be a lower frame rate.
             {FrameRateCategory::NoPreference, true, 120_Hz},
-            {FrameRateCategory::Low, true, 30_Hz},
+            {FrameRateCategory::Low, true, 48_Hz},
             {FrameRateCategory::Normal, true, 60_Hz},
             {FrameRateCategory::High, true, 120_Hz},
     };
@@ -3585,6 +3737,51 @@ TEST_P(RefreshRateSelectorTest, getFrameRateOverrides_twoUids) {
     EXPECT_TRUE(frameRateOverrides.empty());
 }
 
+TEST_P(RefreshRateSelectorTest, getFrameRateOverrides_twoUids_arr) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    SET_FLAG_FOR_TEST(flags::vrr_config, true);
+    // Device with VRR config mode
+    auto selector = createSelector(kVrrMode_120, kModeId120);
+
+    std::vector<LayerRequirement> layers = {{.ownerUid = 1234, .weight = 1.f},
+                                            {.ownerUid = 5678, .weight = 1.f}};
+    auto& lr1 = layers[0];
+    auto& lr2 = layers[1];
+
+    lr1.vote = LayerVoteType::ExplicitCategory;
+    lr1.frameRateCategory = FrameRateCategory::Normal;
+    lr1.name = "ExplicitCategory Normal";
+    lr2.vote = LayerVoteType::ExplicitDefault;
+    lr2.desiredRefreshRate = 30_Hz;
+    lr2.name = "30Hz ExplicitDefault";
+    // No global touch boost, for example a game that uses setFrameRate(30, default compatibility).
+    // The `displayFrameRate` is 60.
+    // However 30 Default app still gets frame rate override.
+    auto frameRateOverrides = selector.getFrameRateOverrides(layers, 60_Hz, {});
+    EXPECT_EQ(2u, frameRateOverrides.size());
+    ASSERT_EQ(1u, frameRateOverrides.count(1234));
+    EXPECT_EQ(60_Hz, frameRateOverrides.at(1234));
+    ASSERT_EQ(1u, frameRateOverrides.count(5678));
+    EXPECT_EQ(30_Hz, frameRateOverrides.at(5678));
+
+    lr1.vote = LayerVoteType::ExplicitCategory;
+    lr1.frameRateCategory = FrameRateCategory::HighHint;
+    lr1.name = "ExplicitCategory HighHint";
+    lr2.vote = LayerVoteType::ExplicitDefault;
+    lr2.desiredRefreshRate = 30_Hz;
+    lr2.name = "30Hz ExplicitDefault";
+    // Gets touch boost because the touched (HighHint) app is different from the 30 Default app.
+    // The `displayFrameRate` is 120 (late touch boost).
+    // However 30 Default app still gets frame rate override.
+    frameRateOverrides = selector.getFrameRateOverrides(layers, 120_Hz, {});
+    EXPECT_EQ(1u, frameRateOverrides.size());
+    ASSERT_EQ(1u, frameRateOverrides.count(5678));
+    EXPECT_EQ(30_Hz, frameRateOverrides.at(5678));
+}
+
 TEST_P(RefreshRateSelectorTest, getFrameRateOverrides_withFrameRateCategory) {
     if (GetParam() == Config::FrameRateOverride::Disabled) {
         return;
@@ -4468,6 +4665,48 @@ TEST_P(RefreshRateSelectorTest, renderFrameRatesForVrr) {
     for (size_t i = 0; i < expected.size(); i++) {
         EXPECT_EQ(expected[i], primaryRefreshRates[i].fps);
         EXPECT_EQ(120_Hz, primaryRefreshRates[i].modePtr->getPeakFps());
+    }
+}
+
+TEST_P(RefreshRateSelectorTest, getSupportedFrameRates) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    auto selector = createSelector(kModes_60_90, kModeId90);
+    const FpsRange range60 = {0_Hz, 60_Hz};
+    EXPECT_EQ(SetPolicyResult::Changed,
+              selector.setDisplayManagerPolicy(
+                      {kModeId60, {range60, range60}, {range60, range60}}));
+
+    // Irrespective of the policy we get the full range of possible frame rates
+    const std::vector<float> expected = {90.0f, 60.0f, 45.0f, 30.0f, 22.5f, 20.0f};
+
+    const auto allSupportedFrameRates = selector.getSupportedFrameRates();
+    ASSERT_EQ(expected.size(), allSupportedFrameRates.size());
+    for (size_t i = 0; i < expected.size(); i++) {
+        EXPECT_EQ(expected[i], allSupportedFrameRates[i])
+                << "expected " << expected[i] << " received " << allSupportedFrameRates[i];
+    }
+}
+
+TEST_P(RefreshRateSelectorTest, getSupportedFrameRatesArr) {
+    if (GetParam() != Config::FrameRateOverride::Enabled) {
+        return;
+    }
+
+    SET_FLAG_FOR_TEST(flags::vrr_config, true);
+    const auto selector = createSelector(kVrrMode_120, kModeId120);
+
+    const std::vector<float> expected = {120.0f, 80.0f,   60.0f, 48.0f,   40.0f, 34.285f,
+                                         30.0f,  26.666f, 24.0f, 21.818f, 20.0f};
+
+    const auto allSupportedFrameRates = selector.getSupportedFrameRates();
+    ASSERT_EQ(expected.size(), allSupportedFrameRates.size());
+    constexpr float kEpsilon = 0.001f;
+    for (size_t i = 0; i < expected.size(); i++) {
+        EXPECT_TRUE(std::abs(expected[i] - allSupportedFrameRates[i]) <= kEpsilon)
+                << "expected " << expected[i] << " received " << allSupportedFrameRates[i];
     }
 }
 } // namespace

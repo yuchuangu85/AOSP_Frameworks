@@ -17,15 +17,18 @@
 package com.android.systemui.statusbar.notification.stack.ui.viewbinder
 
 import android.util.Log
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.repeatOnLifecycle
+import com.android.app.tracing.coroutines.flow.collectTraced
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.common.ui.ConfigurationState
 import com.android.systemui.common.ui.view.onLayoutChanged
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.dump.DumpManager
+import com.android.systemui.lifecycle.WindowLifecycleState
 import com.android.systemui.lifecycle.repeatWhenAttached
+import com.android.systemui.lifecycle.viewModel
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.notification.stack.ui.view.NotificationScrollView
 import com.android.systemui.statusbar.notification.stack.ui.viewmodel.NotificationScrollViewModel
 import com.android.systemui.util.kotlin.FlowDumperImpl
@@ -33,10 +36,9 @@ import com.android.systemui.util.kotlin.launchAndDispose
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.DisposableHandle
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filter
 
 /** Binds the [NotificationScrollView]. */
 @SysUISingleton
@@ -46,8 +48,8 @@ constructor(
     dumpManager: DumpManager,
     @Main private val mainImmediateDispatcher: CoroutineDispatcher,
     private val view: NotificationScrollView,
-    private val viewModel: NotificationScrollViewModel,
-    private val configuration: ConfigurationState,
+    private val viewModelFactory: NotificationScrollViewModel.Factory,
+    @ShadeDisplayAware private val configuration: ConfigurationState,
 ) : FlowDumperImpl(dumpManager) {
 
     private val viewLeftOffset = MutableStateFlow(0).dumpValue("viewLeftOffset")
@@ -61,38 +63,95 @@ constructor(
     }
 
     fun bindWhileAttached(): DisposableHandle {
-        return view.asView().repeatWhenAttached(mainImmediateDispatcher) {
-            repeatOnLifecycle(Lifecycle.State.CREATED) { bind() }
-        }
+        return view.asView().repeatWhenAttached(mainImmediateDispatcher) { bind() }
     }
 
-    suspend fun bind() = coroutineScope {
-        launchAndDispose {
-            updateViewPosition()
-            view.asView().onLayoutChanged { updateViewPosition() }
-        }
+    suspend fun bind(): Nothing =
+        view.asView().viewModel(
+            traceName = "NotificationScrollViewBinder",
+            minWindowLifecycleState = WindowLifecycleState.ATTACHED,
+            factory = viewModelFactory::create,
+        ) { viewModel ->
+            launchAndDispose {
+                updateViewPosition()
+                view.asView().onLayoutChanged { updateViewPosition() }
+            }
 
-        launch {
-            viewModel
-                .shadeScrimShape(cornerRadius = scrimRadius, viewLeftOffset = viewLeftOffset)
-                .collect { view.setScrimClippingShape(it) }
-        }
+            launch {
+                viewModel
+                    .notificationScrimShape(
+                        cornerRadius = scrimRadius,
+                        viewLeftOffset = viewLeftOffset,
+                    )
+                    .collectTraced { view.setClippingShape(it) }
+            }
 
-        launch { viewModel.maxAlpha.collect { view.setMaxAlpha(it) } }
-        launch { viewModel.scrolledToTop.collect { view.setScrolledToTop(it) } }
-        launch { viewModel.expandFraction.collect { view.setExpandFraction(it.coerceIn(0f, 1f)) } }
-        launch { viewModel.isScrollable.collect { view.setScrollingEnabled(it) } }
-        launch { viewModel.isDozing.collect { isDozing -> view.setDozing(isDozing) } }
+            launch { viewModel.isOccluded.collectTraced { view.setOccluded(it) } }
 
-        launchAndDispose {
-            view.setSyntheticScrollConsumer(viewModel.syntheticScrollConsumer)
-            view.setCurrentGestureOverscrollConsumer(viewModel.currentGestureOverscrollConsumer)
-            DisposableHandle {
-                view.setSyntheticScrollConsumer(null)
-                view.setCurrentGestureOverscrollConsumer(null)
+            launch { viewModel.maxAlpha.collectTraced { view.setMaxAlpha(it) } }
+            launch { viewModel.shadeScrollState.collect { view.setScrollState(it) } }
+            launch {
+                viewModel.expandFraction.collectTraced {
+                    view.setExpandFraction(it.coerceIn(0f, 1f))
+                }
+            }
+            launch { viewModel.qsExpandFraction.collectTraced { view.setQsExpandFraction(it) } }
+            launch { viewModel.blurRadius(maxBlurRadius).collect(view::setBlurRadius) }
+            launch {
+                viewModel.isShowingStackOnLockscreen.collectTraced {
+                    view.setShowingStackOnLockscreen(it)
+                }
+            }
+            launch {
+                viewModel.alphaForLockscreenFadeIn.collectTraced {
+                    view.setAlphaForLockscreenFadeIn(it)
+                }
+            }
+            launch { viewModel.isScrollable.collectTraced { view.setScrollingEnabled(it) } }
+            launch { viewModel.isDozing.collectTraced { isDozing -> view.setDozing(isDozing) } }
+            launch {
+                viewModel.isPulsing.collectTraced { isPulsing ->
+                    view.setPulsing(isPulsing, viewModel.shouldAnimatePulse.value)
+                }
+            }
+            launch {
+                viewModel.shouldCloseGuts
+                    .filter { it }
+                    .collectTraced { view.closeGutsOnSceneTouch() }
+            }
+            launch {
+                viewModel.suppressHeightUpdates.collectTraced { view.suppressHeightUpdates(it) }
+            }
+
+            launchAndDispose {
+                view.setSyntheticScrollConsumer(viewModel.syntheticScrollConsumer)
+                view.setCurrentGestureOverscrollConsumer(viewModel.currentGestureOverscrollConsumer)
+                view.setCurrentGestureInGutsConsumer(viewModel.currentGestureInGutsConsumer)
+                view.setRemoteInputRowBottomBoundConsumer(
+                    viewModel.remoteInputRowBottomBoundConsumer
+                )
+                view.setAccessibilityScrollEventConsumer(viewModel.accessibilityScrollEventConsumer)
+                viewModel.setQsScrimShapeConsumer { shape ->
+                    view.setNegativeClippingShape(
+                        shape?.let {
+                            it.copy(bounds = it.bounds.minus(leftOffset = view.asView().left))
+                        }
+                    )
+                }
+                DisposableHandle {
+                    view.setSyntheticScrollConsumer(null)
+                    view.setCurrentGestureOverscrollConsumer(null)
+                    view.setCurrentGestureInGutsConsumer(null)
+                    view.setRemoteInputRowBottomBoundConsumer(null)
+                    view.setAccessibilityScrollEventConsumer(null)
+                    viewModel.setQsScrimShapeConsumer(null)
+                }
             }
         }
-    }
+
+    /** blur radius to be applied when the QS panel is fully expanded */
+    private val maxBlurRadius: Flow<Int> =
+        configuration.getDimensionPixelSize(R.dimen.max_shade_content_blur_radius)
 
     /** flow of the scrim clipping radius */
     private val scrimRadius: Flow<Int>

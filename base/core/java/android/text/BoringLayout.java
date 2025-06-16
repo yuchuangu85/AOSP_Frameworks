@@ -30,6 +30,8 @@ import android.graphics.RectF;
 import android.graphics.text.LineBreakConfig;
 import android.text.style.ParagraphStyle;
 
+import com.android.text.flags.Flags;
+
 /**
  * A BoringLayout is a very simple Layout implementation for text that
  * fits on a single line and is all left-to-right characters.
@@ -43,6 +45,7 @@ import android.text.style.ParagraphStyle;
  * {@link android.graphics.Canvas#drawText(java.lang.CharSequence, int, int, float, float, android.graphics.Paint)
  *  Canvas.drawText()} directly.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback {
 
     /**
@@ -589,7 +592,7 @@ public class BoringLayout extends Layout implements TextUtils.EllipsizeCallback 
             fm.reset();
         }
 
-        if (ClientFlags.fixLineHeightForLocale()) {
+        if (Flags.fixLineHeightForLocale()) {
             if (minimumFontMetrics != null) {
                 fm.set(minimumFontMetrics);
                 // Because the font metrics is provided by public APIs, adjust the top/bottom with

@@ -35,6 +35,24 @@ public:
     {
     }
 
+    virtual sp<media::IAudioManagerNative> getNativeInterface() {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioManager::getInterfaceDescriptor());
+        const status_t res = remote()->transact(GET_NATIVE_INTERFACE, data, &reply, 0);
+        if (res == DEAD_OBJECT) return nullptr;
+        LOG_ALWAYS_FATAL_IF(res != OK, "%s failed with result %d", __func__, res);
+        const int ex = reply.readExceptionCode();
+        LOG_ALWAYS_FATAL_IF(ex != binder::Status::EX_NONE, "%s failed with exception %d",
+                            __func__,
+                            ex);
+        sp<IBinder> binder;
+        const status_t err = reply.readNullableStrongBinder(&binder);
+        LOG_ALWAYS_FATAL_IF(binder == nullptr, "%s failed unexpected nullptr %d", __func__, err);
+        const auto iface = checked_interface_cast<media::IAudioManagerNative>(binder);
+        LOG_ALWAYS_FATAL_IF(iface == nullptr, "%s failed unexpected interface", __func__);
+        return iface;
+    }
+
     virtual audio_unique_id_t trackPlayer(player_type_t playerType, audio_usage_t usage,
             audio_content_type_t content, const sp<IBinder>& player, audio_session_t sessionId) {
         Parcel data, reply;
@@ -87,12 +105,15 @@ public:
     }
 
     virtual status_t playerEvent(audio_unique_id_t piid, player_state_t event,
-            audio_port_handle_t eventId) {
+            const std::vector<audio_port_handle_t>& eventIds) {
         Parcel data, reply;
         data.writeInterfaceToken(IAudioManager::getInterfaceDescriptor());
         data.writeInt32((int32_t) piid);
         data.writeInt32((int32_t) event);
-        data.writeInt32((int32_t) eventId);
+        data.writeInt32((int32_t) eventIds.size());
+        for (auto eventId: eventIds) {
+            data.writeInt32((int32_t) eventId);
+        }
         return remote()->transact(PLAYER_EVENT, data, &reply, IBinder::FLAG_ONEWAY);
     }
 
@@ -151,6 +172,12 @@ public:
         // TODO: replace PersistableBundle with own struct
         data.writeNullableParcelable(extras);
         return remote()->transact(PORT_EVENT, data, &reply, IBinder::FLAG_ONEWAY);
+    }
+
+    virtual status_t permissionUpdateBarrier() {
+        Parcel data, reply;
+        data.writeInterfaceToken(IAudioManager::getInterfaceDescriptor());
+        return remote()->transact(PERMISSION_UPDATE_BARRIER, data, &reply, 0);
     }
 };
 

@@ -17,7 +17,8 @@
 package com.android.systemui.keyguard.domain.interactor
 
 import com.android.keyguard.keyguardSecurityModel
-import com.android.systemui.communal.domain.interactor.communalInteractor
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.communalSettingsInteractor
 import com.android.systemui.keyguard.data.repository.keyguardTransitionRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
@@ -31,11 +32,13 @@ var Kosmos.fromPrimaryBouncerTransitionInteractor by
         FromPrimaryBouncerTransitionInteractor(
             transitionRepository = keyguardTransitionRepository,
             transitionInteractor = keyguardTransitionInteractor,
+            internalTransitionInteractor = internalKeyguardTransitionInteractor,
             scope = applicationCoroutineScope,
             bgDispatcher = testDispatcher,
             mainDispatcher = testDispatcher,
             keyguardInteractor = keyguardInteractor,
-            communalInteractor = communalInteractor,
+            communalSceneInteractor = communalSceneInteractor,
+            communalSettingsInteractor = communalSettingsInteractor,
             keyguardSecurityModel = keyguardSecurityModel,
             selectedUserInteractor = selectedUserInteractor,
             powerInteractor = powerInteractor,

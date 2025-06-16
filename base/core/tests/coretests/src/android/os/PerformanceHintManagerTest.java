@@ -24,11 +24,11 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeNotNull;
 
 import android.os.PerformanceHintManager.Session;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -38,7 +38,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(blockedBy = PerformanceHintManager.class)
+@DisabledOnRavenwood(blockedBy = PerformanceHintManager.class)
 public class PerformanceHintManagerTest {
     @Rule
     public final RavenwoodRule mRavenwood = new RavenwoodRule();

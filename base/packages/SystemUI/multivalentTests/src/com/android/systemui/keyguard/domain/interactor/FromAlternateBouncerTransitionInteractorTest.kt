@@ -34,39 +34,61 @@ package com.android.systemui.keyguard.domain.interactor
 
 import android.platform.test.annotations.DisableFlags
 import android.platform.test.annotations.EnableFlags
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import android.platform.test.flag.junit.FlagsParameterization
 import androidx.test.filters.SmallTest
 import com.android.systemui.Flags
+import com.android.systemui.Flags.FLAG_GLANCEABLE_HUB_V2
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.bouncer.data.repository.fakeKeyguardBouncerRepository
+import com.android.systemui.communal.data.repository.fakeCommunalSceneRepository
 import com.android.systemui.communal.domain.interactor.communalInteractor
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.setCommunalV2ConfigEnabled
+import com.android.systemui.communal.shared.model.CommunalScenes
 import com.android.systemui.keyguard.data.repository.FakeKeyguardTransitionRepository
 import com.android.systemui.keyguard.data.repository.fakeKeyguardRepository
-import com.android.systemui.keyguard.data.repository.fakeKeyguardTransitionRepository
+import com.android.systemui.keyguard.data.repository.fakeKeyguardTransitionRepositorySpy
+import com.android.systemui.keyguard.data.repository.keyguardTransitionRepository
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.keyguard.util.KeyguardTransitionRepositorySpySubject.Companion.assertThat
+import com.android.systemui.kosmos.collectLastValue
+import com.android.systemui.kosmos.runCurrent
+import com.android.systemui.kosmos.runTest
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.power.data.repository.fakePowerRepository
 import com.android.systemui.power.shared.model.WakeSleepReason
 import com.android.systemui.power.shared.model.WakefulnessState
 import com.android.systemui.testKosmos
-import kotlinx.coroutines.ExperimentalCoroutinesApi
+import com.google.common.truth.Truth
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.Mockito
 import org.mockito.Mockito.reset
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4
+import platform.test.runner.parameterized.Parameters
 
-@ExperimentalCoroutinesApi
 @SmallTest
-@RunWith(AndroidJUnit4::class)
-class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
+@RunWith(ParameterizedAndroidJunit4::class)
+class FromAlternateBouncerTransitionInteractorTest(flags: FlagsParameterization) : SysuiTestCase() {
+
+    companion object {
+        @JvmStatic
+        @Parameters(name = "{0}")
+        fun getParams(): List<FlagsParameterization> {
+            return FlagsParameterization.allCombinationsOf(FLAG_GLANCEABLE_HUB_V2)
+        }
+    }
+
+    init {
+        mSetFlagsRule.setFlagsParameterization(flags)
+    }
+
     private val kosmos =
         testKosmos().apply {
-            this.fakeKeyguardTransitionRepository = Mockito.spy(FakeKeyguardTransitionRepository())
+            this.keyguardTransitionRepository = fakeKeyguardTransitionRepositorySpy
         }
     private val testScope = kosmos.testScope
     private lateinit var underTest: FromAlternateBouncerTransitionInteractor
@@ -74,8 +96,9 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
 
     @Before
     fun setup() {
-        transitionRepository = kosmos.fakeKeyguardTransitionRepository
+        transitionRepository = kosmos.fakeKeyguardTransitionRepositorySpy
         underTest = kosmos.fromAlternateBouncerTransitionInteractor
+        kosmos.setCommunalV2ConfigEnabled(true)
         underTest.start()
     }
 
@@ -86,7 +109,7 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.OCCLUDED,
                 to = KeyguardState.ALTERNATE_BOUNCER,
-                testScope
+                testScope,
             )
             reset(transitionRepository)
 
@@ -111,12 +134,12 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.OCCLUDED,
                 to = KeyguardState.ALTERNATE_BOUNCER,
-                testScope
+                testScope,
             )
             reset(transitionRepository)
 
             // Authentication results in calling startDismissKeyguardTransition.
-            kosmos.keyguardTransitionInteractor.startDismissKeyguardTransition()
+            kosmos.keyguardDismissTransitionInteractor.startDismissKeyguardTransition()
             runCurrent()
 
             assertThat(transitionRepository)
@@ -129,7 +152,7 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.OCCLUDED,
                 to = KeyguardState.ALTERNATE_BOUNCER,
-                testScope
+                testScope,
             )
             reset(transitionRepository)
 
@@ -158,7 +181,7 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.OCCLUDED,
                 to = KeyguardState.ALTERNATE_BOUNCER,
-                testScope
+                testScope,
             )
             reset(transitionRepository)
 
@@ -168,11 +191,77 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             assertThat(transitionRepository)
                 .startedTransition(
                     from = KeyguardState.ALTERNATE_BOUNCER,
-                    to = KeyguardState.OCCLUDED
+                    to = KeyguardState.OCCLUDED,
                 )
         }
 
     @Test
+    @EnableFlags(FLAG_GLANCEABLE_HUB_V2)
+    fun transitionToOccluded_glanceableHubShowing() =
+        kosmos.runTest {
+            val currentScene by collectLastValue(communalSceneInteractor.currentScene)
+
+            fakePowerRepository.updateWakefulness(
+                WakefulnessState.AWAKE,
+                WakeSleepReason.POWER_BUTTON,
+                WakeSleepReason.POWER_BUTTON,
+                false,
+            )
+            fakeKeyguardRepository.setKeyguardOccluded(false)
+            fakeKeyguardBouncerRepository.setAlternateVisible(true)
+            fakeCommunalSceneRepository.changeScene(CommunalScenes.Communal)
+            runCurrent()
+
+            Truth.assertThat(currentScene).isEqualTo(CommunalScenes.Communal)
+
+            transitionRepository.sendTransitionSteps(
+                from = KeyguardState.GLANCEABLE_HUB,
+                to = KeyguardState.ALTERNATE_BOUNCER,
+                testScope,
+            )
+            reset(transitionRepository)
+
+            fakeKeyguardRepository.setKeyguardOccluded(true)
+            fakeKeyguardBouncerRepository.setAlternateVisible(false)
+            testScope.advanceTimeBy(200) // advance past delay
+
+            Truth.assertThat(currentScene).isEqualTo(CommunalScenes.Blank)
+        }
+
+    @Test
+    fun transitionToDreaming() =
+        kosmos.runTest {
+            fakePowerRepository.updateWakefulness(
+                WakefulnessState.AWAKE,
+                WakeSleepReason.POWER_BUTTON,
+                WakeSleepReason.POWER_BUTTON,
+                false,
+            )
+            fakeKeyguardRepository.setKeyguardOccluded(false)
+            fakeKeyguardBouncerRepository.setAlternateVisible(true)
+            runCurrent()
+
+            transitionRepository.sendTransitionSteps(
+                from = KeyguardState.LOCKSCREEN,
+                to = KeyguardState.ALTERNATE_BOUNCER,
+                testScope,
+            )
+            reset(transitionRepository)
+
+            fakeKeyguardRepository.setKeyguardOccluded(true)
+            fakeKeyguardRepository.setDreaming(true)
+            fakeKeyguardBouncerRepository.setAlternateVisible(false)
+            testScope.advanceTimeBy(200) // advance past delay
+
+            assertThat(transitionRepository)
+                .startedTransition(
+                    from = KeyguardState.ALTERNATE_BOUNCER,
+                    to = KeyguardState.DREAMING,
+                )
+        }
+
+    @Test
+    @DisableFlags(Flags.FLAG_KEYGUARD_WM_STATE_REFACTOR)
     fun transitionToGone_whenOpeningGlanceableHubEditMode() =
         testScope.runTest {
             kosmos.fakeKeyguardBouncerRepository.setAlternateVisible(true)
@@ -182,7 +271,7 @@ class FromAlternateBouncerTransitionInteractorTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.GLANCEABLE_HUB,
                 to = KeyguardState.ALTERNATE_BOUNCER,
-                testScope
+                testScope,
             )
             reset(transitionRepository)
 

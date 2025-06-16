@@ -21,36 +21,38 @@ import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.database.ContentObserver
 import android.os.LocaleList
+import android.platform.test.flag.junit.FlagsParameterization
 import android.provider.Settings
 import android.testing.TestableLooper
 import android.util.MathUtils.abs
 import android.view.View
-import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.internal.logging.InstanceId
+import com.android.compose.animation.scene.ObservableTransitionState
+import com.android.compose.animation.scene.SceneKey
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.keyguard.KeyguardUpdateMonitorCallback
+import com.android.systemui.Flags.mediaControlsUmoInflationInBackground
 import com.android.systemui.SysuiTestCase
-import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.deviceentry.domain.interactor.deviceEntryInteractor
 import com.android.systemui.dump.DumpManager
 import com.android.systemui.flags.DisableSceneContainer
 import com.android.systemui.flags.EnableSceneContainer
-import com.android.systemui.flags.Flags
-import com.android.systemui.flags.fakeFeatureFlagsClassic
+import com.android.systemui.keyguard.data.repository.fakeDeviceEntryFingerprintAuthRepository
 import com.android.systemui.keyguard.data.repository.fakeKeyguardTransitionRepository
 import com.android.systemui.keyguard.domain.interactor.keyguardTransitionInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
+import com.android.systemui.keyguard.shared.model.SuccessFingerprintAuthenticationStatus
+import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testDispatcher
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.kosmos.useUnconfinedTestDispatcher
 import com.android.systemui.media.controls.MediaTestUtils
-import com.android.systemui.media.controls.domain.pipeline.EMPTY_SMARTSPACE_MEDIA_DATA
 import com.android.systemui.media.controls.domain.pipeline.MediaDataManager
 import com.android.systemui.media.controls.shared.model.MediaData
 import com.android.systemui.media.controls.ui.controller.MediaHierarchyManager.Companion.LOCATION_QS
 import com.android.systemui.media.controls.ui.view.MediaHostState
 import com.android.systemui.media.controls.ui.view.MediaScrollView
 import com.android.systemui.media.controls.ui.viewmodel.mediaCarouselViewModel
-import com.android.systemui.media.controls.util.MediaFlags
 import com.android.systemui.media.controls.util.MediaUiEventLogger
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.plugins.FalsingManager
@@ -60,24 +62,23 @@ import com.android.systemui.scene.data.repository.Idle
 import com.android.systemui.scene.data.repository.setSceneTransition
 import com.android.systemui.scene.domain.interactor.sceneInteractor
 import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.statusbar.featurepods.media.domain.interactor.mediaControlChipInteractor
 import com.android.systemui.statusbar.notification.collection.provider.OnReorderingAllowedListener
 import com.android.systemui.statusbar.notification.collection.provider.VisualStabilityProvider
 import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.testKosmos
-import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.concurrency.FakeExecutor
-import com.android.systemui.util.settings.FakeSettings
 import com.android.systemui.util.settings.GlobalSettings
-import com.android.systemui.util.settings.SecureSettings
+import com.android.systemui.util.settings.fakeSettings
 import com.android.systemui.util.time.FakeSystemClock
+import com.google.common.truth.Truth.assertThat
 import java.util.Locale
 import javax.inject.Provider
 import junit.framework.Assert.assertEquals
-import junit.framework.Assert.assertFalse
 import junit.framework.Assert.assertTrue
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.TestDispatcher
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -98,18 +99,21 @@ import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.any
 import org.mockito.kotlin.capture
 import org.mockito.kotlin.eq
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4
+import platform.test.runner.parameterized.Parameters
 
 private val DATA = MediaTestUtils.emptyMediaData
 
-private val SMARTSPACE_KEY = "smartspace"
 private const val PAUSED_LOCAL = "paused local"
 private const val PLAYING_LOCAL = "playing local"
 
 @SmallTest
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
-@RunWith(AndroidJUnit4::class)
-class MediaCarouselControllerTest : SysuiTestCase() {
-    val kosmos = testKosmos()
+@RunWith(ParameterizedAndroidJunit4::class)
+class MediaCarouselControllerTest(flags: FlagsParameterization) : SysuiTestCase() {
+    private val kosmos = testKosmos().useUnconfinedTestDispatcher()
+    private val testDispatcher = kosmos.testDispatcher
+    private val secureSettings = kosmos.fakeSettings
 
     @Mock lateinit var mediaControlPanelFactory: Provider<MediaControlPanel>
     @Mock lateinit var mediaViewControllerFactory: Provider<MediaViewController>
@@ -118,7 +122,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
     @Mock lateinit var mediaHostStatesManager: MediaHostStatesManager
     @Mock lateinit var mediaHostState: MediaHostState
     @Mock lateinit var activityStarter: ActivityStarter
-    @Mock @Main private lateinit var executor: DelayableExecutor
     @Mock lateinit var mediaDataManager: MediaDataManager
     @Mock lateinit var configurationController: ConfigurationController
     @Mock lateinit var falsingManager: FalsingManager
@@ -128,10 +131,8 @@ class MediaCarouselControllerTest : SysuiTestCase() {
     @Mock lateinit var mediaViewController: MediaViewController
     @Mock lateinit var mediaCarousel: MediaScrollView
     @Mock lateinit var pageIndicator: PageIndicator
-    @Mock lateinit var mediaFlags: MediaFlags
     @Mock lateinit var keyguardUpdateMonitor: KeyguardUpdateMonitor
     @Mock lateinit var globalSettings: GlobalSettings
-    private lateinit var secureSettings: SecureSettings
     private val transitionRepository = kosmos.fakeKeyguardTransitionRepository
     @Captor lateinit var listener: ArgumentCaptor<MediaDataManager.Listener>
     @Captor
@@ -143,21 +144,36 @@ class MediaCarouselControllerTest : SysuiTestCase() {
 
     private val clock = FakeSystemClock()
     private lateinit var bgExecutor: FakeExecutor
-    private lateinit var testDispatcher: TestDispatcher
+    private lateinit var uiExecutor: FakeExecutor
     private lateinit var mediaCarouselController: MediaCarouselController
 
     private var originalResumeSetting =
         Settings.Secure.getInt(context.contentResolver, Settings.Secure.MEDIA_CONTROLS_RESUME, 1)
 
+    companion object {
+        @JvmStatic
+        @Parameters(name = "{0}")
+        fun getParams(): List<FlagsParameterization> {
+            return FlagsParameterization.progressionOf(
+                com.android.systemui.Flags.FLAG_MEDIA_CONTROLS_UMO_INFLATION_IN_BACKGROUND
+            )
+        }
+    }
+
+    init {
+        mSetFlagsRule.setFlagsParameterization(flags)
+    }
+
     @Before
     fun setup() {
         MockitoAnnotations.initMocks(this)
-        secureSettings = FakeSettings()
         context.resources.configuration.setLocales(LocaleList(Locale.US, Locale.UK))
         bgExecutor = FakeExecutor(clock)
-        testDispatcher = UnconfinedTestDispatcher()
+        uiExecutor = FakeExecutor(clock)
+
         mediaCarouselController =
             MediaCarouselController(
+                applicationScope = kosmos.applicationCoroutineScope,
                 context = context,
                 mediaControlPanelFactory = mediaControlPanelFactory,
                 visualStabilityProvider = visualStabilityProvider,
@@ -165,7 +181,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 activityStarter = activityStarter,
                 systemClock = clock,
                 mainDispatcher = kosmos.testDispatcher,
-                executor = executor,
+                uiExecutor = uiExecutor,
                 bgExecutor = bgExecutor,
                 backgroundDispatcher = testDispatcher,
                 mediaManager = mediaDataManager,
@@ -174,31 +190,30 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 dumpManager = dumpManager,
                 logger = logger,
                 debugLogger = debugLogger,
-                mediaFlags = mediaFlags,
                 keyguardUpdateMonitor = keyguardUpdateMonitor,
                 keyguardTransitionInteractor = kosmos.keyguardTransitionInteractor,
                 globalSettings = globalSettings,
                 secureSettings = secureSettings,
                 mediaCarouselViewModel = kosmos.mediaCarouselViewModel,
                 mediaViewControllerFactory = mediaViewControllerFactory,
-                sceneInteractor = kosmos.sceneInteractor,
+                deviceEntryInteractor = kosmos.deviceEntryInteractor,
+                mediaControlChipInteractor = kosmos.mediaControlChipInteractor,
             )
         verify(configurationController).addCallback(capture(configListener))
-        verify(mediaDataManager).addListener(capture(listener))
         verify(visualStabilityProvider)
             .addPersistentReorderingAllowedListener(capture(visualStabilityCallback))
         verify(keyguardUpdateMonitor).registerCallback(capture(keyguardCallback))
         verify(mediaHostStatesManager).addCallback(capture(hostStateCallback))
         whenever(mediaControlPanelFactory.get()).thenReturn(panel)
         whenever(panel.mediaViewController).thenReturn(mediaViewController)
-        whenever(mediaFlags.isPersistentSsCardEnabled()).thenReturn(false)
         MediaPlayerData.clear()
         FakeExecutor.exhaustExecutors(bgExecutor)
+        FakeExecutor.exhaustExecutors(uiExecutor)
         verify(globalSettings)
-                .registerContentObserverSync(
-                        eq(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)),
-                        capture(settingsObserverCaptor)
-                )
+            .registerContentObserverSync(
+                eq(Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)),
+                capture(settingsObserverCaptor),
+            )
     }
 
     @After
@@ -206,7 +221,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         Settings.Secure.putInt(
             context.contentResolver,
             Settings.Secure.MEDIA_CONTROLS_RESUME,
-            originalResumeSetting
+            originalResumeSetting,
         )
     }
 
@@ -220,9 +235,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = true,
                     playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = false
+                    resumption = false,
                 ),
-                4500L
+                4500L,
             )
 
         val playingCast =
@@ -232,9 +247,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = true,
                     playbackLocation = MediaData.PLAYBACK_CAST_LOCAL,
-                    resumption = false
+                    resumption = false,
                 ),
-                5000L
+                5000L,
             )
 
         val pausedLocal =
@@ -244,9 +259,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = false
+                    resumption = false,
                 ),
-                1000L
+                1000L,
             )
 
         val pausedCast =
@@ -256,9 +271,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_CAST_LOCAL,
-                    resumption = false
+                    resumption = false,
                 ),
-                2000L
+                2000L,
             )
 
         val playingRcn =
@@ -268,9 +283,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = true,
                     playbackLocation = MediaData.PLAYBACK_CAST_REMOTE,
-                    resumption = false
+                    resumption = false,
                 ),
-                5000L
+                5000L,
             )
 
         val pausedRcn =
@@ -280,9 +295,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_CAST_REMOTE,
-                    resumption = false
+                    resumption = false,
                 ),
-                5000L
+                5000L,
             )
 
         val active =
@@ -292,9 +307,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = true,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = true
+                    resumption = true,
                 ),
-                250L
+                250L,
             )
 
         val resume1 =
@@ -304,9 +319,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = false,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = true
+                    resumption = true,
                 ),
-                500L
+                500L,
             )
 
         val resume2 =
@@ -316,36 +331,11 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                     active = false,
                     isPlaying = false,
                     playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = true
+                    resumption = true,
                 ),
-                1000L
+                1000L,
             )
 
-        val activeMoreRecent =
-            Triple(
-                "active more recent",
-                DATA.copy(
-                    active = false,
-                    isPlaying = false,
-                    playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = true,
-                    lastActive = 2L
-                ),
-                1000L
-            )
-
-        val activeLessRecent =
-            Triple(
-                "active less recent",
-                DATA.copy(
-                    active = false,
-                    isPlaying = false,
-                    playbackLocation = MediaData.PLAYBACK_LOCAL,
-                    resumption = true,
-                    lastActive = 1L
-                ),
-                1000L
-            )
         // Expected ordering for media players:
         // Actively playing local sessions
         // Actively playing cast sessions
@@ -363,7 +353,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 pausedRcn,
                 active,
                 resume2,
-                resume1
+                resume1,
             )
 
         expected.forEach {
@@ -373,7 +363,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 it.second.copy(notificationKey = it.first),
                 panel,
                 clock,
-                isSsReactivated = false
             )
         }
 
@@ -386,59 +375,11 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         }
     }
 
-    @Test
-    fun testOrderWithSmartspace_prioritized() {
-        testPlayerOrdering()
-
-        // If smartspace is prioritized
-        MediaPlayerData.addMediaRecommendation(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(isActive = true),
-            panel,
-            true,
-            clock
-        )
-
-        // Then it should be shown immediately after any actively playing controls
-        assertTrue(MediaPlayerData.playerKeys().elementAt(2).isSsMediaRec)
-    }
-
-    @Test
-    fun testOrderWithSmartspace_prioritized_updatingVisibleMediaPlayers() {
-        testPlayerOrdering()
-
-        // If smartspace is prioritized
-        listener.value.onSmartspaceMediaDataLoaded(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(isActive = true),
-            true
-        )
-
-        // Then it should be shown immediately after any actively playing controls
-        assertTrue(MediaPlayerData.playerKeys().elementAt(2).isSsMediaRec)
-        assertTrue(MediaPlayerData.visiblePlayerKeys().elementAt(2).isSsMediaRec)
-    }
-
-    @Test
-    fun testOrderWithSmartspace_notPrioritized() {
-        testPlayerOrdering()
-
-        // If smartspace is not prioritized
-        MediaPlayerData.addMediaRecommendation(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(isActive = true),
-            panel,
-            false,
-            clock
-        )
-
-        // Then it should be shown at the end of the carousel's active entries
-        val idx = MediaPlayerData.playerKeys().count { it.data.active } - 1
-        assertTrue(MediaPlayerData.playerKeys().elementAt(idx).isSsMediaRec)
-    }
-
+    @DisableSceneContainer
     @Test
     fun testPlayingExistingMediaPlayerFromCarousel_visibleMediaPlayersNotUpdated() {
+        verify(mediaDataManager).addListener(capture(listener))
+
         testPlayerOrdering()
         // playing paused player
         listener.value.onMediaDataLoaded(
@@ -448,8 +389,8 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 active = true,
                 isPlaying = true,
                 playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
+                resumption = false,
+            ),
         )
         listener.value.onMediaDataLoaded(
             PLAYING_LOCAL,
@@ -458,19 +399,20 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 active = true,
                 isPlaying = false,
                 playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = true
-            )
+                resumption = true,
+            ),
         )
+        runAllReady()
 
         assertEquals(
             MediaPlayerData.getMediaPlayerIndex(PAUSED_LOCAL),
-            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex
+            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex,
         )
         // paused player order should stays the same in visibleMediaPLayer map.
         // paused player order should be first in mediaPlayer map.
         assertEquals(
             MediaPlayerData.visiblePlayerKeys().elementAt(3),
-            MediaPlayerData.playerKeys().elementAt(0)
+            MediaPlayerData.playerKeys().elementAt(0),
         )
     }
 
@@ -493,7 +435,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         mediaCarouselController.onDesiredLocationChanged(
             LOCATION_QS,
             mediaHostState,
-            animate = false
+            animate = false,
         )
         bgExecutor.runAllReady()
         verify(logger).logCarouselPosition(LOCATION_QS)
@@ -504,7 +446,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         mediaCarouselController.onDesiredLocationChanged(
             MediaHierarchyManager.LOCATION_QQS,
             mediaHostState,
-            animate = false
+            animate = false,
         )
         bgExecutor.runAllReady()
         verify(logger).logCarouselPosition(MediaHierarchyManager.LOCATION_QQS)
@@ -515,7 +457,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         mediaCarouselController.onDesiredLocationChanged(
             MediaHierarchyManager.LOCATION_LOCKSCREEN,
             mediaHostState,
-            animate = false
+            animate = false,
         )
         bgExecutor.runAllReady()
         verify(logger).logCarouselPosition(MediaHierarchyManager.LOCATION_LOCKSCREEN)
@@ -526,147 +468,10 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         mediaCarouselController.onDesiredLocationChanged(
             MediaHierarchyManager.LOCATION_DREAM_OVERLAY,
             mediaHostState,
-            animate = false
+            animate = false,
         )
         bgExecutor.runAllReady()
         verify(logger).logCarouselPosition(MediaHierarchyManager.LOCATION_DREAM_OVERLAY)
-    }
-
-    @Test
-    fun testRecommendationRemoved_logged() {
-        val packageName = "smartspace package"
-        val instanceId = InstanceId.fakeInstanceId(123)
-
-        val smartspaceData =
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(packageName = packageName, instanceId = instanceId)
-        MediaPlayerData.addMediaRecommendation(SMARTSPACE_KEY, smartspaceData, panel, true, clock)
-        mediaCarouselController.removePlayer(SMARTSPACE_KEY)
-
-        verify(logger).logRecommendationRemoved(eq(packageName), eq(instanceId!!))
-    }
-
-    @Test
-    fun testMediaLoaded_ScrollToActivePlayer() {
-        listener.value.onMediaDataLoaded(
-            PLAYING_LOCAL,
-            null,
-            DATA.copy(
-                active = true,
-                isPlaying = true,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
-        )
-        listener.value.onMediaDataLoaded(
-            PAUSED_LOCAL,
-            null,
-            DATA.copy(
-                active = true,
-                isPlaying = false,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
-        )
-        // adding a media recommendation card.
-        listener.value.onSmartspaceMediaDataLoaded(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA,
-            false
-        )
-        mediaCarouselController.shouldScrollToKey = true
-        // switching between media players.
-        listener.value.onMediaDataLoaded(
-            PLAYING_LOCAL,
-            PLAYING_LOCAL,
-            DATA.copy(
-                active = true,
-                isPlaying = false,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = true
-            )
-        )
-        listener.value.onMediaDataLoaded(
-            PAUSED_LOCAL,
-            PAUSED_LOCAL,
-            DATA.copy(
-                active = true,
-                isPlaying = true,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
-        )
-
-        assertEquals(
-            MediaPlayerData.getMediaPlayerIndex(PAUSED_LOCAL),
-            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex
-        )
-    }
-
-    @Test
-    fun testMediaLoadedFromRecommendationCard_ScrollToActivePlayer() {
-        listener.value.onSmartspaceMediaDataLoaded(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(packageName = "PACKAGE_NAME", isActive = true),
-            false
-        )
-        listener.value.onMediaDataLoaded(
-            PLAYING_LOCAL,
-            null,
-            DATA.copy(
-                active = true,
-                isPlaying = true,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
-        )
-
-        var playerIndex = MediaPlayerData.getMediaPlayerIndex(PLAYING_LOCAL)
-        assertEquals(
-            playerIndex,
-            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex
-        )
-        assertEquals(playerIndex, 0)
-
-        // Replaying the same media player one more time.
-        // And check that the card stays in its position.
-        mediaCarouselController.shouldScrollToKey = true
-        listener.value.onMediaDataLoaded(
-            PLAYING_LOCAL,
-            null,
-            DATA.copy(
-                active = true,
-                isPlaying = true,
-                playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false,
-                packageName = "PACKAGE_NAME"
-            )
-        )
-        playerIndex = MediaPlayerData.getMediaPlayerIndex(PLAYING_LOCAL)
-        assertEquals(playerIndex, 0)
-    }
-
-    @Test
-    fun testRecommendationRemovedWhileNotVisible_updateHostVisibility() {
-        var result = false
-        mediaCarouselController.updateHostVisibility = { result = true }
-
-        whenever(visualStabilityProvider.isReorderingAllowed).thenReturn(true)
-        listener.value.onSmartspaceMediaDataRemoved(SMARTSPACE_KEY, false)
-
-        assertEquals(true, result)
-    }
-
-    @Test
-    fun testRecommendationRemovedWhileVisible_thenReorders_updateHostVisibility() {
-        var result = false
-        mediaCarouselController.updateHostVisibility = { result = true }
-
-        whenever(visualStabilityProvider.isReorderingAllowed).thenReturn(false)
-        listener.value.onSmartspaceMediaDataRemoved(SMARTSPACE_KEY, false)
-        assertEquals(false, result)
-
-        visualStabilityCallback.value.onReorderingAllowed()
-        assertEquals(true, result)
     }
 
     @Test
@@ -679,7 +484,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
             player1.second.copy(notificationKey = player1.first),
             panel,
             clock,
-            isSsReactivated = false
         )
 
         assertEquals(mediaCarouselController.getCurrentVisibleMediaContentIntent(), clickIntent1)
@@ -692,7 +496,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
             player2.second.copy(notificationKey = player2.first),
             panel,
             clock,
-            isSsReactivated = false
         )
 
         // mediaCarouselScrollHandler.visibleMediaIndex is unchanged (= 0), and the new player is
@@ -707,7 +510,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
             player3.second.copy(notificationKey = player3.first),
             panel,
             clock,
-            isSsReactivated = false
         )
 
         // mediaCarouselScrollHandler.visibleMediaIndex is unchanged (= 0), and the new player is
@@ -787,41 +589,6 @@ class MediaCarouselControllerTest : SysuiTestCase() {
     }
 
     @Test
-    fun testRecommendation_persistentEnabled_newSmartspaceLoaded_updatesSort() {
-        testRecommendation_persistentEnabled_inactiveSmartspaceDataLoaded_isAdded()
-
-        // When an update to existing smartspace data is loaded
-        listener.value.onSmartspaceMediaDataLoaded(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA.copy(isActive = true),
-            true
-        )
-
-        // Then the carousel is updated
-        assertTrue(MediaPlayerData.playerKeys().elementAt(0).data.active)
-        assertTrue(MediaPlayerData.visiblePlayerKeys().elementAt(0).data.active)
-    }
-
-    @Test
-    fun testRecommendation_persistentEnabled_inactiveSmartspaceDataLoaded_isAdded() {
-        whenever(mediaFlags.isPersistentSsCardEnabled()).thenReturn(true)
-
-        // When inactive smartspace data is loaded
-        listener.value.onSmartspaceMediaDataLoaded(
-            SMARTSPACE_KEY,
-            EMPTY_SMARTSPACE_MEDIA_DATA,
-            false
-        )
-
-        // Then it is added to the carousel with correct state
-        assertTrue(MediaPlayerData.playerKeys().elementAt(0).isSsMediaRec)
-        assertFalse(MediaPlayerData.playerKeys().elementAt(0).data.active)
-
-        assertTrue(MediaPlayerData.visiblePlayerKeys().elementAt(0).isSsMediaRec)
-        assertFalse(MediaPlayerData.visiblePlayerKeys().elementAt(0).data.active)
-    }
-
-    @Test
     fun testOnLockDownMode_hideMediaCarousel() {
         whenever(keyguardUpdateMonitor.isUserInLockdown(context.userId)).thenReturn(true)
         mediaCarouselController.mediaCarousel = mediaCarousel
@@ -843,11 +610,9 @@ class MediaCarouselControllerTest : SysuiTestCase() {
     }
 
     @DisableSceneContainer
-    @ExperimentalCoroutinesApi
     @Test
     fun testKeyguardGone_showMediaCarousel() =
         kosmos.testScope.runTest {
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
             var updatedVisibility = false
             mediaCarouselController.updateHostVisibility = { updatedVisibility = true }
             mediaCarouselController.mediaCarousel = mediaCarousel
@@ -856,7 +621,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.LOCKSCREEN,
                 to = KeyguardState.GONE,
-                this
+                this,
             )
 
             verify(mediaCarousel).visibility = View.VISIBLE
@@ -867,16 +632,21 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         }
 
     @EnableSceneContainer
-    @ExperimentalCoroutinesApi
     @Test
     fun testKeyguardGone_showMediaCarousel_scene_container() =
         kosmos.testScope.runTest {
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
             var updatedVisibility = false
             mediaCarouselController.updateHostVisibility = { updatedVisibility = true }
             mediaCarouselController.mediaCarousel = mediaCarousel
+            kosmos.sceneInteractor.snapToScene(Scenes.Lockscreen, "")
+            kosmos.fakeDeviceEntryFingerprintAuthRepository.setAuthenticationStatus(
+                SuccessFingerprintAuthenticationStatus(0, true)
+            )
+            runCurrent()
 
             val job = mediaCarouselController.listenForAnyStateToGoneKeyguardTransition(this)
+
+            kosmos.sceneInteractor.changeScene(Scenes.Gone, "")
             kosmos.setSceneTransition(Idle(Scenes.Gone))
 
             verify(mediaCarousel).visibility = View.VISIBLE
@@ -885,23 +655,24 @@ class MediaCarouselControllerTest : SysuiTestCase() {
             job.cancel()
         }
 
-    @ExperimentalCoroutinesApi
     @Test
     fun keyguardShowing_notAllowedOnLockscreen_updateVisibility() {
         kosmos.testScope.runTest {
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
             var updatedVisibility = false
             mediaCarouselController.updateHostVisibility = { updatedVisibility = true }
             mediaCarouselController.mediaCarousel = mediaCarousel
 
-            val settingsJob = mediaCarouselController.listenForLockscreenSettingChanges(this)
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
             secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, false)
 
             val keyguardJob = mediaCarouselController.listenForAnyStateToLockscreenTransition(this)
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.GONE,
                 to = KeyguardState.LOCKSCREEN,
-                this
+                this,
             )
 
             assertEquals(true, updatedVisibility)
@@ -912,23 +683,24 @@ class MediaCarouselControllerTest : SysuiTestCase() {
         }
     }
 
-    @ExperimentalCoroutinesApi
     @Test
     fun keyguardShowing_allowedOnLockscreen_updateVisibility() {
         kosmos.testScope.runTest {
-            kosmos.fakeFeatureFlagsClassic.set(Flags.MEDIA_RETAIN_RECOMMENDATIONS, false)
             var updatedVisibility = false
             mediaCarouselController.updateHostVisibility = { updatedVisibility = true }
             mediaCarouselController.mediaCarousel = mediaCarousel
 
-            val settingsJob = mediaCarouselController.listenForLockscreenSettingChanges(this)
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
             secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, true)
 
             val keyguardJob = mediaCarouselController.listenForAnyStateToLockscreenTransition(this)
             transitionRepository.sendTransitionSteps(
                 from = KeyguardState.GONE,
                 to = KeyguardState.LOCKSCREEN,
-                this
+                this,
             )
 
             assertEquals(true, updatedVisibility)
@@ -936,6 +708,102 @@ class MediaCarouselControllerTest : SysuiTestCase() {
 
             settingsJob.cancel()
             keyguardJob.cancel()
+        }
+    }
+
+    @Test
+    fun goingToDozing_notAllowedOnLockscreen_updateVisibility() {
+        kosmos.testScope.runTest {
+            var updatedVisibility = false
+            mediaCarouselController.updateHostVisibility = { updatedVisibility = true }
+            mediaCarouselController.mediaCarousel = mediaCarousel
+
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
+            secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, false)
+
+            val keyguardJob = mediaCarouselController.listenForAnyStateToDozingTransition(this)
+            transitionRepository.sendTransitionSteps(
+                from = KeyguardState.GONE,
+                to = KeyguardState.DOZING,
+                this,
+            )
+
+            assertEquals(true, updatedVisibility)
+            assertEquals(true, mediaCarouselController.isLockedAndHidden())
+
+            settingsJob.cancel()
+            keyguardJob.cancel()
+        }
+    }
+
+    @EnableSceneContainer
+    @Test
+    fun deviceEntered_mediaAllowed_notLockedAndHidden() {
+        kosmos.testScope.runTest {
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
+            secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, true)
+            setDeviceEntered(true)
+
+            assertEquals(false, mediaCarouselController.isLockedAndHidden())
+
+            settingsJob.cancel()
+        }
+    }
+
+    @EnableSceneContainer
+    @Test
+    fun deviceEntered_mediaNotAllowed_notLockedAndHidden() {
+        kosmos.testScope.runTest {
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
+            secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, false)
+            setDeviceEntered(true)
+
+            assertEquals(false, mediaCarouselController.isLockedAndHidden())
+
+            settingsJob.cancel()
+        }
+    }
+
+    @EnableSceneContainer
+    @Test
+    fun deviceNotEntered_mediaAllowed_notLockedAndHidden() {
+        kosmos.testScope.runTest {
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
+            secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, true)
+            setDeviceEntered(false)
+
+            assertEquals(false, mediaCarouselController.isLockedAndHidden())
+
+            settingsJob.cancel()
+        }
+    }
+
+    @EnableSceneContainer
+    @Test
+    fun deviceNotEntered_mediaNotAllowed_lockedAndHidden() {
+        kosmos.testScope.runTest {
+            val settingsJob =
+                mediaCarouselController.listenForLockscreenSettingChanges(
+                    kosmos.applicationCoroutineScope
+                )
+            secureSettings.putBool(Settings.Secure.MEDIA_CONTROLS_LOCK_SCREEN, false)
+            setDeviceEntered(false)
+
+            assertEquals(true, mediaCarouselController.isLockedAndHidden())
+
+            settingsJob.cancel()
         }
     }
 
@@ -1008,46 +876,55 @@ class MediaCarouselControllerTest : SysuiTestCase() {
 
     @Test
     fun testAnimationScaleChanged_mediaControlPanelsNotified() {
-        MediaPlayerData.addMediaPlayer("key", DATA, panel, clock, isSsReactivated = false)
+        MediaPlayerData.addMediaPlayer("key", DATA, panel, clock)
 
         globalSettings.putFloat(Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
         settingsObserverCaptor.value!!.onChange(false)
         verify(panel).updateAnimatorDurationScale()
     }
 
+    @DisableSceneContainer
     @Test
     fun swipeToDismiss_pausedAndResumeOff_userInitiated() {
+        verify(mediaDataManager).addListener(capture(listener))
+
         // When resumption is disabled, paused media should be dismissed after being swiped away
         Settings.Secure.putInt(context.contentResolver, Settings.Secure.MEDIA_CONTROLS_RESUME, 0)
-
         val pausedMedia = DATA.copy(isPlaying = false)
         listener.value.onMediaDataLoaded(PAUSED_LOCAL, PAUSED_LOCAL, pausedMedia)
+        runAllReady()
         mediaCarouselController.onSwipeToDismiss()
 
         // When it can be removed immediately on update
         whenever(visualStabilityProvider.isReorderingAllowed).thenReturn(true)
         val inactiveMedia = pausedMedia.copy(active = false)
         listener.value.onMediaDataLoaded(PAUSED_LOCAL, PAUSED_LOCAL, inactiveMedia)
+        runAllReady()
 
         // This is processed as a user-initiated dismissal
         verify(debugLogger).logMediaRemoved(eq(PAUSED_LOCAL), eq(true))
         verify(mediaDataManager).dismissMediaData(eq(PAUSED_LOCAL), anyLong(), eq(true))
     }
 
+    @DisableSceneContainer
     @Test
     fun swipeToDismiss_pausedAndResumeOff_delayed_userInitiated() {
+        verify(mediaDataManager).addListener(capture(listener))
+
         // When resumption is disabled, paused media should be dismissed after being swiped away
         Settings.Secure.putInt(context.contentResolver, Settings.Secure.MEDIA_CONTROLS_RESUME, 0)
         mediaCarouselController.updateHostVisibility = {}
 
         val pausedMedia = DATA.copy(isPlaying = false)
         listener.value.onMediaDataLoaded(PAUSED_LOCAL, PAUSED_LOCAL, pausedMedia)
+        runAllReady()
         mediaCarouselController.onSwipeToDismiss()
 
         // When it can't be removed immediately on update
         whenever(visualStabilityProvider.isReorderingAllowed).thenReturn(false)
         val inactiveMedia = pausedMedia.copy(active = false)
         listener.value.onMediaDataLoaded(PAUSED_LOCAL, PAUSED_LOCAL, inactiveMedia)
+        runAllReady()
         visualStabilityCallback.value.onReorderingAllowed()
 
         // This is processed as a user-initiated dismissal
@@ -1060,6 +937,7 @@ class MediaCarouselControllerTest : SysuiTestCase() {
      * @param function called when a certain configuration change occurs.
      */
     private fun testConfigurationChange(function: () -> Unit) {
+        verify(mediaDataManager).addListener(capture(listener))
         mediaCarouselController.pageIndicator = pageIndicator
         listener.value.onMediaDataLoaded(
             PLAYING_LOCAL,
@@ -1068,8 +946,8 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 active = true,
                 isPlaying = true,
                 playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
+                resumption = false,
+            ),
         )
         listener.value.onMediaDataLoaded(
             PAUSED_LOCAL,
@@ -1078,18 +956,53 @@ class MediaCarouselControllerTest : SysuiTestCase() {
                 active = true,
                 isPlaying = false,
                 playbackLocation = MediaData.PLAYBACK_LOCAL,
-                resumption = false
-            )
+                resumption = false,
+            ),
         )
+        runAllReady()
 
         val playersSize = MediaPlayerData.players().size
         reset(pageIndicator)
         function()
+        runAllReady()
 
         assertEquals(playersSize, MediaPlayerData.players().size)
         assertEquals(
             MediaPlayerData.getMediaPlayerIndex(PLAYING_LOCAL),
-            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex
+            mediaCarouselController.mediaCarouselScrollHandler.visibleMediaIndex,
         )
+    }
+
+    private fun TestScope.setDeviceEntered(isEntered: Boolean) {
+        if (isEntered) {
+            // Unlock the device, marking the device as entered
+            kosmos.fakeDeviceEntryFingerprintAuthRepository.setAuthenticationStatus(
+                SuccessFingerprintAuthenticationStatus(0, true)
+            )
+            runCurrent()
+        }
+        setScene(
+            if (isEntered) {
+                Scenes.Gone
+            } else {
+                Scenes.Lockscreen
+            }
+        )
+        assertThat(kosmos.deviceEntryInteractor.isDeviceEntered.value).isEqualTo(isEntered)
+    }
+
+    private fun TestScope.setScene(key: SceneKey) {
+        kosmos.sceneInteractor.changeScene(key, "test")
+        kosmos.sceneInteractor.setTransitionState(
+            MutableStateFlow<ObservableTransitionState>(ObservableTransitionState.Idle(key))
+        )
+        runCurrent()
+    }
+
+    private fun runAllReady() {
+        if (mediaControlsUmoInflationInBackground()) {
+            bgExecutor.runAllReady()
+            uiExecutor.runAllReady()
+        }
     }
 }

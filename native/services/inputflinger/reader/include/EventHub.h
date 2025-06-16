@@ -21,6 +21,8 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
 #include <unordered_map>
@@ -29,6 +31,7 @@
 
 #include <batteryservice/BatteryService.h>
 #include <ftl/flags.h>
+#include <input/BlockingQueue.h>
 #include <input/Input.h>
 #include <input/InputDevice.h>
 #include <input/KeyCharacterMap.h>
@@ -70,18 +73,14 @@ struct RawEvent {
 
 /* Describes an absolute axis. */
 struct RawAbsoluteAxisInfo {
-    bool valid{false}; // true if the information is valid, false otherwise
-
     int32_t minValue{};   // minimum value
     int32_t maxValue{};   // maximum value
     int32_t flat{};       // center flat position, eg. flat == 8 means center is between -8 and 8
     int32_t fuzz{};       // error tolerance, eg. fuzz == 4 means value is +/- 4 due to noise
     int32_t resolution{}; // resolution in units per mm or radians per mm
-
-    inline void clear() { *this = RawAbsoluteAxisInfo(); }
 };
 
-std::ostream& operator<<(std::ostream& out, const RawAbsoluteAxisInfo& info);
+std::ostream& operator<<(std::ostream& out, const std::optional<RawAbsoluteAxisInfo>& info);
 
 /*
  * Input device classes.
@@ -90,6 +89,7 @@ std::ostream& operator<<(std::ostream& out, const RawAbsoluteAxisInfo& info);
  * If any new classes are added, we need to add them in rust input side too.
  */
 enum class InputDeviceClass : uint32_t {
+    // LINT.IfChange
     /* The input device is a keyboard or has buttons. */
     KEYBOARD = android::os::IInputConstants::DEVICE_CLASS_KEYBOARD,
 
@@ -146,6 +146,7 @@ enum class InputDeviceClass : uint32_t {
 
     /* The input device is external (not built-in). */
     EXTERNAL = android::os::IInputConstants::DEVICE_CLASS_EXTERNAL,
+    // LINT.ThenChange(frameworks/native/services/inputflinger/tests/fuzzers/MapperHelpers.h)
 };
 
 enum class SysfsClass : uint32_t {
@@ -182,6 +183,8 @@ enum class InputLightClass : uint32_t {
     KEYBOARD_BACKLIGHT = 0x00000100,
     /* The input light has mic_mute name */
     KEYBOARD_MIC_MUTE = 0x00000200,
+    /* The input light has mute name */
+    KEYBOARD_VOLUME_MUTE = 0x00000400,
 };
 
 enum class InputBatteryClass : uint32_t {
@@ -257,9 +260,6 @@ public:
         DEVICE_ADDED = 0x10000000,
         // Sent when a device is removed.
         DEVICE_REMOVED = 0x20000000,
-        // Sent when all added/removed devices from the most recent scan have been reported.
-        // This event is always sent at least once.
-        FINISHED_DEVICE_SCAN = 0x30000000,
 
         FIRST_SYNTHETIC_EVENT = DEVICE_ADDED,
     };
@@ -278,8 +278,8 @@ public:
      */
     virtual std::optional<PropertyMap> getConfiguration(int32_t deviceId) const = 0;
 
-    virtual status_t getAbsoluteAxisInfo(int32_t deviceId, int axis,
-                                         RawAbsoluteAxisInfo* outAxisInfo) const = 0;
+    virtual std::optional<RawAbsoluteAxisInfo> getAbsoluteAxisInfo(int32_t deviceId,
+                                                                   int axis) const = 0;
 
     virtual bool hasRelativeAxis(int32_t deviceId, int axis) const = 0;
 
@@ -287,8 +287,8 @@ public:
 
     virtual bool hasMscEvent(int32_t deviceId, int mscEvent) const = 0;
 
-    virtual void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode,
-                                 int32_t toKeyCode) const = 0;
+    virtual void setKeyRemapping(int32_t deviceId,
+                                 const std::map<int32_t, int32_t>& keyRemapping) const = 0;
 
     virtual status_t mapKey(int32_t deviceId, int32_t scanCode, int32_t usageCode,
                             int32_t metaState, int32_t* outKeycode, int32_t* outMetaState,
@@ -339,8 +339,7 @@ public:
     virtual int32_t getScanCodeState(int32_t deviceId, int32_t scanCode) const = 0;
     virtual int32_t getKeyCodeState(int32_t deviceId, int32_t keyCode) const = 0;
     virtual int32_t getSwitchState(int32_t deviceId, int32_t sw) const = 0;
-    virtual status_t getAbsoluteAxisValue(int32_t deviceId, int32_t axis,
-                                          int32_t* outValue) const = 0;
+    virtual std::optional<int32_t> getAbsoluteAxisValue(int32_t deviceId, int32_t axis) const = 0;
     /* Query Multi-Touch slot values for an axis. Returns error or an 1 indexed array of size
      * (slotCount + 1). The value at the 0 index is set to queried axis. */
     virtual base::Result<std::vector<int32_t>> getMtSlotValues(int32_t deviceId, int32_t axis,
@@ -400,9 +399,19 @@ public:
     /* Disable an input device. Closes file descriptor to that device. */
     virtual status_t disableDevice(int32_t deviceId) = 0;
 
+    /* Gets the sysfs root path for this device. Returns an empty path if there is none. */
+    virtual std::filesystem::path getSysfsRootPath(int32_t deviceId) const = 0;
+
     /* Sysfs node changed. Reopen the Eventhub device if any new Peripheral like Light, Battery,
      * etc. is detected. */
     virtual void sysfsNodeChanged(const std::string& sysfsNodePath) = 0;
+
+    /* Set whether the given input device can wake up the kernel from sleep
+     * when it generates input events. By default, usually only internal (built-in)
+     * input devices can wake the kernel from sleep. For an external input device
+     * that supports remote wakeup to be able to wake the kernel, this must be called
+     * after each time the device is connected/added. */
+    virtual bool setKernelWakeEnabled(int32_t deviceId, bool enabled) = 0;
 };
 
 template <std::size_t BITS>
@@ -511,8 +520,8 @@ public:
 
     std::optional<PropertyMap> getConfiguration(int32_t deviceId) const override final;
 
-    status_t getAbsoluteAxisInfo(int32_t deviceId, int axis,
-                                 RawAbsoluteAxisInfo* outAxisInfo) const override final;
+    std::optional<RawAbsoluteAxisInfo> getAbsoluteAxisInfo(int32_t deviceId,
+                                                           int axis) const override final;
 
     bool hasRelativeAxis(int32_t deviceId, int axis) const override final;
 
@@ -520,8 +529,8 @@ public:
 
     bool hasMscEvent(int32_t deviceId, int mscEvent) const override final;
 
-    void addKeyRemapping(int32_t deviceId, int32_t fromKeyCode,
-                         int32_t toKeyCode) const override final;
+    void setKeyRemapping(int32_t deviceId,
+                         const std::map<int32_t, int32_t>& keyRemapping) const override final;
 
     status_t mapKey(int32_t deviceId, int32_t scanCode, int32_t usageCode, int32_t metaState,
                     int32_t* outKeycode, int32_t* outMetaState,
@@ -559,8 +568,8 @@ public:
     int32_t getSwitchState(int32_t deviceId, int32_t sw) const override final;
     int32_t getKeyCodeForKeyLocation(int32_t deviceId,
                                      int32_t locationKeyCode) const override final;
-    status_t getAbsoluteAxisValue(int32_t deviceId, int32_t axis,
-                                  int32_t* outValue) const override final;
+    std::optional<int32_t> getAbsoluteAxisValue(int32_t deviceId,
+                                                int32_t axis) const override final;
     base::Result<std::vector<int32_t>> getMtSlotValues(int32_t deviceId, int32_t axis,
                                                        size_t slotCount) const override final;
 
@@ -608,20 +617,27 @@ public:
 
     status_t disableDevice(int32_t deviceId) override final;
 
+    std::filesystem::path getSysfsRootPath(int32_t deviceId) const override final;
+
     void sysfsNodeChanged(const std::string& sysfsNodePath) override final;
+
+    bool setKernelWakeEnabled(int32_t deviceId, bool enabled) override final;
 
     ~EventHub() override;
 
 private:
     // Holds information about the sysfs device associated with the Device.
     struct AssociatedDevice {
+        AssociatedDevice(const std::filesystem::path& sysfsRootPath,
+                         std::shared_ptr<PropertyMap> baseDevConfig);
         // The sysfs root path of the misc device.
         std::filesystem::path sysfsRootPath;
+        // The configuration of the base device.
+        std::shared_ptr<PropertyMap> baseDevConfig;
         std::unordered_map<int32_t /*batteryId*/, RawBatteryInfo> batteryInfos;
         std::unordered_map<int32_t /*lightId*/, RawLightInfo> lightInfos;
         std::optional<RawLayoutInfo> layoutInfo;
 
-        bool isChanged() const;
         bool operator==(const AssociatedDevice&) const = default;
         bool operator!=(const AssociatedDevice&) const = default;
         std::string dump() const;
@@ -654,7 +670,7 @@ private:
         std::map<int /*axis*/, AxisState> absState;
 
         std::string configurationFile;
-        std::unique_ptr<PropertyMap> configuration;
+        std::shared_ptr<PropertyMap> configuration;
         std::unique_ptr<VirtualKeyMap> virtualKeyMap;
         KeyMap keyMap;
 
@@ -668,7 +684,7 @@ private:
         int32_t controllerNumber;
 
         Device(int fd, int32_t id, std::string path, InputDeviceIdentifier identifier,
-               std::shared_ptr<const AssociatedDevice> assocDev);
+               std::shared_ptr<PropertyMap> config);
         ~Device();
 
         void close();
@@ -687,7 +703,7 @@ private:
         void configureFd();
         void populateAbsoluteAxisStates();
         bool hasKeycodeLocked(int keycode) const;
-        void loadConfigurationLocked();
+        bool hasKeycodeInternalLocked(int keycode) const;
         bool loadVirtualKeyMapLocked();
         status_t loadKeyMapLocked();
         bool isExternalDeviceLocked();
@@ -719,7 +735,8 @@ private:
     void addDeviceLocked(std::unique_ptr<Device> device) REQUIRES(mLock);
     void assignDescriptorLocked(InputDeviceIdentifier& identifier) REQUIRES(mLock);
     std::shared_ptr<const AssociatedDevice> obtainAssociatedDeviceLocked(
-            const std::filesystem::path& devicePath) const REQUIRES(mLock);
+            const std::filesystem::path& devicePath,
+            const std::shared_ptr<PropertyMap>& config) const REQUIRES(mLock);
 
     void closeDeviceByPathLocked(const std::string& devicePath) REQUIRES(mLock);
     void closeVideoDeviceByPathLocked(const std::string& devicePath) REQUIRES(mLock);
@@ -764,6 +781,8 @@ private:
     void addDeviceInputInotify();
     void addDeviceInotify();
 
+    void handleSysfsNodeChangeNotificationsLocked() REQUIRES(mLock);
+
     // Protect all internal state.
     mutable std::mutex mLock;
 
@@ -793,10 +812,10 @@ private:
     std::vector<std::unique_ptr<Device>> mOpeningDevices;
     std::vector<std::unique_ptr<Device>> mClosingDevices;
 
-    bool mNeedToSendFinishedDeviceScan;
     bool mNeedToReopenDevices;
     bool mNeedToScanDevices;
     std::vector<std::string> mExcludedDevices;
+    std::vector<int32_t> mDeviceIdsToReopen;
 
     int mEpollFd;
     int mINotifyFd;
@@ -814,6 +833,10 @@ private:
     size_t mPendingEventCount;
     size_t mPendingEventIndex;
     bool mPendingINotify;
+
+    // The sysfs node change notifications that have been sent to EventHub.
+    // Enqueuing notifications does not require the lock to be held.
+    BlockingQueue<std::string> mChangedSysfsNodeNotifications;
 };
 
 } // namespace android

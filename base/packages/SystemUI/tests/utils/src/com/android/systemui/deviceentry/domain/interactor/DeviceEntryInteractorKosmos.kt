@@ -19,14 +19,13 @@ package com.android.systemui.deviceentry.domain.interactor
 import com.android.systemui.authentication.domain.interactor.authenticationInteractor
 import com.android.systemui.bouncer.domain.interactor.alternateBouncerInteractor
 import com.android.systemui.deviceentry.data.repository.deviceEntryRepository
-import com.android.systemui.flags.fakeSystemPropertiesHelper
-import com.android.systemui.keyguard.domain.interactor.trustInteractor
+import com.android.systemui.keyguard.dismissCallbackRegistry
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
+import com.android.systemui.log.table.logcatTableLogBuffer
+import com.android.systemui.scene.domain.interactor.sceneBackInteractor
 import com.android.systemui.scene.domain.interactor.sceneInteractor
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 
-@ExperimentalCoroutinesApi
 val Kosmos.deviceEntryInteractor by
     Kosmos.Fixture {
         DeviceEntryInteractor(
@@ -34,12 +33,10 @@ val Kosmos.deviceEntryInteractor by
             repository = deviceEntryRepository,
             authenticationInteractor = authenticationInteractor,
             sceneInteractor = sceneInteractor,
-            faceAuthInteractor = deviceEntryFaceAuthInteractor,
-            fingerprintAuthInteractor = deviceEntryFingerprintAuthInteractor,
-            biometricSettingsInteractor = deviceEntryBiometricSettingsInteractor,
-            trustInteractor = trustInteractor,
             deviceUnlockedInteractor = deviceUnlockedInteractor,
-            systemPropertiesHelper = fakeSystemPropertiesHelper,
             alternateBouncerInteractor = alternateBouncerInteractor,
+            dismissCallbackRegistry = dismissCallbackRegistry,
+            sceneBackInteractor = sceneBackInteractor,
+            tableLogBuffer = logcatTableLogBuffer(this, "sceneFrameworkTableLogBuffer"),
         )
     }

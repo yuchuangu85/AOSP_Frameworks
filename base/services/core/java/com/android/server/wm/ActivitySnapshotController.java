@@ -18,12 +18,13 @@ package com.android.server.wm;
 
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
 
+import static com.android.server.wm.SnapshotPersistQueue.MAX_STORE_QUEUE_DEPTH;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.graphics.Rect;
 import android.os.Environment;
-import android.os.SystemProperties;
 import android.os.Trace;
 import android.util.ArraySet;
 import android.util.IntArray;
@@ -33,11 +34,11 @@ import android.window.TaskSnapshot;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wm.BaseAppSnapshotPersister.PersistInfoProvider;
-import com.android.window.flags.Flags;
 
 import java.io.File;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.function.Supplier;
 
 /**
  * When an app token becomes invisible, we take a snapshot (bitmap) and put it into our cache.
@@ -98,20 +99,25 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
 
     ActivitySnapshotController(WindowManagerService service, SnapshotPersistQueue persistQueue) {
         super(service);
-        mSnapshotPersistQueue = persistQueue;
-        mPersistInfoProvider = createPersistInfoProvider(service,
-                Environment::getDataSystemCeDirectory);
-        mPersister = new TaskSnapshotPersister(persistQueue, mPersistInfoProvider);
-        mSnapshotLoader = new AppSnapshotLoader(mPersistInfoProvider);
-        initialize(new ActivitySnapshotCache());
-
         final boolean snapshotEnabled =
                 !service.mContext
                         .getResources()
                         .getBoolean(com.android.internal.R.bool.config_disableTaskSnapshots)
-                && isSnapshotEnabled()
                 && !ActivityManager.isLowRamDeviceStatic(); // Don't support Android Go
         setSnapshotEnabled(snapshotEnabled);
+        mSnapshotPersistQueue = persistQueue;
+        mPersistInfoProvider = createPersistInfoProvider(service);
+        mPersister = new TaskSnapshotPersister(
+                persistQueue,
+                mPersistInfoProvider,
+                shouldDisableSnapshots());
+        mSnapshotLoader = new AppSnapshotLoader(mPersistInfoProvider);
+        initialize(new ActivitySnapshotCache());
+    }
+
+    @VisibleForTesting
+    PersistInfoProvider createPersistInfoProvider(WindowManagerService service) {
+        return createPersistInfoProvider(service, Environment::getDataSystemCeDirectory);
     }
 
     @Override
@@ -119,12 +125,6 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
         final float config = mService.mContext.getResources().getFloat(
                 com.android.internal.R.dimen.config_resActivitySnapshotScale);
         return Math.max(Math.min(config, 1f), 0.1f);
-    }
-
-    // TODO remove when enabled
-    static boolean isSnapshotEnabled() {
-        return SystemProperties.getInt("persist.wm.debug.activity_screenshot", 0) != 0
-                || Flags.activitySnapshotByDefault();
     }
 
     static PersistInfoProvider createPersistInfoProvider(
@@ -156,7 +156,8 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
         for (int i = activities.length - 1; i >= 0; --i) {
             fileId ^= getSystemHashCode(activities[i]);
         }
-        return tmpUsf.mFileId == fileId ? mCache.getSnapshot(tmpUsf.mActivityIds.get(0)) : null;
+        return tmpUsf.mFileId == fileId
+                ? mCache.getSnapshotInner(tmpUsf.mActivityIds.get(0)) : null;
     }
 
     private void cleanUpUserFiles(int userId) {
@@ -352,11 +353,18 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
         if (DEBUG) {
             Slog.d(TAG, "ActivitySnapshotController#recordSnapshot " + activity);
         }
+        if (mPersister.mSnapshotPersistQueue.peekWriteQueueSize() >= MAX_STORE_QUEUE_DEPTH
+                || mPersister.mSnapshotPersistQueue.peekQueueSize() > MAX_PERSIST_SNAPSHOT_COUNT) {
+            Slog.w(TAG, "Skipping recording activity snapshot, too many requests!");
+            return;
+        }
         final int size = activity.size();
         final int[] mixedCode = new int[size];
         if (size == 1) {
             final ActivityRecord singleActivity = activity.get(0);
-            final TaskSnapshot snapshot = recordSnapshotInner(singleActivity);
+            final Supplier<TaskSnapshot> supplier = recordSnapshotInner(singleActivity,
+                    false /* allowAppTheme */, null /* inLockConsumer */);
+            final TaskSnapshot snapshot = supplier != null ? supplier.get() : null;
             if (snapshot != null) {
                 mixedCode[0] = getSystemHashCode(singleActivity);
                 addUserSavedFile(singleActivity.mUserId, snapshot, mixedCode);
@@ -441,7 +449,7 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
             addBelowActivityIfExist(ar, mPendingLoadActivity, false, "load-snapshot");
         } else {
             // remove the snapshot for the one below close
-            addBelowActivityIfExist(ar, mPendingRemoveActivity, true, "remove-snapshot");
+            addBelowActivityIfExist(ar, mPendingRemoveActivity, false, "remove-snapshot");
         }
     }
 
@@ -496,50 +504,53 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
         }
         final TaskFragment currTF = currentActivity.getTaskFragment();
         final TaskFragment prevTF = initPrev.getTaskFragment();
-        final TaskFragment prevAdjacentTF = prevTF != null
-                ? prevTF.getAdjacentTaskFragment() : null;
-        if (currTF == prevTF && currTF != null || prevAdjacentTF == null) {
-            // Current activity and previous one is in the same task fragment, or
-            // previous activity is not in a task fragment, or
-            // previous activity's task fragment doesn't adjacent to any others.
+        if (currTF == prevTF || prevTF.asTask() != null || !prevTF.hasAdjacentTaskFragment()) {
+            // Current activity and the initPrev is in the same TaskFragment,
+            // or initPrev activity is a direct child of Task,
+            // or initPrev activity doesn't have an adjacent.
+            // A
+            // B
             if (!inTransition || isInParticipant(initPrev, mTmpTransitionParticipants)) {
                 result.add(initPrev);
             }
             return;
         }
 
-        if (prevAdjacentTF == currTF) {
+        if (currTF.isAdjacentTo(prevTF)) {
             // previous activity A is adjacent to current activity B.
             // Try to find anyone below previous activityA, which are C and D if exists.
             // A | B
             // C (| D)
             getActivityBelow(initPrev, inTransition, result);
-        } else {
-            // previous activity C isn't adjacent to current activity A.
-            // A
-            // B | C
-            final Task prevAdjacentTask = prevAdjacentTF.getTask();
-            if (prevAdjacentTask == currentTask) {
-                final int currentIndex = currTF != null
-                        ? currentTask.mChildren.indexOf(currTF)
-                        : currentTask.mChildren.indexOf(currentActivity);
-                final int prevAdjacentIndex =
-                        prevAdjacentTask.mChildren.indexOf(prevAdjacentTF);
-                // prevAdjacentTF already above currentActivity
-                if (prevAdjacentIndex > currentIndex) {
-                    return;
-                }
-            }
-            if (!inTransition || isInParticipant(initPrev, mTmpTransitionParticipants)) {
-                result.add(initPrev);
-            }
-            // prevAdjacentTF is adjacent to another one
+            return;
+        }
+
+        // The initPrev activity has an adjacent that is different from current activity.
+        // A
+        // B | C
+        final int currentIndex = currTF.asTask() != null
+                ? currentTask.mChildren.indexOf(currentActivity)
+                : currentTask.mChildren.indexOf(currTF);
+        final boolean hasAdjacentAboveCurrent = prevTF.forOtherAdjacentTaskFragments(
+                prevAdjacentTF -> {
+                    final int prevAdjacentIndex = currentTask.mChildren.indexOf(prevAdjacentTF);
+                    return prevAdjacentIndex > currentIndex;
+                });
+        if (hasAdjacentAboveCurrent) {
+            // PrevAdjacentTF already above currentActivity
+            return;
+        }
+        // Add all adjacent top.
+        if (!inTransition || isInParticipant(initPrev, mTmpTransitionParticipants)) {
+            result.add(initPrev);
+        }
+        prevTF.forOtherAdjacentTaskFragments(prevAdjacentTF -> {
             final ActivityRecord prevAdjacentActivity = prevAdjacentTF.getTopMostActivity();
             if (prevAdjacentActivity != null && (!inTransition
                     || isInParticipant(prevAdjacentActivity, mTmpTransitionParticipants))) {
                 result.add(prevAdjacentActivity);
             }
-        }
+        });
     }
 
     static boolean isInParticipant(ActivityRecord ar,
@@ -588,12 +599,6 @@ class ActivitySnapshotController extends AbsAppSnapshotController<ActivityRecord
     @Override
     ActivityRecord getTopActivity(ActivityRecord activity) {
         return activity;
-    }
-
-    @Override
-    ActivityRecord getTopFullscreenActivity(ActivityRecord activity) {
-        final WindowState win = activity.findMainWindow();
-        return (win != null && win.mAttrs.isFullscreen()) ? activity : null;
     }
 
     @Override

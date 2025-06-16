@@ -16,6 +16,7 @@
 
 package com.android.keyguard;
 
+import static com.android.systemui.Flags.simPinUseSlotId;
 import static com.android.keyguard.logging.CarrierTextManagerLogger.REASON_ACTIVE_DATA_SUB_CHANGED;
 import static com.android.keyguard.logging.CarrierTextManagerLogger.REASON_ON_TELEPHONY_CAPABLE;
 import static com.android.keyguard.logging.CarrierTextManagerLogger.REASON_REFRESH_CARRIER_INFO;
@@ -202,7 +203,9 @@ public class CarrierTextManager {
             CarrierTextManagerLogger logger) {
 
         mContext = context;
-        mIsEmergencyCallCapable = telephonyManager.isVoiceCapable();
+        boolean hasTelephony = mContext.getPackageManager()
+                .hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
+        mIsEmergencyCallCapable = telephonyManager.isVoiceCapable() && hasTelephony;
 
         mShowAirplaneMode = showAirplaneMode;
         mShowMissingSim = showMissingSim;
@@ -220,9 +223,7 @@ public class CarrierTextManager {
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
         mLogger = logger;
         mBgExecutor.execute(() -> {
-            boolean supported = mContext.getPackageManager()
-                    .hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
-            if (supported && mNetworkSupported.compareAndSet(false, supported)) {
+            if (hasTelephony && mNetworkSupported.compareAndSet(false, hasTelephony)) {
                 // This will set/remove the listeners appropriately. Note that it will never double
                 // add the listeners.
                 handleSetListening(mCarrierTextCallback);
@@ -368,10 +369,12 @@ public class CarrierTextManager {
 
         for (int i = 0; i < numSubs; i++) {
             int subId = subs.get(i).getSubscriptionId();
+            int slotId = subs.get(i).getSimSlotIndex();
             carrierNames[i] = "";
             subsIds[i] = subId;
-            subOrderBySlot[subs.get(i).getSimSlotIndex()] = i;
-            int simState = mKeyguardUpdateMonitor.getSimState(subId);
+            subOrderBySlot[slotId] = i;
+            int simState = simPinUseSlotId() ? mKeyguardUpdateMonitor.getSimStateForSlotId(slotId)
+                    :  mKeyguardUpdateMonitor.getSimState(subId);
             CharSequence carrierName = subs.get(i).getCarrierName();
             CharSequence carrierTextForSimState = getCarrierTextForSimState(simState, carrierName);
             mLogger.logUpdateLoopStart(subId, simState, String.valueOf(carrierName));

@@ -44,6 +44,10 @@ struct LayerMetadata : public Parcelable {
     LayerMetadata& operator=(const LayerMetadata& other);
     LayerMetadata& operator=(LayerMetadata&& other);
 
+    // Note: `default` is not feasible because Parcelable does not provide ==.
+    bool operator==(const LayerMetadata& rhs) const { return mMap == rhs.mMap; }
+    bool operator!=(const LayerMetadata&) const = default;
+
     // Merges other into this LayerMetadata. If eraseEmpty is true, any entries in
     // in this whose keys are paired with empty values in other will be erased.
     bool merge(const LayerMetadata& other, bool eraseEmpty = false);
@@ -74,6 +78,7 @@ enum class GameMode : int32_t {
 } // namespace android::gui
 
 using android::gui::METADATA_ACCESSIBILITY_ID;
+using android::gui::METADATA_CALLING_UID;
 using android::gui::METADATA_DEQUEUE_TIME;
 using android::gui::METADATA_GAME_MODE;
 using android::gui::METADATA_MOUSE_CURSOR;

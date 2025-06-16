@@ -29,21 +29,26 @@
 #include <math/mat4.h>
 #include <ui/DisplayedFrameStats.h>
 #include <ui/GraphicBuffer.h>
+#include <ui/PictureProfileHandle.h>
 #include <utils/StrongPointer.h>
+
+#include "DisplayHardware/Hal.h"
 
 #include <aidl/android/hardware/graphics/common/DisplayDecorationSupport.h>
 #include <aidl/android/hardware/graphics/common/HdrConversionCapability.h>
 #include <aidl/android/hardware/graphics/common/HdrConversionStrategy.h>
+#include <aidl/android/hardware/graphics/common/Transform.h>
 #include <aidl/android/hardware/graphics/composer3/Capability.h>
 #include <aidl/android/hardware/graphics/composer3/ClientTargetPropertyWithBrightness.h>
 #include <aidl/android/hardware/graphics/composer3/Color.h>
 #include <aidl/android/hardware/graphics/composer3/Composition.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayCapability.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayConfiguration.h>
+#include <aidl/android/hardware/graphics/composer3/DisplayLuts.h>
 #include <aidl/android/hardware/graphics/composer3/IComposerCallback.h>
+#include <aidl/android/hardware/graphics/composer3/Luts.h>
 #include <aidl/android/hardware/graphics/composer3/OverlayProperties.h>
 
-#include <aidl/android/hardware/graphics/common/Transform.h>
 #include <optional>
 
 // TODO(b/129481165): remove the #pragma below and fix conversion issues
@@ -71,9 +76,9 @@ using types::V1_2::ColorMode;
 using types::V1_2::Dataspace;
 using types::V1_2::PixelFormat;
 
+using hardware::graphics::composer::hal::Error;
 using V2_1::Config;
 using V2_1::Display;
-using V2_1::Error;
 using V2_1::Layer;
 using V2_4::CommandReaderBase;
 using V2_4::CommandWriterBase;
@@ -152,6 +157,10 @@ public:
     virtual Error getReleaseFences(Display display, std::vector<Layer>* outLayers,
                                    std::vector<int>* outReleaseFences) = 0;
 
+    virtual Error getLayerPresentFences(Display display, std::vector<Layer>* outLayers,
+                                        std::vector<int>* outFences,
+                                        std::vector<int64_t>* outLatenciesNanos) = 0;
+
     virtual Error presentDisplay(Display display, int* outPresentFence) = 0;
 
     virtual Error setActiveConfig(Display display, Config config) = 0;
@@ -220,14 +229,13 @@ public:
     virtual std::vector<IComposerClient::PerFrameMetadataKey> getPerFrameMetadataKeys(
             Display display) = 0;
     virtual Error getRenderIntents(Display display, ColorMode colorMode,
-            std::vector<RenderIntent>* outRenderIntents) = 0;
+                                   std::vector<RenderIntent>* outRenderIntents) = 0;
     virtual Error getDataspaceSaturationMatrix(Dataspace dataspace, mat4* outMatrix) = 0;
 
     // Composer HAL 2.3
     virtual Error getDisplayIdentificationData(Display display, uint8_t* outPort,
                                                std::vector<uint8_t>* outData) = 0;
-    virtual Error setLayerColorTransform(Display display, Layer layer,
-                                         const float* matrix) = 0;
+    virtual Error setLayerColorTransform(Display display, Layer layer, const float* matrix) = 0;
     virtual Error getDisplayedContentSamplingAttributes(Display display, PixelFormat* outFormat,
                                                         Dataspace* outDataspace,
                                                         uint8_t* outComponentMask) = 0;
@@ -259,7 +267,7 @@ public:
             Display display, IComposerClient::DisplayConnectionType* outType) = 0;
     virtual V2_4::Error getDisplayVsyncPeriod(Display display,
                                               VsyncPeriodNanos* outVsyncPeriod) = 0;
-    virtual V2_4::Error setActiveConfigWithConstraints(
+    virtual Error setActiveConfigWithConstraints(
             Display display, Config config,
             const IComposerClient::VsyncPeriodChangeConstraints& vsyncPeriodChangeConstraints,
             VsyncPeriodChangeTimeline* outTimeline) = 0;
@@ -303,6 +311,16 @@ public:
     virtual Error setRefreshRateChangedCallbackDebugEnabled(Display, bool) = 0;
     virtual Error notifyExpectedPresent(Display, nsecs_t expectedPresentTime,
                                         int32_t frameIntervalNs) = 0;
+    virtual Error getRequestedLuts(Display display, std::vector<Layer>* outLayers,
+                                   std::vector<V3_0::DisplayLuts::LayerLut>* outLuts) = 0;
+    virtual Error setLayerLuts(Display display, Layer layer, V3_0::Luts& luts) = 0;
+    virtual Error getMaxLayerPictureProfiles(Display display, int32_t* outMaxProfiles) = 0;
+    virtual Error setDisplayPictureProfileId(Display display, PictureProfileId id) = 0;
+    virtual Error setLayerPictureProfileId(Display display, Layer layer, PictureProfileId id) = 0;
+    virtual Error startHdcpNegotiation(Display display,
+                                       const aidl::android::hardware::drm::HdcpLevels& levels) = 0;
+    virtual Error getLuts(Display display, const std::vector<sp<GraphicBuffer>>&,
+                          std::vector<V3_0::Luts>*) = 0;
 };
 
 } // namespace Hwc2

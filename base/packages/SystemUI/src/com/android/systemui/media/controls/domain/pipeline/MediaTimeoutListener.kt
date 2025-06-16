@@ -16,22 +16,23 @@
 
 package com.android.systemui.media.controls.domain.pipeline
 
+import android.annotation.WorkerThread
 import android.media.session.MediaController
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.SystemProperties
 import com.android.internal.annotations.VisibleForTesting
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.media.NotificationMediaManager.isPlayingState
 import com.android.systemui.media.controls.shared.model.MediaData
-import com.android.systemui.media.controls.shared.model.SmartspaceMediaData
 import com.android.systemui.media.controls.util.MediaControllerFactory
-import com.android.systemui.media.controls.util.MediaFlags
 import com.android.systemui.plugins.statusbar.StatusBarStateController
-import com.android.systemui.statusbar.NotificationMediaManager.isPlayingState
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.time.SystemClock
+import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
@@ -49,15 +50,15 @@ class MediaTimeoutListener
 @Inject
 constructor(
     private val mediaControllerFactory: MediaControllerFactory,
+    @Background private val bgExecutor: Executor,
+    @Main private val uiExecutor: Executor,
     @Main private val mainExecutor: DelayableExecutor,
     private val logger: MediaTimeoutLogger,
     statusBarStateController: SysuiStatusBarStateController,
     private val systemClock: SystemClock,
-    private val mediaFlags: MediaFlags,
 ) : MediaDataManager.Listener {
 
     private val mediaListeners: MutableMap<String, PlaybackStateListener> = mutableMapOf()
-    private val recommendationListeners: MutableMap<String, RecommendationListener> = mutableMapOf()
 
     /**
      * Callback representing that a media object is now expired:
@@ -101,16 +102,6 @@ constructor(
                                 listener.doTimeout()
                             }
                         }
-
-                        recommendationListeners.forEach { (key, listener) ->
-                            if (
-                                listener.cancellation != null &&
-                                    listener.expiration <= systemClock.currentTimeMillis()
-                            ) {
-                                logger.logTimeoutCancelled(key, "Timed out while dozing")
-                                listener.doTimeout()
-                            }
-                        }
                     }
                 }
             }
@@ -123,7 +114,7 @@ constructor(
         data: MediaData,
         immediately: Boolean,
         receivedSmartspaceCardLatency: Int,
-        isSsReactivated: Boolean
+        isSsReactivated: Boolean,
     ) {
         var reusedListener: PlaybackStateListener? = null
 
@@ -147,19 +138,21 @@ constructor(
         }
 
         reusedListener?.let {
-            val wasPlaying = it.isPlaying()
-            logger.logUpdateListener(key, wasPlaying)
-            it.setMediaData(data)
-            it.key = key
-            mediaListeners[key] = it
-            if (wasPlaying != it.isPlaying()) {
-                // If a player becomes active because of a migration, we'll need to broadcast
-                // its state. Doing it now would lead to reentrant callbacks, so let's wait
-                // until we're done.
-                mainExecutor.execute {
-                    if (mediaListeners[key]?.isPlaying() == true) {
-                        logger.logDelayedUpdate(key)
-                        timeoutCallback.invoke(key, false /* timedOut */)
+            bgExecutor.execute {
+                val wasPlaying = it.isPlaying()
+                logger.logUpdateListener(key, wasPlaying)
+                it.setMediaData(data)
+                it.key = key
+                mediaListeners[key] = it
+                if (wasPlaying != it.isPlaying()) {
+                    // If a player becomes active because of a migration, we'll need to broadcast
+                    // its state. Doing it now would lead to reentrant callbacks, so let's wait
+                    // until we're done.
+                    mainExecutor.execute {
+                        if (mediaListeners[key]?.isPlaying() == true) {
+                            logger.logDelayedUpdate(key)
+                            timeoutCallback.invoke(key, false /* timedOut */)
+                        }
                     }
                 }
             }
@@ -171,30 +164,6 @@ constructor(
 
     override fun onMediaDataRemoved(key: String, userInitiated: Boolean) {
         mediaListeners.remove(key)?.destroy()
-    }
-
-    override fun onSmartspaceMediaDataLoaded(
-        key: String,
-        data: SmartspaceMediaData,
-        shouldPrioritize: Boolean
-    ) {
-        if (!mediaFlags.isPersistentSsCardEnabled()) return
-
-        // First check if we already have a listener
-        recommendationListeners.get(key)?.let {
-            if (!it.destroyed) {
-                it.recommendationData = data
-                return
-            }
-        }
-
-        // Otherwise, create a new one
-        recommendationListeners[key] = RecommendationListener(key, data)
-    }
-
-    override fun onSmartspaceMediaDataRemoved(key: String, immediately: Boolean) {
-        if (!mediaFlags.isPersistentSsCardEnabled()) return
-        recommendationListeners.remove(key)?.destroy()
     }
 
     fun isTimedOut(key: String): Boolean {
@@ -217,18 +186,20 @@ constructor(
             private set
 
         fun Int.isPlaying() = isPlayingState(this)
+
         fun isPlaying() = lastState?.state?.isPlaying() ?: false
 
         init {
-            setMediaData(data)
+            bgExecutor.execute { setMediaData(data) }
         }
 
         fun destroy() {
-            mediaController?.unregisterCallback(this)
+            bgExecutor.execute { mediaController?.unregisterCallback(this) }
             cancellation?.run()
             destroyed = true
         }
 
+        @WorkerThread
         fun setMediaData(data: MediaData) {
             sessionToken = data.token
             destroyed = false
@@ -250,7 +221,9 @@ constructor(
         }
 
         override fun onPlaybackStateChanged(state: PlaybackState?) {
-            processState(state, dispatchEvents = true, currentResumption = resumption)
+            bgExecutor.execute {
+                processState(state, dispatchEvents = true, currentResumption = resumption)
+            }
         }
 
         override fun onSessionDestroyed() {
@@ -258,7 +231,7 @@ constructor(
             if (resumption == true) {
                 // Some apps create a session when MBS is queried. We should unregister the
                 // controller since it will no longer be valid, but don't cancel the timeout
-                mediaController?.unregisterCallback(this)
+                bgExecutor.execute { mediaController?.unregisterCallback(this) }
             } else {
                 // For active controls, if the session is destroyed, clean up everything since we
                 // will need to recreate it if this key is updated later
@@ -267,6 +240,7 @@ constructor(
             }
         }
 
+        @WorkerThread
         private fun processState(
             state: PlaybackState?,
             dispatchEvents: Boolean,
@@ -284,7 +258,7 @@ constructor(
 
             if ((!actionsSame || !playingStateSame) && state != null && dispatchEvents) {
                 logger.logStateCallback(key)
-                stateCallback.invoke(key, state)
+                uiExecutor.execute { stateCallback.invoke(key, state) }
             }
 
             if (playingStateSame && !resumptionChanged) {
@@ -313,7 +287,7 @@ constructor(
                 expireMediaTimeout(key, "playback started - $state, $key")
                 timedOut = false
                 if (dispatchEvents) {
-                    timeoutCallback(key, timedOut)
+                    uiExecutor.execute { timeoutCallback(key, timedOut) }
                 }
             }
         }
@@ -334,103 +308,6 @@ constructor(
             }
             expiration = Long.MAX_VALUE
             cancellation = null
-        }
-    }
-
-    private fun areCustomActionListsEqual(
-        first: List<PlaybackState.CustomAction>?,
-        second: List<PlaybackState.CustomAction>?
-    ): Boolean {
-        // Same object, or both null
-        if (first === second) {
-            return true
-        }
-
-        // Only one null, or different number of actions
-        if ((first == null || second == null) || (first.size != second.size)) {
-            return false
-        }
-
-        // Compare individual actions
-        first.asSequence().zip(second.asSequence()).forEach { (firstAction, secondAction) ->
-            if (!areCustomActionsEqual(firstAction, secondAction)) {
-                return false
-            }
-        }
-        return true
-    }
-
-    private fun areCustomActionsEqual(
-        firstAction: PlaybackState.CustomAction,
-        secondAction: PlaybackState.CustomAction
-    ): Boolean {
-        if (
-            firstAction.action != secondAction.action ||
-                firstAction.name != secondAction.name ||
-                firstAction.icon != secondAction.icon
-        ) {
-            return false
-        }
-
-        if ((firstAction.extras == null) != (secondAction.extras == null)) {
-            return false
-        }
-        if (firstAction.extras != null) {
-            firstAction.extras.keySet().forEach { key ->
-                if (firstAction.extras.get(key) != secondAction.extras.get(key)) {
-                    return false
-                }
-            }
-        }
-        return true
-    }
-
-    /** Listens to changes in recommendation card data and schedules a timeout for its expiration */
-    private inner class RecommendationListener(var key: String, data: SmartspaceMediaData) {
-        private var timedOut = false
-        var destroyed = false
-        var expiration = Long.MAX_VALUE
-            private set
-        var cancellation: Runnable? = null
-            private set
-
-        var recommendationData: SmartspaceMediaData = data
-            set(value) {
-                destroyed = false
-                field = value
-                processUpdate()
-            }
-
-        init {
-            recommendationData = data
-        }
-
-        fun destroy() {
-            cancellation?.run()
-            cancellation = null
-            destroyed = true
-        }
-
-        private fun processUpdate() {
-            if (recommendationData.expiryTimeMs != expiration) {
-                // The expiry time changed - cancel and reschedule
-                val timeout =
-                    recommendationData.expiryTimeMs -
-                        recommendationData.headphoneConnectionTimeMillis
-                logger.logRecommendationTimeoutScheduled(key, timeout)
-                cancellation?.run()
-                cancellation = mainExecutor.executeDelayed({ doTimeout() }, timeout)
-                expiration = recommendationData.expiryTimeMs
-            }
-        }
-
-        fun doTimeout() {
-            cancellation?.run()
-            cancellation = null
-            logger.logTimeout(key)
-            timedOut = true
-            expiration = Long.MAX_VALUE
-            timeoutCallback(key, timedOut)
         }
     }
 }

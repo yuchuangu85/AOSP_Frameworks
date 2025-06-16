@@ -2,6 +2,14 @@ package: "android.database.sqlite"
 container: "system"
 
 flag {
+     name: "oneway_finalizer_close_fixed"
+     namespace: "system_performance"
+     is_fixed_read_only: true
+     description: "Make BuildCursorNative.close oneway if in the finalizer"
+     bug: "368221351"
+}
+
+flag {
      name: "sqlite_apis_35"
      is_exported: true
      namespace: "system_performance"
@@ -11,17 +19,17 @@ flag {
 }
 
 flag {
-     name: "sqlite_allow_temp_tables"
+     name: "concurrent_open_helper"
+     is_exported: true
      namespace: "system_performance"
-     is_fixed_read_only: true
-     description: "Permit updates to TEMP tables in read-only transactions"
-     bug: "317993835"
+     is_fixed_read_only: false
+     description: "Make SQLiteOpenHelper thread-safe"
+     bug: "335904370"
 }
 
 flag {
-     name: "simple_sql_comment_scanner"
+     name: "no_checkpoint_on_finalize"
      namespace: "system_performance"
-     is_fixed_read_only: true
-     description: "Scan SQL comments by hand instead of with a regex"
-     bug: "329118560"
+     description: "Do not checkpoint WAL if closing in the finalizer"
+     bug: "397982577"
 }

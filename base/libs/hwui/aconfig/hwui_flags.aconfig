@@ -2,6 +2,14 @@ package: "com.android.graphics.hwui.flags"
 container: "system"
 
 flag {
+  name: "runtime_color_filters_blenders"
+  namespace: "core_graphics"
+  description: "API for AGSL authored runtime color filters and blenders"
+  bug: "358126864"
+  is_exported: true
+}
+
+flag {
   name: "clip_shader"
   is_exported: true
   namespace: "core_graphics"
@@ -26,17 +34,21 @@ flag {
 }
 
 flag {
-  name: "high_contrast_text_luminance"
-  namespace: "accessibility"
-  description: "Use luminance to determine how to make text more high contrast, instead of RGB heuristic"
-  bug: "186567103"
-}
-
-flag {
   name: "high_contrast_text_small_text_rect"
   namespace: "accessibility"
   description: "Draw a solid rectangle background behind text instead of a stroke outline"
   bug: "186567103"
+  is_exported: true
+}
+
+flag {
+  name: "high_contrast_text_inner_text_color"
+  namespace: "accessibility"
+  description: "Render text color by modifying its brightness instead of defaulting to black and white"
+  bug: "384793956"
+  metadata {
+      purpose: PURPOSE_BUGFIX
+  }
 }
 
 flag {
@@ -89,6 +101,7 @@ flag {
   namespace: "core_graphics"
   description: "Add canvas#drawRegion API"
   bug: "318612129"
+  is_exported: true
 }
 
 flag {
@@ -96,4 +109,105 @@ flag {
   namespace: "core_graphics"
   description: "Initialize GL even when HWUI is set to use Vulkan. This improves app startup time for apps using GL."
   bug: "335172671"
+}
+
+flag {
+  name: "skip_eglmanager_telemetry"
+  namespace: "core_graphics"
+  description: "Skip telemetry in EglManager's calls to eglCreateContext to avoid polluting telemetry"
+  bug: "347911216"
+}
+
+flag {
+  name: "resample_gainmap_regions"
+  namespace: "core_graphics"
+  description: "Resample gainmaps when decoding regions, to improve visual quality"
+  bug: "352847821"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "iso_gainmap_apis"
+  is_exported: true
+  namespace: "core_graphics"
+  description: "APIs that expose gainmap metadata corresponding to those defined in ISO 21496-1"
+  bug: "349357636"
+}
+
+flag {
+  name: "shader_color_space"
+  is_exported: true
+  namespace: "core_graphics"
+  description: "API to set the working colorspace of a Shader or ColorFilter"
+  bug: "299670828"
+}
+
+flag {
+  name: "query_global_priority"
+  namespace: "core_graphics"
+  description: "Attempt to query whether the vulkan driver supports the requested global priority before queue creation."
+  bug: "343986434"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "bitmap_ashmem_long_name"
+  namespace: "core_graphics"
+  description: "Whether to have more information in ashmem filenames for bitmaps"
+  bug: "369619160"
+}
+
+flag {
+  name: "animated_image_drawable_filter_bitmap"
+  is_exported: true
+  namespace: "core_graphics"
+  description: "API's that enable animated image drawables to use nearest sampling when scaling."
+  bug: "370523334"
+}
+
+flag {
+  name: "remove_vri_sketchy_destroy"
+  namespace: "core_graphics"
+  description: "Remove the eager yet thread-violating destroyHardwareResources in VRI#die"
+  bug: "377057106"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "early_preload_gl_context"
+  namespace: "core_graphics"
+  description: "Preload GL context on renderThread preload. This improves app startup time for apps using GL."
+  bug: "383612849"
+}
+
+flag {
+  name: "calc_workload_orig_deadline"
+  namespace: "window_surfaces"
+  description: "Use original frame deadline to calculate the workload target deadline for jank tracking"
+  bug: "389939827"
+  is_fixed_read_only: true
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
+}
+
+flag {
+  name: "early_preinit_buffer_allocator"
+  namespace: "core_graphics"
+  description: "Initialize GraphicBufferAllocater on ViewRootImpl init, to avoid blocking on init during buffer allocation, improving app launch latency."
+  bug: "389908734"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "bitmap_parcel_ashmem_as_immutable"
+  namespace: "system_performance"
+  description: "Whether to parcel implicit copies of bitmaps to ashmem as immutable"
+  bug: "400807118"
 }

@@ -18,8 +18,6 @@ package com.android.systemui.statusbar.events
 
 import android.graphics.Point
 import android.graphics.Rect
-import android.platform.test.annotations.DisableFlags
-import android.platform.test.annotations.EnableFlags
 import android.testing.TestableLooper.RunWithLooper
 import android.view.Display
 import android.view.DisplayAdjustments
@@ -28,11 +26,14 @@ import android.widget.FrameLayout
 import android.widget.FrameLayout.LayoutParams.UNSPECIFIED_GRAVITY
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
-import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.res.R
 import com.android.systemui.statusbar.FakeStatusBarStateController
-import com.android.systemui.statusbar.phone.StatusBarContentInsetsProvider
+import com.android.systemui.statusbar.events.PrivacyDotCorner.BottomLeft
+import com.android.systemui.statusbar.events.PrivacyDotCorner.BottomRight
+import com.android.systemui.statusbar.events.PrivacyDotCorner.TopLeft
+import com.android.systemui.statusbar.events.PrivacyDotCorner.TopRight
+import com.android.systemui.statusbar.layout.StatusBarContentInsetsProvider
 import com.android.systemui.statusbar.policy.FakeConfigurationController
 import com.android.systemui.util.concurrency.DelayableExecutor
 import com.android.systemui.util.leak.RotationUtils.ROTATION_LANDSCAPE
@@ -73,16 +74,16 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
         }
 
     private fun createController() =
-        PrivacyDotViewController(
-                executor,
-                testScope.backgroundScope,
-                statusBarStateController,
-                configurationController,
-                contentInsetsProvider,
-                animationScheduler = mock<SystemStatusAnimationScheduler>(),
-                shadeInteractor = null
-            )
-            .also { it.setUiExecutor(executor) }
+        PrivacyDotViewControllerImpl(
+            executor,
+            testScope.backgroundScope,
+            statusBarStateController,
+            configurationController,
+            contentInsetsProvider,
+            animationScheduler = mock<SystemStatusAnimationScheduler>(),
+            shadeInteractor = null,
+            uiExecutor = executor,
+        )
 
     @Test
     fun topMargin_topLeftView_basedOnSeascapeArea() {
@@ -218,7 +219,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
 
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(TOP_RIGHT)
+        assertThat(controller.currentViewState.corner).isEqualTo(TopRight)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(topRightView)
     }
 
@@ -228,7 +229,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
 
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(BOTTOM_RIGHT)
+        assertThat(controller.currentViewState.corner).isEqualTo(BottomRight)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(bottomRightView)
     }
 
@@ -238,7 +239,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
 
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(TOP_LEFT)
+        assertThat(controller.currentViewState.corner).isEqualTo(TopLeft)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(topLeftView)
     }
 
@@ -248,7 +249,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
 
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(BOTTOM_LEFT)
+        assertThat(controller.currentViewState.corner).isEqualTo(BottomLeft)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(bottomLeftView)
     }
 
@@ -259,7 +260,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
         enableRtl()
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(TOP_LEFT)
+        assertThat(controller.currentViewState.corner).isEqualTo(TopLeft)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(topLeftView)
     }
 
@@ -270,7 +271,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
         enableRtl()
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(TOP_RIGHT)
+        assertThat(controller.currentViewState.corner).isEqualTo(TopRight)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(topRightView)
     }
 
@@ -281,7 +282,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
         enableRtl()
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(BOTTOM_LEFT)
+        assertThat(controller.currentViewState.corner).isEqualTo(BottomLeft)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(bottomLeftView)
     }
 
@@ -292,13 +293,12 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
         enableRtl()
         val controller = createAndInitializeController()
 
-        assertThat(controller.currentViewState.cornerIndex).isEqualTo(BOTTOM_RIGHT)
+        assertThat(controller.currentViewState.corner).isEqualTo(BottomRight)
         assertThat(controller.currentViewState.designatedCorner).isEqualTo(bottomRightView)
     }
 
     @Test
-    @EnableFlags(Flags.FLAG_PRIVACY_DOT_UNFOLD_WRONG_CORNER_FIX)
-    fun initialize_newViews_fixFlagEnabled_gravityIsUpdated() {
+    fun initialize_newViews_gravityIsUpdated() {
         val newTopLeftView = initDotView()
         val newTopRightView = initDotView()
         val newBottomLeftView = initDotView()
@@ -311,33 +311,11 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
             newTopLeftView,
             newTopRightView,
             newBottomLeftView,
-            newBottomRightView
+            newBottomRightView,
         )
 
         assertThat((newBottomRightView.layoutParams as FrameLayout.LayoutParams).gravity)
             .isNotEqualTo(UNSPECIFIED_GRAVITY)
-    }
-
-    @Test
-    @DisableFlags(Flags.FLAG_PRIVACY_DOT_UNFOLD_WRONG_CORNER_FIX)
-    fun initialize_newViews_fixFlagDisabled_gravityIsNotUpdated() {
-        val newTopLeftView = initDotView()
-        val newTopRightView = initDotView()
-        val newBottomLeftView = initDotView()
-        val newBottomRightView = initDotView()
-        setRotation(ROTATION_LANDSCAPE) // Bottom right used in landscape
-
-        val controller = createAndInitializeController()
-        // Re-init with different views, but same rotation
-        controller.initialize(
-            newTopLeftView,
-            newTopRightView,
-            newBottomLeftView,
-            newBottomRightView
-        )
-
-        assertThat((newBottomRightView.layoutParams as FrameLayout.LayoutParams).gravity)
-            .isEqualTo(UNSPECIFIED_GRAVITY)
     }
 
     private fun setRotation(rotation: Int) {
@@ -347,7 +325,7 @@ class PrivacyDotViewControllerTest : SysuiTestCase() {
     private fun initDotView(): View {
         val privacyDot = View(context).also { it.id = R.id.privacy_dot }
         return FrameLayout(context).also {
-            it.layoutParams = FrameLayout.LayoutParams(/* width = */ 0, /* height = */ 0)
+            it.layoutParams = FrameLayout.LayoutParams(/* width= */ 0, /* height= */ 0)
             it.addView(privacyDot)
         }
     }

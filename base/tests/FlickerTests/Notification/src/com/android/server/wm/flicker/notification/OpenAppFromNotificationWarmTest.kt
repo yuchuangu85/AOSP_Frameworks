@@ -16,8 +16,6 @@
 
 package com.android.server.wm.flicker.notification
 
-import android.platform.test.annotations.Postsubmit
-import android.platform.test.annotations.Presubmit
 import android.platform.test.rule.DisableNotificationCooldownSettingRule
 import android.tools.flicker.junit.FlickerParametersRunnerFactory
 import android.tools.flicker.legacy.FlickerBuilder
@@ -28,6 +26,7 @@ import android.tools.helpers.wakeUpAndGoToHomeScreen
 import android.tools.traces.component.ComponentNameMatcher
 import android.view.WindowInsets
 import android.view.WindowManager
+import androidx.test.filters.FlakyTest
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Until
 import com.android.server.wm.flicker.helpers.NotificationAppHelper
@@ -54,6 +53,7 @@ import org.junit.runners.Parameterized
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@FlakyTest(bugId = 384046002)
 open class OpenAppFromNotificationWarmTest(flicker: LegacyFlickerTest) :
     OpenAppTransition(flicker) {
     override val testApp: NotificationAppHelper = NotificationAppHelper(instrumentation)
@@ -120,23 +120,20 @@ open class OpenAppFromNotificationWarmTest(flicker: LegacyFlickerTest) :
         // Wait for the app to launch
         wmHelper.StateSyncBuilder().withFullScreenApp(testApp).waitForAndVerify()
     }
-    @Presubmit @Test override fun appWindowBecomesVisible() = appWindowBecomesVisible_warmStart()
+    @Test override fun appWindowBecomesVisible() = appWindowBecomesVisible_warmStart()
 
-    @Presubmit @Test override fun appLayerBecomesVisible() = appLayerBecomesVisible_warmStart()
+    @Test override fun appLayerBecomesVisible() = appLayerBecomesVisible_warmStart()
 
-    @Presubmit
     @Test
     open fun notificationAppWindowVisibleAtEnd() {
         flicker.assertWmEnd { this.isAppWindowVisible(testApp) }
     }
 
-    @Presubmit
     @Test
     open fun notificationAppWindowOnTopAtEnd() {
         flicker.assertWmEnd { this.isAppWindowOnTop(testApp) }
     }
 
-    @Presubmit
     @Test
     open fun notificationAppLayerVisibleAtEnd() {
         flicker.assertLayersEnd { this.isVisible(testApp) }
@@ -148,10 +145,9 @@ open class OpenAppFromNotificationWarmTest(flicker: LegacyFlickerTest) :
      *
      * Note: Large screen only
      */
-    @Presubmit
     @Test
     open fun taskBarWindowIsVisibleAtEnd() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         flicker.taskBarWindowIsVisibleAtEnd()
     }
 
@@ -160,33 +156,29 @@ open class OpenAppFromNotificationWarmTest(flicker: LegacyFlickerTest) :
      *
      * Note: Large screen only
      */
-    @Presubmit
     @Test
     open fun taskBarLayerIsVisibleAtEnd() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         flicker.taskBarLayerIsVisibleAtEnd()
     }
 
     /** Checks the position of the [ComponentNameMatcher.NAV_BAR] at the end of the transition */
-    @Presubmit
     @Test
     open fun navBarLayerPositionAtEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarLayerPositionAtEnd()
     }
 
     /** {@inheritDoc} */
-    @Presubmit
     @Test
     open fun navBarLayerIsVisibleAtEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarLayerIsVisibleAtEnd()
     }
 
-    @Presubmit
     @Test
     open fun navBarWindowIsVisibleAtEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.navBarWindowIsVisibleAtEnd()
     }
 
@@ -197,7 +189,6 @@ open class OpenAppFromNotificationWarmTest(flicker: LegacyFlickerTest) :
 
     /** {@inheritDoc} */
     @Test
-    @Postsubmit
     override fun taskBarWindowIsAlwaysVisible() = super.taskBarWindowIsAlwaysVisible()
 
     companion object {

@@ -2,11 +2,9 @@ package com.android.systemui.biometrics.ui.viewmodel
 
 import android.content.Context
 import android.graphics.drawable.Drawable
-import android.hardware.biometrics.Flags.customBiometricPrompt
 import android.hardware.biometrics.PromptContentView
 import android.text.InputType
 import com.android.internal.widget.LockPatternView
-import com.android.systemui.Flags.constraintBp
 import com.android.systemui.biometrics.Utils
 import com.android.systemui.biometrics.domain.interactor.CredentialStatus
 import com.android.systemui.biometrics.domain.interactor.PromptCredentialInteractor
@@ -37,21 +35,17 @@ constructor(
     val header: Flow<CredentialHeaderViewModel> =
         combine(
             credentialInteractor.prompt.filterIsInstance<BiometricPromptRequest.Credential>(),
-            credentialInteractor.showTitleOnly
+            credentialInteractor.showTitleOnly,
         ) { request, showTitleOnly ->
-            val flagEnabled = customBiometricPrompt() && constraintBp()
-            val showTitleOnlyForCredential = showTitleOnly && flagEnabled
             BiometricPromptHeaderViewModelImpl(
                 request,
                 user = request.userInfo,
                 title = request.title,
-                subtitle = if (showTitleOnlyForCredential) "" else request.subtitle,
-                contentView =
-                    if (flagEnabled && !showTitleOnlyForCredential) request.contentView else null,
-                description =
-                    if (flagEnabled && request.contentView != null) "" else request.description,
+                subtitle = if (showTitleOnly) "" else request.subtitle,
+                contentView = if (!showTitleOnly) request.contentView else null,
+                description = if (request.contentView != null) "" else request.description,
                 icon = applicationContext.asLockIcon(request.userInfo.deviceCredentialOwnerId),
-                showEmergencyCallButton = request.showEmergencyCallButton
+                showEmergencyCallButton = request.showEmergencyCallButton,
             )
         }
 
@@ -61,6 +55,17 @@ constructor(
             when (it) {
                 is BiometricPromptRequest.Credential.Pin ->
                     InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                else -> null
+            }
+        }
+
+    /** Input box accessibility description for text based credential views */
+    val inputBoxContentDescription: Flow<Int?> =
+        credentialInteractor.prompt.map {
+            when (it) {
+                is BiometricPromptRequest.Credential.Pin -> R.string.keyguard_accessibility_pin_area
+                is BiometricPromptRequest.Credential.Password ->
+                    R.string.keyguard_accessibility_password
                 else -> null
             }
         }
@@ -82,8 +87,8 @@ constructor(
     val errorMessage: Flow<String> =
         combine(credentialInteractor.verificationError, credentialInteractor.prompt) { error, p ->
             when (error) {
-                is CredentialStatus.Fail.Error -> error.error
-                        ?: applicationContext.asBadCredentialErrorMessage(p)
+                is CredentialStatus.Fail.Error ->
+                    error.error ?: applicationContext.asBadCredentialErrorMessage(p)
                 is CredentialStatus.Fail.Throttled -> error.error
                 null -> ""
             }
@@ -126,7 +131,7 @@ constructor(
     /** Check a pattern and update [validatedAttestation] or [remainingAttempts]. */
     suspend fun checkCredential(
         pattern: List<LockPatternView.Cell>,
-        header: CredentialHeaderViewModel
+        header: CredentialHeaderViewModel,
     ) = checkCredential(credentialInteractor.checkCredential(header.asRequest(), pattern = pattern))
 
     private suspend fun checkCredential(result: CredentialStatus) {

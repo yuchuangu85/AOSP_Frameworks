@@ -21,11 +21,9 @@
 
 #include <errno.h>
 #include <inttypes.h>
-#include <linux/capability.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <sstream>
@@ -36,7 +34,6 @@
 #include "android-base/stringprintf.h"
 #include "android_content_res_ApkAssets.h"
 #include "android_runtime/AndroidRuntime.h"
-#include "android_util_Binder.h"
 #include "androidfw/Asset.h"
 #include "androidfw/AssetManager.h"
 #include "androidfw/AssetManager2.h"
@@ -56,9 +53,6 @@
 #include "utils/Trace.h"
 #include "utils/misc.h"
 
-extern "C" int capget(cap_user_header_t hdrp, cap_user_data_t datap);
-extern "C" int capset(cap_user_header_t hdrp, const cap_user_data_t datap);
-
 using ::android::base::StringPrintf;
 
 namespace android {
@@ -73,6 +67,7 @@ static struct typedvalue_offsets_t {
   jfieldID mResourceId;
   jfieldID mChangingConfigurations;
   jfieldID mDensity;
+  jfieldID mUsesFeatureFlags;
 } gTypedValueOffsets;
 
 // This is also used by asset_manager.cpp.
@@ -104,7 +99,23 @@ static struct arraymap_offsets_t {
   jmethodID put;
 } gArrayMapOffsets;
 
+static struct parcel_file_descriptor_offsets_t {
+  jclass mClass;
+  jmethodID mConstructor;
+} gParcelFileDescriptorOffsets;
+
+static struct file_descriptor_offsets_t {
+    jclass mClass;
+    jmethodID mConstructor;
+    jfieldID mHandle;
+} gFileDescriptorOffsets;
+
 static jclass g_stringClass = nullptr;
+
+// Duplicates a file descriptor. On Linux/Mac, this wraps fcntl(fd, F_DUPFD_CLOEXEC).
+// On windows, since file descriptors are not inherited by child processes by default, this
+// wraps dup()
+extern int DupFdCloExec(int fd);
 
 // ----------------------------------------------------------------------------
 
@@ -127,6 +138,8 @@ static jint CopyValue(JNIEnv* env, const AssetManager2::SelectedValue& value,
   env->SetIntField(out_typed_value, gTypedValueOffsets.mResourceId, value.resid);
   env->SetIntField(out_typed_value, gTypedValueOffsets.mChangingConfigurations, value.flags);
   env->SetIntField(out_typed_value, gTypedValueOffsets.mDensity, value.config.density);
+  env->SetBooleanField(out_typed_value, gTypedValueOffsets.mUsesFeatureFlags,
+                       value.entry_flags & ResTable_entry::FLAG_USES_FEATURE_FLAGS);
   return static_cast<jint>(ApkAssetsCookieToJavaCookie(value.cookie));
 }
 
@@ -188,7 +201,7 @@ static jobject NativeGetOverlayableMap(JNIEnv* env, jclass /*clazz*/, jlong ptr,
   auto assetmanager = LockAndStartAssetManager(ptr);
   const ScopedUtfChars package_name_utf8(env, package_name);
   CHECK(package_name_utf8.c_str() != nullptr);
-  const std::string std_package_name(package_name_utf8.c_str());
+  const std::string_view std_package_name(package_name_utf8.c_str());
   const std::unordered_map<std::string, std::string>* map = nullptr;
 
   assetmanager->ForEachPackage([&](const std::string& this_package_name, uint8_t package_id) {
@@ -244,7 +257,6 @@ static jstring NativeGetOverlayablesToString(JNIEnv* env, jclass /*clazz*/, jlon
   return env->NewStringUTF(result.c_str());
 }
 
-#ifdef __ANDROID__ // Layoutlib does not support parcel
 static jobject ReturnParcelFileDescriptor(JNIEnv* env, std::unique_ptr<Asset> asset,
                                           jlongArray out_offsets) {
   off64_t start_offset, length;
@@ -269,22 +281,15 @@ static jobject ReturnParcelFileDescriptor(JNIEnv* env, std::unique_ptr<Asset> as
 
   env->ReleasePrimitiveArrayCritical(out_offsets, offsets, 0);
 
-  jobject file_desc = jniCreateFileDescriptor(env, fd);
-  if (file_desc == nullptr) {
-    close(fd);
-    return nullptr;
-  }
-  return newParcelFileDescriptor(env, file_desc);
-}
-#else
-static jobject ReturnParcelFileDescriptor(JNIEnv* env, std::unique_ptr<Asset> asset,
-                                          jlongArray out_offsets) {
-  jniThrowException(env, "java/lang/UnsupportedOperationException",
-                    "Implement me");
-  // never reached
-  return nullptr;
-}
+  jobject fdescObj =
+          env->NewObject(gFileDescriptorOffsets.mClass, gFileDescriptorOffsets.mConstructor, fd);
+#ifdef _WIN32
+  env->SetLongField(fdescObj, gFileDescriptorOffsets.mHandle, _get_osfhandle(fd));
 #endif
+
+  return env->NewObject(gParcelFileDescriptorOffsets.mClass,
+                        gParcelFileDescriptorOffsets.mConstructor, fdescObj);
+}
 
 static jint NativeGetGlobalAssetCount(JNIEnv* /*env*/, jobject /*clazz*/) {
   return Asset::getGlobalCount();
@@ -407,19 +412,26 @@ static void NativeSetConfiguration(JNIEnv* env, jclass /*clazz*/, jlong ptr, jin
     configs.push_back(configuration);
   }
 
-  uint32_t default_locale_int = 0;
+  std::optional<ResTable_config> default_locale_opt;
   if (default_locale != nullptr) {
-    ResTable_config config;
-    static_assert(std::is_same_v<decltype(config.locale), decltype(default_locale_int)>);
-    ScopedUtfChars locale_utf8(env, default_locale);
-    CHECK(locale_utf8.c_str() != nullptr);
-    config.setBcp47Locale(locale_utf8.c_str());
-    default_locale_int = config.locale;
+      ScopedUtfChars locale_utf8(env, default_locale);
+      CHECK(locale_utf8.c_str() != nullptr);
+      default_locale_opt.emplace();
+      default_locale_opt->setBcp47Locale(locale_utf8.c_str());
   }
 
   auto assetmanager = LockAndStartAssetManager(ptr);
   assetmanager->SetConfigurations(std::move(configs), force_refresh != JNI_FALSE);
-  assetmanager->SetDefaultLocale(default_locale_int);
+  assetmanager->SetDefaultLocale(default_locale_opt);
+}
+
+static void NativeSetOverlayConstraints(JNIEnv* /*env*/, jclass /*clazz*/, jlong ptr,
+                                        jint displayId, jint deviceId) {
+    ATRACE_NAME("AssetManager::SetDisplayIdAndDeviceId");
+
+    auto assetmanager = LockAndStartAssetManager(ptr);
+    assetmanager->SetOverlayConstraints(static_cast<int32_t>(displayId),
+                                        static_cast<int32_t>(deviceId));
 }
 
 static jobject NativeGetAssignedPackageIdentifiers(JNIEnv* env, jclass /*clazz*/, jlong ptr,
@@ -653,7 +665,7 @@ static jlong NativeOpenXmlAssetFd(JNIEnv* env, jobject /*clazz*/, jlong ptr, int
     return 0;
   }
 
-  base::unique_fd dup_fd(::fcntl(fd, F_DUPFD_CLOEXEC, 0));
+  base::unique_fd dup_fd(DupFdCloExec(fd));
   if (dup_fd < 0) {
     jniThrowIOException(env, errno);
     return 0;
@@ -1065,8 +1077,8 @@ static jstring NativeGetLastResourceResolution(JNIEnv* env,
 static jobjectArray NativeGetLocales(JNIEnv* env, jclass /*class*/, jlong ptr,
                                      jboolean exclude_system) {
   auto assetmanager = LockAndStartAssetManager(ptr);
-  std::set<std::string> locales =
-      assetmanager->GetResourceLocales(exclude_system, true /*merge_equivalent_languages*/);
+  auto locales =
+          assetmanager->GetResourceLocales(exclude_system, true /*merge_equivalent_languages*/);
 
   jobjectArray array = env->NewObjectArray(locales.size(), g_stringClass, nullptr);
   if (array == nullptr) {
@@ -1200,6 +1212,28 @@ static void NativeApplyStyle(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong the
              static_cast<uint32_t>(def_style_resid), reinterpret_cast<uint32_t*>(attrs), attrs_len,
              out_values, out_indices);
   env->ReleasePrimitiveArrayCritical(java_attrs, attrs, JNI_ABORT);
+}
+
+// This version is compatible with standard JVMs, however slower without ART optimizations
+static void NativeApplyStyleWithArray(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
+                                      jint def_style_attr, jint def_style_resid,
+                                      jlong xml_parser_ptr, jintArray java_attrs,
+                                      jintArray java_values, jintArray java_indices) {
+  auto assetmanager = LockAndStartAssetManager(ptr);
+  Theme* theme = reinterpret_cast<Theme*>(theme_ptr);
+  CHECK(theme->GetAssetManager() == &(*assetmanager));
+  (void) assetmanager;
+
+  ResXMLParser* xml_parser = reinterpret_cast<ResXMLParser*>(xml_parser_ptr);
+  ScopedIntCriticalArrayRW out_values(env, java_values);
+  ScopedIntCriticalArrayRW out_indices(env, java_indices);
+  ScopedIntCriticalArrayRO attrs(env, java_attrs);
+
+  ApplyStyle(theme, xml_parser, static_cast<uint32_t>(def_style_attr),
+             static_cast<uint32_t>(def_style_resid),
+             reinterpret_cast<const uint32_t*>(attrs.get()), attrs.size(),
+             reinterpret_cast<uint32_t*>(out_values.get()),
+             reinterpret_cast<uint32_t*>(out_indices.get()));
 }
 
 static jboolean NativeResolveAttrs(JNIEnv* env, jclass /*clazz*/, jlong ptr, jlong theme_ptr,
@@ -1530,6 +1564,7 @@ static const JNINativeMethod gAssetManagerMethods[] = {
         {"nativeSetApkAssets", "(J[Landroid/content/res/ApkAssets;ZZ)V", (void*)NativeSetApkAssets},
         {"nativeSetConfiguration", "(JIILjava/lang/String;[Ljava/lang/String;IIIIIIIIIIIIIIIIZ)V",
          (void*)NativeSetConfiguration},
+        {"nativeSetOverlayConstraints", "(JII)V", (void*)NativeSetOverlayConstraints},
         {"nativeGetAssignedPackageIdentifiers", "(JZZ)Landroid/util/SparseArray;",
          (void*)NativeGetAssignedPackageIdentifiers},
 
@@ -1581,6 +1616,7 @@ static const JNINativeMethod gAssetManagerMethods[] = {
         // Style attribute related methods.
         {"nativeAttributeResolutionStack", "(JJIII)[I", (void*)NativeAttributeResolutionStack},
         {"nativeApplyStyle", "(JJIIJ[IJJ)V", (void*)NativeApplyStyle},
+        {"nativeApplyStyleWithArray", "(JJIIJ[I[I[I)V", (void*)NativeApplyStyleWithArray},
         {"nativeResolveAttrs", "(JJII[I[I[I[I)Z", (void*)NativeResolveAttrs},
         {"nativeRetrieveAttributes", "(JJ[I[I[I)Z", (void*)NativeRetrieveAttributes},
 
@@ -1631,6 +1667,7 @@ int register_android_content_AssetManager(JNIEnv* env) {
   gTypedValueOffsets.mChangingConfigurations =
       GetFieldIDOrDie(env, typedValue, "changingConfigurations", "I");
   gTypedValueOffsets.mDensity = GetFieldIDOrDie(env, typedValue, "density", "I");
+  gTypedValueOffsets.mUsesFeatureFlags = GetFieldIDOrDie(env, typedValue, "usesFeatureFlags", "Z");
 
   jclass assetManager = FindClassOrDie(env, "android/content/res/AssetManager");
   gAssetManagerOffsets.mObject = GetFieldIDOrDie(env, assetManager, "mObject", "J");
@@ -1665,6 +1702,20 @@ int register_android_content_AssetManager(JNIEnv* env) {
   gArrayMapOffsets.put =
       GetMethodIDOrDie(env, gArrayMapOffsets.classObject, "put",
                        "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+
+  jclass pfdClass = FindClassOrDie(env, "android/os/ParcelFileDescriptor");
+  gParcelFileDescriptorOffsets.mClass = MakeGlobalRefOrDie(env, pfdClass);
+  gParcelFileDescriptorOffsets.mConstructor =
+          GetMethodIDOrDie(env, pfdClass, "<init>", "(Ljava/io/FileDescriptor;)V");
+
+  jclass fdClass = FindClassOrDie(env, "java/io/FileDescriptor");
+  gFileDescriptorOffsets.mClass = MakeGlobalRefOrDie(env, fdClass);
+  gFileDescriptorOffsets.mConstructor =
+          GetMethodIDOrDie(env, gFileDescriptorOffsets.mClass, "<init>", "(I)V");
+#ifdef _WIN32
+  gFileDescriptorOffsets.mHandle =
+          GetFieldIDOrDie(env, gFileDescriptorOffsets.mClass, "handle", "J");
+#endif
 
   return RegisterMethodsOrDie(env, "android/content/res/AssetManager", gAssetManagerMethods,
                               NELEM(gAssetManagerMethods));

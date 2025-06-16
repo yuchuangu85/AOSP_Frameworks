@@ -36,13 +36,14 @@
 #include <ftl/non_null.h>
 #include <ftl/optional.h>
 #include <scheduler/Features.h>
+#include <scheduler/FrameRateMode.h>
 #include <scheduler/FrameTargeter.h>
 #include <scheduler/Time.h>
 #include <scheduler/VsyncConfig.h>
 #include <ui/DisplayId.h>
 #include <ui/DisplayMap.h>
 
-#include "Display/DisplayModeRequest.h"
+#include "DisplayHardware/DisplayMode.h"
 #include "EventThread.h"
 #include "FrameRateOverrideMappings.h"
 #include "ISchedulerCallback.h"
@@ -52,6 +53,7 @@
 #include "RefreshRateSelector.h"
 #include "SmallAreaDetectionAllowMappings.h"
 #include "Utils/Dumper.h"
+#include "VsyncConfiguration.h"
 #include "VsyncModulator.h"
 
 #include <FrontEnd/LayerHierarchy.h>
@@ -94,7 +96,7 @@ public:
 
     // TODO: b/241285191 - Remove this API by promoting pacesetter in onScreen{Acquired,Released}.
     void setPacesetterDisplay(PhysicalDisplayId) REQUIRES(kMainThreadContext)
-            EXCLUDES(mDisplayLock);
+            EXCLUDES(mDisplayLock, mVsyncConfigLock);
 
     using RefreshRateSelectorPtr = std::shared_ptr<RefreshRateSelector>;
 
@@ -145,21 +147,19 @@ public:
             Cycle, EventRegistrationFlags eventRegistration = {},
             const sp<IBinder>& layerHandle = nullptr) EXCLUDES(mChoreographerLock);
 
-    const sp<EventThreadConnection>& getEventConnection(Cycle cycle) const {
-        return cycle == Cycle::Render ? mRenderEventConnection : mLastCompositeEventConnection;
-    }
-
     enum class Hotplug { Connected, Disconnected };
     void dispatchHotplug(PhysicalDisplayId, Hotplug);
 
     void dispatchHotplugError(int32_t errorCode);
 
-    void onPrimaryDisplayModeChanged(Cycle, const FrameRateMode&) EXCLUDES(mPolicyLock);
-    void onNonPrimaryDisplayModeChanged(Cycle, const FrameRateMode&);
+    // Returns true if the PhysicalDisplayId is the pacesetter.
+    bool onDisplayModeChanged(PhysicalDisplayId, const FrameRateMode&,
+                              bool clearContentRequirements) EXCLUDES(mPolicyLock);
+
+    void onDisplayModeRejected(PhysicalDisplayId, DisplayModeId);
 
     void enableSyntheticVsync(bool = true) REQUIRES(kMainThreadContext);
-
-    void onFrameRateOverridesChanged(Cycle, PhysicalDisplayId);
+    void omitVsyncDispatching(bool) REQUIRES(kMainThreadContext);
 
     void onHdcpLevelsChanged(Cycle, PhysicalDisplayId, int32_t, int32_t);
 
@@ -189,10 +189,19 @@ public:
         }
     }
 
-    void updatePhaseConfiguration(Fps);
-    void resetPhaseConfiguration(Fps) REQUIRES(kMainThreadContext);
+    void updatePhaseConfiguration(PhysicalDisplayId, Fps) EXCLUDES(mVsyncConfigLock);
+    void reloadPhaseConfiguration(Fps, Duration minSfDuration, Duration maxSfDuration,
+                                  Duration appDuration) EXCLUDES(mVsyncConfigLock);
 
-    const VsyncConfiguration& getVsyncConfiguration() const { return *mVsyncConfiguration; }
+    VsyncConfigSet getCurrentVsyncConfigs() const EXCLUDES(mVsyncConfigLock) {
+        std::scoped_lock lock{mVsyncConfigLock};
+        return mVsyncConfiguration->getCurrentConfigs();
+    }
+
+    VsyncConfigSet getVsyncConfigsForRefreshRate(Fps refreshRate) const EXCLUDES(mVsyncConfigLock) {
+        std::scoped_lock lock{mVsyncConfigLock};
+        return mVsyncConfiguration->getConfigsForRefreshRate(refreshRate);
+    }
 
     // Sets the render rate for the scheduler to run at.
     void setRenderRate(PhysicalDisplayId, Fps, bool applyImmediately);
@@ -222,7 +231,7 @@ public:
             REQUIRES(kMainThreadContext);
 
     // Layers are registered on creation, and unregistered when the weak reference expires.
-    void registerLayer(Layer*);
+    void registerLayer(Layer*, FrameRateCompatibility);
     void recordLayerHistory(int32_t id, const LayerProps& layerProps, nsecs_t presentTime,
                             nsecs_t now, LayerHistory::LayerUpdateType) EXCLUDES(mDisplayLock);
     void setModeChangePending(bool pending);
@@ -268,7 +277,7 @@ public:
 
     bool isVsyncInPhase(TimePoint expectedVsyncTime, Fps frameRate) const;
 
-    void dump(utils::Dumper&) const;
+    void dump(utils::Dumper&) const EXCLUDES(mVsyncConfigLock);
     void dump(Cycle, std::string&) const;
     void dumpVsync(std::string&) const EXCLUDES(mDisplayLock);
 
@@ -326,7 +335,7 @@ public:
         return mLayerHistory.getLayerFramerate(now, id);
     }
 
-    bool updateFrameRateOverrides(GlobalSignals, Fps displayRefreshRate) EXCLUDES(mPolicyLock);
+    void updateFrameRateOverrides(GlobalSignals, Fps displayRefreshRate) EXCLUDES(mPolicyLock);
 
     // Returns true if the small dirty detection is enabled for the appId.
     bool supportSmallDirtyDetection(int32_t appId) {
@@ -339,6 +348,8 @@ public:
         mPacesetterFrameDurationFractionToSkip = frameDurationFraction;
     }
 
+    void setDebugPresentDelay(TimePoint delay) { mDebugPresentDelay = delay; }
+
 private:
     friend class TestableScheduler;
 
@@ -348,7 +359,7 @@ private:
 
     // impl::MessageQueue overrides:
     void onFrameSignal(ICompositor&, VsyncId, TimePoint expectedVsyncTime) override
-            REQUIRES(kMainThreadContext, mDisplayLock);
+            REQUIRES(kMainThreadContext, mDisplayLock) EXCLUDES(mVsyncConfigLock);
 
     // Used to skip event dispatch before EventThread creation during boot.
     // TODO: b/241285191 - Reorder Scheduler initialization to avoid this.
@@ -382,7 +393,7 @@ private:
     // a deadlock where the main thread joins with the timer thread as the timer thread waits to
     // lock a mutex held by the main thread.
     struct PromotionParams {
-        // Whether to stop and start the idle timer. Ignored unless connected_display flag is set.
+        // Whether to stop and start the idle timer.
         bool toggleIdleTimer;
     };
 
@@ -450,6 +461,9 @@ private:
 
     bool updateFrameRateOverridesLocked(GlobalSignals, Fps displayRefreshRate)
             REQUIRES(mPolicyLock);
+
+    void onFrameRateOverridesChanged();
+
     void updateAttachedChoreographers(const surfaceflinger::frontend::LayerHierarchy&,
                                       Fps displayRefreshRate);
     int updateAttachedChoreographersInternal(const surfaceflinger::frontend::LayerHierarchy&,
@@ -457,7 +471,7 @@ private:
     void updateAttachedChoreographersFrameRate(const surfaceflinger::frontend::RequestedLayerState&,
                                                Fps fps) EXCLUDES(mChoreographerLock);
 
-    void dispatchCachedReportedMode() REQUIRES(mPolicyLock) EXCLUDES(mDisplayLock);
+    void emitModeChangeIfNeeded() REQUIRES(mPolicyLock) EXCLUDES(mDisplayLock);
 
     // IEventThreadCallback overrides
     bool throttleVsync(TimePoint, uid_t) override;
@@ -467,17 +481,15 @@ private:
     void onExpectedPresentTimePosted(TimePoint expectedPresentTime) override EXCLUDES(mDisplayLock);
 
     std::unique_ptr<EventThread> mRenderEventThread;
-    sp<EventThreadConnection> mRenderEventConnection;
-
     std::unique_ptr<EventThread> mLastCompositeEventThread;
-    sp<EventThreadConnection> mLastCompositeEventConnection;
 
     std::atomic<nsecs_t> mLastResyncTime = 0;
 
     const FeatureFlags mFeatures;
 
+    mutable std::mutex mVsyncConfigLock;
     // Stores phase offsets configured per refresh rate.
-    const std::unique_ptr<VsyncConfiguration> mVsyncConfiguration;
+    std::unique_ptr<VsyncConfiguration> mVsyncConfiguration GUARDED_BY(mVsyncConfigLock);
 
     // Shifts the VSYNC phase during certain transactions and refresh rate changes.
     const sp<VsyncModulator> mVsyncModulator;
@@ -583,13 +595,8 @@ private:
         // Chosen display mode.
         ftl::Optional<FrameRateMode> modeOpt;
 
-        struct ModeChangedParams {
-            Cycle cycle;
-            FrameRateMode mode;
-        };
-
-        // Parameters for latest dispatch of mode change event.
-        std::optional<ModeChangedParams> cachedModeChangedParams;
+        // Display mode of latest emitted event.
+        std::optional<FrameRateMode> emittedModeOpt;
     } mPolicy GUARDED_BY(mPolicyLock);
 
     std::mutex mChoreographerLock;
@@ -609,6 +616,8 @@ private:
 
     FrameRateOverrideMappings mFrameRateOverrideMappings;
     SmallAreaDetectionAllowMappings mSmallAreaDetectionAllowMappings;
+
+    std::atomic<std::optional<TimePoint>> mDebugPresentDelay;
 };
 
 } // namespace scheduler

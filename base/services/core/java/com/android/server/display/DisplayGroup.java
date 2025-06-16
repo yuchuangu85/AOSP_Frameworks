@@ -16,6 +16,8 @@
 
 package com.android.server.display;
 
+import android.util.IndentingPrintWriter;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -86,5 +88,25 @@ public class DisplayGroup {
     /** Returns the ID of the {@link LogicalDisplay} at the provided {@code index}. */
     int getIdLocked(int index) {
         return mDisplays.get(index).getDisplayIdLocked();
+    }
+
+    /** Returns the IDs of the {@link LogicalDisplay}s belonging to the DisplayGroup. */
+    int[] getIdsLocked() {
+        final int numDisplays = mDisplays.size();
+        final int[] displayIds = new int[numDisplays];
+        for (int i = 0; i < numDisplays; i++) {
+            displayIds[i] = mDisplays.get(i).getDisplayIdLocked();
+        }
+        return displayIds;
+    }
+
+    /** Dumps information about the DisplayGroup. */
+    void dumpLocked(IndentingPrintWriter ipw) {
+        final int numDisplays = mDisplays.size();
+        for (int i = 0; i < numDisplays; i++) {
+            LogicalDisplay logicalDisplay = mDisplays.get(i);
+            ipw.println("Display " + logicalDisplay.getDisplayIdLocked() + " "
+                    + logicalDisplay.getPrimaryDisplayDeviceLocked());
+        }
     }
 }

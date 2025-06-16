@@ -16,12 +16,16 @@
 
 package com.android.systemui.statusbar.chips.ui.viewmodel
 
+import com.android.systemui.biometrics.domain.interactor.displayStateInteractor
+import com.android.systemui.common.ui.domain.interactor.configurationInteractor
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.testScope
 import com.android.systemui.statusbar.chips.call.ui.viewmodel.callChipViewModel
 import com.android.systemui.statusbar.chips.casttootherdevice.ui.viewmodel.castToOtherDeviceChipViewModel
+import com.android.systemui.statusbar.chips.notification.ui.viewmodel.notifChipsViewModel
 import com.android.systemui.statusbar.chips.screenrecord.ui.viewmodel.screenRecordChipViewModel
 import com.android.systemui.statusbar.chips.sharetoapp.ui.viewmodel.shareToAppChipViewModel
+import com.android.systemui.statusbar.chips.statusBarChipsLogger
 
 val Kosmos.ongoingActivityChipsViewModel: OngoingActivityChipsViewModel by
     Kosmos.Fixture {
@@ -31,5 +35,9 @@ val Kosmos.ongoingActivityChipsViewModel: OngoingActivityChipsViewModel by
             shareToAppChipViewModel = shareToAppChipViewModel,
             castToOtherDeviceChipViewModel = castToOtherDeviceChipViewModel,
             callChipViewModel = callChipViewModel,
+            notifChipsViewModel = notifChipsViewModel,
+            displayStateInteractor = displayStateInteractor,
+            configurationInteractor = configurationInteractor,
+            logger = statusBarChipsLogger,
         )
     }

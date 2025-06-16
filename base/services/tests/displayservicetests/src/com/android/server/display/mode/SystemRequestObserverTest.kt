@@ -27,6 +27,7 @@ import org.junit.runner.RunWith
 import org.mockito.junit.MockitoJUnit
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.clearInvocations
 import org.mockito.kotlin.doThrow
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -51,7 +52,7 @@ class SystemRequestObserverTest {
     private val storage = VotesStorage({}, null)
 
     @Test
-    fun `requestDisplayModes adds vote to storage`() {
+    fun testRequestDisplayModes_voteAdded() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -69,7 +70,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `requestDisplayModes overrides votes in storage`() {
+    fun testRequestDisplayModes_voteReplaced() {
         val systemRequestObserver = SystemRequestObserver(storage)
 
         systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, intArrayOf(1, 2, 3))
@@ -89,7 +90,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `requestDisplayModes removes vote to storage`() {
+    fun testRequestDisplayModes_voteRemoved() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -101,7 +102,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `requestDisplayModes calls linkToDeath to token`() {
+    fun testTokenLinkToDeath() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -111,7 +112,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `does not add votes to storage if binder died when requestDisplayModes called`() {
+    fun testBinderDied_voteRemoved() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -123,7 +124,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `removes all votes from storage when binder dies`() {
+    fun testBinderDied_allVotesRemoved() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -138,7 +139,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `calls unlinkToDeath on token when no votes remaining`() {
+    fun testTokenUnlinkToDeath_noMoreVotes() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -149,7 +150,30 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `does not call unlinkToDeath on token when votes for other display in storage`() {
+    fun testTokenUnlinkToDeath_noVotes() {
+        val systemRequestObserver = SystemRequestObserver(storage)
+
+        systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, null)
+
+        verify(mockToken, never()).unlinkToDeath(any(), eq(0))
+    }
+
+    @Test
+    fun testTokenUnlinkToDeath_removedVotes() {
+        val systemRequestObserver = SystemRequestObserver(storage)
+        val requestedModes = intArrayOf(1, 2, 3)
+
+        systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, requestedModes)
+        systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, null)
+        clearInvocations(mockToken)
+
+        systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, null)
+
+        verify(mockToken, never()).unlinkToDeath(any(), eq(0))
+    }
+
+    @Test
+    fun testTokenUnlinkToDeathNotCalled_votesForOtherDisplayInStorage() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
 
@@ -161,7 +185,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `requestDisplayModes subset modes from different tokens`() {
+    fun testRequestDisplayModes_differentToken_voteHasModesSubset() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
         systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, requestedModes)
@@ -187,7 +211,7 @@ class SystemRequestObserverTest {
     }
 
     @Test
-    fun `recalculates vote if one binder dies`() {
+    fun testBinderDies_recalculatesVotes() {
         val systemRequestObserver = SystemRequestObserver(storage)
         val requestedModes = intArrayOf(1, 2, 3)
         systemRequestObserver.requestDisplayModes(mockToken, DISPLAY_ID, requestedModes)

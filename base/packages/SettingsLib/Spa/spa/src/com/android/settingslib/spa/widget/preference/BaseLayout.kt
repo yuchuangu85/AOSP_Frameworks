@@ -16,25 +16,33 @@
 
 package com.android.settingslib.spa.widget.preference
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.android.settingslib.spa.framework.compose.thenIf
 import com.android.settingslib.spa.framework.theme.SettingsDimension
 import com.android.settingslib.spa.framework.theme.SettingsOpacity.alphaForEnabled
+import com.android.settingslib.spa.framework.theme.SettingsShape
 import com.android.settingslib.spa.framework.theme.SettingsTheme
+import com.android.settingslib.spa.framework.theme.isSpaExpressiveEnabled
+import com.android.settingslib.spa.widget.ui.LocalIsInCategory
 import com.android.settingslib.spa.widget.ui.SettingsTitle
 
 @Composable
@@ -50,11 +58,19 @@ internal fun BaseLayout(
     paddingVertical: Dp = SettingsDimension.itemPaddingVertical,
     widget: @Composable () -> Unit = {},
 ) {
+    val surfaceBright = MaterialTheme.colorScheme.surfaceBright
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .semantics(mergeDescendants = true) {}
-            .padding(end = paddingEnd),
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .semantics(mergeDescendants = true) {}
+                .thenIf(isSpaExpressiveEnabled) {
+                    Modifier.heightIn(min = SettingsDimension.preferenceMinHeight)
+                }
+                .thenIf(isSpaExpressiveEnabled && LocalIsInCategory.current) {
+                    Modifier.clip(SettingsShape.CornerExtraSmall).background(surfaceBright)
+                }
+                .padding(end = paddingEnd),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         val alphaModifier = Modifier.alphaForEnabled(enabled())
@@ -63,29 +79,36 @@ internal fun BaseLayout(
             title = title,
             titleContentDescription = titleContentDescription,
             subTitle = subTitle,
-            modifier = alphaModifier
-                .weight(1f)
-                .padding(vertical = paddingVertical),
+            modifier = alphaModifier.weight(1f).padding(vertical = paddingVertical),
         )
         widget()
     }
 }
 
 @Composable
-internal fun BaseIcon(
-    icon: @Composable (() -> Unit)?,
-    modifier: Modifier,
-    paddingStart: Dp,
-) {
-    if (icon != null) {
-        Box(
-            modifier = modifier.size(SettingsDimension.itemIconContainerSize),
-            contentAlignment = Alignment.Center,
-        ) {
-            icon()
+internal fun BaseIcon(icon: @Composable (() -> Unit)?, modifier: Modifier, paddingStart: Dp) {
+    if (isSpaExpressiveEnabled) {
+        Spacer(modifier = Modifier.width(width = paddingStart))
+        if (icon != null) {
+            Box(
+                modifier = modifier.size(SettingsDimension.itemIconContainerSizeSmall),
+                contentAlignment = Alignment.Center,
+            ) {
+                icon()
+            }
+            Spacer(modifier = Modifier.width(width = SettingsDimension.paddingExtraSmall6))
         }
     } else {
-        Spacer(modifier = Modifier.width(width = paddingStart))
+        if (icon != null) {
+            Box(
+                modifier = modifier.size(SettingsDimension.itemIconContainerSize),
+                contentAlignment = Alignment.Center,
+            ) {
+                icon()
+            }
+        } else {
+            Spacer(modifier = Modifier.width(width = paddingStart))
+        }
     }
 }
 
@@ -107,11 +130,6 @@ private fun Titles(
 @Composable
 private fun BaseLayoutPreview() {
     SettingsTheme {
-        BaseLayout(
-            title = "Title",
-            subTitle = {
-                HorizontalDivider(thickness = 10.dp)
-            }
-        )
+        BaseLayout(title = "Title", subTitle = { HorizontalDivider(thickness = 10.dp) })
     }
 }

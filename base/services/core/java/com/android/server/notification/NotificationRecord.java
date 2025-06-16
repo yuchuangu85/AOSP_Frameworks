@@ -25,6 +25,7 @@ import static android.app.NotificationManager.IMPORTANCE_HIGH;
 import static android.app.NotificationManager.IMPORTANCE_LOW;
 import static android.app.NotificationManager.IMPORTANCE_MIN;
 import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
+import static android.service.notification.Adjustment.KEY_SUMMARIZATION;
 import static android.service.notification.NotificationListenerService.Ranking.USER_SENTIMENT_NEUTRAL;
 import static android.service.notification.NotificationListenerService.Ranking.USER_SENTIMENT_POSITIVE;
 
@@ -222,6 +223,14 @@ public final class NotificationRecord {
     private boolean mPendingLogUpdate = false;
     private int mProposedImportance = IMPORTANCE_UNSPECIFIED;
     private boolean mSensitiveContent = false;
+    // Whether an app has attempted to cancel this notification after it has been marked as
+    // lifetime extended.
+    private boolean mCanceledAfterLifetimeExtension = false;
+
+    // type of the bundle if the notification was classified
+    private @Adjustment.Types int mBundleType = Adjustment.TYPE_OTHER;
+
+    private String mSummarization = null;
 
     public NotificationRecord(Context context, StatusBarNotification sbn,
             NotificationChannel channel) {
@@ -327,10 +336,19 @@ public final class NotificationRecord {
         }
 
         final long[] vibrationPattern = channel.getVibrationPattern();
-        if (vibrationPattern == null) {
-            return helper.createDefaultVibration(insistent);
+        if (vibrationPattern != null) {
+            return helper.createWaveformVibration(vibrationPattern, insistent);
         }
-        return helper.createWaveformVibration(vibrationPattern, insistent);
+
+        if (com.android.server.notification.Flags.notificationVibrationInSoundUriForChannel()) {
+            final VibrationEffect vibrationEffectFromSoundUri =
+                    helper.createVibrationEffectFromSoundUri(channel.getSound());
+            if (vibrationEffectFromSoundUri != null) {
+                return vibrationEffectFromSoundUri;
+            }
+        }
+
+        return helper.createDefaultVibration(insistent);
     }
 
     private VibrationEffect calculateVibration() {
@@ -449,9 +467,16 @@ public final class NotificationRecord {
         mRankingTimeMs = calculateRankingTimeMs(previous.getRankingTimeMs());
         mCreationTimeMs = previous.mCreationTimeMs;
         mVisibleSinceMs = previous.mVisibleSinceMs;
-        if (previous.getSbn().getOverrideGroupKey() != null && !getSbn().isAppGroup()) {
-            getSbn().setOverrideGroupKey(previous.getSbn().getOverrideGroupKey());
+        if (android.service.notification.Flags.notificationForceGrouping()) {
+            if (previous.getSbn().getOverrideGroupKey() != null) {
+                getSbn().setOverrideGroupKey(previous.getSbn().getOverrideGroupKey());
+            }
+        } else {
+            if (previous.getSbn().getOverrideGroupKey() != null && !getSbn().isAppGroup()) {
+                getSbn().setOverrideGroupKey(previous.getSbn().getOverrideGroupKey());
+            }
         }
+
         // Don't copy importance information or mGlobalSortKey, recompute them.
     }
 
@@ -528,6 +553,7 @@ public final class NotificationRecord {
                 + NotificationListenerService.Ranking.importanceToString(mProposedImportance));
         pw.println(prefix + "mIsAppImportanceLocked=" + mIsAppImportanceLocked);
         pw.println(prefix + "mSensitiveContent=" + mSensitiveContent);
+        pw.println(prefix + "mCanceledAfterLifetimeExtension=" + mCanceledAfterLifetimeExtension);
         pw.println(prefix + "mIntercept=" + mIntercept);
         pw.println(prefix + "mHidden==" + mHidden);
         pw.println(prefix + "mGlobalSortKey=" + mGlobalSortKey);
@@ -566,6 +592,7 @@ public final class NotificationRecord {
         pw.println(prefix + "shortcut=" + notification.getShortcutId()
                 + " found valid? " + (mShortcutInfo != null));
         pw.println(prefix + "mUserVisOverride=" + getPackageVisibilityOverride());
+        pw.println(prefix + "hasSummarization=" + (mSummarization != null));
     }
 
     private void dumpNotification(PrintWriter pw, String prefix, Notification notification,
@@ -710,7 +737,8 @@ public final class NotificationRecord {
                 if (signals.containsKey(Adjustment.KEY_SNOOZE_CRITERIA)) {
                     final ArrayList<SnoozeCriterion> snoozeCriterionList =
                             adjustment.getSignals().getParcelableArrayList(
-                                    Adjustment.KEY_SNOOZE_CRITERIA, android.service.notification.SnoozeCriterion.class);
+                                    Adjustment.KEY_SNOOZE_CRITERIA,
+                                    android.service.notification.SnoozeCriterion.class);
                     setSnoozeCriteria(snoozeCriterionList);
                     EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_SNOOZE_CRITERIA,
                             snoozeCriterionList.toString());
@@ -736,7 +764,8 @@ public final class NotificationRecord {
                 }
                 if (signals.containsKey(Adjustment.KEY_CONTEXTUAL_ACTIONS)) {
                     setSystemGeneratedSmartActions(
-                            signals.getParcelableArrayList(Adjustment.KEY_CONTEXTUAL_ACTIONS, android.app.Notification.Action.class));
+                            signals.getParcelableArrayList(Adjustment.KEY_CONTEXTUAL_ACTIONS,
+                                    android.app.Notification.Action.class));
                     EventLogTags.writeNotificationAdjusted(getKey(),
                             Adjustment.KEY_CONTEXTUAL_ACTIONS,
                             getSystemGeneratedSmartActions().toString());
@@ -777,6 +806,26 @@ public final class NotificationRecord {
                     EventLogTags.writeNotificationAdjusted(getKey(),
                             Adjustment.KEY_SENSITIVE_CONTENT,
                             Boolean.toString(mSensitiveContent));
+                }
+                if (android.service.notification.Flags.notificationClassification()
+                        && signals.containsKey(Adjustment.KEY_TYPE)) {
+                    updateNotificationChannel(signals.getParcelable(Adjustment.KEY_TYPE,
+                            NotificationChannel.class));
+                    EventLogTags.writeNotificationAdjusted(getKey(),
+                            Adjustment.KEY_TYPE,
+                            mChannel.getId());
+                }
+                if ((android.app.Flags.nmSummarizationUi() || android.app.Flags.nmSummarization())
+                        && signals.containsKey(KEY_SUMMARIZATION)) {
+                    CharSequence summary = signals.getCharSequence(KEY_SUMMARIZATION,
+                            signals.getString(KEY_SUMMARIZATION));
+                    if (summary != null) {
+                        mSummarization = summary.toString();
+                    } else {
+                        mSummarization = null;
+                    }
+                    EventLogTags.writeNotificationAdjusted(getKey(),
+                            KEY_SUMMARIZATION, Boolean.toString(mSummarization != null));
                 }
                 if (!signals.isEmpty() && adjustment.getIssuer() != null) {
                     mAdjustmentIssuer = adjustment.getIssuer();
@@ -946,6 +995,13 @@ public final class NotificationRecord {
                 return "asst";
             case MetricsEvent.IMPORTANCE_EXPLANATION_SYSTEM:
                 return "system";
+        }
+        return null;
+    }
+
+    public @Nullable String getSummarization() {
+        if ((android.app.Flags.nmSummarizationUi() || android.app.Flags.nmSummarization())) {
+            return mSummarization;
         }
         return null;
     }
@@ -1144,6 +1200,21 @@ public final class NotificationRecord {
 
     public void setOverrideGroupKey(String overrideGroupKey) {
         getSbn().setOverrideGroupKey(overrideGroupKey);
+    }
+
+    /**
+     * Get the original group key that was set via {@link Notification.Builder#setGroup}
+     *
+     * This value is different than the value returned by {@link #getGroupKey()} as it does
+     * not contain any userId or package name.
+     *
+     * This value is different than the value returned
+     * by {@link StatusBarNotification#getGroup()} if the notification group
+     * was overridden: by NotificationAssistantService or by autogrouping.
+     */
+    @Nullable
+    public String getOriginalGroupKey() {
+        return getSbn().getNotification().getGroup();
     }
 
     public NotificationChannel getChannel() {
@@ -1588,6 +1659,22 @@ public final class NotificationRecord {
         mPkgAllowedAsConvo = allowedAsConvo;
     }
 
+    public boolean isCanceledAfterLifetimeExtension() {
+        return mCanceledAfterLifetimeExtension;
+    }
+
+    public void setCanceledAfterLifetimeExtension(boolean canceledAfterLifetimeExtension) {
+        mCanceledAfterLifetimeExtension = canceledAfterLifetimeExtension;
+    }
+
+    public @Adjustment.Types int getBundleType() {
+        return mBundleType;
+    }
+
+    public void setBundleType(@Adjustment.Types int bundleType) {
+        mBundleType = bundleType;
+    }
+
     /**
      * Whether this notification is a conversation notification.
      */
@@ -1612,9 +1699,13 @@ public final class NotificationRecord {
         }
 
         if (mTargetSdkVersion >= Build.VERSION_CODES.R
-                && notification.isStyle(Notification.MessagingStyle.class)
-                && (mShortcutInfo == null || isOnlyBots(mShortcutInfo.getPersons()))) {
-            return false;
+                && notification.isStyle(Notification.MessagingStyle.class)) {
+            if (mShortcutInfo == null || isOnlyBots(mShortcutInfo.getPersons())) {
+                return false;
+            }
+            if (Flags.notificationNoCustomViewConversations() && hasUndecoratedRemoteView()) {
+                return false;
+            }
         }
         if (mHasSentValidMsg && mShortcutInfo == null) {
             return false;

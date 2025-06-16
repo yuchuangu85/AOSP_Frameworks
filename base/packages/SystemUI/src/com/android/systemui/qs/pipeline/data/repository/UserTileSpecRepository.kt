@@ -3,11 +3,13 @@ package com.android.systemui.qs.pipeline.data.repository
 import android.annotation.UserIdInt
 import android.database.ContentObserver
 import android.provider.Settings
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.common.coroutine.ConflatedCallbackFlow
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.qs.pipeline.data.model.RestoreData
 import com.android.systemui.qs.pipeline.shared.TileSpec
+import com.android.systemui.qs.pipeline.shared.TilesUpgradePath
 import com.android.systemui.qs.pipeline.shared.logging.QSPipelineLogger
 import com.android.systemui.util.settings.SecureSettings
 import dagger.assisted.Assisted
@@ -15,6 +17,8 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -23,7 +27,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -47,6 +50,9 @@ constructor(
     @Background private val backgroundDispatcher: CoroutineDispatcher,
 ) {
 
+    private val _tilesUpgradePath = Channel<TilesUpgradePath>(capacity = 3)
+    val tilesUpgradePath: ReceiveChannel<TilesUpgradePath> = _tilesUpgradePath
+
     private val defaultTiles: List<TileSpec>
         get() = defaultTilesRepository.defaultTiles
 
@@ -62,13 +68,22 @@ constructor(
                     .scan(loadTilesFromSettingsAndParse(userId)) { current, change ->
                         change
                             .apply(current)
-                            .also {
-                                if (current != it) {
+                            .also { afterRestore ->
+                                if (current != afterRestore) {
                                     if (change is RestoreTiles) {
-                                        logger.logTilesRestoredAndReconciled(current, it, userId)
+                                        logger.logTilesRestoredAndReconciled(
+                                            current,
+                                            afterRestore,
+                                            userId,
+                                        )
                                     } else {
-                                        logger.logProcessTileChange(change, it, userId)
+                                        logger.logProcessTileChange(change, afterRestore, userId)
                                     }
+                                }
+                                if (change is RestoreTiles) {
+                                    _tilesUpgradePath.send(
+                                        TilesUpgradePath.RestoreFromBackup(afterRestore.toSet())
+                                    )
                                 }
                             }
                             // Distinct preserves the order of the elements removing later
@@ -84,7 +99,7 @@ constructor(
     }
 
     private fun startFlowCollections(tiles: StateFlow<List<TileSpec>>) {
-        applicationScope.launch(backgroundDispatcher) {
+        applicationScope.launch(context = backgroundDispatcher) {
             launch { tiles.collect { storeTiles(userId, it) } }
             launch {
                 // As Settings is not the source of truth, once we started tracking tiles for a
@@ -119,14 +134,7 @@ constructor(
                 .filter { it !is TileSpec.Invalid }
                 .joinToString(DELIMITER, transform = TileSpec::spec)
         withContext(backgroundDispatcher) {
-            secureSettings.putStringForUser(
-                SETTING,
-                toStore,
-                null,
-                false,
-                forUser,
-                true,
-            )
+            secureSettings.putStringForUser(SETTING, toStore, null, false, forUser, true)
         }
     }
 
@@ -154,7 +162,13 @@ constructor(
     }
 
     private suspend fun loadTilesFromSettingsAndParse(userId: Int): List<TileSpec> {
-        return parseTileSpecs(loadTilesFromSettings(userId), userId)
+        val loadedTiles = loadTilesFromSettings(userId)
+        if (loadedTiles.isNotEmpty()) {
+            _tilesUpgradePath.send(TilesUpgradePath.ReadFromSettings(loadedTiles.toSet()))
+        } else {
+            _tilesUpgradePath.send(TilesUpgradePath.DefaultSet)
+        }
+        return parseTileSpecs(loadedTiles, userId)
     }
 
     private suspend fun loadTilesFromSettings(userId: Int): List<TileSpec> {
@@ -172,13 +186,17 @@ constructor(
         changeEvents.emit(PrependDefault(defaultTiles))
     }
 
+    suspend fun resetToDefault() {
+        changeEvents.emit(ResetToDefault(defaultTiles))
+    }
+
     sealed interface ChangeAction {
         fun apply(currentTiles: List<TileSpec>): List<TileSpec>
     }
 
     private data class AddTile(
         val tileSpec: TileSpec,
-        val position: Int = TileSpecRepository.POSITION_AT_END
+        val position: Int = TileSpecRepository.POSITION_AT_END,
     ) : ChangeAction {
         override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
             val tilesList = currentTiles.toMutableList()
@@ -199,9 +217,7 @@ constructor(
         }
     }
 
-    private data class ChangeTiles(
-        val newTiles: List<TileSpec>,
-    ) : ChangeAction {
+    private data class ChangeTiles(val newTiles: List<TileSpec>) : ChangeAction {
         override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
             val new = newTiles.filter { it !is TileSpec.Invalid }
             return if (new.isNotEmpty()) new else currentTiles
@@ -211,6 +227,12 @@ constructor(
     private data class PrependDefault(val defaultTiles: List<TileSpec>) : ChangeAction {
         override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
             return defaultTiles + currentTiles
+        }
+    }
+
+    private data class ResetToDefault(val defaultTiles: List<TileSpec>) : ChangeAction {
+        override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
+            return defaultTiles
         }
     }
 
@@ -236,7 +258,7 @@ constructor(
         fun reconcileTiles(
             currentTiles: List<TileSpec>,
             currentAutoAdded: Set<TileSpec>,
-            restoreData: RestoreData
+            restoreData: RestoreData,
         ): List<TileSpec> {
             val toRestore = restoreData.restoredTiles.toMutableList()
             val freshlyAutoAdded =
@@ -260,8 +282,6 @@ constructor(
 
     @AssistedFactory
     interface Factory {
-        fun create(
-            userId: Int,
-        ): UserTileSpecRepository
+        fun create(userId: Int): UserTileSpecRepository
     }
 }

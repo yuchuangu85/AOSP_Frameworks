@@ -19,16 +19,15 @@ package com.android.systemui.keyguard.data.quickaffordance
 
 import android.content.Context
 import android.os.UserHandle
+import com.android.app.tracing.FlowTracing.tracedAwaitClose
+import com.android.app.tracing.FlowTracing.tracedConflatedCallbackFlow
 import com.android.systemui.common.coroutine.ChannelExt.trySendWithFailureLogging
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.settings.UserTracker
 import com.android.systemui.shared.customization.data.content.CustomizationProviderClient
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -37,14 +36,13 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * Manages and provides access to the current "selections" of keyguard quick affordances, answering
  * the question "which affordances should the keyguard show?" for users associated with other System
  * UI processes.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class KeyguardQuickAffordanceRemoteUserSelectionManager
 @Inject
@@ -55,19 +53,20 @@ constructor(
     private val userHandle: UserHandle,
 ) : KeyguardQuickAffordanceSelectionManager {
 
-    private val userId: Flow<Int> = conflatedCallbackFlow {
-        val callback =
-            object : UserTracker.Callback {
-                override fun onUserChanged(newUser: Int, userContext: Context) {
-                    trySendWithFailureLogging(newUser, TAG)
+    private val userId: Flow<Int> =
+        tracedConflatedCallbackFlow("userId") {
+            val callback =
+                object : UserTracker.Callback {
+                    override fun onUserChanged(newUser: Int, userContext: Context) {
+                        trySendWithFailureLogging(newUser, TAG)
+                    }
                 }
-            }
 
-        userTracker.addCallback(callback) { it.run() }
-        trySendWithFailureLogging(userTracker.userId, TAG)
+            userTracker.addCallback(callback) { it.run() }
+            trySendWithFailureLogging(userTracker.userId, TAG)
 
-        awaitClose { userTracker.removeCallback(callback) }
-    }
+            tracedAwaitClose("userId") { userTracker.removeCallback(callback) }
+        }
 
     private val clientOrNull: StateFlow<CustomizationProviderClient?> =
         userId

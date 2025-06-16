@@ -18,10 +18,12 @@ package com.android.systemui.accessibility.data.repository
 
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityManager.TouchExplorationStateChangeListener
-import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
+import com.android.app.tracing.FlowTracing.tracedAwaitClose
+import com.android.app.tracing.FlowTracing.tracedConflatedCallbackFlow
 import dagger.Module
 import dagger.Provides
-import kotlinx.coroutines.channels.awaitClose
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -32,32 +34,43 @@ interface AccessibilityRepository {
     /** @see [AccessibilityManager.isEnabled] */
     val isEnabled: Flow<Boolean>
 
+    fun getRecommendedTimeout(originalTimeout: Duration, uiFlags: Int): Duration
+
     companion object {
         operator fun invoke(a11yManager: AccessibilityManager): AccessibilityRepository =
             AccessibilityRepositoryImpl(a11yManager)
     }
 }
 
-private class AccessibilityRepositoryImpl(
-    manager: AccessibilityManager,
-) : AccessibilityRepository {
+private const val TAG = "AccessibilityRepository"
+
+private class AccessibilityRepositoryImpl(private val manager: AccessibilityManager) :
+    AccessibilityRepository {
     override val isTouchExplorationEnabled: Flow<Boolean> =
-        conflatedCallbackFlow {
+        tracedConflatedCallbackFlow(TAG) {
                 val listener = TouchExplorationStateChangeListener(::trySend)
                 manager.addTouchExplorationStateChangeListener(listener)
                 trySend(manager.isTouchExplorationEnabled)
-                awaitClose { manager.removeTouchExplorationStateChangeListener(listener) }
+                tracedAwaitClose(TAG) {
+                    manager.removeTouchExplorationStateChangeListener(listener)
+                }
             }
             .distinctUntilChanged()
 
     override val isEnabled: Flow<Boolean> =
-        conflatedCallbackFlow {
+        tracedConflatedCallbackFlow(TAG) {
                 val listener = AccessibilityManager.AccessibilityStateChangeListener(::trySend)
                 manager.addAccessibilityStateChangeListener(listener)
                 trySend(manager.isEnabled)
-                awaitClose { manager.removeAccessibilityStateChangeListener(listener) }
+                tracedAwaitClose(TAG) { manager.removeAccessibilityStateChangeListener(listener) }
             }
             .distinctUntilChanged()
+
+    override fun getRecommendedTimeout(originalTimeout: Duration, uiFlags: Int): Duration {
+        return manager
+            .getRecommendedTimeoutMillis(originalTimeout.inWholeMilliseconds.toInt(), uiFlags)
+            .milliseconds
+    }
 }
 
 @Module

@@ -1334,6 +1334,9 @@ public abstract class Window {
      * <p>The requested color mode is not guaranteed to be honored. Please refer to
      * {@link #getColorMode()} for more information.</p>
      *
+     * <p>Note: This does not impact SurfaceViews or SurfaceControls, as those have their own
+     * independent color mode and HDR parameters.</p>
+     *
      * @see #getColorMode()
      * @see Display#isWideColorGamut()
      * @see Configuration#isScreenWideColorGamut()
@@ -1345,7 +1348,7 @@ public abstract class Window {
     }
 
     /**
-     * <p>Sets the desired about of HDR headroom to be used when rendering as a ratio of
+     * <p>Sets the desired amount of HDR headroom to be used when rendering as a ratio of
      * targetHdrPeakBrightnessInNits / targetSdrWhitePointInNits. Only applies when
      * {@link #setColorMode(int)} is {@link ActivityInfo#COLOR_MODE_HDR}</p>
      *
@@ -1360,6 +1363,9 @@ public abstract class Window {
      * of factors such as ambient conditions, display capabilities, or bit-depth limitations.
      * See {@link Display#getHdrSdrRatio()} for more information as well as how to query the
      * current value.</p>
+     *
+     * <p>Note: This does not impact SurfaceViews or SurfaceControls, as those have their own
+     * independent desired HDR headroom and HDR capabilities.</p>
      *
      * @param desiredHeadroom The amount of HDR headroom that is desired. Must be >= 1.0 (no HDR)
      *                        and <= 10,000.0. Passing 0.0 will reset to the default, automatically
@@ -1722,7 +1728,9 @@ public abstract class Window {
      * @see View#findViewById(int)
      * @see Window#requireViewById(int)
      */
-    @Nullable
+    // Strictly speaking this should be marked as @Nullable but the nullability of the return value
+    // is deliberately left unspecified as idiomatically correct code can make assumptions either
+    // way based on local context, e.g. layout specification.
     public <T extends View> T findViewById(@IdRes int id) {
         return getDecorView().findViewById(id);
     }
@@ -1832,6 +1840,16 @@ public abstract class Window {
     @NonNull
     public abstract LayoutInflater getLayoutInflater();
 
+    /**
+     * Sets a user-facing title for the window.
+     * <p>
+     * This title may be shown to the user in the window's title or action bar
+     * if the {@link #requestFeature requested features} provide such a bar.
+     * It is also exposed through {@link
+     * android.view.accessibility.AccessibilityWindowInfo#getTitle}.
+     *
+     * @see WindowManager.LayoutParams#setTitle
+     */
     public abstract void setTitle(CharSequence title);
 
     @Deprecated

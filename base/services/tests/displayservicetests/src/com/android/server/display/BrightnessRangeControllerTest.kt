@@ -42,31 +42,25 @@ class BrightnessRangeControllerTest {
     private val mockToken = mock<IBinder>()
 
     @Test
-    fun `returns HBC max brightness if HBM supported and ON`() {
+    fun testMaxBrightness_HbmSupportedAndOn() {
         val controller = createController()
         assertThat(controller.currentBrightnessMax).isEqualTo(MAX_BRIGHTNESS)
     }
 
     @Test
-    fun `returns NBC max brightness if device does not support HBM`() {
+    fun testMaxBrightness_HbmNotSupported() {
         val controller = createController(hbmSupported = false)
         assertThat(controller.currentBrightnessMax).isEqualTo(NORMAL_BRIGHTNESS_LOW)
     }
 
     @Test
-    fun `returns NBC max brightness if HBM not allowed`() {
+    fun testMaxBrightness_HbmNotAllowed() {
         val controller = createController(hbmAllowed = false)
         assertThat(controller.currentBrightnessMax).isEqualTo(NORMAL_BRIGHTNESS_LOW)
     }
 
     @Test
-    fun `returns HBC max brightness if NBM is disabled`() {
-        val controller = createController(nbmEnabled = false, hbmAllowed = false)
-        assertThat(controller.currentBrightnessMax).isEqualTo(MAX_BRIGHTNESS)
-    }
-
-    @Test
-    fun `returns HBC max brightness if lower than NBC max brightness`() {
+    fun testMaxBrightness_transitionPointLessThanCurrentNbmLimit() {
         val controller = createController(
             hbmAllowed = false,
             hbmMaxBrightness = TRANSITION_POINT,
@@ -76,13 +70,11 @@ class BrightnessRangeControllerTest {
     }
 
     private fun createController(
-        nbmEnabled: Boolean = true,
         hbmSupported: Boolean = true,
         hbmAllowed: Boolean = true,
         hbmMaxBrightness: Float = MAX_BRIGHTNESS,
         nbmMaxBrightness: Float = NORMAL_BRIGHTNESS_LOW
     ): BrightnessRangeController {
-        whenever(mockFlags.isNbmControllerEnabled).thenReturn(nbmEnabled)
         whenever(mockHbmController.deviceSupportsHbm()).thenReturn(hbmSupported)
         whenever(mockHbmController.isHbmCurrentlyAllowed).thenReturn(hbmAllowed)
         whenever(mockHbmController.currentBrightnessMax).thenReturn(hbmMaxBrightness)

@@ -17,12 +17,28 @@
 package com.android.server.clipboard;
 
 import static android.app.ActivityManagerInternal.ALLOW_FULL_ONLY;
-import static android.companion.virtual.VirtualDeviceManager.ACTION_VIRTUAL_DEVICE_REMOVED;
-import static android.companion.virtual.VirtualDeviceManager.EXTRA_VIRTUAL_DEVICE_ID;
 import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_CUSTOM;
 import static android.companion.virtual.VirtualDeviceParams.POLICY_TYPE_CLIPBOARD;
+import static android.content.ClipDescription.MIMETYPE_UNKNOWN;
+import static android.content.ClipDescription.MIMETYPE_TEXT_PLAIN;
+import static android.content.ClipDescription.MIMETYPE_TEXT_HTML;
+import static android.content.ClipDescription.MIMETYPE_TEXT_URILIST;
+import static android.content.ClipDescription.MIMETYPE_TEXT_INTENT;
+import static android.content.ClipDescription.MIMETYPE_APPLICATION_ACTIVITY;
+import static android.content.ClipDescription.MIMETYPE_APPLICATION_SHORTCUT;
+import static android.content.ClipDescription.MIMETYPE_APPLICATION_TASK;
 import static android.content.Context.DEVICE_ID_DEFAULT;
 import static android.content.Context.DEVICE_ID_INVALID;
+
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_UNKNOWN;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_PLAIN;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_HTML;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_URILIST;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_INTENT;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_ACTIVITY;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_SHORTCUT;
+import static com.android.internal.util.FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_TASK;
+import static com.android.server.clipboard.Flags.clipboardGetEventLogging;
 
 import android.Manifest;
 import android.annotation.NonNull;
@@ -46,7 +62,6 @@ import android.content.Context;
 import android.content.IClipboard;
 import android.content.IOnPrimaryClipChangedListener;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.UserInfo;
@@ -73,6 +88,7 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.IntArray;
 import android.util.Pair;
 import android.util.SafetyProtectionUtils;
 import android.util.Slog;
@@ -101,6 +117,7 @@ import com.android.server.wm.WindowManagerInternal;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
@@ -134,6 +151,10 @@ public class ClipboardService extends SystemService {
     // DeviceConfig properties
     private static final String PROPERTY_MAX_CLASSIFICATION_LENGTH = "max_classification_length";
     private static final int DEFAULT_MAX_CLASSIFICATION_LENGTH = 400;
+
+    private static final int[] CLIP_DATA_TYPES_UNKNOWN = {
+            CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_UNKNOWN
+    };
 
     private final ActivityManagerInternal mAmInternal;
     private final IUriGrantsManager mUgm;
@@ -219,39 +240,11 @@ public class ClipboardService extends SystemService {
     @Override
     public void onStart() {
         publishBinderService(Context.CLIPBOARD_SERVICE, new ClipboardImpl());
-        if (!android.companion.virtual.flags.Flags.vdmPublicApis() && mVdmInternal != null) {
-            registerVirtualDeviceBroadcastReceiver();
-        } else if (android.companion.virtual.flags.Flags.vdmPublicApis() && mVdm != null) {
-            registerVirtualDeviceListener();
-        }
-    }
-
-    private void registerVirtualDeviceBroadcastReceiver() {
-        if (mVirtualDeviceRemovedReceiver != null) {
-            return;
-        }
-        mVirtualDeviceRemovedReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if (!intent.getAction().equals(ACTION_VIRTUAL_DEVICE_REMOVED)) {
-                    return;
-                }
-                final int removedDeviceId =
-                        intent.getIntExtra(EXTRA_VIRTUAL_DEVICE_ID, DEVICE_ID_INVALID);
-                synchronized (mLock) {
-                    for (int i = mClipboards.numMaps() - 1; i >= 0; i--) {
-                        mClipboards.delete(mClipboards.keyAt(i), removedDeviceId);
-                    }
-                }
-            }
-        };
-        IntentFilter filter = new IntentFilter(ACTION_VIRTUAL_DEVICE_REMOVED);
-        getContext().registerReceiver(mVirtualDeviceRemovedReceiver, filter,
-                Context.RECEIVER_NOT_EXPORTED);
+        registerVirtualDeviceListener();
     }
 
     private void registerVirtualDeviceListener() {
-        if (mVirtualDeviceListener != null) {
+        if (mVdm == null || mVirtualDeviceListener != null) {
             return;
         }
         mVirtualDeviceListener = new VirtualDeviceManager.VirtualDeviceListener() {
@@ -684,9 +677,12 @@ public class ClipboardService extends SystemService {
                 if (clipboard == null) {
                     return null;
                 }
-                showAccessNotificationLocked(pkg, intendingUid, intendingUserId, clipboard);
+                showAccessNotificationLocked(
+                        pkg, intendingUid, intendingUserId, clipboard, deviceId);
                 notifyTextClassifierLocked(clipboard, pkg, intendingUid);
                 if (clipboard.primaryClip != null) {
+                    scheduleWriteClipDataStats(clipboard.primaryClip,
+                            clipboard.primaryClipUid, intendingUid);
                     scheduleAutoClear(userId, intendingUid, intendingDeviceId);
                 }
                 return clipboard.primaryClip;
@@ -891,7 +887,8 @@ public class ClipboardService extends SystemService {
                 Slog.e(TAG, "RemoteException calling UserManager: " + e);
                 return null;
             }
-            if (deviceId != DEVICE_ID_DEFAULT && !mVdm.isValidVirtualDeviceId(deviceId)) {
+            if (deviceId != DEVICE_ID_DEFAULT
+                    && mVdm != null && !mVdm.isValidVirtualDeviceId(deviceId)) {
                 Slog.w(TAG, "getClipboardLocked called with invalid (possibly released) deviceId "
                         + deviceId);
                 return null;
@@ -1437,7 +1434,7 @@ public class ClipboardService extends SystemService {
      */
     @GuardedBy("mLock")
     private void showAccessNotificationLocked(String callingPackage, int uid, @UserIdInt int userId,
-            Clipboard clipboard) {
+            Clipboard clipboard, int accessDeviceId) {
         if (clipboard.primaryClip == null) {
             return;
         }
@@ -1467,8 +1464,8 @@ public class ClipboardService extends SystemService {
             return;
         }
         // Don't notify if this access is coming from the privileged app which owns the device.
-        if (clipboard.deviceId != DEVICE_ID_DEFAULT && mVdmInternal.getDeviceOwnerUid(
-                clipboard.deviceId) == uid) {
+        if (clipboard.deviceId != DEVICE_ID_DEFAULT && mVdmInternal != null
+                && mVdmInternal.getDeviceOwnerUid(clipboard.deviceId) == uid) {
             return;
         }
         // Don't notify if already notified for this uid and clip.
@@ -1476,7 +1473,7 @@ public class ClipboardService extends SystemService {
             return;
         }
 
-        final ArraySet<Context> toastContexts = getToastContexts(clipboard);
+        final ArraySet<Context> toastContexts = getToastContexts(clipboard, accessDeviceId);
         Binder.withCleanCallingIdentity(() -> {
             try {
                 CharSequence callingAppLabel = mPm.getApplicationLabel(
@@ -1515,40 +1512,55 @@ public class ClipboardService extends SystemService {
      * If the clipboard is for a VirtualDevice, we attempt to return the single DisplayContext for
      * the focused VirtualDisplay for that device, but might need to return the contexts for
      * multiple displays if the VirtualDevice has several but none of them were focused.
+     *
+     * If the clipboard is NOT for a VirtualDevice, but it's being accessed from a VirtualDevice,
+     * this means that the clipboard is shared between the default and that device. In this case we
+     * need to show a toast in both places.
      */
-    private ArraySet<Context> getToastContexts(Clipboard clipboard) throws IllegalStateException {
+    private ArraySet<Context> getToastContexts(Clipboard clipboard, int accessDeviceId)
+            throws IllegalStateException {
         ArraySet<Context> contexts = new ArraySet<>();
-
-        if (clipboard.deviceId != DEVICE_ID_DEFAULT) {
-            DisplayManager displayManager = getContext().getSystemService(DisplayManager.class);
-
-            int topFocusedDisplayId = mWm.getTopFocusedDisplayId();
-            ArraySet<Integer> displayIds = mVdmInternal.getDisplayIdsForDevice(clipboard.deviceId);
-
-            if (displayIds.contains(topFocusedDisplayId)) {
-                Display display = displayManager.getDisplay(topFocusedDisplayId);
-                if (display != null) {
-                    contexts.add(getContext().createDisplayContext(display));
-                    return contexts;
-                }
-            }
-
-            for (int i = 0; i < displayIds.size(); i++) {
-                Display display = displayManager.getDisplay(displayIds.valueAt(i));
-                if (display != null) {
-                    contexts.add(getContext().createDisplayContext(display));
-                }
-            }
-            if (!contexts.isEmpty()) {
-                return contexts;
-            }
-            Slog.e(TAG, "getToastContexts Couldn't find any VirtualDisplays for VirtualDevice "
-                    + clipboard.deviceId);
-            // Since we couldn't find any VirtualDisplays to use at all, just fall through to using
-            // the default display below.
+        if (clipboard.deviceId == DEVICE_ID_DEFAULT || accessDeviceId == DEVICE_ID_DEFAULT) {
+            // Always show the toast on the default display when the default clipboard is accessed -
+            // also when the clipboard is shared with a virtual device and accessed from there.
+            // Same when any clipboard is accessed from the default device.
+            contexts.add(getContext());
         }
 
-        contexts.add(getContext());
+        if ((accessDeviceId == DEVICE_ID_DEFAULT && clipboard.deviceId == DEVICE_ID_DEFAULT)
+                || mVdmInternal == null) {
+            // No virtual devices involved.
+            return contexts;
+        }
+
+        // At this point the clipboard is either accessed from a virtual device, or it is a virtual
+        // device clipboard, so show a toast on the relevant virtual display(s).
+        DisplayManager displayManager = getContext().getSystemService(DisplayManager.class);
+        ArraySet<Integer> displayIds = mVdmInternal.getDisplayIdsForDevice(accessDeviceId);
+        int topFocusedDisplayId = mWm.getTopFocusedDisplayId();
+
+        if (displayIds.contains(topFocusedDisplayId)) {
+            Display display = displayManager.getDisplay(topFocusedDisplayId);
+            if (display != null) {
+                contexts.add(getContext().createDisplayContext(display));
+                return contexts;
+            }
+        }
+
+        for (int i = 0; i < displayIds.size(); i++) {
+            Display display = displayManager.getDisplay(displayIds.valueAt(i));
+            if (display != null) {
+                contexts.add(getContext().createDisplayContext(display));
+            }
+        }
+        if (contexts.isEmpty()) {
+            Slog.e(TAG, "getToastContexts Couldn't find any VirtualDisplays for VirtualDevice "
+                    + accessDeviceId);
+            // Since we couldn't find any VirtualDisplays to use at all, just fall through to using
+            // the default display below.
+            contexts.add(getContext());
+        }
+
         return contexts;
     }
 
@@ -1613,5 +1625,66 @@ public class ClipboardService extends SystemService {
     private TextClassificationManager createTextClassificationManagerAsUser(@UserIdInt int userId) {
         Context context = getContext().createContextAsUser(UserHandle.of(userId), /* flags= */ 0);
         return context.getSystemService(TextClassificationManager.class);
+    }
+
+    private static int mimeTypeToClipDataType(@NonNull String mimeType) {
+        switch (mimeType) {
+            case MIMETYPE_TEXT_PLAIN:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_PLAIN;
+            case MIMETYPE_TEXT_HTML:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_HTML;
+            case MIMETYPE_TEXT_URILIST:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_URILIST;
+            case MIMETYPE_TEXT_INTENT:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_TEXT_INTENT;
+            case MIMETYPE_APPLICATION_ACTIVITY:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_ACTIVITY;
+            case MIMETYPE_APPLICATION_SHORTCUT:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_SHORTCUT;
+            case MIMETYPE_APPLICATION_TASK:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_APPLICATION_TASK;
+            case MIMETYPE_UNKNOWN:
+                // fallthrough
+            default:
+                return CLIPBOARD_GET_EVENT_REPORTED__CLIP_DATA_TYPE__MIMETYPE_UNKNOWN;
+        }
+    }
+
+    private void scheduleWriteClipDataStats(@NonNull ClipData clipData,
+            int sourceUid, int intendingUid) {
+        if (!clipboardGetEventLogging()) {
+            return;
+        }
+        final ClipDescription description = clipData.getDescription();
+        if (description != null) {
+            final IntArray mimeTypes = new IntArray();
+            final int secondsSinceSet = (int) TimeUnit.MILLISECONDS.toSeconds(
+                    System.currentTimeMillis() - description.getTimestamp());
+            for (int i = description.getMimeTypeCount() - 1; i >= 0; i--) {
+                final String mimeType = description.getMimeType(i);
+                if (mimeType != null) {
+                    final int clipDataType = mimeTypeToClipDataType(mimeType);
+                    if (!mimeTypes.contains(clipDataType)) {
+                        mimeTypes.add(clipDataType);
+                    }
+                }
+            }
+            // The getUidProcessState() will hit AMS lock which might be slow, while getting the
+            // clip data might be on the critical UI path. So post to the work thread.
+            // There could be race conditions where the UID state might have been changed
+            // between now and the work thread execution time, but this should be acceptable.
+            mWorkerHandler.post(() -> FrameworkStatsLog.write(
+                    FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED,
+                    sourceUid, intendingUid,
+                    mAmInternal.getUidProcessState(intendingUid),
+                    mimeTypes.toArray(),
+                    secondsSinceSet));
+        } else {
+            mWorkerHandler.post(() -> FrameworkStatsLog.write(
+                    FrameworkStatsLog.CLIPBOARD_GET_EVENT_REPORTED,
+                    sourceUid, intendingUid,
+                    mAmInternal.getUidProcessState(intendingUid),
+                    CLIP_DATA_TYPES_UNKNOWN, 0));
+        }
     }
 }

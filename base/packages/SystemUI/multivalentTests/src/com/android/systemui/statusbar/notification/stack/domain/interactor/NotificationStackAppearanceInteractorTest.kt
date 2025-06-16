@@ -21,10 +21,11 @@ import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.scene.domain.interactor.sceneInteractor
 import com.android.systemui.shade.data.repository.shadeRepository
-import com.android.systemui.shade.shared.model.ShadeMode
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimBounds
 import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimRounding
+import com.android.systemui.statusbar.notification.stack.shared.model.ShadeScrimShape
 import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.test.runTest
@@ -40,25 +41,34 @@ class NotificationStackAppearanceInteractorTest : SysuiTestCase() {
     private val underTest = kosmos.notificationStackAppearanceInteractor
 
     @Test
-    fun stackBounds() =
+    fun stackNotificationScrimBounds() =
         testScope.runTest {
-            val stackBounds by collectLastValue(underTest.shadeScrimBounds)
+            val stackBounds by collectLastValue(underTest.notificationShadeScrimBounds)
 
-            val bounds1 =
-                ShadeScrimBounds(
-                    top = 100f,
-                    bottom = 200f,
-                )
-            underTest.setShadeScrimBounds(bounds1)
+            val bounds1 = ShadeScrimBounds(top = 100f, bottom = 200f)
+            underTest.setNotificationShadeScrimBounds(bounds1)
             assertThat(stackBounds).isEqualTo(bounds1)
 
-            val bounds2 =
-                ShadeScrimBounds(
-                    top = 200f,
-                    bottom = 300f,
-                )
-            underTest.setShadeScrimBounds(bounds2)
+            val bounds2 = ShadeScrimBounds(top = 200f, bottom = 300f)
+            underTest.setNotificationShadeScrimBounds(bounds2)
             assertThat(stackBounds).isEqualTo(bounds2)
+        }
+
+    fun setQsPanelShape() =
+        testScope.runTest {
+            var actual: ShadeScrimShape? = null
+            underTest.setQsPanelShapeConsumer { shape -> actual = shape }
+
+            val expected1 =
+                ShadeScrimShape(
+                    bounds = ShadeScrimBounds(top = 0f, bottom = 100f),
+                    topRadius = 0,
+                    bottomRadius = 10,
+                )
+            assertThat(actual).isEqualTo(expected1)
+
+            val expected2 = expected1.copy(topRadius = 10)
+            assertThat(expected2).isEqualTo(actual)
         }
 
     @Test
@@ -66,23 +76,71 @@ class NotificationStackAppearanceInteractorTest : SysuiTestCase() {
         testScope.runTest {
             val stackRounding by collectLastValue(underTest.shadeScrimRounding)
 
-            kosmos.shadeRepository.setShadeMode(ShadeMode.Single)
+            kosmos.shadeRepository.setShadeLayoutWide(false)
             assertThat(stackRounding)
                 .isEqualTo(ShadeScrimRounding(isTopRounded = true, isBottomRounded = false))
 
-            kosmos.shadeRepository.setShadeMode(ShadeMode.Split)
+            kosmos.shadeRepository.setShadeLayoutWide(true)
             assertThat(stackRounding)
                 .isEqualTo(ShadeScrimRounding(isTopRounded = true, isBottomRounded = true))
         }
 
     @Test(expected = IllegalStateException::class)
-    fun setStackBounds_withImproperBounds_throwsException() =
+    fun stackNotificationScrimBounds_withImproperBounds_throwsException() =
         testScope.runTest {
-            underTest.setShadeScrimBounds(
-                ShadeScrimBounds(
-                    top = 100f,
-                    bottom = 99f,
-                )
+            underTest.setNotificationShadeScrimBounds(ShadeScrimBounds(top = 100f, bottom = 99f))
+        }
+
+    @Test(expected = IllegalStateException::class)
+    fun setQsPanelShape_withImproperBounds_throwsException() =
+        testScope.runTest {
+            val invalidBounds = ShadeScrimBounds(top = 0f, bottom = -10f)
+            underTest.sendQsPanelShape(
+                ShadeScrimShape(bounds = invalidBounds, topRadius = 10, bottomRadius = 10)
             )
+        }
+
+    @Test
+    fun shouldCloseGuts_userInputOngoing_currentGestureInGuts() =
+        testScope.runTest {
+            val shouldCloseGuts by collectLastValue(underTest.shouldCloseGuts)
+
+            kosmos.sceneInteractor.onSceneContainerUserInputStarted()
+            underTest.setCurrentGestureInGuts(true)
+
+            assertThat(shouldCloseGuts).isFalse()
+        }
+
+    @Test
+    fun shouldCloseGuts_userInputOngoing_currentGestureNotInGuts() =
+        testScope.runTest {
+            val shouldCloseGuts by collectLastValue(underTest.shouldCloseGuts)
+
+            kosmos.sceneInteractor.onSceneContainerUserInputStarted()
+            underTest.setCurrentGestureInGuts(false)
+
+            assertThat(shouldCloseGuts).isTrue()
+        }
+
+    @Test
+    fun shouldCloseGuts_userInputNotOngoing_currentGestureInGuts() =
+        testScope.runTest {
+            val shouldCloseGuts by collectLastValue(underTest.shouldCloseGuts)
+
+            kosmos.sceneInteractor.onUserInputFinished()
+            underTest.setCurrentGestureInGuts(true)
+
+            assertThat(shouldCloseGuts).isFalse()
+        }
+
+    @Test
+    fun shouldCloseGuts_userInputNotOngoing_currentGestureNotInGuts() =
+        testScope.runTest {
+            val shouldCloseGuts by collectLastValue(underTest.shouldCloseGuts)
+
+            kosmos.sceneInteractor.onUserInputFinished()
+            underTest.setCurrentGestureInGuts(false)
+
+            assertThat(shouldCloseGuts).isFalse()
         }
 }

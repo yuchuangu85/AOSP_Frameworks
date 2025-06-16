@@ -19,7 +19,7 @@ package com.android.systemui.statusbar.pipeline.satellite.data
 import android.os.Bundle
 import androidx.annotation.VisibleForTesting
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.demomode.DemoMode
 import com.android.systemui.demomode.DemoModeController
 import com.android.systemui.statusbar.pipeline.satellite.data.demo.DemoDeviceBasedSatelliteRepository
@@ -27,7 +27,6 @@ import com.android.systemui.statusbar.pipeline.satellite.shared.model.SatelliteC
 import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -51,7 +50,6 @@ import kotlinx.coroutines.flow.stateIn
  * DemoRepository
  * ```
  */
-@OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
 class DeviceBasedSatelliteRepositorySwitcher
 @Inject
@@ -59,7 +57,7 @@ constructor(
     private val realImpl: RealDeviceBasedSatelliteRepository,
     private val demoImpl: DemoDeviceBasedSatelliteRepository,
     private val demoModeController: DemoModeController,
-    @Application scope: CoroutineScope,
+    @Background scope: CoroutineScope,
 ) : DeviceBasedSatelliteRepository {
     private val isDemoMode =
         conflatedCallbackFlow {
@@ -97,6 +95,9 @@ constructor(
             }
             .stateIn(scope, SharingStarted.WhileSubscribed(), realImpl)
 
+    override val isOpportunisticSatelliteIconEnabled: Boolean
+        get() = activeRepo.value.isOpportunisticSatelliteIconEnabled
+
     override val isSatelliteProvisioned: StateFlow<Boolean> =
         activeRepo
             .flatMapLatest { it.isSatelliteProvisioned }
@@ -118,6 +119,6 @@ constructor(
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                realImpl.isSatelliteAllowedForCurrentLocation.value
+                realImpl.isSatelliteAllowedForCurrentLocation.value,
             )
 }

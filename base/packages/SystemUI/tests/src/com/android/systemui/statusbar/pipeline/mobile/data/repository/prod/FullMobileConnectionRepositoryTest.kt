@@ -23,13 +23,14 @@ import android.telephony.SignalStrength
 import android.telephony.SubscriptionManager.PROFILE_CLASS_UNSET
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.flags.FakeFeatureFlagsClassic
 import com.android.systemui.flags.Flags.ROAMING_INDICATOR_VIA_DISPLAY_INFO
-import com.android.systemui.log.table.TableLogBuffer
-import com.android.systemui.log.table.TableLogBufferFactory
+import com.android.systemui.log.table.logcatTableLogBuffer
+import com.android.systemui.log.table.tableLogBufferFactory
 import com.android.systemui.statusbar.pipeline.mobile.data.model.NetworkNameModel
 import com.android.systemui.statusbar.pipeline.mobile.data.model.SubscriptionModel
 import com.android.systemui.statusbar.pipeline.mobile.data.model.SystemUiCarrierConfig
@@ -41,15 +42,14 @@ import com.android.systemui.statusbar.pipeline.mobile.data.repository.prod.FullM
 import com.android.systemui.statusbar.pipeline.mobile.data.repository.prod.MobileTelephonyHelpers.getTelephonyCallbackForType
 import com.android.systemui.statusbar.pipeline.wifi.data.repository.FakeWifiRepository
 import com.android.systemui.statusbar.pipeline.wifi.shared.model.WifiNetworkModel
+import com.android.systemui.testKosmos
 import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.mockito.whenever
-import com.android.systemui.util.time.FakeSystemClock
 import com.google.common.truth.Truth.assertThat
 import java.io.PrintWriter
 import java.io.StringWriter
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -58,6 +58,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 
@@ -67,26 +68,19 @@ import org.mockito.Mockito.verify
  * properly switches over when the value of `isCarrierMerged` changes.
  */
 @Suppress("EXPERIMENTAL_IS_NOT_ENABLED")
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
+@RunWith(AndroidJUnit4::class)
 class FullMobileConnectionRepositoryTest : SysuiTestCase() {
+    private val kosmos = testKosmos()
+
     private lateinit var underTest: FullMobileConnectionRepository
 
     private val flags =
         FakeFeatureFlagsClassic().also { it.set(ROAMING_INDICATOR_VIA_DISPLAY_INFO, true) }
 
-    private val systemClock = FakeSystemClock()
     private val testDispatcher = UnconfinedTestDispatcher()
     private val testScope = TestScope(testDispatcher)
-    private val tableLogBuffer =
-        TableLogBuffer(
-            maxSize = 100,
-            name = "TestName",
-            systemClock,
-            mock(),
-            testDispatcher,
-            testScope.backgroundScope,
-        )
+    private val tableLogBuffer = logcatTableLogBuffer(kosmos, "TestName")
     private val mobileFactory = mock<MobileConnectionRepositoryImpl.Factory>()
     private val carrierMergedFactory = mock<CarrierMergedConnectionRepository.Factory>()
     private val connectivityManager = mock<ConnectivityManager>()
@@ -369,19 +363,10 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
     @Test
     fun factory_reusesLogBuffersForSameConnection() =
         testScope.runTest {
-            val realLoggerFactory =
-                TableLogBufferFactory(
-                    mock(),
-                    FakeSystemClock(),
-                    mock(),
-                    testDispatcher,
-                    testScope.backgroundScope,
-                )
-
             val factory =
                 FullMobileConnectionRepository.Factory(
                     scope = testScope.backgroundScope,
-                    realLoggerFactory,
+                    kosmos.tableLogBufferFactory,
                     mobileFactory,
                     carrierMergedFactory,
                 )
@@ -413,19 +398,10 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
     @Test
     fun factory_reusesLogBuffersForSameSubIDevenIfCarrierMerged() =
         testScope.runTest {
-            val realLoggerFactory =
-                TableLogBufferFactory(
-                    mock(),
-                    FakeSystemClock(),
-                    mock(),
-                    testDispatcher,
-                    testScope.backgroundScope,
-                )
-
             val factory =
                 FullMobileConnectionRepository.Factory(
                     scope = testScope.backgroundScope,
-                    realLoggerFactory,
+                    kosmos.tableLogBufferFactory,
                     mobileFactory,
                     carrierMergedFactory,
                 )
@@ -509,10 +485,8 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
             val job = underTest.primaryLevel.launchIn(this)
 
             // WHEN we set up carrier merged info
-            val networkId = 2
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 3,
                 )
@@ -523,8 +497,7 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
 
             // WHEN we update the info
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 1,
                 )
@@ -562,10 +535,8 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
             assertThat(dumpBuffer()).contains("$COL_PRIMARY_LEVEL${BUFFER_SEPARATOR}1")
 
             // WHEN isCarrierMerged is set to true
-            val networkId = 2
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 3,
                 )
@@ -577,8 +548,7 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
 
             // WHEN the carrier merge network is updated
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 4,
                 )
@@ -629,10 +599,8 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
                 .onSignalStrengthsChanged(signalStrength)
 
             // THEN updates to the carrier merged level aren't logged
-            val networkId = 2
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 4,
                 )
@@ -640,8 +608,7 @@ class FullMobileConnectionRepositoryTest : SysuiTestCase() {
             assertThat(dumpBuffer()).doesNotContain("$COL_PRIMARY_LEVEL${BUFFER_SEPARATOR}4")
 
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.CarrierMerged(
-                    networkId,
+                WifiNetworkModel.CarrierMerged.of(
                     SUB_ID,
                     level = 3,
                 )

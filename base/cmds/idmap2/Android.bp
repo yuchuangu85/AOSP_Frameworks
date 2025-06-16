@@ -165,6 +165,7 @@ cc_test {
     ],
     host_supported: true,
     test_suites: ["general-tests"],
+    require_root: true,
     srcs: [
         "tests/BinaryStreamVisitorTests.cpp",
         "tests/CommandLineOptionsTests.cpp",
@@ -347,6 +348,7 @@ filegroup {
         "idmap2d/aidl/core/android/os/FabricatedOverlayInternal.aidl",
         "idmap2d/aidl/core/android/os/FabricatedOverlayInternalEntry.aidl",
         "idmap2d/aidl/core/android/os/FabricatedOverlayInfo.aidl",
+        "idmap2d/aidl/core/android/os/OverlayConstraint.aidl",
     ],
     path: "idmap2d/aidl/core/",
 }

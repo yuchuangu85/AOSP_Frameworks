@@ -23,6 +23,7 @@ import android.util.AttributeSet
 import android.util.StateSet
 import android.view.Gravity
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
@@ -30,7 +31,8 @@ import android.widget.ImageView
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import com.airbnb.lottie.LottieCompositionFactory
 import com.airbnb.lottie.LottieDrawable
-import com.android.systemui.common.ui.view.LongPressHandlingView
+import com.android.systemui.common.ui.view.TouchHandlingView
+import com.android.systemui.log.TouchHandlingViewLogger
 import com.android.systemui.res.R
 
 class DeviceEntryIconView
@@ -39,8 +41,17 @@ constructor(
     context: Context,
     attrs: AttributeSet?,
     defStyleAttrs: Int = 0,
+    logger: TouchHandlingViewLogger? = null,
 ) : FrameLayout(context, attrs, defStyleAttrs) {
-    val longPressHandlingView: LongPressHandlingView = LongPressHandlingView(context, attrs)
+
+    val touchHandlingView: TouchHandlingView =
+        TouchHandlingView(
+            context = context,
+            attrs = attrs,
+            longPressDuration = { ViewConfiguration.getLongPressTimeout().toLong() },
+            allowedTouchSlop = ViewConfiguration.get(context).getScaledTouchSlop(),
+            logger = logger,
+        )
     val iconView: ImageView = ImageView(context, attrs).apply { id = R.id.device_entry_icon_fg }
     val bgView: ImageView = ImageView(context, attrs).apply { id = R.id.device_entry_icon_bg }
     val aodFpDrawable: LottieDrawable = LottieDrawable()
@@ -57,7 +68,7 @@ constructor(
         //     bgView, iconView, longpressHandlingView overlay
         addBgImageView()
         addIconImageView()
-        addLongpressHandlingView()
+        addTouchHandlingView()
     }
 
     private fun setupAccessibilityDelegate() {
@@ -66,17 +77,17 @@ constructor(
                 private val accessibilityBouncerHint =
                     AccessibilityNodeInfo.AccessibilityAction(
                         AccessibilityNodeInfoCompat.ACTION_CLICK,
-                        resources.getString(R.string.accessibility_bouncer)
+                        resources.getString(R.string.accessibility_bouncer),
                     )
                 private val accessibilityEnterHint =
                     AccessibilityNodeInfo.AccessibilityAction(
                         AccessibilityNodeInfoCompat.ACTION_CLICK,
-                        resources.getString(R.string.accessibility_enter_hint)
+                        resources.getString(R.string.accessibility_enter_hint),
                     )
 
                 override fun onInitializeAccessibilityNodeInfo(
                     v: View,
-                    info: AccessibilityNodeInfo
+                    info: AccessibilityNodeInfo,
                 ) {
                     super.onInitializeAccessibilityNodeInfo(v, info)
                     when (accessibilityHintType) {
@@ -221,12 +232,12 @@ constructor(
         )
     }
 
-    private fun addLongpressHandlingView() {
-        addView(longPressHandlingView)
-        val lp = longPressHandlingView.layoutParams as LayoutParams
+    private fun addTouchHandlingView() {
+        addView(touchHandlingView)
+        val lp = touchHandlingView.layoutParams as LayoutParams
         lp.height = ViewGroup.LayoutParams.MATCH_PARENT
         lp.width = ViewGroup.LayoutParams.MATCH_PARENT
-        longPressHandlingView.layoutParams = lp
+        touchHandlingView.layoutParams = lp
     }
 
     private fun addIconImageView() {
@@ -247,6 +258,7 @@ constructor(
         lp.height = ViewGroup.LayoutParams.MATCH_PARENT
         lp.width = ViewGroup.LayoutParams.MATCH_PARENT
         bgView.layoutParams = lp
+        bgView.alpha = 0f
     }
 
     fun getIconState(icon: IconType, aod: Boolean): IntArray {

@@ -16,8 +16,6 @@
 
 package com.android.server.accessibility.gestures;
 
-import static android.accessibilityservice.AccessibilityTrace.FLAGS_GESTURE;
-import static android.accessibilityservice.AccessibilityTrace.FLAGS_INPUT_FILTER;
 import static android.view.MotionEvent.ACTION_CANCEL;
 import static android.view.MotionEvent.ACTION_DOWN;
 import static android.view.MotionEvent.ACTION_HOVER_ENTER;
@@ -85,8 +83,6 @@ import java.util.List;
  */
 public class TouchExplorer extends BaseEventStreamTransformation
         implements GestureManifold.Listener {
-
-    private static final long LOGGING_FLAGS = FLAGS_GESTURE | FLAGS_INPUT_FILTER;
 
     // Tag for logging received events.
     private static final String LOG_TAG = "TouchExplorer";
@@ -240,10 +236,7 @@ public class TouchExplorer extends BaseEventStreamTransformation
     }
 
     private void clear(MotionEvent event, int policyFlags) {
-        if (mState.isTouchExploring() || Flags.sendHoverEventsBasedOnEventStream()) {
-            // If a touch exploration gesture is in progress send events for its end.
-            sendHoverExitAndTouchExplorationGestureEndIfNeeded(policyFlags);
-        }
+        sendHoverExitAndTouchExplorationGestureEndIfNeeded(policyFlags);
         mDraggingPointerId = INVALID_POINTER_ID;
         // Send exit to any pointers that we have delivered as part of delegating or dragging.
         mDispatcher.sendUpForInjectedDownPointers(event, policyFlags);
@@ -264,10 +257,6 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public void onMotionEvent(MotionEvent event, MotionEvent rawEvent, int policyFlags) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onMotionEvent", LOGGING_FLAGS,
-                    "event=" + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
-        }
         if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
             super.onMotionEvent(event, rawEvent, policyFlags);
             return;
@@ -326,9 +315,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onAccessibilityEvent",
-                    LOGGING_FLAGS, "event=" + event);
+        if (DEBUG) {
+            Slog.v(LOG_TAG, "Received A11y Event. event=" + event);
         }
         final int eventType = event.getEventType();
 
@@ -386,9 +374,9 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public void onDoubleTapAndHold(MotionEvent event, MotionEvent rawEvent, int policyFlags) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onDoubleTapAndHold", LOGGING_FLAGS,
-                    "event=" + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
+        if (DEBUG) {
+            Slog.i(LOG_TAG, "Double tap and hold. event="
+                    + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
         }
         if (mDispatcher.longPressWithTouchEvents(event, policyFlags)) {
             sendHoverExitAndTouchExplorationGestureEndIfNeeded(policyFlags);
@@ -406,9 +394,9 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public boolean onDoubleTap(MotionEvent event, MotionEvent rawEvent, int policyFlags) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onDoubleTap", LOGGING_FLAGS,
-                    "event=" + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
+        if (DEBUG) {
+            Slog.i(LOG_TAG, "Double tap. event="
+                    + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
         }
         mAms.onTouchInteractionEnd();
         // Remove pending event deliveries.
@@ -466,8 +454,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public boolean onGestureStarted() {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onGestureStarted", LOGGING_FLAGS);
+        if (DEBUG) {
+            Slog.i(LOG_TAG, "Gesture started.");
         }
         // We have to perform gesture detection, so
         // clear the current state and try to detect.
@@ -482,9 +470,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public boolean onGestureCompleted(AccessibilityGestureEvent gestureEvent) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onGestureCompleted",
-                    LOGGING_FLAGS, "event=" + gestureEvent);
+        if (DEBUG) {
+            Slog.i(LOG_TAG, "Gesture completed. gestureEvent=" + gestureEvent);
         }
         endGestureDetection(true);
         mSendTouchInteractionEndDelayed.cancel();
@@ -494,10 +481,11 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
     @Override
     public boolean onGestureCancelled(MotionEvent event, MotionEvent rawEvent, int policyFlags) {
-        if (mAms.getTraceManager().isA11yTracingEnabledForTypes(LOGGING_FLAGS)) {
-            mAms.getTraceManager().logTrace(LOG_TAG + ".onGestureCancelled", LOGGING_FLAGS,
-                    "event=" + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
+        if (DEBUG) {
+            Slog.i(LOG_TAG, "Gesture cancelled. event="
+                    + event + ";rawEvent=" + rawEvent + ";policyFlags=" + policyFlags);
         }
+
         if (mState.isGestureDetecting()) {
             endGestureDetection(event.getActionMasked() == ACTION_UP);
             return true;
@@ -509,13 +497,14 @@ public class TouchExplorer extends BaseEventStreamTransformation
 
                 // We have just decided that the user is touch,
                 // exploring so start sending events.
-                mSendHoverEnterAndMoveDelayed.addEvent(event, mState.getLastReceivedEvent());
+                mSendHoverEnterAndMoveDelayed.addEvent(event,
+                        Flags.eventDispatcherRawEvent() ? rawEvent : mState.getLastReceivedEvent());
                 mSendHoverEnterAndMoveDelayed.forceSendAndRemove();
                 mSendHoverExitDelayed.cancel();
                 mDispatcher.sendMotionEvent(
                         event,
                         ACTION_HOVER_MOVE,
-                        event,
+                        Flags.eventDispatcherRawEvent() ? rawEvent : event,
                         pointerIdBits,
                         policyFlags);
                 return true;
@@ -562,10 +551,7 @@ public class TouchExplorer extends BaseEventStreamTransformation
         // clear any hover events that might have been queued and never sent.
         mSendHoverEnterAndMoveDelayed.clear();
         mSendHoverExitDelayed.cancel();
-        // If a touch exploration gesture is in progress send events for its end.
-        if (mState.isTouchExploring() || Flags.sendHoverEventsBasedOnEventStream()) {
-            sendHoverExitAndTouchExplorationGestureEndIfNeeded(policyFlags);
-        }
+        sendHoverExitAndTouchExplorationGestureEndIfNeeded(policyFlags);
         if (mState.isClear()) {
             if (!mSendHoverEnterAndMoveDelayed.isPending()) {
                 // Queue a delayed transition to STATE_TOUCH_EXPLORING.
@@ -666,6 +652,14 @@ public class TouchExplorer extends BaseEventStreamTransformation
                 break;
             case ACTION_UP:
                 handleActionUp(event, rawEvent, policyFlags);
+                break;
+            case ACTION_POINTER_UP:
+                if (com.android.server.accessibility.Flags
+                        .pointerUpMotionEventInTouchExploration()) {
+                    if (mState.isServiceDetectingGestures()) {
+                        mAms.sendMotionEventToListeningServices(rawEvent);
+                    }
+                }
                 break;
             default:
                 break;
@@ -901,6 +895,9 @@ public class TouchExplorer extends BaseEventStreamTransformation
                     mSendHoverEnterAndMoveDelayed.cancel();
                     mSendHoverExitDelayed.cancel();
                 }
+                if (pointerIndex < 0) {
+                    return;
+                }
                 // If the user is touch exploring the second pointer may be
                 // performing a double tap to activate an item without need
                 // for the user to lift their exploring finger.
@@ -1114,7 +1111,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
      *
      * @param policyFlags The policy flags associated with the event.
      */
-    private void sendHoverExitAndTouchExplorationGestureEndIfNeeded(int policyFlags) {
+    @VisibleForTesting
+    void sendHoverExitAndTouchExplorationGestureEndIfNeeded(int policyFlags) {
         MotionEvent event = mState.getLastInjectedHoverEvent();
         if (event != null && event.getActionMasked() != ACTION_HOVER_EXIT) {
             final int pointerIdBits = event.getPointerIdBits();
@@ -1124,7 +1122,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
             mDispatcher.sendMotionEvent(
                     event,
                     ACTION_HOVER_EXIT,
-                    mState.getLastReceivedEvent(),
+                    Flags.eventDispatcherRawEvent() ? mState.getLastReceivedRawEvent() :
+                            mState.getLastReceivedEvent(),
                     pointerIdBits,
                     policyFlags);
         }
@@ -1146,7 +1145,8 @@ public class TouchExplorer extends BaseEventStreamTransformation
             mDispatcher.sendMotionEvent(
                     event,
                     ACTION_HOVER_ENTER,
-                    mState.getLastReceivedEvent(),
+                    Flags.eventDispatcherRawEvent() ? mState.getLastReceivedRawEvent() :
+                            mState.getLastReceivedEvent(),
                     pointerIdBits,
                     policyFlags);
         }
@@ -1599,9 +1599,7 @@ public class TouchExplorer extends BaseEventStreamTransformation
             if (mEvents.size() == 0) {
                 return;
             }
-            if (Flags.sendHoverEventsBasedOnEventStream()) {
-                sendHoverExitAndTouchExplorationGestureEndIfNeeded(mPolicyFlags);
-            }
+            sendHoverExitAndTouchExplorationGestureEndIfNeeded(mPolicyFlags);
             // Send an accessibility event to announce the touch exploration start.
             mDispatcher.sendAccessibilityEvent(TYPE_TOUCH_EXPLORATION_GESTURE_START);
             if (isSendMotionEventsEnabled()) {
@@ -1613,6 +1611,19 @@ public class TouchExplorer extends BaseEventStreamTransformation
                 dispatchGesture(gestureEvent);
             }
             if (!mEvents.isEmpty() && !mRawEvents.isEmpty()) {
+                if (Flags.resetInputDispatcherBeforeFirstTouchExploration()
+                        && !mState.hasResetInputDispatcherState()) {
+                    // Cancel any possible ongoing touch gesture from before touch exploration
+                    // started. This clears out the InputDispatcher event stream state so that it
+                    // is ready to accept new injected HOVER events.
+                    mDispatcher.sendMotionEvent(
+                            mEvents.get(0),
+                            ACTION_CANCEL,
+                            mRawEvents.get(0),
+                            mPointerIdBits,
+                            mPolicyFlags);
+                    setHasResetInputDispatcherState(true);
+                }
                 // Deliver a down event.
                 mDispatcher.sendMotionEvent(
                         mEvents.get(0),
@@ -1772,5 +1783,10 @@ public class TouchExplorer extends BaseEventStreamTransformation
                 + ", mDoubleTapSlop: " + mDoubleTapSlop
                 + ", mDraggingPointerId: " + mDraggingPointerId
                 + " }";
+    }
+
+    @VisibleForTesting
+    void setHasResetInputDispatcherState(boolean value) {
+        mState.setHasResetInputDispatcherState(value);
     }
 }

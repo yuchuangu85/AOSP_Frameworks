@@ -18,10 +18,11 @@ package android.text.format;
 
 import static org.junit.Assert.assertEquals;
 
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
@@ -72,6 +73,7 @@ public class TimeMigrationUtilsTest {
      * Compares TimeMigrationUtils.formatSimpleDateTime() with the code it is replacing.
      */
     @Test
+    @DisabledOnRavenwood(blockedBy = Time.class)
     public void formatMillisAsDateTime_matchesOldBehavior() {
         // A selection of interesting locales.
         Locale[] locales = new Locale[] {

@@ -29,8 +29,8 @@ import static junit.framework.Assert.assertNull;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyObject;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -42,8 +42,8 @@ import android.util.SparseArray;
 import android.view.Display;
 import android.view.View;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.LargeTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.google.common.base.Throwables;
 
@@ -79,7 +79,7 @@ public class AccessibilityCacheTest {
     @Before
     public void setUp() {
         mAccessibilityNodeRefresher = mock(AccessibilityCache.AccessibilityNodeRefresher.class);
-        when(mAccessibilityNodeRefresher.refreshNode(anyObject(), anyBoolean())).thenReturn(true);
+        when(mAccessibilityNodeRefresher.refreshNode(any(), anyBoolean())).thenReturn(true);
         mAccessibilityCache = new AccessibilityCache(mAccessibilityNodeRefresher);
     }
 
@@ -854,7 +854,7 @@ public class AccessibilityCacheTest {
                 try {
                     assertEventTypeClearsNode(eventType, false);
                     verify(mAccessibilityNodeRefresher, never())
-                            .refreshNode(anyObject(), anyBoolean());
+                            .refreshNode(any(), anyBoolean());
                 } catch (Throwable e) {
                     throw new AssertionError(
                             "Failed for eventType: " + AccessibilityEvent.eventTypeToString(
@@ -1051,6 +1051,28 @@ public class AccessibilityCacheTest {
 
         assertFalse(mAccessibilityCache.isNodeInCache(info));
         assertFalse(mAccessibilityCache.isNodeInCache(childInfo));
+    }
+
+    @Test
+    public void getEventSourceClassName_windowStateChangedThenRemoved() {
+        final String sourceActivityClassName = "com.example.SomeActivity";
+        final AccessibilityEvent windowStateChangedEvent = new AccessibilityEvent(
+                AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+        final View mockView = getMockViewWithA11yAndWindowIds(PARENT_VIEW_ID, WINDOW_ID_1);
+        windowStateChangedEvent.setSource(mockView);
+        windowStateChangedEvent.setClassName(sourceActivityClassName);
+
+        mAccessibilityCache.onAccessibilityEvent(windowStateChangedEvent);
+        assertEquals(mAccessibilityCache.getEventSourceClassName(WINDOW_ID_1),
+                sourceActivityClassName);
+
+        final AccessibilityEvent windowRemovedEvent = new AccessibilityEvent(
+                AccessibilityEvent.TYPE_WINDOWS_CHANGED);
+        windowRemovedEvent.setWindowChanges(AccessibilityEvent.WINDOWS_CHANGE_REMOVED);
+        windowRemovedEvent.setSource(mockView);
+
+        mAccessibilityCache.onAccessibilityEvent(windowRemovedEvent);
+        assertNull(mAccessibilityCache.getEventSourceClassName(WINDOW_ID_1));
     }
 
     private AccessibilityWindowInfo obtainAccessibilityWindowInfo(int windowId, int layer) {

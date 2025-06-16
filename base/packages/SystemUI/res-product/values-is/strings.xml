@@ -58,7 +58,7 @@
     <string name="high_temp_dialog_message" product="default" msgid="4272882413847595625">"Síminn reynir að kæla sig sjálfkrafa. Þú getur áfram notað símann en hann gæti verið hægvirkari.\n\nÞegar síminn hefur kælt sig mun hann virka eðlilega."</string>
     <string name="high_temp_dialog_message" product="device" msgid="263861943935989046">"Tækið reynir að kæla sig sjálfkrafa. Þú getur áfram notað tækið en það gæti verið hægvirkara.\n\nÞegar tækið hefur kælt sig mun það virka eðlilega."</string>
     <string name="high_temp_dialog_message" product="tablet" msgid="5613713326841935537">"Spjaldtölvan reynir að kæla sig sjálfkrafa. Þú getur áfram notað spjaldtölvuna en hún gæti verið hægvirkari.\n\nÞegar spjaldtölvan hefur kælt sig mun hún virka eðlilega."</string>
-    <string name="security_settings_sfps_enroll_find_sensor_message" product="tablet" msgid="3726972508570143945">"Fingrafaralesarinn er á aflrofanum. Það er flati hnappurinn við hliðina á upphleypta hljóðstyrkshnappnum á hlið spjaldtölvunnar."</string>
+    <string name="security_settings_sfps_enroll_find_sensor_message" product="tablet" msgid="3726972508570143945">"Fingrafaralesarinn er á aflrofanum. Það er flati hnappurinn við hliðina á upphleypta hljóðstyrkshnappnum á brún spjaldtölvunnar."</string>
     <string name="security_settings_sfps_enroll_find_sensor_message" product="device" msgid="2929467060295094725">"Fingrafaralesarinn er á aflrofanum. Það er flati hnappurinn við hliðina á upphleypta hljóðstyrkshnappnum á hlið tækisins."</string>
     <string name="security_settings_sfps_enroll_find_sensor_message" product="default" msgid="8582726566542997639">"Fingrafaralesarinn er á aflrofanum. Það er flati hnappurinn við hliðina á upphleypta hljóðstyrkshnappnum á hlið símans."</string>
     <string name="global_action_lock_message" product="default" msgid="7092460751050168771">"Taktu símann úr lás til að fá fleiri valkosti"</string>
@@ -66,4 +66,6 @@
     <string name="global_action_lock_message" product="device" msgid="3165224897120346096">"Taktu tækið úr lás til að fá fleiri valkosti"</string>
     <string name="media_transfer_playing_this_device" product="default" msgid="5795784619523545556">"Í spilun í þessum síma"</string>
     <string name="media_transfer_playing_this_device" product="tablet" msgid="222514408550408633">"Í spilun í þessari spjaldtölvu"</string>
+    <string name="finder_active" product="default" msgid="2734050945122991747">"Þú getur fundið þennan síma með „Finna tækið mitt“, jafnvel þótt slökkt sé á honum"</string>
+    <string name="finder_active" product="tablet" msgid="8045583079989970505">"Þú getur fundið þessa spjaldtölvu með „Finna tækið mitt“, jafnvel þótt slökkt sé á henni"</string>
 </resources>

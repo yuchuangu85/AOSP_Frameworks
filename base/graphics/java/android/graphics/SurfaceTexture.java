@@ -78,6 +78,7 @@ import java.lang.ref.WeakReference;
  * frame-available callback is called on an arbitrary thread, so unless special care is taken {@link
  * #updateTexImage} should not be called directly from the callback.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class SurfaceTexture {
     private final Looper mCreatorLooper;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
@@ -416,7 +417,8 @@ public class SurfaceTexture {
     }
 
     /**
-     * Retrieve the dataspace associated with the texture image.
+     * Retrieve the dataspace associated with the texture image
+     * set by the most recent call to {@link #updateTexImage}.
      */
     @SuppressLint("MethodNameUnits")
     public @NamedDataSpace int getDataSpace() {

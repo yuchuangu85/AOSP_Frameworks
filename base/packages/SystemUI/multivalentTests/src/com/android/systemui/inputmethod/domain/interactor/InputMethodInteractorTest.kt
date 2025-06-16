@@ -22,8 +22,8 @@ import com.android.systemui.SysuiTestCase
 import com.android.systemui.inputmethod.data.model.InputMethodModel
 import com.android.systemui.inputmethod.data.repository.fakeInputMethodRepository
 import com.android.systemui.inputmethod.data.repository.inputMethodRepository
-import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.testScope
+import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
 import java.util.UUID
 import kotlinx.coroutines.test.runTest
@@ -34,7 +34,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class InputMethodInteractorTest : SysuiTestCase() {
 
-    private val kosmos = Kosmos()
+    private val kosmos = testKosmos()
     private val testScope = kosmos.testScope
     private val fakeInputMethodRepository = kosmos.fakeInputMethodRepository
 
@@ -143,11 +143,12 @@ class InputMethodInteractorTest : SysuiTestCase() {
         nonAuxiliarySubtypes: Int,
     ): InputMethodModel {
         return InputMethodModel(
+            userId = UUID.randomUUID().mostSignificantBits.toInt(),
             imeId = UUID.randomUUID().toString(),
             subtypes =
                 List(auxiliarySubtypes + nonAuxiliarySubtypes) {
                     InputMethodModel.Subtype(subtypeId = it, isAuxiliary = it < auxiliarySubtypes)
-                }
+                },
         )
     }
 

@@ -35,23 +35,30 @@ interface BlockedByAdmin : RestrictedMode {
 
 interface BlockedByEcm : RestrictedMode {
     fun showRestrictedSettingsDetails()
+    fun isBlockedByPhoneCall() = false
 }
-
 
 internal data class BlockedByAdminImpl(
     private val context: Context,
     private val enforcedAdmin: RestrictedLockUtils.EnforcedAdmin,
+    private val userId: Int,
     private val enterpriseRepository: IEnterpriseRepository = EnterpriseRepository(context),
 ) : BlockedByAdmin {
     override fun getSummary(checked: Boolean?) = when (checked) {
-        true -> enterpriseRepository.getEnterpriseString(
+        true -> enterpriseRepository.getAdminSummaryString(
+            advancedProtectionStringId = com.android.settingslib.R.string.enabled,
             updatableStringId = Settings.ENABLED_BY_ADMIN_SWITCH_SUMMARY,
             resId = R.string.enabled_by_admin,
+            enforcedAdmin = enforcedAdmin,
+            userId = userId,
         )
 
-        false -> enterpriseRepository.getEnterpriseString(
+        false -> enterpriseRepository.getAdminSummaryString(
+            advancedProtectionStringId = com.android.settingslib.R.string.disabled,
             updatableStringId = Settings.DISABLED_BY_ADMIN_SWITCH_SUMMARY,
             resId = R.string.disabled_by_admin,
+            enforcedAdmin = enforcedAdmin,
+            userId = userId,
         )
 
         else -> ""
@@ -66,8 +73,13 @@ internal data class BlockedByEcmImpl(
     private val context: Context,
     private val intent: Intent,
 ) : BlockedByEcm {
+    private val reasonPhoneState = "phone_state"
 
     override fun showRestrictedSettingsDetails() {
         context.startActivity(intent)
+    }
+
+    override fun isBlockedByPhoneCall(): Boolean {
+        return intent.getStringExtra(Intent.EXTRA_REASON) == reasonPhoneState
     }
 }

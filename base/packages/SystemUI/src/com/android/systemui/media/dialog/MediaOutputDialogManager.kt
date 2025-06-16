@@ -25,6 +25,9 @@ import com.android.internal.logging.UiEventLogger
 import com.android.systemui.animation.DialogCuj
 import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.broadcast.BroadcastSender
+import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.dagger.qualifiers.Main
+import java.util.concurrent.Executor
 import javax.inject.Inject
 
 /** Manager to create and show a [MediaOutputDialog]. */
@@ -35,8 +38,11 @@ constructor(
     private val broadcastSender: BroadcastSender,
     private val uiEventLogger: UiEventLogger,
     private val dialogTransitionAnimator: DialogTransitionAnimator,
-    private val mediaOutputControllerFactory: MediaOutputController.Factory,
+    private val mediaSwitchingControllerFactory: MediaSwitchingController.Factory,
 ) {
+    @Inject @Main lateinit var mainExecutor: Executor
+    @Inject @Background lateinit var backgroundExecutor: Executor
+
     companion object {
         const val INTERACTION_JANK_TAG = "media_output"
         var mediaOutputDialog: MediaOutputDialog? = null
@@ -51,7 +57,7 @@ constructor(
         aboveStatusBar: Boolean,
         view: View? = null,
         userHandle: UserHandle? = null,
-        token: MediaSession.Token? = null
+        token: MediaSession.Token? = null,
     ) {
         createAndShowWithController(
             packageName,
@@ -62,8 +68,8 @@ constructor(
                         it,
                         DialogCuj(
                             InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN,
-                            INTERACTION_JANK_TAG
-                        )
+                            INTERACTION_JANK_TAG,
+                        ),
                     )
                 },
             userHandle = userHandle,
@@ -98,7 +104,7 @@ constructor(
         createAndShow(
             packageName = null,
             aboveStatusBar = false,
-            dialogTransitionAnimatorController = null,
+            dialogTransitionAnimatorController = controller,
             includePlaybackAndAppMetadata = false,
             userHandle = null,
         )
@@ -118,7 +124,7 @@ constructor(
         // Dismiss the previous dialog, if any.
         mediaOutputDialog?.dismiss()
 
-        val controller = mediaOutputControllerFactory.create(packageName, userHandle, token)
+        val controller = mediaSwitchingControllerFactory.create(packageName, userHandle, token)
 
         val mediaOutputDialog =
             MediaOutputDialog(
@@ -128,15 +134,14 @@ constructor(
                 controller,
                 dialogTransitionAnimator,
                 uiEventLogger,
-                includePlaybackAndAppMetadata
+                mainExecutor,
+                backgroundExecutor,
+                includePlaybackAndAppMetadata,
             )
 
         // Show the dialog.
         if (dialogTransitionAnimatorController != null) {
-            dialogTransitionAnimator.show(
-                mediaOutputDialog,
-                dialogTransitionAnimatorController,
-            )
+            dialogTransitionAnimator.show(mediaOutputDialog, dialogTransitionAnimatorController)
         } else {
             mediaOutputDialog.show()
         }

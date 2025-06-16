@@ -24,7 +24,7 @@
 #include <ui/Size.h>
 #include <ui/StaticDisplayInfo.h>
 
-#include "DisplayHardware/PowerAdvisor.h"
+#include "PowerAdvisor/PowerAdvisor.h"
 
 namespace android::compositionengine {
 
@@ -34,7 +34,7 @@ class CompositionEngine;
  * A parameter object for creating Display instances
  */
 struct DisplayCreationArgs {
-    DisplayId id;
+    DisplayIdVariant idVariant;
 
     // Size of the display in pixels
     ui::Size pixels = ui::kInvalidSize;
@@ -46,9 +46,15 @@ struct DisplayCreationArgs {
     // content.
     bool isProtected = false;
 
+    // True if this display has picture processing hardware and pipelines.
+    bool hasPictureProcessing = false;
+
+    // The number of layer-specific picture-processing pipelines.
+    int32_t maxLayerPictureProfiles = 0;
+
     // Optional pointer to the power advisor interface, if one is needed for
     // this display.
-    Hwc2::PowerAdvisor* powerAdvisor = nullptr;
+    adpf::PowerAdvisor* powerAdvisor = nullptr;
 
     // Debugging. Human readable name for the display.
     std::string name;
@@ -62,8 +68,8 @@ class DisplayCreationArgsBuilder {
 public:
     DisplayCreationArgs build() { return std::move(mArgs); }
 
-    DisplayCreationArgsBuilder& setId(DisplayId id) {
-        mArgs.id = id;
+    DisplayCreationArgsBuilder& setId(DisplayIdVariant idVariant) {
+        mArgs.idVariant = idVariant;
         return *this;
     }
 
@@ -82,7 +88,17 @@ public:
         return *this;
     }
 
-    DisplayCreationArgsBuilder& setPowerAdvisor(Hwc2::PowerAdvisor* powerAdvisor) {
+    DisplayCreationArgsBuilder& setHasPictureProcessing(bool hasPictureProcessing) {
+        mArgs.hasPictureProcessing = hasPictureProcessing;
+        return *this;
+    }
+
+    DisplayCreationArgsBuilder& setMaxLayerPictureProfiles(int32_t maxLayerPictureProfiles) {
+        mArgs.maxLayerPictureProfiles = maxLayerPictureProfiles;
+        return *this;
+    }
+
+    DisplayCreationArgsBuilder& setPowerAdvisor(adpf::PowerAdvisor* powerAdvisor) {
         mArgs.powerAdvisor = powerAdvisor;
         return *this;
     }

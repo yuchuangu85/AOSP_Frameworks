@@ -42,6 +42,24 @@ constexpr bool hdr_10bit_plus() {
 constexpr bool initialize_gl_always() {
     return false;
 }
+
+constexpr bool skip_eglmanager_telemetry() {
+    return false;
+}
+
+constexpr bool resample_gainmap_regions() {
+    return false;
+}
+
+constexpr bool query_global_priority() {
+    return false;
+}
+constexpr bool early_preload_gl_context() {
+    return false;
+}
+constexpr bool calc_workload_orig_deadline() {
+    return false;
+}
 }  // namespace hwui_flags
 #endif
 
@@ -100,6 +118,10 @@ float Properties::maxHdrHeadroomOn8bit = 5.f;  // TODO: Refine this number
 
 bool Properties::clipSurfaceViews = false;
 bool Properties::hdr10bitPlus = false;
+bool Properties::skipTelemetry = false;
+bool Properties::queryGlobalPriority = false;
+
+int Properties::timeoutMultiplier = 1;
 
 StretchEffectBehavior Properties::stretchEffectBehavior = StretchEffectBehavior::ShaderHWUI;
 
@@ -173,6 +195,11 @@ bool Properties::load() {
     clipSurfaceViews =
             base::GetBoolProperty("debug.hwui.clip_surfaceviews", hwui_flags::clip_surfaceviews());
     hdr10bitPlus = hwui_flags::hdr_10bit_plus();
+    queryGlobalPriority = hwui_flags::query_global_priority();
+
+    timeoutMultiplier = android::base::GetIntProperty("ro.hw_timeout_multiplier", 1);
+    skipTelemetry = base::GetBoolProperty(PROPERTY_SKIP_EGLMANAGER_TELEMETRY,
+                                          hwui_flags::skip_eglmanager_telemetry());
 
     return (prevDebugLayersUpdates != debugLayersUpdates) || (prevDebugOverdraw != debugOverdraw);
 }
@@ -264,5 +291,21 @@ bool Properties::initializeGlAlways() {
     return base::GetBoolProperty(PROPERTY_INITIALIZE_GL_ALWAYS, hwui_flags::initialize_gl_always());
 }
 
+bool Properties::resampleGainmapRegions() {
+    static bool sResampleGainmapRegions = base::GetBoolProperty(
+            "debug.hwui.resample_gainmap_regions", hwui_flags::resample_gainmap_regions());
+    return sResampleGainmapRegions;
+}
+
+bool Properties::earlyPreloadGlContext() {
+    return base::GetBoolProperty(PROPERTY_EARLY_PRELOAD_GL_CONTEXT,
+                                 hwui_flags::early_preload_gl_context());
+}
+
+bool Properties::calcWorkloadOrigDeadline() {
+    static bool sCalcWorkloadOrigDeadline = base::GetBoolProperty(
+            "debug.hwui.calc_workload_orig_deadline", hwui_flags::calc_workload_orig_deadline());
+    return sCalcWorkloadOrigDeadline;
+}
 }  // namespace uirenderer
 }  // namespace android

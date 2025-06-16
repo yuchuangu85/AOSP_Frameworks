@@ -106,6 +106,13 @@ void LayerProtoHelper::readFromProto(const perfetto::protos::RectProto& proto, R
     outRect.right = proto.right();
 }
 
+void LayerProtoHelper::readFromProto(const perfetto::protos::RectProto& proto, FloatRect& outRect) {
+    outRect.left = proto.left();
+    outRect.top = proto.top();
+    outRect.bottom = proto.bottom();
+    outRect.right = proto.right();
+}
+
 void LayerProtoHelper::writeToProto(
         const FloatRect& rect,
         std::function<perfetto::protos::FloatRectProto*()> getFloatRectProto) {
@@ -178,12 +185,8 @@ void LayerProtoHelper::writeToProto(
 }
 
 void LayerProtoHelper::writeToProto(
-        const WindowInfo& inputInfo, const wp<Layer>& touchableRegionBounds,
+        const WindowInfo& inputInfo,
         std::function<perfetto::protos::InputWindowInfoProto*()> getInputWindowInfoProto) {
-    if (inputInfo.token == nullptr) {
-        return;
-    }
-
     perfetto::protos::InputWindowInfoProto* proto = getInputWindowInfoProto();
     proto->set_layout_params_flags(inputInfo.layoutParamsFlags.get());
     proto->set_input_config(inputInfo.inputConfig.get());
@@ -208,13 +211,6 @@ void LayerProtoHelper::writeToProto(
     proto->set_global_scale_factor(inputInfo.globalScaleFactor);
     LayerProtoHelper::writeToProtoDeprecated(inputInfo.transform, proto->mutable_transform());
     proto->set_replace_touchable_region_with_crop(inputInfo.replaceTouchableRegionWithCrop);
-    auto cropLayer = touchableRegionBounds.promote();
-    if (cropLayer != nullptr) {
-        proto->set_crop_layer_id(cropLayer->sequence);
-        LayerProtoHelper::writeToProto(cropLayer->getScreenBounds(
-                                               false /* reduceTransparentRegion */),
-                                       [&]() { return proto->mutable_touchable_region_crop(); });
-    }
 }
 
 void LayerProtoHelper::writeToProto(const mat4 matrix,
@@ -263,9 +259,10 @@ void LayerProtoHelper::readFromProto(const perfetto::protos::BlurRegion& proto,
     outRegion.bottom = proto.bottom();
 }
 
-perfetto::protos::LayersProto LayerProtoFromSnapshotGenerator::generate(
+LayerProtoFromSnapshotGenerator& LayerProtoFromSnapshotGenerator::with(
         const frontend::LayerHierarchy& root) {
     mLayersProto.clear_layers();
+    mVisitedLayers.clear();
     std::unordered_set<uint64_t> stackIdsToSkip;
     if ((mTraceFlags & LayerTracing::TRACE_VIRTUAL_DISPLAYS) == 0) {
         for (const auto& [layerStack, displayInfo] : mDisplayInfos) {
@@ -281,10 +278,9 @@ perfetto::protos::LayersProto LayerProtoFromSnapshotGenerator::generate(
             stackIdsToSkip.find(child->getLayer()->layerStack.id) != stackIdsToSkip.end()) {
             continue;
         }
-        frontend::LayerHierarchy::ScopedAddToTraversalPath addChildToPath(path,
-                                                                          child->getLayer()->id,
-                                                                          variant);
-        LayerProtoFromSnapshotGenerator::writeHierarchyToProto(*child, path);
+        LayerProtoFromSnapshotGenerator::writeHierarchyToProto(*child,
+                                                               path.makeChild(child->getLayer()->id,
+                                                                              variant));
     }
 
     // fill in relative and parent info
@@ -304,13 +300,45 @@ perfetto::protos::LayersProto LayerProtoFromSnapshotGenerator::generate(
         }
     }
 
-    mDefaultSnapshots.clear();
-    mChildToRelativeParent.clear();
-    return std::move(mLayersProto);
+    return *this;
+}
+
+LayerProtoFromSnapshotGenerator& LayerProtoFromSnapshotGenerator::withOffscreenLayers(
+        const frontend::LayerHierarchy& offscreenRoot) {
+    // Add a fake invisible root layer to the proto output and parent all the offscreen layers to
+    // it.
+    perfetto::protos::LayerProto* rootProto = mLayersProto.add_layers();
+    const int32_t offscreenRootLayerId = INT32_MAX - 2;
+    rootProto->set_id(offscreenRootLayerId);
+    rootProto->set_name("Offscreen Root");
+    rootProto->set_parent(-1);
+
+    perfetto::protos::LayersProto offscreenLayers =
+            LayerProtoFromSnapshotGenerator(mSnapshotBuilder, mDisplayInfos, mLegacyLayers,
+                                            mTraceFlags)
+                    .with(offscreenRoot)
+                    .generate();
+
+    for (int i = 0; i < offscreenLayers.layers_size(); i++) {
+        perfetto::protos::LayerProto* layerProto = offscreenLayers.mutable_layers()->Mutable(i);
+        if (layerProto->parent() == -1) {
+            layerProto->set_parent(offscreenRootLayerId);
+            // Add layer as child of the fake root
+            rootProto->add_children(layerProto->id());
+        }
+    }
+
+    mLayersProto.mutable_layers()->Reserve(mLayersProto.layers_size() +
+                                           offscreenLayers.layers_size());
+    std::copy(offscreenLayers.layers().begin(), offscreenLayers.layers().end(),
+              RepeatedFieldBackInserter(mLayersProto.mutable_layers()));
+
+    return *this;
 }
 
 frontend::LayerSnapshot* LayerProtoFromSnapshotGenerator::getSnapshot(
-        frontend::LayerHierarchy::TraversalPath& path, const frontend::RequestedLayerState& layer) {
+        const frontend::LayerHierarchy::TraversalPath& path,
+        const frontend::RequestedLayerState& layer) {
     frontend::LayerSnapshot* snapshot = mSnapshotBuilder.getSnapshot(path);
     if (snapshot) {
         return snapshot;
@@ -321,18 +349,21 @@ frontend::LayerSnapshot* LayerProtoFromSnapshotGenerator::getSnapshot(
 }
 
 void LayerProtoFromSnapshotGenerator::writeHierarchyToProto(
-        const frontend::LayerHierarchy& root, frontend::LayerHierarchy::TraversalPath& path) {
+        const frontend::LayerHierarchy& root, const frontend::LayerHierarchy::TraversalPath& path) {
     using Variant = frontend::LayerHierarchy::Variant;
     perfetto::protos::LayerProto* layerProto = mLayersProto.add_layers();
     const frontend::RequestedLayerState& layer = *root.getLayer();
     frontend::LayerSnapshot* snapshot = getSnapshot(path, layer);
+    if (mVisitedLayers.find(snapshot->uniqueSequence) != mVisitedLayers.end()) {
+        TransactionTraceWriter::getInstance().invoke("DuplicateLayer", /* overwrite= */ false);
+        return;
+    }
+    mVisitedLayers.insert(snapshot->uniqueSequence);
     LayerProtoHelper::writeSnapshotToProto(layerProto, layer, *snapshot, mTraceFlags);
 
     for (const auto& [child, variant] : root.mChildren) {
-        frontend::LayerHierarchy::ScopedAddToTraversalPath addChildToPath(path,
-                                                                          child->getLayer()->id,
-                                                                          variant);
-        frontend::LayerSnapshot* childSnapshot = getSnapshot(path, layer);
+        frontend::LayerSnapshot* childSnapshot =
+                getSnapshot(path.makeChild(child->getLayer()->id, variant), layer);
         if (variant == Variant::Attached || variant == Variant::Detached ||
             frontend::LayerHierarchy::isMirror(variant)) {
             mChildToParent[childSnapshot->uniqueSequence] = snapshot->uniqueSequence;
@@ -355,10 +386,7 @@ void LayerProtoFromSnapshotGenerator::writeHierarchyToProto(
         if (variant == Variant::Detached) {
             continue;
         }
-        frontend::LayerHierarchy::ScopedAddToTraversalPath addChildToPath(path,
-                                                                          child->getLayer()->id,
-                                                                          variant);
-        writeHierarchyToProto(*child, path);
+        writeHierarchyToProto(*child, path.makeChild(child->getLayer()->id, variant));
     }
 }
 
@@ -397,7 +425,7 @@ void LayerProtoHelper::writeSnapshotToProto(perfetto::protos::LayerProto* layerI
                                        layerInfo->mutable_color_transform());
     }
 
-    LayerProtoHelper::writeToProto(snapshot.croppedBufferSize.toFloatRect(),
+    LayerProtoHelper::writeToProto(snapshot.croppedBufferSize,
                                    [&]() { return layerInfo->mutable_source_bounds(); });
     LayerProtoHelper::writeToProto(snapshot.transformedBounds,
                                    [&]() { return layerInfo->mutable_screen_bounds(); });
@@ -414,7 +442,7 @@ void LayerProtoHelper::writeSnapshotToProto(perfetto::protos::LayerProto* layerI
     }
     layerInfo->set_type("Layer");
 
-    LayerProtoHelper::writeToProto(requestedState.transparentRegion,
+    LayerProtoHelper::writeToProto(requestedState.getTransparentRegion(),
                                    [&]() { return layerInfo->mutable_transparent_region(); });
 
     layerInfo->set_layer_stack(snapshot.outputFilter.layerStack.id);
@@ -425,7 +453,7 @@ void LayerProtoHelper::writeSnapshotToProto(perfetto::protos::LayerProto* layerI
         return layerInfo->mutable_requested_position();
     });
 
-    LayerProtoHelper::writeToProto(requestedState.crop,
+    LayerProtoHelper::writeToProto(Rect(requestedState.crop),
                                    [&]() { return layerInfo->mutable_crop(); });
 
     layerInfo->set_is_opaque(snapshot.contentOpaque);
@@ -445,7 +473,7 @@ void LayerProtoHelper::writeSnapshotToProto(perfetto::protos::LayerProto* layerI
     layerInfo->set_owner_uid(requestedState.ownerUid.val());
 
     if ((traceFlags & LayerTracing::TRACE_INPUT) && snapshot.hasInputInfo()) {
-        LayerProtoHelper::writeToProto(snapshot.inputInfo, {},
+        LayerProtoHelper::writeToProto(snapshot.inputInfo,
                                        [&]() { return layerInfo->mutable_input_window_info(); });
     }
 

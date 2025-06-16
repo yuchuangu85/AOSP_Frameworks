@@ -20,12 +20,14 @@
 
 #include <android-base/properties.h>
 #include <binder/IBinder.h>
+#include <dispatcher/Entry.h>
 #include <gui/InputApplication.h>
 #include <gui/PidUid.h>
 #include <input/Input.h>
 #include <input/InputDevice.h>
 #include <utils/RefBase.h>
 #include <set>
+#include <variant>
 
 namespace android {
 
@@ -42,9 +44,6 @@ class InputDispatcherPolicyInterface {
 public:
     InputDispatcherPolicyInterface() = default;
     virtual ~InputDispatcherPolicyInterface() = default;
-
-    /* Notifies the system that a configuration change has occurred. */
-    virtual void notifyConfigurationChanged(nsecs_t when) = 0;
 
     /* Notifies the system that an application does not have a focused window.
      */
@@ -109,9 +108,9 @@ public:
                                                uint32_t& policyFlags) = 0;
 
     /* Allows the policy a chance to intercept a key before dispatching. */
-    virtual nsecs_t interceptKeyBeforeDispatching(const sp<IBinder>& token,
-                                                  const KeyEvent& keyEvent,
-                                                  uint32_t policyFlags) = 0;
+    virtual std::variant<nsecs_t, inputdispatcher::KeyEntry::InterceptKeyResult>
+    interceptKeyBeforeDispatching(const sp<IBinder>& token, const KeyEvent& keyEvent,
+                                  uint32_t policyFlags) = 0;
 
     /* Allows the policy a chance to perform default processing for an unhandled key.
      * Returns an alternate key event to redispatch as a fallback, if needed. */

@@ -46,10 +46,13 @@ class FakeKeyguardClockRepository() : KeyguardClockRepository {
     private val _previewClock = MutableStateFlow(Mockito.mock(ClockController::class.java))
     override val previewClock: Flow<ClockController>
         get() = _previewClock
+
     override val clockEventController: ClockEventController
         get() = mock()
+
     override val shouldForceSmallClock: Boolean
         get() = _shouldForceSmallClock
+
     private var _shouldForceSmallClock: Boolean = false
 
     override fun setClockSize(size: ClockSize) {

@@ -26,17 +26,12 @@
 #include <utils/Log.h>
 
 #include <unistd.h>
+#include <memory>
 #include <thread>
 
-using aidl::android::hardware::power::Boost;
-using aidl::android::hardware::power::ChannelConfig;
-using aidl::android::hardware::power::IPower;
-using aidl::android::hardware::power::IPowerHintSession;
-using aidl::android::hardware::power::Mode;
-using aidl::android::hardware::power::SessionConfig;
-using aidl::android::hardware::power::SessionTag;
 using android::binder::Status;
 
+using namespace aidl::android::hardware::power;
 using namespace android;
 using namespace android::power;
 using namespace std::chrono_literals;
@@ -65,10 +60,19 @@ public:
                 (int32_t tgid, int32_t uid, ChannelConfig* _aidl_return), (override));
     MOCK_METHOD(ndk::ScopedAStatus, closeSessionChannel, (int32_t tgid, int32_t uid), (override));
     MOCK_METHOD(ndk::ScopedAStatus, getHintSessionPreferredRate, (int64_t * rate), (override));
+    MOCK_METHOD(ndk::ScopedAStatus, getSupportInfo, (SupportInfo * _aidl_return), (override));
     MOCK_METHOD(ndk::ScopedAStatus, getInterfaceVersion, (int32_t * version), (override));
     MOCK_METHOD(ndk::ScopedAStatus, getInterfaceHash, (std::string * hash), (override));
     MOCK_METHOD(ndk::SpAIBinder, asBinder, (), (override));
     MOCK_METHOD(bool, isRemote, (), (override));
+    MOCK_METHOD(ndk::ScopedAStatus, getCpuHeadroom,
+                (const CpuHeadroomParams& params, CpuHeadroomResult* headroom), (override));
+    MOCK_METHOD(ndk::ScopedAStatus, getGpuHeadroom,
+                (const GpuHeadroomParams& params, GpuHeadroomResult* headroom), (override));
+    MOCK_METHOD(ndk::ScopedAStatus, sendCompositionData,
+                (const std::vector<CompositionData>& in_data), (override));
+    MOCK_METHOD(ndk::ScopedAStatus, sendCompositionUpdate,
+                (const CompositionUpdate& in_update), (override));
 };
 
 // -------------------------------------------------------------------------------------------------
@@ -342,4 +346,51 @@ TEST_F(PowerHalWrapperAidlTest, TestCreateHintSessionWithConfigUnsupported) {
                     testing::ByMove(ndk::ScopedAStatus::fromStatus(STATUS_UNKNOWN_TRANSACTION))));
     result = mWrapper->createHintSessionWithConfig(tgid, uid, threadIds, durationNanos, tag, &out);
     ASSERT_TRUE(result.isUnsupported());
+}
+
+TEST_F(PowerHalWrapperAidlTest, TestSendingCompositionData) {
+    int32_t tgid = 999;
+    int32_t uid = 1001;
+    std::vector<hal::CompositionData> dataOut;
+    dataOut.emplace_back(hal::CompositionData{
+            .timestampNanos = 0L,
+            .scheduledPresentTimestampsNanos = {100},
+            .latchTimestampNanos = 50,
+            .outputIds = {0},
+    });
+    dataOut.emplace_back(hal::CompositionData{
+            .timestampNanos = 200L,
+            .scheduledPresentTimestampsNanos = {300},
+            .latchTimestampNanos = 250,
+            .outputIds = {0},
+    });
+    EXPECT_CALL(*mMockHal.get(), sendCompositionData(_))
+            .Times(Exactly(1))
+            .WillOnce([&](const std::vector<hal::CompositionData>& passedData) {
+                if (!std::equal(passedData.begin(), passedData.end(), dataOut.begin())) {
+                    ADD_FAILURE() << "Passed composition data not the same";
+                }
+                return ndk::ScopedAStatus::ok();
+            });
+
+    ASSERT_TRUE(mWrapper->sendCompositionData(dataOut).isOk());
+}
+
+TEST_F(PowerHalWrapperAidlTest, TestSendingCompositionUpdate) {
+    int32_t tgid = 999;
+    int32_t uid = 1001;
+    hal::CompositionUpdate dataOut{
+            .timestampNanos = 123,
+            .deadOutputIds = {1, 2, 3},
+    };
+    EXPECT_CALL(*mMockHal.get(), sendCompositionUpdate(_))
+            .Times(Exactly(1))
+            .WillOnce([&](const hal::CompositionUpdate& passedData) {
+                if (passedData != dataOut) {
+                    ADD_FAILURE() << "Passed composition update data not the same";
+                }
+                return ndk::ScopedAStatus::ok();
+            });
+
+    ASSERT_TRUE(mWrapper->sendCompositionUpdate(dataOut).isOk());
 }

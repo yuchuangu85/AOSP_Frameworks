@@ -16,12 +16,16 @@
 
 package com.android.server.wm;
 
+import static android.view.Display.INVALID_DISPLAY;
+import static android.view.WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
+
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.any;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mock;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.never;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
+import static com.android.server.wm.WindowStateAnimator.HAS_DRAWN;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -37,8 +41,8 @@ import android.view.DisplayInfo;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.server.LocalServices;
 import com.android.server.wm.TransitionController.OnStartCollect;
-import com.android.window.flags.Flags;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -57,23 +61,29 @@ import org.mockito.ArgumentCaptor;
 public class DisplayContentDeferredUpdateTests extends WindowTestsBase {
 
     // The fields to override the current DisplayInfo.
-    private String mUniqueId;
+    private String mUniqueId = "initial_unique_id";
+    private String mSecondaryUniqueId = "secondary_initial_unique_id";
     private int mColorMode;
     private int mLogicalDensityDpi;
 
-    private final Message mScreenUnblocker = mock(Message.class);
+    private DisplayContent mSecondaryDisplayContent;
 
-    @Override
-    protected void onBeforeSystemServicesCreated() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_DEFER_DISPLAY_UPDATES);
-    }
+    private final Message mScreenUnblocker = mock(Message.class);
+    private final Message mSecondaryScreenUnblocker = mock(Message.class);
+
+    private WindowManagerInternal mWmInternal;
 
     @Before
     public void before() {
+        when(mScreenUnblocker.getTarget()).thenReturn(mWm.mH);
         doReturn(true).when(mDisplayContent).getLastHasContent();
-        mockTransitionsController(/* enabled= */ true);
-        mockRemoteDisplayChangeController();
-        performInitialDisplayUpdate();
+
+        mockTransitionsController();
+
+        mockRemoteDisplayChangeController(mDisplayContent);
+        performInitialDisplayUpdate(mDisplayContent);
+
+        mWmInternal = LocalServices.getService(WindowManagerInternal.class);
     }
 
     @Test
@@ -207,7 +217,6 @@ public class DisplayContentDeferredUpdateTests extends WindowTestsBase {
 
     @Test
     public void testWaitForTransition_displaySwitching_waitsForTransitionToBeStarted() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_WAIT_FOR_TRANSITION_ON_DISPLAY_SWITCH);
         mDisplayContent.mDisplayUpdater.onDisplaySwitching(/* switching= */ true);
         boolean willWait = mDisplayContent.mDisplayUpdater.waitForTransition(mScreenUnblocker);
         assertThat(willWait).isTrue();
@@ -230,7 +239,6 @@ public class DisplayContentDeferredUpdateTests extends WindowTestsBase {
 
     @Test
     public void testWaitForTransition_displayNotSwitching_doesNotWait() {
-        mSetFlagsRule.enableFlags(Flags.FLAG_WAIT_FOR_TRANSITION_ON_DISPLAY_SWITCH);
         mDisplayContent.mDisplayUpdater.onDisplaySwitching(/* switching= */ false);
 
         boolean willWait = mDisplayContent.mDisplayUpdater.waitForTransition(mScreenUnblocker);
@@ -240,34 +248,88 @@ public class DisplayContentDeferredUpdateTests extends WindowTestsBase {
     }
 
     @Test
-    public void testWaitForTransition_displayIsSwitchingButFlagDisabled_doesNotWait() {
-        mSetFlagsRule.disableFlags(Flags.FLAG_WAIT_FOR_TRANSITION_ON_DISPLAY_SWITCH);
+    public void testTwoDisplayUpdateAtTheSameTime_bothDisplaysAreUnblocked() {
+        prepareSecondaryDisplay();
+
+        final WindowState defaultDisplayWindow = newWindowBuilder("DefaultDisplayWindow",
+                TYPE_BASE_APPLICATION).setDisplay(mDisplayContent).build();
+        final WindowState secondaryDisplayWindow = newWindowBuilder("SecondaryDisplayWindow",
+                TYPE_BASE_APPLICATION).setDisplay(mSecondaryDisplayContent).build();
+        makeWindowVisibleAndNotDrawn(defaultDisplayWindow, secondaryDisplayWindow);
+
+        // Mark as display switching only for the default display as we filter out
+        // non-default display switching events in the display policy
         mDisplayContent.mDisplayUpdater.onDisplaySwitching(/* switching= */ true);
 
-        boolean willWait = mDisplayContent.mDisplayUpdater.waitForTransition(mScreenUnblocker);
+        mWmInternal.waitForAllWindowsDrawn(mScreenUnblocker,
+                /* timeout= */ Integer.MAX_VALUE, INVALID_DISPLAY);
+        mWmInternal.waitForAllWindowsDrawn(mSecondaryScreenUnblocker,
+                /* timeout= */ Integer.MAX_VALUE, mSecondaryDisplayContent.getDisplayId());
 
-        assertThat(willWait).isFalse();
+        // Perform display update for both displays at the same time
+        mUniqueId = "new_default_display_unique_id";
+        mSecondaryUniqueId = "new_secondary_display_unique_id";
+        mDisplayContent.requestDisplayUpdate(mock(Runnable.class));
+        mSecondaryDisplayContent.requestDisplayUpdate(mock(Runnable.class));
+
+        when(mDisplayContent.mTransitionController.inTransition()).thenReturn(true);
+
+        // Notify that both transitions started collecting
+        captureStartTransitionCollection().getAllValues().forEach((callback) ->
+                callback.onCollectStarted(/* deferred= */ true));
+
+        // Verify that screens are not unblocked yet
         verify(mScreenUnblocker, never()).sendToTarget();
+        verify(mSecondaryScreenUnblocker, never()).sendToTarget();
+
+        // Make all secondary display windows drawn
+        secondaryDisplayWindow.mWinAnimator.mDrawState = HAS_DRAWN;
+        mWm.mRoot.performSurfacePlacement();
+
+        // Verify that only secondary screen is unblocked as it uses
+        // the legacy waitForAllWindowsDrawn path
+        verify(mScreenUnblocker, never()).sendToTarget();
+        verify(mSecondaryScreenUnblocker).sendToTarget();
+
+        // Mark start transactions as presented
+        when(mDisplayContent.mTransitionController.inTransition()).thenReturn(false);
+        captureRequestedTransition().getAllValues().forEach(
+                this::makeTransitionTransactionCompleted);
+
+        // Verify that the default screen unblocker is sent only after start transaction
+        // of the Shell transition is presented
+        verify(mScreenUnblocker).sendToTarget();
     }
 
-    private void mockTransitionsController(boolean enabled) {
+    private void prepareSecondaryDisplay() {
+        mSecondaryDisplayContent = createNewDisplay();
+        when(mSecondaryScreenUnblocker.getTarget()).thenReturn(mWm.mH);
+        doReturn(true).when(mSecondaryDisplayContent).getLastHasContent();
+        mockRemoteDisplayChangeController(mSecondaryDisplayContent);
+        performInitialDisplayUpdate(mSecondaryDisplayContent);
+    }
+
+    private void mockTransitionsController() {
         spyOn(mDisplayContent.mTransitionController);
-        when(mDisplayContent.mTransitionController.isShellTransitionsEnabled()).thenReturn(enabled);
-        doReturn(true).when(mDisplayContent.mTransitionController).startCollectOrQueue(any(),
-                any());
+        when(mDisplayContent.mTransitionController.isShellTransitionsEnabled())
+                .thenReturn(true);
+        doReturn(mock(Transition.class)).when(mDisplayContent.mTransitionController)
+                .createTransition(anyInt(), anyInt());
+        doReturn(true).when(mDisplayContent.mTransitionController)
+                .startCollectOrQueue(any(), any());
     }
 
-    private void mockRemoteDisplayChangeController() {
-        spyOn(mDisplayContent.mRemoteDisplayChangeController);
-        doReturn(true).when(mDisplayContent.mRemoteDisplayChangeController)
+    private void mockRemoteDisplayChangeController(DisplayContent displayContent) {
+        spyOn(displayContent.mRemoteDisplayChangeController);
+        doReturn(true).when(displayContent.mRemoteDisplayChangeController)
                 .performRemoteDisplayChange(anyInt(), anyInt(), any(), any());
     }
 
     private ArgumentCaptor<OnStartCollect> captureStartTransitionCollection() {
         ArgumentCaptor<OnStartCollect> callbackCaptor =
                 ArgumentCaptor.forClass(OnStartCollect.class);
-        verify(mDisplayContent.mTransitionController, atLeast(1)).startCollectOrQueue(any(),
-                callbackCaptor.capture());
+        verify(mDisplayContent.mTransitionController, atLeast(1))
+                .startCollectOrQueue(any(), callbackCaptor.capture());
         return callbackCaptor;
     }
 
@@ -288,20 +350,23 @@ public class DisplayContentDeferredUpdateTests extends WindowTestsBase {
         }
     }
 
-    private void performInitialDisplayUpdate() {
-        mUniqueId = "initial_unique_id";
+    private void performInitialDisplayUpdate(DisplayContent displayContent) {
         mColorMode = 0;
         mLogicalDensityDpi = 400;
 
-        spyOn(mDisplayContent.mDisplay);
+        spyOn(displayContent.mDisplay);
         doAnswer(invocation -> {
             DisplayInfo info = invocation.getArgument(0);
-            info.uniqueId = mUniqueId;
+            if (displayContent.isDefaultDisplay) {
+                info.uniqueId = mUniqueId;
+            } else {
+                info.uniqueId = mSecondaryUniqueId;
+            }
             info.colorMode = mColorMode;
             info.logicalDensityDpi = mLogicalDensityDpi;
             return null;
-        }).when(mDisplayContent.mDisplay).getDisplayInfo(any());
+        }).when(displayContent.mDisplay).getDisplayInfo(any());
         Runnable onUpdated = mock(Runnable.class);
-        mDisplayContent.requestDisplayUpdate(onUpdated);
+        displayContent.requestDisplayUpdate(onUpdated);
     }
 }

@@ -16,6 +16,8 @@
 
 package com.android.systemui.accessibility;
 
+import static com.android.systemui.accessibility.WindowMagnificationSettings.MagnificationSize;
+
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Size;
@@ -47,9 +49,11 @@ final class WindowMagnificationFrameSizePrefs {
     /**
      * Saves the window frame size for current screen density.
      */
-    public void saveSizeForCurrentDensity(Size size) {
-        mWindowMagnificationSizePreferences.edit()
-                .putString(getKey(), size.toString()).apply();
+    public void saveIndexAndSizeForCurrentDensity(int index, Size size) {
+        mWindowMagnificationSizePreferences
+                .edit()
+                .putString(getKey(), WindowMagnificationFrameSpec.serialize(index, size))
+                .apply();
     }
 
     /**
@@ -62,10 +66,28 @@ final class WindowMagnificationFrameSizePrefs {
     }
 
     /**
+     * Gets the index preference for current screen density. Returns DEFAULT if no preference
+     * is found.
+     */
+    public @MagnificationSize int getIndexForCurrentDensity() {
+        final String spec = mWindowMagnificationSizePreferences.getString(getKey(), null);
+        if (spec == null) {
+            return MagnificationSize.DEFAULT;
+        }
+        try {
+            return WindowMagnificationFrameSpec.deserialize(spec).getIndex();
+        } catch (NumberFormatException e) {
+            return MagnificationSize.DEFAULT;
+        }
+    }
+
+    /**
      * Gets the size preference for current screen density.
      */
     public Size getSizeForCurrentDensity() {
-        return Size.parseSize(mWindowMagnificationSizePreferences.getString(getKey(), null));
+        return WindowMagnificationFrameSpec.deserialize(
+                        mWindowMagnificationSizePreferences.getString(getKey(), null))
+                .getSize();
     }
 
 }

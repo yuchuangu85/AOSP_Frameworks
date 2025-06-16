@@ -278,7 +278,8 @@ public class HdmiCecNetwork {
     }
 
     private void invokeDeviceEventListener(HdmiDeviceInfo info, int event) {
-        if (!hideDevicesBehindLegacySwitch(info)) {
+        if (event == HdmiControlManager.DEVICE_EVENT_REMOVE_DEVICE ||
+                    !hideDevicesBehindLegacySwitch(info)) {
             mHdmiControlService.invokeDeviceEventListeners(info, event);
         }
     }
@@ -660,7 +661,11 @@ public class HdmiCecNetwork {
                     .setPortId(physicalAddressToPortId(physicalAddress))
                     .setDeviceType(type)
                     .build();
-            updateCecDevice(updatedDeviceInfo);
+            if (deviceInfo.getPhysicalAddress() != physicalAddress) {
+                addCecDevice(updatedDeviceInfo);
+            } else {
+                updateCecDevice(updatedDeviceInfo);
+            }
         }
     }
 

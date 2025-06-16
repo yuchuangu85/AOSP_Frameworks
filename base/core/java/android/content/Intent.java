@@ -16,11 +16,11 @@
 
 package android.content;
 
-import static android.app.sdksandbox.SdkSandboxManager.ACTION_START_SANDBOXED_ACTIVITY;
 import static android.content.ContentProvider.maybeAddUserId;
 import static android.os.Flags.FLAG_ALLOW_PRIVATE_PROFILE;
 import static android.security.Flags.FLAG_FRP_ENFORCEMENT;
-import static android.service.chooser.Flags.FLAG_ENABLE_SHARESHEET_METADATA_EXTRA;
+import static android.security.Flags.FLAG_PREVENT_INTENT_REDIRECT;
+import static android.security.Flags.preventIntentRedirect;
 
 import android.Manifest;
 import android.accessibilityservice.AccessibilityService;
@@ -54,6 +54,7 @@ import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Rect;
 import android.net.Uri;
+import android.os.BadParcelableException;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.BundleMerger;
@@ -87,6 +88,7 @@ import android.util.Log;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.util.XmlUtils;
+import com.android.modules.expresslog.Counter;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -106,6 +108,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.function.Consumer;
 
 /**
  * An intent is an abstract description of an operation to be performed.  It
@@ -668,7 +671,6 @@ import java.util.TimeZone;
 @android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class Intent implements Parcelable, Cloneable {
     private static final String TAG = "Intent";
-
     private static final String ATTR_ACTION = "action";
     private static final String TAG_CATEGORIES = "categories";
     private static final String ATTR_CATEGORY = "category";
@@ -678,6 +680,7 @@ public class Intent implements Parcelable, Cloneable {
     private static final String ATTR_COMPONENT = "component";
     private static final String ATTR_DATA = "data";
     private static final String ATTR_FLAGS = "flags";
+    private static final String ATTR_PACKAGE = "package";
 
     // ---------------------------------------------------------------------
     // ---------------------------------------------------------------------
@@ -887,6 +890,36 @@ public class Intent implements Parcelable, Cloneable {
     public static final String ACTION_ACTIVITY_RECOGNIZER =
             "android.intent.action.ACTIVITY_RECOGNIZER";
 
+    /** @hide */
+    public static void maybeMarkAsMissingCreatorToken(Object object) {
+        if (object instanceof Intent intent) {
+            maybeMarkAsMissingCreatorTokenInternal(intent);
+        } else if (object instanceof Parcelable[] parcelables) {
+            for (Parcelable p : parcelables) {
+                if (p instanceof Intent intent) {
+                    maybeMarkAsMissingCreatorTokenInternal(intent);
+                }
+            }
+        } else if (object instanceof ArrayList parcelables) {
+            int N = parcelables.size();
+            for (int i = 0; i < N; i++) {
+                Object p = parcelables.get(i);
+                if (p instanceof Intent intent) {
+                    maybeMarkAsMissingCreatorTokenInternal(intent);
+                }
+            }
+        }
+    }
+
+    private static void maybeMarkAsMissingCreatorTokenInternal(Intent intent) {
+        boolean isForeign = (intent.mLocalFlags & LOCAL_FLAG_FROM_PARCEL) != 0;
+        boolean isWithoutTrustedCreatorToken =
+                (intent.mLocalFlags & Intent.LOCAL_FLAG_TRUSTED_CREATOR_TOKEN_PRESENT) == 0;
+        if (isForeign && isWithoutTrustedCreatorToken && preventIntentRedirect()) {
+            intent.addExtendedFlags(EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN);
+        }
+    }
+
     /**
      * Represents a shortcut/live folder icon resource.
      *
@@ -1063,11 +1096,7 @@ public class Intent implements Parcelable, Cloneable {
         }
 
         if (sender != null) {
-            if (android.service.chooser.Flags.enableChooserResult()) {
-                intent.putExtra(EXTRA_CHOOSER_RESULT_INTENT_SENDER, sender);
-            } else {
-                intent.putExtra(EXTRA_CHOSEN_COMPONENT_INTENT_SENDER, sender);
-            }
+            intent.putExtra(EXTRA_CHOOSER_RESULT_INTENT_SENDER, sender);
         }
 
         // Migrate any clip data and flags from target.
@@ -1183,8 +1212,8 @@ public class Intent implements Parcelable, Cloneable {
      * {@link android.telecom.TelecomManager#placeCall(Uri, Bundle)} to place calls rather than
      * relying on this intent.
      *
-     * <p>Note: if you app targets {@link android.os.Build.VERSION_CODES#M M}
-     * and above and declares as using the {@link android.Manifest.permission#CALL_PHONE}
+     * <p>Note: If your app targets {@link android.os.Build.VERSION_CODES#M M}
+     * or higher and declares as using the {@link android.Manifest.permission#CALL_PHONE}
      * permission which is not granted, then attempting to use this action will
      * result in a {@link java.lang.SecurityException}.
      */
@@ -3768,7 +3797,7 @@ public class Intent implements Parcelable, Cloneable {
      * <p>The Intent will have the following extra value:</p>
      * <ul>
      *   <li><em>{@link android.content.Intent#EXTRA_PHONE_NUMBER}</em> -
-     *       the phone number originally intended to be dialed.</li>
+     *       the phone number dialed.</li>
      * </ul>
      * <p class="note">Starting in Android 15, this broadcast is no longer sent as an ordered
      * broadcast.  The <code>resultData</code> no longer has any effect and will not determine the
@@ -3800,6 +3829,14 @@ public class Intent implements Parcelable, Cloneable {
      * <p>You must hold the
      * {@link android.Manifest.permission#PROCESS_OUTGOING_CALLS}
      * permission to receive this Intent.</p>
+     *
+     * <p class="note">Starting in {@link Build.VERSION_CODES#VANILLA_ICE_CREAM}, this broadcast is
+     * no longer sent as an ordered broadcast, and does not allow activity launches.  This means
+     * that receivers may no longer change the phone number for the outgoing call, or cancel the
+     * outgoing call.  This functionality is only possible using the
+     * {@link android.telecom.CallRedirectionService} API.  Although background receivers are
+     * woken up to handle this intent, no guarantee is made as to the timeliness of the broadcast.
+     * </p>
      *
      * <p class="note">This is a protected intent that can only be sent
      * by the system.
@@ -4177,6 +4214,17 @@ public class Intent implements Parcelable, Cloneable {
      */
     public static final String ACTION_USER_INFO_CHANGED =
             "android.intent.action.USER_INFO_CHANGED";
+
+
+    /**
+     * Broadcast sent to the system when a user's information changes. Carries an extra
+     * {@link #EXTRA_USER_HANDLE} to indicate which user's information changed.
+     * This is only sent to permission protected manifest receivers. It is sent to all users.
+     * @hide
+     */
+    @BroadcastBehavior(includeBackground = true)
+    public static final String ACTION_USER_INFO_CHANGED_BACKGROUND =
+            "android.intent.action.USER_INFO_CHANGED_BACKGROUND";
 
     /**
      * Broadcast sent to the primary user when an associated managed profile is added (the profile
@@ -5278,12 +5326,28 @@ public class Intent implements Parcelable, Cloneable {
      * through {@link #getData()}. User interaction is required to return the edited screenshot to
      * the calling activity.
      *
+     * <p>The response {@link Intent} may include additional data to "backlink" directly back to the
+     * application for which the screenshot was captured. If present, the application "backlink" can
+     * be retrieved via {@link #getClipData()}. The data is present only if the user accepted to
+     * include the link information with the screenshot. The data can contain one of the following:
+     * <ul>
+     *     <li>A deeplinking {@link Uri} or an {@link Intent} if the captured app integrates with
+     *         {@link android.app.assist.AssistContent}.</li>
+     *     <li>Otherwise, a main launcher intent that launches the screenshotted application to
+     *         its home screen.</li>
+     * </ul>
+     * The "backlink" to the screenshotted application will be set within {@link ClipData}, either
+     * as a {@link Uri} or an {@link Intent} if present.
+     *
      * <p>This intent action requires the permission
      * {@link android.Manifest.permission#LAUNCH_CAPTURE_CONTENT_ACTIVITY_FOR_NOTE}.
      *
      * <p>Callers should query
      * {@link StatusBarManager#canLaunchCaptureContentActivityForNote(Activity)} before showing a UI
      * element that allows users to trigger this flow.
+     *
+     * <p>Callers should query for {@link #EXTRA_CAPTURE_CONTENT_FOR_NOTE_STATUS_CODE} in the
+     * response {@link Intent} to check if the request was a success.
      */
     @RequiresPermission(Manifest.permission.LAUNCH_CAPTURE_CONTENT_ACTIVITY_FOR_NOTE)
     @SdkConstant(SdkConstantType.ACTIVITY_INTENT_ACTION)
@@ -5407,7 +5471,7 @@ public class Intent implements Parcelable, Cloneable {
     /**
      * Activities that can be safely invoked from a browser must support this
      * category.  For example, if the user is viewing a web page or an e-mail
-     * and clicks on a link in the text, the Intent generated execute that
+     * and clicks on a link in the text, the Intent generated to execute that
      * link will require the BROWSABLE category, so that only activities
      * supporting this category will be considered as possible actions.  By
      * supporting this category, you are promising that there is nothing
@@ -6068,7 +6132,6 @@ public class Intent implements Parcelable, Cloneable {
      * @see #CHOOSER_CONTENT_TYPE_ALBUM
      * @see #createChooser(Intent, CharSequence)
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_CHOOSER_ALBUM_TEXT)
     public static final String EXTRA_CHOOSER_CONTENT_TYPE_HINT =
             "android.intent.extra.CHOOSER_CONTENT_TYPE_HINT";
 
@@ -6085,7 +6148,6 @@ public class Intent implements Parcelable, Cloneable {
      *
      * @see #EXTRA_CHOOSER_CONTENT_TYPE_HINT
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_CHOOSER_ALBUM_TEXT)
     public static final int CHOOSER_CONTENT_TYPE_ALBUM = 1;
 
     /**
@@ -6137,10 +6199,10 @@ public class Intent implements Parcelable, Cloneable {
      * {@link #EXTRA_CHOOSER_MODIFY_SHARE_ACTION},
      * {@link #EXTRA_METADATA_TEXT},
      * {@link #EXTRA_CHOOSER_REFINEMENT_INTENT_SENDER},
-     * {@link #EXTRA_CHOOSER_RESULT_INTENT_SENDER}.
+     * {@link #EXTRA_CHOOSER_RESULT_INTENT_SENDER},
+     * {@link #EXTRA_EXCLUDE_COMPONENTS}.
      * </p>
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_CHOOSER_PAYLOAD_TOGGLING)
     public static final String EXTRA_CHOOSER_ADDITIONAL_CONTENT_URI =
             "android.intent.extra.CHOOSER_ADDITIONAL_CONTENT_URI";
 
@@ -6150,7 +6212,6 @@ public class Intent implements Parcelable, Cloneable {
      * An integer, zero-based index into {@link #EXTRA_STREAM} argument indicating the item that
      * should be focused by the Chooser in preview.
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_CHOOSER_PAYLOAD_TOGGLING)
     public static final String EXTRA_CHOOSER_FOCUSED_ITEM_POSITION =
             "android.intent.extra.CHOOSER_FOCUSED_ITEM_POSITION";
 
@@ -6254,7 +6315,6 @@ public class Intent implements Parcelable, Cloneable {
      * <p>e.g. When sharing a photo, metadata could inform the user that location data is included
      * in the photo they are sharing.</p>
      */
-    @FlaggedApi(FLAG_ENABLE_SHARESHEET_METADATA_EXTRA)
     public static final String EXTRA_METADATA_TEXT = "android.intent.extra.METADATA_TEXT";
 
     /**
@@ -6403,7 +6463,6 @@ public class Intent implements Parcelable, Cloneable {
      * activity. The IntentSender will have the extra {@link #EXTRA_CHOOSER_RESULT} describing
      * the result.
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_ENABLE_CHOOSER_RESULT)
     public static final String EXTRA_CHOOSER_RESULT_INTENT_SENDER =
             "android.intent.extra.CHOOSER_RESULT_INTENT_SENDER";
 
@@ -6413,7 +6472,6 @@ public class Intent implements Parcelable, Cloneable {
      * An instance is supplied to the optional IntentSender provided to
      * {@link #createChooser(Intent, CharSequence, IntentSender)} when the session completes.
      */
-    @FlaggedApi(android.service.chooser.Flags.FLAG_ENABLE_CHOOSER_RESULT)
     public static final String EXTRA_CHOOSER_RESULT = "android.intent.extra.CHOOSER_RESULT";
 
     /**
@@ -7473,7 +7531,7 @@ public class Intent implements Parcelable, Cloneable {
 
     /**
      * This flag is only used for split-screen multi-window mode. The new activity will be displayed
-     * adjacent to the one launching it. This can only be used in conjunction with
+     * adjacent to the one launching it if possible. This can only be used in conjunction with
      * {@link #FLAG_ACTIVITY_NEW_TASK}. Also, setting {@link #FLAG_ACTIVITY_MULTIPLE_TASK} is
      * required if you want a new instance of an existing activity to be created.
      */
@@ -7666,9 +7724,16 @@ public class Intent implements Parcelable, Cloneable {
     /** @hide */
     public static final int LOCAL_FLAG_FROM_SYSTEM = 1 << 5;
 
+    /**
+     * This flag indicates the creator token of this intent has been verified.
+     */
+    private static final int LOCAL_FLAG_TRUSTED_CREATOR_TOKEN_PRESENT = 1 << 6;
+
     /** @hide */
     @IntDef(flag = true, prefix = { "EXTENDED_FLAG_" }, value = {
             EXTENDED_FLAG_FILTER_MISMATCH,
+            EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN,
+            EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ExtendedFlags {}
@@ -7681,6 +7746,20 @@ public class Intent implements Parcelable, Cloneable {
      */
     @TestApi
     public static final int EXTENDED_FLAG_FILTER_MISMATCH = 1 << 0;
+
+    /**
+     * This flag indicates the creator token of this intent is either missing or invalid.
+     *
+     * @hide
+     */
+    public static final int EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN = 1 << 1;
+
+    /**
+     * This flag indicates this intent called {@link #collectExtraIntentKeys()}.
+     *
+     * @hide
+     */
+    public static final int EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED = 1 << 2;
 
     // ---------------------------------------------------------------------
     // ---------------------------------------------------------------------
@@ -7790,6 +7869,10 @@ public class Intent implements Parcelable, Cloneable {
      */
     public static final int URI_ALLOW_UNSAFE = 1<<2;
 
+    static {
+        Bundle.intentClass = Intent.class;
+    }
+
     // ---------------------------------------------------------------------
 
     private String mAction;
@@ -7849,6 +7932,7 @@ public class Intent implements Parcelable, Cloneable {
         this.mPackage = o.mPackage;
         this.mComponent = o.mComponent;
         this.mOriginalIntent = o.mOriginalIntent;
+        this.mCreatorTokenInfo = o.mCreatorTokenInfo;
 
         if (o.mCategories != null) {
             this.mCategories = new ArraySet<>(o.mCategories);
@@ -7900,6 +7984,24 @@ public class Intent implements Parcelable, Cloneable {
      */
     public @NonNull Intent cloneFilter() {
         return new Intent(this, COPY_MODE_FILTER);
+    }
+
+    /**
+     * Make a copy of all members important to identify an intent with its creator token.
+     * @hide
+     */
+    public @NonNull Intent cloneForCreatorToken() {
+        Intent clone = new Intent()
+                .setAction(this.mAction)
+                .setDataAndType(this.mData, this.mType)
+                .setPackage(this.mPackage)
+                .setComponent(this.mComponent)
+                .setFlags(this.mFlags & IMMUTABLE_FLAGS);
+        if (this.mClipData != null) {
+            clone.setClipData(this.mClipData.cloneOnlyUriItems());
+        }
+        clone.mCreatorTokenInfo = this.mCreatorTokenInfo;
+        return clone;
     }
 
     /**
@@ -8080,7 +8182,7 @@ public class Intent implements Parcelable, Cloneable {
     /**
      * Create an intent from a URI.  This URI may encode the action,
      * category, and other intent fields, if it was returned by
-     * {@link #toUri}.  If the Intent was not generate by toUri(), its data
+     * {@link #toUri}.  If the Intent was not generated by toUri(), its data
      * will be the entire URI and its action will be ACTION_VIEW.
      *
      * <p>The URI given here must not be relative -- that is, it must include
@@ -11617,11 +11719,51 @@ public class Intent implements Parcelable, Cloneable {
                 Log.w(TAG, "Failure filling in extras", e);
             }
         }
+        fillInCreatorTokenInfo(other.mCreatorTokenInfo, changes);
         if (mayHaveCopiedUris && mContentUserHint == UserHandle.USER_CURRENT
                 && other.mContentUserHint != UserHandle.USER_CURRENT) {
             mContentUserHint = other.mContentUserHint;
         }
         return changes;
+    }
+
+    // keep original creator token and merge nested intent keys.
+    private void fillInCreatorTokenInfo(CreatorTokenInfo otherCreatorTokenInfo, int changes) {
+        if (otherCreatorTokenInfo != null && otherCreatorTokenInfo.mNestedIntentKeys != null) {
+            if (mCreatorTokenInfo == null) {
+                mCreatorTokenInfo = new CreatorTokenInfo();
+            }
+            ArraySet<NestedIntentKey> otherNestedIntentKeys =
+                    otherCreatorTokenInfo.mNestedIntentKeys;
+            if (mCreatorTokenInfo.mNestedIntentKeys == null) {
+                mCreatorTokenInfo.mNestedIntentKeys = new ArraySet<>(otherNestedIntentKeys);
+            } else {
+                ArraySet<NestedIntentKey> otherKeys;
+                if ((changes & FILL_IN_CLIP_DATA) == 0) {
+                    // If clip data is Not filled in from other, do not merge clip data keys.
+                    otherKeys = new ArraySet<>();
+                    int N = otherNestedIntentKeys.size();
+                    for (int i = 0; i < N; i++) {
+                        NestedIntentKey key = otherNestedIntentKeys.valueAt(i);
+                        if (key.mType != NestedIntentKey.NESTED_INTENT_KEY_TYPE_CLIP_DATA) {
+                            otherKeys.add(key);
+                        }
+                    }
+                } else {
+                    // If clip data is filled in from other, remove clip data keys from this
+                    // creatorTokenInfo and then merge every key from the others.
+                    int N = mCreatorTokenInfo.mNestedIntentKeys.size();
+                    for (int i = N - 1; i >= 0; i--) {
+                        NestedIntentKey key = mCreatorTokenInfo.mNestedIntentKeys.valueAt(i);
+                        if (key.mType == NestedIntentKey.NESTED_INTENT_KEY_TYPE_CLIP_DATA) {
+                            mCreatorTokenInfo.mNestedIntentKeys.removeAt(i);
+                        }
+                    }
+                    otherKeys = otherNestedIntentKeys;
+                }
+                mCreatorTokenInfo.mNestedIntentKeys.addAll(otherKeys);
+            }
+        }
     }
 
     /**
@@ -12155,6 +12297,360 @@ public class Intent implements Parcelable, Cloneable {
         return (mExtras != null) ? mExtras.describeContents() : 0;
     }
 
+    private static class CreatorTokenInfo {
+        // Stores a creator token for an intent embedded as an extra intent in a top level intent,
+        private IBinder mCreatorToken;
+        // Stores all extra keys whose values are intents for a top level intent.
+        private ArraySet<NestedIntentKey> mNestedIntentKeys;
+    }
+
+    /**
+     * @hide
+     */
+    public static class NestedIntentKey {
+        /** @hide */
+        @IntDef(flag = true, prefix = {"NESTED_INTENT_KEY_TYPE"}, value = {
+                NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL,
+                NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY,
+                NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST,
+                NESTED_INTENT_KEY_TYPE_CLIP_DATA,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        private @interface NestedIntentKeyType {
+        }
+
+        /**
+         * This flag indicates the key is for an extra parcel in mExtras.
+         */
+        private static final int NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL = 1 << 0;
+
+        /**
+         * This flag indicates the key is for an extra parcel array in mExtras and the index is the
+         * index of that array.
+         */
+        private static final int NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY = 1 << 1;
+
+        /**
+         * This flag indicates the key is for an extra parcel list in mExtras and the index is the
+         * index of that list.
+         */
+        private static final int NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST = 1 << 2;
+
+        /**
+         * This flag indicates the key is for an extra parcel in mClipData.mItems.
+         */
+        private static final int NESTED_INTENT_KEY_TYPE_CLIP_DATA = 1 << 3;
+
+        private final @NestedIntentKeyType int mType;
+        private final String mKey;
+        private final int mIndex;
+
+        private NestedIntentKey(@NestedIntentKeyType int type, String key, int index) {
+            this.mType = type;
+            this.mKey = key;
+            this.mIndex = index;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            NestedIntentKey that = (NestedIntentKey) o;
+            return mType == that.mType && mIndex == that.mIndex && Objects.equals(mKey, that.mKey);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(mType, mKey, mIndex);
+        }
+
+    }
+
+    private @Nullable CreatorTokenInfo mCreatorTokenInfo;
+
+    /** @hide */
+    public void removeCreatorTokenInfo() {
+        mCreatorTokenInfo = null;
+    }
+
+    /** @hide */
+    public void removeCreatorToken() {
+        if (mCreatorTokenInfo != null) {
+            mCreatorTokenInfo.mCreatorToken = null;
+        }
+    }
+
+    /** @hide */
+    public @Nullable IBinder getCreatorToken() {
+        return mCreatorTokenInfo == null ? null : mCreatorTokenInfo.mCreatorToken;
+    }
+
+    /** @hide */
+    public Set<NestedIntentKey> getExtraIntentKeys() {
+        return mCreatorTokenInfo == null ? null : mCreatorTokenInfo.mNestedIntentKeys;
+    }
+
+    /** @hide */
+    public void setCreatorToken(@NonNull IBinder creatorToken) {
+        if (mCreatorTokenInfo == null) {
+            mCreatorTokenInfo = new CreatorTokenInfo();
+        }
+        mCreatorTokenInfo.mCreatorToken = creatorToken;
+    }
+
+    /**
+     * Collects keys in the extra bundle whose value are intents.
+     * With these keys collected on the client side, the system server would only unparcel values
+     * of these keys and create IntentCreatorToken for them.
+     * @hide
+     */
+    public void collectExtraIntentKeys() {
+        collectExtraIntentKeys(false);
+    }
+
+    /**
+     * Collects keys in the extra bundle whose value are intents.
+     * With these keys collected on the client side, the system server would only unparcel values
+     * of these keys and create IntentCreatorToken for them.
+     * This method could also be called from the system server side as a catch all safty net in case
+     * these keys are not collected on the client side. In that case, call it with forceUnparcel set
+     * to true since everything is parceled on the system server side.
+     *
+     * @param forceUnparcel if it is true, unparcel everything to determine if an object is an
+     *                      intent. Otherwise, do not unparcel anything.
+     * @hide
+     */
+    public void collectExtraIntentKeys(boolean forceUnparcel) {
+        if (preventIntentRedirect()) {
+            collectNestedIntentKeysRecur(new ArraySet<>(), forceUnparcel);
+        }
+    }
+
+    private void collectNestedIntentKeysRecur(Set<Intent> visited, boolean forceUnparcel) {
+        // if forceUnparcel is false, do not unparcel the mExtras bundle.
+        // forceUnparcel will only be true when this method is called from system server.
+        if (mExtras != null && (forceUnparcel || !mExtras.isParcelled()) && !mExtras.isEmpty()) {
+            addExtendedFlags(EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED);
+            for (String key : mExtras.keySet()) {
+                Object value;
+                try {
+                    // Do not unparcel any Parcelable objects. It may cause issues for app who would
+                    // change class loader before it reads a parceled value. b/382633789.
+                    // It is okay to not collect a parceled intent since it would have been
+                    // coming from another process and collected by its containing intent already
+                    // in that process.
+                    if (forceUnparcel || !mExtras.isValueParceled(key)) {
+                        value = mExtras.get(key);
+                    } else {
+                        value = null;
+                        removeExtendedFlags(EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED);
+                    }
+                } catch (BadParcelableException e) {
+                    // This may still happen if the keys are collected on the system server side, in
+                    // which case, we will try to unparcel everything. If this happens, simply
+                    // ignore it since it is not an intent anyway.
+                    value = null;
+                }
+                if (value instanceof Intent intent) {
+                    handleNestedIntent(intent, visited, new NestedIntentKey(
+                                    NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL, key, 0),
+                            forceUnparcel);
+                } else if (value instanceof Parcelable[] parcelables) {
+                    handleParcelableArray(parcelables, key, visited, forceUnparcel);
+                } else if (value instanceof ArrayList<?> parcelables) {
+                    handleParcelableList(parcelables, key, visited, forceUnparcel);
+                }
+            }
+        }
+
+        // if there is no extras in the bundle, we also mark the intent as keys are collected.
+        // isDefinitelyEmpty() will not unparceled the mExtras. This is the best we can do without
+        // unparceling the extra bundle.
+        if (mExtras == null ||  mExtras.isDefinitelyEmpty()) {
+            addExtendedFlags(EXTENDED_FLAG_NESTED_INTENT_KEYS_COLLECTED);
+        }
+
+        if (mClipData != null) {
+            for (int i = 0; i < mClipData.getItemCount(); i++) {
+                Intent intent = mClipData.getItemAt(i).mIntent;
+                if (intent != null && !visited.contains(intent)) {
+                    handleNestedIntent(intent, visited, new NestedIntentKey(
+                                    NestedIntentKey.NESTED_INTENT_KEY_TYPE_CLIP_DATA, null, i),
+                            forceUnparcel);
+                }
+            }
+        }
+    }
+
+    private void handleNestedIntent(Intent intent, Set<Intent> visited, NestedIntentKey key,
+            boolean forceUnparcel) {
+        if (mCreatorTokenInfo == null) {
+            mCreatorTokenInfo = new CreatorTokenInfo();
+        }
+        if (mCreatorTokenInfo.mNestedIntentKeys == null) {
+            mCreatorTokenInfo.mNestedIntentKeys = new ArraySet<>();
+        }
+        mCreatorTokenInfo.mNestedIntentKeys.add(key);
+        if (!visited.contains(intent)) {
+            visited.add(intent);
+            intent.collectNestedIntentKeysRecur(visited, forceUnparcel);
+        }
+    }
+
+    private void handleParcelableArray(Parcelable[] parcelables, String key, Set<Intent> visited,
+            boolean forceUnparcel) {
+        for (int i = 0; i < parcelables.length; i++) {
+            if (parcelables[i] instanceof Intent intent && !visited.contains(intent)) {
+                handleNestedIntent(intent, visited, new NestedIntentKey(
+                                NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY, key, i),
+                        forceUnparcel);
+            }
+        }
+    }
+
+    private void handleParcelableList(ArrayList<?> parcelables, String key, Set<Intent> visited,
+            boolean forceUnparcel) {
+        for (int i = 0; i < parcelables.size(); i++) {
+            if (parcelables.get(i) instanceof Intent intent && !visited.contains(intent)) {
+                handleNestedIntent(intent, visited, new NestedIntentKey(
+                                NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST, key, i),
+                        forceUnparcel);
+            }
+        }
+    }
+
+    private static final Consumer<Intent> MARK_TRUSTED_TOKEN_PRESENT_ACTION = intent -> {
+        intent.mLocalFlags |= LOCAL_FLAG_TRUSTED_CREATOR_TOKEN_PRESENT;
+    };
+
+    private static final Consumer<Intent> ENABLE_TOKEN_VERIFY_ACTION = intent -> {
+        if (intent.mExtras != null) {
+            intent.mExtras.enableTokenVerification();
+        }
+        if (intent.mClipData != null) {
+            intent.mClipData.setTokenVerificationEnabled();
+        }
+    };
+
+    /** @hide */
+    public void checkCreatorToken() {
+        forEachNestedCreatorToken(MARK_TRUSTED_TOKEN_PRESENT_ACTION, ENABLE_TOKEN_VERIFY_ACTION);
+        if (mExtras != null) {
+            // mark the bundle as intent extras after calls to getParcelable.
+            // otherwise, the logic to mark missing token would run before
+            // mark trusted creator token present.
+            mExtras.enableTokenVerification();
+        }
+        if (mClipData != null) {
+            mClipData.setTokenVerificationEnabled();
+        }
+    }
+
+    /** @hide */
+    public void forEachNestedCreatorToken(Consumer<? super Intent> action) {
+        forEachNestedCreatorToken(action, null);
+    }
+
+    private void forEachNestedCreatorToken(Consumer<? super Intent> action,
+            Consumer<? super Intent> postAction) {
+        if (mExtras == null && mClipData == null) return;
+
+        if (mCreatorTokenInfo != null && mCreatorTokenInfo.mNestedIntentKeys != null) {
+            int N = mCreatorTokenInfo.mNestedIntentKeys.size();
+            for (int i = 0; i < N; i++) {
+                NestedIntentKey key = mCreatorTokenInfo.mNestedIntentKeys.valueAt(i);
+                Intent extraIntent = extractIntentFromKey(key);
+
+                if (extraIntent != null) {
+                    action.accept(extraIntent);
+                    extraIntent.forEachNestedCreatorToken(action);
+                    if (postAction != null) {
+                        postAction.accept(extraIntent);
+                    }
+                } else {
+                    Log.w(TAG, getLogMessageForKey(key));
+                }
+            }
+        }
+    }
+
+    private Intent extractIntentFromKey(NestedIntentKey key) {
+        switch (key.mType) {
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL:
+                return mExtras == null ? null : mExtras.getParcelable(key.mKey, Intent.class);
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY:
+                if (mExtras == null) return null;
+                Intent[] extraIntents = mExtras.getParcelableArray(key.mKey, Intent.class);
+                if (extraIntents != null && key.mIndex < extraIntents.length) {
+                    return extraIntents[key.mIndex];
+                }
+                break;
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST:
+                if (mExtras == null) return null;
+                ArrayList<Intent> extraIntentsList = mExtras.getParcelableArrayList(key.mKey,
+                        Intent.class);
+                if (extraIntentsList != null && key.mIndex < extraIntentsList.size()) {
+                    return extraIntentsList.get(key.mIndex);
+                }
+                break;
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_CLIP_DATA:
+                if (mClipData == null) return null;
+                if (key.mIndex < mClipData.getItemCount()) {
+                    ClipData.Item item = mClipData.getItemAt(key.mIndex);
+                    if (item != null) {
+                        return item.mIntent;
+                    }
+                }
+                break;
+        }
+        return null;
+    }
+
+    private String getLogMessageForKey(NestedIntentKey key) {
+        switch (key.mType) {
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL:
+                return "The key {" + key + "} does not correspond to an intent in the bundle.";
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_ARRAY:
+                if (mExtras.getParcelableArray(key.mKey, Intent.class) == null) {
+                    return "The key {" + key
+                            + "} does not correspond to a Parcelable[] in the bundle.";
+                } else {
+                    return "Parcelable[" + key.mIndex + "] for key {" + key + "} is not an intent.";
+                }
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_EXTRA_PARCEL_LIST:
+                if (mExtras.getParcelableArrayList(key.mKey, Intent.class) == null) {
+                    return "The key {" + key
+                            + "} does not correspond to an ArrayList<Parcelable> in the bundle.";
+                } else {
+                    return "List.get(" + key.mIndex + ") for key {" + key + "} is not an intent.";
+                }
+            case NestedIntentKey.NESTED_INTENT_KEY_TYPE_CLIP_DATA:
+                if (key.mIndex >= mClipData.getItemCount()) {
+                    return "Index out of range for clipData items. index: " + key.mIndex
+                            + ". item counts: " + mClipData.getItemCount();
+                } else {
+                    return "clipData items at index [" + key.mIndex
+                            + "] is null or does not contain an intent.";
+                }
+            default:
+                return "Unknown key type: " + key.mType;
+        }
+    }
+
+    /**
+     * When an intent comes from another app or component as an embedded extra intent, the system
+     * creates a token to identify the creator of this foreign intent. If this token is missing or
+     * invalid, the system will block the launch of this intent. If it contains a valid token, the
+     * system will perform verification against the creator to block launching target it has no
+     * permission to launch or block it from granting URI access to the tagert it cannot access.
+     * This method provides a way to opt out this feature.
+     */
+    @FlaggedApi(FLAG_PREVENT_INTENT_REDIRECT)
+    public void removeLaunchSecurityProtection() {
+        mExtendedFlags &= ~EXTENDED_FLAG_MISSING_CREATOR_OR_INVALID_TOKEN;
+        removeCreatorTokenInfo();
+    }
+
     public void writeToParcel(Parcel out, int flags) {
         out.writeString8(mAction);
         Uri.writeToParcel(out, mData);
@@ -12203,6 +12699,28 @@ public class Intent implements Parcelable, Cloneable {
             mOriginalIntent.writeToParcel(out, flags);
         } else {
             out.writeInt(0);
+        }
+
+        if (preventIntentRedirect()) {
+            if (mCreatorTokenInfo == null) {
+                out.writeInt(0);
+            } else {
+                out.writeInt(1);
+                out.writeStrongBinder(mCreatorTokenInfo.mCreatorToken);
+
+                if (mCreatorTokenInfo.mNestedIntentKeys != null) {
+                    final int N = mCreatorTokenInfo.mNestedIntentKeys.size();
+                    out.writeInt(N);
+                    for (int i = 0; i < N; i++) {
+                        NestedIntentKey key = mCreatorTokenInfo.mNestedIntentKeys.valueAt(i);
+                        out.writeInt(key.mType);
+                        out.writeString8(key.mKey);
+                        out.writeInt(key.mIndex);
+                    }
+                } else {
+                    out.writeInt(0);
+                }
+            }
         }
     }
 
@@ -12260,6 +12778,25 @@ public class Intent implements Parcelable, Cloneable {
         mExtras = in.readBundle();
         if (in.readInt() != 0) {
             mOriginalIntent = new Intent(in);
+        }
+
+        if (preventIntentRedirect()) {
+            if (in.readInt() != 0) {
+                mCreatorTokenInfo = new CreatorTokenInfo();
+                mCreatorTokenInfo.mCreatorToken = in.readStrongBinder();
+
+                N = in.readInt();
+                if (N > 0) {
+                    mCreatorTokenInfo.mNestedIntentKeys = new ArraySet<>(N);
+                    for (int i = 0; i < N; i++) {
+                        int type = in.readInt();
+                        String key = in.readString8();
+                        int index = in.readInt();
+                        mCreatorTokenInfo.mNestedIntentKeys.append(
+                                new NestedIntentKey(type, key, index));
+                    }
+                }
+            }
         }
     }
 
@@ -12357,6 +12894,9 @@ public class Intent implements Parcelable, Cloneable {
         if (mComponent != null) {
             out.attribute(null, ATTR_COMPONENT, mComponent.flattenToShortString());
         }
+        if (android.content.flags.Flags.intentSaveToXmlPackage() && mPackage != null) {
+            out.attribute(null, ATTR_PACKAGE, mPackage);
+        }
         out.attribute(null, ATTR_FLAGS, Integer.toHexString(getFlags()));
 
         if (mCategories != null) {
@@ -12390,6 +12930,9 @@ public class Intent implements Parcelable, Cloneable {
                 intent.setComponent(ComponentName.unflattenFromString(attrValue));
             } else if (ATTR_FLAGS.equals(attrName)) {
                 intent.setFlags(Integer.parseInt(attrValue, 16));
+            } else if (android.content.flags.Flags.intentSaveToXmlPackage()
+                    && ATTR_PACKAGE.equals(attrName)) {
+                intent.setPackage(attrValue);
             } else {
                 Log.e(TAG, "restoreFromXml: unknown attribute=" + attrName);
             }
@@ -12479,22 +13022,29 @@ public class Intent implements Parcelable, Cloneable {
      */
     @android.ravenwood.annotation.RavenwoodThrow
     public void prepareToLeaveProcess(boolean leavingPackage) {
+        prepareToLeaveProcess(leavingPackage, true);
+    }
+
+    /**
+     * @hide
+     */
+    void prepareToLeaveProcess(boolean leavingPackage, boolean isTopLevel) {
         setAllowFds(false);
 
         if (mSelector != null) {
-            mSelector.prepareToLeaveProcess(leavingPackage);
+            mSelector.prepareToLeaveProcess(leavingPackage, false);
         }
         if (mClipData != null) {
             mClipData.prepareToLeaveProcess(leavingPackage, getFlags());
         }
         if (mOriginalIntent != null) {
-            mOriginalIntent.prepareToLeaveProcess(leavingPackage);
+            mOriginalIntent.prepareToLeaveProcess(leavingPackage, false);
         }
 
         if (mExtras != null && !mExtras.isParcelled()) {
             final Object intent = mExtras.get(Intent.EXTRA_INTENT);
             if (intent instanceof Intent) {
-                ((Intent) intent).prepareToLeaveProcess(leavingPackage);
+                ((Intent) intent).prepareToLeaveProcess(leavingPackage, false);
             }
         }
 
@@ -12568,6 +13118,10 @@ public class Intent implements Parcelable, Cloneable {
                 StrictMode.onUnsafeIntentLaunch(this);
             }
         }
+
+        if (isTopLevel) {
+            collectExtraIntentKeys();
+        }
     }
 
     /**
@@ -12613,6 +13167,7 @@ public class Intent implements Parcelable, Cloneable {
         }
 
         mLocalFlags |= localFlags;
+        checkCreatorToken();
 
         // Special attribution fix-up logic for any BluetoothDevice extras
         // passed via Bluetooth intents
@@ -12646,6 +13201,8 @@ public class Intent implements Parcelable, Cloneable {
     private boolean isImageCaptureIntent() {
         return (MediaStore.ACTION_IMAGE_CAPTURE.equals(mAction)
                 || MediaStore.ACTION_IMAGE_CAPTURE_SECURE.equals(mAction)
+                || MediaStore.ACTION_MOTION_PHOTO_CAPTURE.equals(mAction)
+                || MediaStore.ACTION_MOTION_PHOTO_CAPTURE_SECURE.equals(mAction)
                 || MediaStore.ACTION_VIDEO_CAPTURE.equals(mAction));
     }
 
@@ -12785,6 +13342,8 @@ public class Intent implements Parcelable, Cloneable {
                             new ClipData.Item(text, htmlText, null, stream));
                     setClipData(clipData);
                     if (stream != null) {
+                        logCounterIfFlagsMissing(FLAG_GRANT_READ_URI_PERMISSION,
+                                "intents.value_explicit_uri_grant_for_send_action");
                         addFlags(FLAG_GRANT_READ_URI_PERMISSION);
                     }
                     return true;
@@ -12826,6 +13385,8 @@ public class Intent implements Parcelable, Cloneable {
 
                     setClipData(clipData);
                     if (streams != null) {
+                        logCounterIfFlagsMissing(FLAG_GRANT_READ_URI_PERMISSION,
+                                "intents.value_explicit_uri_grant_for_send_multiple_action");
                         addFlags(FLAG_GRANT_READ_URI_PERMISSION);
                     }
                     return true;
@@ -12845,12 +13406,22 @@ public class Intent implements Parcelable, Cloneable {
                 putExtra(MediaStore.EXTRA_OUTPUT, output);
 
                 setClipData(ClipData.newRawUri("", output));
+
+                logCounterIfFlagsMissing(
+                        FLAG_GRANT_WRITE_URI_PERMISSION | FLAG_GRANT_READ_URI_PERMISSION,
+                        "intents.value_explicit_uri_grant_for_image_capture_action");
                 addFlags(FLAG_GRANT_WRITE_URI_PERMISSION|FLAG_GRANT_READ_URI_PERMISSION);
                 return true;
             }
         }
 
         return false;
+    }
+
+    private void logCounterIfFlagsMissing(int requiredFlags, String metricId) {
+        if ((getFlags() & requiredFlags) != requiredFlags) {
+            Counter.logIncrement(metricId);
+        }
     }
 
     @android.ravenwood.annotation.RavenwoodThrow
@@ -12903,29 +13474,5 @@ public class Intent implements Parcelable, Cloneable {
     /** @hide */
     public boolean isDocument() {
         return (mFlags & FLAG_ACTIVITY_NEW_DOCUMENT) == FLAG_ACTIVITY_NEW_DOCUMENT;
-    }
-
-    /**
-     * @deprecated Use {@link SdkSandboxActivityAuthority#isSdkSandboxActivityIntent} instead.
-     * Once the other API is finalized this method will be removed.
-     *
-     * TODO(b/300059435): remove as part of the cleanup.
-     *
-     * @hide
-     */
-    @Deprecated
-    @android.ravenwood.annotation.RavenwoodThrow
-    public boolean isSandboxActivity(@NonNull Context context) {
-        if (mAction != null && mAction.equals(ACTION_START_SANDBOXED_ACTIVITY)) {
-            return true;
-        }
-        final String sandboxPackageName = context.getPackageManager().getSdkSandboxPackageName();
-        if (mPackage != null && mPackage.equals(sandboxPackageName)) {
-            return true;
-        }
-        if (mComponent != null && mComponent.getPackageName().equals(sandboxPackageName)) {
-            return true;
-        }
-        return false;
     }
 }

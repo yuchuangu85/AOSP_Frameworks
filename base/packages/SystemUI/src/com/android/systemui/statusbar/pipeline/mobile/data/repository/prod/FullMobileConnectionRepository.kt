@@ -18,7 +18,7 @@ package com.android.systemui.statusbar.pipeline.mobile.data.repository.prod
 
 import android.util.IndentingPrintWriter
 import androidx.annotation.VisibleForTesting
-import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.log.table.TableLogBuffer
 import com.android.systemui.log.table.TableLogBufferFactory
 import com.android.systemui.log.table.logDiffsForTable
@@ -28,7 +28,6 @@ import com.android.systemui.statusbar.pipeline.mobile.data.repository.MobileConn
 import java.io.PrintWriter
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,7 +45,6 @@ import kotlinx.coroutines.flow.stateIn
  * carrier merged (see [setIsCarrierMerged]).
  */
 @Suppress("EXPERIMENTAL_IS_NOT_ENABLED")
-@OptIn(ExperimentalCoroutinesApi::class)
 class FullMobileConnectionRepository(
     override val subId: Int,
     startingIsCarrierMerged: Boolean,
@@ -54,7 +52,7 @@ class FullMobileConnectionRepository(
     subscriptionModel: Flow<SubscriptionModel?>,
     private val defaultNetworkName: NetworkNameModel,
     private val networkNameSeparator: String,
-    @Application scope: CoroutineScope,
+    @Background scope: CoroutineScope,
     private val mobileRepoFactory: MobileConnectionRepositoryImpl.Factory,
     private val carrierMergedRepoFactory: CarrierMergedConnectionRepository.Factory,
 ) : MobileConnectionRepository {
@@ -75,7 +73,6 @@ class FullMobileConnectionRepository(
         _isCarrierMerged
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = "isCarrierMerged",
                 initialValue = startingIsCarrierMerged,
             )
@@ -130,14 +127,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.isEmergencyOnly }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_EMERGENCY,
-                activeRepo.value.isEmergencyOnly.value
+                initialValue = activeRepo.value.isEmergencyOnly.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.isEmergencyOnly.value
+                activeRepo.value.isEmergencyOnly.value,
             )
 
     override val isRoaming =
@@ -145,9 +141,8 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.isRoaming }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_ROAMING,
-                activeRepo.value.isRoaming.value
+                initialValue = activeRepo.value.isRoaming.value,
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.isRoaming.value)
 
@@ -156,14 +151,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.operatorAlphaShort }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_OPERATOR,
-                activeRepo.value.operatorAlphaShort.value
+                initialValue = activeRepo.value.operatorAlphaShort.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.operatorAlphaShort.value
+                activeRepo.value.operatorAlphaShort.value,
             )
 
     override val isInService =
@@ -171,9 +165,8 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.isInService }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_IS_IN_SERVICE,
-                activeRepo.value.isInService.value
+                initialValue = activeRepo.value.isInService.value,
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.isInService.value)
 
@@ -182,14 +175,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.isNonTerrestrial }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_IS_NTN,
-                activeRepo.value.isNonTerrestrial.value
+                initialValue = activeRepo.value.isNonTerrestrial.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.isNonTerrestrial.value
+                activeRepo.value.isNonTerrestrial.value,
             )
 
     override val isGsm =
@@ -197,9 +189,8 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.isGsm }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_IS_GSM,
-                activeRepo.value.isGsm.value
+                initialValue = activeRepo.value.isGsm.value,
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.isGsm.value)
 
@@ -208,9 +199,8 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.cdmaLevel }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_CDMA_LEVEL,
-                activeRepo.value.cdmaLevel.value
+                initialValue = activeRepo.value.cdmaLevel.value,
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.cdmaLevel.value)
 
@@ -219,24 +209,32 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.primaryLevel }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_PRIMARY_LEVEL,
-                activeRepo.value.primaryLevel.value
+                initialValue = activeRepo.value.primaryLevel.value,
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.primaryLevel.value)
+
+    override val satelliteLevel: StateFlow<Int> =
+        activeRepo
+            .flatMapLatest { it.satelliteLevel }
+            .logDiffsForTable(
+                tableLogBuffer,
+                columnName = COL_SATELLITE_LEVEL,
+                initialValue = activeRepo.value.satelliteLevel.value,
+            )
+            .stateIn(scope, SharingStarted.WhileSubscribed(), activeRepo.value.satelliteLevel.value)
 
     override val dataConnectionState =
         activeRepo
             .flatMapLatest { it.dataConnectionState }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
-                activeRepo.value.dataConnectionState.value
+                initialValue = activeRepo.value.dataConnectionState.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.dataConnectionState.value
+                activeRepo.value.dataConnectionState.value,
             )
 
     override val dataActivityDirection =
@@ -244,13 +242,12 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.dataActivityDirection }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
-                activeRepo.value.dataActivityDirection.value
+                initialValue = activeRepo.value.dataActivityDirection.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.dataActivityDirection.value
+                activeRepo.value.dataActivityDirection.value,
             )
 
     override val carrierNetworkChangeActive =
@@ -258,14 +255,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.carrierNetworkChangeActive }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = COL_CARRIER_NETWORK_CHANGE,
-                activeRepo.value.carrierNetworkChangeActive.value
+                initialValue = activeRepo.value.carrierNetworkChangeActive.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.carrierNetworkChangeActive.value
+                activeRepo.value.carrierNetworkChangeActive.value,
             )
 
     override val resolvedNetworkType =
@@ -273,13 +269,12 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.resolvedNetworkType }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
-                activeRepo.value.resolvedNetworkType.value
+                initialValue = activeRepo.value.resolvedNetworkType.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.resolvedNetworkType.value
+                activeRepo.value.resolvedNetworkType.value,
             )
 
     override val dataEnabled =
@@ -287,7 +282,6 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.dataEnabled }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = "dataEnabled",
                 initialValue = activeRepo.value.dataEnabled.value,
             )
@@ -298,14 +292,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.inflateSignalStrength }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = "inflate",
                 initialValue = activeRepo.value.inflateSignalStrength.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.inflateSignalStrength.value
+                activeRepo.value.inflateSignalStrength.value,
             )
 
     override val allowNetworkSliceIndicator =
@@ -313,14 +306,13 @@ class FullMobileConnectionRepository(
             .flatMapLatest { it.allowNetworkSliceIndicator }
             .logDiffsForTable(
                 tableLogBuffer,
-                columnPrefix = "",
                 columnName = "allowSlice",
                 initialValue = activeRepo.value.allowNetworkSliceIndicator.value,
             )
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                activeRepo.value.allowNetworkSliceIndicator.value
+                activeRepo.value.allowNetworkSliceIndicator.value,
             )
 
     override val numberOfLevels =
@@ -392,7 +384,7 @@ class FullMobileConnectionRepository(
     class Factory
     @Inject
     constructor(
-        @Application private val scope: CoroutineScope,
+        @Background private val scope: CoroutineScope,
         private val logFactory: TableLogBufferFactory,
         private val mobileRepoFactory: MobileConnectionRepositoryImpl.Factory,
         private val carrierMergedRepoFactory: CarrierMergedConnectionRepository.Factory,
@@ -439,6 +431,7 @@ class FullMobileConnectionRepository(
         const val COL_IS_IN_SERVICE = "isInService"
         const val COL_OPERATOR = "operatorName"
         const val COL_PRIMARY_LEVEL = "primaryLevel"
+        const val COL_SATELLITE_LEVEL = "satelliteLevel"
         const val COL_ROAMING = "roaming"
     }
 }

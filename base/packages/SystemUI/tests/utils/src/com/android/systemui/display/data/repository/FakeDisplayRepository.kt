@@ -16,6 +16,7 @@
 package com.android.systemui.display.data.repository
 
 import android.view.Display
+import com.android.app.displaylib.DisplayRepository.PendingDisplay
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.util.mockito.mock
 import dagger.Binds
@@ -24,16 +25,12 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.mockito.Mockito.`when` as whenever
 
 /** Creates a mock display. */
-fun display(
-    type: Int,
-    flags: Int = 0,
-    id: Int = 0,
-    state: Int? = null,
-): Display {
+fun display(type: Int, flags: Int = 0, id: Int = 0, state: Int? = null): Display {
     return mock {
         whenever(this.displayId).thenReturn(id)
         whenever(this.type).thenReturn(type)
@@ -45,16 +42,57 @@ fun display(
 }
 
 /** Creates a mock [DisplayRepository.PendingDisplay]. */
-fun createPendingDisplay(id: Int = 0): DisplayRepository.PendingDisplay =
-    mock<DisplayRepository.PendingDisplay> { whenever(this.id).thenReturn(id) }
+fun createPendingDisplay(id: Int = 0): PendingDisplay =
+    mock<PendingDisplay> { whenever(this.id).thenReturn(id) }
 
 @SysUISingleton
 /** Fake [DisplayRepository] implementation for testing. */
 class FakeDisplayRepository @Inject constructor() : DisplayRepository {
-    private val flow = MutableSharedFlow<Set<Display>>(replay = 1)
-    private val pendingDisplayFlow =
-        MutableSharedFlow<DisplayRepository.PendingDisplay?>(replay = 1)
-    private val displayAdditionEventFlow = MutableSharedFlow<Display?>(replay = 1)
+    private val flow = MutableStateFlow<Set<Display>>(emptySet())
+    private val displayIdFlow = MutableStateFlow<Set<Int>>(emptySet())
+    private val pendingDisplayFlow = MutableSharedFlow<PendingDisplay?>(replay = 1)
+    private val displayAdditionEventFlow = MutableSharedFlow<Display?>(replay = 0)
+    private val displayRemovalEventFlow = MutableSharedFlow<Int>(replay = 0)
+    private val displayIdsWithSystemDecorationsFlow = MutableStateFlow<Set<Int>>(emptySet())
+
+    suspend fun addDisplay(displayId: Int, type: Int = Display.TYPE_EXTERNAL) {
+        addDisplay(display(type, id = displayId))
+    }
+
+    suspend fun addDisplays(vararg displays: Display) {
+        displays.forEach { addDisplay(it) }
+    }
+
+    suspend operator fun plusAssign(display: Display) {
+        addDisplay(display)
+    }
+
+    suspend operator fun minusAssign(displayId: Int) {
+        removeDisplay(displayId)
+    }
+
+    suspend fun addDisplay(display: Display) {
+        flow.value += display
+        displayIdFlow.value += display.displayId
+        displayAdditionEventFlow.emit(display)
+        displayIdsWithSystemDecorationsFlow.value += display.displayId
+    }
+
+    suspend fun removeDisplay(displayId: Int) {
+        flow.value = flow.value.filter { it.displayId != displayId }.toSet()
+        displayIdFlow.value = displayIdFlow.value.filter { it != displayId }.toSet()
+        displayRemovalEventFlow.emit(displayId)
+    }
+
+    suspend fun triggerAddDisplaySystemDecorationEvent(displayId: Int) {
+        displayIdsWithSystemDecorationsFlow.value += displayId
+        displayIdsWithSystemDecorationsFlow.emit(displayIdsWithSystemDecorationsFlow.value)
+    }
+
+    suspend fun triggerRemoveSystemDecorationEvent(displayId: Int) {
+        displayIdsWithSystemDecorationsFlow.value -= displayId
+        displayIdsWithSystemDecorationsFlow.emit(displayIdsWithSystemDecorationsFlow.value)
+    }
 
     /** Emits [value] as [displayAdditionEvent] flow value. */
     suspend fun emit(value: Display?) = displayAdditionEventFlow.emit(value)
@@ -63,23 +101,32 @@ class FakeDisplayRepository @Inject constructor() : DisplayRepository {
     suspend fun emit(value: Set<Display>) = flow.emit(value)
 
     /** Emits [value] as [pendingDisplay] flow value. */
-    suspend fun emit(value: DisplayRepository.PendingDisplay?) = pendingDisplayFlow.emit(value)
+    suspend fun emit(value: PendingDisplay?) = pendingDisplayFlow.emit(value)
 
-    override val displays: Flow<Set<Display>>
+    override val displays: StateFlow<Set<Display>>
         get() = flow
 
-    override val pendingDisplay: Flow<DisplayRepository.PendingDisplay?>
+    override val displayIds: StateFlow<Set<Int>>
+        get() = displayIdFlow
+
+    override val pendingDisplay: Flow<PendingDisplay?>
         get() = pendingDisplayFlow
 
-    val _defaultDisplayOff: MutableStateFlow<Boolean> = MutableStateFlow(false)
+    private val _defaultDisplayOff: MutableStateFlow<Boolean> = MutableStateFlow(false)
     override val defaultDisplayOff: Flow<Boolean>
         get() = _defaultDisplayOff.asStateFlow()
 
     override val displayAdditionEvent: Flow<Display?>
         get() = displayAdditionEventFlow
 
+    override val displayRemovalEvent: Flow<Int> = displayRemovalEventFlow
+
     private val _displayChangeEvent = MutableSharedFlow<Int>(replay = 1)
     override val displayChangeEvent: Flow<Int> = _displayChangeEvent
+
+    override val displayIdsWithSystemDecorations: StateFlow<Set<Int>> =
+        displayIdsWithSystemDecorationsFlow
+
     suspend fun emitDisplayChangeEvent(displayId: Int) = _displayChangeEvent.emit(displayId)
 
     fun setDefaultDisplayOff(defaultDisplayOff: Boolean) {
@@ -91,3 +138,6 @@ class FakeDisplayRepository @Inject constructor() : DisplayRepository {
 interface FakeDisplayRepositoryModule {
     @Binds fun bindFake(fake: FakeDisplayRepository): DisplayRepository
 }
+
+val DisplayRepository.fake
+    get() = this as FakeDisplayRepository

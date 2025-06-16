@@ -24,13 +24,8 @@
 #include <functional>
 #include <optional>
 #include <string>
-#include <utility>
+#include <string_view>
 #include <vector>
-
-// TODO(b/129481165): remove the #pragma below and fix conversion issues
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wconversion"
-#pragma clang diagnostic ignored "-Wextra"
 
 #include <android/hardware/graphics/composer/2.4/IComposer.h>
 #include <android/hardware/graphics/composer/2.4/IComposerClient.h>
@@ -43,9 +38,6 @@
 #include <aidl/android/hardware/graphics/composer3/Composition.h>
 #include <aidl/android/hardware/graphics/composer3/DisplayCapability.h>
 
-// TODO(b/129481165): remove the #pragma below and fix conversion issues
-#pragma clang diagnostic pop // ignored "-Wconversion -Wextra"
-
 namespace android::Hwc2 {
 
 using aidl::android::hardware::graphics::common::DisplayDecorationSupport;
@@ -53,6 +45,7 @@ using aidl::android::hardware::graphics::common::HdrConversionCapability;
 using aidl::android::hardware::graphics::common::HdrConversionStrategy;
 using aidl::android::hardware::graphics::composer3::ComposerClientReader;
 using aidl::android::hardware::graphics::composer3::ComposerClientWriter;
+using aidl::android::hardware::graphics::composer3::Luts;
 using aidl::android::hardware::graphics::composer3::OverlayProperties;
 
 class AidlIComposerCallbackWrapper;
@@ -60,7 +53,8 @@ class AidlIComposerCallbackWrapper;
 // Composer is a wrapper to IComposer, a proxy to server-side composer.
 class AidlComposer final : public Hwc2::Composer {
 public:
-    static bool isDeclared(const std::string& serviceName);
+    // Returns true if serviceName appears to be something that is meant to be used by AidlComposer.
+    static bool namesAnAidlComposerService(std::string_view serviceName);
 
     explicit AidlComposer(const std::string& serviceName);
     ~AidlComposer() override;
@@ -112,6 +106,10 @@ public:
 
     Error getReleaseFences(Display display, std::vector<Layer>* outLayers,
                            std::vector<int>* outReleaseFences) override;
+
+    Error getLayerPresentFences(Display display, std::vector<Layer>* outLayers,
+                                std::vector<int>* outFences,
+                                std::vector<int64_t>* outLatenciesNanos) override;
 
     Error presentDisplay(Display display, int* outPresentFence) override;
 
@@ -205,7 +203,7 @@ public:
     V2_4::Error getDisplayConnectionType(Display display,
                                          IComposerClient::DisplayConnectionType* outType) override;
     V2_4::Error getDisplayVsyncPeriod(Display display, VsyncPeriodNanos* outVsyncPeriod) override;
-    V2_4::Error setActiveConfigWithConstraints(
+    Error setActiveConfigWithConstraints(
             Display display, Config config,
             const IComposerClient::VsyncPeriodChangeConstraints& vsyncPeriodChangeConstraints,
             VsyncPeriodChangeTimeline* outTimeline) override;
@@ -244,6 +242,17 @@ public:
     Error setRefreshRateChangedCallbackDebugEnabled(Display, bool) override;
     Error notifyExpectedPresent(Display, nsecs_t expectedPresentTime,
                                 int32_t frameIntervalNs) override;
+    Error getRequestedLuts(
+            Display display, std::vector<Layer>* outLayers,
+            std::vector<aidl::android::hardware::graphics::composer3::DisplayLuts::LayerLut>*
+                    outLuts) override;
+    Error setLayerLuts(Display display, Layer layer, Luts& luts) override;
+    Error getMaxLayerPictureProfiles(Display, int32_t* outMaxProfiles) override;
+    Error setDisplayPictureProfileId(Display, PictureProfileId id) override;
+    Error setLayerPictureProfileId(Display, Layer, PictureProfileId id) override;
+    Error startHdcpNegotiation(Display, const aidl::android::hardware::drm::HdcpLevels&) override;
+    Error getLuts(Display, const std::vector<sp<GraphicBuffer>>&,
+                  std::vector<aidl::android::hardware::graphics::composer3::Luts>*) override;
 
 private:
     // Many public functions above simply write a command into the command
@@ -251,8 +260,8 @@ private:
     // this function to execute the command queue.
     Error execute(Display) REQUIRES_SHARED(mMutex);
 
-    // returns the default instance name for the given service
-    static std::string instance(const std::string& serviceName);
+    // Ensures serviceName is fully qualified.
+    static std::string ensureFullyQualifiedName(std::string_view serviceName);
 
     ftl::Optional<std::reference_wrapper<ComposerClientWriter>> getWriter(Display)
             REQUIRES_SHARED(mMutex);

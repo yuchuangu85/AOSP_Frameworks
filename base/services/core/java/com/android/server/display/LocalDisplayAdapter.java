@@ -35,16 +35,18 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemProperties;
 import android.os.Trace;
+import android.util.DisplayMetrics;
 import android.util.DisplayUtils;
 import android.util.LongSparseArray;
-import android.util.MathUtils;
 import android.util.Slog;
 import android.util.SparseArray;
+import android.util.Spline;
 import android.view.Display;
 import android.view.DisplayAddress;
 import android.view.DisplayCutout;
 import android.view.DisplayEventReceiver;
 import android.view.DisplayShape;
+import android.view.FrameRateCategoryRate;
 import android.view.RoundedCorners;
 import android.view.SurfaceControl;
 
@@ -80,10 +82,12 @@ final class LocalDisplayAdapter extends DisplayAdapter {
     private static final String UNIQUE_ID_PREFIX = "local:";
 
     private static final String PROPERTY_EMULATOR_CIRCULAR = "ro.boot.emulator.circular";
-    // Min and max strengths for even dimmer feature.
-    private static final float EVEN_DIMMER_MIN_STRENGTH = 0.0f;
-    private static final float EVEN_DIMMER_MAX_STRENGTH = 90.0f;
-    private static final float BRIGHTNESS_MIN = 0.0f;
+
+    private static final double DEFAULT_DISPLAY_SIZE = 24.0;
+    // Touch target size 10.4mm in inches (divided by mm per inch 25.4)
+    private static final double EXTERNAL_DISPLAY_BASE_TOUCH_TARGET_SIZE_IN_INCHES = 10.4 / 25.4;
+
+    private static final double BASE_TOUCH_TARGET_SIZE_DP = 48.0;
 
     private final LongSparseArray<LocalDisplayDevice> mDevices = new LongSparseArray<>();
 
@@ -98,7 +102,9 @@ final class LocalDisplayAdapter extends DisplayAdapter {
     private Context mOverlayContext;
 
     private int mEvenDimmerStrength = -1;
+    private boolean mEvenDimmerEnabled = false;
     private ColorDisplayService.ColorDisplayServiceInternal mCdsi;
+    private Spline mNitsToEvenDimmerStrength;
 
     // Called with SyncRoot lock held.
     LocalDisplayAdapter(DisplayManagerService.SyncRoot syncRoot, Context context,
@@ -202,21 +208,6 @@ final class LocalDisplayAdapter extends DisplayAdapter {
         }
     }
 
-    static int getPowerModeForState(int state) {
-        switch (state) {
-            case Display.STATE_OFF:
-                return SurfaceControl.POWER_MODE_OFF;
-            case Display.STATE_DOZE:
-                return SurfaceControl.POWER_MODE_DOZE;
-            case Display.STATE_DOZE_SUSPEND:
-                return SurfaceControl.POWER_MODE_DOZE_SUSPEND;
-            case Display.STATE_ON_SUSPEND:
-                return SurfaceControl.POWER_MODE_ON_SUSPEND;
-            default:
-                return SurfaceControl.POWER_MODE_NORMAL;
-        }
-    }
-
     private final class LocalDisplayDevice extends DisplayDevice {
         private final long mPhysicalDisplayId;
         private final SparseArray<DisplayModeRecord> mSupportedModes = new SparseArray<>();
@@ -247,6 +238,9 @@ final class LocalDisplayAdapter extends DisplayAdapter {
         private int mActiveModeId = INVALID_MODE_ID;
         private boolean mDisplayModeSpecsInvalid;
         private int mActiveColorMode;
+        private boolean mHasArrSupport;
+        private FrameRateCategoryRate mFrameRateCategoryRate;
+        private float[] mSupportedRefreshRates = new float[0];
         private Display.HdrCapabilities mHdrCapabilities;
         private boolean mAllmSupported;
         private boolean mGameContentTypeSupported;
@@ -278,7 +272,7 @@ final class LocalDisplayAdapter extends DisplayAdapter {
             mIsFirstDisplay = isFirstDisplay;
             updateDisplayPropertiesLocked(staticDisplayInfo, dynamicInfo, modeSpecs);
             mSidekickInternal = LocalServices.getService(SidekickInternal.class);
-            mBacklightAdapter = new BacklightAdapter(displayToken, isFirstDisplay,
+            mBacklightAdapter = mInjector.getBacklightAdapter(displayToken, isFirstDisplay,
                     mSurfaceControlProxy);
             mActiveSfDisplayModeAtStartId = dynamicInfo.activeDisplayModeId;
         }
@@ -312,6 +306,9 @@ final class LocalDisplayAdapter extends DisplayAdapter {
             changed |= updateHdrCapabilitiesLocked(dynamicInfo.hdrCapabilities);
             changed |= updateAllmSupport(dynamicInfo.autoLowLatencyModeSupported);
             changed |= updateGameContentTypeSupport(dynamicInfo.gameContentTypeSupported);
+            changed |= updateHasArrSupportLocked(dynamicInfo.hasArrSupport);
+            changed |= updateFrameRateCategoryRatesLocked(dynamicInfo.frameRateCategoryRate);
+            changed |= updateSupportedRefreshatesLocked(dynamicInfo.supportedRefreshRates);
 
             if (changed) {
                 mHavePendingChanges = true;
@@ -520,6 +517,24 @@ final class LocalDisplayAdapter extends DisplayAdapter {
         private int getLogicalDensity() {
             DensityMapping densityMapping = getDisplayDeviceConfig().getDensityMapping();
             if (densityMapping == null) {
+                if (getFeatureFlags().isBaseDensityForExternalDisplaysEnabled()
+                        && !mStaticDisplayInfo.isInternal) {
+                    double ppi;
+
+                    if (mActiveSfDisplayMode.xDpi > 0 && mActiveSfDisplayMode.yDpi > 0) {
+                        ppi = Math.sqrt((Math.pow(mActiveSfDisplayMode.xDpi, 2)
+                                + Math.pow(mActiveSfDisplayMode.yDpi, 2)) / 2);
+                    } else {
+                        // xDPI and yDPI is missing, calculate DPI from display resolution and
+                        // default display size
+                        ppi = Math.sqrt(Math.pow(mInfo.width, 2) + Math.pow(mInfo.height, 2))
+                                / DEFAULT_DISPLAY_SIZE;
+                    }
+                    double pixels = ppi * EXTERNAL_DISPLAY_BASE_TOUCH_TARGET_SIZE_IN_INCHES;
+                    double dpi =
+                            pixels * DisplayMetrics.DENSITY_DEFAULT / BASE_TOUCH_TARGET_SIZE_DP;
+                    return (int) (dpi + 0.5);
+                }
                 return (int) (mStaticDisplayInfo.density * 160 + 0.5);
             }
 
@@ -600,6 +615,37 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                 return false;
             }
             mHdrCapabilities = newHdrCapabilities;
+            return true;
+        }
+
+        private boolean updateFrameRateCategoryRatesLocked(
+                FrameRateCategoryRate newFrameRateCategoryRate) {
+            if (Objects.equals(mFrameRateCategoryRate, newFrameRateCategoryRate)) {
+                return false;
+            }
+            mFrameRateCategoryRate = newFrameRateCategoryRate;
+            return true;
+        }
+
+        private boolean updateHasArrSupportLocked(boolean newHasArrSupport) {
+            if (mHasArrSupport == newHasArrSupport) {
+                return false;
+            }
+            mHasArrSupport = newHasArrSupport;
+            return true;
+        }
+
+        private boolean updateSupportedRefreshatesLocked(float[] supportedRefreshRates) {
+            if (!getFeatureFlags().enableGetSupportedRefreshRates()) {
+                return false;
+            }
+            if (supportedRefreshRates == null) {
+                return false;
+            }
+            if (Arrays.equals(mSupportedRefreshRates, supportedRefreshRates)) {
+                return false;
+            }
+            mSupportedRefreshRates = supportedRefreshRates;
             return true;
         }
 
@@ -685,6 +731,9 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                     mInfo.supportedColorModes[i] = mSupportedColorModes.get(i);
                 }
                 mInfo.hdrCapabilities = mHdrCapabilities;
+                mInfo.hasArrSupport = mHasArrSupport;
+                mInfo.frameRateCategoryRate = mFrameRateCategoryRate;
+                mInfo.supportedRefreshRates = mSupportedRefreshRates;
                 mInfo.appVsyncOffsetNanos = mActiveSfDisplayMode.appVsyncOffsetNanos;
                 mInfo.presentationDeadlineNanos = mActiveSfDisplayMode.presentationDeadlineNanos;
                 mInfo.state = mState;
@@ -717,12 +766,26 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                         mInfo.flags |= DisplayDeviceInfo.FLAG_ROUND;
                     }
                 } else {
-                    if (!res.getBoolean(R.bool.config_localDisplaysMirrorContent)) {
+                    if (shouldOwnContentOnly()) {
                         mInfo.flags |= DisplayDeviceInfo.FLAG_OWN_CONTENT_ONLY;
                     }
 
                     if (isDisplayPrivate(physicalAddress)) {
                         mInfo.flags |= DisplayDeviceInfo.FLAG_PRIVATE;
+                    }
+
+                    if (isDisplayStealTopFocusDisabled(physicalAddress)) {
+                        mInfo.flags |= DisplayDeviceInfo.FLAG_OWN_FOCUS;
+                        mInfo.flags |= DisplayDeviceInfo.FLAG_STEAL_TOP_FOCUS_DISABLED;
+                    }
+                }
+
+                if (getFeatureFlags().isDisplayContentModeManagementEnabled()) {
+                    // Public display with FLAG_OWN_CONTENT_ONLY disabled is allowed to switch the
+                    // content mode.
+                    if (mIsFirstDisplay
+                            || (!isDisplayPrivate(physicalAddress) && !shouldOwnContentOnly())) {
+                        mInfo.flags |= DisplayDeviceInfo.FLAG_ALLOWS_CONTENT_MODE_SWITCH;
                     }
                 }
 
@@ -768,13 +831,15 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                                 R.string.display_manager_hdmi_display_name);
                     }
                 }
+
                 mInfo.frameRateOverrides = mFrameRateOverrides;
 
                 // The display is trusted since it is created by system.
                 mInfo.flags |= DisplayDeviceInfo.FLAG_TRUSTED;
-                mInfo.brightnessMinimum = PowerManager.BRIGHTNESS_MIN;
-                mInfo.brightnessMaximum = PowerManager.BRIGHTNESS_MAX;
+                mInfo.brightnessMinimum = getDisplayDeviceConfig().getBrightnessMinimum();
+                mInfo.brightnessMaximum = getDisplayDeviceConfig().getBrightnessMaximum();
                 mInfo.brightnessDefault = getDisplayDeviceConfig().getBrightnessDefault();
+                mInfo.brightnessDim = getDisplayDeviceConfig().getBrightnessDim();
                 mInfo.hdrSdrRatio = mCurrentHdrSdrRatio;
             }
             return mInfo;
@@ -981,7 +1046,9 @@ final class LocalDisplayAdapter extends DisplayAdapter {
 
                     void handleHdrSdrNitsChanged(float displayNits, float sdrNits) {
                         final float newHdrSdrRatio;
-                        if (displayNits != INVALID_NITS && sdrNits != INVALID_NITS) {
+                        if (displayNits != INVALID_NITS && sdrNits != INVALID_NITS
+                            && (mBacklightAdapter.mUseSurfaceControlBrightness ||
+                                mBacklightAdapter.mForceSurfaceControl)) {
                             // Ensure the ratio stays >= 1.0f as values below that are nonsensical
                             newHdrSdrRatio = Math.max(1.f, displayNits / sdrNits);
                         } else {
@@ -997,26 +1064,36 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                     }
 
                     private void applyColorMatrixBasedDimming(float brightnessState) {
-                        int strength = (int) (MathUtils.constrainedMap(
-                                // to this range:
-                                EVEN_DIMMER_MAX_STRENGTH, EVEN_DIMMER_MIN_STRENGTH,
-                                // from this range:
-                                BRIGHTNESS_MIN, mDisplayDeviceConfig.getEvenDimmerTransitionPoint(),
-                                // map this (+ rounded up):
-                                brightnessState) + 0.5);
-
-                        if (mEvenDimmerStrength < 0 // uninitialised
-                                || MathUtils.abs(mEvenDimmerStrength - strength) > 1
-                                || strength <= 1) {
-                            mEvenDimmerStrength = strength;
-                        }
-                        boolean enabled = mEvenDimmerStrength > 0.0f;
-
                         if (mCdsi == null) {
                             mCdsi = LocalServices.getService(
                                     ColorDisplayService.ColorDisplayServiceInternal.class);
                         }
-                        if (mCdsi != null) {
+                        if (mCdsi == null) {
+                            return;
+                        }
+
+                        final float minHardwareNits = backlightToNits(brightnessToBacklight(
+                                mDisplayDeviceConfig.getEvenDimmerTransitionPoint()));
+                        final float requestedNits =
+                                backlightToNits(brightnessToBacklight(brightnessState));
+                        mNitsToEvenDimmerStrength =
+                                mCdsi.fetchEvenDimmerSpline(minHardwareNits);
+
+                        if (mNitsToEvenDimmerStrength == null) {
+                            return;
+                        }
+
+                        // Find required dimming strength, rounded up.
+                        int strength = Math.round(mNitsToEvenDimmerStrength
+                                .interpolate(requestedNits));
+                        boolean enabled = strength > 0.0f;
+                        if (mEvenDimmerEnabled != enabled) {
+                            Slog.i(TAG, "Setting Extra Dim; strength: " + strength
+                                    + ", " + (enabled ? "enabled" : "disabled"));
+                        }
+                        if (mEvenDimmerStrength != strength || mEvenDimmerEnabled != enabled) {
+                            mEvenDimmerEnabled = enabled;
+                            mEvenDimmerStrength = strength;
                             mCdsi.applyEvenDimmerColorChanges(enabled, strength);
                         }
                     }
@@ -1265,6 +1342,8 @@ final class LocalDisplayAdapter extends DisplayAdapter {
             pw.println("mActiveColorMode=" + mActiveColorMode);
             pw.println("mDefaultModeId=" + mDefaultModeId);
             pw.println("mUserPreferredModeId=" + mUserPreferredModeId);
+            pw.println("mHasArrSupport=" + mHasArrSupport);
+            pw.println("mSupportedRefreshRates=" + Arrays.toString(mSupportedRefreshRates));
             pw.println("mState=" + Display.stateToString(mState));
             pw.println("mCommittedState=" + Display.stateToString(mCommittedState));
             pw.println("mBrightnessState=" + mBrightnessState);
@@ -1285,7 +1364,13 @@ final class LocalDisplayAdapter extends DisplayAdapter {
                 pw.println("  " + mSupportedModes.valueAt(i));
             }
             pw.println("mSupportedColorModes=" + mSupportedColorModes);
-            pw.println("mDisplayDeviceConfig=" + mDisplayDeviceConfig);
+            pw.println("");
+            pw.println("DisplayDeviceConfig: ");
+            pw.println("---------------------");
+            pw.println(mDisplayDeviceConfig);
+            pw.println("mEvenDimmerEnabled=" + mEvenDimmerEnabled);
+            pw.println("mEvenDimmerStrength=" + mEvenDimmerStrength);
+            pw.println("mNitsToEvenDimmerStrength=" + mNitsToEvenDimmerStrength);
         }
 
         private int findSfDisplayModeIdLocked(int displayModeId, int modeGroup) {
@@ -1391,6 +1476,28 @@ final class LocalDisplayAdapter extends DisplayAdapter {
             }
             return false;
         }
+
+        private boolean shouldOwnContentOnly() {
+            final Resources res = getOverlayContext().getResources();
+            return !res.getBoolean(R.bool.config_localDisplaysMirrorContent);
+        }
+
+        private boolean isDisplayStealTopFocusDisabled(DisplayAddress.Physical physicalAddress) {
+            if (physicalAddress == null) {
+                return false;
+            }
+            final Resources res = getOverlayContext().getResources();
+            int[] ports = res.getIntArray(R.array.config_localNotStealTopFocusDisplayPorts);
+            if (ports != null) {
+                int port = physicalAddress.getPort();
+                for (int p : ports) {
+                    if (p == port) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
     }
 
     private boolean hdrTypesEqual(int[] modeHdrTypes, int[] recordHdrTypes) {
@@ -1442,7 +1549,6 @@ final class LocalDisplayAdapter extends DisplayAdapter {
     }
 
     public static class Injector {
-        // Native callback.
         @SuppressWarnings("unused")
         private ProxyDisplayEventReceiver mReceiver;
         public void setDisplayEventListenerLocked(Looper looper, DisplayEventListener listener) {
@@ -1455,6 +1561,12 @@ final class LocalDisplayAdapter extends DisplayAdapter {
         public DisplayDeviceConfig createDisplayDeviceConfig(Context context,
                 long physicalDisplayId, boolean isFirstDisplay, DisplayManagerFlags flags) {
             return DisplayDeviceConfig.create(context, physicalDisplayId, isFirstDisplay, flags);
+        }
+
+        public BacklightAdapter getBacklightAdapter(IBinder displayToken, boolean isFirstDisplay,
+                SurfaceControlProxy surfaceControlProxy) {
+            return new BacklightAdapter(displayToken, isFirstDisplay, surfaceControlProxy);
+
         }
     }
 

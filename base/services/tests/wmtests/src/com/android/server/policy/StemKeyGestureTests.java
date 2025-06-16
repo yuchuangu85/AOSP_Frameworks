@@ -23,6 +23,7 @@ import static android.provider.Settings.Global.STEM_PRIMARY_BUTTON_TRIPLE_PRESS;
 import static android.view.KeyEvent.KEYCODE_STEM_PRIMARY;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+import static com.android.server.policy.PhoneWindowManager.DOUBLE_PRESS_PRIMARY_LAUNCH_DEFAULT_FITNESS_APP;
 import static com.android.server.policy.PhoneWindowManager.DOUBLE_PRESS_PRIMARY_SWITCH_RECENT_APP;
 import static com.android.server.policy.PhoneWindowManager.LONG_PRESS_PRIMARY_LAUNCH_VOICE_ASSISTANT;
 import static com.android.server.policy.PhoneWindowManager.SHORT_PRESS_PRIMARY_LAUNCH_ALL_APPS;
@@ -32,10 +33,13 @@ import static com.android.server.policy.PhoneWindowManager.TRIPLE_PRESS_PRIMARY_
 import android.app.ActivityManager.RecentTaskInfo;
 import android.app.ActivityTaskManager.RootTaskInfo;
 import android.content.ComponentName;
+import android.hardware.input.KeyGestureEvent;
 import android.os.RemoteException;
+import android.platform.test.annotations.Presubmit;
 import android.provider.Settings;
 import android.view.Display;
 
+import org.junit.Before;
 import org.junit.Test;
 
 /**
@@ -44,9 +48,17 @@ import org.junit.Test;
  * Build/Install/Run:
  * atest WmTests:StemKeyGestureTests
  */
+@Presubmit
 public class StemKeyGestureTests extends ShortcutKeyTestBase {
 
     private static final String TEST_TARGET_ACTIVITY = "com.android.server.policy/.TestActivity";
+
+    @Before
+    public void setup() {
+        super.setup();
+        overrideResource(com.android.internal.R.integer.config_longPressOnStemPrimaryBehavior,
+                LONG_PRESS_PRIMARY_LAUNCH_VOICE_ASSISTANT);
+    }
 
     /**
      * Stem single key should not launch behavior during set up.
@@ -186,6 +198,26 @@ public class StemKeyGestureTests extends ShortcutKeyTestBase {
     }
 
     @Test
+    public void stemLongKey_appHasOverridePermission_consumedByApp_triggerStatusBarToStartAssist() {
+        overrideBehavior(
+                STEM_PRIMARY_BUTTON_LONG_PRESS,
+                LONG_PRESS_PRIMARY_LAUNCH_VOICE_ASSISTANT);
+        setUpPhoneWindowManager(/* supportSettingsUpdate= */ true);
+        mPhoneWindowManager.overrideShouldEarlyShortPressOnStemPrimary(false);
+        mPhoneWindowManager.setupAssistForLaunch();
+        mPhoneWindowManager.overrideSearchManager(null);
+        mPhoneWindowManager.overrideStatusBarManagerInternal();
+        mPhoneWindowManager.overrideIsUserSetupComplete(true);
+        mPhoneWindowManager.overrideFocusedWindowButtonOverridePermission(true);
+
+        setDispatchedKeyHandler(keyEvent -> true);
+
+        sendKey(KEYCODE_STEM_PRIMARY, /* longPress= */ true);
+
+        mPhoneWindowManager.assertStatusBarStartAssist();
+    }
+
+    @Test
     public void stemDoubleKey_EarlyShortPress_AllAppsThenSwitchToMostRecent()
             throws RemoteException {
         overrideBehavior(STEM_PRIMARY_BUTTON_SHORT_PRESS, SHORT_PRESS_PRIMARY_LAUNCH_ALL_APPS);
@@ -205,6 +237,19 @@ public class StemKeyGestureTests extends ShortcutKeyTestBase {
 
         mPhoneWindowManager.assertOpenAllAppView();
         mPhoneWindowManager.assertSwitchToTask(referenceId);
+    }
+
+    @Test
+    public void stemDoubleKey_behaviorIsLaunchFitness_gestureEventFired() {
+        overrideBehavior(
+                STEM_PRIMARY_BUTTON_DOUBLE_PRESS, DOUBLE_PRESS_PRIMARY_LAUNCH_DEFAULT_FITNESS_APP);
+        setUpPhoneWindowManager(/* supportSettingsUpdate= */ true);
+
+        sendKey(KEYCODE_STEM_PRIMARY);
+        sendKey(KEYCODE_STEM_PRIMARY);
+
+        mPhoneWindowManager.assertKeyGestureEventSentToKeyGestureController(
+                KeyGestureEvent.KEY_GESTURE_TYPE_LAUNCH_DEFAULT_FITNESS);
     }
 
     @Test

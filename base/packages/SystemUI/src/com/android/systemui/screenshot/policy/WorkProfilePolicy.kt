@@ -18,6 +18,7 @@ package com.android.systemui.screenshot.policy
 
 import android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM
 import android.app.WindowConfiguration.WINDOWING_MODE_PINNED
+import android.content.Context
 import android.os.UserHandle
 import com.android.systemui.screenshot.data.model.DisplayContentModel
 import com.android.systemui.screenshot.data.model.ProfileType
@@ -25,9 +26,8 @@ import com.android.systemui.screenshot.data.repository.ProfileTypeRepository
 import com.android.systemui.screenshot.policy.CapturePolicy.PolicyResult
 import com.android.systemui.screenshot.policy.CapturePolicy.PolicyResult.NotMatched
 import com.android.systemui.screenshot.policy.CaptureType.IsolatedTask
-import com.android.window.flags.Flags
+import com.android.wm.shell.shared.desktopmode.DesktopModeStatus
 import javax.inject.Inject
-import kotlinx.coroutines.flow.first
 
 /**
  * Condition: When the top visible task (excluding PIP mode) belongs to a work user.
@@ -36,9 +36,8 @@ import kotlinx.coroutines.flow.first
  */
 class WorkProfilePolicy
 @Inject
-constructor(
-    private val profileTypes: ProfileTypeRepository,
-) : CapturePolicy {
+constructor(private val profileTypes: ProfileTypeRepository, private val context: Context) :
+    CapturePolicy {
 
     override suspend fun check(content: DisplayContentModel): PolicyResult {
         // The systemUI notification shade isn't a work app, skip.
@@ -46,7 +45,7 @@ constructor(
             return NotMatched(policy = NAME, reason = SHADE_EXPANDED)
         }
 
-        if (Flags.enableDesktopWindowingMode()) {
+        if (DesktopModeStatus.canEnterDesktopMode(context)) {
             content.rootTasks.firstOrNull()?.also {
                 if (it.windowingMode == WINDOWING_MODE_FREEFORM) {
                     return NotMatched(policy = NAME, reason = DESKTOP_MODE_ENABLED)
@@ -63,21 +62,17 @@ constructor(
                 .map { it to it.childTasksTopDown().first() }
                 .firstOrNull { (_, child) ->
                     profileTypes.getProfileType(child.userId) == ProfileType.WORK
-                }
-                ?: return NotMatched(
-                    policy = NAME,
-                    reason = WORK_TASK_NOT_TOP,
-                )
+                } ?: return NotMatched(policy = NAME, reason = WORK_TASK_NOT_TOP)
 
         // If matched, return parameters needed to modify the request.
         return PolicyResult.Matched(
             policy = NAME,
             reason = WORK_TASK_IS_TOP,
-            CaptureParameters(
+            LegacyCaptureParameters(
                 type = IsolatedTask(taskId = childTask.id, taskBounds = childTask.bounds),
                 component = childTask.componentName ?: rootTask.topActivity,
                 owner = UserHandle.of(childTask.userId),
-            )
+            ),
         )
     }
 

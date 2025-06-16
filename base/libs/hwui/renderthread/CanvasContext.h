@@ -50,6 +50,9 @@
 #include "utils/RingBuffer.h"
 
 namespace android {
+
+class SurfaceStats;
+
 namespace uirenderer {
 
 class AnimationContext;
@@ -121,7 +124,9 @@ public:
      */
     GrDirectContext* getGrContext() const { return mRenderThread.getGrContext(); }
 
-    ASurfaceControl* getSurfaceControl() const { return mSurfaceControl; }
+#ifdef __ANDROID__
+    sp<SurfaceControl> getSurfaceControl() const;
+#endif
     int32_t getSurfaceControlGenerationId() const { return mSurfaceControlGenerationId; }
 
     // Won't take effect until next EGLSurface creation
@@ -129,7 +134,7 @@ public:
 
     void setHardwareBuffer(AHardwareBuffer* buffer);
     void setSurface(ANativeWindow* window, bool enableTimeout = true);
-    void setSurfaceControl(ASurfaceControl* surfaceControl);
+    void setSurfaceControl(sp<SurfaceControl> surfaceControl);
     bool pauseSurface();
     void setStopped(bool stopped);
     bool isStopped() { return mStopped || !hasOutputTarget(); }
@@ -176,8 +181,8 @@ public:
 
     void setContentDrawBounds(const Rect& bounds) { mContentDrawBounds = bounds; }
 
-    void addFrameMetricsObserver(FrameMetricsObserver* observer);
-    void removeFrameMetricsObserver(FrameMetricsObserver* observer);
+    void addFrameMetricsObserver(sp<FrameMetricsObserver>&& observer);
+    void removeFrameMetricsObserver(const sp<FrameMetricsObserver>& observer);
 
     // Used to queue up work that needs to be completed before this frame completes
     void enqueueFrameWork(std::function<void()>&& func);
@@ -207,7 +212,7 @@ public:
 
     // Called when SurfaceStats are available.
     static void onSurfaceStatsAvailable(void* context, int32_t surfaceControlId,
-                                        ASurfaceControlStats* stats);
+                                        const SurfaceStats& stats);
 
     void setASurfaceTransactionCallback(
             const std::function<bool(int64_t, int64_t, int64_t)>& callback) {
@@ -218,7 +223,7 @@ public:
         mBufferParams = params;
     }
 
-    bool mergeTransaction(ASurfaceTransaction* transaction, ASurfaceControl* control);
+    bool mergeTransaction(ASurfaceTransaction* transaction, const sp<SurfaceControl>& control);
 
     void setPrepareSurfaceControlForWebviewCallback(const std::function<void()>& callback) {
         mPrepareSurfaceControlForWebviewCallback = callback;
@@ -260,7 +265,7 @@ private:
     void finishFrame(FrameInfo* frameInfo);
 
     /**
-     * Invoke 'reportFrameMetrics' on the last frame stored in 'mLast4FrameInfos'.
+     * Invoke 'reportFrameMetrics' on the last frame stored in 'mLastFrameInfos'.
      * Populate the 'presentTime' field before calling.
      */
     void reportMetricsWithPresentTime();
@@ -271,7 +276,7 @@ private:
         int32_t surfaceId;
     };
 
-    FrameInfo* getFrameInfoFromLast4(uint64_t frameNumber, uint32_t surfaceControlId);
+    FrameInfo* getFrameInfoFromLastFew(uint64_t frameNumber, uint32_t surfaceControlId);
 
     Frame getFrame();
 
@@ -286,7 +291,9 @@ private:
     std::unique_ptr<ReliableSurface> mNativeSurface;
     // The SurfaceControl reference is passed from ViewRootImpl, can be set to
     // NULL to remove the reference
-    ASurfaceControl* mSurfaceControl = nullptr;
+#ifdef __ANDROID__
+    sp<SurfaceControl> mSurfaceControl = nullptr;
+#endif
     // id to track surface control changes and WebViewFunctor uses it to determine
     // whether reparenting is needed also used by FrameMetricsReporter to determine
     // if a frame is from an "old" surface (i.e. one that existed before the
@@ -312,7 +319,7 @@ private:
     };
 
     // Need at least 4 because we do quad buffer. Add a few more for good measure.
-    RingBuffer<SwapHistory, 7> mSwapHistory;
+    RingBuffer<SwapHistory, 8> mSwapHistory;
     // Frame numbers start at 1, 0 means uninitialized
     uint64_t mFrameNumber = 0;
     int64_t mDamageId = 0;
@@ -336,9 +343,9 @@ private:
 
     // List of data of frames that are awaiting GPU completion reporting. Used to compute frame
     // metrics and determine whether or not to report the metrics.
-    RingBuffer<FrameMetricsInfo, 4> mLast4FrameMetricsInfos
-            GUARDED_BY(mLast4FrameMetricsInfosMutex);
-    std::mutex mLast4FrameMetricsInfosMutex;
+    RingBuffer<FrameMetricsInfo, 6> mLastFrameMetricsInfos
+            GUARDED_BY(mLastFrameMetricsInfosMutex);
+    std::mutex mLastFrameMetricsInfosMutex;
 
     std::string mName;
     JankTracker mJankTracker;

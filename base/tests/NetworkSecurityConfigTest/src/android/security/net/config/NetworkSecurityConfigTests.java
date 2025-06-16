@@ -40,9 +40,9 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
         super(Activity.class);
     }
 
-    // SHA-256 of the GTS intermediate CA (CN = GTS CA 1C3) for android.com (as of 09/2023).
+    // SHA-256 of the GTS intermediate CA (CN = WR2) for android.com (as of 01/2025).
     private static final byte[] GTS_INTERMEDIATE_SPKI_SHA256 =
-        hexToBytes("cc24e77cbc0b29b4bd4b6b1ba7eb85cf82993a8705bd7c64574e827bd3b9336c");
+        hexToBytes("60fb4769fb4bc3aff4be773606734a185e78c62080dbc58571c723900e32a423");
 
     private static final byte[] TEST_CA_BYTES
             = hexToBytes(
@@ -111,7 +111,8 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
     private NetworkSecurityConfig getSystemStoreConfig() {
         return new NetworkSecurityConfig.Builder()
                 .addCertificatesEntryRef(
-                        new CertificatesEntryRef(SystemCertificateSource.getInstance(), false))
+                        new CertificatesEntryRef(
+                              SystemCertificateSource.getInstance(), false, false))
                 .build();
     }
 
@@ -141,7 +142,8 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
         NetworkSecurityConfig domain = new NetworkSecurityConfig.Builder()
                 .setPinSet(new PinSet(pins, Long.MAX_VALUE))
                 .addCertificatesEntryRef(
-                        new CertificatesEntryRef(SystemCertificateSource.getInstance(), false))
+                        new CertificatesEntryRef(
+                              SystemCertificateSource.getInstance(), false, false))
                 .build();
         ArraySet<Pair<Domain, NetworkSecurityConfig>> domainMap
                 = new ArraySet<Pair<Domain, NetworkSecurityConfig>>();
@@ -159,7 +161,8 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
         NetworkSecurityConfig domain = new NetworkSecurityConfig.Builder()
                 .setPinSet(new PinSet(pins, Long.MAX_VALUE))
                 .addCertificatesEntryRef(
-                        new CertificatesEntryRef(SystemCertificateSource.getInstance(), false))
+                        new CertificatesEntryRef(
+                              SystemCertificateSource.getInstance(), false, false))
                 .build();
         ArraySet<Pair<Domain, NetworkSecurityConfig>> domainMap
                 = new ArraySet<Pair<Domain, NetworkSecurityConfig>>();
@@ -178,7 +181,8 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
         NetworkSecurityConfig domain = new NetworkSecurityConfig.Builder()
                 .setPinSet(new PinSet(pins, Long.MAX_VALUE))
                 .addCertificatesEntryRef(
-                        new CertificatesEntryRef(SystemCertificateSource.getInstance(), true))
+                        new CertificatesEntryRef(
+                              SystemCertificateSource.getInstance(), true, false))
                 .build();
         ArraySet<Pair<Domain, NetworkSecurityConfig>> domainMap
                 = new ArraySet<Pair<Domain, NetworkSecurityConfig>>();
@@ -245,7 +249,8 @@ public class NetworkSecurityConfigTests extends ActivityUnitTestCase<Activity> {
         NetworkSecurityConfig domain = new NetworkSecurityConfig.Builder()
                 .setPinSet(new PinSet(pins, Long.MAX_VALUE))
                 .addCertificatesEntryRef(
-                        new CertificatesEntryRef(SystemCertificateSource.getInstance(), false))
+                        new CertificatesEntryRef(
+                              SystemCertificateSource.getInstance(), false, false))
                 .build();
         ArraySet<Pair<Domain, NetworkSecurityConfig>> domainMap
                 = new ArraySet<Pair<Domain, NetworkSecurityConfig>>();

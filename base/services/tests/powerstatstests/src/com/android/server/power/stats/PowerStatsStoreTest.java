@@ -21,7 +21,6 @@ import static com.google.common.truth.Truth.assertThat;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
-import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.runner.AndroidJUnit4;
 
@@ -29,7 +28,6 @@ import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
 
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.xmlpull.v1.XmlPullParser;
@@ -45,11 +43,6 @@ import java.util.List;
 public class PowerStatsStoreTest {
     private static final long MAX_BATTERY_STATS_SNAPSHOT_STORAGE_BYTES = 2 * 1024;
 
-    @Rule
-    public final RavenwoodRule mRavenwood = new RavenwoodRule.Builder()
-            .setProvideMainThread(true)
-            .build();
-
     private PowerStatsStore mPowerStatsStore;
     private File mStoreDirectory;
 
@@ -59,14 +52,7 @@ public class PowerStatsStoreTest {
         clearDirectory(mStoreDirectory);
 
         mPowerStatsStore = new PowerStatsStore(mStoreDirectory,
-                MAX_BATTERY_STATS_SNAPSHOT_STORAGE_BYTES,
-                new TestHandler(),
-                (sectionType, parser) -> {
-                    if (sectionType.equals(TestSection.TYPE)) {
-                        return TestSection.readXml(parser);
-                    }
-                    return null;
-                });
+                MAX_BATTERY_STATS_SNAPSHOT_STORAGE_BYTES, new TestHandler());
     }
 
     @Test
@@ -144,7 +130,7 @@ public class PowerStatsStoreTest {
         }
 
         @Override
-        void write(TypedXmlSerializer serializer) throws IOException {
+        public void write(TypedXmlSerializer serializer) throws IOException {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < mSize; i++) {
                 sb.append("X");

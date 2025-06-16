@@ -20,6 +20,8 @@
 
 #include "RotaryEncoderInputMapper.h"
 
+#include <Counter.h>
+#include <com_android_input_flags.h>
 #include <utils/Timers.h>
 #include <optional>
 
@@ -27,11 +29,26 @@
 
 namespace android {
 
+using android::expresslog::Counter;
+
+constexpr float kDefaultResolution = 0;
+constexpr float kDefaultScaleFactor = 1.0f;
+constexpr int32_t kDefaultMinRotationsToLog = 3;
+
 RotaryEncoderInputMapper::RotaryEncoderInputMapper(InputDeviceContext& deviceContext,
                                                    const InputReaderConfiguration& readerConfig)
-      : InputMapper(deviceContext, readerConfig), mOrientation(ui::ROTATION_0) {
-    mSource = AINPUT_SOURCE_ROTARY_ENCODER;
-}
+      : RotaryEncoderInputMapper(deviceContext, readerConfig,
+                                 Counter::logIncrement /* telemetryLogCounter */) {}
+
+RotaryEncoderInputMapper::RotaryEncoderInputMapper(
+        InputDeviceContext& deviceContext, const InputReaderConfiguration& readerConfig,
+        std::function<void(const char*, int64_t)> telemetryLogCounter)
+      : InputMapper(deviceContext, readerConfig),
+        mSource(AINPUT_SOURCE_ROTARY_ENCODER),
+        mScalingFactor(kDefaultScaleFactor),
+        mResolution(kDefaultResolution),
+        mOrientation(ui::ROTATION_0),
+        mTelemetryLogCounter(telemetryLogCounter) {}
 
 RotaryEncoderInputMapper::~RotaryEncoderInputMapper() {}
 
@@ -48,14 +65,31 @@ void RotaryEncoderInputMapper::populateDeviceInfo(InputDeviceInfo& info) {
         if (!res.has_value()) {
             ALOGW("Rotary Encoder device configuration file didn't specify resolution!\n");
         }
+        mResolution = res.value_or(kDefaultResolution);
         std::optional<float> scalingFactor = config.getFloat("device.scalingFactor");
         if (!scalingFactor.has_value()) {
             ALOGW("Rotary Encoder device configuration file didn't specify scaling factor,"
-                  "default to 1.0!\n");
+                  "default to %f!\n",
+                  kDefaultScaleFactor);
         }
-        mScalingFactor = scalingFactor.value_or(1.0f);
+        mScalingFactor = scalingFactor.value_or(kDefaultScaleFactor);
         info.addMotionRange(AMOTION_EVENT_AXIS_SCROLL, mSource, -1.0f, 1.0f, 0.0f, 0.0f,
-                            res.value_or(0.0f) * mScalingFactor);
+                            mResolution * mScalingFactor);
+
+        if (com::android::input::flags::rotary_input_telemetry()) {
+            mMinRotationsToLog = config.getInt("rotary_encoder.min_rotations_to_log");
+            if (!mMinRotationsToLog.has_value()) {
+                ALOGI("Rotary Encoder device configuration file didn't specify min log rotation.");
+            } else if (*mMinRotationsToLog <= 0) {
+                ALOGE("Rotary Encoder device configuration specified non-positive min log rotation "
+                      ": %d. Telemetry logging of rotations disabled.",
+                      *mMinRotationsToLog);
+                mMinRotationsToLog = {};
+            } else {
+                ALOGD("Rotary Encoder telemetry enabled. mMinRotationsToLog=%d",
+                      *mMinRotationsToLog);
+            }
+        }
     }
 }
 
@@ -84,12 +118,18 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::reconfigure(nsecs_t when,
         }
     }
     if (!changes.any() || changes.test(InputReaderConfiguration::Change::DISPLAY_INFO)) {
-        std::optional<DisplayViewport> internalViewport =
-                config.getDisplayViewportByType(ViewportType::INTERNAL);
-        if (internalViewport) {
-            mOrientation = internalViewport->orientation;
+        if (getDeviceContext().getAssociatedViewport()) {
+            mDisplayId = getDeviceContext().getAssociatedViewport()->displayId;
+            mOrientation = getDeviceContext().getAssociatedViewport()->orientation;
         } else {
-            mOrientation = ui::ROTATION_0;
+            mDisplayId = ui::LogicalDisplayId::INVALID;
+            std::optional<DisplayViewport> internalViewport =
+                    config.getDisplayViewportByType(ViewportType::INTERNAL);
+            if (internalViewport) {
+                mOrientation = internalViewport->orientation;
+            } else {
+                mOrientation = ui::ROTATION_0;
+            }
         }
     }
     return out;
@@ -111,10 +151,29 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::process(const RawEvent& rawEvent
     return out;
 }
 
+void RotaryEncoderInputMapper::logScroll(float scroll) {
+    if (mResolution <= 0 || !mMinRotationsToLog) return;
+
+    mUnloggedScrolls += fabs(scroll);
+
+    // unitsPerRotation = (2 * PI * radians) * (units per radian (i.e. resolution))
+    const float unitsPerRotation = 2 * M_PI * mResolution;
+    const float scrollsPerMinRotationsToLog = *mMinRotationsToLog * unitsPerRotation;
+    const int32_t numMinRotationsToLog =
+            static_cast<int32_t>(mUnloggedScrolls / scrollsPerMinRotationsToLog);
+    mUnloggedScrolls = std::fmod(mUnloggedScrolls, scrollsPerMinRotationsToLog);
+    if (numMinRotationsToLog) {
+        mTelemetryLogCounter("input.value_rotary_input_device_full_rotation_count",
+                             numMinRotationsToLog * (*mMinRotationsToLog));
+    }
+}
+
 std::list<NotifyArgs> RotaryEncoderInputMapper::sync(nsecs_t when, nsecs_t readTime) {
     std::list<NotifyArgs> out;
 
     float scroll = mRotaryEncoderScrollAccumulator.getRelativeVWheel();
+    logScroll(scroll);
+
     if (mSlopController) {
         scroll = mSlopController->consumeEvent(when, scroll);
     }
@@ -124,8 +183,6 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::sync(nsecs_t when, nsecs_t readT
     // Send motion event.
     if (scrolled) {
         int32_t metaState = getContext()->getGlobalMetaState();
-        // This is not a pointer, so it's not associated with a display.
-        ui::LogicalDisplayId displayId = ui::LogicalDisplayId::INVALID;
 
         if (mOrientation == ui::ROTATION_180) {
             scroll = -scroll;
@@ -147,7 +204,7 @@ std::list<NotifyArgs> RotaryEncoderInputMapper::sync(nsecs_t when, nsecs_t readT
 
         out.push_back(
                 NotifyMotionArgs(getContext()->getNextId(), when, readTime, getDeviceId(), mSource,
-                                 displayId, policyFlags, AMOTION_EVENT_ACTION_SCROLL, 0, 0,
+                                 mDisplayId, policyFlags, AMOTION_EVENT_ACTION_SCROLL, 0, 0,
                                  metaState, /*buttonState=*/0, MotionClassification::NONE,
                                  AMOTION_EVENT_EDGE_FLAG_NONE, 1, &pointerProperties,
                                  &pointerCoords, 0, 0, AMOTION_EVENT_INVALID_CURSOR_POSITION,

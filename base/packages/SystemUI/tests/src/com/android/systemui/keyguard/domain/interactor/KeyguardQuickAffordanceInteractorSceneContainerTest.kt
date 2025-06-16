@@ -23,6 +23,7 @@ import android.os.UserHandle
 import androidx.test.filters.FlakyTest
 import androidx.test.filters.SmallTest
 import com.android.internal.widget.LockPatternUtils
+import com.android.keyguard.logging.KeyguardQuickAffordancesLogger
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.animation.ActivityTransitionAnimator
 import com.android.systemui.animation.DialogTransitionAnimator
@@ -58,14 +59,10 @@ import com.android.systemui.util.mockito.whenever
 import com.android.systemui.util.settings.FakeSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
-import platform.test.runner.parameterized.ParameterizedAndroidJunit4
-import platform.test.runner.parameterized.Parameters
-import platform.test.runner.parameterized.Parameter
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.anyInt
@@ -74,13 +71,15 @@ import org.mockito.ArgumentMatchers.eq
 import org.mockito.ArgumentMatchers.same
 import org.mockito.Mock
 import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyZeroInteractions
+import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.MockitoAnnotations
+import platform.test.runner.parameterized.Parameter
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4
+import platform.test.runner.parameterized.Parameters
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @FlakyTest(
     bugId = 292574995,
-    detail = "on certain architectures all permutations with startActivity=true is causing failures"
+    detail = "on certain architectures all permutations with startActivity=true is causing failures",
 )
 @SmallTest
 @RunWith(ParameterizedAndroidJunit4::class)
@@ -89,15 +88,6 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
 
     companion object {
         private val INTENT = Intent("some.intent.action")
-        private val DRAWABLE =
-            mock<Icon> {
-                whenever(this.contentDescription)
-                    .thenReturn(
-                        ContentDescription.Resource(
-                            res = CONTENT_DESCRIPTION_RESOURCE_ID,
-                        )
-                    )
-            }
         private const val CONTENT_DESCRIPTION_RESOURCE_ID = 1337
 
         @Parameters(
@@ -232,7 +222,8 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
     @Mock private lateinit var expandable: Expandable
     @Mock private lateinit var launchAnimator: DialogTransitionAnimator
     @Mock private lateinit var devicePolicyManager: DevicePolicyManager
-    @Mock private lateinit var logger: KeyguardQuickAffordancesMetricsLogger
+    @Mock private lateinit var logger: KeyguardQuickAffordancesLogger
+    @Mock private lateinit var metricsLogger: KeyguardQuickAffordancesMetricsLogger
 
     private lateinit var underTest: KeyguardQuickAffordanceInteractor
     private lateinit var testScope: TestScope
@@ -271,17 +262,10 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
                 context = context,
                 userFileManager =
                     mock<UserFileManager>().apply {
-                        whenever(
-                                getSharedPreferences(
-                                    anyString(),
-                                    anyInt(),
-                                    anyInt(),
-                                )
-                            )
+                        whenever(getSharedPreferences(anyString(), anyInt(), anyInt()))
                             .thenReturn(FakeSharedPreferences())
                     },
                 userTracker = userTracker,
-                systemSettings = FakeSettings(),
                 broadcastDispatcher = fakeBroadcastDispatcher,
             )
         val remoteUserSelectionManager =
@@ -315,9 +299,7 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
         underTest =
             KeyguardQuickAffordanceInteractor(
                 keyguardInteractor =
-                    KeyguardInteractorFactory.create(
-                            featureFlags = featureFlags,
-                        )
+                    KeyguardInteractorFactory.create(featureFlags = featureFlags)
                         .keyguardInteractor,
                 shadeInteractor = kosmos.shadeInteractor,
                 lockPatternUtils = lockPatternUtils,
@@ -328,11 +310,13 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
                 repository = { quickAffordanceRepository },
                 launchAnimator = launchAnimator,
                 logger = logger,
+                metricsLogger = metricsLogger,
                 devicePolicyManager = devicePolicyManager,
                 dockManager = dockManager,
                 biometricSettingsRepository = biometricSettingsRepository,
                 backgroundDispatcher = testDispatcher,
                 appContext = mContext,
+                accessibilityManager = mock(),
                 sceneInteractor = { kosmos.sceneInteractor },
             )
     }
@@ -349,7 +333,15 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
             homeControls.setState(
                 lockScreenState =
                     KeyguardQuickAffordanceConfig.LockScreenState.Visible(
-                        icon = DRAWABLE,
+                        icon =
+                            mock<Icon> {
+                                whenever(contentDescription)
+                                    .thenReturn(
+                                        ContentDescription.Resource(
+                                            res = CONTENT_DESCRIPTION_RESOURCE_ID
+                                        )
+                                    )
+                            }
                     )
             )
             homeControls.onTriggeredResult =
@@ -359,7 +351,7 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
                         canShowWhileLocked = canShowWhileLocked,
                     )
                 } else {
-                    KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled
+                    KeyguardQuickAffordanceConfig.OnTriggeredResult.Handled(false)
                 }
 
             underTest.onQuickAffordanceTriggered(
@@ -386,7 +378,7 @@ class KeyguardQuickAffordanceInteractorSceneContainerTest : SysuiTestCase() {
                         )
                 }
             } else {
-                verifyZeroInteractions(activityStarter)
+                verifyNoMoreInteractions(activityStarter)
             }
         }
 

@@ -16,7 +16,7 @@
 
 package com.android.server.companion.association;
 
-import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
 import static android.companion.AssociationRequest.DEVICE_PROFILE_AUTOMOTIVE_PROJECTION;
 
 import static com.android.internal.util.CollectionUtils.any;
@@ -46,6 +46,13 @@ import com.android.server.companion.transport.CompanionTransportManager;
  */
 @SuppressLint("LongLogTag")
 public class DisassociationProcessor {
+
+    public static final String REASON_REVOKED = "revoked";
+    public static final String REASON_SELF_IDLE = "self-idle";
+    public static final String REASON_SHELL = "shell";
+    public static final String REASON_LEGACY = "legacy";
+    public static final String REASON_API = "api";
+    public static final String REASON_PKG_DATA_CLEARED = "pkg-data-cleared";
 
     private static final String TAG = "CDM_DisassociationProcessor";
 
@@ -94,7 +101,7 @@ public class DisassociationProcessor {
      * Disassociate an association by id.
      */
     // TODO: also revoke notification access
-    public void disassociate(int id) {
+    public void disassociate(int id, String reason) {
         Slog.i(TAG, "Disassociating id=[" + id + "]...");
 
         final AssociationInfo association = mAssociationStore.getAssociationWithCallerChecks(id);
@@ -107,7 +114,7 @@ public class DisassociationProcessor {
                     it -> deviceProfile.equals(it.getDeviceProfile()) && id != it.getId());
 
         final int packageProcessImportance = getPackageProcessImportance(userId, packageName);
-        if (packageProcessImportance <= IMPORTANCE_VISIBLE && deviceProfile != null
+        if (packageProcessImportance <= IMPORTANCE_FOREGROUND && deviceProfile != null
                 && !isRoleInUseByOtherAssociations) {
             // Need to remove the app from the list of role holders, but the process is visible
             // to the user at the moment, so we'll need to do it later.
@@ -126,7 +133,7 @@ public class DisassociationProcessor {
 
         // Association cleanup.
         mSystemDataTransferRequestStore.removeRequestsByAssociationId(userId, id);
-        mAssociationStore.removeAssociation(association.getId());
+        mAssociationStore.removeAssociation(association.getId(), reason);
 
         // If role is not in use by other associations, revoke the role.
         // Do not need to remove the system role since it was pre-granted by the system.
@@ -151,7 +158,7 @@ public class DisassociationProcessor {
     }
 
     /**
-     * @deprecated Use {@link #disassociate(int)} instead.
+     * @deprecated Use {@link #disassociate(int, String)} instead.
      */
     @Deprecated
     public void disassociate(int userId, String packageName, String macAddress) {
@@ -165,7 +172,7 @@ public class DisassociationProcessor {
 
         mAssociationStore.getAssociationWithCallerChecks(association.getId());
 
-        disassociate(association.getId());
+        disassociate(association.getId(), REASON_LEGACY);
     }
 
     @SuppressLint("MissingPermission")
@@ -223,7 +230,7 @@ public class DisassociationProcessor {
 
             Slog.i(TAG, "Removing inactive self-managed association=[" + association.toShortString()
                     + "].");
-            disassociate(id);
+            disassociate(id, REASON_SELF_IDLE);
         }
     }
 
@@ -234,16 +241,20 @@ public class DisassociationProcessor {
      *
      * Lastly remove the role holder for the revoked associations for the same packages.
      *
-     * @see #disassociate(int)
+     * @see #disassociate(int, String)
      */
     private class OnPackageVisibilityChangeListener implements
             ActivityManager.OnUidImportanceListener {
-
+        // This method is called when the importance of a uid (app) changes.
+        // We only care about changes where the app is moving to the background.
+        // (e.g., the app currently is not at the top of the screen that the user
+        // is interacting with.)
         @Override
         public void onUidImportance(int uid, int importance) {
-            if (importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE) {
-                // The lower the importance value the more "important" the process is.
-                // We are only interested when the process ceases to be visible.
+            // Higher importance values indicate the app is less important.
+            // We are only interested when the process importance level
+            // is greater than IMPORTANCE_FOREGROUND.
+            if (importance <= IMPORTANCE_FOREGROUND) {
                 return;
             }
 
@@ -256,7 +267,7 @@ public class DisassociationProcessor {
             int userId = UserHandle.getUserId(uid);
             for (AssociationInfo association : mAssociationStore.getRevokedAssociations(userId,
                     packageName)) {
-                disassociate(association.getId());
+                disassociate(association.getId(), REASON_REVOKED);
             }
 
             if (mAssociationStore.getRevokedAssociations().isEmpty()) {

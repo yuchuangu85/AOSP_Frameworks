@@ -19,6 +19,8 @@
 use crate::ffi::RustInputDeviceIdentifier;
 use bitflags::bitflags;
 use inputconstants::aidl::android::os::IInputConstants;
+use inputconstants::aidl::android::os::MotionEventFlag::MotionEventFlag;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// The InputDevice ID.
@@ -48,7 +50,7 @@ pub enum SourceClass {
 
 bitflags! {
     /// Source of the input device or input events.
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     pub struct Source: u32 {
         // Constants from SourceClass, added here for compatibility reasons
         /// SourceClass::Button
@@ -99,6 +101,7 @@ bitflags! {
 
 /// A rust enum representation of a MotionEvent action.
 #[repr(u32)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub enum MotionAction {
     /// ACTION_DOWN
     Down = input_bindgen::AMOTION_EVENT_ACTION_DOWN,
@@ -129,9 +132,15 @@ pub enum MotionAction {
     /// ACTION_SCROLL
     Scroll = input_bindgen::AMOTION_EVENT_ACTION_SCROLL,
     /// ACTION_BUTTON_PRESS
-    ButtonPress = input_bindgen::AMOTION_EVENT_ACTION_BUTTON_PRESS,
+    ButtonPress {
+        /// The button being pressed.
+        action_button: MotionButton,
+    } = input_bindgen::AMOTION_EVENT_ACTION_BUTTON_PRESS,
     /// ACTION_BUTTON_RELEASE
-    ButtonRelease = input_bindgen::AMOTION_EVENT_ACTION_BUTTON_RELEASE,
+    ButtonRelease {
+        /// The button being released.
+        action_button: MotionButton,
+    } = input_bindgen::AMOTION_EVENT_ACTION_BUTTON_RELEASE,
 }
 
 impl fmt::Display for MotionAction {
@@ -150,14 +159,20 @@ impl fmt::Display for MotionAction {
             MotionAction::Scroll => write!(f, "SCROLL"),
             MotionAction::HoverEnter => write!(f, "HOVER_ENTER"),
             MotionAction::HoverExit => write!(f, "HOVER_EXIT"),
-            MotionAction::ButtonPress => write!(f, "BUTTON_PRESS"),
-            MotionAction::ButtonRelease => write!(f, "BUTTON_RELEASE"),
+            MotionAction::ButtonPress { action_button } => {
+                write!(f, "BUTTON_PRESS({action_button:?})")
+            }
+            MotionAction::ButtonRelease { action_button } => {
+                write!(f, "BUTTON_RELEASE({action_button:?})")
+            }
         }
     }
 }
 
-impl From<u32> for MotionAction {
-    fn from(action: u32) -> Self {
+impl MotionAction {
+    /// Creates a [`MotionAction`] from an `AMOTION_EVENT_ACTION_…` constant and an action button
+    /// (which should be empty for all actions except `BUTTON_PRESS` and `…_RELEASE`).
+    pub fn from_code(action: u32, action_button: MotionButton) -> Self {
         let (action_masked, action_index) = MotionAction::breakdown_action(action);
         match action_masked {
             input_bindgen::AMOTION_EVENT_ACTION_DOWN => MotionAction::Down,
@@ -175,14 +190,16 @@ impl From<u32> for MotionAction {
             input_bindgen::AMOTION_EVENT_ACTION_HOVER_MOVE => MotionAction::HoverMove,
             input_bindgen::AMOTION_EVENT_ACTION_HOVER_EXIT => MotionAction::HoverExit,
             input_bindgen::AMOTION_EVENT_ACTION_SCROLL => MotionAction::Scroll,
-            input_bindgen::AMOTION_EVENT_ACTION_BUTTON_PRESS => MotionAction::ButtonPress,
-            input_bindgen::AMOTION_EVENT_ACTION_BUTTON_RELEASE => MotionAction::ButtonRelease,
+            input_bindgen::AMOTION_EVENT_ACTION_BUTTON_PRESS => {
+                MotionAction::ButtonPress { action_button }
+            }
+            input_bindgen::AMOTION_EVENT_ACTION_BUTTON_RELEASE => {
+                MotionAction::ButtonRelease { action_button }
+            }
             _ => panic!("Unknown action: {}", action),
         }
     }
-}
 
-impl MotionAction {
     fn breakdown_action(action: u32) -> (u32, usize) {
         let action_masked = action & input_bindgen::AMOTION_EVENT_ACTION_MASK;
         let index = (action & input_bindgen::AMOTION_EVENT_ACTION_POINTER_INDEX_MASK)
@@ -192,32 +209,59 @@ impl MotionAction {
 }
 
 bitflags! {
+    /// MotionEvent buttons.
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub struct MotionButton: u32 {
+        /// Primary button (e.g. the left mouse button)
+        const Primary = input_bindgen::AMOTION_EVENT_BUTTON_PRIMARY;
+        /// Secondary button (e.g. the right mouse button)
+        const Secondary = input_bindgen::AMOTION_EVENT_BUTTON_SECONDARY;
+        /// Tertiary button (e.g. the middle mouse button)
+        const Tertiary = input_bindgen::AMOTION_EVENT_BUTTON_TERTIARY;
+        /// Back button
+        const Back = input_bindgen::AMOTION_EVENT_BUTTON_BACK;
+        /// Forward button
+        const Forward = input_bindgen::AMOTION_EVENT_BUTTON_FORWARD;
+        /// Primary stylus button
+        const StylusPrimary = input_bindgen::AMOTION_EVENT_BUTTON_STYLUS_PRIMARY;
+        /// Secondary stylus button
+        const StylusSecondary = input_bindgen::AMOTION_EVENT_BUTTON_STYLUS_SECONDARY;
+    }
+}
+
+bitflags! {
     /// MotionEvent flags.
-    #[derive(Debug)]
+    /// The source of truth for the flag definitions are the MotionEventFlag AIDL enum.
+    /// The flag values are redefined here as a bitflags API.
+    #[derive(Clone, Copy, Debug)]
     pub struct MotionFlags: u32 {
         /// FLAG_WINDOW_IS_OBSCURED
-        const WINDOW_IS_OBSCURED = IInputConstants::MOTION_EVENT_FLAG_WINDOW_IS_OBSCURED as u32;
+        const WINDOW_IS_OBSCURED = MotionEventFlag::WINDOW_IS_OBSCURED.0 as u32;
         /// FLAG_WINDOW_IS_PARTIALLY_OBSCURED
-        const WINDOW_IS_PARTIALLY_OBSCURED = IInputConstants::MOTION_EVENT_FLAG_WINDOW_IS_PARTIALLY_OBSCURED as u32;
+        const WINDOW_IS_PARTIALLY_OBSCURED = MotionEventFlag::WINDOW_IS_PARTIALLY_OBSCURED.0 as u32;
         /// FLAG_HOVER_EXIT_PENDING
-        const HOVER_EXIT_PENDING = IInputConstants::MOTION_EVENT_FLAG_HOVER_EXIT_PENDING as u32;
+        const HOVER_EXIT_PENDING = MotionEventFlag::HOVER_EXIT_PENDING.0 as u32;
         /// FLAG_IS_GENERATED_GESTURE
-        const IS_GENERATED_GESTURE = IInputConstants::MOTION_EVENT_FLAG_IS_GENERATED_GESTURE as u32;
+        const IS_GENERATED_GESTURE = MotionEventFlag::IS_GENERATED_GESTURE.0 as u32;
         /// FLAG_CANCELED
-        const CANCELED = IInputConstants::INPUT_EVENT_FLAG_CANCELED as u32;
+        const CANCELED = MotionEventFlag::CANCELED.0 as u32;
         /// FLAG_NO_FOCUS_CHANGE
-        const NO_FOCUS_CHANGE = IInputConstants::MOTION_EVENT_FLAG_NO_FOCUS_CHANGE as u32;
+        const NO_FOCUS_CHANGE = MotionEventFlag::NO_FOCUS_CHANGE.0 as u32;
         /// PRIVATE_FLAG_SUPPORTS_ORIENTATION
-        const PRIVATE_SUPPORTS_ORIENTATION = IInputConstants::MOTION_EVENT_PRIVATE_FLAG_SUPPORTS_ORIENTATION as u32;
+        const PRIVATE_FLAG_SUPPORTS_ORIENTATION =
+                MotionEventFlag::PRIVATE_FLAG_SUPPORTS_ORIENTATION.0 as u32;
         /// PRIVATE_FLAG_SUPPORTS_DIRECTIONAL_ORIENTATION
-        const PRIVATE_SUPPORTS_DIRECTIONAL_ORIENTATION =
-                IInputConstants::MOTION_EVENT_PRIVATE_FLAG_SUPPORTS_DIRECTIONAL_ORIENTATION as u32;
+        const PRIVATE_FLAG_SUPPORTS_DIRECTIONAL_ORIENTATION =
+                MotionEventFlag::PRIVATE_FLAG_SUPPORTS_DIRECTIONAL_ORIENTATION.0 as u32;
         /// FLAG_IS_ACCESSIBILITY_EVENT
-        const IS_ACCESSIBILITY_EVENT = IInputConstants::INPUT_EVENT_FLAG_IS_ACCESSIBILITY_EVENT as u32;
+        const IS_ACCESSIBILITY_EVENT = MotionEventFlag::IS_ACCESSIBILITY_EVENT.0 as u32;
+        /// FLAG_INJECTED_FROM_ACCESSIBILITY_TOOL
+        const INJECTED_FROM_ACCESSIBILITY_TOOL =
+                MotionEventFlag::INJECTED_FROM_ACCESSIBILITY_TOOL.0 as u32;
         /// FLAG_TAINTED
-        const TAINTED = IInputConstants::INPUT_EVENT_FLAG_TAINTED as u32;
+        const TAINTED = MotionEventFlag::TAINTED.0 as u32;
         /// FLAG_TARGET_ACCESSIBILITY_FOCUS
-        const TARGET_ACCESSIBILITY_FOCUS = IInputConstants::MOTION_EVENT_FLAG_TARGET_ACCESSIBILITY_FOCUS as u32;
+        const TARGET_ACCESSIBILITY_FOCUS = MotionEventFlag::TARGET_ACCESSIBILITY_FOCUS.0 as u32;
     }
 }
 
@@ -320,9 +364,11 @@ bitflags! {
 
 /// A rust enum representation of a Keyboard type.
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
 pub enum KeyboardType {
     /// KEYBOARD_TYPE_NONE
+    #[default]
     None = input_bindgen::AINPUT_KEYBOARD_TYPE_NONE,
     /// KEYBOARD_TYPE_NON_ALPHABETIC
     NonAlphabetic = input_bindgen::AINPUT_KEYBOARD_TYPE_NON_ALPHABETIC,
@@ -333,10 +379,24 @@ pub enum KeyboardType {
 #[cfg(test)]
 mod tests {
     use crate::input::SourceClass;
+    use crate::MotionFlags;
     use crate::Source;
+    use inputconstants::aidl::android::os::MotionEventFlag::MotionEventFlag;
+
     #[test]
     fn convert_source_class_pointer() {
         let source = Source::from_bits(input_bindgen::AINPUT_SOURCE_CLASS_POINTER).unwrap();
         assert!(source.is_from_class(SourceClass::Pointer));
+    }
+
+    /// Ensure all MotionEventFlag constants are re-defined in rust.
+    #[test]
+    fn all_motion_event_flags_defined() {
+        for flag in MotionEventFlag::enum_values() {
+            assert!(
+                MotionFlags::from_bits(flag.0 as u32).is_some(),
+                "MotionEventFlag value {flag:?} is not redefined as a rust MotionFlags"
+            );
+        }
     }
 }

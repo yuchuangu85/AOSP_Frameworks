@@ -21,6 +21,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import com.android.settingslib.spa.framework.common.SpaEnvironmentFactory
 
 /**
  * The Material 3 Theme for Settings.
@@ -39,4 +40,8 @@ fun SettingsTheme(content: @Composable () -> Unit) {
             content()
         }
     }
+}
+
+val isSpaExpressiveEnabled by lazy {
+    SpaEnvironmentFactory.optionalInstance?.isSpaExpressiveEnabled ?: false
 }

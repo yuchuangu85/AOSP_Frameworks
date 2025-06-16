@@ -18,57 +18,24 @@ package com.android.compose.animation.scene.transformation
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import com.android.compose.animation.scene.Element
-import com.android.compose.animation.scene.ElementMatcher
-import com.android.compose.animation.scene.OverscrollScope
-import com.android.compose.animation.scene.SceneKey
-import com.android.compose.animation.scene.SceneTransitionLayoutImpl
-import com.android.compose.animation.scene.TransitionState
+import com.android.compose.animation.scene.ContentKey
+import com.android.compose.animation.scene.ElementKey
+import com.android.compose.animation.scene.content.state.TransitionState
 
-internal class Translate(
-    override val matcher: ElementMatcher,
-    private val x: Dp = 0.dp,
-    private val y: Dp = 0.dp,
-) : PropertyTransformation<Offset> {
-    override fun transform(
-        layoutImpl: SceneTransitionLayoutImpl,
-        scene: SceneKey,
-        element: Element,
-        sceneState: Element.SceneState,
+internal class Translate private constructor(private val x: Dp, private val y: Dp) :
+    InterpolatedPropertyTransformation<Offset> {
+    override val property = PropertyTransformation.Property.Offset
+
+    override fun PropertyTransformationScope.transform(
+        content: ContentKey,
+        element: ElementKey,
         transition: TransitionState.Transition,
-        value: Offset,
+        idleValue: Offset,
     ): Offset {
-        return with(layoutImpl.density) {
-            Offset(
-                value.x + x.toPx(),
-                value.y + y.toPx(),
-            )
-        }
+        return Offset(idleValue.x + x.toPx(), idleValue.y + y.toPx())
     }
-}
 
-internal class OverscrollTranslate(
-    override val matcher: ElementMatcher,
-    val x: OverscrollScope.() -> Float = { 0f },
-    val y: OverscrollScope.() -> Float = { 0f },
-) : PropertyTransformation<Offset> {
-    override fun transform(
-        layoutImpl: SceneTransitionLayoutImpl,
-        scene: SceneKey,
-        element: Element,
-        sceneState: Element.SceneState,
-        transition: TransitionState.Transition,
-        value: Offset,
-    ): Offset {
-        // As this object is created by OverscrollBuilderImpl and we retrieve the current
-        // OverscrollSpec only when the transition implements HasOverscrollProperties, we can assume
-        // that this method was invoked after performing this check.
-        val overscrollProperties = transition as TransitionState.HasOverscrollProperties
-
-        return Offset(
-            x = value.x + overscrollProperties.overscrollScope.x(),
-            y = value.y + overscrollProperties.overscrollScope.y(),
-        )
+    class Factory(private val x: Dp, private val y: Dp) : Transformation.Factory {
+        override fun create(): Transformation = Translate(x, y)
     }
 }

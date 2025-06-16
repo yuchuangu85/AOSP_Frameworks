@@ -50,9 +50,9 @@ protected:
         const ::testing::TestInfo* const test_info =
                 ::testing::UnitTest::GetInstance()->current_test_info();
         ALOGV("**** Setting up for %s.%s\n", test_info->test_case_name(), test_info->name());
-        BufferQueue::createBufferQueue(&mProducer, &mConsumer);
-        mItemConsumer = new BufferItemConsumer(mConsumer, GRALLOC_USAGE_SW_READ_OFTEN);
-        mWindow = new TestableSurface(mProducer);
+        sp<Surface> surface;
+        std::tie(mItemConsumer, surface) = BufferItemConsumer::create(GRALLOC_USAGE_SW_READ_OFTEN);
+        mWindow = new TestableSurface(surface->getIGraphicBufferProducer());
         const int success = native_window_api_connect(mWindow.get(), NATIVE_WINDOW_API_CPU);
         EXPECT_EQ(0, success);
     }
@@ -64,10 +64,12 @@ protected:
         const int success = native_window_api_disconnect(mWindow.get(), NATIVE_WINDOW_API_CPU);
         EXPECT_EQ(0, success);
     }
+
+#if !COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
     sp<IGraphicBufferProducer> mProducer;
     sp<IGraphicBufferConsumer> mConsumer;
+#endif // COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(WB_CONSUMER_BASE_OWNS_BQ)
     sp<BufferItemConsumer> mItemConsumer;
-
     sp<TestableSurface> mWindow;
 };
 

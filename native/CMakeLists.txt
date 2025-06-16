@@ -115,7 +115,6 @@ include_directories(libs/binder/trusty/include_mock/openssl)
 include_directories(libs/binder/trusty/include_mock/uapi)
 include_directories(libs/binder/trusty/ndk)
 include_directories(libs/binder/trusty/ndk/include)
-include_directories(libs/binder/trusty/ndk/include/android)
 include_directories(libs/binder/trusty/ndk/include/sys)
 include_directories(libs/binder/trusty/rust/binder_rpc_unstable_bindgen)
 include_directories(libs/binderdebug/include)
@@ -149,11 +148,13 @@ include_directories(libs/gui/include/gui/view)
 include_directories(libs/gui/include/private)
 include_directories(libs/gui/include/private/gui)
 include_directories(libs/gui/tests)
+include_directories(libs/gui/tests/testserver)
 include_directories(libs/incidentcompanion/include)
 include_directories(libs/incidentcompanion/include/android)
 include_directories(libs/incidentcompanion/include/android/os)
 include_directories(libs/input)
 include_directories(libs/input/ffi)
+include_directories(libs/input/tests)
 include_directories(libs/math/include)
 include_directories(libs/math/include/math)
 include_directories(libs/nativebase)
@@ -199,7 +200,7 @@ include_directories(libs/tonemap/include)
 include_directories(libs/tonemap/include/tonemap)
 include_directories(libs/tracing_perfetto)
 include_directories(libs/tracing_perfetto/include)
-include_directories(libs/tracing_perfetto/tests)
+include_directories(libs/tracing_perfetto/tests/include)
 include_directories(libs/ui/include)
 include_directories(libs/ui/include/ui)
 include_directories(libs/ui/include/ui/fuzzer)
@@ -214,40 +215,7 @@ include_directories(libs/ui/include_vndk/ui)
 include_directories(libs/ui/tests/mock)
 include_directories(libs/vibrator/include)
 include_directories(libs/vibrator/include/vibrator)
-include_directories(libs/vr/libbroadcastring/include)
-include_directories(libs/vr/libbroadcastring/include/libbroadcastring)
-include_directories(libs/vr/libbufferhub/include)
-include_directories(libs/vr/libbufferhub/include/private)
-include_directories(libs/vr/libbufferhub/include/private/dvr)
-include_directories(libs/vr/libdvr)
-include_directories(libs/vr/libdvr/include)
-include_directories(libs/vr/libdvr/include/dvr)
-include_directories(libs/vr/libdvrcommon/include)
-include_directories(libs/vr/libdvrcommon/include/private)
-include_directories(libs/vr/libdvrcommon/include/private/dvr)
-include_directories(libs/vr/libdvrcommon/include/private/dvr/test)
-include_directories(libs/vr/libpdx/fuzz)
-include_directories(libs/vr/libpdx/private)
-include_directories(libs/vr/libpdx/private/pdx)
-include_directories(libs/vr/libpdx/private/pdx/rpc)
-include_directories(libs/vr/libpdx_default_transport/private)
-include_directories(libs/vr/libpdx_default_transport/private/pdx)
-include_directories(libs/vr/libpdx_default_transport/private/pdx/default_transport)
-include_directories(libs/vr/libpdx_default_transport/private/servicefs)
-include_directories(libs/vr/libpdx_default_transport/private/servicefs/pdx)
-include_directories(libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport)
-include_directories(libs/vr/libpdx_default_transport/private/uds)
-include_directories(libs/vr/libpdx_default_transport/private/uds/pdx)
-include_directories(libs/vr/libpdx_default_transport/private/uds/pdx/default_transport)
-include_directories(libs/vr/libpdx_uds/private)
-include_directories(libs/vr/libpdx_uds/private/uds)
-include_directories(libs/vr/libperformance/include)
-include_directories(libs/vr/libperformance/include/dvr)
-include_directories(libs/vr/libperformance/include/private)
-include_directories(libs/vr/libperformance/include/private/dvr)
-include_directories(libs/vr/libvr_manager/include)
-include_directories(libs/vr/libvr_manager/include/private)
-include_directories(libs/vr/libvr_manager/include/private/dvr)
+include_directories(libs/vibrator/tests)
 include_directories(opengl/include)
 include_directories(opengl/include/EGL)
 include_directories(opengl/include/ETC1)
@@ -271,6 +239,8 @@ include_directories(services/batteryservice/include)
 include_directories(services/batteryservice/include/batteryservice)
 include_directories(services/displayservice/include)
 include_directories(services/displayservice/include/displayservice)
+include_directories(services/gpuservice/feature_override/include)
+include_directories(services/gpuservice/feature_override/include/feature_override)
 include_directories(services/gpuservice/gpumem/include)
 include_directories(services/gpuservice/gpumem/include/gpumem)
 include_directories(services/gpuservice/gpustats/include)
@@ -328,22 +298,29 @@ include_directories(services/surfaceflinger/CompositionEngine/tests)
 include_directories(services/surfaceflinger/Display)
 include_directories(services/surfaceflinger/DisplayHardware)
 include_directories(services/surfaceflinger/Effects)
-include_directories(services/surfaceflinger/EventLog)
 include_directories(services/surfaceflinger/FrameTimeline)
 include_directories(services/surfaceflinger/FrameTracer)
 include_directories(services/surfaceflinger/FrontEnd)
+include_directories(services/surfaceflinger/Jank)
+include_directories(services/surfaceflinger/layerproto)
 include_directories(services/surfaceflinger/layerproto/include)
 include_directories(services/surfaceflinger/layerproto/include/layerproto)
+include_directories(services/surfaceflinger/PowerAdvisor)
 include_directories(services/surfaceflinger/Scheduler)
 include_directories(services/surfaceflinger/Scheduler/include)
 include_directories(services/surfaceflinger/Scheduler/include/scheduler)
 include_directories(services/surfaceflinger/Scheduler/include/scheduler/interface)
 include_directories(services/surfaceflinger/Scheduler/tests)
 include_directories(services/surfaceflinger/tests)
+include_directories(services/surfaceflinger/tests/common)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/core)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/fake_hwc3)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/surfaceflinger)
 include_directories(services/surfaceflinger/tests/unittests)
 include_directories(services/surfaceflinger/tests/unittests/fake)
 include_directories(services/surfaceflinger/tests/unittests/mock)
 include_directories(services/surfaceflinger/tests/unittests/mock/DisplayHardware)
+include_directories(services/surfaceflinger/tests/unittests/mock/PowerAdvisor)
 include_directories(services/surfaceflinger/tests/unittests/mock/system/window)
 include_directories(services/surfaceflinger/tests/utils)
 include_directories(services/surfaceflinger/TimeStats)
@@ -360,13 +337,6 @@ include_directories(services/utils/include/serviceutils)
 include_directories(services/vibratorservice/include)
 include_directories(services/vibratorservice/include/vibratorservice)
 include_directories(services/vibratorservice/test)
-include_directories(services/vr/bufferhubd/include)
-include_directories(services/vr/bufferhubd/include/private)
-include_directories(services/vr/bufferhubd/include/private/dvr)
-include_directories(services/vr/performanced)
-include_directories(services/vr/virtual_touchpad)
-include_directories(services/vr/virtual_touchpad/include)
-include_directories(services/vr/virtual_touchpad/include/dvr)
 include_directories(vulkan/include)
 include_directories(vulkan/include/hardware)
 include_directories(vulkan/include/vulkan)
@@ -417,15 +387,20 @@ add_executable(native
         cmds/idlcli/vibrator/CommandAlwaysOnEnable.cpp
         cmds/idlcli/vibrator/CommandCompose.cpp
         cmds/idlcli/vibrator/CommandComposePwle.cpp
+        cmds/idlcli/vibrator/CommandComposePwleV2.cpp
         cmds/idlcli/vibrator/CommandGetBandwidthAmplitudeMap.cpp
         cmds/idlcli/vibrator/CommandGetCapabilities.cpp
         cmds/idlcli/vibrator/CommandGetCompositionDelayMax.cpp
         cmds/idlcli/vibrator/CommandGetCompositionSizeMax.cpp
         cmds/idlcli/vibrator/CommandGetFrequencyMinimum.cpp
         cmds/idlcli/vibrator/CommandGetFrequencyResolution.cpp
+        cmds/idlcli/vibrator/CommandGetFrequencyToOutputAccelerationMap.cpp
         cmds/idlcli/vibrator/CommandGetPrimitiveDuration.cpp
         cmds/idlcli/vibrator/CommandGetPwleCompositionSizeMax.cpp
         cmds/idlcli/vibrator/CommandGetPwlePrimitiveDurationMax.cpp
+        cmds/idlcli/vibrator/CommandGetPwleV2CompositionSizeMax.cpp
+        cmds/idlcli/vibrator/CommandGetPwleV2PrimitiveDurationMaxMillis.cpp
+        cmds/idlcli/vibrator/CommandGetPwleV2PrimitiveDurationMinMillis.cpp
         cmds/idlcli/vibrator/CommandGetQFactor.cpp
         cmds/idlcli/vibrator/CommandGetResonantFrequency.cpp
         cmds/idlcli/vibrator/CommandGetSupportedAlwaysOnEffects.cpp
@@ -435,6 +410,7 @@ add_executable(native
         cmds/idlcli/vibrator/CommandOff.cpp
         cmds/idlcli/vibrator/CommandOn.cpp
         cmds/idlcli/vibrator/CommandPerform.cpp
+        cmds/idlcli/vibrator/CommandPerformVendorEffect.cpp
         cmds/idlcli/vibrator/CommandSetAmplitude.cpp
         cmds/idlcli/vibrator/CommandSetExternalControl.cpp
         cmds/idlcli/vibrator/CommandSupportsAmplitudeControl.cpp
@@ -561,6 +537,7 @@ add_executable(native
         include/android/bitmap.h
         include/android/choreographer.h
         include/android/configuration.h
+        include/android/display_luts.h
         include/android/font.h
         include/android/font_matcher.h
         include/android/hardware_buffer_jni.h
@@ -585,6 +562,7 @@ add_executable(native
         include/android/surface_texture.h
         include/android/surface_texture_jni.h
         include/android/system_fonts.h
+        include/android/system_health.h
         include/android/thermal.h
         include/android/trace.h
         include/android/window.h
@@ -608,10 +586,12 @@ add_executable(native
         include/ftl/enum.h
         include/ftl/expected.h
         include/ftl/fake_guard.h
+        include/ftl/finalizer.h
         include/ftl/flags.h
         include/ftl/function.h
         include/ftl/future.h
         include/ftl/hash.h
+        include/ftl/ignore.h
         include/ftl/initializer_list.h
         include/ftl/match.h
         include/ftl/mixins.h
@@ -641,6 +621,8 @@ add_executable(native
         include/gui/view/Surface.h
         include/input/AccelerationCurve.h
         include/input/BlockingQueue.h
+        include/input/CoordinateFilter.h
+        include/input/DisplayTopologyGraph.h
         include/input/DisplayViewport.h
         include/input/Input.h
         include/input/InputConsumer.h
@@ -648,6 +630,7 @@ add_executable(native
         include/input/InputDevice.h
         include/input/InputEventBuilders.h
         include/input/InputEventLabels.h
+        include/input/InputFlags.h
         include/input/InputTransport.h
         include/input/InputVerifier.h
         include/input/Keyboard.h
@@ -656,8 +639,10 @@ add_executable(native
         include/input/KeyLayoutMap.h
         include/input/MotionPredictor.h
         include/input/MotionPredictorMetricsManager.h
+        include/input/OneEuroFilter.h
         include/input/PrintTools.h
         include/input/PropertyMap.h
+        include/input/Resampler.h
         include/input/RingBuffer.h
         include/input/TfLiteMotionPredictor.h
         include/input/TouchVideoFrame.h
@@ -696,8 +681,10 @@ add_executable(native
         include/powermanager/PowerHalWrapper.h
         include/powermanager/PowerHintSessionWrapper.h
         include/powermanager/PowerManager.h
+        include/private/display_luts_private.h
         include/private/performance_hint_private.h
         include/private/surface_control_private.h
+        include/private/system_health_private.h
         include/private/thermal_private.h
         include/vr/vr_manager/vr_manager.h
         libs/adbd_auth/include/adbd_auth.h
@@ -728,6 +715,8 @@ add_executable(native
         libs/binder/include/binder/IPermissionController.h
         libs/binder/include/binder/IResultReceiver.h
         libs/binder/include/binder/IServiceManager.h
+        libs/binder/include/binder/IServiceManagerFFI.h
+        libs/binder/include/binder/IServiceManagerUnitTestHelper.h
         libs/binder/include/binder/IShellCallback.h
         libs/binder/include/binder/LazyServiceRegistrar.h
         libs/binder/include/binder/MemoryBase.h
@@ -789,6 +778,7 @@ add_executable(native
         libs/binder/ndk/include_platform/android/binder_manager.h
         libs/binder/ndk/include_platform/android/binder_parcel_platform.h
         libs/binder/ndk/include_platform/android/binder_process.h
+        libs/binder/ndk/include_platform/android/binder_rpc.h
         libs/binder/ndk/include_platform/android/binder_shell.h
         libs/binder/ndk/include_platform/android/binder_stability.h
         libs/binder/ndk/tests/include/iface/iface.h
@@ -796,6 +786,7 @@ add_executable(native
         libs/binder/ndk/tests/iface.cpp
         libs/binder/ndk/tests/libbinder_ndk_unit_test.cpp
         libs/binder/ndk/tests/libbinder_ndk_unit_test_host.cpp
+        libs/binder/ndk/binder_rpc.cpp
         libs/binder/ndk/ibinder.cpp
         libs/binder/ndk/ibinder_internal.h
         libs/binder/ndk/ibinder_jni.cpp
@@ -861,6 +852,7 @@ add_executable(native
         libs/binder/tests/unit_fuzzers/TextOutputFuzz.cpp
         libs/binder/tests/binderAllocationLimits.cpp
         libs/binder/tests/binderBinderUnitTest.cpp
+        libs/binder/tests/binderCacheUnitTest.cpp
         libs/binder/tests/binderClearBufTest.cpp
         libs/binder/tests/binderDriverInterfaceTest.cpp
         libs/binder/tests/binderHostDeviceTest.cpp
@@ -883,6 +875,7 @@ add_executable(native
         libs/binder/tests/binderRpcUniversalTests.cpp
         libs/binder/tests/binderRpcWireProtocolTest.cpp
         libs/binder/tests/binderSafeInterfaceTest.cpp
+        libs/binder/tests/binderStabilityIntegrationTest.cpp
         libs/binder/tests/binderStabilityTest.cpp
         libs/binder/tests/binderStatusUnitTest.cpp
         libs/binder/tests/binderTextOutputTest.cpp
@@ -905,7 +898,6 @@ add_executable(native
         libs/binder/trusty/include_mock/trusty-gtest.h
         libs/binder/trusty/include_mock/trusty_ipc.h
         libs/binder/trusty/include_mock/trusty_log.h
-        libs/binder/trusty/ndk/include/android/llndk-versioning.h
         libs/binder/trusty/ndk/include/sys/cdefs.h
         libs/binder/trusty/rust/binder_rpc_server_bindgen/cpp/ARpcServerTrusty.cpp
         libs/binder/trusty/rust/binder_rpc_unstable_bindgen/BinderBindings.hpp
@@ -916,12 +908,15 @@ add_executable(native
         libs/binder/trusty/TrustyStatus.cpp
         libs/binder/trusty/TrustyStatus.h
         libs/binder/ActivityManager.cpp
+        libs/binder/BackendUnifiedServiceManager.cpp
+        libs/binder/BackendUnifiedServiceManager.h
         libs/binder/Binder.cpp
         libs/binder/binder_module.h
         libs/binder/BpBinder.cpp
         libs/binder/BufferedTextOutput.cpp
         libs/binder/BufferedTextOutput.h
         libs/binder/BuildFlags.h
+        libs/binder/Constants.h
         libs/binder/Debug.cpp
         libs/binder/Debug.h
         libs/binder/FdTrigger.cpp
@@ -938,6 +933,7 @@ add_executable(native
         libs/binder/IProcessInfoService.cpp
         libs/binder/IResultReceiver.cpp
         libs/binder/IServiceManager.cpp
+        libs/binder/IServiceManagerFFI.cpp
         libs/binder/IShellCallback.cpp
         libs/binder/IUidObserver.cpp
         libs/binder/LazyServiceRegistrar.cpp
@@ -1011,10 +1007,12 @@ add_executable(native
         libs/ftl/enum_test.cpp
         libs/ftl/expected_test.cpp
         libs/ftl/fake_guard_test.cpp
+        libs/ftl/finalizer_test.cpp
         libs/ftl/flags_test.cpp
         libs/ftl/function_test.cpp
         libs/ftl/future_test.cpp
         libs/ftl/hash_test.cpp
+        libs/ftl/ignore_test.cpp
         libs/ftl/match_test.cpp
         libs/ftl/mixins_test.cpp
         libs/ftl/non_null_test.cpp
@@ -1032,9 +1030,11 @@ add_executable(native
         libs/gralloc/types/include/gralloctypes/Gralloc4.h
         libs/gralloc/types/tests/Gralloc4_test.cpp
         libs/gralloc/types/Gralloc4.cpp
+        libs/graphicsenv/include/graphicsenv/FeatureOverrides.h
         libs/graphicsenv/include/graphicsenv/GpuStatsInfo.h
         libs/graphicsenv/include/graphicsenv/GraphicsEnv.h
         libs/graphicsenv/include/graphicsenv/IGpuService.h
+        libs/graphicsenv/FeatureOverrides.cpp
         libs/graphicsenv/GpuStatsInfo.cpp
         libs/graphicsenv/GraphicsEnv.cpp
         libs/graphicsenv/IGpuService.cpp
@@ -1065,7 +1065,7 @@ add_executable(native
         libs/gui/include/gui/test/CallbackUtils.h
         libs/gui/include/gui/view/Surface.h
         libs/gui/include/gui/AdditionalOptions.h
-        libs/gui/include/gui/AidlStatusUtil.h
+        libs/gui/include/gui/AidlUtil.h
         libs/gui/include/gui/BLASTBufferQueue.h
         libs/gui/include/gui/BufferItem.h
         libs/gui/include/gui/BufferItemConsumer.h
@@ -1074,17 +1074,19 @@ add_executable(native
         libs/gui/include/gui/BufferQueueCore.h
         libs/gui/include/gui/BufferQueueDefs.h
         libs/gui/include/gui/BufferQueueProducer.h
+        libs/gui/include/gui/BufferReleaseChannel.h
         libs/gui/include/gui/BufferSlot.h
         libs/gui/include/gui/Choreographer.h
         libs/gui/include/gui/CompositorTiming.h
         libs/gui/include/gui/ConsumerBase.h
         libs/gui/include/gui/CpuConsumer.h
         libs/gui/include/gui/DebugEGLImageTracker.h
-        libs/gui/include/gui/DisplayCaptureArgs.h
         libs/gui/include/gui/DisplayEventDispatcher.h
         libs/gui/include/gui/DisplayEventReceiver.h
         libs/gui/include/gui/DisplayInfo.h
+        libs/gui/include/gui/DisplayLuts.h
         libs/gui/include/gui/FenceMonitor.h
+        libs/gui/include/gui/Flags.h
         libs/gui/include/gui/FrameRateUtils.h
         libs/gui/include/gui/FrameTimestamps.h
         libs/gui/include/gui/GLConsumer.h
@@ -1098,7 +1100,6 @@ add_executable(native
         libs/gui/include/gui/ISurfaceComposer.h
         libs/gui/include/gui/ITransactionCompletedListener.h
         libs/gui/include/gui/JankInfo.h
-        libs/gui/include/gui/LayerCaptureArgs.h
         libs/gui/include/gui/LayerMetadata.h
         libs/gui/include/gui/LayerState.h
         libs/gui/include/gui/LayerStatePermissions.h
@@ -1113,6 +1114,7 @@ add_executable(native
         libs/gui/include/gui/SurfaceControl.h
         libs/gui/include/gui/SyncScreenCaptureListener.h
         libs/gui/include/gui/TraceUtils.h
+        libs/gui/include/gui/TransactionState.h
         libs/gui/include/gui/VsyncEventData.h
         libs/gui/include/gui/WindowInfo.h
         libs/gui/include/gui/WindowInfosListener.h
@@ -1126,9 +1128,19 @@ add_executable(native
         libs/gui/include/private/gui/SyncFeatures.h
         libs/gui/mock/GraphicBufferConsumer.cpp
         libs/gui/mock/GraphicBufferProducer.cpp
+        libs/gui/tests/benchmarks/main.cpp
+        libs/gui/tests/benchmarks/Transaction_benchmarks.cpp
+        libs/gui/tests/testserver/TestServer.cpp
+        libs/gui/tests/testserver/TestServer.h
+        libs/gui/tests/testserver/TestServerClient.cpp
+        libs/gui/tests/testserver/TestServerClient.h
+        libs/gui/tests/testserver/TestServerCommon.h
+        libs/gui/tests/testserver/TestServerHost.cpp
+        libs/gui/tests/testserver/TestServerHost.h
         libs/gui/tests/BLASTBufferQueue_test.cpp
         libs/gui/tests/BufferItemConsumer_test.cpp
         libs/gui/tests/BufferQueue_test.cpp
+        libs/gui/tests/BufferReleaseChannel_test.cpp
         libs/gui/tests/Choreographer_test.cpp
         libs/gui/tests/CompositorTiming_test.cpp
         libs/gui/tests/Constants.h
@@ -1164,8 +1176,10 @@ add_executable(native
         libs/gui/tests/SurfaceTextureGLToGL_test.cpp
         libs/gui/tests/SurfaceTextureMultiContextGL.h
         libs/gui/tests/SurfaceTextureMultiContextGL_test.cpp
+        libs/gui/tests/TestServer_test.cpp
         libs/gui/tests/TextureRenderer.cpp
         libs/gui/tests/TextureRenderer.h
+        libs/gui/tests/TransactionState_test.cpp
         libs/gui/tests/VsyncEventData_test.cpp
         libs/gui/tests/WindowInfo_test.cpp
         libs/gui/view/Surface.cpp
@@ -1179,6 +1193,7 @@ add_executable(native
         libs/gui/BufferQueueCore.cpp
         libs/gui/BufferQueueProducer.cpp
         libs/gui/BufferQueueThreadState.cpp
+        libs/gui/BufferReleaseChannel.cpp
         libs/gui/BufferSlot.cpp
         libs/gui/Choreographer.cpp
         libs/gui/CompositorTiming.cpp
@@ -1188,14 +1203,14 @@ add_executable(native
         libs/gui/DisplayEventDispatcher.cpp
         libs/gui/DisplayEventReceiver.cpp
         libs/gui/DisplayInfo.cpp
+        libs/gui/DisplayLuts.cpp
         libs/gui/FenceMonitor.cpp
+        libs/gui/Flags.cpp
         libs/gui/FrameRateUtils.cpp
         libs/gui/FrameTimestamps.cpp
         libs/gui/GLConsumer.cpp
         libs/gui/GLConsumerUtils.cpp
         libs/gui/HdrMetadata.cpp
-        libs/gui/IConsumerListener.cpp
-        libs/gui/IGraphicBufferConsumer.cpp
         libs/gui/IGraphicBufferProducer.cpp
         libs/gui/IGraphicBufferProducerFlattenables.cpp
         libs/gui/IProducerListener.cpp
@@ -1211,6 +1226,7 @@ add_executable(native
         libs/gui/SurfaceComposerClient.cpp
         libs/gui/SurfaceControl.cpp
         libs/gui/SyncFeatures.cpp
+        libs/gui/TransactionState.cpp
         libs/gui/VsyncEventData.cpp
         libs/gui/WindowInfo.cpp
         libs/gui/WindowInfosListenerReporter.cpp
@@ -1221,6 +1237,9 @@ add_executable(native
         libs/input/tests/BlockingQueue_test.cpp
         libs/input/tests/IdGenerator_test.cpp
         libs/input/tests/InputChannel_test.cpp
+        libs/input/tests/InputConsumer_test.cpp
+        libs/input/tests/InputConsumerFilteredResampling_test.cpp
+        libs/input/tests/InputConsumerResampling_test.cpp
         libs/input/tests/InputDevice_test.cpp
         libs/input/tests/InputEvent_test.cpp
         libs/input/tests/InputPublisherAndConsumer_test.cpp
@@ -1228,8 +1247,13 @@ add_executable(native
         libs/input/tests/InputVerifier_test.cpp
         libs/input/tests/MotionPredictor_test.cpp
         libs/input/tests/MotionPredictorMetricsManager_test.cpp
+        libs/input/tests/OneEuroFilter_test.cpp
+        libs/input/tests/Resampler_test.cpp
         libs/input/tests/RingBuffer_test.cpp
         libs/input/tests/StructLayout_test.cpp
+        libs/input/tests/TestEventMatchers.h
+        libs/input/tests/TestInputChannel.cpp
+        libs/input/tests/TestInputChannel.h
         libs/input/tests/TfLiteMotionPredictor_test.cpp
         libs/input/tests/TouchResampling_test.cpp
         libs/input/tests/TouchVideoFrame_test.cpp
@@ -1237,12 +1261,15 @@ add_executable(native
         libs/input/tests/VelocityTracker_test.cpp
         libs/input/tests/VerifiedInputEvent_test.cpp
         libs/input/AccelerationCurve.cpp
+        libs/input/CoordinateFilter.cpp
+        libs/input/DisplayTopologyGraph.cpp
         libs/input/FromRustToCpp.cpp
         libs/input/Input.cpp
         libs/input/InputConsumer.cpp
         libs/input/InputConsumerNoResampling.cpp
         libs/input/InputDevice.cpp
         libs/input/InputEventLabels.cpp
+        libs/input/InputFlags.cpp
         libs/input/InputTransport.cpp
         libs/input/InputVerifier.cpp
         libs/input/InputWrapper.hpp
@@ -1252,9 +1279,11 @@ add_executable(native
         libs/input/KeyLayoutMap.cpp
         libs/input/MotionPredictor.cpp
         libs/input/MotionPredictorMetricsManager.cpp
+        libs/input/OneEuroFilter.cpp
         libs/input/PrintTools.cpp
         libs/input/PropertyMap.cpp
         libs/input/PropertyMap_fuzz.cpp
+        libs/input/Resampler.cpp
         libs/input/TfLiteMotionPredictor.cpp
         libs/input/TouchVideoFrame.cpp
         libs/input/VelocityControl.cpp
@@ -1314,10 +1343,8 @@ add_executable(native
         libs/permission/android/permission/PermissionChecker.cpp
         libs/permission/include/android/permission/PermissionChecker.h
         libs/permission/include/binder/AppOpsManager.h
-        libs/permission/include/binder/IAppOpsCallback.h
         libs/permission/include/binder/IAppOpsService.h
         libs/permission/AppOpsManager.cpp
-        libs/permission/IAppOpsCallback.cpp
         libs/permission/IAppOpsService.cpp
         libs/renderengine/benchmark/Codec.cpp
         libs/renderengine/benchmark/Flags.cpp
@@ -1353,12 +1380,20 @@ add_executable(native
         libs/renderengine/skia/debug/SkiaMemoryReporter.h
         libs/renderengine/skia/filters/BlurFilter.cpp
         libs/renderengine/skia/filters/BlurFilter.h
+        libs/renderengine/skia/filters/EdgeExtensionShaderFactory.cpp
+        libs/renderengine/skia/filters/EdgeExtensionShaderFactory.h
+        libs/renderengine/skia/filters/GainmapFactory.cpp
+        libs/renderengine/skia/filters/GainmapFactory.h
         libs/renderengine/skia/filters/GaussianBlurFilter.cpp
         libs/renderengine/skia/filters/GaussianBlurFilter.h
+        libs/renderengine/skia/filters/KawaseBlurDualFilter.cpp
+        libs/renderengine/skia/filters/KawaseBlurDualFilter.h
         libs/renderengine/skia/filters/KawaseBlurFilter.cpp
         libs/renderengine/skia/filters/KawaseBlurFilter.h
         libs/renderengine/skia/filters/LinearEffect.cpp
         libs/renderengine/skia/filters/LinearEffect.h
+        libs/renderengine/skia/filters/LutShader.cpp
+        libs/renderengine/skia/filters/LutShader.h
         libs/renderengine/skia/filters/MouriMap.cpp
         libs/renderengine/skia/filters/MouriMap.h
         libs/renderengine/skia/filters/StretchShaderFactory.cpp
@@ -1416,22 +1451,23 @@ add_executable(native
         libs/tonemap/tests/tonemap_test.cpp
         libs/tonemap/tonemap.cpp
         libs/tracing_perfetto/include/trace_categories.h
-        libs/tracing_perfetto/include/trace_result.h
         libs/tracing_perfetto/include/tracing_perfetto.h
+        libs/tracing_perfetto/include/tracing_sdk.h
+        libs/tracing_perfetto/tests/include/utils.h
         libs/tracing_perfetto/tests/tracing_perfetto_test.cpp
         libs/tracing_perfetto/tests/utils.cpp
-        libs/tracing_perfetto/tests/utils.h
         libs/tracing_perfetto/tracing_perfetto.cpp
         libs/tracing_perfetto/tracing_perfetto_internal.cpp
         libs/tracing_perfetto/tracing_perfetto_internal.h
+        libs/tracing_perfetto/tracing_sdk.cpp
         libs/ui/include/ui/fuzzer/FuzzableDataspaces.h
         libs/ui/include/ui/ANativeObjectBase.h
         libs/ui/include/ui/BlurRegion.h
-        libs/ui/include/ui/BufferHubDefs.h
         libs/ui/include/ui/BufferQueueDefs.h
         libs/ui/include/ui/ColorMode.h
         libs/ui/include/ui/ConfigStoreTypes.h
         libs/ui/include/ui/DebugUtils.h
+        libs/ui/include/ui/DependencyMonitor.h
         libs/ui/include/ui/DeviceProductInfo.h
         libs/ui/include/ui/DisplayedFrameStats.h
         libs/ui/include/ui/DisplayId.h
@@ -1441,11 +1477,13 @@ add_executable(native
         libs/ui/include/ui/DisplayState.h
         libs/ui/include/ui/DisplayStatInfo.h
         libs/ui/include/ui/DynamicDisplayInfo.h
+        libs/ui/include/ui/EdgeExtensionEffect.h
         libs/ui/include/ui/FatVector.h
         libs/ui/include/ui/Fence.h
         libs/ui/include/ui/FenceResult.h
         libs/ui/include/ui/FenceTime.h
         libs/ui/include/ui/FloatRect.h
+        libs/ui/include/ui/FrameRateCategoryRate.h
         libs/ui/include/ui/FrameStats.h
         libs/ui/include/ui/Gralloc.h
         libs/ui/include/ui/Gralloc2.h
@@ -1459,12 +1497,14 @@ add_executable(native
         libs/ui/include/ui/HdrCapabilities.h
         libs/ui/include/ui/LayerStack.h
         libs/ui/include/ui/LogicalDisplayId.h
+        libs/ui/include/ui/PictureProfileHandle.h
         libs/ui/include/ui/PixelFormat.h
         libs/ui/include/ui/Point.h
         libs/ui/include/ui/PublicFormat.h
         libs/ui/include/ui/Rect.h
         libs/ui/include/ui/Region.h
         libs/ui/include/ui/Result.h
+        libs/ui/include/ui/RingBuffer.h
         libs/ui/include/ui/Rotation.h
         libs/ui/include/ui/ShadowSettings.h
         libs/ui/include/ui/Size.h
@@ -1480,7 +1520,6 @@ add_executable(native
         libs/ui/tests/mock/MockGrallocAllocator.cpp
         libs/ui/tests/mock/MockGrallocAllocator.h
         libs/ui/tests/colorspace_test.cpp
-        libs/ui/tests/DisplayId_test.cpp
         libs/ui/tests/DisplayIdentification_test.cpp
         libs/ui/tests/FlattenableHelpers_test.cpp
         libs/ui/tests/GraphicBuffer_test.cpp
@@ -1490,11 +1529,13 @@ add_executable(native
         libs/ui/tests/MockFence_test.cpp
         libs/ui/tests/Rect_test.cpp
         libs/ui/tests/Region_test.cpp
+        libs/ui/tests/RingBuffer_test.cpp
         libs/ui/tests/Size_test.cpp
         libs/ui/tests/Transform_test.cpp
         libs/ui/tools/lutgen.cpp
         libs/ui/ColorSpace.cpp
         libs/ui/DebugUtils.cpp
+        libs/ui/DependencyMonitor.cpp
         libs/ui/DeviceProductInfo.cpp
         libs/ui/DisplayIdentification.cpp
         libs/ui/DynamicDisplayInfo.cpp
@@ -1509,6 +1550,7 @@ add_executable(native
         libs/ui/GraphicBuffer.cpp
         libs/ui/GraphicBufferAllocator.cpp
         libs/ui/GraphicBufferMapper.cpp
+        libs/ui/PictureProfileHandle.cpp
         libs/ui/PixelFormat.cpp
         libs/ui/PublicFormat.cpp
         libs/ui/Rect.cpp
@@ -1518,153 +1560,11 @@ add_executable(native
         libs/vibrator/fuzzer/vibrator_fuzzer.cpp
         libs/vibrator/include/vibrator/ExternalVibration.h
         libs/vibrator/include/vibrator/ExternalVibrationUtils.h
+        libs/vibrator/tests/ExternalVibrationTest.cpp
+        libs/vibrator/tests/ExternalVibrationUtilsTest.cpp
+        libs/vibrator/tests/test_utils.h
         libs/vibrator/ExternalVibration.cpp
         libs/vibrator/ExternalVibrationUtils.cpp
-        libs/vr/libbroadcastring/include/libbroadcastring/broadcast_ring.h
-        libs/vr/libbroadcastring/broadcast_ring_test.cc
-        libs/vr/libbufferhub/include/private/dvr/buffer_hub_base.h
-        libs/vr/libbufferhub/include/private/dvr/buffer_hub_defs.h
-        libs/vr/libbufferhub/include/private/dvr/bufferhub_rpc.h
-        libs/vr/libbufferhub/include/private/dvr/consumer_buffer.h
-        libs/vr/libbufferhub/include/private/dvr/ion_buffer.h
-        libs/vr/libbufferhub/include/private/dvr/native_handle_wrapper.h
-        libs/vr/libbufferhub/include/private/dvr/producer_buffer.h
-        libs/vr/libbufferhub/buffer_hub-test.cpp
-        libs/vr/libbufferhub/buffer_hub_base.cpp
-        libs/vr/libbufferhub/buffer_hub_rpc.cpp
-        libs/vr/libbufferhub/consumer_buffer.cpp
-        libs/vr/libbufferhub/ion_buffer.cpp
-        libs/vr/libbufferhub/producer_buffer.cpp
-        libs/vr/libdvr/include/dvr/dvr_api.h
-        libs/vr/libdvr/include/dvr/dvr_api_entries.h
-        libs/vr/libdvr/include/dvr/dvr_buffer.h
-        libs/vr/libdvr/include/dvr/dvr_buffer_queue.h
-        libs/vr/libdvr/include/dvr/dvr_config.h
-        libs/vr/libdvr/include/dvr/dvr_configuration_data.h
-        libs/vr/libdvr/include/dvr/dvr_deleter.h
-        libs/vr/libdvr/include/dvr/dvr_display_manager.h
-        libs/vr/libdvr/include/dvr/dvr_display_types.h
-        libs/vr/libdvr/include/dvr/dvr_hardware_composer_client.h
-        libs/vr/libdvr/include/dvr/dvr_hardware_composer_types.h
-        libs/vr/libdvr/include/dvr/dvr_performance.h
-        libs/vr/libdvr/include/dvr/dvr_pose.h
-        libs/vr/libdvr/include/dvr/dvr_shared_buffers.h
-        libs/vr/libdvr/include/dvr/dvr_surface.h
-        libs/vr/libdvr/include/dvr/dvr_tracking.h
-        libs/vr/libdvr/include/dvr/dvr_tracking_types.h
-        libs/vr/libdvr/include/dvr/dvr_vsync.h
-        libs/vr/libdvrcommon/include/private/dvr/test/test_macros.h
-        libs/vr/libdvrcommon/include/private/dvr/benchmark.h
-        libs/vr/libdvrcommon/include/private/dvr/clock_ns.h
-        libs/vr/libdvrcommon/include/private/dvr/debug.h
-        libs/vr/libdvrcommon/include/private/dvr/eigen.h
-        libs/vr/libdvrcommon/include/private/dvr/field_of_view.h
-        libs/vr/libdvrcommon/include/private/dvr/log_helpers.h
-        libs/vr/libdvrcommon/include/private/dvr/matrix_helpers.h
-        libs/vr/libdvrcommon/include/private/dvr/numeric.h
-        libs/vr/libdvrcommon/include/private/dvr/ortho.h
-        libs/vr/libdvrcommon/include/private/dvr/pose.h
-        libs/vr/libdvrcommon/include/private/dvr/range.h
-        libs/vr/libdvrcommon/include/private/dvr/ring_buffer.h
-        libs/vr/libdvrcommon/include/private/dvr/types.h
-        libs/vr/libdvrcommon/tests/numeric_test.cpp
-        libs/vr/libdvrcommon/tests/pose_test.cpp
-        libs/vr/libpdx/fuzz/helpers.h
-        libs/vr/libpdx/fuzz/message_fuzzer.cpp
-        libs/vr/libpdx/fuzz/serialization_fuzzer.cpp
-        libs/vr/libpdx/fuzz/service_dispatcher_fuzzer.cpp
-        libs/vr/libpdx/private/pdx/rpc/argument_encoder.h
-        libs/vr/libpdx/private/pdx/rpc/array_wrapper.h
-        libs/vr/libpdx/private/pdx/rpc/buffer_wrapper.h
-        libs/vr/libpdx/private/pdx/rpc/copy_cv_reference.h
-        libs/vr/libpdx/private/pdx/rpc/default_initialization_allocator.h
-        libs/vr/libpdx/private/pdx/rpc/encoding.h
-        libs/vr/libpdx/private/pdx/rpc/enumeration.h
-        libs/vr/libpdx/private/pdx/rpc/find_replace.h
-        libs/vr/libpdx/private/pdx/rpc/function_traits.h
-        libs/vr/libpdx/private/pdx/rpc/macros.h
-        libs/vr/libpdx/private/pdx/rpc/message_buffer.h
-        libs/vr/libpdx/private/pdx/rpc/payload.h
-        libs/vr/libpdx/private/pdx/rpc/pointer_wrapper.h
-        libs/vr/libpdx/private/pdx/rpc/remote_method.h
-        libs/vr/libpdx/private/pdx/rpc/remote_method_type.h
-        libs/vr/libpdx/private/pdx/rpc/sequence.h
-        libs/vr/libpdx/private/pdx/rpc/serializable.h
-        libs/vr/libpdx/private/pdx/rpc/serialization.h
-        libs/vr/libpdx/private/pdx/rpc/string_wrapper.h
-        libs/vr/libpdx/private/pdx/rpc/thread_local_buffer.h
-        libs/vr/libpdx/private/pdx/rpc/type_operators.h
-        libs/vr/libpdx/private/pdx/rpc/variant.h
-        libs/vr/libpdx/private/pdx/channel_handle.h
-        libs/vr/libpdx/private/pdx/channel_parcelable.h
-        libs/vr/libpdx/private/pdx/client.h
-        libs/vr/libpdx/private/pdx/client_channel.h
-        libs/vr/libpdx/private/pdx/client_channel_factory.h
-        libs/vr/libpdx/private/pdx/file_handle.h
-        libs/vr/libpdx/private/pdx/message_reader.h
-        libs/vr/libpdx/private/pdx/message_writer.h
-        libs/vr/libpdx/private/pdx/mock_client_channel.h
-        libs/vr/libpdx/private/pdx/mock_client_channel_factory.h
-        libs/vr/libpdx/private/pdx/mock_message_reader.h
-        libs/vr/libpdx/private/pdx/mock_message_writer.h
-        libs/vr/libpdx/private/pdx/mock_service_endpoint.h
-        libs/vr/libpdx/private/pdx/service.h
-        libs/vr/libpdx/private/pdx/service_dispatcher.h
-        libs/vr/libpdx/private/pdx/service_endpoint.h
-        libs/vr/libpdx/private/pdx/status.h
-        libs/vr/libpdx/private/pdx/trace.h
-        libs/vr/libpdx/private/pdx/utility.h
-        libs/vr/libpdx/client.cpp
-        libs/vr/libpdx/client_tests.cpp
-        libs/vr/libpdx/encoder_performance_test.cpp
-        libs/vr/libpdx/mock_tests.cpp
-        libs/vr/libpdx/serialization_tests.cpp
-        libs/vr/libpdx/service.cpp
-        libs/vr/libpdx/service_dispatcher.cpp
-        libs/vr/libpdx/service_tests.cpp
-        libs/vr/libpdx/status.cpp
-        libs/vr/libpdx/status_tests.cpp
-        libs/vr/libpdx/thread_local_buffer_tests.cpp
-        libs/vr/libpdx/variant_tests.cpp
-        libs/vr/libpdx_default_transport/private/pdx/default_transport/service_utility.h
-        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/channel_manager.h
-        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/channel_parcelable.h
-        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/client_channel.h
-        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/client_channel_factory.h
-        libs/vr/libpdx_default_transport/private/servicefs/pdx/default_transport/service_endpoint.h
-        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/channel_manager.h
-        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/channel_parcelable.h
-        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/client_channel.h
-        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/client_channel_factory.h
-        libs/vr/libpdx_default_transport/private/uds/pdx/default_transport/service_endpoint.h
-        libs/vr/libpdx_default_transport/pdx_benchmarks.cpp
-        libs/vr/libpdx_default_transport/pdx_tool.cpp
-        libs/vr/libpdx_uds/private/uds/channel_event_set.h
-        libs/vr/libpdx_uds/private/uds/channel_manager.h
-        libs/vr/libpdx_uds/private/uds/channel_parcelable.h
-        libs/vr/libpdx_uds/private/uds/client_channel.h
-        libs/vr/libpdx_uds/private/uds/client_channel_factory.h
-        libs/vr/libpdx_uds/private/uds/ipc_helper.h
-        libs/vr/libpdx_uds/private/uds/service_endpoint.h
-        libs/vr/libpdx_uds/channel_event_set.cpp
-        libs/vr/libpdx_uds/channel_manager.cpp
-        libs/vr/libpdx_uds/channel_parcelable.cpp
-        libs/vr/libpdx_uds/client_channel.cpp
-        libs/vr/libpdx_uds/client_channel_factory.cpp
-        libs/vr/libpdx_uds/client_channel_tests.cpp
-        libs/vr/libpdx_uds/ipc_helper.cpp
-        libs/vr/libpdx_uds/ipc_helper_tests.cpp
-        libs/vr/libpdx_uds/remote_method_tests.cpp
-        libs/vr/libpdx_uds/service_endpoint.cpp
-        libs/vr/libpdx_uds/service_framework_tests.cpp
-        libs/vr/libperformance/include/dvr/performance_client_api.h
-        libs/vr/libperformance/include/private/dvr/performance_client.h
-        libs/vr/libperformance/include/private/dvr/performance_rpc.h
-        libs/vr/libperformance/performance_client.cpp
-        libs/vr/libperformance/performance_rpc.cpp
-        libs/vr/libvr_manager/include/private/dvr/trusted_uids.h
-        libs/vr/libvr_manager/trusted_uids.cpp
-        libs/vr/libvr_manager/vr_manager.cpp
         opengl/include/EGL/egl.h
         opengl/include/EGL/eglext.h
         opengl/include/EGL/eglext_angle.h
@@ -1839,6 +1739,8 @@ add_executable(native
         services/displayservice/DisplayEventReceiver.cpp
         services/displayservice/DisplayService.cpp
         services/gpuservice/bpfprogs/gpuMem.c
+        services/gpuservice/feature_override/include/feature_override/FeatureOverrideParser.h
+        services/gpuservice/feature_override/FeatureOverrideParser.cpp
         services/gpuservice/gpumem/include/gpumem/GpuMem.h
         services/gpuservice/gpumem/GpuMem.cpp
         services/gpuservice/gpustats/include/gpustats/GpuStats.h
@@ -1849,6 +1751,7 @@ add_executable(native
         services/gpuservice/gpuwork/GpuWork.cpp
         services/gpuservice/include/gpuservice/GpuService.h
         services/gpuservice/tests/fuzzers/GpuServiceFuzzer.cpp
+        services/gpuservice/tests/unittests/FeatureOverrideParserTest.cpp
         services/gpuservice/tests/unittests/GpuMemTest.cpp
         services/gpuservice/tests/unittests/GpuMemTracerTest.cpp
         services/gpuservice/tests/unittests/GpuServiceTest.cpp
@@ -1864,7 +1767,6 @@ add_executable(native
         services/inputflinger/dispatcher/include/InputDispatcherFactory.h
         services/inputflinger/dispatcher/include/InputDispatcherInterface.h
         services/inputflinger/dispatcher/include/InputDispatcherPolicyInterface.h
-        services/inputflinger/dispatcher/trace/AndroidInputEventProtoConverter.cpp
         services/inputflinger/dispatcher/trace/AndroidInputEventProtoConverter.h
         services/inputflinger/dispatcher/trace/EventTrackerInterface.h
         services/inputflinger/dispatcher/trace/InputTracer.cpp
@@ -1903,6 +1805,8 @@ add_executable(native
         services/inputflinger/dispatcher/InputTargetFlags.h
         services/inputflinger/dispatcher/LatencyAggregator.cpp
         services/inputflinger/dispatcher/LatencyAggregator.h
+        services/inputflinger/dispatcher/LatencyAggregatorWithHistograms.cpp
+        services/inputflinger/dispatcher/LatencyAggregatorWithHistograms.h
         services/inputflinger/dispatcher/LatencyTracker.cpp
         services/inputflinger/dispatcher/LatencyTracker.h
         services/inputflinger/dispatcher/Monitor.cpp
@@ -1921,6 +1825,7 @@ add_executable(native
         services/inputflinger/include/NotifyArgsBuilders.h
         services/inputflinger/include/PointerChoreographerPolicyInterface.h
         services/inputflinger/include/PointerControllerInterface.h
+        services/inputflinger/include/TouchpadHardwareState.h
         services/inputflinger/include/UnwantedInteractionBlockerInterface.h
         services/inputflinger/include/VibrationElement.h
         services/inputflinger/reader/controller/PeripheralController.cpp
@@ -1946,11 +1851,13 @@ add_executable(native
         services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.h
         services/inputflinger/reader/mapper/gestures/GestureConverter.cpp
         services/inputflinger/reader/mapper/gestures/GestureConverter.h
-        services/inputflinger/reader/mapper/gestures/GesturesLogging.cpp
+        services/inputflinger/reader/mapper/gestures/GesturesLogcatAdapter.cpp
         services/inputflinger/reader/mapper/gestures/HardwareProperties.cpp
         services/inputflinger/reader/mapper/gestures/HardwareProperties.h
         services/inputflinger/reader/mapper/gestures/HardwareStateConverter.cpp
         services/inputflinger/reader/mapper/gestures/HardwareStateConverter.h
+        services/inputflinger/reader/mapper/gestures/Logging.cpp
+        services/inputflinger/reader/mapper/gestures/Logging.h
         services/inputflinger/reader/mapper/gestures/PropertyProvider.cpp
         services/inputflinger/reader/mapper/gestures/PropertyProvider.h
         services/inputflinger/reader/mapper/gestures/TimerProvider.cpp
@@ -2010,9 +1917,11 @@ add_executable(native
         services/inputflinger/tests/fuzzers/SwitchInputFuzzer.cpp
         services/inputflinger/tests/fuzzers/ThreadSafeFuzzedDataProvider.h
         services/inputflinger/tests/fuzzers/TouchpadInputFuzzer.cpp
+        services/inputflinger/tests/AndroidInputEventProtoConverter_test.cpp
         services/inputflinger/tests/AnrTracker_test.cpp
         services/inputflinger/tests/CapturedTouchpadEventConverter_test.cpp
         services/inputflinger/tests/CursorInputMapper_test.cpp
+        services/inputflinger/tests/DisplayTopologyGraph_test.cpp
         services/inputflinger/tests/EventHub_test.cpp
         services/inputflinger/tests/FakeApplicationHandle.h
         services/inputflinger/tests/FakeEventHub.cpp
@@ -2045,6 +1954,7 @@ add_executable(native
         services/inputflinger/tests/InstrumentedInputReader.cpp
         services/inputflinger/tests/InstrumentedInputReader.h
         services/inputflinger/tests/InterfaceMocks.h
+        services/inputflinger/tests/JoystickInputMapper_test.cpp
         services/inputflinger/tests/KeyboardInputMapper_test.cpp
         services/inputflinger/tests/LatencyTracker_test.cpp
         services/inputflinger/tests/MultiTouchInputMapper_test.cpp
@@ -2053,7 +1963,11 @@ add_executable(native
         services/inputflinger/tests/PointerChoreographer_test.cpp
         services/inputflinger/tests/PreferStylusOverTouch_test.cpp
         services/inputflinger/tests/PropertyProvider_test.cpp
+        services/inputflinger/tests/RotaryEncoderInputMapper_test.cpp
+        services/inputflinger/tests/ScopedFlagOverride.h
+        services/inputflinger/tests/SensorInputMapper_test.cpp
         services/inputflinger/tests/SlopController_test.cpp
+        services/inputflinger/tests/SwitchInputMapper_test.cpp
         services/inputflinger/tests/SyncQueue_test.cpp
         services/inputflinger/tests/TestConstants.h
         services/inputflinger/tests/TestEventMatchers.h
@@ -2064,6 +1978,7 @@ add_executable(native
         services/inputflinger/tests/UinputDevice.cpp
         services/inputflinger/tests/UinputDevice.h
         services/inputflinger/tests/UnwantedInteractionBlocker_test.cpp
+        services/inputflinger/tests/VibratorInputMapper_test.cpp
         services/inputflinger/InputCommonConverter.cpp
         services/inputflinger/InputCommonConverter.h
         services/inputflinger/InputDeviceMetricsCollector.cpp
@@ -2202,6 +2117,8 @@ add_executable(native
         services/stats/StatsHal.cpp
         services/surfaceflinger/common/include/common/test/FlagUtils.h
         services/surfaceflinger/common/include/common/FlagManager.h
+        services/surfaceflinger/common/include/common/trace.h
+        services/surfaceflinger/common/include/common/WorkloadTracer.h
         services/surfaceflinger/common/FlagManager.cpp
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/CachedSet.h
         services/surfaceflinger/CompositionEngine/include/compositionengine/impl/planner/Flattener.h
@@ -2285,13 +2202,8 @@ add_executable(native
         services/surfaceflinger/CompositionEngine/tests/CompositionEngineTest.cpp
         services/surfaceflinger/CompositionEngine/tests/DisplayColorProfileTest.cpp
         services/surfaceflinger/CompositionEngine/tests/DisplayTest.cpp
+        services/surfaceflinger/CompositionEngine/tests/HwcAsyncWorkerTest.cpp
         services/surfaceflinger/CompositionEngine/tests/HwcBufferCacheTest.cpp
-        services/surfaceflinger/CompositionEngine/tests/MockHWC2.cpp
-        services/surfaceflinger/CompositionEngine/tests/MockHWC2.h
-        services/surfaceflinger/CompositionEngine/tests/MockHWComposer.cpp
-        services/surfaceflinger/CompositionEngine/tests/MockHWComposer.h
-        services/surfaceflinger/CompositionEngine/tests/MockPowerAdvisor.cpp
-        services/surfaceflinger/CompositionEngine/tests/MockPowerAdvisor.h
         services/surfaceflinger/CompositionEngine/tests/OutputLayerTest.cpp
         services/surfaceflinger/CompositionEngine/tests/OutputTest.cpp
         services/surfaceflinger/CompositionEngine/tests/ProjectionSpaceTest.cpp
@@ -2304,6 +2216,7 @@ add_executable(native
         services/surfaceflinger/Display/DisplaySnapshot.h
         services/surfaceflinger/Display/DisplaySnapshotRef.h
         services/surfaceflinger/Display/PhysicalDisplay.h
+        services/surfaceflinger/Display/VirtualDisplaySnapshot.h
         services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp
         services/surfaceflinger/DisplayHardware/AidlComposerHal.h
         services/surfaceflinger/DisplayHardware/ComposerHal.cpp
@@ -2318,14 +2231,10 @@ add_executable(native
         services/surfaceflinger/DisplayHardware/HWC2.h
         services/surfaceflinger/DisplayHardware/HWComposer.cpp
         services/surfaceflinger/DisplayHardware/HWComposer.h
-        services/surfaceflinger/DisplayHardware/PowerAdvisor.cpp
-        services/surfaceflinger/DisplayHardware/PowerAdvisor.h
         services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
         services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
         services/surfaceflinger/Effects/Daltonizer.cpp
         services/surfaceflinger/Effects/Daltonizer.h
-        services/surfaceflinger/EventLog/EventLog.cpp
-        services/surfaceflinger/EventLog/EventLog.h
         services/surfaceflinger/FrameTimeline/FrameTimeline.cpp
         services/surfaceflinger/FrameTimeline/FrameTimeline.h
         services/surfaceflinger/FrameTracer/FrameTracer.cpp
@@ -2351,10 +2260,18 @@ add_executable(native
         services/surfaceflinger/FrontEnd/TransactionHandler.h
         services/surfaceflinger/FrontEnd/Update.h
         services/surfaceflinger/fuzzer/surfaceflinger_service_fuzzer.cpp
+        services/surfaceflinger/Jank/JankTracker.cpp
+        services/surfaceflinger/Jank/JankTracker.h
         services/surfaceflinger/layerproto/include/layerproto/LayerProtoHeader.h
-        services/surfaceflinger/layerproto/include/layerproto/LayerProtoParser.h
         services/surfaceflinger/layerproto/include/layerproto/TransactionProto.h
-        services/surfaceflinger/layerproto/LayerProtoParser.cpp
+        services/surfaceflinger/PowerAdvisor/Common.h
+        services/surfaceflinger/PowerAdvisor/PowerAdvisor.cpp
+        services/surfaceflinger/PowerAdvisor/PowerAdvisor.h
+        services/surfaceflinger/PowerAdvisor/SessionLayerMap.cpp
+        services/surfaceflinger/PowerAdvisor/SessionLayerMap.h
+        services/surfaceflinger/PowerAdvisor/SessionManager.cpp
+        services/surfaceflinger/PowerAdvisor/SessionManager.h
+        services/surfaceflinger/PowerAdvisor/Workload.h
         services/surfaceflinger/Scheduler/include/scheduler/interface/CompositeResult.h
         services/surfaceflinger/Scheduler/include/scheduler/interface/CompositionCoverage.h
         services/surfaceflinger/Scheduler/include/scheduler/interface/ICompositor.h
@@ -2362,6 +2279,7 @@ add_executable(native
         services/surfaceflinger/Scheduler/include/scheduler/Fps.h
         services/surfaceflinger/Scheduler/include/scheduler/FrameRateMode.h
         services/surfaceflinger/Scheduler/include/scheduler/FrameTargeter.h
+        services/surfaceflinger/Scheduler/include/scheduler/FrameTime.h
         services/surfaceflinger/Scheduler/include/scheduler/IVsyncSource.h
         services/surfaceflinger/Scheduler/include/scheduler/PresentLatencyTracker.h
         services/surfaceflinger/Scheduler/include/scheduler/Seamlessness.h
@@ -2414,6 +2332,21 @@ add_executable(native
         services/surfaceflinger/Scheduler/VsyncSchedule.cpp
         services/surfaceflinger/Scheduler/VsyncSchedule.h
         services/surfaceflinger/Scheduler/VSyncTracker.h
+        services/surfaceflinger/tests/benchmarks/LayerLifecycleManager_benchmarks.cpp
+        services/surfaceflinger/tests/benchmarks/LocklessQueue_benchmarks.cpp
+        services/surfaceflinger/tests/benchmarks/main.cpp
+        services/surfaceflinger/tests/common/LayerLifecycleManagerHelper.h
+        services/surfaceflinger/tests/end2end/test_framework/core/DisplayConfiguration.h
+        services/surfaceflinger/tests/end2end/test_framework/core/TestService.cpp
+        services/surfaceflinger/tests/end2end/test_framework/core/TestService.h
+        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Composer.cpp
+        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Composer.h
+        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Controller.cpp
+        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Controller.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SFController.cpp
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SFController.h
+        services/surfaceflinger/tests/end2end/tests/Placeholder_test.cpp
+        services/surfaceflinger/tests/end2end/main.cpp
         services/surfaceflinger/tests/tracing/TransactionTraceTestSuite.cpp
         services/surfaceflinger/tests/unittests/fake/FakeClock.h
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockComposer.cpp
@@ -2421,14 +2354,14 @@ add_executable(native
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockDisplayMode.h
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.cpp
         services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWC2.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockIPower.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerAdvisor.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHalController.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHalController.h
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHintSessionWrapper.cpp
-        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockPowerHintSessionWrapper.h
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWComposer.cpp
+        services/surfaceflinger/tests/unittests/mock/DisplayHardware/MockHWComposer.h
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerAdvisor.cpp
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerAdvisor.h
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerHalController.cpp
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerHalController.h
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerHintSessionWrapper.cpp
+        services/surfaceflinger/tests/unittests/mock/PowerAdvisor/MockPowerHintSessionWrapper.h
         services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.cpp
         services/surfaceflinger/tests/unittests/mock/system/window/MockNativeWindow.h
         services/surfaceflinger/tests/unittests/mock/MockDisplayModeSpecs.h
@@ -2452,6 +2385,7 @@ add_executable(native
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.cpp
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.h
         services/surfaceflinger/tests/unittests/ActiveDisplayRotationFlagsTest.cpp
+        services/surfaceflinger/tests/unittests/ActivePictureTrackerTest.cpp
         services/surfaceflinger/tests/unittests/BackgroundExecutorTest.cpp
         services/surfaceflinger/tests/unittests/CommitAndCompositeTest.h
         services/surfaceflinger/tests/unittests/CommitTest.cpp
@@ -2475,21 +2409,17 @@ add_executable(native
         services/surfaceflinger/tests/unittests/FpsTest.cpp
         services/surfaceflinger/tests/unittests/FramebufferSurfaceTest.cpp
         services/surfaceflinger/tests/unittests/FrameRateOverrideMappingsTest.cpp
-        services/surfaceflinger/tests/unittests/FrameRateSelectionPriorityTest.cpp
-        services/surfaceflinger/tests/unittests/FrameRateSelectionStrategyTest.cpp
         services/surfaceflinger/tests/unittests/FrameTimelineTest.cpp
         services/surfaceflinger/tests/unittests/FrameTracerTest.cpp
-        services/surfaceflinger/tests/unittests/GameModeTest.cpp
         services/surfaceflinger/tests/unittests/HWComposerTest.cpp
+        services/surfaceflinger/tests/unittests/JankTrackerTest.cpp
         services/surfaceflinger/tests/unittests/LayerHierarchyTest.cpp
         services/surfaceflinger/tests/unittests/LayerHierarchyTest.h
         services/surfaceflinger/tests/unittests/LayerHistoryIntegrationTest.cpp
-        services/surfaceflinger/tests/unittests/LayerHistoryTest.cpp
         services/surfaceflinger/tests/unittests/LayerInfoTest.cpp
         services/surfaceflinger/tests/unittests/LayerLifecycleManagerTest.cpp
         services/surfaceflinger/tests/unittests/LayerMetadataTest.cpp
         services/surfaceflinger/tests/unittests/LayerSnapshotTest.cpp
-        services/surfaceflinger/tests/unittests/LayerTest.cpp
         services/surfaceflinger/tests/unittests/LayerTestUtils.cpp
         services/surfaceflinger/tests/unittests/LayerTestUtils.h
         services/surfaceflinger/tests/unittests/libsurfaceflinger_unittest_main.cpp
@@ -2501,7 +2431,6 @@ add_executable(native
         services/surfaceflinger/tests/unittests/RefreshRateStatsTest.cpp
         services/surfaceflinger/tests/unittests/RegionSamplingTest.cpp
         services/surfaceflinger/tests/unittests/SchedulerTest.cpp
-        services/surfaceflinger/tests/unittests/SetFrameRateTest.cpp
         services/surfaceflinger/tests/unittests/SmallAreaDetectionAllowMappingsTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_ColorMatrixTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_CreateDisplayTest.cpp
@@ -2519,9 +2448,8 @@ add_executable(native
         services/surfaceflinger/tests/unittests/SurfaceFlinger_NotifyPowerBoostTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_PowerHintTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_SetDisplayStateTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_SetPowerModeInternalTest.cpp
+        services/surfaceflinger/tests/unittests/SurfaceFlinger_SetPhysicalDisplayPowerModeTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_SetupNewDisplayDeviceInternalTest.cpp
-        services/surfaceflinger/tests/unittests/SurfaceFlinger_UpdateLayerMetadataSnapshotTest.cpp
         services/surfaceflinger/tests/unittests/TestableScheduler.cpp
         services/surfaceflinger/tests/unittests/TestableScheduler.h
         services/surfaceflinger/tests/unittests/TestableSurfaceFlinger.h
@@ -2572,14 +2500,13 @@ add_executable(native
         services/surfaceflinger/tests/LayerTypeTransaction_test.cpp
         services/surfaceflinger/tests/LayerUpdate_test.cpp
         services/surfaceflinger/tests/MirrorLayer_test.cpp
-        services/surfaceflinger/tests/MultiDisplayLayerBounds_test.cpp
+        services/surfaceflinger/tests/MultiDisplay_test.cpp
         services/surfaceflinger/tests/RefreshRateOverlay_test.cpp
         services/surfaceflinger/tests/RelativeZ_test.cpp
         services/surfaceflinger/tests/ReleaseBufferCallback_test.cpp
         services/surfaceflinger/tests/ScreenCapture_test.cpp
         services/surfaceflinger/tests/SetFrameRate_test.cpp
         services/surfaceflinger/tests/SetGeometry_test.cpp
-        services/surfaceflinger/tests/Stress_test.cpp
         services/surfaceflinger/tests/TextureFiltering_test.cpp
         services/surfaceflinger/tests/TransactionTestHarnesses.h
         services/surfaceflinger/tests/VirtualDisplay_test.cpp
@@ -2609,7 +2536,8 @@ add_executable(native
         services/surfaceflinger/Utils/FenceUtils.h
         services/surfaceflinger/Utils/OnceFuture.h
         services/surfaceflinger/Utils/OverlayUtils.h
-        services/surfaceflinger/Utils/RingBuffer.h
+        services/surfaceflinger/ActivePictureTracker.cpp
+        services/surfaceflinger/ActivePictureTracker.h
         services/surfaceflinger/BackgroundExecutor.cpp
         services/surfaceflinger/BackgroundExecutor.h
         services/surfaceflinger/Client.cpp
@@ -2621,8 +2549,6 @@ add_executable(native
         services/surfaceflinger/DisplayDevice.cpp
         services/surfaceflinger/DisplayDevice.h
         services/surfaceflinger/DisplayIdGenerator.h
-        services/surfaceflinger/DisplayRenderArea.cpp
-        services/surfaceflinger/DisplayRenderArea.h
         services/surfaceflinger/FpsReporter.cpp
         services/surfaceflinger/FpsReporter.h
         services/surfaceflinger/FrameTracker.cpp
@@ -2637,8 +2563,6 @@ add_executable(native
         services/surfaceflinger/LayerFE.h
         services/surfaceflinger/LayerProtoHelper.cpp
         services/surfaceflinger/LayerProtoHelper.h
-        services/surfaceflinger/LayerRenderArea.cpp
-        services/surfaceflinger/LayerRenderArea.h
         services/surfaceflinger/LayerVector.cpp
         services/surfaceflinger/LayerVector.h
         services/surfaceflinger/LocklessQueue.h
@@ -2646,13 +2570,11 @@ add_executable(native
         services/surfaceflinger/MutexUtils.h
         services/surfaceflinger/NativeWindowSurface.cpp
         services/surfaceflinger/NativeWindowSurface.h
+        services/surfaceflinger/QueuedTransactionState.h
         services/surfaceflinger/RefreshRateOverlay.cpp
         services/surfaceflinger/RefreshRateOverlay.h
         services/surfaceflinger/RegionSamplingThread.cpp
         services/surfaceflinger/RegionSamplingThread.h
-        services/surfaceflinger/RenderArea.cpp
-        services/surfaceflinger/RenderArea.h
-        services/surfaceflinger/RenderAreaBuilder.h
         services/surfaceflinger/ScreenCaptureOutput.cpp
         services/surfaceflinger/ScreenCaptureOutput.h
         services/surfaceflinger/ScreenCaptureRenderSurface.h
@@ -2668,7 +2590,6 @@ add_executable(native
         services/surfaceflinger/TracedOrdinal.h
         services/surfaceflinger/TransactionCallbackInvoker.cpp
         services/surfaceflinger/TransactionCallbackInvoker.h
-        services/surfaceflinger/TransactionState.h
         services/surfaceflinger/TunnelModeEnabledReporter.cpp
         services/surfaceflinger/TunnelModeEnabledReporter.h
         services/surfaceflinger/WindowInfosListenerInvoker.cpp
@@ -2679,64 +2600,31 @@ add_executable(native
         services/utils/PriorityDumper.cpp
         services/vibratorservice/benchmarks/VibratorHalControllerBenchmarks.cpp
         services/vibratorservice/include/vibratorservice/VibratorCallbackScheduler.h
+        services/vibratorservice/include/vibratorservice/VibratorController.h
         services/vibratorservice/include/vibratorservice/VibratorHalController.h
         services/vibratorservice/include/vibratorservice/VibratorHalWrapper.h
         services/vibratorservice/include/vibratorservice/VibratorManagerHalController.h
         services/vibratorservice/include/vibratorservice/VibratorManagerHalWrapper.h
+        services/vibratorservice/test/test_mocks.h
         services/vibratorservice/test/test_utils.h
         services/vibratorservice/test/VibratorCallbackSchedulerTest.cpp
+        services/vibratorservice/test/VibratorControllerTest.cpp
         services/vibratorservice/test/VibratorHalControllerTest.cpp
         services/vibratorservice/test/VibratorHalWrapperAidlTest.cpp
-        services/vibratorservice/test/VibratorHalWrapperHidlV1_0Test.cpp
-        services/vibratorservice/test/VibratorHalWrapperHidlV1_1Test.cpp
-        services/vibratorservice/test/VibratorHalWrapperHidlV1_2Test.cpp
-        services/vibratorservice/test/VibratorHalWrapperHidlV1_3Test.cpp
         services/vibratorservice/test/VibratorManagerHalControllerTest.cpp
         services/vibratorservice/test/VibratorManagerHalWrapperAidlTest.cpp
         services/vibratorservice/test/VibratorManagerHalWrapperLegacyTest.cpp
         services/vibratorservice/VibratorCallbackScheduler.cpp
+        services/vibratorservice/VibratorController.cpp
         services/vibratorservice/VibratorHalController.cpp
         services/vibratorservice/VibratorHalWrapper.cpp
         services/vibratorservice/VibratorManagerHalController.cpp
         services/vibratorservice/VibratorManagerHalWrapper.cpp
-        services/vr/bufferhubd/include/private/dvr/buffer_hub.h
-        services/vr/bufferhubd/include/private/dvr/consumer_channel.h
-        services/vr/bufferhubd/include/private/dvr/consumer_queue_channel.h
-        services/vr/bufferhubd/include/private/dvr/producer_channel.h
-        services/vr/bufferhubd/include/private/dvr/producer_queue_channel.h
-        services/vr/bufferhubd/buffer_hub.cpp
-        services/vr/bufferhubd/bufferhubd.cpp
-        services/vr/bufferhubd/consumer_channel.cpp
-        services/vr/bufferhubd/consumer_queue_channel.cpp
-        services/vr/bufferhubd/producer_channel.cpp
-        services/vr/bufferhubd/producer_queue_channel.cpp
-        services/vr/performanced/cpu_set.cpp
-        services/vr/performanced/cpu_set.h
-        services/vr/performanced/directory_reader.h
-        services/vr/performanced/main.cpp
-        services/vr/performanced/performance_service.cpp
-        services/vr/performanced/performance_service.h
-        services/vr/performanced/performance_service_tests.cpp
-        services/vr/performanced/stdio_filebuf.h
-        services/vr/performanced/task.cpp
-        services/vr/performanced/task.h
-        services/vr/performanced/unique_file.h
-        services/vr/virtual_touchpad/include/dvr/virtual_touchpad_client.h
-        services/vr/virtual_touchpad/include/VirtualTouchpad.h
-        services/vr/virtual_touchpad/include/VirtualTouchpadClient.h
-        services/vr/virtual_touchpad/tests/VirtualTouchpad_test.cpp
-        services/vr/virtual_touchpad/DvrVirtualTouchpadClient.cpp
-        services/vr/virtual_touchpad/EvdevInjector.cpp
-        services/vr/virtual_touchpad/EvdevInjector.h
-        services/vr/virtual_touchpad/main.cpp
-        services/vr/virtual_touchpad/VirtualTouchpadClient.cpp
-        services/vr/virtual_touchpad/VirtualTouchpadEvdev.cpp
-        services/vr/virtual_touchpad/VirtualTouchpadEvdev.h
-        services/vr/virtual_touchpad/VirtualTouchpadService.cpp
-        services/vr/virtual_touchpad/VirtualTouchpadService.h
         vulkan/include/hardware/hwvulkan.h
         vulkan/include/vulkan/vk_android_native_buffer.h
         vulkan/include/vulkan/vk_layer_interface.h
+        vulkan/libvulkan/allocator.cpp
+        vulkan/libvulkan/allocator.h
         vulkan/libvulkan/api.cpp
         vulkan/libvulkan/api.h
         vulkan/libvulkan/api_gen.cpp
@@ -2756,6 +2644,7 @@ add_executable(native
         vulkan/nulldrv/null_driver.cpp
         vulkan/nulldrv/null_driver_gen.cpp
         vulkan/nulldrv/null_driver_gen.h
+        vulkan/tests/libvulkan_test.cpp
         vulkan/vkjson/vkjson.cc
         vulkan/vkjson/vkjson.h
         vulkan/vkjson/vkjson_instance.cc

@@ -24,10 +24,12 @@ import static android.app.ActivityTaskManager.INVALID_TASK_ID;
 import static android.app.ActivityTaskManager.INVALID_WINDOWING_MODE;
 import static android.app.FullscreenRequestHandler.REMOTE_CALLBACK_RESULT_KEY;
 import static android.app.FullscreenRequestHandler.RESULT_APPROVED;
+import static android.app.FullscreenRequestHandler.RESULT_FAILED_ALREADY_FULLY_EXPANDED;
 import static android.app.FullscreenRequestHandler.RESULT_FAILED_NOT_IN_FULLSCREEN_WITH_HISTORY;
 import static android.app.FullscreenRequestHandler.RESULT_FAILED_NOT_TOP_FOCUSED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
+import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.content.pm.PackageManager.PERMISSION_DENIED;
@@ -42,8 +44,8 @@ import static android.view.WindowManager.TRANSIT_CHANGE;
 import static android.view.WindowManager.TRANSIT_TO_BACK;
 import static android.view.WindowManager.TRANSIT_TO_FRONT;
 
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_CONFIGURATION;
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_IMMERSIVE;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_CONFIGURATION;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_IMMERSIVE;
 import static com.android.server.wm.ActivityRecord.State.DESTROYED;
 import static com.android.server.wm.ActivityRecord.State.DESTROYING;
 import static com.android.server.wm.ActivityRecord.State.PAUSING;
@@ -68,7 +70,6 @@ import android.app.ActivityManager;
 import android.app.ActivityTaskManager;
 import android.app.FullscreenRequestHandler;
 import android.app.IActivityClientController;
-import android.app.ICompatCameraControlCallback;
 import android.app.IRequestFinishCallback;
 import android.app.PictureInPictureParams;
 import android.app.PictureInPictureUiState;
@@ -96,13 +97,14 @@ import android.os.UserHandle;
 import android.service.voice.VoiceInteractionManagerInternal;
 import android.util.Slog;
 import android.view.RemoteAnimationDefinition;
+import android.window.DesktopModeFlags;
 import android.window.SizeConfigurationBuckets;
 import android.window.TransitionInfo;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.AssistUtils;
 import com.android.internal.policy.IKeyguardDismissCallback;
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.server.LocalServices;
 import com.android.server.Watchdog;
 import com.android.server.pm.KnownPackages;
@@ -501,6 +503,8 @@ class ActivityClientController extends IActivityClientController.Stub {
                 r.app.setLastActivityFinishTimeIfNeeded(SystemClock.uptimeMillis());
             }
 
+            mService.mAmInternal.addCreatorToken(resultData, r.packageName);
+
             final long origId = Binder.clearCallingIdentity();
             Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "finishActivity");
             try {
@@ -865,8 +869,9 @@ class ActivityClientController extends IActivityClientController.Stub {
                 if (transition != null) {
                     if (changed) {
                         // Always set as scene transition because it expects to be a jump-cut.
-                        transition.setOverrideAnimation(TransitionInfo.AnimationOptions
-                                .makeSceneTransitionAnimOptions(), null, null);
+                        transition.setOverrideAnimation(
+                                TransitionInfo.AnimationOptions.makeSceneTransitionAnimOptions(), r,
+                                null, null);
                         r.mTransitionController.requestStartTransition(transition,
                                 null /*startTask */, null /* remoteTransition */,
                                 null /* displayChange */);
@@ -884,7 +889,10 @@ class ActivityClientController extends IActivityClientController.Stub {
 
     @Override
     public boolean convertToTranslucent(IBinder token, Bundle options) {
-        final SafeActivityOptions safeOptions = SafeActivityOptions.fromBundle(options);
+        final int callingPid = Binder.getCallingPid();
+        final int callingUid = Binder.getCallingUid();
+        final SafeActivityOptions safeOptions = SafeActivityOptions.fromBundle(
+                options, callingPid, callingUid);
         final long origId = Binder.clearCallingIdentity();
         try {
             synchronized (mGlobalLock) {
@@ -911,8 +919,9 @@ class ActivityClientController extends IActivityClientController.Stub {
                                 && under.returningOptions.getAnimationType()
                                         == ANIM_SCENE_TRANSITION) {
                             // Pass along the scene-transition animation-type
-                            transition.setOverrideAnimation(TransitionInfo.AnimationOptions
-                                    .makeSceneTransitionAnimOptions(), null, null);
+                            transition.setOverrideAnimation(TransitionInfo
+                                            .AnimationOptions.makeSceneTransitionAnimOptions(), r,
+                                    null, null);
                         }
                     } else {
                         transition.abort();
@@ -1006,22 +1015,6 @@ class ActivityClientController extends IActivityClientController.Stub {
             ActivityRecord.splashScreenAttachedLocked(token);
         }
         Binder.restoreCallingIdentity(origId);
-    }
-
-    @Override
-    public void requestCompatCameraControl(IBinder token, boolean showControl,
-            boolean transformationApplied, ICompatCameraControlCallback callback) {
-        final long origId = Binder.clearCallingIdentity();
-        try {
-            synchronized (mGlobalLock) {
-                final ActivityRecord r = ActivityRecord.isInRootTaskLocked(token);
-                if (r != null) {
-                    r.updateCameraCompatState(showControl, transformationApplied, callback);
-                }
-            }
-        } finally {
-            Binder.restoreCallingIdentity(origId);
-        }
     }
 
     /**
@@ -1123,11 +1116,11 @@ class ActivityClientController extends IActivityClientController.Stub {
                     false /* fromClient */);
         }
 
+        final EnterPipRequestedItem item = new EnterPipRequestedItem(r.token);
         try {
-            mService.getLifecycleManager().scheduleTransactionItem(r.app.getThread(),
-                    EnterPipRequestedItem.obtain(r.token));
-            return true;
-        } catch (Exception e) {
+            return mService.getLifecycleManager().scheduleTransactionItem(r.app.getThread(), item);
+        } catch (RemoteException e) {
+            // TODO(b/323801078): remove Exception when cleanup
             Slog.w(TAG, "Failed to send enter pip requested item: "
                     + r.intent.getComponent(), e);
             return false;
@@ -1139,10 +1132,11 @@ class ActivityClientController extends IActivityClientController.Stub {
      */
     void onPictureInPictureUiStateChanged(@NonNull ActivityRecord r,
             PictureInPictureUiState pipState) {
+        final PipStateTransactionItem item = new PipStateTransactionItem(r.token, pipState);
         try {
-            mService.getLifecycleManager().scheduleTransactionItem(r.app.getThread(),
-                    PipStateTransactionItem.obtain(r.token, pipState));
-        } catch (Exception e) {
+            mService.getLifecycleManager().scheduleTransactionItem(r.app.getThread(), item);
+        } catch (RemoteException e) {
+            // TODO(b/323801078): remove Exception when cleanup
             Slog.w(TAG, "Failed to send pip state transaction item: "
                     + r.intent.getComponent(), e);
         }
@@ -1173,7 +1167,7 @@ class ActivityClientController extends IActivityClientController.Stub {
                 }
 
                 if (rootTask.inFreeformWindowingMode()) {
-                    rootTask.setWindowingMode(WINDOWING_MODE_FULLSCREEN);
+                    rootTask.setRootTaskWindowingMode(WINDOWING_MODE_FULLSCREEN);
                     rootTask.setBounds(null);
                 } else if (!r.supportsFreeform()) {
                     throw new IllegalStateException(
@@ -1182,9 +1176,9 @@ class ActivityClientController extends IActivityClientController.Stub {
                     // If the window is on a freeform display, set it to undefined. It will be
                     // resolved to freeform and it can adjust windowing mode when the display mode
                     // changes in runtime.
-                    rootTask.setWindowingMode(WINDOWING_MODE_UNDEFINED);
+                    rootTask.setRootTaskWindowingMode(WINDOWING_MODE_UNDEFINED);
                 } else {
-                    rootTask.setWindowingMode(WINDOWING_MODE_FREEFORM);
+                    rootTask.setRootTaskWindowingMode(WINDOWING_MODE_FREEFORM);
                 }
             }
         } finally {
@@ -1197,17 +1191,25 @@ class ActivityClientController extends IActivityClientController.Stub {
         if (requesterActivity.getWindowingMode() == WINDOWING_MODE_PINNED) {
             return RESULT_APPROVED;
         }
+        final int taskWindowingMode = topFocusedRootTask.getWindowingMode();
         // If this is not coming from the currently top-most activity, reject the request.
         if (requesterActivity != topFocusedRootTask.getTopMostActivity()) {
             return RESULT_FAILED_NOT_TOP_FOCUSED;
         }
         if (fullscreenRequest == FULLSCREEN_MODE_REQUEST_EXIT) {
-            if (topFocusedRootTask.getWindowingMode() != WINDOWING_MODE_FULLSCREEN) {
+            if (taskWindowingMode != WINDOWING_MODE_FULLSCREEN) {
                 return RESULT_FAILED_NOT_IN_FULLSCREEN_WITH_HISTORY;
             }
             if (topFocusedRootTask.mMultiWindowRestoreWindowingMode == INVALID_WINDOWING_MODE) {
                 return RESULT_FAILED_NOT_IN_FULLSCREEN_WITH_HISTORY;
             }
+            return RESULT_APPROVED;
+        }
+
+        if (DesktopModeFlags.ENABLE_REQUEST_FULLSCREEN_BUGFIX.isTrue()
+                && (taskWindowingMode == WINDOWING_MODE_FULLSCREEN
+                || taskWindowingMode == WINDOWING_MODE_MULTI_WINDOW)) {
+            return RESULT_FAILED_ALREADY_FULLY_EXPANDED;
         }
         return RESULT_APPROVED;
     }
@@ -1290,12 +1292,12 @@ class ActivityClientController extends IActivityClientController.Stub {
         }
     }
 
-    private static void executeMultiWindowFullscreenRequest(int fullscreenRequest, Task requester) {
+    private void executeMultiWindowFullscreenRequest(int fullscreenRequest, Task requester) {
         final int targetWindowingMode;
         if (fullscreenRequest == FULLSCREEN_MODE_REQUEST_ENTER) {
             final int restoreWindowingMode = requester.getRequestedOverrideWindowingMode();
             targetWindowingMode = WINDOWING_MODE_FULLSCREEN;
-            requester.setWindowingMode(targetWindowingMode);
+            requester.setRootTaskWindowingMode(targetWindowingMode);
             // The restore windowing mode must be set after the windowing mode is set since
             // Task#setWindowingMode resets the restore windowing mode to WINDOWING_MODE_INVALID.
             requester.mMultiWindowRestoreWindowingMode = restoreWindowingMode;
@@ -1303,7 +1305,13 @@ class ActivityClientController extends IActivityClientController.Stub {
                     requester.getParent().mRemoteToken.toWindowContainerToken();
         } else {
             targetWindowingMode = requester.mMultiWindowRestoreWindowingMode;
-            requester.restoreWindowingMode();
+            if (DesktopModeFlags.ENABLE_REQUEST_FULLSCREEN_BUGFIX.isTrue()
+                    && targetWindowingMode == WINDOWING_MODE_PINNED) {
+                final ActivityRecord r = requester.topRunningActivity();
+                enterPictureInPictureMode(r.token, r.pictureInPictureArgs);
+            } else {
+                requester.restoreWindowingMode();
+            }
         }
         if (targetWindowingMode == WINDOWING_MODE_FULLSCREEN) {
             requester.setBounds(null);
@@ -1314,9 +1322,8 @@ class ActivityClientController extends IActivityClientController.Stub {
     public void startLockTaskModeByToken(IBinder token) {
         synchronized (mGlobalLock) {
             final ActivityRecord r = ActivityRecord.forTokenLocked(token);
-            if (r != null) {
-                mService.startLockTaskMode(r.getTask(), false /* isSystemCaller */);
-            }
+            if (r == null) return;
+            mService.startLockTaskMode(r.getTask(), false /* isSystemCaller */);
         }
     }
 
@@ -1521,13 +1528,12 @@ class ActivityClientController extends IActivityClientController.Stub {
         synchronized (mGlobalLock) {
             final ActivityRecord r = ActivityRecord.isInRootTaskLocked(token);
             if (r != null && r.isState(RESUMED, PAUSING)) {
-                r.mDisplayContent.mAppTransition.overridePendingAppTransition(
-                        packageName, enterAnim, exitAnim, backgroundColor, null, null,
-                        r.mOverrideTaskTransition);
                 r.mTransitionController.setOverrideAnimation(
                         TransitionInfo.AnimationOptions.makeCustomAnimOptions(packageName,
-                                enterAnim, exitAnim, backgroundColor, r.mOverrideTaskTransition),
-                        null /* startCallback */, null /* finishCallback */);
+                                enterAnim, 0 /* changeResId */, exitAnim,
+                                r.mOverrideTaskTransition),
+                        r, null /* startCallback */, null /* finishCallback */);
+                r.mTransitionController.setOverrideBackgroundColor(backgroundColor);
             }
         }
         Binder.restoreCallingIdentity(origId);

@@ -32,7 +32,7 @@ import com.android.systemui.statusbar.phone.SystemUIDialogManager
 import com.android.systemui.util.ViewController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 import java.io.PrintWriter
 
 /**
@@ -131,7 +131,7 @@ abstract class UdfpsAnimationViewController<T : UdfpsAnimationView>(
 
     override fun onViewAttached() {
         dialogManager.registerListener(dialogListener)
-        dumpManager.registerDumpable(dumpTag, this)
+        dumpManager.registerNormalDumpable(dumpTag, this)
         udfpsOverlayInteractor.setHandleTouches(shouldHandle = !shouldPauseAuth())
     }
 

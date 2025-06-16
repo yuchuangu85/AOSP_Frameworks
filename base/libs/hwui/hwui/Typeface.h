@@ -32,18 +32,39 @@ constexpr int RESOLVE_BY_FONT_TABLE = -1;
 
 struct ANDROID_API Typeface {
 public:
-    std::shared_ptr<minikin::FontCollection> fFontCollection;
+    enum Style : uint8_t { kNormal = 0, kBold = 0x01, kItalic = 0x02, kBoldItalic = 0x03 };
+    Typeface(const std::shared_ptr<minikin::FontCollection> fc, minikin::FontStyle style,
+             Style apiStyle, int baseWeight, bool isVariationInstance)
+            : fFontCollection(fc)
+            , fStyle(style)
+            , fAPIStyle(apiStyle)
+            , fBaseWeight(baseWeight)
+            , fIsVariationInstance(isVariationInstance) {}
+
+    const std::shared_ptr<minikin::FontCollection>& getFontCollection() const {
+        return fFontCollection;
+    }
 
     // resolved style actually used for rendering
-    minikin::FontStyle fStyle;
+    minikin::FontStyle getFontStyle() const { return fStyle; }
 
     // style used in the API
-    enum Style : uint8_t { kNormal = 0, kBold = 0x01, kItalic = 0x02, kBoldItalic = 0x03 };
-    Style fAPIStyle;
+    Style getAPIStyle() const { return fAPIStyle; }
 
     // base weight in CSS-style units, 1..1000
-    int fBaseWeight;
+    int getBaseWeight() const { return fBaseWeight; }
 
+    // True if the Typeface is already created for variation settings.
+    bool isVariationInstance() const { return fIsVariationInstance; }
+
+private:
+    std::shared_ptr<minikin::FontCollection> fFontCollection;
+    minikin::FontStyle fStyle;
+    Style fAPIStyle;
+    int fBaseWeight;
+    bool fIsVariationInstance = false;
+
+public:
     static const Typeface* resolveDefault(const Typeface* src);
 
     // The following three functions create new Typeface from an existing Typeface with a different
@@ -74,8 +95,8 @@ public:
     static Typeface* createRelative(Typeface* src, Style desiredStyle);
     static Typeface* createAbsolute(Typeface* base, int weight, bool italic);
 
-    static Typeface* createFromTypefaceWithVariation(
-            Typeface* src, const std::vector<minikin::FontVariation>& variations);
+    static Typeface* createFromTypefaceWithVariation(Typeface* src,
+                                                     const minikin::VariationSettings& variations);
 
     static Typeface* createFromFamilies(
             std::vector<std::shared_ptr<minikin::FontFamily>>&& families, int weight, int italic,

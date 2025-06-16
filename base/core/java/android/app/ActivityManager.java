@@ -16,6 +16,7 @@
 
 package android.app;
 
+import static android.app.Instrumentation.DEBUG_FINISH_ACTIVITY;
 import static android.app.WindowConfiguration.activityTypeToString;
 import static android.app.WindowConfiguration.windowingModeToString;
 import static android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS;
@@ -54,9 +55,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Point;
-import android.graphics.Rect;
 import android.graphics.drawable.Icon;
-import android.hardware.HardwareBuffer;
 import android.os.BatteryStats;
 import android.os.Binder;
 import android.os.Build;
@@ -65,6 +64,7 @@ import android.os.Bundle;
 import android.os.Debug;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.IpcDataCache;
 import android.os.LocaleList;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -80,11 +80,12 @@ import android.os.WorkSource;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.DisplayMetrics;
+import android.util.Log;
 import android.util.Singleton;
 import android.util.Size;
 import android.view.WindowInsetsController.Appearance;
-import android.window.TaskSnapshot;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.app.LocalePicker;
 import com.android.internal.app.procstats.ProcessStats;
 import com.android.internal.os.RoSystemProperties;
@@ -92,6 +93,7 @@ import com.android.internal.os.TransferPipe;
 import com.android.internal.util.FastPrintWriter;
 import com.android.internal.util.MemInfoReader;
 import com.android.internal.util.Preconditions;
+import com.android.internal.util.RateLimitingCache;
 import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.LocalServices;
@@ -225,6 +227,68 @@ public class ActivityManager {
     }
 
     final ArrayMap<OnUidImportanceListener, MyUidObserver> mImportanceListeners = new ArrayMap<>();
+
+    /** Rate-Limiting Cache that allows no more than 400 calls to the service per second. */
+    private static final RateLimitingCache<List<RunningAppProcessInfo>> mRunningProcessesCache =
+            new RateLimitingCache<>(10, 4);
+
+    /** Rate-Limiting Cache that allows no more than 200 calls to the service per second. */
+    private static final RateLimitingCache<List<ProcessErrorStateInfo>> mErrorProcessesCache =
+            new RateLimitingCache<>(10, 2);
+
+    /** Rate-Limiting cache that allows no more than 100 calls to the service per second. */
+    @GuardedBy("mMemoryInfoCache")
+    private static final RateLimitingCache<MemoryInfo> mMemoryInfoCache =
+            new RateLimitingCache<>(10);
+    /** Used to store cached results for rate-limited calls to getMemoryInfo(). */
+    @GuardedBy("mMemoryInfoCache")
+    private static final MemoryInfo mRateLimitedMemInfo = new MemoryInfo();
+
+    /** Rate-Limiting cache that allows no more than 200 calls to the service per second. */
+    @GuardedBy("mMyMemoryStateCache")
+    private static final RateLimitingCache<RunningAppProcessInfo> mMyMemoryStateCache =
+            new RateLimitingCache<>(10, 2);
+    /** Used to store cached results for rate-limited calls to getMyMemoryState(). */
+    @GuardedBy("mMyMemoryStateCache")
+    private static final RunningAppProcessInfo mRateLimitedMemState = new RunningAppProcessInfo();
+
+    /**
+     * Query handler for mGetCurrentUserIdCache - returns a cached value of the current foreground
+     * user id if the backstage_power/android.app.cache_get_current_user_id flag is enabled.
+     */
+    private static final IpcDataCache.QueryHandler<Void, Integer> mGetCurrentUserIdQuery =
+            new IpcDataCache.QueryHandler<>() {
+                @Override
+                public Integer apply(Void query) {
+                    try {
+                        return getService().getCurrentUserId();
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                }
+
+                @Override
+                public boolean shouldBypassCache(Void query) {
+                    // If the flag to enable the new caching behavior is off, bypass the cache.
+                    return !Flags.cacheGetCurrentUserId();
+                }
+            };
+
+    /** A cache which maintains the current foreground user id. */
+    private static final IpcDataCache<Void, Integer> mGetCurrentUserIdCache =
+            new IpcDataCache<>(1, IpcDataCache.MODULE_SYSTEM,
+                    /* api= */ "getCurrentUserId", /* cacheName= */ "CurrentUserIdCache",
+                    mGetCurrentUserIdQuery);
+
+    /**
+     * The current foreground user has changed - invalidate the cache. Currently only called from
+     * UserController when a user switch occurs.
+     * @hide
+     */
+    public static void invalidateGetCurrentUserIdCache() {
+        IpcDataCache.invalidateCache(
+                IpcDataCache.MODULE_SYSTEM, /* api= */ "getCurrentUserId");
+    }
 
     /**
      * Map of callbacks that have registered for {@link UidFrozenStateChanged} events.
@@ -483,35 +547,35 @@ public class ActivityManager {
     public static final int START_ASSISTANT_NOT_ACTIVE_SESSION = FIRST_START_FATAL_ERROR_CODE + 11;
 
     /**
-     * Result for IActivityManaqer.startActivity: the activity was started
+     * Result for IActivityManager.startActivity: the activity was started
      * successfully as normal.
      * @hide
      */
     public static final int START_SUCCESS = FIRST_START_SUCCESS_CODE;
 
     /**
-     * Result for IActivityManaqer.startActivity: the caller asked that the Intent not
+     * Result for IActivityManager.startActivity: the caller asked that the Intent not
      * be executed if it is the recipient, and that is indeed the case.
      * @hide
      */
     public static final int START_RETURN_INTENT_TO_CALLER = FIRST_START_SUCCESS_CODE + 1;
 
     /**
-     * Result for IActivityManaqer.startActivity: activity was started or brought forward in an
+     * Result for IActivityManager.startActivity: activity was started or brought forward in an
      * existing task which was brought to the foreground.
      * @hide
      */
     public static final int START_TASK_TO_FRONT = FIRST_START_SUCCESS_CODE + 2;
 
     /**
-     * Result for IActivityManaqer.startActivity: activity wasn't really started, but
+     * Result for IActivityManager.startActivity: activity wasn't really started, but
      * the given Intent was given to the existing top activity.
      * @hide
      */
     public static final int START_DELIVERED_TO_TOP = FIRST_START_SUCCESS_CODE + 3;
 
     /**
-     * Result for IActivityManaqer.startActivity: request was canceled because
+     * Result for IActivityManager.startActivity: request was canceled because
      * app switches are temporarily canceled to ensure the user's last request
      * (such as pressing home) is performed.
      * @hide
@@ -519,7 +583,7 @@ public class ActivityManager {
     public static final int START_SWITCHES_CANCELED = FIRST_START_NON_FATAL_ERROR_CODE;
 
     /**
-     * Result for IActivityManaqer.startActivity: a new activity was attempted to be started
+     * Result for IActivityManager.startActivity: a new activity was attempted to be started
      * while in Lock Task Mode.
      * @hide
      */
@@ -527,55 +591,55 @@ public class ActivityManager {
             FIRST_START_NON_FATAL_ERROR_CODE + 1;
 
     /**
-     * Result for IActivityManaqer.startActivity: a new activity start was aborted. Never returned
+     * Result for IActivityManager.startActivity: a new activity start was aborted. Never returned
      * externally.
      * @hide
      */
     public static final int START_ABORTED = FIRST_START_NON_FATAL_ERROR_CODE + 2;
 
     /**
-     * Flag for IActivityManaqer.startActivity: do special start mode where
+     * Flag for IActivityManager.startActivity: do special start mode where
      * a new activity is launched only if it is needed.
      * @hide
      */
     public static final int START_FLAG_ONLY_IF_NEEDED = 1<<0;
 
     /**
-     * Flag for IActivityManaqer.startActivity: launch the app for
+     * Flag for IActivityManager.startActivity: launch the app for
      * debugging.
      * @hide
      */
     public static final int START_FLAG_DEBUG = 1<<1;
 
     /**
-     * Flag for IActivityManaqer.startActivity: launch the app for
+     * Flag for IActivityManager.startActivity: launch the app for
      * allocation tracking.
      * @hide
      */
     public static final int START_FLAG_TRACK_ALLOCATION = 1<<2;
 
     /**
-     * Flag for IActivityManaqer.startActivity: launch the app with
+     * Flag for IActivityManager.startActivity: launch the app with
      * native debugging support.
      * @hide
      */
     public static final int START_FLAG_NATIVE_DEBUGGING = 1<<3;
 
     /**
-     * Flag for IActivityManaqer.startActivity: launch the app for
+     * Flag for IActivityManager.startActivity: launch the app for
      * debugging and suspend threads.
      * @hide
      */
     public static final int START_FLAG_DEBUG_SUSPEND = 1 << 4;
 
     /**
-     * Result for IActivityManaqer.broadcastIntent: success!
+     * Result for IActivityManager.broadcastIntent: success!
      * @hide
      */
     public static final int BROADCAST_SUCCESS = 0;
 
     /**
-     * Result for IActivityManaqer.broadcastIntent: attempt to broadcast
+     * Result for IActivityManager.broadcastIntent: attempt to broadcast
      * a sticky intent without appropriate permission.
      * @hide
      */
@@ -589,20 +653,20 @@ public class ActivityManager {
     public static final int BROADCAST_FAILED_USER_STOPPED = -2;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent type is unknown.
+     * Type for IActivityManager.getIntentSender: this PendingIntent type is unknown.
      * @hide
      */
     public static final int INTENT_SENDER_UNKNOWN = 0;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent is
+     * Type for IActivityManager.getIntentSender: this PendingIntent is
      * for a sendBroadcast operation.
      * @hide
      */
     public static final int INTENT_SENDER_BROADCAST = 1;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent is
+     * Type for IActivityManager.getIntentSender: this PendingIntent is
      * for a startActivity operation.
      * @hide
      */
@@ -610,21 +674,21 @@ public class ActivityManager {
     public static final int INTENT_SENDER_ACTIVITY = 2;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent is
+     * Type for IActivityManager.getIntentSender: this PendingIntent is
      * for an activity result operation.
      * @hide
      */
     public static final int INTENT_SENDER_ACTIVITY_RESULT = 3;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent is
+     * Type for IActivityManager.getIntentSender: this PendingIntent is
      * for a startService operation.
      * @hide
      */
     public static final int INTENT_SENDER_SERVICE = 4;
 
     /**
-     * Type for IActivityManaqer.getIntentSender: this PendingIntent is
+     * Type for IActivityManager.getIntentSender: this PendingIntent is
      * for a startForegroundService operation.
      * @hide
      */
@@ -950,6 +1014,12 @@ public class ActivityManager {
     public static final int PROCESS_CAPABILITY_FOREGROUND_AUDIO_CONTROL = 1 << 6;
 
     /**
+     * @hide
+     * Process is guaranteed cpu time (IE. it will not be frozen).
+     */
+    public static final int PROCESS_CAPABILITY_CPU_TIME = 1 << 7;
+
+    /**
      * @hide all capabilities, the ORing of all flags in {@link ProcessCapability}.
      *
      * Don't expose it as TestApi -- we may add new capabilities any time, which could
@@ -961,10 +1031,13 @@ public class ActivityManager {
             | PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
             | PROCESS_CAPABILITY_BFSL
             | PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK
-            | PROCESS_CAPABILITY_FOREGROUND_AUDIO_CONTROL;
+            | PROCESS_CAPABILITY_FOREGROUND_AUDIO_CONTROL
+            | PROCESS_CAPABILITY_CPU_TIME;
 
     /**
-     * All implicit capabilities. There are capabilities that process automatically have.
+     * All implicit capabilities. This capability set is currently only used for processes under
+     * active instrumentation. The intent is to allow CTS tests to always have these capabilities
+     * so that every test doesn't need to launch FGS.
      * @hide
      */
     @TestApi
@@ -984,6 +1057,7 @@ public class ActivityManager {
         pw.print((caps & PROCESS_CAPABILITY_BFSL) != 0 ? 'F' : '-');
         pw.print((caps & PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK) != 0 ? 'U' : '-');
         pw.print((caps & PROCESS_CAPABILITY_FOREGROUND_AUDIO_CONTROL) != 0 ? 'A' : '-');
+        pw.print((caps & PROCESS_CAPABILITY_CPU_TIME) != 0 ? 'T' : '-');
     }
 
     /** @hide */
@@ -996,6 +1070,7 @@ public class ActivityManager {
         sb.append((caps & PROCESS_CAPABILITY_BFSL) != 0 ? 'F' : '-');
         sb.append((caps & PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK) != 0 ? 'U' : '-');
         sb.append((caps & PROCESS_CAPABILITY_FOREGROUND_AUDIO_CONTROL) != 0 ? 'A' : '-');
+        sb.append((caps & PROCESS_CAPABILITY_CPU_TIME) != 0 ? 'T' : '-');
     }
 
     /**
@@ -1109,6 +1184,18 @@ public class ActivityManager {
     @android.ravenwood.annotation.RavenwoodKeep
     public static boolean isForegroundService(int procState) {
         return procState == PROCESS_STATE_FOREGROUND_SERVICE;
+    }
+
+    /** @hide Should this process state be considered jank perceptible? */
+    public static final boolean isProcStateJankPerceptible(int procState) {
+        if (Flags.jankPerceptibleNarrow() && !Flags.jankPerceptibleNarrowHoldback()) {
+            return procState == PROCESS_STATE_PERSISTENT_UI
+                || procState == PROCESS_STATE_TOP
+                || procState == PROCESS_STATE_IMPORTANT_FOREGROUND
+                || procState == PROCESS_STATE_TOP_SLEEPING;
+        } else {
+            return !isProcStateCached(procState);
+        }
     }
 
     /** @hide requestType for assist context: only basic information. */
@@ -2601,62 +2688,6 @@ public class ActivityManager {
      */
     public static class RecentTaskInfo extends TaskInfo implements Parcelable {
         /**
-         * @hide
-         */
-        public static class PersistedTaskSnapshotData {
-            /**
-             * The bounds of the task when the last snapshot was taken, may be null if the task is
-             * not yet attached to the hierarchy.
-             * @see {@link android.window.TaskSnapshot#mTaskSize}.
-             * @hide
-             */
-            public @Nullable Point taskSize;
-
-            /**
-             * The content insets of the task when the task snapshot was taken.
-             * @see {@link android.window.TaskSnapshot#mContentInsets}.
-             * @hide
-             */
-            public @Nullable Rect contentInsets;
-
-            /**
-             * The size of the last snapshot taken, may be null if there is no associated snapshot.
-             * @see {@link android.window.TaskSnapshot#mSnapshot}.
-             * @hide
-             */
-            public @Nullable Point bufferSize;
-
-            /**
-             * Sets the data from the other data.
-             * @hide
-             */
-            public void set(PersistedTaskSnapshotData other) {
-                taskSize = other.taskSize;
-                contentInsets = other.contentInsets;
-                bufferSize = other.bufferSize;
-            }
-
-            /**
-             * Sets the data from the provided {@param snapshot}.
-             * @hide
-             */
-            public void set(TaskSnapshot snapshot) {
-                if (snapshot == null) {
-                    taskSize = null;
-                    contentInsets = null;
-                    bufferSize = null;
-                    return;
-                }
-                final HardwareBuffer buffer = snapshot.getHardwareBuffer();
-                taskSize = new Point(snapshot.getTaskSize());
-                contentInsets = new Rect(snapshot.getContentInsets());
-                bufferSize = buffer != null
-                        ? new Point(buffer.getWidth(), buffer.getHeight())
-                        : null;
-            }
-        }
-
-        /**
          * If this task is currently running, this is the identifier for it.
          * If it is not running, this will be -1.
          *
@@ -2692,19 +2723,6 @@ public class ActivityManager {
         @Deprecated
         public int affiliatedTaskId;
 
-        /**
-         * Information of organized child tasks.
-         *
-         * @hide
-         */
-        public ArrayList<RecentTaskInfo> childrenTaskInfos = new ArrayList<>();
-
-        /**
-         * Information about the last snapshot taken for this task.
-         * @hide
-         */
-        public PersistedTaskSnapshotData lastSnapshotData = new PersistedTaskSnapshotData();
-
         public RecentTaskInfo() {
         }
 
@@ -2720,22 +2738,14 @@ public class ActivityManager {
         public void readFromParcel(Parcel source) {
             id = source.readInt();
             persistentId = source.readInt();
-            childrenTaskInfos = source.readArrayList(RecentTaskInfo.class.getClassLoader(), android.app.ActivityManager.RecentTaskInfo.class);
-            lastSnapshotData.taskSize = source.readTypedObject(Point.CREATOR);
-            lastSnapshotData.contentInsets = source.readTypedObject(Rect.CREATOR);
-            lastSnapshotData.bufferSize = source.readTypedObject(Point.CREATOR);
-            super.readFromParcel(source);
+            super.readTaskFromParcel(source);
         }
 
         @Override
         public void writeToParcel(Parcel dest, int flags) {
             dest.writeInt(id);
             dest.writeInt(persistentId);
-            dest.writeList(childrenTaskInfos);
-            dest.writeTypedObject(lastSnapshotData.taskSize, flags);
-            dest.writeTypedObject(lastSnapshotData.contentInsets, flags);
-            dest.writeTypedObject(lastSnapshotData.bufferSize, flags);
-            super.writeToParcel(dest, flags);
+            super.writeTaskToParcel(dest, flags);
         }
 
         public static final @android.annotation.NonNull Creator<RecentTaskInfo> CREATOR
@@ -2801,11 +2811,6 @@ public class ActivityManager {
                 pw.println(" }");
             }
             pw.print("   ");
-            pw.print(" lastSnapshotData {");
-            pw.print(" taskSize=" + lastSnapshotData.taskSize);
-            pw.print(" contentInsets=" + lastSnapshotData.contentInsets);
-            pw.print(" bufferSize=" + lastSnapshotData.bufferSize);
-            pw.println(" }");
         }
     }
 
@@ -2919,13 +2924,13 @@ public class ActivityManager {
 
         public void readFromParcel(Parcel source) {
             id = source.readInt();
-            super.readFromParcel(source);
+            super.readTaskFromParcel(source);
         }
 
         @Override
         public void writeToParcel(Parcel dest, int flags) {
             dest.writeInt(id);
-            super.writeToParcel(dest, flags);
+            super.writeTaskToParcel(dest, flags);
         }
 
         public static final @android.annotation.NonNull Creator<RunningTaskInfo> CREATOR = new Creator<RunningTaskInfo>() {
@@ -3094,7 +3099,8 @@ public class ActivityManager {
     /**
      * Flag for {@link #moveTaskToFront(int, int)}: also move the "home"
      * activity along with the task, so it is positioned immediately behind
-     * the task.
+     * the task. This flag is ignored if the task's windowing mode is
+     * {@link WindowConfiguration#WINDOWING_MODE_MULTI_WINDOW}.
      */
     public static final int MOVE_TASK_WITH_HOME = 0x00000001;
 
@@ -3460,6 +3466,19 @@ public class ActivityManager {
             foregroundAppThreshold = source.readLong();
         }
 
+        /** @hide */
+        public void copyTo(MemoryInfo other) {
+            other.advertisedMem = advertisedMem;
+            other.availMem = availMem;
+            other.totalMem = totalMem;
+            other.threshold = threshold;
+            other.lowMemory = lowMemory;
+            other.hiddenAppThreshold = hiddenAppThreshold;
+            other.secondaryServerThreshold = secondaryServerThreshold;
+            other.visibleAppThreshold = visibleAppThreshold;
+            other.foregroundAppThreshold = foregroundAppThreshold;
+        }
+
         public static final @android.annotation.NonNull Creator<MemoryInfo> CREATOR
                 = new Creator<MemoryInfo>() {
             public MemoryInfo createFromParcel(Parcel source) {
@@ -3486,6 +3505,20 @@ public class ActivityManager {
      * manage its memory.
      */
     public void getMemoryInfo(MemoryInfo outInfo) {
+        if (Flags.rateLimitGetMemoryInfo()) {
+            synchronized (mMemoryInfoCache) {
+                mMemoryInfoCache.get(() -> {
+                    getMemoryInfoInternal(mRateLimitedMemInfo);
+                    return mRateLimitedMemInfo;
+                });
+                mRateLimitedMemInfo.copyTo(outInfo);
+            }
+        } else {
+            getMemoryInfoInternal(outInfo);
+        }
+    }
+
+    private void getMemoryInfoInternal(MemoryInfo outInfo) {
         try {
             getService().getMemoryInfo(outInfo);
         } catch (RemoteException e) {
@@ -3678,6 +3711,16 @@ public class ActivityManager {
      * specified.
      */
     public List<ProcessErrorStateInfo> getProcessesInErrorState() {
+        if (Flags.rateLimitGetProcessesInErrorState()) {
+            return mErrorProcessesCache.get(() -> {
+                return getProcessesInErrorStateInternal();
+            });
+        } else {
+            return getProcessesInErrorStateInternal();
+        }
+    }
+
+    private List<ProcessErrorStateInfo> getProcessesInErrorStateInternal() {
         try {
             return getService().getProcessesInErrorState();
         } catch (RemoteException e) {
@@ -4127,6 +4170,23 @@ public class ActivityManager {
             lastActivityTime = source.readLong();
         }
 
+        /**
+         * Note: only fields that are updated in ProcessList.fillInProcMemInfoLOSP() are copied.
+         * @hide
+         */
+        public void copyTo(RunningAppProcessInfo other) {
+            other.pid = pid;
+            other.uid = uid;
+            other.flags = flags;
+            other.lastTrimLevel = lastTrimLevel;
+            other.importance = importance;
+            other.lru = lru;
+            other.importanceReasonCode = importanceReasonCode;
+            other.processState = processState;
+            other.isFocused = isFocused;
+            other.lastActivityTime = lastActivityTime;
+        }
+
         public static final @android.annotation.NonNull Creator<RunningAppProcessInfo> CREATOR =
             new Creator<RunningAppProcessInfo>() {
             public RunningAppProcessInfo createFromParcel(Parcel source) {
@@ -4211,6 +4271,16 @@ public class ActivityManager {
      * specified.
      */
     public List<RunningAppProcessInfo> getRunningAppProcesses() {
+        if (!Flags.rateLimitGetRunningAppProcesses()) {
+            return getRunningAppProcessesInternal();
+        } else {
+            return mRunningProcessesCache.get(() -> {
+                return getRunningAppProcessesInternal();
+            });
+        }
+    }
+
+    private List<RunningAppProcessInfo> getRunningAppProcessesInternal() {
         try {
             return getService().getRunningAppProcesses();
         } catch (RemoteException e) {
@@ -4748,7 +4818,21 @@ public class ActivityManager {
      * {@link RunningAppProcessInfo#lru}, and
      * {@link RunningAppProcessInfo#importanceReasonCode}.
      */
-    static public void getMyMemoryState(RunningAppProcessInfo outState) {
+    public static void getMyMemoryState(RunningAppProcessInfo outState) {
+        if (Flags.rateLimitGetMyMemoryState()) {
+            synchronized (mMyMemoryStateCache) {
+                mMyMemoryStateCache.get(() -> {
+                    getMyMemoryStateInternal(mRateLimitedMemState);
+                    return mRateLimitedMemState;
+                });
+                mRateLimitedMemState.copyTo(outState);
+            }
+        } else {
+            getMyMemoryStateInternal(outState);
+        }
+    }
+
+    private static void getMyMemoryStateInternal(RunningAppProcessInfo outState) {
         try {
             getService().getMyMemoryState(outState);
         } catch (RemoteException e) {
@@ -4883,6 +4967,25 @@ public class ActivityManager {
     public void forceStopPackageAsUserEvenWhenStopping(String packageName, @UserIdInt int userId) {
         try {
             getService().forceStopPackageEvenWhenStopping(packageName, userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Fully stop the given app's processes without restoring service starts or
+     * bindings, but without the other durable effects of the full-scale
+     * "force stop" intervention.
+     *
+     * @param packageName The name of the package to be stopped.
+     *
+     * @hide This is not available to third party applications due to
+     * it allowing them to break other applications by stopping their
+     * services.
+     */
+    public void stopPackageForUser(String packageName) {
+        try {
+            getService().stopAppForUser(packageName, mContext.getUserId());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -5139,7 +5242,6 @@ public class ActivityManager {
         if (!exported) {
             /*
             RuntimeException here = new RuntimeException("here");
-            here.fillInStackTrace();
             Slog.w(TAG, "Permission denied: checkComponentPermission() owningUid=" + owningUid,
                     here);
             */
@@ -5213,11 +5315,7 @@ public class ActivityManager {
     })
     @android.ravenwood.annotation.RavenwoodReplace
     public static int getCurrentUser() {
-        try {
-            return getService().getCurrentUserId();
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return mGetCurrentUserIdCache.query(null);
     }
 
     /** @hide */
@@ -5320,10 +5418,11 @@ public class ActivityManager {
      *
      * @hide
      */
+    @Nullable
     @RequiresPermission(Manifest.permission.MANAGE_USERS)
-    public @Nullable String getSwitchingFromUserMessage() {
+    public String getSwitchingFromUserMessage(@UserIdInt int userId) {
         try {
-            return getService().getSwitchingFromUserMessage();
+            return getService().getSwitchingFromUserMessage(userId);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
@@ -5334,10 +5433,11 @@ public class ActivityManager {
      *
      * @hide
      */
+    @Nullable
     @RequiresPermission(Manifest.permission.MANAGE_USERS)
-    public @Nullable String getSwitchingToUserMessage() {
+    public String getSwitchingToUserMessage(@UserIdInt int userId) {
         try {
-            return getService().getSwitchingToUserMessage();
+            return getService().getSwitchingToUserMessage(userId);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
@@ -6011,6 +6111,10 @@ public class ActivityManager {
          * Finishes all activities in this task and removes it from the recent tasks list.
          */
         public void finishAndRemoveTask() {
+            if (DEBUG_FINISH_ACTIVITY) {
+                Log.d(Instrumentation.TAG, "AppTask#finishAndRemoveTask: task="
+                        + getTaskInfo(), new Throwable());
+            }
             try {
                 mAppTaskImpl.finishAndRemoveTask();
             } catch (RemoteException e) {

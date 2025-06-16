@@ -19,6 +19,7 @@ package com.android.server.powerstats;
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -36,9 +37,13 @@ import android.os.Bundle;
 import android.os.IPowerStatsService;
 import android.os.Looper;
 import android.os.PowerMonitor;
+import android.os.PowerMonitorReadings;
 import android.os.ResultReceiver;
+import android.platform.test.annotations.EnableFlags;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfigInterface;
+import android.util.IntArray;
 
 import androidx.test.InstrumentationRegistry;
 
@@ -58,6 +63,7 @@ import com.android.server.powerstats.nano.StateResidencyResultProto;
 import com.android.server.testutils.FakeDeviceConfigInterface;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -70,6 +76,8 @@ import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
 /**
@@ -101,6 +109,8 @@ public class PowerStatsServiceTest {
     private static final int STATE_RESIDENCY_COUNT = 4;
     private static final int APP_UID = 10042;
 
+    @Rule public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
     private final Context mContext = InstrumentationRegistry.getInstrumentation().getContext();
     private PowerStatsService mService;
     private TestPowerStatsHALWrapper mPowerStatsHALWrapper = new TestPowerStatsHALWrapper();
@@ -120,6 +130,8 @@ public class PowerStatsServiceTest {
             return realtime;
         }
     }
+
+    private final IntArray mFinePowerMonitorsPermissionGranted = new IntArray();
 
     private final PowerStatsService.Injector mInjector = new PowerStatsService.Injector() {
 
@@ -212,9 +224,15 @@ public class PowerStatsServiceTest {
         IntervalRandomNoiseGenerator createIntervalRandomNoiseGenerator() {
             return mMockNoiseGenerator;
         }
+
+        @Override
+        boolean checkFinePowerMonitorsPermission(Context context, int callingUid) {
+            return mFinePowerMonitorsPermissionGranted.contains(callingUid);
+        }
     };
 
     public static final class TestPowerStatsHALWrapper implements IPowerStatsHALWrapper {
+        public RuntimeException exception;
         public EnergyConsumerResult[] energyConsumerResults;
         public EnergyMeasurement[] energyMeasurements;
 
@@ -237,6 +255,9 @@ public class PowerStatsServiceTest {
 
         @Override
         public StateResidencyResult[] getStateResidency(int[] powerEntityIds) {
+            if (exception != null) {
+                throw exception;
+            }
             StateResidencyResult[] stateResidencyResultList =
                     new StateResidencyResult[POWER_ENTITY_COUNT];
             for (int i = 0; i < stateResidencyResultList.length; i++) {
@@ -288,6 +309,9 @@ public class PowerStatsServiceTest {
 
         @Override
         public EnergyConsumerResult[] getEnergyConsumed(int[] energyConsumerIds) {
+            if (exception != null) {
+                throw exception;
+            }
             return energyConsumerResults;
         }
 
@@ -316,6 +340,9 @@ public class PowerStatsServiceTest {
 
         @Override
         public EnergyMeasurement[] readEnergyMeter(int[] channelIds) {
+            if (exception != null) {
+                throw exception;
+            }
             return energyMeasurements;
         }
 
@@ -1091,6 +1118,8 @@ public class PowerStatsServiceTest {
         public int resultCode;
         public long[] energyUws;
         public long[] timestamps;
+        @PowerMonitorReadings.PowerMonitorGranularity
+        public int granularity;
 
         GetPowerMonitorsResult() {
             super(null);
@@ -1102,12 +1131,23 @@ public class PowerStatsServiceTest {
             if (resultData != null) {
                 energyUws = resultData.getLongArray(IPowerStatsService.KEY_ENERGY);
                 timestamps = resultData.getLongArray(IPowerStatsService.KEY_TIMESTAMPS);
+                granularity = resultData.getInt(IPowerStatsService.KEY_GRANULARITY);
             }
         }
     }
 
     @Test
     public void getPowerMonitors() {
+        testGetPowerMonitors(PowerMonitorReadings.GRANULARITY_UNSPECIFIED);
+    }
+
+    @Test
+    public void getPowerMonitors_finePowerMonitorPermissionGranted() {
+        mFinePowerMonitorsPermissionGranted.add(APP_UID);
+        testGetPowerMonitors(PowerMonitorReadings.GRANULARITY_FINE);
+    }
+
+    private void testGetPowerMonitors(int expectedGranularity) {
         mMockClock.realtime = 10 * 60_000;
         mMockNoiseGenerator.reseed(314);
 
@@ -1143,6 +1183,7 @@ public class PowerStatsServiceTest {
 
         assertThat(result.energyUws).isEqualTo(new long[]{42, 142, 314, 514});
         assertThat(result.timestamps).isEqualTo(new long[]{600_000, 600_100, 600_000, 600_200});
+        assertThat(result.granularity).isEqualTo(expectedGranularity);
 
         // Test caching/throttling
         mMockClock.realtime += 1;
@@ -1162,6 +1203,7 @@ public class PowerStatsServiceTest {
 
         assertThat(result.energyUws).isEqualTo(new long[]{42, 314});
         assertThat(result.timestamps).isEqualTo(new long[]{600_000, 600_000});
+        assertThat(result.granularity).isEqualTo(expectedGranularity);
 
         mMockClock.realtime += 10 * 60000;
 
@@ -1171,6 +1213,7 @@ public class PowerStatsServiceTest {
         // This time, random noise is added
         assertThat(result.energyUws).isEqualTo(new long[]{298, 399});
         assertThat(result.timestamps).isEqualTo(new long[]{600_301, 600_401});
+        assertThat(result.granularity).isEqualTo(expectedGranularity);
     }
 
     @Test
@@ -1197,5 +1240,49 @@ public class PowerStatsServiceTest {
         mService.getSupportedPowerMonitorsImpl(supportedPowerMonitorsResult);
         assertThat(Arrays.stream(supportedPowerMonitorsResult.powerMonitors)
                 .map(PowerMonitor::getName).toList()).contains("ENERGYCONSUMER0");
+    }
+
+    @EnableFlags(Flags.FLAG_VERIFY_NON_NULL_ARGUMENTS)
+    @Test
+    public void testGetSupportedPowerMonitors_withNullArguments() {
+        IPowerStatsService iPowerStatsService = mService.getIPowerStatsServiceForTest();
+        assertThrows(NullPointerException.class,
+                () -> iPowerStatsService.getSupportedPowerMonitors(null));
+    }
+
+    @EnableFlags(Flags.FLAG_VERIFY_NON_NULL_ARGUMENTS)
+    @Test
+    public void testGetPowerMonitorReadings_withNullArguments() {
+        IPowerStatsService iPowerStatsService = mService.getIPowerStatsServiceForTest();
+        assertThrows(NullPointerException.class, () -> iPowerStatsService.getPowerMonitorReadings(
+                null, new GetPowerMonitorsResult()));
+        assertThrows(NullPointerException.class, () -> iPowerStatsService.getPowerMonitorReadings(
+                new int[] {0}, null));
+    }
+    @Test
+    public void getEnergyConsumedAsync_halException() {
+        mPowerStatsHALWrapper.exception = new IllegalArgumentException();
+        CompletableFuture<EnergyConsumerResult[]> future =
+                mService.getPowerStatsInternal().getEnergyConsumedAsync(new int[]{1});
+        ExecutionException exception = assertThrows(ExecutionException.class, future::get);
+        assertThat(exception.getCause()).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    public void getStateResidencyAsync_halException() {
+        mPowerStatsHALWrapper.exception = new IllegalArgumentException();
+        CompletableFuture<StateResidencyResult[]> future =
+                mService.getPowerStatsInternal().getStateResidencyAsync(new int[]{1});
+        ExecutionException exception = assertThrows(ExecutionException.class, future::get);
+        assertThat(exception.getCause()).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    public void readEnergyMeterAsync_halException() {
+        mPowerStatsHALWrapper.exception = new IllegalArgumentException();
+        CompletableFuture<EnergyMeasurement[]> future =
+                mService.getPowerStatsInternal().readEnergyMeterAsync(new int[]{1});
+        ExecutionException exception = assertThrows(ExecutionException.class, future::get);
+        assertThat(exception.getCause()).isInstanceOf(IllegalArgumentException.class);
     }
 }

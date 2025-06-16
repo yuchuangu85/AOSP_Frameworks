@@ -14,10 +14,12 @@
 
 package com.android.systemui.utils.leaks;
 
+import android.graphics.drawable.Drawable;
 import android.testing.LeakCheck;
 
+import androidx.annotation.Nullable;
+
 import com.android.internal.statusbar.StatusBarIcon;
-import com.android.systemui.statusbar.phone.StatusBarSignalPolicy.CallIndicatorIconState;
 import com.android.systemui.statusbar.phone.ui.IconManager;
 import com.android.systemui.statusbar.phone.ui.StatusBarIconController;
 
@@ -60,19 +62,17 @@ public class FakeStatusBarIconController extends BaseLeakChecker<IconManager>
     }
 
     @Override
+    public void setResourceIcon(String slot, @Nullable String resPackage, int iconResId,
+            @Nullable Drawable preloadedIcon, CharSequence contentDescription,
+            StatusBarIcon.Shape shape) {
+    }
+
+    @Override
     public void setNewWifiIcon() {
     }
 
     @Override
     public void setNewMobileIconSubIds(List<Integer> subIds) {
-    }
-
-    @Override
-    public void setCallStrengthIcons(String slot, List<CallIndicatorIconState> states) {
-    }
-
-    @Override
-    public void setNoCallingIcons(String slot, List<CallIndicatorIconState> states) {
     }
 
     @Override

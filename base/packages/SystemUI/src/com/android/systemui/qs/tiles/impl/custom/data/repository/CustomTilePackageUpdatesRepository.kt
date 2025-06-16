@@ -23,11 +23,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.UserHandle
 import androidx.annotation.GuardedBy
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow
-import com.android.systemui.dagger.qualifiers.Application
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.qs.pipeline.shared.TileSpec
-import com.android.systemui.qs.tiles.impl.di.QSTileScope
+import com.android.systemui.qs.tiles.base.shared.model.QSTileScope
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
@@ -39,7 +40,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.launch
 
 interface CustomTilePackageUpdatesRepository {
 
@@ -51,7 +51,7 @@ class CustomTilePackageUpdatesRepositoryImpl
 @Inject
 constructor(
     private val tileSpec: TileSpec.CustomTileSpec,
-    @Application private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     @QSTileScope private val tileScope: CoroutineScope,
     @Background private val backgroundCoroutineContext: CoroutineContext,
 ) : CustomTilePackageUpdatesRepository {
@@ -78,7 +78,7 @@ constructor(
         "RegisterReceiverViaContext",
     )
     private fun createPackageChangesFlowForUser(user: UserHandle): Flow<Unit> =
-        ConflatedCallbackFlow.conflatedCallbackFlow {
+        conflatedCallbackFlow {
                 val receiver =
                     object : BroadcastReceiver() {
                         override fun onReceive(context: Context?, intent: Intent?) {

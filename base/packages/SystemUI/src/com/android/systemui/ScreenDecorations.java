@@ -91,7 +91,6 @@ import com.android.systemui.statusbar.commandline.CommandRegistry;
 import com.android.systemui.statusbar.events.PrivacyDotViewController;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.util.concurrency.DelayableExecutor;
-import com.android.systemui.util.concurrency.ThreadFactory;
 import com.android.systemui.util.kotlin.JavaAdapter;
 import com.android.systemui.util.settings.SecureSettings;
 
@@ -112,7 +111,7 @@ import javax.inject.Inject;
  */
 @SysUISingleton
 public class ScreenDecorations implements
-        CoreStartable, ConfigurationController.ConfigurationListener, Dumpable {
+        CoreStartable, ConfigurationController.ConfigurationListener {
     private static final boolean DEBUG_LOGGING = false;
     private static final String TAG = "ScreenDecorations";
 
@@ -146,7 +145,6 @@ public class ScreenDecorations implements
     private CameraAvailabilityListener mCameraListener;
     private final UserTracker mUserTracker;
     private final PrivacyDotViewController mDotViewController;
-    private final ThreadFactory mThreadFactory;
     private final DecorProviderFactory mDotFactory;
     private final FaceScanningProviderFactory mFaceScanningFactory;
     private final CameraProtectionLoader mCameraProtectionLoader;
@@ -171,7 +169,6 @@ public class ScreenDecorations implements
     private WindowManager mWindowManager;
     private int mRotation;
     private UserSettingObserver mColorInversionSetting;
-    @Nullable
     private DelayableExecutor mExecutor;
     private Handler mHandler;
     boolean mPendingConfigChange;
@@ -191,7 +188,7 @@ public class ScreenDecorations implements
 
     @VisibleForTesting
     protected void showCameraProtection(@NonNull Path protectionPath, @NonNull Rect bounds) {
-        if (mFaceScanningFactory.shouldShowFaceScanningAnim()) {
+        if (mDebug || mFaceScanningFactory.shouldShowFaceScanningAnim()) {
             DisplayCutoutView overlay = (DisplayCutoutView) getOverlayView(
                     mFaceScanningViewId);
             if (overlay != null) {
@@ -326,26 +323,28 @@ public class ScreenDecorations implements
     }
 
     @Inject
-    public ScreenDecorations(Context context,
+    public ScreenDecorations(
+            Context context,
             SecureSettings secureSettings,
             CommandRegistry commandRegistry,
             UserTracker userTracker,
             DisplayTracker displayTracker,
             PrivacyDotViewController dotViewController,
-            ThreadFactory threadFactory,
             PrivacyDotDecorProviderFactory dotFactory,
             FaceScanningProviderFactory faceScanningFactory,
             ScreenDecorationsLogger logger,
             FacePropertyRepository facePropertyRepository,
             JavaAdapter javaAdapter,
-            CameraProtectionLoader cameraProtectionLoader) {
+            CameraProtectionLoader cameraProtectionLoader,
+            WindowManager windowManager,
+            @ScreenDecorationsThread Handler handler,
+            @ScreenDecorationsThread DelayableExecutor executor) {
         mContext = context;
         mSecureSettings = secureSettings;
         mCommandRegistry = commandRegistry;
         mUserTracker = userTracker;
         mDisplayTracker = displayTracker;
         mDotViewController = dotViewController;
-        mThreadFactory = threadFactory;
         mDotFactory = dotFactory;
         mFaceScanningFactory = faceScanningFactory;
         mCameraProtectionLoader = cameraProtectionLoader;
@@ -353,6 +352,9 @@ public class ScreenDecorations implements
         mLogger = logger;
         mFacePropertyRepository = facePropertyRepository;
         mJavaAdapter = javaAdapter;
+        mWindowManager = windowManager;
+        mHandler = handler;
+        mExecutor = executor;
     }
 
     private final ScreenDecorCommand.Callback mScreenDecorCommandCallback = (cmd, pw) -> {
@@ -392,6 +394,12 @@ public class ScreenDecorations implements
                 setupDecorations();
             });
         }
+
+        if (cmd.getFaceAuthScreen() != null) {
+            mExecutor.execute(() -> {
+                debugTriggerFaceAuth(cmd.getFaceAuthScreen());
+            });
+        }
     };
 
     @Override
@@ -400,10 +408,7 @@ public class ScreenDecorations implements
             Log.i(TAG, "ScreenDecorations is disabled");
             return;
         }
-        mHandler = mThreadFactory.buildHandlerOnNewThread("ScreenDecorations");
-        mExecutor = mThreadFactory.buildDelayableExecutorOnHandler(mHandler);
         mExecutor.execute(this::startOnScreenDecorationsThread);
-        mDotViewController.setUiExecutor(mExecutor);
         mCommandRegistry.registerCommand(ScreenDecorCommand.SCREEN_DECOR_CMD_NAME,
                 () -> new ScreenDecorCommand(mScreenDecorCommandCallback));
     }
@@ -484,7 +489,6 @@ public class ScreenDecorations implements
 
     private void startOnScreenDecorationsThread() {
         Trace.beginSection("ScreenDecorations#startOnScreenDecorationsThread");
-        mWindowManager = mContext.getSystemService(WindowManager.class);
         mContext.getDisplay().getDisplayInfo(mDisplayInfo);
         mRotation = mDisplayInfo.rotation;
         mDisplaySize.x = mDisplayInfo.getNaturalWidth();
@@ -628,6 +632,15 @@ public class ScreenDecorations implements
             }
 
             overlay.removeView(id);
+        }
+    }
+
+    private void debugTriggerFaceAuth(int screen) {
+        DisplayCutoutView overlay = (DisplayCutoutView) getOverlayView(
+                mFaceScanningViewId);
+        if (overlay != null) {
+            overlay.setDebug(true);
+            mCameraListener.debugFaceAuth(screen);
         }
     }
 
@@ -906,12 +919,22 @@ public class ScreenDecorations implements
         return lp;
     }
 
-    private WindowManager.LayoutParams getWindowLayoutBaseParams() {
+    public static WindowManager.LayoutParams getWindowLayoutBaseParams() {
+        return getWindowLayoutBaseParams(/* excludeFromScreenshots= */ true);
+    }
+
+    /**
+     * Creates the base {@link WindowManager.LayoutParams} that are used for all decoration windows.
+     *
+     * @param excludeFromScreenshots whether to set the {@link
+     *     WindowManager.LayoutParams#PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY} flag.
+     */
+    public static WindowManager.LayoutParams getWindowLayoutBaseParams(
+            boolean excludeFromScreenshots) {
         final WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.TYPE_NAVIGATION_BAR_PANEL,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
                         | WindowManager.LayoutParams.FLAG_SLIPPERY
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
@@ -922,7 +945,7 @@ public class ScreenDecorations implements
         // FLAG_SLIPPERY can only be set by trusted overlays
         lp.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_TRUSTED_OVERLAY;
 
-        if (!DEBUG_SCREENSHOT_ROUNDED_CORNERS) {
+        if (!DEBUG_SCREENSHOT_ROUNDED_CORNERS && excludeFromScreenshots) {
             lp.privateFlags |= WindowManager.LayoutParams.PRIVATE_FLAG_IS_ROUNDED_CORNERS_OVERLAY;
         }
 
@@ -1351,6 +1374,7 @@ public class ScreenDecorations implements
         final List<Rect> mBounds = new ArrayList();
         final Rect mBoundingRect = new Rect();
         Rect mTotalBounds = new Rect();
+        boolean mDebug = false;
 
         private int mColor = Color.BLACK;
         private int mRotation;
@@ -1367,6 +1391,10 @@ public class ScreenDecorations implements
                 getViewTreeObserver().addOnDrawListener(() -> Log.i(TAG,
                         getWindowTitleByPos(pos) + " drawn in rot " + mRotation));
             }
+        }
+
+        public void setDebug(boolean debug) {
+            mDebug = debug;
         }
 
         public void setColor(int color) {

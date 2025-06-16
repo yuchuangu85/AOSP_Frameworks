@@ -43,12 +43,20 @@ import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spy;
 import static com.android.server.policy.WindowManagerPolicy.ACTION_PASS_TO_USER;
 
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 
 import static java.util.Collections.unmodifiableMap;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
+import android.content.res.XmlResourceParser;
+import android.hardware.input.KeyGestureEvent;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.util.ArrayMap;
 import android.view.InputDevice;
@@ -75,8 +83,11 @@ class ShortcutKeyTestBase {
     public RuleChain rules = RuleChain.outerRule(mSettingsProviderRule).around(mSetFlagsRule);
 
     private Resources mResources;
+    private PackageManager mPackageManager;
     TestPhoneWindowManager mPhoneWindowManager;
-    DispatchedKeyHandler mDispatchedKeyHandler = event -> false;
+    DispatchedKeyHandler mDispatchedKeyHandler;
+    private int mDownKeysDispatched;
+    private int mUpKeysDispatched;
     Context mContext;
 
     /** Modifier key to meta state */
@@ -99,9 +110,28 @@ class ShortcutKeyTestBase {
     public void setup() {
         mContext = spy(getInstrumentation().getTargetContext());
         mResources = spy(mContext.getResources());
+        mPackageManager = spy(mContext.getPackageManager());
+        doReturn(mContext).when(mContext).createContextAsUser(any(), anyInt());
         doReturn(mResources).when(mContext).getResources();
         doReturn(mSettingsProviderRule.mockContentResolver(mContext))
                 .when(mContext).getContentResolver();
+        XmlResourceParser testBookmarks = mResources.getXml(
+                com.android.frameworks.wmtests.R.xml.bookmarks);
+        doReturn(testBookmarks).when(mResources).getXml(com.android.internal.R.xml.bookmarks);
+        mDispatchedKeyHandler = event -> false;
+        mDownKeysDispatched = 0;
+        mUpKeysDispatched = 0;
+
+        try {
+            // Keep packageName / className in sync with
+            // services/tests/wmtests/res/xml/bookmarks.xml
+            ActivityInfo testActivityInfo = new ActivityInfo();
+            testActivityInfo.applicationInfo = new ApplicationInfo();
+            testActivityInfo.packageName =
+                    testActivityInfo.applicationInfo.packageName = "com.test";
+            doReturn(testActivityInfo).when(mPackageManager).getActivityInfo(
+                    eq(new ComponentName("com.test", "com.test.BookmarkTest")), anyInt());
+        } catch (PackageManager.NameNotFoundException ignored) { }
     }
 
 
@@ -204,6 +234,42 @@ class ShortcutKeyTestBase {
         sendKeyCombination(new int[]{keyCode}, 0 /*durationMillis*/, longPress, DEFAULT_DISPLAY);
     }
 
+    void sendKey(int keyCode, long durationMillis) {
+        sendKeyCombination(new int[]{keyCode}, durationMillis, false, DEFAULT_DISPLAY);
+    }
+
+    void sendKeyGestureEventStart(int gestureType) {
+        mPhoneWindowManager.sendKeyGestureEvent(
+                new KeyGestureEvent.Builder().setKeyGestureType(gestureType).setAction(
+                        KeyGestureEvent.ACTION_GESTURE_START).build());
+    }
+
+    void sendKeyGestureEventComplete(int gestureType) {
+        mPhoneWindowManager.sendKeyGestureEvent(
+                new KeyGestureEvent.Builder().setKeyGestureType(gestureType).setAction(
+                        KeyGestureEvent.ACTION_GESTURE_COMPLETE).build());
+    }
+
+    void sendKeyGestureEventCancel(int gestureType) {
+        mPhoneWindowManager.sendKeyGestureEvent(
+                new KeyGestureEvent.Builder().setKeyGestureType(gestureType).setAction(
+                        KeyGestureEvent.ACTION_GESTURE_COMPLETE).setFlags(
+                        KeyGestureEvent.FLAG_CANCELLED).build());
+    }
+
+    void sendKeyGestureEventComplete(int gestureType, int modifierState) {
+        mPhoneWindowManager.sendKeyGestureEvent(
+                new KeyGestureEvent.Builder().setModifierState(modifierState).setKeyGestureType(
+                        gestureType).setAction(KeyGestureEvent.ACTION_GESTURE_COMPLETE).build());
+    }
+
+    void sendKeyGestureEventComplete(int keycode, int modifierState, int gestureType) {
+        mPhoneWindowManager.sendKeyGestureEvent(
+                new KeyGestureEvent.Builder().setKeycodes(new int[]{keycode}).setModifierState(
+                        modifierState).setKeyGestureType(gestureType).setAction(
+                        KeyGestureEvent.ACTION_GESTURE_COMPLETE).build());
+    }
+
     /**
      * Since we use SettingsProviderRule to mock the ContentResolver in these
      * tests, the settings observer registered by PhoneWindowManager will not
@@ -221,12 +287,25 @@ class ShortcutKeyTestBase {
         doReturn(expectedBehavior).when(mResources).getInteger(eq(resId));
     }
 
+    int getDownKeysDispatched() {
+        return mDownKeysDispatched;
+    }
+
+    int getUpKeysDispatched() {
+        return mUpKeysDispatched;
+    }
+
     private void interceptKey(KeyEvent keyEvent) {
         int actions = mPhoneWindowManager.interceptKeyBeforeQueueing(keyEvent);
         if ((actions & ACTION_PASS_TO_USER) != 0) {
             if (0 == mPhoneWindowManager.interceptKeyBeforeDispatching(keyEvent)) {
                 if (!mDispatchedKeyHandler.onKeyDispatched(keyEvent)) {
-                    mPhoneWindowManager.dispatchUnhandledKey(keyEvent);
+                    mPhoneWindowManager.interceptUnhandledKey(keyEvent);
+                }
+                if (keyEvent.getAction() == KeyEvent.ACTION_DOWN) {
+                    ++mDownKeysDispatched;
+                } else {
+                    ++mUpKeysDispatched;
                 }
             }
         }

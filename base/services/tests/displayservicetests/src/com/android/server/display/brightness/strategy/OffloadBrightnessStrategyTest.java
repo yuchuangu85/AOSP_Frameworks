@@ -66,14 +66,14 @@ public class OffloadBrightnessStrategyTest {
                 new DisplayBrightnessState.Builder()
                         .setBrightness(brightness)
                         .setBrightnessReason(brightnessReason)
-                        .setSdrBrightness(brightness)
                         .setDisplayBrightnessStrategyName(mOffloadBrightnessStrategy.getName())
                         .setShouldUpdateScreenBrightnessSetting(true)
                         .build();
         DisplayBrightnessState updatedDisplayBrightnessState =
                 mOffloadBrightnessStrategy.updateBrightness(
                         new StrategyExecutionRequest(displayPowerRequest, 0.2f,
-                                /* userSetBrightnessChanged= */ false));
+                                /* userSetBrightnessChanged= */ false,
+                                /* isStylusBeingUsed */ false));
         assertEquals(updatedDisplayBrightnessState, expectedDisplayBrightnessState);
         assertEquals(PowerManager.BRIGHTNESS_INVALID_FLOAT, mOffloadBrightnessStrategy
                 .getOffloadScreenBrightness(), 0.0f);

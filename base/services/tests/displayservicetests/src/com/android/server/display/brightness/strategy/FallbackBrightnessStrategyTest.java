@@ -54,7 +54,6 @@ public class FallbackBrightnessStrategyTest {
                 new DisplayBrightnessState.Builder()
                         .setBrightness(currentBrightness)
                         .setBrightnessReason(brightnessReason)
-                        .setSdrBrightness(currentBrightness)
                         .setDisplayBrightnessStrategyName(mFallbackBrightnessStrategy.getName())
                         .setShouldUpdateScreenBrightnessSetting(true)
                         .setIsUserInitiatedChange(true)
@@ -62,7 +61,8 @@ public class FallbackBrightnessStrategyTest {
         DisplayBrightnessState updatedDisplayBrightnessState =
                 mFallbackBrightnessStrategy.updateBrightness(
                         new StrategyExecutionRequest(displayPowerRequest, currentBrightness,
-                                /* userSetBrightnessChanged= */ true));
+                                /* userSetBrightnessChanged= */ true,
+                                /* isStylusBeingUsed */ false));
         assertEquals(updatedDisplayBrightnessState, expectedDisplayBrightnessState);
     }
 }

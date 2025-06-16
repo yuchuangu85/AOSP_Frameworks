@@ -4,10 +4,6 @@ import static android.app.ActivityManager.PROCESS_STATE_NONEXISTENT;
 import static android.app.ActivityManager.START_SUCCESS;
 import static android.app.ActivityManager.START_TASK_TO_FRONT;
 import static android.app.ActivityManager.processStateAmToProto;
-import static android.app.CameraCompatTaskInfo.CAMERA_COMPAT_CONTROL_DISMISSED;
-import static android.app.CameraCompatTaskInfo.CAMERA_COMPAT_CONTROL_HIDDEN;
-import static android.app.CameraCompatTaskInfo.CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED;
-import static android.app.CameraCompatTaskInfo.CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED;
 import static android.app.WaitResult.INVALID_DELAY;
 import static android.app.WaitResult.LAUNCH_STATE_COLD;
 import static android.app.WaitResult.LAUNCH_STATE_HOT;
@@ -61,6 +57,7 @@ import static com.android.internal.logging.nano.MetricsProto.MetricsEvent.TYPE_T
 import static com.android.internal.logging.nano.MetricsProto.MetricsEvent.TYPE_TRANSITION_REPORTED_DRAWN_NO_BUNDLE;
 import static com.android.internal.logging.nano.MetricsProto.MetricsEvent.TYPE_TRANSITION_REPORTED_DRAWN_WITH_BUNDLE;
 import static com.android.internal.logging.nano.MetricsProto.MetricsEvent.TYPE_TRANSITION_WARM_LAUNCH;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS;
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__LETTERBOX_POSITION__NOT_LETTERBOXED_POSITION;
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__LETTERBOXED_FOR_ASPECT_RATIO;
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__LETTERBOXED_FOR_FIXED_ORIENTATION;
@@ -69,11 +66,6 @@ import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANG
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__NOT_VISIBLE;
 import static com.android.internal.util.FrameworkStatsLog.APP_START_OCCURRED__PACKAGE_STOPPED_STATE__PACKAGE_STATE_NORMAL;
 import static com.android.internal.util.FrameworkStatsLog.APP_START_OCCURRED__PACKAGE_STOPPED_STATE__PACKAGE_STATE_STOPPED;
-import static com.android.internal.util.FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__APPEARED_APPLY_TREATMENT;
-import static com.android.internal.util.FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__APPEARED_REVERT_TREATMENT;
-import static com.android.internal.util.FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_APPLY_TREATMENT;
-import static com.android.internal.util.FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_DISMISS;
-import static com.android.internal.util.FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_REVERT_TREATMENT;
 import static com.android.server.am.MemoryStatUtil.MemoryStat;
 import static com.android.server.am.MemoryStatUtil.readMemoryStatFromFilesystem;
 import static com.android.server.am.ProcessList.INVALID_ADJ;
@@ -89,7 +81,6 @@ import android.annotation.Nullable;
 import android.app.ActivityOptions;
 import android.app.ActivityOptions.SourceInfo;
 import android.app.ApplicationStartInfo;
-import android.app.CameraCompatTaskInfo.CameraCompatControlState;
 import android.app.WaitResult;
 import android.app.WindowConfiguration.WindowingMode;
 import android.content.ComponentName;
@@ -113,6 +104,7 @@ import android.util.TimeUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.protolog.ProtoLog;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.LatencyTracker;
 import com.android.internal.util.function.pooled.PooledLambda;
@@ -254,7 +246,7 @@ class ActivityMetricsLogger {
                     status = ":completed-same-process:";
                 } else {
                     if (endInfo.mTransitionType == TYPE_TRANSITION_HOT_LAUNCH) {
-                        status = ":completed-hot:";
+                        status = !endInfo.mRelaunched ? ":completed-hot:" : ":completed-relaunch:";
                     } else if (endInfo.mTransitionType == TYPE_TRANSITION_WARM_LAUNCH) {
                         status = ":completed-warm:";
                     } else {
@@ -398,6 +390,14 @@ class ActivityMetricsLogger {
                 return;
             }
             if (mLastLaunchedActivity != null) {
+                if (mLastLaunchedActivity.mLaunchCookie != null) {
+                    ProtoLog.v(WM_DEBUG_WINDOW_TRANSITIONS,
+                            "Transferring launch cookie=%s from=%s(%d) to=%s(%d)",
+                            mLastLaunchedActivity.mLaunchCookie,
+                            mLastLaunchedActivity.packageName,
+                            System.identityHashCode(mLastLaunchedActivity), r.packageName,
+                            System.identityHashCode(r));
+                }
                 // Transfer the launch cookie and launch root task because it is a consecutive
                 // launch event.
                 r.mLaunchCookie = mLastLaunchedActivity.mLaunchCookie;
@@ -768,6 +768,11 @@ class ActivityMetricsLogger {
             // As abort for no process switch.
             launchObserverNotifyIntentFailed(newInfo.mLaunchingState.mStartUptimeNs);
         }
+        if (Intent.ACTION_PROCESS_TEXT.equals(newInfo.mLastLaunchedActivity.intent.getAction())) {
+            mLoggerHandler.post(PooledLambda.obtainRunnable(FrameworkStatsLog::write,
+                    FrameworkStatsLog.PROCESS_TEXT_ACTION_LAUNCHED_REPORTED,
+                    launchedActivity.launchedFromUid, launchedActivity.getUid()));
+        }
         scheduleCheckActivityToBeDrawnIfSleeping(launchedActivity);
 
         // If the previous transitions are no longer visible, abort them to avoid counting the
@@ -788,11 +793,12 @@ class ActivityMetricsLogger {
      */
     private void updateSplitPairLaunches(@NonNull TransitionInfo info) {
         final Task launchedActivityTask = info.mLastLaunchedActivity.getTask();
-        final Task adjacentToLaunchedTask = launchedActivityTask.getAdjacentTask();
-        if (adjacentToLaunchedTask == null) {
+        final Task launchedSplitRootTask = launchedActivityTask.getTaskWithAdjacent();
+        if (launchedSplitRootTask == null) {
             // Not a part of a split pair
             return;
         }
+
         for (int i = mTransitionInfoList.size() - 1; i >= 0; i--) {
             final TransitionInfo otherInfo = mTransitionInfoList.get(i);
             if (otherInfo == info) {
@@ -800,7 +806,9 @@ class ActivityMetricsLogger {
             }
             final Task otherTask = otherInfo.mLastLaunchedActivity.getTask();
             // The adjacent task is the split root in which activities are started
-            if (otherTask.isDescendantOf(adjacentToLaunchedTask)) {
+            final boolean isDescendantOfAdjacent = launchedSplitRootTask.forOtherAdjacentTasks(
+                    otherTask::isDescendantOf);
+            if (isDescendantOfAdjacent) {
                 if (DEBUG_METRICS) {
                     Slog.i(TAG, "Found adjacent tasks t1=" + launchedActivityTask.mTaskId
                             + " t2=" + otherTask.mTaskId);
@@ -842,18 +850,18 @@ class ActivityMetricsLogger {
         info.mWindowsDrawnDelayMs = info.calculateDelay(timestampNs);
         info.mIsDrawn = true;
         final TransitionInfoSnapshot infoSnapshot = new TransitionInfoSnapshot(info);
-        if (info.mLoggedTransitionStarting || (!r.mDisplayContent.mOpeningApps.contains(r)
-                && !r.mTransitionController.isCollecting(r))) {
+        if (info.mLoggedTransitionStarting || !r.mTransitionController.isCollecting(r)) {
             done(false /* abort */, info, "notifyWindowsDrawn", timestampNs);
         }
 
         if (android.app.Flags.appStartInfoTimestamps()) {
+            final int pid = r.getPid();
             // Log here to match StatsD for time to first frame.
             mLoggerHandler.post(
                     () -> mSupervisor.mService.mWindowManager.mAmInternal.addStartInfoTimestamp(
                             ApplicationStartInfo.START_TIMESTAMP_FIRST_FRAME,
-                            timestampNs, r.getUid(), r.getPid(),
-                            info.mLastLaunchedActivity.mUserId));
+                            timestampNs, infoSnapshot.applicationInfo.uid, pid,
+                            infoSnapshot.userId));
         }
 
         return infoSnapshot;
@@ -1285,10 +1293,8 @@ class ActivityMetricsLogger {
         final ActivityRecord r = info.mLastLaunchedActivity;
         final long lastTopLossTime = r.topResumedStateLossTime;
         final WindowManagerService wm = mSupervisor.mService.mWindowManager;
-        final Object controller = wm.getRecentsAnimationController();
         mLoggerHandler.postDelayed(() -> {
-            if (lastTopLossTime != r.topResumedStateLossTime
-                    || controller != wm.getRecentsAnimationController()) {
+            if (lastTopLossTime != r.topResumedStateLossTime) {
                 // Skip if the animation was finished in a short time.
                 return;
             }
@@ -1622,7 +1628,8 @@ class ActivityMetricsLogger {
 
         int positionToLog = APP_COMPAT_STATE_CHANGED__LETTERBOX_POSITION__NOT_LETTERBOXED_POSITION;
         if (isAppCompateStateChangedToLetterboxed(state)) {
-            positionToLog = activity.mLetterboxUiController.getLetterboxPositionForLogging();
+            positionToLog = activity.mAppCompatController.getReachabilityOverrides()
+                    .getLetterboxPositionForLogging();
         }
         FrameworkStatsLog.write(FrameworkStatsLog.APP_COMPAT_STATE_CHANGED,
                 packageUid, state, positionToLog);
@@ -1659,71 +1666,6 @@ class ActivityMetricsLogger {
         if (DEBUG_METRICS) {
             Slog.i(TAG, String.format("LETTERBOX_POSITION_CHANGED(%s, %s)",
                     packageUid, position));
-        }
-    }
-
-    /**
-     * Logs the Camera Compat Control appeared event that corresponds to the given {@code state}
-     * with the given {@code packageUid}.
-     */
-    void logCameraCompatControlAppearedEventReported(@CameraCompatControlState int state,
-            int packageUid) {
-        switch (state) {
-            case CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED:
-                logCameraCompatControlEventReported(
-                        CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__APPEARED_APPLY_TREATMENT,
-                        packageUid);
-                break;
-            case CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED:
-                logCameraCompatControlEventReported(
-                        CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__APPEARED_REVERT_TREATMENT,
-                        packageUid);
-                break;
-            case CAMERA_COMPAT_CONTROL_HIDDEN:
-                // Nothing to log.
-                break;
-            default:
-                Slog.w(TAG, "Unexpected state in logCameraCompatControlAppearedEventReported: "
-                        + state);
-                break;
-        }
-    }
-
-    /**
-     * Logs the Camera Compat Control clicked event that corresponds to the given {@code state}
-     * with the given {@code packageUid}.
-     */
-    void logCameraCompatControlClickedEventReported(@CameraCompatControlState int state,
-            int packageUid) {
-        switch (state) {
-            case CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED:
-                logCameraCompatControlEventReported(
-                        CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_APPLY_TREATMENT,
-                        packageUid);
-                break;
-            case CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED:
-                logCameraCompatControlEventReported(
-                        CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_REVERT_TREATMENT,
-                        packageUid);
-                break;
-            case CAMERA_COMPAT_CONTROL_DISMISSED:
-                logCameraCompatControlEventReported(
-                        CAMERA_COMPAT_CONTROL_EVENT_REPORTED__EVENT__CLICKED_DISMISS,
-                        packageUid);
-                break;
-            default:
-                Slog.w(TAG, "Unexpected state in logCameraCompatControlAppearedEventReported: "
-                        + state);
-                break;
-        }
-    }
-
-    private void logCameraCompatControlEventReported(int event, int packageUid) {
-        FrameworkStatsLog.write(FrameworkStatsLog.CAMERA_COMPAT_CONTROL_EVENT_REPORTED, packageUid,
-                event);
-        if (DEBUG_METRICS) {
-            Slog.i(TAG, String.format("CAMERA_COMPAT_CONTROL_EVENT_REPORTED(%s, %s)", packageUid,
-                    event));
         }
     }
 

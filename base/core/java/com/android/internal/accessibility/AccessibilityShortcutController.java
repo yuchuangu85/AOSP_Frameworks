@@ -36,6 +36,7 @@ import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.ContentObserver;
@@ -48,6 +49,7 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.provider.SettingsStringUtil;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.Voice;
 import android.text.TextUtils;
@@ -56,12 +58,12 @@ import android.util.Slog;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityManager;
-import android.view.accessibility.Flags;
 import android.widget.Toast;
 
 import com.android.internal.R;
 import com.android.internal.accessibility.dialog.AccessibilityTarget;
 import com.android.internal.accessibility.util.ShortcutUtils;
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.function.pooled.PooledLambda;
 
 import java.lang.annotation.Retention;
@@ -95,6 +97,8 @@ public class AccessibilityShortcutController {
             new ComponentName("com.android.server.accessibility", "ReduceBrightColors");
     public static final ComponentName FONT_SIZE_COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "FontSize");
+    public static final ComponentName AUTOCLICK_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "Autoclick");
 
     // The component name for the sub setting of Accessibility button in Accessibility settings
     public static final ComponentName ACCESSIBILITY_BUTTON_COMPONENT_NAME =
@@ -121,11 +125,19 @@ public class AccessibilityShortcutController {
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
             .build();
+
+    /**
+     * An intent action to launch Extra Dim dialog.
+     */
+    @VisibleForTesting
+    static final String ACTION_LAUNCH_REMOVE_EXTRA_DIM_DIALOG =
+            "com.android.systemui.action.LAUNCH_REMOVE_EXTRA_DIM_DIALOG";
     private static Map<ComponentName, FrameworkFeatureInfo> sFrameworkShortcutFeaturesMap;
 
     private final Context mContext;
     private final Handler mHandler;
-    private final UserSetupCompleteObserver  mUserSetupCompleteObserver;
+    @VisibleForTesting
+    public final UserSetupCompleteObserver  mUserSetupCompleteObserver;
 
     private AlertDialog mAlertDialog;
     private boolean mIsShortcutEnabled;
@@ -151,9 +163,10 @@ public class AccessibilityShortcutController {
      *         info for toggling a framework feature
      */
     public static Map<ComponentName, FrameworkFeatureInfo>
-        getFrameworkShortcutFeaturesMap() {
+            getFrameworkShortcutFeaturesMap() {
+
         if (sFrameworkShortcutFeaturesMap == null) {
-            Map<ComponentName, FrameworkFeatureInfo> featuresMap = new ArrayMap<>(4);
+            Map<ComponentName, FrameworkFeatureInfo> featuresMap = new ArrayMap<>(8);
             featuresMap.put(COLOR_INVERSION_COMPONENT_NAME,
                     new ToggleableFrameworkFeatureInfo(
                             Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED,
@@ -164,6 +177,11 @@ public class AccessibilityShortcutController {
                             Settings.Secure.ACCESSIBILITY_DISPLAY_DALTONIZER_ENABLED,
                             "1" /* Value to enable */, "0" /* Value to disable */,
                             R.string.color_correction_feature_name));
+            featuresMap.put(AUTOCLICK_COMPONENT_NAME,
+                    new ToggleableFrameworkFeatureInfo(
+                            Settings.Secure.ACCESSIBILITY_AUTOCLICK_ENABLED,
+                            "1" /* Value to enable */, "0" /* Value to disable */,
+                            R.string.autoclick_feature_name));
             if (SUPPORT_ONE_HANDED_MODE) {
                 featuresMap.put(ONE_HANDED_COMPONENT_NAME,
                         new ToggleableFrameworkFeatureInfo(
@@ -172,7 +190,7 @@ public class AccessibilityShortcutController {
                                 R.string.one_handed_mode_feature_name));
             }
             featuresMap.put(REDUCE_BRIGHT_COLORS_COMPONENT_NAME,
-                    new ToggleableFrameworkFeatureInfo(
+                    new ExtraDimFrameworkFeatureInfo(
                             Settings.Secure.REDUCE_BRIGHT_COLORS_ACTIVATED,
                             "1" /* Value to enable */, "0" /* Value to disable */,
                             R.string.reduce_bright_colors_feature_name));
@@ -278,9 +296,7 @@ public class AccessibilityShortcutController {
                     cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStatus.SHOWN,
                     userId);
         } else {
-            if (Flags.restoreA11yShortcutTargetService()) {
-                enableDefaultHardwareShortcut(userId);
-            }
+            enableDefaultHardwareShortcut(userId);
             playNotificationTone();
             if (mAlertDialog != null) {
                 mAlertDialog.dismiss();
@@ -349,43 +365,44 @@ public class AccessibilityShortcutController {
 
         // Avoid non-a11y users accidentally turning shortcut on without reading this carefully.
         // Put "don't turn on" as the primary action.
-        final AlertDialog alertDialog = mFrameworkObjectProvider.getAlertDialogBuilder(
-                        // Use SystemUI context so we pick up any theme set in a vendor overlay
-                        mFrameworkObjectProvider.getSystemUiContext())
-                .setTitle(getShortcutWarningTitle(targets))
-                .setMessage(getShortcutWarningMessage(targets))
-                .setCancelable(false)
-                .setNegativeButton(R.string.accessibility_shortcut_on,
-                        (DialogInterface d, int which) -> enableDefaultHardwareShortcut(userId))
-                .setPositiveButton(R.string.accessibility_shortcut_off,
-                        (DialogInterface d, int which) -> {
-                            Set<String> targetServices =
-                                    ShortcutUtils.getShortcutTargetsFromSettings(
-                                            mContext,
-                                            HARDWARE,
+        final AlertDialog alertDialog =
+                mFrameworkObjectProvider
+                        .getAlertDialogBuilder(
+                                // Use SystemUI context so we pick up any theme set in a vendor
+                                // overlay
+                                mFrameworkObjectProvider.getSystemUiContext())
+                        .setTitle(getShortcutWarningTitle(targets))
+                        .setMessage(getShortcutWarningMessage(targets))
+                        .setCancelable(false)
+                        .setNegativeButton(
+                                R.string.accessibility_shortcut_on,
+                                (DialogInterface d, int which) ->
+                                        enableDefaultHardwareShortcut(userId))
+                        .setPositiveButton(
+                                R.string.accessibility_shortcut_off,
+                                (DialogInterface d, int which) -> {
+                                    Set<String> targetServices =
+                                            ShortcutUtils.getShortcutTargetsFromSettings(
+                                                    mContext, HARDWARE, userId);
+                                    am.enableShortcutsForTargets(
+                                            false, HARDWARE, targetServices, userId);
+                                    // If canceled, treat as if the dialog has never been shown
+                                    Settings.Secure.putIntForUser(
+                                            mContext.getContentResolver(),
+                                            Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
+                                            DialogStatus.NOT_SHOWN,
                                             userId);
-                            if (Flags.migrateEnableShortcuts()) {
-                                am.enableShortcutsForTargets(
-                                        false, HARDWARE, targetServices, userId);
-                            } else {
-                                Settings.Secure.putStringForUser(mContext.getContentResolver(),
-                                        Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE, "",
-                                        userId);
-                                ShortcutUtils.updateInvisibleToggleAccessibilityServiceEnableState(
-                                        mContext, targetServices, userId);
-                            }
-                            // If canceled, treat as if the dialog has never been shown
-                            Settings.Secure.putIntForUser(mContext.getContentResolver(),
-                                    Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
-                                    DialogStatus.NOT_SHOWN, userId);
-                        })
-                .setOnCancelListener((DialogInterface d) -> {
-                    // If canceled, treat as if the dialog has never been shown
-                    Settings.Secure.putIntForUser(mContext.getContentResolver(),
-                            Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
-                            DialogStatus.NOT_SHOWN, userId);
-                })
-                .create();
+                                })
+                        .setOnCancelListener(
+                                (DialogInterface d) -> {
+                                    // If canceled, treat as if the dialog has never been shown
+                                    Settings.Secure.putIntForUser(
+                                            mContext.getContentResolver(),
+                                            Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
+                                            DialogStatus.NOT_SHOWN,
+                                            userId);
+                                })
+                        .create();
         return alertDialog;
     }
 
@@ -455,7 +472,7 @@ public class AccessibilityShortcutController {
         AccessibilityManager accessibilityManager =
                 mFrameworkObjectProvider.getAccessibilityManagerInstance(mContext);
         return accessibilityManager.getEnabledAccessibilityServiceList(
-                FEEDBACK_ALL_MASK).contains(serviceInfo);
+                FEEDBACK_ALL_MASK, mUserId).contains(serviceInfo);
     }
 
     private boolean hasFeatureLeanback() {
@@ -520,14 +537,8 @@ public class AccessibilityShortcutController {
             // Default service is invalid, so nothing we can do here.
             return;
         }
-        if (Flags.migrateEnableShortcuts()) {
-            accessibilityManager.enableShortcutsForTargets(true, HARDWARE,
-                    Set.of(defaultServiceComponent.flattenToString()), userId);
-        } else {
-            Settings.Secure.putStringForUser(mContext.getContentResolver(),
-                    Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE,
-                    defaultServiceComponent.flattenToString(), userId);
-        }
+        accessibilityManager.enableShortcutsForTargets(true, HARDWARE,
+                Set.of(defaultServiceComponent.flattenToString()), userId);
     }
 
     private boolean performTtsPrompt(AlertDialog alertDialog) {
@@ -666,7 +677,8 @@ public class AccessibilityShortcutController {
         }
     }
 
-    private class UserSetupCompleteObserver extends ContentObserver {
+    @VisibleForTesting
+    public class UserSetupCompleteObserver extends ContentObserver {
 
         private boolean mIsRegistered = false;
         private int mUserId;
@@ -739,7 +751,8 @@ public class AccessibilityShortcutController {
                     R.string.config_defaultAccessibilityService);
             final List<AccessibilityServiceInfo> enabledServices =
                     mFrameworkObjectProvider.getAccessibilityManagerInstance(
-                            mContext).getEnabledAccessibilityServiceList(FEEDBACK_ALL_MASK);
+                            mContext).getEnabledAccessibilityServiceList(
+                                    FEEDBACK_ALL_MASK, mUserId);
             for (int i = enabledServices.size() - 1; i >= 0; i--) {
                 if (TextUtils.equals(defaultShortcutTarget, enabledServices.get(i).getId())) {
                     return;
@@ -825,6 +838,48 @@ public class AccessibilityShortcutController {
         LaunchableFrameworkFeatureInfo(int labelStringResourceId) {
             super(/* settingKey= */ null, /* settingOnValue= */ null, /* settingOffValue= */ null,
                     labelStringResourceId);
+        }
+    }
+
+
+    public static class ExtraDimFrameworkFeatureInfo extends FrameworkFeatureInfo {
+        ExtraDimFrameworkFeatureInfo(String settingKey, String settingOnValue,
+                String settingOffValue, int labelStringResourceId) {
+            super(settingKey, settingOnValue, settingOffValue, labelStringResourceId);
+        }
+
+        /**
+         * Perform shortcut action.
+         *
+         * @return True if the accessibility service is enabled, false otherwise.
+         */
+        public boolean activateShortcut(Context context, int userId) {
+            if (com.android.server.display.feature.flags.Flags.evenDimmer()
+                    && context.getResources().getBoolean(
+                    com.android.internal.R.bool.config_evenDimmerEnabled)) {
+                launchExtraDimDialog(context);
+                return true;
+            } else {
+                // Assuming that the default state will be to have the feature off
+                final SettingsStringUtil.SettingStringHelper
+                        setting = new SettingsStringUtil.SettingStringHelper(
+                        context.getContentResolver(), getSettingKey(), userId);
+                if (!TextUtils.equals(getSettingOnValue(), setting.read())) {
+                    setting.write(getSettingOnValue());
+                    return true;
+                } else {
+                    setting.write(getSettingOffValue());
+                    return false;
+                }
+            }
+        }
+
+        private void launchExtraDimDialog(Context context) {
+            final Intent intent = new Intent(ACTION_LAUNCH_REMOVE_EXTRA_DIM_DIALOG);
+            intent.setFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.setPackage(
+                    context.getString(com.android.internal.R.string.config_systemUi));
+            context.sendBroadcastAsUser(intent, UserHandle.SYSTEM);
         }
     }
 

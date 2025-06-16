@@ -16,12 +16,16 @@
 
 package com.android.systemui.statusbar.ui.viewmodel
 
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor
-import com.android.systemui.keyguard.shared.model.StatusBarState
+import com.android.systemui.scene.domain.interactor.SceneInteractor
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.scene.shared.model.Overlays
+import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.statusbar.domain.interactor.KeyguardStatusBarInteractor
+import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior
 import com.android.systemui.statusbar.notification.domain.interactor.HeadsUpNotificationInteractor
 import com.android.systemui.statusbar.policy.BatteryController
 import com.android.systemui.statusbar.policy.BatteryController.BatteryStateChangeCallback
@@ -32,6 +36,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 /**
@@ -48,18 +54,33 @@ class KeyguardStatusBarViewModel
 constructor(
     @Application scope: CoroutineScope,
     headsUpNotificationInteractor: HeadsUpNotificationInteractor,
+    sceneInteractor: SceneInteractor,
     keyguardInteractor: KeyguardInteractor,
     keyguardStatusBarInteractor: KeyguardStatusBarInteractor,
     batteryController: BatteryController,
 ) {
+
+    private val showingHeadsUpStatusBar: Flow<Boolean> =
+        if (SceneContainerFlag.isEnabled && !StatusBarNoHunBehavior.isEnabled) {
+            headsUpNotificationInteractor.statusBarHeadsUpStatus.map { it.isPinned }
+        } else {
+            flowOf(false)
+        }
+
     /** True if this view should be visible and false otherwise. */
     val isVisible: StateFlow<Boolean> =
         combine(
+                sceneInteractor.currentScene,
+                sceneInteractor.currentOverlays,
                 keyguardInteractor.isDozing,
-                keyguardInteractor.statusBarState,
-                headsUpNotificationInteractor.showHeadsUpStatusBar,
-            ) { isDozing, statusBarState, showHeadsUpStatusBar ->
-                !isDozing && statusBarState == StatusBarState.KEYGUARD && !showHeadsUpStatusBar
+                showingHeadsUpStatusBar,
+            ) { currentScene, currentOverlays, isDozing, showHeadsUpStatusBar ->
+                currentScene == Scenes.Lockscreen &&
+                    Overlays.NotificationsShade !in currentOverlays &&
+                    Overlays.QuickSettingsShade !in currentOverlays &&
+                    Overlays.Bouncer !in currentOverlays &&
+                    !isDozing &&
+                    !showHeadsUpStatusBar
             }
             .stateIn(scope, SharingStarted.WhileSubscribed(), false)
 

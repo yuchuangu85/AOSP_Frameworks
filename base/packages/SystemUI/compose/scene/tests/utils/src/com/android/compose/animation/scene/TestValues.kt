@@ -21,18 +21,28 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 
-/** Scenes keys that can be reused by tests. */
+/** Scene keys that can be reused by tests. */
 object TestScenes {
     val SceneA = SceneKey("SceneA")
     val SceneB = SceneKey("SceneB")
     val SceneC = SceneKey("SceneC")
     val SceneD = SceneKey("SceneD")
+    val SceneE = SceneKey("SceneE")
+}
+
+/** Overlay keys that can be reused by tests. */
+object TestOverlays {
+    val OverlayA = OverlayKey("OverlayA")
+    val OverlayB = OverlayKey("OverlayB")
+    val OverlayC = OverlayKey("OverlayC")
+    val OverlayD = OverlayKey("OverlayD")
 }
 
 /** Element keys that can be reused by tests. */
 object TestElements {
     val Foo = ElementKey("Foo")
     val Bar = ElementKey("Bar")
+    val LowZIndex = ElementKey("LowZIndex", contentPicker = LowestZIndexContentPicker)
 }
 
 /** Value keys that can be reused by tests. */
@@ -59,4 +69,6 @@ val EmptyTestTransitions = transitions {
     }
 
     from(TestScenes.SceneC, to = TestScenes.SceneA) { spec = snap() }
+
+    from(TestScenes.SceneC, to = TestScenes.SceneD) { spec = snap() }
 }

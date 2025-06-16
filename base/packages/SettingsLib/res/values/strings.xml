@@ -229,11 +229,21 @@
     <string name="bluetooth_hearing_aid_right_active">Active (right only)</string>
     <!-- Connected device settings. Message when the left-side and right-side hearing aids device are active. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_hearing_aid_left_and_right_active">Active (left and right)</string>
+    <!-- Connected device settings.: Message when changing remote ambient state failed. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_hearing_device_ambient_error">Couldn\u2019t update surroundings</string>
 
     <!-- Connected devices settings. Message when Bluetooth is connected and active for media only, showing remote device status and battery level. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_active_media_only_battery_level">Active (media only). <xliff:g id="battery_level_as_percentage">%1$s</xliff:g> battery.</string>
     <!-- Connected devices settings. Message when Bluetooth is connected and active for media only, showing remote device status and battery level for untethered headset. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_active_media_only_battery_level_untethered">Active (media only). L: <xliff:g id="battery_level_as_percentage" example="25%">%1$s</xliff:g>, R: <xliff:g id="battery_level_as_percentage" example="25%">%2$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device status and battery level for temporary bond device. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_battery_level">Guest device. <xliff:g id="battery_level_as_percentage">%1$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device status and battery level for temporary bond untethered headset. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_battery_level_untethered">Guest device. L: <xliff:g id="battery_level_as_percentage" example="25%">%1$s</xliff:g>, R: <xliff:g id="battery_level_as_percentage" example="25%">%2$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected and active for media only, showing remote device status and battery level for temporary bond device. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_media_only_battery_level">Guest device (media only). <xliff:g id="battery_level_as_percentage">%1$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected and active for media only, showing remote device status and battery level for temporary bond untethered headset. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_media_only_battery_level_untethered">Guest device (media only). L: <xliff:g id="battery_level_as_percentage" example="25%">%1$s</xliff:g>, R: <xliff:g id="battery_level_as_percentage" example="25%">%2$s</xliff:g> battery.</string>
     <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device battery level, supports audio sharing. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_battery_level_lea_support">Connected (supports audio sharing). <xliff:g id="battery_level_as_percentage">%1$s</xliff:g> battery.</string>
     <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device battery level for untethered headset, supports audio sharing. [CHAR LIMIT=NONE] -->
@@ -244,10 +254,22 @@
     <string name="bluetooth_battery_level_untethered_right_lea_support">Connected (supports audio sharing). Right: <xliff:g id="battery_level_as_percentage" example="25%">%1$s</xliff:g> battery.</string>
     <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing no battery information, supports audio sharing. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_no_battery_level_lea_support">Connected (supports audio sharing)</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device battery level, supports audio sharing. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_battery_level_lea_support">Guest device (supports audio sharing). <xliff:g id="battery_level_as_percentage">%1$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing remote device battery level for untethered headset, supports audio sharing. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_battery_level_untethered_lea_support">Guest device (supports audio sharing). L: <xliff:g id="battery_level_as_percentage" example="25%">%1$s</xliff:g>, R: <xliff:g id="battery_level_as_percentage" example="25%">%2$s</xliff:g> battery.</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use, showing no battery information, supports audio sharing. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_no_battery_level_lea_support">Guest device (supports audio sharing)</string>
     <!-- Connected devices settings. Message when Bluetooth is connected and active for media only but no battery information, showing remote device status. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_active_media_only_no_battery_level">Active (media only)</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected but not in use with no battery information, showing remote device status for temporary bond device. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_no_battery_level">Guest device</string>
+    <!-- Connected devices settings. Message when Bluetooth is connected and active for media only but no battery information, showing remote device status for temporary bond device. [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_media_only_no_battery_level">Guest device (media only)</string>
     <!-- Connected devices settings. Message shown when bluetooth device is disconnected but is a known, previously connected device, supports audio sharing [CHAR LIMIT=NONE] -->
     <string name="bluetooth_saved_device_lea_support">Supports audio sharing</string>
+    <!-- Connected devices settings. Message shown when temporary bond bluetooth device is disconnected but is a known, previously connected device, supports audio sharing [CHAR LIMIT=NONE] -->
+    <string name="bluetooth_guest_saved_device_lea_support">Guest device. Supports audio sharing</string>
 
     <!-- Connected device settings. Message when the left-side hearing aid device is active for media only. [CHAR LIMIT=NONE] -->
     <string name="bluetooth_hearing_aid_media_only_left_active">Active (media only), left only</string>
@@ -266,7 +288,7 @@
     <string name="bluetooth_profile_hid">Input device</string>
     <!-- Bluetooth settings. The user-visible string that is used whenever referring to the PAN profile (accessing Internet through remote device). [CHAR LIMIT=40] -->
     <string name="bluetooth_profile_pan">Internet access</string>
-    <!-- Bluetooth settings. The user-visible string that is used whenever referring to the PBAP profile. [CHAR LIMIT=40] -->
+    <!-- Bluetooth settings. The user-visible string that is used whenever referring to the PBAP profile. [CHAR LIMIT=80] -->
     <string name="bluetooth_profile_pbap">Allow access to contacts and call history</string>
     <!-- Bluetooth settings. The user-visible summary string that is used whenever referring to the PBAP profile (sharing contacts). [CHAR LIMIT=60] -->
     <string name="bluetooth_profile_pbap_summary">Info will be used for call announcements and more</string>
@@ -819,6 +841,13 @@
     <!-- Summary of checkbox setting that enables the terminal app. [CHAR LIMIT=64] -->
     <string name="enable_terminal_summary">Enable terminal app that offers local shell access</string>
 
+    <!-- Title of checkbox setting that enables the Linux terminal app. [CHAR LIMIT=32] -->
+    <string name="enable_linux_terminal_title">Linux development environment</string>
+    <!-- Summary of checkbox setting that enables the Linux terminal app. [CHAR LIMIT=none] -->
+    <string name="enable_linux_terminal_summary">(Experimental) Run Linux terminal on Android</string>
+    <!-- Disclaimer below the checkbox that disabling the Linux terminal app would clear its data. [CHAR LIMIT=none] -->
+    <string name="disable_linux_terminal_disclaimer">If you disable, Linux terminal data will be cleared</string>
+
     <!-- HDCP checking title, used for debug purposes only. [CHAR LIMIT=25] -->
     <string name="hdcp_checking_title">HDCP checking</string>
     <!-- HDCP checking dialog title, used for debug purposes only. [CHAR LIMIT=25] -->
@@ -860,6 +889,9 @@
     <!-- Preference category for monitoring debugging development settings. [CHAR LIMIT=25] -->
     <string name="debug_monitoring_category">Monitoring</string>
 
+    <!-- Preference category to alter window management settings, [CHAR LIMIT=50] -->
+    <string name="window_management_category">Window Management</string>
+
     <!-- UI debug setting: always enable strict mode? [CHAR LIMIT=25] -->
     <string name="strict_mode">Strict mode enabled</string>
     <!-- UI debug setting: show strict mode summary [CHAR LIMIT=50] -->
@@ -880,6 +912,11 @@
     <string name="show_key_presses">Show key presses</string>
     <!-- UI debug setting: show physical key presses summary [CHAR LIMIT=150] -->
     <string name="show_key_presses_summary">Show visual feedback for physical key presses</string>
+
+    <!-- UI debug setting: Title text for a debug setting that enables a visualization of touchpad input in a window on the screen  [CHAR LIMIT=50] -->
+    <string name="touchpad_visualizer">Show touchpad input</string>
+    <!-- UI debug setting: Summary text for a debug setting that enables a visualization of touchpad input in a window on the screen [CHAR LIMIT=150] -->
+    <string name="touchpad_visualizer_summary">Screen overlay displaying touchpad input data and recognized gestures</string>
 
     <!-- UI debug setting: show where surface updates happen? [CHAR LIMIT=25] -->
     <string name="show_screen_updates">Show surface updates</string>
@@ -953,6 +990,18 @@
     <string name="enable_verbose_vendor_logging">Enable verbose vendor logging</string>
     <!-- UI debug setting: enable verbose vendor logging summary [CHAR LIMIT=NONE] -->
     <string name="enable_verbose_vendor_logging_summary">Include additional device-specific vendor logs in bug reports, which may contain private information, use more battery, and/or use more storage.</string>
+    <!-- UI debug setting: checkbox text to disable verbose vendor logging after one day [CHAR LIMIT=50] -->
+    <string name="enable_verbose_vendor_logging_checkbox">Disable after one day</string>
+    <!-- UI debug setting: verbose vendor logging notification title [CHAR LIMIT=60] -->
+    <string name="verbose_vendor_logging_notification_title">Verbose vendor logging has ended</string>
+    <!-- UI debug setting: verbose vendor logging notification summary [CHAR LIMIT=60] -->
+    <string name="verbose_vendor_logging_notification_summary">Enabled for one day</string>
+    <!-- UI debug setting: verbose vendor logging notification action text [CHAR LIMIT=60] -->
+    <string name="verbose_vendor_logging_notification_action">Enable for one more day</string>
+    <!-- UI debug setting: verbose vendor logging preference summary for disabling after one day [CHAR LIMIT=60] -->
+    <string name="verbose_vendor_logging_preference_summary_will_disable">Disables after one day</string>
+    <!-- UI debug setting: verbose vendor logging preference summary for leaving setting enabled indefinitely [CHAR LIMIT=60] -->
+    <string name="verbose_vendor_logging_preference_summary_on">Enabled indefinitely</string>
 
     <!-- UI debug setting: scaling factor for window animations [CHAR LIMIT=25] -->
     <string name="window_animation_scale_title">Window animation scale</string>
@@ -965,6 +1014,9 @@
 
     <!-- UI debug setting: simulate secondary display devices using overlays [CHAR LIMIT=45] -->
     <string name="overlay_display_devices_title">Simulate secondary displays</string>
+
+    <!-- UI debug setting: shade display awareness title [CHAR LIMIT=45] -->
+    <string name="shade_display_awareness_title">Shade display position</string>
 
     <!-- Preference category for application debugging development settings. [CHAR LIMIT=25] -->
     <string name="debug_applications_category">Apps</string>
@@ -998,10 +1050,8 @@
     <!-- UI debug setting: force allow on external summary [CHAR LIMIT=150] -->
     <string name="force_resizable_activities_summary">Make all activities resizable for multi-window, regardless of manifest values.</string>
 
-    <!-- UI debug setting: enable freeform window support [CHAR LIMIT=50] -->
+    <!-- Title for a toggle that enables support for windows to be in freeform. Freeform windows enables users to freely arrange and resize overlapping apps. [CHAR LIMIT=50] -->
     <string name="enable_freeform_support">Enable freeform windows</string>
-    <!-- UI debug setting: enable freeform window support summary [CHAR LIMIT=150] -->
-    <string name="enable_freeform_support_summary">Enable support for experimental freeform windows.</string>
 
     <!-- Local (desktop) backup password menu title [CHAR LIMIT=25] -->
     <string name="local_backup_password_title">Desktop backup password</string>
@@ -1075,6 +1125,13 @@
     <string name="select_webview_provider_dialog_title">Set WebView implementation</string>
     <!-- Developer settings: text for the WebView provider selection toast shown if an invalid provider was chosen (i.e. the setting list was stale). [CHAR LIMIT=NONE] -->
     <string name="select_webview_provider_toast_text">This choice is no longer valid. Try again.</string>
+
+    <!-- [CHAR LIMIT=50] Label for button to launch current WebView provider's DevTools (developer tools) UI -->
+    <string name="webview_launch_devtools_title">WebView DevTools</string>
+    <!-- [CHAR LIMIT=50] Error toast shown to user when no (current) WebView package is found (when trying to launch DevTools) -->
+    <string name="webview_launch_devtools_no_package">WebView package not found.</string>
+    <!-- [CHAR LIMIT=50] Error toast shown to user when DevTools (developer tools) activity could not be launched (despite there being a WebView package) -->
+    <string name="webview_launch_devtools_no_activity">Could not launch DevTools.</string>
 
     <!-- Name of feature to change color setting for the display [CHAR LIMIT=60] -->
     <string name="picture_color_mode">Picture color mode</string>
@@ -1154,7 +1211,7 @@
     <!-- [CHAR_LIMIT=40] Label for battery level chart when charging with duration -->
     <string name="power_charging_duration"><xliff:g id="level">%1$s</xliff:g> - <xliff:g id="time">%2$s</xliff:g> left until full</string>
     <!-- [CHAR_LIMIT=80] Label for battery level chart when charge been limited -->
-    <string name="power_charging_limited"><xliff:g id="level">%1$s</xliff:g> - Charging optimized</string>
+    <string name="power_charging_limited"><xliff:g id="level">%1$s</xliff:g> - Charging on hold to protect battery</string>
     <!-- [CHAR_LIMIT=80] Label for battery charging future pause -->
     <string name="power_charging_future_paused"><xliff:g id="level">%1$s</xliff:g> - Charging</string>
 
@@ -1201,9 +1258,13 @@
 
     <!-- Summary for settings preference disabled by app ops [CHAR LIMIT=50] -->
     <string name="disabled_by_app_ops_text">Controlled by Restricted Setting</string>
+    <!-- Summary for settings preference disabled while the device is in a phone call [CHAR LIMIT=50] -->
+    <string name="disabled_in_phone_call_text">Unavailable during calls</string>
 
     <!-- [CHAR LIMIT=25] Manage applications, text telling using an application is disabled. -->
     <string name="disabled">Disabled</string>
+    <!-- Summary for a settings preference indicating it is enabled [CHAR LIMIT = 30] -->
+    <string name="enabled">Enabled</string>
     <!-- Summary of app trusted to install apps [CHAR LIMIT=45] -->
     <string name="external_source_trusted">Allowed</string>
     <!-- Summary of app not trusted to install apps [CHAR LIMIT=45] -->
@@ -1349,6 +1410,12 @@
     <!-- Keywords for setting screen for controlling apps that can schedule alarms [CHAR LIMIT=100] -->
     <string name="keywords_alarms_and_reminders">schedule, alarm, reminder, clock</string>
 
+    <!-- Priority Modes: Name of the "manual" Do Not Disturb mode. [CHAR LIMIT=50] -->
+    <string name="zen_mode_do_not_disturb_name">Do Not Disturb</string>
+
+    <!-- Sound: Title for the Do not Disturb option and associated settings page. [CHAR LIMIT=50]-->
+    <string name="zen_mode_settings_title">Do Not Disturb</string>
+
     <!--  Do not disturb: Label for button in enable zen dialog that will turn on zen mode. [CHAR LIMIT=30] -->
     <string name="zen_mode_enable_dialog_turn_on">Turn on</string>
     <!-- Do not disturb: Title for the Do not Disturb dialog to turn on Do not disturb. [CHAR LIMIT=50]-->
@@ -1375,6 +1442,9 @@
     <!-- Do not disturb: Duration option to always have DND on until it is manually turned off [CHAR LIMIT=60] -->
     <string name="zen_mode_forever">Until you turn off</string>
 
+    <!-- [CHAR LIMIT=50] Zen mode settings: placeholder for a Contact name when the name is empty -->
+    <string name="zen_mode_starred_contacts_empty_name">(No name)</string>
+
     <!-- time label for event have that happened very recently [CHAR LIMIT=60] -->
     <string name="time_unit_just_now">Just now</string>
 
@@ -1385,8 +1455,10 @@
     <string name="media_transfer_this_device_name">This phone</string>
     <!-- Name of the tablet device. [CHAR LIMIT=30] -->
     <string name="media_transfer_this_device_name_tablet">This tablet</string>
+    <!-- Name of the internal speaker and mic. [CHAR LIMIT=30] -->
+    <string name="media_transfer_this_device_name_desktop">This computer (internal)</string>
     <!-- Name of the default media output of the TV. [CHAR LIMIT=30] -->
-    <string name="media_transfer_this_device_name_tv">@string/tv_media_transfer_default</string>
+    <string name="media_transfer_this_device_name_tv">This TV</string>
     <!-- Name of the dock device. [CHAR LIMIT=30] -->
     <string name="media_transfer_dock_speaker_device_name">Dock speaker</string>
     <!-- Default name of the external device. [CHAR LIMIT=30] -->
@@ -1395,6 +1467,12 @@
     <string name="media_transfer_default_device_name">Connected device</string>
     <!-- Name of the phone device with an active remote session. [CHAR LIMIT=30] -->
     <string name="media_transfer_this_phone">This phone</string>
+    <!-- Name of the digital audio output, i.e. S/PDIF, usually optical. [CHAR LIMIT=30] -->
+    <string name="media_transfer_digital_line_name">S/PDIF</string>
+    <!-- Name of the analog audio output. [CHAR LIMIT=30] -->
+    <string name="media_transfer_analog_line_name">Analog</string>
+    <!-- Name of the AUX audio output. [CHAR LIMIT=30] -->
+    <string name="media_transfer_aux_line_name">AUX</string>
     <!-- Sub status indicates device is not available due to an unknown error. [CHAR LIMIT=NONE] -->
     <string name="media_output_status_unknown_error">Can\’t play on this device</string>
     <!-- Sub status indicates device need premium account. [CHAR LIMIT=NONE] -->
@@ -1423,15 +1501,17 @@
     <!-- Media output switcher. Subtitle for devices connected through HDMI EARC if a device name is available. [CHAR LIMIT=NONE] -->
     <string name="tv_media_transfer_earc_subtitle">Connected via eARC</string>
 
-    <!-- TV media output switcher. Title for the default audio output of the device [CHAR LIMIT=NONE] -->
-    <string name="tv_media_transfer_default">TV default</string>
-    <!-- TV media output switcher. Subtitle for default audio output which is HDMI, e.g. TV dongle [CHAR LIMIT=NONE] -->
-    <string name="tv_media_transfer_hdmi">HDMI output</string>
-    <!-- TV media output switcher. Subtitle for default audio output which is internal speaker, i.e. panel VTs [CHAR LIMIT=NONE] -->
-    <string name="tv_media_transfer_internal_speakers">Internal speakers</string>
+    <!-- TV media output switcher. Subtitle for default audio output which is internal speaker [CHAR LIMIT=NONE] -->
+    <string name="tv_media_transfer_internal_speakers">Built-in speaker</string>
+
+    <!-- TV media output switcher. Title for default audio output which is HDMI, e.g. TV dongle [CHAR LIMIT=NONE] -->
+    <string name="tv_media_transfer_hdmi_title">TV Audio</string>
 
     <!-- Warning message to tell user is have problem during profile connect, it need to turn off device and back on. [CHAR_LIMIT=NONE] -->
     <string name="profile_connect_timeout_subtext">Problem connecting. Turn device off &amp; back on</string>
+
+    <!-- Warning message when the bluetooth key is missing. [CHAR_LIMIT=NONE] -->
+    <string name="bluetooth_key_missing_subtext">Can’t connect</string>
 
     <!-- Name of the 3.5mm audio device. [CHAR LIMIT=40] -->
     <string name="media_transfer_wired_device_name">Wired audio device</string>
@@ -1611,7 +1691,22 @@
     <string name="cached_apps_freezer_reboot_dialog_text">Your device must be rebooted for this change to apply. Reboot now or cancel.</string>
 
     <!-- Name of the 3.5mm and usb audio device. [CHAR LIMIT=50] -->
-    <string name="media_transfer_wired_usb_device_name">Wired headphone</string>
+    <string name="media_transfer_wired_headphone_name">Wired headphone</string>
+
+    <!-- Name of the 3.5mm headphone, used in desktop devices. [CHAR LIMIT=50] -->
+    <string name="media_transfer_headphone_name">Wired audio</string>
+
+    <!-- Name of the usb audio device speaker, used in desktop devices. [CHAR LIMIT=50] -->
+    <string name="media_transfer_usb_audio_name">USB audio</string>
+
+    <!-- Name of the 3.5mm audio device mic. [CHAR LIMIT=50] -->
+    <string name="media_transfer_wired_device_mic_name">Wired microphone</string>
+
+    <!-- Name of the usb audio device mic. [CHAR LIMIT=50] -->
+    <string name="media_transfer_usb_device_mic_name">USB microphone</string>
+
+    <!-- Name of the bluetooth audio device mic. [CHAR LIMIT=50] -->
+    <string name="media_transfer_bt_device_mic_name">BT microphone</string>
 
     <!-- Label for Wifi hotspot switch on. Toggles hotspot on [CHAR LIMIT=30] -->
     <string name="wifi_hotspot_switch_on_text">On</string>
@@ -1665,6 +1760,8 @@
 
     <!-- Content description of the data connection type 5G+. [CHAR LIMIT=NONE] -->
     <string name="data_connection_5g_plus" translatable="false">5G+</string>
+    <!-- Content description of the data connection type 5G+ for carrier 2032. [CHAR LIMIT=NONE] -->
+    <string name="data_connection_5g_plus_carrier_2032" translatable="false">5G+</string>
 
     <!-- Content description of the data connection type Carrier WiFi. [CHAR LIMIT=NONE] -->
     <string name="data_connection_carrier_wifi">W+</string>

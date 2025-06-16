@@ -74,7 +74,7 @@ android::base::Result<void> TouchState::addOrUpdateWindow(
         const sp<WindowInfoHandle>& windowHandle, InputTarget::DispatchMode dispatchMode,
         ftl::Flags<InputTarget::Flags> targetFlags, DeviceId deviceId,
         const std::vector<PointerProperties>& touchingPointers,
-        std::optional<nsecs_t> firstDownTimeInTarget) {
+        std::optional<nsecs_t> firstDownTimeInTarget, sp<IBinder> forwardingWindowToken) {
     if (touchingPointers.empty()) {
         LOG(FATAL) << __func__ << "No pointers specified for " << windowHandle->getName();
         return android::base::Error();
@@ -88,6 +88,7 @@ android::base::Result<void> TouchState::addOrUpdateWindow(
         if (touchedWindow.windowHandle == windowHandle) {
             touchedWindow.dispatchMode = dispatchMode;
             touchedWindow.targetFlags |= targetFlags;
+            touchedWindow.forwardingWindowToken = forwardingWindowToken;
             // For cases like hover enter/exit or DISPATCH_AS_OUTSIDE a touch window might not have
             // downTime set initially. Need to update existing window when a pointer is down for the
             // window.
@@ -103,6 +104,7 @@ android::base::Result<void> TouchState::addOrUpdateWindow(
     touchedWindow.windowHandle = windowHandle;
     touchedWindow.dispatchMode = dispatchMode;
     touchedWindow.targetFlags = targetFlags;
+    touchedWindow.forwardingWindowToken = forwardingWindowToken;
     touchedWindow.addTouchingPointers(deviceId, touchingPointers);
     if (firstDownTimeInTarget) {
         touchedWindow.trySetDownTimeInTarget(deviceId, *firstDownTimeInTarget);
@@ -112,17 +114,18 @@ android::base::Result<void> TouchState::addOrUpdateWindow(
 }
 
 void TouchState::addHoveringPointerToWindow(const sp<WindowInfoHandle>& windowHandle,
-                                            DeviceId deviceId, const PointerProperties& pointer) {
+                                            DeviceId deviceId, const PointerProperties& pointer,
+                                            float x, float y) {
     for (TouchedWindow& touchedWindow : windows) {
         if (touchedWindow.windowHandle == windowHandle) {
-            touchedWindow.addHoveringPointer(deviceId, pointer);
+            touchedWindow.addHoveringPointer(deviceId, pointer, x, y);
             return;
         }
     }
 
     TouchedWindow touchedWindow;
     touchedWindow.windowHandle = windowHandle;
-    touchedWindow.addHoveringPointer(deviceId, pointer);
+    touchedWindow.addHoveringPointer(deviceId, pointer, x, y);
     windows.push_back(touchedWindow);
 }
 

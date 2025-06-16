@@ -55,7 +55,7 @@ import org.junit.runners.Parameterized
  *     Stop tracing
  * ```
  *
- * To run this test: `atest FlickerTests:SeamlessAppRotationTest`
+ * To run this test: `atest FlickerTestsRotation:SeamlessAppRotationTest`
  *
  * To run only the presubmit assertions add: `--
  *
@@ -156,19 +156,6 @@ class SeamlessAppRotationTest(flicker: LegacyFlickerTest) : RotationTransition(f
         flicker.assertLayers { isVisible(testApp) }
     }
 
-    /** Checks that [testApp] layer covers the entire screen during the whole transition */
-    @Presubmit
-    @Test
-    fun appLayerRotates() {
-        flicker.assertLayers {
-            this.invoke("entireScreenCovered") { entry ->
-                entry.entry.displays.map { display ->
-                    entry.visibleRegion(testApp).coversExactly(display.layerStackSpace)
-                }
-            }
-        }
-    }
-
     /** {@inheritDoc} */
     @Test
     @Ignore("Not applicable to this CUJ. App is full screen")
@@ -225,7 +212,6 @@ class SeamlessAppRotationTest(flicker: LegacyFlickerTest) : RotationTransition(f
         visibleLayersShownMoreThanOneConsecutiveEntry()
         visibleWindowsShownMoreThanOneConsecutiveEntry()
 
-        runAndIgnoreAssumptionViolation { appLayerRotates() }
         runAndIgnoreAssumptionViolation { appLayerAlwaysVisible() }
         runAndIgnoreAssumptionViolation { navBarLayerIsVisibleAtStartAndEnd() }
         runAndIgnoreAssumptionViolation { navBarWindowIsAlwaysVisible() }

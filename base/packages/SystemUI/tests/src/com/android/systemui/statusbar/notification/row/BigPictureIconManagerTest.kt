@@ -30,7 +30,6 @@ import com.android.systemui.res.R
 import com.android.systemui.util.mockito.argumentCaptor
 import com.android.systemui.util.mockito.mock
 import com.google.common.truth.Truth.assertThat
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -42,12 +41,11 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.verify
-import org.mockito.Mockito.verifyZeroInteractions
+import org.mockito.Mockito.verifyNoMoreInteractions
 
 private const val FREE_IMAGE_DELAY_MS = 4000L
 private const val MAX_IMAGE_SIZE = 512 // size of the test drawables in pixels
 
-@OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWithLooper
 @RunWith(AndroidJUnit4::class)
@@ -160,7 +158,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             assertIsPlaceHolder(drawableCaptor.value)
             assertSize(drawableCaptor.value)
             // AND nothing happens on the old consumer
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -182,7 +180,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             assertIsFullImage(drawableCaptor.value)
             assertSize(drawableCaptor.value)
             // AND nothing happens on the old consumer
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -332,7 +330,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -347,7 +345,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -362,7 +360,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -382,7 +380,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -399,7 +397,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -416,7 +414,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -436,7 +434,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN nothing happens
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     @Test
@@ -457,7 +455,7 @@ class BigPictureIconManagerTest : SysuiTestCase() {
             runCurrent()
 
             // THEN no more updates are happening
-            verifyZeroInteractions(mockConsumer)
+            verifyNoMoreInteractions(mockConsumer)
         }
 
     private fun overrideMaxImageSizes() {

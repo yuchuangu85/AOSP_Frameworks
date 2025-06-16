@@ -16,27 +16,22 @@
 
 package com.android.systemui.keyguard.domain.interactor
 
-import android.content.applicationContext
 import com.android.systemui.biometrics.domain.interactor.fingerprintPropertyInteractor
 import com.android.systemui.common.ui.domain.interactor.configurationInteractor
 import com.android.systemui.keyguard.data.repository.keyguardBlueprintRepository
-import com.android.systemui.keyguard.data.repository.keyguardClockSection
 import com.android.systemui.keyguard.data.repository.keyguardSmartspaceSection
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
-import com.android.systemui.shade.domain.interactor.shadeInteractor
+import com.android.systemui.shade.domain.interactor.shadeModeInteractor
 
 val Kosmos.keyguardBlueprintInteractor by
     Kosmos.Fixture {
         KeyguardBlueprintInteractor(
             keyguardBlueprintRepository = keyguardBlueprintRepository,
             applicationScope = applicationCoroutineScope,
-            context = applicationContext,
-            shadeInteractor = shadeInteractor,
-            clockInteractor = keyguardClockInteractor,
+            shadeModeInteractor = shadeModeInteractor,
             configurationInteractor = configurationInteractor,
             fingerprintPropertyInteractor = fingerprintPropertyInteractor,
-            clockSection = keyguardClockSection,
             smartspaceSection = keyguardSmartspaceSection,
         )
     }

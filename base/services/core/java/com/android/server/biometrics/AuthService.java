@@ -38,7 +38,6 @@ import android.hardware.biometrics.AuthenticationStateListener;
 import android.hardware.biometrics.BiometricAuthenticator;
 import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.ComponentInfoInternal;
-import android.hardware.biometrics.Flags;
 import android.hardware.biometrics.IAuthService;
 import android.hardware.biometrics.IBiometricEnabledOnKeyguardCallback;
 import android.hardware.biometrics.IBiometricService;
@@ -49,8 +48,6 @@ import android.hardware.biometrics.ITestSessionCallback;
 import android.hardware.biometrics.PromptInfo;
 import android.hardware.biometrics.SensorLocationInternal;
 import android.hardware.biometrics.SensorPropertiesInternal;
-import android.hardware.biometrics.face.IFace;
-import android.hardware.biometrics.fingerprint.IFingerprint;
 import android.hardware.face.FaceSensorConfigurations;
 import android.hardware.face.FaceSensorProperties;
 import android.hardware.face.FaceSensorPropertiesInternal;
@@ -74,6 +71,8 @@ import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.server.SystemService;
+import com.android.server.biometrics.sensors.face.FaceService;
+import com.android.server.biometrics.sensors.fingerprint.FingerprintService;
 import com.android.server.companion.virtual.VirtualDeviceManagerInternal;
 
 import java.util.ArrayList;
@@ -203,7 +202,7 @@ public class AuthService extends SystemService {
          */
         @VisibleForTesting
         public String[] getFingerprintAidlInstances() {
-            return ServiceManager.getDeclaredInstances(IFingerprint.DESCRIPTOR);
+            return FingerprintService.getDeclaredInstances();
         }
 
         /**
@@ -211,7 +210,7 @@ public class AuthService extends SystemService {
          */
         @VisibleForTesting
         public String[] getFaceAidlInstances() {
-            return ServiceManager.getDeclaredInstances(IFace.DESCRIPTOR);
+            return FaceService.getDeclaredInstances();
         }
 
         /**
@@ -399,12 +398,6 @@ public class AuthService extends SystemService {
 
             final long identity = Binder.clearCallingIdentity();
             try {
-                // We can't do this above because we need the READ_DEVICE_CONFIG permission, which
-                // the calling user may not possess.
-                if (!Flags.lastAuthenticationTime()) {
-                    throw new UnsupportedOperationException();
-                }
-
                 return mBiometricService.getLastAuthenticationTime(userId, authenticators);
             } finally {
                 Binder.restoreCallingIdentity(identity);
@@ -850,10 +843,28 @@ public class AuthService extends SystemService {
             return;
         }
 
+        boolean tempResetLockoutRequiresChallenge = false;
+
+        if (hidlConfigStrings != null && hidlConfigStrings.length > 0) {
+            for (String configString : hidlConfigStrings) {
+                try {
+                    SensorConfig sensor = new SensorConfig(configString);
+                    switch (sensor.modality) {
+                        case BiometricAuthenticator.TYPE_FACE:
+                            tempResetLockoutRequiresChallenge = true;
+                            break;
+                    }
+                } catch (Exception e) {
+                    Slog.e(TAG, "Error parsing configString: " + configString, e);
+                }
+            }
+        }
+
+        final boolean resetLockoutRequiresChallenge = tempResetLockoutRequiresChallenge;
+
         handlerProvider.getFaceHandler().post(() -> {
             final FaceSensorConfigurations mFaceSensorConfigurations =
-                    new FaceSensorConfigurations(hidlConfigStrings != null
-                            && hidlConfigStrings.length > 0);
+                    new FaceSensorConfigurations(resetLockoutRequiresChallenge);
 
             if (hidlConfigStrings != null && hidlConfigStrings.length > 0) {
                 mFaceSensorConfigurations.addHidlConfigs(hidlConfigStrings, context);

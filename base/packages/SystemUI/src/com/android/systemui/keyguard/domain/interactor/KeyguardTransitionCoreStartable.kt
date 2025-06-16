@@ -27,7 +27,9 @@ class KeyguardTransitionCoreStartable
 constructor(
     private val interactors: Set<TransitionInteractor>,
     private val auditLogger: KeyguardTransitionAuditLogger,
-    private val bootInteractor: KeyguardTransitionBootInteractor,
+    private val statusBarDisableFlagsInteractor: StatusBarDisableFlagsInteractor,
+    private val keyguardStateCallbackInteractor: KeyguardStateCallbackInteractor,
+    private val keyguardServiceShowLockscreenInteractor: KeyguardServiceShowLockscreenInteractor,
 ) : CoreStartable {
 
     override fun start() {
@@ -47,12 +49,13 @@ constructor(
                     is FromOccludedTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromDozingTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromAlternateBouncerTransitionInteractor -> Log.d(TAG, "Started $it")
-                    is FromDreamingLockscreenHostedTransitionInteractor -> Log.d(TAG, "Started $it")
                 }
             it.start()
         }
         auditLogger.start()
-        bootInteractor.start()
+        statusBarDisableFlagsInteractor.start()
+        keyguardStateCallbackInteractor.start()
+        keyguardServiceShowLockscreenInteractor.start()
     }
 
     companion object {

@@ -38,6 +38,7 @@
 #endif
 
 #include "BuildFlags.h"
+#include "Constants.h"
 #include "OS.h"
 #include "RpcState.h"
 
@@ -70,8 +71,6 @@ constexpr bool kEnableRecording = true;
 constexpr bool kEnableRecording = false;
 #endif
 
-// Log any reply transactions for which the data exceeds this size
-#define LOG_REPLIES_OVER_SIZE (300 * 1024)
 // ---------------------------------------------------------------------------
 
 IBinder::IBinder()
@@ -141,6 +140,22 @@ status_t IBinder::getExtension(sp<IBinder>* out) {
     if (status != OK) return status;
 
     return reply.readNullableStrongBinder(out);
+}
+
+status_t IBinder::addFrozenStateChangeCallback(const wp<FrozenStateChangeCallback>& callback) {
+    BpBinder* proxy = this->remoteBinder();
+    if (proxy != nullptr) {
+        return proxy->addFrozenStateChangeCallback(callback);
+    }
+    return INVALID_OPERATION;
+}
+
+status_t IBinder::removeFrozenStateChangeCallback(const wp<FrozenStateChangeCallback>& callback) {
+    BpBinder* proxy = this->remoteBinder();
+    if (proxy != nullptr) {
+        return proxy->removeFrozenStateChangeCallback(callback);
+    }
+    return INVALID_OPERATION;
 }
 
 status_t IBinder::getDebugPid(pid_t* out) {
@@ -272,7 +287,7 @@ public:
     // for below objects
     RpcMutex mLock;
     std::set<sp<RpcServerLink>> mRpcServerLinks;
-    BpBinder::ObjectManager mObjects;
+    BpBinder::ObjectManager mObjectMgr;
 
     unique_fd mRecordingFd;
 };
@@ -396,7 +411,7 @@ status_t BBinder::transact(
     // In case this is being transacted on in the same process.
     if (reply != nullptr) {
         reply->setDataPosition(0);
-        if (reply->dataSize() > LOG_REPLIES_OVER_SIZE) {
+        if (reply->dataSize() > binder::kLogTransactionsOverBytes) {
             ALOGW("Large reply transaction of %zu bytes, interface descriptor %s, code %d",
                   reply->dataSize(), String8(getInterfaceDescriptor()).c_str(), code);
         }
@@ -430,6 +445,9 @@ status_t BBinder::linkToDeath(
     const sp<DeathRecipient>& /*recipient*/, void* /*cookie*/,
     uint32_t /*flags*/)
 {
+    // BBinder::linkToDeath is invalid because this process owns this binder.
+    // The DeathRecipient is called on BpBinders when the process owning the
+    // binder node dies.
     return INVALID_OPERATION;
 }
 
@@ -452,7 +470,7 @@ void* BBinder::attachObject(const void* objectID, void* object, void* cleanupCoo
     LOG_ALWAYS_FATAL_IF(!e, "no memory");
 
     RpcMutexUniqueLock _l(e->mLock);
-    return e->mObjects.attach(objectID, object, cleanupCookie, func);
+    return e->mObjectMgr.attach(objectID, object, cleanupCookie, func);
 }
 
 void* BBinder::findObject(const void* objectID) const
@@ -461,7 +479,7 @@ void* BBinder::findObject(const void* objectID) const
     if (!e) return nullptr;
 
     RpcMutexUniqueLock _l(e->mLock);
-    return e->mObjects.find(objectID);
+    return e->mObjectMgr.find(objectID);
 }
 
 void* BBinder::detachObject(const void* objectID) {
@@ -469,7 +487,7 @@ void* BBinder::detachObject(const void* objectID) {
     if (!e) return nullptr;
 
     RpcMutexUniqueLock _l(e->mLock);
-    return e->mObjects.detach(objectID);
+    return e->mObjectMgr.detach(objectID);
 }
 
 void BBinder::withLock(const std::function<void()>& doWithLock) {
@@ -485,7 +503,7 @@ sp<IBinder> BBinder::lookupOrCreateWeak(const void* objectID, object_make_func m
     Extras* e = getOrCreateExtras();
     LOG_ALWAYS_FATAL_IF(!e, "no memory");
     RpcMutexUniqueLock _l(e->mLock);
-    return e->mObjects.lookupOrCreateWeak(objectID, make, makeArgs);
+    return e->mObjectMgr.lookupOrCreateWeak(objectID, make, makeArgs);
 }
 
 BBinder* BBinder::localBinder()

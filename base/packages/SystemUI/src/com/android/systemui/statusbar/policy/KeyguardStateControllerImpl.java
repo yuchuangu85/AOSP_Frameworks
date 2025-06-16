@@ -32,6 +32,7 @@ import android.os.Trace;
 
 import androidx.annotation.VisibleForTesting;
 
+import com.android.app.tracing.coroutines.TrackTracer;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
@@ -40,6 +41,7 @@ import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
 import com.android.systemui.res.R;
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 
@@ -71,6 +73,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
             new UpdateMonitorCallback();
     private final Lazy<KeyguardUnlockAnimationController> mUnlockAnimationControllerLazy;
     private final KeyguardUpdateMonitorLogger mLogger;
+    private final Lazy<KeyguardInteractor> mKeyguardInteractorLazy;
 
     private boolean mCanDismissLockScreen;
     private boolean mShowing;
@@ -123,6 +126,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
             Lazy<KeyguardUnlockAnimationController> keyguardUnlockAnimationController,
             KeyguardUpdateMonitorLogger logger,
             DumpManager dumpManager,
+            Lazy<KeyguardInteractor> keyguardInteractor,
             FeatureFlags featureFlags,
             SelectedUserInteractor userInteractor) {
         mContext = context;
@@ -133,6 +137,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
         mKeyguardUpdateMonitor.registerCallback(mKeyguardUpdateMonitorCallback);
         mUnlockAnimationControllerLazy = keyguardUnlockAnimationController;
         mFeatureFlags = featureFlags;
+        mKeyguardInteractorLazy = keyguardInteractor;
 
         dumpManager.registerDumpable(getClass().getSimpleName(), this);
 
@@ -237,7 +242,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
 
     private void setKeyguardFadingAway(boolean keyguardFadingAway) {
         if (mKeyguardFadingAway != keyguardFadingAway) {
-            Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguardFadingAway",
+            TrackTracer.instantForGroup("keyguard", "FadingAway",
                     keyguardFadingAway ? 1 : 0);
             mKeyguardFadingAway = keyguardFadingAway;
             invokeForEachCallback(Callback::onKeyguardFadingAwayChanged);
@@ -283,8 +288,9 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
 
     @Override
     public boolean isKeyguardScreenRotationAllowed() {
-        return SystemProperties.getBoolean("lockscreen.rot_override", false)
-                || mContext.getResources().getBoolean(R.bool.config_enableLockScreenRotation)
+        final boolean configEnabled =
+                mContext.getResources().getBoolean(R.bool.config_enableLockScreenRotation);
+        return SystemProperties.getBoolean("lockscreen.rot_override", configEnabled)
                 || mFeatureFlags.isEnabled(LOCKSCREEN_ENABLE_LANDSCAPE);
     }
 
@@ -351,9 +357,10 @@ public class KeyguardStateControllerImpl implements KeyguardStateController {
     @Override
     public void notifyKeyguardGoingAway(boolean keyguardGoingAway) {
         if (mKeyguardGoingAway != keyguardGoingAway) {
-            Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguardGoingAway",
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguard##GoingAway",
                     keyguardGoingAway ? 1 : 0);
             mKeyguardGoingAway = keyguardGoingAway;
+            mKeyguardInteractorLazy.get().setIsKeyguardGoingAway(keyguardGoingAway);
             invokeForEachCallback(Callback::onKeyguardGoingAwayChanged);
         }
     }

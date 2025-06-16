@@ -20,9 +20,11 @@
 
 #include <map>
 #include <unordered_map>
+#include <vector>
 
 #include <binder/IBinder.h>
 #include <input/Input.h>
+#include <input/InputDevice.h>
 
 #include "InputEventTimeline.h"
 #include "NotifyArgs.h"
@@ -41,26 +43,27 @@ public:
     /**
      * Create a LatencyTracker.
      * param reportingFunction: the function that will be called in order to report full latency.
+     * param inputDevices: input devices relevant for tracking.
      */
-    LatencyTracker(InputEventTimelineProcessor* processor);
+    LatencyTracker(InputEventTimelineProcessor& processor,
+                   std::vector<InputDeviceInfo>& inputDevices);
     /**
-     * Start keeping track of an event identified by inputEventId. This must be called first.
+     * Start keeping track of an event identified by the args. This must be called first.
      * If duplicate events are encountered (events that have the same eventId), none of them will be
-     * tracked. This is because there is not enough information to correctly track them. The api's
-     * 'trackFinishedEvent' and 'trackGraphicsLatency' only contain the inputEventId, and not the
-     * eventTime. Even if eventTime was provided, there would still be a possibility of having
-     * duplicate events that happen to have the same eventTime and inputEventId. Therefore, we
-     * must drop all duplicate data.
+     * tracked. This is because there is not enough information to correctly track them. It is
+     * always possible that two different events are generated with the same inputEventId and the
+     * same eventTime, so there aren't ways to distinguish those. Therefore, we must drop all
+     * duplicate data.
+     * For that reason, the APIs 'trackFinishedEvent' and 'trackGraphicsLatency' only receive the
+     * inputEventId as input.
      */
-    void trackListener(int32_t inputEventId, bool isDown, nsecs_t eventTime, nsecs_t readTime,
-                       DeviceId deviceId, const std::set<InputDeviceUsageSource>& sources);
+    void trackListener(const NotifyArgs& args);
     void trackFinishedEvent(int32_t inputEventId, const sp<IBinder>& connectionToken,
                             nsecs_t deliveryTime, nsecs_t consumeTime, nsecs_t finishTime);
     void trackGraphicsLatency(int32_t inputEventId, const sp<IBinder>& connectionToken,
                               std::array<nsecs_t, GraphicsTimeline::SIZE> timeline);
 
     std::string dump(const char* prefix) const;
-    void setInputDevices(const std::vector<InputDeviceInfo>& inputDevices);
 
 private:
     /**
@@ -81,7 +84,11 @@ private:
     std::multimap<nsecs_t /*eventTime*/, int32_t /*inputEventId*/> mEventTimes;
 
     InputEventTimelineProcessor* mTimelineProcessor;
-    std::vector<InputDeviceInfo> mInputDevices;
+    std::vector<InputDeviceInfo>& mInputDevices;
+
+    void trackListener(int32_t inputEventId, nsecs_t eventTime, nsecs_t readTime, DeviceId deviceId,
+                       const std::set<InputDeviceUsageSource>& sources, int32_t inputEventAction,
+                       InputEventType inputEventType);
     void reportAndPruneMatureRecords(nsecs_t newEventTime);
 };
 

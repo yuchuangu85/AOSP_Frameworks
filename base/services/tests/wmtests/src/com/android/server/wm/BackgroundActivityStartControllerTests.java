@@ -24,6 +24,7 @@ import static com.android.window.flags.Flags.balImprovedMetrics;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -43,6 +44,7 @@ import androidx.test.filters.SmallTest;
 import com.android.compatibility.common.util.DeviceConfigStateHelper;
 import com.android.server.am.PendingIntentRecord;
 import com.android.server.wm.BackgroundActivityStartController.BalVerdict;
+import com.android.server.wm.BackgroundLaunchProcessController.BalCheckConfiguration;
 
 import org.junit.After;
 import org.junit.Before;
@@ -109,6 +111,9 @@ public class BackgroundActivityStartControllerTests {
     @Mock
     AppOpsManager mAppOpsManager;
     MirrorActiveUids mActiveUids = new MirrorActiveUids();
+    @Mock
+    VisibleActivityProcessTracker mVisibleActivityProcessTracker;
+
     WindowProcessControllerMap mProcessMap = new WindowProcessControllerMap();
 
     @Mock
@@ -167,9 +172,9 @@ public class BackgroundActivityStartControllerTests {
         }
 
         @Override
-        BalVerdict checkBackgroundActivityStartAllowedBySender(BalState state) {
+        BalVerdict checkBackgroundActivityStartAllowedByRealCaller(BalState state) {
             return mRealCallerVerdict.orElseGet(
-                    () -> super.checkBackgroundActivityStartAllowedBySender(state));
+                    () -> super.checkBackgroundActivityStartAllowedByRealCaller(state));
         }
 
         public void setRealCallerVerdict(BalVerdict verdict) {
@@ -177,11 +182,12 @@ public class BackgroundActivityStartControllerTests {
         }
 
         @Override
-        BalVerdict checkProcessAllowsBal(WindowProcessController app, BalState state) {
+        BalVerdict checkProcessAllowsBal(WindowProcessController app, BalState state,
+                BalCheckConfiguration checkConfiguration) {
             if (mProcessVerdicts.containsKey(app)) {
                 return mProcessVerdicts.get(app);
             }
-            return super.checkProcessAllowsBal(app, state);
+            return super.checkProcessAllowsBal(app, state, checkConfiguration);
         }
     }
 
@@ -191,11 +197,14 @@ public class BackgroundActivityStartControllerTests {
         mService.mTaskSupervisor = mSupervisor;
         mService.mContext = mContext;
         setViaReflection(mService, "mActiveUids", mActiveUids);
+        setViaReflection(mService, "mGlobalLock", new WindowManagerGlobalLock());
         Mockito.when(mService.getPackageManagerInternalLocked()).thenReturn(
                 mPackageManagerInternal);
         mService.mRootWindowContainer = mRootWindowContainer;
         Mockito.when(mService.getAppOpsManager()).thenReturn(mAppOpsManager);
         setViaReflection(mService, "mProcessMap", mProcessMap);
+        setViaReflection(mService, "mVisibleActivityProcessTracker",
+                mVisibleActivityProcessTracker);
 
         //Mockito.when(mSupervisor.getBackgroundActivityLaunchController()).thenReturn(mController);
         setViaReflection(mSupervisor, "mRecentTasks", mRecentTasks);
@@ -209,7 +218,7 @@ public class BackgroundActivityStartControllerTests {
         Mockito.when(mAppOpsManager.checkOpNoThrow(
                 eq(AppOpsManager.OP_SYSTEM_EXEMPT_FROM_ACTIVITY_BG_START_RESTRICTION),
                 anyInt(), anyString())).thenReturn(AppOpsManager.MODE_DEFAULT);
-        Mockito.when(mCallerApp.areBackgroundActivityStartsAllowed(anyInt())).thenReturn(
+        Mockito.when(mCallerApp.areBackgroundActivityStartsAllowed(anyInt(), any())).thenReturn(
                 BalVerdict.BLOCK);
     }
 
@@ -238,14 +247,14 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
 
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -273,14 +282,14 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
 
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -296,7 +305,7 @@ public class BackgroundActivityStartControllerTests {
     @Test
     public void testRegularActivityStart_allowedByCaller_isAllowed() {
         // setup state
-        BalVerdict callerVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false,
+        BalVerdict callerVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW,
                 "CallerIsVisible");
         mController.setCallerVerdict(callerVerdict);
         mController.setRealCallerVerdict(BalVerdict.BLOCK);
@@ -308,14 +317,14 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
 
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -331,7 +340,7 @@ public class BackgroundActivityStartControllerTests {
     @Test
     public void testRegularActivityStart_allowedByRealCaller_isAllowed() {
         // setup state
-        BalVerdict realCallerVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false,
+        BalVerdict realCallerVerdict = new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW,
                 "RealCallerIsVisible");
         mController.setCallerVerdict(BalVerdict.BLOCK);
         mController.setRealCallerVerdict(realCallerVerdict);
@@ -343,14 +352,14 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
 
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -364,9 +373,9 @@ public class BackgroundActivityStartControllerTests {
     public void testRegularActivityStart_allowedByCallerAndRealCaller_returnsCallerVerdict() {
         // setup state
         BalVerdict callerVerdict =
-                new BalVerdict(BAL_ALLOW_PERMISSION, false, "CallerHasPermission");
+                new BalVerdict(BAL_ALLOW_PERMISSION, "CallerHasPermission");
         BalVerdict realCallerVerdict =
-                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "RealCallerIsVisible");
+                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "RealCallerIsVisible");
         mController.setCallerVerdict(callerVerdict);
         mController.setRealCallerVerdict(realCallerVerdict);
 
@@ -377,14 +386,14 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
 
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -402,9 +411,9 @@ public class BackgroundActivityStartControllerTests {
     public void testPendingIntent_allowedByCallerAndRealCallerButOptOut_isBlocked() {
         // setup state
         BalVerdict callerVerdict =
-                new BalVerdict(BAL_ALLOW_PERMISSION, false, "CallerhasPermission");
+                new BalVerdict(BAL_ALLOW_PERMISSION, "CallerhasPermission");
         BalVerdict realCallerVerdict =
-                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "RealCallerIsVisible");
+                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "RealCallerIsVisible");
         mController.setCallerVerdict(callerVerdict);
         mController.setRealCallerVerdict(realCallerVerdict);
 
@@ -415,7 +424,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = mPendingIntentRecord;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic()
                 .setPendingIntentBackgroundActivityStartMode(
@@ -426,7 +435,7 @@ public class BackgroundActivityStartControllerTests {
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -443,7 +452,7 @@ public class BackgroundActivityStartControllerTests {
     public void testPendingIntent_allowedByCallerAndOptIn_isAllowed() {
         // setup state
         BalVerdict callerVerdict =
-                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "CallerIsVisible");
+                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "CallerIsVisible");
         mController.setCallerVerdict(callerVerdict);
         mController.setRealCallerVerdict(BalVerdict.BLOCK);
 
@@ -454,7 +463,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = mPendingIntentRecord;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic()
                 .setPendingIntentCreatorBackgroundActivityStartMode(
@@ -463,7 +472,7 @@ public class BackgroundActivityStartControllerTests {
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -480,7 +489,7 @@ public class BackgroundActivityStartControllerTests {
     public void testPendingIntent_allowedByRealCallerAndOptIn_isAllowed() {
         // setup state
         BalVerdict realCallerVerdict =
-                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, false, "RealCallerIsVisible");
+                new BalVerdict(BAL_ALLOW_VISIBLE_WINDOW, "RealCallerIsVisible");
         mController.setCallerVerdict(BalVerdict.BLOCK);
         mController.setRealCallerVerdict(realCallerVerdict);
 
@@ -491,7 +500,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = mPendingIntentRecord;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic()
                 .setPendingIntentBackgroundActivityStartMode(
@@ -500,7 +509,7 @@ public class BackgroundActivityStartControllerTests {
         // call
         BalVerdict verdict = mController.checkBackgroundActivityStart(callingUid, callingPid,
                 callingPackage, realCallingUid, realCallingPid, mCallerApp,
-                originatingPendingIntent, forcedBalByPiSender, mResultRecord, intent,
+                originatingPendingIntent, allowBalExemptionForSystemProcess, mResultRecord, intent,
                 checkedOptions);
 
         // assertions
@@ -527,7 +536,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = null;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
         WindowProcessController callerApp = mCallerApp;
@@ -536,8 +545,8 @@ public class BackgroundActivityStartControllerTests {
         // call
         BackgroundActivityStartController.BalState balState = mController
                 .new BalState(callingUid, callingPid, callingPackage, realCallingUid,
-                realCallingPid, callerApp, originatingPendingIntent, forcedBalByPiSender,
-                resultRecord, intent, checkedOptions);
+                realCallingPid, callerApp, originatingPendingIntent,
+                allowBalExemptionForSystemProcess, resultRecord, intent, checkedOptions);
 
         // assertions
         assertThat(balState.mAutoOptInReason).isEqualTo("notPendingIntent");
@@ -547,22 +556,22 @@ public class BackgroundActivityStartControllerTests {
         assertThat(balState.callerExplicitOptInOrOut()).isFalse();
         assertThat(balState.realCallerExplicitOptInOrAutoOptIn()).isTrue();
         assertThat(balState.realCallerExplicitOptInOrOut()).isFalse();
-        assertThat(balState.toString()).contains(
+        assertThat(balState.toString()).isEqualTo(
                 "[callingPackage: package.app1; "
                         + "callingPackageTargetSdk: -1; "
                         + "callingUid: 10001; "
                         + "callingPid: 11001; "
                         + "appSwitchState: 0; "
-                        + "callingUidHasAnyVisibleWindow: false; "
+                        + "callingUidHasVisibleActivity: false; "
+                        + "callingUidHasNonAppVisibleWindow: false; "
                         + "callingUidProcState: NONEXISTENT; "
                         + "isCallingUidPersistentSystemProcess: false; "
-                        + "forcedBalByPiSender: BSP.NONE; "
+                        + "allowBalExemptionForSystemProcess: false; "
                         + "intent: Intent { cmp=package.app3/someClass }; "
                         + "callerApp: mCallerApp; "
                         + "inVisibleTask: false; "
                         + "balAllowedByPiCreator: BSP.ALLOW_BAL; "
-                        + "balAllowedByPiCreatorWithHardening: BSP.ALLOW_BAL; "
-                        + "resultIfPiCreatorAllowsBal: null; "
+                        + "callerStartMode: MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED; "
                         + "hasRealCaller: true; "
                         + "isCallForResult: false; "
                         + "isPendingIntent: false; "
@@ -571,13 +580,16 @@ public class BackgroundActivityStartControllerTests {
                         + "realCallingPackageTargetSdk: -1; "
                         + "realCallingUid: 1; "
                         + "realCallingPid: 1; "
-                        + "realCallingUidHasAnyVisibleWindow: false; "
+                        + "realCallingUidHasVisibleActivity: false; "
+                        + "realCallingUidHasNonAppVisibleWindow: false; "
                         + "realCallingUidProcState: NONEXISTENT; "
                         + "isRealCallingUidPersistentSystemProcess: false; "
                         + "originatingPendingIntent: null; "
                         + "realCallerApp: null; "
                         + "balAllowedByPiSender: BSP.ALLOW_BAL; "
-                        + "resultIfPiSenderAllowsBal: null");
+                        + "realCallerStartMode: MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED; "
+                        + "balRequireOptInByPendingIntentCreator: true; "
+                        + "balDontBringExistingBackgroundTaskStackToFg: true]");
     }
 
     @Test
@@ -592,7 +604,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = mPendingIntentRecord;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
         WindowProcessController callerApp = mCallerApp;
@@ -601,8 +613,8 @@ public class BackgroundActivityStartControllerTests {
         // call
         BackgroundActivityStartController.BalState balState = mController
                 .new BalState(callingUid, callingPid, callingPackage, realCallingUid,
-                realCallingPid, callerApp, originatingPendingIntent, forcedBalByPiSender,
-                resultRecord, intent, checkedOptions);
+                realCallingPid, callerApp, originatingPendingIntent,
+                allowBalExemptionForSystemProcess, resultRecord, intent, checkedOptions);
 
         // assertions
         assertThat(balState.mAutoOptInReason).isEqualTo("callForResult");
@@ -625,7 +637,7 @@ public class BackgroundActivityStartControllerTests {
         int realCallingUid = NO_UID;
         int realCallingPid = NO_PID;
         PendingIntentRecord originatingPendingIntent = mPendingIntentRecord;
-        BackgroundStartPrivileges forcedBalByPiSender = BackgroundStartPrivileges.NONE;
+        boolean allowBalExemptionForSystemProcess = false;
         Intent intent = TEST_INTENT;
         ActivityOptions checkedOptions = ActivityOptions.makeBasic();
         WindowProcessController callerApp = mCallerApp;
@@ -634,8 +646,8 @@ public class BackgroundActivityStartControllerTests {
         // call
         BackgroundActivityStartController.BalState balState = mController
                 .new BalState(callingUid, callingPid, callingPackage, realCallingUid,
-                realCallingPid, callerApp, originatingPendingIntent, forcedBalByPiSender,
-                resultRecord, intent, checkedOptions);
+                realCallingPid, callerApp, originatingPendingIntent,
+                allowBalExemptionForSystemProcess, resultRecord, intent, checkedOptions);
 
         // assertions
         assertThat(balState.mAutoOptInReason).isNull();
@@ -646,22 +658,22 @@ public class BackgroundActivityStartControllerTests {
         assertThat(balState.callerExplicitOptInOrOut()).isFalse();
         assertThat(balState.realCallerExplicitOptInOrAutoOptIn()).isFalse();
         assertThat(balState.realCallerExplicitOptInOrOut()).isFalse();
-        assertThat(balState.toString()).contains(
+        assertThat(balState.toString()).isEqualTo(
                 "[callingPackage: package.app1; "
                         + "callingPackageTargetSdk: -1; "
                         + "callingUid: 10001; "
                         + "callingPid: 11001; "
                         + "appSwitchState: 0; "
-                        + "callingUidHasAnyVisibleWindow: false; "
+                        + "callingUidHasVisibleActivity: false; "
+                        + "callingUidHasNonAppVisibleWindow: false; "
                         + "callingUidProcState: NONEXISTENT; "
                         + "isCallingUidPersistentSystemProcess: false; "
-                        + "forcedBalByPiSender: BSP.NONE; "
+                        + "allowBalExemptionForSystemProcess: false; "
                         + "intent: Intent { cmp=package.app3/someClass }; "
                         + "callerApp: mCallerApp; "
                         + "inVisibleTask: false; "
                         + "balAllowedByPiCreator: BSP.NONE; "
-                        + "balAllowedByPiCreatorWithHardening: BSP.NONE; "
-                        + "resultIfPiCreatorAllowsBal: null; "
+                        + "callerStartMode: MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED; "
                         + "hasRealCaller: true; "
                         + "isCallForResult: false; "
                         + "isPendingIntent: true; "
@@ -670,12 +682,15 @@ public class BackgroundActivityStartControllerTests {
                         + "realCallingPackageTargetSdk: -1; "
                         + "realCallingUid: 1; "
                         + "realCallingPid: 1; "
-                        + "realCallingUidHasAnyVisibleWindow: false; "
+                        + "realCallingUidHasVisibleActivity: false; "
+                        + "realCallingUidHasNonAppVisibleWindow: false; "
                         + "realCallingUidProcState: NONEXISTENT; "
                         + "isRealCallingUidPersistentSystemProcess: false; "
                         + "originatingPendingIntent: PendingIntentRecord; "
                         + "realCallerApp: null; "
                         + "balAllowedByPiSender: BSP.ALLOW_FGS; "
-                        + "resultIfPiSenderAllowsBal: null");
+                        + "realCallerStartMode: MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED; "
+                        + "balRequireOptInByPendingIntentCreator: true; "
+                        + "balDontBringExistingBackgroundTaskStackToFg: true]");
     }
 }

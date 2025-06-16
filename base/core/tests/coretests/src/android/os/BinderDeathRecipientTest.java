@@ -25,14 +25,14 @@ import android.app.ActivityManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 import android.util.ArraySet;
 import android.util.Log;
 import android.util.Pair;
 
 import androidx.test.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import com.android.frameworks.coretests.bdr_helper_app.TestCommsReceiver;
 
@@ -55,7 +55,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Tests functionality of {@link android.os.IBinder.DeathRecipient} callbacks.
  */
 @RunWith(AndroidJUnit4.class)
-@IgnoreUnderRavenwood(blockedBy = ActivityManager.class)
+@DisabledOnRavenwood(blockedBy = ActivityManager.class)
 public class BinderDeathRecipientTest {
     private static final String TAG = BinderDeathRecipientTest.class.getSimpleName();
     private static final String TEST_PACKAGE_NAME_1 =

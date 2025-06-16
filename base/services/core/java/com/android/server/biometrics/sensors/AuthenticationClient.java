@@ -99,7 +99,7 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
             boolean shouldVibrate, int sensorStrength) {
         super(context, lazyDaemon, token, listener, options.getUserId(),
                 options.getOpPackageName(), cookie, options.getSensorId(), shouldVibrate,
-                biometricLogger, biometricContext);
+                biometricLogger, biometricContext, options.isMandatoryBiometrics());
         mIsStrongBiometric = isStrongBiometric;
         mOperationId = operationId;
         mRequireConfirmation = requireConfirmation;
@@ -115,7 +115,7 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
     }
 
     @LockoutTracker.LockoutMode
-    public int handleFailedAttempt(int userId) {
+    private int handleFailedAttempt(int userId) {
         if (mLockoutTracker != null) {
             mLockoutTracker.addFailedAttemptForUser(getTargetUserId());
         }

@@ -21,13 +21,14 @@ import android.util.Log
 import android.view.ContextThemeWrapper
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.lifecycle.LifecycleOwner
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.settingslib.Utils
 import com.android.systemui.animation.Expandable
 import com.android.systemui.common.shared.model.ContentDescription
 import com.android.systemui.common.shared.model.Icon
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.globalactions.GlobalActionsDialogLite
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.plugins.FalsingManager
@@ -36,18 +37,25 @@ import com.android.systemui.qs.footer.data.model.UserSwitcherStatusModel
 import com.android.systemui.qs.footer.domain.interactor.FooterActionsInteractor
 import com.android.systemui.qs.footer.domain.model.SecurityButtonConfig
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shade.domain.interactor.ShadeModeInteractor
+import com.android.systemui.shade.shared.model.ShadeMode
 import com.android.systemui.util.icuMessageFormat
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Provider
 import kotlin.math.max
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 
 private const val TAG = "FooterActionsViewModel"
 
@@ -66,7 +74,8 @@ class FooterActionsViewModel(
     val settings: FooterActionsButtonViewModel,
 
     /** The model for the power button. */
-    val power: FooterActionsButtonViewModel?,
+    val power: Flow<FooterActionsButtonViewModel?>,
+    val initialPower: () -> FooterActionsButtonViewModel?,
 
     /**
      * Observe the device monitoring dialog requests and show the dialog accordingly. This function
@@ -106,9 +115,10 @@ class FooterActionsViewModel(
     class Factory
     @Inject
     constructor(
-        @Application private val context: Context,
+        @ShadeDisplayAware private val context: Context,
         private val falsingManager: FalsingManager,
         private val footerActionsInteractor: FooterActionsInteractor,
+        private val shadeModeInteractor: ShadeModeInteractor,
         private val globalActionsDialogLiteProvider: Provider<GlobalActionsDialogLite>,
         private val activityStarter: ActivityStarter,
         @Named(PM_LITE_ENABLED) private val showPowerButton: Boolean,
@@ -131,9 +141,35 @@ class FooterActionsViewModel(
                 )
             }
 
-            return FooterActionsViewModel(
+            return createFooterActionsViewModel(
                 context,
                 footerActionsInteractor,
+                shadeModeInteractor.shadeMode,
+                falsingManager,
+                globalActionsDialogLite,
+                activityStarter,
+                showPowerButton,
+            )
+        }
+
+        fun create(lifecycleCoroutineScope: LifecycleCoroutineScope): FooterActionsViewModel {
+            val globalActionsDialogLite = globalActionsDialogLiteProvider.get()
+            if (lifecycleCoroutineScope.isActive) {
+                lifecycleCoroutineScope.launch(start = CoroutineStart.ATOMIC) {
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        globalActionsDialogLite.destroy()
+                    }
+                }
+            } else {
+                globalActionsDialogLite.destroy()
+            }
+
+            return createFooterActionsViewModel(
+                context,
+                footerActionsInteractor,
+                shadeModeInteractor.shadeMode,
                 falsingManager,
                 globalActionsDialogLite,
                 activityStarter,
@@ -143,9 +179,10 @@ class FooterActionsViewModel(
     }
 }
 
-fun FooterActionsViewModel(
-    @Application appContext: Context,
+fun createFooterActionsViewModel(
+    @ShadeDisplayAware appContext: Context,
     footerActionsInteractor: FooterActionsInteractor,
+    shadeMode: StateFlow<ShadeMode>,
     falsingManager: FalsingManager,
     globalActionsDialogLite: GlobalActionsDialogLite,
     activityStarter: ActivityStarter,
@@ -179,7 +216,7 @@ fun FooterActionsViewModel(
                 false /* if the dismiss should be deferred */
             },
             null /* cancelAction */,
-            true /* afterKeyguardGone */
+            true, /* afterKeyguardGone */
         )
     }
 
@@ -237,36 +274,15 @@ fun FooterActionsViewModel(
             .distinctUntilChanged()
 
     val userSwitcher =
-        footerActionsInteractor.userSwitcherStatus
-            .map { userSwitcherStatus ->
-                when (userSwitcherStatus) {
-                    UserSwitcherStatusModel.Disabled -> null
-                    is UserSwitcherStatusModel.Enabled -> {
-                        if (userSwitcherStatus.currentUserImage == null) {
-                            Log.e(
-                                TAG,
-                                "Skipped the addition of user switcher button because " +
-                                    "currentUserImage is missing",
-                            )
-                            return@map null
-                        }
-
-                        userSwitcherButtonViewModel(
-                            qsThemedContext,
-                            userSwitcherStatus,
-                            ::onUserSwitcherClicked
-                        )
-                    }
-                }
-            }
-            .distinctUntilChanged()
+        userSwitcherViewModel(qsThemedContext, footerActionsInteractor, ::onUserSwitcherClicked)
 
     val settings = settingsButtonViewModel(qsThemedContext, ::onSettingsButtonClicked)
+
     val power =
         if (showPowerButton) {
-            powerButtonViewModel(qsThemedContext, ::onPowerButtonClicked)
+            powerButtonViewModel(qsThemedContext, ::onPowerButtonClicked, shadeMode)
         } else {
-            null
+            flowOf(null)
         }
 
     return FooterActionsViewModel(
@@ -276,7 +292,43 @@ fun FooterActionsViewModel(
         settings = settings,
         power = power,
         observeDeviceMonitoringDialogRequests = ::observeDeviceMonitoringDialogRequests,
+        initialPower =
+            if (showPowerButton) {
+                { powerButtonViewModel(qsThemedContext, ::onPowerButtonClicked, shadeMode.value) }
+            } else {
+                { null }
+            },
     )
+}
+
+fun userSwitcherViewModel(
+    themedContext: Context,
+    footerActionsInteractor: FooterActionsInteractor,
+    onUserSwitcherClicked: (Expandable) -> Unit,
+): Flow<FooterActionsButtonViewModel?> {
+    return footerActionsInteractor.userSwitcherStatus
+        .map { userSwitcherStatus ->
+            when (userSwitcherStatus) {
+                UserSwitcherStatusModel.Disabled -> null
+                is UserSwitcherStatusModel.Enabled -> {
+                    if (userSwitcherStatus.currentUserImage == null) {
+                        Log.e(
+                            TAG,
+                            "Skipped the addition of user switcher button because " +
+                                "currentUserImage is missing",
+                        )
+                        return@map null
+                    }
+
+                    userSwitcherButtonViewModel(
+                        themedContext,
+                        userSwitcherStatus,
+                        onUserSwitcherClicked,
+                    )
+                }
+            }
+        }
+        .distinctUntilChanged()
 }
 
 fun securityButtonViewModel(
@@ -337,7 +389,7 @@ fun userSwitcherButtonViewModel(
 
 private fun userSwitcherContentDescription(
     qsThemedContext: Context,
-    currentUser: String?
+    currentUser: String?,
 ): String? {
     return currentUser?.let { user ->
         qsThemedContext.getString(R.string.accessibility_quick_settings_user, user)
@@ -352,13 +404,9 @@ fun settingsButtonViewModel(
         id = R.id.settings_button_container,
         Icon.Resource(
             R.drawable.ic_settings,
-            ContentDescription.Resource(R.string.accessibility_quick_settings_settings)
+            ContentDescription.Resource(R.string.accessibility_quick_settings_settings),
         ),
-        iconTint =
-            Utils.getColorAttrDefaultColor(
-                qsThemedContext,
-                R.attr.onShadeInactiveVariant,
-            ),
+        iconTint = Utils.getColorAttrDefaultColor(qsThemedContext, R.attr.onShadeInactiveVariant),
         backgroundColor = R.attr.shadeInactive,
         onSettingsButtonClicked,
     )
@@ -367,19 +415,31 @@ fun settingsButtonViewModel(
 fun powerButtonViewModel(
     qsThemedContext: Context,
     onPowerButtonClicked: (Expandable) -> Unit,
+    shadeMode: Flow<ShadeMode>,
+): Flow<FooterActionsButtonViewModel?> {
+    return shadeMode.map { mode ->
+        powerButtonViewModel(qsThemedContext, onPowerButtonClicked, mode)
+    }
+}
+
+fun powerButtonViewModel(
+    qsThemedContext: Context,
+    onPowerButtonClicked: (Expandable) -> Unit,
+    shadeMode: ShadeMode,
 ): FooterActionsButtonViewModel {
+    val isDualShade = shadeMode is ShadeMode.Dual
     return FooterActionsButtonViewModel(
         id = R.id.pm_lite,
         Icon.Resource(
             android.R.drawable.ic_lock_power_off,
-            ContentDescription.Resource(R.string.accessibility_quick_settings_power_menu)
+            ContentDescription.Resource(R.string.accessibility_quick_settings_power_menu),
         ),
         iconTint =
             Utils.getColorAttrDefaultColor(
                 qsThemedContext,
-                R.attr.onShadeActive,
+                if (isDualShade) R.attr.onShadeInactiveVariant else R.attr.onShadeActive,
             ),
-        backgroundColor = R.attr.shadeActive,
+        backgroundColor = if (isDualShade) R.attr.shadeInactive else R.attr.shadeActive,
         onPowerButtonClicked,
     )
 }

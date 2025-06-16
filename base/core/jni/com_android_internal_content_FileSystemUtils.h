@@ -15,9 +15,18 @@
  */
 #pragma once
 
+#include <elf.h>
 #include <sys/types.h>
 
+#include <vector>
+
 namespace android {
+
+enum read_elf_status_t {
+    ELF_IS_NOT_64_BIT = -2,
+    ELF_READ_ERROR = -1,
+    ELF_READ_OK = 0,
+};
 
 /*
  * This function deallocates space used by zero padding at the end of LOAD segments in given
@@ -34,5 +43,12 @@ bool punchHolesInElf64(const char* filePath, uint64_t offset);
  * extra field for zero stretches till the actual file content.
  */
 bool punchHolesInZip(const char* filePath, uint64_t offset, uint16_t extraFieldLen);
+
+/*
+ * This function reads program headers from 64 bit ELF file. ELF can be specified with file path
+ * directly or it should be at offset inside Apk. Program headers passed to function is populated.
+ */
+read_elf_status_t getLoadSegmentPhdrs(const char* filePath, const uint64_t offset,
+                                      std::vector<Elf64_Phdr>& programHeaders);
 
 } // namespace android

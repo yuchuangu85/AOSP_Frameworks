@@ -53,6 +53,7 @@ import java.lang.ref.WeakReference;
  * {@link android.graphics.Canvas#drawText(java.lang.CharSequence, int, int, float, float, android.graphics.Paint)
  *  Canvas.drawText()} directly.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class DynamicLayout extends Layout {
     private static final int PRIORITY = 128;
     private static final int BLOCK_MINIMUM_CHARACTER_LENGTH = 400;
@@ -1320,7 +1321,11 @@ public class DynamicLayout extends Layout {
                         // It's possible that a Span is removed when the text covering it is
                         // deleted, in this case, the original start and end of the span might be
                         // OOB. So it'll reflow the entire string instead.
-                        reflow(s, 0, 0, s.length());
+                        if (Flags.insertModeCrashUpdateLayoutSpan()) {
+                            transformAndReflow(s, 0, s.length());
+                        } else {
+                            reflow(s, 0, 0, s.length());
+                        }
                     } else {
                         reflow(s, start, end - start, end - start);
                     }
@@ -1343,7 +1348,11 @@ public class DynamicLayout extends Layout {
                         // When text is changed, it'll also trigger onSpanChanged. In this case we
                         // can't determine the updated range in the transformed text. So it'll
                         // reflow the entire range instead.
-                        reflow(s, 0, 0, s.length());
+                        if (Flags.insertModeCrashUpdateLayoutSpan()) {
+                            transformAndReflow(s, 0, s.length());
+                        } else {
+                            reflow(s, 0, 0, s.length());
+                        }
                     } else {
                         reflow(s, start, end - start, end - start);
                         reflow(s, nstart, nend - nstart, nend - nstart);

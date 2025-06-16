@@ -67,7 +67,6 @@ import static com.android.server.alarm.AlarmManagerService.AlarmHandler.CHARGING
 import static com.android.server.alarm.AlarmManagerService.AlarmHandler.CHECK_EXACT_ALARM_PERMISSION_ON_UPDATE;
 import static com.android.server.alarm.AlarmManagerService.AlarmHandler.REFRESH_EXACT_ALARM_CANDIDATES;
 import static com.android.server.alarm.AlarmManagerService.AlarmHandler.REMOVE_EXACT_ALARMS;
-import static com.android.server.alarm.AlarmManagerService.AlarmHandler.REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED;
 import static com.android.server.alarm.AlarmManagerService.AlarmHandler.REMOVE_FOR_CANCELED;
 import static com.android.server.alarm.AlarmManagerService.AlarmHandler.TEMPORARY_QUOTA_CHANGED;
 import static com.android.server.alarm.AlarmManagerService.Constants.KEY_ALLOW_WHILE_IDLE_COMPAT_QUOTA;
@@ -110,7 +109,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.Manifest;
 import android.app.ActivityManager;
@@ -132,6 +131,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.PermissionChecker;
 import android.content.pm.PackageManagerInternal;
+import android.content.pm.UserInfo;
 import android.net.Uri;
 import android.os.BatteryManager;
 import android.os.Bundle;
@@ -149,6 +149,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.platform.test.annotations.DisableFlags;
 import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
@@ -176,6 +177,7 @@ import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
 import com.android.server.SystemClockTime.TimeConfidence;
 import com.android.server.SystemService;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.pm.permission.PermissionManagerService;
 import com.android.server.pm.permission.PermissionManagerServiceInternal;
 import com.android.server.pm.pkg.AndroidPackage;
@@ -191,7 +193,9 @@ import org.junit.runner.RunWith;
 import org.mockito.Answers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.mockito.InOrder;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.quality.Strictness;
 import org.mockito.stubbing.Answer;
 
@@ -249,6 +253,8 @@ public final class AlarmManagerServiceTest {
     private AppStandbyInternal mAppStandbyInternal;
     @Mock
     private ActivityManagerInternal mActivityManagerInternal;
+    @Mock
+    private UserManagerInternal mUserManagerInternal;
     @Mock
     private ActivityManager mActivityManager;
     @Mock
@@ -431,8 +437,8 @@ public final class AlarmManagerServiceTest {
      */
     private void disableFlagsNotSetByAnnotation() {
         try {
-            mSetFlagsRule.disableFlags(Flags.FLAG_USE_FROZEN_STATE_TO_DROP_LISTENER_ALARMS,
-                    Flags.FLAG_START_USER_BEFORE_SCHEDULED_ALARMS);
+            mSetFlagsRule.disableFlags(Flags.FLAG_START_USER_BEFORE_SCHEDULED_ALARMS);
+            mSetFlagsRule.disableFlags(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND);
         } catch (FlagSetException fse) {
             // Expected if the test about to be run requires this enabled.
         }
@@ -447,6 +453,8 @@ public final class AlarmManagerServiceTest {
                 () -> LocalServices.getService(PermissionManagerServiceInternal.class));
         doReturn(mActivityManagerInternal).when(
                 () -> LocalServices.getService(ActivityManagerInternal.class));
+        doReturn(mUserManagerInternal).when(
+                () -> LocalServices.getService(UserManagerInternal.class));
         doReturn(mPackageManagerInternal).when(
                 () -> LocalServices.getService(PackageManagerInternal.class));
         doReturn(mAppStateTracker).when(() -> LocalServices.getService(AppStateTracker.class));
@@ -505,6 +513,9 @@ public final class AlarmManagerServiceTest {
         when(mPermissionManagerInternal.getAppOpPermissionPackages(
                 SCHEDULE_EXACT_ALARM)).thenReturn(EmptyArray.STRING);
 
+        // Initialize timestamps with arbitrary values of time
+        mNowElapsedTest = 12;
+        mNowRtcTest = 345;
         mInjector = new Injector(mMockContext);
         mService = new AlarmManagerService(mMockContext, mInjector);
         spyOn(mService);
@@ -513,13 +524,11 @@ public final class AlarmManagerServiceTest {
 
         mService.onStart();
 
-        if (Flags.useFrozenStateToDropListenerAlarms()) {
-            final ArgumentCaptor<ActivityManager.UidFrozenStateChangedCallback> frozenCaptor =
-                    ArgumentCaptor.forClass(ActivityManager.UidFrozenStateChangedCallback.class);
-            verify(mActivityManager).registerUidFrozenStateChangedCallback(
-                    any(HandlerExecutor.class), frozenCaptor.capture());
-            mUidFrozenStateCallback = frozenCaptor.getValue();
-        }
+        final ArgumentCaptor<ActivityManager.UidFrozenStateChangedCallback> frozenCaptor =
+                ArgumentCaptor.forClass(ActivityManager.UidFrozenStateChangedCallback.class);
+        verify(mActivityManager).registerUidFrozenStateChangedCallback(
+                any(HandlerExecutor.class), frozenCaptor.capture());
+        mUidFrozenStateCallback = frozenCaptor.getValue();
 
         // Unable to mock mMockContext to return a mock stats manager.
         // So just mocking the whole MetricsHelper instance.
@@ -767,6 +776,61 @@ public final class AlarmManagerServiceTest {
     }
 
     @Test
+    public void timeChangeBroadcastForward() throws Exception {
+        final long timeDelta = 12345;
+        // AlarmManagerService sends the broadcast if real time clock proceeds 1000ms more than boot
+        // time clock.
+        mNowRtcTest += timeDelta + 1001;
+        mNowElapsedTest += timeDelta;
+        mTestTimer.expire(TIME_CHANGED_MASK);
+
+        verify(mMockContext)
+                .sendBroadcastAsUser(
+                        argThat((intent) -> intent.getAction() == Intent.ACTION_TIME_CHANGED),
+                        eq(UserHandle.ALL),
+                        isNull(),
+                        any());
+    }
+
+    @Test
+    public void timeChangeBroadcastBackward() throws Exception {
+        final long timeDelta = 12345;
+        // AlarmManagerService sends the broadcast if real time clock proceeds 1000ms less than boot
+        // time clock.
+        mNowRtcTest += timeDelta - 1001;
+        mNowElapsedTest += timeDelta;
+        mTestTimer.expire(TIME_CHANGED_MASK);
+
+        verify(mMockContext)
+                .sendBroadcastAsUser(
+                        argThat((intent) -> intent.getAction() == Intent.ACTION_TIME_CHANGED),
+                        eq(UserHandle.ALL),
+                        isNull(),
+                        any());
+    }
+
+    @Test
+    public void timeChangeFilterMinorAdjustment() throws Exception {
+        final long timeDelta = 12345;
+        // AlarmManagerService does not send the broadcast if real time clock proceeds within 1000ms
+        // than boot time clock.
+        mNowRtcTest += timeDelta + 1000;
+        mNowElapsedTest += timeDelta;
+        mTestTimer.expire(TIME_CHANGED_MASK);
+
+        mNowRtcTest += timeDelta - 1000;
+        mNowElapsedTest += timeDelta;
+        mTestTimer.expire(TIME_CHANGED_MASK);
+
+        verify(mMockContext, never())
+                .sendBroadcastAsUser(
+                        argThat((intent) -> intent.getAction() == Intent.ACTION_TIME_CHANGED),
+                        any(),
+                        any(),
+                        any());
+    }
+
+    @Test
     public void testSingleAlarmExpiration() throws Exception {
         final long triggerTime = mNowElapsedTest + 5000;
         final PendingIntent alarmPi = getNewMockPendingIntent();
@@ -885,6 +949,96 @@ public final class AlarmManagerServiceTest {
         final long expectedTriggerTime = mNowElapsedTest + mService.mConstants.MIN_FUTURITY;
         setTestAlarm(ELAPSED_REALTIME_WAKEUP, triggerTime, getNewMockPendingIntent());
         assertEquals(expectedTriggerTime, mTestTimer.getElapsed());
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND)
+    public void testWakelockOrderingFirstAlarm() throws Exception {
+        final long triggerTime = mNowElapsedTest + 5000;
+        final PendingIntent alarmPi = getNewMockPendingIntent();
+        setTestAlarm(ELAPSED_REALTIME_WAKEUP, triggerTime, alarmPi);
+
+        // Pretend that it is the first alarm in this batch, or no other alarms are still processing
+        mService.mBroadcastRefCount = 0;
+        mNowElapsedTest = mTestTimer.getElapsed();
+        mTestTimer.expire();
+
+        final InOrder inOrder = Mockito.inOrder(alarmPi, mWakeLock);
+        inOrder.verify(mWakeLock).acquire();
+
+        final ArgumentCaptor<PendingIntent.OnFinished> onFinishedCaptor =
+                ArgumentCaptor.forClass(PendingIntent.OnFinished.class);
+        inOrder.verify(alarmPi).send(eq(mMockContext), eq(0), any(Intent.class),
+                onFinishedCaptor.capture(), any(Handler.class), isNull(), any());
+        onFinishedCaptor.getValue().onSendFinished(alarmPi, null, 0, null, null);
+
+        inOrder.verify(mWakeLock).release();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND)
+    public void testWakelockOrderingNonFirst() throws Exception {
+        final long triggerTime = mNowElapsedTest + 5000;
+        final PendingIntent alarmPi = getNewMockPendingIntent();
+        setTestAlarm(ELAPSED_REALTIME_WAKEUP, triggerTime, alarmPi);
+
+        // Pretend that some previous alarms are still processing.
+        mService.mBroadcastRefCount = 3;
+        mNowElapsedTest = mTestTimer.getElapsed();
+        mTestTimer.expire();
+
+        final ArgumentCaptor<PendingIntent.OnFinished> onFinishedCaptor =
+                ArgumentCaptor.forClass(PendingIntent.OnFinished.class);
+        verify(alarmPi).send(eq(mMockContext), eq(0), any(Intent.class), onFinishedCaptor.capture(),
+                any(Handler.class), isNull(), any());
+        onFinishedCaptor.getValue().onSendFinished(alarmPi, null, 0, null, null);
+
+        verify(mWakeLock, never()).acquire();
+        verify(mWakeLock, never()).release();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND)
+    public void testWakelockReleasedWhenSendFails() throws Exception {
+        final PendingIntent alarmPi = getNewMockPendingIntent();
+        doThrow(new PendingIntent.CanceledException("test")).when(alarmPi).send(eq(mMockContext),
+                eq(0), any(Intent.class), any(), any(Handler.class), isNull(), any());
+
+        setTestAlarm(ELAPSED_REALTIME_WAKEUP, mNowElapsedTest + 5000, alarmPi);
+
+        // Pretend that it is the first alarm in this batch, or no other alarms are still processing
+        mService.mBroadcastRefCount = 0;
+        mNowElapsedTest = mTestTimer.getElapsed();
+        mTestTimer.expire();
+
+        final InOrder inOrder = Mockito.inOrder(mWakeLock);
+        inOrder.verify(mWakeLock).acquire();
+        inOrder.verify(mWakeLock).release();
+
+        setTestAlarm(ELAPSED_REALTIME_WAKEUP, mNowElapsedTest + 5000, alarmPi);
+
+        // Pretend that some previous alarms are still processing.
+        mService.mBroadcastRefCount = 4;
+        mNowElapsedTest = mTestTimer.getElapsed();
+        mTestTimer.expire();
+        inOrder.verifyNoMoreInteractions();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ACQUIRE_WAKELOCK_BEFORE_SEND)
+    public void testWakelockReleasedOnListenerException() throws Exception {
+        final long triggerTime = mNowElapsedTest + 5000;
+        final IAlarmListener listener = getNewListener(() -> {
+            throw new RuntimeException("test");
+        });
+        setTestAlarmWithListener(ELAPSED_REALTIME_WAKEUP, triggerTime, listener);
+
+        mNowElapsedTest = mTestTimer.getElapsed();
+        mTestTimer.expire();
+
+        final InOrder inOrder = Mockito.inOrder(mWakeLock);
+        inOrder.verify(mWakeLock).acquire();
+        inOrder.verify(mWakeLock).release();
     }
 
     @Test
@@ -1249,6 +1403,26 @@ public final class AlarmManagerServiceTest {
                 TEST_CALLING_PACKAGE)).thenReturn(true);
         mListener.removeAlarmsForUid(TEST_CALLING_UID);
         assertEquals(0, mService.mAlarmsPerUid.get(TEST_CALLING_UID));
+    }
+
+    @Test
+    public void wakeupShouldBeScheduledForFullUsers_skipsGuestSystemAndProfiles() {
+        final int systemUserId = 0;
+        final int fullUserId = 10;
+        final int privateProfileId = 12;
+        final int guestUserId = 13;
+        when(mUserManagerInternal.getUserInfo(fullUserId)).thenReturn(new UserInfo(fullUserId,
+                "TestUser2", UserInfo.FLAG_FULL));
+        when(mUserManagerInternal.getUserInfo(privateProfileId)).thenReturn(new UserInfo(
+                privateProfileId, "TestUser3", UserInfo.FLAG_PROFILE));
+        when(mUserManagerInternal.getUserInfo(guestUserId)).thenReturn(new UserInfo(
+                guestUserId, "TestUserGuest", null, 0, UserManager.USER_TYPE_FULL_GUEST));
+        when(mUserManagerInternal.getUserInfo(systemUserId)).thenReturn(new UserInfo(
+                systemUserId, "TestUserSystem", null, 0, UserManager.USER_TYPE_FULL_SYSTEM));
+        assertTrue(mService.shouldAddWakeupForUser(fullUserId));
+        assertFalse(mService.shouldAddWakeupForUser(systemUserId));
+        assertFalse(mService.shouldAddWakeupForUser(privateProfileId));
+        assertFalse(mService.shouldAddWakeupForUser(guestUserId));
     }
 
     @Test
@@ -3550,8 +3724,8 @@ public final class AlarmManagerServiceTest {
         setDeviceConfigInt(KEY_TEMPORARY_QUOTA_BUMP, 0);
 
         mAppStandbyListener.triggerTemporaryQuotaBump(TEST_CALLING_PACKAGE, TEST_CALLING_USER);
-        verifyZeroInteractions(mPackageManagerInternal);
-        verifyZeroInteractions(mService.mHandler);
+        verifyNoMoreInteractions(mPackageManagerInternal);
+        verifyNoMoreInteractions(mService.mHandler);
     }
 
     private void testTemporaryQuota_bumpedAfterDeferral(int standbyBucket) throws Exception {
@@ -3659,79 +3833,11 @@ public final class AlarmManagerServiceTest {
         testTemporaryQuota_bumpedBeforeDeferral(STANDBY_BUCKET_RARE);
     }
 
-    @Test
-    public void exactListenerAlarmsRemovedOnCached() {
-        mockChangeEnabled(EXACT_LISTENER_ALARMS_DROPPED_ON_CACHED, true);
-
-        setTestAlarmWithListener(ELAPSED_REALTIME, 31, getNewListener(() -> {}), WINDOW_EXACT,
-                TEST_CALLING_UID);
-        setTestAlarmWithListener(RTC, 42, getNewListener(() -> {}), 56, TEST_CALLING_UID);
-        setTestAlarm(ELAPSED_REALTIME, 54, WINDOW_EXACT, getNewMockPendingIntent(), 0, 0,
-                TEST_CALLING_UID, null);
-        setTestAlarm(RTC, 49, 154, getNewMockPendingIntent(), 0, 0, TEST_CALLING_UID, null);
-
-        setTestAlarmWithListener(ELAPSED_REALTIME, 21, getNewListener(() -> {}), WINDOW_EXACT,
-                TEST_CALLING_UID_2);
-        setTestAlarmWithListener(RTC, 412, getNewListener(() -> {}), 561, TEST_CALLING_UID_2);
-        setTestAlarm(ELAPSED_REALTIME, 26, WINDOW_EXACT, getNewMockPendingIntent(), 0, 0,
-                TEST_CALLING_UID_2, null);
-        setTestAlarm(RTC, 549, 234, getNewMockPendingIntent(), 0, 0, TEST_CALLING_UID_2, null);
-
-        assertEquals(8, mService.mAlarmStore.size());
-
-        mListener.handleUidCachedChanged(TEST_CALLING_UID, true);
-        assertAndHandleMessageSync(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED);
-        assertEquals(7, mService.mAlarmStore.size());
-
-        mListener.handleUidCachedChanged(TEST_CALLING_UID_2, true);
-        assertAndHandleMessageSync(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED);
-        assertEquals(6, mService.mAlarmStore.size());
-    }
-
-    @Test
-    public void alarmCountOnListenerCached() {
-        mockChangeEnabled(EXACT_LISTENER_ALARMS_DROPPED_ON_CACHED, true);
-
-        // Set some alarms for TEST_CALLING_UID.
-        final int numExactListenerUid1 = 14;
-        for (int i = 0; i < numExactListenerUid1; i++) {
-            setTestAlarmWithListener(ALARM_TYPES[i % 4], mNowElapsedTest + i,
-                    getNewListener(() -> {}));
-        }
-        setTestAlarmWithListener(RTC, 42, getNewListener(() -> {}), 56, TEST_CALLING_UID);
-        setTestAlarm(ELAPSED_REALTIME, 54, getNewMockPendingIntent());
-        setTestAlarm(RTC, 49, 154, getNewMockPendingIntent(), 0, 0, TEST_CALLING_UID, null);
-
-        // Set some alarms for TEST_CALLING_UID_2.
-        final int numExactListenerUid2 = 9;
-        for (int i = 0; i < numExactListenerUid2; i++) {
-            setTestAlarmWithListener(ALARM_TYPES[i % 4], mNowElapsedTest + i,
-                    getNewListener(() -> {}), WINDOW_EXACT, TEST_CALLING_UID_2);
-        }
-        setTestAlarmWithListener(RTC, 412, getNewListener(() -> {}), 561, TEST_CALLING_UID_2);
-        setTestAlarm(RTC_WAKEUP, 26, WINDOW_EXACT, getNewMockPendingIntent(), 0, 0,
-                TEST_CALLING_UID_2, null);
-
-        assertEquals(numExactListenerUid1 + 3, mService.mAlarmsPerUid.get(TEST_CALLING_UID));
-        assertEquals(numExactListenerUid2 + 2, mService.mAlarmsPerUid.get(TEST_CALLING_UID_2));
-
-        mListener.handleUidCachedChanged(TEST_CALLING_UID, true);
-        assertAndHandleMessageSync(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED);
-        assertEquals(3, mService.mAlarmsPerUid.get(TEST_CALLING_UID));
-        assertEquals(numExactListenerUid2 + 2, mService.mAlarmsPerUid.get(TEST_CALLING_UID_2));
-
-        mListener.handleUidCachedChanged(TEST_CALLING_UID_2, true);
-        assertAndHandleMessageSync(REMOVE_EXACT_LISTENER_ALARMS_ON_CACHED);
-        assertEquals(3, mService.mAlarmsPerUid.get(TEST_CALLING_UID));
-        assertEquals(2, mService.mAlarmsPerUid.get(TEST_CALLING_UID_2));
-    }
-
     private void executeUidFrozenStateCallback(int[] uids, int[] frozenStates) {
         assertNotNull(mUidFrozenStateCallback);
         mUidFrozenStateCallback.onUidFrozenStateChanged(uids, frozenStates);
     }
 
-    @EnableFlags(Flags.FLAG_USE_FROZEN_STATE_TO_DROP_LISTENER_ALARMS)
     @DisableFlags(Flags.FLAG_START_USER_BEFORE_SCHEDULED_ALARMS)
     @Test
     public void exactListenerAlarmsRemovedOnFrozen() {
@@ -3763,7 +3869,6 @@ public final class AlarmManagerServiceTest {
         assertEquals(6, mService.mAlarmStore.size());
     }
 
-    @EnableFlags(Flags.FLAG_USE_FROZEN_STATE_TO_DROP_LISTENER_ALARMS)
     @DisableFlags(Flags.FLAG_START_USER_BEFORE_SCHEDULED_ALARMS)
     @Test
     public void alarmCountOnListenerFrozen() {

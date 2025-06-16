@@ -27,6 +27,7 @@ import java.text.BreakIterator;
  * Utility class for manipulating cursors and selections in CharSequences.
  * A cursor is a selection where the start and end are at the same offset.
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public class Selection {
     private Selection() { /* cannot be instantiated */ }
 
@@ -350,7 +351,7 @@ public class Selection {
     private static final char PARAGRAPH_SEPARATOR = '\n';
 
     /**
-     * Move the cusrot to the closest paragraph start offset.
+     * Move the cursor to the closest paragraph start offset.
      *
      * @param text the spannable text
      * @param layout layout to be used for drawing.

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include <ui/PictureProfileHandle.h>
 #include <ui/Transform.h>
 #include <utils/StrongPointer.h>
 
@@ -86,6 +87,16 @@ public:
     // longer cares about.
     virtual void uncacheBuffers(const std::vector<uint64_t>& bufferIdsToUncache) = 0;
 
+    // Get the relative priority of the layer's picture profile with respect to the importance of
+    // the visual content to the user experience. Lower is higher priority.
+    virtual int64_t getPictureProfilePriority() const = 0;
+
+    // The picture profile handle for the layer.
+    virtual const PictureProfileHandle& getPictureProfileHandle() const = 0;
+
+    // Commit the picture profile to the composition state.
+    virtual void commitPictureProfileToCompositionState() = 0;
+
     // Recalculates the state of the output layer from the output-independent
     // layer. If includeGeometry is false, the geometry state can be skipped.
     // internalDisplayRotationFlags must be set to the rotation flags for the
@@ -93,7 +104,10 @@ public:
     // transform, if needed.
     virtual void updateCompositionState(
             bool includeGeometry, bool forceClientComposition,
-            ui::Transform::RotationFlags internalDisplayRotationFlags) = 0;
+            ui::Transform::RotationFlags internalDisplayRotationFlags,
+            const std::optional<std::vector<
+                    std::optional<aidl::android::hardware::graphics::composer3::LutProperties>>>
+                    properties) = 0;
 
     // Writes the geometry state to the HWC, or does nothing if this layer does
     // not use the HWC. If includeGeometry is false, the geometry state can be
@@ -104,7 +118,8 @@ public:
     // isPeekingThrough specifies whether this layer will be shown through a
     // hole punch in a layer above it.
     virtual void writeStateToHWC(bool includeGeometry, bool skipLayer, uint32_t z,
-                                 bool zIsOverridden, bool isPeekingThrough) = 0;
+                                 bool zIsOverridden, bool isPeekingThrough,
+                                 bool isLutSupported) = 0;
 
     // Updates the cursor position with the HWC
     virtual void writeCursorPositionToHWC() const = 0;
@@ -127,6 +142,12 @@ public:
 
     // Applies a HWC device layer request
     virtual void applyDeviceLayerRequest(Hwc2::IComposerClient::LayerRequest request) = 0;
+
+    // Applies a HWC device layer lut
+    virtual void applyDeviceLayerLut(
+            ::android::base::unique_fd,
+            std::vector<std::pair<
+                    int, aidl::android::hardware::graphics::composer3::LutProperties>>) = 0;
 
     // Returns true if the composition settings scale pixels
     virtual bool needsFiltering() const = 0;

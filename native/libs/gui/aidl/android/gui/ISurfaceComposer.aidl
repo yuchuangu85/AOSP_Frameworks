@@ -33,6 +33,7 @@ import android.gui.FrameEvent;
 import android.gui.FrameStats;
 import android.gui.HdrConversionCapability;
 import android.gui.HdrConversionStrategy;
+import android.gui.IActivePictureListener;
 import android.gui.IDisplayEventConnection;
 import android.gui.IFpsListener;
 import android.gui.IHdrLayerInfoListener;
@@ -42,6 +43,7 @@ import android.gui.ISurfaceComposerClient;
 import android.gui.ITunnelModeEnabledListener;
 import android.gui.IWindowInfosListener;
 import android.gui.IWindowInfosPublisher;
+import android.gui.IJankListener;
 import android.gui.LayerCaptureArgs;
 import android.gui.OverlayProperties;
 import android.gui.PullAtomData;
@@ -63,6 +65,11 @@ interface ISurfaceComposer {
     enum EventRegistration {
         modeChanged = 1 << 0,
         frameRateOverride = 1 << 1,
+    }
+
+    enum OptimizationPolicy {
+        optimizeForPower = 0,
+        optimizeForPerformance = 1,
     }
 
     /**
@@ -95,6 +102,10 @@ interface ISurfaceComposer {
      *     The name of the virtual display.
      * isSecure
      *     Whether this virtual display is secure.
+     * optimizationPolicy
+     *     Whether to optimize for power or performance. Displays that are optimizing for power may
+     *     be dependent on a different display that optimizes for performance when they are on,
+     *     which will guarantee performance for all of the other displays.
      * uniqueId
      *     The unique ID for the display.
      * requestedRefreshRate
@@ -106,7 +117,7 @@ interface ISurfaceComposer {
      * requires ACCESS_SURFACE_FLINGER permission.
      */
     @nullable IBinder createVirtualDisplay(@utf8InCpp String displayName, boolean isSecure,
-            @utf8InCpp String uniqueId, float requestedRefreshRate);
+            OptimizationPolicy optimizationPolicy, @utf8InCpp String uniqueId, float requestedRefreshRate);
 
     /**
      * Destroy a virtual display.
@@ -225,6 +236,11 @@ interface ISurfaceComposer {
      * For more information, see the HDMI 1.4 specification.
      */
     void setGameContentType(IBinder display, boolean on);
+
+    /**
+     * Gets the maximum number of picture profiles supported by the display.
+     */
+    int getMaxLayerPictureProfiles(IBinder display);
 
     /**
      * Capture the specified screen. This requires READ_FRAME_BUFFER
@@ -580,4 +596,34 @@ interface ISurfaceComposer {
      * This method should not block the ShutdownThread therefore it's handled asynchronously.
      */
     oneway void notifyShutdown();
+
+    /**
+     * Registers the jank listener on the given layer to receive jank data of future frames.
+     */
+    void addJankListener(IBinder layer, IJankListener listener);
+
+    /**
+     * Flushes any pending jank data on the given layer to any registered listeners on that layer.
+     */
+    oneway void flushJankData(int layerId);
+
+    /**
+     * Schedules the removal of the jank listener from the given layer after the VSync with the
+     * specified ID. Use a value <= 0 for afterVsync to remove the listener immediately. The given
+     * listener will not be removed before the given VSync, but may still receive data for frames
+     * past the provided VSync.
+     */
+    oneway void removeJankListener(int layerId, IJankListener listener, long afterVsync);
+
+    /**
+     * Adds a listener used to monitor visible content that is being processed with picture
+     * profiles.
+     */
+    oneway void addActivePictureListener(IActivePictureListener listener);
+
+    /**
+     * Removes a listener used to monitor visible content that is being processed with picture
+     * profiles.
+     */
+    oneway void removeActivePictureListener(IActivePictureListener listener);
 }

@@ -19,6 +19,7 @@
 #include "InputReader.h"
 
 #include <android-base/stringprintf.h>
+#include <com_android_input_flags.h>
 #include <errno.h>
 #include <input/Keyboard.h>
 #include <input/VirtualKeyMap.h>
@@ -31,8 +32,10 @@
 #include <unistd.h>
 #include <utils/Errors.h>
 #include <utils/Thread.h>
+#include <string>
 
 #include "InputDevice.h"
+#include "include/gestures.h"
 
 using android::base::StringPrintf;
 
@@ -58,6 +61,28 @@ bool isSubDevice(const InputDeviceIdentifier& identifier1,
             identifier1.version == identifier2.version &&
             identifier1.uniqueId == identifier2.uniqueId &&
             identifier1.location == identifier2.location);
+}
+
+/**
+ * Determines if the device classes passed for two devices represent incompatible combinations
+ * that should not be merged into into a single InputDevice.
+ */
+
+bool isCompatibleSubDevice(ftl::Flags<InputDeviceClass> classes1,
+                           ftl::Flags<InputDeviceClass> classes2) {
+    if (!com::android::input::flags::prevent_merging_input_pointer_devices()) {
+        return true;
+    }
+
+    const ftl::Flags<InputDeviceClass> pointerFlags =
+            ftl::Flags<InputDeviceClass>{InputDeviceClass::TOUCH, InputDeviceClass::TOUCH_MT,
+                                         InputDeviceClass::CURSOR, InputDeviceClass::TOUCHPAD};
+
+    // Do not merge devices that both have any type of pointer event.
+    if (classes1.any(pointerFlags) && classes2.any(pointerFlags)) return false;
+
+    // Safe to merge
+    return true;
 }
 
 bool isStylusPointerGestureStart(const NotifyMotionArgs& motionArgs) {
@@ -121,7 +146,8 @@ status_t InputReader::start() {
         return ALREADY_EXISTS;
     }
     mThread = std::make_unique<InputThread>(
-            "InputReader", [this]() { loopOnce(); }, [this]() { mEventHub->wake(); });
+            "InputReader", [this]() { loopOnce(); }, [this]() { mEventHub->wake(); },
+            /*isInCriticalPath=*/true);
     return OK;
 }
 
@@ -171,15 +197,17 @@ void InputReader::loopOnce() {
         if (mNextTimeout != LLONG_MAX) {
             nsecs_t now = systemTime(SYSTEM_TIME_MONOTONIC);
             if (now >= mNextTimeout) {
-                if (debugRawEvents()) {
-                    ALOGD("Timeout expired, latency=%0.3fms", (now - mNextTimeout) * 0.000001f);
-                }
+                ALOGD_IF(debugRawEvents(), "Timeout expired, latency=%0.3fms",
+                         (now - mNextTimeout) * 0.000001f);
                 mNextTimeout = LLONG_MAX;
                 mPendingArgs += timeoutExpiredLocked(now);
             }
         }
 
         if (oldGeneration != mGeneration) {
+            // Reset global meta state because it depends on connected input devices.
+            updateGlobalMetaStateLocked();
+
             inputDevicesChanged = true;
             inputDevices = getInputDevicesLocked();
             mPendingArgs.emplace_back(
@@ -235,9 +263,7 @@ std::list<NotifyArgs> InputReader::processEventsLocked(const RawEvent* rawEvents
                 }
                 batchSize += 1;
             }
-            if (debugRawEvents()) {
-                ALOGD("BatchSize: %zu Count: %zu", batchSize, count);
-            }
+            ALOGD_IF(debugRawEvents(), "BatchSize: %zu Count: %zu", batchSize, count);
             out += processEventsForDeviceLocked(deviceId, rawEvent, batchSize);
         } else {
             switch (rawEvent->type) {
@@ -246,9 +272,6 @@ std::list<NotifyArgs> InputReader::processEventsLocked(const RawEvent* rawEvents
                     break;
                 case EventHubInterface::DEVICE_REMOVED:
                     removeDeviceLocked(rawEvent->when, rawEvent->deviceId);
-                    break;
-                case EventHubInterface::FINISHED_DEVICE_SCAN:
-                    handleConfigurationChangedLocked(rawEvent->when);
                     break;
                 default:
                     ALOG_ASSERT(false); // can't happen
@@ -268,7 +291,8 @@ void InputReader::addDeviceLocked(nsecs_t when, int32_t eventHubId) {
     }
 
     InputDeviceIdentifier identifier = mEventHub->getDeviceIdentifier(eventHubId);
-    std::shared_ptr<InputDevice> device = createDeviceLocked(when, eventHubId, identifier);
+    ftl::Flags<InputDeviceClass> classes = mEventHub->getDeviceClasses(eventHubId);
+    std::shared_ptr<InputDevice> device = createDeviceLocked(when, eventHubId, identifier, classes);
 
     mPendingArgs += device->configure(when, mConfig, /*changes=*/{});
     mPendingArgs += device->reset(when);
@@ -351,12 +375,16 @@ void InputReader::removeDeviceLocked(nsecs_t when, int32_t eventHubId) {
 }
 
 std::shared_ptr<InputDevice> InputReader::createDeviceLocked(
-        nsecs_t when, int32_t eventHubId, const InputDeviceIdentifier& identifier) {
-    auto deviceIt = std::find_if(mDevices.begin(), mDevices.end(), [identifier](auto& devicePair) {
-        const InputDeviceIdentifier identifier2 =
-                devicePair.second->getDeviceInfo().getIdentifier();
-        return isSubDevice(identifier, identifier2);
-    });
+        nsecs_t when, int32_t eventHubId, const InputDeviceIdentifier& identifier,
+        ftl::Flags<InputDeviceClass> classes) {
+    auto deviceIt =
+            std::find_if(mDevices.begin(), mDevices.end(), [identifier, classes](auto& devicePair) {
+                const InputDeviceIdentifier identifier2 =
+                        devicePair.second->getDeviceInfo().getIdentifier();
+                const ftl::Flags<InputDeviceClass> classes2 = devicePair.second->getClasses();
+                return isSubDevice(identifier, identifier2) &&
+                        isCompatibleSubDevice(classes, classes2);
+            });
 
     std::shared_ptr<InputDevice> device;
     if (deviceIt != mDevices.end()) {
@@ -412,14 +440,6 @@ std::list<NotifyArgs> InputReader::timeoutExpiredLocked(nsecs_t when) {
 
 int32_t InputReader::nextInputDeviceIdLocked() {
     return ++mNextInputDeviceId;
-}
-
-void InputReader::handleConfigurationChangedLocked(nsecs_t when) {
-    // Reset global meta state because it depends on the list of all configured devices.
-    updateGlobalMetaStateLocked();
-
-    // Enqueue configuration changed.
-    mPendingArgs.emplace_back(NotifyConfigurationChangedArgs{mContext.getNextId(), when});
 }
 
 void InputReader::refreshConfigurationLocked(ConfigurationChanges changes) {
@@ -590,18 +610,14 @@ int32_t InputReader::getStateLocked(int32_t deviceId, uint32_t sourceMask, int32
 
 void InputReader::toggleCapsLockState(int32_t deviceId) {
     std::scoped_lock _l(mLock);
-    InputDevice* device = findInputDeviceLocked(deviceId);
-    if (!device) {
-        ALOGW("Ignoring toggleCapsLock for unknown deviceId %" PRId32 ".", deviceId);
-        return;
+    if (mKeyboardClassifier->getKeyboardType(deviceId) == KeyboardType::ALPHABETIC) {
+        updateLedMetaStateLocked(mLedMetaState ^ AMETA_CAPS_LOCK_ON);
     }
+}
 
-    if (device->isIgnored()) {
-        ALOGW("Ignoring toggleCapsLock for ignored deviceId %" PRId32 ".", deviceId);
-        return;
-    }
-
-    device->updateMetaState(AKEYCODE_CAPS_LOCK);
+void InputReader::resetLockedModifierState() {
+    std::scoped_lock _l(mLock);
+    updateLedMetaStateLocked(0);
 }
 
 bool InputReader::hasKeys(int32_t deviceId, uint32_t sourceMask,
@@ -630,15 +646,6 @@ bool InputReader::markSupportedKeyCodesLocked(int32_t deviceId, uint32_t sourceM
         }
     }
     return result;
-}
-
-void InputReader::addKeyRemapping(int32_t deviceId, int32_t fromKeyCode, int32_t toKeyCode) const {
-    std::scoped_lock _l(mLock);
-
-    InputDevice* device = findInputDeviceLocked(deviceId);
-    if (device != nullptr) {
-        device->addKeyRemapping(fromKeyCode, toKeyCode);
-    }
 }
 
 int32_t InputReader::getKeyCodeForKeyLocation(int32_t deviceId, int32_t locationKeyCode) const {
@@ -825,6 +832,18 @@ std::vector<InputDeviceSensorInfo> InputReader::getSensors(int32_t deviceId) {
     return device->getDeviceInfo().getSensors();
 }
 
+std::optional<HardwareProperties> InputReader::getTouchpadHardwareProperties(int32_t deviceId) {
+    std::scoped_lock _l(mLock);
+
+    InputDevice* device = findInputDeviceLocked(deviceId);
+
+    if (device == nullptr) {
+        return {};
+    }
+
+    return device->getTouchpadHardwareProperties();
+}
+
 bool InputReader::setLightColor(int32_t deviceId, int32_t lightId, int32_t color) {
     std::scoped_lock _l(mLock);
 
@@ -898,8 +917,19 @@ bool InputReader::canDispatchToDisplay(int32_t deviceId, ui::LogicalDisplayId di
     return *associatedDisplayId == displayId;
 }
 
+std::filesystem::path InputReader::getSysfsRootPath(int32_t deviceId) const {
+    std::scoped_lock _l(mLock);
+
+    const InputDevice* device = findInputDeviceLocked(deviceId);
+    if (!device) {
+        return {};
+    }
+    return device->getSysfsRootPath();
+}
+
 void InputReader::sysfsNodeChanged(const std::string& sysfsNodePath) {
     mEventHub->sysfsNodeChanged(sysfsNodePath);
+    mEventHub->wake();
 }
 
 DeviceId InputReader::getLastUsedInputDeviceId() {
@@ -907,9 +937,30 @@ DeviceId InputReader::getLastUsedInputDeviceId() {
     return mLastUsedDeviceId;
 }
 
+void InputReader::notifyMouseCursorFadedOnTyping() {
+    std::scoped_lock _l(mLock);
+    // disable touchpad taps when cursor has faded due to typing
+    mPreventingTouchpadTaps = true;
+}
+
+bool InputReader::setKernelWakeEnabled(int32_t deviceId, bool enabled) {
+    std::scoped_lock _l(mLock);
+    if (!com::android::input::flags::set_input_device_kernel_wake()){
+        return false;
+    }
+    InputDevice* device = findInputDeviceLocked(deviceId);
+    if (device) {
+        return device->setKernelWakeEnabled(enabled);
+    }
+    return false;
+}
+
 void InputReader::dump(std::string& dump) {
     std::scoped_lock _l(mLock);
+    dumpLocked(dump);
+}
 
+void InputReader::dumpLocked(std::string& dump) {
     mEventHub->dump(dump);
     dump += "\n";
 
@@ -996,6 +1047,12 @@ void InputReader::monitor() {
 InputReader::ContextImpl::ContextImpl(InputReader* reader)
       : mReader(reader), mIdGenerator(IdGenerator::Source::INPUT_READER) {}
 
+std::string InputReader::ContextImpl::dump() {
+    std::string dump;
+    mReader->dumpLocked(dump);
+    return dump;
+}
+
 void InputReader::ContextImpl::updateGlobalMetaState() {
     // lock is already held by the input loop
     mReader->updateGlobalMetaStateLocked();
@@ -1073,7 +1130,7 @@ EventHubInterface* InputReader::ContextImpl::getEventHub() {
     return mReader->mEventHub.get();
 }
 
-int32_t InputReader::ContextImpl::getNextId() {
+int32_t InputReader::ContextImpl::getNextId() const {
     return mIdGenerator.nextId();
 }
 

@@ -198,7 +198,7 @@ public class ContentCaptureSessionTest {
         }
 
         @Override
-        MainContentCaptureSession getMainCaptureSession() {
+        ContentCaptureSession getMainCaptureSession() {
             throw new UnsupportedOperationException("should not have been called");
         }
 
@@ -262,6 +262,11 @@ public class ContentCaptureSessionTest {
 
         @Override
         void internalNotifySessionPaused() {
+            throw new UnsupportedOperationException("should not have been called");
+        }
+
+        @Override
+        void internalNotifySessionFlushEvent(int sessionId) {
             throw new UnsupportedOperationException("should not have been called");
         }
 

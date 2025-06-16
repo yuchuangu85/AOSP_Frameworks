@@ -17,7 +17,7 @@
 package com.android.systemui.statusbar.notification.stack.domain.interactor
 
 import android.content.applicationContext
-import com.android.systemui.common.ui.data.repository.configurationRepository
+import com.android.systemui.common.ui.domain.interactor.configurationInteractor
 import com.android.systemui.deviceentry.domain.interactor.deviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.keyguardInteractor
 import com.android.systemui.kosmos.Kosmos
@@ -27,11 +27,11 @@ import com.android.systemui.statusbar.policy.splitShadeStateController
 val Kosmos.sharedNotificationContainerInteractor by
     Kosmos.Fixture {
         SharedNotificationContainerInteractor(
-            configurationRepository = configurationRepository,
             context = applicationContext,
-            splitShadeStateController = splitShadeStateController,
+            splitShadeStateController = { splitShadeStateController },
+            configurationInteractor = configurationInteractor,
             keyguardInteractor = keyguardInteractor,
             deviceEntryUdfpsInteractor = deviceEntryUdfpsInteractor,
-            largeScreenHeaderHelperLazy = { largeScreenHeaderHelper }
+            largeScreenHeaderHelperLazy = { largeScreenHeaderHelper },
         )
     }

@@ -31,6 +31,7 @@ import static android.window.DisplayAreaOrganizer.FEATURE_VENDOR_FIRST;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doNothing;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
+import static com.android.server.display.feature.flags.Flags.FLAG_ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT;
 import static com.android.server.wm.ActivityRecord.State.FINISHING;
 import static com.android.server.wm.ActivityRecord.State.PAUSED;
 import static com.android.server.wm.ActivityRecord.State.PAUSING;
@@ -40,6 +41,7 @@ import static com.android.server.wm.ActivityRecord.State.STOPPING;
 import static com.android.server.wm.ActivityTaskSupervisor.ON_TOP;
 import static com.android.server.wm.RootWindowContainer.MATCH_ATTACHED_TASK_OR_RECENT_TASKS_AND_RESTORE;
 import static com.android.server.wm.WindowContainer.POSITION_BOTTOM;
+
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -54,6 +56,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.refEq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
@@ -62,6 +65,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.testng.internal.junit.ArrayAsserts.assertArrayEquals;
 
 import android.app.ActivityOptions;
 import android.app.WindowConfiguration;
@@ -76,12 +80,15 @@ import android.graphics.Rect;
 import android.os.PowerManager;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
 import android.util.Pair;
+import android.view.DisplayInfo;
 
 import androidx.test.filters.MediumTest;
 
 import com.android.internal.app.ResolverActivity;
+import com.android.window.flags.Flags;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -204,6 +211,44 @@ public class RootWindowContainerTests extends WindowTestsBase {
     }
 
     @Test
+    public void testAllResumedActivitiesIdle() {
+        final ActivityRecord activity1 = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final ActivityRecord activity2 = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final WindowProcessController proc2 = activity2.app;
+        activity1.setState(RESUMED, "test");
+        activity2.detachFromProcess();
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isFalse();
+
+        activity1.idle = true;
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isFalse();
+
+        activity2.setProcess(proc2);
+        activity2.setState(RESUMED, "test");
+        activity2.idle = true;
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isTrue();
+
+        activity1.idle = false;
+        activity1.setVisibleRequested(false);
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isTrue();
+
+        final TaskFragment taskFragment = new TaskFragmentBuilder(mAtm)
+                .setParentTask(activity2.getTask()).build();
+        final ActivityRecord activity3 = new ActivityBuilder(mAtm).build();
+        taskFragment.addChild(activity3);
+        taskFragment.setVisibleRequested(true);
+        activity3.setState(RESUMED, "test");
+        activity3.idle = true;
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isTrue();
+
+        activity3.idle = false;
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isFalse();
+
+        activity2.idle = false;
+        activity3.idle = true;
+        assertThat(mWm.mRoot.allResumedActivitiesIdle()).isFalse();
+    }
+
+    @Test
     public void testTaskLayerRank() {
         final Task rootTask = new TaskBuilder(mSupervisor).build();
         final Task task1 = new TaskBuilder(mSupervisor).setParentTask(rootTask).build();
@@ -246,6 +291,52 @@ public class RootWindowContainerTests extends WindowTestsBase {
     }
 
     @Test
+    public void testTaskLayerRankFreeform() {
+        mSetFlagsRule.enableFlags(com.android.window.flags.Flags
+                .FLAG_PROCESS_PRIORITY_POLICY_FOR_MULTI_WINDOW_MODE);
+        final Task[] freeformTasks = new Task[3];
+        final WindowProcessController[] processes = new WindowProcessController[3];
+        for (int i = 0; i < freeformTasks.length; i++) {
+            freeformTasks[i] = new TaskBuilder(mSupervisor)
+                    .setWindowingMode(WINDOWING_MODE_FREEFORM).setCreateActivity(true).build();
+            final ActivityRecord r = freeformTasks[i].getTopMostActivity();
+            r.setState(RESUMED, "test");
+            processes[i] = r.app;
+        }
+        resizeDisplay(mDisplayContent, 2400, 2000);
+        // ---------
+        // | 2 | 1 |
+        // ---------
+        // | 0 |   |
+        // ---------
+        freeformTasks[2].setBounds(0, 0, 1000, 1000);
+        freeformTasks[1].setBounds(1000, 0, 2000, 1000);
+        freeformTasks[0].setBounds(0, 1000, 1000, 2000);
+        mRootWindowContainer.rankTaskLayers();
+        assertEquals(1, freeformTasks[2].mLayerRank);
+        assertEquals(2, freeformTasks[1].mLayerRank);
+        assertEquals(3, freeformTasks[0].mLayerRank);
+        assertFalse("Top doesn't need perceptible hint", (processes[2].getActivityStateFlags()
+                & WindowProcessController.ACTIVITY_STATE_FLAG_PERCEPTIBLE_FREEFORM) != 0);
+        assertTrue((processes[1].getActivityStateFlags()
+                & WindowProcessController.ACTIVITY_STATE_FLAG_PERCEPTIBLE_FREEFORM) != 0);
+        assertTrue((processes[0].getActivityStateFlags()
+                & WindowProcessController.ACTIVITY_STATE_FLAG_PERCEPTIBLE_FREEFORM) != 0);
+
+        // Make task2 occlude half of task0.
+        clearInvocations(mAtm);
+        freeformTasks[2].setBounds(0, 0, 1000, 1500);
+        waitHandlerIdle(mWm.mH);
+        // The process of task0 will demote from perceptible to visible.
+        final int stateFlags0 = processes[0].getActivityStateFlags();
+        assertTrue((stateFlags0
+                & WindowProcessController.ACTIVITY_STATE_FLAG_VISIBLE_MULTI_WINDOW_MODE) != 0);
+        assertFalse((stateFlags0
+                & WindowProcessController.ACTIVITY_STATE_FLAG_PERCEPTIBLE_FREEFORM) != 0);
+        verify(mAtm).updateOomAdj();
+    }
+
+    @Test
     public void testForceStopPackage() {
         final Task task = new TaskBuilder(mSupervisor).setCreateActivity(true).build();
         final ActivityRecord activity = task.getTopMostActivity();
@@ -274,20 +365,43 @@ public class RootWindowContainerTests extends WindowTestsBase {
 
     @Test
     public void testAttachApplication() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final ActivityRecord activity = new ActivityBuilder(mAtm).setProcessName("testAttach")
+                .setCreateTask(true).build();
+        final ActivityRecord topActivity = new ActivityBuilder(mAtm).setProcessName("testAttach")
+                .setUseProcess(activity.app).setTask(activity.getTask()).build();
         activity.detachFromProcess();
-        mAtm.startProcessAsync(activity, false /* knownToBeDead */,
+        topActivity.detachFromProcess();
+        mAtm.startProcessAsync(topActivity, false /* knownToBeDead */,
                 true /* isTop */, "test" /* hostingType */);
+        // Even if the activity is added after topActivity, the start order should still follow
+        // z-order, i.e. the topActivity will be started first.
+        mAtm.startProcessAsync(activity, false /* knownToBeDead */,
+                false /* isTop */, "test" /* hostingType */);
+        assertEquals(2, mAtm.mStartingProcessActivities.size());
+        assertEquals("Top record must be at the tail to start first",
+                topActivity, mAtm.mStartingProcessActivities.get(1));
         final WindowProcessController proc = mSystemServicesTestRule.addProcess(
                 activity.packageName, activity.processName,
                 6789 /* pid */, activity.info.applicationInfo.uid);
+        mAtm.mInternal.preBindApplication(proc, proc.mInfo);
+        assertTrue(proc.registeredForActivityConfigChanges());
+        assertFalse(proc.mHasEverAttached);
         try {
             mRootWindowContainer.attachApplication(proc);
-            verify(mSupervisor).realStartActivityLocked(eq(activity), eq(proc), anyBoolean(),
-                    anyBoolean());
+            verify(mSupervisor).realStartActivityLocked(eq(topActivity), eq(proc),
+                    anyBoolean(), anyBoolean());
         } catch (RemoteException e) {
             e.rethrowAsRuntimeException();
         }
+
+        // Verify that onProcessRemoved won't clear the launching activities if an attached process
+        // is died. Because in real case, it should be handled from WindowProcessController's
+        // and ActivityRecord's handleAppDied to decide whether to remove the activities.
+        assertTrue(proc.mHasEverAttached);
+        assertTrue(mAtm.mStartingProcessActivities.isEmpty());
+        mAtm.mStartingProcessActivities.add(activity);
+        mAtm.mInternal.onProcessRemoved(proc.mName, proc.mUid);
+        assertFalse(mAtm.mStartingProcessActivities.isEmpty());
     }
 
     /**
@@ -321,8 +435,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         ensureTaskPlacement(fullscreenTask, firstActivity, secondActivity);
 
         // Move first activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(firstActivity,
-                null /* launchIntoPipHostActivity */, "initialMove");
+        mRootWindowContainer.moveActivityToPinnedRootTask(firstActivity, "initialMove");
 
         final TaskDisplayArea taskDisplayArea = fullscreenTask.getDisplayArea();
         Task pinnedRootTask = taskDisplayArea.getRootPinnedTask();
@@ -331,8 +444,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         ensureTaskPlacement(fullscreenTask, secondActivity);
 
         // Move second activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(secondActivity,
-                null /* launchIntoPipHostActivity */, "secondMove");
+        mRootWindowContainer.moveActivityToPinnedRootTask(secondActivity, "secondMove");
 
         // Need to get root tasks again as a new instance might have been created.
         pinnedRootTask = taskDisplayArea.getRootPinnedTask();
@@ -341,32 +453,6 @@ public class RootWindowContainerTests extends WindowTestsBase {
         // Ensure root tasks have swapped tasks.
         ensureTaskPlacement(pinnedRootTask, secondActivity);
         ensureTaskPlacement(fullscreenTask, firstActivity);
-    }
-
-    @Test
-    public void testMovingBottomMostRootTaskActivityToPinnedRootTask() {
-        final Task fullscreenTask = mRootWindowContainer.getDefaultTaskDisplayArea().createRootTask(
-                WINDOWING_MODE_FULLSCREEN, ACTIVITY_TYPE_STANDARD, true /* onTop */);
-        final ActivityRecord firstActivity = new ActivityBuilder(mAtm)
-                .setTask(fullscreenTask).build();
-        final Task task = firstActivity.getTask();
-
-        final ActivityRecord secondActivity = new ActivityBuilder(mAtm)
-                .setTask(fullscreenTask).build();
-
-        fullscreenTask.moveTaskToBack(task);
-
-        // Ensure full screen task has both tasks.
-        ensureTaskPlacement(fullscreenTask, firstActivity, secondActivity);
-        assertEquals(task.getTopMostActivity(), secondActivity);
-        firstActivity.setState(STOPPED, "testMovingBottomMostRootTaskActivityToPinnedRootTask");
-
-
-        // Move first activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(secondActivity,
-                null /* launchIntoPipHostActivity */, "initialMove");
-
-        assertTrue(firstActivity.mRequestForceTransition);
     }
 
     @Test
@@ -384,8 +470,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         transientActivity.setState(RESUMED, "test");
         transientActivity.getTask().moveToFront("test");
 
-        mRootWindowContainer.moveActivityToPinnedRootTask(activity2,
-                null /* launchIntoPipHostActivity */, "test");
+        mRootWindowContainer.moveActivityToPinnedRootTask(activity2, "test");
         assertEquals("Created PiP task must not change focus", transientActivity.getTask(),
                 mRootWindowContainer.getTopDisplayFocusedRootTask());
         final Task newPipTask = activity2.getTask();
@@ -410,8 +495,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         final Task task = activity.getTask();
 
         // Move activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(activity,
-                null /* launchIntoPipHostActivity */, "test");
+        mRootWindowContainer.moveActivityToPinnedRootTask(activity, "test");
 
         // Ensure a task has moved over.
         ensureTaskPlacement(task, activity);
@@ -428,7 +512,8 @@ public class RootWindowContainerTests extends WindowTestsBase {
         final Rect bounds = new Rect(task.getBounds());
         bounds.scale(0.5f);
         task.setBounds(bounds);
-        assertFalse(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(activity.mAppCompatController.getAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertThat(task.autoRemoveRecents).isFalse();
     }
 
@@ -448,8 +533,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         final Task task = activity.getTask();
 
         // Move activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(activity,
-                null /* launchIntoPipHostActivity */, "test");
+        mRootWindowContainer.moveActivityToPinnedRootTask(activity, "test");
 
         // Ensure a task has moved over.
         ensureTaskPlacement(task, activity);
@@ -473,8 +557,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         final ActivityRecord secondActivity = taskFragment.getBottomMostActivity();
 
         // Move first activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(firstActivity,
-                null /* launchIntoPipHostActivity */, "test");
+        mRootWindowContainer.moveActivityToPinnedRootTask(firstActivity, "test");
 
         final TaskDisplayArea taskDisplayArea = fullscreenTask.getDisplayArea();
         final Task pinnedRootTask = taskDisplayArea.getRootPinnedTask();
@@ -505,8 +588,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         final ActivityRecord topActivity = taskFragment.getTopMostActivity();
 
         // Move the top activity to pinned root task.
-        mRootWindowContainer.moveActivityToPinnedRootTask(topActivity,
-                null /* launchIntoPipHostActivity */, "test");
+        mRootWindowContainer.moveActivityToPinnedRootTask(topActivity, "test");
 
         final Task pinnedRootTask = task.getDisplayArea().getRootPinnedTask();
 
@@ -586,12 +668,13 @@ public class RootWindowContainerTests extends WindowTestsBase {
         mRootWindowContainer.applySleepTokens(true);
         verify(task, times(expectWakeFromSleep ? 1 : 0)).awakeFromSleeping();
         verify(task, times(expectResumeTopActivity ? 1 : 0)).resumeTopActivityUncheckedLocked(
-                null /* target */, null /* targetOptions */);
+                isNull() /* target */, isNull() /* targetOptions */, eq(false) /* deferPause */);
     }
 
     @Test
     public void testAwakeFromSleepingWithAppConfiguration() {
         final DisplayContent display = mRootWindowContainer.getDefaultDisplay();
+        display.setIgnoreOrientationRequest(false);
         final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
         activity.moveFocusableActivityToTop("test");
         assertTrue(activity.getRootTask().isFocusedRootTaskOnDisplay());
@@ -778,8 +861,7 @@ public class RootWindowContainerTests extends WindowTestsBase {
         doReturn(rootTask).when(mRootWindowContainer).getTopDisplayFocusedRootTask();
 
         // Use the task as target to resume.
-        mRootWindowContainer.resumeFocusedTasksTopActivities(rootTask, activity,
-                null /* targetOptions */);
+        mRootWindowContainer.resumeFocusedTasksTopActivities(rootTask, activity);
 
         // Verify the target task should resume its activity.
         verify(rootTask, times(1)).resumeTopActivityUncheckedLocked(
@@ -1231,6 +1313,44 @@ public class RootWindowContainerTests extends WindowTestsBase {
         assertEquals(taskDisplayArea.getTopRootTask(), taskDisplayArea.getRootHomeTask());
     }
 
+    @EnableFlags(Flags.FLAG_ENABLE_TOP_VISIBLE_ROOT_TASK_PER_USER_TRACKING)
+    @Test
+    public void testSwitchUser_withVisibleRootTasks_storesAllVisibleRootTasksForCurrentUser() {
+        // Set up root tasks
+        final Task rootTask1 = mRootWindowContainer.getDefaultTaskDisplayArea().createRootTask(
+                WINDOWING_MODE_FULLSCREEN, ACTIVITY_TYPE_STANDARD, true /* onTop */);
+        final Task rootTask2 = mRootWindowContainer.getDefaultTaskDisplayArea().createRootTask(
+                WINDOWING_MODE_FREEFORM, ACTIVITY_TYPE_STANDARD, true /* onTop */);
+        final Task rootTask3 = mRootWindowContainer.getDefaultTaskDisplayArea().createRootTask(
+                WINDOWING_MODE_FREEFORM, ACTIVITY_TYPE_STANDARD, true /* onTop */);
+        doReturn(rootTask3).when(mRootWindowContainer).getTopDisplayFocusedRootTask();
+
+        // Set up child tasks inside root tasks and set some of them visible
+        final Task task1 = new TaskBuilder(mSupervisor).setOnTop(true).setParentTask(
+                rootTask1).build();
+        final Task task2 = new TaskBuilder(mSupervisor).setOnTop(true).setParentTask(
+                rootTask2).build();
+        final Task task3 = new TaskBuilder(mSupervisor).setOnTop(true).setParentTask(
+                rootTask3).build();
+        rootTask1.mUserId = mRootWindowContainer.mCurrentUser;
+        rootTask2.mUserId = mRootWindowContainer.mCurrentUser;
+        rootTask3.mUserId = mRootWindowContainer.mCurrentUser;
+        doReturn(false).when(task1).isVisible();
+        doReturn(true).when(task2).isVisible();
+        doReturn(true).when(task3).isVisible();
+
+        // Switch to a different user
+        int currentUser = mRootWindowContainer.mCurrentUser;
+        int otherUser = currentUser + 1;
+        mRootWindowContainer.switchUser(otherUser, null);
+
+        // Verify that the previous user persists it's previous visible root tasks
+        assertArrayEquals(
+                new int[]{rootTask2.mTaskId, rootTask3.mTaskId},
+                mRootWindowContainer.mUserVisibleRootTasks.get(currentUser).toArray()
+        );
+    }
+
     @Test
     public void testLockAllProfileTasks() {
         final int profileUid = UserHandle.PER_USER_RANGE + UserHandle.MIN_SECONDARY_USER_ID;
@@ -1259,6 +1379,23 @@ public class RootWindowContainerTests extends WindowTestsBase {
         clearInvocations(controller);
         mWm.mRoot.lockAllProfileTasks(profileUserId);
         verify(controller, never()).notifyTaskProfileLocked(any(), anyInt());
+    }
+
+    @EnableFlags(FLAG_ENABLE_DISPLAY_CONTENT_MODE_MANAGEMENT)
+    @Test
+    public void testOnDisplayBelongToTopologyChanged() {
+        final DisplayInfo displayInfo = new DisplayInfo();
+        displayInfo.copyFrom(mDisplayInfo);
+        displayInfo.displayId = DEFAULT_DISPLAY + 1;
+        final DisplayContent dc = createNewDisplay(displayInfo);
+        final int displayId = dc.getDisplayId();
+
+        doReturn(dc).when(mRootWindowContainer).getDisplayContentOrCreate(displayId);
+        doReturn(true).when(mWm.mDisplayWindowSettings).shouldShowSystemDecorsLocked(dc);
+
+        mRootWindowContainer.onDisplayAdded(displayId);
+        verify(mWm.mDisplayManagerInternal, times(1)).onDisplayBelongToTopologyChanged(anyInt(),
+                anyBoolean());
     }
 
     /**

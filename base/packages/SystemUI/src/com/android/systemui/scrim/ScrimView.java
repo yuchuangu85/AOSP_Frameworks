@@ -27,9 +27,13 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuff.Mode;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.Looper;
 import android.util.AttributeSet;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -50,6 +54,9 @@ import java.util.concurrent.Executor;
  * need to be careful to synchronize when necessary.
  */
 public class ScrimView extends View {
+    private static final String TAG = "ScrimView";
+    private static final boolean isDebugLoggable = Build.isDebuggable() || Log.isLoggable(TAG,
+            Log.DEBUG);
 
     private final Object mColorLock = new Object();
 
@@ -371,6 +378,29 @@ public class ScrimView extends View {
     public void setCornerRadius(int radius) {
         if (mDrawable instanceof ScrimDrawable) {
             ((ScrimDrawable) mDrawable).setRoundedCorners(radius);
+        }
+    }
+
+    /**
+     * Blur the view with the specific blur radius or clear any blurs if the radius is 0
+     */
+    public void setBlurRadius(float blurRadius) {
+        if (blurRadius > 0) {
+            debugLog("Apply blur RenderEffect to ScrimView " + mScrimName + " for radius "
+                    + blurRadius);
+            setRenderEffect(RenderEffect.createBlurEffect(
+                    blurRadius,
+                    blurRadius,
+                    Shader.TileMode.CLAMP));
+        } else {
+            debugLog("Resetting blur RenderEffect to ScrimView " + mScrimName);
+            setRenderEffect(null);
+        }
+    }
+
+    private void debugLog(String logMsg) {
+        if (isDebugLoggable) {
+            Log.d(TAG, logMsg);
         }
     }
 }

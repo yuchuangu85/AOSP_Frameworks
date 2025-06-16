@@ -34,6 +34,7 @@ import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 import android.util.proto.ProtoInputStream;
 import android.util.proto.ProtoOutputStream;
 import android.util.proto.WireTypeMismatchException;
@@ -55,6 +56,7 @@ import java.util.Objects;
  * @hide
  */
 @TestApi
+@RavenwoodKeepWholeClass
 public class WindowConfiguration implements Parcelable, Comparable<WindowConfiguration> {
     /**
      * bounds that can differ from app bounds, which may include things such as insets.
@@ -786,12 +788,6 @@ public class WindowConfiguration implements Parcelable, Comparable<WindowConfigu
     public boolean canResizeTask() {
         return mWindowingMode == WINDOWING_MODE_FREEFORM
                 || mWindowingMode == WINDOWING_MODE_MULTI_WINDOW;
-    }
-
-    /** Returns true if the task bounds should persist across power cycles.
-     * @hide */
-    public boolean persistTaskBounds() {
-        return mWindowingMode == WINDOWING_MODE_FREEFORM;
     }
 
     /**

@@ -16,8 +16,10 @@
 
 package com.android.systemui.keyguard.domain.interactor
 
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.communalSettingsInteractor
 import com.android.systemui.deviceentry.data.repository.deviceEntryRepository
-import com.android.systemui.keyguard.data.repository.fakeKeyguardTransitionRepository
+import com.android.systemui.keyguard.data.repository.keyguardTransitionRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testDispatcher
@@ -27,8 +29,9 @@ import com.android.systemui.statusbar.domain.interactor.keyguardOcclusionInterac
 val Kosmos.fromAodTransitionInteractor by
     Kosmos.Fixture {
         FromAodTransitionInteractor(
-            transitionRepository = fakeKeyguardTransitionRepository,
+            transitionRepository = keyguardTransitionRepository,
             transitionInteractor = keyguardTransitionInteractor,
+            internalTransitionInteractor = internalKeyguardTransitionInteractor,
             scope = applicationCoroutineScope,
             bgDispatcher = testDispatcher,
             mainDispatcher = testDispatcher,
@@ -36,5 +39,8 @@ val Kosmos.fromAodTransitionInteractor by
             powerInteractor = powerInteractor,
             keyguardOcclusionInteractor = keyguardOcclusionInteractor,
             deviceEntryRepository = deviceEntryRepository,
+            wakeToGoneInteractor = keyguardWakeDirectlyToGoneInteractor,
+            communalSettingsInteractor = communalSettingsInteractor,
+            communalSceneInteractor = communalSceneInteractor,
         )
     }

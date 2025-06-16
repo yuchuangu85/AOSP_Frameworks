@@ -36,7 +36,7 @@ namespace android {
 class Button : public gui::BnRegionSamplingListener {
 public:
     Button(const char* name, const Rect& samplingArea) {
-        sp<SurfaceComposerClient> client = new SurfaceComposerClient;
+        sp<SurfaceComposerClient> client = sp<SurfaceComposerClient>::make();
 
         mButton = client->createSurface(String8(name), 0, 0, PIXEL_FORMAT_RGBA_8888,
                                         ISurfaceComposerClient::eFXSurfaceEffect);
@@ -46,7 +46,8 @@ public:
 
         SurfaceComposerClient::Transaction{}
                 .setLayer(mButton, 0x7fffffff)
-                .setCrop(mButton, {0, 0, width - 2 * BUTTON_PADDING, height - 2 * BUTTON_PADDING})
+                .setCrop(mButton,
+                         Rect{0, 0, width - 2 * BUTTON_PADDING, height - 2 * BUTTON_PADDING})
                 .setPosition(mButton, samplingArea.left + BUTTON_PADDING,
                              samplingArea.top + BUTTON_PADDING)
                 .setColor(mButton, half3{1, 1, 1})
@@ -59,7 +60,8 @@ public:
         SurfaceComposerClient::Transaction{}
                 .setLayer(mButtonBlend, 0x7ffffffe)
                 .setCrop(mButtonBlend,
-                         {0, 0, width - 2 * SAMPLE_AREA_PADDING, height - 2 * SAMPLE_AREA_PADDING})
+                         Rect{0, 0, width - 2 * SAMPLE_AREA_PADDING,
+                              height - 2 * SAMPLE_AREA_PADDING})
                 .setPosition(mButtonBlend, samplingArea.left + SAMPLE_AREA_PADDING,
                              samplingArea.top + SAMPLE_AREA_PADDING)
                 .setColor(mButtonBlend, half3{1, 1, 1})
@@ -75,7 +77,7 @@ public:
 
             SurfaceComposerClient::Transaction{}
                     .setLayer(mSamplingArea, 0x7ffffffd)
-                    .setCrop(mSamplingArea, {0, 0, 100, 32})
+                    .setCrop(mSamplingArea, Rect{0, 0, 100, 32})
                     .setPosition(mSamplingArea, 490, 1606)
                     .setColor(mSamplingArea, half3{0, 1, 0})
                     .setAlpha(mSamplingArea, 0.1)

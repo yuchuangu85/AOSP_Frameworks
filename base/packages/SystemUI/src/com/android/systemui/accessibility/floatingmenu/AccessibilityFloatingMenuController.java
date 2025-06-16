@@ -19,23 +19,28 @@ package com.android.systemui.accessibility.floatingmenu;
 import static android.provider.Settings.Secure.ACCESSIBILITY_BUTTON_MODE_FLOATING_MENU;
 import static android.view.WindowManager.LayoutParams.TYPE_NAVIGATION_BAR_PANEL;
 
+import android.annotation.Nullable;
 import android.content.Context;
 import android.hardware.display.DisplayManager;
-import android.os.UserHandle;
+import android.os.Handler;
 import android.text.TextUtils;
 import android.view.Display;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.IUserInitializationCompleteCallback;
 
 import androidx.annotation.MainThread;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
+import com.android.settingslib.bluetooth.HearingAidDeviceManager;
 import com.android.systemui.accessibility.AccessibilityButtonModeObserver;
 import com.android.systemui.accessibility.AccessibilityButtonModeObserver.AccessibilityButtonMode;
 import com.android.systemui.accessibility.AccessibilityButtonTargetsObserver;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.navigationbar.NavigationModeController;
 import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.util.settings.SecureSettings;
 
@@ -52,18 +57,23 @@ public class AccessibilityFloatingMenuController implements
     private final AccessibilityButtonTargetsObserver mAccessibilityButtonTargetsObserver;
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
 
-    private Context mContext;
+    private final Context mContext;
     private final WindowManager mWindowManager;
     private final DisplayManager mDisplayManager;
     private final AccessibilityManager mAccessibilityManager;
+    private final HearingAidDeviceManager mHearingAidDeviceManager;
 
     private final SecureSettings mSecureSettings;
     private final DisplayTracker mDisplayTracker;
+    private final NavigationModeController mNavigationModeController;
     @VisibleForTesting
     IAccessibilityFloatingMenu mFloatingMenu;
     private int mBtnMode;
     private String mBtnTargets;
     private boolean mIsKeyguardVisible;
+    private boolean mIsUserInInitialization;
+    @VisibleForTesting
+    Handler mHandler;
 
     @VisibleForTesting
     final KeyguardUpdateMonitorCallback mKeyguardCallback = new KeyguardUpdateMonitorCallback() {
@@ -82,17 +92,13 @@ public class AccessibilityFloatingMenuController implements
         @Override
         public void onUserSwitching(int userId) {
             destroyFloatingMenu();
-        }
-
-        @Override
-        public void onUserSwitchComplete(int userId) {
-            mContext = mContext.createContextAsUser(UserHandle.of(userId), /* flags= */ 0);
-            mBtnMode = mAccessibilityButtonModeObserver.getCurrentAccessibilityButtonMode();
-            mBtnTargets =
-                    mAccessibilityButtonTargetsObserver.getCurrentAccessibilityButtonTargets();
-            handleFloatingMenuVisibility(mIsKeyguardVisible, mBtnMode, mBtnTargets);
+            mIsUserInInitialization = true;
         }
     };
+
+    @VisibleForTesting
+    final UserInitializationCompleteCallback mUserInitializationCompleteCallback =
+            new UserInitializationCompleteCallback();
 
     @Inject
     public AccessibilityFloatingMenuController(Context context,
@@ -101,18 +107,24 @@ public class AccessibilityFloatingMenuController implements
             AccessibilityManager accessibilityManager,
             AccessibilityButtonTargetsObserver accessibilityButtonTargetsObserver,
             AccessibilityButtonModeObserver accessibilityButtonModeObserver,
+            @Nullable HearingAidDeviceManager hearingAidDeviceManager,
             KeyguardUpdateMonitor keyguardUpdateMonitor,
             SecureSettings secureSettings,
-            DisplayTracker displayTracker) {
+            DisplayTracker displayTracker,
+            NavigationModeController navigationModeController,
+            @Main Handler handler) {
         mContext = context;
         mWindowManager = windowManager;
         mDisplayManager = displayManager;
         mAccessibilityManager = accessibilityManager;
         mAccessibilityButtonTargetsObserver = accessibilityButtonTargetsObserver;
         mAccessibilityButtonModeObserver = accessibilityButtonModeObserver;
+        mHearingAidDeviceManager = hearingAidDeviceManager;
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
         mSecureSettings = secureSettings;
         mDisplayTracker = displayTracker;
+        mNavigationModeController = navigationModeController;
+        mHandler = handler;
 
         mIsKeyguardVisible = false;
     }
@@ -151,6 +163,8 @@ public class AccessibilityFloatingMenuController implements
         mAccessibilityButtonModeObserver.addListener(this);
         mAccessibilityButtonTargetsObserver.addListener(this);
         mKeyguardUpdateMonitor.registerCallback(mKeyguardCallback);
+        mAccessibilityManager.registerUserInitializationCompleteCallback(
+                mUserInitializationCompleteCallback);
     }
 
     /**
@@ -164,7 +178,7 @@ public class AccessibilityFloatingMenuController implements
      */
     private void handleFloatingMenuVisibility(boolean keyguardVisible,
             @AccessibilityButtonMode int mode, String targets) {
-        if (keyguardVisible) {
+        if (keyguardVisible || mIsUserInInitialization) {
             destroyFloatingMenu();
             return;
         }
@@ -187,7 +201,8 @@ public class AccessibilityFloatingMenuController implements
             final Context windowContext = mContext.createWindowContext(defaultDisplay,
                     TYPE_NAVIGATION_BAR_PANEL, /* options= */ null);
             mFloatingMenu = new MenuViewLayerController(windowContext, mWindowManager,
-                    mAccessibilityManager, mSecureSettings);
+                    mAccessibilityManager, mSecureSettings, mNavigationModeController,
+                    mHearingAidDeviceManager);
         }
 
         mFloatingMenu.show();
@@ -200,5 +215,22 @@ public class AccessibilityFloatingMenuController implements
 
         mFloatingMenu.hide();
         mFloatingMenu = null;
+    }
+
+    class UserInitializationCompleteCallback
+            extends IUserInitializationCompleteCallback.Stub {
+        @Override
+        public void onUserInitializationComplete(int userId) {
+            mIsUserInInitialization = false;
+            mBtnMode = mAccessibilityButtonModeObserver.getCurrentAccessibilityButtonMode();
+            mBtnTargets =
+                    mAccessibilityButtonTargetsObserver.getCurrentAccessibilityButtonTargets();
+            mHandler.post(
+                    () -> {
+                        // Force a refresh by destroying the menu if it exists.
+                        destroyFloatingMenu();
+                        handleFloatingMenuVisibility(mIsKeyguardVisible, mBtnMode, mBtnTargets);
+                    });
+        }
     }
 }

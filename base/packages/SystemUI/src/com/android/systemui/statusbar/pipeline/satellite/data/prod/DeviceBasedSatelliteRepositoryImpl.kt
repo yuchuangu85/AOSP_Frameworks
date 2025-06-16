@@ -16,28 +16,30 @@
 
 package com.android.systemui.statusbar.pipeline.satellite.data.prod
 
+import android.content.res.Resources
 import android.os.OutcomeReceiver
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.telephony.satellite.NtnSignalStrengthCallback
+import android.telephony.satellite.SatelliteCommunicationAccessStateCallback
 import android.telephony.satellite.SatelliteManager
 import android.telephony.satellite.SatelliteManager.SATELLITE_RESULT_SUCCESS
 import android.telephony.satellite.SatelliteModemStateCallback
 import android.telephony.satellite.SatelliteProvisionStateCallback
-import android.telephony.satellite.SatelliteSupportedStateCallback
 import androidx.annotation.VisibleForTesting
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
+import com.android.app.tracing.coroutines.launchTraced as launch
+import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.core.LogLevel
 import com.android.systemui.log.core.MessageInitializer
 import com.android.systemui.log.core.MessagePrinter
+import com.android.systemui.res.R
 import com.android.systemui.statusbar.pipeline.dagger.DeviceBasedSatelliteInputLog
 import com.android.systemui.statusbar.pipeline.dagger.VerboseDeviceBasedSatelliteInputLog
 import com.android.systemui.statusbar.pipeline.satellite.data.RealDeviceBasedSatelliteRepository
-import com.android.systemui.statusbar.pipeline.satellite.data.prod.DeviceBasedSatelliteRepositoryImpl.Companion.POLLING_INTERVAL_MS
 import com.android.systemui.statusbar.pipeline.satellite.data.prod.SatelliteSupport.Companion.whenSupported
 import com.android.systemui.statusbar.pipeline.satellite.data.prod.SatelliteSupport.NotSupported
 import com.android.systemui.statusbar.pipeline.satellite.data.prod.SatelliteSupport.Supported
@@ -47,11 +49,11 @@ import com.android.systemui.util.kotlin.getOrNull
 import com.android.systemui.util.kotlin.pairwise
 import com.android.systemui.util.time.SystemClock
 import java.util.Optional
+import java.util.function.Consumer
 import javax.inject.Inject
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
@@ -60,15 +62,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
@@ -100,7 +99,6 @@ sealed interface SatelliteSupport {
      */
     data object NotSupported : SatelliteSupport
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     companion object {
         /**
          * Convenience function to switch to the supported flow. [retrySignal] is a flow that emits
@@ -122,15 +120,9 @@ sealed interface SatelliteSupport {
 }
 
 /**
- * Basically your everyday run-of-the-mill system service listener, with three notable exceptions.
+ * Basically your everyday run-of-the-mill system service listener, with two notable exceptions.
  *
- * First, there is an availability bit that we are tracking via [SatelliteManager]. See
- * [isSatelliteAllowedForCurrentLocation] for the implementation details. The thing to note about
- * this bit is that there is no callback that exists. Therefore we implement a simple polling
- * mechanism here. Since the underlying bit is location-dependent, we simply poll every hour (see
- * [POLLING_INTERVAL_MS]) and see what the current state is.
- *
- * Secondly, there are cases when simply requesting information from SatelliteManager can fail. See
+ * First, there are cases when simply requesting information from SatelliteManager can fail. See
  * [SatelliteSupport] for details on how we track the state. What's worth noting here is that
  * SUPPORTED is a stronger guarantee than [satelliteManager] being null. Therefore, the fundamental
  * data flows here ([connectionState], [signalStrength],...) are wrapped in the convenience method
@@ -138,7 +130,7 @@ sealed interface SatelliteSupport {
  * [SupportedSatelliteManager], we can guarantee that the manager is non-null AND that it has told
  * us that satellite is supported. Therefore, we don't expect exceptions to be thrown.
  *
- * Lastly, this class is designed to wait a full minute of process uptime before making any requests
+ * Second, this class is designed to wait a full minute of process uptime before making any requests
  * to the satellite manager. The hope is that by waiting we don't have to retry due to a modem that
  * is still booting up or anything like that. We can tune or remove this behavior in the future if
  * necessary.
@@ -150,15 +142,17 @@ constructor(
     satelliteManagerOpt: Optional<SatelliteManager>,
     telephonyManager: TelephonyManager,
     @Background private val bgDispatcher: CoroutineDispatcher,
-    @Application private val scope: CoroutineScope,
+    @Background private val scope: CoroutineScope,
     @DeviceBasedSatelliteInputLog private val logBuffer: LogBuffer,
     @VerboseDeviceBasedSatelliteInputLog private val verboseLogBuffer: LogBuffer,
     private val systemClock: SystemClock,
+    @Main resources: Resources,
 ) : RealDeviceBasedSatelliteRepository {
 
     private val satelliteManager: SatelliteManager?
 
-    override val isSatelliteAllowedForCurrentLocation: MutableStateFlow<Boolean>
+    override val isOpportunisticSatelliteIconEnabled: Boolean =
+        resources.getBoolean(R.bool.config_showOpportunisticSatelliteIcon)
 
     // Some calls into satellite manager will throw exceptions if it is not supported.
     // This is never expected to change after boot, but may need to be retried in some cases
@@ -192,7 +186,7 @@ constructor(
             .stateIn(
                 scope,
                 SharingStarted.WhileSubscribed(),
-                TelephonyManager.RADIO_POWER_UNAVAILABLE
+                TelephonyManager.RADIO_POWER_UNAVAILABLE,
             )
 
     /**
@@ -221,11 +215,9 @@ constructor(
     init {
         satelliteManager = satelliteManagerOpt.getOrNull()
 
-        isSatelliteAllowedForCurrentLocation = MutableStateFlow(false)
-
         if (satelliteManager != null) {
             // Outer scope launch allows us to delay until MIN_UPTIME
-            scope.launch {
+            scope.launch(context = bgDispatcher) {
                 // First, check that satellite is supported on this device
                 satelliteSupport.value = checkSatelliteSupportAfterMinUptime(satelliteManager)
                 logBuffer.i(
@@ -233,11 +225,10 @@ constructor(
                     { "Checked for system support. support=$str1" },
                 )
 
-                // Second, launch a job to poll for service availability based on location
-                scope.launch { pollForAvailabilityBasedOnLocation() }
-
-                // Third, register a listener to let us know if there are changes to support
-                scope.launch { listenForChangesToSatelliteSupport(satelliteManager) }
+                // Second, register a listener to let us know if there are changes to support
+                scope.launch(context = bgDispatcher) {
+                    listenForChangesToSatelliteSupport(satelliteManager)
+                }
             }
         } else {
             logBuffer.i { "Satellite manager is null" }
@@ -259,28 +250,45 @@ constructor(
         return sm.checkSatelliteSupported()
     }
 
-    /*
-     * As there is no listener available for checking satellite allowed, we must poll the service.
-     * Defaulting to polling at most once every 20m while active. Subsequent OOS events will restart
-     * the job, so a flaky connection might cause more frequent checks.
-     */
-    private suspend fun pollForAvailabilityBasedOnLocation() {
+    override val isSatelliteAllowedForCurrentLocation =
         satelliteSupport
             .whenSupported(
-                supported = ::isSatelliteAllowedHasListener,
+                supported = ::isSatelliteAvailableFlow,
                 orElse = flowOf(false),
                 retrySignal = telephonyProcessCrashedEvent,
             )
-            .collectLatest { hasSubscribers ->
-                if (hasSubscribers) {
-                    while (true) {
-                        logBuffer.i { "requestIsCommunicationAllowedForCurrentLocation" }
-                        checkIsSatelliteAllowed()
-                        delay(POLLING_INTERVAL_MS)
+            .stateIn(scope, SharingStarted.Lazily, false)
+
+    private fun isSatelliteAvailableFlow(sm: SupportedSatelliteManager): Flow<Boolean> =
+        conflatedCallbackFlow {
+                val callback = SatelliteCommunicationAccessStateCallback { allowed ->
+                    logBuffer.i({ bool1 = allowed }) {
+                        "onSatelliteCommunicationAccessAllowedStateChanged: $bool1"
+                    }
+
+                    trySend(allowed)
+                }
+
+                var registered = false
+                try {
+                    logBuffer.i { "registerForCommunicationAccessStateChanged" }
+                    sm.registerForCommunicationAccessStateChanged(
+                        bgDispatcher.asExecutor(),
+                        callback,
+                    )
+                    registered = true
+                } catch (e: Exception) {
+                    logBuffer.e("Error calling registerForCommunicationAccessStateChanged", e)
+                }
+
+                awaitClose {
+                    if (registered) {
+                        logBuffer.i { "unRegisterForCommunicationAccessStateChanged" }
+                        sm.unregisterForCommunicationAccessStateChanged(callback)
                     }
                 }
             }
-    }
+            .flowOn(bgDispatcher)
 
     /**
      * Register a callback with [SatelliteManager] to let us know if there is a change in satellite
@@ -311,19 +319,21 @@ constructor(
             flowOf(false)
         } else {
             conflatedCallbackFlow {
-                val callback = SatelliteSupportedStateCallback { supported ->
-                    logBuffer.i {
-                        "onSatelliteSupportedStateChanged: " +
-                            "${if (supported) "supported" else "not supported"}"
+                val callback =
+                    Consumer<Boolean> { supported ->
+                        logBuffer.i {
+                            "onSatelliteSupportedStateChanged: " +
+                                "${if (supported) "supported" else "not supported"}"
+                        }
+                        trySend(supported)
                     }
-                    trySend(supported)
-                }
 
                 var registered = false
                 try {
+                    logBuffer.i { "registerForSupportedStateChanged" }
                     satelliteManager.registerForSupportedStateChanged(
                         bgDispatcher.asExecutor(),
-                        callback
+                        callback,
                     )
                     registered = true
                 } catch (e: Exception) {
@@ -332,6 +342,7 @@ constructor(
 
                 awaitClose {
                     if (registered) {
+                        logBuffer.i { "unregisterForSupportedStateChanged" }
                         satelliteManager.unregisterForSupportedStateChanged(callback)
                     }
                 }
@@ -366,10 +377,7 @@ constructor(
                 var registered = false
                 try {
                     logBuffer.i { "registerForProvisionStateChanged" }
-                    sm.registerForProvisionStateChanged(
-                        bgDispatcher.asExecutor(),
-                        callback,
-                    )
+                    sm.registerForProvisionStateChanged(bgDispatcher.asExecutor(), callback)
                     registered = true
                 } catch (e: Exception) {
                     logBuffer.e("error registering for provisioning state callback", e)
@@ -377,6 +385,7 @@ constructor(
 
                 awaitClose {
                     if (registered) {
+                        logBuffer.i { "unregisterForProvisionStateChanged" }
                         sm.unregisterForProvisionStateChanged(callback)
                     }
                 }
@@ -409,14 +418,6 @@ constructor(
                 }
             }
         }
-
-    /**
-     * Signal that we should start polling [checkIsSatelliteAllowed]. We only need to poll if there
-     * are active listeners to [isSatelliteAllowedForCurrentLocation]
-     */
-    @SuppressWarnings("unused")
-    private fun isSatelliteAllowedHasListener(sm: SupportedSatelliteManager): Flow<Boolean> =
-        isSatelliteAllowedForCurrentLocation.subscriptionCount.map { it > 0 }.distinctUntilChanged()
 
     override val connectionState =
         satelliteSupport
@@ -485,28 +486,6 @@ constructor(
             }
             .flowOn(bgDispatcher)
 
-    /** Fire off a request to check for satellite availability. Always runs on the bg context */
-    private suspend fun checkIsSatelliteAllowed() =
-        withContext(bgDispatcher) {
-            satelliteManager?.requestIsCommunicationAllowedForCurrentLocation(
-                bgDispatcher.asExecutor(),
-                object : OutcomeReceiver<Boolean, SatelliteManager.SatelliteException> {
-                    override fun onError(e: SatelliteManager.SatelliteException) {
-                        logBuffer.e(
-                            "Found exception when checking availability",
-                            e,
-                        )
-                        isSatelliteAllowedForCurrentLocation.value = false
-                    }
-
-                    override fun onResult(allowed: Boolean) {
-                        logBuffer.i { "isSatelliteAllowedForCurrentLocation: $allowed" }
-                        isSatelliteAllowedForCurrentLocation.value = allowed
-                    }
-                }
-            )
-        }
-
     private suspend fun SatelliteManager.checkSatelliteSupported(): SatelliteSupport =
         suspendCancellableCoroutine { continuation ->
             val cb =
@@ -546,9 +525,6 @@ constructor(
         }
 
     companion object {
-        // TTL for satellite polling is twenty minutes
-        const val POLLING_INTERVAL_MS: Long = 1000 * 60 * 20
-
         // Let the system boot up and stabilize before we check for system support
         const val MIN_UPTIME: Long = 1000 * 60
 
@@ -559,17 +535,10 @@ constructor(
             uptime - (clock.uptimeMillis() - android.os.Process.getStartUptimeMillis())
 
         /** A couple of convenience logging methods rather than a whole class */
-        private fun LogBuffer.i(
-            initializer: MessageInitializer = {},
-            printer: MessagePrinter,
-        ) = this.log(TAG, LogLevel.INFO, initializer, printer)
+        private fun LogBuffer.i(initializer: MessageInitializer = {}, printer: MessagePrinter) =
+            this.log(TAG, LogLevel.INFO, initializer, printer)
 
         private fun LogBuffer.e(message: String, exception: Throwable? = null) =
-            this.log(
-                tag = TAG,
-                level = LogLevel.ERROR,
-                message = message,
-                exception = exception,
-            )
+            this.log(tag = TAG, level = LogLevel.ERROR, message = message, exception = exception)
     }
 }

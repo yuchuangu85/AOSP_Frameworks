@@ -22,16 +22,13 @@ import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.systemui.bouncer.domain.interactor.AlternateBouncerInteractor
 import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
-import com.android.systemui.keyguard.data.repository.BiometricType
 import com.android.systemui.keyguard.data.repository.DeviceEntryFingerprintAuthRepository
 import com.android.systemui.res.R
 import com.android.systemui.scene.domain.interactor.SceneInteractor
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
-import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.scene.shared.model.Overlays
+import com.android.systemui.shade.ShadeDisplayAware
 import javax.inject.Inject
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -41,7 +38,6 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onEach
-import kotlinx.coroutines.launch
 
 /**
  * Encapsulates business logic for device entry events that impact the side fingerprint sensor
@@ -51,8 +47,7 @@ import kotlinx.coroutines.launch
 class DeviceEntrySideFpsOverlayInteractor
 @Inject
 constructor(
-    @Application private val applicationScope: CoroutineScope,
-    @Application private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     deviceEntryFingerprintAuthRepository: DeviceEntryFingerprintAuthRepository,
     private val sceneInteractor: SceneInteractor,
     private val primaryBouncerInteractor: PrimaryBouncerInteractor,
@@ -60,24 +55,12 @@ constructor(
     private val keyguardUpdateMonitor: KeyguardUpdateMonitor,
 ) {
 
-    init {
-        if (!DeviceEntryUdfpsRefactor.isEnabled) {
-            applicationScope.launch {
-                deviceEntryFingerprintAuthRepository.availableFpSensorType.collect { sensorType ->
-                    if (sensorType == BiometricType.SIDE_FINGERPRINT) {
-                        alternateBouncerInteractor.setAlternateBouncerUIAvailable(true, TAG)
-                    }
-                }
-            }
-        }
-    }
-
     private val isSideFpsIndicatorOnPrimaryBouncerEnabled: Boolean
         get() = context.resources.getBoolean(R.bool.config_show_sidefps_hint_on_bouncer)
 
-    private val isBouncerSceneActive: Flow<Boolean> =
+    private val isBouncerOverlayActive: Flow<Boolean> =
         if (SceneContainerFlag.isEnabled) {
-            sceneInteractor.currentScene.map { it == Scenes.Bouncer }.distinctUntilChanged()
+            sceneInteractor.currentOverlays.map { Overlays.Bouncer in it }.distinctUntilChanged()
         } else {
             flowOf(false)
         }
@@ -89,8 +72,8 @@ constructor(
                 primaryBouncerInteractor.startingToHide,
                 primaryBouncerInteractor.startingDisappearAnimation.filterNotNull(),
                 // Bouncer scene visibility changes.
-                isBouncerSceneActive,
-                deviceEntryFingerprintAuthRepository.shouldUpdateIndicatorVisibility.filter { it }
+                isBouncerOverlayActive,
+                deviceEntryFingerprintAuthRepository.shouldUpdateIndicatorVisibility.filter { it },
             )
             .map {
                 isBouncerActive() &&
@@ -121,7 +104,7 @@ constructor(
 
     private fun isBouncerActive(): Boolean {
         if (SceneContainerFlag.isEnabled) {
-            return sceneInteractor.currentScene.value == Scenes.Bouncer
+            return Overlays.Bouncer in sceneInteractor.currentOverlays.value
         }
         return primaryBouncerInteractor.isBouncerShowing() &&
             !primaryBouncerInteractor.isAnimatingAway()

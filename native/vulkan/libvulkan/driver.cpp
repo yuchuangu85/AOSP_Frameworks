@@ -41,28 +41,14 @@
 #include <new>
 #include <vector>
 
+#include <com_android_graphics_libvulkan_flags.h>
 #include "stubhal.h"
 
 using namespace android::hardware::configstore;
 using namespace android::hardware::configstore::V1_0;
+using namespace com::android::graphics::libvulkan;
 
 extern "C" android_namespace_t* android_get_exported_namespace(const char*);
-
-// #define ENABLE_ALLOC_CALLSTACKS 1
-#if ENABLE_ALLOC_CALLSTACKS
-#include <utils/CallStack.h>
-#define ALOGD_CALLSTACK(...)                             \
-    do {                                                 \
-        ALOGD(__VA_ARGS__);                              \
-        android::CallStack callstack;                    \
-        callstack.update();                              \
-        callstack.log(LOG_TAG, ANDROID_LOG_DEBUG, "  "); \
-    } while (false)
-#else
-#define ALOGD_CALLSTACK(...) \
-    do {                     \
-    } while (false)
-#endif
 
 namespace vulkan {
 namespace driver {
@@ -339,10 +325,13 @@ void Hal::UnloadBuiltinDriver() {
 
     ALOGD("Unload builtin Vulkan driver.");
 
-    // Close the opened device
-    int err = hal_.dev_->common.close(
-        const_cast<struct hw_device_t*>(&hal_.dev_->common));
-    ALOG_ASSERT(!err, "hw_device_t::close() failed.");
+    if (hal_.dev_->common.close != nullptr)
+    {
+        // Close the opened device
+        int err = hal_.dev_->common.close(
+            const_cast<struct hw_device_t*>(&hal_.dev_->common));
+        ALOG_ASSERT(!err, "hw_device_t::close() failed.");
+    }
 
     // Close the opened shared library in the hw_module_t
     android_unload_sphal_library(hal_.dev_->common.module->dso);
@@ -393,7 +382,7 @@ CreateInfoWrapper::CreateInfoWrapper(const VkInstanceCreateInfo& create_info,
                                      const VkAllocationCallbacks& allocator)
     : is_instance_(true),
       allocator_(allocator),
-      loader_api_version_(VK_API_VERSION_1_3),
+      loader_api_version_(flags::vulkan_1_4_instance_api() ? VK_API_VERSION_1_4 : VK_API_VERSION_1_3),
       icd_api_version_(icd_api_version),
       physical_dev_(VK_NULL_HANDLE),
       instance_info_(create_info),
@@ -405,7 +394,7 @@ CreateInfoWrapper::CreateInfoWrapper(VkPhysicalDevice physical_dev,
                                      const VkAllocationCallbacks& allocator)
     : is_instance_(false),
       allocator_(allocator),
-      loader_api_version_(VK_API_VERSION_1_3),
+      loader_api_version_(flags::vulkan_1_4_instance_api() ? VK_API_VERSION_1_4 : VK_API_VERSION_1_3),
       icd_api_version_(icd_api_version),
       physical_dev_(physical_dev),
       dev_info_(create_info),
@@ -449,6 +438,19 @@ CreateInfoWrapper::operator const VkDeviceCreateInfo*() const {
 VkResult CreateInfoWrapper::SanitizeApiVersion() {
     if (!is_instance_ || !instance_info_.pApplicationInfo)
         return VK_SUCCESS;
+
+    // certain 1.3 icds in the wild may misbehave if the app requests
+    // the 1.4 instance api. since there are no actual instance api
+    // differences between these versions, downgrade the instance api
+    // to 1.3 for such icds.
+    if (icd_api_version_ >= VK_API_VERSION_1_3 &&
+            icd_api_version_ < VK_API_VERSION_1_4 &&
+            instance_info_.pApplicationInfo->apiVersion >= VK_API_VERSION_1_4) {
+        application_info_ = *instance_info_.pApplicationInfo;
+        application_info_.apiVersion = icd_api_version_;
+        instance_info_.pApplicationInfo = &application_info_;
+        return VK_SUCCESS;
+    }
 
     if (icd_api_version_ > VK_API_VERSION_1_0 ||
         instance_info_.pApplicationInfo->apiVersion < VK_API_VERSION_1_1)
@@ -547,6 +549,10 @@ VkResult CreateInfoWrapper::SanitizeExtensions() {
         is_instance_ ? loader_api_version_
                      : std::min(icd_api_version_, loader_api_version_);
     switch (api_version) {
+        case VK_API_VERSION_1_4:
+            hook_extensions_.set(ProcHook::EXTENSION_CORE_1_4);
+            hal_extensions_.set(ProcHook::EXTENSION_CORE_1_4);
+            [[clang::fallthrough]];
         case VK_API_VERSION_1_3:
             hook_extensions_.set(ProcHook::EXTENSION_CORE_1_3);
             hal_extensions_.set(ProcHook::EXTENSION_CORE_1_3);
@@ -685,6 +691,7 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
             case ProcHook::KHR_incremental_present:
             case ProcHook::KHR_shared_presentable_image:
             case ProcHook::KHR_swapchain:
+            case ProcHook::KHR_swapchain_mutable_format:
             case ProcHook::EXT_hdr_metadata:
             case ProcHook::EXT_swapchain_maintenance1:
             case ProcHook::ANDROID_external_memory_android_hardware_buffer:
@@ -695,6 +702,7 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
             case ProcHook::EXTENSION_CORE_1_1:
             case ProcHook::EXTENSION_CORE_1_2:
             case ProcHook::EXTENSION_CORE_1_3:
+            case ProcHook::EXTENSION_CORE_1_4:
             case ProcHook::EXTENSION_COUNT:
                 // Device and meta extensions. If we ever get here it's a bug in
                 // our code. But enumerating them lets us avoid having a default
@@ -737,6 +745,7 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
                 break;
             case ProcHook::ANDROID_external_memory_android_hardware_buffer:
             case ProcHook::KHR_external_fence_fd:
+            case ProcHook::KHR_swapchain_mutable_format:
             case ProcHook::EXTENSION_UNKNOWN:
                 // Extensions we don't need to do anything about at this level
                 break;
@@ -759,6 +768,7 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
             case ProcHook::EXTENSION_CORE_1_1:
             case ProcHook::EXTENSION_CORE_1_2:
             case ProcHook::EXTENSION_CORE_1_3:
+            case ProcHook::EXTENSION_CORE_1_4:
             case ProcHook::EXTENSION_COUNT:
                 // Instance and meta extensions. If we ever get here it's a bug
                 // in our code. But enumerating them lets us avoid having a
@@ -816,54 +826,6 @@ void CreateInfoWrapper::FilterExtension(const char* name) {
     }
 }
 
-VKAPI_ATTR void* DefaultAllocate(void*,
-                                 size_t size,
-                                 size_t alignment,
-                                 VkSystemAllocationScope) {
-    void* ptr = nullptr;
-    // Vulkan requires 'alignment' to be a power of two, but posix_memalign
-    // additionally requires that it be at least sizeof(void*).
-    int ret = posix_memalign(&ptr, std::max(alignment, sizeof(void*)), size);
-    ALOGD_CALLSTACK("Allocate: size=%zu align=%zu => (%d) %p", size, alignment,
-                    ret, ptr);
-    return ret == 0 ? ptr : nullptr;
-}
-
-VKAPI_ATTR void* DefaultReallocate(void*,
-                                   void* ptr,
-                                   size_t size,
-                                   size_t alignment,
-                                   VkSystemAllocationScope) {
-    if (size == 0) {
-        free(ptr);
-        return nullptr;
-    }
-
-    // TODO(b/143295633): Right now we never shrink allocations; if the new
-    // request is smaller than the existing chunk, we just continue using it.
-    // Right now the loader never reallocs, so this doesn't matter. If that
-    // changes, or if this code is copied into some other project, this should
-    // probably have a heuristic to allocate-copy-free when doing so will save
-    // "enough" space.
-    size_t old_size = ptr ? malloc_usable_size(ptr) : 0;
-    if (size <= old_size)
-        return ptr;
-
-    void* new_ptr = nullptr;
-    if (posix_memalign(&new_ptr, std::max(alignment, sizeof(void*)), size) != 0)
-        return nullptr;
-    if (ptr) {
-        memcpy(new_ptr, ptr, std::min(old_size, size));
-        free(ptr);
-    }
-    return new_ptr;
-}
-
-VKAPI_ATTR void DefaultFree(void*, void* ptr) {
-    ALOGD_CALLSTACK("Free: %p", ptr);
-    free(ptr);
-}
-
 InstanceData* AllocateInstanceData(const VkAllocationCallbacks& allocator) {
     void* data_mem = allocator.pfnAllocation(
         allocator.pUserData, sizeof(InstanceData), alignof(InstanceData),
@@ -901,17 +863,6 @@ void FreeDeviceData(DeviceData* data, const VkAllocationCallbacks& allocator) {
 
 bool OpenHAL() {
     return Hal::Open();
-}
-
-const VkAllocationCallbacks& GetDefaultAllocator() {
-    static const VkAllocationCallbacks kDefaultAllocCallbacks = {
-        .pUserData = nullptr,
-        .pfnAllocation = DefaultAllocate,
-        .pfnReallocation = DefaultReallocate,
-        .pfnFree = DefaultFree,
-    };
-
-    return kDefaultAllocCallbacks;
 }
 
 PFN_vkVoidFunction GetInstanceProcAddr(VkInstance instance, const char* pName) {
@@ -1246,6 +1197,15 @@ VkResult EnumerateDeviceExtensionProperties(
         loader_extensions.push_back({
                 VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
                 VK_EXT_SWAPCHAIN_MAINTENANCE_1_SPEC_VERSION});
+    }
+
+    VkPhysicalDeviceProperties pDeviceProperties;
+    data.driver.GetPhysicalDeviceProperties(physicalDevice, &pDeviceProperties);
+    if (flags::swapchain_mutable_format_ext() &&
+        pDeviceProperties.apiVersion >= VK_API_VERSION_1_2) {
+        loader_extensions.push_back(
+            {VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,
+             VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_SPEC_VERSION});
     }
 
     // enumerate our extensions first

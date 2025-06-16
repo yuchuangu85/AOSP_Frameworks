@@ -14,18 +14,16 @@
  * limitations under the License.
  */
 
-@file:OptIn(ExperimentalCoroutinesApi::class)
-
 package com.android.systemui.shade.domain.interactor
 
+import com.android.compose.animation.scene.ContentKey
 import com.android.compose.animation.scene.ObservableTransitionState
-import com.android.compose.animation.scene.SceneKey
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.scene.domain.interactor.SceneInteractor
+import com.android.systemui.scene.shared.model.Overlays
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.statusbar.SysuiStatusBarStateController
 import javax.inject.Inject
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -55,7 +53,9 @@ constructor(
             when (state) {
                 is ObservableTransitionState.Idle ->
                     flowOf(
-                        if (state.currentScene != Scenes.Gone) {
+                        if (
+                            state.currentScene != Scenes.Gone || state.currentOverlays.isNotEmpty()
+                        ) {
                             // When resting on a non-Gone scene, the panel is fully expanded.
                             1f
                         } else {
@@ -66,8 +66,8 @@ constructor(
                     )
                 is ObservableTransitionState.Transition ->
                     when {
-                        state.fromScene == Scenes.Gone ->
-                            if (state.toScene.isExpandable()) {
+                        state.fromContent == Scenes.Gone ->
+                            if (state.toContent.isExpandable()) {
                                 // Moving from Gone to a scene that can animate-expand has a
                                 // panel expansion that tracks with the transition.
                                 state.progress
@@ -76,8 +76,8 @@ constructor(
                                 // immediately makes the panel fully expanded.
                                 flowOf(1f)
                             }
-                        state.toScene == Scenes.Gone ->
-                            if (state.fromScene.isExpandable()) {
+                        state.toContent == Scenes.Gone ->
+                            if (state.fromContent.isExpandable()) {
                                 // Moving to Gone from a scene that can animate-expand has a
                                 // panel expansion that tracks with the transition.
                                 state.progress.map { 1 - it }
@@ -129,7 +129,13 @@ constructor(
         return sceneInteractor.currentScene.value == Scenes.Lockscreen
     }
 
-    private fun SceneKey.isExpandable(): Boolean {
-        return this == Scenes.Shade || this == Scenes.QuickSettings
+    private fun ContentKey.isExpandable(): Boolean {
+        return when (this) {
+            Scenes.Shade,
+            Scenes.QuickSettings,
+            Overlays.NotificationsShade,
+            Overlays.QuickSettingsShade -> true
+            else -> false
+        }
     }
 }

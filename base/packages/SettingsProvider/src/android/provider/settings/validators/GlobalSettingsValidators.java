@@ -102,6 +102,7 @@ public class GlobalSettingsValidators {
                 });
         VALIDATORS.put(Global.AUTO_TIME, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.AUTO_TIME_ZONE, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(Global.TIME_ZONE_NOTIFICATIONS, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.POWER_SOUNDS_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.DOCK_SOUNDS_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.CHARGING_SOUNDS_ENABLED, BOOLEAN_VALIDATOR);
@@ -176,7 +177,7 @@ public class GlobalSettingsValidators {
         VALIDATORS.put(Global.REQUIRE_PASSWORD_TO_DECRYPT, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.DEVICE_DEMO_MODE, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.AWARE_ALLOWED, BOOLEAN_VALIDATOR);
-        VALIDATORS.put(Global.POWER_BUTTON_SHORT_PRESS, new InclusiveIntegerRangeValidator(0, 7));
+        VALIDATORS.put(Global.POWER_BUTTON_SHORT_PRESS, new InclusiveIntegerRangeValidator(0, 8));
         VALIDATORS.put(Global.POWER_BUTTON_DOUBLE_PRESS, new InclusiveIntegerRangeValidator(0, 3));
         VALIDATORS.put(Global.POWER_BUTTON_TRIPLE_PRESS, new InclusiveIntegerRangeValidator(0, 3));
         VALIDATORS.put(Global.POWER_BUTTON_LONG_PRESS, new InclusiveIntegerRangeValidator(0, 5));
@@ -186,7 +187,7 @@ public class GlobalSettingsValidators {
         VALIDATORS.put(
                 Global.STEM_PRIMARY_BUTTON_SHORT_PRESS, new InclusiveIntegerRangeValidator(0, 1));
         VALIDATORS.put(
-                Global.STEM_PRIMARY_BUTTON_DOUBLE_PRESS, new InclusiveIntegerRangeValidator(0, 1));
+                Global.STEM_PRIMARY_BUTTON_DOUBLE_PRESS, new InclusiveIntegerRangeValidator(0, 2));
         VALIDATORS.put(
                 Global.STEM_PRIMARY_BUTTON_TRIPLE_PRESS, new InclusiveIntegerRangeValidator(0, 1));
         VALIDATORS.put(
@@ -340,7 +341,8 @@ public class GlobalSettingsValidators {
                         new String[] {
                             String.valueOf(Global.Wearable.PAIRED_DEVICE_OS_TYPE_UNKNOWN),
                             String.valueOf(Global.Wearable.PAIRED_DEVICE_OS_TYPE_ANDROID),
-                            String.valueOf(Global.Wearable.PAIRED_DEVICE_OS_TYPE_IOS)
+                            String.valueOf(Global.Wearable.PAIRED_DEVICE_OS_TYPE_IOS),
+                            String.valueOf(Global.Wearable.PAIRED_DEVICE_OS_TYPE_NONE)
                         }));
         VALIDATORS.put(
                 Global.Wearable.COMPANION_BLE_ROLE,
@@ -433,7 +435,7 @@ public class GlobalSettingsValidators {
         VALIDATORS.put(Global.Wearable.PHONE_SWITCHING_STATUS,
                 new InclusiveIntegerRangeValidator(
                         Global.Wearable.PHONE_SWITCHING_STATUS_NOT_STARTED,
-                        Global.Wearable.PHONE_SWITCHING_STATUS_IN_PROGRESS_MIGRATION_SUCCESS));
+                        Global.Wearable.PHONE_SWITCHING_STATUS_ACCOUNTS_MATCHED));
         VALIDATORS.put(Global.Wearable.REDUCE_MOTION, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.Wearable.RTL_SWIPE_TO_DISMISS_ENABLED_DEV, BOOLEAN_VALIDATOR);
         VALIDATORS.put(
@@ -445,7 +447,6 @@ public class GlobalSettingsValidators {
                                 String.valueOf(Global.Wearable.TETHERED_CONFIG_TETHERED),
                                 String.valueOf(Global.Wearable.TETHERED_CONFIG_RESTRICTED)
                         }));
-        VALIDATORS.put(Global.Wearable.PHONE_SWITCHING_SUPPORTED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.Wearable.WEAR_LAUNCHER_UI_MODE, ANY_INTEGER_VALIDATOR);
         VALIDATORS.put(Global.Wearable.WEAR_POWER_ANOMALY_SERVICE_ENABLED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.Wearable.CONNECTIVITY_KEEP_DATA_ON, BOOLEAN_VALIDATOR);
@@ -457,5 +458,23 @@ public class GlobalSettingsValidators {
         VALIDATORS.put(Global.ADD_USERS_WHEN_LOCKED, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.REMOVE_GUEST_ON_EXIT, BOOLEAN_VALIDATOR);
         VALIDATORS.put(Global.USER_SWITCHER_ENABLED, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(Global.Wearable.PHONE_SWITCHING_REQUEST_SOURCE,
+            new InclusiveIntegerRangeValidator(
+                Global.Wearable.PHONE_SWITCHING_REQUEST_SOURCE_NONE,
+                Global.Wearable.PHONE_SWITCHING_REQUEST_SOURCE_COMPANION
+        ));
+        VALIDATORS.put(Global.HEARING_DEVICE_LOCAL_AMBIENT_VOLUME, ANY_STRING_VALIDATOR);
+        VALIDATORS.put(Global.HEARING_DEVICE_LOCAL_NOTIFICATION, ANY_STRING_VALIDATOR);
+        VALIDATORS.put(
+                Global.Wearable.WEAR_SYSTEM_STATUS_TRAY_CONFIGURATION,
+                new DiscreteValueValidator(
+                        new String[] {
+                                String.valueOf(
+                                        Global.Wearable.STATUS_TRAY_CONFIGURATION_DEFAULT),
+                                String.valueOf(
+                                        Global.Wearable.STATUS_TRAY_CONFIGURATION_SYSTEM_HIDDEN)
+                        }));
+        VALIDATORS.put(Global.Wearable.GESTURE_PRIMARY_ACTION_USER_PREFERENCE, BOOLEAN_VALIDATOR);
+        VALIDATORS.put(Global.Wearable.GESTURE_DISMISS_ACTION_USER_PREFERENCE, BOOLEAN_VALIDATOR);
     }
 }

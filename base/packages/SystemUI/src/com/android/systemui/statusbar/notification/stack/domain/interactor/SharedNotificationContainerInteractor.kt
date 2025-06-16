@@ -18,16 +18,18 @@
 package com.android.systemui.statusbar.notification.stack.domain.interactor
 
 import android.content.Context
-import com.android.systemui.Flags.centralizedStatusBarHeightFix
-import com.android.systemui.common.ui.data.repository.ConfigurationRepository
+import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor
 import com.android.systemui.res.R
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.shade.LargeScreenHeaderHelper
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.policy.SplitShadeStateController
 import dagger.Lazy
 import javax.inject.Inject
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,16 +37,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onStart
 
 /** Encapsulates business-logic specifically related to the shared notification stack container. */
+@OptIn(FlowPreview::class)
 @SysUISingleton
 class SharedNotificationContainerInteractor
 @Inject
 constructor(
-    configurationRepository: ConfigurationRepository,
-    private val context: Context,
-    private val splitShadeStateController: SplitShadeStateController,
+    @ShadeDisplayAware private val context: Context,
+    private val splitShadeStateController: Lazy<SplitShadeStateController>,
+    @ShadeDisplayAware configurationInteractor: ConfigurationInteractor,
     keyguardInteractor: KeyguardInteractor,
     deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
     largeScreenHeaderHelperLazy: Lazy<LargeScreenHeaderHelper>,
@@ -57,16 +59,22 @@ constructor(
     /** An internal modification was made to notifications */
     val notificationStackChanged = _notificationStackChanged.debounce(20L)
 
+    /* Warning: Even though the value it emits only contains the split shade status, this flow must
+     * emit a value whenever the configuration *or* the split shade status changes. Adding a
+     * distinctUntilChanged() to this would cause configurationBasedDimensions to miss configuration
+     * updates that affect other resources, like margins or the large screen header flag.
+     */
+    @Deprecated("Use SharedNotificationContainerViewModel.ConfigurationBasedDimensions instead")
     val configurationBasedDimensions: Flow<ConfigurationBasedDimensions> =
-        configurationRepository.onAnyConfigurationChange
-            .onStart { emit(Unit) }
-            .map { _ ->
+        configurationInteractor.onAnyConfigurationChange
+            .map {
+                val shouldUseSplitShade =
+                    splitShadeStateController
+                        .get()
+                        .shouldUseSplitNotificationShade(context.resources)
                 with(context.resources) {
                     ConfigurationBasedDimensions(
-                        useSplitShade =
-                            splitShadeStateController.shouldUseSplitNotificationShade(
-                                context.resources
-                            ),
+                        useSplitShade = shouldUseSplitShade,
                         useLargeScreenHeader =
                             getBoolean(R.bool.config_use_large_screen_shade_header),
                         marginHorizontal =
@@ -75,17 +83,17 @@ constructor(
                             getDimensionPixelSize(R.dimen.notification_panel_margin_bottom),
                         marginTop = getDimensionPixelSize(R.dimen.notification_panel_margin_top),
                         marginTopLargeScreen =
-                            if (centralizedStatusBarHeightFix()) {
-                                largeScreenHeaderHelperLazy.get().getLargeScreenHeaderHeight()
-                            } else {
-                                getDimensionPixelSize(R.dimen.large_screen_shade_header_height)
-                            },
+                            largeScreenHeaderHelperLazy.get().getLargeScreenHeaderHeight(),
                         keyguardSplitShadeTopMargin =
                             getDimensionPixelSize(R.dimen.keyguard_split_shade_top_margin),
                     )
                 }
             }
             .distinctUntilChanged()
+        get() {
+            SceneContainerFlag.assertInLegacyMode()
+            return field
+        }
 
     /**
      * The notification shelf can extend over the lock icon area if:
@@ -100,11 +108,6 @@ constructor(
             isUdfpsSupported || !ambientIndicationVisible
         }
 
-    val isSplitShadeEnabled: Flow<Boolean> =
-        configurationBasedDimensions
-            .map { dimens: ConfigurationBasedDimensions -> dimens.useSplitShade }
-            .distinctUntilChanged()
-
     /** Top position (without translation) of the shared container. */
     fun setTopPosition(top: Float) {
         _topPosition.value = top
@@ -115,6 +118,7 @@ constructor(
         _notificationStackChanged.value = _notificationStackChanged.value + 1
     }
 
+    @Deprecated("Use SharedNotificationContainerViewModel.ConfigurationBasedDimensions instead")
     data class ConfigurationBasedDimensions(
         val useSplitShade: Boolean,
         val useLargeScreenHeader: Boolean,

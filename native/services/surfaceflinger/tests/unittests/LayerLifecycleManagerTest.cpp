@@ -21,7 +21,7 @@
 
 #include "FrontEnd/LayerLifecycleManager.h"
 #include "LayerHierarchyTest.h"
-#include "TransactionState.h"
+#include "QueuedTransactionState.h"
 
 using namespace android::surfaceflinger;
 
@@ -61,18 +61,6 @@ public:
 
 class LayerLifecycleManagerTest : public LayerHierarchyTestBase {
 protected:
-    std::unique_ptr<RequestedLayerState> rootLayer(uint32_t id) {
-        return std::make_unique<RequestedLayerState>(createArgs(/*id=*/id, /*canBeRoot=*/true,
-                                                                /*parent=*/UNASSIGNED_LAYER_ID,
-                                                                /*mirror=*/UNASSIGNED_LAYER_ID));
-    }
-
-    std::unique_ptr<RequestedLayerState> childLayer(uint32_t id, uint32_t parentId) {
-        return std::make_unique<RequestedLayerState>(createArgs(/*id=*/id, /*canBeRoot=*/false,
-                                                                parentId,
-                                                                /*mirror=*/UNASSIGNED_LAYER_ID));
-    }
-
     RequestedLayerState* getRequestedLayerState(LayerLifecycleManager& lifecycleManager,
                                                 uint32_t layerId) {
         return lifecycleManager.getLayerFromId(layerId);
@@ -116,7 +104,7 @@ TEST_F(LayerLifecycleManagerTest, updateLayerStates) {
     EXPECT_FALSE(managedLayers.front()->changes.test(RequestedLayerState::Changes::Z));
 
     // apply transactions that do not affect the hierarchy
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.backgroundBlurRadius = 22;
@@ -309,7 +297,7 @@ TEST_F(LayerLifecycleManagerTest, canAddBackgroundLayer) {
     layers.emplace_back(rootLayer(1));
     lifecycleManager.addLayers(std::move(layers));
 
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.bgColor.a = 0.5;
@@ -338,7 +326,7 @@ TEST_F(LayerLifecycleManagerTest, canDestroyBackgroundLayer) {
     layers.emplace_back(rootLayer(1));
     lifecycleManager.addLayers(std::move(layers));
 
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.bgColor.a = 0.5;
@@ -372,7 +360,7 @@ TEST_F(LayerLifecycleManagerTest, onParentDestroyDestroysBackgroundLayer) {
     layers.emplace_back(rootLayer(1));
     lifecycleManager.addLayers(std::move(layers));
 
-    std::vector<TransactionState> transactions;
+    std::vector<QueuedTransactionState> transactions;
     transactions.emplace_back();
     transactions.back().states.push_back({});
     transactions.back().states.front().state.bgColor.a = 0.5;
@@ -629,6 +617,34 @@ TEST_F(LayerLifecycleManagerTest, isSimpleBufferUpdate) {
         state.y = 10;
         EXPECT_TRUE(layer->isSimpleBufferUpdate(state));
     }
+}
+
+TEST_F(LayerLifecycleManagerTest, layerWithBufferNeedsInputInfo) {
+    // If a layer has no buffer or no color, it doesn't have an input info
+    LayerHierarchyTestBase::createRootLayer(3);
+    setColor(3, {-1._hf, -1._hf, -1._hf});
+    mLifecycleManager.commitChanges();
+
+    EXPECT_FALSE(getRequestedLayerState(mLifecycleManager, 3)->needsInputInfo());
+
+    setBuffer(3);
+    mLifecycleManager.commitChanges();
+
+    EXPECT_TRUE(getRequestedLayerState(mLifecycleManager, 3)->needsInputInfo());
+}
+
+TEST_F(LayerLifecycleManagerTest, layerWithColorNeedsInputInfo) {
+    // If a layer has no buffer or no color, it doesn't have an input info
+    LayerHierarchyTestBase::createRootLayer(4);
+    setColor(4, {-1._hf, -1._hf, -1._hf});
+    mLifecycleManager.commitChanges();
+
+    EXPECT_FALSE(getRequestedLayerState(mLifecycleManager, 4)->needsInputInfo());
+
+    setColor(4, {1._hf, 0._hf, 0._hf});
+    mLifecycleManager.commitChanges();
+
+    EXPECT_TRUE(getRequestedLayerState(mLifecycleManager, 4)->needsInputInfo());
 }
 
 } // namespace android::surfaceflinger::frontend

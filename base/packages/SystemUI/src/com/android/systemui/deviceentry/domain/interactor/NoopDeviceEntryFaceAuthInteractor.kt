@@ -19,6 +19,7 @@ package com.android.systemui.deviceentry.domain.interactor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.deviceentry.shared.model.FaceAuthenticationStatus
 import com.android.systemui.deviceentry.shared.model.FaceDetectionStatus
+import com.android.systemui.log.table.TableLogBuffer
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,6 +48,7 @@ class NoopDeviceEntryFaceAuthInteractor @Inject constructor() : DeviceEntryFaceA
     override fun isFaceAuthEnabledAndEnrolled(): Boolean = false
 
     override fun isFaceAuthStrong(): Boolean = false
+
     override fun start() = Unit
 
     override fun registerListener(listener: FaceAuthenticationListener) {}
@@ -59,13 +61,19 @@ class NoopDeviceEntryFaceAuthInteractor @Inject constructor() : DeviceEntryFaceA
 
     override fun onDeviceLifted() {}
 
-    override fun onQsExpansionStared() {}
+    override fun onShadeExpansionStarted() {}
 
     override fun onNotificationPanelClicked() {}
 
     override fun onSwipeUpOnBouncer() {}
+
     override fun onPrimaryBouncerUserInput() {}
+
     override fun onAccessibilityAction() {}
+
     override fun onWalletLaunched() = Unit
+
     override fun onDeviceUnfolded() {}
+
+    override suspend fun hydrateTableLogBuffer(tableLogBuffer: TableLogBuffer) {}
 }

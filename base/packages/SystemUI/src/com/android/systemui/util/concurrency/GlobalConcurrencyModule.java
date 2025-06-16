@@ -28,6 +28,7 @@ import dagger.Module;
 import dagger.Provides;
 
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import javax.inject.Singleton;
@@ -64,15 +65,6 @@ public abstract class GlobalConcurrencyModule {
     }
 
     /**
-     * @deprecated Use @Main Handler.
-     */
-    @Deprecated
-    @Provides
-    public static Handler provideHandler() {
-        return new Handler();
-    }
-
-    /**
      * Provide an Executor specifically for running UI operations on a separate thread.
      *
      * Keep submitted runnables short and to the point, just as with any other UI code.
@@ -81,6 +73,18 @@ public abstract class GlobalConcurrencyModule {
     @Singleton
     @UiBackground
     public static Executor provideUiBackgroundExecutor() {
+        return provideUiBackgroundExecutorService();
+    }
+
+    /**
+     * Provide an ExecutorService specifically for running UI operations on a separate thread.
+     *
+     * <p>Keep submitted runnables short and to the point, just as with any other UI code.
+     */
+    @Provides
+    @Singleton
+    @UiBackground
+    public static ExecutorService provideUiBackgroundExecutorService() {
         return Executors.newSingleThreadExecutor();
     }
 

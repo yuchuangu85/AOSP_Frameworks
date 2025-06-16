@@ -24,6 +24,7 @@ import android.tools.flicker.legacy.FlickerBuilder
 import android.tools.flicker.legacy.LegacyFlickerTest
 import android.tools.flicker.legacy.LegacyFlickerTestFactory
 import android.tools.traces.parsers.toFlickerComponent
+import androidx.test.filters.FlakyTest
 import com.android.server.wm.flicker.activityembedding.ActivityEmbeddingTestBase
 import com.android.server.wm.flicker.helpers.ActivityEmbeddingAppHelper
 import com.android.server.wm.flicker.testapp.ActivityOptions
@@ -46,7 +47,7 @@ import org.junit.runners.Parameterized
  * Setup: Launch A|B in split and secondaryApp, return to home. Transitions: Let AE Split A|B enter
  * splitscreen with secondaryApp. Resulting in A|B|secondaryApp.
  *
- * To run this test: `atest FlickerTestsOther:EnterSystemSplitTest`
+ * To run this test: `atest FlickerTestsActivityEmbedding:EnterSystemSplitTest`
  */
 @RequiresDevice
 @RunWith(Parameterized::class)
@@ -175,7 +176,17 @@ class EnterSystemSplitTest(flicker: LegacyFlickerTest) : ActivityEmbeddingTestBa
     }
 
     @Ignore("Not applicable to this CUJ.")
+    @Test
     override fun visibleLayersShownMoreThanOneConsecutiveEntry() {}
+
+    @FlakyTest(bugId = 342596801)
+    @Test
+    override fun entireScreenCovered() = super.entireScreenCovered()
+
+    @FlakyTest(bugId = 342596801)
+    @Test
+    override fun visibleWindowsShownMoreThanOneConsecutiveEntry() =
+        super.visibleWindowsShownMoreThanOneConsecutiveEntry()
 
     companion object {
         /** {@inheritDoc} */

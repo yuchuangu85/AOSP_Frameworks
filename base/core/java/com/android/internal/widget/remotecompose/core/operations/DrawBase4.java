@@ -17,44 +17,32 @@ package com.android.internal.widget.remotecompose.core.operations;
 
 import static com.android.internal.widget.remotecompose.core.operations.Utils.floatToString;
 
-import com.android.internal.widget.remotecompose.core.CompanionOperation;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
+
 import com.android.internal.widget.remotecompose.core.Operation;
-import com.android.internal.widget.remotecompose.core.Operations;
 import com.android.internal.widget.remotecompose.core.PaintOperation;
 import com.android.internal.widget.remotecompose.core.RemoteContext;
 import com.android.internal.widget.remotecompose.core.VariableSupport;
 import com.android.internal.widget.remotecompose.core.WireBuffer;
+import com.android.internal.widget.remotecompose.core.serialize.MapSerializer;
+import com.android.internal.widget.remotecompose.core.serialize.Serializable;
 
 import java.util.List;
 
-/**
- * Base class for draw commands that take 4 floats
- */
-public abstract class DrawBase4 extends PaintOperation
-        implements VariableSupport {
-    public static final Companion COMPANION =
-            new Companion(Operations.DRAW_RECT) {
-                @Override
-                public Operation construct(float x1, float y1, float x2, float y2) {
-                    //   return new DrawRectBase(x1, y1, x2, y2);
-                    return null;
-                }
-            };
-    protected String mName = "DrawRectBase";
-    float mX1;
-    float mY1;
-    float mX2;
-    float mY2;
+/** Base class for draw commands that take 4 floats */
+public abstract class DrawBase4 extends PaintOperation implements VariableSupport, Serializable {
+    @NonNull protected String mName = "DrawRectBase";
+    protected float mX1;
+    protected float mY1;
+    protected float mX2;
+    protected float mY2;
     float mX1Value;
     float mY1Value;
     float mX2Value;
     float mY2Value;
 
-    public DrawBase4(
-            float x1,
-            float y1,
-            float x2,
-            float y2) {
+    public DrawBase4(float x1, float y1, float x2, float y2) {
         mX1Value = x1;
         mY1Value = y1;
         mX2Value = x2;
@@ -67,19 +55,15 @@ public abstract class DrawBase4 extends PaintOperation
     }
 
     @Override
-    public void updateVariables(RemoteContext context) {
-        mX1 = (Float.isNaN(mX1Value))
-                ? context.getFloat(Utils.idFromNan(mX1Value)) : mX1Value;
-        mY1 = (Float.isNaN(mY1Value))
-                ? context.getFloat(Utils.idFromNan(mY1Value)) : mY1Value;
-        mX2 = (Float.isNaN(mX2Value))
-                ? context.getFloat(Utils.idFromNan(mX2Value)) : mX2Value;
-        mY2 = (Float.isNaN(mY2Value))
-                ? context.getFloat(Utils.idFromNan(mY2Value)) : mY2Value;
+    public void updateVariables(@NonNull RemoteContext context) {
+        mX1 = Float.isNaN(mX1Value) ? context.getFloat(Utils.idFromNan(mX1Value)) : mX1Value;
+        mY1 = Float.isNaN(mY1Value) ? context.getFloat(Utils.idFromNan(mY1Value)) : mY1Value;
+        mX2 = Float.isNaN(mX2Value) ? context.getFloat(Utils.idFromNan(mX2Value)) : mX2Value;
+        mY2 = Float.isNaN(mY2Value) ? context.getFloat(Utils.idFromNan(mY2Value)) : mY2Value;
     }
 
     @Override
-    public void registerListening(RemoteContext context) {
+    public void registerListening(@NonNull RemoteContext context) {
         if (Float.isNaN(mX1Value)) {
             context.listensTo(Utils.idFromNan(mX1Value), this);
         }
@@ -95,77 +79,88 @@ public abstract class DrawBase4 extends PaintOperation
     }
 
     @Override
-    public void write(WireBuffer buffer) {
-        COMPANION.apply(buffer, mX1, mY1, mX2, mY2);
+    public void write(@NonNull WireBuffer buffer) {
+        write(buffer, mX1, mY1, mX2, mY2);
     }
 
+    protected abstract void write(
+            @NonNull WireBuffer buffer, float v1, float v2, float v3, float v4);
+
+    protected interface Maker {
+        DrawBase4 create(float v1, float v2, float v3, float v4);
+    }
+
+    @NonNull
     @Override
     public String toString() {
-        return mName + " " + floatToString(mX1Value, mX1) + " " + floatToString(mY1Value, mY1)
-                + " " + floatToString(mX2Value, mX2) + " " + floatToString(mY2Value, mY2);
+        return mName
+                + " "
+                + floatToString(mX1Value, mX1)
+                + " "
+                + floatToString(mY1Value, mY1)
+                + " "
+                + floatToString(mX2Value, mX2)
+                + " "
+                + floatToString(mY2Value, mY2);
     }
 
-    public static class Companion implements CompanionOperation {
-        public final int OP_CODE;
+    /**
+     * Read this operation and add it to the list of operations
+     *
+     * @param maker the maker of the operation
+     * @param buffer the buffer to read
+     * @param operations the list of operations to add to
+     */
+    public static void read(
+            @NonNull Maker maker, @NonNull WireBuffer buffer, @NonNull List<Operation> operations) {
+        float v1 = buffer.readFloat();
+        float v2 = buffer.readFloat();
+        float v3 = buffer.readFloat();
+        float v4 = buffer.readFloat();
 
-        protected Companion(int code) {
-            OP_CODE = code;
-        }
+        Operation op = maker.create(v1, v2, v3, v4);
+        operations.add(op);
+    }
 
-        @Override
-        public void read(WireBuffer buffer, List<Operation> operations) {
-            float sLeft = buffer.readFloat();
-            float srcTop = buffer.readFloat();
-            float srcRight = buffer.readFloat();
-            float srcBottom = buffer.readFloat();
+    /**
+     * Construct and Operation from the 3 variables.
+     *
+     * @param x1
+     * @param y1
+     * @param x2
+     * @param y2
+     * @return
+     */
+    @Nullable
+    public Operation construct(float x1, float y1, float x2, float y2) {
+        return null;
+    }
 
-            Operation op = construct(sLeft, srcTop, srcRight, srcBottom);
-            operations.add(op);
-        }
+    /**
+     * Writes out the operation to the buffer
+     *
+     * @param buffer
+     * @param opCode
+     * @param x1
+     * @param y1
+     * @param x2
+     * @param y2
+     */
+    protected static void write(
+            @NonNull WireBuffer buffer, int opCode, float x1, float y1, float x2, float y2) {
+        buffer.start(opCode);
+        buffer.writeFloat(x1);
+        buffer.writeFloat(y1);
+        buffer.writeFloat(x2);
+        buffer.writeFloat(y2);
+    }
 
-        /**
-         * Construct and Operation from the 3 variables.
-         * @param x1
-         * @param y1
-         * @param x2
-         * @param y2
-         * @return
-         */
-        public Operation construct(float x1,
-                                   float y1,
-                                   float x2,
-                                   float y2) {
-            return null;
-        }
-
-        @Override
-        public String name() {
-            return "DrawRect";
-        }
-
-        @Override
-        public int id() {
-            return OP_CODE;
-        }
-
-        /**
-         * Writes out the operation to the buffer
-         * @param buffer
-         * @param x1
-         * @param y1
-         * @param x2
-         * @param y2
-         */
-        public void apply(WireBuffer buffer,
-                          float x1,
-                          float y1,
-                          float x2,
-                          float y2) {
-            buffer.start(OP_CODE);
-            buffer.writeFloat(x1);
-            buffer.writeFloat(y1);
-            buffer.writeFloat(x2);
-            buffer.writeFloat(y2);
-        }
+    protected MapSerializer serialize(
+            MapSerializer serializer, String x1Name, String y1Name, String x2Name, String y2Name) {
+        return serializer
+                .add(x1Name, mX1Value, mX1)
+                .add(y1Name, mY1Value, mY1)
+                .add(x2Name, mX2Value, mX2)
+                .add(y2Name, mY2Value, mY2);
     }
 }

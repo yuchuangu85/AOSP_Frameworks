@@ -25,14 +25,15 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Paint.FontMetricsInt;
 import android.os.LocaleList;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.annotations.Presubmit;
 import android.text.Layout.Alignment;
 import android.text.method.EditorState;
 import android.text.style.LocaleSpan;
 import android.util.Log;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -726,6 +727,7 @@ public class StaticLayoutTest {
     }
 
     @Test
+    @DisabledOnRavenwood(bug = 391342883)
     public void testLocaleSpanAffectsHyphenation() {
         TextPaint paint = new TextPaint();
         paint.setTextLocale(Locale.US);

@@ -17,15 +17,25 @@
 package com.android.systemui.communal.dagger
 
 import android.content.Context
+import android.content.res.Resources
+import com.android.systemui.CoreStartable
 import com.android.systemui.communal.data.backup.CommunalBackupUtils
 import com.android.systemui.communal.data.db.CommunalDatabaseModule
 import com.android.systemui.communal.data.repository.CommunalMediaRepositoryModule
 import com.android.systemui.communal.data.repository.CommunalPrefsRepositoryModule
 import com.android.systemui.communal.data.repository.CommunalRepositoryModule
 import com.android.systemui.communal.data.repository.CommunalSettingsRepositoryModule
+import com.android.systemui.communal.data.repository.CommunalSmartspaceRepositoryModule
 import com.android.systemui.communal.data.repository.CommunalTutorialRepositoryModule
 import com.android.systemui.communal.data.repository.CommunalWidgetRepositoryModule
+import com.android.systemui.communal.domain.interactor.CommunalSceneTransitionInteractor
+import com.android.systemui.communal.domain.suppression.dagger.CommunalSuppressionModule
+import com.android.systemui.communal.shared.log.CommunalMetricsLogger
+import com.android.systemui.communal.shared.log.CommunalStatsLogProxyImpl
 import com.android.systemui.communal.shared.model.CommunalScenes
+import com.android.systemui.communal.shared.model.GlanceableHubMultiUserHelper
+import com.android.systemui.communal.shared.model.GlanceableHubMultiUserHelperImpl
+import com.android.systemui.communal.ui.compose.sceneTransitions
 import com.android.systemui.communal.util.CommunalColors
 import com.android.systemui.communal.util.CommunalColorsImpl
 import com.android.systemui.communal.widgets.CommunalWidgetModule
@@ -33,12 +43,18 @@ import com.android.systemui.communal.widgets.EditWidgetsActivityStarter
 import com.android.systemui.communal.widgets.EditWidgetsActivityStarterImpl
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.res.R
 import com.android.systemui.scene.shared.model.SceneContainerConfig
 import com.android.systemui.scene.shared.model.SceneDataSource
 import com.android.systemui.scene.shared.model.SceneDataSourceDelegator
+import com.android.systemui.scene.ui.composable.ConstantSceneContainerTransitionsBuilder
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
+import dagger.multibindings.ClassKey
+import dagger.multibindings.IntoMap
+import javax.inject.Named
 import kotlinx.coroutines.CoroutineScope
 
 @Module(
@@ -52,6 +68,10 @@ import kotlinx.coroutines.CoroutineScope
             CommunalWidgetModule::class,
             CommunalPrefsRepositoryModule::class,
             CommunalSettingsRepositoryModule::class,
+            CommunalSmartspaceRepositoryModule::class,
+            CommunalStartableModule::class,
+            GlanceableHubWidgetManagerModule::class,
+            CommunalSuppressionModule::class,
         ]
 )
 interface CommunalModule {
@@ -66,7 +86,32 @@ interface CommunalModule {
 
     @Binds fun bindCommunalColors(impl: CommunalColorsImpl): CommunalColors
 
+    @Binds
+    fun bindCommunalStatsLogProxy(
+        impl: CommunalStatsLogProxyImpl
+    ): CommunalMetricsLogger.StatsLogProxy
+
+    @Binds
+    @IntoMap
+    @ClassKey(CommunalSceneTransitionInteractor::class)
+    abstract fun bindCommunalSceneTransitionInteractor(
+        impl: CommunalSceneTransitionInteractor
+    ): CoreStartable
+
+    @Binds
+    fun bindGlanceableHubMultiUserHelper(
+        impl: GlanceableHubMultiUserHelperImpl
+    ): GlanceableHubMultiUserHelper
+
     companion object {
+        const val LOGGABLE_PREFIXES = "loggable_prefixes"
+        const val LAUNCHER_PACKAGE = "launcher_package"
+        const val SWIPE_TO_HUB = "swipe_to_hub"
+        const val SHOW_UMO = "show_umo"
+        const val TOUCH_NOTIFICATION_RATE_LIMIT = "TOUCH_NOTIFICATION_RATE_LIMIT"
+
+        const val TOUCH_NOTIFIFCATION_RATE_LIMIT_MS = 100
+
         @Provides
         @Communal
         @SysUISingleton
@@ -78,20 +123,50 @@ interface CommunalModule {
                     sceneKeys = listOf(CommunalScenes.Blank, CommunalScenes.Communal),
                     initialSceneKey = CommunalScenes.Blank,
                     navigationDistances =
-                        mapOf(
-                            CommunalScenes.Blank to 0,
-                            CommunalScenes.Communal to 1,
-                        ),
+                        mapOf(CommunalScenes.Blank to 0, CommunalScenes.Communal to 1),
+                    transitionsBuilder = ConstantSceneContainerTransitionsBuilder(sceneTransitions),
                 )
             return SceneDataSourceDelegator(applicationScope, config)
         }
 
         @Provides
         @SysUISingleton
-        fun providesCommunalBackupUtils(
-            @Application context: Context,
-        ): CommunalBackupUtils {
+        fun providesCommunalBackupUtils(@Application context: Context): CommunalBackupUtils {
             return CommunalBackupUtils(context)
+        }
+
+        /** The prefixes of widgets packages names that are considered loggable. */
+        @Provides
+        @Named(LOGGABLE_PREFIXES)
+        fun provideLoggablePrefixes(@Application context: Context): List<String> {
+            return context.resources
+                .getStringArray(com.android.internal.R.array.config_loggable_dream_prefixes)
+                .toList()
+        }
+
+        /** The package name of the launcher */
+        @Provides
+        @Named(LAUNCHER_PACKAGE)
+        fun provideLauncherPackage(@Main resources: Resources): String {
+            return resources.getString(R.string.launcher_overlayable_package)
+        }
+
+        @Provides
+        @Named(SWIPE_TO_HUB)
+        fun provideSwipeToHub(@Main resources: Resources): Boolean {
+            return resources.getBoolean(R.bool.config_swipeToOpenGlanceableHub)
+        }
+
+        @Provides
+        @Named(SHOW_UMO)
+        fun provideShowUmo(@Main resources: Resources): Boolean {
+            return resources.getBoolean(R.bool.config_showUmoOnHub)
+        }
+
+        @Provides
+        @Named(TOUCH_NOTIFICATION_RATE_LIMIT)
+        fun providesRateLimit(): Int {
+            return TOUCH_NOTIFIFCATION_RATE_LIMIT_MS
         }
     }
 }

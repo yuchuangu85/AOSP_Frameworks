@@ -10,9 +10,6 @@ per-file DisplayThread.java = michaelwr@google.com, ogunwale@google.com
 # Zram writeback
 per-file ZramWriteback.java = minchan@google.com, rajekumar@google.com
 
-# Userspace reboot
-per-file UserspaceRebootLogger.java = ioffe@google.com, dvander@google.com
-
 # ServiceWatcher
 per-file ServiceWatcher.java = sooniln@google.com
 
@@ -34,6 +31,7 @@ per-file *Storage* = file:/core/java/android/os/storage/OWNERS
 per-file *TimeUpdate* = file:/services/core/java/com/android/server/timezonedetector/OWNERS
 per-file DynamicSystemService.java = file:/packages/DynamicSystemInstallationService/OWNERS
 per-file GestureLauncherService.java = file:platform/packages/apps/EmergencyInfo:/OWNERS
+per-file GestureLauncherService.java = file:/INPUT_OWNERS
 per-file MmsServiceBroker.java = file:/telephony/OWNERS
 per-file NetIdManager.java = file:/services/core/java/com/android/server/net/OWNERS
 per-file PackageWatchdog.java = file:/services/core/java/com/android/server/crashrecovery/OWNERS
@@ -48,3 +46,9 @@ per-file VcnManagementService.java = file:/services/core/java/com/android/server
 
 # SystemConfig
 per-file SystemConfig.java = file:/PACKAGE_MANAGER_OWNERS
+
+# CertBlocklister
+per-file Cert*.java = tweek@google.com, brambonne@google.com, prb@google.com, miguelaranda@google.com
+
+# TradeInMode
+per-file TradeInModeService.java = dvander@google.com, paullawrence@google.com

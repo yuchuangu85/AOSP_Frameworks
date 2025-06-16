@@ -23,27 +23,23 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.projection.StopReason;
 import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.os.Process;
 import android.os.UserHandle;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.systemui.animation.DialogTransitionAnimator;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
 import com.android.systemui.mediaprojection.MediaProjectionMetricsLogger;
 import com.android.systemui.mediaprojection.SessionCreationSource;
 import com.android.systemui.mediaprojection.devicepolicy.ScreenCaptureDevicePolicyResolver;
 import com.android.systemui.mediaprojection.devicepolicy.ScreenCaptureDisabledDialogDelegate;
-import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.policy.CallbackController;
 
@@ -60,22 +56,22 @@ import javax.inject.Inject;
 @SysUISingleton
 public class RecordingController
         implements CallbackController<RecordingController.RecordingStateChangeCallback> {
-    private static final String TAG = "RecordingController";
-
     private boolean mIsStarting;
     private boolean mIsRecording;
     private PendingIntent mStopIntent;
+    private @StopReason int mStopReason = StopReason.STOP_UNKNOWN;
     private final Bundle mInteractiveBroadcastOption;
     private CountDownTimer mCountDownTimer = null;
     private final Executor mMainExecutor;
     private final BroadcastDispatcher mBroadcastDispatcher;
-    private final FeatureFlags mFlags;
     private final UserTracker mUserTracker;
+    private final RecordingControllerLogger mRecordingControllerLogger;
     private final MediaProjectionMetricsLogger mMediaProjectionMetricsLogger;
     private final ScreenCaptureDisabledDialogDelegate mScreenCaptureDisabledDialogDelegate;
-    private final ScreenRecordDialogDelegate.Factory mScreenRecordDialogFactory;
     private final ScreenRecordPermissionDialogDelegate.Factory
             mScreenRecordPermissionDialogDelegateFactory;
+    private final ScreenRecordPermissionViewBinder.Factory
+            mScreenRecordPermissionViewBinderFactory;
 
     protected static final String INTENT_UPDATE_STATE =
             "com.android.systemui.screenrecord.UPDATE_STATE";
@@ -91,7 +87,7 @@ public class RecordingController
             new UserTracker.Callback() {
                 @Override
                 public void onUserChanged(int newUser, @NonNull Context userContext) {
-                    stopRecording();
+                    stopRecording(StopReason.STOP_USER_SWITCH);
                 }
             };
 
@@ -102,9 +98,10 @@ public class RecordingController
             if (intent != null && INTENT_UPDATE_STATE.equals(intent.getAction())) {
                 if (intent.hasExtra(EXTRA_STATE)) {
                     boolean state = intent.getBooleanExtra(EXTRA_STATE, false);
+                    mRecordingControllerLogger.logIntentStateUpdated(state);
                     updateState(state);
                 } else {
-                    Log.e(TAG, "Received update intent with no state");
+                    mRecordingControllerLogger.logIntentMissingState();
                 }
             }
         }
@@ -117,23 +114,23 @@ public class RecordingController
     public RecordingController(
             @Main Executor mainExecutor,
             BroadcastDispatcher broadcastDispatcher,
-            FeatureFlags flags,
             Lazy<ScreenCaptureDevicePolicyResolver> devicePolicyResolver,
             UserTracker userTracker,
+            RecordingControllerLogger recordingControllerLogger,
             MediaProjectionMetricsLogger mediaProjectionMetricsLogger,
             ScreenCaptureDisabledDialogDelegate screenCaptureDisabledDialogDelegate,
-            ScreenRecordDialogDelegate.Factory screenRecordDialogFactory,
             ScreenRecordPermissionDialogDelegate.Factory
-                    screenRecordPermissionDialogDelegateFactory) {
+                    screenRecordPermissionDialogDelegateFactory,
+            ScreenRecordPermissionViewBinder.Factory screenRecordPermissionViewBinderFactory) {
         mMainExecutor = mainExecutor;
-        mFlags = flags;
         mDevicePolicyResolver = devicePolicyResolver;
         mBroadcastDispatcher = broadcastDispatcher;
         mUserTracker = userTracker;
+        mRecordingControllerLogger = recordingControllerLogger;
         mMediaProjectionMetricsLogger = mediaProjectionMetricsLogger;
         mScreenCaptureDisabledDialogDelegate = screenCaptureDisabledDialogDelegate;
-        mScreenRecordDialogFactory = screenRecordDialogFactory;
         mScreenRecordPermissionDialogDelegateFactory = screenRecordPermissionDialogDelegateFactory;
+        mScreenRecordPermissionViewBinderFactory = screenRecordPermissionViewBinderFactory;
 
         BroadcastOptions options = BroadcastOptions.makeBasic();
         options.setInteractive(true);
@@ -157,25 +154,38 @@ public class RecordingController
     /** Create a dialog to show screen recording options to the user.
      *  If screen capturing is currently not allowed it will return a dialog
      *  that warns users about it. */
-    public Dialog createScreenRecordDialog(Context context, FeatureFlags flags,
-                                           DialogTransitionAnimator dialogTransitionAnimator,
-                                           ActivityStarter activityStarter,
-                                           @Nullable Runnable onStartRecordingClicked) {
-        if (mFlags.isEnabled(Flags.WM_ENABLE_PARTIAL_SCREEN_SHARING_ENTERPRISE_POLICIES)
-                && mDevicePolicyResolver.get()
-                        .isScreenCaptureCompletelyDisabled(getHostUserHandle())) {
+    public Dialog createScreenRecordDialog(@Nullable Runnable onStartRecordingClicked) {
+        if (isScreenCaptureDisabled()) {
             return mScreenCaptureDisabledDialogDelegate.createSysUIDialog();
         }
 
         mMediaProjectionMetricsLogger.notifyProjectionInitiated(
                 getHostUid(), SessionCreationSource.SYSTEM_UI_SCREEN_RECORDER);
 
-        return (flags.isEnabled(Flags.WM_ENABLE_PARTIAL_SCREEN_SHARING)
-                ? mScreenRecordPermissionDialogDelegateFactory
-                    .create(this, getHostUserHandle(), getHostUid(), onStartRecordingClicked)
-                : mScreenRecordDialogFactory
-                    .create(this, onStartRecordingClicked))
+        return mScreenRecordPermissionDialogDelegateFactory
+                .create(this, getHostUserHandle(), getHostUid(), onStartRecordingClicked)
                 .createDialog();
+    }
+
+    /**
+     * Create a view binder that controls the logic of views inside the screen record permission
+     * view.
+     * @param onStartRecordingClicked the callback that is run when the start button is clicked.
+     */
+    public ScreenRecordPermissionViewBinder createScreenRecordPermissionViewBinder(
+            @Nullable Runnable onStartRecordingClicked
+    ) {
+        return mScreenRecordPermissionViewBinderFactory
+                .create(getHostUserHandle(), getHostUid(), this,
+                        onStartRecordingClicked);
+    }
+
+    /**
+     * Check if screen capture is currently disabled for this device and user.
+     */
+    public boolean isScreenCaptureDisabled() {
+        return mDevicePolicyResolver.get()
+                .isScreenCaptureCompletelyDisabled(getHostUserHandle());
     }
 
     /**
@@ -212,9 +222,9 @@ public class RecordingController
                     IntentFilter stateFilter = new IntentFilter(INTENT_UPDATE_STATE);
                     mBroadcastDispatcher.registerReceiver(mStateChangeReceiver, stateFilter, null,
                             UserHandle.ALL);
-                    Log.d(TAG, "sent start intent");
+                    mRecordingControllerLogger.logSentStartIntent();
                 } catch (PendingIntent.CanceledException e) {
-                    Log.e(TAG, "Pending intent was cancelled: " + e.getMessage());
+                    mRecordingControllerLogger.logPendingIntentCancelled(e);
                 }
             }
         };
@@ -227,9 +237,10 @@ public class RecordingController
      */
     public void cancelCountdown() {
         if (mCountDownTimer != null) {
+            mRecordingControllerLogger.logCountdownCancelled();
             mCountDownTimer.cancel();
         } else {
-            Log.e(TAG, "Timer was null");
+            mRecordingControllerLogger.logCountdownCancelErrorNoTimer();
         }
         mIsStarting = false;
 
@@ -255,18 +266,21 @@ public class RecordingController
     }
 
     /**
-     * Stop the recording
+     * Stop the recording and sets the stop reason to be used by the RecordingService
+     * @param stopReason the method of the recording stopped (i.e. QS tile, status bar chip, etc.)
      */
-    public void stopRecording() {
+    public void stopRecording(@StopReason int stopReason) {
+        mStopReason = stopReason;
         try {
             if (mStopIntent != null) {
+                mRecordingControllerLogger.logRecordingStopped();
                 mStopIntent.send(mInteractiveBroadcastOption);
             } else {
-                Log.e(TAG, "Stop intent was null");
+                mRecordingControllerLogger.logRecordingStopErrorNoStopIntent();
             }
             updateState(false);
         } catch (PendingIntent.CanceledException e) {
-            Log.e(TAG, "Error stopping: " + e.getMessage());
+            mRecordingControllerLogger.logRecordingStopError(e);
         }
     }
 
@@ -275,6 +289,7 @@ public class RecordingController
      * @param isRecording
      */
     public synchronized void updateState(boolean isRecording) {
+        mRecordingControllerLogger.logStateUpdated(isRecording);
         if (!isRecording && mIsRecording) {
             // Unregister receivers if we have stopped recording
             mUserTracker.removeCallback(mUserChangedCallback);
@@ -288,6 +303,10 @@ public class RecordingController
                 cb.onRecordingEnd();
             }
         }
+    }
+
+    public @StopReason int getStopReason() {
+        return mStopReason;
     }
 
     @Override

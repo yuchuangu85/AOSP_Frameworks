@@ -17,8 +17,12 @@
 package com.android.systemui.keyguard.domain.interactor
 
 import android.animation.ValueAnimator
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor
 import com.android.systemui.communal.domain.interactor.CommunalInteractor
+import com.android.systemui.communal.domain.interactor.CommunalSceneInteractor
+import com.android.systemui.communal.domain.interactor.CommunalSettingsInteractor
+import com.android.systemui.communal.shared.model.CommunalScenes
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
@@ -26,17 +30,15 @@ import com.android.systemui.keyguard.KeyguardWmStateRefactor
 import com.android.systemui.keyguard.data.repository.KeyguardTransitionRepository
 import com.android.systemui.keyguard.shared.model.Edge
 import com.android.systemui.keyguard.shared.model.KeyguardState
-import com.android.systemui.keyguard.shared.model.TransitionStep
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.scene.shared.flag.SceneContainerFlag
 import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.util.kotlin.Utils.Companion.sample as sampleCombine
-import com.android.wm.shell.animation.Interpolators
+import com.android.wm.shell.shared.animation.Interpolators
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -48,20 +50,21 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 
-@ExperimentalCoroutinesApi
 @SysUISingleton
 class FromAlternateBouncerTransitionInteractor
 @Inject
 constructor(
     override val transitionRepository: KeyguardTransitionRepository,
+    override val internalTransitionInteractor: InternalKeyguardTransitionInteractor,
     transitionInteractor: KeyguardTransitionInteractor,
     @Background private val scope: CoroutineScope,
     @Background bgDispatcher: CoroutineDispatcher,
     @Main mainDispatcher: CoroutineDispatcher,
     keyguardInteractor: KeyguardInteractor,
     private val communalInteractor: CommunalInteractor,
+    private val communalSettingsInteractor: CommunalSettingsInteractor,
+    private val communalSceneInteractor: CommunalSceneInteractor,
     powerInteractor: PowerInteractor,
     keyguardOcclusionInteractor: KeyguardOcclusionInteractor,
     private val primaryBouncerInteractor: PrimaryBouncerInteractor,
@@ -88,14 +91,14 @@ constructor(
             .transition(
                 edge = Edge.create(from = KeyguardState.ALTERNATE_BOUNCER, to = Scenes.Gone),
                 edgeWithoutSceneContainer =
-                    Edge.create(from = KeyguardState.ALTERNATE_BOUNCER, to = KeyguardState.GONE)
+                    Edge.create(from = KeyguardState.ALTERNATE_BOUNCER, to = KeyguardState.GONE),
             )
-            .map<TransitionStep, Boolean?> {
+            .map {
                 // The alt bouncer is pretty fast to hide, so start the surface behind animation
                 // around 30%.
                 it.value > 0.3f
             }
-            .onStart {
+            .onStart<Boolean?> {
                 // Default to null ("don't care, use a reasonable default").
                 emit(null)
             }
@@ -114,27 +117,21 @@ constructor(
                     keyguardInteractor.primaryBouncerShowing,
                     powerInteractor.isAwake,
                     keyguardInteractor.isAodAvailable,
-                    communalInteractor.isIdleOnCommunal,
-                    communalInteractor.editModeOpen,
+                    communalSceneInteractor.isIdleOnCommunal,
+                    keyguardInteractor.isDreaming,
                     keyguardInteractor.isKeyguardOccluded,
                 )
                 .filterRelevantKeyguardStateAnd {
-                    (isAlternateBouncerShowing, isPrimaryBouncerShowing, _, _, _) ->
+                    (isAlternateBouncerShowing, isPrimaryBouncerShowing, _, _, _, _) ->
                     !isAlternateBouncerShowing && !isPrimaryBouncerShowing
                 }
-                .collect {
-                    (
-                        _,
-                        _,
-                        isAwake,
-                        isAodAvailable,
-                        isIdleOnCommunal,
-                        isCommunalEditMode,
-                        isOccluded) ->
+                .collect { (_, _, isAwake, isAodAvailable, isIdleOnCommunal, isDreaming, isOccluded)
+                    ->
                     // When unlocking over glanceable hub to enter edit mode, transitioning directly
                     // to GONE prevents the lockscreen flash. Let listenForAlternateBouncerToGone
                     // handle it.
-                    if (isCommunalEditMode) return@collect
+                    if (communalInteractor.editModeOpen.value) return@collect
+                    val hubV2 = communalSettingsInteractor.isV2FlagEnabled()
                     val to =
                         if (!isAwake) {
                             if (isAodAvailable) {
@@ -143,21 +140,37 @@ constructor(
                                 KeyguardState.DOZING
                             }
                         } else {
-                            if (isIdleOnCommunal) {
+                            if (!hubV2 && isIdleOnCommunal) {
+                                if (SceneContainerFlag.isEnabled) return@collect
                                 KeyguardState.GLANCEABLE_HUB
-                            } else if (isOccluded) {
+                            } else if (isOccluded && !isDreaming) {
                                 KeyguardState.OCCLUDED
+                            } else if (isDreaming) {
+                                KeyguardState.DREAMING
+                            } else if (hubV2 && isIdleOnCommunal) {
+                                if (SceneContainerFlag.isEnabled) return@collect
+                                KeyguardState.GLANCEABLE_HUB
                             } else {
                                 KeyguardState.LOCKSCREEN
                             }
                         }
-                    startTransitionTo(to)
+
+                    if (hubV2 && to != KeyguardState.GLANCEABLE_HUB && isIdleOnCommunal) {
+                        // If bouncer is showing over the hub, we need to make sure we
+                        // properly dismiss the hub when transitioning away.
+                        communalSceneInteractor.changeScene(
+                            newScene = CommunalScenes.Blank,
+                            loggingReason = "alternate bouncer no longer showing over GH",
+                            keyguardState = to,
+                        )
+                    } else {
+                        startTransitionTo(to)
+                    }
                 }
         }
     }
 
     private fun listenForAlternateBouncerToGone() {
-        // TODO(b/336576536): Check if adaptation for scene framework is needed
         if (SceneContainerFlag.isEnabled) return
         if (KeyguardWmStateRefactor.isEnabled) {
             // Handled via #dismissAlternateBouncer.
@@ -169,13 +182,13 @@ constructor(
                     keyguardInteractor.isKeyguardGoingAway.filter { it }.map {}, // map to Unit
                     keyguardInteractor.isKeyguardOccluded.flatMapLatest { keyguardOccluded ->
                         if (keyguardOccluded) {
-                            primaryBouncerInteractor.keyguardAuthenticatedBiometricsHandled.drop(
-                                1
-                            ) // drop the initial state
+                            primaryBouncerInteractor.keyguardAuthenticatedBiometricsHandled
+                                // drop the initial state
+                                .drop(1)
                         } else {
                             emptyFlow()
                         }
-                    }
+                    },
                 )
                 .filterRelevantKeyguardState()
                 .collect { startTransitionTo(KeyguardState.GONE) }
@@ -183,7 +196,6 @@ constructor(
     }
 
     private fun listenForAlternateBouncerToPrimaryBouncer() {
-        // TODO(b/336576536): Check if adaptation for scene framework is needed
         if (SceneContainerFlag.isEnabled) return
         scope.launch {
             keyguardInteractor.primaryBouncerShowing
@@ -199,7 +211,12 @@ constructor(
             interpolator = Interpolators.LINEAR
             duration =
                 when (toState) {
+                    KeyguardState.AOD -> TO_AOD_DURATION
+                    KeyguardState.DOZING -> TO_DOZING_DURATION
                     KeyguardState.GONE -> TO_GONE_DURATION
+                    KeyguardState.LOCKSCREEN -> TO_LOCKSCREEN_DURATION
+                    KeyguardState.OCCLUDED -> TO_OCCLUDED_DURATION
+                    KeyguardState.PRIMARY_BOUNCER -> TO_PRIMARY_BOUNCER_DURATION
                     else -> TRANSITION_DURATION_MS
                 }.inWholeMilliseconds
         }
@@ -212,10 +229,11 @@ constructor(
     companion object {
         const val TAG = "FromAlternateBouncerTransitionInteractor"
         val TRANSITION_DURATION_MS = 300.milliseconds
-        val TO_GONE_DURATION = 500.milliseconds
         val TO_AOD_DURATION = TRANSITION_DURATION_MS
-        val TO_PRIMARY_BOUNCER_DURATION = TRANSITION_DURATION_MS
         val TO_DOZING_DURATION = TRANSITION_DURATION_MS
+        val TO_GONE_DURATION = 500.milliseconds
+        val TO_LOCKSCREEN_DURATION = 300.milliseconds
         val TO_OCCLUDED_DURATION = TRANSITION_DURATION_MS
+        val TO_PRIMARY_BOUNCER_DURATION = TRANSITION_DURATION_MS
     }
 }

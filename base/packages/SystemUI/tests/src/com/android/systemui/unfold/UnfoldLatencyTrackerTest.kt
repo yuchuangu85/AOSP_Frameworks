@@ -18,14 +18,19 @@ package com.android.systemui.unfold
 
 import android.hardware.devicestate.DeviceStateManager
 import android.hardware.devicestate.DeviceStateManager.FoldStateListener
+import android.platform.test.annotations.DisableFlags
 import android.provider.Settings
-import android.testing.AndroidTestingRunner
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.util.LatencyTracker
+import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.foldedDeviceStateList
 import com.android.systemui.keyguard.ScreenLifecycle
+import com.android.systemui.testKosmos
 import com.android.systemui.unfold.util.FoldableDeviceStates
 import com.android.systemui.unfold.util.FoldableTestUtils
+import com.android.systemui.unfoldedDeviceState
 import com.android.systemui.util.mockito.any
 import java.util.Optional
 import org.junit.Before
@@ -38,9 +43,11 @@ import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.verifyNoMoreInteractions
 import org.mockito.MockitoAnnotations
+import org.mockito.kotlin.whenever
 
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @SmallTest
+@DisableFlags(Flags.FLAG_UNFOLD_LATENCY_TRACKING_FIX)
 class UnfoldLatencyTrackerTest : SysuiTestCase() {
 
     @Mock lateinit var latencyTracker: LatencyTracker
@@ -62,6 +69,11 @@ class UnfoldLatencyTrackerTest : SysuiTestCase() {
     @Before
     fun setUp() {
         MockitoAnnotations.initMocks(this)
+        whenever(deviceStateManager.supportedDeviceStates)
+            .thenReturn(
+                listOf(testKosmos().foldedDeviceStateList[0], testKosmos().unfoldedDeviceState)
+            )
+
         unfoldLatencyTracker =
             UnfoldLatencyTracker(
                     latencyTracker,
@@ -70,9 +82,10 @@ class UnfoldLatencyTrackerTest : SysuiTestCase() {
                     context.mainExecutor,
                     context,
                     context.contentResolver,
-                    screenLifecycle
+                    screenLifecycle,
                 )
                 .apply { init() }
+
         deviceStates = FoldableTestUtils.findDeviceStates(context)
 
         verify(deviceStateManager).registerCallback(any(), foldStateListenerCaptor.capture())
@@ -190,7 +203,7 @@ class UnfoldLatencyTrackerTest : SysuiTestCase() {
         Settings.Global.putString(
             context.contentResolver,
             Settings.Global.ANIMATOR_DURATION_SCALE,
-            durationScale.toString()
+            durationScale.toString(),
         )
     }
 }

@@ -18,7 +18,8 @@ package com.android.systemui.clipboardoverlay.dagger;
 
 import static android.view.WindowManager.LayoutParams.TYPE_SCREENSHOT;
 
-import static com.android.systemui.Flags.screenshotShelfUi2;
+import static com.android.systemui.Flags.clipboardOverlayMultiuser;
+import static com.android.systemui.shared.Flags.usePreferredImageEditor;
 
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
@@ -26,11 +27,18 @@ import android.content.Context;
 import android.hardware.display.DisplayManager;
 import android.view.Display;
 import android.view.LayoutInflater;
+import android.view.WindowManager;
 
+import com.android.systemui.clipboardoverlay.ActionIntentCreator;
 import com.android.systemui.clipboardoverlay.ClipboardOverlayView;
+import com.android.systemui.clipboardoverlay.DefaultIntentCreator;
+import com.android.systemui.clipboardoverlay.IntentCreator;
 import com.android.systemui.res.R;
 import com.android.systemui.settings.DisplayTracker;
+import com.android.systemui.settings.UserTracker;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
 
+import dagger.Lazy;
 import dagger.Module;
 import dagger.Provides;
 
@@ -49,22 +57,48 @@ public interface ClipboardOverlayModule {
     @Provides
     @OverlayWindowContext
     static Context provideWindowContext(DisplayManager displayManager,
-            DisplayTracker displayTracker, Context context) {
+            DisplayTracker displayTracker, Context context, UserTracker userTracker) {
         Display display = displayManager.getDisplay(displayTracker.getDefaultDisplayId());
-        return context.createWindowContext(display, TYPE_SCREENSHOT, null);
+        if (clipboardOverlayMultiuser()) {
+            return userTracker.getUserContext().createWindowContext(display, TYPE_SCREENSHOT, null);
+        } else {
+            return context.createWindowContext(display, TYPE_SCREENSHOT, null);
+        }
     }
 
     /**
      *
      */
     @Provides
-    static ClipboardOverlayView provideClipboardOverlayView(@OverlayWindowContext Context context) {
-        if (screenshotShelfUi2()) {
-            return (ClipboardOverlayView) LayoutInflater.from(context).inflate(
-                    R.layout.clipboard_overlay2, null);
-        } else {
+    static ClipboardOverlayView provideClipboardOverlayView(
+            @OverlayWindowContext Context overlayContext, Context context) {
+        if (clipboardOverlayMultiuser()) {
             return (ClipboardOverlayView) LayoutInflater.from(context).inflate(
                     R.layout.clipboard_overlay, null);
+        } else {
+            return (ClipboardOverlayView) LayoutInflater.from(overlayContext).inflate(
+                    R.layout.clipboard_overlay, null);
+        }
+    }
+
+    /**
+     *
+     */
+    @Provides
+    @OverlayWindowContext
+    static WindowManager provideWindowManager(@OverlayWindowContext Context context,
+            WindowManagerProvider windowManagerProvider) {
+        return windowManagerProvider.getWindowManager(context);
+    }
+
+    @Provides
+    static IntentCreator provideIntentCreator(
+            Lazy<DefaultIntentCreator> defaultIntentCreator,
+            Lazy<ActionIntentCreator> actionIntentCreator) {
+        if (usePreferredImageEditor()) {
+            return actionIntentCreator.get();
+        } else {
+            return defaultIntentCreator.get();
         }
     }
 

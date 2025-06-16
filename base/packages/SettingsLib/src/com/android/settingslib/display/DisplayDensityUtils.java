@@ -29,12 +29,16 @@ import android.view.Display;
 import android.view.DisplayInfo;
 import android.view.IWindowManager;
 import android.view.WindowManagerGlobal;
+import android.window.ConfigurationChangeSetting;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.settingslib.R;
 
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.function.Predicate;
 
 /**
@@ -53,7 +57,7 @@ public class DisplayDensityUtils {
      * Summaries for scales smaller than "default" in order of smallest to
      * largest.
      */
-    private static final int[] SUMMARIES_SMALLER = new int[] {
+    private static final int[] SUMMARIES_SMALLER = new int[]{
             R.string.screen_zoom_summary_small
     };
 
@@ -61,7 +65,7 @@ public class DisplayDensityUtils {
      * Summaries for scales larger than "default" in order of smallest to
      * largest.
      */
-    private static final int[] SUMMARIES_LARGER = new int[] {
+    private static final int[] SUMMARIES_LARGER = new int[]{
             R.string.screen_zoom_summary_large,
             R.string.screen_zoom_summary_very_large,
             R.string.screen_zoom_summary_extremely_large,
@@ -82,38 +86,59 @@ public class DisplayDensityUtils {
     private final DisplayManager mDisplayManager;
 
     /**
-     * The text description of the density values of the default display.
+     * The text description of the density values.
      */
-    private String[] mDefaultDisplayDensityEntries;
+    @Nullable
+    private final String[] mEntries;
 
     /**
-     * The density values of the default display.
+     * The density values.
      */
-    private int[] mDefaultDisplayDensityValues;
+    @Nullable
+    private final int[] mValues;
 
     /**
-     * The density values, indexed by display unique ID.
+     * The density values before rounding to an integer.
      */
-    private final Map<String, int[]> mValuesPerDisplay = new HashMap();
+    @Nullable
+    private final float[] mFloatValues;
 
-    private int mDefaultDensityForDefaultDisplay;
-    private int mCurrentIndex = -1;
+    private final int mDefaultDensity;
+    private final int mCurrentIndex;
 
-    public DisplayDensityUtils(Context context) {
+    public DisplayDensityUtils(@NonNull Context context) {
         this(context, INTERNAL_ONLY);
     }
 
     /**
-     * Creates an instance that stores the density values for the displays that satisfy
-     * the predicate.
-     * @param context The context
+     * Creates an instance that stores the density values for the smallest display that satisfies
+     * the predicate. It is enough to store the values for one display because the same density
+     * should be set to all the displays that satisfy the predicate.
+     *
+     * @param context   The context
      * @param predicate Determines what displays the density should be set for. The default display
      *                  must satisfy this predicate.
      */
-    public DisplayDensityUtils(Context context, Predicate predicate) {
+    public DisplayDensityUtils(@NonNull Context context,
+            @NonNull Predicate<DisplayInfo> predicate) {
         mPredicate = predicate;
         mDisplayManager = context.getSystemService(DisplayManager.class);
 
+        Display defaultDisplay = mDisplayManager.getDisplay(Display.DEFAULT_DISPLAY);
+        DisplayInfo defaultDisplayInfo = new DisplayInfo();
+        if (!defaultDisplay.getDisplayInfo(defaultDisplayInfo)) {
+            Log.w(LOG_TAG, "Cannot fetch display info for the default display");
+            mEntries = null;
+            mValues = null;
+            mFloatValues = null;
+            mDefaultDensity = 0;
+            mCurrentIndex = -1;
+            return;
+        }
+
+        int idOfSmallestDisplay = Display.INVALID_DISPLAY;
+        int minDimensionPx = Integer.MAX_VALUE;
+        DisplayInfo smallestDisplayInfo = null;
         for (Display display : mDisplayManager.getDisplays(
                 DisplayManager.DISPLAY_CATEGORY_ALL_INCLUDING_DISABLED)) {
             DisplayInfo info = new DisplayInfo();
@@ -122,137 +147,174 @@ public class DisplayDensityUtils {
                 continue;
             }
             if (!mPredicate.test(info)) {
-                if (display.getDisplayId() == Display.DEFAULT_DISPLAY) {
-                    throw new IllegalArgumentException("Predicate must not filter out the default "
-                            + "display.");
-                }
                 continue;
             }
-
-            final int defaultDensity = DisplayDensityUtils.getDefaultDensityForDisplay(
-                    display.getDisplayId());
-            if (defaultDensity <= 0) {
-                Log.w(LOG_TAG, "Cannot fetch default density for display "
-                        + display.getDisplayId());
-                continue;
+            int minDimension = Math.min(info.logicalWidth, info.logicalHeight);
+            if (minDimension < minDimensionPx) {
+                minDimensionPx = minDimension;
+                idOfSmallestDisplay = display.getDisplayId();
+                smallestDisplayInfo = info;
             }
-
-            final Resources res = context.getResources();
-
-            final int currentDensity = info.logicalDensityDpi;
-            int currentDensityIndex = -1;
-
-            // Compute number of "larger" and "smaller" scales for this display.
-            final int minDimensionPx = Math.min(info.logicalWidth, info.logicalHeight);
-            final int maxDensity =
-                    DisplayMetrics.DENSITY_MEDIUM * minDimensionPx / MIN_DIMENSION_DP;
-            final float maxScaleDimen = context.getResources().getFraction(
-                    R.fraction.display_density_max_scale, 1, 1);
-            final float maxScale = Math.min(maxScaleDimen, maxDensity / (float) defaultDensity);
-            final float minScale = context.getResources().getFraction(
-                    R.fraction.display_density_min_scale, 1, 1);
-            final float minScaleInterval = context.getResources().getFraction(
-                    R.fraction.display_density_min_scale_interval, 1, 1);
-            final int numLarger = (int) MathUtils.constrain((maxScale - 1) / minScaleInterval,
-                    0, SUMMARIES_LARGER.length);
-            final int numSmaller = (int) MathUtils.constrain((1 - minScale) / minScaleInterval,
-                    0, SUMMARIES_SMALLER.length);
-
-            String[] entries = new String[1 + numSmaller + numLarger];
-            int[] values = new int[entries.length];
-            int curIndex = 0;
-
-            if (numSmaller > 0) {
-                final float interval = (1 - minScale) / numSmaller;
-                for (int i = numSmaller - 1; i >= 0; i--) {
-                    // Round down to a multiple of 2 by truncating the low bit.
-                    final int density = ((int) (defaultDensity * (1 - (i + 1) * interval))) & ~1;
-                    if (currentDensity == density) {
-                        currentDensityIndex = curIndex;
-                    }
-                    entries[curIndex] = res.getString(SUMMARIES_SMALLER[i]);
-                    values[curIndex] = density;
-                    curIndex++;
-                }
-            }
-
-            if (currentDensity == defaultDensity) {
-                currentDensityIndex = curIndex;
-            }
-            values[curIndex] = defaultDensity;
-            entries[curIndex] = res.getString(SUMMARY_DEFAULT);
-            curIndex++;
-
-            if (numLarger > 0) {
-                final float interval = (maxScale - 1) / numLarger;
-                for (int i = 0; i < numLarger; i++) {
-                    // Round down to a multiple of 2 by truncating the low bit.
-                    final int density = ((int) (defaultDensity * (1 + (i + 1) * interval))) & ~1;
-                    if (currentDensity == density) {
-                        currentDensityIndex = curIndex;
-                    }
-                    values[curIndex] = density;
-                    entries[curIndex] = res.getString(SUMMARIES_LARGER[i]);
-                    curIndex++;
-                }
-            }
-
-            final int displayIndex;
-            if (currentDensityIndex >= 0) {
-                displayIndex = currentDensityIndex;
-            } else {
-                // We don't understand the current density. Must have been set by
-                // someone else. Make room for another entry...
-                int newLength = values.length + 1;
-                values = Arrays.copyOf(values, newLength);
-                values[curIndex] = currentDensity;
-
-                entries = Arrays.copyOf(entries, newLength);
-                entries[curIndex] = res.getString(SUMMARY_CUSTOM, currentDensity);
-
-                displayIndex = curIndex;
-            }
-
-            if (display.getDisplayId() == Display.DEFAULT_DISPLAY) {
-                mDefaultDensityForDefaultDisplay = defaultDensity;
-                mCurrentIndex = displayIndex;
-                mDefaultDisplayDensityEntries = entries;
-                mDefaultDisplayDensityValues = values;
-            }
-            mValuesPerDisplay.put(info.uniqueId, values);
         }
+
+        if (smallestDisplayInfo == null) {
+            Log.w(LOG_TAG, "No display satisfies the predicate");
+            mEntries = null;
+            mValues = null;
+            mFloatValues = null;
+            mDefaultDensity = 0;
+            mCurrentIndex = -1;
+            return;
+        }
+
+        final int defaultDensity =
+                DisplayDensityUtils.getDefaultDensityForDisplay(idOfSmallestDisplay);
+        if (defaultDensity <= 0) {
+            Log.w(LOG_TAG, "Cannot fetch default density for display " + idOfSmallestDisplay);
+            mEntries = null;
+            mValues = null;
+            mFloatValues = null;
+            mDefaultDensity = 0;
+            mCurrentIndex = -1;
+            return;
+        }
+
+        final Resources res = context.getResources();
+
+        int currentDensity;
+        if (mPredicate.test(defaultDisplayInfo)) {
+            currentDensity = defaultDisplayInfo.logicalDensityDpi;
+        } else {
+            currentDensity = smallestDisplayInfo.logicalDensityDpi;
+        }
+        int currentDensityIndex = -1;
+
+        // Compute number of "larger" and "smaller" scales for this display.
+        final int maxDensity =
+                DisplayMetrics.DENSITY_MEDIUM * minDimensionPx / MIN_DIMENSION_DP;
+        final float maxScaleDimen = context.getResources().getFraction(
+                R.fraction.display_density_max_scale, 1, 1);
+        final float maxScale = Math.min(maxScaleDimen, maxDensity / (float) defaultDensity);
+        final float minScale = context.getResources().getFraction(
+                R.fraction.display_density_min_scale, 1, 1);
+        final float minScaleInterval = context.getResources().getFraction(
+                R.fraction.display_density_min_scale_interval, 1, 1);
+        final int numLarger = (int) MathUtils.constrain((maxScale - 1) / minScaleInterval,
+                0, SUMMARIES_LARGER.length);
+        final int numSmaller = (int) MathUtils.constrain((1 - minScale) / minScaleInterval,
+                0, SUMMARIES_SMALLER.length);
+
+        String[] entries = new String[1 + numSmaller + numLarger];
+        int[] values = new int[entries.length];
+        float[] valuesFloat = new float[entries.length];
+        int curIndex = 0;
+
+        if (numSmaller > 0) {
+            final float interval = (1 - minScale) / numSmaller;
+            for (int i = numSmaller - 1; i >= 0; i--) {
+                // Save the float density value before rounding to be used to set the density ratio
+                // of overridden density to default density in WM.
+                final float densityFloat = defaultDensity * (1 - (i + 1) * interval);
+                // Round down to a multiple of 2 by truncating the low bit.
+                // LINT.IfChange
+                final int density = ((int) densityFloat) & ~1;
+                // LINT.ThenChange(/services/core/java/com/android/server/wm/DisplayContent.java:getBaseDensityFromRatio)
+                if (currentDensity == density) {
+                    currentDensityIndex = curIndex;
+                }
+                values[curIndex] = density;
+                valuesFloat[curIndex] = densityFloat;
+                entries[curIndex] = res.getString(SUMMARIES_SMALLER[i]);
+                curIndex++;
+            }
+        }
+
+        if (currentDensity == defaultDensity) {
+            currentDensityIndex = curIndex;
+        }
+        values[curIndex] = defaultDensity;
+        valuesFloat[curIndex] = (float) defaultDensity;
+        entries[curIndex] = res.getString(SUMMARY_DEFAULT);
+        curIndex++;
+
+        if (numLarger > 0) {
+            final float interval = (maxScale - 1) / numLarger;
+            for (int i = 0; i < numLarger; i++) {
+                // Save the float density value before rounding to be used to set the density ratio
+                // of overridden density to default density in WM.
+                final float densityFloat = defaultDensity * (1 + (i + 1) * interval);
+                // Round down to a multiple of 2 by truncating the low bit.
+                // LINT.IfChange
+                final int density = ((int) densityFloat) & ~1;
+                // LINT.ThenChange(/services/core/java/com/android/server/wm/DisplayContent.java:getBaseDensityFromRatio)
+                if (currentDensity == density) {
+                    currentDensityIndex = curIndex;
+                }
+                values[curIndex] = density;
+                valuesFloat[curIndex] = densityFloat;
+                entries[curIndex] = res.getString(SUMMARIES_LARGER[i]);
+                curIndex++;
+            }
+        }
+
+        final int displayIndex;
+        if (currentDensityIndex >= 0) {
+            displayIndex = currentDensityIndex;
+        } else {
+            // We don't understand the current density. Must have been set by
+            // someone else. Make room for another entry...
+            int newLength = values.length + 1;
+            values = Arrays.copyOf(values, newLength);
+            values[curIndex] = currentDensity;
+
+            valuesFloat = Arrays.copyOf(valuesFloat, newLength);
+            valuesFloat[curIndex] = (float) currentDensity;
+
+            entries = Arrays.copyOf(entries, newLength);
+            entries[curIndex] = res.getString(SUMMARY_CUSTOM, currentDensity);
+
+            displayIndex = curIndex;
+        }
+
+        mDefaultDensity = defaultDensity;
+        mCurrentIndex = displayIndex;
+        mEntries = entries;
+        mValues = values;
+        mFloatValues = valuesFloat;
     }
 
-    public String[] getDefaultDisplayDensityEntries() {
-        return mDefaultDisplayDensityEntries;
+    @Nullable
+    public String[] getEntries() {
+        return mEntries;
     }
 
-    public int[] getDefaultDisplayDensityValues() {
-        return mDefaultDisplayDensityValues;
+    @Nullable
+    public int[] getValues() {
+        return mValues;
     }
 
-    public int getCurrentIndexForDefaultDisplay() {
+    public int getCurrentIndex() {
         return mCurrentIndex;
     }
 
-    public int getDefaultDensityForDefaultDisplay() {
-        return mDefaultDensityForDefaultDisplay;
+    public int getDefaultDensity() {
+        return mDefaultDensity;
     }
 
     /**
      * Returns the default density for the specified display.
      *
      * @param displayId the identifier of the display
-     * @return the default density of the specified display, or {@code -1} if
-     *         the display does not exist or the density could not be obtained
+     * @return the default density of the specified display, or {@code -1} if the display does not
+     * exist or the density could not be obtained
      */
     private static int getDefaultDensityForDisplay(int displayId) {
-       try {
-           final IWindowManager wm = WindowManagerGlobal.getWindowManagerService();
-           return wm.getInitialDisplayDensity(displayId);
-       } catch (RemoteException exc) {
-           return -1;
-       }
+        try {
+            final IWindowManager wm = WindowManagerGlobal.getWindowManagerService();
+            return wm.getInitialDisplayDensity(displayId);
+        } catch (RemoteException exc) {
+            return -1;
+        }
     }
 
     /**
@@ -311,19 +373,47 @@ public class DisplayDensityUtils {
                     if (!mPredicate.test(info)) {
                         continue;
                     }
-                    if (!mValuesPerDisplay.containsKey(info.uniqueId)) {
-                        Log.w(LOG_TAG, "Unable to save forced display density setting "
-                                + "for display " + info.uniqueId);
-                        continue;
-                    }
 
                     final IWindowManager wm = WindowManagerGlobal.getWindowManagerService();
-                    wm.setForcedDisplayDensityForUser(displayId,
-                            mValuesPerDisplay.get(info.uniqueId)[index], userId);
+                    // Only set the ratio for external displays as Settings uses
+                    // ScreenResolutionFragment to handle density update for internal display.
+                    if (info.type == Display.TYPE_EXTERNAL) {
+                        wm.setForcedDisplayDensityRatio(displayId,
+                                mFloatValues[index] / mDefaultDensity, userId);
+                    } else {
+                        wm.setForcedDisplayDensityForUser(displayId, mValues[index], userId);
+                    }
                 }
             } catch (RemoteException exc) {
                 Log.w(LOG_TAG, "Unable to save forced display density setting");
             }
         });
+    }
+
+    /**
+     * Returns a list of {@link ConfigurationChangeSetting} object representing the forced display
+     * density settings for the displays that satisfy the predicate.
+     *
+     * @param index the index of the density value in the available density values array.
+     * @return a list of {@link ConfigurationChangeSetting} objects.
+     * @see IWindowManager#setConfigurationChangeSettingsForUser
+     */
+    @NonNull
+    public List<ConfigurationChangeSetting> getForcedDisplayDensitySetting(final int index) {
+        final ArrayList<ConfigurationChangeSetting> settings = new ArrayList<>();
+        for (final Display display : mDisplayManager.getDisplays(
+                DisplayManager.DISPLAY_CATEGORY_ALL_INCLUDING_DISABLED)) {
+            final int displayId = display.getDisplayId();
+            final DisplayInfo info = new DisplayInfo();
+            if (!display.getDisplayInfo(info)) {
+                Log.w(LOG_TAG, "Unable to get display info for display " + displayId);
+                continue;
+            }
+            if (!mPredicate.test(info)) {
+                continue;
+            }
+            settings.add(new ConfigurationChangeSetting.DensitySetting(displayId, mValues[index]));
+        }
+        return settings;
     }
 }

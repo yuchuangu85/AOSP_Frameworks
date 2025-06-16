@@ -16,6 +16,7 @@
 
 package com.android.systemui.keyguard.domain.interactor.scenetransition
 
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.compose.animation.scene.ObservableTransitionState
 import com.android.compose.animation.scene.SceneKey
 import com.android.systemui.CoreStartable
@@ -23,6 +24,7 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.data.repository.LockscreenSceneTransitionRepository
 import com.android.systemui.keyguard.data.repository.LockscreenSceneTransitionRepository.Companion.DEFAULT_STATE
+import com.android.systemui.keyguard.domain.interactor.InternalKeyguardTransitionInteractor
 import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
 import com.android.systemui.keyguard.shared.model.KeyguardState.UNDEFINED
@@ -37,7 +39,6 @@ import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 
 /**
  * This class listens to scene framework scene transitions and manages keyguard transition framework
@@ -67,7 +68,8 @@ import kotlinx.coroutines.launch
 class LockscreenSceneTransitionInteractor
 @Inject
 constructor(
-    val transitionInteractor: KeyguardTransitionInteractor,
+    private val transitionInteractor: KeyguardTransitionInteractor,
+    private val internalTransitionInteractor: InternalKeyguardTransitionInteractor,
     @Application private val applicationScope: CoroutineScope,
     private val sceneInteractor: SceneInteractor,
     private val repository: LockscreenSceneTransitionRepository,
@@ -104,17 +106,21 @@ constructor(
 
     private suspend fun handleIdle(
         prevTransition: ObservableTransitionState,
-        idle: ObservableTransitionState.Idle
+        idle: ObservableTransitionState.Idle,
     ) {
         if (currentTransitionId == null) return
         if (prevTransition !is ObservableTransitionState.Transition) return
 
-        if (idle.currentScene == prevTransition.toScene) {
+        if (
+            idle.currentScene == prevTransition.toContent ||
+                idle.currentOverlays.contains(prevTransition.toContent)
+        ) {
             finishCurrentTransition()
         } else {
             val targetState =
                 if (idle.currentScene == Scenes.Lockscreen) {
-                    transitionInteractor.getStartedFromState()
+                    repository.nextLockscreenTargetState.value
+                        ?: transitionInteractor.startedKeyguardTransitionStep.value.from
                 } else {
                     UNDEFINED
                 }
@@ -122,8 +128,8 @@ constructor(
         }
     }
 
-    private fun finishCurrentTransition() {
-        transitionInteractor.updateTransition(currentTransitionId!!, 1f, FINISHED)
+    private suspend fun finishCurrentTransition() {
+        internalTransitionInteractor.updateTransition(currentTransitionId!!, 1f, FINISHED)
         resetTransitionData()
     }
 
@@ -131,13 +137,13 @@ constructor(
         val newTransition =
             TransitionInfo(
                 ownerName = this::class.java.simpleName,
-                from = transitionInteractor.currentTransitionInfoInternal.value.to,
+                from = internalTransitionInteractor.currentTransitionInfoInternal().to,
                 to = state,
                 animator = null,
-                modeOnCanceled = TransitionModeOnCanceled.REVERSE
+                modeOnCanceled = TransitionModeOnCanceled.REVERSE,
             )
-        currentTransitionId = transitionInteractor.startTransition(newTransition)
-        transitionInteractor.updateTransition(currentTransitionId!!, 1f, FINISHED)
+        currentTransitionId = internalTransitionInteractor.startTransition(newTransition)
+        internalTransitionInteractor.updateTransition(currentTransitionId!!, 1f, FINISHED)
         resetTransitionData()
     }
 
@@ -148,16 +154,16 @@ constructor(
     }
 
     private suspend fun handleTransition(transition: ObservableTransitionState.Transition) {
-        if (transition.fromScene == Scenes.Lockscreen) {
+        if (transition.fromContent == Scenes.Lockscreen) {
             if (currentTransitionId != null) {
-                val currentToState = transitionInteractor.currentTransitionInfoInternal.value.to
+                val currentToState = internalTransitionInteractor.currentTransitionInfoInternal().to
                 if (currentToState == UNDEFINED) {
-                    transitionKtfTo(transitionInteractor.getStartedFromState())
+                    transitionKtfTo(transitionInteractor.startedKeyguardTransitionStep.value.from)
                 }
             }
             startTransitionFromLockscreen()
             collectProgress(transition)
-        } else if (transition.toScene == Scenes.Lockscreen) {
+        } else if (transition.toContent == Scenes.Lockscreen) {
             if (currentTransitionId != null) {
                 transitionKtfTo(UNDEFINED)
             }
@@ -192,24 +198,25 @@ constructor(
             TransitionInfo(
                 ownerName = this::class.java.simpleName,
                 from = UNDEFINED,
-                to = repository.nextLockscreenTargetState.value,
+                to = repository.nextLockscreenTargetState.value ?: DEFAULT_STATE,
                 animator = null,
-                modeOnCanceled = TransitionModeOnCanceled.RESET
+                modeOnCanceled = TransitionModeOnCanceled.RESET,
             )
-        repository.nextLockscreenTargetState.value = DEFAULT_STATE
+        repository.nextLockscreenTargetState.value = null
         startTransition(newTransition)
     }
 
     private suspend fun startTransitionFromLockscreen() {
-        val currentState = transitionInteractor.currentTransitionInfoInternal.value.to
+        val currentState = internalTransitionInteractor.currentTransitionInfoInternal().to
         val newTransition =
             TransitionInfo(
                 ownerName = this::class.java.simpleName,
                 from = currentState,
                 to = UNDEFINED,
                 animator = null,
-                modeOnCanceled = TransitionModeOnCanceled.RESET
+                modeOnCanceled = TransitionModeOnCanceled.RESET,
             )
+        repository.nextLockscreenTargetState.value = null
         startTransition(newTransition)
     }
 
@@ -217,15 +224,15 @@ constructor(
         if (currentTransitionId != null) {
             resetTransitionData()
         }
-        currentTransitionId = transitionInteractor.startTransition(transitionInfo)
+        currentTransitionId = internalTransitionInteractor.startTransition(transitionInfo)
     }
 
-    private fun updateProgress(progress: Float) {
+    private suspend fun updateProgress(progress: Float) {
         if (currentTransitionId == null) return
-        transitionInteractor.updateTransition(
+        internalTransitionInteractor.updateTransition(
             currentTransitionId!!,
             progress.coerceIn(0f, 1f),
-            RUNNING
+            RUNNING,
         )
     }
 }

@@ -18,6 +18,7 @@ package com.android.server.biometrics.sensors;
 
 import android.annotation.NonNull;
 import android.content.Context;
+import android.content.Intent;
 import android.hardware.biometrics.BiometricAuthenticator;
 import android.hardware.biometrics.BiometricRequestConstants;
 import android.hardware.face.FaceEnrollOptions;
@@ -26,6 +27,7 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Slog;
 
+import com.android.server.biometrics.AuthenticationStatsCollector;
 import com.android.server.biometrics.BiometricsProto;
 import com.android.server.biometrics.log.BiometricContext;
 import com.android.server.biometrics.log.BiometricLogger;
@@ -60,7 +62,7 @@ public abstract class EnrollClient<T> extends AcquisitionClient<T> implements En
             @NonNull BiometricLogger logger, @NonNull BiometricContext biometricContext,
             int enrollReason) {
         super(context, lazyDaemon, token, listener, userId, owner, 0 /* cookie */, sensorId,
-                shouldVibrate, logger, biometricContext);
+                shouldVibrate, logger, biometricContext, false /* isMandatoryBiometrics */);
         mBiometricUtils = utils;
         mHardwareAuthToken = Arrays.copyOf(hardwareAuthToken, hardwareAuthToken.length);
         mTimeoutSec = timeoutSec;
@@ -95,7 +97,7 @@ public abstract class EnrollClient<T> extends AcquisitionClient<T> implements En
             mBiometricUtils.addBiometricForUser(getContext(), getTargetUserId(), identifier);
             getLogger().logOnEnrolled(getTargetUserId(),
                     System.currentTimeMillis() - mEnrollmentStartTimeMs,
-                    true /* enrollSuccessful */, mEnrollReason);
+                    true /* enrollSuccessful */, mEnrollReason, identifier.getBiometricId());
             mCallback.onClientFinished(this, true /* success */);
         }
         notifyUserActivity();
@@ -123,7 +125,7 @@ public abstract class EnrollClient<T> extends AcquisitionClient<T> implements En
     public void onError(int error, int vendorCode) {
         getLogger().logOnEnrolled(getTargetUserId(),
                 System.currentTimeMillis() - mEnrollmentStartTimeMs,
-                false /* enrollSuccessful */, mEnrollReason);
+                false /* enrollSuccessful */, mEnrollReason, -1 /* templateId */);
         super.onError(error, vendorCode);
     }
 
@@ -158,5 +160,14 @@ public abstract class EnrollClient<T> extends AcquisitionClient<T> implements En
                     BiometricRequestConstants.REASON_ENROLL_ENROLLING;
             default -> BiometricRequestConstants.REASON_UNKNOWN;
         };
+    }
+
+    protected void notifyLastEnrollmentTime(int modality) {
+        // Notify the last enrollment time to re-count authentication stats for frr.
+        final Intent intent = new Intent(
+                AuthenticationStatsCollector.ACTION_LAST_ENROLL_TIME_CHANGED);
+        intent.putExtra(Intent.EXTRA_USER_HANDLE, getTargetUserId());
+        intent.putExtra(AuthenticationStatsCollector.EXTRA_MODALITY, modality);
+        getContext().sendBroadcast(intent);
     }
 }

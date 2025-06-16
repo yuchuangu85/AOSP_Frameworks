@@ -119,8 +119,20 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
+    name: "android.hardware.nfc.ese.prebuilt.xml",
+    src: "android.hardware.nfc.ese.xml",
+    defaults: ["frameworks_native_data_etc_defaults"],
+}
+
+prebuilt_etc {
     name: "android.hardware.nfc.hce.prebuilt.xml",
     src: "android.hardware.nfc.hce.xml",
+    defaults: ["frameworks_native_data_etc_defaults"],
+}
+
+prebuilt_etc {
+    name: "android.hardware.nfc.hcef.prebuilt.xml",
+    src: "android.hardware.nfc.hcef.xml",
     defaults: ["frameworks_native_data_etc_defaults"],
 }
 
@@ -305,8 +317,20 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
+    name: "android.hardware.telephony.satellite.prebuilt.xml",
+    src: "android.hardware.telephony.satellite.xml",
+    defaults: ["frameworks_native_data_etc_defaults"],
+}
+
+prebuilt_etc {
     name: "android.hardware.telephony.ims.singlereg.prebuilt.xml",
     src: "android.hardware.telephony.ims.singlereg.xml",
+    defaults: ["frameworks_native_data_etc_defaults"],
+}
+
+prebuilt_etc {
+    name: "android.hardware.telephony.messaging.prebuilt.xml",
+    src: "android.hardware.telephony.messaging.xml",
     defaults: ["frameworks_native_data_etc_defaults"],
 }
 
@@ -426,6 +450,14 @@ prebuilt_etc {
     defaults: ["frameworks_native_data_etc_defaults"],
 }
 
+// installed in system
+prebuilt_etc {
+    name: "android.software.preview_sdk.prebuilt.xml",
+    relative_install_path: "permissions",
+    src: "android.software.preview_sdk.xml",
+    filename_from_src: true,
+}
+
 prebuilt_etc {
     name: "android.software.sip.voip.prebuilt.xml",
     src: "android.software.sip.voip.xml",
@@ -468,9 +500,31 @@ prebuilt_etc {
     defaults: ["frameworks_native_data_etc_defaults"],
 }
 
+// installed in system
+prebuilt_etc {
+    name: "android.software.webview.prebuilt.xml",
+    relative_install_path: "permissions",
+    src: "android.software.webview.xml",
+    filename_from_src: true,
+}
+
+// installed in system
+prebuilt_etc {
+    name: "android.software.window_magnification.prebuilt.xml",
+    relative_install_path: "permissions",
+    src: "android.software.window_magnification.xml",
+    filename_from_src: true,
+}
+
 prebuilt_etc {
     name: "aosp_excluded_hardware.prebuilt.xml",
     src: "aosp_excluded_hardware.xml",
+    defaults: ["frameworks_native_data_etc_defaults"],
+}
+
+prebuilt_etc {
+    name: "com.nxp.mifare.prebuilt.xml",
+    src: "com.nxp.mifare.xml",
     defaults: ["frameworks_native_data_etc_defaults"],
 }
 

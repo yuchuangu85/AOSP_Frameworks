@@ -19,6 +19,7 @@ package com.android.server;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.media.AudioManager;
 import android.media.Ringtone;
@@ -26,7 +27,6 @@ import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Handler;
-import android.os.Message;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.os.UEventObserver;
@@ -35,6 +35,8 @@ import android.provider.Settings;
 import android.util.Pair;
 import android.util.Slog;
 
+import com.android.internal.R;
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.util.FrameworkStatsLog;
@@ -55,8 +57,6 @@ import java.util.Map;
 final class DockObserver extends SystemService {
     private static final String TAG = "DockObserver";
 
-    private static final int MSG_DOCK_STATE_CHANGED = 0;
-
     private final PowerManager mPowerManager;
     private final PowerManager.WakeLock mWakeLock;
 
@@ -64,11 +64,16 @@ final class DockObserver extends SystemService {
 
     private boolean mSystemReady;
 
+    @GuardedBy("mLock")
     private int mActualDockState = Intent.EXTRA_DOCK_STATE_UNDOCKED;
 
+    @GuardedBy("mLock")
     private int mReportedDockState = Intent.EXTRA_DOCK_STATE_UNDOCKED;
+
+    @GuardedBy("mLock")
     private int mPreviousDockState = Intent.EXTRA_DOCK_STATE_UNDOCKED;
 
+    @GuardedBy("mLock")
     private boolean mUpdatesStopped;
 
     private final boolean mKeepDreamingWhenUnplugging;
@@ -76,6 +81,8 @@ final class DockObserver extends SystemService {
 
     private final List<ExtconStateConfig> mExtconStateConfigs;
     private DeviceProvisionedObserver mDeviceProvisionedObserver;
+
+    private final DockObserverLocalService mDockObserverLocalService;
 
     static final class ExtconStateProvider {
         private final Map<String, String> mState;
@@ -178,26 +185,40 @@ final class DockObserver extends SystemService {
                 ExtconInfo.EXTCON_DOCK
         });
 
-        if (!infos.isEmpty()) {
-            ExtconInfo info = infos.get(0);
-            Slog.i(TAG, "Found extcon info devPath: " + info.getDevicePath()
-                        + ", statePath: " + info.getStatePath());
+        synchronized (mLock) {
+            if (!infos.isEmpty()) {
+                ExtconInfo info = infos.get(0);
+                Slog.i(
+                        TAG,
+                        "Found extcon info devPath: "
+                                + info.getDevicePath()
+                                + ", statePath: "
+                                + info.getStatePath());
 
-            // set initial status
-            setDockStateFromProviderLocked(ExtconStateProvider.fromFile(info.getStatePath()));
-            mPreviousDockState = mActualDockState;
+                // set initial status
+                setDockStateFromProviderLocked(ExtconStateProvider.fromFile(info.getStatePath()));
+                mPreviousDockState = mActualDockState;
 
-            mExtconUEventObserver.startObserving(info);
-        } else {
-            Slog.i(TAG, "No extcon dock device found in this kernel.");
+                mExtconUEventObserver.startObserving(info);
+            } else {
+                Slog.i(TAG, "No extcon dock device found in this kernel.");
+            }
+        }
+
+        mDockObserverLocalService = new DockObserverLocalService();
+        LocalServices.addService(DockObserverInternal.class, mDockObserverLocalService);
+    }
+
+    public class DockObserverLocalService extends DockObserverInternal {
+        @Override
+        public int getActualDockState() {
+            return mActualDockState;
         }
     }
 
     @Override
     public void onStart() {
         publishBinderService(TAG, new BinderService());
-        // Logs dock state after setDockStateFromProviderLocked sets mReportedDockState
-        FrameworkStatsLog.write(FrameworkStatsLog.DOCK_STATE_CHANGED, mReportedDockState);
     }
 
     @Override
@@ -211,13 +232,15 @@ final class DockObserver extends SystemService {
         }
     }
 
+    @GuardedBy("mLock")
     private void updateIfDockedLocked() {
         // don't bother broadcasting undocked here
         if (mReportedDockState != Intent.EXTRA_DOCK_STATE_UNDOCKED) {
-            updateLocked();
+            postWakefulDockStateChange();
         }
     }
 
+    @GuardedBy("mLock")
     private void setActualDockStateLocked(int newState) {
         mActualDockState = newState;
         if (!mUpdatesStopped) {
@@ -225,16 +248,22 @@ final class DockObserver extends SystemService {
         }
     }
 
+    @GuardedBy("mLock")
     private void setDockStateLocked(int newState) {
         if (newState != mReportedDockState) {
             mReportedDockState = newState;
+            // Here is the place mReportedDockState is updated. Logs dock state for
+            // mReportedDockState here so we can report the dock state.
+            FrameworkStatsLog.write(FrameworkStatsLog.DOCK_STATE_CHANGED, mReportedDockState);
             if (mSystemReady) {
                 // Wake up immediately when docked or undocked unless prohibited from doing so.
                 if (allowWakeFromDock()) {
-                    mPowerManager.wakeUp(SystemClock.uptimeMillis(),
+                    mPowerManager.wakeUp(
+                            SystemClock.uptimeMillis(),
+                            PowerManager.WAKE_REASON_DOCK,
                             "android.server:DOCK");
                 }
-                updateLocked();
+                postWakefulDockStateChange();
             }
         }
     }
@@ -248,9 +277,8 @@ final class DockObserver extends SystemService {
                 Settings.Global.THEATER_MODE_ON, 0) == 0);
     }
 
-    private void updateLocked() {
-        mWakeLock.acquire();
-        mHandler.sendEmptyMessage(MSG_DOCK_STATE_CHANGED);
+    private void postWakefulDockStateChange() {
+        mHandler.post(mWakeLock.wrap(this::handleDockStateChange));
     }
 
     private void handleDockStateChange() {
@@ -259,11 +287,19 @@ final class DockObserver extends SystemService {
                     + mReportedDockState);
             final int previousDockState = mPreviousDockState;
             mPreviousDockState = mReportedDockState;
-            // Skip the dock intent if not yet provisioned.
+
             final ContentResolver cr = getContext().getContentResolver();
-            if (!mDeviceProvisionedObserver.isDeviceProvisioned()) {
-                Slog.i(TAG, "Device not provisioned, skipping dock broadcast");
-                return;
+
+            /// If the allow dock rotation before provision is enabled then we allow rotation.
+            final Resources r = getContext().getResources();
+            final boolean allowDockBeforeProvision =
+                    r.getBoolean(R.bool.config_allowDockBeforeProvision);
+            if (!allowDockBeforeProvision) {
+                // Skip the dock intent if not yet provisioned.
+                if (!mDeviceProvisionedObserver.isDeviceProvisioned()) {
+                    Slog.i(TAG, "Device not provisioned, skipping dock broadcast");
+                    return;
+                }
             }
 
             // Pack up the values and broadcast them to everyone
@@ -325,17 +361,7 @@ final class DockObserver extends SystemService {
         }
     }
 
-    private final Handler mHandler = new Handler(true /*async*/) {
-        @Override
-        public void handleMessage(Message msg) {
-            switch (msg.what) {
-                case MSG_DOCK_STATE_CHANGED:
-                    handleDockStateChange();
-                    mWakeLock.release();
-                    break;
-            }
-        }
-    };
+    private final Handler mHandler = new Handler(true /*async*/);
 
     private int getDockedStateExtraValue(ExtconStateProvider state) {
         for (ExtconStateConfig config : mExtconStateConfigs) {
@@ -363,6 +389,7 @@ final class DockObserver extends SystemService {
         }
     }
 
+    @GuardedBy("mLock")
     private void setDockStateFromProviderLocked(ExtconStateProvider provider) {
         int state = Intent.EXTRA_DOCK_STATE_UNDOCKED;
         if ("1".equals(provider.getValue("DOCK"))) {

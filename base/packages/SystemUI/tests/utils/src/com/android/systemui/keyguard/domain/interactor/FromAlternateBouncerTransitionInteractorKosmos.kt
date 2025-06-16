@@ -18,20 +18,21 @@ package com.android.systemui.keyguard.domain.interactor
 
 import com.android.systemui.bouncer.domain.interactor.primaryBouncerInteractor
 import com.android.systemui.communal.domain.interactor.communalInteractor
+import com.android.systemui.communal.domain.interactor.communalSceneInteractor
+import com.android.systemui.communal.domain.interactor.communalSettingsInteractor
 import com.android.systemui.keyguard.data.repository.keyguardTransitionRepository
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.applicationCoroutineScope
 import com.android.systemui.kosmos.testDispatcher
 import com.android.systemui.power.domain.interactor.powerInteractor
 import com.android.systemui.statusbar.domain.interactor.keyguardOcclusionInteractor
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 
-@ExperimentalCoroutinesApi
 val Kosmos.fromAlternateBouncerTransitionInteractor by
     Kosmos.Fixture {
         FromAlternateBouncerTransitionInteractor(
             transitionRepository = keyguardTransitionRepository,
             transitionInteractor = keyguardTransitionInteractor,
+            internalTransitionInteractor = internalKeyguardTransitionInteractor,
             scope = applicationCoroutineScope,
             bgDispatcher = testDispatcher,
             mainDispatcher = testDispatcher,
@@ -40,5 +41,7 @@ val Kosmos.fromAlternateBouncerTransitionInteractor by
             powerInteractor = powerInteractor,
             keyguardOcclusionInteractor = keyguardOcclusionInteractor,
             primaryBouncerInteractor = primaryBouncerInteractor,
+            communalSceneInteractor = communalSceneInteractor,
+            communalSettingsInteractor = communalSettingsInteractor,
         )
     }

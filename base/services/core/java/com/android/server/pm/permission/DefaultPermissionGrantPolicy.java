@@ -36,6 +36,7 @@ import android.content.pm.PackageManagerInternal;
 import android.content.pm.PermissionInfo;
 import android.content.pm.ProviderInfo;
 import android.content.pm.ResolveInfo;
+import android.health.connect.HealthPermissions;
 import android.media.RingtoneManager;
 import android.media.midi.MidiManager;
 import android.net.Uri;
@@ -48,6 +49,7 @@ import android.os.Process;
 import android.os.UserHandle;
 import android.os.storage.StorageManager;
 import android.permission.PermissionManager;
+import android.permission.flags.Flags;
 import android.print.PrintManager;
 import android.provider.CalendarContract;
 import android.provider.ContactsContract;
@@ -64,6 +66,7 @@ import android.util.SparseArray;
 import android.util.Xml;
 
 import com.android.internal.R;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.XmlUtils;
 import com.android.modules.utils.TypedXmlPullParser;
@@ -215,6 +218,11 @@ final class DefaultPermissionGrantPolicy {
     static {
         SENSORS_PERMISSIONS.add(Manifest.permission.BODY_SENSORS);
         SENSORS_PERMISSIONS.add(Manifest.permission.BODY_SENSORS_BACKGROUND);
+
+        if (Flags.replaceBodySensorPermissionEnabled()) {
+            SENSORS_PERMISSIONS.add(HealthPermissions.READ_HEART_RATE);
+            SENSORS_PERMISSIONS.add(HealthPermissions.READ_HEALTH_DATA_IN_BACKGROUND);
+        }
     }
 
     private static final Set<String> STORAGE_PERMISSIONS = new ArraySet<>();
@@ -235,6 +243,7 @@ final class DefaultPermissionGrantPolicy {
         NEARBY_DEVICES_PERMISSIONS.add(Manifest.permission.BLUETOOTH_SCAN);
         NEARBY_DEVICES_PERMISSIONS.add(Manifest.permission.UWB_RANGING);
         NEARBY_DEVICES_PERMISSIONS.add(Manifest.permission.NEARBY_WIFI_DEVICES);
+        NEARBY_DEVICES_PERMISSIONS.add(Manifest.permission.RANGING);
     }
 
     private static final Set<String> NOTIFICATION_PERMISSIONS = new ArraySet<>();
@@ -814,7 +823,7 @@ final class DefaultPermissionGrantPolicy {
                     getDefaultSystemHandlerActivityPackage(pm,
                             SearchManager.INTENT_ACTION_GLOBAL_SEARCH, userId),
                     userId, MICROPHONE_PERMISSIONS, ALWAYS_LOCATION_PERMISSIONS,
-                    NOTIFICATION_PERMISSIONS, PHONE_PERMISSIONS, CALENDAR_PERMISSIONS);
+                    NOTIFICATION_PERMISSIONS);
         }
 
         // Voice recognition
@@ -882,6 +891,15 @@ final class DefaultPermissionGrantPolicy {
                     getDefaultSystemHandlerActivityPackage(pm, ACTION_TRACK, userId), userId,
                     SENSORS_PERMISSIONS);
             }
+
+            // Allow voice search on wear
+            String voiceSearchPackage = getDefaultSystemHandlerActivityPackage(pm,
+                    SearchManager.INTENT_ACTION_GLOBAL_SEARCH, userId);
+            grantPermissionsToSystemPackage(pm, voiceSearchPackage,
+                    userId, PHONE_PERMISSIONS, CALENDAR_PERMISSIONS, NEARBY_DEVICES_PERMISSIONS,
+                    COARSE_BACKGROUND_LOCATION_PERMISSIONS, CONTACTS_PERMISSIONS);
+            revokeRuntimePermissions(pm, voiceSearchPackage,
+                FINE_LOCATION_PERMISSIONS, false, userId);
         }
 
         // Print Spooler
@@ -1262,6 +1280,7 @@ final class DefaultPermissionGrantPolicy {
      */
     private boolean isFixedOrUserSet(int flags) {
         return (flags & (PackageManager.FLAG_PERMISSION_USER_SET
+                | PackageManager.FLAG_PERMISSION_ONE_TIME
                 | PackageManager.FLAG_PERMISSION_USER_FIXED
                 | PackageManager.FLAG_PERMISSION_POLICY_FIXED
                 | PackageManager.FLAG_PERMISSION_SYSTEM_FIXED)) != 0;
@@ -1360,7 +1379,7 @@ final class DefaultPermissionGrantPolicy {
 
         for (int requestedPermissionNum = 0; requestedPermissionNum < numRequestedPermissions;
                 requestedPermissionNum++) {
-            String permission = requestedPermissions[requestedPermissionNum];
+            String permission = sortedRequestedPermissions[requestedPermissionNum];
 
             // If there is a disabled system app it may request a permission the updated
             // version ot the data partition doesn't, In this case skip the permission.
@@ -1621,6 +1640,14 @@ final class DefaultPermissionGrantPolicy {
                     continue;
                 }
 
+                // If the trunkstable feature flag is disabled for this
+                // exception, skip the tag.
+                if (ParsingPackageUtils.getAconfigFlags().skipCurrentElement(
+                        /* pkg= */ null, parser, /* allowNoNamespace= */ true)) {
+                    XmlUtils.skipCurrentTag(parser);
+                    continue;
+                }
+
                 final boolean fixed =
                         parser.getAttributeBoolean(null, ATTR_FIXED, false);
                 final boolean whitelisted =
@@ -1638,10 +1665,12 @@ final class DefaultPermissionGrantPolicy {
     private boolean isSystemOrCertificateMatchingPackage(PackageInfo pi, String cert) {
         if (cert == null) {
             return pi.applicationInfo.isSystemApp();
+        } else if (Objects.equals(cert, "platform")) {
+            return mServiceInternal.isPlatformSigned(pi.packageName);
+        } else {
+            return mContext.getPackageManager().hasSigningCertificate(pi.packageName, HexEncoding.
+                    decode(cert.replace(":", "")), PackageManager.CERT_INPUT_SHA256);
         }
-
-        return mContext.getPackageManager().hasSigningCertificate(pi.packageName, HexEncoding.
-                decode(cert.replace(":", "")), PackageManager.CERT_INPUT_SHA256);
     }
 
     private static boolean doesPackageSupportRuntimePermissions(PackageInfo pkg) {

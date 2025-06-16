@@ -1,7 +1,6 @@
 package com.android.settingslib;
 
 import static android.app.admin.DevicePolicyResources.Strings.Settings.WORK_PROFILE_USER_LABEL;
-import static android.webkit.Flags.updateServiceV2;
 
 import android.annotation.ColorInt;
 import android.app.admin.DevicePolicyManager;
@@ -11,6 +10,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.pm.ResolveInfo;
 import android.content.pm.Signature;
 import android.content.pm.UserInfo;
 import android.content.res.ColorStateList;
@@ -30,9 +30,11 @@ import android.hardware.usb.flags.Flags;
 import android.icu.text.NumberFormat;
 import android.location.LocationManager;
 import android.media.AudioManager;
+import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.TetheringManager;
-import android.net.vcn.VcnTransportInfo;
+import android.net.Uri;
+import android.net.vcn.VcnUtils;
 import android.net.wifi.WifiInfo;
 import android.os.BatteryManager;
 import android.os.Build;
@@ -66,7 +68,6 @@ import com.android.launcher3.util.UserIconInfo;
 import com.android.settingslib.drawable.UserIconDrawable;
 import com.android.settingslib.fuelgauge.BatteryStatus;
 import com.android.settingslib.fuelgauge.BatteryUtils;
-import com.android.settingslib.utils.BuildCompatUtils;
 
 import java.util.List;
 
@@ -80,11 +81,14 @@ public class Utils {
     @VisibleForTesting
     static final String STORAGE_MANAGER_ENABLED_PROPERTY = "ro.storage_manager.enabled";
 
+    private static final String PACKAGE_MIME_TYPE = "application/vnd.android.package-archive";
+
     private static Signature[] sSystemSignature;
     private static String sPermissionControllerPackageName;
     private static String sServicesSystemSharedLibPackageName;
     private static String sSharedSystemSharedLibPackageName;
     private static String sDefaultWebViewPackageName;
+    private static String sPackageInstallerPackageName;
 
     static final int[] WIFI_PIE = {
         com.android.internal.R.drawable.ic_wifi_signal_0,
@@ -147,7 +151,7 @@ public class Utils {
         String name = info != null ? info.name : null;
         if (info.isManagedProfile()) {
             // We use predefined values for managed profiles
-            return BuildCompatUtils.isAtLeastT()
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                     ? getUpdatableManagedUserTitle(context)
                     : context.getString(R.string.managed_user_title);
         } else if (info.isGuest()) {
@@ -496,8 +500,28 @@ public class Utils {
                 || packageName.equals(sServicesSystemSharedLibPackageName)
                 || packageName.equals(sSharedSystemSharedLibPackageName)
                 || packageName.equals(PrintManager.PRINT_SPOOLER_PACKAGE_NAME)
-                || (updateServiceV2() && packageName.equals(getDefaultWebViewPackageName()))
+                || packageName.equals(getDefaultWebViewPackageName(pm))
+                || packageName.equals(getPackageInstallerPackageName(pm))
                 || isDeviceProvisioningPackage(resources, packageName);
+    }
+
+    /** Return the package name of the installer */
+    private static String getPackageInstallerPackageName(PackageManager pm) {
+        if (sPackageInstallerPackageName != null) {
+            return sPackageInstallerPackageName;
+        }
+        final Intent intent = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+        intent.addCategory(Intent.CATEGORY_DEFAULT);
+        intent.setDataAndType(Uri.parse("content://com.example/foo.apk"), PACKAGE_MIME_TYPE);
+        final List<ResolveInfo> matches =
+                pm.queryIntentActivities(intent, PackageManager.GET_META_DATA);
+        if (matches.size() == 1) {
+            final ResolveInfo resolveInfo = matches.get(0);
+            if (resolveInfo.activityInfo.applicationInfo.isPrivilegedApp()) {
+                sPackageInstallerPackageName = resolveInfo.getComponentInfo().packageName;
+            }
+        }
+        return sPackageInstallerPackageName;
     }
 
     /**
@@ -512,7 +536,7 @@ public class Utils {
 
     /** Fetch the package name of the default WebView provider. */
     @Nullable
-    private static String getDefaultWebViewPackageName() {
+    private static String getDefaultWebViewPackageName(PackageManager pm) {
         if (sDefaultWebViewPackageName != null) {
             return sDefaultWebViewPackageName;
         }
@@ -520,9 +544,8 @@ public class Utils {
         WebViewProviderInfo provider = null;
 
         if (android.webkit.Flags.updateServiceIpcWrapper()) {
-            WebViewUpdateManager manager = WebViewUpdateManager.getInstance();
-            if (manager != null) {
-                provider = manager.getDefaultWebViewPackage();
+            if (pm.hasSystemFeature(PackageManager.FEATURE_WEBVIEW)) {
+                provider = WebViewUpdateManager.getInstance().getDefaultWebViewPackage();
             }
         } else {
             try {
@@ -739,14 +762,9 @@ public class Utils {
      * @param networkCapabilities NetworkCapabilities of the network.
      */
     @Nullable
-    public static WifiInfo tryGetWifiInfoForVcn(NetworkCapabilities networkCapabilities) {
-        if (networkCapabilities.getTransportInfo() == null
-                || !(networkCapabilities.getTransportInfo() instanceof VcnTransportInfo)) {
-            return null;
-        }
-        VcnTransportInfo vcnTransportInfo =
-                (VcnTransportInfo) networkCapabilities.getTransportInfo();
-        return vcnTransportInfo.getWifiInfo();
+    public static WifiInfo tryGetWifiInfoForVcn(
+            ConnectivityManager connectivityMgr, NetworkCapabilities networkCapabilities) {
+        return VcnUtils.getWifiInfoFromVcnCaps(connectivityMgr, networkCapabilities);
     }
 
     /** Whether there is any incompatible chargers in the current UsbPort? */

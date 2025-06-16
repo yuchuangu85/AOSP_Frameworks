@@ -16,6 +16,7 @@
 
 package com.android.systemui.qs.panels.ui.viewmodel
 
+import androidx.compose.runtime.Immutable
 import com.android.systemui.animation.Expandable
 import com.android.systemui.plugins.qs.QSTile
 import com.android.systemui.qs.pipeline.shared.TileSpec
@@ -23,9 +24,11 @@ import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.onStart
 
-class TileViewModel(private val tile: QSTile, val spec: TileSpec) {
+@Immutable
+data class TileViewModel(private val tile: QSTile, val spec: TileSpec) {
     val state: Flow<QSTile.State> =
         conflatedCallbackFlow {
                 val callback = QSTile.Callback { trySend(it.copy()) }
@@ -35,6 +38,7 @@ class TileViewModel(private val tile: QSTile, val spec: TileSpec) {
                 awaitClose { tile.removeCallback(callback) }
             }
             .onStart { emit(tile.state) }
+            .filterNotNull()
             .distinctUntilChanged()
 
     val currentState: QSTile.State
@@ -48,8 +52,8 @@ class TileViewModel(private val tile: QSTile, val spec: TileSpec) {
         tile.longClick(expandable)
     }
 
-    fun onSecondaryClick(expandable: Expandable?) {
-        tile.secondaryClick(expandable)
+    fun onSecondaryClick() {
+        tile.secondaryClick(null)
     }
 
     fun startListening(token: Any) = tile.setListening(token, true)

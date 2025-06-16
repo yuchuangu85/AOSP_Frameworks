@@ -1215,8 +1215,15 @@ VkResult GetPhysicalDeviceSurfaceFormats2KHR(
                             surfaceCompressionProps
                                 ->imageCompressionFixedRateFlags =
                                 compressionProps.imageCompressionFixedRateFlags;
-                        } else {
+                        } else if (compressionRes ==
+                                       VK_ERROR_OUT_OF_HOST_MEMORY ||
+                                   compressionRes ==
+                                       VK_ERROR_OUT_OF_DEVICE_MEMORY) {
                             return compressionRes;
+                        } else {
+                            // For any of the *_NOT_SUPPORTED errors we continue
+                            // onto the next format
+                            continue;
                         }
                     }
                 } break;
@@ -1406,6 +1413,119 @@ static void DestroySwapchainInternal(VkDevice device,
     allocator->pfnFree(allocator->pUserData, swapchain);
 }
 
+static VkResult getProducerUsageGPDIFP2(
+    const VkPhysicalDevice& pdev,
+    const VkSwapchainCreateInfoKHR* create_info,
+    const VkSwapchainImageUsageFlagsANDROID swapchain_image_usage,
+    bool create_protected_swapchain,
+    uint64_t* producer_usage) {
+    // Look through the create_info pNext chain passed to createSwapchainKHR
+    // for an image compression control struct.
+    // if one is found AND the appropriate extensions are enabled, create a
+    // VkImageCompressionControlEXT structure to pass on to
+    // GetPhysicalDeviceImageFormatProperties2
+    void* compression_control_pNext = nullptr;
+    VkImageCompressionControlEXT image_compression = {};
+    const VkSwapchainCreateInfoKHR* create_infos = create_info;
+    while (create_infos->pNext) {
+        create_infos = reinterpret_cast<const VkSwapchainCreateInfoKHR*>(
+            create_infos->pNext);
+        switch (create_infos->sType) {
+            case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT: {
+                const VkImageCompressionControlEXT* compression_infos =
+                    reinterpret_cast<const VkImageCompressionControlEXT*>(
+                        create_infos);
+                image_compression = *compression_infos;
+                image_compression.pNext = nullptr;
+                compression_control_pNext = &image_compression;
+            } break;
+            default:
+                // Ignore all other info structs
+                break;
+        }
+    }
+
+    // call GetPhysicalDeviceImageFormatProperties2KHR
+    VkPhysicalDeviceExternalImageFormatInfo external_image_format_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+        .pNext = compression_control_pNext,
+        .handleType =
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID,
+    };
+
+    // AHB does not have an sRGB format so we can't pass it to GPDIFP
+    // We need to convert the format to unorm if it is srgb
+    VkFormat format = create_info->imageFormat;
+    if (format == VK_FORMAT_R8G8B8A8_SRGB) {
+        format = VK_FORMAT_R8G8B8A8_UNORM;
+    }
+
+    VkPhysicalDeviceImageFormatInfo2 image_format_info = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+        .pNext = &external_image_format_info,
+        .format = format,
+        .type = VK_IMAGE_TYPE_2D,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = create_info->imageUsage,
+        .flags =
+            create_protected_swapchain ? VK_IMAGE_CREATE_PROTECTED_BIT : 0u,
+    };
+
+    // If supporting mutable format swapchain add the mutable format flag
+    if (create_info->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
+        image_format_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        image_format_info.flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT_KHR;
+    }
+
+    VkAndroidHardwareBufferUsageANDROID ahb_usage;
+    ahb_usage.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_USAGE_ANDROID;
+    ahb_usage.pNext = nullptr;
+
+    VkImageFormatProperties2 image_format_properties;
+    image_format_properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+    image_format_properties.pNext = &ahb_usage;
+
+    VkResult result = GetPhysicalDeviceImageFormatProperties2(
+        pdev, &image_format_info, &image_format_properties);
+    if (result != VK_SUCCESS) {
+        ALOGE(
+            "VkGetPhysicalDeviceImageFormatProperties2 for AHB usage "
+            "failed: %d",
+            result);
+        return VK_ERROR_SURFACE_LOST_KHR;
+    }
+    // Determine if USAGE_FRONT_BUFFER is needed.
+    // GPDIFP2 has no means of using VkSwapchainImageUsageFlagsANDROID when
+    // querying for producer_usage. So androidHardwareBufferUsage will not
+    // contain USAGE_FRONT_BUFFER. We need to manually check for usage here.
+    if (!(swapchain_image_usage &
+          VK_SWAPCHAIN_IMAGE_USAGE_SHARED_BIT_ANDROID)) {
+        *producer_usage = ahb_usage.androidHardwareBufferUsage;
+        return VK_SUCCESS;
+    }
+
+    // Check if USAGE_FRONT_BUFFER is supported for this swapchain
+    AHardwareBuffer_Desc ahb_desc = {
+        .width = create_info->imageExtent.width,
+        .height = create_info->imageExtent.height,
+        .layers = create_info->imageArrayLayers,
+        .format = create_info->imageFormat,
+        .usage = ahb_usage.androidHardwareBufferUsage |
+                 AHARDWAREBUFFER_USAGE_FRONT_BUFFER,
+        .stride = 0,  // stride is always ignored when calling isSupported()
+    };
+
+    // If FRONT_BUFFER is not supported in the GPDIFP2 path
+    // then we need to fallback to GetSwapchainGrallocUsageXAndroid
+    if (AHardwareBuffer_isSupported(&ahb_desc)) {
+        *producer_usage = ahb_usage.androidHardwareBufferUsage;
+        *producer_usage |= AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
+        return VK_SUCCESS;
+    }
+
+    return VK_ERROR_FORMAT_NOT_SUPPORTED;
+}
+
 static VkResult getProducerUsage(const VkDevice& device,
                                  const VkSwapchainCreateInfoKHR* create_info,
                                  const VkSwapchainImageUsageFlagsANDROID swapchain_image_usage,
@@ -1415,109 +1535,16 @@ static VkResult getProducerUsage(const VkDevice& device,
     const VkPhysicalDevice& pdev = GetData(device).driver_physical_device;
     const InstanceData& instance_data = GetData(pdev);
     const InstanceDriverTable& instance_dispatch = instance_data.driver;
+
     if (instance_dispatch.GetPhysicalDeviceImageFormatProperties2 ||
             instance_dispatch.GetPhysicalDeviceImageFormatProperties2KHR) {
-        // Look through the create_info pNext chain passed to createSwapchainKHR
-        // for an image compression control struct.
-        // if one is found AND the appropriate extensions are enabled, create a
-        // VkImageCompressionControlEXT structure to pass on to
-        // GetPhysicalDeviceImageFormatProperties2
-        void* compression_control_pNext = nullptr;
-        VkImageCompressionControlEXT image_compression = {};
-        const VkSwapchainCreateInfoKHR* create_infos = create_info;
-        while (create_infos->pNext) {
-            create_infos = reinterpret_cast<const VkSwapchainCreateInfoKHR*>(create_infos->pNext);
-            switch (create_infos->sType) {
-                case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT: {
-                    const VkImageCompressionControlEXT* compression_infos =
-                        reinterpret_cast<const VkImageCompressionControlEXT*>(create_infos);
-                    image_compression = *compression_infos;
-                    image_compression.pNext = nullptr;
-                    compression_control_pNext = &image_compression;
-                } break;
-                default:
-                    // Ignore all other info structs
-                    break;
-            }
-        }
-
-        // call GetPhysicalDeviceImageFormatProperties2KHR
-        VkPhysicalDeviceExternalImageFormatInfo external_image_format_info = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
-            .pNext = compression_control_pNext,
-            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID,
-        };
-
-        // AHB does not have an sRGB format so we can't pass it to GPDIFP
-        // We need to convert the format to unorm if it is srgb
-        VkFormat format = create_info->imageFormat;
-        if (format == VK_FORMAT_R8G8B8A8_SRGB) {
-            format = VK_FORMAT_R8G8B8A8_UNORM;
-        }
-
-        VkPhysicalDeviceImageFormatInfo2 image_format_info = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
-            .pNext = &external_image_format_info,
-            .format = format,
-            .type = VK_IMAGE_TYPE_2D,
-            .tiling = VK_IMAGE_TILING_OPTIMAL,
-            .usage = create_info->imageUsage,
-            .flags = create_protected_swapchain ? VK_IMAGE_CREATE_PROTECTED_BIT : 0u,
-        };
-
-        VkAndroidHardwareBufferUsageANDROID ahb_usage;
-        ahb_usage.sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_USAGE_ANDROID;
-        ahb_usage.pNext = nullptr;
-
-        VkImageFormatProperties2 image_format_properties;
-        image_format_properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
-        image_format_properties.pNext = &ahb_usage;
-
-        if (instance_dispatch.GetPhysicalDeviceImageFormatProperties2) {
-            VkResult result = instance_dispatch.GetPhysicalDeviceImageFormatProperties2(
-                pdev, &image_format_info, &image_format_properties);
-            if (result != VK_SUCCESS) {
-                ALOGE("VkGetPhysicalDeviceImageFormatProperties2 for AHB usage failed: %d", result);
-                return VK_ERROR_SURFACE_LOST_KHR;
-            }
-        }
-        else {
-            VkResult result = instance_dispatch.GetPhysicalDeviceImageFormatProperties2KHR(
-                pdev, &image_format_info,
-                &image_format_properties);
-            if (result != VK_SUCCESS) {
-                ALOGE("VkGetPhysicalDeviceImageFormatProperties2KHR for AHB usage failed: %d",
-                    result);
-                return VK_ERROR_SURFACE_LOST_KHR;
-            }
-        }
-
-        // Determine if USAGE_FRONT_BUFFER is needed.
-        // GPDIFP2 has no means of using VkSwapchainImageUsageFlagsANDROID when
-        // querying for producer_usage. So androidHardwareBufferUsage will not
-        // contain USAGE_FRONT_BUFFER. We need to manually check for usage here.
-        if (!(swapchain_image_usage & VK_SWAPCHAIN_IMAGE_USAGE_SHARED_BIT_ANDROID)) {
-            *producer_usage = ahb_usage.androidHardwareBufferUsage;
+        VkResult result =
+            getProducerUsageGPDIFP2(pdev, create_info, swapchain_image_usage,
+                                    create_protected_swapchain, producer_usage);
+        if (result == VK_SUCCESS) {
             return VK_SUCCESS;
         }
-
-        // Check if USAGE_FRONT_BUFFER is supported for this swapchain
-        AHardwareBuffer_Desc ahb_desc = {
-            .width = create_info->imageExtent.width,
-            .height = create_info->imageExtent.height,
-            .layers = create_info->imageArrayLayers,
-            .format = create_info->imageFormat,
-            .usage = ahb_usage.androidHardwareBufferUsage | AHARDWAREBUFFER_USAGE_FRONT_BUFFER,
-            .stride = 0, // stride is always ignored when calling isSupported()
-        };
-
-        // If FRONT_BUFFER is not supported,
-        // then we need to call GetSwapchainGrallocUsageXAndroid below
-        if (AHardwareBuffer_isSupported(&ahb_desc)) {
-            *producer_usage = ahb_usage.androidHardwareBufferUsage;
-            *producer_usage |= AHARDWAREBUFFER_USAGE_FRONT_BUFFER;
-            return VK_SUCCESS;
-        }
+        // Fall through to gralloc path on error
     }
 
     uint64_t native_usage = 0;
@@ -1892,6 +1919,11 @@ VkResult CreateSwapchainKHR(VkDevice device,
         num_images = 1;
     }
 
+    VkImageFormatListCreateInfo extra_mutable_formats = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO_KHR,
+    };
+    VkImageFormatListCreateInfo* extra_mutable_formats_ptr;
+
     // Look through the create_info pNext chain passed to createSwapchainKHR
     // for an image compression control struct.
     // if one is found AND the appropriate extensions are enabled, create a
@@ -1910,7 +1942,29 @@ VkResult CreateSwapchainKHR(VkDevice device,
                 image_compression.pNext = nullptr;
                 usage_info_pNext = &image_compression;
             } break;
-
+            case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
+                const VkImageFormatListCreateInfo* format_list =
+                    reinterpret_cast<const VkImageFormatListCreateInfo*>(
+                        create_infos);
+                if (create_info->flags &
+                    VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
+                    if (format_list && format_list->viewFormatCount > 0 &&
+                        format_list->pViewFormats) {
+                        extra_mutable_formats.viewFormatCount =
+                            format_list->viewFormatCount;
+                        extra_mutable_formats.pViewFormats =
+                            format_list->pViewFormats;
+                        extra_mutable_formats_ptr = &extra_mutable_formats;
+                    } else {
+                        ALOGE(
+                            "vk_swapchain_create_mutable_format_bit_khr was "
+                            "set during swapchain creation but no valid "
+                            "vkimageformatlistcreateinfo was found in the "
+                            "pnext chain");
+                        return VK_ERROR_INITIALIZATION_FAILED;
+                    }
+                }
+            } break;
             default:
                 // Ignore all other info structs
                 break;
@@ -2006,6 +2060,11 @@ VkResult CreateSwapchainKHR(VkDevice device,
         .pQueueFamilyIndices = create_info->pQueueFamilyIndices,
     };
 
+    if (create_info->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
+        image_create.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        image_create.flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT_KHR;
+    }
+
     // Note: don't do deferred allocation for shared present modes. There's only one buffer
     // involved so very little benefit.
     if ((create_info->flags & VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_EXT) &&
@@ -2015,7 +2074,7 @@ VkResult CreateSwapchainKHR(VkDevice device,
         // AcquireNextImage.
         VkImageSwapchainCreateInfoKHR image_swapchain_create = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_SWAPCHAIN_CREATE_INFO_KHR,
-            .pNext = nullptr,
+            .pNext = extra_mutable_formats_ptr,
             .swapchain = HandleFromSwapchain(swapchain),
         };
         image_create.pNext = &image_swapchain_create;
@@ -2066,6 +2125,11 @@ VkResult CreateSwapchainKHR(VkDevice device,
             image_native_buffer.ahb =
                 ANativeWindowBuffer_getHardwareBuffer(img.buffer.get());
             image_create.pNext = &image_native_buffer;
+
+            if (extra_mutable_formats_ptr) {
+                extra_mutable_formats_ptr->pNext = image_create.pNext;
+                image_create.pNext = extra_mutable_formats_ptr;
+            }
 
             ATRACE_BEGIN("CreateImage");
             result =

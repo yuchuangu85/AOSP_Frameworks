@@ -47,7 +47,7 @@ status_t StreamSplitter::createSplitter(
         return BAD_VALUE;
     }
 
-    sp<StreamSplitter> splitter(new StreamSplitter(inputQueue));
+    sp<StreamSplitter> splitter = sp<StreamSplitter>::make(inputQueue);
     status_t status = splitter->mInput->consumerConnect(splitter, false);
     if (status == NO_ERROR) {
         splitter->mInput->setConsumerName(String8("StreamSplitter"));
@@ -82,7 +82,7 @@ status_t StreamSplitter::addOutput(
     Mutex::Autolock lock(mMutex);
 
     IGraphicBufferProducer::QueueBufferOutput queueBufferOutput;
-    sp<OutputListener> listener(new OutputListener(this, outputQueue));
+    sp<OutputListener> listener = sp<OutputListener>::make(this, outputQueue);
     IInterface::asBinder(outputQueue)->linkToDeath(listener);
     status_t status = outputQueue->connect(listener, NATIVE_WINDOW_API_CPU,
             /* producerControlledByApp */ false, &queueBufferOutput);
@@ -140,7 +140,7 @@ void StreamSplitter::onFrameAvailable(const BufferItem& /* item */) {
 
     // Initialize our reference count for this buffer
     mBuffers.add(bufferItem.mGraphicBuffer->getId(),
-            new BufferTracker(bufferItem.mGraphicBuffer));
+                 sp<BufferTracker>::make(bufferItem.mGraphicBuffer));
 
     IGraphicBufferProducer::QueueBufferInput queueInput(
             bufferItem.mTimestamp, bufferItem.mIsAutoTimestamp,
@@ -234,8 +234,7 @@ void StreamSplitter::onBufferReleasedByOutput(
     LOG_ALWAYS_FATAL_IF(status != NO_ERROR,
             "attaching buffer to input failed (%d)", status);
 
-    status = mInput->releaseBuffer(consumerSlot, /* frameNumber */ 0,
-            EGL_NO_DISPLAY, EGL_NO_SYNC_KHR, tracker->getMergedFence());
+    status = mInput->releaseBuffer(consumerSlot, /* frameNumber */ 0, tracker->getMergedFence());
     LOG_ALWAYS_FATAL_IF(status != NO_ERROR,
             "releasing buffer to input failed (%d)", status);
 

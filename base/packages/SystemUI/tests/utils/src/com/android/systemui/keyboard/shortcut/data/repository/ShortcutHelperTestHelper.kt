@@ -18,42 +18,84 @@ package com.android.systemui.keyboard.shortcut.data.repository
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.input.FakeInputManager
+import android.view.KeyboardShortcutGroup
+import android.view.WindowManager
+import android.view.WindowManager.KeyboardShortcutsReceiver
 import com.android.systemui.broadcast.FakeBroadcastDispatcher
+import com.android.systemui.keyboard.shortcut.ShortcutHelperCoreStartable
 import com.android.systemui.keyguard.data.repository.FakeCommandQueue
+import com.android.systemui.plugins.ActivityStarter
+import com.android.systemui.util.mockito.any
+import com.android.systemui.util.mockito.whenever
+import org.mockito.kotlin.eq
 
 class ShortcutHelperTestHelper(
-    repo: ShortcutHelperRepository,
+    coreStartable: ShortcutHelperCoreStartable,
     private val context: Context,
     private val fakeBroadcastDispatcher: FakeBroadcastDispatcher,
     private val fakeCommandQueue: FakeCommandQueue,
+    private val fakeInputManager: FakeInputManager,
+    private val activityStarter: ActivityStarter,
+    windowManager: WindowManager,
 ) {
+    private var imeShortcuts: List<KeyboardShortcutGroup> = emptyList()
+    private var currentAppsShortcuts: List<KeyboardShortcutGroup> = emptyList()
 
     init {
-        repo.start()
+        whenever(windowManager.requestImeKeyboardShortcuts(any(), any())).thenAnswer {
+            val keyboardShortcutReceiver = it.getArgument<KeyboardShortcutsReceiver>(0)
+            keyboardShortcutReceiver.onKeyboardShortcutsReceived(imeShortcuts)
+        }
+        whenever(windowManager.requestAppKeyboardShortcuts(any(), any())).thenAnswer {
+            val keyboardShortcutReceiver = it.getArgument<KeyboardShortcutsReceiver>(0)
+            keyboardShortcutReceiver.onKeyboardShortcutsReceived(currentAppsShortcuts)
+        }
+        whenever(activityStarter.dismissKeyguardThenExecute(any(), any(), eq(true))).then {
+            (it.arguments[0] as ActivityStarter.OnDismissAction).onDismiss()
+        }
+        coreStartable.start()
+    }
+
+    /**
+     * Use this method to set what ime shortcuts should be returned from windowManager in tests. By
+     * default windowManager.requestImeKeyboardShortcuts will return emptyList. See init block.
+     */
+    fun setImeShortcuts(imeShortcuts: List<KeyboardShortcutGroup>) {
+        this.imeShortcuts = imeShortcuts
+    }
+
+    /**
+     * Use this method to set what current app shortcuts should be returned from windowManager in
+     * tests. By default [WindowManager.requestAppKeyboardShortcuts] will return emptyList.
+     */
+    fun setCurrentAppsShortcuts(currentAppShortcuts: List<KeyboardShortcutGroup>) {
+        this.currentAppsShortcuts = currentAppShortcuts
     }
 
     fun hideThroughCloseSystemDialogs() {
         fakeBroadcastDispatcher.sendIntentToMatchingReceiversOnly(
             context,
-            Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS)
+            Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS),
         )
     }
 
     fun hideFromActivity() {
         fakeBroadcastDispatcher.sendIntentToMatchingReceiversOnly(
             context,
-            Intent(Intent.ACTION_DISMISS_KEYBOARD_SHORTCUTS)
+            Intent(Intent.ACTION_DISMISS_KEYBOARD_SHORTCUTS),
         )
     }
 
     fun showFromActivity() {
         fakeBroadcastDispatcher.sendIntentToMatchingReceiversOnly(
             context,
-            Intent(Intent.ACTION_SHOW_KEYBOARD_SHORTCUTS)
+            Intent(Intent.ACTION_SHOW_KEYBOARD_SHORTCUTS),
         )
     }
 
     fun toggle(deviceId: Int) {
+        fakeInputManager.addPhysicalKeyboardIfNotPresent(deviceId)
         fakeCommandQueue.doForEachCallback { it.toggleKeyboardShortcutsMenu(deviceId) }
     }
 

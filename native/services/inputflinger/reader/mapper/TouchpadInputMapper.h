@@ -66,7 +66,11 @@ public:
     using MetricsIdentifier = std::tuple<uint16_t /*busId*/, uint16_t /*vendorId*/,
                                          uint16_t /*productId*/, uint16_t /*version*/>;
 
-    std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() override;
+    std::optional<ui::LogicalDisplayId> getAssociatedDisplayId() const override;
+
+    std::optional<HardwareProperties> getTouchpadHardwareProperties() override;
+
+    std::optional<GesturesProp> getGesturePropertyForTesting(const std::string& name);
 
 private:
     void resetGestureInterpreter(nsecs_t when);
@@ -92,6 +96,7 @@ private:
     HardwareStateConverter mStateConverter;
     GestureConverter mGestureConverter;
     CapturedTouchpadEventConverter mCapturedEventConverter;
+    HardwareProperties mHardwareProperties;
 
     bool mPointerCaptured = false;
     bool mResettingInterpreter = false;
@@ -112,6 +117,10 @@ private:
     std::optional<ui::LogicalDisplayId> mDisplayId;
 
     nsecs_t mGestureStartTime{0};
+
+    // True if hardware state update notifications is available for usage based on its feature flag
+    // and settings value.
+    bool mTouchpadHardwareStateNotificationsEnabled = false;
 };
 
 } // namespace android

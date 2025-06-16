@@ -16,6 +16,8 @@
 
 #include "FakeInputDispatcherPolicy.h"
 
+#include <variant>
+
 #include <gtest/gtest.h>
 
 namespace android {
@@ -52,13 +54,6 @@ void FakeInputDispatcherPolicy::assertFilterInputEventWasCalled(const NotifyMoti
 void FakeInputDispatcherPolicy::assertFilterInputEventWasNotCalled() {
     std::scoped_lock lock(mLock);
     ASSERT_EQ(nullptr, mFilteredEvent);
-}
-
-void FakeInputDispatcherPolicy::assertNotifyConfigurationChangedWasCalled(nsecs_t when) {
-    std::scoped_lock lock(mLock);
-    ASSERT_TRUE(mConfigurationChangedTime) << "Timed out waiting for configuration changed call";
-    ASSERT_EQ(*mConfigurationChangedTime, when);
-    mConfigurationChangedTime = std::nullopt;
 }
 
 void FakeInputDispatcherPolicy::assertNotifySwitchWasCalled(const NotifySwitchArgs& args) {
@@ -203,10 +198,6 @@ void FakeInputDispatcherPolicy::assertNotifyInputChannelBrokenWasCalled(const sp
     ASSERT_EQ(token, *receivedToken);
 }
 
-void FakeInputDispatcherPolicy::setInterceptKeyTimeout(std::chrono::milliseconds timeout) {
-    mInterceptKeyTimeout = timeout;
-}
-
 std::chrono::nanoseconds FakeInputDispatcherPolicy::getKeyWaitingForEventsTimeout() {
     return 500ms;
 }
@@ -215,8 +206,9 @@ void FakeInputDispatcherPolicy::setStaleEventTimeout(std::chrono::nanoseconds ti
     mStaleEventTimeout = timeout;
 }
 
-void FakeInputDispatcherPolicy::setConsumeKeyBeforeDispatching(bool consumeKeyBeforeDispatching) {
-    mConsumeKeyBeforeDispatching = consumeKeyBeforeDispatching;
+void FakeInputDispatcherPolicy::setInterceptKeyBeforeDispatchingResult(
+        std::variant<nsecs_t, inputdispatcher::KeyEntry::InterceptKeyResult> result) {
+    mInterceptKeyBeforeDispatchingResult = result;
 }
 
 void FakeInputDispatcherPolicy::assertFocusedDisplayNotified(ui::LogicalDisplayId expectedDisplay) {
@@ -342,11 +334,6 @@ std::optional<T> FakeInputDispatcherPolicy::getItemFromStorageLockedInterruptibl
     return std::make_optional(item);
 }
 
-void FakeInputDispatcherPolicy::notifyConfigurationChanged(nsecs_t when) {
-    std::scoped_lock lock(mLock);
-    mConfigurationChangedTime = when;
-}
-
 void FakeInputDispatcherPolicy::notifyWindowUnresponsive(const sp<IBinder>& connectionToken,
                                                          std::optional<gui::Pid> pid,
                                                          const std::string&) {
@@ -414,21 +401,32 @@ bool FakeInputDispatcherPolicy::filterInputEvent(const InputEvent& inputEvent,
 void FakeInputDispatcherPolicy::interceptKeyBeforeQueueing(const KeyEvent& inputEvent, uint32_t&) {
     if (inputEvent.getAction() == AKEY_EVENT_ACTION_UP) {
         // Clear intercept state when we handled the event.
-        mInterceptKeyTimeout = 0ms;
+        if (std::holds_alternative<nsecs_t>(mInterceptKeyBeforeDispatchingResult)) {
+            mInterceptKeyBeforeDispatchingResult = nsecs_t(0);
+        }
     }
 }
 
 void FakeInputDispatcherPolicy::interceptMotionBeforeQueueing(ui::LogicalDisplayId, uint32_t,
                                                               int32_t, nsecs_t, uint32_t&) {}
 
-nsecs_t FakeInputDispatcherPolicy::interceptKeyBeforeDispatching(const sp<IBinder>&,
-                                                                 const KeyEvent&, uint32_t) {
-    if (mConsumeKeyBeforeDispatching) {
-        return -1;
+std::variant<nsecs_t, inputdispatcher::KeyEntry::InterceptKeyResult>
+FakeInputDispatcherPolicy::interceptKeyBeforeDispatching(const sp<IBinder>&, const KeyEvent&,
+                                                         uint32_t) {
+    if (std::holds_alternative<inputdispatcher::KeyEntry::InterceptKeyResult>(
+                mInterceptKeyBeforeDispatchingResult)) {
+        return mInterceptKeyBeforeDispatchingResult;
     }
-    nsecs_t delay = std::chrono::nanoseconds(mInterceptKeyTimeout).count();
+
+    nsecs_t delay =
+            std::chrono::nanoseconds(std::get<nsecs_t>(mInterceptKeyBeforeDispatchingResult))
+                    .count();
+    if (delay == 0) {
+        return inputdispatcher::KeyEntry::InterceptKeyResult::CONTINUE;
+    }
+
     // Clear intercept state so we could dispatch the event in next wake.
-    mInterceptKeyTimeout = 0ms;
+    mInterceptKeyBeforeDispatchingResult = nsecs_t(0);
     return delay;
 }
 

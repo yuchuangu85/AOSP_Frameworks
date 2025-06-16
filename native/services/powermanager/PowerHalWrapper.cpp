@@ -18,6 +18,7 @@
 #include <aidl/android/hardware/power/Boost.h>
 #include <aidl/android/hardware/power/IPowerHintSession.h>
 #include <aidl/android/hardware/power/Mode.h>
+#include <aidl/android/hardware/power/SupportInfo.h>
 #include <powermanager/HalResult.h>
 #include <powermanager/PowerHalWrapper.h>
 #include <utils/Log.h>
@@ -70,6 +71,21 @@ HalResult<Aidl::ChannelConfig> EmptyHalWrapper::getSessionChannel(int, int) {
 
 HalResult<void> EmptyHalWrapper::closeSessionChannel(int, int) {
     ALOGV("Skipped closeSessionChannel because %s", getUnsupportedMessage());
+    return HalResult<void>::unsupported();
+}
+
+HalResult<Aidl::SupportInfo> EmptyHalWrapper::getSupportInfo() {
+    ALOGV("Skipped getSupportInfo because %s", getUnsupportedMessage());
+    return HalResult<Aidl::SupportInfo>::unsupported();
+}
+
+HalResult<void> EmptyHalWrapper::sendCompositionData(const std::vector<hal::CompositionData>&) {
+    ALOGV("Skipped sendCompositionData because %s", getUnsupportedMessage());
+    return HalResult<void>::unsupported();
+}
+
+HalResult<void> EmptyHalWrapper::sendCompositionUpdate(const hal::CompositionUpdate&) {
+    ALOGV("Skipped sendCompositionUpdate because %s", getUnsupportedMessage());
     return HalResult<void>::unsupported();
 }
 
@@ -278,6 +294,20 @@ HalResult<Aidl::ChannelConfig> AidlHalWrapper::getSessionChannel(int tgid, int u
 
 HalResult<void> AidlHalWrapper::closeSessionChannel(int tgid, int uid) {
     return HalResult<void>::fromStatus(mHandle->closeSessionChannel(tgid, uid));
+}
+
+HalResult<Aidl::SupportInfo> AidlHalWrapper::getSupportInfo() {
+    Aidl::SupportInfo support;
+    auto result = mHandle->getSupportInfo(&support);
+    return HalResult<Aidl::SupportInfo>::fromStatus(result, std::move(support));
+}
+
+HalResult<void> AidlHalWrapper::sendCompositionData(const std::vector<hal::CompositionData>& data) {
+    return HalResult<void>::fromStatus(mHandle->sendCompositionData(data));
+}
+
+HalResult<void> AidlHalWrapper::sendCompositionUpdate(const hal::CompositionUpdate& update) {
+    return HalResult<void>::fromStatus(mHandle->sendCompositionUpdate(update));
 }
 
 const char* AidlHalWrapper::getUnsupportedMessage() {

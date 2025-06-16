@@ -28,6 +28,15 @@ class FakeSecureSettingsRepository : SecureSettingsRepository {
         return settings.map { it.getOrDefault(name, defaultValue.toString()) }.map { it.toInt() }
     }
 
+    override fun boolSetting(name: String, defaultValue: Boolean): Flow<Boolean> {
+        return intSetting(name, if (defaultValue) 1 else 0).map { it != 0 }
+    }
+
+    fun setBool(name: String, value: Boolean) {
+        settings.value =
+            settings.value.toMutableMap().apply { this[name] = (if (value) 1 else 0).toString() }
+    }
+
     override suspend fun setInt(name: String, value: Int) {
         settings.value = settings.value.toMutableMap().apply { this[name] = value.toString() }
     }

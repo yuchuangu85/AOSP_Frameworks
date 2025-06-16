@@ -16,10 +16,9 @@
 
 package com.android.systemui.accessibility;
 
-import static com.android.systemui.accessibility.Magnification.DELAY_SHOW_MAGNIFICATION_TIMEOUT_MS;
+import static com.android.systemui.accessibility.MagnificationImpl.DELAY_SHOW_MAGNIFICATION_TIMEOUT_MS;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -32,10 +31,6 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 import android.hardware.display.DisplayManager;
 import android.os.RemoteException;
-import android.platform.test.annotations.RequiresFlagsDisabled;
-import android.platform.test.annotations.RequiresFlagsEnabled;
-import android.platform.test.flag.junit.CheckFlagsRule;
-import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.provider.Settings;
 import android.testing.TestableLooper;
 import android.view.Display;
@@ -48,16 +43,15 @@ import android.view.accessibility.IRemoteMagnificationAnimationCallback;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
-import com.android.systemui.Flags;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.model.SysUiState;
-import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.recents.LauncherProxyService;
 import com.android.systemui.settings.FakeDisplayTracker;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.util.settings.SecureSettings;
+import com.android.systemui.utils.windowmanager.WindowManagerProvider;
 
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
@@ -65,15 +59,12 @@ import org.mockito.MockitoAnnotations;
 
 /**
  * Tests for {@link android.view.accessibility.IMagnificationConnection} retrieved from
- * {@link Magnification}
+ * {@link MagnificationImpl}
  */
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class IMagnificationConnectionTest extends SysuiTestCase {
-
-    @Rule
-    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     private static final int TEST_DISPLAY = Display.DEFAULT_DISPLAY;
     @Mock
@@ -95,16 +86,18 @@ public class IMagnificationConnectionTest extends SysuiTestCase {
     @Mock
     private IRemoteMagnificationAnimationCallback mAnimationCallback;
     @Mock
-    private OverviewProxyService mOverviewProxyService;
+    private LauncherProxyService mLauncherProxyService;
     @Mock
     private SecureSettings mSecureSettings;
     @Mock
     private AccessibilityLogger mA11yLogger;
     @Mock
     private IWindowManager mIWindowManager;
+    @Mock
+    private WindowManagerProvider mWindowManagerProvider;
 
     private IMagnificationConnection mIMagnificationConnection;
-    private Magnification mMagnification;
+    private MagnificationImpl mMagnification;
     private FakeDisplayTracker mDisplayTracker = new FakeDisplayTracker(mContext);
     private TestableLooper mTestableLooper;
 
@@ -119,11 +112,11 @@ public class IMagnificationConnectionTest extends SysuiTestCase {
                 any(IMagnificationConnection.class));
         mTestableLooper = TestableLooper.get(this);
         assertNotNull(mTestableLooper);
-        mMagnification = new Magnification(getContext(),
+        mMagnification = new MagnificationImpl(getContext(),
                 mTestableLooper.getLooper(), mContext.getMainExecutor(), mCommandQueue,
-                mModeSwitchesController, mSysUiState, mOverviewProxyService, mSecureSettings,
+                mModeSwitchesController, mSysUiState, mLauncherProxyService, mSecureSettings,
                 mDisplayTracker, getContext().getSystemService(DisplayManager.class),
-                mA11yLogger, mIWindowManager);
+                mA11yLogger, mIWindowManager, mAccessibilityManager, mWindowManagerProvider);
         mMagnification.mWindowMagnificationControllerSupplier =
                 new FakeWindowMagnificationControllerSupplier(
                         mContext.getSystemService(DisplayManager.class));
@@ -194,24 +187,8 @@ public class IMagnificationConnectionTest extends SysuiTestCase {
     }
 
     @Test
-    @RequiresFlagsDisabled(Flags.FLAG_DELAY_SHOW_MAGNIFICATION_BUTTON)
-    public void showMagnificationButton_flagOff_directlyShowButton() throws RemoteException {
-        // magnification settings panel should not be showing
-        assertFalse(mMagnification.isMagnificationSettingsPanelShowing(TEST_DISPLAY));
-
-        mIMagnificationConnection.showMagnificationButton(TEST_DISPLAY,
-                Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
-        processAllPendingMessages();
-
-        verify(mModeSwitchesController).showButton(TEST_DISPLAY,
-                Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
-    }
-
-    @Test
-    @RequiresFlagsEnabled(Flags.FLAG_DELAY_SHOW_MAGNIFICATION_BUTTON)
-    public void showMagnificationButton_flagOn_delayedShowButton() throws RemoteException {
-        // magnification settings panel should not be showing
-        assertFalse(mMagnification.isMagnificationSettingsPanelShowing(TEST_DISPLAY));
+    public void showMagnificationButton_delayedShowButton() throws RemoteException {
+        when(mMagnificationSettingsController.isMagnificationSettingsShowing()).thenReturn(false);
 
         mIMagnificationConnection.showMagnificationButton(TEST_DISPLAY,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
@@ -239,12 +216,9 @@ public class IMagnificationConnectionTest extends SysuiTestCase {
         // showMagnificationButton request to Magnification.
         processAllPendingMessages();
 
-        // If the flag is on, the isMagnificationSettingsShowing will be checked after timeout, so
+        // The isMagnificationSettingsShowing will be checked after timeout, so
         // process all message after a timeout here to verify the showButton will not be called.
-        int timeout = Flags.delayShowMagnificationButton()
-                ? DELAY_SHOW_MAGNIFICATION_TIMEOUT_MS + 100
-                : 0;
-        processAllPendingMessages(timeout);
+        processAllPendingMessages(DELAY_SHOW_MAGNIFICATION_TIMEOUT_MS + 100);
         verify(mModeSwitchesController, never()).showButton(TEST_DISPLAY,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
     }
@@ -258,11 +232,9 @@ public class IMagnificationConnectionTest extends SysuiTestCase {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_DELAY_SHOW_MAGNIFICATION_BUTTON)
     public void removeMagnificationButton_delayingShowButton_doNotShowButtonAfterTimeout()
             throws RemoteException {
-        // magnification settings panel should not be showing
-        assertFalse(mMagnification.isMagnificationSettingsPanelShowing(TEST_DISPLAY));
+        when(mMagnificationSettingsController.isMagnificationSettingsShowing()).thenReturn(false);
 
         mIMagnificationConnection.showMagnificationButton(TEST_DISPLAY,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
