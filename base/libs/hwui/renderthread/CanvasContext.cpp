@@ -433,15 +433,19 @@ bool CanvasContext::isSwapChainStuffed() {
     return true;
 }
 
+// 把 UI 线程刚录制的 RenderNode 树“搬进” GPU，同时决定这帧到底画不画；不画就给出跳过理由，画就预留 Surface 缓冲并安排后续动画回调。
 void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued,
                                 RenderNode* target) {
+    // 阶段 0  清空上一帧的回调: 如果上一帧给自己贴了“下一帧继续动画”的回调，先摘掉，防止重复发帖。
     mRenderThread.removeFrameCallback(this);
 
+    // 阶段 1  确保 GPU 上下文已创建: 第一次进来时 GrContext 可能还没初始化，这里强行触发创建，后面上传纹理才能成功。
     // Make sure we have a valid device info
     if (!DeviceInfo::get()->hasMaxTextureSize()) {
         (void)mRenderThread.requireGrContext();
     }
 
+    // 阶段 2  跳帧审计 —— 上一帧被丢了？记下来: 用于 systrace / GPU 分析工具 统计“连续丢帧”场景，方便定位是 Surface 丢失、没 buffer 还是重复绘制。
     // If the previous frame was dropped we don't need to hold onto it, so
     // just keep using the previous frame's structure instead
     const auto reason = wasSkipped(mCurrentFrameInfo);
@@ -471,15 +475,30 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         mSkippedFrameInfo.reset();
     }
 
+    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴计算 Sync → Issue → GPU → Present 各段耗时，用于 JankTracker 掉帧归因。
     mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);
     mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;
     mCurrentFrameInfo->markSyncStart();
 
+    // 阶段 4  初始化 遍历上下文 TreeInfo
+    // damageAccumulator 收集 脏矩形，后面提交给 SurfaceFlinger 做 部分更新。
+    // layerUpdateQueue 收集 TextureView / SurfaceView 的异步 buffer。
+    // damageGenerationId 保证多次 prepareTree 之间脏区版本一致。
     info.damageAccumulator = &mDamageAccumulator;
     info.layerUpdateQueue = &mLayerUpdateQueue;
     info.damageGenerationId = mDamageId++;
     info.out.skippedFrameReason = std::nullopt;
 
+    // 阶段 5  两趟遍历 —— 动画 + 树
+    // mRenderNodes 里通常有 2~3 个节点：
+    //  – [0] 窗口内容（primary）
+    //  – [1] 背景/Backdrop
+    //  – [2] 非客户区（导航栏填充）
+    // 只有 primary 才走 MODE_FULL（完整 DisplayList），其余只跑 实时模式（MODE_RT_ONLY），不触发重绘。
+    // prepareTree() 递归地把 DisplayList 指令、Matrix、Clip、Paint、Bitmap 翻译成 GPU 资源，同时写回：
+    //  – info.out.hasAnimations
+    //  – info.out.requiresUiRedraw
+    //  – info.prepareTextures（纹理是否成功上传）
     mAnimationContext->startFrame(info.mode);
     for (const sp<RenderNode>& node : mRenderNodes) {
         // Only the primary target node will be drawn full - all other nodes would get drawn in
@@ -492,6 +511,9 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     mAnimationContext->runRemainingAnimations(info);
     GL_CHECKPOINT(MODERATE);
 
+    // 阶段 6  释放预取纹理 + 早期快速跳出
+    // - 预取队列里的纹理如果这一帧没用到，就立即 glDeleteTextures 回收。
+    // - 早期返回，避免后面 reserveNext() 空耗一次。
     freePrefetchedLayers();
     GL_CHECKPOINT(MODERATE);
 
@@ -500,9 +522,12 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     if (CC_UNLIKELY(!hasOutputTarget())) {
         info.out.skippedFrameReason = SkippedFrameReason::NoOutputTarget;
         mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason);
-        return;
+        return; // 没有 Surface，直接收工
     }
 
+    // 阶段 7  防重复绘制 & 无内容可画检测
+    // - 防止 UI 线程慢 导致同一 vsync 脉冲里画两次。
+    // - 背景节点不可渲染也跳过，节省 GPU。
     if (CC_LIKELY(mSwapHistory.size() && !info.forceDrawFrame)) {
         nsecs_t latestVsync = mRenderThread.timeLord().latestVsync();
         SwapHistory& lastSwap = mSwapHistory.back();
@@ -511,7 +536,7 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         // the vsync was estimated due to being slow handling the signal.
         // See the logic in TimeLord#computeFrameTimeNanos or in
         // Choreographer.java for details on when this happens
-        if (vsyncDelta < 2_ms) {
+        if (vsyncDelta < 2_ms) { // 同一 vsync 已画过
             // Already drew for this vsync pulse, UI draw request missed
             // the deadline for RT animations
             info.out.skippedFrameReason = SkippedFrameReason::AlreadyDrawn;
@@ -527,6 +552,11 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     }
 
     if (!info.out.skippedFrameReason) {
+        // 阶段 8  预留 buffer + 安排 下一帧回调
+        // -  reserveNext() 向 SurfaceFlinger 要一个 GraphicBuffer；
+        //    若返回 TIMED_OUT 说明暂时没 buffer，这一帧放弃；其他错误认为 Surface 已死，直接 setSurface(nullptr)。
+        // - 只要有 跑着的动画 或 这帧被跳过，就给自己贴一个 VSync 回调，下一帧继续走 渲染线程动画（RT 动画），避免回到 UI 线程抢锁，降低掉帧。
+        // - GIF/WebP 这类 固定帧率 的动图则按 图片自身延迟 发帖，不必死守 16 ms。
         int err = mNativeSurface->reserveNext();
         if (err != OK) {
             info.out.skippedFrameReason = SkippedFrameReason::NoBuffer;
@@ -545,16 +575,17 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     bool postedFrameCallback = false;
     if (info.out.hasAnimations || info.out.skippedFrameReason) {
         if (CC_UNLIKELY(!Properties::enableRTAnimations)) {
-            info.out.requiresUiRedraw = true;
+            info.out.requiresUiRedraw = true; // 强制走 UI 线程
         }
         if (!info.out.requiresUiRedraw) {
             // If animationsNeedsRedraw is set don't bother posting for an RT anim
             // as we will just end up fighting the UI thread.
-            mRenderThread.postFrameCallback(this);
+            mRenderThread.postFrameCallback(this); // 16 ms 后再来
             postedFrameCallback = true;
         }
     }
 
+    // 还有 AnimatedImage（GIF/WebP）自己定的延迟
     if (!postedFrameCallback &&
         info.out.animatedImageDelay != TreeInfo::Out::kNoAnimatedImageDelay) {
         // Subtract the time of one frame so it can be displayed on time.
