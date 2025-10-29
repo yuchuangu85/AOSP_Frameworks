@@ -64,10 +64,12 @@ class TreeInfo {
 
 public:
     enum TraversalMode {
+        // 表示本次绘制是由主线程驱动的。
         // The full monty - sync, push, run animators, etc... Used by DrawFrameTask
         // May only be used if both the UI thread and RT thread are blocked on the
         // prepare
         MODE_FULL,
+        // 表示本次绘制是由渲染线程驱动的，主要是动画。
         // Run only what can be done safely on RT thread. Currently this only means
         // animators, but potentially things like SurfaceTexture updates
         // could be handled by this as well if there are no listeners
@@ -108,8 +110,10 @@ public:
 
     struct Out {
         bool hasFunctors = false;
+        // 动画是否正在运行，即未执行完成。
         // This is only updated if evaluateAnimations is true
         bool hasAnimations = false;
+        // 为true表示动画无法由RenderThread进行驱使，应该由主线程发起渲染请求。
         // This is set to true if there is an animation that RenderThread cannot
         // animate itself, such as if hasFunctors is true
         // This is only set if hasAnimations is true

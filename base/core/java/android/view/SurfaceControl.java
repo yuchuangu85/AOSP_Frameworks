@@ -108,7 +108,7 @@ import java.util.function.Consumer;
  */
 public final class SurfaceControl implements Parcelable {
     private static final String TAG = "SurfaceControl";
-
+    // 调用到SurfaceComposerClient中对应的方法
     private static native long nativeCreate(SurfaceSession session, String name,
             int w, int h, int format, int flags, long parentObject, Parcel metadata)
             throws OutOfResourcesException;
@@ -164,6 +164,7 @@ public final class SurfaceControl implements Parcelable {
             float cornerRadius);
     private static native void nativeSetClientDrawnCornerRadius(long transactionObj,
             long nativeObject, float clientDrawnCornerRadius);
+    // 调用到SurfaceComposerClient::Transaction::setBackgroundBlurRadius方法，其他类似
     private static native void nativeSetBackgroundBlurRadius(long transactionObj, long nativeObject,
             int blurRadius);
     private static native void nativeSetLayerStack(long transactionObj, long nativeObject,

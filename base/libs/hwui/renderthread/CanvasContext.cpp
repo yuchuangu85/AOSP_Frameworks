@@ -475,7 +475,8 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         mSkippedFrameInfo.reset();
     }
 
-    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴计算 Sync → Issue → GPU → Present 各段耗时，用于 JankTracker 掉帧归因。
+    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴计算 Sync → Issue → GPU → Present 各段耗时，
+    // 用于 JankTracker 掉帧归因。
     mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);
     mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;
     mCurrentFrameInfo->markSyncStart();
@@ -624,8 +625,11 @@ Frame CanvasContext::getFrame() {
     }
 }
 
+// CanvasContext::draw() 是 RenderThread 的心跳函数：它决定 是否绘制、如何绘制、是否送显、如何记录性能，并 通知 UI 线程 继续下一帧。
 void CanvasContext::draw(bool solelyTextureViewUpdates) {
 #ifdef __ANDROID__
+    // 防止在 GPU 上下文丢失（如 GPU 进程崩溃、设备被移除）时继续绘制。
+    // 一旦发现 GrContext 被废弃，直接 LOG_ALWAYS_FATAL 崩溃，方便调试。
     if (auto grContext = getGrContext()) {
         if (grContext->abandoned()) {
             if (grContext->isDeviceLost()) {
@@ -637,15 +641,31 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         }
     }
 #endif
+    // 收集“脏区”（damage region）
+    // 自上一帧以来 需要重绘的屏幕区域。
+    // 用于后续 partial redraw 优化，减少 GPU 工作量。
     SkRect dirty;
     mDamageAccumulator.finish(&dirty);
 
+    // 重置同步/空闲计时器
+    // 用于 性能追踪，记录主线程等待 GPU、Buffer 的时间。
     // reset syncDelayDuration each time we draw
     nsecs_t syncDelayDuration = mSyncDelayDuration;
     nsecs_t idleDuration = mIdleDuration;
     mSyncDelayDuration = 0;
     mIdleDuration = 0;
 
+    // 帧跳过逻辑（Early-out）
+    /*
+     * 跳过条件：
+        - 全局绘制开关关闭；
+        - 没有脏区且允许跳过空帧；
+     * 若跳过，则：
+        - 标记跳过原因；
+        - 提交 GPU 命令（释放上传缓存）；
+        - 通知所有 mFrameCommitCallbacks（防止上层无限等待）；
+        - 直接 return，不执行后续绘制。
+     */
     const auto skippedFrameReason = [&]() -> std::optional<SkippedFrameReason> {
         if (!Properties::isDrawingEnabled()) {
             return SkippedFrameReason::DrawingOff;
@@ -678,20 +698,30 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         return;
     }
 
+    // 真正开始绘制
+    // ScopedActiveContext：确保当前线程绑定 EGLContext；
     ScopedActiveContext activeContext(this);
     mCurrentFrameInfo->set(FrameInfoIndex::FrameInterval) =
             mRenderThread.timeLord().frameIntervalNanos();
 
     mCurrentFrameInfo->markIssueDrawCommandsStart();
 
+    // Frame：封装了 Surface、ANativeWindow、Buffer 状态；
     Frame frame = getFrame();
 
+    // windowDirty：将脏区转换为 窗口坐标系。
     SkRect windowDirty = computeDirtyRect(frame, &dirty);
 
     ATRACE_FORMAT("Drawing " RECT_STRING, SK_RECT_ARGS(dirty));
 
     IRenderPipeline::DrawResult drawResult;
     {
+        // 调用渲染管线（RenderPipeline）
+        // 真正的 GPU 绘制：
+        //   - 遍历 RenderNode 树；
+        //   - 生成 Skia 命令；
+        //   - 上传纹理；
+        //   - 记录 GPU 命令提交时间 drawResult.commandSubmissionTime。
         // FrameInfoVisualizer accesses the frame events, which cannot be mutated mid-draw
         // or it can lead to memory corruption.
         drawResult = mRenderPipeline->draw(
@@ -703,6 +733,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     waitOnFences();
 
+    // 设置帧元数据（FrameTimeline）
+    // - 将 帧号、VSync ID、输入事件 ID 传递给 SurfaceFlinger；
+    // - 用于 帧节奏（Frame Pacing）、掉帧归因。
     if (mNativeSurface) {
         // TODO(b/165985262): measure performance impact
         const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);
@@ -731,6 +764,17 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     bool didDraw = false;
 
     int error = OK;
+    // 缓冲交换（SwapBuffers）
+    /**
+      * 若 requireSwap == true：
+        - 调用 eglSwapBuffers / ANativeWindow::queueBuffer；
+        - 真正把图像送显；
+      * 若 超时（TIMED_OUT）：
+        - 重新注册下一次 VSync 回调；
+        - 标记 didDraw = false，表示该帧 未成功呈现；
+      * 若 其他错误：
+        - 放弃当前 Surface（setSurface(nullptr)）；
+     */
     bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
                                                 &requireSwap);
 
@@ -756,6 +800,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
             didDraw = false;
         }
 
+        // 记录 SwapHistory
+        //  - 用于 性能分析、掉帧归因；
+        //  - 若 didDraw == false，damage 设为 全屏，表示下一帧需全刷。
         SwapHistory& swap = mSwapHistory.next();
         if (didDraw) {
             swap.damage = windowDirty;
@@ -808,6 +855,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     }
 #endif
 
+    // 通知上层帧完成
+    // - mFrameCommitCallbacks 是 UI 线程 postFrameCallback 注册的回调；
+    // - 通知上层 “可以解锁 MessageQueue” 或 “可以释放锁”。
     if (didSwap) {
         for (auto& func : mFrameCommitCallbacks) {
             std::invoke(func, true /* didProduceBuffer */);
@@ -815,6 +865,11 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         mFrameCommitCallbacks.clear();
     }
 
+    // 性能追踪与 JankTracker
+    // 将 帧耗时、掉帧原因、Surface ID 上报给：
+    //   - dumpsys gfxinfo；
+    //   - FrameMetrics API；
+    //   - Android Studio GPU Profiler。
     if (requireSwap) {
         if (mExpectSurfaceStats) {
             reportMetricsWithPresentTime();
@@ -839,6 +894,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     int64_t frameDeadline = mCurrentFrameInfo->get(FrameInfoIndex::FrameDeadline);
     int64_t dequeueBufferDuration = mCurrentFrameInfo->get(FrameInfoIndex::DequeueBufferDuration);
 
+    // 帧节奏（Workload Hint）
+    // - 与 ADPF (Android Dynamic Performance Framework) 交互；
+    // - 告诉 CPU 调度器 该帧 实际耗时，用于 动态调频、减少卡顿。
     if (Properties::calcWorkloadOrigDeadline()) {
         // Uses the unmodified frame deadline in calculating workload target duration
         mHintSessionWrapper->updateTargetWorkDuration(
@@ -860,6 +918,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     mLastDequeueBufferDuration = dequeueBufferDuration;
 
+    // 清理与缓存管理
+    // - 清理 GPU 纹理缓存、路径缓存；
+    // - 防止 内存泄漏 或 显存爆炸。
     mRenderThread.cacheManager().onFrameCompleted();
     return;
 }
@@ -1112,12 +1173,20 @@ void CanvasContext::setName(const std::string&& name) {
     mJankTracker.setDescription(JankTrackerType::Window, std::move(name));
 }
 
+// 它负责 在 RenderThread 中同步 GPU 与 Buffer 的完成状态，防止 读写冲突 与 画面撕裂。
+// 调用线程：RenderThread（非 UI 线程）。
+// 调用时机：
+//    - 每帧 draw() 的 GPU 命令提交后；
+//    - 在 swapBuffers() 之前；
+//    - 确保 上一帧的 Buffer 已被消费（SurfaceFlinger 读完）。
 void CanvasContext::waitOnFences() {
     if (mFrameFences.size()) {
         ATRACE_CALL();
         for (auto& fence : mFrameFences) {
             fence.get();
         }
+        // 一旦所有 Fence 都被 Signal，清空列表；
+        // 表示 所有历史 Buffer 都已安全回收，可以 继续 dequeue 新 Buffer。
         mFrameFences.clear();
     }
 }

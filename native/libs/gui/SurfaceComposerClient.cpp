@@ -1489,15 +1489,21 @@ SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setClien
     return *this;
 }
 
+// sp 是 Strong Pointer（强指针）的缩写，是Android特有的智能指针实现
+// const &：常量引用，避免不必要的拷贝，但保证对象不会被意外释放
 SurfaceComposerClient::Transaction& SurfaceComposerClient::Transaction::setBackgroundBlurRadius(
         const sp<SurfaceControl>& sc, int backgroundBlurRadius) {
+    // 获取对应SurfaceControl的图层状态
     layer_state_t* s = getLayerState(sc);
     if (!s) {
-        mStatus = BAD_INDEX;
-        return *this;
+        mStatus = BAD_INDEX;// 如果获取失败，设置错误状态
+        return *this; // 返回当前对象的引用，支持链式调用
     }
+    // 设置状态标志，表示背景模糊半径已改变
     s->what |= layer_state_t::eBackgroundBlurRadiusChanged;
+    // 存储实际的模糊半径值
     s->backgroundBlurRadius = backgroundBlurRadius;
+    // 返回当前对象的引用，支持链式调用
     return *this;
 }
 

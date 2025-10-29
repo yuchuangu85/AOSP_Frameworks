@@ -95,11 +95,15 @@ int DrawFrameTask::drawFrame() {
  */
 void DrawFrameTask::postAndWait() {
     ATRACE_CALL(); // 1. 仅调试：systrace 打标签，方便性能分析
-    AutoMutex _lock(mLock); // 2. 加锁：保护下面两个临界操作
+    // 2. 加锁：保护下面两个临界操作
+    // 原子操作：释放锁 + 进入等待状态
+    // 避免竞态条件：确保signal不会在wait之前发生
+    AutoMutex _lock(mLock);
     mRenderThread->queue().post([this]() { run(); }); // 3. 把任务扔给渲染线程
     mSignal.wait(mLock); // 4. UI 线程挂起，等渲染线程做完
 }
 
+// 在渲染线程中执行
 void DrawFrameTask::run() {
     // 阶段 0：拿“身份证”与调试信息: 从 mFrameInfo 数组里取出 VSync 序号，后面所有 trace 都以它为标记，
     // 方便 systrace 里把 UI 线程、RenderThread、GPU 三段串成一条流水线。
@@ -108,7 +112,7 @@ void DrawFrameTask::run() {
 
     // 阶段 1：把“UI 线程排队耗时”告诉 GPU 端
     // mSyncQueued 是 UI 线程调用 postAndWait() 时打的时间戳；这里算出的差值就是 Sync 延迟，用于 GPU 端性能分析。
-    // 下面第二行和第四行把 HDR/SDR 比例 与 HardwareBuffer 参数 一并塞进 CanvasContext，供后续 GPU 管线使用。
+    // 下面第二行和第四行把 HDR/SDR 显示比例 与 HardwareBuffer 参数 一并塞进 CanvasContext，供后续 GPU 管线使用。
     mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);
     mContext->setTargetSdrHdrRatio(mRenderSdrHdrRatio);
 
@@ -153,7 +157,7 @@ void DrawFrameTask::run() {
     // 阶段 3：提前唤醒 UI 线程（减少卡顿）
     // 如果 syncFrameState() 已经把 所有 GPU 指令 都准备完毕，UI 线程就可以继续往前跑，不必等到 GPU 真正画完。
     // unblockUiThread() 里做的就是 mSignal.signal()，让 postAndWait() 的 wait() 返回。
-    // → 这样 UI 线程 可以立刻开始准备下一帧的逻辑，并行 于 GPU 渲染，降低掉帧概率。
+    // → 这样 UI 线程 可以立刻开始准备下一帧的逻辑，并行 于 GPU 渲染，减少卡顿、降低掉帧概率。
     // From this point on anything in "this" is *UNSAFE TO ACCESS*
     if (canUnblockUiThread) {
         unblockUiThread();
@@ -180,7 +184,7 @@ void DrawFrameTask::run() {
         // Do a flush in case syncFrameState performed any texture uploads. Since we skipped
         // the draw() call, those uploads (or deletes) will end up sitting in the queue.
         // Do them now
-        // 跳帧，但之前上传的纹理还在 GL 队列里，先 flush
+        // 跳帧，但之前上传的纹理还在 GL 队列里，先 flush，清理残留的纹理上传
         if (GrDirectContext* grContext = mRenderThread->getGrContext()) {
             grContext->flushAndSubmit();
         }
