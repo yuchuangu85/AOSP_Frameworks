@@ -798,14 +798,31 @@ VulkanManager::VkDrawResult VulkanManager::finishFrame(SkSurface* surface) {
 
     return drawResult;
 }
+/*
+ * 参数说明
+    VulkanSurface* surface: Vulkan 表面对象，管理交换链和缓冲区
+    const SkRect& dirtyRect: 脏区域矩形，标识需要更新的屏幕区域
+    android::base::unique_fd&& presentFence: 呈现栅栏，用于 GPU-CPU 同步
 
+ * android::base::unique_fd&& presentFence：使用栅栏进行正确的 GPU-CPU 同步：
+    确保渲染完成后再呈现
+    避免撕裂和时序问题
+    自动资源管理（unique_fd）
+ */
 void VulkanManager::swapBuffers(VulkanSurface* surface, const SkRect& dirtyRect,
                                 android::base::unique_fd&& presentFence) {
+    // GPU 完成等待（调试模式）
+    // 调试功能：
+    //  - 仅在调试模式下启用（CC_UNLIKELY 提示）
+    //  - 使用 mDeviceWaitIdle 等待所有 GPU 工作完成
+    //  - 用于调试和性能分析，确保前一帧完全处理完毕
+    //  - 使用 ATRACE 标记性能跟踪区间
     if (CC_UNLIKELY(Properties::waitForGpuCompletion)) {
         ATRACE_NAME("Finishing GPU work");
         mDeviceWaitIdle(mDevice);
     }
 
+    // 缓冲区呈现
     surface->presentCurrentBuffer(dirtyRect, presentFence.release());
 }
 

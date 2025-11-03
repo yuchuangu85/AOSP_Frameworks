@@ -628,7 +628,8 @@ Frame CanvasContext::getFrame() {
     }
 }
 
-// CanvasContext::draw() 是 RenderThread 的心跳函数：它决定 是否绘制、如何绘制、是否送显、如何记录性能，并 通知 UI 线程 继续下一帧。
+// CanvasContext::draw() 是 RenderThread 的心跳函数：它决定 是否绘制、如何绘制、是否送显、如何记录性能，
+// 并通知 UI 线程 继续下一帧。
 void CanvasContext::draw(bool solelyTextureViewUpdates) {
 #ifdef __ANDROID__
     // 防止在 GPU 上下文丢失（如 GPU 进程崩溃、设备被移除）时继续绘制。
@@ -709,6 +710,7 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     mCurrentFrameInfo->markIssueDrawCommandsStart();
 
+    // 重点
     // Frame：封装了 Surface、ANativeWindow、Buffer 状态；
     Frame frame = getFrame();
 

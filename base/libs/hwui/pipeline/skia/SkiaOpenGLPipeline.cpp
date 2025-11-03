@@ -60,6 +60,7 @@ MakeCurrentResult SkiaOpenGLPipeline::makeCurrent() {
 
     // In case the surface was destroyed (e.g. a previous trimMemory call) we
     // need to recreate it here.
+    // 重新创建被销毁的表面
     if (mHardwareBuffer) {
         mRenderThread.requireGlContext();
     } else if (!isSurfaceReady() && mNativeWindow) {
@@ -79,7 +80,9 @@ MakeCurrentResult SkiaOpenGLPipeline::makeCurrent() {
     // to EGL_NO_SURFACE and vice-versa. There was a related discussion within Khronos on this topic.
     // See https://cvs.khronos.org/bugzilla/show_bug.cgi?id=13534.
     // The discussion was not resolved with a clear consensus
+    // OpenGL ES 3.x 默认帧缓冲区状态修复
     if (error == 0 && (majorVersion > 2) && wasSurfaceless && mEglSurface != EGL_NO_SURFACE) {
+        // 确保读/写缓冲区正确设置为GL_BACK
         GLint curReadFB = 0;
         GLint curDrawFB = 0;
         glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &curReadFB);
@@ -119,14 +122,16 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         const Rect& contentDrawBounds, bool opaque, const LightInfo& lightInfo,
         const std::vector<sp<RenderNode>>& renderNodes, FrameInfoVisualizer* profiler,
         const HardwareBufferRenderParams& bufferParams, std::mutex& profilerLock) {
+    // 1. 报告损坏区域（除非在捕获SKP或使用硬件缓冲区）
     if (!isCapturingSkp() && !mHardwareBuffer) {
         mEglManager.damageFrame(frame, dirty);
     }
 
     SkColorType colorType = getSurfaceColorType();
     // setup surface for fbo0
+    // 2. 设置帧缓冲区信息
     GrGLFramebufferInfo fboInfo;
-    fboInfo.fFBOID = 0;
+    fboInfo.fFBOID = 0;// 默认帧缓冲区
     if (colorType == kRGBA_F16_SkColorType) {
         fboInfo.fFormat = GL_RGBA16F;
     } else if (colorType == kN32_SkColorType) {
@@ -141,6 +146,7 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         LOG_ALWAYS_FATAL("Unsupported color type.");
     }
 
+    // 3. 创建Skia渲染表面
     auto backendRT = GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0,
                                                     STENCIL_BUFFER_SIZE, fboInfo);
 
@@ -164,10 +170,12 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
     LightGeometry localGeometry = lightGeometry;
     localGeometry.center.x = lightCenter.fX;
     localGeometry.center.y = lightCenter.fY;
+    // 4. 更新光照并渲染帧
     LightingInfo::updateLighting(localGeometry, lightInfo);
     renderFrame(*layerUpdateQueue, dirty, renderNodes, opaque, contentDrawBounds, surface,
                 preTransform);
 
+    // 5. 调试信息绘制
     // Draw visual debugging features
     if (CC_UNLIKELY(Properties::showDirtyRegions ||
                     ProfileType::None != Properties::getProfileType())) {
@@ -177,12 +185,14 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         profiler->draw(profileRenderer);
     }
 
+    // 6. 提交命令
     {
         ATRACE_NAME("flush commands");
         skgpu::ganesh::FlushAndSubmit(surface);
     }
     layerUpdateQueue->clear();
 
+    // 7. 清理和统计
     // Log memory statistics
     if (CC_UNLIKELY(Properties::debugLevel != kDebugDisabled)) {
         dumpResourceCacheUsage();
@@ -198,16 +208,17 @@ bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, IRenderPipeline::DrawRe
 
     // Even if we decided to cancel the frame, from the perspective of jank
     // metrics the frame was swapped at this point
+    // 标记交换缓冲区时间点（用于性能分析）
     currentFrameInfo->markSwapBuffers();
 
     if (mHardwareBuffer) {
-        return false;
+        return false;// 硬件缓冲区不需要交换
     }
 
     *requireSwap = drawResult.success || mEglManager.damageRequiresSwap();
 
     if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, screenDirty)))) {
-        return false;
+        return false;// 交换失败
     }
 
     return *requireSwap;
@@ -235,11 +246,13 @@ bool SkiaOpenGLPipeline::setSurface(ANativeWindow* surface, SwapBehavior swapBeh
     mNativeWindow = surface;
     mSwapBehavior = swapBehavior;
 
+    // 销毁旧表面
     if (mEglSurface != EGL_NO_SURFACE) {
         mEglManager.destroySurface(mEglSurface);
         mEglSurface = EGL_NO_SURFACE;
     }
 
+    // 创建新表面
     if (surface) {
         mRenderThread.requireGlContext();
         auto newSurface = mEglManager.createSurface(surface, mColorMode, mSurfaceColorSpace);
@@ -249,6 +262,7 @@ bool SkiaOpenGLPipeline::setSurface(ANativeWindow* surface, SwapBehavior swapBeh
         mEglSurface = newSurface.unwrap();
     }
 
+    // 设置缓冲区保留策略
     if (mEglSurface != EGL_NO_SURFACE) {
         const bool preserveBuffer = (swapBehavior != SwapBehavior::kSwap_discardBuffer);
         mEglManager.setPreserveBuffer(mEglSurface, preserveBuffer);
@@ -258,14 +272,17 @@ bool SkiaOpenGLPipeline::setSurface(ANativeWindow* surface, SwapBehavior swapBeh
     return false;
 }
 
+// 同步机制
 [[nodiscard]] android::base::unique_fd SkiaOpenGLPipeline::flush() {
     int fence = -1;
     EGLSyncKHR sync = EGL_NO_SYNC_KHR;
     mEglManager.createReleaseFence(true, &sync, &fence);
     // If a sync object is returned here then the device does not support native
     // fences, we block on the returned sync and return -1 as a file descriptor
+    // 处理不支持原生fence的设备
     if (sync != EGL_NO_SYNC_KHR) {
         EGLDisplay display = mEglManager.eglDisplay();
+        // 等待同步对象
         EGLint result = eglClientWaitSyncKHR(display, sync, 0, 1000000000);
         if (result == EGL_FALSE) {
             ALOGE("EglManager::createReleaseFence: error waiting for previous fence: %#x",
@@ -273,6 +290,7 @@ bool SkiaOpenGLPipeline::setSurface(ANativeWindow* surface, SwapBehavior swapBeh
         } else if (result == EGL_TIMEOUT_EXPIRED_KHR) {
             ALOGE("EglManager::createReleaseFence: timeout waiting for previous fence");
         }
+        // 错误处理...
         eglDestroySyncKHR(display, sync);
     }
     return android::base::unique_fd(fence);
