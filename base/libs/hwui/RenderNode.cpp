@@ -132,7 +132,7 @@ int RenderNode::getAllocatedSize() {
     return size;
 }
 
-
+// mRootRenderNode递归遍历所有节点
 void RenderNode::prepareTree(TreeInfo& info) {
     ATRACE_CALL();
     LOG_ALWAYS_FATAL_IF(!info.damageAccumulator, "DamageAccumulator missing");
@@ -168,14 +168,18 @@ void RenderNode::damageSelf(TreeInfo& info) {
 }
 
 void RenderNode::prepareLayer(TreeInfo& info, uint32_t dirtyMask) {
+    // 获取节点的有效图层类型。
     LayerType layerType = properties().effectiveLayerType();
     if (CC_UNLIKELY(layerType == LayerType::RenderLayer)) {
         // Damage applied so far needs to affect our parent, but does not require
         // the layer to be updated. So we pop/push here to clear out the current
         // damage and get a clean state for display list or children updates to
         // affect, which will require the layer to be updated
+        // 将当前变换从损伤累积器中弹出，这样之前累积的损伤会影响父节点，但不会强制当前图层更新。
         info.damageAccumulator->popTransform();
+        // 为当前节点压入新的变换，为后续的显示列表或子节点更新提供一个干净的起点。
         info.damageAccumulator->pushTransform(this);
+        // 如果脏标记包含DISPLAY_LIST，调用damageSelf标记自身为损伤区域。
         if (dirtyMask & DISPLAY_LIST) {
             damageSelf(info);
         }
@@ -223,20 +227,43 @@ void RenderNode::pushLayerUpdate(TreeInfo& info) {
  *
  * While traversing down the tree, functorsNeedLayer flag is set to true if anything that uses the
  * stencil buffer may be needed. Views that use a functor to draw will be forced onto a layer.
+ *
+ * 关键特性
+ *   递归遍历
+ *   - 通过 prepareListAndChildren 和 lambda 函数递归处理所有子节点。
+ *
+ *   状态管理
+ *   - 使用栈式计数管理嵌套的渲染效果状态。
+ *
+ *   性能优化
+ *   - 使用 CC_LIKELY/CC_UNLIKELY 提示编译器优化分支预测
+ *   - 通过生成ID避免重复处理
+ *   - 最小化损伤区域计算
+ *
+ *   线程安全
+ *   区分 MODE_FULL（UI线程驱动）和其他模式（渲染线程驱动），确保属性同步的正确性。
+ *   这个函数是Android渲染系统的核心，确保了渲染树的正确准备和高效渲染。
+ *
  */
 void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool functorsNeedLayer) {
+    // 1. 重复访问检测与损伤处理
+    //  - 检测是否在同一帧中第二次访问同一节点
+    //  - 如果是，标记最大可能的损伤区域（因为无法确定最小损伤区域）
     if (mDamageGenerationId == info.damageGenerationId && mDamageGenerationId != 0) {
         // We hit the same node a second time in the same tree. We don't know the minimal
         // damage rect anymore, so just push the biggest we can onto our parent's transform
         // We push directly onto parent in case we are clipped to bounds but have moved position.
         info.damageAccumulator->dirty(DIRTY_MIN, DIRTY_MIN, DIRTY_MAX, DIRTY_MAX);
     }
+    // 2. 变换压栈：将当前节点的变换压入损伤累积器栈，建立新的坐标空间。
     info.damageAccumulator->pushTransform(this);
 
+    // 3. 在UI线程模式下，将暂存属性同步到渲染属性。
     if (info.mode == TreeInfo::MODE_FULL) {
         pushStagingPropertiesChanges(info);
     }
 
+    // 4. 管理强制深色模式和拉伸效果的嵌套计数。
     if (!mProperties.getAllowForceDark()) {
         info.disableForceDark++;
     }
@@ -244,11 +271,13 @@ void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool fu
         info.stretchEffectCount++;
     }
 
+    // 5. 运行动画并获取动画导致的脏标记。
     uint32_t animatorDirtyMask = 0;
     if (CC_LIKELY(info.runAnimations)) {
         animatorDirtyMask = mAnimatorManager.animate(info);
     }
 
+    // 6. 检测节点是否包含Functor（需要硬件加速的绘制操作），并确定是否需要图层。
     bool willHaveFunctor = false;
     if (info.mode == TreeInfo::MODE_FULL && mStagingDisplayList) {
         willHaveFunctor = mStagingDisplayList.hasFunctor();
@@ -258,21 +287,29 @@ void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool fu
     bool childFunctorsNeedLayer =
             mProperties.prepareForFunctorPresence(willHaveFunctor, functorsNeedLayer);
 
+    // 7. 通知位置监听器节点位置更新。
     if (CC_UNLIKELY(mPositionListener.get())) {
         mPositionListener->onPositionUpdated(*this, info);
     }
 
+    // 8. 准备节点的图层，处理渲染层的特殊逻辑。
     prepareLayer(info, animatorDirtyMask);
+    // 9. 在UI线程模式下，同步暂存显示列表。
     if (info.mode == TreeInfo::MODE_FULL) {
         pushStagingDisplayListChanges(observer, info);
     }
 
     // always damageSelf when filtering backdrop content, or else the BackdropFilterDrawable will
     // get a wrong snapshot of previous content.
+    // 10. 如果有背景滤镜，强制标记自身为损伤区域。
     if (mProperties.layerProperties().getBackdropImageFilter()) {
         damageSelf(info);
     }
 
+    // 11. 显示列表与子节点处理
+    //  - 处理显示列表和递归处理子节点
+    //  - 检测Functor和孔洞穿透效果
+    //  - 如果显示列表变脏，标记自身损伤
     if (mDisplayList) {
         info.out.hasFunctors |= mDisplayList.hasFunctor();
         mHasHolePunches = mDisplayList.hasHolePunches();
@@ -289,14 +326,17 @@ void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool fu
     } else {
         mHasHolePunches = false;
     }
+    // 12. 推送图层更新信息。
     pushLayerUpdate(info);
 
+    // 13. 恢复强制深色模式和拉伸效果的计数。
     if (!mProperties.getAllowForceDark()) {
         info.disableForceDark--;
     }
     if (!mProperties.layerProperties().getStretchEffect().isEmpty()) {
         info.stretchEffectCount--;
     }
+    // 14. 弹出当前节点的变换，将损伤区域转换回父坐标系。
     info.damageAccumulator->popTransform();
 }
 

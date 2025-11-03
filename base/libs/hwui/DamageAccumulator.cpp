@@ -77,20 +77,52 @@ void DamageAccumulator::computeCurrentTransform(Matrix4* outMatrix) const {
     computeTransformImpl(mHead, outMatrix);
 }
 
+/*
+ * 设计特点
+ * - 内存管理优化
+ *   - 使用对象分配器 (mAllocator) 而不是直接 new，提高性能
+ *   - create_trivial 表示不需要调用构造函数，直接分配内存
+ *   - 预分配栈帧，避免频繁的内存分配
+ *
+ *   链表结构
+ *    损伤累积器使用双向链表管理栈帧：
+ *    Frame1 <-> Frame2 <-> Frame3 <-> ...
+ *      ↑
+ *    mHead (当前活动帧)
+ *
+ *   性能考虑
+ *    - 避免在每次压栈时都分配新内存，通过检查 mHead->next 实现帧复用
+ *    - 使用内存分配器提高内存分配效率
+ *    - 简单的链表操作，时间复杂度 O(1)
+ */
 void DamageAccumulator::pushCommon() {
+    // 栈帧分配与初始化
+    // - 检查是否需要分配新帧：如果当前头帧没有下一个帧，需要分配新的栈帧
+    // - 内存分配：使用分配器创建新的 DirtyStack 对象
+    // - 链表连接：
+    //    - nextFrame->prev = mHead - 新帧指向前一帧
+    //    - mHead->next = nextFrame - 当前帧指向新帧
+    //    - nextFrame->next = nullptr - 新帧的下一帧暂时为空
     if (!mHead->next) {
         DirtyStack* nextFrame = mAllocator.create_trivial<DirtyStack>();
         nextFrame->next = nullptr;
         nextFrame->prev = mHead;
         mHead->next = nextFrame;
     }
+    // 将头指针移动到新分配的栈帧，使其成为当前活动帧。
     mHead = mHead->next;
+    // 将新帧的待处理损伤区域设置为空，为后续的损伤累积做准备。
     mHead->pendingDirty.setEmpty();
 }
 
 void DamageAccumulator::pushTransform(const RenderNode* transform) {
     pushCommon();
+    // 明确标识这个栈帧包含的是渲染节点变换，这在后续的 popTransform() 中很重要，因为会根据这个类型调用相应的处理函数。
     mHead->type = TransformRenderNode;
+    // 保存指向渲染节点的指针，这样在弹出栈帧时可以：
+    // - 访问节点的变换属性
+    // - 获取裁剪边界信息
+    // - 检查透明度和投影设置
     mHead->renderNode = transform;
 }
 
@@ -101,16 +133,27 @@ void DamageAccumulator::pushTransform(const Matrix4* transform) {
 }
 
 void DamageAccumulator::popTransform() {
+    // 防止弹出根帧（根帧的prev指向自己）
     LOG_ALWAYS_FATAL_IF(mHead->prev == mHead, "Cannot pop the root frame!");
+    // 保存当前栈帧指针
     DirtyStack* dirtyFrame = mHead;
+    // 将头指针移动到前一个栈帧（弹出操作）
     mHead = mHead->prev;
     switch (dirtyFrame->type) {
+        // 处理渲染节点变换：
+        //  - 将当前帧的损伤区域通过渲染节点的逆变换映射回父节点坐标系
+        //  - 合并到父帧的待处理损伤区域
         case TransformRenderNode:
             applyRenderNodeTransform(dirtyFrame);
             break;
+        // 处理4x4矩阵变换：
+        //  - 使用矩阵的逆变换将损伤区域转换回父坐标系
+        //  - 合并到父帧
         case TransformMatrix4:
             applyMatrix4Transform(dirtyFrame);
             break;
+        // 直接将当前帧的损伤区域合并到父帧
+        // 不需要坐标变换
         case TransformNone:
             mHead->pendingDirty.join(dirtyFrame->pendingDirty);
             break;
@@ -212,11 +255,16 @@ void DamageAccumulator::applyRenderNodeTransform(DirtyStack* frame) {
         return;
     }
 
+    // 如果节点完全透明（alpha <= 0），不会产生可见的损伤，直接返回。
     const RenderProperties& props = frame->renderNode->properties();
     if (props.getAlpha() <= 0) {
         return;
     }
 
+    // 裁切处理
+    // - 如果启用了边界裁剪，将损伤区域限制在节点的边界内
+    // - 使用节点的宽度和高度创建裁剪矩形
+    // - 如果损伤区域与边界没有交集，清空损伤区域
     // Perform clipping
     if (props.getClipDamageToBounds()) {
         if (!frame->pendingDirty.intersect(SkRect::MakeIWH(props.getWidth(), props.getHeight()))) {
@@ -224,9 +272,20 @@ void DamageAccumulator::applyRenderNodeTransform(DirtyStack* frame) {
         }
     }
 
+    // 坐标变换
+    // - 将当前帧的损伤区域通过渲染节点的变换矩阵映射到父节点坐标系
+    // - 结果合并到父帧的待处理损伤区域中
+    // - 考虑了节点的平移、旋转、缩放等变换
     // apply all transforms
     mapRect(props, frame->pendingDirty, &mHead->pendingDirty);
 
+    // 处理特殊的向后投影效果（如阴影、反射等）：
+    // 向后投影流程：
+    // - 查找父节点：findParentRenderNode(frame) 找到当前节点的直接父节点
+    // - 查找投影接收者：findProjectionReceiver(parentNode) 找到实际的投影目标节点
+    // - 应用变换：applyTransforms(frame, projectionReceiver) 将损伤区域变换到投影接收者的坐标系
+    // - 合并损伤：将变换后的损伤区域合并到投影接收者
+    // - 清空当前：清空当前帧的损伤区域，因为已经投影到其他地方
     // project backwards if necessary
     if (props.getProjectBackwards() && !frame->pendingDirty.isEmpty()) {
         // First, find our parent RenderNode:

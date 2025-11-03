@@ -433,7 +433,8 @@ bool CanvasContext::isSwapChainStuffed() {
     return true;
 }
 
-// 把 UI 线程刚录制的 RenderNode 树“搬进” GPU，同时决定这帧到底画不画；不画就给出跳过理由，画就预留 Surface 缓冲并安排后续动画回调。
+// 把 UI 线程刚录制的 RenderNode 树“搬进” GPU，同时决定这帧到底画不画；不画就给出跳过理由，
+// 画就预留 Surface 缓冲并安排后续动画回调。
 void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued,
                                 RenderNode* target) {
     // 阶段 0  清空上一帧的回调: 如果上一帧给自己贴了“下一帧继续动画”的回调，先摘掉，防止重复发帖。
@@ -445,7 +446,8 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         (void)mRenderThread.requireGrContext();
     }
 
-    // 阶段 2  跳帧审计 —— 上一帧被丢了？记下来: 用于 systrace / GPU 分析工具 统计“连续丢帧”场景，方便定位是 Surface 丢失、没 buffer 还是重复绘制。
+    // 阶段 2  跳帧审计 —— 上一帧被丢了？记下来: 用于 systrace / GPU 分析工具 统计“连续丢帧”场景，
+    // 方便定位是 Surface 丢失、没 buffer 还是重复绘制。
     // If the previous frame was dropped we don't need to hold onto it, so
     // just keep using the previous frame's structure instead
     const auto reason = wasSkipped(mCurrentFrameInfo);
@@ -475,11 +477,12 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         mSkippedFrameInfo.reset();
     }
 
-    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴计算 Sync → Issue → GPU → Present 各段耗时，
-    // 用于 JankTracker 掉帧归因。
+    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴
+    // 计算 Sync → Issue → GPU → Present 各段耗时，用于 JankTracker 掉帧归因。
+    // 同步Java层测绘信息到native，OpenGL玄学曲线的来源
     mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);
     mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;
-    mCurrentFrameInfo->markSyncStart();
+    mCurrentFrameInfo->markSyncStart();// 一个计时节点
 
     // 阶段 4  初始化 遍历上下文 TreeInfo
     // damageAccumulator 收集 脏矩形，后面提交给 SurfaceFlinger 做 部分更新。
@@ -506,7 +509,7 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         // real time mode. In case of a window, the primary node is the window content and the other
         // node(s) are non client / filler nodes.
         info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);
-        node->prepareTree(info);
+        node->prepareTree(info);// mRootRenderNode递归遍历所有节点
         GL_CHECKPOINT(MODERATE);
     }
     mAnimationContext->runRemainingAnimations(info);

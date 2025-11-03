@@ -89,6 +89,8 @@ static struct {
     bool waitSync = false;
 } EglExtensions;
 
+// EglManager主要作用是管理OpenGL上下文，比如创建EglSurface、指定当前操作的Surface、
+// swapBuffers等，主要负责场景及节点的管理工作：
 EglManager::EglManager()
         : mEglDisplay(EGL_NO_DISPLAY)
         , mEglConfig(nullptr)
