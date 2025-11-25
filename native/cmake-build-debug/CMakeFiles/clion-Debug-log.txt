@@ -1,4 +1,4 @@
 /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/bin/cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_MAKE_PROGRAM=/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -G Ninja -S /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native -B /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug
--- Configuring done (0.2s)
--- Generating done (0.7s)
+-- Configuring done (0.1s)
+-- Generating done (0.3s)
 -- Build files have been written to: /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug

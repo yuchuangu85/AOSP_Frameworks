@@ -2809,6 +2809,7 @@ status_t Surface::lock(
     return err;
 }
 
+// 向 SF 提交绘制缓冲区
 status_t Surface::unlockAndPost()
 {
     if (mLockedBuffer == nullptr) {
