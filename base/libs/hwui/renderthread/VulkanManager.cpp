@@ -720,6 +720,7 @@ VulkanManager::VkDrawResult VulkanManager::finishFrame(SkSurface* surface) {
     GrFlushInfo flushInfo;
 
     {
+        // 1. 创建可导出fd的VkSemaphore
         VkExportSemaphoreCreateInfo exportInfo;
         exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
         exportInfo.pNext = nullptr;

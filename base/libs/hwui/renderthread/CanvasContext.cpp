@@ -1219,6 +1219,7 @@ bool CanvasContext::surfaceRequiresRedraw() {
     return width != mLastFrameWidth || height != mLastFrameHeight;
 }
 
+// 收益: 减少30-50%(AI给出，仅供参考)的GPU负载，尤其在静态UI场景
 SkRect CanvasContext::computeDirtyRect(const Frame& frame, SkRect* dirty) {
     if (frame.width() != mLastFrameWidth || frame.height() != mLastFrameHeight) {
         // can't rely on prior content of window if viewport size changes
@@ -1255,14 +1256,14 @@ SkRect CanvasContext::computeDirtyRect(const Frame& frame, SkRect* dirty) {
         if (frame.bufferAge() > (int)mSwapHistory.size()) {
             // We don't have enough history to handle this old of a buffer
             // Just do a full-draw
-            dirty->setIWH(frame.width(), frame.height());
+            dirty->setIWH(frame.width(), frame.height());// 全刷
         } else {
             // At this point we haven't yet added the latest frame
             // to the damage history (happens below)
             // So we need to damage
             for (int i = mSwapHistory.size() - 1;
                  i > ((int)mSwapHistory.size()) - frame.bufferAge(); i--) {
-                dirty->join(mSwapHistory[i].damage);
+                dirty->join(mSwapHistory[i].damage);// 合并历史脏区
             }
         }
     }
