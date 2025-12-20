@@ -45,8 +45,8 @@ import com.android.systemui.Dumpable;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.demomode.DemoMode;
 import com.android.systemui.demomode.DemoModeController;
+import com.android.systemui.display.dagger.SystemUIDisplaySubcomponent.DisplayAware;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.plugins.DarkIconDispatcher;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.res.R;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
@@ -56,10 +56,8 @@ import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.OperatorNameView;
 import com.android.systemui.statusbar.OperatorNameViewController;
 import com.android.systemui.statusbar.StatusBarState;
-import com.android.systemui.statusbar.chips.notification.shared.StatusBarNotifChips;
 import com.android.systemui.statusbar.core.StatusBarConnectedDisplays;
 import com.android.systemui.statusbar.core.StatusBarRootModernization;
-import com.android.systemui.statusbar.data.repository.DarkIconDispatcherStore;
 import com.android.systemui.statusbar.data.repository.StatusBarConfigurationController;
 import com.android.systemui.statusbar.data.repository.StatusBarConfigurationControllerStore;
 import com.android.systemui.statusbar.disableflags.DisableFlagsLogger;
@@ -67,6 +65,7 @@ import com.android.systemui.statusbar.events.SystemStatusAnimationCallback;
 import com.android.systemui.statusbar.events.SystemStatusAnimationScheduler;
 import com.android.systemui.statusbar.headsup.shared.StatusBarNoHunBehavior;
 import com.android.systemui.statusbar.notification.icon.ui.viewbinder.NotificationIconContainerStatusBarViewBinder;
+import com.android.systemui.statusbar.notification.promoted.PromotedNotificationUi;
 import com.android.systemui.statusbar.phone.NotificationIconContainer;
 import com.android.systemui.statusbar.phone.PhoneStatusBarView;
 import com.android.systemui.statusbar.phone.StatusBarHideIconsForBouncerManager;
@@ -167,7 +166,6 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
     private final DemoModeController mDemoModeController;
     private final StatusBarWindowControllerStore mStatusBarWindowControllerStore;
     private final StatusBarConfigurationControllerStore mStatusBarConfigurationControllerStore;
-    private final DarkIconDispatcherStore mDarkIconDispatcherStore;
 
     private List<String> mBlockedIcons = new ArrayList<>();
     private Map<Startable, Startable.State> mStartableStates = new ArrayMap<>();
@@ -259,8 +257,8 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
             ShadeExpansionStateManager shadeExpansionStateManager,
             StatusBarIconController statusBarIconController,
             DarkIconManager.Factory darkIconManagerFactory,
-            HomeStatusBarViewModelFactory homeStatusBarViewModelFactory,
-            HomeStatusBarViewBinder homeStatusBarViewBinder,
+            @DisplayAware HomeStatusBarViewModelFactory homeStatusBarViewModelFactory,
+            @DisplayAware HomeStatusBarViewBinder homeStatusBarViewBinder,
             StatusBarHideIconsForBouncerManager statusBarHideIconsForBouncerManager,
             KeyguardStateController keyguardStateController,
             PanelExpansionInteractor panelExpansionInteractor,
@@ -273,12 +271,11 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
             SecureSettings secureSettings,
             @Main Executor mainExecutor,
             DumpManager dumpManager,
-            StatusBarWindowStateController statusBarWindowStateController,
+            @DisplayAware StatusBarWindowStateController statusBarWindowStateController,
             KeyguardUpdateMonitor keyguardUpdateMonitor,
             DemoModeController demoModeController,
             StatusBarWindowControllerStore statusBarWindowControllerStore,
-            StatusBarConfigurationControllerStore statusBarConfigurationControllerStore,
-            DarkIconDispatcherStore darkIconDispatcherStore) {
+            StatusBarConfigurationControllerStore statusBarConfigurationControllerStore) {
         mHomeStatusBarComponentFactory = homeStatusBarComponentFactory;
         mOngoingCallController = ongoingCallController;
         mAnimationScheduler = animationScheduler;
@@ -304,7 +301,6 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         mDemoModeController = demoModeController;
         mStatusBarWindowControllerStore = statusBarWindowControllerStore;
         mStatusBarConfigurationControllerStore = statusBarConfigurationControllerStore;
-        mDarkIconDispatcherStore = darkIconDispatcherStore;
     }
 
     private final DemoMode mDemoModeCallback = new DemoMode() {
@@ -366,16 +362,11 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         if (statusBarWindowController == null) {
             return;
         }
-        DarkIconDispatcher darkIconDispatcher = mDarkIconDispatcherStore.forDisplay(displayId);
-        if (darkIconDispatcher == null) {
-            return;
-        }
         mHomeStatusBarComponent =
                 mHomeStatusBarComponentFactory.create(
                         (PhoneStatusBarView) getView(),
                         configurationController,
-                        statusBarWindowController,
-                        darkIconDispatcher);
+                        statusBarWindowController);
         mHomeStatusBarComponent.init();
         mStartableStates.clear();
         for (Startable startable : mHomeStatusBarComponent.getStartables()) {
@@ -413,7 +404,7 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
         mCarrierConfigTracker.addCallback(mCarrierConfigCallback);
         mCarrierConfigTracker.addDefaultDataSubscriptionChangedListener(mDefaultDataListener);
 
-        mHomeStatusBarViewModel = mHomeStatusBarViewModelFactory.create(displayId);
+        mHomeStatusBarViewModel = mHomeStatusBarViewModelFactory.create();
         mHomeStatusBarViewBinder.bind(
                 view.getContext().getDisplayId(),
                 mStatusBar,
@@ -705,7 +696,7 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
 
         boolean showPrimaryOngoingActivityChip = mHasPrimaryOngoingActivity;
         boolean showSecondaryOngoingActivityChip =
-                StatusBarNotifChips.isEnabled() && mHasSecondaryOngoingActivity;
+                PromotedNotificationUi.isEnabled() && mHasSecondaryOngoingActivity;
 
         return new StatusBarVisibilityModel(
                 showClock,
@@ -746,7 +737,7 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
 
         boolean showSecondaryOngoingActivityChip =
                 // Secondary chips are only supported when RONs are enabled.
-                StatusBarNotifChips.isEnabled()
+                PromotedNotificationUi.isEnabled()
                         && visibilityModel.getShowSecondaryOngoingActivityChip()
                         && !disableNotifications;
         if (showSecondaryOngoingActivityChip) {
@@ -875,7 +866,7 @@ public class CollapsedStatusBarFragment extends Fragment implements CommandQueue
     }
 
     private void showSecondaryOngoingActivityChip(boolean animate) {
-        StatusBarNotifChips.unsafeAssertInNewMode();
+        PromotedNotificationUi.unsafeAssertInNewMode();
         StatusBarRootModernization.assertInLegacyMode();
         animateShow(mSecondaryOngoingActivityChip, animate);
     }

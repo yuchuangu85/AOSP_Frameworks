@@ -55,7 +55,6 @@ static bool gHasRenderThreadInstance = false;
 
 static JVMAttachHook gOnStartHook = nullptr;
 
-// 从回调数据中提取vsync信息，然后调用frameCallback
 void RenderThread::extendedFrameCallback(const AChoreographerFrameCallbackData* cbData,
                                          void* data) {
     RenderThread* rt = reinterpret_cast<RenderThread*>(data);
@@ -71,7 +70,6 @@ void RenderThread::extendedFrameCallback(const AChoreographerFrameCallbackData* 
     rt->frameCallback(vsyncId, frameDeadline, frameTimeNanos, frameInterval);
 }
 
-// 处理vsync信号，安排帧回调任务
 void RenderThread::frameCallback(int64_t vsyncId, int64_t frameDeadline, int64_t frameTimeNanos,
                                  int64_t frameInterval) {
     mVsyncRequested = false;
@@ -98,7 +96,6 @@ void RenderThread::frameCallback(int64_t vsyncId, int64_t frameDeadline, int64_t
     }
 }
 
-// 当刷新率改变时更新设备信息，并设置帧间隔
 void RenderThread::refreshRateCallback(int64_t vsyncPeriod, void* data) {
     ATRACE_NAME("refreshRateCallback");
     RenderThread* rt = reinterpret_cast<RenderThread*>(data);
@@ -106,8 +103,6 @@ void RenderThread::refreshRateCallback(int64_t vsyncPeriod, void* data) {
     rt->setupFrameInterval();
 }
 
-// ChoreographerSource和DummyVsyncSource类
-// 这两个类实现了VsyncSource接口，分别用于从Choreographer获取vsync信号和模拟vsync信号（用于隔离进程）。
 class ChoreographerSource : public VsyncSource {
 public:
     ChoreographerSource(RenderThread* renderThread) : mRenderThread(renderThread) {}
@@ -188,7 +183,6 @@ RenderThread::~RenderThread() {
     LOG_ALWAYS_FATAL("Can't destroy the render thread");
 }
 
-// 初始化Choreographer，用于接收vsync信号
 void RenderThread::initializeChoreographer() {
     LOG_ALWAYS_FATAL_IF(mVsyncSource, "Initializing a second Choreographer?");
 
@@ -397,20 +391,15 @@ void RenderThread::requestVsync() {
 }
 
 bool RenderThread::threadLoop() {
-    // 设置线程优先级和Looper
     setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);
     Looper::setForThread(mLooper);
     if (gOnStartHook) {
         gOnStartHook("RenderThread");
     }
-    // 初始化线程局部变量
     initThreadLocals();
 
-    // 进入主循环，等待工作并处理队列
     while (true) {
-        // epoll 等待；
         waitForWork();
-        // 执行 RenderTask；
         processQueue();
 
         if (mPendingRegistrationFrameCallbacks.size() && !mFrameCallbackTaskPending) {
@@ -421,7 +410,6 @@ bool RenderThread::threadLoop() {
             requestVsync();
         }
 
-        // 若 无 VSync 请求但还有回调，补一次 requestVsync()；
         if (!mFrameCallbackTaskPending && !mVsyncRequested && mFrameCallbacks.size()) {
             // TODO: Clean this up. This is working around an issue where a combination
             // of bad timing and slow drawing can result in dropping a stale vsync
@@ -472,15 +460,10 @@ bool RenderThread::isCurrent() {
 void RenderThread::preload() {
     // EGL driver is always preloaded only if HWUI renders with GL.
     if (Properties::getRenderPipelineType() == RenderPipelineType::SkiaGL) {
-        if (Properties::earlyPreloadGlContext()) {
-            queue().post([this]() {
-                ATRACE_NAME("earlyPreloadGlContext");
-                requireGlContext();
-            });
-        } else {
-            std::thread eglInitThread([]() { eglGetDisplay(EGL_DEFAULT_DISPLAY); });
-            eglInitThread.detach();
-        }
+        queue().post([this]() {
+            ATRACE_NAME("earlyPreloadGlContext");
+            requireGlContext();
+        });
     } else {
         requireVkContext();
     }

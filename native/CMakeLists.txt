@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.31)
+cmake_minimum_required(VERSION 4.1)
 project(native)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -12,8 +12,6 @@ include_directories(cmds/idlcli)
 include_directories(cmds/installd)
 include_directories(cmds/installd/tests)
 include_directories(cmds/lshal)
-include_directories(cmds/lshal/libprocpartition/include)
-include_directories(cmds/lshal/libprocpartition/include/procpartition)
 include_directories(cmds/servicemanager)
 include_directories(headers)
 include_directories(headers/media_plugin)
@@ -55,6 +53,7 @@ include_directories(include/vr)
 include_directories(include/vr/vr_manager)
 include_directories(include_sensor)
 include_directories(include_sensor/android)
+include_directories(libs/adbd_auth)
 include_directories(libs/adbd_auth/include)
 include_directories(libs/android_runtime_lazy/include)
 include_directories(libs/android_runtime_lazy/include/android_runtime)
@@ -180,6 +179,8 @@ include_directories(libs/permission/include)
 include_directories(libs/permission/include/android)
 include_directories(libs/permission/include/android/permission)
 include_directories(libs/permission/include/binder)
+include_directories(libs/procpartition/include)
+include_directories(libs/procpartition/include/procpartition)
 include_directories(libs/renderengine/benchmark)
 include_directories(libs/renderengine/include)
 include_directories(libs/renderengine/include/renderengine)
@@ -270,12 +271,11 @@ include_directories(services/inputflinger/rust)
 include_directories(services/inputflinger/rust/ffi)
 include_directories(services/inputflinger/tests)
 include_directories(services/inputflinger/tests/fuzzers)
+include_directories(services/inputflinger/trace)
 include_directories(services/memtrackproxy/include)
 include_directories(services/memtrackproxy/include/memtrackproxy)
 include_directories(services/powermanager/include)
 include_directories(services/powermanager/include/android)
-include_directories(services/schedulerservice/include)
-include_directories(services/schedulerservice/include/schedulerservice)
 include_directories(services/sensorservice)
 include_directories(services/sensorservice/aidl)
 include_directories(services/sensorservice/aidl/include)
@@ -297,10 +297,11 @@ include_directories(services/surfaceflinger/CompositionEngine/include/compositio
 include_directories(services/surfaceflinger/CompositionEngine/tests)
 include_directories(services/surfaceflinger/Display)
 include_directories(services/surfaceflinger/DisplayHardware)
+include_directories(services/surfaceflinger/DisplayHardware/VirtualDisplay)
 include_directories(services/surfaceflinger/Effects)
-include_directories(services/surfaceflinger/FrameTimeline)
 include_directories(services/surfaceflinger/FrameTracer)
 include_directories(services/surfaceflinger/FrontEnd)
+include_directories(services/surfaceflinger/FrontEnd/Caching)
 include_directories(services/surfaceflinger/Jank)
 include_directories(services/surfaceflinger/layerproto)
 include_directories(services/surfaceflinger/layerproto/include)
@@ -314,8 +315,11 @@ include_directories(services/surfaceflinger/Scheduler/tests)
 include_directories(services/surfaceflinger/tests)
 include_directories(services/surfaceflinger/tests/common)
 include_directories(services/surfaceflinger/tests/end2end/test_framework/core)
-include_directories(services/surfaceflinger/tests/end2end/test_framework/fake_hwc3)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/hwc3)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/hwc3/delegators)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/hwc3/events)
 include_directories(services/surfaceflinger/tests/end2end/test_framework/surfaceflinger)
+include_directories(services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events)
 include_directories(services/surfaceflinger/tests/unittests)
 include_directories(services/surfaceflinger/tests/unittests/fake)
 include_directories(services/surfaceflinger/tests/unittests/mock)
@@ -425,7 +429,6 @@ add_executable(native
         cmds/installd/tests/installd_cache_test.cpp
         cmds/installd/tests/installd_dexopt_test.cpp
         cmds/installd/tests/installd_file_test.cpp
-        cmds/installd/tests/installd_otapreopt_test.cpp
         cmds/installd/tests/installd_service_test.cpp
         cmds/installd/tests/installd_utils_test.cpp
         cmds/installd/tests/test_utils.h
@@ -440,7 +443,6 @@ add_executable(native
         cmds/installd/dexopt_return_codes.h
         cmds/installd/execv_helper.cpp
         cmds/installd/execv_helper.h
-        cmds/installd/file_parsing.h
         cmds/installd/globals.cpp
         cmds/installd/globals.h
         cmds/installd/installd.cpp
@@ -449,12 +451,6 @@ add_executable(native
         cmds/installd/InstalldNativeService.cpp
         cmds/installd/InstalldNativeService.h
         cmds/installd/MatchExtensionGen.h
-        cmds/installd/otapreopt.cpp
-        cmds/installd/otapreopt_chroot.cpp
-        cmds/installd/otapreopt_parameters.cpp
-        cmds/installd/otapreopt_parameters.h
-        cmds/installd/otapreopt_utils.cpp
-        cmds/installd/otapreopt_utils.h
         cmds/installd/QuotaUtils.cpp
         cmds/installd/QuotaUtils.h
         cmds/installd/restorable_file.cpp
@@ -462,7 +458,6 @@ add_executable(native
         cmds/installd/run_dex2oat.cpp
         cmds/installd/run_dex2oat.h
         cmds/installd/run_dex2oat_test.cpp
-        cmds/installd/system_properties.h
         cmds/installd/SysTrace.cpp
         cmds/installd/SysTrace.h
         cmds/installd/unique_file.cpp
@@ -470,8 +465,6 @@ add_executable(native
         cmds/installd/utils.cpp
         cmds/installd/utils.h
         cmds/installd/utils_default.cpp
-        cmds/lshal/libprocpartition/include/procpartition/procpartition.h
-        cmds/lshal/libprocpartition/procpartition.cpp
         cmds/lshal/Command.h
         cmds/lshal/DebugCommand.cpp
         cmds/lshal/DebugCommand.h
@@ -682,6 +675,8 @@ add_executable(native
         include/powermanager/PowerHintSessionWrapper.h
         include/powermanager/PowerManager.h
         include/private/display_luts_private.h
+        include/private/native_service.h
+        include/private/native_service_private.h
         include/private/performance_hint_private.h
         include/private/surface_control_private.h
         include/private/system_health_private.h
@@ -689,6 +684,8 @@ add_executable(native
         include/vr/vr_manager/vr_manager.h
         libs/adbd_auth/include/adbd_auth.h
         libs/adbd_auth/adbd_auth.cpp
+        libs/adbd_auth/adbd_auth_internal.h
+        libs/adbd_auth/adbd_auth_test.cpp
         libs/android_runtime_lazy/include/android_runtime/AndroidRuntime.h
         libs/android_runtime_lazy/include/android_os_Parcel.h
         libs/android_runtime_lazy/include/android_util_Binder.h
@@ -748,7 +745,6 @@ add_executable(native
         libs/binder/include_activitymanager/binder/IActivityManager.h
         libs/binder/include_activitymanager/binder/IUidObserver.h
         libs/binder/include_batterystats/batterystats/IBatteryStats.h
-        libs/binder/include_processinfo/processinfo/IProcessInfoService.h
         libs/binder/include_processinfo/processinfo/ProcessInfoService.h
         libs/binder/include_rpc_unstable/binder_rpc_unstable.hpp
         libs/binder/include_tls/binder/RpcAuth.h
@@ -857,8 +853,10 @@ add_executable(native
         libs/binder/tests/binderDriverInterfaceTest.cpp
         libs/binder/tests/binderHostDeviceTest.cpp
         libs/binder/tests/binderHostDeviceTestService.cpp
+        libs/binder/tests/binderKernelRpcCommon.h
         libs/binder/tests/binderLibTest.cpp
         libs/binder/tests/binderMemoryHeapBaseUnitTest.cpp
+        libs/binder/tests/binderObserverConfigUnitTest.cpp
         libs/binder/tests/binderParcelBenchmark.cpp
         libs/binder/tests/binderParcelUnitTest.cpp
         libs/binder/tests/binderPersistableBundleTest.cpp
@@ -877,6 +875,8 @@ add_executable(native
         libs/binder/tests/binderSafeInterfaceTest.cpp
         libs/binder/tests/binderStabilityIntegrationTest.cpp
         libs/binder/tests/binderStabilityTest.cpp
+        libs/binder/tests/binderStatsPusherTest.cpp
+        libs/binder/tests/binderStatsSpscQueueTest.cpp
         libs/binder/tests/binderStatusUnitTest.cpp
         libs/binder/tests/binderTextOutputTest.cpp
         libs/binder/tests/binderThroughputTest.cpp
@@ -889,11 +889,14 @@ add_executable(native
         libs/binder/trusty/include/binder/ARpcServerTrusty.h
         libs/binder/trusty/include/binder/RpcServerTrusty.h
         libs/binder/trusty/include/binder/RpcTransportTipcTrusty.h
+        libs/binder/trusty/include_mock/lib/tipc/peer_id.h
         libs/binder/trusty/include_mock/lib/tipc/tipc.h
         libs/binder/trusty/include_mock/lib/tipc/tipc_srv.h
         libs/binder/trusty/include_mock/lk/err_ptr.h
+        libs/binder/trusty/include_mock/lk/macros.h
         libs/binder/trusty/include_mock/openssl/rand.h
         libs/binder/trusty/include_mock/uapi/err.h
+        libs/binder/trusty/include_mock/uapi/trusty_peer_id.h
         libs/binder/trusty/include_mock/uapi/trusty_uuid.h
         libs/binder/trusty/include_mock/trusty-gtest.h
         libs/binder/trusty/include_mock/trusty_ipc.h
@@ -912,6 +915,14 @@ add_executable(native
         libs/binder/BackendUnifiedServiceManager.h
         libs/binder/Binder.cpp
         libs/binder/binder_module.h
+        libs/binder/BinderObserver.cpp
+        libs/binder/BinderObserver.h
+        libs/binder/BinderObserverConfig.cpp
+        libs/binder/BinderObserverConfig.h
+        libs/binder/BinderStatsPusher.cpp
+        libs/binder/BinderStatsPusher.h
+        libs/binder/BinderStatsSpscQueue.h
+        libs/binder/BinderStatsUtils.h
         libs/binder/BpBinder.cpp
         libs/binder/BufferedTextOutput.cpp
         libs/binder/BufferedTextOutput.h
@@ -930,12 +941,12 @@ add_executable(native
         libs/binder/IMemory.cpp
         libs/binder/IPCThreadState.cpp
         libs/binder/IPermissionController.cpp
-        libs/binder/IProcessInfoService.cpp
         libs/binder/IResultReceiver.cpp
         libs/binder/IServiceManager.cpp
         libs/binder/IServiceManagerFFI.cpp
         libs/binder/IShellCallback.cpp
         libs/binder/IUidObserver.cpp
+        libs/binder/JvmUtils.h
         libs/binder/LazyServiceRegistrar.cpp
         libs/binder/libbinder_rpc_unstable.cpp
         libs/binder/MemoryBase.cpp
@@ -1079,6 +1090,7 @@ add_executable(native
         libs/gui/include/gui/Choreographer.h
         libs/gui/include/gui/CompositorTiming.h
         libs/gui/include/gui/ConsumerBase.h
+        libs/gui/include/gui/CornerRadii.h
         libs/gui/include/gui/CpuConsumer.h
         libs/gui/include/gui/DebugEGLImageTracker.h
         libs/gui/include/gui/DisplayEventDispatcher.h
@@ -1140,6 +1152,7 @@ add_executable(native
         libs/gui/tests/BLASTBufferQueue_test.cpp
         libs/gui/tests/BufferItemConsumer_test.cpp
         libs/gui/tests/BufferQueue_test.cpp
+        libs/gui/tests/BufferQueueConsumer_test.cpp
         libs/gui/tests/BufferReleaseChannel_test.cpp
         libs/gui/tests/Choreographer_test.cpp
         libs/gui/tests/CompositorTiming_test.cpp
@@ -1346,6 +1359,8 @@ add_executable(native
         libs/permission/include/binder/IAppOpsService.h
         libs/permission/AppOpsManager.cpp
         libs/permission/IAppOpsService.cpp
+        libs/procpartition/include/procpartition/procpartition.h
+        libs/procpartition/procpartition.cpp
         libs/renderengine/benchmark/Codec.cpp
         libs/renderengine/benchmark/Flags.cpp
         libs/renderengine/benchmark/main.cpp
@@ -1368,6 +1383,10 @@ add_executable(native
         libs/renderengine/skia/compat/GraphiteBackendTexture.h
         libs/renderengine/skia/compat/GraphiteGpuContext.cpp
         libs/renderengine/skia/compat/GraphiteGpuContext.h
+        libs/renderengine/skia/compat/GraphitePipelineManager.cpp
+        libs/renderengine/skia/compat/GraphitePipelineManager.h
+        libs/renderengine/skia/compat/PaintOptionsBuilder.cpp
+        libs/renderengine/skia/compat/PaintOptionsBuilder.h
         libs/renderengine/skia/compat/SkiaBackendTexture.h
         libs/renderengine/skia/compat/SkiaGpuContext.h
         libs/renderengine/skia/debug/CaptureTimer.cpp
@@ -1388,18 +1407,23 @@ add_executable(native
         libs/renderengine/skia/filters/GaussianBlurFilter.h
         libs/renderengine/skia/filters/KawaseBlurDualFilter.cpp
         libs/renderengine/skia/filters/KawaseBlurDualFilter.h
+        libs/renderengine/skia/filters/KawaseBlurDualFilterV2.cpp
+        libs/renderengine/skia/filters/KawaseBlurDualFilterV2.h
         libs/renderengine/skia/filters/KawaseBlurFilter.cpp
         libs/renderengine/skia/filters/KawaseBlurFilter.h
-        libs/renderengine/skia/filters/LinearEffect.cpp
-        libs/renderengine/skia/filters/LinearEffect.h
         libs/renderengine/skia/filters/LutShader.cpp
         libs/renderengine/skia/filters/LutShader.h
         libs/renderengine/skia/filters/MouriMap.cpp
         libs/renderengine/skia/filters/MouriMap.h
+        libs/renderengine/skia/filters/RuntimeEffectManager.cpp
+        libs/renderengine/skia/filters/RuntimeEffectManager.h
+        libs/renderengine/skia/filters/RuntimeEffects.inl
         libs/renderengine/skia/filters/StretchShaderFactory.cpp
         libs/renderengine/skia/filters/StretchShaderFactory.h
         libs/renderengine/skia/AutoBackendTexture.cpp
         libs/renderengine/skia/AutoBackendTexture.h
+        libs/renderengine/skia/BoxShadowUtils.cpp
+        libs/renderengine/skia/BoxShadowUtils.h
         libs/renderengine/skia/Cache.cpp
         libs/renderengine/skia/Cache.h
         libs/renderengine/skia/ColorSpaces.cpp
@@ -1410,6 +1434,10 @@ add_executable(native
         libs/renderengine/skia/GLExtensions.h
         libs/renderengine/skia/GraphiteVkRenderEngine.cpp
         libs/renderengine/skia/GraphiteVkRenderEngine.h
+        libs/renderengine/skia/RenderDocUtils.cpp
+        libs/renderengine/skia/RenderDocUtils.h
+        libs/renderengine/skia/ShaderCache.cpp
+        libs/renderengine/skia/ShaderCache.h
         libs/renderengine/skia/SkiaGLRenderEngine.cpp
         libs/renderengine/skia/SkiaGLRenderEngine.h
         libs/renderengine/skia/SkiaRenderEngine.cpp
@@ -1471,7 +1499,6 @@ add_executable(native
         libs/ui/include/ui/DeviceProductInfo.h
         libs/ui/include/ui/DisplayedFrameStats.h
         libs/ui/include/ui/DisplayId.h
-        libs/ui/include/ui/DisplayIdentification.h
         libs/ui/include/ui/DisplayMap.h
         libs/ui/include/ui/DisplayMode.h
         libs/ui/include/ui/DisplayState.h
@@ -1497,6 +1524,7 @@ add_executable(native
         libs/ui/include/ui/HdrCapabilities.h
         libs/ui/include/ui/LayerStack.h
         libs/ui/include/ui/LogicalDisplayId.h
+        libs/ui/include/ui/OutputType.h
         libs/ui/include/ui/PictureProfileHandle.h
         libs/ui/include/ui/PixelFormat.h
         libs/ui/include/ui/Point.h
@@ -1506,6 +1534,7 @@ add_executable(native
         libs/ui/include/ui/Result.h
         libs/ui/include/ui/RingBuffer.h
         libs/ui/include/ui/Rotation.h
+        libs/ui/include/ui/ScreenPartStatus.h
         libs/ui/include/ui/ShadowSettings.h
         libs/ui/include/ui/Size.h
         libs/ui/include/ui/StaticDisplayInfo.h
@@ -1520,7 +1549,7 @@ add_executable(native
         libs/ui/tests/mock/MockGrallocAllocator.cpp
         libs/ui/tests/mock/MockGrallocAllocator.h
         libs/ui/tests/colorspace_test.cpp
-        libs/ui/tests/DisplayIdentification_test.cpp
+        libs/ui/tests/FenceTime_test.cpp
         libs/ui/tests/FlattenableHelpers_test.cpp
         libs/ui/tests/GraphicBuffer_test.cpp
         libs/ui/tests/GraphicBufferAllocator_test.cpp
@@ -1537,7 +1566,6 @@ add_executable(native
         libs/ui/DebugUtils.cpp
         libs/ui/DependencyMonitor.cpp
         libs/ui/DeviceProductInfo.cpp
-        libs/ui/DisplayIdentification.cpp
         libs/ui/DynamicDisplayInfo.cpp
         libs/ui/Fence.cpp
         libs/ui/FenceTime.cpp
@@ -1767,17 +1795,10 @@ add_executable(native
         services/inputflinger/dispatcher/include/InputDispatcherFactory.h
         services/inputflinger/dispatcher/include/InputDispatcherInterface.h
         services/inputflinger/dispatcher/include/InputDispatcherPolicyInterface.h
-        services/inputflinger/dispatcher/trace/AndroidInputEventProtoConverter.h
         services/inputflinger/dispatcher/trace/EventTrackerInterface.h
         services/inputflinger/dispatcher/trace/InputTracer.cpp
         services/inputflinger/dispatcher/trace/InputTracer.h
         services/inputflinger/dispatcher/trace/InputTracerInterface.h
-        services/inputflinger/dispatcher/trace/InputTracingBackendInterface.h
-        services/inputflinger/dispatcher/trace/InputTracingPerfettoBackend.cpp
-        services/inputflinger/dispatcher/trace/InputTracingPerfettoBackend.h
-        services/inputflinger/dispatcher/trace/InputTracingPerfettoBackendConfig.h
-        services/inputflinger/dispatcher/trace/ThreadedBackend.cpp
-        services/inputflinger/dispatcher/trace/ThreadedBackend.h
         services/inputflinger/dispatcher/AnrTracker.cpp
         services/inputflinger/dispatcher/AnrTracker.h
         services/inputflinger/dispatcher/CancelationOptions.h
@@ -1818,8 +1839,11 @@ add_executable(native
         services/inputflinger/include/InputFilterPolicyInterface.h
         services/inputflinger/include/InputListener.h
         services/inputflinger/include/InputReaderBase.h
-        services/inputflinger/include/InputReaderFactory.h
         services/inputflinger/include/InputThread.h
+        services/inputflinger/include/InputTracingBackendInterface.h
+        services/inputflinger/include/InputTracingPerfettoBackend.h
+        services/inputflinger/include/InputTracingPerfettoBackendConfig.h
+        services/inputflinger/include/InputTracingThreadedBackend.h
         services/inputflinger/include/KeyCodeClassifications.h
         services/inputflinger/include/NotifyArgs.h
         services/inputflinger/include/NotifyArgsBuilders.h
@@ -1835,6 +1859,8 @@ add_executable(native
         services/inputflinger/reader/include/InputDevice.h
         services/inputflinger/reader/include/InputReader.h
         services/inputflinger/reader/include/InputReaderContext.h
+        services/inputflinger/reader/include/InputReaderTracer.h
+        services/inputflinger/reader/include/RawEvent.h
         services/inputflinger/reader/include/StylusState.h
         services/inputflinger/reader/include/TouchVideoDevice.h
         services/inputflinger/reader/mapper/accumulator/CursorButtonAccumulator.cpp
@@ -1849,8 +1875,6 @@ add_executable(native
         services/inputflinger/reader/mapper/accumulator/SingleTouchMotionAccumulator.h
         services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.cpp
         services/inputflinger/reader/mapper/accumulator/TouchButtonAccumulator.h
-        services/inputflinger/reader/mapper/gestures/GestureConverter.cpp
-        services/inputflinger/reader/mapper/gestures/GestureConverter.h
         services/inputflinger/reader/mapper/gestures/GesturesLogcatAdapter.cpp
         services/inputflinger/reader/mapper/gestures/HardwareProperties.cpp
         services/inputflinger/reader/mapper/gestures/HardwareProperties.h
@@ -1860,8 +1884,12 @@ add_executable(native
         services/inputflinger/reader/mapper/gestures/Logging.h
         services/inputflinger/reader/mapper/gestures/PropertyProvider.cpp
         services/inputflinger/reader/mapper/gestures/PropertyProvider.h
+        services/inputflinger/reader/mapper/gestures/RelativeModeGestureConverter.cpp
+        services/inputflinger/reader/mapper/gestures/RelativeModeGestureConverter.h
         services/inputflinger/reader/mapper/gestures/TimerProvider.cpp
         services/inputflinger/reader/mapper/gestures/TimerProvider.h
+        services/inputflinger/reader/mapper/gestures/UncapturedGestureConverter.cpp
+        services/inputflinger/reader/mapper/gestures/UncapturedGestureConverter.h
         services/inputflinger/reader/mapper/CapturedTouchpadEventConverter.cpp
         services/inputflinger/reader/mapper/CapturedTouchpadEventConverter.h
         services/inputflinger/reader/mapper/CursorInputMapper.cpp
@@ -1897,7 +1925,7 @@ add_executable(native
         services/inputflinger/reader/EventHub.cpp
         services/inputflinger/reader/InputDevice.cpp
         services/inputflinger/reader/InputReader.cpp
-        services/inputflinger/reader/InputReaderFactory.cpp
+        services/inputflinger/reader/InputReaderTracer.cpp
         services/inputflinger/reader/Macros.cpp
         services/inputflinger/reader/Macros.h
         services/inputflinger/reader/TouchVideoDevice.cpp
@@ -1937,7 +1965,6 @@ add_executable(native
         services/inputflinger/tests/FakeWindows.cpp
         services/inputflinger/tests/FakeWindows.h
         services/inputflinger/tests/FocusResolver_test.cpp
-        services/inputflinger/tests/GestureConverter_test.cpp
         services/inputflinger/tests/HardwareProperties_test.cpp
         services/inputflinger/tests/HardwareStateConverter_test.cpp
         services/inputflinger/tests/InputDeviceMetricsCollector_test.cpp
@@ -1963,6 +1990,7 @@ add_executable(native
         services/inputflinger/tests/PointerChoreographer_test.cpp
         services/inputflinger/tests/PreferStylusOverTouch_test.cpp
         services/inputflinger/tests/PropertyProvider_test.cpp
+        services/inputflinger/tests/RelativeModeGestureConverter_test.cpp
         services/inputflinger/tests/RotaryEncoderInputMapper_test.cpp
         services/inputflinger/tests/ScopedFlagOverride.h
         services/inputflinger/tests/SensorInputMapper_test.cpp
@@ -1977,8 +2005,12 @@ add_executable(native
         services/inputflinger/tests/TouchpadInputMapper_test.cpp
         services/inputflinger/tests/UinputDevice.cpp
         services/inputflinger/tests/UinputDevice.h
+        services/inputflinger/tests/UncapturedGestureConverter_test.cpp
         services/inputflinger/tests/UnwantedInteractionBlocker_test.cpp
         services/inputflinger/tests/VibratorInputMapper_test.cpp
+        services/inputflinger/trace/AndroidInputEventProtoConverter.h
+        services/inputflinger/trace/InputTracingPerfettoBackend.cpp
+        services/inputflinger/trace/InputTracingThreadedBackend.cpp
         services/inputflinger/InputCommonConverter.cpp
         services/inputflinger/InputCommonConverter.h
         services/inputflinger/InputDeviceMetricsCollector.cpp
@@ -2009,9 +2041,7 @@ add_executable(native
         services/memtrackproxy/test/MemtrackProxyTest.cpp
         services/memtrackproxy/MemtrackProxy.cpp
         services/powermanager/benchmarks/main.cpp
-        services/powermanager/benchmarks/PowerHalAidlBenchmarks.cpp
         services/powermanager/benchmarks/PowerHalControllerBenchmarks.cpp
-        services/powermanager/benchmarks/PowerHalHidlBenchmarks.cpp
         services/powermanager/include/android/BatterySaverPolicyConfig.h
         services/powermanager/include/android/CoolingDevice.h
         services/powermanager/include/android/LocationMode.h
@@ -2040,8 +2070,6 @@ add_executable(native
         services/powermanager/PowerSaveState.cpp
         services/powermanager/Temperature.cpp
         services/powermanager/WorkSource.cpp
-        services/schedulerservice/include/schedulerservice/SchedulingPolicyService.h
-        services/schedulerservice/SchedulingPolicyService.cpp
         services/sensorservice/aidl/fuzzer/fuzzer.cpp
         services/sensorservice/aidl/include/sensorserviceaidl/SensorManagerAidl.h
         services/sensorservice/aidl/DirectReportChannel.cpp
@@ -2117,6 +2145,7 @@ add_executable(native
         services/stats/StatsHal.cpp
         services/surfaceflinger/common/include/common/test/FlagUtils.h
         services/surfaceflinger/common/include/common/FlagManager.h
+        services/surfaceflinger/common/include/common/LayerFilter.h
         services/surfaceflinger/common/include/common/trace.h
         services/surfaceflinger/common/include/common/WorkloadTracer.h
         services/surfaceflinger/common/FlagManager.cpp
@@ -2209,6 +2238,8 @@ add_executable(native
         services/surfaceflinger/CompositionEngine/tests/ProjectionSpaceTest.cpp
         services/surfaceflinger/CompositionEngine/tests/RegionMatcher.h
         services/surfaceflinger/CompositionEngine/tests/RenderSurfaceTest.cpp
+        services/surfaceflinger/Display/DisplayIdentification.cpp
+        services/surfaceflinger/Display/DisplayIdentification.h
         services/surfaceflinger/Display/DisplayModeController.cpp
         services/surfaceflinger/Display/DisplayModeController.h
         services/surfaceflinger/Display/DisplayModeRequest.h
@@ -2217,6 +2248,18 @@ add_executable(native
         services/surfaceflinger/Display/DisplaySnapshotRef.h
         services/surfaceflinger/Display/PhysicalDisplay.h
         services/surfaceflinger/Display/VirtualDisplaySnapshot.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/LegacyVirtualDisplaySurface.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/SinkSurfaceHelper.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/SinkSurfaceHelper.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayBufferSlotTracker.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayBufferSlotTracker.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplaySurface.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplaySurface.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayThread.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayThread.h
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayThreadManager.cpp
+        services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplayThreadManager.h
         services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp
         services/surfaceflinger/DisplayHardware/AidlComposerHal.h
         services/surfaceflinger/DisplayHardware/ComposerHal.cpp
@@ -2231,14 +2274,13 @@ add_executable(native
         services/surfaceflinger/DisplayHardware/HWC2.h
         services/surfaceflinger/DisplayHardware/HWComposer.cpp
         services/surfaceflinger/DisplayHardware/HWComposer.h
-        services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.cpp
-        services/surfaceflinger/DisplayHardware/VirtualDisplaySurface.h
         services/surfaceflinger/Effects/Daltonizer.cpp
         services/surfaceflinger/Effects/Daltonizer.h
-        services/surfaceflinger/FrameTimeline/FrameTimeline.cpp
-        services/surfaceflinger/FrameTimeline/FrameTimeline.h
         services/surfaceflinger/FrameTracer/FrameTracer.cpp
         services/surfaceflinger/FrameTracer/FrameTracer.h
+        services/surfaceflinger/FrontEnd/Caching/MergeableHierarchy.cpp
+        services/surfaceflinger/FrontEnd/Caching/MergeableHierarchy.h
+        services/surfaceflinger/FrontEnd/Caching/MergeableHierarchyManager.h
         services/surfaceflinger/FrontEnd/DisplayInfo.h
         services/surfaceflinger/FrontEnd/LayerCreationArgs.cpp
         services/surfaceflinger/FrontEnd/LayerCreationArgs.h
@@ -2301,6 +2343,8 @@ add_executable(native
         services/surfaceflinger/Scheduler/FrameRateCompatibility.h
         services/surfaceflinger/Scheduler/FrameRateOverrideMappings.cpp
         services/surfaceflinger/Scheduler/FrameRateOverrideMappings.h
+        services/surfaceflinger/Scheduler/FrameTimeline.cpp
+        services/surfaceflinger/Scheduler/FrameTimeline.h
         services/surfaceflinger/Scheduler/ISchedulerCallback.h
         services/surfaceflinger/Scheduler/LayerHistory.cpp
         services/surfaceflinger/Scheduler/LayerHistory.h
@@ -2336,15 +2380,63 @@ add_executable(native
         services/surfaceflinger/tests/benchmarks/LocklessQueue_benchmarks.cpp
         services/surfaceflinger/tests/benchmarks/main.cpp
         services/surfaceflinger/tests/common/LayerLifecycleManagerHelper.h
+        services/surfaceflinger/tests/end2end/test_framework/core/AsyncFunction.h
+        services/surfaceflinger/tests/end2end/test_framework/core/BufferId.cpp
+        services/surfaceflinger/tests/end2end/test_framework/core/BufferId.h
+        services/surfaceflinger/tests/end2end/test_framework/core/ConstevaledTypeName.h
         services/surfaceflinger/tests/end2end/test_framework/core/DisplayConfiguration.h
+        services/surfaceflinger/tests/end2end/test_framework/core/EdidBuilder.cpp
+        services/surfaceflinger/tests/end2end/test_framework/core/EdidBuilder.h
+        services/surfaceflinger/tests/end2end/test_framework/core/GuardedSharedState.h
         services/surfaceflinger/tests/end2end/test_framework/core/TestService.cpp
         services/surfaceflinger/tests/end2end/test_framework/core/TestService.h
-        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Composer.cpp
-        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Composer.h
-        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Controller.cpp
-        services/surfaceflinger/tests/end2end/test_framework/fake_hwc3/Hwc3Controller.h
+        services/surfaceflinger/tests/end2end/test_framework/core/TimeInterval.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/delegators/Composer.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/delegators/ComposerCallback.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/delegators/ComposerClient.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/BufferPendingDisplay.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/BufferPendingRelease.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/ClientDestroyed.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/DisplayPresented.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/PowerMode.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/VSync.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/events/VSyncEnabled.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/DisplayVSyncEventService.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/DisplayVSyncEventService.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/FakeComposer.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/FakeComposer.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/FakeDisplayConfiguration.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/Hwc3Controller.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/Hwc3Controller.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/MultiDisplayRefreshEventGenerator.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/MultiDisplayRefreshEventGenerator.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/ObservingComposer.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/ObservingComposer.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/SingleDisplayRefreshEventGenerator.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/SingleDisplayRefreshEventGenerator.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/SingleDisplayRefreshSchedule.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/SingleDisplayRefreshSchedule.h
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/TimeKeeperThread.cpp
+        services/surfaceflinger/tests/end2end/test_framework/hwc3/TimeKeeperThread.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/BufferReleased.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/Hotplug.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/TransactionCommitted.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/TransactionCompleted.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/TransactionInitiated.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/events/VSyncTiming.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/DisplayEventReceiver.cpp
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/DisplayEventReceiver.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/PollFdThread.cpp
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/PollFdThread.h
         services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SFController.cpp
         services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SFController.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SimpleBufferPool.cpp
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/SimpleBufferPool.h
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/Surface.cpp
+        services/surfaceflinger/tests/end2end/test_framework/surfaceflinger/Surface.h
+        services/surfaceflinger/tests/end2end/tests/internal/AsyncFunction_test.cpp
+        services/surfaceflinger/tests/end2end/tests/internal/DisplayRefresh_test.cpp
+        services/surfaceflinger/tests/end2end/tests/internal/EdidBuilder_test.cpp
         services/surfaceflinger/tests/end2end/tests/Placeholder_test.cpp
         services/surfaceflinger/tests/end2end/main.cpp
         services/surfaceflinger/tests/tracing/TransactionTraceTestSuite.cpp
@@ -2373,8 +2465,6 @@ add_executable(native
         services/surfaceflinger/tests/unittests/mock/MockFrameTracer.cpp
         services/surfaceflinger/tests/unittests/mock/MockFrameTracer.h
         services/surfaceflinger/tests/unittests/mock/MockLayer.h
-        services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.cpp
-        services/surfaceflinger/tests/unittests/mock/MockNativeWindowSurface.h
         services/surfaceflinger/tests/unittests/mock/MockSchedulerCallback.h
         services/surfaceflinger/tests/unittests/mock/MockTimeStats.cpp
         services/surfaceflinger/tests/unittests/mock/MockTimeStats.h
@@ -2384,7 +2474,6 @@ add_executable(native
         services/surfaceflinger/tests/unittests/mock/MockVSyncDispatch.h
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.cpp
         services/surfaceflinger/tests/unittests/mock/MockVSyncTracker.h
-        services/surfaceflinger/tests/unittests/ActiveDisplayRotationFlagsTest.cpp
         services/surfaceflinger/tests/unittests/ActivePictureTrackerTest.cpp
         services/surfaceflinger/tests/unittests/BackgroundExecutorTest.cpp
         services/surfaceflinger/tests/unittests/CommitAndCompositeTest.h
@@ -2394,6 +2483,7 @@ add_executable(native
         services/surfaceflinger/tests/unittests/DisplayDevice_GetBestColorModeTest.cpp
         services/surfaceflinger/tests/unittests/DisplayDevice_SetDisplayBrightnessTest.cpp
         services/surfaceflinger/tests/unittests/DisplayDevice_SetProjectionTest.cpp
+        services/surfaceflinger/tests/unittests/DisplayIdentification_test.cpp
         services/surfaceflinger/tests/unittests/DisplayIdentificationTestHelpers.h
         services/surfaceflinger/tests/unittests/DisplayIdGeneratorTest.cpp
         services/surfaceflinger/tests/unittests/DisplayModeControllerTest.cpp
@@ -2411,6 +2501,7 @@ add_executable(native
         services/surfaceflinger/tests/unittests/FrameRateOverrideMappingsTest.cpp
         services/surfaceflinger/tests/unittests/FrameTimelineTest.cpp
         services/surfaceflinger/tests/unittests/FrameTracerTest.cpp
+        services/surfaceflinger/tests/unittests/FrontInternalDisplayRotationFlagsTest.cpp
         services/surfaceflinger/tests/unittests/HWComposerTest.cpp
         services/surfaceflinger/tests/unittests/JankTrackerTest.cpp
         services/surfaceflinger/tests/unittests/LayerHierarchyTest.cpp
@@ -2431,6 +2522,9 @@ add_executable(native
         services/surfaceflinger/tests/unittests/RefreshRateStatsTest.cpp
         services/surfaceflinger/tests/unittests/RegionSamplingTest.cpp
         services/surfaceflinger/tests/unittests/SchedulerTest.cpp
+        services/surfaceflinger/tests/unittests/SessionLayerMapTest.cpp
+        services/surfaceflinger/tests/unittests/SessionManagerTestUtils.cpp
+        services/surfaceflinger/tests/unittests/SessionManagerTestUtils.h
         services/surfaceflinger/tests/unittests/SmallAreaDetectionAllowMappingsTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_ColorMatrixTest.cpp
         services/surfaceflinger/tests/unittests/SurfaceFlinger_CreateDisplayTest.cpp
@@ -2461,6 +2555,8 @@ add_executable(native
         services/surfaceflinger/tests/unittests/TransactionTraceWriterTest.cpp
         services/surfaceflinger/tests/unittests/TransactionTracingTest.cpp
         services/surfaceflinger/tests/unittests/TunnelModeEnabledReporterTest.cpp
+        services/surfaceflinger/tests/unittests/VirtualDisplayBufferSlotTracker_test.cpp
+        services/surfaceflinger/tests/unittests/VirtualDisplaySurfaceTest.cpp
         services/surfaceflinger/tests/unittests/VSyncCallbackRegistrationTest.cpp
         services/surfaceflinger/tests/unittests/VsyncConfigurationTest.cpp
         services/surfaceflinger/tests/unittests/VSyncDispatchRealtimeTest.cpp
@@ -2568,8 +2664,6 @@ add_executable(native
         services/surfaceflinger/LocklessQueue.h
         services/surfaceflinger/main_surfaceflinger.cpp
         services/surfaceflinger/MutexUtils.h
-        services/surfaceflinger/NativeWindowSurface.cpp
-        services/surfaceflinger/NativeWindowSurface.h
         services/surfaceflinger/QueuedTransactionState.h
         services/surfaceflinger/RefreshRateOverlay.cpp
         services/surfaceflinger/RefreshRateOverlay.h

@@ -2,18 +2,235 @@
 ---
 events:
   -
-    kind: "message-v1"
+    kind: "find-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineSystem.cmake:205 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
       - "CMakeLists.txt:2 (project)"
-    message: |
-      The system is: Darwin - 25.0.0 - arm64
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "uname"
+    candidate_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/uname"
+      - "/usr/local/bin/uname"
+      - "/opt/homebrew/bin/uname"
+      - "/opt/homebrew/sbin/uname"
+      - "/Users/yuchuan/.local/bin/uname"
+      - "/Users/yuchuan/.cargo/bin/uname"
+      - "/opt/anaconda3/bin/uname"
+      - "/usr/bin/python3/bin/uname"
+      - "/Users/yuchuan/Library/Android/sdk/tools/uname"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/uname"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/uname"
+      - "/usr/local/sbin/uname"
+    found: "/usr/bin/uname"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCCompiler.cmake:123 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Darwin - 25.2.0 - arm64
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompiler.cmake:73 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:64 (_cmake_find_compiler)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_C_COMPILER"
+    description: "C compiler"
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "cc"
+      - "gcc"
+      - "cl"
+      - "bcc"
+      - "xlc"
+      - "icx"
+      - "clang"
+    candidate_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/cc"
+      - "/usr/local/bin/cc"
+      - "/opt/homebrew/bin/cc"
+      - "/opt/homebrew/sbin/cc"
+      - "/Users/yuchuan/.local/bin/cc"
+      - "/Users/yuchuan/.cargo/bin/cc"
+      - "/opt/anaconda3/bin/cc"
+      - "/usr/bin/python3/bin/cc"
+      - "/Users/yuchuan/Library/Android/sdk/tools/cc"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/cc"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/cc"
+      - "/usr/local/sbin/cc"
+    found: "/usr/bin/cc"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:462 (find_file)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:500 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCCompilerId.c.in"
+    candidate_directories:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/"
+    found: "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCCompilerId.c.in"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
@@ -28,13 +245,13 @@ events:
       Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "a.out"
       
       The C compiler identification is AppleClang, found in:
-        /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/4.0.2/CompilerIdC/a.out
+        /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/4.1.2/CompilerIdC/a.out
       
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:290 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCCompiler.cmake:123 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:290 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:122 (CMAKE_DETERMINE_COMPILER_ID)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Detecting C compiler apple sysroot: "/usr/bin/cc" "-E" "apple-sdk.c"
@@ -72,11 +289,977 @@ events:
         
       Found apple sysroot: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
   -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_AR"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ar"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/ar"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_RANLIB"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ranlib"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/ranlib"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_STRIP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "strip"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/strip"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_LINKER"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "ld"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/ld"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_NM"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "nm"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/nm"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJDUMP"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objdump"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    found: "/usr/bin/objdump"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_OBJCOPY"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "objcopy"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/usr/bin/objcopy"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/objcopy"
+      - "/usr/local/bin/objcopy"
+      - "/opt/homebrew/bin/objcopy"
+      - "/opt/homebrew/sbin/objcopy"
+      - "/Users/yuchuan/.local/bin/objcopy"
+      - "/Users/yuchuan/.cargo/bin/objcopy"
+      - "/opt/anaconda3/bin/objcopy"
+      - "/usr/bin/python3/bin/objcopy"
+      - "/Users/yuchuan/Library/Android/sdk/tools/objcopy"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/objcopy"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/objcopy"
+      - "/usr/local/sbin/objcopy"
+      - "/bin/objcopy"
+      - "/usr/sbin/objcopy"
+      - "/sbin/objcopy"
+      - "/usr/X11/bin/objcopy"
+      - "/usr/local/Cellar/node/15.4.0/bin/objcopy"
+      - "/Users/yuchuan/bin/objcopy"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/objcopy"
+      - "/Users/yuchuan/flutter/bin/objcopy"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/objcopy"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_READELF"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "readelf"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/usr/bin/readelf"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/readelf"
+      - "/usr/local/bin/readelf"
+      - "/opt/homebrew/bin/readelf"
+      - "/opt/homebrew/sbin/readelf"
+      - "/Users/yuchuan/.local/bin/readelf"
+      - "/Users/yuchuan/.cargo/bin/readelf"
+      - "/opt/anaconda3/bin/readelf"
+      - "/usr/bin/python3/bin/readelf"
+      - "/Users/yuchuan/Library/Android/sdk/tools/readelf"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/readelf"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/readelf"
+      - "/usr/local/sbin/readelf"
+      - "/bin/readelf"
+      - "/usr/sbin/readelf"
+      - "/sbin/readelf"
+      - "/usr/X11/bin/readelf"
+      - "/usr/local/Cellar/node/15.4.0/bin/readelf"
+      - "/Users/yuchuan/bin/readelf"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/readelf"
+      - "/Users/yuchuan/flutter/bin/readelf"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/readelf"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_DLLTOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "dlltool"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/usr/bin/dlltool"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/dlltool"
+      - "/usr/local/bin/dlltool"
+      - "/opt/homebrew/bin/dlltool"
+      - "/opt/homebrew/sbin/dlltool"
+      - "/Users/yuchuan/.local/bin/dlltool"
+      - "/Users/yuchuan/.cargo/bin/dlltool"
+      - "/opt/anaconda3/bin/dlltool"
+      - "/usr/bin/python3/bin/dlltool"
+      - "/Users/yuchuan/Library/Android/sdk/tools/dlltool"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/dlltool"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/dlltool"
+      - "/usr/local/sbin/dlltool"
+      - "/bin/dlltool"
+      - "/usr/sbin/dlltool"
+      - "/sbin/dlltool"
+      - "/usr/X11/bin/dlltool"
+      - "/usr/local/Cellar/node/15.4.0/bin/dlltool"
+      - "/Users/yuchuan/bin/dlltool"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/dlltool"
+      - "/Users/yuchuan/flutter/bin/dlltool"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/dlltool"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_ADDR2LINE"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "addr2line"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/usr/bin/addr2line"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/addr2line"
+      - "/usr/local/bin/addr2line"
+      - "/opt/homebrew/bin/addr2line"
+      - "/opt/homebrew/sbin/addr2line"
+      - "/Users/yuchuan/.local/bin/addr2line"
+      - "/Users/yuchuan/.cargo/bin/addr2line"
+      - "/opt/anaconda3/bin/addr2line"
+      - "/usr/bin/python3/bin/addr2line"
+      - "/Users/yuchuan/Library/Android/sdk/tools/addr2line"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/addr2line"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/addr2line"
+      - "/usr/local/sbin/addr2line"
+      - "/bin/addr2line"
+      - "/usr/sbin/addr2line"
+      - "/sbin/addr2line"
+      - "/usr/X11/bin/addr2line"
+      - "/usr/local/Cellar/node/15.4.0/bin/addr2line"
+      - "/Users/yuchuan/bin/addr2line"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/addr2line"
+      - "/Users/yuchuan/flutter/bin/addr2line"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/addr2line"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeFindBinUtils.cmake:238 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCCompiler.cmake:200 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_TAPI"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: false
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: false
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "tapi"
+    candidate_directories:
+      - "/usr/bin/"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/usr/bin/tapi"
+      - "/Users/yuchuan/.antigravity/antigravity/bin/tapi"
+      - "/usr/local/bin/tapi"
+      - "/opt/homebrew/bin/tapi"
+      - "/opt/homebrew/sbin/tapi"
+      - "/Users/yuchuan/.local/bin/tapi"
+      - "/Users/yuchuan/.cargo/bin/tapi"
+      - "/opt/anaconda3/bin/tapi"
+      - "/usr/bin/python3/bin/tapi"
+      - "/Users/yuchuan/Library/Android/sdk/tools/tapi"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/tapi"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/tapi"
+      - "/usr/local/sbin/tapi"
+      - "/bin/tapi"
+      - "/usr/sbin/tapi"
+      - "/sbin/tapi"
+      - "/usr/X11/bin/tapi"
+      - "/usr/local/Cellar/node/15.4.0/bin/tapi"
+      - "/Users/yuchuan/bin/tapi"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/tapi"
+      - "/Users/yuchuan/flutter/bin/tapi"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/tapi"
+    found: false
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompiler.cmake:54 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCXXCompiler.cmake:69 (_cmake_find_compiler)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_CXX_COMPILER"
+    description: "CXX compiler"
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "c++"
+      - "g++"
+      - "cl"
+      - "bcc"
+      - "icpx"
+      - "icx"
+      - "clang++"
+    candidate_directories:
+      - "/usr/bin/"
+    found: "/usr/bin/c++"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:462 (find_file)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:500 (CMAKE_DETERMINE_COMPILER_ID_WRITE)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:8 (CMAKE_DETERMINE_COMPILER_ID_BUILD)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "file"
+    variable: "src_in"
+    description: "Path to a file."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "CMakeCXXCompilerId.cpp.in"
+    candidate_directories:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/"
+    found: "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCXXCompilerId.cpp.in"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+  -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:17 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:64 (__determine_compiler_id_test)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
@@ -91,13 +1274,13 @@ events:
       Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "a.out"
       
       The CXX compiler identification is AppleClang, found in:
-        /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/4.0.2/CompilerIdCXX/a.out
+        /Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/4.1.2/CompilerIdCXX/a.out
       
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake:290 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCXXCompiler.cmake:126 (CMAKE_DETERMINE_COMPILER_ID)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerId.cmake:290 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCXXCompiler.cmake:125 (CMAKE_DETERMINE_COMPILER_ID)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Detecting CXX compiler apple sysroot: "/usr/bin/c++" "-E" "apple-sdk.cpp"
@@ -135,16 +1318,98 @@ events:
         
       Found apple sysroot: /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk
   -
+    kind: "find-v1"
+    backtrace:
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/Platform/Darwin.cmake:76 (find_program)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeSystemSpecificInformation.cmake:32 (include)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_INSTALL_NAME_TOOL"
+    description: "Path to a program."
+    settings:
+      SearchFramework: "FIRST"
+      SearchAppBundle: "FIRST"
+      CMAKE_FIND_USE_CMAKE_PATH: true
+      CMAKE_FIND_USE_CMAKE_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH: true
+      CMAKE_FIND_USE_CMAKE_SYSTEM_PATH: true
+      CMAKE_FIND_USE_INSTALL_PREFIX: true
+    names:
+      - "install_name_tool"
+    candidate_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/"
+      - "/usr/local/bin/"
+      - "/opt/homebrew/bin/"
+      - "/opt/homebrew/sbin/"
+      - "/Users/yuchuan/.local/bin/"
+      - "/Users/yuchuan/.cargo/bin/"
+      - "/opt/anaconda3/bin/"
+      - "/usr/bin/python3/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/"
+      - "/usr/local/sbin/"
+      - "/usr/bin/"
+      - "/bin/"
+      - "/usr/sbin/"
+      - "/sbin/"
+      - "/usr/X11/bin/"
+      - "/usr/local/Cellar/node/15.4.0/bin/"
+      - "/Users/yuchuan/bin/"
+      - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125/"
+      - "/Users/yuchuan/flutter/bin/"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/"
+    searched_directories:
+      - "/Users/yuchuan/.antigravity/antigravity/bin/install_name_tool"
+      - "/usr/local/bin/install_name_tool"
+      - "/opt/homebrew/bin/install_name_tool"
+      - "/opt/homebrew/sbin/install_name_tool"
+      - "/Users/yuchuan/.local/bin/install_name_tool"
+      - "/Users/yuchuan/.cargo/bin/install_name_tool"
+      - "/opt/anaconda3/bin/install_name_tool"
+      - "/usr/bin/python3/bin/install_name_tool"
+      - "/Users/yuchuan/Library/Android/sdk/tools/install_name_tool"
+      - "/Users/yuchuan/Library/Android/sdk/tools/bin/install_name_tool"
+      - "/Users/yuchuan/Library/Android/sdk/platform-tools/install_name_tool"
+      - "/usr/local/sbin/install_name_tool"
+    found: "/usr/bin/install_name_tool"
+    search_context:
+      ENV{PATH}:
+        - "/Users/yuchuan/.antigravity/antigravity/bin"
+        - "/usr/local/bin"
+        - "/opt/homebrew/bin"
+        - "/opt/homebrew/sbin"
+        - "/Users/yuchuan/.local/bin"
+        - "/Users/yuchuan/.cargo/bin"
+        - "/opt/anaconda3/bin"
+        - "/usr/bin/python3/bin"
+        - "/Users/yuchuan/Library/Android/sdk/tools"
+        - "/Users/yuchuan/Library/Android/sdk/tools/bin"
+        - "/Users/yuchuan/Library/Android/sdk/platform-tools"
+        - "/usr/local/sbin"
+        - "/usr/bin"
+        - "/bin"
+        - "/usr/sbin"
+        - "/sbin"
+        - "/usr/local/bin"
+        - "/usr/X11/bin"
+        - "/usr/local/Cellar/node/15.4.0/bin"
+        - "/Users/yuchuan/bin"
+        - "/Users/yuchuan/Library/Android/sdk/ndk/26.1.10909125"
+        - "/Users/yuchuan/flutter/bin"
+        - "/Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64"
+      CMAKE_INSTALL_PREFIX: "/usr/local"
+  -
     kind: "try_compile-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     checks:
       - "Detecting C compiler ABI info"
     directories:
-      source: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm"
-      binary: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm"
+      source: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb"
+      binary: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb"
     cmakeVariables:
       CMAKE_C_FLAGS: ""
       CMAKE_C_FLAGS_DEBUG: "-g"
@@ -156,17 +1421,17 @@ events:
       variable: "CMAKE_C_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm'
+        Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb'
         
-        Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_1c70f
-        [1/2] /usr/bin/cc   -arch arm64 -fcolor-diagnostics   -v -Wl,-v -MD -MT CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCCompilerABI.c
-        Apple clang version 17.0.0 (clang-1700.3.19.1)
-        Target: arm64-apple-darwin25.0.0
+        Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_101c1
+        [1/2] /usr/bin/cc   -arch arm64 -fcolor-diagnostics   -v -Wl,-v -MD -MT CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCCompilerABI.c
+        Apple clang version 17.0.0 (clang-1700.6.3.2)
+        Target: arm64-apple-darwin25.2.0
         Thread model: posix
         InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
         clang: warning: -Wl,-v: 'linker' input unused [-Wunused-command-line-argument]
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.0 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm -target-linker-version 1221.4 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fskip-odr-check-in-gmf -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -x c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCCompilerABI.c
-        clang -cc1 version 17.0.0 (clang-1700.3.19.1) default target arm64-apple-darwin25.0.0
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.2 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb -target-linker-version 1230.1 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fskip-odr-check-in-gmf -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -x c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCCompilerABI.c
+        clang -cc1 version 17.0.0 (clang-1700.6.3.2) default target arm64-apple-darwin25.2.0
         ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"
         ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
         #include "..." search starts here:
@@ -178,14 +1443,14 @@ events:
          /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)
          /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks (framework directory)
         End of search list.
-        [2/2] : && /usr/bin/cc -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -v -Wl,-v CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -o cmTC_1c70f   && :
-        Apple clang version 17.0.0 (clang-1700.3.19.1)
-        Target: arm64-apple-darwin25.0.0
+        [2/2] : && /usr/bin/cc -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -v -Wl,-v CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -o cmTC_101c1   && :
+        Apple clang version 17.0.0 (clang-1700.6.3.2)
+        Target: arm64-apple-darwin25.2.0
         Thread model: posix
         InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_1c70f -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a
-        @(#)PROGRAM:ld PROJECT:ld-1221.4
-        BUILD 16:29:08 Aug 11 2025
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_101c1 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a
+        @(#)PROGRAM:ld PROJECT:ld-1230.1
+        BUILD 06:36:05 Dec  2 2025
         configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em armv8m.main armv8.1m.main
         will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
         LTO support using: LLVM version 17.0.0 (static support for 29, runtime is 29)
@@ -201,8 +1466,8 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Effective list of requested architectures (possibly empty)  : ""
@@ -210,8 +1475,8 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:191 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:217 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Parsed C implicit include dir info: rv=done
@@ -232,24 +1497,24 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:227 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:253 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Parsed C implicit link information:
         link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
         linker tool regex: [^[ 	]*(->|")?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
-        ignore line: [Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm']
+        ignore line: [Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb']
         ignore line: []
-        ignore line: [Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_1c70f]
-        ignore line: [[1/2] /usr/bin/cc   -arch arm64 -fcolor-diagnostics   -v -Wl -v -MD -MT CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCCompilerABI.c]
-        ignore line: [Apple clang version 17.0.0 (clang-1700.3.19.1)]
-        ignore line: [Target: arm64-apple-darwin25.0.0]
+        ignore line: [Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_101c1]
+        ignore line: [[1/2] /usr/bin/cc   -arch arm64 -fcolor-diagnostics   -v -Wl -v -MD -MT CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -MF CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o.d -o CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCCompilerABI.c]
+        ignore line: [Apple clang version 17.0.0 (clang-1700.6.3.2)]
+        ignore line: [Target: arm64-apple-darwin25.2.0]
         ignore line: [Thread model: posix]
         ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
         ignore line: [clang: warning: -Wl -v: 'linker' input unused [-Wunused-command-line-argument]]
-        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.0 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm -target-linker-version 1221.4 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-oioSrm -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fskip-odr-check-in-gmf -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -x c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCCompilerABI.c]
-        ignore line: [clang -cc1 version 17.0.0 (clang-1700.3.19.1) default target arm64-apple-darwin25.0.0]
+        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCCompilerABI.c -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.2 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb -target-linker-version 1230.1 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-CW8hyb -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fskip-odr-check-in-gmf -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -x c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCCompilerABI.c]
+        ignore line: [clang -cc1 version 17.0.0 (clang-1700.6.3.2) default target arm64-apple-darwin25.2.0]
         ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"]
         ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"]
         ignore line: [#include "..." search starts here:]
@@ -261,12 +1526,12 @@ events:
         ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)]
         ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks (framework directory)]
         ignore line: [End of search list.]
-        ignore line: [[2/2] : && /usr/bin/cc -arch arm64 -Wl -search_paths_first -Wl -headerpad_max_install_names -v -Wl -v CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -o cmTC_1c70f   && :]
-        ignore line: [Apple clang version 17.0.0 (clang-1700.3.19.1)]
-        ignore line: [Target: arm64-apple-darwin25.0.0]
+        ignore line: [[2/2] : && /usr/bin/cc -arch arm64 -Wl -search_paths_first -Wl -headerpad_max_install_names -v -Wl -v CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -o cmTC_101c1   && :]
+        ignore line: [Apple clang version 17.0.0 (clang-1700.6.3.2)]
+        ignore line: [Target: arm64-apple-darwin25.2.0]
         ignore line: [Thread model: posix]
         ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
-        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_1c70f -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
+        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_101c1 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
           arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld] ==> ignore
           arg [-demangle] ==> ignore
           arg [-lto_library] ==> ignore, skip following value
@@ -277,18 +1542,18 @@ events:
           arg [-platform_version] ==> ignore
           arg [macos] ==> ignore
           arg [26.0.0] ==> ignore
-          arg [26.0] ==> ignore
+          arg [26.2] ==> ignore
           arg [-syslibroot] ==> ignore
           arg [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk] ==> ignore
           arg [-mllvm] ==> ignore
           arg [-enable-linkonceodr-outlining] ==> ignore
           arg [-o] ==> ignore
-          arg [cmTC_1c70f] ==> ignore
+          arg [cmTC_101c1] ==> ignore
           arg [-L/usr/local/lib] ==> dir [/usr/local/lib]
           arg [-search_paths_first] ==> ignore
           arg [-headerpad_max_install_names] ==> ignore
           arg [-v] ==> ignore
-          arg [CMakeFiles/cmTC_1c70f.dir/CMakeCCompilerABI.c.o] ==> ignore
+          arg [CMakeFiles/cmTC_101c1.dir/CMakeCCompilerABI.c.o] ==> ignore
           arg [-lSystem] ==> lib [System]
           arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a] ==> lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
         linker tool for 'C': /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld
@@ -310,14 +1575,14 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/Internal/CMakeDetermineLinkerId.cmake:36 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:270 (cmake_determine_linker_id)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/Internal/CMakeDetermineLinkerId.cmake:36 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:299 (cmake_determine_linker_id)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Running the C compiler's linker: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" "-v"
-      @(#)PROGRAM:ld PROJECT:ld-1221.4
-      BUILD 16:29:08 Aug 11 2025
+      @(#)PROGRAM:ld PROJECT:ld-1230.1
+      BUILD 06:36:05 Dec  2 2025
       configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em armv8m.main armv8.1m.main
       will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
       LTO support using: LLVM version 17.0.0 (static support for 29, runtime is 29)
@@ -325,14 +1590,14 @@ events:
   -
     kind: "try_compile-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:83 (try_compile)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa"
-      binary: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa"
+      source: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4"
+      binary: "/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4"
     cmakeVariables:
       CMAKE_CXX_FLAGS: ""
       CMAKE_CXX_FLAGS_DEBUG: "-g"
@@ -345,18 +1610,18 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa'
+        Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4'
         
-        Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_53276
-        [1/2] /usr/bin/c++   -arch arm64 -fcolor-diagnostics   -v -Wl,-v -MD -MT CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCXXCompilerABI.cpp
-        Apple clang version 17.0.0 (clang-1700.3.19.1)
-        Target: arm64-apple-darwin25.0.0
+        Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_e5371
+        [1/2] /usr/bin/c++   -arch arm64 -fcolor-diagnostics   -v -Wl,-v -MD -MT CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCXXCompilerABI.cpp
+        Apple clang version 17.0.0 (clang-1700.6.3.2)
+        Target: arm64-apple-darwin25.2.0
         Thread model: posix
         InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
         clang++: warning: -Wl,-v: 'linker' input unused [-Wunused-command-line-argument]
         ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/../include/c++/v1"
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.0 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa -target-linker-version 1221.4 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -fdeprecated-macro -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fskip-odr-check-in-gmf -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -x c++ /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCXXCompilerABI.cpp
-        clang -cc1 version 17.0.0 (clang-1700.3.19.1) default target arm64-apple-darwin25.0.0
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.2 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4 -target-linker-version 1230.1 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4 -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -fdeprecated-macro -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fskip-odr-check-in-gmf -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -x c++ /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCXXCompilerABI.cpp
+        clang -cc1 version 17.0.0 (clang-1700.6.3.2) default target arm64-apple-darwin25.2.0
         ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"
         ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"
         #include "..." search starts here:
@@ -369,14 +1634,14 @@ events:
          /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)
          /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks (framework directory)
         End of search list.
-        [2/2] : && /usr/bin/c++ -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -v -Wl,-v CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_53276   && :
-        Apple clang version 17.0.0 (clang-1700.3.19.1)
-        Target: arm64-apple-darwin25.0.0
+        [2/2] : && /usr/bin/c++ -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names -v -Wl,-v CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_e5371   && :
+        Apple clang version 17.0.0 (clang-1700.6.3.2)
+        Target: arm64-apple-darwin25.2.0
         Thread model: posix
         InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
-         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_53276 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a
-        @(#)PROGRAM:ld PROJECT:ld-1221.4
-        BUILD 16:29:08 Aug 11 2025
+         "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_e5371 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a
+        @(#)PROGRAM:ld PROJECT:ld-1230.1
+        BUILD 06:36:05 Dec  2 2025
         configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em armv8m.main armv8.1m.main
         will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
         LTO support using: LLVM version 17.0.0 (static support for 29, runtime is 29)
@@ -392,8 +1657,8 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:122 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Effective list of requested architectures (possibly empty)  : ""
@@ -401,8 +1666,8 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:191 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:217 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Parsed CXX implicit include dir info: rv=done
@@ -425,25 +1690,25 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:227 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:253 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Parsed CXX implicit link information:
         link line regex: [^( *|.*[/\\])(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\\]+-)?ld|collect2)[^/\\]*( |$)]
         linker tool regex: [^[ 	]*(->|")?[ 	]*(([^"]*[/\\])?(ld[0-9]*(|\\.[a-rt-z][a-z]*|\\.s[a-np-z][a-z]*|\\.so[a-z]+)))("|,| |$)]
-        ignore line: [Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa']
+        ignore line: [Change Dir: '/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4']
         ignore line: []
-        ignore line: [Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_53276]
-        ignore line: [[1/2] /usr/bin/c++   -arch arm64 -fcolor-diagnostics   -v -Wl -v -MD -MT CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCXXCompilerABI.cpp]
-        ignore line: [Apple clang version 17.0.0 (clang-1700.3.19.1)]
-        ignore line: [Target: arm64-apple-darwin25.0.0]
+        ignore line: [Run Build Command(s): /Users/yuchuan/Applications/CLion.app/Contents/bin/ninja/mac/aarch64/ninja -v cmTC_e5371]
+        ignore line: [[1/2] /usr/bin/c++   -arch arm64 -fcolor-diagnostics   -v -Wl -v -MD -MT CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -MF CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o.d -o CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -c /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [Apple clang version 17.0.0 (clang-1700.6.3.2)]
+        ignore line: [Target: arm64-apple-darwin25.2.0]
         ignore line: [Thread model: posix]
         ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
         ignore line: [clang++: warning: -Wl -v: 'linker' input unused [-Wunused-command-line-argument]]
         ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/../include/c++/v1"]
-        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.0 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa -target-linker-version 1221.4 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ryFSoa -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -fdeprecated-macro -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fskip-odr-check-in-gmf -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -x c++ /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeCXXCompilerABI.cpp]
-        ignore line: [clang -cc1 version 17.0.0 (clang-1700.3.19.1) default target arm64-apple-darwin25.0.0]
+        ignore line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" -cc1 -triple arm64-apple-macosx26.0.0 -Wundef-prefix=TARGET_OS_ -Wdeprecated-objc-isa-usage -Werror=deprecated-objc-isa-usage -Werror=implicit-function-declaration -emit-obj -disable-free -clear-ast-before-backend -disable-llvm-verifier -discard-value-names -main-file-name CMakeCXXCompilerABI.cpp -mrelocation-model pic -pic-level 2 -mframe-pointer=non-leaf -fno-strict-return -ffp-contract=on -fno-rounding-math -funwind-tables=1 -fobjc-msgsend-selector-stubs -target-sdk-version=26.2 -fvisibility-inlines-hidden-static-local-var -fdefine-target-os-macros -fno-assume-unique-vtables -fno-modulemap-allow-subdirectory-search -target-cpu apple-m1 -target-feature +zcm -target-feature +zcz -target-feature +v8.5a -target-feature +aes -target-feature +altnzcv -target-feature +ccdp -target-feature +complxnum -target-feature +crc -target-feature +dotprod -target-feature +fp-armv8 -target-feature +fp16fml -target-feature +fptoint -target-feature +fullfp16 -target-feature +jsconv -target-feature +lse -target-feature +neon -target-feature +pauth -target-feature +perfmon -target-feature +predres -target-feature +ras -target-feature +rcpc -target-feature +rdm -target-feature +sb -target-feature +sha2 -target-feature +sha3 -target-feature +specrestrict -target-feature +ssbs -target-abi darwinpcs -debugger-tuning=lldb -fdebug-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4 -target-linker-version 1230.1 -v -fcoverage-compilation-dir=/Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/cmake-build-debug/CMakeFiles/CMakeScratch/TryCompile-ea5fe4 -resource-dir /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17 -dependency-file CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o.d -skip-unused-modulemap-deps -MT CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -sys-header-deps -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -I/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/c++/v1 -internal-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include -internal-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include -internal-externc-isystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks -internal-iframework /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks -Wno-reorder-init-list -Wno-implicit-int-float-conversion -Wno-c99-designator -Wno-final-dtor-non-final-class -Wno-extra-semi-stmt -Wno-misleading-indentation -Wno-quoted-include-in-framework-header -Wno-implicit-fallthrough -Wno-enum-enum-conversion -Wno-enum-float-conversion -Wno-elaborated-enum-base -fdeprecated-macro -ferror-limit 19 -stack-protector 1 -fstack-check -mdarwin-stkchk-strong-link -fblocks -fencode-extended-block-signature -fregister-global-dtors-with-atexit -fgnuc-version=4.2.1 -fno-cxx-modules -fskip-odr-check-in-gmf -fcxx-exceptions -fexceptions -fmax-type-align=16 -fcommon -fcolor-diagnostics -clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation -fno-odr-hash-protocols -clang-vendor-feature=+enableAggressiveVLAFolding -clang-vendor-feature=+revert09abecef7bbf -clang-vendor-feature=+thisNoAlignAttr -clang-vendor-feature=+thisNoNullAttr -clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError -D__GCC_HAVE_DWARF2_CFI_ASM=1 -o CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -x c++ /Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeCXXCompilerABI.cpp]
+        ignore line: [clang -cc1 version 17.0.0 (clang-1700.6.3.2) default target arm64-apple-darwin25.2.0]
         ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/local/include"]
         ignore line: [ignoring nonexistent directory "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/Library/Frameworks"]
         ignore line: [#include "..." search starts here:]
@@ -456,12 +1721,12 @@ events:
         ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks (framework directory)]
         ignore line: [ /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/SubFrameworks (framework directory)]
         ignore line: [End of search list.]
-        ignore line: [[2/2] : && /usr/bin/c++ -arch arm64 -Wl -search_paths_first -Wl -headerpad_max_install_names -v -Wl -v CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_53276   && :]
-        ignore line: [Apple clang version 17.0.0 (clang-1700.3.19.1)]
-        ignore line: [Target: arm64-apple-darwin25.0.0]
+        ignore line: [[2/2] : && /usr/bin/c++ -arch arm64 -Wl -search_paths_first -Wl -headerpad_max_install_names -v -Wl -v CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_e5371   && :]
+        ignore line: [Apple clang version 17.0.0 (clang-1700.6.3.2)]
+        ignore line: [Target: arm64-apple-darwin25.2.0]
         ignore line: [Thread model: posix]
         ignore line: [InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin]
-        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.0 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_53276 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
+        link line: [ "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" -demangle -lto_library /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libLTO.dylib -dynamic -arch arm64 -platform_version macos 26.0.0 26.2 -syslibroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -mllvm -enable-linkonceodr-outlining -o cmTC_e5371 -L/usr/local/lib -search_paths_first -headerpad_max_install_names -v CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o -lc++ -lSystem /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
           arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld] ==> ignore
           arg [-demangle] ==> ignore
           arg [-lto_library] ==> ignore, skip following value
@@ -472,18 +1737,18 @@ events:
           arg [-platform_version] ==> ignore
           arg [macos] ==> ignore
           arg [26.0.0] ==> ignore
-          arg [26.0] ==> ignore
+          arg [26.2] ==> ignore
           arg [-syslibroot] ==> ignore
           arg [/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk] ==> ignore
           arg [-mllvm] ==> ignore
           arg [-enable-linkonceodr-outlining] ==> ignore
           arg [-o] ==> ignore
-          arg [cmTC_53276] ==> ignore
+          arg [cmTC_e5371] ==> ignore
           arg [-L/usr/local/lib] ==> dir [/usr/local/lib]
           arg [-search_paths_first] ==> ignore
           arg [-headerpad_max_install_names] ==> ignore
           arg [-v] ==> ignore
-          arg [CMakeFiles/cmTC_53276.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+          arg [CMakeFiles/cmTC_e5371.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
           arg [-lc++] ==> lib [c++]
           arg [-lSystem] ==> lib [System]
           arg [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a] ==> lib [/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/17/lib/darwin/libclang_rt.osx.a]
@@ -506,14 +1771,14 @@ events:
   -
     kind: "message-v1"
     backtrace:
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/Internal/CMakeDetermineLinkerId.cmake:36 (message)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeDetermineCompilerABI.cmake:270 (cmake_determine_linker_id)"
-      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.0/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/Internal/CMakeDetermineLinkerId.cmake:36 (message)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeDetermineCompilerABI.cmake:299 (cmake_determine_linker_id)"
+      - "/Users/yuchuan/Applications/CLion.app/Contents/bin/cmake/mac/aarch64/share/cmake-4.1/Modules/CMakeTestCXXCompiler.cmake:26 (CMAKE_DETERMINE_COMPILER_ABI)"
       - "CMakeLists.txt:2 (project)"
     message: |
       Running the CXX compiler's linker: "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld" "-v"
-      @(#)PROGRAM:ld PROJECT:ld-1221.4
-      BUILD 16:29:08 Aug 11 2025
+      @(#)PROGRAM:ld PROJECT:ld-1230.1
+      BUILD 06:36:05 Dec  2 2025
       configured to support archs: armv6 armv7 armv7s arm64 arm64e arm64_32 i386 x86_64 x86_64h armv6m armv7k armv7m armv7em armv8m.main armv8.1m.main
       will use ld-classic for: armv6 armv7 armv7s i386 armv6m armv7k armv7m armv7em
       LTO support using: LLVM version 17.0.0 (static support for 29, runtime is 29)

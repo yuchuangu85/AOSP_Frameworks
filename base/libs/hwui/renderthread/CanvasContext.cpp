@@ -36,6 +36,8 @@
 
 #include "../Properties.h"
 #include "AnimationContext.h"
+#include "ColorArea.h"
+#include "FeatureFlags.h"
 #include "Frame.h"
 #include "LayerUpdateQueue.h"
 #include "Properties.h"
@@ -433,21 +435,15 @@ bool CanvasContext::isSwapChainStuffed() {
     return true;
 }
 
-// 把 UI 线程刚录制的 RenderNode 树“搬进” GPU，同时决定这帧到底画不画；不画就给出跳过理由，
-// 画就预留 Surface 缓冲并安排后续动画回调。
 void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued,
                                 RenderNode* target) {
-    // 阶段 0  清空上一帧的回调: 如果上一帧给自己贴了“下一帧继续动画”的回调，先摘掉，防止重复发帖。
     mRenderThread.removeFrameCallback(this);
 
-    // 阶段 1  确保 GPU 上下文已创建: 第一次进来时 GrContext 可能还没初始化，这里强行触发创建，后面上传纹理才能成功。
     // Make sure we have a valid device info
     if (!DeviceInfo::get()->hasMaxTextureSize()) {
         (void)mRenderThread.requireGrContext();
     }
 
-    // 阶段 2  跳帧审计 —— 上一帧被丢了？记下来: 用于 systrace / GPU 分析工具 统计“连续丢帧”场景，
-    // 方便定位是 Surface 丢失、没 buffer 还是重复绘制。
     // If the previous frame was dropped we don't need to hold onto it, so
     // just keep using the previous frame's structure instead
     const auto reason = wasSkipped(mCurrentFrameInfo);
@@ -477,47 +473,33 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         mSkippedFrameInfo.reset();
     }
 
-    // 阶段 3  把 UI 线程时间戳 搬进渲染侧: 这样后续 draw()、swapBuffers() 都能用同一套时间轴
-    // 计算 Sync → Issue → GPU → Present 各段耗时，用于 JankTracker 掉帧归因。
-    // 同步Java层测绘信息到native，OpenGL玄学曲线的来源
     mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);
     mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;
-    mCurrentFrameInfo->markSyncStart();// 一个计时节点
+    mCurrentFrameInfo->markSyncStart();
 
-    // 阶段 4  初始化 遍历上下文 TreeInfo
-    // damageAccumulator 收集 脏矩形，后面提交给 SurfaceFlinger 做 部分更新。
-    // layerUpdateQueue 收集 TextureView / SurfaceView 的异步 buffer。
-    // damageGenerationId 保证多次 prepareTree 之间脏区版本一致。
     info.damageAccumulator = &mDamageAccumulator;
+    info.colorArea = &mColorArea;
     info.layerUpdateQueue = &mLayerUpdateQueue;
     info.damageGenerationId = mDamageId++;
     info.out.skippedFrameReason = std::nullopt;
 
-    // 阶段 5  两趟遍历 —— 动画 + 树
-    // mRenderNodes 里通常有 2~3 个节点：
-    //  – [0] 窗口内容（primary）
-    //  – [1] 背景/Backdrop
-    //  – [2] 非客户区（导航栏填充）
-    // 只有 primary 才走 MODE_FULL（完整 DisplayList），其余只跑 实时模式（MODE_RT_ONLY），不触发重绘。
-    // prepareTree() 递归地把 DisplayList 指令、Matrix、Clip、Paint、Bitmap 翻译成 GPU 资源，同时写回：
-    //  – info.out.hasAnimations
-    //  – info.out.requiresUiRedraw
-    //  – info.prepareTextures（纹理是否成功上传）
     mAnimationContext->startFrame(info.mode);
+
+    if (target) {
+        determineColors(target);
+    }
+
     for (const sp<RenderNode>& node : mRenderNodes) {
         // Only the primary target node will be drawn full - all other nodes would get drawn in
         // real time mode. In case of a window, the primary node is the window content and the other
         // node(s) are non client / filler nodes.
         info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);
-        node->prepareTree(info);// mRootRenderNode递归遍历所有节点
+        node->prepareTree(info);
         GL_CHECKPOINT(MODERATE);
     }
     mAnimationContext->runRemainingAnimations(info);
     GL_CHECKPOINT(MODERATE);
 
-    // 阶段 6  释放预取纹理 + 早期快速跳出
-    // - 预取队列里的纹理如果这一帧没用到，就立即 glDeleteTextures 回收。
-    // - 早期返回，避免后面 reserveNext() 空耗一次。
     freePrefetchedLayers();
     GL_CHECKPOINT(MODERATE);
 
@@ -526,12 +508,9 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     if (CC_UNLIKELY(!hasOutputTarget())) {
         info.out.skippedFrameReason = SkippedFrameReason::NoOutputTarget;
         mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason);
-        return; // 没有 Surface，直接收工
+        return;
     }
 
-    // 阶段 7  防重复绘制 & 无内容可画检测
-    // - 防止 UI 线程慢 导致同一 vsync 脉冲里画两次。
-    // - 背景节点不可渲染也跳过，节省 GPU。
     if (CC_LIKELY(mSwapHistory.size() && !info.forceDrawFrame)) {
         nsecs_t latestVsync = mRenderThread.timeLord().latestVsync();
         SwapHistory& lastSwap = mSwapHistory.back();
@@ -540,7 +519,7 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
         // the vsync was estimated due to being slow handling the signal.
         // See the logic in TimeLord#computeFrameTimeNanos or in
         // Choreographer.java for details on when this happens
-        if (vsyncDelta < 2_ms) { // 同一 vsync 已画过
+        if (vsyncDelta < 2_ms) {
             // Already drew for this vsync pulse, UI draw request missed
             // the deadline for RT animations
             info.out.skippedFrameReason = SkippedFrameReason::AlreadyDrawn;
@@ -556,11 +535,6 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     }
 
     if (!info.out.skippedFrameReason) {
-        // 阶段 8  预留 buffer + 安排 下一帧回调
-        // -  reserveNext() 向 SurfaceFlinger 要一个 GraphicBuffer；
-        //    若返回 TIMED_OUT 说明暂时没 buffer，这一帧放弃；其他错误认为 Surface 已死，直接 setSurface(nullptr)。
-        // - 只要有 跑着的动画 或 这帧被跳过，就给自己贴一个 VSync 回调，下一帧继续走 渲染线程动画（RT 动画），避免回到 UI 线程抢锁，降低掉帧。
-        // - GIF/WebP 这类 固定帧率 的动图则按 图片自身延迟 发帖，不必死守 16 ms。
         int err = mNativeSurface->reserveNext();
         if (err != OK) {
             info.out.skippedFrameReason = SkippedFrameReason::NoBuffer;
@@ -579,17 +553,16 @@ void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t sy
     bool postedFrameCallback = false;
     if (info.out.hasAnimations || info.out.skippedFrameReason) {
         if (CC_UNLIKELY(!Properties::enableRTAnimations)) {
-            info.out.requiresUiRedraw = true; // 强制走 UI 线程
+            info.out.requiresUiRedraw = true;
         }
         if (!info.out.requiresUiRedraw) {
             // If animationsNeedsRedraw is set don't bother posting for an RT anim
             // as we will just end up fighting the UI thread.
-            mRenderThread.postFrameCallback(this); // 16 ms 后再来
+            mRenderThread.postFrameCallback(this);
             postedFrameCallback = true;
         }
     }
 
-    // 还有 AnimatedImage（GIF/WebP）自己定的延迟
     if (!postedFrameCallback &&
         info.out.animatedImageDelay != TreeInfo::Out::kNoAnimatedImageDelay) {
         // Subtract the time of one frame so it can be displayed on time.
@@ -617,7 +590,7 @@ void CanvasContext::stopDrawing() {
 void CanvasContext::notifyFramePending() {
     ATRACE_CALL();
     mRenderThread.pushBackFrameCallback(this);
-    sendLoadResetHint();
+    sendCpuLoadResetHint();
 }
 
 Frame CanvasContext::getFrame() {
@@ -628,12 +601,8 @@ Frame CanvasContext::getFrame() {
     }
 }
 
-// CanvasContext::draw() 是 RenderThread 的心跳函数：它决定 是否绘制、如何绘制、是否送显、如何记录性能，
-// 并通知 UI 线程 继续下一帧。
 void CanvasContext::draw(bool solelyTextureViewUpdates) {
 #ifdef __ANDROID__
-    // 防止在 GPU 上下文丢失（如 GPU 进程崩溃、设备被移除）时继续绘制。
-    // 一旦发现 GrContext 被废弃，直接 LOG_ALWAYS_FATAL 崩溃，方便调试。
     if (auto grContext = getGrContext()) {
         if (grContext->abandoned()) {
             if (grContext->isDeviceLost()) {
@@ -645,31 +614,15 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         }
     }
 #endif
-    // 收集“脏区”（damage region）
-    // 自上一帧以来 需要重绘的屏幕区域。
-    // 用于后续 partial redraw 优化，减少 GPU 工作量。
     SkRect dirty;
     mDamageAccumulator.finish(&dirty);
 
-    // 重置同步/空闲计时器
-    // 用于 性能追踪，记录主线程等待 GPU、Buffer 的时间。
     // reset syncDelayDuration each time we draw
     nsecs_t syncDelayDuration = mSyncDelayDuration;
     nsecs_t idleDuration = mIdleDuration;
     mSyncDelayDuration = 0;
     mIdleDuration = 0;
 
-    // 帧跳过逻辑（Early-out）
-    /*
-     * 跳过条件：
-        - 全局绘制开关关闭；
-        - 没有脏区且允许跳过空帧；
-     * 若跳过，则：
-        - 标记跳过原因；
-        - 提交 GPU 命令（释放上传缓存）；
-        - 通知所有 mFrameCommitCallbacks（防止上层无限等待）；
-        - 直接 return，不执行后续绘制。
-     */
     const auto skippedFrameReason = [&]() -> std::optional<SkippedFrameReason> {
         if (!Properties::isDrawingEnabled()) {
             return SkippedFrameReason::DrawingOff;
@@ -702,31 +655,20 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         return;
     }
 
-    // 真正开始绘制
-    // ScopedActiveContext：确保当前线程绑定 EGLContext；
     ScopedActiveContext activeContext(this);
     mCurrentFrameInfo->set(FrameInfoIndex::FrameInterval) =
             mRenderThread.timeLord().frameIntervalNanos();
 
     mCurrentFrameInfo->markIssueDrawCommandsStart();
 
-    // 重点
-    // Frame：封装了 Surface、ANativeWindow、Buffer 状态；
     Frame frame = getFrame();
 
-    // windowDirty：将脏区转换为 窗口坐标系。
     SkRect windowDirty = computeDirtyRect(frame, &dirty);
 
     ATRACE_FORMAT("Drawing " RECT_STRING, SK_RECT_ARGS(dirty));
 
     IRenderPipeline::DrawResult drawResult;
     {
-        // 调用渲染管线（RenderPipeline）
-        // 真正的 GPU 绘制：
-        //   - 遍历 RenderNode 树；
-        //   - 生成 Skia 命令；
-        //   - 上传纹理；
-        //   - 记录 GPU 命令提交时间 drawResult.commandSubmissionTime。
         // FrameInfoVisualizer accesses the frame events, which cannot be mutated mid-draw
         // or it can lead to memory corruption.
         drawResult = mRenderPipeline->draw(
@@ -738,9 +680,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     waitOnFences();
 
-    // 设置帧元数据（FrameTimeline）
-    // - 将 帧号、VSync ID、输入事件 ID 传递给 SurfaceFlinger；
-    // - 用于 帧节奏（Frame Pacing）、掉帧归因。
     if (mNativeSurface) {
         // TODO(b/165985262): measure performance impact
         const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);
@@ -769,17 +708,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     bool didDraw = false;
 
     int error = OK;
-    // 缓冲交换（SwapBuffers）
-    /**
-      * 若 requireSwap == true：
-        - 调用 eglSwapBuffers / ANativeWindow::queueBuffer；
-        - 真正把图像送显；
-      * 若 超时（TIMED_OUT）：
-        - 重新注册下一次 VSync 回调；
-        - 标记 didDraw = false，表示该帧 未成功呈现；
-      * 若 其他错误：
-        - 放弃当前 Surface（setSurface(nullptr)）；
-     */
     bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
                                                 &requireSwap);
 
@@ -805,9 +733,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
             didDraw = false;
         }
 
-        // 记录 SwapHistory
-        //  - 用于 性能分析、掉帧归因；
-        //  - 若 didDraw == false，damage 设为 全屏，表示下一帧需全刷。
         SwapHistory& swap = mSwapHistory.next();
         if (didDraw) {
             swap.damage = windowDirty;
@@ -860,9 +785,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     }
 #endif
 
-    // 通知上层帧完成
-    // - mFrameCommitCallbacks 是 UI 线程 postFrameCallback 注册的回调；
-    // - 通知上层 “可以解锁 MessageQueue” 或 “可以释放锁”。
     if (didSwap) {
         for (auto& func : mFrameCommitCallbacks) {
             std::invoke(func, true /* didProduceBuffer */);
@@ -870,11 +792,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         mFrameCommitCallbacks.clear();
     }
 
-    // 性能追踪与 JankTracker
-    // 将 帧耗时、掉帧原因、Surface ID 上报给：
-    //   - dumpsys gfxinfo；
-    //   - FrameMetrics API；
-    //   - Android Studio GPU Profiler。
     if (requireSwap) {
         if (mExpectSurfaceStats) {
             reportMetricsWithPresentTime();
@@ -895,20 +812,10 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
         }
     }
 
-    int64_t intendedVsync = mCurrentFrameInfo->get(FrameInfoIndex::IntendedVsync);
-    int64_t frameDeadline = mCurrentFrameInfo->get(FrameInfoIndex::FrameDeadline);
     int64_t dequeueBufferDuration = mCurrentFrameInfo->get(FrameInfoIndex::DequeueBufferDuration);
 
-    // 帧节奏（Workload Hint）
-    // - 与 ADPF (Android Dynamic Performance Framework) 交互；
-    // - 告诉 CPU 调度器 该帧 实际耗时，用于 动态调频、减少卡顿。
-    if (Properties::calcWorkloadOrigDeadline()) {
-        // Uses the unmodified frame deadline in calculating workload target duration
-        mHintSessionWrapper->updateTargetWorkDuration(
-                mCurrentFrameInfo->get(FrameInfoIndex::WorkloadTarget));
-    } else {
-        mHintSessionWrapper->updateTargetWorkDuration(frameDeadline - intendedVsync);
-    }
+    mHintSessionWrapper->updateTargetWorkDuration(
+            mCurrentFrameInfo->get(FrameInfoIndex::WorkloadTarget));
 
     if (didDraw) {
         int64_t frameStartTime = mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime);
@@ -923,9 +830,6 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     mLastDequeueBufferDuration = dequeueBufferDuration;
 
-    // 清理与缓存管理
-    // - 清理 GPU 纹理缓存、路径缓存；
-    // - 防止 内存泄漏 或 显存爆炸。
     mRenderThread.cacheManager().onFrameCompleted();
     return;
 }
@@ -1123,6 +1027,7 @@ void CanvasContext::buildLayer(RenderNode* node) {
     ScopedActiveContext activeContext(this);
     TreeInfo info(TreeInfo::MODE_FULL, *this);
     info.damageAccumulator = &mDamageAccumulator;
+    info.colorArea = &mColorArea;
     info.layerUpdateQueue = &mLayerUpdateQueue;
     info.runAnimations = false;
     node->prepareTree(info);
@@ -1178,20 +1083,12 @@ void CanvasContext::setName(const std::string&& name) {
     mJankTracker.setDescription(JankTrackerType::Window, std::move(name));
 }
 
-// 它负责 在 RenderThread 中同步 GPU 与 Buffer 的完成状态，防止 读写冲突 与 画面撕裂。
-// 调用线程：RenderThread（非 UI 线程）。
-// 调用时机：
-//    - 每帧 draw() 的 GPU 命令提交后；
-//    - 在 swapBuffers() 之前；
-//    - 确保 上一帧的 Buffer 已被消费（SurfaceFlinger 读完）。
 void CanvasContext::waitOnFences() {
     if (mFrameFences.size()) {
         ATRACE_CALL();
         for (auto& fence : mFrameFences) {
             fence.get();
         }
-        // 一旦所有 Fence 都被 Signal，清空列表；
-        // 表示 所有历史 Buffer 都已安全回收，可以 继续 dequeue 新 Buffer。
         mFrameFences.clear();
     }
 }
@@ -1219,7 +1116,6 @@ bool CanvasContext::surfaceRequiresRedraw() {
     return width != mLastFrameWidth || height != mLastFrameHeight;
 }
 
-// 收益: 减少30-50%(AI给出，仅供参考)的GPU负载，尤其在静态UI场景
 SkRect CanvasContext::computeDirtyRect(const Frame& frame, SkRect* dirty) {
     if (frame.width() != mLastFrameWidth || frame.height() != mLastFrameHeight) {
         // can't rely on prior content of window if viewport size changes
@@ -1256,19 +1152,33 @@ SkRect CanvasContext::computeDirtyRect(const Frame& frame, SkRect* dirty) {
         if (frame.bufferAge() > (int)mSwapHistory.size()) {
             // We don't have enough history to handle this old of a buffer
             // Just do a full-draw
-            dirty->setIWH(frame.width(), frame.height());// 全刷
+            dirty->setIWH(frame.width(), frame.height());
         } else {
             // At this point we haven't yet added the latest frame
             // to the damage history (happens below)
             // So we need to damage
             for (int i = mSwapHistory.size() - 1;
                  i > ((int)mSwapHistory.size()) - frame.bufferAge(); i--) {
-                dirty->join(mSwapHistory[i].damage);// 合并历史脏区
+                dirty->join(mSwapHistory[i].damage);
             }
         }
     }
 
     return windowDirty;
+}
+
+void CanvasContext::determineColors(const RenderNode* target) {
+    if (CC_UNLIKELY(view_accessibility_flags::force_invert_color() &&
+                    mForceDarkType == ForceDarkType::FORCE_INVERT_COLOR_DARK)) {
+        ATRACE_FORMAT("determineColors(): Color area calculation pre-pass");
+
+        // first pass: figure out if the app is light or dark mode
+        mColorArea.reset();
+
+        for (const sp<RenderNode>& node : mRenderNodes) {
+            node->gatherColorAreasForSubtree(mColorArea, target == node.get());
+        }
+    }
 }
 
 CanvasContext* CanvasContext::getActiveContext() {
@@ -1288,12 +1198,16 @@ void CanvasContext::prepareSurfaceControlForWebview() {
     }
 }
 
-void CanvasContext::sendLoadResetHint() {
-    mHintSessionWrapper->sendLoadResetHint();
+void CanvasContext::sendCpuLoadResetHint() {
+    mHintSessionWrapper->sendCpuLoadResetHint();
 }
 
-void CanvasContext::sendLoadIncreaseHint() {
-    mHintSessionWrapper->sendLoadIncreaseHint();
+void CanvasContext::sendCpuLoadIncreaseHint() {
+    mHintSessionWrapper->sendCpuLoadIncreaseHint();
+}
+
+void CanvasContext::sendGpuLoadIncreaseHint() {
+    mHintSessionWrapper->sendGpuLoadIncreaseHint();
 }
 
 void CanvasContext::setSyncDelayDuration(nsecs_t duration) {

@@ -2,7 +2,7 @@
 
 
 
-版本：android16-s2-release
+版本：android16-qpr2-release
 
 
 

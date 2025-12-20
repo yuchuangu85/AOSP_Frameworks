@@ -29,12 +29,6 @@ namespace android {
 namespace uirenderer {
 namespace skiapipeline {
 
-/*
- * 先渲染所有图层：
-    处理离屏图层合成
-    按照图层更新队列的顺序渲染
-    考虑不透明性优化
- */
 void SkiaCpuPipeline::renderLayersImpl(const LayerUpdateQueue& layers, bool opaque) {
     // Render all layers that need to be updated, in order.
     for (size_t i = 0; i < layers.entries().size(); i++) {

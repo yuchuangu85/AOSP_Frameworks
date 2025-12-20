@@ -89,8 +89,6 @@ static struct {
     bool waitSync = false;
 } EglExtensions;
 
-// EglManager主要作用是管理OpenGL上下文，比如创建EglSurface、指定当前操作的Surface、
-// swapBuffers等，主要负责场景及节点的管理工作：
 EglManager::EglManager()
         : mEglDisplay(EGL_NO_DISPLAY)
         , mEglConfig(nullptr)
@@ -580,13 +578,13 @@ bool EglManager::makeCurrent(EGLSurface surface, EGLint* errOut, bool force) {
 EGLint EglManager::queryBufferAge(EGLSurface surface) {
     switch (mSwapBehavior) {
         case SwapBehavior::Discard:
-            return 0; // 每帧全刷
+            return 0;
         case SwapBehavior::Preserved:
-            return 1;// 保留内容
-        case SwapBehavior::BufferAge:// 使用EGL_EXT_buffer_age
+            return 1;
+        case SwapBehavior::BufferAge:
             EGLint bufferAge;
             eglQuerySurface(mEglDisplay, surface, EGL_BUFFER_AGE_EXT, &bufferAge);
-            return bufferAge;// 返回缓冲区年龄(1-4)
+            return bufferAge;
     }
     return 0;
 }
@@ -753,7 +751,7 @@ status_t EglManager::createReleaseFence(bool useFenceSync, EGLSyncKHR* eglFence,
                   eglGetError());
             return UNKNOWN_ERROR;
         }
-        *nativeFence = fenceFd;// 传递给SurfaceFlinger
+        *nativeFence = fenceFd;
         *eglFence = EGL_NO_SYNC_KHR;
     } else if (useFenceSync && EglExtensions.fenceSync) {
         if (*eglFence != EGL_NO_SYNC_KHR) {

@@ -18,14 +18,6 @@
 
 namespace android::uirenderer {
 
-//| 跳帧原因               | 触发条件            | 性能影响    | 恢复策略                |
-//| ------------------ | --------------- | ------- | ------------------- |
-//| `AlreadyDrawn`     | 同一VSync已绘制      | 避免重复绘制  | 下一VSync自动恢复         |
-//| `NoBuffer`         | dequeueBuffer超时 | 减少GPU阻塞 | 250ms后重试            |
-//| `NoOutputTarget`   | Surface丢失       | 节省CPU   | Surface创建后恢复        |
-//| `ContextIsStopped` | Activity暂停      | 完全停止渲染  | `setStopped(false)` |
-//| `NothingToDraw`    | 脏区为空            | 节省GPU   | 内容变化后自动恢复           |
-
 enum class SkippedFrameReason {
     DrawingOff,
     ContextIsStopped,

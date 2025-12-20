@@ -23,7 +23,6 @@ import static com.android.internal.util.Preconditions.checkArgument;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.am.ActivityManagerService.MY_PID;
-import static com.android.server.am.OomAdjusterModernImpl.ProcessRecordNode.NUM_NODE_TYPE;
 
 import static java.util.Objects.requireNonNull;
 
@@ -35,6 +34,7 @@ import android.app.ApplicationExitInfo.Reason;
 import android.app.ApplicationExitInfo.SubReason;
 import android.app.BackgroundStartPrivileges;
 import android.app.IApplicationThread;
+import android.content.ComponentName;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.ProcessInfo;
@@ -65,7 +65,10 @@ import com.android.internal.app.procstats.ProcessState;
 import com.android.internal.app.procstats.ProcessStats;
 import com.android.internal.os.Zygote;
 import com.android.server.FgThread;
-import com.android.server.am.OomAdjusterModernImpl.ProcessRecordNode;
+import com.android.server.am.OomAdjusterImpl.ProcessRecordNode;
+import com.android.server.am.ProcessCachedOptimizerRecord.ShouldNotFreezeReason;
+import com.android.server.am.psc.PlatformCompatCache.CachedCompatChangeId;
+import com.android.server.am.psc.ProcessRecordInternal;
 import com.android.server.wm.WindowProcessController;
 import com.android.server.wm.WindowProcessListener;
 
@@ -79,7 +82,7 @@ import java.util.function.Consumer;
  * Full information about a particular process that
  * is currently running.
  */
-class ProcessRecord implements WindowProcessListener {
+class ProcessRecord extends ProcessRecordInternal implements WindowProcessListener {
     static final String TAG = TAG_WITH_CLASS_NAME ? "ProcessRecord" : TAG_AM;
 
     final ActivityManagerService mService; // where we came from
@@ -91,12 +94,7 @@ class ProcessRecord implements WindowProcessListener {
     // =========================================================
     volatile ApplicationInfo info; // all about the first app in the process
     final ProcessInfo processInfo; // if non-null, process-specific manifest info
-    final boolean isolated;     // true if this is a special isolated process
-    public final boolean isSdkSandbox; // true if this is an SDK sandbox process
     final boolean appZygote;    // true if this is forked from the app zygote
-    final int uid;              // uid of process; may be different from 'info' if isolated
-    final int userId;           // user of process.
-    final String processName;   // name of the process
     final String sdkSandboxClientAppPackage; // if this is an sdk sandbox process, name of the
                                              // app package for which it is running
     final String sdkSandboxClientAppVolumeUuid; // uuid of the app for which the sandbox is running
@@ -186,12 +184,6 @@ class ProcessRecord implements WindowProcessListener {
     private boolean mPendingStart;
 
     /**
-     * Process finish attach application is pending.
-     */
-    @GuardedBy("mService")
-    private boolean mPendingFinishAttach;
-
-    /**
      * Seq no. Indicating the latest process start associated with this process record.
      */
     @GuardedBy("mService")
@@ -244,12 +236,6 @@ class ProcessRecord implements WindowProcessListener {
     private boolean mUnlocked;
 
     /**
-     * TID for RenderThread.
-     */
-    @GuardedBy("mProcLock")
-    private int mRenderThreadTid;
-
-    /**
      * Last used compatibility mode.
      */
     @GuardedBy("mService")
@@ -268,6 +254,12 @@ class ProcessRecord implements WindowProcessListener {
     private long[] mLoggableCompatChanges;
 
     /**
+     * Whether to log compat change checks to statsd.
+     */
+    @GuardedBy("mService")
+    private boolean mLogChangeChecksToStatsD;
+
+    /**
      * Who is watching for the death.
      */
     @GuardedBy("mService")
@@ -280,28 +272,10 @@ class ProcessRecord implements WindowProcessListener {
     private ActiveInstrumentation mInstr;
 
     /**
-     * True when proc has been killed by activity manager, not for RAM.
-     */
-    @CompositeRWLock({"mService", "mProcLock"})
-    private boolean mKilledByAm;
-
-    /**
-     * True once we know the process has been killed.
-     */
-    @CompositeRWLock({"mService", "mProcLock"})
-    private boolean mKilled;
-
-    /**
      * The timestamp in uptime when this process was killed.
      */
     @CompositeRWLock({"mService", "mProcLock"})
     private long mKillTime;
-
-    /**
-     * Process is waiting to be killed when in the bg, and reason.
-     */
-    @GuardedBy("mService")
-    private String mWaitingToKill;
 
     /**
      * Whether this process should be killed and removed from process list.
@@ -322,28 +296,10 @@ class ProcessRecord implements WindowProcessListener {
     private boolean mWaitedForDebugger;
 
     /**
-     * For managing the LRU list.
-     */
-    @CompositeRWLock({"mService", "mProcLock"})
-    private long mLastActivityTime;
-
-    /**
      * Set to true when process was launched with a wrapper attached.
      */
     @GuardedBy("mService")
     private boolean mUsingWrapper;
-
-    /**
-     * Sequence id for identifying LRU update cycles.
-     */
-    @GuardedBy("mService")
-    private int mLruSeq;
-
-    /**
-     * Class to run on start if this is a special isolated process.
-     */
-    @GuardedBy("mService")
-    private String mIsolatedEntryPoint;
 
     /**
      * Arguments to pass to isolatedEntryPoint's main().
@@ -407,11 +363,6 @@ class ProcessRecord implements WindowProcessListener {
     final ProcessErrorStateRecord mErrorState;
 
     /**
-     * All about the process state info (proc state, oom adj score) in this process.
-     */
-    ProcessStateRecord mState;
-
-    /**
      * All about the state info of the optimizer when the process is cached.
      */
     final ProcessCachedOptimizerRecord mOptRecord;
@@ -445,8 +396,6 @@ class ProcessRecord implements WindowProcessListener {
      * Whether or not we should skip the process group creation.
      */
     volatile boolean mSkipProcessGroupCreation;
-
-    final ProcessRecordNode[] mLinkedNodes = new ProcessRecordNode[NUM_NODE_TYPE];
 
     /** Whether the app was launched from a stopped state and is being unstopped. */
     @GuardedBy("mService")
@@ -524,7 +473,7 @@ class ProcessRecord implements WindowProcessListener {
         pw.print(prefix); pw.print("thread="); pw.println(mThread);
         pw.print(prefix); pw.print("pid="); pw.println(mPid);
         pw.print(prefix); pw.print("lastActivityTime=");
-        TimeUtils.formatDuration(mLastActivityTime, nowUptime, pw);
+        TimeUtils.formatDuration(getLastActivityTime(), nowUptime, pw);
         pw.print(prefix); pw.print("startUpTime=");
         TimeUtils.formatDuration(mStartUptime, nowUptime, pw);
         pw.print(prefix); pw.print("startElapsedTime=");
@@ -543,21 +492,24 @@ class ProcessRecord implements WindowProcessListener {
         pw.print(prefix); pw.print("startSeq="); pw.println(mStartSeq);
         pw.print(prefix); pw.print("mountMode="); pw.println(
                 DebugUtils.valueToString(Zygote.class, "MOUNT_EXTERNAL_", mMountMode));
-        if (mKilled || mKilledByAm || mWaitingToKill != null) {
-            pw.print(prefix); pw.print("killed="); pw.print(mKilled);
-            pw.print(" killedByAm="); pw.print(mKilledByAm);
-            pw.print(" waitingToKill="); pw.println(mWaitingToKill);
+        if (isKilled() || isKilledByAm() || getWaitingToKill() != null) {
+            pw.print(prefix); pw.print("killed="); pw.print(isKilled());
+            pw.print(" killedByAm="); pw.print(isKilledByAm());
+            pw.print(" waitingToKill="); pw.println(getWaitingToKill());
         }
-        if (mIsolatedEntryPoint != null || mIsolatedEntryPointArgs != null) {
-            pw.print(prefix); pw.print("isolatedEntryPoint="); pw.println(mIsolatedEntryPoint);
+        if (getIsolatedEntryPoint() != null || mIsolatedEntryPointArgs != null) {
+            pw.print(prefix); pw.print("isolatedEntryPoint="); pw.println(getIsolatedEntryPoint());
             pw.print(prefix); pw.print("isolatedEntryPointArgs=");
             pw.println(Arrays.toString(mIsolatedEntryPointArgs));
         }
-        if (mState.getSetProcState() > ActivityManager.PROCESS_STATE_SERVICE) {
+        if (getSetProcState() > ActivityManager.PROCESS_STATE_SERVICE) {
             mProfile.dumpCputime(pw, prefix);
         }
+        if (mProfile.hasPendingUiClean()) {
+            pw.print(prefix); pw.print("pendingUiClean="); pw.println(mProfile.hasPendingUiClean());
+        }
         mProfile.dumpPss(pw, prefix, nowUptime);
-        mState.dump(pw, prefix, nowUptime);
+        super.dump(pw, prefix, nowUptime);
         mErrorState.dump(pw, prefix, nowUptime);
         mServices.dump(pw, prefix, nowUptime);
         mProviders.dump(pw, prefix, nowUptime);
@@ -574,6 +526,8 @@ class ProcessRecord implements WindowProcessListener {
     ProcessRecord(ActivityManagerService _service, ApplicationInfo _info, String _processName,
             int _uid, String _sdkSandboxClientAppPackage, int _definingUid,
             String _definingProcessName) {
+        super(_processName, _uid, _service, _service.mProcLock);
+
         mService = _service;
         mProcLock = _service.mProcLock;
         info = _info;
@@ -599,13 +553,8 @@ class ProcessRecord implements WindowProcessListener {
             }
         }
         processInfo = procInfo;
-        isolated = Process.isIsolated(_uid);
-        isSdkSandbox = Process.isSdkSandboxUid(_uid);
         appZygote = (UserHandle.getAppId(_uid) >= Process.FIRST_APP_ZYGOTE_ISOLATED_UID
                 && UserHandle.getAppId(_uid) <= Process.LAST_APP_ZYGOTE_ISOLATED_UID);
-        uid = _uid;
-        userId = UserHandle.getUserId(_uid);
-        processName = _processName;
         sdkSandboxClientAppPackage = _sdkSandboxClientAppPackage;
         if (isSdkSandbox) {
             final ApplicationInfo clientInfo = getClientInfoForSdkSandbox();
@@ -619,16 +568,17 @@ class ProcessRecord implements WindowProcessListener {
         mProfile = new ProcessProfileRecord(this);
         mServices = new ProcessServiceRecord(this);
         mProviders = new ProcessProviderRecord(this);
-        mReceivers = new ProcessReceiverRecord(this);
+        mReceivers = new ProcessReceiverRecord(mService);
         mErrorState = new ProcessErrorStateRecord(this);
-        mState = new ProcessStateRecord(this);
+        mWindowProcessController = new WindowProcessController(
+                mService.mActivityTaskManager, info, processName, uid, userId, this, this);
+
+
         mOptRecord = new ProcessCachedOptimizerRecord(this);
         final long now = SystemClock.uptimeMillis();
         mProfile.init(now);
         mOptRecord.init(now);
-        mState.init(now);
-        mWindowProcessController = new WindowProcessController(
-                mService.mActivityTaskManager, info, processName, uid, userId, this, this);
+        super.init(mWindowProcessController, mProfile, now);
         mPkgList.put(_info.packageName, new ProcessStats.ProcessStateHolder(_info.longVersionCode));
         updateProcessRecordNodes(this);
     }
@@ -638,10 +588,8 @@ class ProcessRecord implements WindowProcessListener {
      */
     @VisibleForTesting
     static void updateProcessRecordNodes(@NonNull ProcessRecord app) {
-        if (app.mService.mConstants.ENABLE_NEW_OOMADJ) {
-            for (int i = 0; i < app.mLinkedNodes.length; i++) {
-                app.mLinkedNodes[i] = new ProcessRecordNode(app);
-            }
+        for (int i = 0; i < app.mLinkedNodes.length; i++) {
+            app.mLinkedNodes[i] = new ProcessRecordNode(app);
         }
     }
 
@@ -664,8 +612,9 @@ class ProcessRecord implements WindowProcessListener {
         mErrorState.setCrashing(false);
     }
 
+    @Override
     @GuardedBy(anyOf = {"mService", "mProcLock"})
-    UidRecord getUidRecord() {
+    public UidRecord getUidRecord() {
         return mUidRecord;
     }
 
@@ -688,8 +637,9 @@ class ProcessRecord implements WindowProcessListener {
         mPkgDeps = pkgDeps;
     }
 
+    @Override
     @GuardedBy(anyOf = {"mService", "mProcLock"})
-    int getPid() {
+    public int getPid() {
         return mPid;
     }
 
@@ -709,14 +659,28 @@ class ProcessRecord implements WindowProcessListener {
         }
     }
 
-    @GuardedBy({"mService", "mProcLock"})
-    int getSetAdj() {
-        return mState.getSetAdj();
-    }
-
     @GuardedBy(anyOf = {"mService", "mProcLock"})
     IApplicationThread getThread() {
         return mThread;
+    }
+
+    @Override
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public boolean isProcessRunning() {
+        return mThread != null;
+    }
+
+    @Override
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public void setProcessStateToThread(int state) {
+        if (mThread == null) {
+            return;
+        }
+
+        try {
+            mThread.setProcessState(state);
+        } catch (RemoteException ignored) {
+        }
     }
 
     @GuardedBy(anyOf = {"mService", "mProcLock"})
@@ -724,20 +688,6 @@ class ProcessRecord implements WindowProcessListener {
         return mOnewayThread;
     }
 
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    int getCurProcState() {
-        return mState.getCurProcState();
-    }
-
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    int getSetProcState() {
-        return mState.getSetProcState();
-    }
-
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    int getSetCapability() {
-        return mState.getSetCapability();
-    }
 
     @GuardedBy({"mService", "mProcLock"})
     public void makeActive(ApplicationThreadDeferred thread, ProcessStatsService tracker) {
@@ -765,11 +715,19 @@ class ProcessRecord implements WindowProcessListener {
         mProfile.onProcessInactive(tracker);
     }
 
+    @Override
     @GuardedBy(anyOf = {"mService", "mProcLock"})
-    boolean useFifoUiScheduling() {
+    public boolean useFifoUiScheduling() {
+        // TODO: b/439611239 - Migrate control of mAllowSpecifiedFifoScheduling to
+        //  ProcessStateController.
         return mService.mUseFifoUiScheduling
                 || (mService.mAllowSpecifiedFifoScheduling
                         && mWindowProcessController.useFifoUiScheduling());
+    }
+
+    @Override
+    public void notifyTopProcChanged() {
+        mWindowProcessController.onTopProcChanged();
     }
 
     @GuardedBy("mService")
@@ -833,18 +791,8 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @GuardedBy("mService")
-    void setPendingFinishAttach(boolean pendingFinishAttach) {
-        mPendingFinishAttach = pendingFinishAttach;
-    }
-
-    @GuardedBy("mService")
-    boolean isPendingFinishAttach() {
-        return mPendingFinishAttach;
-    }
-
-    @GuardedBy("mService")
     boolean isThreadReady() {
-        return mThread != null && !mPendingFinishAttach;
+        return mThread != null && !isPendingFinishAttach();
     }
 
     @GuardedBy("mService")
@@ -932,16 +880,6 @@ class ProcessRecord implements WindowProcessListener {
         mUnlocked = unlocked;
     }
 
-    @GuardedBy("mProcLock")
-    int getRenderThreadTid() {
-        return mRenderThreadTid;
-    }
-
-    @GuardedBy("mProcLock")
-    void setRenderThreadTid(int renderThreadTid) {
-        mRenderThreadTid = renderThreadTid;
-    }
-
     @GuardedBy("mService")
     CompatibilityInfo getCompat() {
         return mCompat;
@@ -963,6 +901,11 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @GuardedBy("mService")
+    boolean isLogChangeChecksToStatsD() {
+        return mLogChangeChecksToStatsD;
+    }
+
+    @GuardedBy("mService")
     void setDisabledCompatChanges(long[] disabledCompatChanges) {
         mDisabledCompatChanges = disabledCompatChanges;
     }
@@ -970,6 +913,11 @@ class ProcessRecord implements WindowProcessListener {
     @GuardedBy("mService")
     void setLoggableCompatChanges(long[] loggableCompatChanges) {
         mLoggableCompatChanges = loggableCompatChanges;
+    }
+
+    @GuardedBy("mService")
+    void setLogChangeChecksToStatsD(boolean logChangeChecksToStatsD) {
+        mLogChangeChecksToStatsD = logChangeChecksToStatsD;
     }
 
     @GuardedBy("mService")
@@ -1005,29 +953,10 @@ class ProcessRecord implements WindowProcessListener {
         return mInstr;
     }
 
+    @Override
     @GuardedBy(anyOf = {"mService", "mProcLock"})
-    boolean hasActiveInstrumentation() {
+    public boolean hasActiveInstrumentation() {
         return mInstr != null;
-    }
-
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    boolean isKilledByAm() {
-        return mKilledByAm;
-    }
-
-    @GuardedBy({"mService", "mProcLock"})
-    void setKilledByAm(boolean killedByAm) {
-        mKilledByAm = killedByAm;
-    }
-
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    boolean isKilled() {
-        return mKilled;
-    }
-
-    @GuardedBy({"mService", "mProcLock"})
-    void setKilled(boolean killed) {
-        mKilled = killed;
     }
 
     @GuardedBy(anyOf = {"mService", "mProcLock"})
@@ -1038,16 +967,6 @@ class ProcessRecord implements WindowProcessListener {
     @GuardedBy({"mService", "mProcLock"})
     void setKillTime(long killTime) {
         mKillTime = killTime;
-    }
-
-    @GuardedBy("mService")
-    String getWaitingToKill() {
-        return mWaitingToKill;
-    }
-
-    @GuardedBy("mService")
-    void setWaitingToKill(String waitingToKill) {
-        mWaitingToKill = waitingToKill;
     }
 
     @Override
@@ -1103,16 +1022,6 @@ class ProcessRecord implements WindowProcessListener {
         mWaitedForDebugger = waitedForDebugger;
     }
 
-    @GuardedBy(anyOf = {"mService", "mProcLock"})
-    long getLastActivityTime() {
-        return mLastActivityTime;
-    }
-
-    @GuardedBy({"mService", "mProcLock"})
-    void setLastActivityTime(long lastActivityTime) {
-        mLastActivityTime = lastActivityTime;
-    }
-
     @GuardedBy("mService")
     boolean isUsingWrapper() {
         return mUsingWrapper;
@@ -1122,26 +1031,6 @@ class ProcessRecord implements WindowProcessListener {
     void setUsingWrapper(boolean usingWrapper) {
         mUsingWrapper = usingWrapper;
         mWindowProcessController.setUsingWrapper(usingWrapper);
-    }
-
-    @GuardedBy("mService")
-    int getLruSeq() {
-        return mLruSeq;
-    }
-
-    @GuardedBy("mService")
-    void setLruSeq(int lruSeq) {
-        mLruSeq = lruSeq;
-    }
-
-    @GuardedBy("mService")
-    String getIsolatedEntryPoint() {
-        return mIsolatedEntryPoint;
-    }
-
-    @GuardedBy("mService")
-    void setIsolatedEntryPoint(String isolatedEntryPoint) {
-        mIsolatedEntryPoint = isolatedEntryPoint;
     }
 
     @GuardedBy("mService")
@@ -1165,21 +1054,135 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @Override
-    @GuardedBy("mService")
-    public boolean isCached() {
-        return mState.isCached();
+    public boolean hasActivities() {
+        return mWindowProcessController.hasActivities();
     }
 
-    boolean hasActivities() {
-        return mWindowProcessController.hasActivities();
+    @Override
+    public boolean isHeavyWeightProcess() {
+        return mWindowProcessController.isHeavyWeightProcess();
+    }
+
+    @Override
+    public boolean hasVisibleActivities() {
+        return mWindowProcessController.hasVisibleActivities();
+    }
+
+    @Override
+    public boolean isHomeProcess() {
+        return mWindowProcessController.isHomeProcess();
+    }
+
+    @Override
+    public boolean isPreviousProcess() {
+        return mWindowProcessController.isPreviousProcess();
+    }
+
+    @Override
+    public boolean hasRecentTasks() {
+        return mWindowProcessController.hasRecentTasks();
+    }
+
+    @Override
+    public boolean isShowingUiWhileDozing() {
+        return mWindowProcessController.isShowingUiWhileDozing();
+    }
+
+    @Override
+    public int getActivityStateFlagsLegacy() {
+        return mWindowProcessController.getActivityStateFlags();
+    }
+
+    @Override
+    public long getPerceptibleTaskStoppedTimeMillisLegacy() {
+        return mWindowProcessController.getPerceptibleTaskStoppedTimeMillis();
+    }
+
+
+    @Override
+    public boolean isReceivingBroadcast(int[] outSchedGroup) {
+        return mService.isReceivingBroadcastLocked(this, outSchedGroup);
+    }
+
+    @Override
+    public boolean hasCompatChange(@CachedCompatChangeId int cachedCompatChangeId) {
+        return mService.mOomAdjuster.isChangeEnabled(cachedCompatChangeId, info,
+                false/* default */);
+    }
+
+    @Override
+    public ProcessServiceRecord getServices() {
+        return mServices;
+    }
+
+    @Override
+    public ProcessProviderRecord getProviders() {
+        return mProviders;
+    }
+
+    @Override
+    public ProcessReceiverRecord getReceivers() {
+        return mReceivers;
+    }
+
+    @Override
+    public boolean isFrozen() {
+        return mOptRecord.isFrozen();
+    }
+
+    @Override
+    public boolean isPendingFreeze() {
+        return mOptRecord.isPendingFreeze();
+    }
+
+    @Override
+    public boolean shouldNotFreeze() {
+        return mOptRecord.shouldNotFreeze();
+    }
+
+    @Override
+    public boolean setShouldNotFreeze(boolean shouldNotFreeze, boolean dryRun,
+            @ShouldNotFreezeReason int reason, int adjSeq) {
+        return mOptRecord.setShouldNotFreeze(shouldNotFreeze, dryRun, reason, adjSeq);
+    }
+
+    @Override
+    public @ShouldNotFreezeReason int shouldNotFreezeReason() {
+        return mOptRecord.shouldNotFreezeReason();
+    }
+
+    @Override
+    public int shouldNotFreezeAdjSeq() {
+        return mOptRecord.shouldNotFreezeAdjSeq();
+    }
+
+    @Override
+    public int getApplicationUid() {
+        return info.uid;
+    }
+
+    @Override
+    public String getPackageName() {
+        return info.packageName;
+    }
+
+    @Override
+    public boolean isInstantApp() {
+        return info.isInstantApp();
+    }
+
+    @Override
+    public long getLastPss() {
+        return mProfile.getLastPss();
+    }
+
+    @Override
+    public long getLastRss() {
+        return mProfile.getLastRss();
     }
 
     boolean hasActivitiesOrRecentTasks() {
         return mWindowProcessController.hasActivitiesOrRecentTasks();
-    }
-
-    boolean hasRecentTasks() {
-        return mWindowProcessController.hasRecentTasks();
     }
 
     @GuardedBy("mService")
@@ -1199,7 +1202,7 @@ class ProcessRecord implements WindowProcessListener {
         makeInactive(processStats);
         setWaitingToKill(null);
 
-        mState.onCleanupApplicationRecordLSP();
+        super.onCleanupApplicationRecordLSP();
         mService.mProcessStateController.onCleanupApplicationRecord(mServices);
         mReceivers.onCleanupApplicationRecordLocked();
         mService.mOomAdjuster.onProcessEndLocked(this);
@@ -1233,7 +1236,7 @@ class ProcessRecord implements WindowProcessListener {
     void scheduleCrashLocked(String message, int exceptionTypeId, @Nullable Bundle extras) {
         // Checking killedbyAm should keep it from showing the crash dialog if the process
         // was already dead for a good / normal reason.
-        if (!mKilledByAm) {
+        if (!isKilledByAm()) {
             if (mThread != null) {
                 if (mPid == Process.myPid()) {
                     Slog.w(TAG, "scheduleCrash: trying to crash system process!");
@@ -1259,59 +1262,42 @@ class ProcessRecord implements WindowProcessListener {
         return (rss != null && rss.length > 0) ? rss[0] : 0;
     }
 
+    @Override
     @GuardedBy("mService")
-    void killLocked(String reason, @Reason int reasonCode, boolean noisy) {
-        killLocked(reason, reasonCode, ApplicationExitInfo.SUBREASON_UNKNOWN, noisy, true);
-    }
-
-    @GuardedBy("mService")
-    void killLocked(String reason, @Reason int reasonCode, @SubReason int subReason,
-            boolean noisy) {
-        killLocked(reason, reason, reasonCode, subReason, noisy, true);
-    }
-
-    @GuardedBy("mService")
-    void killLocked(String reason, String description, @Reason int reasonCode,
-            @SubReason int subReason, boolean noisy) {
-        killLocked(reason, description, reasonCode, subReason, noisy, true);
-    }
-
-    @GuardedBy("mService")
-    void killLocked(String reason, @Reason int reasonCode, @SubReason int subReason,
-            boolean noisy, boolean asyncKPG) {
-        killLocked(reason, reason, reasonCode, subReason, noisy, asyncKPG);
-    }
-
-    @GuardedBy("mService")
-    void killLocked(String reason, String description, @Reason int reasonCode,
+    public void killLocked(String reason, String description, @Reason int reasonCode,
             @SubReason int subReason, boolean noisy, boolean asyncKPG) {
-        if (!mKilledByAm) {
-            Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "kill");
+        if (!isKilledByAm()) {
+            if (Trace.isTagEnabled(Trace.TRACE_TAG_ACTIVITY_MANAGER)) {
+                Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                        "kill/" + processName + "/" + reasonCode + "/" + subReason);
+            }
             if (reasonCode == ApplicationExitInfo.REASON_ANR
                     && mErrorState.getAnrAnnotation() != null) {
                 description = description + ": " + mErrorState.getAnrAnnotation();
             }
             if (mService != null && (noisy || info.uid == mService.mCurOomAdjUid)) {
                 mService.reportUidInfoMessageLocked(TAG,
-                        "Killing " + toShortString() + " (adj " + mState.getSetAdj()
+                        "Killing " + toShortString() + " (adj " + getSetAdj()
                         + "): " + reason, info.uid);
             }
             // Since the process is getting killed, reset the freezable related state.
-            mOptRecord.setPendingFreeze(false);
-            mOptRecord.setFrozen(false);
+            synchronized (mProcLock) {
+                mOptRecord.setPendingFreeze(false);
+                mOptRecord.setFrozen(false);
+            }
             if (mPid > 0) {
                 mService.mProcessList.noteAppKill(this, reasonCode, subReason, description);
                 EventLog.writeEvent(EventLogTags.AM_KILL,
-                        userId, mPid, processName, mState.getSetAdj(), reason, getRss(mPid));
+                        userId, mPid, processName, getSetAdj(), reason, getRss(mPid));
                 Process.killProcessQuiet(mPid);
-                killProcessGroupIfNecessaryLocked(asyncKPG);
+                killProcessGroupIfNecessaryLocked(asyncKPG, reason);
             } else {
                 mPendingStart = false;
             }
             if (!mPersistent) {
                 synchronized (mProcLock) {
-                    mKilled = true;
-                    mKilledByAm = true;
+                    setKilled(true);
+                    setKilledByAm(true);
                     mKillTime = SystemClock.uptimeMillis();
                 }
             }
@@ -1320,7 +1306,7 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @GuardedBy("mService")
-    void killProcessGroupIfNecessaryLocked(boolean async) {
+    void killProcessGroupIfNecessaryLocked(boolean async, String reason) {
         final boolean killProcessGroup;
         if (mHostingRecord != null
                 && (mHostingRecord.usesWebviewZygote() || mHostingRecord.usesAppZygote())) {
@@ -1338,7 +1324,7 @@ class ProcessRecord implements WindowProcessListener {
             if (!async) {
                 Process.sendSignalToProcessGroup(uid, mPid, OsConstants.SIGKILL);
             }
-            ProcessList.killProcessGroup(uid, mPid);
+            ProcessList.killProcessGroup(uid, mPid, reason);
         }
     }
 
@@ -1366,6 +1352,37 @@ class ProcessRecord implements WindowProcessListener {
         proto.end(token);
     }
 
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    String makeAdjReason() {
+        final Object adjSource = getAdjSource();
+        final Object adjTarget = getAdjTarget();
+        if (adjSource == null && adjTarget == null) {
+            return null;
+        }
+
+        StringBuilder sb = new StringBuilder(128);
+        sb.append(' ');
+        if (adjTarget instanceof ComponentName) {
+            sb.append(((ComponentName) adjTarget).flattenToShortString());
+        } else if (adjTarget != null) {
+            sb.append(adjTarget);
+        } else {
+            sb.append("{null}");
+        }
+        sb.append("<=");
+        if (adjSource instanceof ProcessRecord) {
+            sb.append("Proc{");
+            sb.append(((ProcessRecord) adjSource).toShortString());
+            sb.append("}");
+        } else if (adjSource != null) {
+            sb.append(adjSource);
+        } else {
+            sb.append("{null}");
+        }
+        return sb.toString();
+    }
+
+    @Override
     public String toShortString() {
         final String shortStringName = mShortStringName;
         if (shortStringName != null) {
@@ -1520,8 +1537,9 @@ class ProcessRecord implements WindowProcessListener {
         }
     }
 
-    String[] getPackageList() {
-        return mPkgList.getPackageList();
+    @Override
+    public String[] getProcessPackageNames() {
+        return mPkgList.getPackageNames();
     }
 
     List<VersionedPackage> getPackageListWithVersionCode() {
@@ -1606,6 +1624,16 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     @Override
+    public long getNextPssTime() {
+        return mProfile.getNextPssTime();
+    }
+
+    @Override
+    public void setLastCpuTime(long time) {
+        mProfile.mLastCpuTime.set(time);
+    }
+
+    @Override
     public void setPendingUiClean(boolean pendingUiClean) {
         synchronized (mProcLock) {
             mProfile.setPendingUiClean(pendingUiClean);
@@ -1616,7 +1644,7 @@ class ProcessRecord implements WindowProcessListener {
     public void setPendingUiCleanAndForceProcessStateUpTo(int newState) {
         synchronized (mService) {
             setPendingUiClean(true);
-            mState.forceProcessStateUpTo(newState);
+            mService.mProcessStateController.forceProcessStateUpTo(this, newState);
         }
     }
 
@@ -1657,7 +1685,7 @@ class ProcessRecord implements WindowProcessListener {
     public void onStartActivity(int topProcessState, boolean setProfileProc, String packageName,
             long versionCode) {
         synchronized (mService) {
-            mWaitingToKill = null;
+            setWaitingToKill(null);
             if (setProfileProc) {
                 synchronized (mService.mAppProfiler.mProfilerLock) {
                     mService.mAppProfiler.setProfileProcLPf(this);
@@ -1672,7 +1700,7 @@ class ProcessRecord implements WindowProcessListener {
                     true /* activityChange */, true /* updateOomAdj */);
             setPendingUiClean(true);
             mService.mProcessStateController.setHasShownUi(this, true);
-            mState.forceProcessStateUpTo(topProcessState);
+            mService.mProcessStateController.forceProcessStateUpTo(this, topProcessState);
         }
     }
 
@@ -1692,7 +1720,12 @@ class ProcessRecord implements WindowProcessListener {
         synchronized (mService) {
             if (mService.mProcessStateController.setRunningRemoteAnimation(this,
                     runningRemoteAnimation)) {
-                mService.mProcessStateController.runUpdate(this, OOM_ADJ_REASON_UI_VISIBILITY);
+                if (Flags.autoTriggerOomadjUpdates()) {
+                    // Do nothing.
+                    // ProcessStateController handled the update in setRunningRemoteAnimation.
+                } else {
+                    mService.mProcessStateController.runUpdate(this, OOM_ADJ_REASON_UI_VISIBILITY);
+                }
             }
         }
     }
@@ -1727,10 +1760,7 @@ class ProcessRecord implements WindowProcessListener {
     }
 
     boolean isFreezable() {
-        return mService.mOomAdjuster.mCachedAppOptimizer.useFreezer()
-                && !mOptRecord.isFreezeExempt()
-                && !mOptRecord.shouldNotFreeze()
-                && mState.getCurAdj() >= mService.mConstants.FREEZER_CUTOFF_ADJ;
+        return OomAdjuster.getFreezePolicy(this);
     }
 
     public void forEachConnectionHost(Consumer<ProcessRecord> consumer) {

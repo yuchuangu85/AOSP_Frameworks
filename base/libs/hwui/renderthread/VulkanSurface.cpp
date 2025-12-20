@@ -65,7 +65,7 @@ static SkMatrix GetPreTransformMatrix(SkISize windowSize, int transform) {
     return SkMatrix::I();
 }
 
-static SkM44 GetPixelSnapMatrix(SkISize windowSize, int transform) {
+SkM44 VulkanSurface::GetPixelSnapMatrix(SkISize windowSize, int transform) {
     // Small (~1/16th) nudge to ensure that pixel-aligned non-AA'd draws fill the
     // desired fragment
     static const SkScalar kOffset = 0.063f;
@@ -492,18 +492,8 @@ VulkanSurface::NativeBufferInfo* VulkanSurface::dequeueNativeBuffer() {
     mCurrentBufferInfo = bufferInfo;
     return bufferInfo;
 }
-/*
- * 核心呈现操作：
-    presentCurrentBuffer: 将当前渲染完成的缓冲区提交给显示系统
-    dirtyRect: 传递脏区域信息，可能用于部分更新优化
-    presentFence.release(): 转移栅栏所有权给呈现操作
- */
+
 bool VulkanSurface::presentCurrentBuffer(const SkRect& dirtyRect, int semaphoreFd) {
-    // 坐标转换过程：
-    //  - 输入: Skia 脏区域矩形（左上角原点坐标系）
-    //  - 转换: 转换为 Android 原生矩形（左下角原点坐标系）
-    //  - 计算: logicalHeight() - irect.top() 进行 Y 轴翻转
-    //  - 设置: 通过 native_window_set_surface_damage 告诉系统只需更新指定区域
     if (!dirtyRect.isEmpty()) {
 
         // native_window_set_surface_damage takes a rectangle in prerotated space
@@ -524,32 +514,11 @@ bool VulkanSurface::presentCurrentBuffer(const SkRect& dirtyRect, int semaphoreF
     }
 
     LOG_ALWAYS_FATAL_IF(!mCurrentBufferInfo);
-    // 确保当前有有效的缓冲区信息，否则触发致命错误。
     VulkanSurface::NativeBufferInfo& currentBuffer = *mCurrentBufferInfo;
     // queueBuffer always closes fence, even on error
-    // 选择要使用的栅栏：
-    //  - 优先使用传入的信号量栅栏 (semaphoreFd)
-    //  - 如果没有传入栅栏，使用缓冲区的出队栅栏
-    //  - release() 转移所有权，避免双重关闭
     int queuedFd = (semaphoreFd != -1) ? semaphoreFd : currentBuffer.dequeue_fence.release();
-    // 缓冲区排队
-    // 将缓冲区提交给显示系统进行呈现：
-    //  - mNativeWindow: Android 原生窗口接口
-    //  - currentBuffer.buffer: 要呈现的图形缓冲区
-    //  - queuedFd: 同步栅栏文件描述符
     int err = mNativeWindow->queueBuffer(mNativeWindow.get(), currentBuffer.buffer.get(), queuedFd);
 
-    // 状态更新与错误处理
-    // 成功路径：
-    //  - 标记缓冲区包含有效内容
-    //  - 记录呈现计数
-    //  - 递增全局呈现计数器
-    // 失败路径：
-    //  - 记录错误日志
-    //  - 取消缓冲区（系统重新获取栅栏所有权）
-    //  - 缓冲区不会显示
-    // 公共清理：
-    //  - 重置出队栅栏，无论成功与否
     currentBuffer.dequeued = false;
     if (err != 0) {
         ALOGE("queueBuffer failed: %s (%d)", strerror(-err), err);

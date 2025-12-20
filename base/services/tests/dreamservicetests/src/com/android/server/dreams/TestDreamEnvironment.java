@@ -17,6 +17,7 @@ package com.android.server.dreams;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.description;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.eq;
@@ -33,6 +34,7 @@ import android.content.pm.ServiceInfo;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.IRemoteCallback;
 import android.os.Looper;
@@ -175,9 +177,7 @@ public class TestDreamEnvironment {
         @Mock
         private ServiceInfo mServiceInfo;
 
-        @Mock
-        private DreamService.WakefulHandler mWakefulHandler;
-
+        private final Handler mHandler;
         private final IDreamManager mDreamManager;
         private final DreamOverlayConnectionHandler mDreamOverlayConnectionHandler;
 
@@ -186,6 +186,7 @@ public class TestDreamEnvironment {
                 DreamOverlayConnectionHandler dreamOverlayConnectionHandler,
                 boolean shouldShowComplications) {
             MockitoAnnotations.initMocks(this);
+            mHandler = new Handler(looper);
             mDreamManager = dreamManager;
             mDreamOverlayConnectionHandler = dreamOverlayConnectionHandler;
             mServiceInfo.packageName = FAKE_DREAM_PACKAGE_NAME;
@@ -198,10 +199,6 @@ public class TestDreamEnvironment {
                     .thenReturn(FAKE_DREAM_SETTINGS_ACTIVITY);
             when(mPackageManager.extractPackageItemInfoAttributes(any(), any(), any(), any()))
                     .thenReturn(mAttributes);
-            doAnswer(invocation -> {
-                ((Runnable) invocation.getArgument(0)).run();
-                return null;
-            }).when(mWakefulHandler).postIfNeeded(any());
         }
         @Override
         public void init(Context context) {
@@ -239,6 +236,11 @@ public class TestDreamEnvironment {
         }
 
         @Override
+        public Handler getHandler() {
+            return mHandler;
+        }
+
+        @Override
         public PackageManager getPackageManager() {
             return mPackageManager;
         }
@@ -246,11 +248,6 @@ public class TestDreamEnvironment {
         @Override
         public Resources getResources() {
             return mResources;
-        }
-
-        @Override
-        public DreamService.WakefulHandler getWakefulHandler() {
-            return mWakefulHandler;
         }
     }
 
@@ -432,5 +429,23 @@ public class TestDreamEnvironment {
      */
     public IDreamOverlayClient getDreamOverlayClient() {
         return mDreamOverlayClient;
+    }
+
+    /**
+     * Calls {@link DreamService#setScreenBrightness(float)}
+     */
+    public void setDreamScreenBrightness(float brightness) {
+        mService.setScreenBrightness(brightness);
+    }
+
+    /**
+     * Returns the last {@link android.view.WindowManager.LayoutParams} set on the activity window.
+     */
+    public WindowManager.LayoutParams getLatestLayoutParams() {
+        final ArgumentCaptor<WindowManager.LayoutParams> lpCaptor =
+                ArgumentCaptor.forClass(WindowManager.LayoutParams.class);
+        verify(mActivityWindow, atLeastOnce()).setAttributes(lpCaptor.capture());
+
+        return lpCaptor.getValue();
     }
 }

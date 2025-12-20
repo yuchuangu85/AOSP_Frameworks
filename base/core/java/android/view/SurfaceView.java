@@ -45,6 +45,7 @@ import android.graphics.RectF;
 import android.graphics.Region;
 import android.graphics.RenderNode;
 import android.hardware.input.InputManager;
+import android.media.quality.PictureProfileHandle;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -59,6 +60,7 @@ import android.util.Log;
 import android.view.SurfaceControl.Transaction;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.IAccessibilityEmbeddedConnection;
+import android.window.InputTransferToken;
 import android.window.SurfaceSyncGroup;
 
 import com.android.graphics.hwui.flags.Flags;
@@ -196,7 +198,6 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
     boolean mDrawFinished = false;
 
     final Rect mScreenRect = new Rect();
-    private final boolean mLimitedHdrEnabled = Flags.limitedHdr();
 
     SurfaceControl mSurfaceControl;
     SurfaceControl mBackgroundControl;
@@ -209,6 +210,8 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
 
     private float mRequestedHdrHeadroom = 0.f;
     private float mHdrHeadroom = 0.f;
+
+    private PictureProfileHandle mRequestedPictureProfileHandle = null;
 
     /**
      * We use this lock to protect access to mSurfaceControl. Both are accessed on the UI
@@ -347,7 +350,7 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
                     sv.mSurfacePackage.getRemoteInterface().attachParentInterface(this);
                     mSurfaceView = sv;
                 } catch (RemoteException e) {
-                    Log.d(TAG, "Failed to attach parent interface to SCVH. Likely SCVH is alraedy "
+                    Log.d(TAG, "Failed to attach parent interface to SCVH. Likely SCVH is already "
                             + "dead.");
                 }
             }
@@ -492,10 +495,37 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
         mTag = "SV[" + System.identityHashCode(this) + windowName + "]";
     }
 
+    private void dispatchScvhAttachedToHost() {
+        final ViewRootImpl viewRoot = getViewRootImpl();
+        if (viewRoot == null) {
+            return;
+        }
+
+        IBinder inputToken = viewRoot.getInputToken();
+        if (inputToken == null) {
+            // We don't have an input channel so we can't transfer focus or active
+            // touch gestures to embedded.
+            return;
+        }
+
+        try {
+            mSurfacePackage
+                    .getRemoteInterface()
+                    .onDispatchAttachedToWindow(new InputTransferToken(inputToken));
+        } catch (RemoteException e) {
+            Log.d(TAG,
+                    "Failed to onDispatchAttachedToWindow to SCVH. Likely SCVH is already "
+                            + "dead.");
+        }
+    }
+
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         setTag();
+        if (mSurfacePackage != null) {
+            dispatchScvhAttachedToHost();
+        }
         getViewRootImpl().addSurfaceChangedCallback(this);
         mWindowStopped = false;
         mViewVisibility = getVisibility() == VISIBLE;
@@ -971,7 +1001,6 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
      *                        chosen value.
      * @see Display#getHdrSdrRatio()
      */
-    @FlaggedApi(com.android.graphics.hwui.flags.Flags.FLAG_LIMITED_HDR)
     public void setDesiredHdrHeadroom(
             @FloatRange(from = 0.0f, to = 10000.0) float desiredHeadroom) {
         if (!Float.isFinite(desiredHeadroom)) {
@@ -986,6 +1015,29 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
         mRequestedHdrHeadroom = desiredHeadroom;
         updateSurface();
         invalidate();
+    }
+
+    /**
+     * Sends the picture profile handle to the Composer HAL for application on the surface.
+     * <p>
+     * This method allows a system application to specify a picture profile handle.
+     * The provided {@link PictureProfileHandle} will be propagated to the Composer HAL,
+     * which is then responsible for applying the corresponding display adjustments.
+     * <p>
+     *
+     * <p><b>Example Usage:</b></p>
+     * This is used by TvView to apply a picture profile handle obtained for the current TV input.
+     *
+     * @param handle The non-null {@link PictureProfileHandle} to send to the layer.
+     * @throws IllegalArgumentException if the provided handle is null.
+     * @hide
+     */
+    public void sendPictureProfileHandle(PictureProfileHandle handle) {
+        if (handle == null) {
+            throw new IllegalArgumentException("PictureProfileHandle is null");
+        }
+        mRequestedPictureProfileHandle = handle;
+        updateSurface();
     }
 
     private void updateOpaqueFlag() {
@@ -1068,7 +1120,8 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
 
     private boolean performSurfaceTransaction(ViewRootImpl viewRoot, Translator translator,
             boolean creating, boolean sizeChanged, boolean hintChanged, boolean relativeZChanged,
-            boolean hdrHeadroomChanged, Transaction surfaceUpdateTransaction) {
+            boolean hdrHeadroomChanged, PictureProfileHandle pictureProfileHandle,
+            Transaction surfaceUpdateTransaction) {
         boolean realSizeChanged = false;
 
         mSurfaceLock.lock();
@@ -1103,9 +1156,13 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
 
             updateBackgroundVisibility(surfaceUpdateTransaction);
             updateBackgroundColor(surfaceUpdateTransaction);
-            if (mLimitedHdrEnabled && (hdrHeadroomChanged || creating)) {
+            if (hdrHeadroomChanged || creating) {
                 surfaceUpdateTransaction.setDesiredHdrHeadroom(
                         mBlastSurfaceControl, mHdrHeadroom);
+            }
+            if (pictureProfileHandle != null) {
+                surfaceUpdateTransaction.setPictureProfileHandle(
+                        mBlastSurfaceControl, pictureProfileHandle);
             }
             if (isAboveParent()) {
                 float alpha = getAlpha();
@@ -1252,11 +1309,12 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
         final boolean surfaceLifecycleStrategyChanged =
                 mSurfaceLifecycleStrategy != mRequestedSurfaceLifecycleStrategy;
         final boolean hdrHeadroomChanged = mHdrHeadroom != mRequestedHdrHeadroom;
+        final boolean pictureProfileChanged = mRequestedPictureProfileHandle != null;
 
         if (creating || formatChanged || sizeChanged || visibleChanged
                 || alphaChanged || windowVisibleChanged || positionChanged
                 || layoutSizeChanged || hintChanged || relativeZChanged || !mAttachedToWindow
-                || surfaceLifecycleStrategyChanged || hdrHeadroomChanged) {
+                || surfaceLifecycleStrategyChanged || hdrHeadroomChanged || pictureProfileChanged) {
 
             if (DEBUG) Log.i(TAG, System.identityHashCode(this) + " "
                     + "Changes: creating=" + creating
@@ -1295,6 +1353,12 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
                 mSurfaceLifecycleStrategy = mRequestedSurfaceLifecycleStrategy;
                 mHdrHeadroom = mRequestedHdrHeadroom;
 
+                // Picture profiles operate a bit differently. Since the picture profiles can also
+                // be changed when queueing buffers, SurfaceView can't be the single source
+                // of truth for the picture profile.
+                PictureProfileHandle pictureProfileHandle = mRequestedPictureProfileHandle;
+                mRequestedPictureProfileHandle = null;
+
                 mScreenRect.left = mWindowSpaceLeft;
                 mScreenRect.top = mWindowSpaceTop;
                 mScreenRect.right = mWindowSpaceLeft + getWidth();
@@ -1331,7 +1395,7 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
 
                 final boolean realSizeChanged = performSurfaceTransaction(viewRoot, translator,
                         creating, sizeChanged, hintChanged, relativeZChanged, hdrHeadroomChanged,
-                        surfaceUpdateTransaction);
+                        pictureProfileHandle, surfaceUpdateTransaction);
 
                 try {
                     SurfaceHolder.Callback[] callbacks = null;
@@ -1416,6 +1480,13 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
                 + " w=" + mScreenRect.width() + " h=" + mScreenRect.height()
                 + ", frame=" + mSurfaceFrame);
         }
+    }
+
+    /**
+     * @hide
+     */
+    public SurfaceControl getRenderingSurfaceControl() {
+        return mBlastSurfaceControl;
     }
 
     /**
@@ -2085,6 +2156,11 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
      * any {@link SurfaceControl.Transaction} to this SurfaceControl except for reparenting
      * child SurfaceControls. See: {@link SurfaceControl.Transaction#reparent}.
      *
+     *  The SurfaceControl lifetime follows the SurfaceView's Surface lifetime. You should implement
+     * {@link SurfaceHolder.Callback#surfaceCreated} and
+     * {@link SurfaceHolder.Callback#surfaceDestroyed} to discover when the
+     * SurfaceControl is valid. Outside of that, a {@code null} SurfaceControl will be returned.
+     *
      * @return The SurfaceControl for this SurfaceView.
      */
     public SurfaceControl getSurfaceControl() {
@@ -2189,6 +2265,7 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
             applyTransactionOnVriDraw(transaction);
         }
         mSurfacePackage = p;
+        dispatchScvhAttachedToHost();
         mSurfaceControlViewHostParent.attach(this);
 
         if (isFocused()) {
@@ -2260,11 +2337,9 @@ public class SurfaceView extends View implements ViewRootImpl.SurfaceChangedCall
     protected void onProvideStructure(@NonNull ViewStructure structure,
             @ViewStructureType int viewFor, int flags) {
         super.onProvideStructure(structure, viewFor, flags);
-        if (android.app.contextualsearch.flags.Flags.reportSecureSurfacesInAssistStructure()) {
-            if ((mSurfaceFlags & SurfaceControl.SECURE) != 0) {
-                structure.getExtras().putBoolean(
-                        ViewStructure.EXTRA_CONTAINS_SECURE_LAYERS, true);
-            }
+        if ((mSurfaceFlags & SurfaceControl.SECURE) != 0) {
+            structure.getExtras().putBoolean(
+                    ViewStructure.EXTRA_CONTAINS_SECURE_LAYERS, true);
         }
     }
 

@@ -44,7 +44,6 @@
 
 #include <sstream>
 
-#include "LightingInfo.h"
 #include "VectorDrawable.h"
 #include "include/gpu/GpuTypes.h"  // from Skia
 #include "thread/CommonPool.h"
@@ -88,20 +87,12 @@ bool SkiaPipeline::renderLayerImpl(RenderNode* layerNode, const Rect& layerDamag
 
     SkCanvas* layerCanvas = layerNode->getLayerSurface()->getCanvas();
 
-    int saveCount = layerCanvas->save();
-    SkASSERT(saveCount == 1);
+    SkASSERT(layerCanvas->getSaveCount() == 1);
+    SkAutoCanvasRestore saver(layerCanvas, true);
 
     layerCanvas->androidFramework_setDeviceClipRestriction(layerDamage.toSkIRect());
 
-    // TODO: put localized light center calculation and storage to a drawable related code.
-    // It does not seem right to store something localized in a global state
-    // fix here and in recordLayers
-    const Vector3 savedLightCenter(LightingInfo::getLightCenterRaw());
-    Vector3 transformedLightCenter(savedLightCenter);
-    // map current light center into RenderNode's coordinate space
-    layerNode->getSkiaLayer()->inverseTransformInWindow.mapPoint3d(transformedLightCenter);
-    LightingInfo::setLightCenterRaw(transformedLightCenter);
-
+    AutoLightingInfoRestore restoreLightingInfo(layerNode);
     const RenderProperties& properties = layerNode->properties();
     const SkRect bounds = SkRect::MakeWH(properties.getWidth(), properties.getHeight());
     if (properties.getClipToBounds() && layerCanvas->quickReject(bounds)) {
@@ -116,9 +107,6 @@ bool SkiaPipeline::renderLayerImpl(RenderNode* layerNode, const Rect& layerDamag
 
     RenderNodeDrawable root(layerNode, layerCanvas, false);
     root.forceDraw(layerCanvas);
-    layerCanvas->restoreToCount(saveCount);
-
-    LightingInfo::setLightCenterRaw(savedLightCenter);
     return true;
 }
 
@@ -299,12 +287,6 @@ SkCanvas* SkiaPipeline::tryCapture(SkSurface* surface, RenderNode* root,
     return mNwayCanvas.get();
 }
 
-/*
- * 结束SKP捕获流程：
-    完成命令录制
-    触发捕获回调（如果设置了）
-    释放录制资源
- */
 void SkiaPipeline::endCapture(SkSurface* surface) {
     if (CC_LIKELY(mCaptureMode == CaptureMode::None)) { return; }
     mNwayCanvas.reset();
@@ -358,17 +340,11 @@ void SkiaPipeline::renderFrame(const LayerUpdateQueue& layers, const SkRect& cli
                                const std::vector<sp<RenderNode>>& nodes, bool opaque,
                                const Rect& contentDrawBounds, sk_sp<SkSurface> surface,
                                const SkMatrix& preTransform) {
-    // 保存并修改SKP（Skia Picture）捕获状态：
-    //  - 保存之前的SKP捕获状态
-    //  - 如果有图片捕获回调，启用SKP捕获
     bool previousSkpEnabled = Properties::skpCaptureEnabled;
     if (mPictureCapturedCallback) {
         Properties::skpCaptureEnabled = true;
     }
 
-    // 获取渲染画布，可能是指录画布（如果启用了SKP捕获）：
-    //  - tryCapture 可能会返回一个录制画布来捕获绘制命令
-    //  - 传入根节点（nodes[0]）和图层信息用于捕获
     // Initialize the canvas for the current frame, that might be a recording canvas if SKP
     // capture is enabled.
     SkCanvas* canvas = tryCapture(surface.get(), nodes[0].get(), layers);
@@ -376,13 +352,10 @@ void SkiaPipeline::renderFrame(const LayerUpdateQueue& layers, const SkRect& cli
     // draw all layers up front
     renderLayersImpl(layers, opaque);
 
-    // 主场景渲染
     renderFrameImpl(clip, nodes, opaque, contentDrawBounds, canvas, preTransform);
 
-    // 结束捕获
     endCapture(surface.get());
 
-    // 过度绘制调试
     if (CC_UNLIKELY(Properties::debugOverdraw)) {
         renderOverdraw(clip, nodes, contentDrawBounds, surface, preTransform);
     }
@@ -397,13 +370,6 @@ static Rect nodeBounds(RenderNode& node) {
 }
 }  // namespace
 
-/*
- * 核心渲染调用：
-    使用指定的裁剪区域
-    渲染所有渲染节点
-    考虑内容绘制边界
-    应用预变换矩阵
- */
 void SkiaPipeline::renderFrameImpl(const SkRect& clip,
                                    const std::vector<sp<RenderNode>>& nodes, bool opaque,
                                    const Rect& contentDrawBounds, SkCanvas* canvas,
@@ -587,12 +553,6 @@ static const SkColor kOverdrawColors[2][6] = {
     },
 };
 
-/*
- * 在调试模式下渲染过度绘制可视化：
-    显示像素被绘制的次数
-    帮助识别渲染性能问题
-    使用 CC_UNLIKELY 优化生产环境下的性能
- */
 void SkiaPipeline::renderOverdraw(const SkRect& clip,
                                   const std::vector<sp<RenderNode>>& nodes,
                                   const Rect& contentDrawBounds, sk_sp<SkSurface> surface,

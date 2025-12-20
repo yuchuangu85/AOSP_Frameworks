@@ -18,6 +18,7 @@ package android.app;
 
 import static android.app.ActivityManager.PROCESS_STATE_UNKNOWN;
 import static android.app.ConfigurationController.createNewConfigAndUpdateIfNotNull;
+import static android.app.Flags.earlyRenderThreadPriorityBoost;
 import static android.app.Flags.skipBgMemTrimOnFgApp;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
@@ -28,8 +29,6 @@ import static android.app.servertransaction.ActivityLifecycleItem.ON_RESUME;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_START;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_STOP;
 import static android.app.servertransaction.ActivityLifecycleItem.PRE_ON_CREATE;
-import static android.content.ContentResolver.DEPRECATE_DATA_COLUMNS;
-import static android.content.ContentResolver.DEPRECATE_DATA_PREFIX;
 import static android.content.pm.ActivityInfo.CONFIG_RESOURCES_UNUSED;
 import static android.content.res.Configuration.UI_MODE_TYPE_DESK;
 import static android.content.res.Configuration.UI_MODE_TYPE_MASK;
@@ -138,7 +137,6 @@ import android.os.DdmSyncStageUpdater;
 import android.os.DdmSyncState.Stage;
 import android.os.Debug;
 import android.os.Environment;
-import android.os.FileUtils;
 import android.os.GraphicsEnvironment;
 import android.os.Handler;
 import android.os.HandlerExecutor;
@@ -182,17 +180,22 @@ import android.provider.DeviceConfigServiceManager;
 import android.provider.Downloads;
 import android.provider.FontsContract;
 import android.provider.Settings;
+import android.ravenwood.annotation.RavenwoodIgnore;
+import android.ravenwood.annotation.RavenwoodKeep;
+import android.ravenwood.annotation.RavenwoodKeepPartialClass;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodReplace;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.renderscript.RenderScriptCacheDir;
 import android.se.omapi.SeFrameworkInitializer;
 import android.se.omapi.SeServiceManager;
 import android.security.NetworkSecurityPolicy;
 import android.security.net.config.NetworkSecurityConfigProvider;
 import android.system.ErrnoException;
-import android.system.OsConstants;
-import android.system.StructStat;
 import android.telephony.TelephonyFrameworkInitializer;
 import android.util.AndroidRuntimeException;
 import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.DisplayMetrics;
 import android.util.EventLog;
 import android.util.Log;
@@ -217,6 +220,8 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.view.WindowManagerGlobal;
 import android.view.autofill.AutofillId;
+import android.view.autofill.AutofillManager;
+import android.view.autofill.AutofillValue;
 import android.view.contentcapture.IContentCaptureManager;
 import android.view.contentcapture.IContentCaptureOptionsCallback;
 import android.view.translation.TranslationSpec;
@@ -238,6 +243,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.content.ReferrerIntent;
 import com.android.internal.os.ApplicationSharedMemory;
+import com.android.internal.os.BackgroundThread;
 import com.android.internal.os.BinderCallsStats;
 import com.android.internal.os.BinderInternal;
 import com.android.internal.os.DebugStore;
@@ -246,23 +252,25 @@ import com.android.internal.os.SafeZipPathValidatorCallback;
 import com.android.internal.os.SomeArgs;
 import com.android.internal.os.logging.MetricsLoggerWrapper;
 import com.android.internal.policy.DecorView;
+import com.android.internal.protolog.ProtoLog;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.FastPrintWriter;
 import com.android.internal.util.Preconditions;
+import com.android.internal.util.StringCache;
 import com.android.internal.util.function.pooled.PooledLambda;
 import com.android.org.conscrypt.TrustedCertificateStore;
+import com.android.server.am.BitmapDumpProto;
 import com.android.server.am.MemInfoDumpProto;
 
 import dalvik.annotation.optimization.NeverCompile;
+import dalvik.annotation.optimization.NeverInline;
 import dalvik.system.AppSpecializationHooks;
 import dalvik.system.CloseGuard;
 import dalvik.system.VMDebug;
 import dalvik.system.VMRuntime;
 import dalvik.system.ZipPathValidator;
 
-import libcore.io.ForwardingOs;
 import libcore.io.IoUtils;
-import libcore.io.Os;
 import libcore.net.event.NetworkEventDispatcher;
 import libcore.util.NativeAllocationRegistry;
 
@@ -270,7 +278,6 @@ import org.apache.harmony.dalvik.ddmc.DdmVmInternal;
 
 import java.io.File;
 import java.io.FileDescriptor;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -281,7 +288,6 @@ import java.net.InetAddress;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -290,10 +296,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * This manages the execution of the main thread in an
@@ -301,12 +309,23 @@ import java.util.function.Consumer;
  * broadcasts, and other operations on it as the activity
  * manager requests.
  *
- * {@hide}
+ * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepPartialClass(comment =
+        "Initialization logic is in ActivityThread_ravenwood and RavenwoodAppDriver."
+        + " Only very basic initialization is done."
+        + " Most of its logic is not ported to Ravenwood yet."
+)
+@android.ravenwood.annotation.RavenwoodRedirectionClass("ActivityThread_ravenwood")
 public final class ActivityThread extends ClientTransactionHandler
         implements ActivityThreadInternal {
 
-    private final DdmSyncStageUpdater mDdmSyncStageUpdater = new DdmSyncStageUpdater();
+    private final DdmSyncStageUpdater mDdmSyncStageUpdater = newDdmSyncStageUpdater();
+
+    @RavenwoodIgnore
+    private static DdmSyncStageUpdater newDdmSyncStageUpdater() {
+        return new DdmSyncStageUpdater();
+    }
 
     /** @hide */
     public static final String TAG = "ActivityThread";
@@ -515,7 +534,12 @@ public final class ActivityThread extends ClientTransactionHandler
             publicAlternatives = "Use {@code Context#getResources()#getConfiguration()} instead.")
     Configuration mPendingConfiguration = null;
     // An executor that performs multi-step transactions.
-    private final TransactionExecutor mTransactionExecutor = new TransactionExecutor(this);
+    private final TransactionExecutor mTransactionExecutor = newTransactionExecutor(this);
+
+    @RavenwoodIgnore
+    private static TransactionExecutor newTransactionExecutor(ActivityThread at) {
+        return new TransactionExecutor(at);
+    }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private final ResourcesManager mResourcesManager;
@@ -555,17 +579,13 @@ public final class ActivityThread extends ClientTransactionHandler
 
     // The lock of mProviderMap protects the following variables.
     @UnsupportedAppUsage
-    final ArrayMap<ProviderKey, ProviderClientRecord> mProviderMap
-        = new ArrayMap<ProviderKey, ProviderClientRecord>();
+    final ArrayMap<ProviderKey, ProviderClientRecord> mProviderMap = new ArrayMap<>();
     @UnsupportedAppUsage
-    final ArrayMap<IBinder, ProviderRefCount> mProviderRefCountMap
-        = new ArrayMap<IBinder, ProviderRefCount>();
+    final ArrayMap<IBinder, ProviderRefCount> mProviderRefCountMap = new ArrayMap<>();
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
-    final ArrayMap<IBinder, ProviderClientRecord> mLocalProviders
-        = new ArrayMap<IBinder, ProviderClientRecord>();
+    final ArrayMap<IBinder, ProviderClientRecord> mLocalProviders = new ArrayMap<>();
     @UnsupportedAppUsage
-    final ArrayMap<ComponentName, ProviderClientRecord> mLocalProvidersByName
-            = new ArrayMap<ComponentName, ProviderClientRecord>();
+    final ArrayMap<ComponentName, ProviderClientRecord> mLocalProvidersByName = new ArrayMap<>();
 
     // Mitigation for b/74523247: Used to serialize calls to AM.getContentProvider().
     // Note we never removes items from this map but that's okay because there are only so many
@@ -573,8 +593,8 @@ public final class ActivityThread extends ClientTransactionHandler
     @GuardedBy("mGetProviderKeys")
     final ArrayMap<ProviderKey, ProviderKey> mGetProviderKeys = new ArrayMap<>();
 
-    final ArrayMap<Activity, ArrayList<OnActivityPausedListener>> mOnPauseListeners
-        = new ArrayMap<Activity, ArrayList<OnActivityPausedListener>>();
+    final ArrayMap<Activity, ArrayList<OnActivityPausedListener>> mOnPauseListeners =
+            new ArrayMap<>();
 
     private SplashScreen.SplashScreenManagerGlobal mSplashScreenGlobal;
 
@@ -588,7 +608,7 @@ public final class ActivityThread extends ClientTransactionHandler
     static volatile Handler sMainThreadHandler;  // set once in main()
     private long mStartSeq; // Only accesssed from the main thread
 
-    Bundle mCoreSettings = null;
+    private Bundle mCoreSettings = null;
 
     /**
      * The lock word for the {@link #mCoreSettings}.
@@ -632,6 +652,7 @@ public final class ActivityThread extends ClientTransactionHandler
         boolean hideForNow;
         Configuration createdConfig;
         Configuration overrideConfig;
+        HandoffActivityData handoffActivityData;
         @NonNull
         private final ActivityWindowInfo mActivityWindowInfo = new ActivityWindowInfo();
         @NonNull
@@ -874,11 +895,7 @@ public final class ActivityThread extends ClientTransactionHandler
                     assumeDelivered, token, sendingUser, intent.getFlags(), sendingUid,
                     sendingPackage);
             this.intent = intent;
-            if (com.android.window.flags.Flags.supportWidgetIntentsOnConnectedDisplay()) {
-                mOptions = ActivityOptions.fromBundle(resultExtras);
-            } else {
-                mOptions = null;
-            }
+            mOptions = ActivityOptions.fromBundle(resultExtras);
         }
 
         @UnsupportedAppUsage
@@ -935,11 +952,14 @@ public final class ActivityThread extends ClientTransactionHandler
         @UnsupportedAppUsage
         IBinder token;
         @UnsupportedAppUsage
+        IBinder bindToken;
+        @UnsupportedAppUsage
         Intent intent;
         boolean rebind;
         long bindSeq;
         public String toString() {
             return "BindServiceData{token=" + token + " intent=" + intent
+                    + " bindToken = " + bindToken
                     + " bindSeq=" + bindSeq + "}";
         }
     }
@@ -1004,6 +1024,7 @@ public final class ActivityThread extends ClientTransactionHandler
 
         long[] disabledCompatChanges;
         long[] mLoggableCompatChanges;
+        boolean mLogChangeChecksToStatsD;
 
         SharedMemory mSerializedSystemFontMap;
 
@@ -1134,37 +1155,81 @@ public final class ActivityThread extends ClientTransactionHandler
         int flags;
     }
 
+    static final class RequestHandoffActivityData {
+        List<IBinder> activityTokens;
+        IBinder requestToken;
+    }
+
     // A list of receivers and an index into the receiver to be processed next.
     static final class ReceiverList {
         List<ReceiverInfo> receivers;
         int index;
     }
 
+    @RavenwoodKeepPartialClass
     private class ApplicationThread extends IApplicationThread.Stub {
+        @RavenwoodKeep
+        ApplicationThread() {
+        }
+
+        @Override
+        public boolean onTransact(int code, Parcel data, Parcel reply, int flags)
+                throws RemoteException {
+            boolean checkApplicationThreadCalledBySystem =
+                    android.security.Flags.checkApplicationThreadCalledBySystem();
+            if (Build.IS_DEBUGGABLE || checkApplicationThreadCalledBySystem) {
+                int callingUid = Binder.getCallingUid();
+                if (callingUid != Process.ROOT_UID && callingUid != Process.SYSTEM_UID) {
+                    String[] packagesForUid =
+                            getSystemContext().getPackageManager().getPackagesForUid(callingUid);
+                    String packageName;
+                    if (packagesForUid == null || packagesForUid.length == 0) {
+                        packageName = "unknown";
+                    } else if (packagesForUid.length == 1) {
+                        packageName = packagesForUid[0];
+                    } else {
+                        packageName = Arrays.asList(packagesForUid).stream().sorted().collect(
+                                Collectors.joining(", "));
+                    }
+                    Slog.wtf(TAG, "ApplicationThread called by non-system process"
+                            + " (callingUid: " + callingUid
+                            + "; packageName: " + packageName
+                            + "; code: " + code
+                            + "; flags: " + flags
+                            + ")");
+                    if (checkApplicationThreadCalledBySystem) {
+                        throw new SecurityException(
+                                "ApplicationThread called by non-system process"
+                                        + " (callingUid: " + callingUid
+                                        + "; packageName: " + packageName + ")");
+                    }
+                }
+            }
+            return super.onTransact(code, data, reply, flags);
+        }
+
         private static final String DB_CONNECTION_INFO_HEADER = "  %8s %8s %14s %5s %5s %5s  %s";
         private static final String DB_CONNECTION_INFO_FORMAT = "  %8s %8s %14s %5d %5d %5d  %s";
         private static final String DB_POOL_INFO_HEADER = "  %13s %13s %13s  %s";
         private static final String DB_POOL_INFO_FORMAT = "  %13d %13d %13d  %s";
 
+        @Override
         public final void scheduleReceiver(Intent intent, ActivityInfo info,
                 CompatibilityInfo compatInfo, int resultCode, String data, Bundle extras,
                 boolean ordered, boolean assumeDelivered, int sendingUser, int processState,
                 int sendingUid, String sendingPackage) {
-            long debugStoreId = -1;
-            if (DEBUG_STORE_ENABLED) {
-                debugStoreId = DebugStore.recordScheduleReceiver();
-            }
             updateProcessState(processState, false);
             ReceiverData r = new ReceiverData(intent, resultCode, data, extras,
                     ordered, false, assumeDelivered, mAppThread.asBinder(), sendingUser,
                     sendingUid, sendingPackage);
             r.info = info;
-            sendMessage(H.RECEIVER, r);
             if (DEBUG_STORE_ENABLED) {
-                DebugStore.recordEventEnd(debugStoreId);
+                DebugStore.recordScheduleBroadcastReceive(System.identityHashCode(r), intent);
             }
+            sendMessage(H.RECEIVER, r);
         }
 
+        @Override
         public final void scheduleReceiverList(List<ReceiverInfo> info) throws RemoteException {
             for (int i = 0; i < info.size(); i++) {
                 ReceiverInfo r = info.get(i);
@@ -1182,6 +1247,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         }
 
+        @Override
         public final void scheduleCreateBackupAgent(ApplicationInfo app,
                 int backupMode, int userId, @BackupDestination int backupDestination) {
             CreateBackupAgentData d = new CreateBackupAgentData();
@@ -1193,6 +1259,7 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.CREATE_BACKUP_AGENT, d);
         }
 
+        @Override
         public final void scheduleDestroyBackupAgent(ApplicationInfo app, int userId) {
             CreateBackupAgentData d = new CreateBackupAgentData();
             d.appInfo = app;
@@ -1201,6 +1268,7 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.DESTROY_BACKUP_AGENT, d);
         }
 
+        @Override
         public final void scheduleCreateService(IBinder token,
                 ServiceInfo info, CompatibilityInfo compatInfo, int processState) {
             updateProcessState(processState, false);
@@ -1212,32 +1280,43 @@ public final class ActivityThread extends ClientTransactionHandler
                 Trace.instant(Trace.TRACE_TAG_ACTIVITY_MANAGER, "scheduleCreateService. token="
                         + token);
             }
+            if (DEBUG_STORE_ENABLED) {
+                DebugStore.recordScheduleServiceCreate(System.identityHashCode(s), info);
+            }
             sendMessage(H.CREATE_SERVICE, s);
         }
 
-        public final void scheduleBindService(IBinder token, Intent intent,
+        @Override
+        public final void scheduleBindService(IBinder token, IBinder bindToken, Intent intent,
                 boolean rebind, int processState, long bindSeq) {
             updateProcessState(processState, false);
             BindServiceData s = new BindServiceData();
             s.token = token;
+            s.bindToken = bindToken;
             s.intent = intent;
             s.rebind = rebind;
             s.bindSeq = bindSeq;
 
             if (DEBUG_SERVICE)
-                Slog.v(TAG, "scheduleBindService token=" + token + " intent=" + intent + " uid="
-                        + Binder.getCallingUid() + " pid=" + Binder.getCallingPid());
+                Slog.v(TAG, "scheduleBindService token=" + token + " bindToken=" + bindToken
+                        + " intent=" + intent + " uid=" + Binder.getCallingUid()
+                        + " pid=" + Binder.getCallingPid());
 
             if (Trace.isTagEnabled(Trace.TRACE_TAG_ACTIVITY_MANAGER)) {
                 Trace.instant(Trace.TRACE_TAG_ACTIVITY_MANAGER, "scheduleBindService. token="
                         + token + " bindSeq=" + bindSeq);
             }
+            if (DEBUG_STORE_ENABLED) {
+                DebugStore.recordScheduleServiceBind(System.identityHashCode(s), s.intent);
+            }
             sendMessage(H.BIND_SERVICE, s);
         }
 
-        public final void scheduleUnbindService(IBinder token, Intent intent) {
+        @Override
+        public final void scheduleUnbindService(IBinder token, IBinder bindToken, Intent intent) {
             BindServiceData s = new BindServiceData();
             s.token = token;
+            s.bindToken = bindToken;
             s.intent = intent;
             s.bindSeq = -1;
 
@@ -1248,6 +1327,7 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.UNBIND_SERVICE, s);
         }
 
+        @Override
         public final void scheduleServiceArgs(IBinder token, ParceledListSlice args) {
             List<ServiceStartArgs> list = args.getList();
 
@@ -1264,10 +1344,14 @@ public final class ActivityThread extends ClientTransactionHandler
                     Trace.instant(Trace.TRACE_TAG_ACTIVITY_MANAGER, "scheduleServiceArgs. token="
                             + token + " startId=" + s.startId);
                 }
+                if (DEBUG_STORE_ENABLED) {
+                    DebugStore.recordScheduleServiceStart(System.identityHashCode(s), s.args);
+                }
                 sendMessage(H.SERVICE_ARGS, s);
             }
         }
 
+        @Override
         public final void scheduleStopService(IBinder token) {
             if (Trace.isTagEnabled(Trace.TRACE_TAG_ACTIVITY_MANAGER)) {
                 Trace.instant(Trace.TRACE_TAG_ACTIVITY_MANAGER, "scheduleStopService. token="
@@ -1301,6 +1385,7 @@ public final class ActivityThread extends ClientTransactionHandler
         }
 
         @Override
+        @RavenwoodThrow(comment = "See ActivityThread_ravenwood for initialization on Ravenwood")
         public final void bindApplication(
                 String processName,
                 ApplicationInfo appInfo,
@@ -1327,10 +1412,14 @@ public final class ActivityThread extends ClientTransactionHandler
                 ContentCaptureOptions contentCaptureOptions,
                 long[] disabledCompatChanges,
                 long[] loggableCompatChanges,
+                boolean logChangeChecksToStatsD,
                 SharedMemory serializedSystemFontMap,
                 FileDescriptor applicationSharedMemoryFd,
                 long startRequestedElapsedTime,
                 long startRequestedUptime) {
+            if (DEBUG_STORE_ENABLED) {
+                DebugStore.recordScheduleBindApplication();
+            }
             if (services != null) {
                 if (false) {
                     // Test code to make sure the app could see the passed-in services.
@@ -1359,17 +1448,13 @@ public final class ActivityThread extends ClientTransactionHandler
 
             // This must be initialized as early as possible to ensure availability for any
             // downstream callers.
-            if (com.android.internal.os.Flags.applicationSharedMemoryEnabled()) {
-                ApplicationSharedMemory instance =
-                        ApplicationSharedMemory.fromFileDescriptor(
-                                applicationSharedMemoryFd, /* mutable= */ false);
-                if (android.content.pm.Flags.cacheSdkSystemFeatures()) {
-                    SystemFeaturesCache.setInstance(
-                            new SystemFeaturesCache(instance.readSystemFeaturesCache()));
-                }
-                instance.closeFileDescriptor();
-                ApplicationSharedMemory.setInstance(instance);
-            }
+            ApplicationSharedMemory instance =
+                    ApplicationSharedMemory.fromFileDescriptor(
+                            applicationSharedMemoryFd, /* mutable= */ false);
+            SystemFeaturesCache.setInstance(
+                    new SystemFeaturesCache(instance.readSystemFeaturesCache()));
+            instance.closeFileDescriptor();
+            ApplicationSharedMemory.setInstance(instance);
 
             setCoreSettings(coreSettings);
 
@@ -1397,11 +1482,12 @@ public final class ActivityThread extends ClientTransactionHandler
             data.contentCaptureOptions = contentCaptureOptions;
             data.disabledCompatChanges = disabledCompatChanges;
             data.mLoggableCompatChanges = loggableCompatChanges;
+            data.mLogChangeChecksToStatsD = logChangeChecksToStatsD;
             data.mSerializedSystemFontMap = serializedSystemFontMap;
             data.startRequestedElapsedTime = startRequestedElapsedTime;
             data.startRequestedUptime = startRequestedUptime;
             updateCompatOverrideScale(compatInfo);
-            updateCompatOverrideDisplayRotation(compatInfo);
+            updateCameraCompatInfo(compatInfo);
             CompatibilityInfo.applyOverrideIfNeeded(config);
             sendMessage(H.BIND_APPLICATION, data);
         }
@@ -1409,22 +1495,22 @@ public final class ActivityThread extends ClientTransactionHandler
         private void updateCompatOverrideScale(CompatibilityInfo info) {
             if (info.hasOverrideScaling()) {
                 CompatibilityInfo.setOverrideInvertedScale(info.applicationInvertedScale,
-                        info.applicationDensityInvertedScale);
+                        info.applicationDensityInvertedScale, info.overrideDensityDisplayIds);
             } else {
                 CompatibilityInfo.setOverrideInvertedScale(/* invertScale */ 1f,
-                        /* densityInvertScale */1f);
+                        /* densityInvertScale */1f, /* densityDisplayIds */ null);
             }
         }
 
-        private void updateCompatOverrideDisplayRotation(@NonNull CompatibilityInfo info) {
-            if (info.isOverrideDisplayRotationRequired()) {
-                CompatibilityInfo.setOverrideDisplayRotation(info.applicationDisplayRotation);
+        private void updateCameraCompatInfo(@NonNull CompatibilityInfo info) {
+            if (info.isOverrideCameraCompatibilityInfoRequired()) {
+                CompatibilityInfo.setCameraCompatibilityInfo(info.cameraCompatibilityInfo);
             } else {
-                CompatibilityInfo.setOverrideDisplayRotation(
-                        WindowConfiguration.ROTATION_UNDEFINED);
+                CompatibilityInfo.resetCameraCompatibilityInfo();
             }
         }
 
+        @Override
         public final void runIsolatedEntryPoint(String entryPoint, String[] entryPointArgs) {
             SomeArgs args = SomeArgs.obtain();
             args.arg1 = entryPoint;
@@ -1432,14 +1518,17 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.RUN_ISOLATED_ENTRY_POINT, args);
         }
 
+        @Override
         public final void scheduleExit() {
             sendMessage(H.EXIT_APPLICATION, null);
         }
 
+        @Override
         public final void scheduleSuicide() {
             sendMessage(H.SUICIDE, null);
         }
 
+        @Override
         public void scheduleApplicationInfoChanged(ApplicationInfo ai) {
             synchronized (mResourcesManager) {
                 var oldAi = mPendingAppInfoUpdates.put(ai.packageName, ai);
@@ -1456,10 +1545,12 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.APPLICATION_INFO_CHANGED, ai.packageName);
         }
 
+        @Override
         public void updateTimeZone() {
             TimeZone.setDefault(null);
         }
 
+        @Override
         public void clearDnsCache() {
             // a non-standard API to get this to libcore
             InetAddress.clearDnsCache();
@@ -1468,6 +1559,7 @@ public final class ActivityThread extends ClientTransactionHandler
             NetworkEventDispatcher.getInstance().dispatchNetworkConfigurationChange();
         }
 
+        @Override
         public void updateHttpProxy() {
             final Application app;
             synchronized (ActivityThread.this) {
@@ -1483,11 +1575,13 @@ public final class ActivityThread extends ClientTransactionHandler
             ActivityThread.updateHttpProxy(app);
         }
 
+        @Override
         public void processInBackground() {
             mH.removeMessages(H.GC_WHEN_IDLE);
             mH.sendMessage(mH.obtainMessage(H.GC_WHEN_IDLE));
         }
 
+        @Override
         public void dumpService(ParcelFileDescriptor pfd, IBinder servicetoken, String[] args) {
             DumpComponentInfo data = new DumpComponentInfo();
             try {
@@ -1505,15 +1599,12 @@ public final class ActivityThread extends ClientTransactionHandler
         // This function exists to make sure all receiver dispatching is
         // correctly ordered, since these are one-way calls and the binder driver
         // applies transaction ordering per object for such calls.
+        @Override
         public void scheduleRegisteredReceiver(IIntentReceiver receiver, Intent intent,
                 int resultCode, String dataStr, Bundle extras, boolean ordered,
                 boolean sticky, boolean assumeDelivered, int sendingUser, int processState,
                 int sendingUid, String sendingPackage)
                 throws RemoteException {
-            long debugStoreId = -1;
-            if (DEBUG_STORE_ENABLED) {
-                debugStoreId = DebugStore.recordScheduleRegisteredReceiver();
-            }
             updateProcessState(processState, false);
 
             // We can't modify IIntentReceiver due to UnsupportedAppUsage, so
@@ -1537,9 +1628,6 @@ public final class ActivityThread extends ClientTransactionHandler
                 }
                 receiver.performReceive(intent, resultCode, dataStr, extras, ordered, sticky,
                         sendingUser);
-            }
-            if (DEBUG_STORE_ENABLED) {
-                DebugStore.recordEventEnd(debugStoreId);
             }
         }
 
@@ -1576,14 +1664,17 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.DUMP_HEAP, dhd, 0, 0, true /*async*/);
         }
 
+        @Override
         public void attachAgent(String agent) {
             sendMessage(H.ATTACH_AGENT, agent);
         }
 
+        @Override
         public void attachStartupAgents(String dataDir) {
             sendMessage(H.ATTACH_STARTUP_AGENTS, dataDir);
         }
 
+        @Override
         public void setSchedulingGroup(int group) {
             // Note: do this immediately, since going into the foreground
             // should happen regardless of what pending work we have to do
@@ -1596,6 +1687,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         }
 
+        @Override
         public void dispatchPackageBroadcast(int cmd, String[] packages) {
             sendMessage(H.DISPATCH_PACKAGE_BROADCAST, packages, cmd);
         }
@@ -1622,6 +1714,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         }
 
+        @Override
         public void dumpActivity(ParcelFileDescriptor pfd, IBinder activitytoken,
                 String prefix, String[] args) {
             DumpComponentInfo data = new DumpComponentInfo();
@@ -1638,6 +1731,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         }
 
+        @Override
         public void dumpProvider(ParcelFileDescriptor pfd, IBinder providertoken,
                 String[] args) {
             DumpComponentInfo data = new DumpComponentInfo();
@@ -1858,6 +1952,12 @@ public final class ActivityThread extends ClientTransactionHandler
             if (dumpAllocatorStats) {
                 Debug.logAllocatorStats();
             }
+
+            pw.println(" ");
+
+            if (android.os.Flags.parcelStringCacheEnabled()) {
+                StringCache.INSTANCE.dump(pw);
+            }
         }
 
         @NeverCompile
@@ -2006,6 +2106,21 @@ public final class ActivityThread extends ClientTransactionHandler
         }
 
         @Override
+        @NeverCompile
+        public void dumpBitmapsProto(ParcelFileDescriptor pfd, String dumpFormat) {
+            try {
+                int pid = Process.myPid();
+                String processName = (mBoundApplication != null)
+                    ? mBoundApplication.processName
+                    : Process.myProcessName();
+                ActivityThread.dumpBitmapsProto(new ProtoOutputStream(pfd.getFileDescriptor()),
+                    pid, processName, dumpFormat);
+            } finally {
+                IoUtils.closeQuietly(pfd);
+            }
+        }
+
+        @Override
         public void dumpCacheInfo(ParcelFileDescriptor pfd, String[] args) {
             try {
                 PropertyInvalidatedCache.dumpCacheInfo(pfd, args);
@@ -2077,19 +2192,37 @@ public final class ActivityThread extends ClientTransactionHandler
             sendMessage(H.REQUEST_ASSIST_CONTEXT_EXTRAS, cmd);
         }
 
+        /**
+         * Requests the data needed to start a handoff activity.
+         *
+         * @param requestToken The token of the request, used by ActivityTaskManager to identify
+         *                     the request.
+         * @param activityTokens The tokens of the activities to hand off.
+         */
+        @Override
+        public void requestHandoffActivityData(IBinder requestToken, List<IBinder> activityTokens) {
+            RequestHandoffActivityData cmd = new RequestHandoffActivityData();
+            cmd.activityTokens = activityTokens;
+            cmd.requestToken = requestToken;
+            sendMessage(H.REQUEST_HANDOFF_ACTIVITY_DATA, cmd);
+        }
+
+        @Override
         public void setCoreSettings(Bundle coreSettings) {
             sendMessage(H.SET_CORE_SETTINGS, coreSettings);
         }
 
+        @Override
         public void updatePackageCompatibilityInfo(String pkg, CompatibilityInfo info) {
             UpdateCompatibilityData ucd = new UpdateCompatibilityData();
             ucd.pkg = pkg;
             ucd.info = info;
             updateCompatOverrideScale(info);
-            updateCompatOverrideDisplayRotation(info);
+            updateCameraCompatInfo(info);
             sendMessage(H.UPDATE_PACKAGE_COMPATIBILITY_INFO, ucd);
         }
 
+        @Override
         public void scheduleTrimMemory(int level) {
             final Runnable r = PooledLambda.obtainRunnable(ActivityThread::handleTrimMemory,
                     ActivityThread.this, level).recycleOnUse();
@@ -2102,15 +2235,18 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         }
 
+        @Override
         public void scheduleTranslucentConversionComplete(IBinder token, boolean drawComplete) {
             sendMessage(H.TRANSLUCENT_CONVERSION_COMPLETE, token, drawComplete ? 1 : 0);
         }
 
+        @Override
         public void scheduleOnNewSceneTransitionInfo(IBinder token, SceneTransitionInfo info) {
             sendMessage(H.ON_NEW_SCENE_TRANSITION_INFO,
                     new Pair<IBinder, SceneTransitionInfo>(token, info));
         }
 
+        @Override
         public void setProcessState(int state) {
             updateProcessState(state, true);
         }
@@ -2400,7 +2536,12 @@ public final class ActivityThread extends ClientTransactionHandler
         throw new ForegroundServiceDidNotStopInTimeException(message, inner);
     }
 
+    @RavenwoodKeepPartialClass
     class H extends Handler {
+        @RavenwoodKeep
+        H() {
+        }
+
         public static final int BIND_APPLICATION        = 110;
         @UnsupportedAppUsage
         public static final int EXIT_APPLICATION        = 111;
@@ -2468,6 +2609,7 @@ public final class ActivityThread extends ClientTransactionHandler
         public static final int FINISH_INSTRUMENTATION_WITHOUT_RESTART = 171;
 
         public static final int TIMEOUT_SERVICE_FOR_TYPE = 172;
+        public static final int REQUEST_HANDOFF_ACTIVITY_DATA = 173;
 
         String codeToString(int code) {
             if (DEBUG_MESSAGES) {
@@ -2523,10 +2665,12 @@ public final class ActivityThread extends ClientTransactionHandler
                     case TIMEOUT_SERVICE: return "TIMEOUT_SERVICE";
                     case PING: return "PING";
                     case TIMEOUT_SERVICE_FOR_TYPE: return "TIMEOUT_SERVICE_FOR_TYPE";
+                    case REQUEST_HANDOFF_ACTIVITY_DATA: return "REQUEST_HANDOFF_ACTIVITY_DATA";
                 }
             }
             return Integer.toString(code);
         }
+        @Override
         public void handleMessage(Message msg) {
             if (DEBUG_MESSAGES) Slog.v(TAG, ">>> handling: " + codeToString(msg.what));
             long debugStoreId = -1;
@@ -2540,7 +2684,7 @@ public final class ActivityThread extends ClientTransactionHandler
                     Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "bindApplication");
                     if (DEBUG_STORE_ENABLED) {
                         debugStoreId =
-                                DebugStore.recordHandleBindApplication();
+                                DebugStore.recordBindApplication();
                     }
                     AppBindData data = (AppBindData)msg.obj;
                     handleBindApplication(data);
@@ -2567,20 +2711,10 @@ public final class ActivityThread extends ClientTransactionHandler
                         }
                     }
                     ReceiverData receiverData = (ReceiverData) msg.obj;
-                    if (DEBUG_STORE_ENABLED) {
-                        debugStoreId =
-                            DebugStore.recordBroadcastReceive(
-                                receiverData.intent, System.identityHashCode(receiverData));
-                    }
-
                     try {
                         handleReceiver(receiverData);
                     } finally {
                         Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
-                        if (DEBUG_STORE_ENABLED) {
-                            DebugStore.recordEventEnd(debugStoreId);
-                            shouldLogLongMessage = false;
-                        }
                     }
                     break;
                 case CREATE_SERVICE:
@@ -2590,7 +2724,9 @@ public final class ActivityThread extends ClientTransactionHandler
                     }
                     CreateServiceData createServiceData = (CreateServiceData) msg.obj;
                     if (DEBUG_STORE_ENABLED) {
-                        debugStoreId = DebugStore.recordServiceCreate(createServiceData.info);
+                        debugStoreId =
+                                DebugStore.recordServiceCreate(
+                                        System.identityHashCode(msg.obj));
                     }
 
                     try {
@@ -2611,7 +2747,8 @@ public final class ActivityThread extends ClientTransactionHandler
                     BindServiceData bindData = (BindServiceData) msg.obj;
                     if (DEBUG_STORE_ENABLED) {
                         debugStoreId =
-                                DebugStore.recordServiceBind(bindData.rebind, bindData.intent);
+                                DebugStore.recordServiceBind(
+                                        System.identityHashCode(msg.obj));
                     }
                     try {
                         handleBindService(bindData);
@@ -2639,8 +2776,9 @@ public final class ActivityThread extends ClientTransactionHandler
                     }
                     ServiceArgsData serviceData = (ServiceArgsData) msg.obj;
                     if (DEBUG_STORE_ENABLED) {
-                        debugStoreId = DebugStore.recordServiceOnStart(serviceData.startId,
-                                serviceData.flags, serviceData.args);
+                        debugStoreId =
+                                DebugStore.recordServiceStart(
+                                        System.identityHashCode(msg.obj));
                     }
 
                     try {
@@ -2849,6 +2987,12 @@ public final class ActivityThread extends ClientTransactionHandler
                 case FINISH_INSTRUMENTATION_WITHOUT_RESTART:
                     handleFinishInstrumentationWithoutRestart();
                     break;
+                case REQUEST_HANDOFF_ACTIVITY_DATA:
+                    Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                            "handleHandoffActivityDataRequest");
+                    handleHandoffActivityDataRequest((RequestHandoffActivityData)msg.obj);
+                    Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+                    break;
             }
             long messageElapsedTimeMs = SystemClock.uptimeMillis() - messageStartUptimeMs;
             Object obj = msg.obj;
@@ -2891,8 +3035,10 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
+    @RavenwoodKeepWholeClass(comment = "needed by ActivityThread constructor")
     final class GcIdler implements MessageQueue.IdleHandler {
         @Override
+        @RavenwoodIgnore
         public final boolean queueIdle() {
             doGcIfNeeded();
             purgePendingResources();
@@ -2900,15 +3046,32 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
+    @RavenwoodKeepWholeClass(comment = "needed by ActivityThread constructor")
     final class PurgeIdler implements MessageQueue.IdleHandler {
         @Override
+        @RavenwoodIgnore
         public boolean queueIdle() {
             purgePendingResources();
             return false;
         }
     }
 
+    /** Backdoor to set private static fields */
+    @RavenwoodReplace
+    static void staticInitForRavenwood(
+            ActivityThread instance
+    ) {
+        throw new IllegalStateException(); // shouldn't be called on a real device.
+    }
+
+    static void staticInitForRavenwood$ravenwood(
+            ActivityThread instance
+    ) {
+        sCurrentActivityThread = instance;
+    }
+
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public static ActivityThread currentActivityThread() {
         return sCurrentActivityThread;
     }
@@ -2944,9 +3107,20 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public static Application currentApplication() {
         ActivityThread am = currentActivityThread();
         return am != null ? am.mInitialApplication : null;
+    }
+
+    /**
+     * Same as {@code ActivityThread.currentActivityThread().getSystemContext()}, but
+     * it'll return a {@link Context} (not a {@link ContextImpl}) and is supported on Ravenwood.
+     */
+    @RavenwoodKeep
+    public static Context currentSystemContext() {
+        ActivityThread am = currentActivityThread();
+        return am != null ? am.getSystemContext() : null;
     }
 
     @UnsupportedAppUsage
@@ -2982,17 +3156,18 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public Handler getHandler() {
         return mH;
     }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
-    public final LoadedApk getPackageInfo(String packageName, CompatibilityInfo compatInfo,
+    public LoadedApk getPackageInfo(String packageName, CompatibilityInfo compatInfo,
             int flags) {
         return getPackageInfo(packageName, compatInfo, flags, UserHandle.myUserId());
     }
 
-    public final LoadedApk getPackageInfo(String packageName, CompatibilityInfo compatInfo,
+    public LoadedApk getPackageInfo(String packageName, CompatibilityInfo compatInfo,
             int flags, int userId) {
         final boolean differentUser = (UserHandle.myUserId() != userId);
         ApplicationInfo ai = PackageManager.getApplicationInfoAsUserCached(
@@ -3039,7 +3214,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage(trackingBug = 171933273)
-    public final LoadedApk getPackageInfo(ApplicationInfo ai, CompatibilityInfo compatInfo,
+    public LoadedApk getPackageInfo(ApplicationInfo ai, CompatibilityInfo compatInfo,
             int flags) {
         boolean includeCode = (flags&Context.CONTEXT_INCLUDE_CODE) != 0;
         boolean securityViolation = includeCode && ai.uid != 0
@@ -3066,7 +3241,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    public final LoadedApk getPackageInfoNoCheck(ApplicationInfo ai,
+    public LoadedApk getPackageInfoNoCheck(ApplicationInfo ai,
             CompatibilityInfo compatInfo) {
         return getPackageInfo(ai, compatInfo, null, false, true, false);
     }
@@ -3078,7 +3253,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
-    public final LoadedApk peekPackageInfo(String packageName, boolean includeCode) {
+    public LoadedApk peekPackageInfo(String packageName, boolean includeCode) {
         synchronized (mResourcesManager) {
             WeakReference<LoadedApk> ref;
             if (includeCode) {
@@ -3180,6 +3355,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodKeep
     ActivityThread() {
         mResourcesManager = ResourcesManager.getInstance();
     }
@@ -3204,9 +3380,35 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public Instrumentation getInstrumentation()
     {
         return mInstrumentation;
+    }
+
+    @NeverCompile // Only called by tests.
+    @NeverInline  // Only called by tests.
+    @RavenwoodReplace
+    public static void throwIfNotInstrumenting() {
+        final ActivityThread activityThread = ActivityThread.currentActivityThread();
+        if (activityThread == null) {
+            // Only tests can reach here.
+            return;
+        }
+        final Instrumentation instrumentation = activityThread.getInstrumentation();
+        if (instrumentation == null) {
+            // Only tests can reach here.
+            return;
+        }
+        if (instrumentation.isInstrumenting()) {
+            return;
+        }
+        throw new IllegalStateException();
+    }
+
+    public static void throwIfNotInstrumenting$ravenwood() {
+        // Treat Ravenwood tests as instrumenting, so that they can call code that is
+        // used in instrumentation tests.
     }
 
     public boolean isProfiling() {
@@ -3219,10 +3421,12 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public Looper getLooper() {
         return mLooper;
     }
 
+    @RavenwoodKeep
     public Executor getExecutor() {
         return mExecutor;
     }
@@ -3240,6 +3444,7 @@ public final class ActivityThread extends ClientTransactionHandler
 
     @Override
     @UnsupportedAppUsage
+    @RavenwoodKeep
     public ContextImpl getSystemContext() {
         synchronized (this) {
             if (mSystemContext == null) {
@@ -3882,6 +4087,18 @@ public final class ActivityThread extends ClientTransactionHandler
         proto.end(asToken);
     }
 
+    @NeverCompile
+    public static void dumpBitmapsProto(ProtoOutputStream proto, int pid,
+                String processName, String dumpFormat) {
+        try {
+            proto.write(BitmapDumpProto.AppBitmapInfo.PID, pid);
+            proto.write(BitmapDumpProto.AppBitmapInfo.PROCESS_NAME, processName);
+            Bitmap.dumpAll(proto, dumpFormat);
+        } finally {
+            proto.flush();
+        }
+    }
+
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void registerOnActivityPausedListener(Activity activity,
             OnActivityPausedListener listener) {
@@ -3903,7 +4120,7 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
-    public final ActivityInfo resolveActivityInfo(Intent intent) {
+    public ActivityInfo resolveActivityInfo(Intent intent) {
         ActivityInfo aInfo = intent.resolveActivityInfo(
                 mInitialApplication.getPackageManager(), PackageManager.GET_SHARED_LIBRARY_FILES);
         if (aInfo == null) {
@@ -3949,6 +4166,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @Override
     public final Activity getActivity(IBinder token) {
         final ActivityClientRecord activityRecord = mActivities.get(token);
         return activityRecord != null ? activityRecord.activity : null;
@@ -4075,6 +4293,7 @@ public final class ActivityThread extends ClientTransactionHandler
         return mTransactionExecutor;
     }
 
+    @Override
     void sendMessage(int what, Object obj) {
         sendMessage(what, obj, 0, 0, false);
     }
@@ -4182,8 +4401,7 @@ public final class ActivityThread extends ClientTransactionHandler
         } catch (Exception e) {
             if (!mInstrumentation.onException(activity, e)) {
                 throw new RuntimeException(
-                    "Unable to instantiate activity " + component
-                    + ": " + e.toString(), e);
+                    "Unable to instantiate activity " + component, e);
             }
         }
 
@@ -4276,8 +4494,7 @@ public final class ActivityThread extends ClientTransactionHandler
         } catch (Exception e) {
             if (!mInstrumentation.onException(activity, e)) {
                 throw new RuntimeException(
-                    "Unable to start activity " + component
-                    + ": " + e.toString(), e);
+                    "Unable to start activity " + component, e);
             }
         }
 
@@ -4356,13 +4573,11 @@ public final class ActivityThread extends ClientTransactionHandler
                     ActivityManager.getService().waitForNetworkStateUpdate(mNetworkBlockSeq);
                     mNetworkBlockSeq = INVALID_PROC_STATE_SEQ;
                 } catch (RemoteException ignored) {}
-                if (Flags.clearDnsCacheOnNetworkRulesUpdate()) {
-                    // InetAddress will cache UnknownHostException failures. If the rules got
-                    // updated and the app has network access now, we need to clear the negative
-                    // cache to ensure valid dns queries can work immediately.
-                    // TODO: b/329133769 - Clear only the negative cache once it is available.
-                    InetAddress.clearDnsCache();
-                }
+                // InetAddress will cache UnknownHostException failures. If the rules got
+                // updated and the app has network access now, we need to clear the negative
+                // cache to ensure valid dns queries can work immediately.
+                // TODO: b/329133769 - Clear only the negative cache once it is available.
+                InetAddress.clearDnsCache();
             }
         }
     }
@@ -4457,8 +4672,25 @@ public final class ActivityThread extends ClientTransactionHandler
         // Initialize before creating the activity
         if (ThreadedRenderer.sRendererEnabled
                 && (r.activityInfo.flags & ActivityInfo.FLAG_HARDWARE_ACCELERATED) != 0) {
-            HardwareRenderer.preload();
+            if (earlyRenderThreadPriorityBoost()) {
+                final int tid = HardwareRenderer.preload();
+                // Adjust the RenderThread priority as soon as it's created.
+                if (tid > 0) {
+                    try {
+                        ActivityManager.getService().setRenderThread(tid);
+                    } catch (Throwable t) {
+                        Log.w(TAG, "Failed to set scheduler for RenderThread", t);
+                    }
+                }
+            } else {
+                HardwareRenderer.preload();
+            }
         }
+
+        if (android.tracing.Flags.imetrackerProtolog()) {
+            ProtoLog.init();
+        }
+
         WindowManagerGlobal.initialize();
 
         // Hint the GraphicsEnvironment that an activity is launching on the process.
@@ -4520,6 +4752,32 @@ public final class ActivityThread extends ClientTransactionHandler
     public void handleNewIntent(ActivityClientRecord r, List<ReferrerIntent> intents) {
         checkAndBlockForNetworkAccess();
         deliverNewIntents(r, intents);
+    }
+
+    private void handleHandoffActivityDataRequest(RequestHandoffActivityData cmd) {
+        final HandoffActivityDataRequestInfo requestInfo = new HandoffActivityDataRequestInfo(true);
+        final List<HandoffActivityData> handoffActivityData = new ArrayList<>();
+        for (IBinder activityToken : cmd.activityTokens) {
+            final ActivityClientRecord r = mActivities.get(activityToken);
+            if (r != null) {
+                final HandoffActivityData dataForActivity =
+                        r.activity.onHandoffActivityDataRequested(requestInfo);
+                if (dataForActivity == null) {
+                    Log.w(TAG, "HandoffActivityData is null for " + r.activity.getComponentName());
+                }
+                handoffActivityData.add(dataForActivity);
+            } else {
+                Log.w(TAG, "Attempted to fetch HandoffActivityData for non-existent activity.");
+                handoffActivityData.add(null);
+            }
+        }
+
+        IActivityTaskManager mgr = ActivityTaskManager.getService();
+        try {
+            mgr.reportHandoffActivityData(cmd.requestToken, handoffActivityData);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     public void handleRequestAssistContextExtras(RequestAssistContextExtras cmd) {
@@ -4673,6 +4931,19 @@ public final class ActivityThread extends ClientTransactionHandler
                 resultCallback.sendResult(null);
                 return;
             }
+
+            if (actionId.equals(AutofillManager.DIRECT_ACTION_ID_REMOTE_AUTOFILL)) {
+                AutofillId autofillId =
+                        arguments.getParcelable(
+                                AutofillManager.EXTRA_REMOTE_AUTOFILL_ID, AutofillId.class);
+                AutofillValue autofillValue =
+                        arguments.getParcelable(
+                                AutofillManager.EXTRA_REMOTE_AUTOFILL_VALUE, AutofillValue.class);
+                if (autofillId != null && autofillValue != null) {
+                    r.activity.autofillViewIfAvailable(autofillId, autofillValue);
+                }
+            }
+
             final Bundle nonNullArguments = (arguments != null) ? arguments : Bundle.EMPTY;
             r.activity.onPerformDirectAction(actionId, nonNullArguments, cancellationSignal,
                     resultCallback::sendResult);
@@ -4822,11 +5093,10 @@ public final class ActivityThread extends ClientTransactionHandler
         final SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
         transaction.hide(startingWindowLeash);
         startingWindowLeash.release();
-
+        decorView.getViewRootImpl().applyTransactionOnDraw(transaction);
         view.syncTransferSurfaceOnDraw();
 
-        if (com.android.window.flags.Flags.useRtFrameCallbackForSplashScreenTransfer()
-                && decorView.isHardwareAccelerated()) {
+        if (decorView.isHardwareAccelerated()) {
             decorView.getViewRootImpl().registerRtFrameCallback(
                     new HardwareRenderer.FrameDrawingCallback() {
                         @Override
@@ -4836,7 +5106,6 @@ public final class ActivityThread extends ClientTransactionHandler
                                 int syncResult, long frame) {
                             return didProduceBuffer -> {
                                 Trace.instant(Trace.TRACE_TAG_VIEW, "transferSplashscreenView");
-                                transaction.apply();
                                 // Tell server we can remove the starting window after frame commit.
                                 decorView.postOnAnimation(() ->
                                         reportSplashscreenViewShown(token, view));
@@ -4845,7 +5114,6 @@ public final class ActivityThread extends ClientTransactionHandler
                     });
         } else {
             Trace.instant(Trace.TRACE_TAG_VIEW, "transferSplashscreenView_software");
-            decorView.getViewRootImpl().applyTransactionOnDraw(transaction);
             // Tell server we can remove the starting window after frame commit.
             decorView.postOnAnimation(() -> reportSplashscreenViewShown(token, view));
         }
@@ -5011,10 +5279,14 @@ public final class ActivityThread extends ClientTransactionHandler
                     "Finishing failed broadcast to " + data.intent.getComponent());
             data.sendFinished(mgr);
             throw new RuntimeException(
-                "Unable to instantiate receiver " + component
-                + ": " + e.toString(), e);
+                "Unable to instantiate receiver " + component, e);
         }
 
+        long debugStoreId = -1;
+        if(DEBUG_STORE_ENABLED) {
+            debugStoreId = DebugStore.recordBroadcastReceive(System.identityHashCode(data),
+                receiver.getClass().getSimpleName());
+        }
         try {
             if (localLOGV) Slog.v(
                 TAG, "Performing receive of " + data.intent
@@ -5034,11 +5306,13 @@ public final class ActivityThread extends ClientTransactionHandler
             data.sendFinished(mgr);
             if (!mInstrumentation.onException(receiver, e)) {
                 throw new RuntimeException(
-                    "Unable to start receiver " + component
-                    + ": " + e.toString(), e);
+                    "Unable to start receiver " + component, e);
             }
         } finally {
             sCurrentBroadcastIntent.set(null);
+            if(DEBUG_STORE_ENABLED) {
+                DebugStore.recordEventEnd(debugStoreId);
+            }
         }
 
         if (receiver.getPendingResult() != null) {
@@ -5065,10 +5339,6 @@ public final class ActivityThread extends ClientTransactionHandler
     @VisibleForTesting(visibility = PRIVATE)
     public Context createDisplayContextIfNeeded(@NonNull Context context,
             @NonNull ReceiverData data) {
-        if (!com.android.window.flags.Flags.supportWidgetIntentsOnConnectedDisplay()) {
-            return context;
-        }
-
         final ActivityOptions options = data.mOptions;
         if (options == null) {
             return context;
@@ -5153,7 +5423,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 } catch (Exception e) {
                     // If this is during restore, fail silently; otherwise go
                     // ahead and let the user see the crash.
-                    Slog.e(TAG, "Agent threw during creation: " + e);
+                    Slog.e(TAG, "Agent threw during creation", e);
                     if (data.backupMode != ApplicationThreadConstants.BACKUP_MODE_RESTORE
                             && data.backupMode !=
                                     ApplicationThreadConstants.BACKUP_MODE_RESTORE_FULL) {
@@ -5171,7 +5441,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
         } catch (Exception e) {
             throw new RuntimeException("Unable to create BackupAgent "
-                    + classname + ": " + e.toString(), e);
+                    + classname, e);
         }
     }
 
@@ -5284,15 +5554,14 @@ public final class ActivityThread extends ClientTransactionHandler
             mServices.put(data.token, service);
             try {
                 ActivityManager.getService().serviceDoneExecuting(
-                        data.token, SERVICE_DONE_EXECUTING_ANON, 0, 0, null);
+                        data.token, SERVICE_DONE_EXECUTING_ANON, 0, 0);
             } catch (RemoteException e) {
                 throw e.rethrowFromSystemServer();
             }
         } catch (Exception e) {
             if (!mInstrumentation.onException(service, e)) {
                 throw new RuntimeException(
-                    "Unable to create service " + data.info.name
-                    + ": " + e.toString(), e);
+                    "Unable to create service " + data.info.name, e);
             }
         }
     }
@@ -5311,11 +5580,11 @@ public final class ActivityThread extends ClientTransactionHandler
                     if (!data.rebind) {
                         IBinder binder = s.onBind(data.intent);
                         ActivityManager.getService().publishService(
-                                data.token, data.intent, binder);
+                                data.token, data.bindToken, binder);
                     } else {
                         s.onRebind(data.intent);
                         ActivityManager.getService().serviceDoneExecuting(
-                                data.token, SERVICE_DONE_EXECUTING_REBIND, 0, 0, data.intent);
+                                data.token, SERVICE_DONE_EXECUTING_REBIND, 0, 0);
                     }
                 } catch (RemoteException ex) {
                     throw ex.rethrowFromSystemServer();
@@ -5324,7 +5593,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(s, e)) {
                     throw new RuntimeException(
                             "Unable to bind to service " + s
-                            + " with " + data.intent + ": " + e.toString(), e);
+                            + " with " + data.intent, e);
                 }
             }
         }
@@ -5342,10 +5611,10 @@ public final class ActivityThread extends ClientTransactionHandler
                 try {
                     if (doRebind) {
                         ActivityManager.getService().unbindFinished(
-                                data.token, data.intent);
+                                data.token, data.bindToken);
                     } else {
                         ActivityManager.getService().serviceDoneExecuting(
-                                data.token, SERVICE_DONE_EXECUTING_UNBIND, 0, 0, data.intent);
+                                data.token, SERVICE_DONE_EXECUTING_UNBIND, 0, 0);
                     }
                 } catch (RemoteException ex) {
                     throw ex.rethrowFromSystemServer();
@@ -5354,7 +5623,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(s, e)) {
                     throw new RuntimeException(
                             "Unable to unbind to service " + s
-                            + " with " + data.intent + ": " + e.toString(), e);
+                            + " with " + data.intent, e);
                 }
             }
         }
@@ -5459,8 +5728,8 @@ public final class ActivityThread extends ClientTransactionHandler
                 QueuedWork.waitToFinish();
 
                 try {
-                    ActivityManager.getService().serviceDoneExecuting(
-                            data.token, SERVICE_DONE_EXECUTING_START, data.startId, res, null);
+                    ActivityManager.getService().serviceDoneExecuting(data.token,
+                            SERVICE_DONE_EXECUTING_START, data.startId, res);
                 } catch (RemoteException e) {
                     throw e.rethrowFromSystemServer();
                 }
@@ -5468,7 +5737,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(s, e)) {
                     throw new RuntimeException(
                             "Unable to start service " + s
-                            + " with " + data.args + ": " + e.toString(), e);
+                            + " with " + data.args, e);
                 }
             }
         }
@@ -5492,15 +5761,13 @@ public final class ActivityThread extends ClientTransactionHandler
 
                 try {
                     ActivityManager.getService().serviceDoneExecuting(
-                            token, SERVICE_DONE_EXECUTING_STOP, 0, 0, null);
+                            token, SERVICE_DONE_EXECUTING_STOP, 0, 0);
                 } catch (RemoteException e) {
                     throw e.rethrowFromSystemServer();
                 }
             } catch (Exception e) {
                 if (!mInstrumentation.onException(s, e)) {
-                    throw new RuntimeException(
-                            "Unable to stop service " + s
-                            + ": " + e.toString(), e);
+                    throw new RuntimeException("Unable to stop service " + s, e);
                 }
                 Slog.i(TAG, "handleStopService: exception for " + token, e);
             }
@@ -5524,8 +5791,7 @@ public final class ActivityThread extends ClientTransactionHandler
             } catch (Exception e) {
                 if (!mInstrumentation.onException(s, e)) {
                     throw new RuntimeException(
-                            "Unable to call onTimeout on service " + s
-                                    + ": " + e.toString(), e);
+                            "Unable to call onTimeout on service " + s, e);
                 }
                 Slog.i(TAG, "handleTimeoutService: exception for " + token, e);
             }
@@ -5545,7 +5811,7 @@ public final class ActivityThread extends ClientTransactionHandler
             } catch (Exception e) {
                 if (!mInstrumentation.onException(s, e)) {
                     throw new RuntimeException(
-                            "Unable to call onTimeLimitExceeded on service " + s + ": " + e, e);
+                            "Unable to call onTimeLimitExceeded on service " + s, e);
                 }
                 Slog.i(TAG, "handleTimeoutServiceForType: exception for " + token, e);
             }
@@ -5612,13 +5878,13 @@ public final class ActivityThread extends ClientTransactionHandler
         } catch (Exception e) {
             if (!mInstrumentation.onException(r.activity, e)) {
                 throw new RuntimeException("Unable to resume activity "
-                        + r.intent.getComponent().toShortString() + ": " + e.toString(), e);
+                        + r.intent.getComponent().toShortString(), e);
             }
         }
         return true;
     }
 
-    static final void cleanUpPendingRemoveWindows(ActivityClientRecord r, boolean force) {
+    static void cleanUpPendingRemoveWindows(ActivityClientRecord r, boolean force) {
         if (r.mPreserveWindow && !force) {
             return;
         }
@@ -5911,7 +6177,7 @@ public final class ActivityThread extends ClientTransactionHandler
         } catch (Exception e) {
             if (!mInstrumentation.onException(r.activity, e)) {
                 throw new RuntimeException("Unable to pause activity "
-                        + safeToComponentShortString(r.intent) + ": " + e.toString(), e);
+                        + safeToComponentShortString(r.intent), e);
             }
         }
         r.setState(ON_PAUSE);
@@ -5991,8 +6257,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(r.activity, e)) {
                     throw new RuntimeException(
                             "Unable to save state of activity "
-                            + r.intent.getComponent().toShortString()
-                            + ": " + e.toString(), e);
+                            + r.intent.getComponent().toShortString(), e);
                 }
             }
         }
@@ -6024,8 +6289,7 @@ public final class ActivityThread extends ClientTransactionHandler
             if (!mInstrumentation.onException(r.activity, e)) {
                 throw new RuntimeException(
                         "Unable to stop activity "
-                                + r.intent.getComponent().toShortString()
-                                + ": " + e.toString(), e);
+                                + r.intent.getComponent().toShortString(), e);
             }
         }
         r.setState(ON_STOP);
@@ -6077,6 +6341,10 @@ public final class ActivityThread extends ClientTransactionHandler
         stopInfo.setActivity(r);
         stopInfo.setState(r.state);
         stopInfo.setPersistentState(r.persistentState);
+        if (android.companion.Flags.enableTaskContinuity()) {
+            stopInfo.setHandoffActivityData(r.handoffActivityData);
+        }
+
         pendingActions.setStopInfo(stopInfo);
         mSomeActivitiesChanged = true;
     }
@@ -6126,12 +6394,13 @@ public final class ActivityThread extends ClientTransactionHandler
 
         // mCoreSettings is only updated from the main thread, while this function is only called
         // from main thread as well, so no need to lock here.
-        View.sDebugViewAttributesApplicationPackage = mCoreSettings.getString(
+        final Bundle defaultDeviceCoreSettings = getCoreSettingsForDefaultDeviceLocked();
+        View.sDebugViewAttributesApplicationPackage = defaultDeviceCoreSettings.getString(
                 Settings.Global.DEBUG_VIEW_ATTRIBUTES_APPLICATION_PACKAGE, "");
         String currentPackage = (mBoundApplication != null && mBoundApplication.appInfo != null)
                 ? mBoundApplication.appInfo.packageName : "<unknown-app>";
         View.sDebugViewAttributes =
-                mCoreSettings.getInt(Settings.Global.DEBUG_VIEW_ATTRIBUTES, 0) != 0
+                defaultDeviceCoreSettings.getInt(Settings.Global.DEBUG_VIEW_ATTRIBUTES, 0) != 0
                         || View.sDebugViewAttributesApplicationPackage.equals(currentPackage);
         return previousState != View.sDebugViewAttributes;
     }
@@ -6180,8 +6449,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(r.activity, e)) {
                     throw new RuntimeException(
                             "Failure delivering result " + ri + " to activity "
-                            + r.intent.getComponent().toShortString()
-                            + ": " + e.toString(), e);
+                            + r.intent.getComponent().toShortString(), e);
                 }
             }
         }
@@ -6214,8 +6482,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 if (!mInstrumentation.onException(r.activity, e)) {
                     throw new RuntimeException(
                             "Unable to pause activity "
-                            + r.intent.getComponent().toShortString()
-                            + ": " + e.toString(), e);
+                            + r.intent.getComponent().toShortString(), e);
                 }
             }
         }
@@ -6247,7 +6514,7 @@ public final class ActivityThread extends ClientTransactionHandler
             } catch (Exception e) {
                 if (!mInstrumentation.onException(r.activity, e)) {
                     throw new RuntimeException("Unable to retain activity "
-                            + r.intent.getComponent().toShortString() + ": " + e.toString(), e);
+                            + r.intent.getComponent().toShortString(), e);
                 }
             }
         }
@@ -6266,7 +6533,7 @@ public final class ActivityThread extends ClientTransactionHandler
         } catch (Exception e) {
             if (!mInstrumentation.onException(r.activity, e)) {
                 throw new RuntimeException("Unable to destroy activity "
-                        + safeToComponentShortString(r.intent) + ": " + e.toString(), e);
+                        + safeToComponentShortString(r.intent), e);
             }
         }
         r.setState(ON_DESTROY);
@@ -6556,7 +6823,7 @@ public final class ActivityThread extends ClientTransactionHandler
         final ActivityRelaunchItem activityRelaunchItem = new ActivityRelaunchItem(
                 r.token, null /* pendingResults */, null /* pendingIntents */,
                 0 /* configChanges */, mergedConfiguration, r.mPreserveWindow,
-                r.getActivityWindowInfo());
+                r.getActivityWindowInfo(), r.activity.getDisplayId());
         // Make sure to match the existing lifecycle state in the end of the transaction.
         final ActivityLifecycleItem lifecycleRequest =
                 TransactionExecutorHelper.getLifecycleRequestForCurrentState(r);
@@ -6618,6 +6885,13 @@ public final class ActivityThread extends ClientTransactionHandler
     private void callActivityOnSaveInstanceState(ActivityClientRecord r) {
         r.state = new Bundle();
         r.state.setAllowFds(false);
+
+        if (android.companion.Flags.enableTaskContinuity() && r.activity.isHandoffEnabled()) {
+            final HandoffActivityDataRequestInfo requestInfo
+                    = new HandoffActivityDataRequestInfo(false /* isActiveRequest */);
+            r.handoffActivityData = r.activity.onHandoffActivityDataRequested(requestInfo);
+        }
+
         if (r.isPersistable()) {
             r.persistentState = new PersistableBundle();
             mInstrumentation.callActivityOnSaveInstanceState(r.activity, r.state,
@@ -6861,8 +7135,8 @@ public final class ActivityThread extends ClientTransactionHandler
             return;
         }
         mLastReportedDeviceId = deviceId;
-        ArrayList<Context> nonUIContexts = new ArrayList<>();
-        // Update Application and Service contexts with implicit device association.
+        final Set<Context> nonUIContexts = new ArraySet<>();
+        // Update non UI contexts with implicit device association.
         // UI Contexts are able to derived their device Id association from the display.
         synchronized (mResourcesManager) {
             final int numApps = mAllApplications.size();
@@ -6878,6 +7152,17 @@ public final class ActivityThread extends ClientTransactionHandler
                 }
             }
         }
+        synchronized (mProviderMap) {
+            final int numContentProviders = mLocalProviders.size();
+            for (int i = 0; i < numContentProviders; i++) {
+                final Context providerContext = mLocalProviders.valueAt(i).mLocalProvider
+                        .getContext();
+                if (providerContext != null) {
+                    nonUIContexts.add(providerContext);
+                }
+            }
+        }
+
         for (Context context : nonUIContexts) {
             try {
                 context.updateDeviceId(deviceId);
@@ -6886,6 +7171,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 // and the passed deviceId is no longer valid.
                 // TODO(b/263355088): check for validity of deviceId before updating
                 // instead of catching this exception once VDM add an API to validate ids.
+                Slog.e(TAG, "Exception updating context with deviceId: " + deviceId, e);
             }
         }
     }
@@ -7177,7 +7463,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 r.mActivityWindowInfo);
     }
 
-    final void handleProfilerControl(boolean start, ProfilerInfo profilerInfo, int profileType) {
+    void handleProfilerControl(boolean start, ProfilerInfo profilerInfo, int profileType) {
         if (start) {
             switch (profileType) {
                 case ProfilerInfo.PROFILE_TYPE_LOW_OVERHEAD:
@@ -7185,7 +7471,14 @@ public final class ActivityThread extends ClientTransactionHandler
                         Slog.w(TAG, "Low overhead tracing feature is not enabled");
                         break;
                     }
-                    VMDebug.startLowOverheadTraceForAllMethods();
+
+                    if (profilerInfo.profileLongRunningMethods) {
+                        long microToNano = 1000;
+                        VMDebug.startLowOverheadTraceForLongRunningMethods(
+                                profilerInfo.durationMicros * microToNano);
+                    } else {
+                        VMDebug.startLowOverheadTraceForAllMethods();
+                    }
                     break;
                 default:
                     try {
@@ -7271,7 +7564,7 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
-    final void handleDispatchPackageBroadcast(int cmd, String[] packages) {
+    void handleDispatchPackageBroadcast(int cmd, String[] packages) {
         boolean hasPkgInfo = false;
         switch (cmd) {
             case ApplicationThreadConstants.PACKAGE_REMOVED:
@@ -7385,7 +7678,7 @@ public final class ActivityThread extends ClientTransactionHandler
         ApplicationPackageManager.handlePackageBroadcast(cmd, packages, hasPkgInfo);
     }
 
-    final void handleLowMemory() {
+    void handleLowMemory() {
         final ArrayList<ComponentCallbacks2> callbacks =
                 collectComponentCallbacks(true /* includeUiContexts */);
 
@@ -7434,6 +7727,11 @@ public final class ActivityThread extends ClientTransactionHandler
         }
 
         WindowManagerGlobal.getInstance().trimMemory(level);
+
+        if (android.os.Flags.parcelStringCacheEnabled()
+                && level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            StringCache.INSTANCE.clear();
+        }
     }
 
     private void setupGraphicsSupport(Context context) {
@@ -7482,7 +7780,7 @@ public final class ActivityThread extends ClientTransactionHandler
 
         // mCoreSettings is only updated from the main thread, while this function is only called
         // from main thread as well, so no need to lock here.
-        GraphicsEnvironment.getInstance().setup(context, mCoreSettings);
+        GraphicsEnvironment.getInstance().setup(context, getCoreSettingsForDefaultDeviceLocked());
         Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
     }
 
@@ -7513,6 +7811,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
+    @RavenwoodThrow(comment = "See ActivityThread_ravenwood for initialization on Ravenwood")
     private void handleBindApplication(AppBindData data) {
         mDdmSyncStageUpdater.next(Stage.Bind);
 
@@ -7530,7 +7829,10 @@ public final class ActivityThread extends ClientTransactionHandler
         Process.setStartTimes(SystemClock.elapsedRealtime(), SystemClock.uptimeMillis(),
                 data.startRequestedElapsedTime, data.startRequestedUptime);
 
-        AppCompatCallbacks.install(data.disabledCompatChanges, data.mLoggableCompatChanges);
+        AppCompatCallbacks.install(
+                data.disabledCompatChanges,
+                data.mLoggableCompatChanges,
+                data.mLogChangeChecksToStatsD);
         // Let libcore handle any compat changes after installing the list of compat changes.
         AppSpecializationHooks.handleCompatChangesBeforeBindingApplication();
 
@@ -7589,8 +7891,6 @@ public final class ActivityThread extends ClientTransactionHandler
         // Let the util.*Array classes maintain "undefined" for apps targeting Pie or earlier.
         UtilConfig.setThrowExceptionForUpperArrayOutOfBounds(
                 data.appInfo.targetSdkVersion >= Build.VERSION_CODES.Q);
-
-        Message.updateCheckRecycle(data.appInfo.targetSdkVersion);
 
         // Supply the targetSdkVersion to the UI rendering module, which may
         // need it in cases where it does not have access to the appInfo.
@@ -7656,7 +7956,8 @@ public final class ActivityThread extends ClientTransactionHandler
 
         // mCoreSettings is only updated from the main thread, while this function is only called
         // from main thread as well, so no need to lock here.
-        final String use24HourSetting = mCoreSettings.getString(Settings.System.TIME_12_24);
+        final String use24HourSetting = getCoreSettingsForDefaultDeviceLocked().getString(
+                Settings.System.TIME_12_24);
         Boolean is24Hr = null;
         if (use24HourSetting != null) {
             is24Hr = "24".equals(use24HourSetting) ? Boolean.TRUE : Boolean.FALSE;
@@ -7794,6 +8095,15 @@ public final class ActivityThread extends ClientTransactionHandler
 
             // Propagate Content Capture options
             app.setContentCaptureOptions(data.contentCaptureOptions);
+            if (data.contentCaptureOptions != null) {
+                if (data.contentCaptureOptions.enableReceiver
+                        && !data.contentCaptureOptions.lite) {
+                    // Warm up the background thread when:
+                    // 1) app is launched with content capture enabled, and
+                    // 2) the app is NOT launched with content capture lite enabled.
+                    BackgroundThread.startIfNeeded();
+                }
+            }
             sendMessage(H.SET_CONTENT_CAPTURE_OPTIONS_CALLBACK, data.appInfo.packageName);
 
             mInitialApplication = app;
@@ -7822,8 +8132,7 @@ public final class ActivityThread extends ClientTransactionHandler
             }
             catch (Exception e) {
                 throw new RuntimeException(
-                    "Exception thrown in onCreate() of "
-                    + data.instrumentationName + ": " + e.toString(), e);
+                    "Exception thrown in onCreate() of " + data.instrumentationName, e);
             }
             try {
                 timestampApplicationOnCreateNs = SystemClock.uptimeNanos();
@@ -7832,8 +8141,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 timestampApplicationOnCreateNs = 0;
                 if (!mInstrumentation.onException(app, e)) {
                     throw new RuntimeException(
-                      "Unable to create application " + app.getClass().getName()
-                      + ": " + e.toString(), e);
+                      "Unable to create application " + app.getClass().getName(), e);
                 }
             }
         } finally {
@@ -8004,8 +8312,7 @@ public final class ActivityThread extends ClientTransactionHandler
                 mInstrumentation.onCreate(data.instrumentationArgs);
             } catch (Exception e) {
                 throw new RuntimeException(
-                        "Exception thrown in onCreate() of "
-                                + data.instrumentationName + ": " + e.toString(), e);
+                        "Exception thrown in onCreate() of " + data.instrumentationName, e);
             }
 
         } catch (Exception e) {
@@ -8082,8 +8389,7 @@ public final class ActivityThread extends ClientTransactionHandler
                     cl.loadClass(data.instrumentationName.getClassName()).newInstance();
         } catch (Exception e) {
             throw new RuntimeException(
-                    "Unable to instantiate instrumentation "
-                            + data.instrumentationName + ": " + e.toString(), e);
+                    "Unable to instantiate instrumentation " + data.instrumentationName, e);
         }
 
         final ComponentName component = new ComponentName(ii.packageName, ii.name);
@@ -8122,7 +8428,7 @@ public final class ActivityThread extends ClientTransactionHandler
         mInstrumentingWithoutRestart = false;
     }
 
-    /*package*/ final void finishInstrumentation(int resultCode, Bundle results) {
+    /*package*/ void finishInstrumentation(int resultCode, Bundle results) {
         IActivityManager am = ActivityManager.getService();
         if (mProfiler.profileFile != null && mProfiler.handlingProfiling
                 && mProfiler.profileFd == null) {
@@ -8171,7 +8477,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    public final IContentProvider acquireProvider(
+    public IContentProvider acquireProvider(
             Context c, String auth, int userId, boolean stable) {
         final IContentProvider provider = acquireExistingProvider(c, auth, userId, stable);
         if (provider != null) {
@@ -8243,7 +8549,7 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
-    private final void incProviderRefLocked(ProviderRefCount prc, boolean stable) {
+    private void incProviderRefLocked(ProviderRefCount prc, boolean stable) {
         if (stable) {
             prc.stableCount += 1;
             if (prc.stableCount == 1) {
@@ -8301,8 +8607,19 @@ public final class ActivityThread extends ClientTransactionHandler
                             Slog.v(TAG, "incProviderRef: Now unstable - "
                                     + prc.holder.info.name);
                         }
-                        ActivityManager.getService().refContentProvider(
-                                prc.holder.connection, 0, 1);
+                        if (Flags.skipRefContentProvider()) {
+                            // If the provider is persistent process and has unstable
+                            // connection, then we don't need to increment the ref count
+                            // in the activity manager.
+                            if (prc != null && prc.holder != null
+                                        && !prc.holder.noReleaseNeededIfUnstable) {
+                                ActivityManager.getService().refContentProvider(
+                                        prc.holder.connection, 0, 1);
+                            }
+                        } else {
+                            ActivityManager.getService().refContentProvider(
+                                        prc.holder.connection, 0, 1);
+                        }
                     } catch (RemoteException e) {
                         //do nothing content provider object is dead any way
                     }
@@ -8312,7 +8629,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    public final IContentProvider acquireExistingProvider(
+    public IContentProvider acquireExistingProvider(
             Context c, String auth, int userId, boolean stable) {
         synchronized (mProviderMap) {
             final ProviderKey key = new ProviderKey(auth, userId);
@@ -8343,7 +8660,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    public final boolean releaseProvider(IContentProvider provider, boolean stable) {
+    public boolean releaseProvider(IContentProvider provider, boolean stable) {
         if (provider == null) {
             return false;
         }
@@ -8401,8 +8718,19 @@ public final class ActivityThread extends ClientTransactionHandler
                                 Slog.v(TAG, "releaseProvider: No longer unstable - "
                                         + prc.holder.info.name);
                             }
-                            ActivityManager.getService().refContentProvider(
-                                    prc.holder.connection, 0, -1);
+                            if (Flags.skipRefContentProvider()) {
+                                // If the provider is persistent process and has unstable
+                                // connection, then we don't need to decrement the ref count
+                                // in the activity manager.
+                                if (prc != null && prc.holder != null
+                                        && !prc.holder.noReleaseNeededIfUnstable) {
+                                    ActivityManager.getService().refContentProvider(
+                                            prc.holder.connection, 0, -1);
+                                }
+                            } else {
+                                ActivityManager.getService().refContentProvider(
+                                        prc.holder.connection, 0, -1);
+                            }
                         } catch (RemoteException e) {
                             //do nothing content provider object is dead any way
                         }
@@ -8429,7 +8757,7 @@ public final class ActivityThread extends ClientTransactionHandler
         }
     }
 
-    final void completeRemoveProvider(ProviderRefCount prc) {
+    void completeRemoveProvider(ProviderRefCount prc) {
         synchronized (mProviderMap) {
             if (!prc.removePending) {
                 // There was a race!  Some other client managed to acquire
@@ -8473,13 +8801,13 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    final void handleUnstableProviderDied(IBinder provider, boolean fromClient) {
+    void handleUnstableProviderDied(IBinder provider, boolean fromClient) {
         synchronized (mProviderMap) {
             handleUnstableProviderDiedLocked(provider, fromClient);
         }
     }
 
-    final void handleUnstableProviderDiedLocked(IBinder provider, boolean fromClient) {
+    void handleUnstableProviderDiedLocked(IBinder provider, boolean fromClient) {
         ProviderRefCount prc = mProviderRefCountMap.get(provider);
         if (prc != null) {
             if (DEBUG_PROVIDER) Slog.v(TAG, "Cleaning up dead provider "
@@ -8643,8 +8971,7 @@ public final class ActivityThread extends ClientTransactionHandler
             } catch (java.lang.Exception e) {
                 if (!mInstrumentation.onException(null, e)) {
                     throw new RuntimeException(
-                            "Unable to get provider " + info.name
-                            + ": " + e.toString(), e);
+                            "Unable to get provider " + info.name, e);
                 }
                 return null;
             }
@@ -8814,7 +9141,7 @@ public final class ActivityThread extends ClientTransactionHandler
             thread.mInitialApplication = context.mPackageInfo.makeApplicationInner(true, null);
             thread.mInitialApplication.onCreate();
         } catch (Exception e) {
-            throw new RuntimeException("Unable to instantiate Application():" + e, e);
+            throw new RuntimeException("Unable to instantiate Application()", e);
         }
     }
 
@@ -8832,7 +9159,7 @@ public final class ActivityThread extends ClientTransactionHandler
     }
 
     @UnsupportedAppUsage
-    public final void installSystemProviders(List<ProviderInfo> providers) {
+    public void installSystemProviders(List<ProviderInfo> providers) {
         if (providers != null) {
             installContentProviders(mInitialApplication, providers);
         }
@@ -8841,16 +9168,23 @@ public final class ActivityThread extends ClientTransactionHandler
     /**
      * Caller should NEVER mutate the Bundle returned from here
      */
-    Bundle getCoreSettings() {
+    Bundle getDefaultDeviceCoreSettings() {
         synchronized (mCoreSettingsLock) {
-            return mCoreSettings;
+            return getCoreSettingsForDefaultDeviceLocked();
         }
     }
 
-    public int getIntCoreSetting(String key, int defaultValue) {
+    int getIntCoreSetting(String key, int defaultValue) {
+        return getIntCoreSetting(key, defaultValue, mLastReportedDeviceId);
+    }
+
+    int getIntCoreSetting(String key, int defaultValue, int deviceId) {
         synchronized (mCoreSettingsLock) {
             if (mCoreSettings != null) {
-                return mCoreSettings.getInt(key, defaultValue);
+                Bundle bundle = getCoreSettingsForDeviceLocked(deviceId);
+                if (bundle != null) {
+                    return bundle.getInt(key, defaultValue);
+                }
             }
             return defaultValue;
         }
@@ -8859,10 +9193,13 @@ public final class ActivityThread extends ClientTransactionHandler
     /**
      * Get the string value of the given key from core settings.
      */
-    public String getStringCoreSetting(String key, String defaultValue) {
+    String getStringCoreSetting(String key, String defaultValue) {
         synchronized (mCoreSettingsLock) {
             if (mCoreSettings != null) {
-                return mCoreSettings.getString(key, defaultValue);
+                Bundle bundle = getCoreSettingsForDeviceLocked(mLastReportedDeviceId);
+                if (bundle != null) {
+                    return bundle.getString(key, defaultValue);
+                }
             }
             return defaultValue;
         }
@@ -8871,155 +9208,38 @@ public final class ActivityThread extends ClientTransactionHandler
     float getFloatCoreSetting(String key, float defaultValue) {
         synchronized (mCoreSettingsLock) {
             if (mCoreSettings != null) {
-                return mCoreSettings.getFloat(key, defaultValue);
+                Bundle bundle = getCoreSettingsForDeviceLocked(mLastReportedDeviceId);
+                if (bundle != null) {
+                    return bundle.getFloat(key, defaultValue);
+                }
             }
             return defaultValue;
         }
     }
 
-    private static class AndroidOs extends ForwardingOs {
-        /**
-         * Install selective syscall interception. For example, this is used to
-         * implement special filesystem paths that will be redirected to
-         * {@link ContentResolver#openFileDescriptor(Uri, String)}.
-         */
-        public static void install() {
-            // If feature is disabled, we don't need to install
-            if (!DEPRECATE_DATA_COLUMNS) return;
-
-            // Install interception and make sure it sticks!
-            Os def;
-            do {
-                def = Os.getDefault();
-            } while (!Os.compareAndSetDefault(def, new AndroidOs(def)));
-        }
-
-        private AndroidOs(Os os) {
-            super(os);
-        }
-
-        private FileDescriptor openDeprecatedDataPath(String path, int mode) throws ErrnoException {
-            final Uri uri = ContentResolver.translateDeprecatedDataPath(path);
-            Log.v(TAG, "Redirecting " + path + " to " + uri);
-
-            final ContentResolver cr = currentActivityThread().getApplication()
-                    .getContentResolver();
-            try {
-                final FileDescriptor fd = new FileDescriptor();
-                fd.setInt$(cr.openFileDescriptor(uri,
-                        FileUtils.translateModePosixToString(mode)).detachFd());
-                return fd;
-            } catch (SecurityException e) {
-                throw new ErrnoException(e.getMessage(), OsConstants.EACCES);
-            } catch (FileNotFoundException e) {
-                throw new ErrnoException(e.getMessage(), OsConstants.ENOENT);
-            }
-        }
-
-        private void deleteDeprecatedDataPath(String path) throws ErrnoException {
-            final Uri uri = ContentResolver.translateDeprecatedDataPath(path);
-            Log.v(TAG, "Redirecting " + path + " to " + uri);
-
-            final ContentResolver cr = currentActivityThread().getApplication()
-                    .getContentResolver();
-            try {
-                if (cr.delete(uri, null, null) == 0) {
-                    throw new FileNotFoundException();
-                }
-            } catch (SecurityException e) {
-                throw new ErrnoException(e.getMessage(), OsConstants.EACCES);
-            } catch (FileNotFoundException e) {
-                throw new ErrnoException(e.getMessage(), OsConstants.ENOENT);
-            }
-        }
-
-        @Override
-        public boolean access(String path, int mode) throws ErrnoException {
-            if (path != null && path.startsWith(DEPRECATE_DATA_PREFIX)) {
-                // If we opened it okay, then access check succeeded
-                IoUtils.closeQuietly(
-                        openDeprecatedDataPath(path, FileUtils.translateModeAccessToPosix(mode)));
-                return true;
-            } else {
-                return super.access(path, mode);
-            }
-        }
-
-        @Override
-        public FileDescriptor open(String path, int flags, int mode) throws ErrnoException {
-            if (path != null && path.startsWith(DEPRECATE_DATA_PREFIX)) {
-                return openDeprecatedDataPath(path, mode);
-            } else {
-                return super.open(path, flags, mode);
-            }
-        }
-
-        @Override
-        public StructStat stat(String path) throws ErrnoException {
-            if (path != null && path.startsWith(DEPRECATE_DATA_PREFIX)) {
-                final FileDescriptor fd = openDeprecatedDataPath(path, OsConstants.O_RDONLY);
-                try {
-                    return android.system.Os.fstat(fd);
-                } finally {
-                    IoUtils.closeQuietly(fd);
-                }
-            } else {
-                return super.stat(path);
-            }
-        }
-
-        @Override
-        public void unlink(String path) throws ErrnoException {
-            if (path != null && path.startsWith(DEPRECATE_DATA_PREFIX)) {
-                deleteDeprecatedDataPath(path);
-            } else {
-                super.unlink(path);
-            }
-        }
-
-        @Override
-        public void remove(String path) throws ErrnoException {
-            if (path != null && path.startsWith(DEPRECATE_DATA_PREFIX)) {
-                deleteDeprecatedDataPath(path);
-            } else {
-                super.remove(path);
-            }
-        }
-
-        @Override
-        public void rename(String oldPath, String newPath) throws ErrnoException {
-            try {
-                super.rename(oldPath, newPath);
-            } catch (ErrnoException e) {
-                // On emulated volumes, we have bind mounts for /Android/data and
-                // /Android/obb, which prevents move from working across those directories
-                // and other directories on the filesystem. To work around that, try to
-                // recover by doing a copy instead.
-                // Note that we only do this for "/storage/emulated", because public volumes
-                // don't have these bind mounts, neither do private volumes that are not
-                // the primary storage.
-                if (e.errno == OsConstants.EXDEV && oldPath.startsWith("/storage/emulated")
-                        && newPath.startsWith("/storage/emulated")) {
-                    Log.v(TAG, "Recovering failed rename " + oldPath + " to " + newPath);
-                    try {
-                        Files.move(new File(oldPath).toPath(), new File(newPath).toPath(),
-                                StandardCopyOption.REPLACE_EXISTING);
-                    } catch (IOException e2) {
-                        Log.e(TAG, "Rename recovery failed ", e2);
-                        throw e;
-                    }
-                } else {
-                    throw e;
-                }
-            }
-        }
+    private Bundle getCoreSettingsForDefaultDeviceLocked() {
+        return getCoreSettingsForDeviceLocked(Context.DEVICE_ID_DEFAULT);
     }
 
+    private Bundle getCoreSettingsForDeviceLocked(int deviceId) {
+        if (android.companion.virtualdevice.flags.Flags.deviceAwareSettingsOverride()) {
+            Bundle bundle = mCoreSettings.getBundle(String.valueOf(deviceId));
+            if (deviceId != Context.DEVICE_ID_DEFAULT && bundle == null) {
+                // There hasn't been any overridden settings for the virtual device, so just return
+                // the settings for the default device.
+                bundle = mCoreSettings.getBundle(String.valueOf(Context.DEVICE_ID_DEFAULT));
+            }
+            return bundle;
+        }
+        return mCoreSettings;
+    }
+
+    @RavenwoodThrow(comment = "See ActivityThread_ravenwood for initialization on Ravenwood")
     public static void main(String[] args) {
         Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "ActivityThreadMain");
 
         // Install selective syscall interception
-        AndroidOs.install();
+        AndroidForwardingOs.install();
 
         // CloseGuard defaults to true and can be quite spammy.  We
         // disable it here, but selectively enable it later (via
@@ -9085,9 +9305,7 @@ public final class ActivityThread extends ClientTransactionHandler
         NfcFrameworkInitializer.setNfcServiceManager(new NfcServiceManager());
         DeviceConfigInitializer.setDeviceConfigServiceManager(new DeviceConfigServiceManager());
         SeFrameworkInitializer.setSeServiceManager(new SeServiceManager());
-        if (android.server.Flags.telemetryApisService()) {
-            ProfilingFrameworkInitializer.setProfilingServiceManager(new ProfilingServiceManager());
-        }
+        ProfilingFrameworkInitializer.setProfilingServiceManager(new ProfilingServiceManager());
     }
 
     private void purgePendingResources() {
@@ -9156,6 +9374,7 @@ public final class ActivityThread extends ClientTransactionHandler
         return false;
     }
 
+    @RavenwoodIgnore(reason = "LoadedApk calls it, but we don't need to keep track of it yet")
     void addApplication(@NonNull Application app) {
         mAllApplications.add(app);
         VMDebug.addApplication(app.mLoadedApk.mPackageName);

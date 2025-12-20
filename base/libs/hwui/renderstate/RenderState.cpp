@@ -20,7 +20,6 @@
 namespace android {
 namespace uirenderer {
 
-// RenderState可以看做是OpenGL状态机的具体呈现，真正负责OpenGL的渲染状态的维护及渲染命令的issue
 RenderState::RenderState(renderthread::RenderThread& thread) : mRenderThread(thread) {
     mThreadId = pthread_self();
 }

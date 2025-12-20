@@ -254,7 +254,7 @@ ui::Transform::RotationFlags Output::getTransformHint() const {
     return static_cast<ui::Transform::RotationFlags>(getState().transform.getOrientation());
 }
 
-void Output::setLayerFilter(ui::LayerFilter filter) {
+void Output::setLayerFilter(LayerFilter filter) {
     editState().layerFilter = filter;
     dirtyEntireOutput();
 }
@@ -389,16 +389,24 @@ void Output::setRenderSurfaceForTest(std::unique_ptr<compositionengine::RenderSu
     mRenderSurface = std::move(surface);
 }
 
+bool Output::plannerTexturePoolEnabled() const {
+    return mPlanner && mPlanner->isTexturePoolEnabled();
+}
+
 Region Output::getDirtyRegion() const {
     const auto& outputState = getState();
     return outputState.dirtyRegion.intersect(outputState.layerStackSpace.getContent());
 }
 
-bool Output::includesLayer(ui::LayerFilter filter) const {
+bool Output::includesLayer(LayerFilter filter) const {
     return getState().layerFilter.includes(filter);
 }
 
 bool Output::includesLayer(const sp<LayerFE>& layerFE) const {
+    return includesLayer(layerFE.get());
+}
+
+bool Output::includesLayer(LayerFE* layerFE) const {
     const auto* layerFEState = layerFE->getCompositionState();
     return layerFEState && includesLayer(layerFEState->outputFilter);
 }
@@ -577,8 +585,15 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
         return;
     }
 
-    bool computeAboveCoveredExcludingOverlays = coverage.aboveCoveredLayersExcludingOverlays &&
-            !layerFEState->outputFilter.toInternalDisplay;
+    bool computeAboveCoveredExcludingOverlays = [&]() {
+        if (FlagManager::getInstance().connected_displays_cursor()) {
+            return coverage.aboveCoveredLayersExcludingOverlays &&
+                    !layerFEState->outputFilter.skipScreenshot;
+        } else {
+            return coverage.aboveCoveredLayersExcludingOverlays &&
+                    !layerFEState->outputFilter.toInternalDisplay;
+        }
+    }();
 
     /*
      * opaqueRegion: area of a surface that is fully opaque.
@@ -617,7 +632,7 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     Region transparentRegion;
 
     /*
-     * shadowRegion: Region cast by the layer's shadow.
+     * shadowRegion: Region cast by the layer's shadow or border.
      */
     Region shadowRegion;
 
@@ -631,18 +646,9 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     // Get the visible region
     // TODO(b/121291683): Is it worth creating helper methods on LayerFEState
     // for computations like this?
-    const Rect visibleRect(tr.transform(layerFEState->geomLayerBounds));
-    visibleRegion.set(visibleRect);
-
-    if (layerFEState->shadowSettings.length > 0.0f) {
-        // if the layer casts a shadow, offset the layers visible region and
-        // calculate the shadow region.
-        const auto inset = static_cast<int32_t>(ceilf(layerFEState->shadowSettings.length) * -1.0f);
-        Rect visibleRectWithShadows(visibleRect);
-        visibleRectWithShadows.inset(inset, inset, inset, inset);
-        visibleRegion.set(visibleRectWithShadows);
-        shadowRegion = visibleRegion.subtract(visibleRect);
-    }
+    const Rect geomRect(tr.transform(layerFEState->geomLayerBounds));
+    visibleRegion.set(Rect(layerFEState->outsetRectForShadow(geomRect.toFloatRect())));
+    shadowRegion = visibleRegion.subtract(geomRect);
 
     if (visibleRegion.isEmpty()) {
         return;
@@ -689,7 +695,7 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
         // Otherwise we don't try and compute the opaque region since there may
         // be errors at the edges, and we treat the entire layer as
         // translucent.
-        opaqueRegion.set(visibleRect);
+        opaqueRegion.set(geomRect);
     }
 
     // Clip the covered region to the visible region
@@ -776,6 +782,11 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
     // one, or create a new one if we do not.
     auto outputLayer = ensureOutputLayer(prevOutputLayerIndex, layerFE);
 
+    coverage.aboveBlurRequests += static_cast<int32_t>(layerFEState->backgroundBlurRadius > 0);
+    // Each blur region can contain a separate blur radius so we need to count each region
+    // as a separate request.
+    coverage.aboveBlurRequests += static_cast<int32_t>(layerFEState->blurRegions.size());
+
     // Store the layer coverage information into the layer state as some of it
     // is useful later.
     auto& outputLayerState = outputLayer->editState();
@@ -790,6 +801,11 @@ void Output::ensureOutputLayerIfVisible(sp<compositionengine::LayerFE>& layerFE,
             ? outputState.transform.transform(
                       transparentRegion.intersect(outputState.layerStackSpace.getContent()))
             : Region();
+
+    // See b/399120953: blurs are so expensive that they may be susceptible to compression side
+    // channel attacks
+    static constexpr auto kMaxBlurRequests = 10;
+    outputLayerState.ignoreBlur = coverage.aboveBlurRequests > kMaxBlurRequests;
     if (CC_UNLIKELY(computeAboveCoveredExcludingOverlays)) {
         outputLayerState.coveredRegionExcludingDisplayOverlays =
                 std::move(coveredRegionExcludingDisplayOverlays);
@@ -862,9 +878,13 @@ void Output::updateCompositionState(const compositionengine::CompositionRefreshA
     auto* properties = getOverlaySupport();
 
     for (auto* layer : getOutputLayersOrderedByZ()) {
+        const ui::LayerStack outputLayerStack =
+                layer->getOutput().getState().layerFilter.layerStack;
+        const bool layerForceClientComposition =
+                refreshArgs.forcedClientCompositionLayerStacks.contains(outputLayerStack);
+
         layer->updateCompositionState(refreshArgs.updatingGeometryThisFrame,
-                                      refreshArgs.devOptForceClientComposition ||
-                                              forceClientComposition,
+                                      layerForceClientComposition || forceClientComposition,
                                       refreshArgs.internalDisplayRotationFlags,
                                       properties ? properties->lutProperties : std::nullopt);
 
@@ -1152,6 +1172,15 @@ void Output::prepareFrame() {
 
     std::optional<android::HWComposer::DeviceRequestedChanges> changes;
     bool success = chooseCompositionStrategy(&changes);
+
+    if (success && changes.has_value()) {
+        for (const compositionengine::OutputLayer* layer : getOutputLayersOrderedByZ()) {
+            HWC2::Layer* hwcLayer = layer->getHwcLayer();
+            if (!hwcLayer || changes->changedTypes.contains(hwcLayer)) continue;
+            changes->changedTypes[hwcLayer] = layer->getState().hwc->hwcCompositionType;
+        }
+    }
+
     resetCompositionStrategy();
     outputState.strategyPrediction = CompositionStrategyPredictionState::DISABLED;
     outputState.previousDeviceRequestedChanges = changes;
@@ -1183,6 +1212,14 @@ GpuCompositionResult Output::prepareFrameAsync() {
     const auto& previousChanges = state.previousDeviceRequestedChanges;
     std::optional<android::HWComposer::DeviceRequestedChanges> changes;
     resetCompositionStrategy();
+    // Store all layer composition types before appplying composition strategy
+    android::HWComposer::DeviceRequestedChanges::ChangedTypes backups;
+    for (const compositionengine::OutputLayer* layer : getOutputLayersOrderedByZ()) {
+        HWC2::Layer* hwcLayer = layer->getHwcLayer();
+        if (!hwcLayer) continue;
+        backups[hwcLayer] = layer->getState().hwc->hwcCompositionType;
+    }
+
     auto hwcResult = chooseCompositionStrategyAsync(&changes);
     if (state.previousDeviceRequestedSuccess) {
         applyCompositionStrategy(previousChanges);
@@ -1203,6 +1240,14 @@ GpuCompositionResult Output::prepareFrameAsync() {
     }
 
     auto chooseCompositionSuccess = hwcResult.get();
+    if (chooseCompositionSuccess && changes.has_value()) {
+        // Keep track of all layer composition types, not just changes
+        for (const compositionengine::OutputLayer* layer : getOutputLayersOrderedByZ()) {
+            HWC2::Layer* hwcLayer = layer->getHwcLayer();
+            if (!hwcLayer || changes->changedTypes.contains(hwcLayer)) continue;
+            changes->changedTypes[hwcLayer] = backups[hwcLayer];
+        }
+    }
     const bool predictionSucceeded = dequeueSucceeded && changes == previousChanges;
     state.strategyPrediction = predictionSucceeded ? CompositionStrategyPredictionState::SUCCESS
                                                    : CompositionStrategyPredictionState::FAIL;
@@ -1291,18 +1336,11 @@ void Output::updateProtectedContentState() {
     auto& renderEngine = getCompositionEngine().getRenderEngine();
     const bool supportsProtectedContent = renderEngine.supportsProtectedContent();
 
-    bool isProtected;
-    if (FlagManager::getInstance().display_protected()) {
-        isProtected = outputState.isProtected;
-    } else {
-        isProtected = outputState.isSecure;
-    }
-
     // We need to set the render surface as protected (DRM) if all the following conditions are met:
     // 1. The display is protected (in legacy, check if the display is secure)
     // 2. Protected content is supported
     // 3. At least one layer has protected content.
-    if (isProtected && supportsProtectedContent) {
+    if (outputState.isProtected && supportsProtectedContent) {
         auto layers = getOutputLayersOrderedByZ();
         bool needsProtected = std::any_of(layers.begin(), layers.end(), [](auto* layer) {
             return layer->getLayerFE().getCompositionState()->hasProtectedContent &&
@@ -1499,7 +1537,7 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
     const Region viewportRegion(outputState.layerStackSpace.getContent());
     bool firstLayer = true;
 
-    bool disableBlurs = false;
+    bool disableBlursWholesale = false;
     uint64_t previousOverrideBufferId = 0;
 
     for (auto* layer : getOutputLayersOrderedByZ()) {
@@ -1516,7 +1554,8 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
             continue;
         }
 
-        disableBlurs |= layerFEState->sidebandStream != nullptr;
+        disableBlursWholesale |= layerFEState->sidebandStream != nullptr;
+        bool disableBlurForLayer = layer->getState().ignoreBlur || disableBlursWholesale;
 
         const bool clientComposition = layer->requiresClientComposition();
 
@@ -1546,23 +1585,21 @@ std::vector<LayerFE::LayerSettings> Output::generateClientCompositionRequests(
                           layer->getLayerFE().getDebugName());
                 }
             } else {
-                LayerFE::ClientCompositionTargetSettings::BlurSetting blurSetting = disableBlurs
+                LayerFE::ClientCompositionTargetSettings::BlurSetting blurSetting =
+                        disableBlurForLayer
                         ? LayerFE::ClientCompositionTargetSettings::BlurSetting::Disabled
                         : (layer->getState().overrideInfo.disableBackgroundBlur
                                    ? LayerFE::ClientCompositionTargetSettings::BlurSetting::
                                              BlurRegionsOnly
                                    : LayerFE::ClientCompositionTargetSettings::BlurSetting::
                                              Enabled);
-                bool isProtected = supportsProtectedContent;
-                if (FlagManager::getInstance().display_protected()) {
-                    isProtected = outputState.isProtected && supportsProtectedContent;
-                }
                 compositionengine::LayerFE::ClientCompositionTargetSettings
                         targetSettings{.clip = clip,
                                        .needsFiltering = layer->needsFiltering() ||
                                                outputState.needsFiltering,
                                        .isSecure = outputState.isSecure,
-                                       .isProtected = isProtected,
+                                       .isProtected = outputState.isProtected &&
+                                               supportsProtectedContent,
                                        .viewport = outputState.layerStackSpace.getContent(),
                                        .dataspace = outputDataspace,
                                        .realContentIsVisible = realContentIsVisible,
@@ -1653,6 +1690,8 @@ void Output::presentFrameAndReleaseLayers(bool flushEvenWhenDisabled) {
 
     mRenderSurface->onPresentDisplayCompleted();
 
+    const bool force_slower_follower_gpu_composition =
+            FlagManager::getInstance().force_slower_follower_gpu_composition();
     for (auto* layer : getOutputLayersOrderedByZ()) {
         // The layer buffer from the previous frame (if any) is released
         // by HWC only when the release fence from this frame (if any) is
@@ -1667,13 +1706,26 @@ void Output::presentFrameAndReleaseLayers(bool flushEvenWhenDisabled) {
 
         // If the layer was client composited in the previous frame, we
         // need to merge with the previous client target acquire fence.
-        // Since we do not track that, always merge with the current
-        // client target acquire fence when it is available, even though
-        // this is suboptimal.
-        // TODO(b/121291683): Track previous frame client target acquire fence.
-        if (outputState.usesClientComposition) {
+        if (force_slower_follower_gpu_composition) {
             releaseFence =
-                    Fence::merge("LayerRelease", releaseFence, frame.clientTargetAcquireFence);
+                    Fence::merge("LayerRelease", releaseFence,
+                                 layer->getLayerFE().getAndClearLastClientTargetAcquireFence());
+
+            // If there's no present fence nor last composition acquire fence, then return the
+            // current acquire fence rather than a NO_FENCE which would release immediately.
+            if (releaseFence == Fence::NO_FENCE) {
+                releaseFence = frame.clientTargetAcquireFence;
+            }
+
+            layer->getLayerFE().setLastClientTargetAcquireFence(frame.clientTargetAcquireFence);
+        } else {
+            // Since we do not track that, always merge with the current
+            // client target acquire fence when it is available, even though
+            // this is suboptimal.
+            if (outputState.usesClientComposition) {
+                releaseFence =
+                        Fence::merge("LayerRelease", releaseFence, frame.clientTargetAcquireFence);
+            }
         }
         layer->getLayerFE().setReleaseFence(releaseFence);
         layer->getLayerFE().setReleasedBuffer(layer->getLayerFE().getCompositionState()->buffer);
@@ -1714,6 +1766,9 @@ void Output::resetCompositionStrategy() {
 }
 
 bool Output::getSkipColorTransform() const {
+    // TODO: This needs to be true because the color transform is a global across all displays, but
+    // use-cases like screen recording don't want the color transform. Please make color transforms
+    // actually a per-display concept :(
     return true;
 }
 
