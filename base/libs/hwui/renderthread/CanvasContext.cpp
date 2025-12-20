@@ -712,9 +712,11 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
 
     // 重点
     // Frame：封装了 Surface、ANativeWindow、Buffer 状态；
+    // 向BufferQueue请求一个图形缓冲区用来进行绘制
     Frame frame = getFrame();
 
     // windowDirty：将脏区转换为 窗口坐标系。
+    // 根据上面构建的Frame对象重新计算窗口的脏区域
     SkRect windowDirty = computeDirtyRect(frame, &dirty);
 
     ATRACE_FORMAT("Drawing " RECT_STRING, SK_RECT_ARGS(dirty));

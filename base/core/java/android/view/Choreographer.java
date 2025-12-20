@@ -1432,7 +1432,7 @@ public final class Choreographer {
 
             long newPreferredDeadline = mFrameTimelines[newPreferredIndex].mDeadlineNanos;
             if (newPreferredDeadline < minimumDeadline) {
-                DisplayEventReceiver.VsyncEventData latestVsyncEventData =
+                DisplayEventRzeceiver.VsyncEventData latestVsyncEventData =
                         displayEventReceiver.getLatestVsyncEventData();
                 if (latestVsyncEventData == null) {
                     Log.w(TAG, "Could not get latest VsyncEventData. Did SurfaceFlinger crash?");
