@@ -904,38 +904,203 @@ flowchart TD
     BC --> BD
 ```
 
-### 6.2 事件分发状态机
+### 6.2 层级化的事件分发状态机
 
 ```mermaid
 stateDiagram-v2
-    [*] --> ACTION_DOWN
-    ACTION_DOWN --> 事件拦截检查
-    事件拦截检查 --> 子View分发 : 不拦截
-    事件拦截检查 --> 父View处理 : 拦截
+    [*] --> 系统层
     
-    子View分发 --> 子View消费 : 有子View消费
-    子View分发 --> 父View处理 : 无子View消费
+    state 系统层 {
+        [*] --> InputReader
+        InputReader --> InputDispatcher
+        InputDispatcher --> ViewRootImpl
+        ViewRootImpl --> Activity层
+    }
     
-    子View消费 --> ACTION_MOVE : 后续事件
-    父View处理 --> ACTION_MOVE : 后续事件
+    state Activity层 {
+        [*] --> Activity.dispatchTouchEvent
+        Activity.dispatchTouchEvent --> Window层 : 调用superDispatchTouchEvent
+        Window层 --> DecorView层 : 调用superDispatchTouchEvent
+        
+        state Window层 {
+            [*] --> PhoneWindow
+            PhoneWindow --> DecorView
+        }
+        
+        state DecorView层 {
+            [*] --> DecorView.dispatchTouchEvent
+            DecorView.dispatchTouchEvent --> ViewGroup层 : 调用父类方法
+        }
+    }
     
-    ACTION_MOVE --> 直接分发 : 已有TouchTarget
-    ACTION_MOVE --> 重新分发 : 无TouchTarget
+    state ViewGroup层 {
+        [*] --> ViewGroup.dispatchTouchEvent
+        ViewGroup.dispatchTouchEvent --> 拦截检查
+        
+        state 拦截检查 {
+            [*] --> 检查拦截条件
+            检查拦截条件 --> 调用onInterceptTouchEvent : 需要检查
+            调用onInterceptTouchEvent --> 拦截判定 : 返回结果
+            拦截判定 --> 子View分发层 : 不拦截
+            拦截判定 --> 父View处理 : 拦截
+        }
+        
+        state 子View分发层 {
+            [*] --> 遍历子View
+            遍历子View --> 检查子View条件
+            检查子View条件 --> 分发事件 : 条件满足
+            分发事件 --> 子View消费层 : 子View处理
+            子View消费层 --> 建立TouchTarget : 消费事件
+            
+            state 子View消费层 {
+                [*] --> View.dispatchTouchEvent
+                View.dispatchTouchEvent --> View.onTouchEvent
+                View.onTouchEvent --> 返回结果 : 处理完成
+            }
+        }
+        
+        state 父View处理 {
+            [*] --> ViewGroup.onTouchEvent
+            ViewGroup.onTouchEvent --> 返回结果 : 处理完成
+        }
+    }
     
-    直接分发 --> ACTION_UP
-    重新分发 --> ACTION_UP
+    ViewGroup层 --> 后续事件处理层 : 返回处理结果
     
-    ACTION_UP --> 清理状态
-    清理状态 --> [*]
+    state 后续事件处理层 {
+        [*] --> ACTION_MOVE
+        ACTION_MOVE --> 直接分发 : 已有TouchTarget
+        直接分发 --> ACTION_UP
+        
+        ACTION_MOVE --> 重新分发 : 无TouchTarget
+        重新分发 --> ACTION_UP
+        
+        ACTION_UP --> 清理状态
+        清理状态 --> [*]
+    }
     
-    note right of 事件拦截检查
-        ViewGroup.onInterceptTouchEvent
-        决定是否拦截事件
+    note right of 拦截检查
+        拦截检查只在ACTION_DOWN
+        或已有TouchTarget时进行
     end note
     
-    note right of 子View分发
+    note right of 子View分发层
         从后向前遍历子View
-        检查触摸区域和可见性
+        检查canReceivePointerEvents
+        和isTransformedTouchPointInView
+    end note
+    
+    note right of 后续事件处理层
+        后续事件通过TouchTarget
+        直接分发，避免重复查找
+    end note
+```
+
+### 6.3 父View与子View交互状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> 父View接收事件
+    
+    state 父View {
+        父View接收事件 --> 拦截检查
+        
+        state 拦截检查 {
+            [*] --> 检查拦截条件
+            检查拦截条件 --> 调用onInterceptTouchEvent
+            调用onInterceptTouchEvent --> 拦截判定
+            拦截判定 --> 父View处理 : 拦截
+            拦截判定 --> 子View分发 : 不拦截
+        }
+        
+        父View处理 --> 父View消费事件 : 处理成功
+        父View处理 --> 父View不消费 : 处理失败
+        
+        子View分发 --> 遍历子View
+        
+        state 遍历子View {
+            [*] --> 检查子View1
+            检查子View1 --> 分发子View1 : 条件满足
+            检查子View1 --> 检查子View2 : 条件不满足
+            
+            分发子View1 --> 子View1消费 : 消费事件
+            分发子View1 --> 检查子View2 : 不消费事件
+            
+            检查子View2 --> 分发子View2 : 条件满足
+            检查子View2 --> 检查子ViewN : 条件不满足
+            
+            分发子View2 --> 子View2消费 : 消费事件
+            分发子View2 --> 检查子ViewN : 不消费事件
+            
+            检查子ViewN --> 分发子ViewN : 条件满足
+            检查子ViewN --> 父View处理 : 所有子View都不满足
+            
+            分发子ViewN --> 子ViewN消费 : 消费事件
+            分发子ViewN --> 父View处理 : 不消费事件
+        }
+        
+        父View消费事件 --> 父View返回结果 : 返回true
+        父View不消费 --> 父View返回结果 : 返回false
+        
+        子View1消费 --> 建立TouchTarget1
+        子View2消费 --> 建立TouchTarget2
+        子ViewN消费 --> 建立TouchTargetN
+        
+        建立TouchTarget1 --> 父View返回结果 : 返回true
+        建立TouchTarget2 --> 父View返回结果 : 返回true
+        建立TouchTargetN --> 父View返回结果 : 返回true
+    }
+    
+    state 子View {
+        state 子View1 {
+            [*] --> 子View1接收事件
+            子View1接收事件 --> 子View1处理事件
+            子View1处理事件 --> 子View1消费 : 消费事件
+            子View1处理事件 --> 子View1不消费 : 不消费事件
+        }
+        
+        state 子View2 {
+            [*] --> 子View2接收事件
+            子View2接收事件 --> 子View2处理事件
+            子View2处理事件 --> 子View2消费 : 消费事件
+            子View2处理事件 --> 子View2不消费 : 不消费事件
+        }
+        
+        state 子ViewN {
+            [*] --> 子ViewN接收事件
+            子ViewN接收事件 --> 子ViewN处理事件
+            子ViewN处理事件 --> 子ViewN消费 : 消费事件
+            子ViewN处理事件 --> 子ViewN不消费 : 不消费事件
+        }
+    }
+    
+    父View返回结果 --> 后续事件处理
+    
+    state 后续事件处理 {
+        [*] --> ACTION_MOVE
+        ACTION_MOVE --> 直接分发 : 已有TouchTarget
+        直接分发 --> ACTION_UP
+        
+        ACTION_UP --> 清理TouchTarget
+        清理TouchTarget --> [*]
+    }
+    
+    note right of 父View
+        父View负责管理子View
+        决定是否拦截事件
+        维护TouchTarget链表
+    end note
+    
+    note right of 子View
+        子View负责处理具体事件
+        可以消费或不消费事件
+        消费后建立TouchTarget
+    end note
+    
+    note right of 后续事件处理
+        后续事件通过TouchTarget
+        直接分发，提高效率
+        避免重复查找子View
     end note
 ```
 
