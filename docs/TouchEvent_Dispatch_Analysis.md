@@ -1,5 +1,7 @@
 # Android触摸事件分发机制完整分析
 
+[toc]
+
 ## 概述
 
 本文档详细分析Android系统中从Activity的`dispatchTouchEvent`方法开始的触摸事件分发流程。通过源码分析和流程图展示，揭示触摸事件从系统层到应用层的完整传递路径。
@@ -366,9 +368,11 @@ case MotionEvent.ACTION_POINTER_DOWN: {
 手指2抬起: ACTION_UP → ViewB (清理TouchTarget2)
 ```
 
-## 4. ViewGroup的事件分发机制
+## 4. 事件分发机制
 
-### 4.1 ViewGroup.dispatchTouchEvent核心逻辑
+### 4.1 ViewGroup
+
+#### 4.1.1 ViewGroup.dispatchTouchEvent核心逻辑
 
 [源码证据：frameworks/base/core/java/android/view/ViewGroup.java#L2670-2750]
 
@@ -454,7 +458,7 @@ public boolean dispatchTouchEvent(MotionEvent ev) {
 }
 ```
 
-### 3.2 事件拦截机制：onInterceptTouchEvent
+#### 4.1.2 事件拦截机制：onInterceptTouchEvent
 
 ViewGroup通过`onInterceptTouchEvent`方法决定是否拦截事件：
 
@@ -467,7 +471,7 @@ public boolean onInterceptTouchEvent(MotionEvent ev) {
 }
 ```
 
-### 3.3 事件分发：dispatchTransformedTouchEvent
+#### 4.1.3 事件分发：dispatchTransformedTouchEvent
 
 该方法负责将事件转换并分发给子View：
 
@@ -507,9 +511,9 @@ private boolean dispatchTransformedTouchEvent(MotionEvent event, boolean cancel,
 }
 ```
 
-## 4. View的事件处理机制
+### 4.2 View的事件处理机制
 
-### 4.1 View.dispatchTouchEvent方法
+#### 4.2.1 View.dispatchTouchEvent方法
 
 [源码证据：frameworks/base/core/java/android/view/View.java#L14320-14380]
 
@@ -536,7 +540,7 @@ public boolean dispatchTouchEvent(MotionEvent event) {
 }
 ```
 
-### 4.2 View.onTouchEvent方法
+#### 4.2.2 View.onTouchEvent方法
 
 [源码证据：frameworks/base/core/java/android/view/View.java#L14750-14920]
 
