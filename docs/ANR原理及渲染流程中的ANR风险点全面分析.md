@@ -2,8 +2,6 @@
 
 ## 一、ANR核心原理架构图
 
-**plain**
-
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                          ANR检测机制架构                                  │
@@ -86,40 +84,47 @@ graph TD
 
 ### 2.2 关键数据结构
 
-**cpp**
+**源码位置**: [InputDispatcher.h:682](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.h#L682)
 
-```
+```cpp
 // frameworks/native/services/inputflinger/dispatcher/InputDispatcher.h
 
 class InputDispatcher {
 private:
-    // 焦点窗口映射表
-    std::unordered_map<ui::LogicalDisplayId, sp<WindowInfoHandle>> 
-        mFocusedWindowHandlesByDisplay;
-    
-    // 焦点应用映射表
-    std::unordered_map<ui::LogicalDisplayId, std::shared_ptr<InputApplicationHandle>>
-        mFocusedApplicationHandlesByDisplay;
-    
-    // 窗口无焦点超时时间点
-    std::optional<nsecs_t> mNoFocusedWindowTimeoutTime;
-    
-    // 等待焦点的应用
-    std::shared_ptr<InputApplicationHandle> mAwaitedFocusedApplication;
-    
-    // 等待焦点的Display ID
-    ui::LogicalDisplayId mAwaitedApplicationDisplayId;
-    
-    // ANR超时时间常量
-    static constexpr std::chrono::nanoseconds DEFAULT_INPUT_DISPATCHING_TIMEOUT = 5s;
+    // Focused applications.
+    std::unordered_map<ui::LogicalDisplayId /*displayId*/, std::shared_ptr<InputApplicationHandle>>
+            mFocusedApplicationHandlesByDisplay GUARDED_BY(mLock);
+
+    // Keeps track of the focused window per display and determines focus changes.
+    FocusResolver mFocusResolver GUARDED_BY(mLock);
+
+    /**
+     * This field is set if there is no focused window, and we have an event that requires
+     * a focused window to be dispatched (for example, a KeyEvent).
+     * When this happens, we will wait until *mNoFocusedWindowTimeoutTime before
+     * dropping the event and raising an ANR for that application.
+     * This is useful if an application is slow to add a focused window.
+     */
+    std::optional<nsecs_t> mNoFocusedWindowTimeoutTime GUARDED_BY(mLock);
+
+    /**
+     * The focused application at the time when no focused window was present.
+     * Used to raise an ANR when we have no focused window.
+     */
+    std::shared_ptr<InputApplicationHandle> mAwaitedFocusedApplication GUARDED_BY(mLock);
+
+    /**
+     * The displayId that the focused application is associated with.
+     */
+    ui::LogicalDisplayId mAwaitedApplicationDisplayId GUARDED_BY(mLock);
 };
 ```
 
 ### 2.3 窗口无焦点ANR触发条件
 
-**cpp**
+**源码位置**: [InputDispatcher.cpp:2310-2350](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2350)
 
-```
+```cpp
 // 条件1：焦点应用不为空
 focusedApplicationHandle != nullptr
 
@@ -127,7 +132,7 @@ focusedApplicationHandle != nullptr
 focusedWindowHandle == nullptr
 
 // 条件3：等待超时（5秒）
-currentTime > mNoFocusedWindowTimeoutTime
+currentTime > *mNoFocusedWindowTimeoutTime
 
 // 条件4：焦点应用未改变
 focusedApplication == mAwaitedFocusedApplication
@@ -136,9 +141,63 @@ focusedApplication == mAwaitedFocusedApplication
 getFocusedWindowHandleLocked(displayId) == nullptr
 ```
 
-## 三、从View刷新到显示的ANR风险点完整流程
+### 2.4 findFocusedWindowTargetLocked 核心实现
 
-**plain**
+**源码位置**: [InputDispatcher.cpp:2310-2380](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2380)
+
+```cpp
+base::Result<sp<android::gui::WindowInfoHandle>, os::InputEventInjectionResult>
+InputDispatcher::findFocusedWindowTargetLocked(nsecs_t currentTime, const EventEntry& entry,
+                                               nsecs_t& nextWakeupTime) {
+    ui::LogicalDisplayId displayId = getTargetDisplayId(entry);
+    sp<WindowInfoHandle> focusedWindowHandle = getFocusedWindowHandleLocked(displayId);
+    std::shared_ptr<InputApplicationHandle> focusedApplicationHandle =
+            getValueByKey(mFocusedApplicationHandlesByDisplay, displayId);
+
+    // If there is no currently focused window and no focused application
+    // then drop the event.
+    if (focusedWindowHandle == nullptr && focusedApplicationHandle == nullptr) {
+        ALOGI("Dropping %s event because there is no focused window or focused application in "
+              "display %s.",
+              ftl::enum_string(entry.type).c_str(), displayId.toString().c_str());
+        return injectionError(InputEventInjectionResult::FAILED);
+    }
+
+    // Compatibility behavior: raise ANR if there is a focused application, but no focused window.
+    // Only start counting when we have a focused event to dispatch. The ANR is canceled if we
+    // start interacting with another application via touch (app switch).
+    if (focusedWindowHandle == nullptr && focusedApplicationHandle != nullptr) {
+        if (!mNoFocusedWindowTimeoutTime.has_value()) {
+            // We just discovered that there's no focused window. Start the ANR timer
+            std::chrono::nanoseconds timeout = focusedApplicationHandle->getDispatchingTimeout(
+                    DEFAULT_INPUT_DISPATCHING_TIMEOUT);
+            mNoFocusedWindowTimeoutTime = currentTime + timeout.count();
+            mAwaitedFocusedApplication = focusedApplicationHandle;
+            mAwaitedApplicationDisplayId = displayId;
+            ALOGW("Waiting because no window has focus but %s may eventually add a "
+                  "window when it finishes starting up. Will wait for %" PRId64 "ms",
+                  mAwaitedFocusedApplication->getName().c_str(), millis(timeout));
+            nextWakeupTime = std::min(nextWakeupTime, *mNoFocusedWindowTimeoutTime);
+            return injectionError(InputEventInjectionResult::PENDING);
+        } else if (currentTime > *mNoFocusedWindowTimeoutTime) {
+            // Already raised ANR. Drop the event
+            ALOGE("Dropping %s event because there is no focused window",
+                  ftl::enum_string(entry.type).c_str());
+            return injectionError(InputEventInjectionResult::FAILED);
+        } else {
+            // Still waiting for the focused window
+            return injectionError(InputEventInjectionResult::PENDING);
+        }
+    }
+
+    // we have a valid, non-null focused window
+    resetNoFocusedWindowTimeoutLocked();
+    // ...
+    return focusedWindowHandle;
+}
+```
+
+## 三、从View刷新到显示的ANR风险点完整流程
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -224,9 +283,7 @@ T7: 33.2ms
 
 ### 风险点1: 应用生命周期阻塞
 
-**java**
-
-```
+```java
 // ========== 问题代码示例 ==========
 public class MainActivity extends Activity {
     @Override
@@ -280,9 +337,9 @@ public class MainActivity extends Activity {
 
 ### 风险点2: Measure/Layout耗时
 
-**java**
+**源码位置**: [ViewRootImpl.java:5082](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L5082)
 
-```
+```java
 // ========== 问题场景 ==========
 // 1. 深层次嵌套导致多次测量
 <LinearLayout>
@@ -344,21 +401,50 @@ public class OptimizedView extends View {
 
 ### 风险点3: RenderThread处理延迟
 
-**cpp**
+**源码位置**: [BufferQueueProducer.cpp:300-450](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp#L300-L450)
 
-```
+```cpp
 // ========== 问题原因 ==========
 // 1. DisplayList过于复杂
 // Canvas绘制命令过多（> 1000个draw call）
 
 // 2. Buffer队列阻塞
 // frameworks/native/libs/gui/BufferQueueProducer.cpp
-status_t BufferQueueProducer::dequeueBuffer(...) {
-    // 所有Buffer都在使用中
-    while (mCore->mFreeBuffers.empty()) {
-        // ⚠️ 阻塞等待，可能等待很久
+int BufferQueueProducer::getFreeBufferLocked() const {
+    if (mCore->mFreeBuffers.empty()) {
+        return BufferQueueCore::INVALID_BUFFER_SLOT;
+    }
+    int slot = mCore->mFreeBuffers.front();
+    mCore->mFreeBuffers.pop_front();
+    return slot;
+}
+
+status_t BufferQueueProducer::waitForFreeSlotThenRelock(FreeSlotCaller caller,
+        std::unique_lock<std::mutex>& lock, int* found) const {
+    // ...
+    while (tryAgain) {
+        // ⚠️ 如果没有可用Buffer，会阻塞等待
+        if (tryAgain) {
+            if (status_t status = waitForBufferRelease(lock, mDequeueTimeout);
+                status == TIMED_OUT) {
+                return TIMED_OUT;
+            }
+        }
+    }
+}
+
+status_t BufferQueueProducer::waitForBufferRelease(std::unique_lock<std::mutex>& lock,
+                                                   nsecs_t timeout) const {
+    if (mDequeueTimeout >= 0) {
+        std::cv_status result =
+                mCore->mDequeueCondition.wait_for(lock, std::chrono::nanoseconds(timeout));
+        if (result == std::cv_status::timeout) {
+            return TIMED_OUT;
+        }
+    } else {
         mCore->mDequeueCondition.wait(lock);
     }
+    return OK;
 }
 
 // ========== 日志特征 ==========
@@ -391,9 +477,7 @@ view.setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
 ### 风险点4: GPU渲染超时
 
-**java**
-
-```
+```java
 // ========== 过度绘制检测 ==========
 // 开启GPU过度绘制调试
 adb shell setprop debug.hwui.overdraw show
@@ -442,9 +526,7 @@ getWindow().setFlags(
 
 ### 风险点5: Surface创建延迟
 
-**java**
-
-```
+```java
 // ========== 问题场景 ==========
 // Surface创建依赖于SurfaceFlinger
 // 如果SF繁忙或系统资源不足，Surface创建会延迟
@@ -480,9 +562,7 @@ adb shell dumpsys SurfaceFlinger | grep "BufferQueue"
 
 ### 风险点6: SurfaceFlinger合成延迟
 
-**cpp**
-
-```
+```cpp
 // ========== 问题原因 ==========
 // 1. Layer数量过多（> 50个）
 // 2. 合成超时（> 8ms）
@@ -519,542 +599,242 @@ adb shell dumpsys SurfaceFlinger --latency <layer_name>
 // 确保Layer满足HWC合成条件：
 // - 不透明或全透明
 // - 无旋转或标准旋转
-// - 无特殊混合模式
 ```
 
 ### 风险点7: Layer可见性问题
 
-**cpp**
-
-```
-// ========== 常见问题场景 ==========
-
-// 场景1: Layer被父Layer隐藏
-Layer: isHiddenByPolicy parent=DefaultTaskDisplayArea#9 
-       reason=parent.mHidden=true
-
-// 场景2: Layer的alpha为0
-Layer: isHidden alpha=0
-
-// 场景3: Layer的size为0
-Layer: isHidden bounds=Rect(0,0-0,0)
-
-// 场景4: Layer被其他Layer完全遮挡
-Layer: isOccluded by layer=StatusBar
-
-// ========== Winscope调试方法 ==========
-// 1. 抓取trace
-adb exec-out dumpsys SurfaceFlinger --proto > sf_dump.winscope
-
-// 2. 在Winscope中检查：
-// - Layer hierarchy（层级关系）
-// - Visibility（可见性状态）
-// - Transform（变换矩阵）
-// - Bounds（边界）
-// - Alpha（透明度）
-
-// ========== 典型问题修复 ==========
-// 问题：DefaultTaskDisplayArea被隐藏
-// 原因：Transition动画执行TO_BACK操作
-// 修复：避免对根Layer执行TO_BACK
-
-// frameworks/base/services/core/java/com/android/server/wm/
-// TransitionController.java
-void startAnimation() {
-    // ❌ 错误：隐藏根Layer
-    if (container == mRootTaskDisplayArea) {
-        t.hide(container.getSurfaceControl());
-    }
-    
-    // ✅ 正确：只隐藏子Layer
-    if (container != mRootTaskDisplayArea) {
-        t.hide(container.getSurfaceControl());
-    }
-}
-```
-
-### 风险点8: InputFocus更新失败
-
-**cpp**
-
-```
-// ========== 更新失败原因 ==========
-
-// 1. Surface不可见 (NOT_VISIBLE)
-FocusResolver::Focusability isTokenFocusable(...) {
-    if (!visibleWindowHandle) {
-        return Focusability::NOT_VISIBLE;  // ⚠️
-    }
-}
-
-// 2. 窗口不存在 (NO_WINDOW)
-if (!windowFound) {
-    return Focusability::NO_WINDOW;  // ⚠️
-}
-
-// 3. 窗口不可聚焦 (NOT_FOCUSABLE)
-if (!allWindowsAreFocusable) {
-    return Focusability::NOT_FOCUSABLE;  // ⚠️
-}
-
-// ========== 日志分析 ==========
-// 正常流程：
-WindowManager: Changing focus to Window{xxx MainActivity}
-input_focus: [Focus request xxx MainActivity, reason=UpdateInputWindows]
-VRI[MainActivity]: reportDrawFinished
-input_focus: [Focus entering xxx MainActivity, 
-              reason=Window became focusable. Previous reason: NOT_VISIBLE]
-              
-// 异常流程（导致ANR）：
-WindowManager: Changing focus to Window{xxx MainActivity}
-input_focus: [Focus request xxx MainActivity, reason=UpdateInputWindows]
-// ⚠️ 5秒内没有 "Focus entering" 日志
-InputDispatcher: Waiting because no window has focus...
-WindowManager: ANR in MainActivity. Reason: no focused window
-
-// ========== 检查清单 ==========
-// 1. Surface是否创建成功
-adb shell dumpsys SurfaceFlinger | grep <window_name>
-
-// 2. Layer是否可见
-adb shell dumpsys SurfaceFlinger --list | grep <layer_name>
-
-// 3. Window属性是否正确
-adb shell dumpsys window windows | grep <window_name>
-// 检查：
-// - mHasSurface=true
-// - mViewVisibility=0 (VISIBLE)
-// - mWindowRemovalAllowed=false
-// - mCanReceiveKeys=true
-
-// 4. InputWindow状态
-adb shell dumpsys input
-// 检查focusedWindowHandle
-
-// ========== 修复方案 ==========
-// 确保以下顺序正确执行：
-// 1. Activity.onCreate/onResume完成
-// 2. ViewRootImpl.relayoutWindow成功
-// 3. Surface创建并可见
-// 4. reportDrawFinished调用
-// 5. InputFocus更新成功
-```
-
-### 风险点9: 特殊场景ANR
-
-#### 9.1 Recent手势导致的ANR
-
-**java**
-
-```
+```java
 // ========== 问题场景 ==========
-// 1. 启动App
-// 2. 快速上滑进入Recent界面
-// 3. App自己又启动了新Activity
-// 4. 焦点从recents_animation_input_consumer丢失
-// 5. 新Activity还未显示，焦点变为null
-// 6. 按Back键 → ANR
+// Layer创建成功但不可见，导致焦点窗口无法设置
+
+// ========== 关键源码路径 ==========
+// WindowState.java -> InputMonitor.java -> InputDispatcher
 
 // ========== 日志特征 ==========
-// 焦点进入Recent consumer
-input_focus: [Focus entering recents_animation_input_consumer]
+// Layer状态异常
+SurfaceFlinger: Layer xxx is NOT_VISIBLE
 
-// App启动新Activity
-wm_create_activity: [..., BugleExpressSignInActivity, ...]
+// InputFocus未更新
+InputDispatcher: Focus request for window xxx ignored (not visible)
 
-// 焦点异常丢失
-input_focus: [Focus leaving recents_animation_input_consumer, 
-              reason=NOT_VISIBLE]
+// ========== 检测方法 ==========
+// 1. 查看Layer可见性
+adb shell dumpsys SurfaceFlinger | grep -A 5 "Layer"
 
-// 没有新的焦点
-// （此时应该保持在recents_animation_input_consumer）
+// 2. 检查InputFocus状态
+adb shell dumpsys input | grep "Focus"
 
-// 按键事件到来
-WindowManager: interceptKeyTq keyCode=4 (BACK)
-
-// 触发ANR
-InputDispatcher: Waiting because no window has focus...
-WindowManager: ANR in Launcher
-
-// ========== 根因分析 ==========
-// recents_animation_input_consumer的Layer相对层级设置错误
-// 设置为相对于Activity，而Activity已经不可见
-
-// ========== 修复方案 ==========
-// frameworks/base/libs/WindowManager/Shell/src/
-// com/android/wm/shell/recents/RecentsTransitionHandler.java
-
-void setupAnimHierarchy(...) {
-    // ❌ 错误：相对于Activity
-    t.setRelativeLayer(mRecentsLayer, activity.getSurface(), 1);
-    
-    // ✅ 正确：相对于Task
-    t.setRelativeLayer(mRecentsLayer, task.getSurface(), 1);
-}
+// ========== 解决方案 ==========
+// 1. 确保Window正确添加和显示
+// 2. 检查Window可见性状态
+// 3. 验证Surface是否正确创建
 ```
 
-#### 9.2 旋转导致的ANR
+### 风险点8: 焦点更新失败
 
-**java**
-
-```
+```java
 // ========== 问题场景 ==========
-// 1. Activity启动中
-// 2. 突然旋转屏幕
-// 3. Activity需要重新创建
-// 4. 焦点在重建过程中丢失超过5秒
+// 窗口已显示但焦点未正确更新到InputDispatcher
+
+// ========== 关键源码路径 ==========
+// ViewRootImpl.java -> WindowManagerService.java -> InputMonitor.java
 
 // ========== 日志特征 ==========
-// 配置变更
-override_config: [0, {..., orientation=2}]
+// 焦点窗口未更新
+WindowManager: Changing focus from null to null (no change)
 
-// Activity销毁重建
-wm_on_destroy_called: [xxx, MainActivity, ...]
-wm_on_create_called: [yyy, MainActivity, ...]
+// InputFocus请求被忽略
+InputDispatcher: Focus request ignored, window not ready
 
-// 焦点在重建过程中丢失
-WindowManager: Changing focus to null
+// ========== 检测方法 ==========
+// 1. 检查焦点窗口状态
+adb shell dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp"
 
-// ========== 优化方案 ==========
-// 1. 声明处理配置变更
-<activity
-    android:name=".MainActivity"
-    android:configChanges="orientation|screenSize"/>
+// 2. 查看InputDispatcher焦点
+adb shell dumpsys input | grep "FocusedWindow"
 
-@Override
-public void onConfigurationChanged(Configuration newConfig) {
-    super.onConfigurationChanged(newConfig);
-    // 手动处理旋转，避免重建
-}
-
-// 2. 加快Activity重建速度
-// - 减少onCreate耗时
-// - 使用Fragment保持状态
-// - 异步加载资源
+// ========== 解决方案 ==========
+// 1. 确保Window正确添加到WMS
+// 2. 检查Window可见性状态
+// 3. 验证InputChannel正确创建
 ```
 
-## 五、ANR问题完整诊断流程图
+### 风险点9: 焦点窗口超时ANR
 
+**源码位置**: [InputDispatcher.cpp:1036-1045](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1036-L1045)
 
-
-```mermaid
-graph TD
-    Start[发现ANR] --> A{查看ANR类型}
-    A -->|窗口无焦点| B[检查wm_activity_launch_time]
-    A -->|Input超时| C[检查事件分发链路]
-    A -->|Service超时| D[检查Service执行]
+```cpp
+// ========== 核心检测逻辑 ==========
+nsecs_t InputDispatcher::processAnrsLocked() {
+    const nsecs_t currentTime = now();
+    nsecs_t nextAnrCheck = LLONG_MAX;
     
-    B --> E{启动时间 > 5s?}
-    E -->|是| F[应用启动慢问题]
-    E -->|否| G[系统问题]
-    
-    F --> H[检查生命周期耗时]
-    H --> I{哪个阶段慢?}
-    I -->|onCreate| J[检查onCreate代码]
-    I -->|onResume| K[检查onResume代码]
-    I -->|Measure/Layout| L[检查布局复杂度]
-    I -->|Draw| M[检查绘制复杂度]
-    
-    G --> N[检查reportDrawFinished]
-    N --> O{是否调用?}
-    O -->|否| P[Surface创建失败]
-    O -->|是| Q[检查InputFocus更新]
-    
-    Q --> R{Focus entering出现?}
-    R -->|否| S[检查Layer可见性]
-    R -->|是| T[时间线问题]
-    
-    S --> U[使用Winscope调试]
-    U --> V{Layer状态?}
-    V -->|Hidden| W[检查父Layer]
-    V -->|NOT_VISIBLE| X[检查Surface状态]
-    V -->|Occluded| Y[检查遮挡关系]
-    
-    P --> Z[检查SurfaceFlinger日志]
-    Z --> AA[分析Buffer/Layer创建]
-    
-    T --> AB[检查Recent手势]
-    AB --> AC{是否相关?}
-    AC -->|是| AD[检查手势动画]
-    AC -->|否| AE[检查其他系统交互]
-```
-
-## 六、ANR预防最佳实践
-
-### 6.1 应用层优化
-
-**java**
-
-```
-// ========== 1. 生命周期优化 ==========
-public class OptimizedActivity extends AppCompatActivity {
-    
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        
-        // ✅ 快速设置ContentView
-        setContentView(R.layout.activity_main);
-        
-        // ✅ 异步初始化
-        initAsync();
-    }
-    
-    private void initAsync() {
-        new Thread(() -> {
-            // 耗时初始化
-            loadData();
-            initLibraries();
-            
-            runOnUiThread(() -> {
-                // 更新UI
-                updateUI();
-            });
-        }).start();
-    }
-    
-    // ========== 2. 布局优化 ==========
-    // 使用ViewStub延迟加载
-    private void loadComplexView() {
-        ViewStub stub = findViewById(R.id.complex_view_stub);
-        if (stub != null) {
-            View inflated = stub.inflate();
-            // 使用inflated
+    // Check if we are waiting for a focused window to appear. Raise ANR if waited too long
+    if (mNoFocusedWindowTimeoutTime.has_value() && mAwaitedFocusedApplication != nullptr) {
+        if (currentTime >= *mNoFocusedWindowTimeoutTime) {
+            processNoFocusedWindowAnrLocked();
+            mAwaitedFocusedApplication.reset();
+            mNoFocusedWindowTimeoutTime = std::nullopt;
+            return LLONG_MIN;
+        } else {
+            // Keep waiting. We will drop the event when mNoFocusedWindowTimeoutTime comes.
+            nextAnrCheck = *mNoFocusedWindowTimeoutTime;
         }
     }
-    
-    // ========== 3. 绘制优化 ==========
-    private Paint mPaint;  // 复用Paint对象
-    
-    @Override
-    protected void onDraw(Canvas canvas) {
-        // ✅ 使用clipRect
-        canvas.save();
-        canvas.clipRect(mVisibleRect);
-        
-        // ✅ 复用对象
-        if (mPaint == null) {
-            mPaint = new Paint();
-            mPaint.setAntiAlias(true);
-        }
-        
-        // 绘制
-        canvas.drawRect(rect, mPaint);
-        canvas.restore();
-    }
-    
-    // ========== 4. 监控启动时间 ==========
-    private long mStartTime;
-    
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        mStartTime = SystemClock.uptimeMillis();
-        super.onCreate(savedInstanceState);
-        // ...
-    }
-    
-    @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            long duration = SystemClock.uptimeMillis() - mStartTime;
-            Log.i(TAG, "Time to focus: " + duration + "ms");
-            
-            // ⚠️ 如果超过3秒，需要优化
-            if (duration > 3000) {
-                reportSlowStart(duration);
-            }
-        }
+    // ...
+}
+
+// ========== ANR触发条件 ==========
+// 1. 焦点应用存在：mAwaitedFocusedApplication != nullptr
+// 2. 焦点窗口一直为null：focusedWindowHandle == nullptr
+// 3. 超过5秒：currentTime >= *mNoFocusedWindowTimeoutTime
+
+// ========== 日志特征 ==========
+// 1. 开始等待焦点窗口
+InputDispatcher: Waiting because no window has focus but xxx may eventually add a window when it finishes starting up. Will wait for 5000ms
+
+// 2. ANR触发
+WindowManager: ANR in Application xxx. Reason: Application does not have a focused window
+
+// ========== 检测方法 ==========
+// 1. 监控焦点窗口状态
+adb shell dumpsys window windows | grep "mCurrentFocus"
+
+// 2. 检查焦点应用
+adb shell dumpsys window windows | grep "mFocusedApp"
+
+// 3. 查看InputDispatcher状态
+adb shell dumpsys input | grep -A 20 "Dispatch State"
+
+// ========== 解决方案 ==========
+// 1. 确保Activity在onCreate后尽快完成UI初始化
+// 2. 避免在主线程执行耗时操作
+// 3. 确保Window正确添加和显示
+// 4. 检查Surface创建是否正常
+```
+
+## 五、ViewRootImpl核心渲染流程
+
+### 5.1 scheduleTraversals 实现
+
+**源码位置**: [ViewRootImpl.java:3085-3114](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L3085-L3114)
+
+```java
+void scheduleTraversals() {
+    if (!mTraversalScheduled) {
+        mTraversalScheduled = true;
+        // The following behavior is load-bearing for public API correctness.
+        // For example, the following code is defined to be correct and the
+        // MessageQueue sync barrier mechanism and its usage here is
+        // responsible for ensuring it:
+        //
+        //   textView.setText("Hello, world!");
+        //   textView.getHandler().post(new Runnable() {
+        //     public void run() {
+        //       // This code will run after traversals have happened
+        //       // and the TextView has been measured with its new text.
+        //       reportNewTextWidth(textView.getWidth());
+        //     }
+        //   });
+        //
+        // Any message posted after scheduling traversals (e.g. via
+        // View#requestLayout or View#invalidate) is guaranteed to run after
+        // the scheduled traversals have occurred unless the message is
+        // specifically "asynchronous" - see Message#setAsynchronous
+        mTraversalBarrier = mQueue.postSyncBarrier();
+        mChoreographer.postCallback(
+                Choreographer.CALLBACK_TRAVERSAL, mTraversalRunnable, null);
+        notifyRendererOfFramePending();
+        pokeDrawLockIfNeeded();
     }
 }
 ```
 
-### 6.2 系统层监控
+### 5.2 performTraversals 核心流程
 
-**cpp**
+**源码位置**: [ViewRootImpl.java:3574](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L3574)
 
-```
-// ========== 添加关键日志 ==========
-// frameworks/base/services/core/java/com/android/server/wm/
-
-// 1. 监控焦点更新
-void updateFocusedWindowLocked(...) {
-    long startTime = SystemClock.uptimeMillis();
+```java
+private void performTraversals() {
+    // ... 省略前置处理
     
-    // 执行焦点更新
-    WindowState newFocus = computeFocusedWindowLocked();
+    // 1. 执行测量
+    performMeasure(childWidthMeasureSpec, childHeightMeasureSpec);
     
-    long duration = SystemClock.uptimeMillis() - startTime;
-    if (duration > 100) {
-        Slog.w(TAG, "updateFocusedWindow took " + duration + "ms");
+    // 2. 执行布局
+    performLayout(lp, mWidth, mHeight);
+    
+    // 3. 执行绘制
+    if (!performDraw(mActiveSurfaceSyncGroup)) {
+        // 绘制失败处理
     }
-}
-
-// 2. 监控Surface创建
-void createSurfaceControl(...) {
-    long startTime = SystemClock.uptimeMillis();
     
-    // 创建Surface
-    mSurfaceControl = new SurfaceControl.Builder()
-        .setName(name)
-        .build();
-    
-    long duration = SystemClock.uptimeMillis() - startTime;
-    if (duration > 500) {
-        Slog.w(TAG, "Surface creation took " + duration + "ms");
-    }
-}
-
-// 3. 监控InputFocus更新
-void updateInputFocus(...) {
-    long startTime = SystemClock.uptimeMillis();
-    
-    // 更新InputFocus
-    setFocusedWindow(...);
-    
-    long duration = SystemClock.uptimeMillis() - startTime;
-    if (duration > 50) {
-        Slog.w(TAG, "InputFocus update took " + duration + "ms");
-    }
+    // ... 省略后置处理
 }
 ```
 
-### 6.3 调试工具使用
+## 六、ANR检测与调试工具
 
-**bash**
+### 6.1 关键命令
 
-```
-# ========== 1. Systrace分析 ==========
-# 抓取10秒trace
-python systrace.py -t 10 -o trace.html \
-    sched gfx view wm am input dalvik sync
+```bash
+# 1. 查看当前ANR状态
+adb shell dumpsys activity anr
 
-# 重点关注：
-# - UI Thread的Choreographer#doFrame耗时
-# - RenderThread的drawFrame耗时  
-# - SurfaceFlinger的doComposition耗时
-# - InputDispatcher的dispatchMotion耗时
-
-# ========== 2. Perfetto分析 ==========
-adb shell perfetto \
-    -c - --txt \
-    -o /data/misc/perfetto-traces/trace \
-    <<EOF
-duration_ms: 10000
-buffers: {
-    size_kb: 63488
-}
-data_sources: {
-    config {
-        name: "linux.ftrace"
-        ftrace_config {
-            ftrace_events: "sched/sched_switch"
-            ftrace_events: "power/suspend_resume"
-            ftrace_events: "sched/sched_wakeup"
-            ftrace_events: "graphics/gpu_mem_total"
-        }
-    }
-}
-EOF
-
-# ========== 3. dumpsys分析 ==========
-# 查看Window状态
-adb shell dumpsys window windows | grep -A 20 <window_name>
-
-# 查看Input状态
+# 2. 查看InputDispatcher状态
 adb shell dumpsys input
 
-# 查看SurfaceFlinger状态
+# 3. 查看窗口焦点状态
+adb shell dumpsys window windows | grep -E "mCurrentFocus|mFocusedApp"
+
+# 4. 查看SurfaceFlinger状态
 adb shell dumpsys SurfaceFlinger
 
-# 查看Activity状态
-adb shell dumpsys activity activities
+# 5. 查看GPU渲染信息
+adb shell dumpsys gfxinfo <package>
 
-# ========== 4. Winscope使用 ==========
-# 同时抓取WM和SF的trace
-adb shell cmd window tracing start
-adb shell su root service call SurfaceFlinger 1025 i32 1
-
-# 复现问题后停止
-adb shell cmd window tracing stop
-adb shell su root service call SurfaceFlinger 1025 i32 0
-
-# 导出trace文件
-adb pull /data/misc/wmtrace/wm_trace.pb .
-adb pull /data/misc/wmtrace/layers_trace.pb .
-
-# 使用Winscope分析
-# https://ui.perfetto.dev/#!/viewer
+# 6. 查看Layer详情
+adb shell dumpsys SurfaceFlinger --list
+adb shell dumpsys SurfaceFlinger --latency <layer_name>
 ```
 
-## 七、总结：ANR完整知识图谱
+### 6.2 Systrace分析
 
-**plain**
+```bash
+# 采集Systrace
+python systrace.py -t 10 -o trace.html sched gfx view wm input
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ANR知识体系                                  │
-└─────────────────────────────────────────────────────────────────────┘
-
-                            ANR原理
-                               │
-                ┌──────────────┼──────────────┐
-                │              │              │
-           窗口无焦点       Input超时      组件超时
-           (5秒)          (5秒)       (10s/60s/20s)
-                │              │              │
-        ┌───────┴───────┐      │              │
-        │               │      │              │
-   焦点应用存在    焦点窗口为null │         Service/
-                                │         Broadcast/
-                                │         Provider
-                        ┌───────┴────────┐
-                        │                │
-                   事件分发链路      Window查找
-                        │                │
-                        │         ┌──────┴──────┐
-                        │         │             │
-                        │    mCurrentFocus  canReceiveKeys
-                        │         │             │
-                  ┌─────┴─────┐   │       ┌─────┴─────┐
-                  │           │   │       │           │
-            findFocusTarget  │   │    isVisible   isFocusable
-                  │           │   │       │           │
-                  └───────────┼───┘       └───────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    │                   │
-              应用层风险点          系统层风险点
-                    │                   │
-        ┌───────────┼─────────┐         │
-        │           │         │         │
-   生命周期耗时  Layout慢  Draw慢      │
-   (onCreate/    (深度嵌套) (过度绘制)  │
-    onResume)     (自定义View)         │
-                                        │
-                        ┌───────────────┼────────────────┐
-                        │               │                │
-                  RenderThread      SurfaceFlinger   InputFocus
-                  (Buffer队列)      (Layer可见性)   (Focus更新)
-                        │               │                │
-                        └───────────────┼────────────────┘
-                                        │
-                                  诊断与优化
-                                        │
-                        ┌───────────────┼────────────────┐
-                        │               │                │
-                    日志分析        工具调试          代码优化
-                  (wm_/input_)   (Systrace/      (异步加载/
-                  (Changing      Perfetto/       布局优化/
-                   focus)        Winscope)       绘制优化)
+# 关键关注点：
+# 1. Choreographer#doFrame 耗时
+# 2. performMeasure/performLayout/performDraw 耗时
+# 3. RenderThread 处理耗时
+# 4. SurfaceFlinger 合成耗时
+# 5. InputDispatcher 事件分发耗时
 ```
 
-通过以上分析，我们可以看到：
+## 七、总结
 
-1. **ANR的本质**：Input系统等待焦点窗口超时
-2. **关键时间点**：从View刷新到焦点获取的完整链路
-3. **风险点分布**：从应用层到系统层的9大风险点
-4. **诊断方法**：日志分析 + 工具调试 + 代码审查
-5. **优化方向**：生命周期优化 + 布局优化 + 渲染优化 + 系统监控
+### ANR风险点汇总
+
+| 风险点 | 位置 | 超时时间 | 主要原因 |
+|--------|------|----------|----------|
+| 风险点1 | 主线程 | 5s | 生命周期阻塞 |
+| 风险点2 | performMeasure/Layout | 16ms | 布局计算耗时 |
+| 风险点3 | RenderThread | 16ms | Buffer队列阻塞 |
+| 风险点4 | GPU | 16ms | 过度绘制 |
+| 风险点5 | Surface创建 | - | SF繁忙 |
+| 风险点6 | SurfaceFlinger | 8ms | Layer过多 |
+| 风险点7 | Layer可见性 | - | 状态异常 |
+| 风险点8 | 焦点更新 | - | InputFocus未更新 |
+| 风险点9 | 焦点窗口超时 | 5s | 窗口未创建 |
+
+### 关键源码路径
+
+| 模块 | 文件路径 |
+|------|----------|
+| InputDispatcher | [InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp) |
+| BufferQueue | [BufferQueueProducer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp) |
+| ViewRootImpl | [ViewRootImpl.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java) |
+| AnrController | [AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java) |
 
 每个环节的优化都需要确保在**5秒超时时间**内完成，这是避免窗口无焦点ANR的核心要求。

@@ -1,12 +1,16 @@
 # Android ANR问题完整分析指南
 
+> **源码参考**：本文档基于AOSP 16源码分析
+> - ANR控制器：[AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java)
+> - Input分发器：[InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp)
+> - EventLog标签：[EventLogTags.logtags](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/EventLogTags.logtags)
+> - 焦点管理：[DisplayContent.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java)
+
 ## 一、需要收集的日志文件清单
 
 ### 1.1 日志文件对应关系表
 
-**plain**
-
-```
+```plain
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        ANR日志文件全景图                              │
 └─────────────────────────────────────────────────────────────────────┘
@@ -54,10 +58,7 @@ winscope         .winscope文件             可视化窗口层级          ⭐�
 
 ### 2.1 实时抓取（ANR发生时）
 
-**bash**
-
-```
-#!/bin/bash
+```bash
 # ========== 完整ANR日志抓取脚本 ==========
 
 ANR_LOG_DIR="anr_logs_$(date +%Y%m%d_%H%M%S)"
@@ -118,9 +119,7 @@ echo "日志保存在: $ANR_LOG_DIR"
 
 ### 2.2 抓取Systrace
 
-**bash**
-
-```
+```bash
 #!/bin/bash
 # ========== Systrace抓取脚本 ==========
 
@@ -192,9 +191,7 @@ echo "Systrace抓取完成"
 
 ### 2.3 抓取Winscope
 
-**bash**
-
-```
+```bash
 #!/bin/bash
 # ========== Winscope抓取脚本 ==========
 
@@ -228,9 +225,7 @@ echo "使用 https://ui.perfetto.dev/ 或 winscope.dev 打开分析"
 
 ### 2.4 Monkey测试日志抓取
 
-**bash**
-
-```
+```bash
 #!/bin/bash
 # ========== Monkey测试完整日志抓取 ==========
 
@@ -292,9 +287,7 @@ echo "Monkey测试完成，日志保存在: $LOG_DIR"
 
 ### 3.1 EventLog关键事件
 
-**bash**
-
-```
+```bash
 # ========== EventLog过滤脚本 ==========
 
 #!/bin/bash
@@ -309,24 +302,27 @@ echo "========== Activity生命周期 ==========" >> $OUTPUT
 grep -E "wm_.*activity|am_.*activity" $LOG_FILE | tail -100 >> $OUTPUT
 echo "" >> $OUTPUT
 
-# 关键事件说明：
-# wm_create_activity: Activity创建
-# wm_restart_activity: Activity重启
-# wm_resume_activity: Activity resume
-# wm_pause_activity: Activity pause
-# wm_destroy_activity: Activity销毁
-# wm_on_create_called: onCreate调用
-# wm_on_start_called: onStart调用
-# wm_on_resume_called: onResume调用
-# wm_on_paused_called: onPaused调用
-# wm_activity_launch_time: Activity启动耗时（关键！）
+# 关键事件说明（源码定义见 base/services/core/java/com/android/server/wm/EventLogTags.logtags）：
+# wm_create_activity (30005): Activity创建
+# wm_restart_activity (30006): Activity重启
+# wm_resume_activity (30007): Activity resume
+# wm_pause_activity (30013): Activity pause
+# wm_destroy_activity (30018): Activity销毁
+# wm_on_create_called (30057): onCreate调用
+# wm_on_start_called (30059): onStart调用
+# wm_on_resume_called (30022): onResume调用
+# wm_on_paused_called (30021): onPause调用
+# wm_on_stop_called (30049): onStop调用
+# wm_activity_launch_time (30009): Activity启动耗时（关键！）
+# wm_set_resumed_activity (30043): Activity变为resumed状态
+# wm_focused_root_task (30044): 焦点Task变化
 
 # 2. 焦点变化
 echo "========== 焦点变化 ==========" >> $OUTPUT
 grep -E "input_focus|Changing focus" $LOG_FILE | tail -50 >> $OUTPUT
 echo "" >> $OUTPUT
 
-# 关键事件：
+# 关键事件（源码见 InputMonitor.java:518 和 DisplayContent.java:4050）：
 # input_focus: Input系统焦点变化
 # - Focus entering: 焦点进入某窗口
 # - Focus leaving: 焦点离开某窗口
@@ -366,9 +362,7 @@ echo "EventLog分析完成: $OUTPUT"
 
 ### 3.2 Logcat主日志关键信息
 
-**bash**
-
-```
+```bash
 #!/bin/bash
 # ========== Logcat主日志过滤脚本 ==========
 
@@ -443,9 +437,7 @@ echo "Logcat主日志分析完成: $OUTPUT"
 
 ### 3.3 自动化分析脚本
 
-**python**
-
-```
+```python
 #!/usr/bin/env python3
 # ========== ANR日志自动分析工具 ==========
 
@@ -769,9 +761,7 @@ if __name__ == '__main__':
 
 ### 4.1 Traces文件结构
 
-**plain**
-
-```
+```plain
 traces.txt结构图:
 ┌─────────────────────────────────────────────────────────────┐
 │ ----- pid <PID> at <timestamp> -----                        │  ← ANR进程标识
@@ -802,9 +792,7 @@ traces.txt结构图:
 
 ### 4.2 Traces分析脚本
 
-**python**
-
-```
+```python
 #!/usr/bin/env python3
 # ========== Traces.txt分析工具 ==========
 
@@ -1058,11 +1046,143 @@ if __name__ == '__main__':
     main()
 ```
 
-## 五、完整ANR分析流程
+## 五、ANR检测核心流程源码分析
 
-**plain**
+### 5.0 ANR检测流程概述
 
+ANR（Application Not Responding）检测主要发生在InputDispatcher中，核心流程如下：
+
+```mermaid
+sequenceDiagram
+    participant App as 应用进程
+    participant ID as InputDispatcher
+    participant WMS as WindowManagerService
+    participant AMS as ActivityManagerService
+    
+    Note over ID: 1. Input事件到达
+    ID->>ID: findFocusedWindowTargetLocked()
+    
+    alt 无焦点窗口
+        ID->>ID: 启动ANR计时器(mNoFocusedWindowTimeoutTime)
+        Note over ID: 等待窗口创建或超时
+        alt 超时
+            ID->>WMS: onAnrLocked()
+            WMS->>WMS: notifyWindowUnresponsive()
+            WMS->>AMS: inputDispatchingTimedOut()
+            AMS->>AMS: 生成ANR traces
+        end
+    else 有焦点窗口
+        ID->>App: 分发事件
+        alt 应用无响应
+            ID->>ID: processAnrsLocked()
+            ID->>WMS: onAnrLocked()
+            WMS->>AMS: inputDispatchingTimedOut()
+        end
+    end
 ```
+
+### 5.0.1 窗口无焦点ANR检测源码
+
+**核心代码位置**：[InputDispatcher.cpp:2330-2360](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2330)
+
+```cpp
+// 当有焦点应用但无焦点窗口时，启动ANR计时器
+if (focusedWindowHandle == nullptr && focusedApplicationHandle != nullptr) {
+    if (!mNoFocusedWindowTimeoutTime.has_value()) {
+        // 刚发现没有焦点窗口，启动ANR计时器
+        std::chrono::nanoseconds timeout = focusedApplicationHandle->getDispatchingTimeout(
+                DEFAULT_INPUT_DISPATCHING_TIMEOUT);
+        mNoFocusedWindowTimeoutTime = currentTime + timeout.count();
+        mAwaitedFocusedApplication = focusedApplicationHandle;
+        ALOGW("Waiting because no window has focus but %s may eventually add a "
+              "window when it finishes starting up. Will wait for %" PRId64 "ms",
+              mAwaitedFocusedApplication->getName().c_str(), millis(timeout));
+        nextWakeupTime = std::min(nextWakeupTime, *mNoFocusedWindowTimeoutTime);
+        return injectionError(InputEventInjectionResult::PENDING);
+    } else if (currentTime > *mNoFocusedWindowTimeoutTime) {
+        // 已超时，触发ANR
+        ALOGE("Dropping %s event because there is no focused window",
+              ftl::enum_string(entry.type).c_str());
+        return injectionError(InputEventInjectionResult::FAILED);
+    }
+}
+```
+
+### 5.0.2 ANR处理流程源码
+
+**核心代码位置**：[AnrController.java:100-130](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L100)
+
+```java
+// AnrController处理无响应窗口
+void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
+        @NonNull TimeoutRecord timeoutRecord) {
+    try {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveStarted();
+        if (notifyWindowUnresponsive(token, timeoutRecord)) {
+            return;
+        }
+        // ... 省略部分代码
+    } finally {
+        timeoutRecord.mLatencyTracker.notifyWindowUnresponsiveEnded();
+    }
+}
+
+// 实际的ANR日志输出
+private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
+        TimeoutRecord timeoutRecord) {
+    // ... 获取窗口信息 ...
+    Slog.i(TAG_WM, "ANR in " + target + ". Reason:" + timeoutRecord.mReason);
+    // ... 调用AMS处理ANR ...
+    if (activity != null) {
+        activity.inputDispatchingTimedOut(timeoutRecord, pid);
+    } else {
+        mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);
+    }
+    dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);
+    return true;
+}
+```
+
+### 5.0.3 ANR超时检测源码
+
+**核心代码位置**：[InputDispatcher.cpp:2820-2860](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2820)
+
+```cpp
+nsecs_t InputDispatcher::processAnrsLocked() {
+    const nsecs_t currentTime = now();
+    nsecs_t nextAnrCheck = LLONG_MAX;
+    
+    // 检查是否在等待焦点窗口出现，如果等待太久则触发ANR
+    if (mNoFocusedWindowTimeoutTime.has_value() && mAwaitedFocusedApplication != nullptr) {
+        if (currentTime >= *mNoFocusedWindowTimeoutTime) {
+            processNoFocusedWindowAnrLocked();  // 触发无焦点窗口ANR
+            mAwaitedFocusedApplication.reset();
+            mNoFocusedWindowTimeoutTime = std::nullopt;
+            return LLONG_MIN;
+        } else {
+            nextAnrCheck = *mNoFocusedWindowTimeoutTime;
+        }
+    }
+    
+    // 检查是否有连接ANR到期
+    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
+    if (currentTime < nextAnrCheck) {
+        return nextAnrCheck;  // 一切正常，下次检查时间
+    }
+    
+    // 有无响应的连接，触发ANR
+    std::shared_ptr<Connection> connection =
+            mConnectionManager.getConnection(mAnrTracker.firstToken());
+    connection->responsive = false;
+    mAnrTracker.eraseToken(connection->getToken());
+    onAnrLocked(connection);
+    return LLONG_MIN;
+}
+```
+
+## 七、完整ANR分析流程
+
+```plain
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      完整ANR分析流程图                                │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1166,13 +1286,11 @@ if __name__ == '__main__':
 步骤10: 给出解决方案
 ```
 
-## 六、实战案例分析
+## 八、实战案例分析
 
 ### 案例1: 应用启动慢导致的ANR
 
-**bash**
-
-```
+```bash
 # ========== 关键日志 ==========
 
 # 1. ANR信息
@@ -1208,9 +1326,7 @@ if __name__ == '__main__':
 
 ### 案例2: Surface不可见导致的ANR
 
-**bash**
-
-```
+```bash
 # ========== 关键日志 ==========
 
 # 1. Activity正常启动
@@ -1249,9 +1365,7 @@ Layer: isHiddenByPolicy parent=DefaultTaskDisplayArea#9 reason=parent.mHidden=tr
 
 ### 案例3: Recent手势导致的ANR
 
-**bash**
-
-```
+```bash
 # ========== 关键日志 ==========
 
 # 1. 进入Recent
@@ -1286,11 +1400,9 @@ Layer: isHiddenByPolicy parent=DefaultTaskDisplayArea#9 reason=parent.mHidden=tr
   3. 提交Google Case修复
 ```
 
-## 七、快速诊断检查清单
+## 九、快速诊断检查清单
 
-**plain**
-
-```
+```plain
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    ANR快速诊断检查清单                                │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1353,7 +1465,7 @@ Layer: isHiddenByPolicy parent=DefaultTaskDisplayArea#9 reason=parent.mHidden=tr
 总耗时: _______ 分钟
 ```
 
-## 八、总结
+## 十、总结
 
 通过以上完整的日志收集、过滤、分析流程，我们可以系统性地诊断ANR问题：
 

@@ -4,6 +4,29 @@
 
 DragAndDrop是Android WindowManager Shell中的重要组件，负责处理全局拖放操作，支持应用图标拖放、分屏拖放、桌面模式拖放等高级功能。本文基于AOSP 16源码，深入分析DragAndDrop的完整架构和核心流程。
 
+## 源码目录结构
+
+**核心源码路径**：`base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/`
+
+| 文件 | 说明 |
+|------|------|
+| [DragAndDropController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java) | 拖放系统核心控制器 |
+| [DragSession.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java) | 拖放会话数据管理 |
+| [DropTarget.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt) | 拖放目标接口定义 |
+| [GlobalDragListener.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt) | 全局拖放监听器 |
+| [DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java) | 拖放布局和UI渲染 |
+| [SplitDragPolicy.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/SplitDragPolicy.java) | 分屏拖放策略 |
+| [DropZoneView.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropZoneView.java) | 拖放区域视图 |
+| [DragUtils.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragUtils.java) | 拖放工具类 |
+
+**动画系统**：`base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/`
+
+| 文件 | 说明 |
+|------|------|
+| [DropTargetAnimSupplier.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt) | 拖放目标动画供应商接口 |
+| [HoverAnimProps.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/HoverAnimProps.kt) | 悬停动画属性 |
+| [TwoFiftyFiftyTargetAnimator.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt) | 50:50分屏目标动画器 |
+
 ## 整体架构图
 
 ```mermaid
@@ -60,12 +83,13 @@ graph TB
 
 ### 1. DragAndDropController - 拖放系统核心控制器
 
-**文件**: `DragAndDropController.java`
+**源码位置**：[DragAndDropController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java)
 
 DragAndDropController是拖放系统的总入口，负责协调所有拖放操作：
 
 ```java
 /**
+ * Handles the global drag and drop handling for the Shell.
  * 处理Shell的全局拖放操作
  */
 public class DragAndDropController implements RemoteCallable<DragAndDropController>,
@@ -187,12 +211,13 @@ public class DragAndDropController implements RemoteCallable<DragAndDropControll
 
 ### 2. DragSession - 拖放会话数据管理
 
-**文件**: `DragSession.java`
+**源码位置**：[DragSession.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java)
 
 DragSession管理单个拖放操作的所有数据状态：
 
 ```java
 /**
+ * Per-drag session data.
  * 每个拖放会话的数据管理
  */
 public class DragSession {
@@ -216,14 +241,16 @@ public class DragSession {
     
     // 运行任务信息
     ActivityManager.RunningTaskInfo runningTaskInfo;
+    @WindowConfiguration.WindowingMode
     int runningTaskWinMode = WINDOWING_MODE_UNDEFINED;
+    @WindowConfiguration.ActivityType
     int runningTaskActType = ACTIVITY_TYPE_STANDARD;
     
     // 拖放支持特性
     boolean dragItemSupportsSplitscreen;
     final int hideDragSourceTaskId;
     
-    public DragSession(ActivityTaskManager activityTaskManager,
+    DragSession(ActivityTaskManager activityTaskManager,
             DisplayLayout dispLayout, ClipData data, int dragFlags) {
         mActivityTaskManager = activityTaskManager;
         mInitialDragData = data;
@@ -237,12 +264,13 @@ public class DragSession {
     }
     
     /**
+     * Updates the running task for this drag session.
      * 更新运行任务信息
      */
     void updateRunningTask() {
         final boolean hideDragSourceTask = hideDragSourceTaskId != -1;
         final List<ActivityManager.RunningTaskInfo> tasks =
-                mActivityTaskManager.getTasks(5, false);
+                mActivityTaskManager.getTasks(5, false /* filterOnlyVisibleRecents */);
         
         for (int i = 0; i < tasks.size(); i++) {
             final ActivityManager.RunningTaskInfo task = tasks.get(i);
@@ -294,42 +322,50 @@ public class DragSession {
 
 ### 3. DropTarget - 拖放目标接口定义
 
-**文件**: `DropTarget.kt`
+**源码位置**：[DropTarget.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt)
 
 DropTarget定义了拖放目标的行为接口：
 
 ```kotlin
 /**
+ * Interface to be implemented by classes which want to provide drop targets
+ * for DragAndDrop in Shell
  * 为Shell中的DragAndDrop提供拖放目标的接口
  */
 interface DropTarget {
-    
+    // TODO(b/349828130) Delete after flexible split launches
     /**
+     * Called at the start of a Drag, before input events are processed.
      * 在拖放开始前调用，处理输入事件之前
      */
     fun start(dragSession: DragSession, logSessionId: InstanceId)
     
     /**
+     * @return [SplitDragPolicy.Target] corresponding to the given coords in display bounds.
      * 根据显示边界中的坐标获取对应的目标
      */
     fun getTargetAtLocation(x: Int, y: Int) : SplitDragPolicy.Target
     
     /**
+     * @return total number of drop targets for the current drag session.
      * 返回当前拖放会话的拖放目标总数
      */
     fun getNumTargets() : Int
     
     /**
+     * @return [List<SplitDragPolicy.Target>] to show for the current drag session.
      * 返回当前拖放会话要显示的目标列表
      */
     fun getTargets(insets: Insets) : List<SplitDragPolicy.Target>
     
     /**
+     * Called when user is hovering Drag object over the given Target
      * 当用户在目标上悬停拖放对象时调用
      */
     fun onHoveringOver(target: SplitDragPolicy.Target?) {}
     
     /**
+     * Called when the user has dropped the provided target
      * 当用户在目标上释放拖放对象时调用
      */
     fun onDropped(target: SplitDragPolicy.Target, hideTaskToken: WindowContainerToken)
@@ -338,7 +374,7 @@ interface DropTarget {
 
 ### 4. DragLayout - 拖放布局和UI渲染
 
-**文件**: `DragLayout.java`
+**源码位置**：[DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
 
 DragLayout负责拖放操作的UI渲染和视觉效果：
 
@@ -426,69 +462,101 @@ public class DragLayout extends FrameLayout {
 
 ### 5. GlobalDragListener - 全局拖放监听器
 
-**文件**: `GlobalDragListener.kt`
+**源码位置**：[GlobalDragListener.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt)
 
 GlobalDragListener负责监听系统级的拖放事件：
 
 ```kotlin
 /**
+ * Manages the listener and callbacks for unhandled global drags.
+ * This is only used by DragAndDropController and should not be used directly by other classes.
  * 全局拖放监听器，拦截和处理系统拖放事件
  */
 class GlobalDragListener(
-    private val context: Context,
+    private val wmService: IWindowManager,
     private val mainExecutor: ShellExecutor
 ) {
     
-    private var listener: GlobalDragListenerCallback? = null
+    private var callback: GlobalDragListenerCallback? = null
     
-    /**
-     * 设置拖放监听回调
-     */
-    fun setListener(callback: GlobalDragListenerCallback) {
-        listener = callback
-        registerGlobalDragInterceptor()
-    }
-    
-    /**
-     * 注册全局拖放拦截器
-     */
-    private fun registerGlobalDragInterceptor() {
-        try {
-            val windowManager = context.getSystemService(WindowManager::class.java)
-            
-            // 设置全局拖放拦截标志
-            val params = WindowManager.LayoutParams().apply {
-                type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                privateFlags = WindowManager.LayoutParams.PRIVATE_FLAG_INTERCEPT_GLOBAL_DRAG_AND_DROP
+    private val globalDragListener: IGlobalDragListener =
+        object : IGlobalDragListener.Stub() {
+            override fun onCrossWindowDrop(taskInfo: ActivityManager.RunningTaskInfo) {
+                mainExecutor.execute() {
+                    this@GlobalDragListener.onCrossWindowDrop(taskInfo)
+                }
             }
-            
-            windowManager.addView(interceptorView, params)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register global drag interceptor", e)
+
+            override fun onUnhandledDrop(event: DragEvent, callback: IUnhandledDragCallback) {
+                mainExecutor.execute() {
+                    this@GlobalDragListener.onUnhandledDrop(event, callback)
+                }
+            }
         }
-    }
     
     /**
-     * 处理拖放事件分发
-     */
-    fun dispatchDragEvent(event: DragEvent): Boolean {
-        return listener?.onGlobalDragEvent(event) ?: false
-    }
-    
-    /**
+     * Callbacks for global drag events.
      * 全局拖放监听回调接口
      */
     interface GlobalDragListenerCallback {
-        fun onGlobalDragEvent(event: DragEvent): Boolean
+        /**
+         * Called when a global drag is successfully handled by another window.
+         */
+        fun onCrossWindowDrop(taskInfo: ActivityManager.RunningTaskInfo) {}
+
+        /**
+         * Called when a global drag is unhandled.
+         */
+        fun onUnhandledDrop(dragEvent: DragEvent, onFinishedCallback: Consumer<Boolean>) {}
+    }
+    
+    /**
+     * Sets a listener for callbacks when an unhandled drag happens.
+     * 设置拖放监听回调
+     */
+    fun setListener(listener: GlobalDragListenerCallback?) {
+        val updateWm = (callback == null && listener != null)
+                || (callback != null && listener == null)
+        callback = listener
+        if (updateWm) {
+            try {
+                wmService.setGlobalDragListener(
+                    if (callback != null) globalDragListener else null)
+            } catch (e: RemoteException) {
+                Log.e(TAG, "Failed to set unhandled drag listener")
+            }
+        }
     }
 }
-```
 
 ## 关键流程分析
 
 ### 1. 拖放启动流程
+
+**核心代码位置**：[DragAndDropController.java:378-400](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java#L378)
+
+```java
+case ACTION_DRAG_STARTED:
+    if (pd.activeDragCount != 0) {
+        Slog.w(TAG, "Unexpected drag start during an active drag");
+        return false;
+    }
+    // Only initialize the session after we've checked that we're handling the drag
+    dragSession.initialize(true /* skipUpdateRunningTask */);
+    pd.dragSession = dragSession;
+    pd.activeDragCount++;
+    pd.dragLayout.prepare(pd.dragSession, mLogger.logStart(pd.dragSession));
+    if (pd.dragSession.hideDragSourceTaskId != -1) {
+        mShellTaskOrganizer.setTaskSurfaceVisibility(
+                pd.dragSession.hideDragSourceTaskId, false /* visible */);
+    }
+    setDropTargetWindowVisibility(pd, View.VISIBLE);
+    notifyListeners(l -> {
+        l.onDragStarted();
+        return false;
+    });
+    break;
+```
 
 ```mermaid
 sequenceDiagram
@@ -549,81 +617,130 @@ sequenceDiagram
 
 ## 动画系统实现
 
-### 1. 拖放阴影动画
+### 1. DropTargetAnimSupplier接口
+
+**源码位置**：[DropTargetAnimSupplier.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt)
+
+```kotlin
+/**
+ * When the user is dragging an icon from Taskbar to add an app into split
+ * screen, we have a set of rules by which we draw and move colored drop
+ * targets around the screen. The rules are provided through this interface.
+ * 
+ * Each possible screen layout should have an implementation of this interface.
+ * E.g.
+ * - 50:50 two-app split
+ * - 10:45:45 three-app split
+ * - single app, no split
+ */
+interface DropTargetAnimSupplier {
+    /**
+     * Returns a Pair of lists.
+     * First list (length n): Where to draw the n colored drop zones.
+     * Second list (length n): How to animate the drop zones as user hovers around.
+     */
+    fun getTargets(displayLayout: DisplayLayout, insets: Insets, isLeftRightSplit: Boolean,
+                   resources: Resources) :
+            Pair<List<SplitDragPolicy.Target>, List<List<HoverAnimProps>>>
+}
+```
+
+### 2. TwoFiftyFiftyTargetAnimator实现
+
+**源码位置**：[TwoFiftyFiftyTargetAnimator.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt)
+
+```kotlin
+/**
+ * 50:50分屏目标动画器
+ */
+class TwoFiftyFiftyTargetAnimator : DropTargetAnimSupplier {
+    
+    override fun getTargets(displayLayout: DisplayLayout, insets: Insets, isLeftRightSplit: Boolean,
+                            resources: Resources) :
+            Pair<List<SplitDragPolicy.Target>, List<List<HoverAnimProps>>> {
+        // 创建拖放目标列表和悬停动画属性
+        // ...
+    }
+}
+```
+
+### 3. DragLayout动画控制
+
+**源码位置**：[DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
 
 DragAndDrop使用复杂的动画系统来提供流畅的拖放体验：
 
 ```java
 /**
- * 拖放阴影动画供应商
+ * Coordinates the visible drop targets for the current drag within a single display.
+ * 协调单个显示器中当前拖放的可见拖放目标
  */
-class DropTargetAnimSupplier {
+public class DragLayout extends LinearLayout
+        implements ViewTreeObserver.OnComputeInternalInsetsListener, DragLayoutProvider,
+        DragZoneAnimator {
     
     /**
-     * 创建进入动画
+     * 显示拖放阴影
      */
-    fun createEnterAnimation(target: SplitDragPolicy.Target): Animator {
-        return ObjectAnimator.ofFloat(target.view, View.ALPHA, 0f, 1f).apply {
-            duration = 200
-            interpolator = ACCELERATE_DECELERATE
-        }
+    public void showDragShadow(DragSession session, float x, float y) {
+        // 创建拖放阴影
+        mShadowBuilder = createShadowBuilder(session);
+        
+        // 开始拖放动画
+        startDragAnimation(x, y);
     }
     
     /**
-     * 创建悬停动画
+     * 更新拖放位置
      */
-    fun createHoverAnimation(target: SplitDragPolicy.Target): Animator {
-        return ObjectAnimator.ofFloat(target.view, View.SCALE_X, 1f, 1.1f, 1f).apply {
-            duration = 300
-            interpolator = OVERSHOOT
+    public void updateDragPosition(float x, float y) {
+        if (mDragAnimator != null && mDragAnimator.isRunning()) {
+            mDragAnimator.cancel();
         }
+        
+        // 立即更新位置
+        setTranslationX(x);
+        setTranslationY(y);
+        
+        // 更新Surface位置
+        mTransaction.setPosition(mSurfaceControl, x, y);
+        mTransaction.apply();
+    }
+    
+    /**
+     * 隐藏拖放阴影
+     */
+    public void hideDragShadow() {
+        if (mDragAnimator != null && mDragAnimator.isRunning()) {
+            mDragAnimator.cancel();
+        }
+        
+        // 执行隐藏动画
+        animate().alpha(0f)
+                .setDuration(200)
+                .withEndAction(() -> {
+                    setVisibility(View.GONE);
+                    cleanup();
+                })
+                .start();
     }
 }
 ```
 
-### 2. SurfaceControl动画
+### 4. SurfaceControl动画
 
 使用SurfaceControl进行硬件加速的拖放动画：
 
 ```java
 /**
- * Surface动画控制
+ * Surface动画控制 - DragZoneAnimator接口实现
  */
-class DragZoneAnimator {
-    
-    private val surfaceControl: SurfaceControl
-    private val transactionPool: TransactionPool
+interface DragZoneAnimator {
     
     /**
      * 执行拖放区域动画
      */
-    fun animateDragZone(show: Boolean, bounds: Rect) {
-        val transaction = transactionPool.acquire()
-        
-        if (show) {
-            // 显示动画
-            transaction.setVisibility(surfaceControl, true)
-            transaction.setAlpha(surfaceControl, 0f)
-            transaction.setWindowCrop(surfaceControl, bounds)
-            transaction.setPosition(surfaceControl, bounds.left.toFloat(), bounds.top.toFloat())
-            transaction.apply()
-            
-            // 渐入动画
-            transaction.setAlpha(surfaceControl, 1f)
-            transaction.setFrameTimelineVsync(Choreographer.getInstance().vsyncId)
-            transaction.apply()
-        } else {
-            // 隐藏动画
-            transaction.setAlpha(surfaceControl, 0f)
-            transaction.setFrameTimelineVsync(Choreographer.getInstance().vsyncId)
-            transaction.apply()
-            
-            transaction.setVisibility(surfaceControl, false)
-            transaction.apply()
-        }
-        
-        transactionPool.release(transaction)
-    }
+    void animateDragZone(boolean show, Rect bounds);
 }
 ```
 

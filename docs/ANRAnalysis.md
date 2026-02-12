@@ -23,14 +23,15 @@ graph TB
     C -->|超时| D["onAnrLocked(connection)"]
     C -->|未超时| E[返回下次检查时间]
     D --> F[构建ANR原因字符串]
-    F --> G[sendWindowUnresponsiveCommandLocked]
-    G --> H[postCommandLocked]
-    H --> I[InputManagerCallback.notifyWindowUnresponsive]
-    I --> J[AnrController.notifyWindowUnresponsive]
-    J --> K[ActivityRecord.inputDispatchingTimedOut]
-    K --> L[ActivityManagerService.inputDispatchingTimedOut]
-    L --> M[显示ANR对话框]
-    L --> N[记录ANR信息]
+    F --> G[processConnectionUnresponsiveLocked]
+    G --> H[sendWindowUnresponsiveCommandLocked]
+    H --> I[postCommandLocked]
+    I --> J[InputManagerCallback.notifyWindowUnresponsive]
+    J --> K[AnrController.notifyWindowUnresponsive]
+    K --> L[ActivityRecord.inputDispatchingTimedOut]
+    L --> M[ActivityManagerService.inputDispatchingTimedOut]
+    M --> N[显示ANR对话框]
+    M --> O[记录ANR信息]
 ```
 
 ## 详细调用序列图
@@ -50,6 +51,7 @@ sequenceDiagram
     alt 检测到超时
         ID->>ID: onAnrLocked(connection)
         ID->>ID: 构建ANR原因字符串
+        ID->>ID: processConnectionUnresponsiveLocked(reason)
         ID->>ID: sendWindowUnresponsiveCommandLocked(token, pid, reason)
         ID->>ID: postCommandLocked() - 异步执行
     end
@@ -78,34 +80,41 @@ sequenceDiagram
 
 ### 1. InputDispatcher.processAnrsLocked() - ANR检测入口
 
+**源码位置**: [InputDispatcher.cpp:1032-1069](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1032-L1069)
+
 ```cpp
 nsecs_t InputDispatcher::processAnrsLocked() {
     const nsecs_t currentTime = now();
     nsecs_t nextAnrCheck = LLONG_MAX;
-    
-    // 检查是否等待焦点窗口出现
+    // Check if we are waiting for a focused window to appear. Raise ANR if waited too long
     if (mNoFocusedWindowTimeoutTime.has_value() && mAwaitedFocusedApplication != nullptr) {
         if (currentTime >= *mNoFocusedWindowTimeoutTime) {
             processNoFocusedWindowAnrLocked();
+            mAwaitedFocusedApplication.reset();
+            mNoFocusedWindowTimeoutTime = std::nullopt;
             return LLONG_MIN;
+        } else {
+            // Keep waiting. We will drop the event when mNoFocusedWindowTimeoutTime comes.
+            nextAnrCheck = *mNoFocusedWindowTimeoutTime;
         }
     }
-    
-    // 检查连接ANR是否到期
+
+    // Check if any connection ANRs are due
     nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
-    if (currentTime < nextAnrCheck) {
-        return nextAnrCheck; // 正常情况，返回下次检查时间
+    if (currentTime < nextAnrCheck) { // most likely scenario
+        return nextAnrCheck;          // everything is normal. Let's check again at nextAnrCheck
     }
-    
-    // 检测到无响应连接
-    std::shared_ptr<Connection> connection = 
-        mConnectionManager.getConnection(mAnrTracker.firstToken());
+
+    // If we reached here, we have an unresponsive connection.
+    std::shared_ptr<Connection> connection =
+            mConnectionManager.getConnection(mAnrTracker.firstToken());
     if (connection == nullptr) {
+        ALOGE("Could not find connection for entry %" PRId64, mAnrTracker.firstTimeout());
         mAnrTracker.eraseToken(mAnrTracker.firstToken());
         return nextAnrCheck;
     }
-    
     connection->responsive = false;
+    // Stop waking up for this unresponsive connection
     mAnrTracker.eraseToken(connection->getToken());
     onAnrLocked(connection);
     return LLONG_MIN;
@@ -114,42 +123,88 @@ nsecs_t InputDispatcher::processAnrsLocked() {
 
 ### 2. InputDispatcher.onAnrLocked() - ANR处理核心
 
+**源码位置**: [InputDispatcher.cpp:6620-6648](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6620-L6648)
+
 ```cpp
 void InputDispatcher::onAnrLocked(const std::shared_ptr<Connection>& connection) {
+    if (connection == nullptr) {
+        LOG_ALWAYS_FATAL("Caller must check for nullness");
+    }
+    // Since we are allowing the policy to extend the timeout, maybe the waitQueue
+    // is already healthy again. Don't raise ANR in this situation
     if (connection->waitQueue.empty()) {
         ALOGI("Not raising ANR because the connection %s has recovered",
               connection->getInputChannelName().c_str());
         return;
     }
-    
-    // 获取最旧的事件条目
+    /**
+     * The "oldestEntry" is the entry that was first sent to the application. That entry, however,
+     * may not be the one that caused the timeout to occur. One possibility is that window timeout
+     * has changed. This could cause newer entries to time out before the already dispatched
+     * entries. In that situation, the newest entries caused ANR. But in all likelihood, the app
+     * processes the events linearly. So providing information about the oldest entry seems to be
+     * most useful.
+     */
     DispatchEntry& oldestEntry = *connection->waitQueue.front();
+    ATRACE_NAME_IF(ATRACE_ENABLED(),
+                   StringPrintf("onAnrLocked(inputChannel=%s, id=0x%" PRIx32 ")",
+                                connection->getInputChannelName().c_str(),
+                                oldestEntry.eventEntry->id));
     const nsecs_t currentWait = now() - oldestEntry.deliveryTime;
-    
-    // 构建ANR原因字符串（如示例中的"swipe-up is not responding. Waited 5001ms for MotionEvent"）
-    std::string reason = android::base::StringPrintf(
-        "%s is not responding. Waited %" PRId64 "ms for %s",
-        connection->getInputChannelName().c_str(),
-        ns2ms(currentWait),
-        oldestEntry.eventEntry->getDescription().c_str());
-    
+    std::string reason =
+            android::base::StringPrintf("%s is not responding. Waited %" PRId64 "ms for %s",
+                                        connection->getInputChannelName().c_str(),
+                                        ns2ms(currentWait),
+                                        oldestEntry.eventEntry->getDescription().c_str());
     sp<IBinder> connectionToken = connection->getToken();
     updateLastAnrStateLocked(mWindowInfos.findWindowHandle(connectionToken), reason);
-    
-    // 取消该连接的事件
+
+    processConnectionUnresponsiveLocked(*connection, std::move(reason));
+
+    // Stop waking up for events on this connection, it is already unresponsive
     cancelEventsForAnrLocked(connection);
-    
-    // 发送ANR通知
-    sendWindowUnresponsiveCommandLocked(connectionToken, connection->getPid(), reason);
 }
 ```
 
-### 3. InputDispatcher.sendWindowUnresponsiveCommandLocked() - 发送ANR通知
+### 3. InputDispatcher.processConnectionUnresponsiveLocked() - 连接无响应处理
+
+**源码位置**: [InputDispatcher.cpp:6750-6770](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6750-L6770)
+
+```cpp
+/**
+ * Tell the policy that a connection has become unresponsive so that it can start ANR.
+ * Check whether the connection of interest is a monitor or a window, and add the corresponding
+ * command entry to the command queue.
+ */
+void InputDispatcher::processConnectionUnresponsiveLocked(const Connection& connection,
+                                                          std::string reason) {
+    const sp<IBinder>& connectionToken = connection.getToken();
+    std::optional<gui::Pid> pid;
+    if (connection.isFocusMonitor) {
+        ALOGW("Monitor %s is unresponsive: %s", connection.getInputChannelName().c_str(),
+              reason.c_str());
+        pid = mConnectionManager.findMonitorPidByToken(connectionToken);
+    } else {
+        // The connection is a window
+        ALOGW("Window %s is unresponsive: %s", connection.getInputChannelName().c_str(),
+              reason.c_str());
+        const sp<WindowInfoHandle> handle = mWindowInfos.findWindowHandle(connectionToken);
+        if (handle != nullptr) {
+            pid = handle->getInfo()->ownerPid;
+        }
+    }
+    sendWindowUnresponsiveCommandLocked(connectionToken, pid, std::move(reason));
+}
+```
+
+### 4. InputDispatcher.sendWindowUnresponsiveCommandLocked() - 发送ANR通知
+
+**源码位置**: [InputDispatcher.cpp:6727-6734](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6727-L6734)
 
 ```cpp
 void InputDispatcher::sendWindowUnresponsiveCommandLocked(const sp<IBinder>& token,
-                                                         std::optional<gui::Pid> pid,
-                                                         std::string reason) {
+                                                          std::optional<gui::Pid> pid,
+                                                          std::string reason) {
     auto command = [this, token, pid, r = std::move(reason)]() REQUIRES(mLock) {
         scoped_unlock unlock(mLock);
         mPolicy.notifyWindowUnresponsive(token, pid, r);
@@ -158,7 +213,9 @@ void InputDispatcher::sendWindowUnresponsiveCommandLocked(const sp<IBinder>& tok
 }
 ```
 
-### 4. InputManagerCallback.notifyWindowUnresponsive() - Java层ANR入口
+### 5. InputManagerCallback.notifyWindowUnresponsive() - Java层ANR入口
+
+**源码位置**: [InputManagerCallback.java:97-101](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/InputManagerCallback.java#L97-L101)
 
 ```java
 @Override
@@ -170,9 +227,18 @@ public void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalIn
 }
 ```
 
-### 5. AnrController.notifyWindowUnresponsive() - ANR控制器处理
+### 6. AnrController.notifyWindowUnresponsive() - ANR控制器处理
+
+**源码位置**: [AnrController.java:143-157](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L143-L157)
 
 ```java
+/**
+ * Notify a window was unresponsive.
+ *
+ * @param token         - the input token of the window
+ * @param pid           - the pid of the window, if known
+ * @param timeoutRecord - details for the timeout
+ */
 void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
         @NonNull TimeoutRecord timeoutRecord) {
     try {
@@ -192,20 +258,27 @@ void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
 }
 ```
 
-### 6. AnrController.notifyWindowUnresponsive()私有方法
+### 7. AnrController.notifyWindowUnresponsive()私有方法
+
+**源码位置**: [AnrController.java:164-202](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L164-L202)
 
 ```java
+/**
+ * Notify a window identified by its input token was unresponsive.
+ *
+ * @return true if the window was identified by the given input token and the request was
+ *         handled, false otherwise.
+ */
 private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
         TimeoutRecord timeoutRecord) {
     timeoutRecord.mLatencyTracker.preDumpIfLockTooSlowStarted();
     preDumpIfLockTooSlow(timeoutRecord);
     timeoutRecord.mLatencyTracker.preDumpIfLockTooSlowEnded();
-    
     final int pid;
     final boolean aboveSystem;
     final ActivityRecord activity;
     final WindowState windowState;
-    
+    timeoutRecord.mLatencyTracker.waitingOnGlobalLockStarted();
     synchronized (mService.mGlobalLock) {
         timeoutRecord.mLatencyTracker.waitingOnGlobalLockEnded();
         InputTarget target = mService.getInputTargetFromToken(inputToken);
@@ -214,67 +287,101 @@ private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
         }
         windowState = target.getWindowState();
         pid = target.getPid();
-        
         if (windowState != null) {
-            // 如果输入token属于窗口，则归咎于Activity
+            // Blame the activity if the input token belongs to the window. If the target is
+            // embedded, then we will blame the pid instead.
             activity = (windowState.mInputChannelToken == inputToken)
                     ? windowState.mActivityRecord : null;
             aboveSystem = isWindowAboveSystem(windowState);
         } else {
-            // 嵌入式窗口假设在系统层之上
+            // Embedded windows without a host window state are assumed to be above 
+            // system layers
             activity = null;
             aboveSystem = true;
         }
-        
         Slog.i(TAG_WM, "ANR in " + target + ". Reason:" + timeoutRecord.mReason);
     }
-    
     if (activity != null) {
         activity.inputDispatchingTimedOut(timeoutRecord, pid);
     } else {
         mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);
     }
-    
     dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);
     return true;
 }
 ```
 
-### 7. ActivityRecord.inputDispatchingTimedOut() - Activity层ANR处理
+### 8. ActivityRecord.inputDispatchingTimedOut() - Activity层ANR处理
+
+**源码位置**: [ActivityRecord.java:6749-6779](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java#L6749-L6779)
 
 ```java
-void inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int pid) {
-    // 调用ActivityManagerService处理ANR
-    mAtmService.mAmInternal.inputDispatchingTimedOut(
-            this, app != null ? app.mName : null, appInfo,
-            shortComponentName, parent, parentProc, aboveSystem(), timeoutRecord);
+/**
+ * Called when input dispatching has timed out.
+ *
+ * @param reason The reason for input dispatching time out.
+ * @param windowPid The pid of the window input dispatching timed out on.
+ * @return True if input dispatching should be aborted.
+ */
+public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {
+    try {
+        Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                "ActivityRecord#inputDispatchingTimedOut()");
+        ActivityRecord anrActivity;
+        WindowProcessController anrApp;
+        boolean blameActivityProcess;
+        timeoutRecord.mLatencyTracker.waitingOnGlobalLockStarted();
+        synchronized (mAtmService.mGlobalLock) {
+            timeoutRecord.mLatencyTracker.waitingOnGlobalLockEnded();
+            anrActivity = getWaitingHistoryRecord();
+            anrApp = app;
+            blameActivityProcess =  hasProcess()
+                    && (app.getPid() == windowPid || windowPid == INVALID_PID);
+        }
+
+        if (blameActivityProcess) {
+            return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,
+                    anrActivity.shortComponentName, anrActivity.info.applicationInfo,
+                    shortComponentName, app, false, timeoutRecord);
+        } else {
+            // In this case another process added windows using this activity token.
+            // So, we call the generic service input dispatch timed out method so
+            // that the right process is blamed.
+            long timeoutMillis = mAtmService.mAmInternal.inputDispatchingTimedOut(
+                    windowPid, false /* aboveSystem */, timeoutRecord);
+            return timeoutMillis <= 0;
+        }
+    } finally {
+        Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
+    }
 }
 ```
 
 ## 关键类和组件
 
 ### 1. InputDispatcher (C++层)
-- **位置**: `/native/services/inputflinger/dispatcher/InputDispatcher.cpp`
+- **位置**: [InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp)
 - **职责**: 输入事件分发和ANR检测
 - **关键方法**: 
   - `processAnrsLocked()`: 定期检查ANR
   - `onAnrLocked()`: 处理检测到的ANR
+  - `processConnectionUnresponsiveLocked()`: 处理连接无响应
   - `sendWindowUnresponsiveCommandLocked()`: 发送ANR通知
 
 ### 2. InputManagerCallback (Java层)
-- **位置**: `/services/core/java/com/android/server/wm/InputManagerCallback.java`
+- **位置**: [InputManagerCallback.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/InputManagerCallback.java)
 - **职责**: InputManager和WindowManager之间的桥梁
 - **关键方法**: `notifyWindowUnresponsive()`
 
 ### 3. AnrController (Java层)
-- **位置**: `/services/core/java/com/android/server/wm/AnrController.java`
+- **位置**: [AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java)
 - **职责**: 管理ANR通知和状态转储
 - **关键方法**: 
   - `notifyWindowUnresponsive()`: 处理窗口无响应
   - `preDumpIfLockTooSlow()`: 预转储堆栈信息
 
 ### 4. ActivityRecord (Java层)
-- **位置**: `/services/core/java/com/android/server/wm/ActivityRecord.java`
+- **位置**: [ActivityRecord.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java)
 - **职责**: 表示Activity实例
 - **关键方法**: `inputDispatchingTimedOut()`
 
@@ -285,10 +392,13 @@ void inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int pid) {
 ## ANR超时时间配置
 
 ### 默认超时时间
+
+**源码位置**: [InputDispatcher.cpp:78-80](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L78-L80)
+
 ```cpp
 const std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(
-    android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *
-    HwTimeoutMultiplier());
+        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *
+        HwTimeoutMultiplier());
 ```
 
 ### 超时时间计算
@@ -315,6 +425,23 @@ nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
 ### 3. 定期检查
 InputDispatcher线程定期调用`processAnrsLocked()`检查ANR状态。
 
+### 4. Monitor与Window区分
+`processConnectionUnresponsiveLocked()`方法会区分处理Monitor和Window：
+
+```cpp
+if (connection.isFocusMonitor) {
+    ALOGW("Monitor %s is unresponsive: %s", ...);
+    pid = mConnectionManager.findMonitorPidByToken(connectionToken);
+} else {
+    // The connection is a window
+    ALOGW("Window %s is unresponsive: %s", ...);
+    const sp<WindowInfoHandle> handle = mWindowInfos.findWindowHandle(connectionToken);
+    if (handle != nullptr) {
+        pid = handle->getInfo()->ownerPid;
+    }
+}
+```
+
 ## ANR恢复机制
 
 ### 1. 响应性检查
@@ -332,15 +459,31 @@ cancelEventsForAnrLocked(connection);
 ### 3. 恢复通知
 当窗口恢复响应时，通过`notifyWindowResponsive()`通知系统。
 
+**源码位置**: [AnrController.java:217-246](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L217-L246)
+
 ## 性能优化和调试
 
 ### 1. 预转储机制
+
+**源码位置**: [AnrController.java:289-298](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L289-L298)
+
 ```java
+/**
+ * Pre-dump stack trace if the locks of activity manager or window manager (they may be locked
+ * in the path of reporting ANR) cannot be acquired in time. That provides the stack traces
+ * before the real blocking symptom has gone.
+ * <p>
+ * Do not hold the {@link WindowManagerGlobalLock} while calling this method.
+ */
 private void preDumpIfLockTooSlow(TimeoutRecord timeoutRecord) {
-    if (!Build.IS_DEBUGGABLE) {
+    if (!Build.IS_DEBUGGABLE)  {
         return;
     }
-    // 在获取锁之前预转储堆栈信息
+    final long now = SystemClock.uptimeMillis();
+    if (mLastPreDumpTimeMs > 0 && now - mLastPreDumpTimeMs < PRE_DUMP_MIN_INTERVAL_MS) {
+        return;
+    }
+    // ...
 }
 ```
 
@@ -375,6 +518,42 @@ if (!pid.isPresent()) {
 ### 3. 锁竞争处理
 使用`preDumpIfLockTooSlow()`避免因锁竞争导致的诊断信息丢失。
 
+### 4. 连接恢复检测
+在`onAnrLocked()`中检查waitQueue是否已恢复：
+```cpp
+if (connection->waitQueue.empty()) {
+    ALOGI("Not raising ANR because the connection %s has recovered",
+          connection->getInputChannelName().c_str());
+    return;
+}
+```
+
+## ANR类型分类
+
+### 1. 输入分发超时ANR
+- **触发条件**: 窗口在超时时间内未响应输入事件
+- **处理流程**: `processAnrsLocked()` → `onAnrLocked(connection)`
+
+### 2. 无焦点窗口ANR
+- **触发条件**: 应用没有焦点窗口
+- **处理流程**: `processNoFocusedWindowAnrLocked()` → `onAnrLocked(application)`
+
+**源码位置**: [InputDispatcher.cpp:6659-6668](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6659-L6668)
+
+```cpp
+void InputDispatcher::onAnrLocked(std::shared_ptr<InputApplicationHandle> application) {
+    std::string reason =
+            StringPrintf("%s does not have a focused window", application->getName().c_str());
+    updateLastAnrStateLocked(*application, reason);
+
+    auto command = [this, app = std::move(application)]() REQUIRES(mLock) {
+        scoped_unlock unlock(mLock);
+        mPolicy.notifyNoFocusedWindowAnr(app);
+    };
+    postCommandLocked(std::move(command));
+}
+```
+
 ## 总结
 
 Android的ANR检测机制是一个复杂的多层级系统：
@@ -384,3 +563,24 @@ Android的ANR检测机制是一个复杂的多层级系统：
 3. **应用层**（ActivityManagerService）负责最终的ANR处理和用户界面显示
 
 整个流程通过异步命令和回调机制实现高效的ANR检测和响应，确保系统能够及时处理应用无响应的情况，同时最小化对正常操作的影响。
+
+## 关键调用链总结
+
+```
+InputDispatcher.processAnrsLocked()
+    └── InputDispatcher.onAnrLocked(connection)
+            ├── 构建ANR原因字符串
+            ├── updateLastAnrStateLocked()
+            ├── processConnectionUnresponsiveLocked()
+            │       └── sendWindowUnresponsiveCommandLocked()
+            │               └── postCommandLocked()
+            └── cancelEventsForAnrLocked()
+                    
+InputManagerCallback.notifyWindowUnresponsive()
+    └── AnrController.notifyWindowUnresponsive()
+            ├── preDumpIfLockTooSlow()
+            └── notifyWindowUnresponsive(inputToken)
+                    ├── 获取InputTarget/WindowState/ActivityRecord
+                    └── ActivityRecord.inputDispatchingTimedOut()
+                            └── AMS.inputDispatchingTimedOut()
+```
