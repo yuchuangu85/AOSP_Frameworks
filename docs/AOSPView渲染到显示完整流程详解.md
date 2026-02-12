@@ -146,8 +146,8 @@ WMS->>App: onWindowFocusChanged(true)
 ### 阶段1：View刷新请求
 
 > **源码参考**：
-> - View刷新：[View.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/View.java)
-> - ViewRootImpl调度：[ViewRootImpl.java:3085](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L3085)
+> - View刷新：[View.java](base/core/java/android/view/View.java)
+> - ViewRootImpl调度：[ViewRootImpl.java:3085](base/core/java/android/view/ViewRootImpl.java#L3085)
 
 ```java
 // 1. Activity/View层发起刷新
@@ -197,7 +197,7 @@ public final class ViewRootImpl implements ViewParent {
 
 ### 阶段2：Vsync信号处理
 
-> **源码参考**：[Choreographer.java:1021](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/Choreographer.java#L1021)
+> **源码参考**：[Choreographer.java:1021](base/core/java/android/view/Choreographer.java#L1021)
 
 ```java
 // Choreographer处理Vsync
@@ -245,7 +245,7 @@ Vsync-0    Vsync-1    Vsync-2    Vsync-3
 
 ### 阶段3：测量、布局、绘制
 
-> **源码参考**：[ViewRootImpl.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java)
+> **源码参考**：[ViewRootImpl.java](base/core/java/android/view/ViewRootImpl.java)
 
 ```java
 // ViewRootImpl执行遍历
@@ -285,7 +285,7 @@ private void performDraw() {
 
 **功能**：协调Vsync信号与UI更新，确保渲染节奏一致
 
-> **源码参考**：[Choreographer.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/Choreographer.java)
+> **源码参考**：[Choreographer.java](base/core/java/android/view/Choreographer.java)
 
 ```java
 public final class Choreographer {
@@ -313,7 +313,7 @@ public final class Choreographer {
 
 **功能**：管理硬件加速渲染，构建DisplayList树
 
-> **源码参考**：[ThreadedRenderer.java:828](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ThreadedRenderer.java#L828)
+> **源码参考**：[ThreadedRenderer.java:828](base/core/java/android/view/ThreadedRenderer.java#L828)
 
 ```java
 public class ThreadedRenderer {
@@ -369,9 +369,9 @@ View树                DisplayList树           Native RenderNode
 **功能**：在独立线程中执行GPU绘制，避免阻塞UI线程
 
 > **源码参考**：
-> - [RenderThread.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/RenderThread.cpp)
-> - [CanvasContext.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/CanvasContext.cpp)
-> - [DrawFrameTask.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/DrawFrameTask.cpp)
+> - [RenderThread.cpp](base/libs/hwui/renderthread/RenderThread.cpp)
+> - [CanvasContext.cpp](base/libs/hwui/renderthread/CanvasContext.cpp)
+> - [DrawFrameTask.cpp](base/libs/hwui/renderthread/DrawFrameTask.cpp)
 
 #### 3.1 RenderThread架构概览
 
@@ -405,7 +405,7 @@ graph TB
 
 #### 3.2 DrawFrameTask绘制帧流程
 
-**核心代码位置**：[DrawFrameTask.cpp:68-170](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/DrawFrameTask.cpp#L68)
+**核心代码位置**：[DrawFrameTask.cpp:68-170](base/libs/hwui/renderthread/DrawFrameTask.cpp#L68)
 
 ```cpp
 // DrawFrameTask::run() - RenderThread上的主要绘制入口
@@ -449,7 +449,7 @@ void DrawFrameTask::run() {
 
 #### 3.3 CanvasContext.draw() 绘制实现
 
-**核心代码位置**：[CanvasContext.cpp:604-750](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/CanvasContext.cpp#L604)
+**核心代码位置**：[CanvasContext.cpp:604-750](base/libs/hwui/renderthread/CanvasContext.cpp#L604)
 
 ```cpp
 void CanvasContext::draw(bool solelyTextureViewUpdates) {
@@ -574,9 +574,9 @@ sequenceDiagram
 **功能**：管理图形缓冲区的生产者-消费者模型
 
 > **源码参考**：
-> - [BufferQueueProducer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp)
-> - [BufferQueueConsumer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueConsumer.cpp)
-> - [BufferQueueCore.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueCore.cpp)
+> - [BufferQueueProducer.cpp](native/libs/gui/BufferQueueProducer.cpp)
+> - [BufferQueueConsumer.cpp](native/libs/gui/BufferQueueConsumer.cpp)
+> - [BufferQueueCore.cpp](native/libs/gui/BufferQueueCore.cpp)
 
 #### 4.1 BufferQueue架构
 
@@ -606,7 +606,7 @@ graph LR
 
 #### 4.2 dequeueBuffer - 生产者获取缓冲区
 
-**核心代码位置**：[BufferQueueProducer.cpp:449-650](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp#L449)
+**核心代码位置**：[BufferQueueProducer.cpp:449-650](native/libs/gui/BufferQueueProducer.cpp#L449)
 
 ```cpp
 status_t BufferQueueProducer::dequeueBuffer(int* outSlot, sp<android::Fence>* outFence,
@@ -650,7 +650,7 @@ status_t BufferQueueProducer::dequeueBuffer(int* outSlot, sp<android::Fence>* ou
 
 #### 4.3 queueBuffer - 生产者提交缓冲区
 
-**核心代码位置**：[BufferQueueProducer.cpp:953-1150](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp#L953)
+**核心代码位置**：[BufferQueueProducer.cpp:953-1150](native/libs/gui/BufferQueueProducer.cpp#L953)
 
 ```cpp
 status_t BufferQueueProducer::queueBuffer(int slot,
@@ -700,7 +700,7 @@ status_t BufferQueueProducer::queueBuffer(int slot,
 
 #### 4.4 acquireBuffer - 消费者获取缓冲区
 
-**核心代码位置**：[BufferQueueConsumer.cpp:85-250](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueConsumer.cpp#L85)
+**核心代码位置**：[BufferQueueConsumer.cpp:85-250](native/libs/gui/BufferQueueConsumer.cpp#L85)
 
 ```cpp
 status_t BufferQueueConsumer::acquireBuffer(BufferItem* outBuffer,
@@ -745,7 +745,7 @@ status_t BufferQueueConsumer::acquireBuffer(BufferItem* outBuffer,
 
 #### 4.5 releaseBuffer - 消费者释放缓冲区
 
-**核心代码位置**：[BufferQueueConsumer.cpp:474-600](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueConsumer.cpp#L474)
+**核心代码位置**：[BufferQueueConsumer.cpp:474-600](native/libs/gui/BufferQueueConsumer.cpp#L474)
 
 ```cpp
 status_t BufferQueueConsumer::releaseBuffer(int slot, uint64_t frameNumber,
@@ -795,9 +795,9 @@ status_t BufferQueueConsumer::releaseBuffer(int slot, uint64_t frameNumber,
 **功能**：管理系统所有Layer的合成和显示
 
 > **源码参考**：
-> - [SurfaceFlinger.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp)
-> - [Layer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/Layer.cpp)
-> - [HWComposer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/DisplayHardware/HWComposer.cpp)
+> - [SurfaceFlinger.cpp](native/services/surfaceflinger/SurfaceFlinger.cpp)
+> - [Layer.cpp](native/services/surfaceflinger/Layer.cpp)
+> - [HWComposer.cpp](native/services/surfaceflinger/DisplayHardware/HWComposer.cpp)
 
 #### 5.1 SurfaceFlinger架构概览
 
@@ -835,7 +835,7 @@ graph TB
 
 #### 5.2 commit阶段 - 事务提交与Layer更新
 
-**核心代码位置**：[SurfaceFlinger.cpp:2845-3000](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp#L2845)
+**核心代码位置**：[SurfaceFlinger.cpp:2845-3000](native/services/surfaceflinger/SurfaceFlinger.cpp#L2845)
 
 ```cpp
 bool SurfaceFlinger::commit(PhysicalDisplayId pacesetterId,
@@ -881,7 +881,7 @@ bool SurfaceFlinger::commit(PhysicalDisplayId pacesetterId,
 
 #### 5.3 Layer.latchBuffer - 获取新帧
 
-**核心代码位置**：[Layer.cpp:1475-1570](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/Layer.cpp#L1475)
+**核心代码位置**：[Layer.cpp:1475-1570](native/services/surfaceflinger/Layer.cpp#L1475)
 
 ```cpp
 bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,
@@ -931,7 +931,7 @@ bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,
 
 #### 5.4 composite阶段 - 合成执行
 
-**核心代码位置**：[SurfaceFlinger.cpp:3118-3320](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp#L3118)
+**核心代码位置**：[SurfaceFlinger.cpp:3118-3320](native/services/surfaceflinger/SurfaceFlinger.cpp#L3118)
 
 ```cpp
 CompositeResultsPerDisplay SurfaceFlinger::composite(
@@ -1007,7 +1007,7 @@ void CompositionEngine::present(const sp<Output>& output,
 
 #### 5.6 postComposition阶段 - 合成后处理
 
-**核心代码位置**：[SurfaceFlinger.cpp:3320-3420](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp#L3320)
+**核心代码位置**：[SurfaceFlinger.cpp:3320-3420](native/services/surfaceflinger/SurfaceFlinger.cpp#L3320)
 
 ```cpp
 void SurfaceFlinger::postComposition(...) {
@@ -1114,7 +1114,7 @@ sequenceDiagram
 
 **功能**：窗口绘制完成后更新焦点状态
 
-> **源码参考**：[WindowManagerService.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java)
+> **源码参考**：[WindowManagerService.java](base/services/core/java/com/android/server/wm/WindowManagerService.java)
 
 ```java
 // frameworks/base/services/core/java/com/android/server/wm/WindowManagerService.java

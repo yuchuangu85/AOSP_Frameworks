@@ -84,7 +84,7 @@ graph TD
 
 ### 2.2 关键数据结构
 
-**源码位置**: [InputDispatcher.h:682](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.h#L682)
+**源码位置**: [InputDispatcher.h:682](native/services/inputflinger/dispatcher/InputDispatcher.h#L682)
 
 ```cpp
 // frameworks/native/services/inputflinger/dispatcher/InputDispatcher.h
@@ -122,7 +122,7 @@ private:
 
 ### 2.3 窗口无焦点ANR触发条件
 
-**源码位置**: [InputDispatcher.cpp:2310-2350](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2350)
+**源码位置**: [InputDispatcher.cpp:2310-2350](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2350)
 
 ```cpp
 // 条件1：焦点应用不为空
@@ -143,7 +143,7 @@ getFocusedWindowHandleLocked(displayId) == nullptr
 
 ### 2.4 findFocusedWindowTargetLocked 核心实现
 
-**源码位置**: [InputDispatcher.cpp:2310-2380](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2380)
+**源码位置**: [InputDispatcher.cpp:2310-2380](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2310-L2380)
 
 ```cpp
 base::Result<sp<android::gui::WindowInfoHandle>, os::InputEventInjectionResult>
@@ -337,7 +337,7 @@ public class MainActivity extends Activity {
 
 ### 风险点2: Measure/Layout耗时
 
-**源码位置**: [ViewRootImpl.java:5082](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L5082)
+**源码位置**: [ViewRootImpl.java:5082](base/core/java/android/view/ViewRootImpl.java#L5082)
 
 ```java
 // ========== 问题场景 ==========
@@ -401,7 +401,7 @@ public class OptimizedView extends View {
 
 ### 风险点3: RenderThread处理延迟
 
-**源码位置**: [BufferQueueProducer.cpp:300-450](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp#L300-L450)
+**源码位置**: [BufferQueueProducer.cpp:300-450](native/libs/gui/BufferQueueProducer.cpp#L300-L450)
 
 ```cpp
 // ========== 问题原因 ==========
@@ -661,7 +661,7 @@ adb shell dumpsys input | grep "FocusedWindow"
 
 ### 风险点9: 焦点窗口超时ANR
 
-**源码位置**: [InputDispatcher.cpp:1036-1045](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1036-L1045)
+**源码位置**: [InputDispatcher.cpp:1036-1045](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1036-L1045)
 
 ```cpp
 // ========== 核心检测逻辑 ==========
@@ -717,7 +717,7 @@ adb shell dumpsys input | grep -A 20 "Dispatch State"
 
 ### 5.1 scheduleTraversals 实现
 
-**源码位置**: [ViewRootImpl.java:3085-3114](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L3085-L3114)
+**源码位置**: [ViewRootImpl.java:3085-3114](base/core/java/android/view/ViewRootImpl.java#L3085-L3114)
 
 ```java
 void scheduleTraversals() {
@@ -752,7 +752,7 @@ void scheduleTraversals() {
 
 ### 5.2 performTraversals 核心流程
 
-**源码位置**: [ViewRootImpl.java:3574](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java#L3574)
+**源码位置**: [ViewRootImpl.java:3574](base/core/java/android/view/ViewRootImpl.java#L3574)
 
 ```java
 private void performTraversals() {
@@ -832,9 +832,9 @@ python systrace.py -t 10 -o trace.html sched gfx view wm input
 
 | 模块 | 文件路径 |
 |------|----------|
-| InputDispatcher | [InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp) |
-| BufferQueue | [BufferQueueProducer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp) |
-| ViewRootImpl | [ViewRootImpl.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java) |
-| AnrController | [AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java) |
+| InputDispatcher | [InputDispatcher.cpp](native/services/inputflinger/dispatcher/InputDispatcher.cpp) |
+| BufferQueue | [BufferQueueProducer.cpp](native/libs/gui/BufferQueueProducer.cpp) |
+| ViewRootImpl | [ViewRootImpl.java](base/core/java/android/view/ViewRootImpl.java) |
+| AnrController | [AnrController.java](base/services/core/java/com/android/server/wm/AnrController.java) |
 
 每个环节的优化都需要确保在**5秒超时时间**内完成，这是避免窗口无焦点ANR的核心要求。

@@ -10,22 +10,22 @@ DragAndDrop是Android WindowManager Shell中的重要组件，负责处理全局
 
 | 文件 | 说明 |
 |------|------|
-| [DragAndDropController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java) | 拖放系统核心控制器 |
-| [DragSession.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java) | 拖放会话数据管理 |
-| [DropTarget.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt) | 拖放目标接口定义 |
-| [GlobalDragListener.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt) | 全局拖放监听器 |
-| [DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java) | 拖放布局和UI渲染 |
-| [SplitDragPolicy.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/SplitDragPolicy.java) | 分屏拖放策略 |
-| [DropZoneView.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropZoneView.java) | 拖放区域视图 |
-| [DragUtils.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragUtils.java) | 拖放工具类 |
+| [DragAndDropController.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java) | 拖放系统核心控制器 |
+| [DragSession.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java) | 拖放会话数据管理 |
+| [DropTarget.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt) | 拖放目标接口定义 |
+| [GlobalDragListener.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt) | 全局拖放监听器 |
+| [DragLayout.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java) | 拖放布局和UI渲染 |
+| [SplitDragPolicy.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/SplitDragPolicy.java) | 分屏拖放策略 |
+| [DropZoneView.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropZoneView.java) | 拖放区域视图 |
+| [DragUtils.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragUtils.java) | 拖放工具类 |
 
 **动画系统**：`base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/`
 
 | 文件 | 说明 |
 |------|------|
-| [DropTargetAnimSupplier.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt) | 拖放目标动画供应商接口 |
-| [HoverAnimProps.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/HoverAnimProps.kt) | 悬停动画属性 |
-| [TwoFiftyFiftyTargetAnimator.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt) | 50:50分屏目标动画器 |
+| [DropTargetAnimSupplier.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt) | 拖放目标动画供应商接口 |
+| [HoverAnimProps.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/HoverAnimProps.kt) | 悬停动画属性 |
+| [TwoFiftyFiftyTargetAnimator.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt) | 50:50分屏目标动画器 |
 
 ## 整体架构图
 
@@ -83,7 +83,7 @@ graph TB
 
 ### 1. DragAndDropController - 拖放系统核心控制器
 
-**源码位置**：[DragAndDropController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java)
+**源码位置**：[DragAndDropController.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java)
 
 DragAndDropController是拖放系统的总入口，负责协调所有拖放操作：
 
@@ -211,7 +211,7 @@ public class DragAndDropController implements RemoteCallable<DragAndDropControll
 
 ### 2. DragSession - 拖放会话数据管理
 
-**源码位置**：[DragSession.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java)
+**源码位置**：[DragSession.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragSession.java)
 
 DragSession管理单个拖放操作的所有数据状态：
 
@@ -322,7 +322,7 @@ public class DragSession {
 
 ### 3. DropTarget - 拖放目标接口定义
 
-**源码位置**：[DropTarget.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt)
+**源码位置**：[DropTarget.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DropTarget.kt)
 
 DropTarget定义了拖放目标的行为接口：
 
@@ -374,7 +374,7 @@ interface DropTarget {
 
 ### 4. DragLayout - 拖放布局和UI渲染
 
-**源码位置**：[DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
+**源码位置**：[DragLayout.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
 
 DragLayout负责拖放操作的UI渲染和视觉效果：
 
@@ -462,7 +462,7 @@ public class DragLayout extends FrameLayout {
 
 ### 5. GlobalDragListener - 全局拖放监听器
 
-**源码位置**：[GlobalDragListener.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt)
+**源码位置**：[GlobalDragListener.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/GlobalDragListener.kt)
 
 GlobalDragListener负责监听系统级的拖放事件：
 
@@ -533,7 +533,7 @@ class GlobalDragListener(
 
 ### 1. 拖放启动流程
 
-**核心代码位置**：[DragAndDropController.java:378-400](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java#L378)
+**核心代码位置**：[DragAndDropController.java:378-400](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragAndDropController.java#L378)
 
 ```java
 case ACTION_DRAG_STARTED:
@@ -619,7 +619,7 @@ sequenceDiagram
 
 ### 1. DropTargetAnimSupplier接口
 
-**源码位置**：[DropTargetAnimSupplier.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt)
+**源码位置**：[DropTargetAnimSupplier.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/DropTargetAnimSupplier.kt)
 
 ```kotlin
 /**
@@ -647,7 +647,7 @@ interface DropTargetAnimSupplier {
 
 ### 2. TwoFiftyFiftyTargetAnimator实现
 
-**源码位置**：[TwoFiftyFiftyTargetAnimator.kt](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt)
+**源码位置**：[TwoFiftyFiftyTargetAnimator.kt](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/anim/TwoFiftyFiftyTargetAnimator.kt)
 
 ```kotlin
 /**
@@ -666,7 +666,7 @@ class TwoFiftyFiftyTargetAnimator : DropTargetAnimSupplier {
 
 ### 3. DragLayout动画控制
 
-**源码位置**：[DragLayout.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
+**源码位置**：[DragLayout.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/draganddrop/DragLayout.java)
 
 DragAndDrop使用复杂的动画系统来提供流畅的拖放体验：
 

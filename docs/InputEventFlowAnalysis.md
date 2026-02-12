@@ -62,7 +62,7 @@ graph TB
 
 #### 1.1 EventHub - 硬件事件采集
 
-**源码路径**: [EventHub.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/reader/EventHub.cpp)
+**源码路径**: [EventHub.cpp](native/services/inputflinger/reader/EventHub.cpp)
 
 EventHub是Input系统的底层接口，负责：
 - 监听`/dev/input`目录下的输入设备文件
@@ -163,7 +163,7 @@ static const char* DEVICE_INPUT_PATH = "/dev/input";
 
 #### 1.2 InputReader - 事件解析与处理
 
-**源码路径**: [InputReader.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/reader/InputReader.cpp)
+**源码路径**: [InputReader.cpp](native/services/inputflinger/reader/InputReader.cpp)
 
 InputReader从EventHub获取原始事件并进行解析，运行在独立的InputReader线程中。
 
@@ -340,7 +340,7 @@ graph LR
 
 #### 2.1 InputDispatcher - 事件分发核心
 
-**源码路径**: [InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp)
+**源码路径**: [InputDispatcher.cpp](native/services/inputflinger/dispatcher/InputDispatcher.cpp)
 
 InputDispatcher负责将处理好的事件分发给合适的窗口，运行在独立的InputDispatcher线程中。
 
@@ -554,7 +554,7 @@ flowchart TD
 
 #### 3.1 InputChannel - 进程间通信桥梁
 
-**源码路径**: [InputTransport.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/input/InputTransport.cpp)
+**源码路径**: [InputTransport.cpp](native/libs/input/InputTransport.cpp)
 
 InputChannel是连接Native层和Java层的桥梁，使用Socket Pair实现进程间通信。
 
@@ -716,7 +716,7 @@ graph LR
 
 #### 4.1 InputEventReceiver - 事件接收器
 
-**源码路径**: [InputEventReceiver.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/InputEventReceiver.java)
+**源码路径**: [InputEventReceiver.java](base/core/java/android/view/InputEventReceiver.java)
 
 InputEventReceiver是Java层接收Input事件的入口，通过JNI与Native层通信。
 
@@ -799,7 +799,7 @@ public abstract class InputEventReceiver {
 
 #### 4.2 ViewRootImpl - 窗口事件分发中心
 
-**源码路径**: [ViewRootImpl.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/view/ViewRootImpl.java)
+**源码路径**: [ViewRootImpl.java](base/core/java/android/view/ViewRootImpl.java)
 
 ViewRootImpl是每个窗口的事件分发中心，负责将事件分发给View层次结构。
 

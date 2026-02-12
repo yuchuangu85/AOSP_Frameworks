@@ -80,7 +80,7 @@ sequenceDiagram
 
 ### 1. InputDispatcher.processAnrsLocked() - ANR检测入口
 
-**源码位置**: [InputDispatcher.cpp:1032-1069](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1032-L1069)
+**源码位置**: [InputDispatcher.cpp:1032-1069](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L1032-L1069)
 
 ```cpp
 nsecs_t InputDispatcher::processAnrsLocked() {
@@ -123,7 +123,7 @@ nsecs_t InputDispatcher::processAnrsLocked() {
 
 ### 2. InputDispatcher.onAnrLocked() - ANR处理核心
 
-**源码位置**: [InputDispatcher.cpp:6620-6648](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6620-L6648)
+**源码位置**: [InputDispatcher.cpp:6620-6648](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6620-L6648)
 
 ```cpp
 void InputDispatcher::onAnrLocked(const std::shared_ptr<Connection>& connection) {
@@ -168,7 +168,7 @@ void InputDispatcher::onAnrLocked(const std::shared_ptr<Connection>& connection)
 
 ### 3. InputDispatcher.processConnectionUnresponsiveLocked() - 连接无响应处理
 
-**源码位置**: [InputDispatcher.cpp:6750-6770](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6750-L6770)
+**源码位置**: [InputDispatcher.cpp:6750-6770](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6750-L6770)
 
 ```cpp
 /**
@@ -199,7 +199,7 @@ void InputDispatcher::processConnectionUnresponsiveLocked(const Connection& conn
 
 ### 4. InputDispatcher.sendWindowUnresponsiveCommandLocked() - 发送ANR通知
 
-**源码位置**: [InputDispatcher.cpp:6727-6734](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6727-L6734)
+**源码位置**: [InputDispatcher.cpp:6727-6734](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6727-L6734)
 
 ```cpp
 void InputDispatcher::sendWindowUnresponsiveCommandLocked(const sp<IBinder>& token,
@@ -215,7 +215,7 @@ void InputDispatcher::sendWindowUnresponsiveCommandLocked(const sp<IBinder>& tok
 
 ### 5. InputManagerCallback.notifyWindowUnresponsive() - Java层ANR入口
 
-**源码位置**: [InputManagerCallback.java:97-101](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/InputManagerCallback.java#L97-L101)
+**源码位置**: [InputManagerCallback.java:97-101](base/services/core/java/com/android/server/wm/InputManagerCallback.java#L97-L101)
 
 ```java
 @Override
@@ -229,7 +229,7 @@ public void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalIn
 
 ### 6. AnrController.notifyWindowUnresponsive() - ANR控制器处理
 
-**源码位置**: [AnrController.java:143-157](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L143-L157)
+**源码位置**: [AnrController.java:143-157](base/services/core/java/com/android/server/wm/AnrController.java#L143-L157)
 
 ```java
 /**
@@ -260,7 +260,7 @@ void notifyWindowUnresponsive(@NonNull IBinder token, @NonNull OptionalInt pid,
 
 ### 7. AnrController.notifyWindowUnresponsive()私有方法
 
-**源码位置**: [AnrController.java:164-202](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L164-L202)
+**源码位置**: [AnrController.java:164-202](base/services/core/java/com/android/server/wm/AnrController.java#L164-L202)
 
 ```java
 /**
@@ -313,7 +313,7 @@ private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
 
 ### 8. ActivityRecord.inputDispatchingTimedOut() - Activity层ANR处理
 
-**源码位置**: [ActivityRecord.java:6749-6779](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java#L6749-L6779)
+**源码位置**: [ActivityRecord.java:6749-6779](base/services/core/java/com/android/server/wm/ActivityRecord.java#L6749-L6779)
 
 ```java
 /**
@@ -360,7 +360,7 @@ public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowP
 ## 关键类和组件
 
 ### 1. InputDispatcher (C++层)
-- **位置**: [InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp)
+- **位置**: [InputDispatcher.cpp](native/services/inputflinger/dispatcher/InputDispatcher.cpp)
 - **职责**: 输入事件分发和ANR检测
 - **关键方法**: 
   - `processAnrsLocked()`: 定期检查ANR
@@ -369,19 +369,19 @@ public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowP
   - `sendWindowUnresponsiveCommandLocked()`: 发送ANR通知
 
 ### 2. InputManagerCallback (Java层)
-- **位置**: [InputManagerCallback.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/InputManagerCallback.java)
+- **位置**: [InputManagerCallback.java](base/services/core/java/com/android/server/wm/InputManagerCallback.java)
 - **职责**: InputManager和WindowManager之间的桥梁
 - **关键方法**: `notifyWindowUnresponsive()`
 
 ### 3. AnrController (Java层)
-- **位置**: [AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java)
+- **位置**: [AnrController.java](base/services/core/java/com/android/server/wm/AnrController.java)
 - **职责**: 管理ANR通知和状态转储
 - **关键方法**: 
   - `notifyWindowUnresponsive()`: 处理窗口无响应
   - `preDumpIfLockTooSlow()`: 预转储堆栈信息
 
 ### 4. ActivityRecord (Java层)
-- **位置**: [ActivityRecord.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/ActivityRecord.java)
+- **位置**: [ActivityRecord.java](base/services/core/java/com/android/server/wm/ActivityRecord.java)
 - **职责**: 表示Activity实例
 - **关键方法**: `inputDispatchingTimedOut()`
 
@@ -393,7 +393,7 @@ public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowP
 
 ### 默认超时时间
 
-**源码位置**: [InputDispatcher.cpp:78-80](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L78-L80)
+**源码位置**: [InputDispatcher.cpp:78-80](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L78-L80)
 
 ```cpp
 const std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(
@@ -459,13 +459,13 @@ cancelEventsForAnrLocked(connection);
 ### 3. 恢复通知
 当窗口恢复响应时，通过`notifyWindowResponsive()`通知系统。
 
-**源码位置**: [AnrController.java:217-246](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L217-L246)
+**源码位置**: [AnrController.java:217-246](base/services/core/java/com/android/server/wm/AnrController.java#L217-L246)
 
 ## 性能优化和调试
 
 ### 1. 预转储机制
 
-**源码位置**: [AnrController.java:289-298](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L289-L298)
+**源码位置**: [AnrController.java:289-298](base/services/core/java/com/android/server/wm/AnrController.java#L289-L298)
 
 ```java
 /**
@@ -538,7 +538,7 @@ if (connection->waitQueue.empty()) {
 - **触发条件**: 应用没有焦点窗口
 - **处理流程**: `processNoFocusedWindowAnrLocked()` → `onAnrLocked(application)`
 
-**源码位置**: [InputDispatcher.cpp:6659-6668](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6659-L6668)
+**源码位置**: [InputDispatcher.cpp:6659-6668](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L6659-L6668)
 
 ```cpp
 void InputDispatcher::onAnrLocked(std::shared_ptr<InputApplicationHandle> application) {

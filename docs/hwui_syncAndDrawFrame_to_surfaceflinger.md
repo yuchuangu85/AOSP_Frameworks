@@ -656,7 +656,7 @@ flowchart TD
 
 - `DrawFrameTask::run()` 里会先 `syncFrameState()`（同步 RenderNode 树状态、纹理上传、准备 surface/buffer 等）
 - 满足条件后就 `signal` 解锁 UI 线程；RT 随后继续完成 `draw()` 与 `swapBuffers()`
-- **关键源码**：[DrawFrameTask.cpp#L155-202](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/DrawFrameTask.cpp#L155-202)
+- **关键源码**：[DrawFrameTask.cpp#L155-202](base/libs/hwui/renderthread/DrawFrameTask.cpp#L155-202)
 
 ### 6.2 `prepareTree()` 与 `reserveNext()` 的意义
 
@@ -664,16 +664,16 @@ flowchart TD
 - 可绘制时触发 `mNativeSurface->reserveNext()`（预取路径可能提前 `dequeueBuffer`，降低关键路径阻塞概率）
 - **注意**：当前默认 `DISABLE_BUFFER_PREFETCH = true`，预取功能被禁用
 - **关键源码**：
-  - [CanvasContext.cpp#L448-548](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/CanvasContext.cpp#L448-548)
-  - [ReliableSurface.cpp#L74-110](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/ReliableSurface.cpp#L74-110)
+  - [CanvasContext.cpp#L448-548](base/libs/hwui/renderthread/CanvasContext.cpp#L448-548)
+  - [ReliableSurface.cpp#L74-110](base/libs/hwui/renderthread/ReliableSurface.cpp#L74-110)
 
 ### 6.3 "交给 SF"的瞬间
 
 - Vulkan 路径最清晰：`VulkanSurface::presentCurrentBuffer()` 中 `mNativeWindow->queueBuffer(...)`
 - 随后 `BufferQueueProducer::queueBuffer()` 触发 consumer 侧 `onFrameAvailable`，SF 才能在后续 commit 中 latch
 - **关键源码**：
-  - [VulkanSurface.cpp#L476-506](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/VulkanSurface.cpp#L476-506)
-  - [BufferQueueProducer.cpp#L953-1249](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp#L953-1249)
+  - [VulkanSurface.cpp#L476-506](base/libs/hwui/renderthread/VulkanSurface.cpp#L476-506)
+  - [BufferQueueProducer.cpp#L953-1249](native/libs/gui/BufferQueueProducer.cpp#L953-1249)
 
 ### 6.4 SF 的帧闭环：commit 负责 latch，composite 负责合成/present
 
@@ -682,9 +682,9 @@ flowchart TD
   - 未 signal 则本帧不 latch，等待下一帧重试
 - `SurfaceFlinger::composite()`：`mCompositionEngine->present()` 执行合成与 present；SF 随后 `postComposition` 收尾
 - **关键源码**：
-  - [SurfaceFlinger.cpp#L2845-2996](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp#L2845-2996)
-  - [SurfaceFlinger.cpp#L3114-3233](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp#L3114-3233)
-  - [Layer.cpp#L1475-1524](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/Layer.cpp#L1475-1524)
+  - [SurfaceFlinger.cpp#L2845-2996](native/services/surfaceflinger/SurfaceFlinger.cpp#L2845-2996)
+  - [SurfaceFlinger.cpp#L3114-3233](native/services/surfaceflinger/SurfaceFlinger.cpp#L3114-3233)
+  - [Layer.cpp#L1475-1524](native/services/surfaceflinger/Layer.cpp#L1475-1524)
 
 ---
 
@@ -733,15 +733,15 @@ flowchart TD
 
 | 模块 | 文件路径 |
 |------|----------|
-| RenderProxy | [base/libs/hwui/renderthread/RenderProxy.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/RenderProxy.cpp) |
-| DrawFrameTask | [base/libs/hwui/renderthread/DrawFrameTask.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/DrawFrameTask.cpp) |
-| CanvasContext | [base/libs/hwui/renderthread/CanvasContext.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/CanvasContext.cpp) |
-| ReliableSurface | [base/libs/hwui/renderthread/ReliableSurface.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/ReliableSurface.cpp) |
-| VulkanSurface | [base/libs/hwui/renderthread/VulkanSurface.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/renderthread/VulkanSurface.cpp) |
-| SkiaOpenGLPipeline | [base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp) |
-| BufferQueueProducer | [native/libs/gui/BufferQueueProducer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/gui/BufferQueueProducer.cpp) |
-| SurfaceFlinger | [native/services/surfaceflinger/SurfaceFlinger.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/SurfaceFlinger.cpp) |
-| Layer | [native/services/surfaceflinger/Layer.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/surfaceflinger/Layer.cpp) |
+| RenderProxy | [base/libs/hwui/renderthread/RenderProxy.cpp](base/libs/hwui/renderthread/RenderProxy.cpp) |
+| DrawFrameTask | [base/libs/hwui/renderthread/DrawFrameTask.cpp](base/libs/hwui/renderthread/DrawFrameTask.cpp) |
+| CanvasContext | [base/libs/hwui/renderthread/CanvasContext.cpp](base/libs/hwui/renderthread/CanvasContext.cpp) |
+| ReliableSurface | [base/libs/hwui/renderthread/ReliableSurface.cpp](base/libs/hwui/renderthread/ReliableSurface.cpp) |
+| VulkanSurface | [base/libs/hwui/renderthread/VulkanSurface.cpp](base/libs/hwui/renderthread/VulkanSurface.cpp) |
+| SkiaOpenGLPipeline | [base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp](base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp) |
+| BufferQueueProducer | [native/libs/gui/BufferQueueProducer.cpp](native/libs/gui/BufferQueueProducer.cpp) |
+| SurfaceFlinger | [native/services/surfaceflinger/SurfaceFlinger.cpp](native/services/surfaceflinger/SurfaceFlinger.cpp) |
+| Layer | [native/services/surfaceflinger/Layer.cpp](native/services/surfaceflinger/Layer.cpp) |
 
 ---
 

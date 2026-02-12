@@ -383,5 +383,5 @@ adb shell dumpsys meminfo <package_name> | grep "Binder"
 ---
 
 **创建时间**：2026-02-12  
-**相关文档**：[BinderAnalysis.md](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/docs/BinderAnalysis.md)  
+**相关文档**：[BinderAnalysis.md](docs/BinderAnalysis.md)  
 **源码版本**：AOSP 16

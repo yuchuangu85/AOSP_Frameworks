@@ -21,7 +21,7 @@
 
 ### 1. RecentTasksController - 任务管理核心
 
-**文件路径**: [RecentTasksController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentTasksController.java)
+**文件路径**: [RecentTasksController.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentTasksController.java)
 
 **主要职责**:
 - 管理最近任务列表的缓存和更新
@@ -85,7 +85,7 @@ public SplitBounds getSplitBoundsForTaskId(int taskId) {
 
 ### 2. RecentsTransitionHandler - 过渡动画处理
 
-**文件路径**: [RecentsTransitionHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionHandler.java)
+**文件路径**: [RecentsTransitionHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionHandler.java)
 
 **主要职责**:
 - 处理 Recents（概览）动画的启动和完成
@@ -162,7 +162,7 @@ public IBinder startRecentsTransition(PendingIntent intent, Intent fillIn, Bundl
 
 ### 3. RecentsTransitionStateListener - 状态监听
 
-**文件路径**: [RecentsTransitionStateListener.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionStateListener.java)
+**文件路径**: [RecentsTransitionStateListener.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionStateListener.java)
 
 ```java
 public interface RecentsTransitionStateListener {
@@ -198,7 +198,7 @@ public interface RecentsTransitionStateListener {
 
 ### 4. RecentsMixedTransition - 混合过渡处理
 
-**文件路径**: [RecentsMixedTransition.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RecentsMixedTransition.java)
+**文件路径**: [RecentsMixedTransition.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RecentsMixedTransition.java)
 
 **主要职责**:
 - 处理 Recents 与其他过渡类型的混合场景
@@ -238,7 +238,7 @@ class RecentsMixedTransition extends DefaultMixedHandler.MixedTransition {
 
 ### 1. IRecentTasks 接口
 
-**文件路径**: [IRecentTasks.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasks.aidl)
+**文件路径**: [IRecentTasks.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasks.aidl)
 
 ```java
 /**
@@ -266,7 +266,7 @@ interface IRecentTasks {
 
 ### 2. IRecentsAnimationRunner 接口
 
-**文件路径**: [IRecentsAnimationRunner.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentsAnimationRunner.aidl)
+**文件路径**: [IRecentsAnimationRunner.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentsAnimationRunner.aidl)
 
 ```java
 /**
@@ -300,7 +300,7 @@ oneway interface IRecentsAnimationRunner {
 
 ### 3. IRecentTasksListener 接口
 
-**文件路径**: [IRecentTasksListener.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasksListener.aidl)
+**文件路径**: [IRecentTasksListener.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasksListener.aidl)
 
 ```java
 /**
@@ -796,10 +796,10 @@ AOSP 16 的 Recent Tasks 架构相比 AOSP 13 有了重大改进：
 **基于AOSP版本**: Android 16  
 **最后更新**: 2026年2月12日  
 **源码路径**:
-- [RecentTasksController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentTasksController.java)
-- [RecentsTransitionHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionHandler.java)
-- [RecentsTransitionStateListener.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionStateListener.java)
-- [RecentsMixedTransition.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RecentsMixedTransition.java)
-- [IRecentTasks.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasks.aidl)
-- [IRecentsAnimationRunner.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentsAnimationRunner.aidl)
-- [IRecentTasksListener.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasksListener.aidl)
+- [RecentTasksController.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentTasksController.java)
+- [RecentsTransitionHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionHandler.java)
+- [RecentsTransitionStateListener.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/RecentsTransitionStateListener.java)
+- [RecentsMixedTransition.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RecentsMixedTransition.java)
+- [IRecentTasks.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasks.aidl)
+- [IRecentsAnimationRunner.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentsAnimationRunner.aidl)
+- [IRecentTasksListener.aidl](base/libs/WindowManager/Shell/src/com/android/wm/shell/recents/IRecentTasksListener.aidl)

@@ -1,10 +1,10 @@
 # Android ANR问题完整分析指南
 
 > **源码参考**：本文档基于AOSP 16源码分析
-> - ANR控制器：[AnrController.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java)
-> - Input分发器：[InputDispatcher.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp)
-> - EventLog标签：[EventLogTags.logtags](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/EventLogTags.logtags)
-> - 焦点管理：[DisplayContent.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/DisplayContent.java)
+> - ANR控制器：[AnrController.java](base/services/core/java/com/android/server/wm/AnrController.java)
+> - Input分发器：[InputDispatcher.cpp](native/services/inputflinger/dispatcher/InputDispatcher.cpp)
+> - EventLog标签：[EventLogTags.logtags](base/services/core/java/com/android/server/wm/EventLogTags.logtags)
+> - 焦点管理：[DisplayContent.java](base/services/core/java/com/android/server/wm/DisplayContent.java)
 
 ## 一、需要收集的日志文件清单
 
@@ -1083,7 +1083,7 @@ sequenceDiagram
 
 ### 5.0.1 窗口无焦点ANR检测源码
 
-**核心代码位置**：[InputDispatcher.cpp:2330-2360](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2330)
+**核心代码位置**：[InputDispatcher.cpp:2330-2360](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2330)
 
 ```cpp
 // 当有焦点应用但无焦点窗口时，启动ANR计时器
@@ -1110,7 +1110,7 @@ if (focusedWindowHandle == nullptr && focusedApplicationHandle != nullptr) {
 
 ### 5.0.2 ANR处理流程源码
 
-**核心代码位置**：[AnrController.java:100-130](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/services/core/java/com/android/server/wm/AnrController.java#L100)
+**核心代码位置**：[AnrController.java:100-130](base/services/core/java/com/android/server/wm/AnrController.java#L100)
 
 ```java
 // AnrController处理无响应窗口
@@ -1145,7 +1145,7 @@ private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
 
 ### 5.0.3 ANR超时检测源码
 
-**核心代码位置**：[InputDispatcher.cpp:2820-2860](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2820)
+**核心代码位置**：[InputDispatcher.cpp:2820-2860](native/services/inputflinger/dispatcher/InputDispatcher.cpp#L2820)
 
 ```cpp
 nsecs_t InputDispatcher::processAnrsLocked() {

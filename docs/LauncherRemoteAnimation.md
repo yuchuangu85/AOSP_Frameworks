@@ -27,12 +27,12 @@ graph TD
 
 | 类名 | 路径 | 职责 |
 |------|------|------|
-| **IRemoteTransition** | [IRemoteTransition.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/IRemoteTransition.aidl) | 远程动画接口，定义动画执行协议 |
-| **RemoteTransition** | [RemoteTransition.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/RemoteTransition.java) | 远程动画的包装类，包含Binder引用和应用线程信息 |
-| **RemoteTransitionHandler** | [RemoteTransitionHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java) | Shell进程中的远程动画处理器 |
-| **OneShotRemoteHandler** | [OneShotRemoteHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/OneShotRemoteHandler.java) | 一次性远程动画处理器 |
-| **Transitions** | [Transitions.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java) | Shell Transition系统的核心管理器 |
-| **TransitionFilter** | [TransitionFilter.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/TransitionFilter.java) | 过渡动画过滤器，用于匹配远程动画 |
+| **IRemoteTransition** | [IRemoteTransition.aidl](base/core/java/android/window/IRemoteTransition.aidl) | 远程动画接口，定义动画执行协议 |
+| **RemoteTransition** | [RemoteTransition.java](base/core/java/android/window/RemoteTransition.java) | 远程动画的包装类，包含Binder引用和应用线程信息 |
+| **RemoteTransitionHandler** | [RemoteTransitionHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java) | Shell进程中的远程动画处理器 |
+| **OneShotRemoteHandler** | [OneShotRemoteHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/OneShotRemoteHandler.java) | 一次性远程动画处理器 |
+| **Transitions** | [Transitions.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java) | Shell Transition系统的核心管理器 |
+| **TransitionFilter** | [TransitionFilter.java](base/core/java/android/window/TransitionFilter.java) | 过渡动画过滤器，用于匹配远程动画 |
 
 ## 远程动画接口定义
 
@@ -807,9 +807,9 @@ Launcher远程动画与Window的交互逻辑体现了Android图形系统的先�
 **基于AOSP版本**: Android 16  
 **最后更新**: 2026年2月12日  
 **源码路径**: 
-- [IRemoteTransition.aidl](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/IRemoteTransition.aidl)
-- [RemoteTransition.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/RemoteTransition.java)
-- [RemoteTransitionHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java)
-- [Transitions.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java)
-- [TransitionFilter.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/window/TransitionFilter.java)
-- [OneShotRemoteHandler.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/OneShotRemoteHandler.java)
+- [IRemoteTransition.aidl](base/core/java/android/window/IRemoteTransition.aidl)
+- [RemoteTransition.java](base/core/java/android/window/RemoteTransition.java)
+- [RemoteTransitionHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java)
+- [Transitions.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java)
+- [TransitionFilter.java](base/core/java/android/window/TransitionFilter.java)
+- [OneShotRemoteHandler.java](base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/OneShotRemoteHandler.java)

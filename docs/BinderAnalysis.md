@@ -98,17 +98,17 @@ graph TD
 
 ### 3.4 核心接口设计
 
-**IBinder接口**（[IBinder.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/IBinder.java)）：
+**IBinder接口**（[IBinder.java](base/core/java/android/os/IBinder.java)）：
 - `transact()` - 核心通信方法
 - `queryLocalInterface()` - 本地接口查询
 - `linkToDeath()` - 死亡通知机制
 
-**Binder类**（[Binder.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/Binder.java)）：
+**Binder类**（[Binder.java](base/core/java/android/os/Binder.java)）：
 - 实现IBinder接口的基类
 - 提供本地Binder对象实现
 - 管理死亡通知和事务处理
 
-**Native层IBinder接口**（[IBinder.h](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/include/binder/IBinder.h)）：
+**Native层IBinder接口**（[IBinder.h](native/libs/binder/include/binder/IBinder.h)）：
 - C++层的Binder接口定义
 - 定义事务码常量（FIRST_CALL_TRANSACTION, LAST_CALL_TRANSACTION等）
 - 定义事务标志（FLAG_ONEWAY, FLAG_CLEAR_BUF等）
@@ -147,24 +147,24 @@ classDiagram
 
 ### 4.2 关键组件分析
 
-**IPCThreadState**（[IPCThreadState.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/IPCThreadState.cpp#L919)）：
+**IPCThreadState**（[IPCThreadState.cpp](native/libs/binder/IPCThreadState.cpp#L919)）：
 - 每个线程的Binder状态管理
 - 负责Binder事务的发送和接收
 - 维护线程本地存储
 - 核心方法：`transact()`, `waitForResponse()`, `joinThreadPool()`
 
-**ProcessState**（[ProcessState.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/ProcessState.cpp)）：
+**ProcessState**（[ProcessState.cpp](native/libs/binder/ProcessState.cpp)）：
 - 进程级别的Binder状态管理
 - 打开Binder驱动设备（`/dev/binder`）
 - 管理Binder线程池
 - 使用`mmap`映射Binder内存（1MB - 2页）
 
-**BpBinder**（[BpBinder.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/BpBinder.cpp#L394)）：
+**BpBinder**（[BpBinder.cpp](native/libs/binder/BpBinder.cpp#L394)）：
 - 代理Binder实现，代表远程Binder对象
 - 持有Binder句柄（handle）
 - 通过IPCThreadState发送事务
 
-**BBinder**（[Binder.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/Binder.cpp#L850)）：
+**BBinder**（[Binder.cpp](native/libs/binder/Binder.cpp#L850)）：
 - 本地Binder实现，代表服务端Binder对象
 - 实现`onTransact()`处理事务
 - 服务实现的基类
@@ -173,14 +173,14 @@ classDiagram
 
 ### 5.1 Java-Native桥接
 
-**BinderInternal**（[BinderInternal.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/com/android/internal/os/BinderInternal.java)）：
+**BinderInternal**（[BinderInternal.java](base/core/java/com/android/internal/os/BinderInternal.java)）：
 - 提供Java层与Native层的桥梁
 - 管理Binder调用统计和监控
 - 处理Binder死亡通知
 
 ### 5.2 服务管理机制
 
-**ServiceManager**（[ServiceManager.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/ServiceManager.java)）：
+**ServiceManager**（[ServiceManager.java](base/core/java/android/os/ServiceManager.java)）：
 - 系统服务的注册和查询
 - 维护服务名到Binder引用的映射
 - 提供跨进程服务访问接口
@@ -281,20 +281,20 @@ private static class Proxy implements IMyService {
 **Java层：**
 | 文件 | 路径 | 说明 |
 |------|------|------|
-| IBinder.java | [base/core/java/android/os/IBinder.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/IBinder.java) | Binder接口定义 |
-| Binder.java | [base/core/java/android/os/Binder.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/Binder.java) | Binder基类实现 |
-| BinderProxy.java | [base/core/java/android/os/BinderProxy.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/BinderProxy.java) | Binder代理类 |
-| ServiceManager.java | [base/core/java/android/os/ServiceManager.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/ServiceManager.java) | 服务管理 |
-| BinderInternal.java | [base/core/java/com/android/internal/os/BinderInternal.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/com/android/internal/os/BinderInternal.java) | 内部工具类 |
+| IBinder.java | [base/core/java/android/os/IBinder.java](base/core/java/android/os/IBinder.java) | Binder接口定义 |
+| Binder.java | [base/core/java/android/os/Binder.java](base/core/java/android/os/Binder.java) | Binder基类实现 |
+| BinderProxy.java | [base/core/java/android/os/BinderProxy.java](base/core/java/android/os/BinderProxy.java) | Binder代理类 |
+| ServiceManager.java | [base/core/java/android/os/ServiceManager.java](base/core/java/android/os/ServiceManager.java) | 服务管理 |
+| BinderInternal.java | [base/core/java/com/android/internal/os/BinderInternal.java](base/core/java/com/android/internal/os/BinderInternal.java) | 内部工具类 |
 
 **Native层：**
 | 文件 | 路径 | 说明 |
 |------|------|------|
-| IBinder.h | [native/libs/binder/include/binder/IBinder.h](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/include/binder/IBinder.h) | C++接口定义 |
-| BpBinder.cpp | [native/libs/binder/BpBinder.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/BpBinder.cpp) | 代理Binder实现 |
-| Binder.cpp | [native/libs/binder/Binder.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/Binder.cpp) | 本地Binder实现 |
-| IPCThreadState.cpp | [native/libs/binder/IPCThreadState.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/IPCThreadState.cpp) | 线程状态管理 |
-| ProcessState.cpp | [native/libs/binder/ProcessState.cpp](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/ProcessState.cpp) | 进程状态管理 |
+| IBinder.h | [native/libs/binder/include/binder/IBinder.h](native/libs/binder/include/binder/IBinder.h) | C++接口定义 |
+| BpBinder.cpp | [native/libs/binder/BpBinder.cpp](native/libs/binder/BpBinder.cpp) | 代理Binder实现 |
+| Binder.cpp | [native/libs/binder/Binder.cpp](native/libs/binder/Binder.cpp) | 本地Binder实现 |
+| IPCThreadState.cpp | [native/libs/binder/IPCThreadState.cpp](native/libs/binder/IPCThreadState.cpp) | 线程状态管理 |
+| ProcessState.cpp | [native/libs/binder/ProcessState.cpp](native/libs/binder/ProcessState.cpp) | 进程状态管理 |
 
 ## 🔮 11. 架构演进趋势
 
@@ -316,7 +316,7 @@ private static class Proxy implements IMyService {
 
 #### Java层BinderProxy.transact()
 
-**源码位置**：[BinderProxy.java:590-630](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/core/java/android/os/BinderProxy.java#L590)
+**源码位置**：[BinderProxy.java:590-630](base/core/java/android/os/BinderProxy.java#L590)
 
 ```java
 public boolean transact(int code, Parcel data, Parcel reply, int flags) 
@@ -344,7 +344,7 @@ public native boolean transactNative(int code, Parcel data, Parcel reply,
 
 #### Native层BpBinder.transact()
 
-**源码位置**：[BpBinder.cpp:394-448](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/BpBinder.cpp#L394)
+**源码位置**：[BpBinder.cpp:394-448](native/libs/binder/BpBinder.cpp#L394)
 
 ```cpp
 status_t BpBinder::transact(
@@ -384,7 +384,7 @@ status_t BpBinder::transact(
 
 #### Native层IPCThreadState.transact()
 
-**源码位置**：[IPCThreadState.cpp:919-995](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/IPCThreadState.cpp#L919)
+**源码位置**：[IPCThreadState.cpp:919-995](native/libs/binder/IPCThreadState.cpp#L919)
 
 ```cpp
 status_t IPCThreadState::transact(int32_t handle,
@@ -428,7 +428,7 @@ status_t IPCThreadState::transact(int32_t handle,
 
 #### Native层BBinder.onTransact()
 
-**源码位置**：[Binder.cpp:850-904](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/native/libs/binder/Binder.cpp#L850)
+**源码位置**：[Binder.cpp:850-904](native/libs/binder/Binder.cpp#L850)
 
 ```cpp
 status_t BBinder::onTransact(
