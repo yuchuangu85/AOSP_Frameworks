@@ -9,8 +9,9 @@ description: |
   - "Compose开发"
   - "Android功能实现"
   - "Android模块开发"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 编码实现专家

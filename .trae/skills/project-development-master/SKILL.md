@@ -10,8 +10,9 @@ description: |
   - "Android项目向导"
   - "Android软件开发"
   - "Android应用制作"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 项目开发主控专家

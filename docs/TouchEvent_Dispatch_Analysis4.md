@@ -6,9 +6,9 @@
 
 ### 7.1 Activity层证据链
 
+[源码证据：frameworks/base/core/java/android/app/Activity.java#L4661-4669]
+
 ```java
-// Activity.dispatchTouchEvent
-[源码证据：frameworks/base/core/java/android/app/Activity.java#L4661-4670]
 public boolean dispatchTouchEvent(MotionEvent ev) {
     if (ev.getAction() == MotionEvent.ACTION_DOWN) {
         onUserInteraction();
@@ -22,47 +22,155 @@ public boolean dispatchTouchEvent(MotionEvent ev) {
 
 ### 7.2 ViewGroup层证据链
 
+[源码证据：frameworks/base/core/java/android/view/ViewGroup.java#L2670-2690]
+
 ```java
 // ViewGroup.dispatchTouchEvent - 事件拦截检查
-[源码证据：frameworks/base/core/java/android/view/ViewGroup.java#L2675-2685]
 final boolean intercepted;
+ViewRootImpl viewRootImpl = getViewRootImpl();
 if (actionMasked == MotionEvent.ACTION_DOWN || mFirstTouchTarget != null) {
     final boolean disallowIntercept = (mGroupFlags & FLAG_DISALLOW_INTERCEPT) != 0;
     if (!disallowIntercept) {
+        // Allow back to intercept touch
         intercepted = onInterceptTouchEvent(ev);
+        ev.setAction(action); // restore action in case it was changed
+    } else {
+        intercepted = false;
     }
+} else {
+    // There are no touch targets and this action is not an initial down
+    // so this view group continues to intercept touches.
+    intercepted = true;
 }
+```
 
-// ViewGroup.dispatchTouchEvent - 子View分发
 [源码证据：frameworks/base/core/java/android/view/ViewGroup.java#L2710-2750]
-for (int i = childrenCount - 1; i >= 0; i--) {
-    if (dispatchTransformedTouchEvent(ev, false, child, idBitsToAssign)) {
-        // 子View消费了事件
-        newTouchTarget = addTouchTarget(child, idBitsToAssign);
-        break;
+
+```java
+// ViewGroup.dispatchTouchEvent - TouchTarget查找条件
+if (!canceled && !intercepted) {
+    if (actionMasked == MotionEvent.ACTION_DOWN
+            || (split && actionMasked == MotionEvent.ACTION_POINTER_DOWN)
+            || actionMasked == MotionEvent.ACTION_HOVER_MOVE) {
+        final int actionIndex = ev.getActionIndex();
+        final int idBitsToAssign = split ? 1 << ev.getPointerId(actionIndex)
+                : TouchTarget.ALL_POINTER_IDS;
+
+        // Clean up earlier touch targets for this pointer id
+        removePointersFromTouchTargets(idBitsToAssign);
+
+        final int childrenCount = mChildrenCount;
+        if (newTouchTarget == null && childrenCount != 0) {
+            // 遍历子View查找目标...
+        }
     }
 }
 ```
 
 ### 7.3 View层证据链
 
+[源码证据：frameworks/base/core/java/android/view/View.java#L16750-16792]
+
 ```java
-// View.dispatchTouchEvent
-[源码证据：frameworks/base/core/java/android/view/View.java#L14320-14340]
 public boolean dispatchTouchEvent(MotionEvent event) {
-    if (onTouchEvent(event)) {
+    // If the event should be handled by accessibility focus first.
+    if (event.isTargetAccessibilityFocus()) {
+        if (!isAccessibilityFocusedViewOrHost()) {
+            return false;
+        }
+        event.setTargetAccessibilityFocus(false);
+    }
+    boolean result = false;
+
+    if (mInputEventConsistencyVerifier != null) {
+        mInputEventConsistencyVerifier.onTouchEvent(event, 0);
+    }
+
+    final int actionMasked = event.getActionMasked();
+    if (actionMasked == MotionEvent.ACTION_DOWN) {
+        // Defensive cleanup for new gesture
+        stopNestedScroll();
+    }
+
+    if (onFilterTouchEventForSecurity(event)) {
+        result = performOnTouchCallback(event);
+    }
+
+    if (actionMasked == MotionEvent.ACTION_UP ||
+            actionMasked == MotionEvent.ACTION_CANCEL ||
+            (actionMasked == MotionEvent.ACTION_DOWN && !result)) {
+        stopNestedScroll();
+    }
+
+    return result;
+}
+```
+
+[源码证据：frameworks/base/core/java/android/view/View.java#L18265-18330]
+
+```java
+public boolean onTouchEvent(MotionEvent event) {
+    final float x = event.getX();
+    final float y = event.getY();
+    final int viewFlags = mViewFlags;
+    final int action = event.getAction();
+
+    final boolean clickable = ((viewFlags & CLICKABLE) == CLICKABLE
+            || (viewFlags & LONG_CLICKABLE) == LONG_CLICKABLE)
+            || (viewFlags & CONTEXT_CLICKABLE) == CONTEXT_CLICKABLE;
+
+    if ((viewFlags & ENABLED_MASK) == DISABLED
+            && (mPrivateFlags4 & PFLAG4_ALLOW_CLICK_WHEN_DISABLED) == 0) {
+        if (action == MotionEvent.ACTION_UP && (mPrivateFlags & PFLAG_PRESSED) != 0) {
+            setPressed(false);
+        }
+        return clickable;
+    }
+    // ...
+    if (clickable || (viewFlags & TOOLTIP) == TOOLTIP) {
+        switch (action) {
+            case MotionEvent.ACTION_UP:
+                // 点击处理逻辑
+                if (!mHasPerformedLongPress && !mIgnoreNextUpEvent) {
+                    removeLongPressCallback();
+                    if (!focusTaken) {
+                        if (mPerformClick == null) {
+                            mPerformClick = new PerformClick();
+                        }
+                        if (!post(mPerformClick)) {
+                            performClickInternal();
+                        }
+                    }
+                }
+                break;
+            // ...
+        }
         return true;
     }
     return false;
 }
+```
 
-// View.onTouchEvent - 点击处理
-[源码证据：frameworks/base/core/java/android/view/View.java#L14820-14840]
-case MotionEvent.ACTION_UP:
-    if ((mPrivateFlags & PFLAG_PRESSED) != 0) {
-        performClick();
+[源码证据：frameworks/base/core/java/android/view/View.java#L8195-8210]
+
+```java
+public boolean performClick() {
+    // We still need to call this method to handle the cases where performClick() was called
+    // externally, instead of calling performClickInternal()
+    notifyAutofillManagerOnClick();
+
+    final boolean result;
+    final ListenerInfo li = mListenerInfo;
+    if (li != null && li.mOnClickListener != null) {
+        playSoundEffect(SoundEffectConstants.CLICK);
+        li.mOnClickListener.onClick(this);
+        result = true;
+    } else {
+        result = false;
     }
-    break;
+    // ...
+    return result;
+}
 ```
 
 ## 8. 性能优化与异常处理

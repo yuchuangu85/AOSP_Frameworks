@@ -9,8 +9,9 @@ description: |
   - "Android项目交付"
   - "Android技术文档"
   - "Android交付物"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 文档生成与交付专家

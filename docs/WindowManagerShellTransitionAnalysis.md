@@ -138,54 +138,123 @@ Transitions类是Shell Transition系统的核心管理器，负责：
 
 **关键方法：**
 
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L1246-1290]
+
 ```java
-// 请求开始过渡动画
+/** @see ITransitionPlayer#requestStartTransition  */
 public void requestStartTransition(@NonNull IBinder transitionToken,
-        @NonNull TransitionRequestInfo request)
+        @Nullable TransitionRequestInfo request) {
+    ProtoLog.v(WM_SHELL_TRANSITIONS, "Transition requested (#%d): %s %s",
+            request.getDebugId(), transitionToken, request);
+    if (mKnownTransitions.containsKey(transitionToken)) {
+        throw new RuntimeException("Transition already started " + transitionToken);
+    }
+    final ActiveTransition active = new ActiveTransition(transitionToken);
+    mKnownTransitions.put(transitionToken, active);
+    WindowContainerTransaction wct = null;
 
-// 过渡动画准备就绪
-public void onTransitionReady(@NonNull IBinder transitionToken, @NonNull TransitionInfo info,
-        @NonNull SurfaceControl.Transaction t, @NonNull SurfaceControl.Transaction finishT)
-
-// 完成过渡动画
-public void finishTransition(@NonNull IBinder transitionToken,
-        @Nullable SurfaceControl.Transaction finishT)
+    // If we have sleep, we use a special handler and we try to finish everything ASAP.
+    if (request.getType() == TRANSIT_SLEEP) {
+        mSleepHandler.handleRequest(transitionToken, request);
+        active.mHandler = mSleepHandler;
+    } else {
+        Pair<TransitionHandler, WindowContainerTransaction> requestResult =
+                dispatchRequestWithTracing(transitionToken, request, /* skip= */ null);
+        if (requestResult != null) {
+            active.mHandler = requestResult.first;
+            wct = requestResult.second;
+        }
+        // ...
+    }
+}
 ```
 
-**源码证据 - 状态机实现** ([Transitions.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L80-L100))
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L717-762]
+
 ```java
-// 过渡生命周期状态机
---start--> PENDING --onTransitionReady--> READY --play--> ACTIVE --finish--> |
-                                                           --merge--> MERGED --^
+/** @see ITransitionPlayer#onTransitionReady */
+public void onTransitionReady(@NonNull IBinder transitionToken, @NonNull TransitionInfo info,
+        @NonNull SurfaceControl.Transaction t, @NonNull SurfaceControl.Transaction finishT) {
+    info.setUnreleasedWarningCallSiteForAllSurfaces("Transitions.onTransitionReady");
+    ProtoLog.v(WM_SHELL_TRANSITIONS, "onTransitionReady (#%d) %s: %s",
+            info.getDebugId(), transitionToken, info.toString("    " /* prefix */));
+    int activeIdx = findByToken(mPendingTransitions, transitionToken);
+    if (activeIdx < 0) {
+        final ActiveTransition existing = mKnownTransitions.get(transitionToken);
+        if (existing != null) {
+            Log.e(TAG, "Got duplicate transitionReady for " + transitionToken);
+            t.apply();
+            if (existing.mFinishT != null) {
+                existing.mFinishT.merge(finishT);
+            } else {
+                existing.mFinishT = finishT;
+            }
+            return;
+        }
+        // ...
+    }
+    // Move from pending to ready
+    final ActiveTransition active = mPendingTransitions.remove(activeIdx);
+    active.mInfo = info;
+    active.mStartT = t;
+    active.mFinishT = finishT;
+    // ...
+}
 ```
 
 ### 2. TransitionHandler接口
 
 TransitionHandler定义了过渡动画处理器的基本接口：
 
-```java
-public interface TransitionHandler {
-    // 开始处理过渡动画
-    boolean startAnimation(@NonNull IBinder transition, @NonNull TransitionInfo info,
-            @NonNull SurfaceControl.Transaction startT,
-            @NonNull SurfaceControl.Transaction finishT,
-            @NonNull Transitions.TransitionFinishCallback finishCallback);
-    
-    // 合并过渡动画
-    boolean mergeAnimation(@NonNull IBinder transition, @NonNull TransitionInfo info,
-            @NonNull SurfaceControl.Transaction t, @NonNull SurfaceControl.Transaction finishT,
-            @NonNull Transitions.TransitionFinishCallback finishCallback);
-}
-```
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L1450-1505]
 
-**源码证据 - 接口定义** ([Transitions.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L1450-L1549))
 ```java
+/**
+ * Interface for something which can handle a subset of transitions.
+ */
 public interface TransitionHandler {
+    /**
+     * Starts a transition animation. This is always called if handleRequest returned non-null
+     * for a particular transition. Otherwise, it is only called if no other handler before
+     * it handled the transition.
+     * @param startTransaction the transaction given to the handler to be applied before the
+     *                         transition animation. Note the handler is expected to call on
+     *                         {@link SurfaceControl.Transaction#apply()} for startTransaction.
+     * @param finishTransaction the transaction given to the handler to be applied after the
+     *                       transition animation. Unlike startTransaction, the handler is NOT
+     *                       expected to apply this transaction. The Transition system will
+     *                       apply it when finishCallback is called. If additional transitions
+     *                       are merged, then the finish transactions for those transitions
+     *                       will be applied after this transaction.
+     * @param finishCallback Call this when finished. This MUST be called on main thread.
+     * @return true if transition was handled, false if not (falls-back to default).
+     */
     boolean startAnimation(@NonNull IBinder transition, @NonNull TransitionInfo info,
             @NonNull SurfaceControl.Transaction startTransaction,
             @NonNull SurfaceControl.Transaction finishTransaction,
             @NonNull TransitionFinishCallback finishCallback);
-    
+
+    /**
+     * Like {@link #startAnimation(IBinder, TransitionInfo, SurfaceControl.Transaction,
+     * SurfaceControl.Transaction, TransitionFinishCallback)} when {@param info} is not null.
+     */
+    default boolean startAnimation(@NonNull IBinder transition,
+                                   @Nullable TransitionInfo consumableInfo,
+                                   @NonNull TransitionDispatchState dispatchState,
+                                   @NonNull SurfaceControl.Transaction startTransaction,
+                                   @NonNull SurfaceControl.Transaction finishTransaction,
+                                   @NonNull TransitionFinishCallback finishCallback) {
+        if (consumableInfo != null) {
+            return startAnimation(transition, consumableInfo, startTransaction,
+                    finishTransaction, finishCallback);
+        }
+        return false;
+    }
+
+    /**
+     * Attempts to merge a different transition's animation into an animation that this handler
+     * is currently playing. If a merge is not possible/supported, this should be a no-op.
+     */
     void mergeAnimation(@NonNull IBinder transition, @NonNull TransitionInfo info,
             @NonNull SurfaceControl.Transaction startTransaction,
             @NonNull SurfaceControl.Transaction finishTransaction,
@@ -208,9 +277,10 @@ Shell Transition系统包含多种内置处理器：
 
 TransitionUtil提供过渡相关的工具函数，支持类型判断和模式识别：
 
-**关键功能** ([TransitionUtil.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/TransitionUtil.java#L40-L60))
+[源码证据：base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/TransitionUtil.java#L70-130]
+
 ```java
-// 类型判断函数
+/** @return true if the transition was triggered by opening something vs closing something */
 public static boolean isOpeningType(@WindowManager.TransitionType int type) {
     return type == TRANSIT_OPEN
             || type == TRANSIT_TO_FRONT
@@ -218,11 +288,27 @@ public static boolean isOpeningType(@WindowManager.TransitionType int type) {
             || type == TRANSIT_PREPARE_BACK_NAVIGATION;
 }
 
+/** @return true if the transition was triggered by closing something vs opening something */
 public static boolean isClosingType(@WindowManager.TransitionType int type) {
     return type == TRANSIT_CLOSE || type == TRANSIT_TO_BACK;
 }
 
-// 特殊窗口识别
+/** Returns {@code true} if the transition is opening or closing mode. */
+public static boolean isOpenOrCloseMode(@TransitionInfo.TransitionMode int mode) {
+    return isOpeningMode(mode) || isClosingMode(mode);
+}
+
+/** Returns {@code true} if the transition is opening mode. */
+public static boolean isOpeningMode(@TransitionInfo.TransitionMode int mode) {
+    return mode == TRANSIT_OPEN || mode == TRANSIT_TO_FRONT;
+}
+
+/** Returns {@code true} if the transition is closing mode. */
+public static boolean isClosingMode(@TransitionInfo.TransitionMode int mode) {
+    return mode == TRANSIT_CLOSE || mode == TRANSIT_TO_BACK;
+}
+
+/** Returns `true` if `change` is a wallpaper. */
 public static boolean isWallpaper(TransitionInfo.Change change) {
     return (change.getTaskInfo() == null)
             && change.hasFlags(FLAG_IS_WALLPAPER)
@@ -340,15 +426,16 @@ private boolean tryMerge(Track track, ActiveTransition ready) {
 
 ### 2. 轨道实现
 
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L290-304]
+
 ```java
 private static class Track {
-    // 准备就绪但等待播放的过渡动画
+    /** Keeps track of transitions which are ready to play but still waiting for their turn. */
     final ArrayList<ActiveTransition> mReadyTransitions = new ArrayList<>();
-    
-    // 当前正在播放的过渡动画
+
+    /** The currently playing transition in this track. */
     ActiveTransition mActiveTransition = null;
-    
-    // 检查轨道是否空闲
+
     boolean isIdle() {
         return mActiveTransition == null && mReadyTransitions.isEmpty();
     }
@@ -357,33 +444,19 @@ private static class Track {
 
 ### 3. 同步机制实现
 
-**同步过渡处理** ([Transitions.java](file:///Users/yuchuan/CodeMX/MX/AOSP_Frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L1200-L1250))
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L252]
+
 ```java
-private void startSyncIfNeeded() {
-    // 检查是否有同步过渡等待
-    if (mReadyDuringSync.isEmpty()) return;
-    
-    // 检查所有轨道是否空闲
-    for (Track track : mTracks) {
-        if (!track.isIdle()) {
-            // 有活动轨道，需要等待
-            return;
-        }
-    }
-    
-    // 所有轨道空闲，开始同步过渡
-    processSyncTransitions();
-}
+private static final int SYNC_ALLOWANCE_MS = 120;
 ```
 
 **同步超时保护**
-```java
-private static final int SYNC_ALLOWANCE_MS = 120;
 
+[源码证据：base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java#L1417]
+
+```java
 // 防止动画无限等待，强制完成超时动画
-if (!mDisableForceSync && elapsedTime > SYNC_ALLOWANCE_MS) {
-    forceFinishActiveTransition(track);
-}
+() -> finishForSync(reason, trackIdx, playing), SYNC_ALLOWANCE_MS
 ```
 
 ## 远程过渡支持

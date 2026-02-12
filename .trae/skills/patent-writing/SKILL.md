@@ -1,6 +1,9 @@
 ---
 name: "patent-writing"
 description: "专利撰写专家技能，指导用户完成发明专利、实用新型专利的撰写。当用户要求专利撰写、专利申请、权利要求书撰写、专利说明书编写时调用此技能。"
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # 专利撰写专家技能

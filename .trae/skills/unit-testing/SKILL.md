@@ -10,8 +10,9 @@ description: |
   - "JUnit测试"
   - "Mock测试"
   - "Android测试覆盖率"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 单元测试开发专家

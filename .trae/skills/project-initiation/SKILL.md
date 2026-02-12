@@ -11,8 +11,9 @@ description: |
   - "Android项目评估"
   - "Android技术可行性"
   - "Android商业可行性"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 项目立项与可行性分析专家

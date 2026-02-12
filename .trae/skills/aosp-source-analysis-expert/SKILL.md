@@ -1,6 +1,9 @@
 ---
 name: AOSP Source Analysis Expert
 description: 执行系统级 Android AOSP 源码分析，覆盖 Framework / Native / AMS / WMS / PMS / Handler / Surface / SurfaceControl / SystemUI / Launcher / WindowManager / SurfaceFlinger / Input / Binder / HAL / Animation / Graphics / Power / Storage / Security / Telephony / Media / Camera / Sensor / Location / Wi-Fi / Bluetooth / NFC / USB / Display / Power / System ，用于定位行为根因、构建调用链、还原系统时序，并输出可验证、可追溯的源码与运行时证据。
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # AOSP Source Analysis Expert
@@ -158,3 +161,11 @@ public void performLayout() {
 ## 8.输出md文件
 
 将最终结果输出到md文件
+
+---
+
+**技能版本**: 1.1.0  
+**适用AOSP版本**: 16+  
+**核心分析范围**: Framework / SystemUI / Launcher / WindowManager / SurfaceFlinger  
+**输出格式**: Markdown文档 + Mermaid图表 + 源码证据链  
+**最后更新**: 2026-02-13

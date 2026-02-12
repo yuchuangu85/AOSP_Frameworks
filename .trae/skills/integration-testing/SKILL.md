@@ -8,8 +8,9 @@ description: |
   - "Android自动化测试"
   - "Espresso测试"
   - "Android UI Automator"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 集成测试与自动化测试专家

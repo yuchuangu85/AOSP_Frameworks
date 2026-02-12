@@ -199,30 +199,109 @@ sequenceDiagram
 
 ### 5.5 ViewRootImpl.dispatchInputEvent方法
 
-[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L7890-7920]
+[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L11072-11086]
 
 ```java
-void dispatchInputEvent(InputEvent event) {
-    // 将事件加入队列
-    enqueueInputEvent(event);
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+public void dispatchInputEvent(InputEvent event) {
+    dispatchInputEvent(event, null);
 }
 
-void enqueueInputEvent(InputEvent event) {
-    // 处理输入事件队列
-    if (mInputEventReceiver != null) {
-        mInputEventReceiver.onInputEvent(event);
-    }
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+public void dispatchInputEvent(InputEvent event, InputEventReceiver receiver) {
+    SomeArgs args = SomeArgs.obtain();
+    args.arg1 = event;
+    args.arg2 = receiver;
+    Message msg = mHandler.obtainMessage(MSG_DISPATCH_INPUT_EVENT, args);
+    msg.setAsynchronous(true);
+    mHandler.sendMessage(msg);
 }
 ```
 
-### 5.6 InputEventReceiver.onInputEvent方法
+### 5.6 ViewRootImpl.enqueueInputEvent方法
 
-[源码证据：frameworks/base/core/java/android/view/InputEventReceiver.java#L250-280]
+[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L10576-10618]
 
 ```java
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+public void enqueueInputEvent(InputEvent event) {
+    enqueueInputEvent(event, null, 0, false);
+}
+
+QueuedInputEvent enqueueInputEvent(InputEvent event,
+        InputEventReceiver receiver, int flags, boolean processImmediately) {
+    QueuedInputEvent q = obtainQueuedInputEvent(event, receiver, flags);
+
+    // Always enqueue the input event in order, regardless of its time stamp.
+    // We do this because the application or the IME may inject key events
+    // in response to touch events and we want to ensure that the injected keys
+    // are processed in the order they were received and we cannot trust that
+    // the time stamp of injected events are monotonic.
+    QueuedInputEvent last = mPendingInputEventTail;
+    if (last == null) {
+        mPendingInputEventHead = q;
+        mPendingInputEventTail = q;
+    } else {
+        last.mNext = q;
+        mPendingInputEventTail = q;
+    }
+    mPendingInputEventCount += 1;
+
+    if (processImmediately) {
+        doProcessInputEvents();
+    } else {
+        scheduleProcessInputEvents();
+    }
+    return q;
+}
+```
+
+### 5.7 InputEventReceiver.onInputEvent方法
+
+[源码证据：frameworks/base/core/java/android/view/InputEventReceiver.java#L147-149]
+
+```java
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
 public void onInputEvent(InputEvent event) {
-    // 处理输入事件
     finishInputEvent(event, false);
+}
+```
+
+### 5.8 InputEventReceiver.dispatchInputEvent方法（Native调用入口）
+
+[源码证据：frameworks/base/core/java/android/view/InputEventReceiver.java#L278-282]
+
+```java
+// Called from native code.
+@SuppressWarnings("unused")
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+private void dispatchInputEvent(int seq, InputEvent event) {
+    mSeqMap.put(event.getSequenceNumber(), seq);
+    onInputEvent(event);
+}
+```
+
+### 5.9 ViewRootImpl.doProcessInputEvents方法
+
+[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L10647-10670]
+
+```java
+void doProcessInputEvents() {
+    // Deliver all pending input events in the queue.
+    while (mPendingInputEventHead != null) {
+        QueuedInputEvent q = mPendingInputEventHead;
+        mPendingInputEventHead = q.mNext;
+        if (mPendingInputEventHead == null) {
+            mPendingInputEventTail = null;
+        }
+        q.mNext = null;
+
+        mPendingInputEventCount -= 1;
+
+        mViewFrameInfo.setInputEvent(mInputEventAssigner.processEvent(q.mEvent));
+
+        deliverInputEvent(q);
+    }
 }
 ```
 

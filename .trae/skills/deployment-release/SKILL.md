@@ -9,8 +9,9 @@ description: |
   - "Android签名"
   - "Android版本发布"
   - "Android应用上架"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 部署与发布专家

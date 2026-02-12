@@ -10,8 +10,9 @@ description: |
   - "Android类设计"
   - "Android UML"
   - "Android技术设计"
-version: 1.0.0
-author: Claude Code
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android 详细设计专家

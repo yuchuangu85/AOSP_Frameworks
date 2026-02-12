@@ -83,18 +83,30 @@ VSYNC-app和VSYNC-sf的计算涉及两个关键参数：
 
 当View需要刷新时（例如调用`invalidate()`或`requestLayout()`），通过ViewRootImpl发起刷新请求：
 
+[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L3085-3100]
+
 ```java
-// ViewRootImpl.java
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
 void scheduleTraversals() {
     if (!mTraversalScheduled) {
         mTraversalScheduled = true;
-        // 设置同步屏障，确保绘制操作优先执行
+        // The following behavior is load-bearing for public API correctness.
+        // For example, the following code is defined to be correct and the
+        // MessageQueue sync barrier mechanism and its usage here is
+        // responsible for ensuring it:
+        //
+        //   textView.setText("Hello, world!");
+        //   textView.getHandler().post(new Runnable() {
+        //     public void run() {
+        //       // This code will run after traversals have happened
+        //       // and the TextView has been measured with its new text.
+        //       reportNewTextWidth(textView.getWidth());
+        //     }
+        //   });
         mTraversalBarrier = mQueue.postSyncBarrier();
-        // 注册遍历回调
         mChoreographer.postCallback(
                 Choreographer.CALLBACK_TRAVERSAL, mTraversalRunnable, null);
         notifyRendererOfFramePending();
-        pokeDrawLockIfNeeded();
     }
 }
 ```
@@ -103,8 +115,17 @@ void scheduleTraversals() {
 
 Choreographer负责协调动画、输入和绘制的时序，通过postCallback方法将遍历回调安排到适当的时机执行：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L612-637]
+
 ```java
-private void postCallbackDelayedInternal(int callbackType, Object action, Object token, long delayMillis) {
+private void postCallbackDelayedInternal(int callbackType,
+        Object action, Object token, long delayMillis) {
+    if (DEBUG_FRAMES) {
+        Log.d(TAG, "PostCallback: type=" + callbackType
+                + ", action=" + action + ", token=" + token
+                + ", delayMillis=" + delayMillis);
+    }
+
     synchronized (mLock) {
         final long now = SystemClock.uptimeMillis();
         final long dueTime = now + delayMillis;
@@ -126,11 +147,20 @@ private void postCallbackDelayedInternal(int callbackType, Object action, Object
 
 Choreographer通过`scheduleFrameLocked`方法请求VSYNC信号：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L872-897]
+
 ```java
 private void scheduleFrameLocked(long now) {
     if (!mFrameScheduled) {
         mFrameScheduled = true;
         if (USE_VSYNC) {
+            if (DEBUG_FRAMES) {
+                Log.d(TAG, "Scheduling next frame on vsync.");
+            }
+
+            // If running on the Looper thread, then schedule the vsync immediately,
+            // otherwise post a message to schedule the vsync from the UI thread
+            // as soon as possible.
             if (isRunningOnLooperThreadLocked()) {
                 scheduleVsyncLocked();
             } else {
@@ -138,6 +168,15 @@ private void scheduleFrameLocked(long now) {
                 msg.setAsynchronous(true);
                 mHandler.sendMessageAtFrontOfQueue(msg);
             }
+        } else {
+            final long nextFrameTime = Math.max(
+                    mLastFrameTimeNanos / TimeUtils.NANOS_PER_MS + sFrameDelay, now);
+            if (DEBUG_FRAMES) {
+                Log.d(TAG, "Scheduling next frame in " + (nextFrameTime - now) + " ms.");
+            }
+            Message msg = mHandler.obtainMessage(MSG_DO_FRAME);
+            msg.setAsynchronous(true);
+            mHandler.sendMessageAtTime(msg, nextFrameTime);
         }
     }
 }
@@ -149,7 +188,10 @@ private void scheduleFrameLocked(long now) {
 
 Choreographer通过DisplayEventReceiver请求VSYNC信号：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L1270-1279]
+
 ```java
+@UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
 private void scheduleVsyncLocked() {
     try {
         Trace.traceBegin(Trace.TRACE_TAG_VIEW, "Choreographer#scheduleVsyncLocked");
@@ -158,7 +200,16 @@ private void scheduleVsyncLocked() {
         Trace.traceEnd(Trace.TRACE_TAG_VIEW);
     }
 }
+```
 
+[源码证据：frameworks/base/core/java/android/view/DisplayEventReceiver.java#L363-373]
+
+```java
+/**
+ * Schedules a single vertical sync pulse to be delivered when the next
+ * display frame begins.
+ */
+@UnsupportedAppUsage
 public void scheduleVsync() {
     if (mReceiverPtr == 0) {
         Log.w(TAG, "Attempted to schedule a vertical sync pulse but the display event "
@@ -172,6 +223,8 @@ public void scheduleVsync() {
 ### 5.2 Native层注册
 
 DisplayEventReceiver通过JNI调用Native层注册VSYNC监听：
+
+[源码证据：frameworks/base/core/jni/android_view_DisplayEventReceiver.cpp]
 
 ```cpp
 // Native层注册
@@ -193,24 +246,66 @@ static jlong nativeInit(JNIEnv* env, jobject clazz,
 
 EventThread是SurfaceFlinger中负责分发VSYNC信号的核心组件：
 
+[源码证据：native/services/surfaceflinger/Scheduler/EventThread.cpp#L532-590]
+
 ```cpp
-// EventThread.cpp
 void EventThread::threadMain(std::unique_lock<std::mutex>& lock) {
     DisplayEventConsumers consumers;
 
     while (mState != State::Quit) {
-        // 等待VSYNC事件或连接请求
-        waitForEvent();
-        
-        // 处理VSYNC事件
-        if (hasVsyncEvent()) {
-            dispatchVsyncEvent();
+        std::optional<DisplayEventReceiver::Event> event;
+
+        // Determine next event to dispatch.
+        if (!mPendingEvents.empty()) {
+            event = mPendingEvents.front();
+            mPendingEvents.pop_front();
+
+            if (event->header.type == DisplayEventType::DISPLAY_EVENT_HOTPLUG) {
+                if (event->hotplug.connectionError == 0) {
+                    if (event->hotplug.connected && !mVSyncState) {
+                        mVSyncState.emplace();
+                    } else if (!event->hotplug.connected &&
+                               mVsyncSchedule->getPhysicalDisplayId() == event->header.displayId) {
+                        mVSyncState.reset();
+                    }
+                }
+            }
         }
-        
-        // 处理连接请求
-        if (hasConnectionRequest()) {
-            handleConnectionRequest();
+
+        bool vsyncRequested = false;
+
+        // Find connections that should consume this event.
+        auto it = mDisplayEventConnections.begin();
+        while (it != mDisplayEventConnections.end()) {
+            if (const auto connection = it->promote()) {
+                if (event && shouldConsumeEvent(*event, connection)) {
+                    consumers.push_back(connection);
+                }
+
+                vsyncRequested |= connection->vsyncRequest != VSyncRequest::None;
+
+                ++it;
+            } else {
+                it = mDisplayEventConnections.erase(it);
+            }
         }
+
+        if (!consumers.empty()) {
+            dispatchEvent(*event, consumers);
+            consumers.clear();
+        }
+
+        if (mVSyncState && vsyncRequested) {
+            const bool vsyncOmitted =
+                    FlagManager::getInstance().no_vsyncs_on_screen_off() && mVSyncState->omitted;
+            if (vsyncOmitted) {
+                updateState(State::Idle);
+                SFTRACE_INT("VsyncPendingScreenOn", 1);
+            } else {
+                updateState(mVSyncState->synthetic ? State::SyntheticVSync : State::VSync);
+            }
+        }
+        // ...
     }
 }
 ```
@@ -219,14 +314,19 @@ void EventThread::threadMain(std::unique_lock<std::mutex>& lock) {
 
 EventThread管理应用的VSYNC连接和请求：
 
+[源码证据：native/services/surfaceflinger/Scheduler/EventThread.cpp#L261-265]
+
 ```cpp
-// EventThread.cpp
 binder::Status EventThreadConnection::requestNextVsync() {
     SFTRACE_CALL();
     mEventThread->requestNextVsync(sp<EventThreadConnection>::fromExisting(this));
     return binder::Status::ok();
 }
+```
 
+[源码证据：native/services/surfaceflinger/Scheduler/EventThread.cpp#L417-428]
+
+```cpp
 void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) {
     mCallback.resync(IEventThreadCallback::ResyncCaller::RequestNextVsync);
 
@@ -235,6 +335,8 @@ void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) 
     if (connection->vsyncRequest == VSyncRequest::None) {
         connection->vsyncRequest = VSyncRequest::Single;
         mCondition.notify_all();
+    } else if (connection->vsyncRequest == VSyncRequest::SingleSuppressCallback) {
+        connection->vsyncRequest = VSyncRequest::Single;
     }
 }
 ```
@@ -243,8 +345,9 @@ void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) 
 
 EventThread根据workDuration和readyDuration参数调度VSYNC信号：
 
+[源码证据：native/services/surfaceflinger/Scheduler/EventThread.cpp#L598-608]
+
 ```cpp
-// EventThread.cpp
 if (mState == State::VSync) {
     const auto scheduleResult = mVsyncRegistration.schedule(
             {.workDuration = mWorkDuration.get().count(),
@@ -252,6 +355,8 @@ if (mState == State::VSync) {
              .lastVsync = mLastVsyncCallbackTime.ns(),
              .committedVsyncOpt = mLastCommittedVsyncTime.ns()});
     LOG_ALWAYS_FATAL_IF(!scheduleResult, "Error scheduling callback");
+} else {
+    mVsyncRegistration.cancel();
 }
 ```
 
@@ -261,11 +366,11 @@ if (mState == State::VSync) {
 
 当VSYNC信号到达时，DisplayEventReceiver的`onVsync`方法被调用：
 
+[源码证据：frameworks/base/core/java/android/view/DisplayEventReceiver.java#L268-271]
+
 ```java
-public void onVsync(long timestampNanos, int builtInDisplayId, int frame, 
+public void onVsync(long timestampNanos, long physicalDisplayId, int frame,
         VsyncEventData vsyncEventData) {
-    // 处理VSYNC事件
-    mHandler.sendMessage(mHandler.obtainMessage(MSG_DISPLAY_EVENT, this));
 }
 ```
 
@@ -273,31 +378,71 @@ public void onVsync(long timestampNanos, int builtInDisplayId, int frame,
 
 Choreographer内部的FrameDisplayEventReceiver处理VSYNC回调：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L1552-1604]
+
 ```java
 private final class FrameDisplayEventReceiver extends DisplayEventReceiver
         implements Runnable {
     private boolean mHavePendingVsync;
     private long mTimestampNanos;
     private int mFrame;
+    private final VsyncEventData mLastVsyncEventData = new VsyncEventData();
 
+    FrameDisplayEventReceiver(Looper looper, int vsyncSource, long layerHandle) {
+        super(looper, vsyncSource, /* eventRegistration */ 0, layerHandle);
+    }
+
+    // TODO(b/116025192): physicalDisplayId is ignored because SF only emits VSYNC events for
+    // the internal display and DisplayEventReceiver#scheduleVsync only allows requesting VSYNC
+    // for the internal display implicitly.
     @Override
     public void onVsync(long timestampNanos, long physicalDisplayId, int frame,
             VsyncEventData vsyncEventData) {
-        // 保存时间戳和帧号
-        mTimestampNanos = timestampNanos;
-        mFrame = frame;
-        mVsyncEventData.copyFrom(vsyncEventData);
-        
-        // 将自身作为Runnable发布到消息队列
-        Message msg = Message.obtain(mHandler, this);
-        msg.setAsynchronous(true);
-        mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);
+        try {
+            if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {
+                Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+                        "Choreographer#onVsync "
+                                + vsyncEventData.preferredFrameTimeline().vsyncId);
+            }
+            // Post the vsync event to the Handler.
+            // The idea is to prevent incoming vsync events from completely starving
+            // the message queue.  If there are no messages in the queue with timestamps
+            // earlier than the frame time, then the vsync event will be processed immediately.
+            // Otherwise, messages that predate the vsync event will be handled first.
+            long now = System.nanoTime();
+            if (timestampNanos > now) {
+                if (DEBUG_JANK) {
+                    Log.w(TAG, "Frame time is " + ((timestampNanos - now) * 0.000001f)
+                            + " ms in the future!  Check that graphics HAL is generating vsync "
+                            + "timestamps using the correct timebase.");
+                }
+                timestampNanos = now;
+            }
+
+            if (mHavePendingVsync) {
+                if (DEBUG_JANK) {
+                    Log.w(TAG, "Already have a pending vsync event.  There should only be "
+                            + "one at a time.");
+                }
+            } else {
+                mHavePendingVsync = true;
+            }
+
+            mTimestampNanos = timestampNanos;
+            mFrame = frame;
+            mLastVsyncEventData.copyFrom(vsyncEventData);
+            Message msg = Message.obtain(mHandler, this);
+            msg.setAsynchronous(true);
+            mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
     }
 
     @Override
     public void run() {
         mHavePendingVsync = false;
-        doFrame(mTimestampNanos, mFrame, mVsyncEventData);
+        doFrame(mTimestampNanos, mFrame, mLastVsyncEventData);
     }
 }
 ```
@@ -306,24 +451,34 @@ private final class FrameDisplayEventReceiver extends DisplayEventReceiver
 
 Choreographer的`doFrame`方法处理VSYNC信号并执行各种回调：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L1021-1095]
+
 ```java
-void doFrame(long frameTimeNanos, int frame, DisplayEventReceiver.VsyncEventData vsyncEventData) {
+void doFrame(long frameTimeNanos, int frame,
+        DisplayEventReceiver.VsyncEventData vsyncEventData) {
     final long startNanos;
     final long frameIntervalNanos = vsyncEventData.frameInterval;
-    // 原始的VSYNC时间，未经过抖动或缓冲区填充恢复调整
+    // Original intended vsync time that is not adjusted by jitter
+    // or buffer stuffing recovery. Reported for jank tracking.
     final long intendedFrameTimeNanos = frameTimeNanos;
     long offsetFrameTimeNanos = frameTimeNanos;
     boolean resynced = false;
 
-    // 评估缓冲区填充恢复是否需要开始或结束
+    // Evaluate if buffer stuffing recovery needs to start or end, and
+    // what actions need to be taken for recovery.
     if (bufferStuffingRecovery()) {
         switch (updateBufferStuffingState(frameTimeNanos, vsyncEventData)) {
+            case NONE:
+                // Without buffer stuffing recovery, offsetFrameTimeNanos is
+                // synonymous with frameTimeNanos.
+                break;
             case OFFSET:
-                // 添加动画偏移量
+                // Add animation offset. Used to update frame timeline with
+                // offset before jitter is calculated.
                 offsetFrameTimeNanos = frameTimeNanos - frameIntervalNanos;
                 break;
             case DELAY_FRAME:
-                // 故意延迟帧以帮助减少排队的缓冲区数量
+                // Intentional frame delay to help reduce queued buffer count.
                 mBufferStuffingState.numberWaitsForNextVsync++;
                 scheduleVsyncLocked();
                 return;
@@ -332,17 +487,42 @@ void doFrame(long frameTimeNanos, int frame, DisplayEventReceiver.VsyncEventData
         }
     }
 
-    // 更新帧数据和时间线
-    FrameTimeline timeline = mFrameData.update(offsetFrameTimeNanos, vsyncEventData);
-
-    synchronized (mLock) {
-        if (!mFrameScheduled) {
-            return; // 没有工作要做
+    try {
+        FrameTimeline timeline = mFrameData.update(offsetFrameTimeNanos, vsyncEventData);
+        if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_VIEW, "Choreographer#doFrame " + timeline.mVsyncId);
+            mInDoFrameCallback = true;
         }
-        mLastNoOffsetFrameTimeNanos = frameTimeNanos;
-        mFrameScheduled = false;
-    }
+        synchronized (mLock) {
+            if (!mFrameScheduled) {
+                traceMessage("Frame not scheduled");
+                return; // no work to do
+            }
+            mLastNoOffsetFrameTimeNanos = frameTimeNanos;
 
+            startNanos = System.nanoTime();
+            // Calculating jitter involves using the original frame time without
+            // adjustments from buffer stuffing
+            final long jitterNanos = startNanos - frameTimeNanos;
+            if (jitterNanos >= frameIntervalNanos) {
+                frameTimeNanos = startNanos;
+                if (frameIntervalNanos == 0) {
+                    Log.i(TAG, "Vsync data empty due to timeout");
+                } else {
+                    long lastFrameOffset = jitterNanos % frameIntervalNanos;
+                    frameTimeNanos = frameTimeNanos - lastFrameOffset;
+                    final long skippedFrames = jitterNanos / frameIntervalNanos;
+                    if (skippedFrames >= SKIPPED_FRAME_WARNING_LIMIT) {
+                        Log.i(TAG, "Skipped " + skippedFrames + " frames!  "
+                                + "The application may be doing too much work on its main "
+                                + "thread.");
+                    }
+                }
+            }
+        }
+        // ...
+    }
     // 执行回调队列
     doCallbacks(Choreographer.CALLBACK_INPUT, frameTimeNanos, vsyncEventData);
     doCallbacks(Choreographer.CALLBACK_ANIMATION, frameTimeNanos, vsyncEventData);
@@ -356,21 +536,14 @@ void doFrame(long frameTimeNanos, int frame, DisplayEventReceiver.VsyncEventData
 
 在`CALLBACK_TRAVERSAL`回调中，ViewRootImpl的`doTraversal()`方法被调用：
 
+[源码证据：frameworks/base/core/java/android/view/ViewRootImpl.java#L3123-3129]
+
 ```java
 void doTraversal() {
     if (mTraversalScheduled) {
         mTraversalScheduled = false;
-        mHandler.getLooper().getQueue().removeSyncBarrier(mTraversalBarrier);
-
-        if (mProfile) {
-            Debug.startMethodTracing("ViewRootImpl");
-        }
-
+        mQueue.removeSyncBarrier(mTraversalBarrier);
         performTraversals();
-
-        if (mProfile) {
-            Debug.stopMethodTracing();
-        }
     }
 }
 ```
@@ -409,16 +582,25 @@ sequenceDiagram
 
 Choreographer会检测帧跳过情况并发出警告：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L1080-1095]
+
 ```java
-void doFrame(long frameTimeNanos, int frame, VsyncEventData vsyncEventData) {
-    final long jitterNanos = startNanos - frameTimeNanos;
-    
-    if (jitterNanos >= mFrameIntervalNanos) {
-        // 跳过帧，因为已经错过了VSYNC
-        final long skippedFrames = jitterNanos / mFrameIntervalNanos;
+startNanos = System.nanoTime();
+// Calculating jitter involves using the original frame time without
+// adjustments from buffer stuffing
+final long jitterNanos = startNanos - frameTimeNanos;
+if (jitterNanos >= frameIntervalNanos) {
+    frameTimeNanos = startNanos;
+    if (frameIntervalNanos == 0) {
+        Log.i(TAG, "Vsync data empty due to timeout");
+    } else {
+        long lastFrameOffset = jitterNanos % frameIntervalNanos;
+        frameTimeNanos = frameTimeNanos - lastFrameOffset;
+        final long skippedFrames = jitterNanos / frameIntervalNanos;
         if (skippedFrames >= SKIPPED_FRAME_WARNING_LIMIT) {
-            Log.i(TAG, "Skipped " + skippedFrames + " frames! " +
-                    "The application may be doing too much work on its main thread.");
+            Log.i(TAG, "Skipped " + skippedFrames + " frames!  "
+                    + "The application may be doing too much work on its main "
+                    + "thread.");
         }
     }
 }
@@ -428,15 +610,24 @@ void doFrame(long frameTimeNanos, int frame, VsyncEventData vsyncEventData) {
 
 系统通过缓冲区填充恢复机制处理帧堆积问题：
 
+[源码证据：frameworks/base/core/java/android/view/Choreographer.java#L1058-1075]
+
 ```java
+// Evaluate if buffer stuffing recovery needs to start or end, and
+// what actions need to be taken for recovery.
 if (bufferStuffingRecovery()) {
     switch (updateBufferStuffingState(frameTimeNanos, vsyncEventData)) {
+        case NONE:
+            // Without buffer stuffing recovery, offsetFrameTimeNanos is
+            // synonymous with frameTimeNanos.
+            break;
         case OFFSET:
-            // 添加动画偏移量
+            // Add animation offset. Used to update frame timeline with
+            // offset before jitter is calculated.
             offsetFrameTimeNanos = frameTimeNanos - frameIntervalNanos;
             break;
         case DELAY_FRAME:
-            // 故意延迟帧以帮助减少排队的缓冲区数量
+            // Intentional frame delay to help reduce queued buffer count.
             mBufferStuffingState.numberWaitsForNextVsync++;
             scheduleVsyncLocked();
             return;

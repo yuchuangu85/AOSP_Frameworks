@@ -1,6 +1,9 @@
 ---
 name: Android应用需求文档
 description: 生成Android应用开发的需求文档，覆盖功能需求、技术架构、UI设计、性能指标、测试策略等，提供从需求分析到测试验证的全链路指导方案。
+version: 1.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Android应用需求文档
@@ -473,7 +476,8 @@ fun testAppStartupPerformance() {
 
 ---
 
-**技能版本**: 1.0  
+**技能版本**: 1.1.0  
 **适用场景**: Android应用开发需求分析  
 **输出格式**: Markdown文档 + Mermaid图表  
-**协作工具**: Git + Markdown编辑器 + 图表工具
+**协作工具**: Git + Markdown编辑器 + 图表工具  
+**最后更新**: 2026-02-13

@@ -1,6 +1,9 @@
 ---
 name: Launcher Animation分析
 description: 执行Launcher动画相关源码分析，覆盖手势动画、远程动画、图标动画、任务切换动画等场景，用于定位动画异常、构建调用链、还原动画时序，并输出可验证的源码证据。
+version: 2.1.0
+author: AOSP Frameworks Team
+last_updated: 2026-02-13
 ---
 
 # Launcher Animation分析
@@ -174,8 +177,9 @@ Launcher请求远程动画 → IRecentsAnimation.startRecentsActivity() →
 
 ---
 
-**技能版本**: 2.0  
-**适用AOSP版本**: 14+  
+**技能版本**: 2.1.0  
+**适用AOSP版本**: 16+  
 **核心分析范围**: Launcher / SystemUI / WindowManager / SurfaceFlinger  
 **新增重点对象**: AnimatorPlaybackController / PendingAnimation / GestureStateTracker  
-**输出格式**: Markdown文档 + Mermaid图表 + 源码证据链
+**输出格式**: Markdown文档 + Mermaid图表 + 源码证据链  
+**最后更新**: 2026-02-13
