@@ -1,0 +1,12 @@
+schema_version: 1
+project:
+  id: "aosp_frameworks"
+  name: "AOSP_Frameworks"
+repository:
+  type: git
+knowledge:
+  root: .knowledge
+revision:
+  strategy: git
+  channel: auto
+  snapshot: commit
