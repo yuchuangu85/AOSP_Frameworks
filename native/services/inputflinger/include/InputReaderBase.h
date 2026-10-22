@@ -20,6 +20,8 @@
 #include <input/DisplayViewport.h>
 #include <input/Input.h>
 #include <input/InputDevice.h>
+#include <input/KeyCode.h>
+#include <input/MotionEventAxis.h>
 #include <input/VelocityControl.h>
 #include <input/VelocityTracker.h>
 #include <stddef.h>
@@ -28,6 +30,7 @@
 #include <utils/Errors.h>
 #include <utils/RefBase.h>
 
+#include <map>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -43,6 +46,13 @@
 #define MAX_VIBRATE_PATTERN_SIZE 100
 
 namespace android {
+
+// Represents the overrides to the .idc properties for an input device. Typically, this is used for
+// virtual input devices which do not have any physical .idc file.
+struct InputDeviceConfigurationOverride {
+    std::optional<std::string> deviceType;
+    std::optional<InputDeviceViewBehavior> viewBehavior;
+};
 
 // --- InputReaderConfiguration ---
 
@@ -81,8 +91,8 @@ struct InputReaderConfiguration {
         // The set of disabled input devices (disabledDevices) has changed.
         ENABLED_STATE = 1u << 9,
 
-        // The device type has been updated.
-        DEVICE_TYPE = 1u << 10,
+        // The overrides for the .idc properties of the device have been updated.
+        DEVICE_CONFIGURATION_OVERRIDES = 1u << 10,
 
         // The keyboard layout association has changed.
         KEYBOARD_LAYOUT_ASSOCIATION = 1u << 11,
@@ -102,6 +112,9 @@ struct InputReaderConfiguration {
 
         // The virtual devices list is updated
         VIRTUAL_DEVICES = 1u << 16,
+
+        // The axis remapping has changed.
+        AXIS_REMAPPING = 1u << 17,
 
         // All devices must be reopened.
         MUST_REOPEN = 1u << 31,
@@ -128,9 +141,11 @@ struct InputReaderConfiguration {
     // Used to determine which DisplayViewport should be tied to which InputDevice.
     std::unordered_map<std::string, std::string> inputDeviceDescriptorToDisplayUniqueIdAssociations;
 
-    // The associations between input device ports device types.
-    // This is used to determine which device type and source should be tied to which InputDevice.
-    std::unordered_map<std::string, std::string> deviceTypeAssociations;
+    // The associations between input device ports to overrides on .idc properties. Typically, these
+    // are used for virtual input devices which do not have any physical .idc file. If an input
+    // device has an actual physical .idc file, then this override would be ignored for that input
+    // device.
+    std::unordered_map<std::string, InputDeviceConfigurationOverride> deviceConfigurationOverrides;
 
     // The map from the input device physical port location to the input device layout info.
     // Can be used to determine the layout of the keyboard device.
@@ -211,7 +226,21 @@ struct InputReaderConfiguration {
     bool stylusPointerIconEnabled;
 
     // Keycodes to be remapped.
-    std::map<int32_t /* fromKeyCode */, int32_t /* toKeyCode */> keyRemapping;
+    std::unordered_map<int32_t /* fromKeyCode */, int32_t /* toKeyCode */> keyRemapping;
+
+    // Keycodes to be remapped for device.
+    std::unordered_map<DeviceId,
+                       std::unordered_map<int32_t /* fromKeyCode */, int32_t /* toKeyCode */>>
+            keyRemappingPerDevice;
+
+    // Keycodes to axes remapping per device.
+    std::map<DeviceId, std::map<KeyCode, MotionEventAxis>> keyToAxisRemappingPerDevice;
+
+    // Per-device axis remapping: Only applied for joystick devices
+    std::unordered_map<
+            int32_t,
+            std::unordered_map</* fromAndroidAxisId */ int32_t, /* toAndroidAxisId */ int32_t>>
+            axisRemappingPerDevice;
 
     // True if the external mouse should have its vertical scrolling reversed, so that rotating the
     // wheel downwards scrolls the content upwards.

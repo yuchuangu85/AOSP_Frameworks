@@ -1,0 +1,10 @@
+{
+  "presubmit": [
+    {
+      "name": "FrameworksMockingServicesTests_supervision"
+    },
+    {
+      "name": "CtsSupervisionTestCases"
+    }
+  ]
+}

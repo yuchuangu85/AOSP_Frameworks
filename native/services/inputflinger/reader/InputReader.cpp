@@ -25,6 +25,7 @@
 #include <input/Keyboard.h>
 #include <input/VirtualKeyMap.h>
 #include <inttypes.h>
+#include <jni.h>
 #include <limits.h>
 #include <log/log.h>
 #include <math.h>
@@ -32,7 +33,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <utils/Errors.h>
-#include <utils/Thread.h>
 #include <string>
 
 #include "InputDevice.h"
@@ -125,10 +125,10 @@ std::optional<DeviceId> getDeviceIdOfNewGesture(const NotifyArgs& args) {
 
 InputReader::InputReader(std::shared_ptr<EventHubInterface> eventHub,
                          const sp<InputReaderPolicyInterface>& policy,
-                         InputListenerInterface& listener, JNIEnv* env,
+                         InputListenerInterface& listener, JavaVM* vm,
                          std::shared_ptr<input_trace::InputTracingBackendInterface> tracingBackend)
       : mContext(this),
-        mJniEnv(env),
+        mVm(vm),
         mEventHub(eventHub),
         mPolicy(policy),
         mNextListener(listener),
@@ -156,7 +156,7 @@ status_t InputReader::start() {
     }
     mThread = std::make_unique<InputThread>(
             "InputReader", [this]() { loopOnce(); }, [this]() { mEventHub->wake(); },
-            /*isInCriticalPath=*/true, mJniEnv);
+            /*isInCriticalPath=*/true, mVm);
     return OK;
 }
 
@@ -964,9 +964,6 @@ void InputReader::notifyMouseCursorFadedOnTyping() {
 
 bool InputReader::setKernelWakeEnabled(DeviceId deviceId, bool enabled) {
     std::scoped_lock _l(mLock);
-    if (!com::android::input::flags::set_input_device_kernel_wake()){
-        return false;
-    }
     InputDevice* device = findInputDeviceLocked(deviceId);
     if (device) {
         return device->setKernelWakeEnabled(enabled);

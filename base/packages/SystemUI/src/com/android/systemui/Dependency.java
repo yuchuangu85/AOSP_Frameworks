@@ -42,7 +42,9 @@ import com.android.systemui.plugins.PluginManager;
 import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.settings.UserTracker;
+import com.android.systemui.shared.plugins.PackageConfig;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController;
 import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
 import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
 import com.android.systemui.statusbar.notification.stack.AmbientState;
@@ -120,6 +122,7 @@ public class Dependency {
     @Inject Lazy<KeyguardUpdateMonitor> mKeyguardUpdateMonitor;
     @Inject Lazy<DeviceProvisionedController> mDeviceProvisionedController;
     @Inject Lazy<PluginManager> mPluginManager;
+    @Inject Lazy<PackageConfig> mPluginPackageConfig;
     @Inject Lazy<AssistManager> mAssistManager;
     @Inject Lazy<TunerService> mTunerService;
     @Inject Lazy<DarkIconDispatcher> mDarkIconDispatcher;
@@ -150,6 +153,7 @@ public class Dependency {
     @Inject Lazy<UserTracker> mUserTrackerLazy;
     @Inject Lazy<StatusBarWindowControllerStore> mStatusBarWindowControllerStoreLazy;
     @Inject Lazy<SysUIStateDisplaysInteractor> mSysUIStateDisplaysInteractor;
+    @Inject Lazy<LockscreenSmartspaceController> mLockscreenSmartspaceControllerLazy;
 
     @Inject
     public Dependency() {
@@ -168,6 +172,7 @@ public class Dependency {
         mProviders.put(KeyguardUpdateMonitor.class, mKeyguardUpdateMonitor::get);
         mProviders.put(DeviceProvisionedController.class, mDeviceProvisionedController::get);
         mProviders.put(PluginManager.class, mPluginManager::get);
+        mProviders.put(PackageConfig.class, mPluginPackageConfig::get);
         mProviders.put(AssistManager.class, mAssistManager::get);
         mProviders.put(TunerService.class, mTunerService::get);
         mProviders.put(DarkIconDispatcher.class, mDarkIconDispatcher::get);
@@ -196,6 +201,8 @@ public class Dependency {
         mProviders.put(SysUIStateDisplaysInteractor.class, mSysUIStateDisplaysInteractor::get);
         mProviders.put(
                 StatusBarWindowControllerStore.class, mStatusBarWindowControllerStoreLazy::get);
+        mProviders.put(LockscreenSmartspaceController.class,
+                mLockscreenSmartspaceControllerLazy::get);
 
         Dependency.setInstance(this);
     }

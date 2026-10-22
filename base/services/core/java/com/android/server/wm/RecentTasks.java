@@ -66,6 +66,7 @@ import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.os.Environment;
 import android.os.IBinder;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -82,8 +83,8 @@ import android.view.WindowManagerPolicyConstants.PointerEventListener;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.protolog.ProtoLog;
-import com.android.internal.util.function.pooled.PooledLambda;
 import com.android.server.am.ActivityManagerService;
+import com.android.server.wm.utils.OptPropFactory;
 
 import com.google.android.collect.Sets;
 
@@ -150,8 +151,16 @@ class RecentTasks {
 
         /**
          * Called when a task is removed from the recent tasks list.
+         *
+         * @param task The task that was removed.
+         * @param wasTrimmed True if the task was removed due to trimming the recents list.
+         * @param killProcess True if the process associated with the task should be killed.
+         * @param replacingTask The task that is being added to recents, which caused this task to
+         *                      be removed, or {@code null} if the removal was not due to adding
+         *                      another task.
          */
-        void onRecentTaskRemoved(Task task, boolean wasTrimmed, boolean killProcess);
+        void onRecentTaskRemoved(Task task, boolean wasTrimmed, boolean killProcess,
+                @Nullable Task replacingTask);
     }
 
     /**
@@ -169,6 +178,9 @@ class RecentTasks {
     private ComponentName mRecentsComponent = null;
     @Nullable
     private String mFeatureId;
+
+    @OptPropFactory.OptionalValue
+    private int mIsHomeRecents = OptPropFactory.VALUE_UNSET;
 
     /**
      * Mapping of user id -> whether recent tasks have been loaded for that user.
@@ -228,7 +240,7 @@ class RecentTasks {
             int displayId = ev.getDisplayId();
             int x = (int) ev.getX();
             int y = (int) ev.getY();
-            mService.mH.post(PooledLambda.obtainRunnable((nonArg) -> {
+            mService.mH.post(() -> {
                 synchronized (mService.mGlobalLock) {
                     final RootWindowContainer rac = mService.mRootWindowContainer;
                     final DisplayContent dc = rac.getDisplayContent(displayId).mDisplayContent;
@@ -258,7 +270,7 @@ class RecentTasks {
                         resetFreezeTaskListReordering(topTask);
                     }
                 }
-            }, null).recycleOnUse());
+            });
         }
     };
 
@@ -333,7 +345,7 @@ class RecentTasks {
     }
 
     /**
-     * Commits the frozen recent task list order, moving the provided {@param topTask} to the
+     * Commits the frozen recent task list order, moving the provided {@code topTask} to the
      * front of the list.
      */
     void resetFreezeTaskListReordering(Task topTask) {
@@ -435,7 +447,7 @@ class RecentTasks {
      * @return whether the current caller has the same uid as the recents component.
      */
     boolean isCallerRecents(int callingUid) {
-        return UserHandle.isSameApp(callingUid, mRecentsUid);
+        return isSameApp(callingUid, mRecentsUid);
     }
 
     /**
@@ -443,17 +455,45 @@ class RecentTasks {
      * recents component.
      */
     boolean isRecentsComponent(ComponentName cn, int uid) {
-        return UserHandle.isSameApp(uid, mRecentsUid) && cn.equals(mRecentsComponent);
+        return isSameApp(uid, mRecentsUid) && cn.equals(mRecentsComponent);
+    }
+
+    private boolean isSameApp(int uid1, int uid2) {
+        if (uid1 == uid2) {
+            return true;
+        }
+        final PackageManager pm = mService.mContext.getPackageManager();
+        final int mappedUid1 = pm.getAppUidForPrivateComputeCoreUid(uid1);
+        final int mappedUid2 = pm.getAppUidForPrivateComputeCoreUid(uid2);
+        return UserHandle.isSameApp(
+                mappedUid1 != Process.INVALID_UID ? mappedUid1 : uid1,
+                mappedUid2 != Process.INVALID_UID ? mappedUid2 : uid2);
     }
 
     /**
+     * This is only used to dump debugging information. It may not be 100% accurate with the cached
+     * value, but it should be enough for testing purposes.
+     *
      * @return whether the home app is also the active handler of recent tasks.
      */
-    boolean isRecentsComponentHomeActivity(int userId) {
+    boolean isRecentsComponentHomeActivity() {
+        if (mIsHomeRecents == OptPropFactory.VALUE_TRUE) {
+            return true;
+        }
+        if (mIsHomeRecents == OptPropFactory.VALUE_FALSE) {
+            return false;
+        }
         final ComponentName defaultHomeActivity = mService.getPackageManagerInternalLocked()
-                .getDefaultHomeActivity(userId);
-        return defaultHomeActivity != null && mRecentsComponent != null &&
-                defaultHomeActivity.getPackageName().equals(mRecentsComponent.getPackageName());
+                .getDefaultHomeActivity(mService.mRootWindowContainer.mCurrentUser);
+        final boolean isHomeRecents = defaultHomeActivity != null && mRecentsComponent != null
+                && defaultHomeActivity.getPackageName().equals(mRecentsComponent.getPackageName());
+        mIsHomeRecents = isHomeRecents ? OptPropFactory.VALUE_TRUE : OptPropFactory.VALUE_FALSE;
+        return isHomeRecents;
+    }
+
+    /** Called when default home package may be changed. */
+    void invalidateIsHomeRecents() {
+        mIsHomeRecents = OptPropFactory.VALUE_UNSET;
     }
 
     /**
@@ -493,18 +533,26 @@ class RecentTasks {
         mTaskNotificationController.notifyTaskListUpdated();
     }
 
+    /**
+     * @param task The task that was removed.
+     * @param wasTrimmed True if the task was removed due to trimming the recents list.
+     * @param killProcess True if the process associated with the task should be killed.
+     * @param replacingTask The task that is being added to recents, which caused this task to
+     *                      be removed, or {@code null} if the removal was not due to adding
+     *                      another task.
+     */
     private void notifyTaskRemoved(Task task, boolean wasTrimmed, boolean killProcess,
-            boolean removedForAddTask) {
+            @Nullable Task replacingTask) {
         for (int i = 0; i < mCallbacks.size(); i++) {
-            mCallbacks.get(i).onRecentTaskRemoved(task, wasTrimmed, killProcess);
+            mCallbacks.get(i).onRecentTaskRemoved(task, wasTrimmed, killProcess, replacingTask);
         }
         mTaskNotificationController.notifyTaskListUpdated();
-        if (removedForAddTask) {
+        if (replacingTask != null) {
             mTaskNotificationController.notifyRecentTaskRemovedForAddTask(task.mTaskId);
         }
     }
     private void notifyTaskRemoved(Task task, boolean wasTrimmed, boolean killProcess) {
-        notifyTaskRemoved(task, wasTrimmed, killProcess, false /* removedForAddTask */);
+        notifyTaskRemoved(task, wasTrimmed, killProcess, null /* replacingTask */);
     }
 
     /**
@@ -584,7 +632,7 @@ class RecentTasks {
     }
 
     /**
-     * @return whether the {@param taskId} is currently in use for the given user.
+     * @return whether the {@code taskId} is currently in use for the given user.
      */
     boolean containsTaskId(int taskId, int userId) {
         final SparseBooleanArray taskIds = mPersistedTaskIds.get(userId);
@@ -738,6 +786,35 @@ class RecentTasks {
                     mSupervisor.removeTask(task, false, REMOVE_FROM_RECENTS, "suspended-package");
                 }
                 notifyTaskPersisterLocked(task, false);
+            }
+        }
+    }
+
+    /**
+     * Called when the App Lock enabled state changes for a package.
+     *
+     * <p>Updates the App Lock enabled state for relevant tasks and persists the change.
+     *
+     * @param packageName the package name whose App Lock state changed.
+     * @param userId      the user ID for whom the App Lock state changed.
+     * @param enabled     {@code true} if App Lock is enabled, {@code false} otherwise.
+     */
+    void onPackageAppLockEnabledChanged(String packageName, int userId, boolean enabled) {
+        if (!android.security.Flags.appLockCore()) {
+            return;
+        }
+        synchronized (mService.mGlobalLock) {
+            ProtoLog.d(WM_DEBUG_TASKS, "onPackageAppLockEnabledChanged: package=%s, userId=%d,"
+                    + " enabled=%b", packageName, userId, enabled);
+            for (int i = mTasks.size() - 1; i >= 0; --i) {
+                final Task task = mTasks.get(i);
+                if (task.realActivity != null
+                        && task.realActivity.getPackageName().equals(packageName)
+                        && task.mUserId == userId
+                        && task.mRealActivityAppLockEnabled != enabled) {
+                    task.mRealActivityAppLockEnabled = enabled;
+                    notifyTaskPersisterLocked(task, /* flush= */ false);
+                }
             }
         }
     }
@@ -912,7 +989,7 @@ class RecentTasks {
     }
 
     /**
-     * @return whether the given {@param task} can be added to the list without causing another
+     * @return whether the given {@code task} can be added to the list without causing another
      * task to be trimmed as a result of that add.
      */
     private boolean canAddTaskWithoutTrim(Task task) {
@@ -988,7 +1065,7 @@ class RecentTasks {
 
             if (isVisibleRecentTask(task)) {
                 numVisibleTasks++;
-                if (isInVisibleRange(task, i, numVisibleTasks, withExcluded)) {
+                if (isInVisibleRange(task, numVisibleTasks, withExcluded)) {
                     // Fall through
                 } else {
                     // Not in visible range
@@ -1093,7 +1170,7 @@ class RecentTasks {
             final Task task = mTasks.get(i);
             if (isVisibleRecentTask(task)) {
                 numVisibleTasks++;
-                if (isInVisibleRange(task, i, numVisibleTasks, false /* skipExcludedCheck */)) {
+                if (isInVisibleRange(task, numVisibleTasks, false /* skipExcludedCheck */)) {
                     res.put(task.mTaskId, true);
                 }
             }
@@ -1102,7 +1179,7 @@ class RecentTasks {
     }
 
     /**
-     * @return the task in the task list with the given {@param id} if one exists.
+     * @return the task in the task list with the given {@code id} if one exists.
      */
     Task getTask(int id) {
         final int recentsCount = mTasks.size();
@@ -1343,16 +1420,19 @@ class RecentTasks {
             return;
         }
 
-        int recentsCount = mTasks.size();
-
         // Remove from the end of the list until we reach the max number of recents
-        while (recentsCount > mGlobalMaxNumTasks) {
-            final Task task = mTasks.remove(recentsCount - 1);
-            notifyTaskRemoved(task, true /* wasTrimmed */, false /* killProcess */);
-            recentsCount--;
-            if (DEBUG_RECENTS_TRIM_TASKS) {
-                Slog.d(TAG, "Trimming over max-recents task=" + task
-                        + " max=" + mGlobalMaxNumTasks);
+        for (int i = mTasks.size() - 1; i >= 0; i--) {
+            if (mTasks.size() <= mGlobalMaxNumTasks) {
+                break;
+            }
+            Task task = mTasks.get(i);
+            if (isTrimmable(task)) {
+                mTasks.remove(i);
+                notifyTaskRemoved(task, true /* wasTrimmed */, false /* killProcess */);
+                if (DEBUG_RECENTS_TRIM_TASKS) {
+                    Slog.d(TAG, "Trimming over max-recents task=" + task
+                            + " max=" + mGlobalMaxNumTasks);
+                }
             }
         }
 
@@ -1388,7 +1468,7 @@ class RecentTasks {
                     continue;
                 } else {
                     numVisibleTasks++;
-                    if (isInVisibleRange(task, i, numVisibleTasks, false /* skipExcludedCheck */)
+                    if (isInVisibleRange(task, numVisibleTasks, false /* skipExcludedCheck */)
                             || !isTrimmable(task)) {
                         // Keep visible tasks in range
                         i++;
@@ -1515,10 +1595,9 @@ class RecentTasks {
     /**
      * @return whether the given visible task is within the policy range.
      */
-    private boolean isInVisibleRange(Task task, int taskIndex, int numVisibleTasks,
-            boolean skipExcludedCheck) {
+    private boolean isInVisibleRange(Task task, int numVisibleTasks, boolean skipExcludedCheck) {
         if (!skipExcludedCheck) {
-            // Keep the most recent task of home display even if it is excluded from recents.
+            // Keep the top visible task even if it is excluded from recents.
             final boolean isExcludeFromRecents = task.getBaseIntent() != null
                     && (task.getBaseIntent().getFlags() & FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
                     == FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS;
@@ -1526,14 +1605,9 @@ class RecentTasks {
                 if (DEBUG_RECENTS_TRIM_TASKS) {
                     Slog.d(TAG,
                             "\texcludeFromRecents=true,"
-                                + " taskIndex: " + taskIndex
-                                + " getTopVisibleActivity: " + task.getTopVisibleActivity()
-                                + " isOnHomeDisplay: " + task.isOnHomeDisplay());
+                                + " getTopVisibleActivity: " + task.getTopVisibleActivity());
                 }
-                // The Recents is only supported on default display now, we should only keep the
-                // most recent task of home display.
-                boolean isMostRecentTask = task.getTopVisibleActivity() != null;
-                return (task.isOnHomeDisplay() && isMostRecentTask);
+                return task.getTopVisibleActivity() != null;
             }
         }
 
@@ -1629,7 +1703,7 @@ class RecentTasks {
             return removeIndex;
         }
 
-        // There is a similar task that will be removed for the addition of {@param task}, but it
+        // There is a similar task that will be removed for the addition of {@code task}, but it
         // can be the same task, and if so, the task will be re-added in add(), so skip the
         // callbacks here.
         final Task removedTask = mTasks.remove(removeIndex);
@@ -1642,7 +1716,7 @@ class RecentTasks {
                 mHiddenTasks.add(0, removedTask);
             }
             notifyTaskRemoved(removedTask, false /* wasTrimmed */, false /* killProcess */,
-                    true /* removedForAddTask */);
+                    task /* replacingTask */);
             if (DEBUG_RECENTS_TRIM_TASKS) {
                 Slog.d(TAG, "Trimming task=" + removedTask
                         + " for addition of task=" + task);
@@ -1653,7 +1727,7 @@ class RecentTasks {
     }
 
     /**
-     * Find the task that would be removed if the given {@param task} is added to the recent tasks
+     * Find the task that would be removed if the given {@code task} is added to the recent tasks
      * list (if any).
      */
     private int findRemoveIndexForAddTask(Task task) {
