@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="基于 Android 16 当前源码的 View、Choreographer、RenderThread、BLAST、SurfaceFlinger、HWC 与屏幕显示交互动画。">
+<title>一帧的旅程 · Android Rendering Lab</title>
+<style>
+:root{--paper:#f4f5f0;--white:#fff;--ink:#172420;--muted:#606e67;--line:#d9dfd7;--green:#17694e;--green-soft:#e7f1e9;--lime:#c8ef91;--dark:#172522;--dark2:#21332d;--dark-line:#34483e;--ui:#b7db91;--rt:#8acac0;--gpu:#c3b5e7;--sf:#edc78d;--red:#b13d32;--radius:12px;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.55}button,input,select{font:inherit}button,select{cursor:pointer}button{color:inherit}a{color:var(--green);text-underline-offset:3px}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{outline:3px solid #6e9d56;outline-offset:3px}button{border:1px solid var(--line);background:var(--white);border-radius:7px;padding:8px 13px;transition:background .15s}button:hover{background:#edf2e9}button:disabled{opacity:.4;cursor:not-allowed}button.primary{background:var(--green);color:#fff;border-color:var(--green);min-width:108px}button.primary:hover{background:#12543e}.mono{font-family:var(--mono)}.eyebrow{font:11px/1.4 var(--mono);letter-spacing:1.8px;text-transform:uppercase;color:var(--muted)}.tag{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:4px;padding:3px 7px;font-size:11px;color:var(--muted)}.tag.dot:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green)}
+.shell{max-width:1920px;margin:auto;padding:0 32px 44px}.topbar{height:68px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:15px}.brand{display:flex;align-items:center;gap:12px;font-weight:700;letter-spacing:.5px}.brand-icon{height:27px;width:27px;border:2px solid var(--ink);position:relative}.brand-icon:before,.brand-icon:after{content:"";position:absolute;background:var(--green);width:11px;height:11px}.brand-icon:before{left:3px;top:3px}.brand-icon:after{right:-5px;bottom:-5px;background:var(--paper);border:2px solid var(--ink)}.toplinks{display:flex;gap:8px;align-items:center}.textbutton{border:0;background:none;padding:5px 9px;color:var(--muted)}.hero{display:flex;justify-content:space-between;gap:35px;padding:31px 0 25px;align-items:end}.hero h1{font-size:clamp(26px,2.8vw,43px);letter-spacing:-1.7px;line-height:1.25;margin:9px 0 12px;font-weight:650}.hero h1 span{color:var(--green)}.hero p{margin:0;color:var(--muted);max-width:830px;font-size:13px}.hero-index{font:64px/.9 var(--mono);color:#d3dbcf;letter-spacing:-6px;white-space:nowrap}.hero-index small{font:11px/1.4 var(--mono);letter-spacing:1px;display:block;text-align:right;margin-top:14px;color:var(--muted)}
+.factbar{display:flex;gap:16px;padding:12px 16px;background:var(--green-soft);border-left:3px solid var(--green);margin-bottom:18px;font-size:12px;align-items:start}.factbar strong{white-space:nowrap;color:var(--green)}.factbar span{color:#40554a}.controls{background:var(--white);border:1px solid var(--line);border-radius:var(--radius);padding:15px 17px;margin-bottom:15px}.control-row{display:flex;align-items:end;gap:13px;flex-wrap:wrap}.play-group{display:flex;gap:5px;align-items:center}.square{padding:8px 10px;min-width:37px}.control-field{display:flex;flex-direction:column;gap:4px}.control-field>span{font-size:10px;color:var(--muted);letter-spacing:.4px}.control-field select{border:1px solid var(--line);border-radius:6px;background:var(--white);padding:7px 25px 7px 9px;height:37px;color:var(--ink);max-width:220px}.control-spacer{flex:1}.clock{font:22px/1.1 var(--mono);white-space:nowrap;text-align:right}.clock small{font-size:10px;color:var(--muted)}.progress-row{display:flex;gap:13px;align-items:center;padding-top:13px}.progress-row input{flex:1;accent-color:var(--green);min-width:60px}.progress-row label{font:11px var(--mono);color:var(--muted);min-width:74px}.step-counter{font:11px var(--mono);color:var(--muted);min-width:82px;text-align:right}.scenario-note{font-size:11px;color:var(--muted);margin:8px 0 0}.scenario-note b{color:var(--red)}
+.phases{display:flex;gap:0;margin:0 0 17px;border-bottom:1px solid var(--line);overflow-x:auto}.phase{flex:1;min-width:106px;border:0;border-radius:0;background:none;padding:12px 8px;text-align:left;position:relative;color:var(--muted);font-size:12px;white-space:nowrap}.phase .num{font:10px var(--mono);display:block;margin-bottom:4px;color:#879286}.phase.active{color:var(--green);font-weight:650}.phase.active:after{content:"";height:3px;background:var(--green);position:absolute;bottom:0;left:8px;right:8px}.phase.done .num{color:var(--green)}
+.workspace{display:grid;grid-template-columns:minmax(0,1fr) 338px;gap:18px;align-items:start}.main-column{min-width:0}.board{background:var(--dark);border-radius:var(--radius);overflow:hidden;color:#e3ece4}.board-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:17px 19px 12px}.board-heading h2{font-size:14px;margin:0;font-weight:550}.board-heading p{font-size:10px;color:#a6b8ab;margin:3px 0 0}.board-tools{display:flex;align-items:center;gap:9px;font-size:10px;color:#b0c2b3}.board-tools button{padding:3px 8px;background:none;color:#cadacc;border:1px solid #536657;font:11px var(--mono)}.board-tools label{white-space:nowrap}.board-tools input{width:70px;accent-color:var(--lime);vertical-align:middle}.timeline-scroll{overflow-x:auto;scrollbar-color:#60775f var(--dark);position:relative;overscroll-behavior-x:contain}.timeline{position:relative;padding-left:134px;min-width:1034px}.time-ruler{height:30px;position:relative;border-bottom:1px solid var(--dark-line);margin-left:0}.tick{position:absolute;top:5px;font:10px var(--mono);color:#97ad9d;transform:translateX(-50%)}.lane{height:60px;position:relative;border-bottom:1px solid var(--dark-line)}.lane.vsync-lane{height:45px}.lane-label{position:absolute;left:-134px;width:134px;top:0;bottom:0;background:var(--dark);z-index:4;display:flex;justify-content:center;flex-direction:column;padding:0 12px;border-right:1px solid var(--dark-line);font-size:11px;line-height:1.4}.lane-label small{font:9px var(--mono);color:#8da292;margin-top:3px}.lane-label:before{content:"";width:4px;height:22px;position:absolute;left:0;background:var(--lane-color)}.lane-label strong{font-weight:550}.event{position:absolute;top:17px;height:28px;min-width:7px;overflow:hidden;text-overflow:clip;white-space:nowrap;border:1px solid color-mix(in srgb,var(--lane-color) 40%,transparent);border-radius:3px;background:color-mix(in srgb,var(--lane-color) 13%,var(--dark));color:var(--lane-color);font:10px/25px var(--mono);padding:0 5px;z-index:2;text-align:left;transition:filter .1s,background .1s}.event:hover{background:color-mix(in srgb,var(--lane-color) 32%,var(--dark));z-index:3}.event.point{padding:0;width:8px;min-width:8px;top:14px;height:20px;border-radius:2px}.event.selected{background:var(--lane-color);color:#14231c;outline:2px solid #fff;outline-offset:2px;z-index:5}.event.completed{opacity:.6}.event.running:not(.selected){filter:brightness(1.5)}.event.missed{--lane-color:#f1a092;background:#6f342a}.gridline{position:absolute;top:30px;bottom:0;border-left:1px dashed #405448;pointer-events:none;z-index:1}.gridline-label{font:9px var(--mono);color:#a1b09f;position:absolute;top:6px;left:4px;white-space:nowrap}.playhead{position:absolute;top:25px;bottom:0;width:2px;background:#f0f7e8;pointer-events:none;z-index:6}.playhead:before{content:"";position:absolute;top:0;left:-4px;border-top:6px solid #f0f7e8;border-left:5px solid transparent;border-right:5px solid transparent}.board-caption{padding:11px 17px;display:flex;gap:14px;justify-content:space-between;font-size:10px;color:#a6b8ab;line-height:1.6}.board-caption .key{display:flex;gap:12px;flex-wrap:wrap}.key span:before{content:"";display:inline-block;width:7px;height:7px;background:var(--key);margin-right:5px}.budget{color:var(--lime)}.budget.late{color:#f6ab9d}
+.live-heading{display:flex;align-items:baseline;gap:12px;margin:21px 0 10px}.live-heading h2{font-size:14px;margin:0}.live-heading span{font-size:10px;color:var(--muted)}.live-grid{display:grid;grid-template-columns:1.2fr 1.3fr .9fr;gap:12px}.live-card{border:1px solid var(--line);border-radius:9px;background:var(--white);padding:15px;min-width:0;position:relative}.live-card h3{font-size:11px;margin:0 0 12px;font-weight:600}.live-card h3 small{color:var(--muted);font:9px var(--mono);display:block;margin-top:3px}.view-tree{height:132px;border:1px dashed #c9d3c5;padding:9px;position:relative}.view-tree:before{content:"DecorView";position:absolute;top:-8px;left:8px;background:white;padding:0 4px;font:9px var(--mono);color:var(--muted)}.view-parent{height:100%;border:1px solid #ccd7c5;padding:14px 9px 8px;position:relative;display:flex;align-items:start;gap:8px}.view-parent:before{content:"ViewGroup";position:absolute;top:1px;left:5px;font:9px var(--mono);color:var(--muted)}.view-target{width:55%;height:57px;min-width:55px;background:var(--green-soft);border:1px solid #71a165;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--green);position:relative;transition:width .3s,height .3s,background .3s}.view-target.dirty{border-style:dashed;background:#fcf4df;color:#8d6325}.view-target.recording{background:var(--green);color:#fff}.view-sibling{width:26%;height:44px;border:1px solid #d7dfd1;background:#f5f7f1}.view-status{margin-top:10px;font-size:10px;color:var(--muted);min-height:32px}.buffer-slots{display:flex;gap:7px}.buffer{flex:1;min-width:0;border:1px solid var(--line);border-top:3px solid #b8c6b1;background:#f7f9f3;padding:10px 5px 7px;text-align:center;min-height:86px}.buffer b{font:13px var(--mono);display:block}.buffer .buffer-state{font:8px var(--mono);display:block;margin-top:7px;overflow-wrap:anywhere}.buffer small{font-size:9px;color:var(--muted);display:block;margin-top:4px}.buffer[data-state=DEQUEUED]{border-top-color:#3b8c80;background:#edf5f2}.buffer[data-state=QUEUED]{border-top-color:#9a78ba;background:#f3eff8}.buffer[data-state=ACQUIRED]{border-top-color:#b18539;background:#fbf5e8}.fence-row{display:flex;justify-content:space-between;gap:6px;margin-top:12px;font-size:9px;color:var(--muted)}.fence-light{display:inline-block;width:6px;height:6px;border-radius:50%;background:#c7cfc1;margin-right:4px}.fence-light.signal{background:var(--green)}.fence-light.pending{background:#b78537}.live-note{font-size:9px;color:var(--muted);margin:9px 0 0}.screen-wrap{display:flex;gap:12px;align-items:center}.phone{width:74px;height:132px;background:#18281f;border:4px solid #26382b;border-radius:10px;position:relative;overflow:hidden;flex:none}.phone:after{content:"";position:absolute;top:0;left:24px;width:20px;height:4px;border-radius:0 0 4px 4px;background:#26382b;z-index:3}.screen-old,.screen-new{position:absolute;inset:0;padding:14px 7px 6px;color:white;font:8px var(--mono)}.screen-old{background:#6a796b}.screen-new{background:#afd77c;clip-path:inset(0 0 100% 0);color:#1b432c}.screen-old i,.screen-new i{display:block;background:#ffffff33;height:6px;margin-top:8px;width:70%}.screen-new i{background:#37714344}.screen-old div,.screen-new div{margin-top:13px;height:34px;border:1px solid #ffffff55}.screen-new div{background:#2b754a;border:0;width:85%}.scanline{position:absolute;left:0;right:0;top:0;height:2px;background:#fff;opacity:0}.screen-meta{font-size:10px;color:var(--muted);line-height:1.8}.screen-meta strong{display:block;font-size:12px;color:var(--ink)}
+.callback-box{margin-top:12px;border:1px solid var(--line);border-radius:9px;background:var(--white);padding:13px 15px}.callback-header{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;gap:12px;margin-bottom:10px}.callback-header span{font-size:10px;color:var(--muted)}.callback-queue{display:flex;gap:7px;align-items:stretch}.callback{flex:1;min-width:0;padding:8px 6px;border-top:2px solid #c9d2c4;background:#f5f7f1;position:relative}.callback b{font:9px var(--mono);display:block;overflow-wrap:anywhere}.callback small{font-size:9px;color:var(--muted)}.callback.active{border-color:var(--green);background:var(--green-soft);color:var(--green)}.callback.done{opacity:.6}.callback.extra b:after{content:" +";color:var(--green)}
+.inspector{border:1px solid var(--line);border-radius:var(--radius);background:var(--white);overflow:hidden;position:sticky;top:16px}.inspector-head{display:flex;justify-content:space-between;padding:12px 17px;border-bottom:1px solid var(--line);font-size:10px;color:var(--muted)}.inspector-content{padding:19px 18px}.event-category{font:10px var(--mono);color:var(--green);letter-spacing:.5px}.inspector h2{font-size:21px;letter-spacing:-.5px;line-height:1.4;margin:9px 0}.event-symbol{font:11px/1.7 var(--mono);background:#f3f5ef;border-left:2px solid #a3b698;padding:9px 10px;margin:12px 0;overflow-wrap:anywhere}.event-summary{font-size:12px;line-height:1.85;margin:13px 0;color:#45564a}.inspector h3{font-size:11px;margin:20px 0 8px;color:var(--ink)}.event-details{padding:0 0 0 16px;margin:0;font-size:11px;color:#536056;line-height:1.85}.event-details li{padding:2px 0}.pitfall{font-size:11px;background:#faf5e9;padding:11px 12px;border-left:2px solid #b29248;color:#745c2d;margin:17px 0}.pitfall strong{display:block;font-size:10px;margin-bottom:4px}.source-link{display:block;font:10px/1.6 var(--mono);margin:8px 0;overflow-wrap:anywhere}.inspector-footer{padding:12px 17px;border-top:1px solid var(--line);font-size:10px;color:var(--muted);display:flex;justify-content:space-between;gap:10px}.thread-badge{font:9px var(--mono);border:1px solid var(--line);padding:2px 5px;border-radius:3px}.event-list-header{margin:27px 0 10px;display:flex;gap:15px;align-items:center;justify-content:space-between}.event-list-header h2{font-size:15px;margin:0}.search{width:255px;max-width:50%;background:var(--white);border:1px solid var(--line);border-radius:6px;padding:8px 11px;font-size:11px}.event-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 20px;border-top:1px solid var(--line)}.event-list-item{border:0;border-bottom:1px solid var(--line);border-radius:0;background:none;display:flex;align-items:center;gap:10px;padding:11px 3px;text-align:left;font-size:11px;min-height:54px}.event-list-item .list-number{font:10px var(--mono);color:#8b9786;min-width:20px}.event-list-item .list-title{flex:1;min-width:0}.event-list-item small{display:block;font:9px var(--mono);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}.event-list-item.active{color:var(--green);background:var(--green-soft)}.event-list-item.active .list-number{color:var(--green)}.event-list-item[hidden]{display:none}.no-results{padding:18px 0;color:var(--muted);font-size:12px}.reading{margin-top:32px;padding-top:24px;border-top:1px solid var(--line);display:grid;grid-template-columns:1.15fr 1fr;gap:32px}.reading h2{font-size:16px;margin:0 0 12px}.reading p,.reading li{font-size:12px;color:var(--muted);line-height:1.9}.reading ul{padding-left:17px}.reading details{border-bottom:1px solid var(--line);padding:11px 0}.reading summary{font-size:12px;cursor:pointer;font-weight:550}.reading details p{margin:10px 0 0}.footer{border-top:1px solid var(--line);margin-top:30px;padding-top:15px;font-size:10px;color:var(--muted);display:flex;justify-content:space-between;gap:20px}.sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}dialog{border:1px solid var(--line);border-radius:14px;padding:0;background:var(--paper);color:var(--ink);width:min(960px,94vw);max-height:87vh}dialog::backdrop{background:#12251dcc}.dialog-head{display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--paper);border-bottom:1px solid var(--line);padding:16px 22px;z-index:2}.dialog-head h2{font-size:18px;margin:0}.dialog-body{padding:20px 24px}.dialog-body p,.dialog-body li{font-size:12px;line-height:1.9;color:var(--muted)}.source-entry{border-bottom:1px solid var(--line);padding:13px 0}.source-entry h3{font-size:13px;margin:0 0 5px}.source-entry a{font:10px/1.8 var(--mono);overflow-wrap:anywhere;display:block}.source-entry p{font-size:11px;margin:5px 0}.source-entry code{font-size:10px}.scope-note{background:var(--green-soft);padding:12px 15px;font-size:12px}.shortcut-list{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:12px}.shortcut-list kbd{font:11px var(--mono);border:1px solid var(--line);padding:3px 7px;background:white;border-radius:4px;margin-right:8px}.focus-mode .hero,.focus-mode .factbar,.focus-mode .event-list-header,.focus-mode .event-list,.focus-mode .reading,.focus-mode .footer{display:none}.focus-mode .controls{margin-top:18px}
+@media(min-width:1650px){.workspace{grid-template-columns:minmax(0,1fr) 365px}.lane{height:65px}.live-grid{grid-template-columns:1.15fr 1.3fr 1fr}}
+@media(max-width:1150px){.shell{padding:0 20px 30px}.workspace{grid-template-columns:minmax(0,1fr) 300px;gap:12px}.inspector-content{padding:16px 14px}.live-grid{grid-template-columns:1fr 1fr}.live-card:last-child{grid-column:1/-1;display:flex;gap:18px;align-items:center}.live-card:last-child h3{min-width:100px}.screen-wrap{flex:1}.phone{width:60px;height:104px}.hero-index{font-size:47px}.hero p{max-width:720px}.control-row{gap:9px}.control-spacer{display:none}.clock{margin-left:auto}.event-list{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:880px){.workspace{grid-template-columns:1fr}.inspector{position:static}.inspector-content{display:grid;grid-template-columns:1fr 1fr;gap:0 25px}.inspector-content .event-category,.inspector-content h2,.inspector-content .event-symbol,.inspector-content .event-summary{grid-column:1}.inspector-content .detail-section{grid-column:2;grid-row:1/6}.inspector-content .pitfall{grid-column:1}.inspector-content .sources-section{grid-column:2}.hero-index{display:none}.live-grid{grid-template-columns:1.1fr 1.2fr 1fr}.live-card:last-child{display:block;grid-column:auto}.live-card:last-child h3{min-width:0}.screen-wrap{gap:8px}.phone{width:62px;height:123px}.reading{gap:22px}.toplinks .tag{display:none}}
+@media(max-width:600px){.shell{padding:0 13px 24px}.topbar{height:57px}.brand{font-size:12px;gap:8px}.brand-icon{width:23px;height:23px}.toplinks{gap:0}.textbutton{font-size:11px;padding:5px}.hero{padding:24px 0 19px}.hero h1{font-size:29px;letter-spacing:-1px}.hero p{font-size:11px;line-height:1.8}.factbar{display:block;font-size:11px;padding:10px 12px}.factbar strong{display:block;margin-bottom:4px}.controls{padding:12px}.control-row{gap:10px 8px}.control-field select{max-width:175px;font-size:11px;padding-right:18px}.control-field>span{font-size:9px}.clock{font-size:19px}.control-spacer{display:none}.play-group{order:-2}.control-field.scenario-field{order:-1}.clock{order:0}.scenario-note{font-size:10px}.phase{font-size:11px;min-width:99px;padding:10px 6px}.board-heading{padding:13px 12px;align-items:start}.board-heading p{max-width:210px;font-size:9px}.board-tools{flex-wrap:wrap;justify-content:end;gap:4px}.board-tools label{display:none}.board-caption{display:block;font-size:9px;padding:10px 12px}.board-caption .budget{display:block;margin-top:5px}.live-grid{grid-template-columns:1fr 1fr;gap:9px}.live-card{padding:11px}.live-card:last-child{display:flex;grid-column:1/-1;gap:16px;align-items:center}.live-card:last-child h3{min-width:80px}.screen-wrap{gap:16px}.phone{height:106px;width:60px}.buffer{padding:8px 3px;min-height:78px}.buffer b{font-size:11px}.buffer .buffer-state{font-size:7px}.buffer small{font-size:8px}.fence-row{display:block}.fence-row span{display:block;margin-top:5px}.callback-box{padding:12px 10px}.callback-header{display:block}.callback-header span{display:block;margin-top:4px}.callback-queue{gap:4px}.callback{padding:7px 4px}.callback b{font-size:7px}.callback small{font-size:8px}.inspector-content{display:block;padding:17px}.inspector h2{font-size:21px}.event-list{grid-template-columns:1fr}.event-list-header{margin-top:22px}.event-list-header h2{font-size:14px}.search{font-size:10px;width:190px}.reading{grid-template-columns:1fr;gap:20px}.footer{display:block;line-height:1.9}.dialog-body{padding:15px}.dialog-head{padding:14px 16px}.shortcut-list{grid-template-columns:1fr}.board-tools input{width:50px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}}
+@media print{.topbar,.controls,.phases,.board-tools,.event-list-header,.event-list,.footer{display:none}.shell{padding:0}.workspace{display:block}.board{print-color-adjust:exact}.timeline-scroll{overflow:visible}.timeline{min-width:0!important}.inspector{position:static;margin-top:20px}.live-grid{break-inside:avoid}.reading{display:block}dialog{display:none}}
+
+.timeline{--label-width:134px;padding-left:var(--label-width)}
+.lane-label{position:sticky;left:0;width:var(--label-width);margin-left:calc(-1 * var(--label-width));height:100%}
+.event{overflow:hidden;text-overflow:unset;white-space:nowrap}
+.event.long-event{text-align:left}
+.event:before{content:"";position:absolute;left:0;top:0;height:3px;width:var(--duration-width);max-width:100%;background:var(--lane-color);opacity:.8}
+.timeline-scrollbar{display:flex;align-items:center;gap:12px;padding:8px 17px 2px;border-top:1px solid var(--dark-line);font:10px var(--mono);color:#b0c2b3}
+.timeline-scrollbar input{flex:1;min-width:60px;accent-color:var(--lime);cursor:ew-resize}
+.timeline-scrollbar output{min-width:34px;text-align:right}
+.journey{margin:0 0 19px;padding:19px 20px 15px;background:var(--white);border:1px solid var(--line);border-radius:var(--radius)}
+.journey-head{display:flex;justify-content:space-between;align-items:start;gap:18px;margin-bottom:14px}.journey-head h2{margin:4px 0 4px;font-size:19px;letter-spacing:-.5px}.journey-head p{font-size:11px;color:var(--muted);margin:0;max-width:620px}.journey-key{font:10px var(--mono);white-space:nowrap;color:var(--green);background:var(--green-soft);padding:5px 8px;border-radius:4px}
+.journey-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 18px}.journey-step{min-width:0;min-height:168px;padding:13px 13px 10px;text-align:left;border:1px solid var(--line);border-radius:8px;background:#f8faf6;position:relative;display:flex;flex-direction:column;gap:7px}.journey-step:hover{background:#f0f5ec}.journey-step.selected{border-color:var(--green);background:var(--green-soft)}.journey-step.busy:not(.selected){border-style:dashed;border-color:#86a780}.journey-step.selected:before{content:"F";position:absolute;right:10px;top:9px;width:21px;height:21px;display:grid;place-items:center;border-radius:4px;background:var(--green);color:white;font:11px var(--mono);animation:packet-enter .24s ease-out}.journey-step .step-top{display:flex;gap:8px;align-items:baseline}.journey-step .step-number{font:10px var(--mono);color:var(--green)}.journey-step .step-actor{font:10px var(--mono);color:var(--muted);letter-spacing:.2px}.journey-step strong{font-size:14px;line-height:1.3;font-weight:650}.journey-step .step-action{color:var(--muted);font-size:11px;line-height:1.5}.journey-step .step-artifact{margin-top:auto;display:flex;align-items:center;gap:6px;font:10px var(--mono);color:var(--green);overflow-wrap:anywhere}.journey-step .step-artifact:before{content:"→";font-size:14px}.journey-step:after{content:"→";position:absolute;right:-15px;top:50%;color:#7f9d77;font:19px var(--mono);pointer-events:none}.journey-step:nth-child(4):after{content:"↘";right:-15px;top:auto;bottom:-24px}.journey-step:nth-child(5):after,.journey-step:nth-child(8):after{content:none}.journey-step:nth-child(n+5){grid-row:2}.journey-step:nth-child(5){grid-column:4}.journey-step:nth-child(6){grid-column:3}.journey-step:nth-child(7){grid-column:2}.journey-step:nth-child(8){grid-column:1}.journey-step:nth-child(n+5):not(:nth-child(8)):after{content:"←";right:auto;left:-16px}
+@keyframes packet-enter{from{opacity:.2;transform:scale(.75)}to{opacity:1;transform:scale(1)}}
+.step-visual{height:35px;display:flex;align-items:center;gap:4px;font:9px var(--mono);color:#416551}.step-visual span{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:25px;padding:0 4px;border:1px solid #a8baa8;background:#fff;border-radius:3px}.step-visual .lit{border-color:var(--green);background:#d4e8d1;color:#124f39}.step-visual .thin{min-width:6px;width:6px;padding:0;background:var(--green);border-color:var(--green)}.step-visual .wide{min-width:42px}.step-visual .screen-mini{width:28px;height:32px;border:3px solid #34483e;border-radius:5px;position:relative;overflow:hidden;background:#819281;padding:0}.step-visual .screen-mini i{position:absolute;left:0;top:0;right:0;height:var(--scan);background:#c8ef91}.step-visual .branch{position:relative;padding-left:9px}.step-visual .branch:before{content:"";position:absolute;left:1px;top:4px;bottom:4px;border-left:1px solid #70947f}
+.journey-now{margin-top:14px;padding-top:11px;border-top:1px solid var(--line);display:flex;align-items:start;gap:10px}.journey-now .now-marker{flex:none;font:10px var(--mono);color:var(--green);padding-top:2px}.journey-now strong{font-size:12px;min-width:0}.journey-now p{font-size:11px;color:var(--muted);line-height:1.6;margin:2px 0 0}.journey-now .now-copy{min-width:0;flex:1}.journey-now button{flex:none;font-size:10px;padding:5px 9px}
+.journey-now .now-artifact{display:inline-block;margin-left:8px;color:var(--green);font:10px var(--mono)}
+.journey-code{margin-top:15px;border-top:1px solid var(--line);padding-top:16px}.journey-code-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:11px}.journey-code-head h3{font-size:15px;margin:0}.journey-code-head p{font-size:10px;color:var(--muted);margin:0}.journey-code-grid{display:grid;grid-template-columns:minmax(260px,34%) minmax(0,1fr);gap:15px}.journey-code-list{position:relative;display:grid;align-content:start;gap:5px;max-height:380px;overflow:auto;padding:2px 5px 2px 2px}.journey-code-item{display:grid;grid-template-columns:24px minmax(0,1fr);gap:2px 8px;text-align:left;padding:8px 10px;border-radius:5px;background:#f7f9f5}.journey-code-item.active{background:var(--green-soft);border-color:var(--green)}.journey-code-item .code-order{grid-row:1/3;color:var(--green);font:10px var(--mono)}.journey-code-item strong{font-size:11px;font-weight:600}.journey-code-item small{font:9px/1.45 var(--mono);color:var(--muted);overflow-wrap:anywhere}.journey-code-detail{min-width:0;padding:14px 16px;border:1px solid var(--line);border-radius:8px;background:#f8faf6}.journey-code-meta{font:10px var(--mono);color:var(--green)}.journey-code-detail h4{font-size:16px;margin:5px 0 3px}.journey-code-detail h5{font-size:11px;margin:15px 0 5px}.journey-code-detail p,.journey-code-detail li{font-size:11px;line-height:1.7}.journey-code-detail p{margin:5px 0;color:#45564a}.journey-code-detail ol{margin:0;padding-left:21px}.journey-code-detail li{padding:2px 0}.journey-code-symbol{display:block;margin:9px 0;padding:10px 12px;background:#eaf1e8;border-left:3px solid var(--green);font:11px/1.65 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}.journey-code-pitfall{margin-top:12px!important;padding:8px 10px;background:#faf5e9;color:#745c2d!important}.journey-code-sources{display:flex;gap:6px 13px;flex-wrap:wrap}.journey-code-sources .source-link{margin:0;max-width:100%}.journey-code-handoff{display:grid;gap:7px}.journey-code-handoff div{display:flex;gap:5px;align-items:center;flex-wrap:wrap;font-size:10px;color:var(--muted)}.journey-code-handoff span{min-width:55px}.journey-code-handoff button{font-size:10px;padding:3px 6px;background:white}
+@media(max-width:750px){.journey-code-grid{grid-template-columns:1fr}.journey-code-list{max-height:218px}.journey-code-head{display:block}.journey-code-head p{margin-top:3px}.journey-code-detail{padding:12px}}
+.scene{margin:0 0 12px;padding:17px 18px;background:var(--dark);border-radius:var(--radius);color:#e7f1e7}.scene-head{display:flex;justify-content:space-between;gap:15px;align-items:start}.scene-head h2{font-size:17px;margin:1px 0 3px}.scene-head p{font-size:10px;color:#a7bba9;margin:0}.scene-count{font:10px var(--mono);color:var(--lime);white-space:nowrap}.scene-map{position:relative;margin:17px 0 13px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 24px}.scene-links{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}.scene-link{fill:none;stroke:#506b5a;stroke-width:1.5}.scene-link.hot{stroke:var(--lime);stroke-width:3;stroke-dasharray:7 5;animation:scene-flow .9s linear infinite}.scene-node{position:relative;z-index:1;min-width:0;min-height:86px;padding:10px 12px;border:1px solid #4d6554;border-radius:6px;background:var(--dark2);text-align:left;color:#dce9dd}.scene-node:hover{background:#2e4434}.scene-node.current{border:2px solid var(--lime);background:#324c39;color:#fff}.scene-node.running:not(.current){border-style:dashed;border-color:#9fb88d}.scene-node.done:not(.current){border-color:#617b65}.scene-node .scene-role{display:block;font:9px var(--mono);color:#a2b6a6}.scene-node strong{display:block;margin:2px 0;font-size:13px}.scene-node small{display:block;font:9px/1.45 var(--mono);color:#a9baaa;overflow-wrap:anywhere}.scene-node.current small{color:#e3f0d7}.scene-readout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 18px;padding-top:12px;border-top:1px solid var(--dark-line)}.scene-readout strong{font-size:12px}.scene-readout p{grid-column:1;margin:0;font-size:10px;line-height:1.6;color:#bbccbd}.scene-readout .scene-artifact{grid-column:2;grid-row:1/3;align-self:center;padding:7px 10px;border:1px solid #67876b;border-radius:4px;font:10px var(--mono);color:var(--lime);max-width:200px;overflow-wrap:anywhere}.scene-busy{margin-top:10px;font:9px/1.6 var(--mono);color:#a9baaa}.scene-busy b{color:#e0eedc;font-weight:500}.timeline-details{margin:0 0 10px}.timeline-details>summary{cursor:pointer;padding:10px 13px;color:var(--green);background:#edf2e9;border:1px solid var(--line);border-radius:7px;font-size:11px;font-weight:600}.timeline-details[open]>summary{margin-bottom:9px}.timeline-details>summary small{font-weight:400;color:var(--muted);margin-left:8px}.timeline-details .board{margin:0}@keyframes scene-flow{to{stroke-dashoffset:-12}}@media(prefers-reduced-motion:reduce){.scene-link.hot{animation:none}}@media(max-width:600px){.scene{padding:13px 11px}.scene-map{gap:16px 10px}.scene-node{min-height:85px;padding:8px 6px}.scene-node strong{font-size:10px}.scene-node .scene-role,.scene-node small{font-size:7px}.scene-head h2{font-size:15px}.scene-count{font-size:8px}.scene-readout{grid-template-columns:1fr}.scene-readout .scene-artifact{grid-column:1;grid-row:auto;max-width:none}.timeline-details>summary small{display:block;margin:2px 0 0}}
+.scene-node:nth-of-type(4){grid-column:3;grid-row:2}.scene-node:nth-of-type(5){grid-column:2;grid-row:2}.scene-node:nth-of-type(6){grid-column:1;grid-row:2}.scene-node:nth-of-type(7){grid-column:1;grid-row:3}.scene-node:nth-of-type(8){grid-column:2;grid-row:3}.scene-link.hot{animation:scene-flow .8s linear 1}
+.scene-map{grid-template-columns:minmax(0,1.23fr) minmax(0,1fr) minmax(0,1fr);gap:15px;align-items:stretch;margin:16px 0}.scene-links{z-index:3}.scene-domain{position:relative;z-index:1;min-width:0;border:1px dashed #6d8c70;border-radius:9px;padding:12px;background:#1b2c25}.scene-domain[data-domain=sf]{border-color:#ac906a;background:#2b2922}.scene-domain[data-domain=device]{border-color:#8c86a8;background:#272933}.scene-domain>header{display:grid;gap:2px;min-height:45px;margin-bottom:10px;padding:0 2px;border-bottom:1px solid #465b49}.scene-domain>header b{font:10px var(--mono);color:var(--lime);letter-spacing:.6px}.scene-domain>header span{font-size:10px;color:#b2c5b5}.scene-domain[data-domain=sf]>header b{color:#edc78d}.scene-domain[data-domain=device]>header b{color:#c3b5e7}.scene-domain-body{display:grid;gap:10px}.scene-domain .scene-node{grid-column:auto;grid-row:auto;width:100%;min-height:108px;display:grid;align-content:start;gap:2px}.scene-domain .scene-node.current{box-shadow:0 0 0 3px #c8ef9122}.scene-node .scene-operation{display:block;margin-top:7px;padding-top:6px;border-top:1px solid #526b56;color:#e5f1d9;font:10px/1.4 var(--mono);overflow-wrap:anywhere}.scene-node .scene-state{display:inline-block;justify-self:start;margin-top:4px;border:1px solid #5f7863;padding:1px 5px;border-radius:3px;color:#b9cfb7;font:9px var(--mono)}.scene-node.current .scene-state{color:#d9f6af;border-color:#acd780}.scene-node.running:not(.current) .scene-state{color:#f0d4a0}.scene-node .scene-role{font-size:10px}.scene-node strong{font-size:14px}.scene-node small{font-size:10px}.scene-link.hot{stroke-dasharray:5 4}.scene-handoff{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;padding:13px 0;border-top:1px solid var(--dark-line);border-bottom:1px solid var(--dark-line)}.scene-handoff .transfer{min-width:0;padding:6px 8px;border:1px solid #4a6150;border-radius:4px;color:#91a994;background:#1b2b24}.scene-handoff .transfer.ready{border-color:#83a876;color:#d6ead0}.scene-handoff .transfer.current{border:2px solid var(--lime);color:#fff;background:#324c39}.scene-handoff .transfer strong{display:block;font:10px/1.4 var(--mono)}.scene-handoff .transfer small{display:block;font:9px/1.4 var(--mono);margin-top:2px;overflow-wrap:anywhere}.scene-code-head{min-width:0}.scene-code-head code{display:block;margin-top:5px;font:10px/1.5 var(--mono);color:var(--lime);overflow-wrap:anywhere}.scene-readout{padding-top:12px}.scene-readout p{margin-top:5px}.scene-node[data-scene=display].current{background:#344839}@media(max-width:950px){.scene-map{grid-template-columns:repeat(2,minmax(0,1fr))}.scene-domain[data-domain=device]{grid-column:1/-1}.scene-domain[data-domain=device] .scene-domain-body{grid-template-columns:repeat(3,minmax(0,1fr))}.scene-handoff{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:600px){.scene-map{grid-template-columns:1fr}.scene-domain[data-domain=device]{grid-column:auto}.scene-domain .scene-domain-body{grid-template-columns:1fr!important}.scene-domain .scene-node{min-height:99px}.scene-node .scene-role{font-size:9px}.scene-node strong{font-size:12px}.scene-node small,.scene-node .scene-operation{font-size:9px}.scene-handoff{grid-template-columns:repeat(2,minmax(0,1fr))}.scene-domain>header{min-height:39px}.scene-count{white-space:normal;text-align:right}}
+.scene-domain.active{outline:2px solid #b8e492;outline-offset:2px}.scene-map{gap:20px}@media(max-width:600px){.scene-domain:after{content:none}}
+.timeline-connectors{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:3;overflow:visible}
+.handoff{min-height:34px;margin:9px 0 0;padding:6px 0;font-size:10px;color:var(--muted);display:flex;align-items:center;flex-wrap:wrap;gap:5px}
+.handoff button{font-size:10px;padding:3px 6px;border-radius:4px;background:transparent}
+.handoff .handoff-current{color:var(--green);font-weight:600}.handoff .handoff-lead{font:9px var(--mono);color:var(--muted);margin-right:3px}
+.composition-flow{margin-top:12px;background:var(--white);border:1px solid var(--line);border-radius:9px;padding:13px 15px}
+.composition-route{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font:10px var(--mono)}.composition-route .route-part{padding:8px 11px;background:#f4f6ef;border:1px solid var(--line);border-radius:4px}.composition-route .route-part.active{background:var(--green-soft);border-color:var(--green);color:var(--green)}.composition-route .route-part.skip{opacity:.45;text-decoration:line-through}.composition-route .route-arrow{color:#83917c}
+@media(max-width:600px){.composition-flow{padding:12px 10px}.composition-route{font-size:9px;gap:5px}.composition-route .route-part{padding:6px 8px}.handoff{font-size:9px}.handoff button{font-size:9px;max-width:100%;text-align:left}}
+@media(max-width:600px){.timeline-scrollbar{padding:8px 12px 2px;gap:8px}.timeline-scrollbar label{font-size:9px}}
+@media(max-width:600px){.timeline{--label-width:78px}.lane-label{padding:0 5px;font-size:9px;overflow-wrap:anywhere}.lane-label small{font-size:7px}}
+@media(max-width:1100px){.journey-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.journey-step:nth-child(n){grid-column:auto;grid-row:auto}.journey-step:nth-child(n):after{content:"→";right:-16px;left:auto;top:50%;bottom:auto}.journey-step:nth-child(2n):after{content:"↓";right:48%;top:auto;bottom:-23px}.journey-step:last-child:after{content:none}}
+@media(max-width:600px){.journey{padding:15px 12px}.journey-head{display:block}.journey-head h2{font-size:17px}.journey-key{display:inline-block;margin-top:9px}.journey-grid{grid-template-columns:1fr;gap:13px}.journey-step{min-height:126px}.journey-step:nth-child(n):after{content:"↓";right:48%;top:auto;bottom:-22px;left:auto}.journey-step:last-child:after{content:none}.journey-now{flex-wrap:wrap}.journey-now button{margin-left:auto}}
+@media(prefers-reduced-motion:reduce){.journey-step.selected:before{animation:none}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="topbar"><div class="brand"><span class="brand-icon" aria-hidden="true"></span>FRAME / LAB <span class="eyebrow">Android graphics</span></div><nav class="toplinks" aria-label="资料导航"><span class="tag dot">离线可用 · 无外部依赖</span><button class="textbutton" id="open-sources">源码与资料 ↗</button><button class="textbutton" id="open-help" aria-label="操作帮助与快捷键">帮助 ?</button></nav></header>
+<section class="hero"><div><div class="eyebrow">From invalidate to photons / 基于当前 AOSP 源码</div><h1>一个 View，<span>如何成为屏幕上的一帧。</span></h1><p>跟随帧 F 穿过 UI 线程、RenderThread、GPU、BLAST、SurfaceFlinger 与显示硬件。点击任意事件，查看调用链、状态变化、同步关系与源码。</p></div><div class="hero-index" aria-hidden="true">01 → ∞<small>REQUEST / RENDER / PRESENT</small></div></section>
+<aside class="factbar"><strong>不是“四个阶段就画完了”</strong><span>当前源码执行 <b>Input → Animation → Insets Animation → Traversal → Commit</b> 五类 callback。传统“四类”不含 Insets；Commit 也不等于 GPU 完成或上屏。本模型只展开已附着、可见且启用硬件加速的普通 View 窗口。</span></aside>
+<section class="controls" aria-label="动画控制">
+<div class="control-row"><div class="play-group"><button class="square" id="reset" aria-label="回到开始" title="回到开始 (Home)">↺</button><button class="square" id="prev" aria-label="上一步" title="上一步 (←)">‹</button><button class="primary" id="play">▶ 播放</button><button class="square" id="next" aria-label="下一步" title="下一步 (→)">›</button></div>
+<label class="control-field scenario-field"><span>刷新 / 延迟场景</span><select id="scenario"><option value="layout">完整刷新 · requestLayout + invalidate</option><option value="invalidate">仅 invalidate · 不重新布局</option><option value="ui-late">UI 线程超时 · 错过本轮合成</option><option value="gpu-late">GPU 晚完成 · acquire fence 未就绪</option><option value="sf-late">SF 合成超时 · 错过呈现目标</option></select></label>
+<label class="control-field"><span>合成策略（示例）</span><select id="composition"><option value="mixed">混合 · DEVICE + CLIENT</option><option value="device">全硬件 · DEVICE</option><option value="client">客户端 · CLIENT</option></select></label>
+<label class="control-field"><span>显示刷新率</span><select id="refresh"><option value="60">60 Hz</option><option value="90">90 Hz</option><option value="120">120 Hz</option></select></label>
+<label class="control-field"><span>播放方式</span><select id="mode"><option value="explain">逐事件讲解</option><option value="continuous">连续时序</option></select></label>
+<label class="control-field"><span>播放速度</span><select id="speed"><option value="0.5">0.5 ×</option><option value="1" selected>1 ×</option><option value="2">2 ×</option><option value="4">4 ×</option></select></label><div class="control-spacer"></div><div class="clock"><span id="time">0.00</span> <small>ms / 示意</small></div></div>
+<div class="progress-row"><label for="scrubber">帧内时间轴</label><input id="scrubber" type="range" min="0" max="1000" value="0" step="1" aria-label="拖动查看帧流水线"><span class="step-counter" id="counter">01 / 00</span></div><p class="scenario-note" id="scenario-note"></p>
+</section>
+<nav class="phases" id="phases" aria-label="流程阶段"></nav>
+<section class="scene" aria-label="一帧的进程与线程现场"><div class="scene-head"><div><div class="eyebrow">Process / thread / operation</div><h2>一帧正在谁手里处理？</h2><p>先看进程边界，再看线程和函数。亮框＝当前事件，虚框＝同时运行；下方交接物展示数据与同步状态。</p></div><span class="scene-count" id="scene-count"></span></div><div class="scene-map" id="scene-map"><section class="scene-domain" data-domain="app"><header><b>APP PROCESS</b><span>应用进程 · Java / HWUI / BLAST</span></header><div class="scene-domain-body" id="scene-app"></div></section><section class="scene-domain" data-domain="sf"><header><b>SURFACEFLINGER PROCESS</b><span>显示调度 + 合成服务</span></header><div class="scene-domain-body" id="scene-sf"></div></section><section class="scene-domain" data-domain="device"><header><b>DEVICE / HAL</b><span>GPU 与显示硬件；不是同一进程</span></header><div class="scene-domain-body" id="scene-device"></div></section></div><div class="scene-handoff" id="scene-handoff" aria-label="当前帧的交接物与同步状态"></div><div class="scene-readout"><div class="scene-code-head"><strong id="scene-title"></strong><code id="scene-symbol"></code></div><p id="scene-summary"></p><span class="scene-artifact" id="scene-artifact"></span></div><div class="scene-busy" id="scene-busy"></div></section>
+<section class="journey" aria-label="一帧的八站旅程"><div class="journey-head"><div><div class="eyebrow">Explore the code / 动画下方的详细讲解</div><h2>沿 8 个交接点查看源码过程</h2><p>先观察上方进程 / 线程动画，再点站点和事件读代码。F 标记只是讲解焦点；多线程会重叠，八站不是严格串行调用栈。</p></div><span class="journey-key">请求 → 节拍 → 回调 → 录制 → 渲染 → 交接 → 合成 → 显示</span></div><div class="journey-grid" id="journey-grid"></div><div class="journey-now" aria-live="polite"><span class="now-marker" id="journey-marker">01 / 08</span><div class="now-copy"><strong id="journey-current"></strong><span class="now-artifact" id="journey-artifact"></span><p id="journey-explanation"></p></div><button id="journey-detail" aria-label="滚动查看下方完整事件详解">看下方代码 ↓</button></div><section class="journey-code" aria-label="流程中的源码过程"><div class="journey-code-head"><h3 id="journey-code-title">本站源码过程</h3><p id="journey-code-count"></p></div><div class="journey-code-grid"><nav class="journey-code-list" id="journey-code-list" aria-label="本站代码事件"></nav><article class="journey-code-detail" id="journey-code-detail" aria-label="当前代码事件详情"></article></div></section></section>
+<main>
+<div class="workspace"><div class="main-column">
+<details class="timeline-details" id="timeline-details"><summary>展开跨线程精确时序 <small>高级视图：核对重叠、示意耗时与超时分支；可横向滚动</small></summary>
+<section class="board" aria-label="跨线程并发时序图"><div class="board-heading"><div><h2>一帧的跨线程时序</h2><p>横轴 = 示意时间（ms） · 同一竖线表示并发 · F−1 为上一帧；条块为教学子步骤，不是函数栈跨度，父函数包含随后展开的内部步骤</p></div><div class="board-tools"><label>缩放 <input id="zoom" type="range" min="1" max="4" value="1.4" step="0.2" aria-label="时序图缩放"></label><button id="follow" aria-pressed="true" title="跟随播放位置">跟随</button><button id="focus" aria-pressed="false" title="专注模式">⛶</button></div></div><div class="timeline-scroll" id="timeline-scroll" tabindex="0" aria-label="可横向滚动的时间轴"><div class="timeline" id="timeline"></div></div><div class="timeline-scrollbar"><label for="timeline-pan">横向浏览</label><input id="timeline-pan" type="range" min="0" max="1000" value="0" aria-label="横向浏览完整时序图"><output id="timeline-pan-value" for="timeline-pan">0%</output></div><div class="board-caption"><div class="key"><span style="--key:var(--ui)">UI / 调度</span><span style="--key:var(--rt)">RT / 缓冲区</span><span style="--key:var(--gpu)">GPU</span><span style="--key:var(--sf)">合成 / 显示</span></div><span class="budget" id="deadline-status"></span></div></section>
+</details>
+<div class="handoff" id="handoff" aria-label="当前事件的上游依赖"></div>
+<div class="live-heading"><h2>帧现场</h2><span>与播放位置同步的状态，不是真机采样</span></div>
+<section class="live-grid" aria-label="视图缓冲区与屏幕状态">
+<article class="live-card"><h3>01 / View 树<small>UI THREAD · DISPLAY LIST</small></h3><div class="view-tree"><div class="view-parent"><div class="view-target" id="view-target">View</div><div class="view-sibling"></div></div></div><div class="view-status" id="view-status"></div></article>
+<article class="live-card"><h3>02 / 缓冲区所有权<small>3 SLOTS FOR ILLUSTRATION, NOT A RULE</small></h3><div class="buffer-slots"><div class="buffer" id="buffer-old"><b>A · F−1</b><span class="buffer-state"></span><small id="old-owner"></small></div><div class="buffer" id="buffer-current"><b>B · F</b><span class="buffer-state"></span><small id="current-owner"></small></div><div class="buffer" data-state="FREE"><b>C</b><span class="buffer-state">FREE</span><small>空闲槽位</small></div></div><div class="fence-row"><span><i class="fence-light" id="acquire-light"></i><span id="acquire-label">acquire：未产生</span></span><span><i class="fence-light" id="release-light"></i><span id="release-label">release：等待换出</span></span></div><p class="live-note">BLAST acquire 不等于 GPU 完成；SF 持有 buffer 后，BQ 槽位状态与下游 fence 生命周期不能简单等同。</p></article>
+<article class="live-card"><h3>03 / 屏幕扫描<small>PRESENT ≠ ALL PIXELS INSTANTLY VISIBLE</small></h3><div class="screen-wrap"><div class="phone" aria-hidden="true"><div class="screen-old">FRAME F−1<i></i><i></i><div></div></div><div class="screen-new" id="screen-new">FRAME F<i></i><i></i><div></div></div><div class="scanline" id="scanline"></div></div><div class="screen-meta"><strong id="screen-state">仍显示 F−1</strong><span id="screen-detail">新帧尚未呈现</span></div></div></article>
+</section>
+<section class="callback-box" aria-label="Choreographer callback队列"><div class="callback-header"><strong>Choreographer / 一次 doFrame 的回调顺序</strong><span>只执行各队列已到期的任务；空队列可直接跳过</span></div><div class="callback-queue" id="callback-queue"></div></section>
+<section class="composition-flow" aria-label="当前合成策略分支"><div class="callback-header"><strong>合成分支 / SF 不一定使用 GPU</strong><span id="composition-caption"></span></div><div class="composition-route" id="composition-route"></div><p class="live-note">CLIENT / DEVICE 是跨 Surface 图层的策略，和应用是否用 GPU 绘制自己的 View 是两回事。</p></section>
+</div>
+<aside class="inspector" aria-label="当前事件详解"><div class="inspector-head"><span id="inspector-step">EVENT 01</span><span class="thread-badge" id="thread-badge">UI THREAD</span></div><div class="inspector-content"><div class="event-category" id="event-category"></div><h2 id="event-title"></h2><div class="event-symbol" id="event-symbol"></div><p class="event-summary" id="event-summary"></p><section class="detail-section"><h3>此刻发生了什么</h3><ul class="event-details" id="event-details"></ul></section><aside class="pitfall"><strong>容易混淆</strong><span id="event-pitfall"></span></aside><section class="sources-section"><h3>对照当前源码 / 官方资料</h3><div id="event-sources"></div></section></div><div class="inspector-footer"><span id="event-timing"></span><span>← / → 逐步查看</span></div></aside>
+</div>
+<section aria-label="完整调用链目录"><div class="event-list-header"><h2>完整调用链 <span class="tag" id="event-count"></span></h2><input class="search" id="event-search" type="search" placeholder="搜索方法、fence、VSync…" aria-label="搜索调用链事件"></div><div class="event-list" id="event-list"></div><p class="no-results" id="no-results" hidden>没有匹配事件。试试 Choreographer、BLAST、measure 或 fence。</p></section>
+<section class="reading"><div><div class="eyebrow">Read the model correctly</div><h2>先建立这些正确的心智模型</h2><ul><li><strong>调度不是绘制：</strong>invalidate / requestLayout 通常只标记状态、合并请求并安排 traversal，不会立即把像素画到屏幕。</li><li><strong>UI、RT、GPU 是不同执行者：</strong>RenderThread 是应用进程里的原生线程，不是独立进程。UI 可在同步完成后继续工作，GPU 仍可异步运行。</li><li><strong>VSync 不止一种视角：</strong>硬件节拍校准预测模型；APP 和 SF 的软件唤醒有不同工作预算与时相。它们不必同时到达，也不是一个方法逐层转发。</li><li><strong>现代普通窗口经过 BLAST：</strong>应用侧消费 BufferQueue，再通过 SurfaceControl 事务把 GraphicBuffer 与 fence 交给 SF；不要照搬旧版 SF 直接作为应用 BQ consumer 的图。</li><li><strong>生产、就绪、呈现是三件事：</strong>queueBuffer 可携带尚未 signal 的 fence。SF/HWC 收到新 buffer 也不代表屏幕已切换。</li><li><strong>流水线跨帧重叠：</strong>图中聚焦 F，其生产期间屏幕仍显示 F−1。实际还可能同时准备 F+1，延迟不固定为一或两个刷新周期。</li></ul></div><div><h2>边界、分支与常见问题</h2><details><summary>为什么仅 invalidate 可能没有 measure / layout？</summary><p>尺寸和位置不变时，主要是失效区域 / RenderNode 内容更新。只有布局请求、窗口大小变化等需要时才重测重排。完整场景显式包含 requestLayout 和内容变化，不把“刷新”误当成每次必经三遍历。</p></details><details><summary>所有 View 每帧都会重新执行 onDraw 吗？</summary><p>不会。硬件加速保留 RenderNode / DisplayList；未变的子树可复用。translation、alpha 等属性更新还可能只改变渲染属性，RenderThread 动画也可不逐帧唤醒 UI。本模型选择内容失效的普通 View 分支。</p></details><details><summary>三缓冲、16.67ms、扫描方向是固定的吗？</summary><p>都不是。槽位数量和背压策略由实现 / 配置决定；16.67ms 只是 60Hz 的周期；90/120Hz、VRR 与帧率覆盖会改变预算。扫描采用从上到下的教学抽象，真实面板方向、传输、响应时间及 present fence 语义依设备而异。</p></details><details><summary>为什么 GPU 晚完成会错过一帧，而不是立即阻塞 SF？</summary><p>该场景选择“acquire fence 未就绪，当前轮不 latch”的保守分支。当前源码也存在受配置约束的 latch-unsignaled 优化；某些路径可传递未就绪 fence 给下游。不能把该动画当成所有设备的唯一等待策略。</p></details><details><summary>Commit、frame complete、present fence 有什么区别？</summary><p>Choreographer CALLBACK_COMMIT 是同一次 doFrame 的最后一类回调。HWUI 提交 / frame complete 回调描述各自 CPU/GPU 阶段；SurfaceControl 的提交与完成通知也各有语义。present fence 表达 HAL 的呈现时序，release fence 约束 buffer 何时可安全复用，均不等于所有像素已被人眼看见。</p></details><details><summary>这里没有展开哪些路径？</summary><p>窗口创建 / WMS relayout 与首次 Surface 分配只在说明中涉及，不按每帧固定步骤演出；不展开软件 Canvas、SurfaceView 独立 Surface、TextureView、视频解码、受保护内容、多屏 / 镜像、截图、HWC 厂商内部驱动及面板电气细节。它们不是不存在，而是不属于选定的普通硬件加速 View 主线。</p></details></div></section>
+</main>
+<footer class="footer"><span>源码基线：README 标注 android16-qpr2-release · 仓库 HEAD e4b38f4859aa · 资料核对 2026-10-21</span><span>教学动画 / 非 Perfetto 实测 · 单文件 HTML / 可离线打开</span></footer>
+</div>
+<dialog id="sources-dialog" aria-labelledby="sources-title"><div class="dialog-head"><h2 id="sources-title">源码、证据与版本</h2><button id="close-sources" aria-label="关闭源码与资料">关闭 ×</button></div><div class="dialog-body"><div class="scope-note">优先级：当前 checkout 的实现 &gt; 同版本上游源码 &gt; 官方架构资料。网页可能描述不同 Android 代际；本模型不会用旧图覆盖当前 BLAST / Scheduler 实现。</div><p>当前仓库 HEAD：<code>e4b38f4859aa7256724c668b8415c8185e35face</code>。版本名称来自仓库 README，并非已核验的完整 repo manifest。源码链接默认打开本地文件；上游链接用于在线对照，行号以本地内容为准。包括异常场景在内，所有时长、唤醒偏移与槽位数量都只是教学参数。</p><div id="source-catalog"></div></div></dialog>
+<dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-head"><h2 id="help-title">如何阅读这段动画</h2><button id="close-help" aria-label="关闭帮助">关闭 ×</button></div><div class="dialog-body"><p><strong>逐事件讲解</strong>为每个事件停留约 2.8 秒，保证调用链不被跳过；<strong>连续时序</strong>让示意时钟匀速前进，适合观察线程重叠。两种播放都不是源码耗时测量。</p><p>先看顶部的应用进程、SurfaceFlinger 进程和设备 / HAL 分区，再点下方八站路线，在“源码过程”列表逐项查看调用路线、状态变化、因果交接和本地源码路径。依赖 / 下游按钮可跨阶段追踪；列表按教学事件排列，不表示线程严格串行。</p><p>主动画在解释内容上方：亮框是当前事件的执行者，虚框表示同时在运行；交接物状态区说明 APP VSync、GraphicBuffer、fence 和事务到达了哪里。设备 / HAL 只是概念分组，不是一个进程。需要检查示意时间与重叠时，展开下方的跨线程精确时序。</p><p>点击事件、阶段或调用链目录可跳转；拖动帧内时间滑块可查看任意瞬间。展开的时序图可以左右滚动，也可拖动图下方“横向浏览”滑块直接移动到右侧；手动拖动会关闭自动跟随。事件的完整文字标签只是为了阅读，顶边细线才表示示意持续时间。缓冲区卡片展示应用 BQ 所有权及下游持有的概念关系，不是逐字段的 dumpsys。</p><div class="shortcut-list"><div><kbd>Space</kbd>播放 / 暂停</div><div><kbd>← / →</kbd>上一 / 下一事件</div><div><kbd>Home / End</kbd>首个 / 最后事件</div><div><kbd>?</kbd>打开帮助</div><div><kbd>Esc</kbd>关闭对话框</div><div><kbd>Tab</kbd>键盘访问所有控制项</div></div><p>尊重系统“减少动态效果”：默认不自动播放，也不进行平滑跟随。需要逐个阅读时使用下一步。</p></div></dialog>
+<div class="sr-only" id="announcer" aria-live="polite"></div>
+<script>
+'use strict';
+// All data is embedded: the teaching model works over file:// without network access.
+const $ = id => document.getElementById(id);
+const PHASES = ['请求与合帧','VSync 调度','五类 Callback','测量 / 布局 / 录制','RenderThread / GPU','BLAST 事务交接','SF 合成','呈现与回收'];
+const JOURNEY = [
+ {actor:'View → ViewRoot',title:'发出刷新请求',action:'标脏 / 请求布局，合并本轮 traversal',artifact:'待处理帧请求'},
+ {actor:'Scheduler → APP',title:'等到合适的节拍',action:'APP VSync 唤醒 Choreographer',artifact:'FrameTimeline'},
+ {actor:'Choreographer',title:'按顺序调度五类回调',action:'输入 → 动画 → Insets → 遍历 → Commit',artifact:'本帧工作队列'},
+ {actor:'UI thread',title:'测量、摆放、录制',action:'按需 Measure / Layout，录制 RenderNode',artifact:'DisplayList'},
+ {actor:'RenderThread + GPU',title:'生成窗口像素',action:'同步场景树、异步绘制 GraphicBuffer',artifact:'buffer + fence'},
+ {actor:'BLAST / app process',title:'移交给 SF',action:'BQ acquire 后 setBuffer / apply 事务',artifact:'SurfaceControl 事务'},
+ {actor:'SurfaceFlinger + HWC',title:'选择并合成图层',action:'SF latch；DEVICE / CLIENT 可分流',artifact:'待呈现输出'},
+ {actor:'HWC → panel',title:'提交、扫描、回收',action:'present 后等待显示链路；旧 buffer 复用',artifact:'屏幕上的 F'}
+];
+const LANES = [
+ {id:'vsync',name:'VSync / Scheduler',sub:'SYSTEM · SOFTWARE WAKEUP',color:'var(--ui)'},
+ {id:'ui',name:'应用 · UI 线程',sub:'APP PROCESS / MAIN',color:'var(--ui)'},
+ {id:'rt',name:'RenderThread',sub:'APP PROCESS / NATIVE',color:'var(--rt)'},
+ {id:'gpu',name:'GPU',sub:'ASYNCHRONOUS EXECUTION',color:'var(--gpu)'},
+ {id:'blast',name:'BufferQueue / BLAST',sub:'APP-SIDE CONSUMER → IPC',color:'var(--rt)'},
+ {id:'sf',name:'SurfaceFlinger',sub:'SF PROCESS / COMPOSITION',color:'var(--sf)'},
+ {id:'hwc',name:'Composer HAL / DPU',sub:'VENDOR / DISPLAY HARDWARE',color:'var(--sf)'},
+ {id:'display',name:'显示屏',sub:'PHYSICAL REFRESH / SCANOUT',color:'var(--sf)'}
+];
+const SCENE_NODES = [
+ {id:'ui',domain:'app',title:'ViewRootImpl / Choreographer',role:'UI 主线程 · Java Looper',hint:'invalidate → doFrame → measure/layout/record'},
+ {id:'rt',domain:'app',title:'HWUI / DrawFrameTask',role:'RenderThread · native',hint:'prepareTree → dequeue → draw → queue'},
+ {id:'blast',domain:'app',title:'BLASTBufferQueue',role:'应用侧 BQ consumer / 回调',hint:'acquire buffer → setBuffer → apply'},
+ {id:'vsync',domain:'sf',title:'Scheduler / EventThread',role:'SurfaceFlinger 进程 · 调度线程',hint:'APP / SF VSync 的预测与派发'},
+ {id:'sf',domain:'sf',title:'SurfaceFlinger',role:'SurfaceFlinger 进程 · 合成主线',hint:'commit → latch → composite'},
+ {id:'gpu',domain:'device',title:'图形 GPU',role:'异步命令执行 · 设备侧',hint:'写窗口 GraphicBuffer / client target'},
+ {id:'hwc',domain:'device',title:'Composer HAL / DPU',role:'HAL 接口 / 显示控制硬件',hint:'validate → present → fences'},
+ {id:'display',domain:'device',title:'显示面板',role:'物理刷新 / 扫描',hint:'F−1 保持 → F 扫描显示'}
+];
+const SOURCES = {};
+const BASE_EVENTS = [];
+Object.assign(SOURCES, {
+ view:{title:'View：invalidate / requestLayout / DisplayList',path:'base/core/java/android/view/View.java',lines:'21249–21320 · 24064–24157 · 25251–25314 · 28478–28670',note:'失效与布局请求、RenderNode 录制、绘制顺序。'},
+ group:{title:'ViewGroup：硬件加速的失效传播',path:'base/core/java/android/view/ViewGroup.java',lines:'6063–6112',note:'硬件路径通过 onDescendantInvalidated 向上传递，native 计算 damage。'},
+ vri:{title:'ViewRootImpl：刷新、屏障与遍历',path:'base/core/java/android/view/ViewRootImpl.java',lines:'2632–2661 · 3085–3129 · 3574–4557 · 5082–5223 · 5548–5960',note:'请求合并、按需 measure/layout、pre-draw 与硬件绘制入口。'},
+ choreo:{title:'Choreographer：五队列与帧时序',path:'base/core/java/android/view/Choreographer.java',lines:'311–353 · 872–902 · 1021–1238 · 1567–1626',note:'INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT。'},
+ receiver:{title:'DisplayEventReceiver / JNI / FD',path:'base/core/jni/android_view_DisplayEventReceiver.cpp',lines:'204–256 · 375–378',note:'native 回调经 JNI 送 Java；scheduleVsync 请求下一次事件。'},
+ dispatcher:{title:'DisplayEventDispatcher：一次性 VSync 请求',path:'native/libs/gui/DisplayEventDispatcher.cpp',lines:'80–100 · 129–141',note:'requestNextVsync 去重；Looper 从事件 FD 读取。'},
+ eventthread:{title:'EventThread：应用显示事件连接',path:'native/services/surfaceflinger/Scheduler/EventThread.cpp',lines:'261–263 · 417–472 · 899',note:'应用请求下一次 VSync，由调度器生成显示事件。'},
+ animation:{title:'AnimationHandler：动画 pulse 与 commit',path:'base/core/java/android/animation/AnimationHandler.java',lines:'505–514',note:'Animation 阶段及帧后 commit callback。'},
+ insets:{title:'InsetsController：插入 Insets 回调',path:'base/core/java/android/view/InsetsController.java',lines:'2033',note:'合并 IME / 系统栏 inset animation 更新。'},
+ renderer:{title:'ThreadedRenderer：录制并提交 HWUI 帧',path:'base/core/java/android/view/ThreadedRenderer.java',lines:'722–778 · 828–849',note:'录制工作在 UI 线程，syncAndDrawFrame 进入原生 HWUI。'},
+ hwRenderer:{title:'HardwareRenderer：JNI 入口',path:'base/graphics/java/android/graphics/HardwareRenderer.java',lines:'554–555',note:'同步帧信息并调用 nSyncAndDrawFrame。'},
+ drawtask:{title:'DrawFrameTask：UI / RT 同步边界',path:'base/libs/hwui/renderthread/DrawFrameTask.cpp',lines:'72–86 · 103–160 · 169–215',note:'postAndWait；通常 prepareTree 后提前放行 UI，而非等 GPU 完成。'},
+ rendernode:{title:'RenderNode：同步 staging 状态',path:'base/libs/hwui/RenderNode.cpp',lines:'237–284',note:'属性、DisplayList、动画与子树准备。'},
+ context:{title:'CanvasContext：绘制与 backend swap',path:'base/libs/hwui/renderthread/CanvasContext.cpp',lines:'604–714',note:'getFrame → pipeline draw → swapBuffers。'},
+ vk:{title:'SkiaVulkanPipeline：命令提交',path:'base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp',lines:'101–144',note:'renderFrame / finishFrame / swap；GL 后端路径不同。'},
+ vksurface:{title:'VulkanSurface：dequeue / queue 与 fence',path:'base/libs/hwui/renderthread/VulkanSurface.cpp',lines:'403–410 · 518–520',note:'以 Vulkan 路径作为带 fence 的队列交接示例。'},
+ surface:{title:'Surface：生产者 API',path:'native/libs/gui/Surface.cpp',lines:'666–784 · 802–807',note:'dequeueBuffer 经 IGraphicBufferProducer 获得 slot / GraphicBuffer 与复用 fence。'},
+ blast:{title:'BLASTBufferQueue：客户端消费与事务桥接',path:'native/libs/gui/BLASTBufferQueue.cpp',lines:'194–212 · 529–538 · 556–715 · 760–845',note:'消费应用侧 BQ，setBuffer(buffer,fence,releaseCallback)，apply；释放后回交 BQ。'},
+ sf:{title:'SurfaceFlinger：事务、latch 与合成',path:'native/services/surfaceflinger/SurfaceFlinger.cpp',lines:'2452–2463 · 2646–2802 · 2845–2976 · 3118–3233 · 5105–5250',note:'现代 commit / updateLayerSnapshots / composite；保守 fence 检查与 latch-unsignaled 分支。'},
+ sfqueue:{title:'SF MessageQueue：软件 VSync 唤醒',path:'native/services/surfaceflinger/Scheduler/MessageQueue.cpp',lines:'32–74 · 191–199',note:'VSyncDispatch 的定时回调 → dispatchFrame → onFrameSignal。'},
+ scheduler:{title:'Scheduler：帧目标与 commit / composite',path:'native/services/surfaceflinger/Scheduler/Scheduler.cpp',lines:'416–506',note:'创建 FrameTarget；commit 返回 false 时不调用 composite。'},
+ layer:{title:'Layer：latch buffer 元数据',path:'native/services/surfaceflinger/Layer.cpp',lines:'1258 · 1475–1500',note:'latchBufferImpl / gatherBufferInfo。'},
+ output:{title:'CompositionEngine / Output：选择、合成、回收',path:'native/services/surfaceflinger/CompositionEngine/src/Output.cpp',lines:'474–506 · 1164–1191 · 1295–1457 · 1673–1730',note:'无 CLIENT 层时跳过 RenderEngine；release fence 约束上一帧 buffer 的复用。'},
+ hwc:{title:'HWComposer：validate / present / fences',path:'native/services/surfaceflinger/DisplayHardware/HWComposer.cpp',lines:'535–600 · 656–686',note:'可能 presentOrValidate；present 返回 present fence 与逐层 release fences。'},
+ display:{title:'CompositionEngine / Display：呈现与 fence',path:'native/services/surfaceflinger/CompositionEngine/src/Display.cpp',lines:'275–278 · 432–447',note:'获取硬件合成决策，提交并收集 fences。'},
+ webVsync:{title:'官方：VSYNC 与显示管线',url:'https://source.android.google.cn/docs/core/graphics/implement-vsync?hl=en',note:'2026-10-21 实时读取。说明硬件/App/SF 节拍；页面含 DispSync 等历史内容，当前类名以源码为准。'},
+ webChoreo:{title:'官方：Choreographer API',url:'https://developer.android.google.cn/reference/android/view/Choreographer?hl=en',note:'2026-10-21 实时读取。Looper 回调、一次性 frame callback、FrameTimeline。'},
+ webBQ:{title:'官方：BufferQueue 与 Gralloc',url:'https://source.android.google.cn/docs/core/graphics/arch-bq-gralloc?hl=en',note:'2026-10-21 实时读取。队列所有权、handle 共享与按需分配；不是固定三缓冲。'},
+ webSF:{title:'官方：SurfaceFlinger 与 HWC',url:'https://source.android.google.cn/docs/core/graphics/surfaceflinger-windowmanager?hl=en',note:'2026-10-21 实时读取。CLIENT / DEVICE 合成与 transaction；现代普通 View 主线以本地 BLAST 实现为准。'},
+ webSync:{title:'官方：图形同步 fence',url:'https://source.android.google.cn/docs/core/graphics/sync?hl=en',note:'2026-10-21 实时读取。acquire / release / present；文中历史内核术语不作为当前所有设备固定实现。'},
+ oldChoreo:{title:'上游对照：Android 9 四类 callback',url:'https://github.com/aosp-mirror/platform_frameworks_base/blob/android-9.0.0_r1/core/java/android/view/Choreographer.java#L200-L226',note:'固定历史 tag；四类说法的版本背景，不是本地 Android 16 实现。'},
+ newChoreo:{title:'上游对照：Android 10 已有五类 callback',url:'https://github.com/aosp-mirror/platform_frameworks_base/blob/android-10.0.0_r1/core/java/android/view/Choreographer.java#L209-L250',note:'固定历史 tag；Android 10 首发已插入 INSETS_ANIMATION。'}
+});
+function E(id,phase,lane,start,end,title,symbol,summary,details,pitfall,refs){BASE_EVENTS.push({id,phase,lane,start,end,title,symbol,summary,details,pitfall,refs});}
+E('invalidate',0,'ui',.025,.045,'内容变化，标记 View 失效','View.invalidate() → invalidateInternal()',
+ 'View 的内容改变。invalidate 先修改失效标志，再把需要更新的信息向父节点传播，不是在这一刻完成绘制。',
+ ['已附着且可见的 View 设置 PFLAG_DIRTY / PFLAG_INVALIDATED 等标志。','硬件加速分支由父 ViewGroup.onDescendantInvalidated 继续上报；不是把像素层层复制。','如果从非 UI 线程发起，应使用适当的 postInvalidate / 主线程调度；这里选择 UI 线程合法调用。'],
+ '仅 invalidate 不意味着尺寸或位置变化；通常不需要重新 measure / layout。',['view','group']);
+E('requestLayout',0,'ui',.048,.07,'尺寸变化，请求重新布局','View.requestLayout() → parent.requestLayout()',
+ '完整场景假设 View 的内容和尺寸约束都发生变化，因此除失效外还显式发出布局请求。',
+ ['清理相关 measurement cache，并置 FORCE_LAYOUT / INVALIDATED。','父节点尚未处于 layoutRequested 时继续上传，最终根节点置 mLayoutRequested。','requestLayout 返回时并没有同步执行整棵树测量；本示例把多个请求合进一个 traversal。'],
+ 'requestLayout 与 invalidate 用途不同，不要在动画里把两者画成恒定的一条互相调用链。',['view','vri']);
+E('schedule',0,'ui',.075,.105,'合并 traversal，放入同步屏障','ViewRootImpl.scheduleTraversals()',
+ '根节点第一次安排遍历：设 mTraversalScheduled，插入消息同步屏障，并注册 TRAVERSAL callback。',
+ ['mTraversalScheduled 为真时避免重复安排同一轮 traversal。','MessageQueue.postSyncBarrier 让屏障之后的普通同步消息暂缓；异步消息仍可通过。','postCallback(CALLBACK_TRAVERSAL, mTraversalRunnable) 把遍历交给 Choreographer；notifyRendererOfFramePending 提示 HWUI。'],
+ '同步屏障不是让 Looper 整体停住，也不意味着 VSync 事件无法送达。',['vri']);
+E('requestVsync',1,'ui',.108,.135,'向显示事件连接请求下一次 VSync','scheduleFrameLocked() → scheduleVsyncLocked()',
+ 'Choreographer 只在需要新帧时发起调度；同一待处理帧通过 mFrameScheduled 去重。',
+ ['在所属 Looper 可直接请求；跨线程请求会先发异步调度消息。','DisplayEventReceiver → JNI → DisplayEventDispatcher → requestNextVsync。','这是一次性节拍请求；持续动画会在后续重新注册，不是应用永远无条件执行 doFrame。'],
+ '无可见更新时系统可停止给该客户端送帧，屏幕仍可按自己的刷新模式工作。',['choreo','receiver','dispatcher']);
+E('hwSample',1,'vsync',.11,.145,'硬件节拍校准软件预测','HWC VSync → onComposerHalVsync() → Scheduler',
+ '软件调度器利用硬件显示时间样本维护节拍预测，再根据各自预算安排 APP 与 SF 的唤醒。',
+ ['VSyncDispatch 依据预期呈现时刻、工作时长等信息安排定时通知。','APP 与 SF 通知可以存在相位差；不是一个硬件中断内串行完成应用与合成。','本条放在此处解释依赖，硬件采样在现实中持续 / 按需发生，并不是每个 invalidate 都触发一次。'],
+ '官方旧资料里的 DispSync 是历史实现；当前源码的主线是 Scheduler / VSyncDispatch。',['sf','eventthread','webVsync']);
+E('appVsync',1,'vsync',.16,.175,'APP VSync 到达事件连接','EventThread → DisplayEventConnection → BitTube / FD',
+ '为应用请求生成显示事件，携带时间戳、vsyncId、frameInterval 以及可选 FrameTimeline。',
+ ['事件连接跨进程传递时序数据，而不是传递 View 绘制内容。','应用 Looper 监控 display event FD，由 native dispatcher 读取。','图中周期和唤醒位置是教学参数，不代表某个设备固定 offset。'],
+ 'APP VSync、SF VSync、物理刷新边界是三种不同角色；SF 不必等应用完成才开始自己的调度。',['eventthread','dispatcher','webVsync']);
+E('onVsync',1,'ui',.18,.197,'onVsync 保存事件，投递异步消息','FrameDisplayEventReceiver.onVsync() → Handler',
+ 'JNI 回调到 Java 后，Choreographer 将帧事件排入自己的 Looper，而不是在回调栈中直接同步跑完整帧。',
+ ['记录时间戳、frame 与 VsyncEventData。','投递标记 asynchronous 的 Message，可穿过 traversal 同步屏障。','消息到期并获得 CPU 执行时，其 Runnable.run 才进入 doFrame。'],
+ 'onVsync 时间戳与 doFrame 实际开始执行的 CPU 时间不是同一概念。',['receiver','choreo']);
+E('doFrame',2,'ui',.2,.225,'doFrame 校正帧时间与目标','Choreographer.doFrame(frameTimeNanos, …)',
+ '准备 FrameData，处理迟到 / jitter，并按固定阶段顺序消费本帧到期的 callback。',
+ ['FrameTimeline 关联 vsyncId、deadline、expectedPresentationTime。','迟到时可调整帧时间 / 选择更合适时间线；还有 FPS divisor、buffer stuffing recovery 等条件分支。','每一队列进入时才提取当前到期回调，因此前一阶段可以给尚未开始的后续阶段追加任务。'],
+ '动画横轴为示意时间，不把 frameTime 当所有方法开始时间，也不宣称每帧都执行全部异常恢复分支。',['choreo','webChoreo']);
+E('input',2,'ui',.228,.25,'① INPUT：消费合批输入','doCallbacks(CALLBACK_INPUT)',
+ '可在帧边界消费 batched input，更新触摸、滚动等 UI 状态，并可能产生新的布局或绘制请求。',
+ ['ViewRootImpl.doConsumeBatchedInput → mInputEventReceiver.consumeBatchedInputEvents → doProcessInputEvents。','输入造成的变化可参与同一次尚未开始的 traversal。','本模型用一个代表性回调示意；实际队列可以为空，也可以有多个任务。'],
+ '不是所有输入都只能在 INPUT 阶段处理；unbuffered input 等路径可立即分发。',['choreo','vri']);
+E('animation',2,'ui',.252,.278,'② ANIMATION：推进属性动画','doCallbacks(CALLBACK_ANIMATION)',
+ 'AnimationHandler 等依据统一帧时间推进动画，应用 postFrameCallback 也属于这一阶段。',
+ ['计算动画 fraction / 插值并更新属性。','属性变更可能触发 invalidate、requestLayout，或仅更新 RenderNode 属性。','后续帧若仍需动画，将继续注册下一次 callback。'],
+ '属性动画不一定每帧重录整棵 View 树；某些动画还可以由 RT 独立推进。',['choreo','animation','webChoreo']);
+E('insets',2,'ui',.28,.296,'③ INSETS_ANIMATION：合并 Insets 变化','doCallbacks(CALLBACK_INSETS_ANIMATION)',
+ '在 Animation 后集中处理 IME / 系统栏的 inset animation 变化，确保遍历前应用相应状态。',
+ ['先收集普通动画阶段产生的 inset 更新。','InsetsController 注册本队列，用于协调窗口 inset animation。','Android 10 起已包含此阶段；当前 checkout 明确使用五队列。'],
+ '传统“四类 callback”是旧版本知识，不能删除当前源码中真实存在的这一阶段。',['choreo','insets','oldChoreo','newChoreo']);
+E('traversal',2,'ui',.298,.318,'④ TRAVERSAL：移除屏障并进入遍历','TraversalRunnable → doTraversal() → performTraversals()',
+ '根节点清除本轮待遍历标志，移除之前插入的同步屏障，随后检查测量、布局和绘制条件。',
+ ['移除屏障发生在 performTraversals 前，不是等屏幕显示后才移除。','检查可见性、窗口属性、Surface 与布局请求。','已有稳定 Surface 的普通更新不要求每帧重新创建窗口；首次创建 / relayout 是条件分支。'],
+ 'TRAVERSAL 是一整个回调，内含后续 measure / layout / draw / HWUI 同步；图中把内部步骤展开。',['vri','choreo']);
+E('measure',3,'ui',.32,.388,'Measure：协商宽高约束','performMeasure() → View.measure() → onMeasure()',
+ '从根的 MeasureSpec 开始，ViewGroup 按自己的策略测量子节点，得到 measuredWidth / measuredHeight。',
+ ['EXACTLY、AT_MOST、UNSPECIFIED 描述父对子尺寸的约束。','各 ViewGroup 在 onMeasure 中决定如何调用 child.measure，而非系统固定深度优先扫描每个节点。','缓存可复用；依布局条件可能多次测量。仅 invalidate 场景会跳过本条。'],
+ '测量结果是期望尺寸，不是最终位置；也不保证每个 View 每帧调用一次 onMeasure。',['vri','view']);
+E('layout',3,'ui',.39,.44,'Layout：确定每个 View 的边界','performLayout() → View.layout() → onLayout()',
+ '把已测量尺寸转化为 left / top / right / bottom，ViewGroup 为孩子分配具体位置。',
+ ['根布局后，容器按自身算法放置子 View。','layout 内再次 requestLayout 可触发补充测量布局；第二轮中的新请求还可能留到下一帧。','仅 invalidate 且几何不变时通常跳过本条。'],
+ 'layout 不生产最终屏幕像素；它确定几何信息，随后才准备绘制。',['vri','view']);
+E('predraw',3,'ui',.442,.462,'Pre-draw 检查：本帧是否继续画','ViewTreeObserver.dispatchOnPreDraw() / performDraw()',
+ '在真正绘制前处理观察者、可见性和同步等条件。本演示选择允许继续绘制的分支。',
+ ['OnPreDrawListener 可以取消这次 draw，并重新调度。','窗口状态或 Surface 尚未就绪时也可能跳过本轮绘制。','需要绘制时进入 ViewRootImpl.performDraw 与硬件 renderer。'],
+ 'measure / layout 完成不保证这一次 traversal 一定提交一个新 buffer。',['vri']);
+E('record',3,'ui',.465,.595,'Draw：把绘制指令录入 RenderNode','ThreadedRenderer.updateRootDisplayList() → View.updateDisplayListIfDirty()',
+ '硬件加速路径中，UI 线程用 RecordingCanvas 录制需要更新的 DisplayList，未脏子树可复用。',
+ ['脏节点 beginRecording → draw / dispatchDraw → endRecording。','常规 draw 包含背景、onDraw 内容、children、overlay、foreground / scrollbars、焦点等层次。','RenderNode 保存指令与属性；此刻不是把整个窗口截图成 bitmap 再送 SF。'],
+ 'UI draw 与 GPU rasterization 不是同一动作；未变化节点不需要重新执行完整 onDraw。',['view','renderer']);
+E('syncUI',4,'ui',.6,.68,'提交 DrawFrameTask，UI 短暂等待','syncAndDrawFrame() → RenderProxy → postAndWait()',
+ 'Java 通过 JNI 进入 HWUI，把同步任务放进应用进程中的 RenderThread 队列，并等待安全同步点。',
+ ['携带 frame info、RenderNode 等本帧信息。','UI 等待 RT 读取 / 同步 staging 状态，避免并发修改冲突。','本演示采用可提前放行的常见分支；某些纹理 / 资源条件会让等待更久。'],
+ 'RenderThread 是线程，不是另一个独立进程；UI 等待并不必然持续到 GPU 完成。',['renderer','hwRenderer','drawtask']);
+E('rtSync',4,'rt',.612,.676,'RT 同步场景树、属性与资源','DrawFrameTask.run() → syncFrameState() → prepareTree()',
+ 'RenderThread 将 UI 的 staging 属性与 DisplayList 同步到渲染状态，准备动画、damage 与资源。',
+ ['RenderNode 同步属性、DisplayList，并遍历需要准备的 children。','按需更新纹理 / layer 状态，计算脏区域。','同步安全时 signal condition 放行 UI，之后 RT 继续自己的绘制。'],
+ 'UI 被放行后，RT 与 GPU 仍可在执行；不要把随后 UI 的 COMMIT 当作 RT 结束点。',['drawtask','rendernode']);
+E('commitCallback',2,'ui',.684,.71,'⑤ COMMIT：doFrame 的帧后回调','doCallbacks(CALLBACK_COMMIT)',
+ 'Traversal 返回后，Choreographer 消费最后一个阶段；可进行帧时间修正以及动画帧后处理。',
+ ['定义顺序严格在 TRAVERSAL 之后。','前一 traversal 已完成 UI / RT 安全同步，但 GPU 可能还没有开始或仍在工作。','到期任务全部执行后结束本次 doFrame；后续普通消息与下一帧可继续。'],
+ '这里的 Commit 与 SurfaceControl transaction commit、HWC present、GPU fence signal 都不是同一个概念。',['choreo','animation']);
+E('dequeue',4,'rt',.688,.745,'获取可写 GraphicBuffer 与复用依赖','CanvasContext.getFrame() → Surface.dequeueBuffer()',
+ '后端通过 ANativeWindow 取得 BQ 槽位与 GraphicBuffer。若旧消费者还在使用，返回的 fence 限制何时能安全重写。',
+ ['FREE → DEQUEUED，生产者获得槽位。','Gralloc 可能首次分配，也可能复用已有图形内存；不是每帧 malloc 一张图。','没有可用槽位会产生 dequeue 背压；等待可在 CPU 或 GPU 同步路径体现，依后端而异。'],
+ 'FREE 表示队列槽位可被取走，不必然意味着相关 fence 已 signal；安全写入还要遵守同步依赖。',['surface','vksurface','webBQ','webSync']);
+E('rtDraw',4,'rt',.748,.835,'Skia 准备光栅化命令','CanvasContext.draw() → SkiaGL / SkiaVulkan draw()',
+ '根据 DisplayList、damage、变换、裁剪、纹理等准备本次绘制，驱动 GPU 后端。',
+ ['处理 RenderNode 树、图层、绘制批次与资源上传等所需工作。','后端可能是 SkiaGL 或 SkiaVulkan；本模型统一展示概念提交。','实际 getFrame / draw / flush 的细节与所选后端有关，图中不是每个驱动函数的唯一顺序。'],
+ 'RT 运行在 CPU；它提交 GPU 工作，不代表自己执行所有像素着色。',['context','vk']);
+E('submitGpu',4,'rt',.838,.86,'提交 GPU 工作，导出完成 fence','flush / finishFrame / submit → GPU dependency',
+ '后端提交生成窗口内容的命令，并建立写入完成依赖。CPU 可以继续交接 buffer，而 GPU 异步运行。',
+ ['Vulkan 的 finishFrame / swap 路径可返回同步 fence；GL 使用 EGL / native window 协作。','同一个依赖在下游语境称为 acquire fence，因为消费者用它确认何时能读取。','图示为一个可异步 queue 的分支，不表示所有驱动必须在相同函数创建 fence FD。'],
+ '命令已提交 ≠ GPU 已完成。fence 交出去时仍可处于 unsignaled 状态。',['vk','vksurface','webSync']);
+E('gpuWork',4,'gpu',.86,1.1,'GPU 执行：把 View 内容写进 B','GPU rasterization / texture sampling / blending',
+ 'GPU 按依赖读取纹理和绘制指令，把新窗口像素写到 GraphicBuffer B 中。',
+ ['执行期间 UI、BLAST 和 SF 的 CPU 工作可能并行推进。','图中把 GPU 工作画成一个整体；真实命令可有多批次、多个队列和调度延迟。','GPU 完成后写入 fence signal，下游才可安全读本帧内容。'],
+ 'queueBuffer 或 Transaction.apply 可以发生在本事件结束之前；不能强制所有步骤串行等待 GPU。',['vk','webSync']);
+E('queue',5,'rt',.875,.9,'queueBuffer：交出 B，携带 acquire fence','ANativeWindow.queueBuffer(buffer, fence)',
+ 'RT / 后端将 GraphicBuffer 排入应用侧 BufferQueue，生产者交还所有权，同时附带 GPU 写入依赖。',
+ ['DEQUEUED → QUEUED。','传递 damage、dataspace、时间戳等元数据；图形内存通常共享 handle，不跨 Binder 复制全帧像素。','GPU 尚未完成时 fence 可以未 signal；收到 buffer 的下一方仍不能立即无条件读取。'],
+ 'queue 是生产端提交，不是 SurfaceFlinger 合成完成，也不是这一刻已经显示。',['vksurface','blast','webBQ']);
+E('blastAcquire',5,'blast',.913,.955,'应用侧 BLAST 消费 BufferQueue','onFrameAvailable() → acquireNextBufferLocked()',
+ 'BLASTBufferQueue 在客户端进程充当 BQ consumer，把队列中的 buffer 转换为可随 SurfaceControl 事务提交的内容。',
+ ['QUEUED → ACQUIRED（这里的 consumer 是 BLAST）。','拿到 BufferItem 与原 GPU fence；acquire 不是 CPU 等 GPU 的同义词。','同步事务 / 窗口 resize 等分支可能先合并或等待，本例选择稳定窗口直接提交。'],
+ '现代普通 View 路径不是 SF 直接 acquire 应用的 BQ；别把 BLAST 的 ACQUIRED 标成 SF 的槽位状态。',['blast','vri']);
+E('transaction',5,'blast',.96,1.012,'把 buffer、fence 与图层状态组成事务','Transaction.setBuffer() → merge / apply()',
+ 'BLAST 将 GraphicBuffer、acquire fence、frame number 和 release callback 放入事务，连同必要图层元数据发往 SF。',
+ ['setDataspace、HDR metadata、surface damage 等可随事务提交。','关联 SurfaceControl 图层，必要时合并其他 pending transactions。','跨进程传递 handle / fence 与状态；不是再在 SF 重跑 View.onDraw。'],
+ '事务 apply 返回只说明提交路径已走到相应阶段，不等于事务已 latch 或屏幕已呈现。',['blast','webSF']);
+E('sfReceive',5,'sf',1.023,1.048,'SF 收到事务，等待可应用时机','SurfaceFlinger transaction queue / scheduleCommit',
+ '事务进入 SurfaceFlinger 的待处理集合，内容、时序、依赖与后续调度共同决定何时应用。',
+ ['事务可以早于 SF 的目标软件 VSync 到达。','expected / desired presentation、barrier、fence、backpressure 等条件会影响 ready 判定。','到达不等于立刻 latch；SF 主线程按 Scheduler 安排处理。'],
+ '不要画成 App queueBuffer 后同步调用 SF 把新帧一路推到屏幕。',['sf','scheduler']);
+E('gpuSignal',4,'gpu',1.1,1.112,'写入完成，acquire fence signal','GPU completion fence → signaled',
+ '本示例中，应用 GPU 的写入依赖此时满足。下游可以安全使用 B 的内容，仍需等待合成与显示时机。',
+ ['同一个 fence 可被转交 / 合并到后续同步链中。','signal 不负责把图层放上屏幕，只解除数据就绪依赖。','无 fence / NO_FENCE 的可用内容是另一路有效情况，并非每帧都有可见等待。'],
+ 'GPU 完成与 present fence signal 是不同事件。',['webSync','sf']);
+E('sfVsync',6,'vsync',1.18,1.195,'SF VSync：软件合成唤醒','MessageQueue.vsyncCallback() → dispatchFrame()',
+ 'Scheduler 根据目标呈现时间和 SF 工作预算唤醒 SF。它不是“等 App 画完之后才产生的硬件 VSync”。',
+ ['Looper 消息调用 Scheduler.onFrameSignal。','FrameTarget 提供 expectedPresentTime、vsyncId、预算、pending fence 等信息。','屏幕物理刷新仍按自身节拍进行；本轮选择在后续边界呈现 F。'],
+ '本示例的相位与预算不具有设备通用性，工作预算还可能随模式 / 帧率策略变化。',['sfqueue','scheduler','webVsync']);
+E('sfCommit',6,'sf',1.2,1.23,'commit：决定是否需要本轮合成','Scheduler.onFrameSignal() → SurfaceFlinger.commit()',
+ 'SF 检查 pending present、模式变化和背压等条件，开始更新本轮事务与 layer 状态。',
+ ['updateLayerSnapshots 收集并筛选 transactions。','commit 返回 false 时可以结束本轮而不调用 composite。','当前实现不是旧式 INVALIDATE / REFRESH 双消息教程中的固定流程。'],
+ 'SurfaceFlinger.commit 与 Choreographer CALLBACK_COMMIT 同名但跨进程且语义不同。',['scheduler','sf']);
+E('apply',6,'sf',1.232,1.287,'检查依赖，应用事务并更新层级快照','collect / flushTransactions → updateLayerSnapshots()',
+ '只处理满足时序与依赖的事务，更新请求层状态、hierarchy 和用于合成的 snapshots。',
+ ['desiredPresentTime、FrameTimeline 与 buffer barrier 等影响事务是否可应用。','未 signal acquire fence 通常使事务 NotReady；部分策略允许 latch-unsignaled 优化。','这里选已就绪的正常路径，并按快照 / layer 状态更新准备后续 latch。'],
+ '此处不是简单地把所有待处理 buffer 无条件全部取走；延迟场景展示保守延后一轮的分支。',['sf']);
+E('latch',6,'sf',1.29,1.337,'Latch：新 buffer 成为本轮图层内容','Layer.commitTransaction() → latchBufferImpl()',
+ 'SF 对 ready layer 接纳新 buffer 和元数据，让本轮合成引用 F 的内容；未更新图层仍可沿用旧 buffer。',
+ ['Layer.gatherBufferInfo 更新图形内容相关状态。','可能影响几何、damage 与可见区域，需要随后计算输出合成状态。','不是复制 View 树；SF 处理 Surface / Layer，不知道应用内部每个普通 View 的语义。'],
+ 'latch 表示被本轮图层状态采用，不是 GPU 已完成合成或屏幕已显示。',['sf','layer']);
+E('composite',6,'sf',1.34,1.395,'Composite：组织显示输出与可见图层','SurfaceFlinger.composite() → CompositionEngine.present()',
+ '根据 layer snapshots、裁剪、Z 序、变换、遮挡和输出配置，准备每个 display 的合成。',
+ ['可见区域 / 脏区域影响是否需要额外重绘。','CompositionEngine 对 output 执行 prepare / present 等阶段。','图中聚焦一个物理显示器；多屏 pacesetter / follower 与镜像是额外分支。'],
+ '合成面对的是窗口等 Surface 图层；并不是 SF 再次测量布局应用 View。',['sf','output']);
+E('strategy',6,'sf',1.398,1.445,'规划图层策略，向 HWC 提交状态','Output.prepareFrame() / chooseCompositionStrategy()',
+ 'SF 把图层几何、buffer、alpha、crop、transform、色彩等状态交给硬件合成器协商。',
+ ['输出策略可含 DEVICE、CLIENT 或混合。','硬件能力、受保护内容、变换与带宽等影响实际决策。','本页选择器用于观察分支，不代表运行时强制所有设备选择该策略。'],
+ '不是每一层都必须经过 SF GPU 合成；可以直接交由显示硬件读取。',['output','display','hwc']);
+E('validate',6,'hwc',1.447,1.505,'HWC 校验 / 接受合成类型','getDeviceCompositionChanges() → validate / presentOrValidate',
+ 'HWC 决定能由硬件处理的图层，并返回需要 SF 做客户端合成的内容及其他请求。',
+ ['SF 接受并应用类型变化。','DEVICE 层保留为硬件输入；CLIENT 层汇入 client target。','某些条件可通过 presentOrValidate 直接呈现或跳过独立 validate；这里展开一般协商路径。'],
+ '不能把每帧固定“两次 prepare/commit”作为当前 HWC API 的唯一顺序。',['hwc','display','webSF']);
+E('clientRender',6,'sf',1.51,1.555,'可选：RenderEngine 准备 CLIENT 合成','Output.composeSurfaces() → RenderEngine.drawLayers()',
+ '需要客户端合成时，SF 通过 RenderEngine 将 CLIENT 图层合成到一个 client target buffer。',
+ ['混合模式中仅 CLIENT 部分进入该 GPU 合成；DEVICE 层仍由 HWC 处理。','RenderEngine 的异步执行 /线程配置依实现，图中 SF 泳道表示调用方，不断言 GPU 在 SF 主线程执行。','全 DEVICE 模式跳过本阶段和随后的 SF GPU 工作。'],
+ '应用 GPU 绘制与 SF GPU 合成是两份不同的工作，不要合成一根没有边界的 GPU draw。',['output','webSF']);
+E('sfGpu',6,'gpu',1.558,1.745,'GPU：合成 CLIENT 层到 client target','RenderEngine GPU composition → output fence',
+ 'GPU 读取需要 CLIENT 合成的图层，完成混合、色彩和裁剪等处理，生成交给 HWC 的 client target。',
+ ['需要满足各输入 buffer 的 acquire 依赖。','输出 GPU fence 作为 client target 给 HWC 的 acquire 依赖。','在全 DEVICE 场景里，这一份 SF GPU 工作不存在，但 App 生成窗口内容的 GPU 工作仍存在。'],
+ '启用硬件合成不代表应用不再需要绘制；它只改变跨 Surface 图层的合成方式。',['output','webSync']);
+E('clientTarget',6,'sf',1.75,1.785,'提交 client target 与输入依赖','queue client target / setClientTarget(buffer, acquireFence)',
+ 'SF 把客户端合成结果及其就绪 fence 接入输出路径，与 DEVICE 层一起等待硬件呈现。',
+ ['本示例将其放在 GPU 完成之后便于阅读；真实路径可以先交 fence 再由 GPU 完成。','混合模式下 HWC 同时拿到独立 DEVICE 层和 CLIENT 合成结果。','全 CLIENT 模式仍由 HWC / 显示管线接收 client target 并呈现。'],
+ 'CLIENT 不是绕过 HWC 直接写屏幕，也不是由 SF 直接驱动所有面板像素。',['output','hwc']);
+E('present',7,'hwc',1.8,1.86,'Present：提交本轮显示，取回 fences','presentAndGetReleaseFences() → presentDisplay()',
+ 'HWC 把本轮配置和 buffer 依赖提交给显示管线，返回本轮 present fence 与相关逐层 release fences。',
+ ['返回的 fence 可能尚未 signal，CPU 无需在同一调用栈等待完整物理扫描。','满足条件时前面的 presentOrValidate 可提前完成呈现提交；这里按一般路径展开。','显示控制器要遵守输入就绪依赖，并在合适刷新边界采用配置。'],
+ 'present 调用返回不等于屏幕已经出现新帧，更不等于所有 buffer 立即可复用。',['hwc','display','webSync']);
+E('dpu',7,'hwc',1.865,2,'显示控制器准备并采用本轮内容','DPU / display engine → physical refresh boundary',
+ '显示硬件处理 DEVICE 层与 client target，按设备能力读取、混合并输送给面板。',
+ ['需要满足输入 buffer 的 acquire fence。','显示模式、带宽、色彩处理、驱动排队和面板链路都会影响实际时序。','这一段为通用硬件概念；当前 framework checkout 不包含完整厂商驱动 / 面板实现。'],
+ '不是所有设备都存在同样的 DPU、相同扫描方向或固定的一次性合成动作。',['webSF','webVsync']);
+E('presentSignal',7,'display',2,2.025,'进入目标物理刷新：呈现时间点','Physical refresh / present fence timing',
+ '新显示提交在本示例的物理刷新目标开始被采用。present fence 用于表达显示链路的呈现时序。',
+ ['实际 fence 语义、信号时点及可靠性依 HAL 与显示类型而异。','本示例把它放在 scanout 起始附近作为教学标记，不宣称所有设备此刻 signal。','目标时间、实际呈现、扫描完成和像素响应是不同指标。'],
+ 'present fence 不是“这一刻全屏所有像素同时变成新颜色”的证明。',['webSync','webVsync']);
+E('scanout',7,'display',2.028,3,'Scanout：新帧逐步输送到屏幕','Display scanout → panel update → pixel response',
+ '以从上到下的扫描示意，展示屏幕并非在 CPU present 返回时瞬间更新全部像素。',
+ ['实际更新方向、command / video mode、面板自刷新、传输方式与响应时间都依设备而异。','图中的手机会随播放位置逐步揭示 F。','若无下一帧，内容可被保持或重复刷新；每次刷新不要求应用重新绘制。'],
+ '这不是 framework 源码可完整证实的面板电气模型，也不把一个刷新周期当成所有设备的响应时间。',['webVsync','webSync']);
+E('release',7,'blast',2.04,2.095,'旧 buffer A：回交 release fence','releaseCallback → BufferItemConsumer.releaseBuffer(A, fence)',
+ 'F 替换 F−1 后，旧 buffer A 的释放依赖被回传到 BLAST，再交还 BQ。',
+ ['这次回交涉及旧 buffer A，不是刚开始呈现的新 buffer B。','BQ 槽位可进入可 dequeue 状态，但 production 必须尊重返回 fence 才能安全覆盖。','CLIENT / DEVICE 的 release 来源可能不同，相关 fence 还可能被合并。'],
+ 'release callback 到达、BQ FREE、release fence signal 三者不能无条件等同。',['blast','output','webSync']);
+E('releaseSignal',7,'blast',2.11,2.135,'旧 buffer 读取结束，可以安全复用','A release fence → signaled → next producer write allowed',
+ '本示例选择旧 buffer 在此时不再被下游读取，复用限制解除，后续帧可以安全写入 A。',
+ ['旧帧释放时间依合成模式 / 硬件而异，图中只是其中一个有效示例。','新 buffer B 仍被下游引用，直到被未来帧替换并满足自己的 release 依赖。','实际 buffer 生命周期可能跨越多次刷新，不强制一帧对应一次立即释放。'],
+ '帧 F 的 present fence signal 不意味着帧 F 的 B 立即 FREE。这里复用的是 F−1 的 A。',['output','blast','webSync']);
+E('visible',7,'display',3.025,3.09,'示意扫描完成，F 保持在屏幕上','Frame F remains visible; next frame may be in flight',
+ '本次完整旅程结束：应用状态经过录制、渲染、事务与合成成为可见内容。其他帧可以已经并发在流水线中。',
+ ['动画只跟踪 F，不会把所有处理误画成严格每帧从零重新开始。','下一次更新可复用未变 DisplayList 和空闲 buffer。','真实可见延迟应结合 FrameTimeline、GPU / SF / HWC trace 与显示测量验证。'],
+ '本页不是设备 trace，没有实测的 input-to-photon 延迟。物理像素响应仍依面板而异。',['webVsync','webSync']);
+
+const CALLBACKS = [
+ {id:'input',title:'0 / INPUT',label:'合批输入'},
+ {id:'animation',title:'1 / ANIMATION',label:'动画 pulse'},
+ {id:'insets',title:'2 / INSETS',label:'Insets 动画',extra:true},
+ {id:'traversal',title:'3 / TRAVERSAL',label:'测量 · 布局 · 录制'},
+ {id:'commitCallback',title:'4 / COMMIT',label:'帧后处理'}
+];
+const state = {events:[],index:0,time:0,playing:false,follow:true,lastNow:0,explainElapsed:0,zoom:1.4,period:1000/60,duration:3.16,target:2,scenario:'layout',composition:'mixed',mode:'explain',speed:1};
+let eventElements = new Map();
+let listElements = new Map();
+let laneElements = new Map();
+const DEPENDENCIES = {
+ requestLayout:['invalidate'],schedule:['invalidate','requestLayout'],requestVsync:['schedule'],appVsync:['requestVsync','hwSample'],onVsync:['appVsync'],doFrame:['onVsync'],input:['doFrame'],animation:['input'],insets:['animation'],traversal:['insets','schedule'],measure:['traversal'],layout:['measure'],predraw:['layout','traversal'],record:['predraw'],syncUI:['record'],rtSync:['syncUI'],commitCallback:['rtSync'],dequeue:['rtSync'],rtDraw:['dequeue'],submitGpu:['rtDraw'],gpuWork:['submitGpu'],queue:['submitGpu'],blastAcquire:['queue'],transaction:['blastAcquire'],sfReceive:['transaction'],gpuSignal:['gpuWork'],sfVsync:['hwSample'],sfCommit:['sfVsync','sfReceive'],apply:['sfCommit','gpuSignal'],latch:['apply'],composite:['latch'],strategy:['composite'],validate:['strategy'],clientRender:['validate'],sfGpu:['clientRender'],clientTarget:['sfGpu'],present:['clientTarget','validate'],dpu:['present'],presentSignal:['dpu'],scanout:['presentSignal'],release:['present'],releaseSignal:['release'],visible:['scanout'],missGpu:['transaction'],missUi:['measure'],missSf:['sfGpu','composite']
+};
+let renderRequest = 0;
+function cloneEvent(e){return {...e,details:[...e.details],refs:[...e.refs]};}
+function byId(id){return state.events.find(e=>e.id===id);}
+function at(id,edge='start',fallback=Infinity){const e=byId(id);return e?e[edge]:fallback;}
+function buildModel(){
+ state.period=1000/Number($('refresh').value);
+ state.scenario=$('scenario').value;
+ state.composition=$('composition').value;
+ let events=BASE_EVENTS.map(cloneEvent);
+ if(state.composition==='mixed')events.find(e=>e.id==='strategy').details.unshift('本示例跟踪的 View 窗口选择 DEVICE，其它示意图层走 CLIENT；用以展示混合策略与旧 buffer 的硬件 release 依赖。');
+ state.target=2;
+ if(state.scenario==='invalidate'){
+  events=events.filter(e=>!['requestLayout','measure','layout'].includes(e.id));
+  for(const e of events){
+   if(e.id==='predraw'){e.start=.322;e.end=.34;}
+   else if(e.start>=.465&&e.start<1.18){e.start-=.12;e.end-=.12;}
+  }
+  const t=events.find(e=>e.id==='traversal');
+  t.details[1]='没有布局请求且窗口几何稳定：跳过 measure / layout，直接进入需要更新的绘制分支。';
+ }
+ if(state.composition==='device'){
+  events=events.filter(e=>!['clientRender','sfGpu','clientTarget'].includes(e.id));
+  events.find(e=>e.id==='strategy').summary='本演示选择所有可见内容均由 HWC 的 DEVICE 合成处理。SF 仍更新图层状态，但跳过 RenderEngine 的 CLIENT GPU 工作。';
+  events.find(e=>e.id==='validate').details[0]='本示例的图层被接受为 DEVICE；硬件仍需处理各输入 buffer 的就绪依赖。';
+ }else if(state.composition==='client'){
+  events.find(e=>e.id==='strategy').summary='本演示选择全部可见图层参与 CLIENT 合成，由 SF / RenderEngine 生成一个 client target，再交 HWC 呈现。';
+  events.find(e=>e.id==='sfGpu').summary='GPU 把本示例全部可见图层合成到 client target。没有独立 DEVICE 内容参与，但 HWC / 显示管线仍负责最终呈现。';
+ }
+ const miss=(id,start,title,summary,details,lane='sf')=>({id,phase:6,lane,start,end:start+.065,title,symbol:'Teaching branch / missed opportunity',summary,details,pitfall:'这是一个明确选择的教学异常分支，不是所有设备的固定行为，也不是实测 trace。',refs:['sf','scheduler','webSync'],missed:true});
+ if(state.scenario==='ui-late'){
+  for(const e of events){if(e.id==='measure'){e.end+=1;e.title='Measure 超时：UI 线程占用过长';e.summary='本例把测量工作人为拉长一个周期，导致内容无法赶上原计划的 SF 合成机会。';}else if(e.start>=.39){e.start+=1;e.end+=1;}}
+  events.push(miss('missUi',1.18,'本轮 SF：F 尚未提交，沿用旧内容','原合成机会到来时 UI 仍未交出新帧，SF 不可能呈现尚不存在的 buffer。',['可以重复呈现 F−1，或本轮无新内容无需重合成。','后续 SF 软件唤醒独立存在；F 赶上下一次合成机会。']));
+  state.target=3;
+ }else if(state.scenario==='gpu-late'){
+  const work=events.find(e=>e.id==='gpuWork');work.end=2.1;work.title='App GPU 排队 / 执行延迟';work.summary='内容已经通过 BQ / BLAST 提交，但 GPU 写入一直未完成。下游拿到的是尚未 signal 的 acquire fence。';
+  const signal=events.find(e=>e.id==='gpuSignal');signal.start=2.1;signal.end=2.112;
+  for(const e of events){if(e.start>=1.18&&e.id!=='gpuSignal'){e.start+=1;e.end+=1;}}
+  events.push(miss('missGpu',1.18,'本轮 SF：acquire fence 未就绪','本模型选择保守分支：buffer 事务 NotReady，本轮不采用 F，沿用旧内容。',['BLAST 已 acquire 不代表 GPU 已完成；事务可携带未 signal fence。','当前源码也允许受约束的 latch-unsignaled 优化；这里不选择该优化。','GPU signal 后，事务在后续合成机会重试。']));
+  state.target=3;
+ }else if(state.scenario==='sf-late'){
+  if(state.composition==='device'){
+   for(const e of events){if(e.id==='composite'){e.end+=1;e.title='SF 输出准备超时';e.summary='全 DEVICE 场景没有 SF GPU 合成，本例改为让 SF 的输出准备 / CPU 工作超时，错过原显示目标。';}else if(e.start>=1.398){e.start+=1;e.end+=1;}}
+  }else{
+   for(const e of events){if(e.id==='sfGpu'){e.end+=1;e.title='SF CLIENT GPU 合成超时';e.summary='应用 buffer 已就绪，但 SF 的客户端 GPU 合成超过本轮预算，client target 无法及时交给显示管线。';}else if(e.start>=1.75){e.start+=1;e.end+=1;}}
+  }
+  events.push(miss('missSf',2,'目标刷新未赶上：继续显示 F−1','应用已完成并被 SF 接纳，但显示提交还没有及时就绪；新帧转到后续物理刷新目标。',['这类迟到不能归咎于 View.onDraw；瓶颈在 SF / 合成侧。','本例人为增加一个周期，不表示真实系统只会以整周期延迟。'],'display'));
+  state.target=3;
+ }
+ if(state.composition==='client'){
+  const released=events.find(e=>e.id==='release');const signaled=events.find(e=>e.id==='releaseSignal');
+  signaled.start=released.start;signaled.end=released.start+.015;
+  signaled.title='旧源 buffer A：回交时 fence 已 signal';
+  signaled.summary='全 CLIENT 下，窗口源 buffer A 不是面板扫描的 client target；在本例释放回调交回时，相关 GPU 读取依赖已经满足。';
+  signaled.details=['面板扫描的是合成后的 client target，不是源窗口 A。','client composition 的 release fence 可与 client target acquire 依赖合并；此例中该依赖在回交前已完成。','新源 buffer B 的保留 / 释放仍有自己的后续生命周期，不等于帧 F 上屏就立即 FREE。'];
+  released.title='旧源 buffer A：回交已满足的 release 依赖';
+  released.summary='本例全 CLIENT 合成已完成读取依赖。释放回调把旧源 A 交回 BLAST / BQ 时，fence 已 signal；不再演出下游仍在读取 A 的等待。';
+ }
+ events.sort((a,b)=>a.start-b.start || BASE_EVENTS.findIndex(e=>e.id===a.id)-BASE_EVENTS.findIndex(e=>e.id===b.id));
+ state.events=events;
+ state.duration=state.target+1.16;
+ state.index=0;state.time=0;state.explainElapsed=0;
+ renderAll();
+ $('timeline-scroll').scrollLeft=0;syncPanControl();
+}
+function node(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
+function makeSourceLink(key,compact=false){
+ const s=SOURCES[key];const a=node('a','source-link');
+ a.href=s.path?'../../'+s.path:s.url;
+ a.target='_blank';a.rel='noopener noreferrer';
+ a.textContent=s.path?(compact?s.path.split('/').pop():s.path)+' : '+s.lines:s.title+' ↗';
+ a.title=s.note;return a;
+}
+function renderSources(){
+ const catalog=$('source-catalog');
+ for(const [key,s] of Object.entries(SOURCES)){
+  const entry=node('section','source-entry');entry.append(node('h3',null,s.title),makeSourceLink(key),node('p',null,s.note));
+  if(s.path){const upstream=node('a',null,'同版本上游分支对照 ↗');const repo=s.path.startsWith('base/')?'base':'native';upstream.href='https://android.googlesource.com/platform/frameworks/'+repo+'/+/refs/heads/android16-qpr2-release/'+s.path.replace(/^(base|native)\//,'');upstream.target='_blank';upstream.rel='noopener noreferrer';entry.append(upstream);}
+  catalog.append(entry);
+ }
+}
+function renderAll(){
+ lastInspectorId='';lastJourneyCodeId='';lastSceneTransfers='';journeyCodePhase=-1;renderPhases();renderJourney();renderScene();renderTimeline();renderList();renderCallbacks();renderComposition();updateScenarioNote();update();
+}
+function renderPhases(){
+ const parent=$('phases');parent.replaceChildren();
+ PHASES.forEach((name,i)=>{const b=node('button','phase');b.dataset.phase=i;b.append(node('span','num',String(i+1).padStart(2,'0')),document.createTextNode(name));b.addEventListener('click',()=>{const idx=state.events.findIndex(e=>e.phase===i);if(idx>=0)select(idx,true);});parent.append(b);});
+}
+function renderJourney(){
+ const grid=$('journey-grid');grid.replaceChildren();
+ JOURNEY.forEach((station,i)=>{
+  const b=node('button','journey-step');b.dataset.station=String(i);b.type='button';
+  const top=node('span','step-top');top.append(node('span','step-number',String(i+1).padStart(2,'0')),node('span','step-actor',station.actor));
+  const visual=node('span','step-visual');visual.setAttribute('aria-hidden','true');
+  const visualParts=[['View','dirty'],['HW','APP','SF'],['IN','ANI','IS','TR','C'],['M','L','D'],['UI','RT','GPU'],['BQ','txn'],['DEVICE','CLIENT'],['screen']][i];
+  for(const part of visualParts){
+   const symbol=node('span',part==='screen'?'screen-mini':part==='DEVICE'||part==='CLIENT'?'branch':part==='dirty'?'lit':null,part==='screen'?undefined:part==='dirty'?'dirty':part);
+   if(part==='screen')symbol.append(node('i'));visual.append(symbol);
+  }
+  b.append(top,node('strong',null,station.title),visual,node('span','step-action',station.action),node('span','step-artifact',station.artifact));
+  b.addEventListener('click',()=>{const index=state.events.findIndex(e=>e.phase===i);if(index>=0)select(index,true);if(matchMedia('(max-width:750px)').matches)$('journey-code-title').scrollIntoView({block:'start',behavior:'auto'});});
+  grid.append(b);
+ });
+}
+function updateJourney(){
+ const e=state.events[state.index];
+ for(const [i,b] of [...$('journey-grid').children].entries()){
+  const selected=i===e.phase;
+  const busy=state.events.some(x=>x.phase===i&&x.start<=state.time&&state.time<x.end);
+  b.classList.toggle('selected',selected);b.classList.toggle('busy',busy);
+  b.setAttribute('aria-pressed',String(selected));
+  if(selected)b.setAttribute('aria-current','step');else b.removeAttribute('aria-current');
+ }
+ const marker=String(e.phase+1).padStart(2,'0')+' / 08';
+ if($('journey-marker').textContent!==marker)$('journey-marker').textContent=marker;
+ if($('journey-current').textContent!==e.title)$('journey-current').textContent=e.title;
+ const artifact='这一站交出：'+JOURNEY[e.phase].artifact;
+ if($('journey-artifact').textContent!==artifact)$('journey-artifact').textContent=artifact;
+ if($('journey-explanation').textContent!==e.summary)$('journey-explanation').textContent=e.summary;
+ const visuals=$('journey-grid').children;
+ const callbackNames=['input','animation','insets','traversal','commitCallback'];
+ for(const [i,span] of [...visuals[2].querySelector('.step-visual').children].entries()){
+  span.classList.toggle('lit',e.id===callbackNames[i]||i===3&&e.phase===3);
+ }
+ const drawing=visuals[3].querySelector('.step-visual').children;
+ ['measure','layout','record'].forEach((id,i)=>drawing[i].classList.toggle('lit',state.time>=at(id)&&state.time<at(id,'end')));
+ const render=visuals[4].querySelector('.step-visual').children;
+ render[0].classList.toggle('lit',state.time>=at('syncUI')&&state.time<at('syncUI','end'));
+ render[1].classList.toggle('lit',state.time>=at('rtSync')&&state.time<at('queue','end'));
+ render[2].classList.toggle('lit',state.time>=at('gpuWork')&&state.time<at('gpuSignal'));
+ const composition=visuals[6].querySelector('.step-visual').children;
+ composition[0].classList.toggle('lit',state.composition!=='client');
+ composition[1].classList.toggle('lit',state.composition!=='device');
+ const scan=Math.max(0,Math.min(1,(state.time-at('scanout'))/(at('scanout','end')-at('scanout'))));
+ visuals[7].querySelector('.screen-mini').style.setProperty('--scan',Math.round(scan*100)+'%');
+ const layoutStation=visuals[3].querySelector('.step-action');
+ layoutStation.textContent=state.scenario==='invalidate'?'几何未变：跳过 Measure / Layout，仅重录脏内容':JOURNEY[3].action;
+ const compositionStation=visuals[6].querySelector('.step-action');
+ compositionStation.textContent=state.composition==='device'?'全 DEVICE：由硬件合成图层':state.composition==='client'?'全 CLIENT：先由 RenderEngine 合成':'SF latch；DEVICE / CLIENT 可分流';
+ updateJourneyCode();
+}
+let journeyCodePhase=-1;
+let lastJourneyCodeId='';
+function updateJourneyCode(){
+ const e=state.events[state.index];
+ if(journeyCodePhase!==e.phase){
+  journeyCodePhase=e.phase;
+  const events=state.events.filter(item=>item.phase===e.phase);
+  $('journey-code-title').textContent=String(e.phase+1).padStart(2,'0')+' / '+PHASES[e.phase]+' · 源码过程';
+  $('journey-code-count').textContent=events.length+' 个事件 · 点击逐项看调用、状态与源码；跨线程工作可重叠';
+  const list=$('journey-code-list');list.replaceChildren();
+  events.forEach((item,i)=>{
+   const button=node('button','journey-code-item');button.type='button';button.dataset.codeEvent=item.id;
+   button.append(node('span','code-order',String(i+1).padStart(2,'0')),node('strong',null,item.title),node('small',null,LANES.find(l=>l.id===item.lane).name+' · '+item.symbol));
+   button.addEventListener('click',()=>select(state.events.indexOf(item),true));list.append(button);
+  });
+ }
+ const list=$('journey-code-list');
+ for(const button of list.children){
+  const selected=button.dataset.codeEvent===e.id;
+  button.classList.toggle('active',selected);
+  if(selected)button.setAttribute('aria-current','step');
+  else button.removeAttribute('aria-current');
+ }
+ if(lastJourneyCodeId===e.id)return;
+ lastJourneyCodeId=e.id;
+ const selectedButton=list.querySelector('[aria-current="step"]');
+ if(selectedButton&&(selectedButton.offsetTop<list.scrollTop||selectedButton.offsetTop+selectedButton.offsetHeight>list.scrollTop+list.clientHeight))list.scrollTop=selectedButton.offsetTop-list.clientHeight/2;
+ const detail=$('journey-code-detail');
+ const meta=node('div','journey-code-meta',LANES.find(l=>l.id===e.lane).name+' · '+(e.start*state.period).toFixed(2)+'–'+(e.end*state.period).toFixed(2)+' ms / 教学示意');
+ const steps=node('ol');steps.append(...e.details.map(item=>node('li',null,item)));
+ const sources=node('div','journey-code-sources');sources.append(...e.refs.map(key=>makeSourceLink(key)));
+ const handoff=node('div','journey-code-handoff');
+ const dependencyIds=(DEPENDENCIES[e.id]||[]).filter(id=>byId(id));
+ const downstreamIds=state.events.filter(item=>(DEPENDENCIES[item.id]||[]).includes(e.id)).map(item=>item.id);
+ for(const [label,ids] of [['直接依赖',dependencyIds],['交给下游',downstreamIds]]){
+  const row=node('div');row.append(node('span',null,label));
+  if(!ids.length)row.append(node('small',null,'本模型未再展开'));
+  for(const id of ids){const target=byId(id);const button=node('button',null,target.title);button.type='button';button.addEventListener('click',()=>select(state.events.indexOf(target),true));row.append(button);}
+  handoff.append(row);
+ }
+ detail.replaceChildren(meta,node('h4',null,e.title),node('code','journey-code-symbol',e.symbol),node('p',null,e.summary),node('h5',null,'源码执行与状态变化'),steps,node('h5',null,'因果交接（可跳转）'),handoff,node('p','journey-code-pitfall','注意：'+e.pitfall),node('h5',null,'对照当前源码 / 官方资料'),sources);
+}
+function renderScene(){
+ const map=$('scene-map');map.querySelectorAll('.scene-node').forEach(el=>el.remove());
+ for(const data of SCENE_NODES){
+  const button=node('button','scene-node');button.type='button';button.dataset.scene=data.id;
+  button.append(node('span','scene-role',data.role),node('strong',null,data.title),node('small',null,data.hint),node('span','scene-operation','下一步：'+data.hint),node('span','scene-state','等待'));
+  button.addEventListener('click',()=>{const index=state.events.findIndex(e=>e.lane===data.id);if(index>=0)select(index,true);});
+  $('scene-'+data.domain).append(button);
+ }
+}
+let lastSceneTransfers='';
+function updateScene(){
+ const e=state.events[state.index];
+ for(const button of $('scene-map').querySelectorAll('.scene-node')){
+  const lane=button.dataset.scene;
+  const current=lane===e.lane;
+  const running=state.events.some(item=>item.lane===lane&&item.start<=state.time&&state.time<item.end);
+  const recent=state.events.filter(item=>item.lane===lane&&item.start<=state.time).at(-1);
+  button.classList.toggle('current',current);
+  button.classList.toggle('running',running);
+  button.classList.toggle('done',!!recent&&!running);
+  const operation=current?e.symbol:recent?recent.symbol:'下一步：'+SCENE_NODES.find(item=>item.id===lane).hint;
+  if(button.querySelector('.scene-operation').textContent!==operation)button.querySelector('.scene-operation').textContent=operation;
+  const status=current?'正在讲解':running?'并行运行':recent?'已到达':'等待';
+  if(button.querySelector('.scene-state').textContent!==status)button.querySelector('.scene-state').textContent=status;
+  if(lane===e.lane)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');
+ }
+ for(const domain of $('scene-map').querySelectorAll('.scene-domain'))domain.classList.toggle('active',domain.querySelector('.scene-node.current')!==null);
+ $('scene-count').textContent=String(state.index+1).padStart(2,'0')+' / '+state.events.length+' · '+(state.time*state.period).toFixed(2)+' ms 示意';
+ $('scene-title').textContent=e.title;
+ if($('scene-symbol').textContent!==e.symbol)$('scene-symbol').textContent=e.symbol;
+ $('scene-summary').textContent=e.summary;
+ $('scene-artifact').textContent='这一站交出：'+JOURNEY[e.phase].artifact;
+ const busy=LANES.filter(lane=>state.events.some(item=>item.lane===lane.id&&item.start<=state.time&&state.time<item.end));
+ $('scene-busy').replaceChildren(node('span',null,'同一时刻仍在运行：'),node('b',null,busy.length?busy.map(lane=>lane.name).join(' / '):'无（等待下一事件或显示目标）'));
+ const transferData=[
+  ['APP VSync','EventThread → app FD',at('appVsync'),at('onVsync')],
+  ['RenderNode','UI 录制 DisplayList',at('record'),at('syncUI')],
+  ['GraphicBuffer B','RT dequeue → queue',at('dequeue'),at('queue')],
+  ['acquire fence','GPU 写入依赖',at('queue'),at('gpuSignal')],
+  ['SurfaceControl 事务','BLAST → SF / Binder',at('transaction'),at('sfReceive')],
+  ['Present / scanout','HWC → 显示面板',at('present'),at('visible')]
+ ];
+ const states=transferData.map(([, ,start,end])=>state.time<start?'waiting':state.time<end?'current':'ready');
+ const transferSignature=states.join('|')+'|'+(state.time>=at('gpuSignal')?'signaled':'unsignaled');
+ if(lastSceneTransfers!==transferSignature){
+  lastSceneTransfers=transferSignature;
+  $('scene-handoff').replaceChildren(...transferData.map(([name,description],i)=>{
+   const card=node('div','transfer '+states[i]);
+   const detail=name==='acquire fence'&&states[i]!=='waiting'?(state.time>=at('gpuSignal')?'已 signal，可安全读':'未 signal，不可无条件读取'):description;
+   card.append(node('strong',null,name),node('small',null,detail));return card;
+  }));
+ }
+}
+function renderTimeline(){
+ const timeline=$('timeline');timeline.replaceChildren();eventElements=new Map();laneElements=new Map();
+ // Extra horizontal space keeps the true start/end positions while allowing event names
+ // to extend into separate label tracks instead of being cut off in narrow time slices.
+ timeline.style.width=(100*state.zoom)+'%';timeline.style.minWidth=(3000*state.zoom)+'px';
+ const offset=axisOffset(),plotWidth=timeline.clientWidth-offset;
+ const textMeasure=document.createElement('canvas').getContext('2d');
+ textMeasure.font='10px ui-monospace, SFMono-Regular, Consolas, monospace';
+ const ruler=node('div','time-ruler');timeline.append(ruler);
+ const maxTick=Math.floor(state.duration*2);
+ for(let i=0;i<=maxTick;i++){const t=i/2;const tick=node('span','tick',(t*state.period).toFixed(1));tick.style.left=(t/state.duration*100)+'%';ruler.append(tick);}
+ for(let i=0;i<=Math.floor(state.duration);i++){
+  const line=node('div','gridline');line.style.left='calc('+offset+'px + (100% - '+offset+'px) * '+i/state.duration+')';
+  const text=i===state.target?'目标刷新 / F':i===2&&state.target===3?'原目标 / 迟到':'物理刷新 '+i;
+  line.append(node('span','gridline-label',text));timeline.append(line);
+ }
+ LANES.forEach(lane=>{
+  const row=node('div','lane'+(lane.id==='vsync'?' vsync-lane':''));row.dataset.lane=lane.id;row.style.setProperty('--lane-color',lane.color);
+  const label=node('div','lane-label');label.append(node('strong',null,lane.name),node('small',null,lane.sub));row.append(label);timeline.append(row);laneElements.set(lane.id,row);
+  if(lane.id==='display'){
+   const old=node('div','previous-frame','F−1 保持显示');old.style.cssText='position:absolute;left:0;top:4px;height:10px;font:8px var(--mono);color:#839b86;border-top:2px solid #566f58;padding-top:1px;width:'+(state.target/state.duration*100)+'%';row.append(old);
+  }
+  if(lane.id==='hwc'){
+   for(let i=0;i<=Math.floor(state.duration);i++){
+    const pulse=node('span',null,'│');pulse.style.cssText='position:absolute;top:1px;font:10px var(--mono);color:#809a77;left:'+(i/state.duration*100)+'%';pulse.title='物理刷新边界示意；不等于每次均向客户端发送硬件回调';row.append(pulse);
+   }
+  }
+  const trackEnds=[];
+  for(const e of state.events.filter(e=>e.lane===lane.id)){
+   const b=node('button','event'+(e.missed?' missed':''));b.dataset.event=e.id;
+   const x=e.start/state.duration*plotWidth;
+   const durationWidth=(e.end-e.start)/state.duration*plotWidth;
+   const labelWidth=Math.ceil(textMeasure.measureText(e.title).width)+16;
+   b.style.left=(e.start/state.duration*100)+'%';b.style.width=Math.max(durationWidth,labelWidth)+'px';
+   b.style.setProperty('--duration-width',durationWidth+'px');
+   b.textContent=e.title;b.title=e.symbol+'\n'+(e.start*state.period).toFixed(2)+' – '+(e.end*state.period).toFixed(2)+' ms（教学示意）';
+   b.setAttribute('aria-label',e.title+'，点击查看详解');b.addEventListener('click',()=>select(state.events.findIndex(x=>x.id===e.id),true));
+   row.append(b);eventElements.set(e.id,b);
+   // Browser text metrics can differ from canvas fallback fonts, especially for CJK.
+   const width=Math.max(b.getBoundingClientRect().width,b.scrollWidth+2);
+   b.style.width=width+'px';
+   b.dataset.labelWidth=Math.min(width,Math.max(labelWidth,b.scrollWidth+2));
+   if(width>Math.max(360,$('timeline-scroll').clientWidth-axisOffset()-24))b.classList.add('long-event');
+   let track=trackEnds.findIndex(right=>x>=right+8);
+   if(track<0){track=trackEnds.length;trackEnds.push(0);}
+   trackEnds[track]=x+width;
+   b.style.top=(16+track*36)+'px';
+  }
+  row.style.height=Math.max(lane.id==='vsync'?50:60,16+(trackEnds.length-1)*36+28+11)+'px';
+ });
+ const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.id='timeline-connectors';svg.classList.add('timeline-connectors');svg.setAttribute('aria-hidden','true');timeline.append(svg);
+ const playhead=node('div','playhead');playhead.id='playhead';timeline.append(playhead);
+ syncPanControl();
+}
+function shortLabel(e){
+ const labels={invalidate:'dirty',requestLayout:'layout?',schedule:'barrier',requestVsync:'req',hwSample:'校准',appVsync:'APP',onVsync:'post',doFrame:'frame',input:'IN',animation:'ANI',insets:'IS',traversal:'TR',measure:'measure',layout:'layout',predraw:'pre',record:'DisplayList',syncUI:'等待 RT',rtSync:'sync tree',commitCallback:'C',dequeue:'dequeue',rtDraw:'Skia draw',submitGpu:'submit',gpuWork:'App GPU → B',queue:'queue',blastAcquire:'acquire',transaction:'setBuffer / apply',sfReceive:'txn',gpuSignal:'✓',sfVsync:'SF',sfCommit:'commit',apply:'apply txn',latch:'latch',composite:'snapshots',strategy:'plan',validate:'validate',clientRender:'RE',sfGpu:'SF GPU → client target',clientTarget:'target',present:'present',dpu:'DPU',presentSignal:'F',scanout:'FRAME F / SCANOUT',release:'A release',releaseSignal:'A ✓',visible:'F 保持'};
+ return labels[e.id]||'错过 / 保留旧帧';
+}
+function renderList(){
+ const list=$('event-list');list.replaceChildren();listElements=new Map();
+ state.events.forEach((e,i)=>{const b=node('button','event-list-item');b.append(node('span','list-number',String(i+1).padStart(2,'0')));const title=node('span','list-title',e.title);title.append(node('small',null,e.symbol));b.append(title,node('span',null,'↗'));b.addEventListener('click',()=>select(i,true));list.append(b);listElements.set(e.id,b);});
+ $('event-count').textContent=state.events.length+' 个事件';filterEvents();
+}
+function renderCallbacks(){
+ const parent=$('callback-queue');parent.replaceChildren();
+ CALLBACKS.forEach(c=>{const n=node('div','callback'+(c.extra?' extra':''));n.id='cb-'+c.id;n.append(node('b',null,c.title),node('small',null,c.label));parent.append(n);});
+}
+function renderComposition(){
+ const route=$('composition-route');route.replaceChildren();
+ const device=state.composition==='device';const client=state.composition==='client';
+ $('composition-caption').textContent=device?'全 DEVICE：跳过 SF GPU 合成':client?'全 CLIENT：所有层 → client target':'混合：本 View 窗口 DEVICE，其它层 CLIENT';
+ const parts=device?['Layer buffers','HWC / DEVICE','DPU / Display']:client?['Layer buffers','RenderEngine / GPU','client target','HWC / Display']:['CLIENT layers → GPU → client target','＋ DEVICE layers','HWC / Display'];
+ parts.forEach((title,i)=>{if(i)route.append(node('span','route-arrow','→'));const n=node('span','route-part',title);route.append(n);});
+}
+function updateDependencies(){
+ const e=state.events[state.index];const deps=(DEPENDENCIES[e.id]||[]).map(byId).filter(Boolean);
+ const panel=$('handoff');panel.replaceChildren(node('span','handoff-lead','SELECTED / 调度与数据依赖，不都代表 CPU 等待'));
+ if(!deps.length)panel.append(node('span',null,'此帧的起点；硬件节拍与其他帧可独立运行。'));
+ deps.forEach((d,i)=>{if(i)panel.append(node('span',null,'＋'));const b=node('button',null,shortLabel(d));b.title=d.title;b.addEventListener('click',()=>select(state.events.indexOf(d),true));panel.append(b);});
+ if(deps.length)panel.append(node('span',null,'→'),node('span','handoff-current',e.title));
+ const svg=$('timeline-connectors');svg.replaceChildren();const w=$('timeline').clientWidth,offset=axisOffset();
+ svg.setAttribute('viewBox','0 0 '+w+' '+$('timeline').clientHeight);
+ const create=(tag,attrs)=>{const el=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v] of Object.entries(attrs))el.setAttribute(k,v);return el;};
+ const defs=create('defs',{}),marker=create('marker',{id:'dependency-arrow',markerWidth:6,markerHeight:6,refX:5,refY:3,orient:'auto'});marker.append(create('path',{d:'M0,0 L6,3 L0,6 Z',fill:'#d7e9bd'}));defs.append(marker);svg.append(defs);
+ const row=laneElements.get(e.lane);const x2=offset+(w-offset)*e.start/state.duration,y2=row.offsetTop+eventElements.get(e.id).offsetTop+14;
+ for(const dep of deps){
+  if(dep.lane===e.lane)continue;
+  const x1=offset+(w-offset)*Math.min(dep.end,e.start)/state.duration,y1=laneElements.get(dep.lane).offsetTop+eventElements.get(dep.id).offsetTop+14;
+  const mid=(y1+y2)/2;
+  const d='M'+x1+','+y1+' C'+x1+','+mid+' '+x2+','+mid+' '+x2+','+y2;
+  svg.append(create('path',{d,fill:'none',stroke:'#d7e9bd','stroke-width':1.2,'stroke-dasharray':'4 3','marker-end':'url(#dependency-arrow)',opacity:.85}));
+ }
+}
+function updateScenarioNote(){
+ const text={layout:'正常主线：内容和几何变化合并为一次 traversal，应用 buffer 先交接、GPU 后完成；SF 选择后续目标刷新呈现。',invalidate:'分支：几何稳定，只更新内容。跳过 measure / layout，复用未失效的 RenderNode / DisplayList。','ui-late':'UI 迟到：人为延长 measure，F 错过原 SF 合成机会；屏幕多保持一轮 F−1。','gpu-late':'GPU 迟到：buffer 已交给 BLAST / SF，但 acquire fence 未 signal；本例选择保守延后一轮，不采用 latch-unsignaled。','sf-late':state.composition==='device'?'SF 迟到：全 DEVICE 场景没有 SF GPU 工作，改为 SF CPU 输出准备超时；错过原呈现目标。':'SF 迟到：应用 buffer 已就绪，但 CLIENT 合成超过预算，client target 不能及时呈现。'};
+ $('scenario-note').replaceChildren(node('span',null,text[state.scenario]+' 所有耗时与偏移均为教学参数；刷新率切换按比例缩放，不预测设备真实性能。'));
+}
+function updateInspector(){
+ const e=state.events[state.index];
+ $('inspector-step').textContent='EVENT '+String(state.index+1).padStart(2,'0')+' / '+state.events.length;
+ $('thread-badge').textContent=LANES.find(l=>l.id===e.lane).name;
+ $('event-category').textContent=String(e.phase+1).padStart(2,'0')+' / '+PHASES[e.phase];
+ $('event-title').textContent=e.title;$('event-symbol').textContent=e.symbol;$('event-summary').textContent=e.summary;$('event-pitfall').textContent=e.pitfall;
+ $('event-details').replaceChildren(...e.details.map(d=>node('li',null,d)));
+ $('event-sources').replaceChildren(...e.refs.map(key=>makeSourceLink(key,true)));
+ $('event-timing').textContent=(e.start*state.period).toFixed(2)+' – '+(e.end*state.period).toFixed(2)+' ms · 示意';
+ $('announcer').textContent='事件 '+(state.index+1)+'：'+e.title;
+ updateDependencies();
+}
+let lastInspectorId='';
+function update(){
+ const e=state.events[state.index];
+ $('time').textContent=(state.time*state.period).toFixed(2);
+ $('scrubber').value=Math.round(state.time/state.duration*1000);
+ $('scrubber').setAttribute('aria-valuetext',(state.time*state.period).toFixed(2)+' 毫秒，'+e.title);
+ $('counter').textContent=String(state.index+1).padStart(2,'0')+' / '+String(state.events.length).padStart(2,'0');
+ $('prev').disabled=state.index===0;$('next').disabled=state.index===state.events.length-1;
+ $('play').textContent=state.playing?'Ⅱ 暂停':'▶ 播放';$('play').setAttribute('aria-label',state.playing?'暂停动画':'播放动画');
+ const ph=$('playhead'),offset=axisOffset();ph.style.left=(offset+($('timeline').clientWidth-offset)*state.time/state.duration)+'px';
+ for(const event of state.events){
+  const el=eventElements.get(event.id);const selected=event.id===e.id;
+  el.classList.toggle('selected',selected);el.classList.toggle('completed',state.time>=event.end);el.classList.toggle('running',state.time>=event.start&&state.time<event.end);el.setAttribute('aria-pressed',String(selected));
+  const list=listElements.get(event.id);list.classList.toggle('active',selected);if(selected)list.setAttribute('aria-current','step');else list.removeAttribute('aria-current');
+ }
+ Array.from($('phases').children).forEach((p,i)=>{p.classList.toggle('active',i===e.phase);p.classList.toggle('done',i<e.phase);if(i===e.phase)p.setAttribute('aria-current','step');else p.removeAttribute('aria-current');});
+ if(e.id!==lastInspectorId){updateInspector();lastInspectorId=e.id;}
+ updateJourney();
+ updateScene();
+ updateLive();
+ if(state.follow&&$('timeline-details').open)followPlayhead();
+}
+function updateLive(){
+ const t=state.time;const view=$('view-target');
+ for(const part of $('composition-route').querySelectorAll('.route-part'))part.classList.toggle('active',t>=at('strategy')&&t<at('present','end'));
+ const isDirty=t>=at('invalidate')&&t<at('record','end');
+ view.classList.toggle('dirty',isDirty);view.classList.toggle('recording',t>=at('record')&&t<at('record','end'));
+ const hasLayout=!!byId('layout')&&t>=at('layout','end');
+ view.style.width=hasLayout?'68%':'55%';view.style.height=hasLayout?'66px':'57px';
+ view.textContent=t>=at('record','end')?'RenderNode ✓':t>=at('record')?'Recording…':isDirty?'dirty View':'View';
+ $('view-status').textContent=t<at('invalidate')?'尚未请求刷新。':t<at('traversal')?'已标记失效 / 待 traversal；多个刷新请求合帧。':state.scenario==='invalidate'&&t<at('record')?'几何不变：跳过 measure / layout。':t<at('measure','end',-Infinity)?'测量约束与子树尺寸。':t<at('layout','end',-Infinity)?'确定边界，布局子节点。':t<at('record','end')?'录制脏节点；未变子树复用指令。':t<at('syncUI')?'DisplayList 录制完成，等待提交 RT。':t<at('syncUI','end')?'UI 正等待 RT 完成安全同步。':'RT 安全同步完成，UI 可继续；GPU 仍可执行。';
+ const old=$('buffer-old'),cur=$('buffer-current');
+ let currentState='FREE',owner='可被生产者取走';
+ if(t>=at('dequeue')){currentState='DEQUEUED';owner=t>=at('gpuWork')?'GPU 写入 / 等依赖':'生产者持有';}
+ if(t>=at('queue')){currentState='QUEUED';owner='等待 BLAST 消费';}
+ if(t>=at('blastAcquire')){currentState='ACQUIRED';owner=t>=at('transaction','end')?'BLAST / 下游持有':'BLAST 持有';}
+ if(t>=at('latch','end'))owner='SF / 显示链路引用';
+ cur.dataset.state=currentState;cur.querySelector('.buffer-state').textContent=currentState;$('current-owner').textContent=owner;
+ const oldFree=t>=at('release','end');old.dataset.state=oldFree?'FREE':'ACQUIRED';old.querySelector('.buffer-state').textContent=oldFree?'FREE + FENCE':'ACQUIRED';
+ if(t>=at('releaseSignal'))old.querySelector('.buffer-state').textContent='FREE / READY';
+ $('old-owner').textContent=oldFree?(t>=at('releaseSignal')?'可安全重写':'重写仍等 fence'):state.composition==='client'?'BLAST 保留旧源帧':t>=state.target?'等待旧帧释放':'下游正在使用';
+ const fenceExists=t>=at('queue');const signal=t>=at('gpuSignal');
+ $('acquire-light').className='fence-light'+(signal?' signal':fenceExists?' pending':'');
+ $('acquire-label').textContent='acquire：'+(signal?'已 signal':fenceExists?'未 signal':'未交接');
+ const releaseSignaled=t>=at('releaseSignal');const releaseReturned=t>=at('release');
+ $('release-light').className='fence-light'+(releaseSignaled?' signal':releaseReturned?' pending':'');
+ $('release-label').textContent='A release：'+(releaseSignaled?'已 signal':releaseReturned?'未 signal':'等待换出');
+ const scanStart=at('scanout'),scanEnd=at('scanout','end');
+ const scan=Math.max(0,Math.min(1,(t-scanStart)/(scanEnd-scanStart)));
+ $('screen-new').style.clipPath='inset(0 0 '+((1-scan)*100)+'% 0)';
+ $('scanline').style.top=(scan*100)+'%';$('scanline').style.opacity=scan>0&&scan<1?'1':'0';
+ $('screen-state').textContent=scan>=1?'F 已完整扫描':scan>0?'正在扫描 F':t>=state.target?'进入 F 刷新目标':'仍显示 F−1';
+ $('screen-detail').textContent=scan>0?'扫描示意 '+Math.round(scan*100)+'%':state.target===3&&t>=2?'原目标未赶上，保留旧内容':'新帧尚未开始扫描';
+ CALLBACKS.forEach(c=>{const el=$('cb-'+c.id);const start=at(c.id);const end=c.id==='traversal'?at('syncUI','end'):at(c.id,'end');el.classList.toggle('active',t>=start&&t<end);el.classList.toggle('done',t>=end);});
+ const targetMs=(state.target*state.period).toFixed(2),originalMs=(2*state.period).toFixed(2);
+ $('deadline-status').textContent=state.target===3?'错过原目标 '+originalMs+' ms → 本例改为 '+targetMs+' ms 呈现':'本例目标呈现 '+targetMs+' ms · 周期 '+state.period.toFixed(2)+' ms';
+ $('deadline-status').classList.toggle('late',state.target===3);
+}
+function syncPanControl(){
+ const container=$('timeline-scroll');
+ const available=Math.max(0,container.scrollWidth-container.clientWidth);
+ const percent=available?container.scrollLeft/available:0;
+ $('timeline-pan').value=Math.round(percent*1000);
+ $('timeline-pan').disabled=available===0;
+ $('timeline-pan-value').textContent=Math.round(percent*100)+'%';
+}
+function axisOffset(){
+ return parseFloat(getComputedStyle($('timeline')).getPropertyValue('--label-width'))||134;
+}
+function followPlayhead(){
+ const container=$('timeline-scroll'),label=eventElements.get(state.events[state.index].id);
+ const offset=axisOffset(),left=container.scrollLeft,width=container.clientWidth;
+ const rawWidth=Number(label.dataset.labelWidth);
+ const labelWidth=Math.min(rawWidth,width-offset-24);
+ const start=offset+label.offsetLeft,end=start+labelWidth;
+ const margin=width<500?8:24;
+ if(rawWidth>labelWidth&&start<left+offset+margin)container.scrollLeft=Math.max(0,start-offset-margin);
+ else if(end>left+width-margin)container.scrollLeft=Math.max(0,end-width+margin);
+ else if(start<left+offset+margin)container.scrollLeft=Math.max(0,start-offset-margin);
+ syncPanControl();
+}
+function select(index,pause=false,keepTime=false){
+ if(pause)setPlaying(false);
+ state.index=Math.max(0,Math.min(state.events.length-1,index));state.explainElapsed=0;
+ if(!keepTime)state.time=state.events[state.index].start;
+ update();
+}
+function setPlaying(value){
+ state.playing=value;state.lastNow=0;
+ if(value){if(state.time>=state.duration-.0001){state.time=0;state.index=0;state.explainElapsed=0;}if(!renderRequest)renderRequest=requestAnimationFrame(tick);}
+ else if(renderRequest){cancelAnimationFrame(renderRequest);renderRequest=0;}
+ update();
+}
+function tick(now){
+ renderRequest=0;if(!state.playing)return;
+ const delta=state.lastNow?Math.min(100,now-state.lastNow):0;state.lastNow=now;
+ if(state.mode==='explain'){
+  state.explainElapsed+=delta*state.speed;
+  const hold=2800;const e=state.events[state.index];const next=state.events[state.index+1];
+  const end=next?next.start:state.duration;
+  state.time=e.start+(end-e.start)*Math.min(1,state.explainElapsed/hold);
+  if(state.explainElapsed>=hold){
+   if(state.index===state.events.length-1){state.time=state.duration;state.playing=false;}
+   else{state.index++;state.explainElapsed=0;}
+  }
+ }else{
+  state.time=Math.min(state.duration,state.time+delta*state.speed/5000);
+  let index=0;for(let i=0;i<state.events.length;i++){if(state.events[i].start<=state.time)index=i;else break;}
+  state.index=index;
+  if(state.time>=state.duration)state.playing=false;
+ }
+ update();if(state.playing)renderRequest=requestAnimationFrame(tick);
+}
+function filterEvents(){
+ const q=$('event-search').value.trim().toLocaleLowerCase();let found=0;
+ for(const e of state.events){const matched=!q||[e.title,e.symbol,e.summary,...e.details,e.pitfall].join(' ').toLocaleLowerCase().includes(q);listElements.get(e.id).hidden=!matched;if(matched)found++;}
+ $('no-results').hidden=found>0;
+}
+$('play').addEventListener('click',()=>setPlaying(!state.playing));
+$('prev').addEventListener('click',()=>select(state.index-1,true));
+$('next').addEventListener('click',()=>select(state.index+1,true));
+$('reset').addEventListener('click',()=>{setPlaying(false);state.index=0;state.time=0;state.explainElapsed=0;$('timeline-scroll').scrollLeft=0;update();});
+for(const id of ['scenario','composition','refresh'])$(id).addEventListener('change',()=>{setPlaying(false);lastInspectorId='';buildModel();});
+$('mode').addEventListener('change',()=>{state.mode=$('mode').value;state.explainElapsed=0;state.lastNow=0;});
+$('speed').addEventListener('change',()=>{state.speed=Number($('speed').value);});
+$('zoom').addEventListener('input',()=>{state.zoom=Number($('zoom').value);renderTimeline();updateDependencies();update();});
+$('timeline-pan').addEventListener('input',()=>{
+ state.follow=false;$('follow').setAttribute('aria-pressed','false');$('follow').textContent='自由';
+ const container=$('timeline-scroll');
+ container.scrollLeft=Number($('timeline-pan').value)/1000*Math.max(0,container.scrollWidth-container.clientWidth);
+ syncPanControl();
+});
+$('timeline-scroll').addEventListener('scroll',syncPanControl,{passive:true});
+$('follow').addEventListener('click',()=>{state.follow=!state.follow;$('follow').setAttribute('aria-pressed',String(state.follow));$('follow').textContent=state.follow?'跟随':'自由';if(state.follow)followPlayhead();});
+$('focus').addEventListener('click',()=>{const focused=document.body.classList.toggle('focus-mode');$('focus').setAttribute('aria-pressed',String(focused));$('focus').title=focused?'退出专注模式':'专注模式';});
+$('scrubber').addEventListener('input',()=>{const value=Number($('scrubber').value);setPlaying(false);state.time=value/1000*state.duration;let i=0;for(let n=0;n<state.events.length;n++){if(state.events[n].start<=state.time)i=n;else break;}state.index=i;state.explainElapsed=0;update();});
+$('event-search').addEventListener('input',filterEvents);
+$('journey-detail').addEventListener('click',()=>{$('journey-code-title').scrollIntoView({block:'start',behavior:'auto'});});
+$('timeline-details').addEventListener('toggle',()=>{if($('timeline-details').open){renderTimeline();updateDependencies();update();syncPanControl();}});
+for(const name of ['sources','help']){
+ $('open-'+name).addEventListener('click',()=>{setPlaying(false);$(name+'-dialog').showModal();});
+ $('close-'+name).addEventListener('click',()=>$(name+'-dialog').close());
+ $(name+'-dialog').addEventListener('click',e=>{if(e.target===e.currentTarget){const rect=e.currentTarget.getBoundingClientRect();if(e.clientX<rect.left||e.clientX>rect.right||e.clientY<rect.top||e.clientY>rect.bottom)e.currentTarget.close();}});
+}
+window.addEventListener('keydown',e=>{
+ if(e.target.matches('input,select,textarea')||document.querySelector('dialog[open]'))return;
+ if(e.code==='Space'&&e.target.tagName!=='BUTTON'){e.preventDefault();setPlaying(!state.playing);}
+ else if(e.key==='ArrowRight'){e.preventDefault();select(state.index+1,true);}
+ else if(e.key==='ArrowLeft'){e.preventDefault();select(state.index-1,true);}
+ else if(e.key==='Home'){e.preventDefault();select(0,true);}
+ else if(e.key==='End'){e.preventDefault();select(state.events.length-1,true);}
+ else if(e.key==='?'){e.preventDefault();setPlaying(false);$('help-dialog').showModal();}
+});
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&state.playing)setPlaying(false);});
+window.addEventListener('resize',()=>{renderTimeline();updateDependencies();update();syncPanControl();});
+renderSources();buildModel();
+// Read-only diagnostics for reproducible browser checks; no network or mutation API.
+Object.defineProperty(window,'frameLab',{value:Object.freeze({snapshot:()=>({scenario:state.scenario,composition:state.composition,refreshHz:1000/state.period,time:state.time,periodMs:state.period,target:state.target,duration:state.duration,eventId:state.events[state.index].id,eventCount:state.events.length,playing:state.playing,events:state.events.map(e=>({id:e.id,start:e.start,end:e.end,lane:e.lane,phase:e.phase}))})})});
+
+</script>
+</body>
+</html>

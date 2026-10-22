@@ -1,0 +1,1308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Android 一帧的完整旅程：从 invalidate 到屏幕显示</title>
+<style>
+:root{--bg:#0f1420;--panel:#171e2e;--panel2:#1d2639;--line:#2b3650;--text:#dfe6f3;--muted:#8d9ab3;--accent:#5fb3ff;
+--ui:#4cc38a;--rt:#f0a33a;--bq:#c58af9;--sch:#ff7b8a;--sf:#58a6ff;--hw:#e5c07b;--vs:#ff5d73;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+header{padding:22px 28px 10px}h1{margin:0 0 6px;font-size:22px}
+.sub{color:var(--muted);font-size:13px}
+section{padding:8px 28px 18px}
+h2{font-size:18px;margin:18px 0 10px;border-left:4px solid var(--accent);padding-left:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+#stageWrap{overflow-x:auto}
+svg text{font-family:inherit}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 4px}
+button,select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:5px 12px;font:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}button:focus-visible,select:focus-visible,.node:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input[type=range]{flex:1;min-width:180px;accent-color:var(--accent)}
+.grid{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;margin-top:10px}
+@media(max-width:1000px){.grid{grid-template-columns:1fr}}
+.tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:10px;margin-right:6px;color:#0f1420;font-weight:600}
+#infoTitle{font-size:17px;font-weight:600;margin:4px 0}
+#infoChain{margin:8px 0 0;padding:0;list-style:none;font:12.5px/1.7 Menlo,Consolas,monospace}
+#infoChain li{padding:1px 8px;border-left:2px solid var(--line);color:var(--muted);transition:all .2s}
+#infoChain li.on{color:var(--text);border-left-color:var(--accent);background:rgba(95,179,255,.08)}
+#infoChain li.cur{color:#fff;border-left-color:#fff;background:rgba(95,179,255,.22)}
+.row{margin:6px 0 10px}.row .lbl{font-size:12px;color:var(--muted);margin-bottom:4px}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{font-size:12px;padding:2px 9px;border-radius:5px;border:1px solid var(--line);color:var(--muted);transition:all .2s}
+.chip.done{border-color:#3c6e57;color:#9fd8bb;background:rgba(76,195,138,.1)}
+.chip.act{border-color:var(--accent);color:#fff;background:rgba(95,179,255,.3);box-shadow:0 0 8px rgba(95,179,255,.5)}
+.chip.q{border-color:#7a6a3c;color:#e5c07b}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--panel2)}tr:hover td{background:rgba(255,255,255,.02)}
+.detail{margin:14px 0;scroll-margin-top:10px}
+.detail h3{margin:0 0 6px;font-size:16px}
+.detail .num{display:inline-block;width:26px;height:26px;line-height:26px;text-align:center;border-radius:50%;background:var(--accent);color:#0f1420;font-weight:700;margin-right:8px}
+.detail ul{margin:6px 0;padding-left:20px}
+.chain{background:#111827;border:1px dashed var(--line);border-radius:6px;padding:8px 12px;font:12.5px/1.7 Menlo,Consolas,monospace;color:#b9c6dd;white-space:pre-wrap}
+.code{margin:10px 0}
+.code .fh{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;background:var(--panel2);border:1px solid var(--line);border-bottom:0;border-radius:6px 6px 0 0;padding:5px 10px;font-size:12px}
+.code .fh code{color:var(--muted)}
+pre{margin:0;background:#0b0f18;border:1px solid var(--line);border-radius:0 0 6px 6px;padding:10px 12px;overflow-x:auto;font:12.5px/1.6 Menlo,Consolas,monospace}
+.k{color:#c678dd}.s{color:#98c379}.c{color:#6b7891;font-style:italic}.n{color:#d19a66}
+.note{color:var(--muted);font-size:12.5px}
+.toplink{float:right;font-size:12px}
+</style>
+</head>
+<body>
+<header id="top">
+  <h1>Android 一帧的完整旅程：invalidate → VSYNC → Choreographer → measure/layout/draw → RenderThread → SurfaceFlinger → 显示</h1>
+  <div class="sub">基于本仓库源码（README 标注 android16-qpr2-release，HEAD e4b38f485）。场景：已附着、可见、开启硬件加速、使用 BLASTBufferQueue 的普通 View 窗口。动画中的时长为教学示意，不是真机测量值。</div>
+</header>
+
+<section>
+  <h2>一、动画模型</h2>
+  <div class="card">
+    <div id="stageWrap"><svg id="stage" viewBox="0 0 1500 560" width="100%" role="img" aria-label="一帧渲染流程泳道动画"></svg></div>
+    <div class="controls">
+      <button id="btnPrev" aria-label="上一阶段">◀ 上一步</button>
+      <button id="btnPlay" aria-label="播放或暂停">⏸ 暂停</button>
+      <button id="btnNext" aria-label="下一阶段">下一步 ▶</button>
+      <button id="btnRestart">⟲ 重新开始</button>
+      <label>速度 <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
+      <input id="scrub" type="range" min="0" max="1000" value="0" aria-label="进度">
+      <span class="note">点击节点可跳转；空格 播放/暂停，← → 单步</span>
+    </div>
+    <div class="grid">
+      <div class="card" aria-live="polite">
+        <div><span id="infoNum" class="tag" style="background:var(--accent)">0</span><span id="infoLane" class="tag"></span></div>
+        <div id="infoTitle"></div>
+        <div id="infoBrief" class="note" style="font-size:13.5px;color:var(--text)"></div>
+        <ul id="infoChain"></ul>
+        <div style="margin-top:8px"><a id="infoMore" href="#">查看本阶段详细介绍与源码 ↓</a></div>
+      </div>
+      <div class="card">
+        <div class="row"><div class="lbl">Choreographer 回调队列（doFrame 内按固定顺序执行）</div><div class="chips" id="rowCb"></div></div>
+        <div class="row"><div class="lbl">View 树三大流程 / 渲染线程</div><div class="chips" id="rowView"></div></div>
+        <div class="row"><div class="lbl">本帧 GraphicBuffer 所有权状态</div><div class="chips" id="rowBuf"></div></div>
+        <div class="row"><div class="lbl">当前跨线程 / 跨进程传递的数据</div><div id="infoPacket" style="font:13px Menlo,Consolas,monospace;color:var(--hw)"></div></div>
+        <div class="note">一帧典型跨越：VSYNC-app（应用开始绘制）→ VSYNC-sf（SF 合成）→ 下一个 HW VSYNC（面板扫描）。三者由同一个 VSyncPredictor 模型按不同 offset 推算。</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>二、阶段总览</h2>
+  <div class="card"><table id="overview"><thead><tr><th>#</th><th>阶段</th><th>进程 / 线程</th><th>入口函数</th><th>产出 / 交给下一阶段</th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<section>
+  <h2>三、各阶段详细介绍</h2>
+  <div class="note">源码链接指向 GitHub 仓库 yuchuangu85/AOSP_Frameworks 的 main 分支并带行号；同时给出本地相对路径（相对仓库根目录）。代码片段为节选，“...”表示省略。</div>
+  <div id="details"></div>
+</section>
+
+<footer style="padding:10px 28px 30px" class="note">提示：真实系统中 VSYNC-app 与 VSYNC-sf 的相位差、buffer 数量、是否走 GPU 合成等都受设备配置影响；可结合 Perfetto 中的 Choreographer#doFrame、DrawFrames、queueBuffer、commit、composite、HWC present 等 trace 标签对照本页阅读。</footer>
+
+<script>
+'use strict';
+const GH = 'https://github.com/yuchuangu85/AOSP_Frameworks/blob/main/';
+const P = {
+  View: 'base/core/java/android/view/View.java',
+  VG: 'base/core/java/android/view/ViewGroup.java',
+  VRI: 'base/core/java/android/view/ViewRootImpl.java',
+  Cho: 'base/core/java/android/view/Choreographer.java',
+  DER: 'base/core/java/android/view/DisplayEventReceiver.java',
+  DERjni: 'base/core/jni/android_view_DisplayEventReceiver.cpp',
+  DED: 'native/libs/gui/DisplayEventDispatcher.cpp',
+  TR: 'base/core/java/android/view/ThreadedRenderer.java',
+  HR: 'base/graphics/java/android/graphics/HardwareRenderer.java',
+  HRjni: 'base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp',
+  RP: 'base/libs/hwui/renderthread/RenderProxy.cpp',
+  DFT: 'base/libs/hwui/renderthread/DrawFrameTask.cpp',
+  CC: 'base/libs/hwui/renderthread/CanvasContext.cpp',
+  RN: 'base/libs/hwui/RenderNode.cpp',
+  SGL: 'base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp',
+  SP: 'base/libs/hwui/pipeline/skia/SkiaPipeline.cpp',
+  EGL: 'base/libs/hwui/renderthread/EglManager.cpp',
+  Surf: 'native/libs/gui/Surface.cpp',
+  BQP: 'native/libs/gui/BufferQueueProducer.cpp',
+  BBQ: 'native/libs/gui/BLASTBufferQueue.cpp',
+  SCC: 'native/libs/gui/SurfaceComposerClient.cpp',
+  ET: 'native/services/surfaceflinger/Scheduler/EventThread.cpp',
+  VDTQ: 'native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp',
+  VP: 'native/services/surfaceflinger/Scheduler/VSyncPredictor.cpp',
+  MQ: 'native/services/surfaceflinger/Scheduler/MessageQueue.cpp',
+  Sch: 'native/services/surfaceflinger/Scheduler/Scheduler.cpp',
+  SF: 'native/services/surfaceflinger/SurfaceFlinger.cpp',
+  TH: 'native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp',
+  Layer: 'native/services/surfaceflinger/Layer.cpp',
+  CE: 'native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp',
+  Out: 'native/services/surfaceflinger/CompositionEngine/src/Output.cpp',
+  Disp: 'native/services/surfaceflinger/CompositionEngine/src/Display.cpp',
+  HWC: 'native/services/surfaceflinger/DisplayHardware/HWComposer.cpp',
+  HWC2: 'native/services/surfaceflinger/DisplayHardware/HWC2.cpp',
+};
+
+// 泳道：y 为泳道中心线
+const LANES = {
+  ui:  { name: 'UI 主线程',            proc: 'App 进程',          y: 95,  color: 'var(--ui)' },
+  rt:  { name: 'RenderThread',          proc: 'App 进程',          y: 165, color: 'var(--rt)' },
+  bq:  { name: 'BufferQueue / BLAST',   proc: 'App 进程',          y: 235, color: 'var(--bq)' },
+  sch: { name: 'Scheduler / EventThread', proc: 'SurfaceFlinger 进程', y: 320, color: 'var(--sch)' },
+  sf:  { name: 'SF 主线程',             proc: 'SurfaceFlinger 进程', y: 390, color: 'var(--sf)' },
+  hw:  { name: 'HWC HAL / DPU / 面板',  proc: '硬件 / HAL',         y: 475, color: 'var(--hw)' },
+};
+const PROCS = [
+  { name: 'App 进程', y1: 58, y2: 270, color: 'rgba(76,195,138,.05)' },
+  { name: 'SurfaceFlinger 进程', y1: 284, y2: 425, color: 'rgba(88,166,255,.05)' },
+  { name: '硬件 / HAL', y1: 439, y2: 510, color: 'rgba(229,192,123,.05)' },
+];
+const CB_ITEMS = ['INPUT', 'ANIMATION', 'INSETS_ANIMATION', 'TRAVERSAL', 'COMMIT'];
+const VIEW_ITEMS = ['measure', 'layout', 'draw(录制 DisplayList)', 'sync 到 RT', 'GPU 绘制'];
+const BUF_ITEMS = ['FREE', 'DEQUEUED(RT 绘制中)', 'QUEUED', 'ACQUIRED(BLAST)', '事务中→SF', 'LATCHED', '合成/显示中', 'RELEASED→FREE'];
+
+const R = String.raw;
+const STAGES = [
+{ lane:'ui', short:'请求刷新', title:'应用请求刷新：invalidate / requestLayout → scheduleTraversals',
+  packet:'dirty 标记 + TraversalRunnable', edge:'postCallback', entry:'View.invalidate() / requestLayout()', output:'CALLBACK_TRAVERSAL 入队 + 同步屏障',
+  brief:'View 内容或尺寸变化后调用 invalidate()/requestLayout()，请求沿父链冒泡到 ViewRootImpl，由 scheduleTraversals() 插入同步屏障并向 Choreographer 注册 TRAVERSAL 回调。',
+  points:[
+    '硬件加速下 ViewGroup.invalidateChild() 走 fast path：onDescendantInvalidated() 一路上传到 ViewRootImpl.invalidate()，不再逐级计算脏区。',
+    'requestLayout() 给自己打上 PFLAG_FORCE_LAYOUT | PFLAG_INVALIDATED，并递归调用 mParent.requestLayout()，最终设置 ViewRootImpl.mLayoutRequested。',
+    'mTraversalScheduled 保证一帧内多次请求只调度一次遍历（合帧）。',
+    'postSyncBarrier() 让之后的同步消息被挡住，只有异步消息（VSYNC、doFrame）能先执行，保证遍历尽早发生。'],
+  chain:['View.invalidate()','View.invalidateInternal()  // 置 PFLAG_DIRTY / PFLAG_INVALIDATED','ViewGroup.invalidateChild() → onDescendantInvalidated()','ViewRootImpl.invalidate() / requestLayout()','ViewRootImpl.scheduleTraversals()','MessageQueue.postSyncBarrier()','Choreographer.postCallback(CALLBACK_TRAVERSAL, mTraversalRunnable)'],
+  codes:[
+   {f:'VG', l:6106, t:R`public final void invalidateChild(View child, final Rect dirty) {
+    final AttachInfo attachInfo = mAttachInfo;
+    if (attachInfo != null && attachInfo.mHardwareAccelerated) {
+        // HW accelerated fast path
+        onDescendantInvalidated(child, child);
+        return;
+    }
+    ...`},
+   {f:'VRI', l:2632, t:R`public void requestLayout() {
+    if (!mHandlingLayoutInLayoutRequest) {
+        checkThread();
+        mLayoutRequested = true;
+        scheduleTraversals();
+    }
+}
+...
+void invalidate() {
+    mDirty.set(0, 0, mWidth, mHeight);
+    if (!mWillDrawSoon) {
+        scheduleTraversals();
+    }
+}`},
+   {f:'VRI', l:3085, t:R`void scheduleTraversals() {
+    if (!mTraversalScheduled) {
+        mTraversalScheduled = true;
+        ...
+        mTraversalBarrier = mQueue.postSyncBarrier();
+        mChoreographer.postCallback(
+                Choreographer.CALLBACK_TRAVERSAL, mTraversalRunnable, null);
+        notifyRendererOfFramePending();
+        pokeDrawLockIfNeeded();
+    }
+}`}]},
+
+{ lane:'ui', short:'请求VSYNC', title:'Choreographer 请求下一个 VSYNC', ipc:true,
+  packet:'requestNextVsync()', edge:'Binder', entry:'Choreographer.postCallbackDelayedInternal()', output:'EventThreadConnection 置为 Single 请求',
+  brief:'回调入队后 Choreographer 调用 scheduleFrameLocked()，经 DisplayEventReceiver → JNI → DisplayEventDispatcher，通过 Binder 调用 SF 端 EventThreadConnection.requestNextVsync()。',
+  points:[
+    'Choreographer 内部有 5 个按类型划分的 CallbackQueue，postCallback 只负责入队，真正请求 VSYNC 的是 scheduleFrameLocked()。',
+    'mFrameScheduled 防止同一帧重复请求；VSYNC 是“按需订阅”，应用不请求就不会收到，从而省电。',
+    '若当前不在 Looper 线程，则投递 MSG_DO_SCHEDULE_VSYNC 异步消息到队首再请求。'],
+  chain:['Choreographer.postCallback() → postCallbackDelayedInternal()','mCallbackQueues[type].addCallbackLocked()','Choreographer.scheduleFrameLocked()','Choreographer.scheduleVsyncLocked()','DisplayEventReceiver.scheduleVsync() → nativeScheduleVsync()','DisplayEventDispatcher::scheduleVsync()','DisplayEventReceiver::requestNextVsync()  // Binder → SF'],
+  codes:[
+   {f:'Cho', l:612, t:R`private void postCallbackDelayedInternal(int callbackType,
+        Object action, Object token, long delayMillis) {
+    ...
+    synchronized (mLock) {
+        final long now = SystemClock.uptimeMillis();
+        final long dueTime = now + delayMillis;
+        mCallbackQueues[callbackType].addCallbackLocked(dueTime, action, token);
+
+        if (dueTime <= now) {
+            scheduleFrameLocked(now);
+        } else { ... MSG_DO_SCHEDULE_CALLBACK ... }
+    }
+}`},
+   {f:'Cho', l:872, t:R`private void scheduleFrameLocked(long now) {
+    if (!mFrameScheduled) {
+        mFrameScheduled = true;
+        if (USE_VSYNC) {
+            if (isRunningOnLooperThreadLocked()) {
+                scheduleVsyncLocked();
+            } else {
+                Message msg = mHandler.obtainMessage(MSG_DO_SCHEDULE_VSYNC);
+                msg.setAsynchronous(true);
+                mHandler.sendMessageAtFrontOfQueue(msg);
+            }
+        } ...`},
+   {f:'DED', l:80, t:R`status_t DisplayEventDispatcher::scheduleVsync() {
+    if (!mWaitingForVsync) {
+        ...
+        status_t status = mReceiver.requestNextVsync();
+        ...
+        mWaitingForVsync = true;
+        mLastScheduleVsyncTime = systemTime(SYSTEM_TIME_MONOTONIC);
+    }
+    return OK;
+}`}]},
+
+{ lane:'sch', short:'VSYNC-app', title:'SurfaceFlinger EventThread 生成 VSYNC-app', vsync:'VSYNC-app', ipc:true,
+  packet:'DisplayEventReceiver::Event(VSYNC)', edge:'BitTube socket', entry:'EventThread::requestNextVsync()', output:'带 FrameTimeline 的 VSYNC 事件写入 app fd',
+  brief:'EventThread 收到请求后，向 VSyncDispatchTimerQueue 注册定时；定时器根据 VSyncPredictor 预测的下一次 HW VSYNC 减去 app 的 workDuration/readyDuration 唤醒，生成 VSYNC 事件并经 BitTube 写给应用。',
+  points:[
+    'VSYNC-app 是软件信号：VSyncPredictor 用硬件 VSYNC 采样拟合周期和相位，不需要每帧打开硬件 VSYNC。',
+    'Single 请求被消费后变为 SingleSuppressCallback，再下一次变为 None；所以应用每帧都要重新 requestNextVsync。',
+    'dispatchEvent() 为每个连接生成多个 FrameTimeline（vsyncId / deadline / expectedPresentTime），后续用于帧对齐与卡顿归因。'],
+  chain:['EventThreadConnection::requestNextVsync()','EventThread::requestNextVsync()  // vsyncRequest = Single, notify_all','EventThread::threadMain() → mVsyncRegistration.schedule(workDuration, readyDuration)','VSyncDispatchTimerQueue::timerCallback()','EventThread::onVsync()  // mPendingEvents.push_back(makeVSync(...))','EventThread::dispatchEvent() → generateFrameTimeline()','EventThreadConnection::postEvent() → BitTube::sendObjects()'],
+  codes:[
+   {f:'ET', l:417, t:R`void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) {
+    mCallback.resync(IEventThreadCallback::ResyncCaller::RequestNextVsync);
+
+    std::lock_guard<std::mutex> lock(mMutex);
+
+    if (connection->vsyncRequest == VSyncRequest::None) {
+        connection->vsyncRequest = VSyncRequest::Single;
+        mCondition.notify_all();
+    } else if (connection->vsyncRequest == VSyncRequest::SingleSuppressCallback) {
+        connection->vsyncRequest = VSyncRequest::Single;
+    }
+}`},
+   {f:'ET', l:597, t:R`// EventThread::threadMain() 片段
+if (mState == State::VSync) {
+    const auto scheduleResult = mVsyncRegistration.schedule(
+            {.workDuration = mWorkDuration.get().count(),
+             .readyDuration = mReadyDuration.count(),
+             .lastVsync = mLastVsyncCallbackTime.ns(),
+             .committedVsyncOpt = mLastCommittedVsyncTime.ns()});
+    ...
+} else {
+    mVsyncRegistration.cancel();
+}`},
+   {f:'ET', l:472, t:R`void EventThread::onVsync(nsecs_t vsyncTime, nsecs_t wakeupTime, nsecs_t readyTime) {
+    std::lock_guard<std::mutex> lock(mMutex);
+    mLastVsyncCallbackTime = TimePoint::fromNs(vsyncTime);
+    ...
+    mPendingEvents.push_back(makeVSync(mVsyncSchedule->getPhysicalDisplayId(), wakeupTime,
+                                       ++mVSyncState->count, vsyncTime, readyTime));
+    mCondition.notify_all();
+}`},
+   {f:'ET', l:771, t:R`void EventThread::dispatchEvent(const DisplayEventReceiver::Event& event,
+                                const DisplayEventConsumers& consumers) {
+    for (const auto& consumer : consumers) {
+        DisplayEventReceiver::Event copy = event;
+        if (event.header.type == DisplayEventType::DISPLAY_EVENT_VSYNC) {
+            const Period frameInterval = mCallback.getVsyncPeriod(consumer->mOwnerUid);
+            copy.vsync.vsyncData.frameInterval = frameInterval.ns();
+            generateFrameTimeline(copy.vsync.vsyncData, frameInterval.ns(), ...);
+        }
+        switch (consumer->postEvent(copy)) { ... }`}]},
+
+{ lane:'ui', short:'收到VSYNC', title:'应用收到 VSYNC：fd 回调 → JNI → FrameDisplayEventReceiver',
+  packet:'Message(async, when = vsync 时间)', edge:'Handler 异步消息', entry:'DisplayEventDispatcher::handleEvent()', output:'异步消息 → doFrame()',
+  brief:'App 主线程 Looper 监听 BitTube 的 fd，可读时回调 handleEvent()，读出事件只保留最新一个 VSYNC，经 JNI 调到 Java 层 onVsync()，再投递一条异步消息执行 doFrame()。',
+  points:[
+    'processPendingEvents() 会把积压的 VSYNC 读完，只保留最新的那个（旧的直接丢弃）。',
+    'onVsync() 不直接调 doFrame，而是 sendMessageAtTime(异步消息, VSYNC 时间戳)：配合同步屏障优先执行，又不会饿死比 VSYNC 更早的消息。',
+    '若等待 VSYNC 超过 WAITING_FOR_VSYNC_TIMEOUT，会伪造一个 VSYNC 防止界面卡死。'],
+  chain:['Looper (epoll) fd 可读','DisplayEventDispatcher::handleEvent()','DisplayEventDispatcher::processPendingEvents()  // 只保留最后一个 VSYNC','NativeDisplayEventReceiver::dispatchVsync()  // JNI CallVoidMethod','DisplayEventReceiver.dispatchVsync() → onVsync()','FrameDisplayEventReceiver.onVsync()  // msg.setAsynchronous(true)','FrameDisplayEventReceiver.run() → Choreographer.doFrame()'],
+  codes:[
+   {f:'DED', l:114, t:R`int DisplayEventDispatcher::handleEvent(int, int events, void*) {
+    ...
+    // Drain all pending events, keep the last vsync.
+    nsecs_t vsyncTimestamp;
+    PhysicalDisplayId vsyncDisplayId;
+    uint32_t vsyncCount;
+    VsyncEventData vsyncEventData;
+    if (processPendingEvents(&vsyncTimestamp, &vsyncDisplayId, &vsyncCount, &vsyncEventData)) {
+        ...
+        mWaitingForVsync = false;
+        mLastVsyncCount = vsyncCount;
+        dispatchVsync(vsyncTimestamp, vsyncDisplayId, vsyncCount, vsyncEventData);
+    }
+    ...`},
+   {f:'Cho', l:1567, t:R`public void onVsync(long timestampNanos, long physicalDisplayId, int frame,
+        VsyncEventData vsyncEventData) {
+    ...
+    mTimestampNanos = timestampNanos;
+    mFrame = frame;
+    mLastVsyncEventData.copyFrom(vsyncEventData);
+    Message msg = Message.obtain(mHandler, this);
+    msg.setAsynchronous(true);
+    mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);
+    ...
+}
+
+@Override
+public void run() {
+    mHavePendingVsync = false;
+    doFrame(mTimestampNanos, mFrame, mLastVsyncEventData);
+}`}]},
+
+{ lane:'ui', short:'doFrame', title:'Choreographer.doFrame()：按顺序处理 5 类 callback',
+  packet:'frameTimeNanos + FrameTimeline', edge:'CALLBACK_TRAVERSAL', entry:'Choreographer.doFrame()', output:'执行 TraversalRunnable',
+  brief:'doFrame 先做掉帧/抖动检测并锁定动画时钟，然后严格按 INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT 执行各队列中已到期的回调。',
+  points:[
+    'jitter ≥ 一个帧间隔时把 frameTime 对齐到最近的 VSYNC，并在跳帧 ≥ 30 时打印 “Skipped N frames!”。',
+    'INPUT：批量输入事件（ConsumeBatchedInputRunnable），让触摸与绘制在同一帧对齐。',
+    'ANIMATION：ValueAnimator / postFrameCallback，统一使用本帧 frameTimeNanos，保证动画同步。',
+    'INSETS_ANIMATION：WindowInsets 动画（如输入法弹出），排在普通动画之后、遍历之前。',
+    'TRAVERSAL：ViewRootImpl 的 measure / layout / draw。',
+    'COMMIT：帧后收尾；若此时已落后 ≥ 2 帧，会修正 frameTime，避免下一帧时间倒退。',
+    'doCallbacks 用 “now” 判断到期，所以 INPUT 阶段新 post 的动画可以在同一帧的 ANIMATION 阶段执行。'],
+  chain:['Choreographer.doFrame()  // jitter / skippedFrames 检测','mFrameInfo.setVsync(...)  AnimationUtils.lockAnimationClock()','doCallbacks(CALLBACK_INPUT)','doCallbacks(CALLBACK_ANIMATION)','doCallbacks(CALLBACK_INSETS_ANIMATION)','doCallbacks(CALLBACK_TRAVERSAL)  // → ViewRootImpl.doTraversal()','doCallbacks(CALLBACK_COMMIT)'],
+  codes:[
+   {f:'Cho', l:1074, t:R`startNanos = System.nanoTime();
+final long jitterNanos = startNanos - frameTimeNanos;
+if (jitterNanos >= frameIntervalNanos) {
+    frameTimeNanos = startNanos;
+    ...
+        long lastFrameOffset = jitterNanos % frameIntervalNanos;
+        frameTimeNanos = frameTimeNanos - lastFrameOffset;
+        final long skippedFrames = jitterNanos / frameIntervalNanos;
+        if (skippedFrames >= SKIPPED_FRAME_WARNING_LIMIT) {
+            Log.i(TAG, "Skipped " + skippedFrames + " frames!  "
+                    + "The application may be doing too much work on its main "
+                    + "thread.");
+        }
+    ...
+}`},
+   {f:'Cho', l:1153, t:R`AnimationUtils.lockAnimationClock(frameTimeNanos / TimeUtils.NANOS_PER_MS,
+        timeline.mExpectedPresentationTimeNanos);
+
+mFrameInfo.markInputHandlingStart();
+doCallbacks(Choreographer.CALLBACK_INPUT, frameIntervalNanos);
+
+mFrameInfo.markAnimationsStart();
+doCallbacks(Choreographer.CALLBACK_ANIMATION, frameIntervalNanos);
+doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION, frameIntervalNanos);
+
+mFrameInfo.markPerformTraversalsStart();
+doCallbacks(Choreographer.CALLBACK_TRAVERSAL, frameIntervalNanos);
+
+doCallbacks(Choreographer.CALLBACK_COMMIT, frameIntervalNanos);`},
+   {f:'Cho', l:1184, t:R`void doCallbacks(int callbackType, long frameIntervalNanos) {
+    CallbackRecord callbacks;
+    ...
+    synchronized (mLock) {
+        final long now = System.nanoTime();
+        callbacks = mCallbackQueues[callbackType].extractDueCallbacksLocked(
+                now / TimeUtils.NANOS_PER_MS);
+        if (callbacks == null) {
+            return;
+        }
+        ...
+    }
+    try {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, CALLBACK_TRACE_TITLES[callbackType]);
+        for (CallbackRecord c = callbacks; c != null; c = c.next) {
+            c.run(mFrameData);
+        }
+    } finally { ... recycleCallbackLocked ... }
+}`}]},
+
+{ lane:'ui', short:'measure', title:'performTraversals() 与测量 measure',
+  packet:'MeasureSpec(mode + size)', edge:'', entry:'ViewRootImpl.doTraversal()', output:'每个 View 的 mMeasuredWidth/Height',
+  brief:'TRAVERSAL 回调执行 doTraversal()：移除同步屏障，进入 performTraversals() 总控函数。它计算窗口尺寸、必要时 relayoutWindow()，再调用 performMeasure() 从 DecorView 开始递归测量。',
+  points:[
+    'performTraversals 是三大流程的总控：measureHierarchy → relayoutWindow(WMS) → performMeasure → performLayout → dispatchOnPreDraw → performDraw。',
+    'relayoutWindow() 通过 Binder 让 WMS 计算窗口帧并可能更新 SurfaceControl / BLAST 尺寸，只在窗口属性或尺寸变化时发生。',
+    'View.measure() 带缓存：没有 PFLAG_FORCE_LAYOUT 且 MeasureSpec 未变化时直接跳过 onMeasure()。',
+    'MeasureSpec 由父容器的约束和子 View 的 LayoutParams 组合而成：EXACTLY / AT_MOST / UNSPECIFIED。'],
+  chain:['TraversalRunnable.run() → ViewRootImpl.doTraversal()','mQueue.removeSyncBarrier(mTraversalBarrier)','ViewRootImpl.performTraversals()','measureHierarchy() / relayoutWindow()','ViewRootImpl.performMeasure() → mView.measure()','View.measure() → onMeasure()  // DecorView → FrameLayout → ...','ViewGroup.measureChildWithMargins() → child.measure()'],
+  codes:[
+   {f:'VRI', l:3123, t:R`void doTraversal() {
+    if (mTraversalScheduled) {
+        mTraversalScheduled = false;
+        mQueue.removeSyncBarrier(mTraversalBarrier);
+        performTraversals();
+    }
+}`},
+   {f:'VRI', l:3574, t:R`private void performTraversals() {
+    ...
+    windowSizeMayChange |= measureHierarchy(host, lp, ...);          // L3749
+    ...
+    relayoutResult = relayoutWindow(params, viewVisibility, insetsPending); // L3891
+    ...
+    performMeasure(childWidthMeasureSpec, childHeightMeasureSpec);   // L4211
+    ...
+    performLayout(lp, mWidth, mHeight);                              // L4293
+    ...
+    boolean cancelDueToPreDrawListener = mAttachInfo.mTreeObserver.dispatchOnPreDraw(); // L4492
+    ...
+    if (!performDraw(mActiveSurfaceSyncGroup)) { ... }               // L4557
+}`},
+   {f:'View', l:28542, t:R`public final void measure(int widthMeasureSpec, int heightMeasureSpec) {
+    ...
+    final boolean forceLayout = (mPrivateFlags & PFLAG_FORCE_LAYOUT) == PFLAG_FORCE_LAYOUT;
+    final boolean specChanged = widthMeasureSpec != mOldWidthMeasureSpec
+            || heightMeasureSpec != mOldHeightMeasureSpec;
+    ...
+    if (forceLayout || needsLayout) {
+        mPrivateFlags &= ~PFLAG_MEASURED_DIMENSION_SET;
+        ...
+        if (cacheIndex < 0) {
+            // measure ourselves, this should set the measured dimension flag back
+            onMeasure(widthMeasureSpec, heightMeasureSpec);
+            ...
+        }
+        ...
+        mPrivateFlags |= PFLAG_LAYOUT_REQUIRED;
+    }
+    ...`}]},
+
+{ lane:'ui', short:'layout', title:'布局 layout：确定每个 View 的位置',
+  packet:'mLeft / mTop / mRight / mBottom', edge:'', entry:'ViewRootImpl.performLayout()', output:'View 树的最终坐标',
+  brief:'performLayout() 以测量结果调用 DecorView.layout(0, 0, w, h)。View.layout() 通过 setFrame() 记录四个边界，若位置变化或带 PFLAG_LAYOUT_REQUIRED，再调用 onLayout() 摆放子 View。',
+  points:[
+    'setFrame() 比较新旧边界，尺寸变化会触发 onSizeChanged() 并 invalidate。',
+    '布局期间调用 requestLayout() 会被 requestLayoutDuringLayout() 收集，在本次布局结束后二次处理，避免死循环。',
+    'layout 结束后分发 OnGlobalLayoutListener（dispatchOnGlobalLayout）。'],
+  chain:['ViewRootImpl.performLayout()','host.layout(0, 0, measuredW, measuredH)','View.layout() → setFrame() / setOpticalFrame()','View.onLayout()  // ViewGroup 子类遍历 child.layout()','处理 mLayoutRequesters（布局中途的 requestLayout）','ViewTreeObserver.dispatchOnGlobalLayout()'],
+  codes:[
+   {f:'VRI', l:5148, t:R`private void performLayout(WindowManager.LayoutParams lp, int desiredWindowWidth,
+        int desiredWindowHeight) {
+    mScrollMayChange = true;
+    mInLayout = true;
+
+    final View host = mView;
+    ...
+    Trace.traceBegin(Trace.TRACE_TAG_VIEW, "layout");
+    try {
+        host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());
+
+        mInLayout = false;
+        ...`},
+   {f:'View', l:25798, t:R`public void layout(int l, int t, int r, int b) {
+    ...
+    boolean changed = isLayoutModeOptical(mParent) ?
+            setOpticalFrame(l, t, r, b) : setFrame(l, t, r, b);
+
+    if (changed || (mPrivateFlags & PFLAG_LAYOUT_REQUIRED) == PFLAG_LAYOUT_REQUIRED) {
+        ...
+        onLayout(changed, l, t, r, b);
+        ...
+        mPrivateFlags &= ~PFLAG_LAYOUT_REQUIRED;
+        ...`}]},
+
+{ lane:'ui', short:'draw', title:'绘制 draw：录制 DisplayList（RenderNode）',
+  packet:'RenderNode 树（staging DisplayList）', edge:'JNI 同步', entry:'ViewRootImpl.performDraw()', output:'更新后的 RenderNode / DisplayList',
+  brief:'performDraw() → draw()：硬件加速时调用 ThreadedRenderer.draw()。UI 线程不产生像素，只把每个 View 的绘制命令录制到 RenderNode 的 DisplayList 中，最后调用 syncAndDrawFrame() 交给 RenderThread。',
+  points:[
+    'updateDisplayListIfDirty()：只有被 invalidate（PFLAG_INVALIDATED）的 View 才重新录制；其它 View 复用旧 DisplayList，只递归通知子 View。',
+    '属性动画（translation / alpha 等）只改 RenderNode 属性，不需要重新录制 DisplayList。',
+    'View.draw() 固定顺序：背景 → onDraw → dispatchDraw(子 View) → 前景 / 滚动条 → 焦点高亮。',
+    '软件绘制（drawSoftware）走 Surface.lockCanvas / unlockCanvasAndPost，本页以硬件加速为主线。'],
+  chain:['ViewRootImpl.performDraw() → draw(fullRedrawNeeded, ...)','ThreadedRenderer.draw(mView, mAttachInfo, this)','updateRootDisplayList() → updateViewTreeDisplayList()','View.updateDisplayListIfDirty()','RenderNode.beginRecording() → RecordingCanvas','View.draw(canvas): drawBackground / onDraw / dispatchDraw / onDrawForeground','RenderNode.endRecording()','HardwareRenderer.syncAndDrawFrame(frameInfo)'],
+  codes:[
+   {f:'VRI', l:5869, t:R`if (isHardwareEnabled()) {
+    ...
+    long timeNs = SystemClock.uptimeNanos();
+    mAttachInfo.mThreadedRenderer.draw(mView, mAttachInfo, this);
+    ...
+} else {
+    ...
+    if (!drawSoftware(surface, mAttachInfo, xOffset, yOffset,
+            scalingRequired, dirty, surfaceInsets)) { ... }
+}`},
+   {f:'TR', l:828, t:R`void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks) {
+    attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();
+
+    updateRootDisplayList(view, callbacks);
+    ...
+    final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();
+
+    int syncResult = syncAndDrawFrame(frameInfo);
+    if ((syncResult & SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) { ... requestLayout(); }
+    if ((syncResult & SYNC_REDRAW_REQUESTED) != 0) {
+        attachInfo.mViewRootImpl.invalidate();
+    }
+}`},
+   {f:'View', l:24064, t:R`public RenderNode updateDisplayListIfDirty() {
+    final RenderNode renderNode = mRenderNode;
+    ...
+    if ((mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == 0
+            || !renderNode.hasDisplayList()
+            || (mRecreateDisplayList)) {
+        if (renderNode.hasDisplayList() && !mRecreateDisplayList) {
+            ...
+            dispatchGetDisplayList();
+            return renderNode; // no work needed
+        }
+        mRecreateDisplayList = true;
+        ...
+        final RecordingCanvas canvas = renderNode.beginRecording(width, height);
+        try {
+            ...
+                if ((mPrivateFlags & PFLAG_SKIP_DRAW) == PFLAG_SKIP_DRAW) {
+                    dispatchDraw(canvas);
+                    ...
+                } else {
+                    draw(canvas);
+                }
+        } finally {
+            renderNode.endRecording();
+            ...`},
+   {f:'View', l:25251, t:R`public void draw(@NonNull Canvas canvas) {
+    ...
+    // Step 1, draw the background, if needed
+    drawBackground(canvas);
+    ...
+        // Step 3, draw the content
+        onDraw(canvas);
+        // Step 4, draw the children
+        dispatchDraw(canvas);
+        ...
+        // Step 6, draw decorations (foreground, scrollbars)
+        onDrawForeground(canvas);
+        // Step 7, draw the default focus highlight
+        drawDefaultFocusHighlight(canvas);
+    ...`}]},
+
+{ lane:'rt', short:'同步树', title:'RenderThread 同步帧状态：syncFrameState / prepareTree',
+  packet:'staging → render 属性与 DisplayList', edge:'unblockUiThread()', entry:'RenderProxy::syncAndDrawFrame()', output:'RenderThread 侧的渲染树；UI 线程被放行',
+  brief:'JNI 进入 RenderProxy → DrawFrameTask::drawFrame()，UI 线程 postAndWait() 阻塞；RenderThread 执行 syncFrameState()：makeCurrent、处理 Layer 更新、prepareTree() 把 RenderNode 的 staging 数据推送为 render 数据，完成后立即 unblockUiThread()。',
+  points:[
+    'RenderNode 有 staging / render 两份数据：UI 线程只写 staging，同步阶段在 RenderThread 上推送，之后两线程互不干扰。',
+    'UI 线程只在 sync 期间短暂阻塞，返回后继续执行 COMMIT 回调与下一条消息，与 RenderThread 的 GPU 绘制并行，这就是“双线程流水线”。',
+    'RenderThread 动画（RenderNodeAnimator、波纹）在 prepareTree 时由 AnimationContext 推进。',
+    '纹理上传等需要 UI 线程数据的操作若不能提前完成，canUnblockUiThread 为 false，UI 线程要等到绘制结束才放行。'],
+  chain:['HardwareRenderer.syncAndDrawFrame() → nSyncAndDrawFrame()','android_view_ThreadedRenderer_syncAndDrawFrame()  // JNI','RenderProxy::syncAndDrawFrame() → DrawFrameTask::drawFrame()','DrawFrameTask::postAndWait()  // UI 线程 mSignal.wait()','DrawFrameTask::run()  // RenderThread','DrawFrameTask::syncFrameState() → CanvasContext::prepareTree()','RenderNode::prepareTree() → pushStagingPropertiesChanges / syncDisplayList','DrawFrameTask::unblockUiThread()'],
+  codes:[
+   {f:'DFT', l:72, t:R`int DrawFrameTask::drawFrame() {
+    LOG_ALWAYS_FATAL_IF(!mContext, "Cannot drawFrame with no CanvasContext!");
+
+    mSyncResult = SyncResult::OK;
+    mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);
+    postAndWait();
+
+    return mSyncResult;
+}
+
+void DrawFrameTask::postAndWait() {
+    ATRACE_CALL();
+    AutoMutex _lock(mLock);
+    mRenderThread->queue().post([this]() { run(); });
+    mSignal.wait(mLock);
+}`},
+   {f:'DFT', l:89, t:R`void DrawFrameTask::run() {
+    const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];
+    ATRACE_FORMAT("DrawFrames %" PRId64, vsyncId);
+    ...
+    {
+        TreeInfo info(TreeInfo::MODE_FULL, *mContext);
+        ...
+        canUnblockUiThread = syncFrameState(info);
+        canDrawThisFrame = !info.out.skippedFrameReason.has_value();
+        ...
+    }
+    ...
+    // From this point on anything in "this" is *UNSAFE TO ACCESS*
+    if (canUnblockUiThread) {
+        unblockUiThread();
+    }
+    ...
+    if (CC_LIKELY(canDrawThisFrame)) {
+        context->draw(solelyTextureViewUpdates);
+    } else { ... }
+    ...`},
+   {f:'CC', l:486, t:R`// CanvasContext::prepareTree() 片段
+mAnimationContext->startFrame(info.mode);
+...
+for (const sp<RenderNode>& node : mRenderNodes) {
+    // Only the primary target node will be drawn full - all other nodes would get drawn in
+    // real time mode. In case of a window, the primary node is the window content and the other
+    // node(s) are non client / filler nodes.
+    info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);
+    node->prepareTree(info);
+    ...
+}
+mAnimationContext->runRemainingAnimations(info);`}]},
+
+{ lane:'rt', short:'GPU绘制', title:'RenderThread 绘制：dequeueBuffer → Skia/GPU → swapBuffers',
+  packet:'GraphicBuffer + acquire fence', edge:'queueBuffer', entry:'CanvasContext::draw()', output:'已入队（QUEUED）的 buffer，GPU 可能仍在执行',
+  brief:'CanvasContext::draw() 计算脏区，getFrame() 通过 EGL/Vulkan 从 Surface 中 dequeueBuffer 取得空闲 buffer；SkiaPipeline::renderFrame() 遍历 RenderNode 生成 GPU 命令；swapBuffers() 调用 eglSwapBuffersWithDamageKHR，内部 queueBuffer 把 buffer 连同 acquire fence 放回 BufferQueue。',
+  points:[
+    'dequeueBuffer 从 BufferQueue 取 FREE 槽位（通常 3 个 buffer 轮转）；全被占用时会阻塞，Perfetto 中表现为 RenderThread 卡在 dequeueBuffer。',
+    'GPU 执行是异步的：CPU 提交命令后 buffer 就入队，附带的 acquire fence 在 GPU 真正画完时 signal。',
+    '脏区为空且 surface 不需要重绘时直接跳过本帧（SkippedFrameReason::NothingToDraw），不产生新 buffer。',
+    'Android 12 起 BufferQueue 的 consumer（BLASTBufferQueue）在应用进程内，queueBuffer 不再跨进程。'],
+  chain:['CanvasContext::draw()  // mDamageAccumulator.finish(&dirty)','CanvasContext::getFrame() → SkiaOpenGLPipeline::getFrame()','  → EGL → Surface::hook_dequeueBuffer → BufferQueueProducer::dequeueBuffer()','SkiaOpenGLPipeline::draw() → SkiaPipeline::renderFrame()','  → RenderNodeDrawable 遍历 → GrDirectContext flush / submit','SkiaOpenGLPipeline::swapBuffers() → EglManager::swapBuffers()','eglSwapBuffersWithDamageKHR → Surface::queueBuffer → BufferQueueProducer::queueBuffer()','frameAvailableListener->onFrameAvailable(item)'],
+  codes:[
+   {f:'CC', l:617, t:R`SkRect dirty;
+mDamageAccumulator.finish(&dirty);
+...
+    if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {
+        return SkippedFrameReason::NothingToDraw;
+    }
+...
+mCurrentFrameInfo->markIssueDrawCommandsStart();
+
+Frame frame = getFrame();
+
+SkRect windowDirty = computeDirtyRect(frame, &dirty);
+...
+    drawResult = mRenderPipeline->draw(
+            frame, windowDirty, dirty, mLightGeometry, &mLayerUpdateQueue, mContentDrawBounds,
+            mOpaque, mLightInfo, mRenderNodes, &(profiler()), mBufferParams, profilerLock());
+...
+bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,
+                                            &requireSwap);`},
+   {f:'SGL', l:116, t:R`IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
+        const Frame& frame, const SkRect& screenDirty, const SkRect& dirty, ...) {
+    ...
+        surface = SkSurfaces::WrapBackendRenderTarget(mRenderThread.getGrContext(), backendRT,
+                                                      getSurfaceOrigin(), colorType,
+                                                      mSurfaceColorSpace, &props);
+    ...
+    renderFrame(*layerUpdateQueue, dirty, renderNodes, opaque, contentDrawBounds, surface,
+                preTransform);
+    ...`},
+   {f:'EGL', l:621, t:R`bool EglManager::swapBuffers(const Frame& frame, const SkRect& screenDirty) {
+    if (CC_UNLIKELY(Properties::waitForGpuCompletion)) {
+        ATRACE_NAME("Finishing GPU work");
+        fence();
+    }
+
+    EGLint rects[4];
+    frame.map(screenDirty, rects);
+    eglSwapBuffersWithDamageKHR(mEglDisplay, frame.mSurface, rects, screenDirty.isEmpty() ? 0 : 1);
+    ...`},
+   {f:'BQP', l:1200, t:R`// BufferQueueProducer::queueBuffer() 末尾
+{ // scope for the lock
+    std::unique_lock<std::mutex> lock(mCallbackMutex);
+    while (callbackTicket != mCurrentCallbackTicket) {
+        mCallbackCondition.wait(lock);
+    }
+
+    if (frameAvailableListener != nullptr) {
+        frameAvailableListener->onFrameAvailable(item);
+    } else if (frameReplacedListener != nullptr) {
+        frameReplacedListener->onFrameReplaced(item);
+    }
+    ...`}]},
+
+{ lane:'bq', short:'BLAST提交', title:'BLASTBufferQueue：acquire buffer 并作为 Transaction 提交', ipc:true,
+  packet:'Transaction{ setBuffer(buffer, acquireFence, releaseCallback) }', edge:'Binder', entry:'BLASTBufferQueue::onFrameAvailable()', output:'SF.setTransactionState()',
+  brief:'BLASTBufferQueue 是应用进程内的 consumer：onFrameAvailable() 中 acquireNextBufferLocked() 取出 buffer，用 Transaction::setBuffer() 把 buffer 作为 SurfaceControl 的属性，连同 acquire fence、release 回调和 FrameTimelineInfo 一起 apply() 给 SurfaceFlinger。',
+  points:[
+    'BLAST = Buffer as LayerState Transaction：buffer 与位置、裁剪等几何属性在同一个事务里原子生效，解决了旧架构中 buffer 与窗口几何不同步的问题。',
+    '已 acquire 数量达到 mMaxAcquiredBuffers + 2 时不再 acquire，帧在 shadow queue 中等待 release。',
+    'setFrameTimelineInfo() 把应用侧的 vsyncId 带给 SF，用于 FrameTimeline 卡顿归因。',
+    'apply(false, true) 为 oneway Binder，不阻塞 RenderThread。'],
+  chain:['BLASTBufferQueue::onFrameAvailable()','BLASTBufferQueue::acquireNextBufferLocked()','BufferItemConsumer::acquireBuffer()  // QUEUED → ACQUIRED','Transaction::setBuffer(mSurfaceControl, buffer, fence, frameNumber, releaseBufferCallback)','Transaction::setFrameTimelineInfo() / addTransactionCompletedCallback()','Transaction::setApplyToken(mApplyToken).apply(false, true)','ISurfaceComposer::setTransactionState()  // Binder → SF'],
+  codes:[
+   {f:'BBQ', l:556, t:R`status_t BLASTBufferQueue::acquireNextBufferLocked(
+        const std::optional<SurfaceComposerClient::Transaction*> transaction) {
+    ...
+    if (mNumAcquired >= (mMaxAcquiredBuffers + 2)) {
+        ...
+        return BufferQueue::NO_BUFFER_AVAILABLE;
+    }
+    ...
+    status_t status =
+            mBufferItemConsumer->acquireBuffer(&bufferItem, 0 /* expectedPresent */, false);
+    ...
+    auto releaseBufferCallback = makeReleaseBufferCallbackThunk();
+    sp<Fence> fence =
+            bufferItem.mFence ? sp<Fence>::make(bufferItem.mFence->dup()) : Fence::NO_FENCE;
+    ...
+    t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId,
+                 releaseBufferCallback, dequeueTime);
+    t->setDataspace(mSurfaceControl, static_cast<ui::Dataspace>(bufferItem.mDataSpace));
+    t->setHdrMetadata(mSurfaceControl, bufferItem.mHdrMetadata);
+    t->setSurfaceDamageRegion(mSurfaceControl, bufferItem.mSurfaceDamage);
+    t->addTransactionCompletedCallback(makeTransactionCallbackThunk(), nullptr);
+    ...`},
+   {f:'BBQ', l:700, t:R`    t->setFrameTimelineInfo(mPendingFrameTimelines.front().second);
+    ...
+mergePendingTransactions(t, bufferItem.mFrameNumber);
+if (applyTransaction) {
+    // All transactions on our apply token are one-way. See comment on mAppliedLastTransaction
+    status_t status = t->setApplyToken(mApplyToken).apply(false, true);
+    ...`},
+   {f:'SCC', l:1195, t:R`// SurfaceComposerClient::Transaction::apply()
+sp<IBinder> applyToken = mApplyToken ? mApplyToken : getDefaultApplyToken();
+
+sp<ISurfaceComposer> sf(ComposerService::getComposerService());
+TransactionState state = std::move(mState);
+status_t binderStatus = sf->setTransactionState(std::move(state), applyToken);`}]},
+
+{ lane:'sf', short:'接收事务', title:'SurfaceFlinger 接收事务并请求 VSYNC-sf',
+  packet:'QueuedTransactionState', edge:'scheduleFrame()', entry:'SurfaceFlinger::setTransactionState()', output:'事务进入无锁队列；SF 预约下一次 VSYNC-sf',
+  brief:'setTransactionState() 在 SF 的 Binder 线程执行，不直接修改图层状态，而是把事务放入 TransactionHandler 的无锁队列，置 eTransactionFlushNeeded，并通过 scheduleCommit() → Scheduler::scheduleFrame() 预约 SF 的下一次 VSYNC。',
+  points:[
+    '所有图层状态修改都被推迟到 SF 主线程 commit 时统一应用，保证同一帧内的原子性和顺序。',
+    'SF 与应用一样按需请求 VSYNC：没有事务、没有动画时 SF 主线程不会被唤醒。',
+    'eEarlyWakeupStart 等标记可让 SF 临时使用更早的 offset（如动画、窗口切换）。'],
+  chain:['SurfaceFlinger::setTransactionState()  // Binder 线程','mTransactionHandler.queueTransaction(std::move(state))','SurfaceFlinger::setTransactionFlags(eTransactionFlushNeeded, ...)','SurfaceFlinger::scheduleCommit()','Scheduler::scheduleFrame() → MessageQueue::scheduleFrame()','mVsync.registration->schedule({workDuration, readyDuration, lastVsync})'],
+  codes:[
+   {f:'SF', l:5497, t:R`{
+    // Transactions are added via a lockless queue and does not need to be added from the main
+    // thread.
+    ftl::FakeGuard guard(kMainThreadContext);
+    mTransactionHandler.queueTransaction(std::move(state));
+}
+...
+setTransactionFlags(eTransactionFlushNeeded, schedule, frameHint,
+                    std::move(transactionState.mEarlyWakeupInfos));`},
+   {f:'SF', l:2430, t:R`void SurfaceFlinger::scheduleCommit(FrameHint hint, Duration workDurationSlack) {
+    if (hint == FrameHint::kActive) {
+        mScheduler->resetAllIdleTimers();
+    }
+    mPowerAdvisor->notifyDisplayUpdateImminentAndCpuReset();
+    mScheduler->scheduleFrame(workDurationSlack);
+}`},
+   {f:'MQ', l:191, t:R`void MessageQueue::scheduleFrame(Duration workDurationSlack) {
+    SFTRACE_CALL();
+
+    std::lock_guard lock(mVsync.mutex);
+    const auto workDuration = Duration(mVsync.workDuration.get() - workDurationSlack);
+    mVsync.scheduledFrameTimeOpt =
+            mVsync.registration->schedule({.workDuration = workDuration.ns(),
+                                           .readyDuration = 0,
+                                           .lastVsync = mVsync.lastCallbackTime.ns()});
+}`}]},
+
+{ lane:'sch', short:'VSYNC-sf', title:'VSYNC-sf 到来：唤醒 SF 主线程 onFrameSignal()', vsync:'VSYNC-sf',
+  packet:'vsyncId + expectedVsyncTime', edge:'Looper 消息', entry:'MessageQueue::vsyncCallback()', output:'SF 主线程执行 commit() + composite()',
+  brief:'定时器线程触发 MessageQueue::vsyncCallback()，生成 vsyncId 并向 SF 主线程 Looper 投递消息；主线程 handleMessage() → Scheduler::onFrameSignal()，依次调用 compositor.commit() 和 compositor.composite()。',
+  points:[
+    'VSYNC-sf 与 VSYNC-app 来自同一个 VSyncPredictor，只是 workDuration 不同：应用先画，SF 稍后合成，两者在时间上形成流水线。',
+    'onFrameSignal() 是 SF 每一帧的总入口；commit() 返回 false（无变化）时跳过 composite，节省功耗。',
+    'FrameTargeter::beginFrame() 记录本帧期望显示时间，并检查上一帧 present fence 是否按时 signal。'],
+  chain:['VSyncDispatchTimerQueue::timerCallback()','MessageQueue::vsyncCallback()  // 生成 vsyncId','MessageQueue::Handler::dispatchFrame() → Looper::sendMessage()','MessageQueue::Handler::handleMessage()  // SF 主线程','Scheduler::onFrameSignal() → FrameTargeter::beginFrame()','compositor.commit()  →  compositor.composite()'],
+  codes:[
+   {f:'MQ', l:59, t:R`void MessageQueue::vsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {
+    SFTRACE_CALL();
+    // Trace VSYNC-sf
+    mVsync.value = (mVsync.value + 1) % 2;
+    ...
+    const auto vsyncId = VsyncId{mVsync.tokenManager->generateTokenForPredictions(
+            {targetWakeupTime, readyTime, vsyncTime})};
+
+    mHandler->dispatchFrame(vsyncId, expectedVsyncTime);
+}`},
+   {f:'MQ', l:32, t:R`void MessageQueue::Handler::dispatchFrame(VsyncId vsyncId, TimePoint expectedVsyncTime) {
+    if (!mFramePending.exchange(true)) {
+        mVsyncId = vsyncId;
+        mExpectedVsyncTime = expectedVsyncTime;
+        mQueue.mLooper->sendMessage(sp<MessageHandler>::fromExisting(this), Message());
+    }
+}
+...
+void MessageQueue::Handler::handleMessage(const Message&) {
+    mFramePending.store(false);
+    mQueue.onFrameSignal(mQueue.mCompositor, mVsyncId, mExpectedVsyncTime);
+}`},
+   {f:'Sch', l:416, t:R`void Scheduler::onFrameSignal(ICompositor& compositor, VsyncId vsyncId,
+                              TimePoint expectedVsyncTime) {
+    ...
+    pacesetterPtr->targeterPtr->beginFrame(beginFrameArgs, *pacesetterPtr->schedulePtr);
+    ...
+        if (!compositor.commit(pacesetterPtr->displayId, targets)) {
+            compositor.sendNotifyExpectedPresentHint(pacesetterPtr->displayId);
+            mSchedulerCallback.onCommitNotComposited();
+            return;
+        }
+    ...
+    const auto resultsPerDisplay = compositor.composite(pacesetterPtr->displayId, targeters);
+    ...`}]},
+
+{ lane:'sf', short:'commit/latch', title:'SF commit()：应用事务、latch buffer、更新图层快照',
+  packet:'LayerSnapshot（含新 buffer）', edge:'', entry:'SurfaceFlinger::commit()', output:'mustComposite = true，进入合成',
+  brief:'commit() 调用 updateLayerSnapshots()：TransactionHandler::flushTransactions() 取出“已就绪”的事务（buffer 的 acquire fence 已 signal、未被 barrier 阻塞），applyTransactionsLocked() 应用图层属性，Layer::latchBufferImpl() 锁定新 buffer，再由 LayerSnapshotBuilder 计算可见区域等快照。',
+  points:[
+    '未就绪的事务（如 GPU 还没画完）会留在队列里等下一个 VSYNC-sf，这就是“GPU 慢导致晚一帧显示”的直接原因（latch-unsignaled 策略可放宽）。',
+    'latch 之后新 buffer 成为该图层当前要显示的内容，旧 buffer 等本帧 present 后再释放。',
+    'commit 末尾 chooseRefreshRateForContent()：根据各图层投票选择 60/90/120Hz 等刷新率。',
+    'onCommit 类型的事务回调在这里就发送，onComplete 类型等到 present 之后。'],
+  chain:['SurfaceFlinger::commit()','SurfaceFlinger::updateLayerSnapshots()','TransactionHandler::collectTransactions() / flushTransactions()  // 过滤未就绪事务','SurfaceFlinger::applyTransactionsLocked()','Layer::latchBufferImpl()  // 新 buffer 生效','LayerSnapshotBuilder::update()  // 可见区域、几何、z 序','mTransactionCallbackInvoker.sendCallbacks(true /* onCommitOnly */)','Scheduler::chooseRefreshRateForContent()'],
+  codes:[
+   {f:'SF', l:2942, t:R`// Composite if transactions were committed, or if requested by HWC.
+bool mustComposite = mMustComposite.exchange(false);
+{
+    ...
+    const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded);
+    bool transactionsAreEmpty = false;
+    mustComposite |= updateLayerSnapshots(vsyncId, pacesetterFrameTarget.frameBeginTime().ns(),
+                                          pacesetterFrameTarget.expectedPresentTime().ns(),
+                                          flushTransactions, transactionsAreEmpty);
+    ...
+    if (transactionsAreEmpty) {
+        // Invoke empty transaction callbacks early.
+        mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);
+    } else {
+        // Invoke OnCommit callbacks.
+        mTransactionCallbackInvoker.sendCallbacks(true /* onCommitOnly */);
+    }
+}
+...
+    mScheduler->chooseRefreshRateForContent(&mLayerHierarchyBuilder.getHierarchy(),
+                                            updateAttachedChoreographer);
+...
+return mustComposite && CC_LIKELY(mBootStage != BootStage::BOOTLOADER);`},
+   {f:'SF', l:2664, t:R`// SurfaceFlinger::updateLayerSnapshots() 片段
+mTransactionHandler.collectTransactions();
+...
+mLayerLifecycleManager.addLayers(std::move(update.newLayers));
+update.transactions = mTransactionHandler.flushTransactions();
+...
+mustComposite |= applyTransactionsLocked(update.transactions);
+traverseLegacyLayers([&](Layer* layer) { layer->commitTransaction(); });
+const nsecs_t latchTime = systemTime();
+...
+    it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);`}]},
+
+{ lane:'sf', short:'composite', title:'SF composite()：CompositionEngine 选择合成策略并合成', ipc:true,
+  packet:'OutputLayer 列表 + 合成类型(DEVICE/CLIENT)', edge:'HAL (AIDL)', entry:'SurfaceFlinger::composite()', output:'提交给 HWC 的图层配置 / client target',
+  brief:'composite() 构建 CompositionRefreshArgs 并调用 CompositionEngine::present()。每个 Output（显示屏）依次 prepare → updateCompositionState → planComposition → writeCompositionState → prepareFrame（与 HWC validate 协商合成策略）→ finishFrame（需要时用 RenderEngine GPU 合成 CLIENT 图层）→ presentFrameAndReleaseLayers。',
+  points:[
+    'HWC 为每层决定合成类型：DEVICE（硬件 overlay 直接叠加，省电）或 CLIENT（交给 SF 用 RenderEngine/GPU 合成到 client target buffer）。',
+    '图层过多、圆角/模糊等特效、overlay 平面不足时会退回 CLIENT 合成，增加 GPU 负担与延迟。',
+    'canPredictCompositionStrategy() 成立时走 prepareFrameAsync()，让 GPU 合成与 HWC validate 并行，缩短 SF 帧耗时。',
+    'composeSurfaces() 中 dequeue client target、renderEngine.drawLayers()，再由 mRenderSurface->queueBuffer() 交给 HWC。'],
+  chain:['SurfaceFlinger::composite()  // 构建 CompositionRefreshArgs','CompositionEngine::present() → preComposition()','Output::prepare()  // 重建可见的 OutputLayer','Output::present(): updateCompositionState / planComposition / writeCompositionState','Output::prepareFrame() → Display::chooseCompositionStrategy()','  → HWComposer::getDeviceCompositionChanges()  // validate','Output::finishFrame() → composeSurfaces()  // CLIENT 图层 GPU 合成','Output::presentFrameAndReleaseLayers()'],
+  codes:[
+   {f:'CE', l:130, t:R`void CompositionEngine::present(CompositionRefreshArgs& args) {
+    SFTRACE_CALL();
+    ALOGV(__FUNCTION__);
+
+    preComposition(args);
+
+    {
+        LayerFESet latchedLayers;
+
+        for (const auto& output : args.outputs) {
+            output->prepare(args, latchedLayers);
+        }
+    }
+
+    offloadOutputs(args.outputs);
+
+    ui::DisplayVector<ftl::Future<std::monostate>> presentFutures;
+    for (const auto& output : args.outputs) {
+        presentFutures.push_back(output->present(args));
+    }
+    ...
+    postComposition(args);
+}`},
+   {f:'Out', l:474, t:R`// Output::present()
+updateColorProfile(refreshArgs);
+updateCompositionState(refreshArgs);
+planComposition();
+writeCompositionState(refreshArgs);
+setColorTransform(refreshArgs);
+beginFrame();
+...
+GpuCompositionResult result;
+const bool predictCompositionStrategy = canPredictCompositionStrategy(refreshArgs);
+if (predictCompositionStrategy) {
+    result = prepareFrameAsync();
+} else {
+    prepareFrame();
+}
+
+devOptRepaintFlash(refreshArgs);
+finishFrame(std::move(result));
+...
+    presentFrameAndReleaseLayers(flushEvenWhenDisabled);`},
+   {f:'Disp', l:263, t:R`// Display::chooseCompositionStrategy()
+// Get any composition changes requested by the HWC device, and apply them.
+auto& hwc = getCompositionEngine().getHwComposer();
+const bool requiresClientComposition = anyLayersRequireClientComposition();
+...
+if (status_t result = hwc.getDeviceCompositionChanges(*halDisplayId, requiresClientComposition,
+                                                      getState().earliestPresentTime,
+                                                      getState().expectedPresentTime,
+                                                      getState().frameInterval, outChanges);
+    result != NO_ERROR) { ... }`},
+   {f:'Out', l:1295, t:R`void Output::finishFrame(GpuCompositionResult&& result) {
+    ...
+        // Repaint the framebuffer (if needed), getting the optional fence for when
+        // the composition completes.
+        optReadyFence = composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);
+    ...
+    // swap buffers (presentation)
+    mRenderSurface->queueBuffer(std::move(*optReadyFence), getHdrSdrRatio(buffer));
+}`}]},
+
+{ lane:'hw', short:'HWC present', title:'HWC present：提交给显示控制器，拿回 present / release fence',
+  packet:'present fence + 各图层 release fence', edge:'', entry:'Display::presentFrame()', output:'DPU 持有本帧配置，等待下一个 HW VSYNC',
+  brief:'Output::presentFrameAndReleaseLayers() → Display::presentFrame() → HWComposer::presentAndGetReleaseFences() → HWC2::Display::present() → Composer HAL presentDisplay()。显示控制器（DPU）拿到图层配置后在下一个硬件 VSYNC 切换；SF 得到 present fence 与每个图层的 release fence。',
+  points:[
+    'present fence：本帧真正开始在屏幕上显示时 signal，FrameTimeline 用它判断实际显示时间与是否掉帧。',
+    'release fence：显示硬件不再读取某个旧 buffer 时 signal，应用之后才能安全复写该 buffer。',
+    'earliestPresentTime 存在时 SF 会 sleep_until，避免过早提交导致提前一帧显示。',
+    'presentFrameAndReleaseLayers() 把 release fence 设置到各 LayerFE，后续随事务回调交还给应用。'],
+  chain:['Output::presentFrameAndReleaseLayers()','Display::presentFrame()','HWComposer::presentAndGetReleaseFences()','HWC2::Display::present() → mComposer.presentDisplay()  // Composer HAL','hwcDisplay->getReleaseFences(&releaseFences)','layer->getLayerFE().setReleaseFence(releaseFence)'],
+  codes:[
+   {f:'Disp', l:416, t:R`compositionengine::Output::FrameFences Display::presentFrame() {
+    auto fences = impl::Output::presentFrame();
+    ...
+    auto& hwc = getCompositionEngine().getHwComposer();
+    ...
+    hwc.presentAndGetReleaseFences(*halDisplayIdOpt, getState().earliestPresentTime);
+    ...
+    fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);
+
+    for (const auto* layer : getOutputLayersOrderedByZ()) {
+        auto hwcLayer = layer->getHwcLayer();
+        if (!hwcLayer) {
+            continue;
+        }
+        fences.layerFences.emplace(hwcLayer, hwc.getLayerReleaseFence(*halDisplayIdOpt, hwcLayer));
+    }
+    ...`},
+   {f:'HWC', l:656, t:R`status_t HWComposer::presentAndGetReleaseFences(
+        HalDisplayId displayId,
+        std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) {
+    ...
+    if (earliestPresentTime) {
+        SFTRACE_NAME("wait for earliest present time");
+        std::this_thread::sleep_until(*earliestPresentTime);
+    }
+
+    auto error = hwcDisplay->present(&displayData.lastPresentFence);
+    RETURN_IF_HWC_ERROR_FOR("present", error, displayId, UNKNOWN_ERROR);
+
+    std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;
+    error = hwcDisplay->getReleaseFences(&releaseFences);
+    ...
+    displayData.releaseFences = std::move(releaseFences);
+    return NO_ERROR;
+}`}]},
+
+{ lane:'hw', short:'扫描显示', title:'HW VSYNC：面板扫描显示新帧，present fence signal', vsync:'HW VSYNC', ipc:true,
+  packet:'像素 → 面板', edge:'Binder 回调', entry:'SurfaceFlinger::onComposerHalVsync()', output:'画面可见；VSyncPredictor 校准；present 回调',
+  brief:'DPU 在下一个硬件 VSYNC 切换到新帧并逐行扫描到面板，present fence 随之 signal。SF 在 composite() 末尾 onCompositionPresented() 中记录 present fence、发送事务完成回调；需要校准时 HWC 上报的硬件 VSYNC 通过 addResyncSample() 修正 VSyncPredictor 模型。',
+  points:[
+    '硬件 VSYNC 只在需要重新校准（resync）时打开，平时由软件模型预测，以省电。',
+    'Scheduler::addPresentFence() 也会用 present fence 时间校验模型误差。',
+    'FrameTimeline 比较 present 时间与应用 / SF 的预期时间，区分 App Deadline Missed、SF 掉帧、Buffer Stuffing 等卡顿类型。',
+    '从应用收到 VSYNC-app 到画面可见，典型需要 2～3 个 VSYNC 周期。'],
+  chain:['DPU 在 HW VSYNC 切换 framebuffer / overlay，面板扫描','present fence signal','SurfaceFlinger::onComposerHalVsync() → Scheduler::addResyncSample()  // 校准模型','SurfaceFlinger::onCompositionPresented()','mTransactionCallbackInvoker.addPresentFence(presentFence)','Layer::onCompositionPresented()  // 帧统计','mScheduler->addPresentFence(id, presentFence)'],
+  codes:[
+   {f:'SF', l:2452, t:R`void SurfaceFlinger::onComposerHalVsync(hal::HWDisplayId hwcDisplayId, int64_t timestamp,
+                                        std::optional<hal::VsyncPeriodNanos> vsyncPeriod) {
+    ...
+    Mutex::Autolock lock(mStateLock);
+    if (const auto displayIdOpt = getHwComposer().onVsync(hwcDisplayId, timestamp)) {
+        if (mScheduler->addResyncSample(*displayIdOpt, timestamp, vsyncPeriod)) {
+            // period flushed
+            mScheduler->modulateVsync(displayIdOpt, &VsyncModulator::onRefreshRateChangeCompleted);
+        }
+    }
+}`},
+   {f:'SF', l:3560, t:R`void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId,
+                                            const scheduler::FrameTargeters& frameTargeters,
+                                            nsecs_t presentStartTime) {
+    ...
+    for (const auto& [id, targeter] : frameTargeters) {
+        auto presentFence = getHwComposer().getPresentFence(id);
+
+        if (id == pacesetterId) {
+            mTransactionCallbackInvoker.addPresentFence(presentFence);
+        }
+        ...
+    }
+    ...
+    mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);
+    ...
+    for (auto&& [id, presentFence] : presentFences) {
+        mScheduler->addPresentFence(id, std::move(presentFence));
+    }`}]},
+
+{ lane:'bq', short:'释放buffer', title:'释放旧 buffer：release callback 回到应用，槽位重新 FREE',
+  packet:'ReleaseCallbackId + release fence', edge:'', entry:'TransactionCompletedListener::onTransactionCompleted()', output:'BufferQueue 槽位 FREE，可被下一帧 dequeue',
+  brief:'新 buffer 被显示后，上一帧的 buffer 不再需要。SF 在 onCompositionPresented() 中 prepareReleaseCallbacks() 把 release fence 放入事务回调，经 Binder 回到应用的 TransactionCompletedListener，调用 BLASTBufferQueue::releaseBufferCallback() → BufferItemConsumer::releaseBuffer()，槽位回到 FREE。',
+  points:[
+    'release 时附带 release fence：应用 dequeue 到该 buffer 后，GPU 写入前仍需等待 fence signal。',
+    '事务完成回调与 release 回调合并在一次 IPC 中，减少跨进程开销。',
+    '若 SF 合成慢迟迟不 release，应用 3 个 buffer 都被占用，RenderThread 就会阻塞在 dequeueBuffer —— 背压由此传回应用。',
+    'transactionCallback 还会带回 latchTime、presentFence 等，用于 FrameMetrics / JankStats。'],
+  chain:['SurfaceFlinger::onCompositionPresented() → Layer::prepareReleaseCallbacks(releaseFence)','TransactionCallbackInvoker::sendCallbacks()  // Binder → App','TransactionCompletedListener::onTransactionCompleted()','BLASTBufferQueue::releaseBufferCallback() → releaseBufferCallbackLocked()','BLASTBufferQueue::releaseBuffer()  // mNumAcquired--','BufferItemConsumer::releaseBuffer(item, releaseFence)  // 槽位 → FREE','下一帧 dequeueBuffer 复用该槽位'],
+  codes:[
+   {f:'Layer', l:794, t:R`void Layer::prepareReleaseCallbacks(ftl::Future<FenceResult> futureFenceResult,
+                                    ui::LayerStack layerStack) {
+    sp<CallbackHandle> ch = findCallbackHandle();
+
+    if (ch != nullptr) {
+        ch->previousReleaseCallbackId = mPreviousReleaseCallbackId;
+        ch->previousReleaseFences.emplace_back(std::move(futureFenceResult));
+        ch->name = mName;
+    } else { ... }
+    ...`},
+   {f:'SCC', l:560, t:R`// TransactionCompletedListener::onTransactionCompleted() 片段
+// callback and a release buffer callback happening at the same time to avoid an
+// additional ipc call from the server.
+if (surfaceStats.previousReleaseCallbackId != ReleaseCallbackId::INVALID_ID) {
+    ReleaseBufferCallback callback;
+    {
+        std::scoped_lock<std::mutex> lock(mMutex);
+        callback = popReleaseBufferCallbackLocked(
+                surfaceStats.previousReleaseCallbackId);
+    }
+    if (callback) {
+        callback(surfaceStats.previousReleaseCallbackId,
+                 surfaceStats.previousReleaseFence
+                         ? surfaceStats.previousReleaseFence
+                         : Fence::NO_FENCE,
+                 surfaceStats.currentMaxAcquiredBufferCount);
+    }`},
+   {f:'BBQ', l:529, t:R`void BLASTBufferQueue::releaseBuffer(const ReleaseCallbackId& callbackId,
+                                     const sp<Fence>& releaseFence) {
+    auto it = mSubmitted.find(callbackId);
+    if (it == mSubmitted.end()) {
+        return;
+    }
+    mNumAcquired--;
+    BBQ_TRACE("frame=%" PRIu64, callbackId.framenumber);
+    BQA_LOGV("released %s", callbackId.to_string().c_str());
+    mBufferItemConsumer->releaseBuffer(it->second, releaseFence);
+    mSubmitted.erase(it);
+    ...`}]},
+];
+
+// ---------- 工具函数 ----------
+const N = STAGES.length;
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const KW = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:[^"\\\n]|\\.)*")|\b(public|private|protected|final|static|void|boolean|int|long|float|if|else|for|while|do|return|new|try|finally|synchronized|switch|case|break|const|auto|bool|class|struct|nullptr|null|true|false|this|status_t|override)\b|\b(\d+)\b/g;
+function highlight(src) {
+  let out = '', last = 0, m;
+  KW.lastIndex = 0;
+  while ((m = KW.exec(src))) {
+    out += esc(src.slice(last, m.index));
+    const cls = m[1] ? 'c' : m[2] ? 's' : m[3] ? 'k' : 'n';
+    out += '<span class="' + cls + '">' + esc(m[0]) + '</span>';
+    last = KW.lastIndex;
+  }
+  return out + esc(src.slice(last));
+}
+const ghLink = (f, l) => GH + P[f] + '#L' + l;
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+
+// ---------- SVG 泳道图 ----------
+const svg = document.getElementById('stage');
+const X0 = 205, X1 = 1465, NW = 68, NH = 34;
+const STEP = (X1 - X0) / (N - 1);
+const nodeX = i => X0 + i * STEP;
+const nodeY = i => LANES[STAGES[i].lane].y;
+
+const defs = el('defs', {}, svg);
+const mk = el('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+el('path', { d: 'M0,0 L10,5 L0,10 z', fill: '#6b7891' }, mk);
+const flt = el('filter', { id: 'glow', x: '-50%', y: '-50%', width: '200%', height: '200%' }, defs);
+el('feGaussianBlur', { stdDeviation: 3.5, result: 'b' }, flt);
+const fm = el('feMerge', {}, flt); el('feMergeNode', { in: 'b' }, fm); el('feMergeNode', { in: 'SourceGraphic' }, fm);
+
+// 进程背景带
+PROCS.forEach(p => {
+  el('rect', { x: 8, y: p.y1, width: 1484, height: p.y2 - p.y1, rx: 8, fill: p.color, stroke: '#2b3650' }, svg);
+  el('text', { x: 18, y: p.y1 + 15, fill: '#8d9ab3', 'font-size': 11, 'font-weight': 600 }, svg, p.name);
+});
+// 泳道
+for (const k in LANES) {
+  const ln = LANES[k];
+  el('line', { x1: 150, x2: 1490, y1: ln.y, y2: ln.y, stroke: ln.color, 'stroke-opacity': .22, 'stroke-dasharray': '2 4' }, svg);
+  el('text', { x: 20, y: ln.y + 4, fill: ln.color, 'font-size': 12.5, 'font-weight': 600 }, svg, ln.name);
+}
+// VSYNC 行与标记
+el('text', { x: 20, y: 34, fill: 'var(--vs)', 'font-size': 12.5, 'font-weight': 600 }, svg, 'VSYNC 信号');
+el('text', { x: 1488, y: 548, fill: '#6b7891', 'font-size': 11, 'text-anchor': 'end' }, svg, '时间 →（教学示意）');
+const vsMarks = [];
+STAGES.forEach((s, i) => {
+  if (!s.vsync) return;
+  const g = el('g', { opacity: .45 }, svg);
+  el('line', { x1: nodeX(i), x2: nodeX(i), y1: 42, y2: 515, stroke: 'var(--vs)', 'stroke-dasharray': '4 4' }, g);
+  el('rect', { x: nodeX(i) - 38, y: 22, width: 76, height: 18, rx: 9, fill: '#3a1d27', stroke: 'var(--vs)' }, g);
+  el('text', { x: nodeX(i), y: 35, fill: '#ffb3bf', 'font-size': 11, 'text-anchor': 'middle', 'font-weight': 600 }, g, s.vsync);
+  vsMarks.push({ i, g });
+});
+
+// 连线
+function edgePath(i) {
+  const ax = nodeX(i), ay = nodeY(i), bx = nodeX(i + 1), by = nodeY(i + 1);
+  if (ay === by) return `M${ax + NW / 2},${ay} H${bx - NW / 2}`;
+  const sy = by > ay ? ay + NH / 2 : ay - NH / 2;
+  return `M${ax},${sy} V${by} H${bx - NW / 2}`;
+}
+const edges = [];
+for (let i = 0; i < N - 1; i++) {
+  const s = STAGES[i];
+  const p = el('path', { d: edgePath(i), fill: 'none', stroke: '#4a5878', 'stroke-width': 1.6, 'marker-end': 'url(#arr)', 'stroke-dasharray': s.ipc ? '5 4' : 'none' }, svg);
+  edges.push(p);
+  if (nodeY(i) !== nodeY(i + 1) && s.edge) {
+    const my = (nodeY(i) + nodeY(i + 1)) / 2;
+    const t = el('text', { x: nodeX(i) + 5, y: my + 4, fill: s.ipc ? '#ffcf8a' : '#8d9ab3', 'font-size': 10 }, svg, s.edge);
+  }
+}
+// 下一帧回环提示
+el('text', { x: nodeX(N - 1), y: nodeY(N - 1) + 34, fill: '#8d9ab3', 'font-size': 10.5, 'text-anchor': 'middle' }, svg, '↺ 槽位供下一帧复用');
+
+// 节点
+const nodes = STAGES.map((s, i) => {
+  const g = el('g', { class: 'node', tabindex: 0, role: 'button', 'aria-label': `第 ${i} 步：${s.title}`, style: 'cursor:pointer' }, svg);
+  const x = nodeX(i), y = nodeY(i), c = LANES[s.lane].color;
+  const r = el('rect', { x: x - NW / 2, y: y - NH / 2, width: NW, height: NH, rx: 7, fill: '#1d2639', stroke: c, 'stroke-width': 1.4 }, g);
+  el('text', { x, y: y + 4, fill: '#dfe6f3', 'font-size': 11, 'text-anchor': 'middle' }, g, s.short);
+  const nb = el('circle', { cx: x - NW / 2 + 1, cy: y - NH / 2 + 1, r: 8, fill: c }, g);
+  el('text', { x: x - NW / 2 + 1, y: y - NH / 2 + 4.5, fill: '#0f1420', 'font-size': 9.5, 'font-weight': 700, 'text-anchor': 'middle' }, g, i);
+  g.addEventListener('click', () => jump(i));
+  g.addEventListener('keydown', e => { if (e.key === 'Enter') jump(i); });
+  return { g, r, c };
+});
+const packet = el('circle', { r: 7, fill: '#fff', filter: 'url(#glow)' }, svg);
+
+// ---------- 状态面板 ----------
+const rowCb = document.getElementById('rowCb'), rowView = document.getElementById('rowView'), rowBuf = document.getElementById('rowBuf');
+const mkChips = (row, items) => items.map(t => { const c = document.createElement('span'); c.className = 'chip'; c.textContent = t; row.appendChild(c); return c; });
+const cbChips = mkChips(rowCb, CB_ITEMS), viewChips = mkChips(rowView, VIEW_ITEMS), bufChips = mkChips(rowBuf, BUF_ITEMS);
+
+function cbState(i, f) {            // 返回每个 callback 的状态
+  const st = CB_ITEMS.map(() => '');
+  if (i <= 3) { st[3] = 'q'; return st; }                 // TRAVERSAL 已入队等待 VSYNC
+  let act;
+  if (i === 4) act = Math.min(3, Math.floor(f / 0.72 * 4));
+  else if (i <= 8) act = 3;
+  else if (i === 9) act = 4;
+  else act = 5;
+  for (let k = 0; k < 5; k++) st[k] = k < act ? 'done' : k === act ? 'act' : '';
+  return st;
+}
+function viewState(i) {
+  const act = i < 5 ? -1 : i - 5;
+  return VIEW_ITEMS.map((_, k) => act < 0 ? '' : k < act ? 'done' : k === act ? 'act' : '');
+}
+function bufIndex(i, f) {
+  if (i < 9) return 0;
+  if (i === 9) return f < 0.55 ? 1 : 2;
+  if (i === 10) return f < 0.45 ? 3 : 4;
+  if (i <= 12) return 4;
+  if (i === 13) return 5;
+  if (i <= 16) return 6;
+  return 7;
+}
+const setChips = (chips, st) => chips.forEach((c, k) => c.className = 'chip' + (st[k] ? ' ' + st[k] : ''));
+
+// ---------- 信息面板 ----------
+const $ = id => document.getElementById(id);
+let shownStage = -1, shownCur = -2;
+function showInfo(i, f) {
+  const s = STAGES[i], ln = LANES[s.lane];
+  if (shownStage !== i) {
+    shownStage = i; shownCur = -2;
+    $('infoNum').textContent = i;
+    $('infoLane').textContent = ln.proc + ' · ' + ln.name;
+    $('infoLane').style.background = ln.color;
+    $('infoTitle').textContent = s.title;
+    $('infoBrief').textContent = s.brief;
+    $('infoPacket').textContent = s.packet;
+    $('infoMore').href = '#stage-' + i;
+    const ul = $('infoChain'); ul.innerHTML = '';
+    s.chain.forEach(c => { const li = document.createElement('li'); li.textContent = c; ul.appendChild(li); });
+  }
+  const lis = $('infoChain').children;
+  const cur = f >= DWELL ? lis.length : Math.min(lis.length - 1, Math.floor(f / DWELL * lis.length));
+  if (cur !== shownCur) {
+    shownCur = cur;
+    for (let k = 0; k < lis.length; k++) lis[k].className = k < cur ? 'on' : k === cur ? 'cur' : '';
+  }
+}
+
+// ---------- 动画循环 ----------
+const STAGE_MS = 2600, DWELL = 0.72;
+let t = 0, playing = true, speed = 1, lastTs = null;
+const scrub = $('scrub'), btnPlay = $('btnPlay');
+
+function render() {
+  const i = Math.min(N - 1, Math.floor(t)), f = t - i;
+  nodes.forEach((n, k) => {
+    n.r.setAttribute('fill', k === i ? '#24406a' : k < i ? '#1a2a24' : '#1d2639');
+    n.r.setAttribute('stroke-width', k === i ? 3 : 1.4);
+    n.r.setAttribute('filter', k === i ? 'url(#glow)' : '');
+  });
+  edges.forEach((e, k) => e.setAttribute('stroke', k < i || (k === i && f > DWELL) ? '#8fb8ff' : '#4a5878'));
+  vsMarks.forEach(v => v.g.setAttribute('opacity', v.i === i ? (0.6 + 0.4 * Math.abs(Math.sin(f * Math.PI * 3))) : 0.35));
+  // 数据包位置
+  let px = nodeX(i), py = nodeY(i), op = 1;
+  if (f > DWELL) {
+    const p = (f - DWELL) / (1 - DWELL);
+    if (i < N - 1) {
+      const e = edges[i], L = e.getTotalLength(), pt = e.getPointAtLength(L * p);
+      px = pt.x; py = pt.y;
+    } else op = 1 - p;   // 最后一步淡出，回到下一帧
+  }
+  packet.setAttribute('cx', px); packet.setAttribute('cy', py); packet.setAttribute('opacity', op);
+  packet.setAttribute('fill', LANES[STAGES[i].lane].color.startsWith('var') ? getComputedStyle(document.documentElement).getPropertyValue(LANES[STAGES[i].lane].color.slice(4, -1)) : '#fff');
+  setChips(cbChips, cbState(i, f));
+  setChips(viewChips, viewState(i));
+  const b = bufIndex(i, f);
+  setChips(bufChips, BUF_ITEMS.map((_, k) => k === b ? 'act' : ''));
+  showInfo(i, f);
+  scrub.value = Math.round(t / N * 1000);
+}
+function tick(ts) {
+  if (lastTs != null && playing) {
+    t += (ts - lastTs) / STAGE_MS * speed;
+    if (t >= N) t = 0;
+  }
+  lastTs = ts;
+  render();
+  requestAnimationFrame(tick);
+}
+function setPlaying(p) { playing = p; btnPlay.textContent = p ? '⏸ 暂停' : '▶ 播放'; }
+function jump(i) { t = Math.max(0, Math.min(N - 1, i)); setPlaying(false); render(); }
+btnPlay.onclick = () => setPlaying(!playing);
+$('btnPrev').onclick = () => jump(Math.ceil(t) - 1 < 0 ? N - 1 : (t % 1 ? Math.floor(t) : t - 1));
+$('btnNext').onclick = () => jump(Math.floor(t) + 1 >= N ? 0 : Math.floor(t) + 1);
+$('btnRestart').onclick = () => { t = 0; setPlaying(true); };
+$('speed').onchange = e => speed = +e.target.value;
+scrub.oninput = () => { t = Math.min(N - 0.001, scrub.value / 1000 * N); setPlaying(false); render(); };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  else if (e.key === 'ArrowRight') $('btnNext').click();
+  else if (e.key === 'ArrowLeft') $('btnPrev').click();
+});
+
+// ---------- 总览表与详细介绍 ----------
+const tbody = document.querySelector('#overview tbody');
+const details = $('details');
+STAGES.forEach((s, i) => {
+  const ln = LANES[s.lane];
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${i}</td><td><a href="#stage-${i}">${esc(s.title)}</a></td><td><span class="tag" style="background:${ln.color}">${esc(ln.name)}</span><span class="note">${esc(ln.proc)}</span></td><td><code>${esc(s.entry)}</code></td><td>${esc(s.output)}</td>`;
+  tbody.appendChild(tr);
+
+  const d = document.createElement('div');
+  d.className = 'card detail'; d.id = 'stage-' + i;
+  const codes = s.codes.map(c => `<div class="code"><div class="fh"><code>${P[c.f]}:${c.l}</code><span><a href="${ghLink(c.f, c.l)}" target="_blank" rel="noopener">GitHub 源码 ↗</a> · <a href="../${P[c.f]}">本地文件</a></span></div><pre>${highlight(c.t)}</pre></div>`).join('');
+  d.innerHTML = `<a class="toplink" href="#top">↑ 回到动画</a>
+    <h3><span class="num">${i}</span>${esc(s.title)}</h3>
+    <div><span class="tag" style="background:${ln.color}">${esc(ln.proc)} · ${esc(ln.name)}</span>${s.vsync ? `<span class="tag" style="background:var(--vs)">${s.vsync}</span>` : ''}${s.ipc ? '<span class="tag" style="background:#ffcf8a">出口跨进程 / 跨硬件边界</span>' : ''}</div>
+    <p><b>功能介绍：</b>${esc(s.brief)}</p>
+    <ul>${s.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>
+    <div class="note">调用链</div>
+    <div class="chain">${s.chain.map((c, k) => (k ? '→ ' : '') + esc(c)).join('\n')}</div>
+    <div class="note" style="margin-top:10px">主要代码</div>${codes}`;
+  details.appendChild(d);
+  d.querySelector('h3').addEventListener('click', () => { jump(i); $('top').scrollIntoView({ behavior: 'smooth' }); });
+});
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

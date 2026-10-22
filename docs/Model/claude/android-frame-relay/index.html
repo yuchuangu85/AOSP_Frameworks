@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>一帧的接力 · Android 图形管线</title>
+<style>
+:root{--bg:#f4f1ea;--paper:#fffdf8;--ink:#14213d;--muted:#5d6475;--line:#d9d3c4;--app:#2f6fde;--app-soft:#e8effc;--sf:#c26d12;--sf-soft:#fbefdf;--hw:#7b4fc9;--hw-soft:#f0e9fb;--hot:#e2463b;--ok:#1f9d63;--warn:#e69a12;--code:#101828;--lab:104px;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 var(--sans)}
+button,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid var(--app);outline-offset:2px}
+.wrap{max-width:1320px;margin:0 auto;padding:0 20px}
+header.top{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding:28px 0 18px}
+.kicker{font:12px var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+h1{margin:4px 0 6px;font-size:clamp(26px,3.4vw,40px);line-height:1.18;letter-spacing:-.01em}
+h1 em{font-style:normal;color:var(--hot);font-family:var(--mono);font-size:.86em}
+.lede{margin:0;max-width:760px;color:var(--muted)}
+.top-actions{display:flex;gap:8px;flex:none}
+.ghost{border:1px solid var(--line);background:var(--paper);border-radius:999px;padding:7px 14px;font-size:13px}
+.ghost:hover{border-color:var(--ink)}
+.chapters{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin-bottom:12px}
+.chap{position:relative;text-align:left;border:1px solid var(--line);background:var(--paper);border-radius:10px;padding:8px 10px 10px;overflow:hidden}
+.chap b{display:flex;align-items:baseline;gap:6px;font-size:14px}.chap b span{font-size:20px;line-height:1}
+.chap small{display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chap i{position:absolute;left:0;bottom:0;height:3px;width:0;background:#9aa3b5;transition:width .3s}
+.chap.done i{width:100%}.chap.active{border-color:var(--ink);box-shadow:0 2px 0 var(--ink)}.chap.active i{background:var(--hot)}
+.stage-card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:10px 10px 12px}
+.stage-scroll{overflow-x:auto}
+#stage{display:block;width:100%;min-width:860px;height:auto}
+.band .bg{stroke-width:1.5;stroke-dasharray:6 5}
+.band[data-p=app] .bg{fill:var(--app-soft);stroke:var(--app)}.band[data-p=sf] .bg{fill:var(--sf-soft);stroke:var(--sf)}.band[data-p=hw] .bg{fill:var(--hw-soft);stroke:var(--hw)}
+.band .bl{font:700 13px var(--mono);letter-spacing:.06em}.band[data-p=app] .bl{fill:var(--app)}.band[data-p=sf] .bl{fill:var(--sf)}.band[data-p=hw] .bl{fill:var(--hw)}
+.band .bs{font:12px var(--sans);fill:var(--muted)}
+.st{cursor:pointer}.st .box{fill:#fff;stroke:#c8c2b3;stroke-width:1.5;transition:fill .25s,stroke .25s}
+.st:hover .box{stroke:var(--ink)}
+.st .role{font:11px var(--mono);fill:var(--muted)}.st .name{font:700 15px var(--sans);fill:var(--ink)}.st .op{font:12px var(--mono);fill:#3c4456}
+.st .pill rect{fill:var(--hot)}.st .pill text{font:700 11px var(--sans);fill:#fff}
+.st.active .box{stroke:var(--ink);stroke-width:3;fill:#fffbe9}
+.st.busy .box{stroke:var(--ink);stroke-dasharray:6 4}.st.busy .pill rect{fill:#2f7d4f}
+.st.blocked .box{fill:url(#hatch);stroke:#9a8f78}.st.blocked .pill rect{fill:var(--warn)}
+.link{fill:none;stroke:var(--hot);stroke-width:3;stroke-linecap:round;stroke-dasharray:1 9;animation:flow .6s linear infinite}
+.link-glow{fill:none;stroke:var(--hot);stroke-opacity:.16;stroke-width:10;stroke-linecap:round}
+@keyframes flow{to{stroke-dashoffset:-10}}
+#packet{transition:transform .7s cubic-bezier(.6,.05,.3,1)}#packet circle{fill:var(--hot);stroke:#fff;stroke-width:3}#packet text{font:800 14px var(--sans);fill:#fff}
+.ripple{fill:none;stroke:var(--ink);stroke-width:2;opacity:0;transform-box:fill-box;transform-origin:center}
+.ripple.go{animation:ripple 1s ease-out 2}
+@keyframes ripple{from{opacity:.8;transform:scale(.15)}to{opacity:0;transform:scale(1)}}
+.wg .frame{fill:#fff;stroke:#b9b2a2;stroke-dasharray:4 4}.wg .wt{font:700 12px var(--sans);fill:var(--ink)}.wg .ws{font:10.5px var(--mono);fill:var(--muted)}
+.slot rect{stroke:#8d8676;stroke-width:1.2;transition:fill .3s}.slot .sl{font:800 16px var(--sans);fill:var(--ink)}.slot .ss{font:700 9.5px var(--mono);fill:var(--ink)}.slot .so{font:9.5px var(--sans);fill:var(--muted)}
+.slot[data-s=FREE] rect{fill:#fff}.slot[data-s=DEQUEUED] rect{fill:#d8e5ff}.slot[data-s=QUEUED] rect{fill:#ffe7c2}.slot[data-s=ACQUIRED] rect{fill:#eadcff}
+.slot.hot rect{stroke:var(--hot);stroke-width:2.5}
+.lyr{font:11px var(--mono);fill:#3c4456}.lyr.hot{fill:var(--hot);font-weight:700}
+.scr-old{fill:#c9ced8}.scr-new{fill:#ffb3a6;transform-box:fill-box;transform-origin:top;transform:scaleY(0);transition:transform 2.6s linear}.scr-new.on{transform:scaleY(1)}
+.scr-t{font:800 12px var(--sans);fill:var(--ink)}
+.strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
+.chip{display:flex;align-items:center;gap:8px;min-width:0;border:1px solid var(--line);border-radius:10px;padding:7px 10px;background:#fff}
+.chip .lamp{flex:none;width:12px;height:12px;border-radius:50%;background:#c9c4b8;box-shadow:inset 0 0 0 2px #fff,0 0 0 1px #b1aa99}
+.chip[data-s=pending] .lamp{background:var(--warn)}.chip[data-s=signaled] .lamp{background:var(--ok)}.chip[data-s=on] .lamp{background:var(--hot)}
+.chip b{display:block;font:700 11px var(--mono);color:var(--muted)}.chip span{display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.controls{position:sticky;bottom:0;z-index:5;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0;padding:10px 12px;background:rgba(20,33,61,.96);color:#fff;border-radius:12px;box-shadow:0 8px 24px rgba(20,33,61,.18)}
+.controls button{border:1px solid #44506b;background:#1d2b4b;border-radius:8px;min-width:38px;height:36px;padding:0 10px}
+.controls button:hover:not(:disabled){background:#2a3a62}.controls button:disabled{opacity:.35;cursor:default}
+.controls #play{background:var(--hot);border-color:var(--hot);font-weight:700;min-width:96px}
+.controls input[type=range]{flex:1;min-width:140px;accent-color:var(--hot)}
+.controls label{display:flex;align-items:center;gap:6px;font-size:13px;color:#c7cfdf}
+.controls select{background:#1d2b4b;border:1px solid #44506b;border-radius:6px;padding:4px}
+.counter{font:13px var(--mono);color:#c7cfdf;min-width:62px;text-align:right}
+.panel{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);gap:12px}
+.story,.codecard,.card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font:12px var(--mono);color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:2px 9px;font:700 12px var(--sans);color:#fff}
+.badge[data-p=app]{background:var(--app)}.badge[data-p=sf]{background:var(--sf)}.badge[data-p=hw]{background:var(--hw)}
+.story h2{margin:8px 0 2px;font-size:22px;line-height:1.3}
+.story .fn{margin:0 0 12px;font:13px var(--mono);color:var(--app);overflow-wrap:anywhere}
+.hook{margin:0 0 12px;padding:9px 12px;border-left:4px solid var(--hot);background:#fff3ef;border-radius:0 8px 8px 0;font-weight:700}
+.story p.narr{margin:0 0 10px}
+.story ul{margin:0;padding-left:20px;color:#3c4456}.story li{margin:3px 0}
+.story .trap{margin:12px 0 0;padding:9px 12px;border-radius:8px;background:#f2efe6;font-size:14px}.story .trap b{color:var(--hot)}
+.codecard{background:var(--code);color:#e6e9f0;border-color:var(--code);padding:14px 0 10px;min-width:0}
+.codecard .ch{display:flex;justify-content:space-between;gap:10px;padding:0 18px 8px;font:12px var(--mono);color:#98a2b3}
+.cblock{margin:6px 0 10px}
+.cfile{display:flex;justify-content:space-between;gap:10px;padding:6px 18px;background:#1b2537;font:12px var(--mono)}
+.cfile a{color:#8fb6ff;text-decoration:none;overflow-wrap:anywhere}.cfile a:hover{text-decoration:underline}.cfile span{color:#98a2b3;flex:none}
+.cfile.pseudo{color:#f5c26b}
+pre.code{margin:0;padding:6px 0;overflow-x:auto;font:12.5px/1.65 var(--mono)}
+.ln{display:grid;grid-template-columns:58px 1fr;padding-right:18px}
+.ln i{font-style:normal;color:#5d6b82;text-align:right;padding-right:14px;user-select:none}
+.ln code{white-space:pre}.ln.hl{background:rgba(226,70,59,.2);box-shadow:inset 3px 0 var(--hot)}.ln.gap i,.ln.gap code{color:#5d6b82}
+.k{color:#ff9e8a}.c{color:#7d8ba1;font-style:italic}.s{color:#a7e3a1}
+.codecard .note{padding:0 18px;font-size:12px;color:#98a2b3}
+.card h2{margin:0 0 4px;font-size:18px}.card>p{margin:0 0 12px;color:var(--muted);font-size:13px}
+.tl{position:relative;font-size:12px}
+.tl-row{display:grid;grid-template-columns:var(--lab) 1fr;align-items:center;height:26px;border-top:1px solid #eee8db}
+.tl-row b{font:700 11px var(--mono);color:var(--muted);white-space:nowrap}
+.tl-row[data-p=app] b{color:var(--app)}.tl-row[data-p=sf] b{color:var(--sf)}.tl-row[data-p=hw] b{color:var(--hw)}
+.tl-track{position:relative;height:100%}
+.tl-bar{position:absolute;top:5px;height:16px;min-width:5px;border:0;border-radius:4px;padding:0;opacity:.5}
+.tl-bar[data-p=app]{background:var(--app)}.tl-bar[data-p=sf]{background:var(--sf)}.tl-bar[data-p=hw]{background:var(--hw)}
+.tl-bar.past{opacity:.85}.tl-bar.cur{opacity:1;outline:2px solid var(--ink);outline-offset:1px;z-index:2}
+.tl-bar.extra{opacity:.28;background:repeating-linear-gradient(45deg,var(--hw) 0 4px,transparent 4px 8px)!important;pointer-events:none}
+.tl-grid{position:absolute;top:0;bottom:22px;left:var(--lab);right:0;pointer-events:none}
+.vl{position:absolute;top:0;bottom:0;border-left:1px solid}.vl.hw{border-color:var(--hw)}.vl.app{border-color:var(--app);border-left-style:dashed;opacity:.6}.vl.sf{border-color:var(--sf);border-left-style:dashed;opacity:.6}
+.vl span{position:absolute;bottom:-20px;left:3px;font:10.5px var(--mono);white-space:nowrap}.vl.hw span{color:var(--hw)}.vl.app span{color:var(--app)}.vl.sf span{color:var(--sf)}
+.playhead{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--hot);transition:left .5s}
+.tl-axis{height:22px}
+.sec{margin:12px 0}
+.recap{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:12px}
+.chain{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 12px}
+.chain button{border:1px solid var(--ink);background:#fff;border-radius:8px;padding:6px 10px;font-weight:800}
+.chain button:hover{background:var(--ink);color:#fff}
+.chain button small{display:block;font:500 10.5px var(--mono);color:var(--muted)}.chain button:hover small{color:#c7cfdf}
+.recap ol{margin:0;padding-left:20px}.recap li{margin:4px 0}
+.myths{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.myth{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff}
+.myth s{display:block;color:var(--hot);text-decoration-thickness:2px;font-weight:700}
+.myth span{display:block;margin-top:4px;font-size:13.5px;color:#3c4456}
+.myth button{margin-top:6px;border:0;background:none;padding:0;color:var(--app);font-size:12.5px}
+footer{padding:12px 0 40px;color:var(--muted);font-size:12.5px}
+dialog{max-width:720px;width:calc(100% - 32px);border:1px solid var(--line);border-radius:14px;padding:0;background:var(--paper);color:var(--ink)}
+dialog::backdrop{background:rgba(20,33,61,.45)}
+.dh{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--line)}.dh h2{margin:0;font-size:18px}
+.db{padding:14px 18px 18px;font-size:14px}.db ul{padding-left:18px}.db li{margin:5px 0}.db code{font:12.5px var(--mono)}
+kbd{display:inline-block;min-width:24px;padding:1px 6px;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;background:#fff;font:12px var(--mono);text-align:center}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media(max-width:1000px){.panel,.recap{grid-template-columns:1fr}.chapters{grid-template-columns:repeat(4,minmax(0,1fr))}.strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.wrap{padding:0 10px}header.top{flex-direction:column;align-items:flex-start}.chapters{grid-template-columns:repeat(2,minmax(0,1fr))}.myths{grid-template-columns:1fr}.story,.card{padding:14px}:root{--lab:62px}.tl-row b{font-size:9.5px}.controls{gap:6px}.controls label span{display:none}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.link{animation:none;stroke-dasharray:none}#packet,.scr-new,.playhead,.chap i{transition:none}.ripple.go{animation:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+ <div>
+  <div class="kicker">Android 16 · 一帧的接力赛</div>
+  <h1>从 <em>invalidate()</em> 到屏幕亮起，<br>一帧经过了谁的手？</h1>
+  <p class="lede">25 个交接点，跨 2 个进程、6 个执行者和显示硬件。上方舞台看“谁在干活、东西交给了谁”，下方看“这一刻的源码”。代码均摘自本仓库工作树，行号可点开对照。</p>
+ </div>
+ <div class="top-actions"><button class="ghost" id="open-sources">源码与资料</button><button class="ghost" id="open-help" aria-label="帮助与快捷键">帮助 ?</button></div>
+</header>
+<nav class="chapters" id="chapters" aria-label="章节"></nav>
+<section class="stage-card" aria-label="进程与线程舞台">
+ <div class="stage-scroll"><svg id="stage" viewBox="0 0 1200 542" role="img" aria-labelledby="stage-desc"><desc id="stage-desc">应用进程、SurfaceFlinger 进程与硬件三层舞台。红色圆点为帧 F 当前所在的执行者，红色虚线为本步交接路径。</desc>
+  <defs><pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="#fff4dc"/><line x1="0" y1="0" x2="0" y2="8" stroke="#f0c674" stroke-width="3"/></pattern></defs>
+  <g id="bands"></g><g id="links"></g><g id="stations"></g><g id="widgets"></g><g id="ripples"></g>
+  <g id="packet" aria-hidden="true"><circle r="17"/><text text-anchor="middle" dy="5">F</text></g>
+ </svg></div>
+ <div class="strip" aria-label="交接物状态">
+  <div class="chip" id="chip-art"><i class="lamp"></i><div><b>此刻交接物</b><span></span></div></div>
+  <div class="chip" id="chip-acq"><i class="lamp"></i><div><b>buffer B · acquire fence</b><span></span></div></div>
+  <div class="chip" id="chip-rel"><i class="lamp"></i><div><b>buffer A · release fence</b><span></span></div></div>
+  <div class="chip" id="chip-scr"><i class="lamp"></i><div><b>屏幕</b><span></span></div></div>
+ </div>
+</section>
+<div class="controls" role="group" aria-label="播放控制">
+ <button id="first" aria-label="回到第一步" title="Home">⏮</button><button id="prev" aria-label="上一步" title="←">‹</button>
+ <button id="play" aria-label="播放">▶ 播放</button>
+ <button id="next" aria-label="下一步" title="→">›</button><button id="last" aria-label="跳到最后一步" title="End">⏭</button>
+ <input type="range" id="scrub" min="0" max="24" value="0" aria-label="选择步骤">
+ <span class="counter" id="counter">01 / 25</span>
+ <label><span>速度</span><select id="speed" aria-label="播放速度"><option value="1.6">慢</option><option value="1" selected>中</option><option value="0.6">快</option></select></label>
+</div>
+<section class="panel" aria-label="当前步骤讲解">
+ <article class="story">
+  <div class="meta"><span id="s-step">STEP 01</span>·<span id="s-chap"></span><span class="badge" id="s-actor"></span><span id="s-time"></span></div>
+  <h2 id="s-title"></h2>
+  <p class="fn" id="s-fn"></p>
+  <p class="hook" id="s-hook"></p>
+  <p class="narr" id="s-narr"></p>
+  <ul id="s-pts"></ul>
+  <p class="trap" id="s-trap"></p>
+ </article>
+ <article class="codecard" aria-label="对应源码">
+  <div class="ch"><span>此刻执行的源码</span><span id="c-kind"></span></div>
+  <div id="c-blocks"></div>
+  <p class="note">摘录保留原始行号，省略处以 ⋯ 标出；高亮行是本步的关键动作。</p>
+ </article>
+</section>
+<section class="card sec" aria-label="跨线程时间线">
+ <h2>同一帧，在时间轴上的重叠</h2>
+ <p>横轴是 60Hz 下的示意毫秒，实线是硬件 VSync，虚线是 APP / SF 软件 VSync。点击色块跳到对应步骤。时长为教学参数，不是真机测量。</p>
+ <div class="tl" id="tl"></div>
+</section>
+<section class="recap sec" aria-label="复盘">
+ <div class="card">
+  <h2>一句话记住</h2>
+  <p>七个字串起一整帧，点击跳到对应章节。</p>
+  <div class="chain" id="chain"></div>
+  <ol>
+   <li><b>UI 只写清单</b>：invalidate 只做标记，onDraw 只把命令录进 DisplayList。</li>
+   <li><b>RT 下单，GPU 干活</b>：命令提交后 CPU 就走，像素由 GPU 异步写入。</li>
+   <li><b>交出去的是 buffer + fence</b>：不是“画好的图”，而是“图 + 何时画完的凭证”。</li>
+   <li><b>SF 按自己的节拍合成</b>：latch 只是选定，present 只是提交，下一次硬件 VSync 才开始扫描。</li>
+   <li><b>旧 buffer 要等灯亮才能复用</b>：release fence 证明显示硬件读完了。</li>
+  </ol>
+ </div>
+ <div class="card">
+  <h2>六个常见误解</h2>
+  <p>每条都能跳回对应步骤，看源码里真实发生了什么。</p>
+  <div class="myths" id="myths"></div>
+ </div>
+</section>
+<footer>基于本仓库 <code>android16-qpr2-release</code> 工作树（README 标注的版本，未核验完整 manifest）。时长、相位、buffer 数量和合成策略均为教学示例；不覆盖 SurfaceView / TextureView、软件绘制、多屏、VRR 与厂商驱动细节。GPU 与显示扫描两步是示意伪代码，相应实现不在本仓库中。</footer>
+</div>
+<dialog id="help" aria-labelledby="help-t"><div class="dh"><h2 id="help-t">怎么看这页</h2><button class="ghost" data-close>关闭</button></div><div class="db">
+ <ul>
+  <li><b>舞台</b>：三条色带是三个边界：蓝色应用进程、橙色 SurfaceFlinger 进程、紫色硬件 / HAL（不是一个进程）。</li>
+  <li><b>红色圆点 F</b> 落在当前执行者上；红色流动虚线是本步的交接路径；黑色波纹是 VSync 脉冲。</li>
+  <li>粗框 = 当前步骤；黑色虚线框 = 同一时刻也在运行；黄色斜纹 = 正在阻塞等待。</li>
+  <li>底部四个指示灯：交接物、acquire fence、release fence、屏幕。灰 = 尚无，黄 = 未 signal，绿 = 已 signal。</li>
+ </ul>
+ <p><kbd>Space</kbd> 播放 / 暂停　<kbd>←</kbd><kbd>→</kbd> 上一步 / 下一步　<kbd>Home</kbd><kbd>End</kbd> 首尾　<kbd>1</kbd>–<kbd>7</kbd> 跳章节　<kbd>?</kbd> 帮助　<kbd>Esc</kbd> 关闭</p>
+ <p>系统开启“减少动态效果”时，页面不做流动和平移动画。</p>
+</div></dialog>
+<dialog id="sources" aria-labelledby="src-t"><div class="dh"><h2 id="src-t">源码与资料</h2><button class="ghost" data-close>关闭</button></div><div class="db">
+ <p>优先级：本仓库工作树源码 &gt; 官方架构文档。官方文档里有历史实现（如 SF 直接消费应用 BufferQueue），现代普通窗口以本地 BLAST 实现为准。</p>
+ <h3>本页引用的本地文件</h3><ul id="src-files"></ul>
+ <h3>官方资料</h3><ul>
+  <li><a href="https://source.android.com/docs/core/graphics/arch-bq-gralloc" rel="noopener">BufferQueue 与 Gralloc</a></li>
+  <li><a href="https://source.android.com/docs/core/graphics/implement-vsync" rel="noopener">实现 VSync</a></li>
+  <li><a href="https://source.android.com/docs/core/graphics/sync" rel="noopener">同步框架（fence）</a></li>
+  <li><a href="https://source.android.com/docs/core/graphics/surfaceflinger-windowmanager" rel="noopener">SurfaceFlinger 与 WindowManager</a></li>
+  <li><a href="https://developer.android.com/reference/android/view/Choreographer" rel="noopener">Choreographer API</a></li>
+ </ul>
+</div></dialog>
+<div class="sr" id="announce" aria-live="polite"></div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const SVGNS='http://www.w3.org/2000/svg';
+function el(tag,attrs={},parent,text){const n=document.createElementNS(SVGNS,tag);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,v);if(text!=null)n.textContent=text;if(parent)parent.append(n);return n;}
+function h(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
+const ROOT='../../../';
+const F={view:'base/core/java/android/view/View.java',vri:'base/core/java/android/view/ViewRootImpl.java',choreo:'base/core/java/android/view/Choreographer.java',tr:'base/core/java/android/view/ThreadedRenderer.java',dft:'base/libs/hwui/renderthread/DrawFrameTask.cpp',cc:'base/libs/hwui/renderthread/CanvasContext.cpp',surface:'native/libs/gui/Surface.cpp',blast:'native/libs/gui/BLASTBufferQueue.cpp',et:'native/services/surfaceflinger/Scheduler/EventThread.cpp',mq:'native/services/surfaceflinger/Scheduler/MessageQueue.cpp',sf:'native/services/surfaceflinger/SurfaceFlinger.cpp',out:'native/services/surfaceflinger/CompositionEngine/src/Output.cpp',hwc:'native/services/surfaceflinger/DisplayHardware/HWComposer.cpp'};
+const PROC={app:'应用进程',sf:'SurfaceFlinger 进程',hw:'硬件 / HAL'};
+const BANDS=[{p:'app',y:10,h:168,label:'APP PROCESS',sub:'应用进程 · Java + HWUI native + BLAST'},{p:'sf',y:186,h:168,label:'SURFACEFLINGER PROCESS',sub:'系统合成服务 · 调度 + 合成'},{p:'hw',y:362,h:172,label:'HARDWARE / HAL',sub:'GPU、Composer HAL / DPU、面板：不是一个进程'}];
+const COLS=[30,325,620,915],SW=255,SH=96;
+const STATIONS=[
+ {id:'ui',p:'app',c:0,name:'UI 主线程',role:'Looper · ViewRootImpl',idle:'等待消息'},
+ {id:'rt',p:'app',c:1,name:'RenderThread',role:'HWUI · native 线程',idle:'等待 DrawFrameTask'},
+ {id:'blast',p:'app',c:2,name:'BLASTBufferQueue',role:'应用侧 BQ 消费者',idle:'等待新 buffer'},
+ {id:'vsync',p:'sf',c:0,name:'Scheduler / EventThread',role:'软件 VSync 派发',idle:'按预测模型计时'},
+ {id:'re',p:'sf',c:1,name:'RenderEngine',role:'CLIENT 合成（可选）',idle:'本轮可能不用'},
+ {id:'sf',p:'sf',c:2,name:'SurfaceFlinger',role:'主线程 + Binder 线程',idle:'等待 VSync-sf'},
+ {id:'hwv',p:'hw',c:0,name:'硬件 VSync',role:'面板 / DPU 刷新节拍',idle:'每 16.67ms 一次'},
+ {id:'gpu',p:'hw',c:1,name:'GPU',role:'异步执行命令',idle:'空闲'},
+ {id:'hwc',p:'hw',c:2,name:'Composer HAL / DPU',role:'叠加与呈现',idle:'显示 F−1 的配置'},
+ {id:'display',p:'hw',c:3,name:'显示面板',role:'逐行扫描',idle:'显示 F−1'}
+];
+const CHAPTERS=[['标','标记','invalidate → 屏障'],['等','等节拍','请求 VSync → 唤醒'],['录','录制','doFrame → DisplayList'],['渲','渲染','同步 → GPU 写像素'],['交','交接','queue → BLAST → SF'],['合','合成','commit → latch → HWC'],['显','显示与回收','present → 扫描 → 复用']];
+// 每一步：a=执行者，from=交接来源，t=[开始,结束]（60Hz 示意毫秒），code 中 "行号|原文" 必须与本地源码逐字一致（verify.cjs 会校验）
+const STEPS=[
+{id:'invalidate',ch:0,a:'ui',t:[.3,.8],op:'invalidate()',art:'脏标记 PFLAG_DIRTY',title:'View 内容变了：先做标记',fn:'View.invalidate() → invalidateInternal() → parent.invalidateChild()',hook:'invalidate 不画画，只举手。',
+ narr:'setText、setColor 之类的调用最终走到 invalidate()。它给 View 打上 PFLAG_DIRTY，再把脏区域一路交给父 View，直到 ViewRootImpl。这一刻没有任何像素产生。',
+ pts:['同一帧内多次 invalidate 会合并成一次绘制。','硬件加速路径通过 onDescendantInvalidated 向上传递，damage 区域在 native 侧计算。'],trap:'invalidate() 返回时屏幕不会变；真正的绘制要等下一个 VSync 的 doFrame。',
+ code:[{f:'view',hl:[21295,21308],ln:['21249|    public void invalidate() {','21250|        invalidate(true);','21271|    void invalidateInternal(int l, int t, int r, int b, boolean invalidateCache,','21295|            mPrivateFlags |= PFLAG_DIRTY;','21304|            final ViewParent p = mParent;','21305|            if (p != null && ai != null && l < r && t < b) {','21307|                damage.set(l, t, r, b);','21308|                p.invalidateChild(this, damage);']}]},
+{id:'schedule',ch:0,a:'ui',t:[.9,1.4],op:'scheduleTraversals()',art:'同步屏障 + TRAVERSAL 回调',title:'ViewRootImpl 合并请求，插入同步屏障',fn:'ViewRootImpl.scheduleTraversals()',hook:'一帧只排一次队，屏障先拦住普通消息。',
+ narr:'脏区域到达 ViewRootImpl 后，mTraversalScheduled 保证一帧只安排一次遍历。它先往主线程 MessageQueue 插入同步屏障，再把 TraversalRunnable 放进 Choreographer 的 TRAVERSAL 队列。',
+ pts:['屏障之后，只有标记为异步的消息（如 VSync 回调）能先执行。','requestLayout() 也走到这里，只是额外标记“需要 measure / layout”。'],trap:'屏障不是锁，它只影响同一个 Looper 上的同步消息顺序。',
+ code:[{f:'vri',hl:[3106,3108],ln:['3085|    void scheduleTraversals() {','3086|        if (!mTraversalScheduled) {','3087|            mTraversalScheduled = true;','3106|            mTraversalBarrier = mQueue.postSyncBarrier();','3107|            mChoreographer.postCallback(','3108|                    Choreographer.CALLBACK_TRAVERSAL, mTraversalRunnable, null);','3109|            notifyRendererOfFramePending();']}]},
+{id:'requestVsync',ch:1,a:'vsync',from:['ui'],t:[1.5,1.9],op:'requestNextVsync()',art:'一次性 VSync 请求',title:'向 SurfaceFlinger 预约下一次 VSync',fn:'Choreographer.scheduleVsyncLocked() → EventThread::requestNextVsync()',hook:'只预约一次，不是订阅。',
+ narr:'Choreographer 发现有待执行的回调，通过 DisplayEventReceiver 请求下一次 VSync。请求经 Binder 进入 SurfaceFlinger 进程的 EventThread，把这条连接标记为 Single：只派发一次。',
+ pts:['这是第一次跨进程：应用进程 → SurfaceFlinger 进程。','UI 线程发完请求立刻返回，不阻塞等待。'],trap:'没有新请求时应用收不到 VSync，静止画面不会每 16ms 唤醒主线程。',
+ code:[{f:'choreo',hl:[1273],ln:['1270|    private void scheduleVsyncLocked() {','1271|        try {','1272|            Trace.traceBegin(Trace.TRACE_TAG_VIEW, "Choreographer#scheduleVsyncLocked");','1273|            mDisplayEventReceiver.scheduleVsync();']},{f:'et',hl:[423],ln:['417|void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) {','422|    if (connection->vsyncRequest == VSyncRequest::None) {','423|        connection->vsyncRequest = VSyncRequest::Single;','424|        mCondition.notify_all();']}]},
+{id:'appVsync',ch:1,a:'vsync',from:['hwv'],pulse:['hwv','vsync'],t:[2,2.3],op:'onVsync → postEvent',art:'VSync 事件（BitTube / FD）',title:'VSync-app 到点，事件写进应用的 FD',fn:'EventThread::onVsync() → dispatchEvent() → postEvent()',hook:'硬件定节拍，软件按相位叫醒。',
+ narr:'VSync-app 不是硬件中断直达应用。Scheduler 用硬件 VSync 校准一个预测模型，在应用的工作相位唤醒 EventThread；EventThread 生成 VSync 事件并写入该应用连接的 BitTube，应用侧的 FD 变为可读。',
+ pts:['事件携带 vsyncId 和 FrameTimeline（期望呈现时间、截止时间）。','APP 与 SF 的唤醒相位不同，图中 VSync-app 比硬件 VSync 晚约 2ms。'],trap:'“VSync 到了”有三种视角：硬件、VSync-app、VSync-sf，它们不是同一时刻。',
+ code:[{f:'et',hl:[478],ln:['472|void EventThread::onVsync(nsecs_t vsyncTime, nsecs_t wakeupTime, nsecs_t readyTime) {','478|    mPendingEvents.push_back(makeVSync(mVsyncSchedule->getPhysicalDisplayId(), wakeupTime,','479|                                       ++mVSyncState->count, vsyncTime, readyTime));','480|    mCondition.notify_all();']},{f:'et',hl:[782],ln:['771|void EventThread::dispatchEvent(const DisplayEventReceiver::Event& event,','773|    for (const auto& consumer : consumers) {','782|        switch (consumer->postEvent(copy)) {']}]},
+{id:'onVsync',ch:1,a:'ui',from:['vsync'],t:[2.4,2.7],op:'onVsync() → 异步消息',art:'异步 Message',title:'主线程被唤醒，投递异步消息',fn:'FrameDisplayEventReceiver.onVsync() → sendMessageAtTime() → run()',hook:'异步消息，跳过屏障。',
+ narr:'主线程 Looper 发现 FD 可读，回调 onVsync。它保存时间戳和 VsyncEventData，然后发一条异步消息。第 2 步插入的同步屏障拦住普通消息，但放行这条异步消息，于是帧回调优先执行。',
+ pts:['run() 里清掉 mHavePendingVsync，再调用 doFrame。','主线程如果正忙于别的消息，onVsync 也只能排队，这是常见卡顿来源。'],trap:'同步屏障保证的是“遍历先于普通消息”，不能让一个已在执行的耗时消息提前结束。',
+ code:[{f:'choreo',hl:[1603],ln:['1599|                mTimestampNanos = timestampNanos;','1600|                mFrame = frame;','1601|                mLastVsyncEventData.copyFrom(vsyncEventData);','1602|                Message msg = Message.obtain(mHandler, this);','1603|                msg.setAsynchronous(true);','1604|                mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);','1611|        public void run() {','1612|            mHavePendingVsync = false;','1613|            doFrame(mTimestampNanos, mFrame, mLastVsyncEventData);']}]},
+{id:'doFrame',ch:2,a:'ui',t:[2.8,3.5],op:'doFrame() · 5 类回调',art:'帧时间 + FrameTimeline',title:'doFrame：按固定顺序跑五类回调',fn:'Choreographer.doFrame() → doCallbacks(INPUT … COMMIT)',hook:'输入 → 动画 → Insets → 遍历 → 提交。',
+ narr:'doFrame 先校正帧时间（主线程迟到超过一个周期会跳帧对齐），然后按固定顺序执行五类回调。第 2 步排进去的 TraversalRunnable 在 TRAVERSAL 这一档执行。',
+ pts:['动画先于遍历推进，所以绘制拿到的是本帧的最新动画值。','COMMIT 回调在遍历之后，用于帧后修正（如动画起始时间）。'],trap:'Android 9 常说“四类回调”；本地 Android 16 源码是五类，多了 INSETS_ANIMATION。',
+ code:[{f:'choreo',hl:[1164],ln:['1021|    void doFrame(long frameTimeNanos, int frame,','1022|            DisplayEventReceiver.VsyncEventData vsyncEventData) {','1156|            mFrameInfo.markInputHandlingStart();','1157|            doCallbacks(Choreographer.CALLBACK_INPUT, frameIntervalNanos);','1158|','1159|            mFrameInfo.markAnimationsStart();','1160|            doCallbacks(Choreographer.CALLBACK_ANIMATION, frameIntervalNanos);','1161|            doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION, frameIntervalNanos);','1162|','1163|            mFrameInfo.markPerformTraversalsStart();','1164|            doCallbacks(Choreographer.CALLBACK_TRAVERSAL, frameIntervalNanos);','1165|','1166|            doCallbacks(Choreographer.CALLBACK_COMMIT, frameIntervalNanos);']}]},
+{id:'traverse',ch:2,a:'ui',t:[3.6,6.2],op:'measure / layout',art:'每个 View 的尺寸与位置',title:'performTraversals：按需 measure、layout',fn:'ViewRootImpl.performTraversals() → performMeasure() → performLayout()',hook:'尺寸没变，就不量。',
+ narr:'遍历开始时移除同步屏障，然后根据标志决定要做什么。只有尺寸或位置可能变化时才 measure 和 layout；单纯 invalidate 的内容变化可以直接进入绘制。',
+ pts:['measure 自上而下传递 MeasureSpec，layout 自上而下确定每个 View 的位置。','首次布局或窗口尺寸变化还会向 WMS relayout，本页不展开。'],trap:'“每帧都 measure / layout / draw”是误解，三遍历是按需的。',
+ code:[{f:'vri',hl:[4293,4557],ln:['3574|    private void performTraversals() {','4211|                    performMeasure(childWidthMeasureSpec, childHeightMeasureSpec);','4293|            performLayout(lp, mWidth, mHeight);','4557|            if (!performDraw(mActiveSurfaceSyncGroup)) {']},{f:'vri',hl:[5088,5164],ln:['5082|    private void performMeasure(int childWidthMeasureSpec, int childHeightMeasureSpec) {','5088|            mView.measure(childWidthMeasureSpec, childHeightMeasureSpec);','5164|            host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());']}]},
+{id:'record',ch:2,a:'ui',t:[6.3,8.4],op:'录制 DisplayList',art:'RenderNode / DisplayList',title:'Draw：把绘制命令录进 DisplayList',fn:'ThreadedRenderer.draw() → updateRootDisplayList() → View.updateDisplayListIfDirty()',hook:'UI 线程只写清单，不出像素。',
+ narr:'硬件加速下，onDraw(Canvas) 里的 drawRect、drawText 被记录进每个 View 的 RenderNode。没失效的子树直接复用上次的 DisplayList。录完之后，UI 线程调用 syncAndDrawFrame，把这一帧交给 RenderThread。',
+ pts:['这里的 Canvas 是 RecordingCanvas，只记录不光栅化。','translationX、alpha 等属性变化可能只改 RenderNode 属性，不需要重录。'],trap:'onDraw 执行完，屏幕上什么都没变；清单还要经过 RT 和 GPU 才变成像素。',
+ code:[{f:'tr',hl:[831,849],ln:['828|    void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks) {','829|        attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();','831|        updateRootDisplayList(view, callbacks);','847|        final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();','849|        int syncResult = syncAndDrawFrame(frameInfo);']},{f:'tr',hl:[733],ln:['731|    private void updateRootDisplayList(View view, DrawCallbacks callbacks) {','732|        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "Record View#draw()");','733|        updateViewTreeDisplayList(view);']}]},
+{id:'sync',ch:3,a:'rt',from:['ui'],block:['ui'],t:[8.5,9.2],op:'syncFrameState()',art:'DrawFrameTask',title:'UI 与 RT 唯一的握手：同步场景树',fn:'DrawFrameTask::postAndWait() → run() → syncFrameState() → unblockUiThread()',hook:'同步完就放手，UI 不等 GPU。',
+ narr:'UI 线程把 DrawFrameTask 投给 RenderThread 后阻塞在 mSignal 上。RenderThread 执行 prepareTree，把 RenderNode 的属性和 DisplayList 同步到自己的副本；同步一完成就 unblockUiThread，UI 线程继续处理后面的消息。',
+ pts:['这是 UI 与 RT 必须严格串行的唯一窗口。','大量 Bitmap 上传等资源同步会拉长这一段，让 UI 线程等更久。'],trap:'UI 线程不会等 RenderThread 画完，更不会等 GPU 完成。',
+ code:[{f:'dft',hl:[85,86],ln:['82|void DrawFrameTask::postAndWait() {','83|    ATRACE_CALL();','84|    AutoMutex _lock(mLock);','85|    mRenderThread->queue().post([this]() { run(); });','86|    mSignal.wait(mLock);']},{f:'dft',hl:[106,126],ln:['89|void DrawFrameTask::run() {','106|        canUnblockUiThread = syncFrameState(info);','125|    if (canUnblockUiThread) {','126|        unblockUiThread();']}]},
+{id:'dequeue',ch:3,a:'rt',from:['blast'],t:[9.3,9.8],op:'dequeueBuffer()',art:'空闲槽位 B + 复用 fence',title:'向 BufferQueue 取一块可写 buffer',fn:'CanvasContext::draw() → getFrame() → Surface::dequeueBuffer()',hook:'拿到槽位 ≠ 马上能写。',
+ narr:'RenderThread 通过 EGL 或 VulkanSurface 向应用窗口的 BufferQueue 请求可写 GraphicBuffer，拿到空闲槽位 B。槽位可能带着上一任消费者的 fence：显示硬件还没读完，GPU 写之前就必须等它。',
+ pts:['buffer 数量由实现和配置决定，三块只是本页的示例。','所有 buffer 都被占用时，dequeue 会阻塞，这就是背压。'],trap:'BufferQueue 的 FREE 是“所有权空闲”，像素能否覆盖还要看 fence。',
+ code:[{f:'cc',hl:[600],ln:['596|Frame CanvasContext::getFrame() {','597|    if (mHardwareBuffer != nullptr) {','598|        return {mBufferParams.getLogicalWidth(), mBufferParams.getLogicalHeight(), 0};','599|    } else {','600|        return mRenderPipeline->getFrame();']},{f:'surface',hl:[666],ln:['666|int Surface::dequeueBuffer(sp<GraphicBuffer>* buffer, int* fenceFd) {']}]},
+{id:'rtDraw',ch:3,a:'rt',t:[9.9,11.1],op:'pipeline->draw()',art:'GPU 命令流',title:'Skia 把 DisplayList 翻译成 GPU 命令',fn:'CanvasContext::draw() → SkiaOpenGLPipeline / SkiaVulkanPipeline::draw()',hook:'RT 下单，GPU 干活。',
+ narr:'RenderThread 遍历同步好的 RenderNode 树，由 Skia 生成 GL 或 Vulkan 命令并提交给 GPU 驱动。CPU 在这里只是“下单”，命令进入 GPU 队列后由 GPU 异步执行。',
+ pts:['GL 与 Vulkan 后端路径不同，本页只画共同的骨架。','此时 UI 线程已经在处理别的消息，甚至准备下一帧。'],trap:'RenderThread 的 draw 结束，不代表像素已经写进 buffer。',
+ code:[{f:'cc',hl:[674],ln:['604|void CanvasContext::draw(bool solelyTextureViewUpdates) {','664|    Frame frame = getFrame();','674|        drawResult = mRenderPipeline->draw(','675|                frame, windowDirty, dirty, mLightGeometry, &mLayerUpdateQueue, mContentDrawBounds,']}]},
+{id:'gpu',ch:3,a:'gpu',from:['rt'],t:[11.2,15.6],op:'光栅化 → buffer B',art:'正在写入的像素',title:'GPU 异步执行：把像素写进 buffer B',fn:'GPU driver · rasterize / sample / blend',hook:'GPU 慢慢画，CPU 先走。',
+ narr:'GPU 执行光栅化、纹理采样和混合，把这个窗口的内容写进 buffer B。这段时间 CPU 侧的线程都可以继续往前走；GPU 写完时，会 signal 和这批命令绑定的 fence。',
+ pts:['图中 GPU 持续约 4.4ms，跨越了后面的 queue、BLAST 和 Binder 三步。','GPU 驱动与固件不在本仓库中，右侧是示意伪代码。'],trap:'GPU 迟到时，fence 就晚 signal，SF 可能推迟一轮才用这块 buffer。',
+ code:[{pseudo:'GPU 驱动 / 固件（示意，不在本仓库）',ln:['// 命令缓冲区按提交顺序执行','for (cmd : commandBuffer) rasterize(cmd);  // 写入 buffer B','signal(acquireFence);  // 全部写完后点亮 acquire fence']}]},
+{id:'queue',ch:4,a:'rt',to:'blast',t:[11.3,11.7],op:'queueBuffer(B, fence)',art:'buffer B + 未 signal 的 acquire fence',title:'queueBuffer：带着“未亮的灯”交出 buffer',fn:'swapBuffers() → ANativeWindow::queueBuffer(buffer, fenceFd)',hook:'先交卷，再补“我写完了”的凭证。',
+ narr:'RenderThread 不等 GPU 画完就调用 queueBuffer，把 buffer B 连同 acquire fence 一起放回 BufferQueue。这个 fence 此刻还没 signal，下游拿到 buffer 后必须先看 fence 才能读像素。',
+ pts:['这种设计让 CPU 和 GPU 流水线并行，而不是互相等待。','buffer 状态：DEQUEUED → QUEUED。'],trap:'queueBuffer 返回 ≠ 画面画好了。“灯”亮之前，像素可能还是半成品。',
+ code:[{f:'cc',hl:[711],ln:['711|    bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,','712|                                                &requireSwap);']},{f:'surface',hl:[1332],ln:['1332|int Surface::queueBuffer(sp<GraphicBuffer>&& buffer, int fenceFd,','1333|                         SurfaceQueueBufferOutput* surfaceOutput) {']}]},
+{id:'blastAcq',ch:4,a:'blast',from:['rt'],t:[11.8,12.4],op:'acquireBuffer()',art:'BufferItem（B + fence）',title:'BLAST 在应用进程内消费 BufferQueue',fn:'BLASTBufferQueue::onFrameAvailable() → acquireNextBufferLocked()',hook:'消费者在应用自己家里。',
+ narr:'现代普通窗口的 BufferQueue 消费者是应用进程内的 BLASTBufferQueue，而不是 SurfaceFlinger。onFrameAvailable 回调后，BLAST acquire 到 buffer B 和它的 fence，准备把它装进一个 SurfaceControl 事务。',
+ pts:['buffer 状态：QUEUED → ACQUIRED（被 BLAST 取走）。','acquire 只是取得所有权，不等于 GPU 已经画完。'],trap:'“SF 直接消费应用 BufferQueue”是 BLAST 之前的旧架构图。',
+ code:[{f:'blast',hl:[845],ln:['760|void BLASTBufferQueue::onFrameAvailable(const BufferItem& item) {','845|            acquireNextBufferLocked(std::nullopt);']},{f:'blast',hl:[589],ln:['556|status_t BLASTBufferQueue::acquireNextBufferLocked(','557|        const std::optional<SurfaceComposerClient::Transaction*> transaction) {','586|    BufferItem bufferItem;','587|','588|    status_t status =','589|            mBufferItemConsumer->acquireBuffer(&bufferItem, 0 /* expectedPresent */, false);']}]},
+{id:'txn',ch:4,a:'sf',from:['blast'],t:[12.5,13.2],op:'事务入队（Binder 线程）',art:'Transaction：buffer + fence + 回调',title:'事务跨进程：交给 SurfaceFlinger',fn:'Transaction::setBuffer() → apply() → SF Binder 线程入队',hook:'寄出包裹，SF 按自己的节拍拆。',
+ narr:'BLAST 把 buffer、acquire fence、帧号和 releaseBufferCallback 写进 Transaction，再 apply 给 SurfaceFlinger。这是第二次跨进程。SF 的 Binder 线程收到后只把事务放进队列、请求一次合成，真正处理要等主线程的 VSync-sf。',
+ pts:['apply(false, true) 是 one-way 调用，BLAST 不会阻塞等 SF。','releaseBufferCallback 在这里登记，之后 SF 用它把旧 buffer 还回来。'],trap:'事务到达 SF ≠ 已合成；SF 不会为了一个事务立刻打断节拍。',
+ code:[{f:'blast',hl:[656],ln:['656|    t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId,','657|                 releaseBufferCallback, dequeueTime);','658|    t->setDataspace(mSurfaceControl, static_cast<ui::Dataspace>(bufferItem.mDataSpace));']},{f:'blast',hl:[715],ln:['713|    if (applyTransaction) {','714|        // All transactions on our apply token are one-way. See comment on mAppliedLastTransaction','715|        status_t status = t->setApplyToken(mApplyToken).apply(false, true);']}]},
+{id:'gpuDone',ch:4,a:'gpu',to:'sf',t:[15.6,15.9],op:'signal acquire fence',art:'acquire fence：已 signal',title:'GPU 写完，acquire fence 亮了',fn:'GPU completion → acquire fence signaled',hook:'灯亮了，SF 才能读。',
+ narr:'GPU 写完 buffer B，acquire fence 被 signal。这是 SF 能安全读取这块 buffer 的前提。如果到了合成时 fence 还没亮，常规路径会推迟 latch 这块 buffer，屏幕继续显示上一帧。',
+ pts:['fence 由内核同步框架管理，跨进程传递的是它的文件描述符。','源码中存在受配置约束的 latch-unsignaled 优化，本页按保守路径讲。'],trap:'不是 SF 在“等” GPU；SF 在自己的节拍上检查 fence 状态。',
+ code:[{pseudo:'GPU 驱动 / 内核 sync（示意）',ln:['// 命令执行完毕，驱动 signal 对应 fence','dma_fence_signal(acquireFence);','// 持有该 fence fd 的进程都能观察到状态变化']}]},
+{id:'sfVsync',ch:5,a:'sf',from:['vsync'],pulse:['hwv','vsync'],t:[18.2,18.6],op:'onFrameSignal()',art:'FrameTarget（期望 33.3ms 呈现）',title:'VSync-sf 到点，SF 主线程开工',fn:'MessageQueue::vsyncCallback() → dispatchFrame() → onFrameSignal()',hook:'SF 有自己的节拍，不跟 App 走。',
+ narr:'SF 有独立的 VSync 相位，通常留出足够时间在下一次硬件刷新前完成合成。回调把帧信号投给 SF 主线程，Scheduler 依次调用 commit 与 composite。',
+ pts:['本例事务 13.2ms 就到了，SF 仍等到 18.2ms 的 VSync-sf 才处理。','目标呈现时间是 33.33ms 的硬件 VSync。'],trap:'从 queueBuffer 到上屏通常跨越不止一个刷新周期，延迟并不固定。',
+ code:[{f:'mq',hl:[74],ln:['59|void MessageQueue::vsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {','60|    SFTRACE_CALL();','74|    mHandler->dispatchFrame(vsyncId, expectedVsyncTime);']},{f:'mq',hl:[46],ln:['44|void MessageQueue::Handler::handleMessage(const Message&) {','45|    mFramePending.store(false);','46|    mQueue.onFrameSignal(mQueue.mCompositor, mVsyncId, mExpectedVsyncTime);']}]},
+{id:'commit',ch:5,a:'sf',t:[18.7,19.9],op:'commit · latch B',art:'图层快照 + latched buffer B',title:'commit：应用事务，latch 新 buffer',fn:'SurfaceFlinger::commit() → updateLayerSnapshots() → latchBufferImpl()',hook:'latch 是选定，不是上屏。',
+ narr:'commit 取出就绪的事务，更新图层快照。对 fence 已 signal 的新 buffer 执行 latch，让 B 成为这个图层本轮要显示的内容。此时屏幕上仍是 F−1。',
+ pts:['commit 判断本轮无需合成时，不会调用 composite。','latch 后，旧 buffer A 仍被显示硬件读取，不能释放。'],trap:'SF 收到事务、latch buffer、屏幕变化是三个不同时刻。',
+ code:[{f:'sf',hl:[2952],ln:['2845|bool SurfaceFlinger::commit(PhysicalDisplayId pacesetterId,','2943|    bool mustComposite = mMustComposite.exchange(false);','2950|        const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded);','2951|        bool transactionsAreEmpty = false;','2952|        mustComposite |= updateLayerSnapshots(vsyncId, pacesetterFrameTarget.frameBeginTime().ns(),']},{f:'sf',hl:[2802],ln:['2646|bool SurfaceFlinger::updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs,','2802|        it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);','2807|        mLayersWithQueuedFrames.emplace(it->second, gameMode);']}]},
+{id:'composite',ch:5,a:'sf',t:[20,20.7],op:'composite() · prepareFrame',art:'CompositionRefreshArgs',title:'composite：规划每个图层怎么合成',fn:'SurfaceFlinger::composite() → CompositionEngine::present() → Output::prepareFrame()',hook:'先问清单，再分工。',
+ narr:'composite 把可见图层整理成 CompositionRefreshArgs 交给 CompositionEngine。Output::prepareFrame 进入策略选择：每个图层能否交给显示硬件直接叠加？',
+ pts:['此时还没决定 DEVICE / CLIENT，右侧图层快照显示“待定”。','多屏时每个 Output 独立走这一流程。'],trap:'SF 的 composite 不等于“SF 用 GPU 画一遍所有窗口”。',
+ code:[{f:'sf',hl:[3233],ln:['3118|CompositeResultsPerDisplay SurfaceFlinger::composite(','3119|        PhysicalDisplayId pacesetterId, const scheduler::FrameTargeters& frameTargeters) {','3233|    mCompositionEngine->present(mainThreadRefreshArgs);']},{f:'out',hl:[1174],ln:['1164|void Output::prepareFrame() {','1174|    bool success = chooseCompositionStrategy(&changes);']}]},
+{id:'validate',ch:5,a:'hwc',from:['sf'],t:[20.8,21.4],op:'validate：DEVICE / CLIENT',art:'每层合成类型',title:'HWC 拍板：哪些层硬件直接叠加',fn:'HWComposer::getDeviceCompositionChanges() → validate / presentOrValidate',hook:'硬件能叠的叫 DEVICE，叠不了的叫 CLIENT。',
+ narr:'Composer HAL 根据显示硬件的叠加能力逐层回答：能直接叠加的标为 DEVICE；不能的改判为 CLIENT，需要先用 GPU 画进一块 client target。本例中应用窗口和状态栏是 DEVICE，带模糊效果的导航栏是 CLIENT。',
+ pts:['叠加层数量、格式、旋转、缩放等都会影响判定。','合成类型由 HWC 最终决定，SF 只是提出期望。'],trap:'“应用用 GPU 绘制”和“SF 用 CLIENT 合成”是两件事。',
+ code:[{f:'hwc',hl:[535],ln:['535|status_t HWComposer::getDeviceCompositionChanges(','536|        HalDisplayId displayId, bool frameUsesClientComposition,','537|        std::optional<std::chrono::steady_clock::time_point> earliestPresentTime,']}]},
+{id:'client',ch:5,a:'re',from:['sf'],to:'gpu',t:[21.5,22.9],op:'drawLayers() → client target',art:'client target buffer + fence',title:'RenderEngine 合成 CLIENT 层（可选）',fn:'Output::composeSurfaces() → RenderEngine::drawLayers()',hook:'有 CLIENT 层才动用 GPU。',
+ narr:'只有存在 CLIENT 层时才走这一步：RenderEngine 用 GPU 把这些层画进 client target buffer，再把它作为一层交给 HWC。如果所有层都是 DEVICE，SF 完全不需要 GPU。',
+ pts:['client target 同样带 fence，HWC 读取前需要等待。','时间线上斜纹块表示 GPU 在为 SF 工作。'],trap:'全 DEVICE 时 SF 合成几乎不占 GPU，这正是硬件叠加的意义。',
+ code:[{f:'out',hl:[1455],ln:['1375|std::optional<base::unique_fd> Output::composeSurfaces(','1455|                               .drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex,']}]},
+{id:'present',ch:6,a:'hwc',from:['sf'],t:[23.2,23.9],op:'present() → fences',art:'present fence + release fences',title:'present：提交本轮配置，拿回 fences',fn:'Output::presentFrame() → HWComposer::presentAndGetReleaseFences()',hook:'present 是“提交”，不是“上屏”。',
+ narr:'SF 调用 HWC present，把本轮图层配置交给显示控制器。HAL 返回 present fence（新帧真正开始显示的时间）和每层的 release fence（旧 buffer 什么时候读完）。此刻屏幕仍显示 F−1。',
+ pts:['新配置会在下一次硬件 VSync 生效。','SF 主线程本帧工作到此结束，可以准备下一帧。'],trap:'present 调用返回、present fence signal、像素被人眼看到，是三个时刻。',
+ code:[{f:'out',hl:[1775],ln:['1673|void Output::presentFrameAndReleaseLayers(bool flushEvenWhenDisabled) {','1775|compositionengine::Output::FrameFences Output::presentFrame() {']},{f:'hwc',hl:[679,683],ln:['656|status_t HWComposer::presentAndGetReleaseFences(','679|    auto error = hwcDisplay->present(&displayData.lastPresentFence);','683|    error = hwcDisplay->getReleaseFences(&releaseFences);']}]},
+{id:'release',ch:6,a:'blast',from:['sf'],t:[24.2,24.8],op:'releaseBuffer(A, fence)',art:'buffer A + 未 signal 的 release fence',title:'旧 buffer A 带着 release fence 回到 BLAST',fn:'releaseBufferCallback() → releaseBuffer() → BufferItemConsumer::releaseBuffer()',hook:'先还槽位，灯亮了才能写。',
+ narr:'SF 通过第 15 步登记的回调，把上一帧的 buffer A 和它的 release fence 还给 BLAST，BLAST 再把它释放回 BufferQueue，A 变为 FREE。此时显示硬件还在扫描 A，release fence 没有 signal。',
+ pts:['这是第三次跨进程：SurfaceFlinger → 应用进程。','FREE 只是槽位所有权，A 的像素此刻仍在被读取。'],trap:'buffer 被 release ≠ 可以立刻覆盖；生产者 dequeue 后必须等 release fence。',
+ code:[{f:'blast',hl:[470],ln:['470|void BLASTBufferQueue::releaseBufferCallback(','471|        const ReleaseCallbackId& id, const sp<Fence>& releaseFence,','472|        std::optional<uint32_t> currentMaxAcquiredBufferCount) {']},{f:'blast',hl:[538],ln:['529|void BLASTBufferQueue::releaseBuffer(const ReleaseCallbackId& callbackId,','538|    mBufferItemConsumer->releaseBuffer(it->second, releaseFence);']}]},
+{id:'scanout',ch:6,a:'display',from:['hwc'],pulse:['hwv'],t:[33.33,48],op:'扫描 F',art:'present fence：已 signal',title:'硬件 VSync：显示控制器开始扫描 F',fn:'DPU / 面板 · 新配置生效 → 逐行 scanout',hook:'下一次硬件 VSync，F 才开始出现。',
+ narr:'33.33ms 的硬件 VSync 到来，显示控制器采用新配置，present fence signal。面板从上到下逐行读取 buffer B（及 client target）的像素，F 在约一个刷新周期内逐渐出现。',
+ pts:['从 invalidate 到开始扫描，本例约 33ms，跨了两个刷新周期。','扫描方向、面板响应时间依设备而异，这里是教学抽象。'],trap:'“present 完成 = 用户看见”不成立，中间还有扫描与像素响应。',
+ code:[{pseudo:'显示控制器 / 面板（示意，厂商实现不在本仓库）',ln:['onHardwareVsync():','  latchNewConfig();         // 采用 present 提交的图层配置','  signal(presentFence);     // 记录 F 开始显示的时间','  for (row : panel) scanout(row);  // 逐行读取 buffer B']}]},
+{id:'reuse',ch:6,a:'rt',from:['blast'],t:[33.6,34.4],op:'dequeue A（灯已亮）',art:'release fence：已 signal',title:'旧 buffer A 读完：可以复用了',fn:'release fence signaled → 下一帧 Surface::dequeueBuffer() 拿到 A',hook:'灯亮才能写，buffer 循环往复。',
+ narr:'显示硬件开始读 B 后，A 不再被需要，它的 release fence signal。下一帧 RenderThread dequeue 到 A 时，fence 已就绪，GPU 可以直接写入。几块 buffer 就这样在 RT、BLAST、SF 和显示硬件之间循环。',
+ pts:['实际流水线是重叠的：F+1 往往在 F 上屏前就已开始准备。','三块 buffer 是示例；背压与槽位数量由配置决定。'],trap:'buffer 卡在 SF 或显示硬件手里太久，应用 dequeue 就会阻塞，表现为掉帧。',
+ code:[{f:'surface',hl:[666],ln:['666|int Surface::dequeueBuffer(sp<GraphicBuffer>* buffer, int* fenceFd) {']}]}
+];
+const EXTRA=[{a:'gpu',t:[21.5,22.8],op:'为 SF 合成 CLIENT 层',title:'GPU 为 SF 合成 CLIENT 层'}];
+const MYTHS=[
+ ['invalidate() 会立刻重绘','它只打脏标记并向上传递，真正绘制在下一个 VSync 的 doFrame 里。','invalidate'],
+ ['onDraw 直接产生像素','硬件加速下 onDraw 只录制 DisplayList，像素由 GPU 稍后写入。','record'],
+ ['queueBuffer 时图已经画好了','buffer 带着未 signal 的 acquire fence 交出，GPU 可能还在写。','queue'],
+ ['SF 直接消费应用的 BufferQueue','现代窗口由应用进程内的 BLAST 消费，再经事务交给 SF。','blastAcq'],
+ ['SF 合成一定要用 GPU','DEVICE 层由显示硬件直接叠加，只有 CLIENT 层才动用 RenderEngine。','validate'],
+ ['present 返回就上屏了','present 只是提交；下一次硬件 VSync 才开始扫描，旧 buffer 还要等 release fence。','present']
+];
+const I=Object.fromEntries(STEPS.map((s,i)=>[s.id,i]));
+const ST=Object.fromEntries(STATIONS.map(s=>[s.id,s]));
+const bandOf=p=>BANDS.find(b=>b.p===p);
+function geo(id){const s=ST[id],b=bandOf(s.p);return {x:COLS[s.c],y:b.y+46,w:SW,h:SH,c:s.c,band:BANDS.indexOf(b)};}
+let cur=0,playing=false,timer=null;
+const nodes={};
+
+function buildStage(){
+ const bands=$('bands');
+ for(const b of BANDS){const g=el('g',{class:'band','data-p':b.p},bands);el('rect',{class:'bg',x:8,y:b.y,width:1184,height:b.h,rx:14},g);el('text',{class:'bl',x:24,y:b.y+26},g,b.label);el('text',{class:'bs',x:b.p==='sf'?232:b.p==='app'?150:170,y:b.y+26},g,b.sub);}
+ const defs=$('stage').querySelector('defs');
+ const m=el('marker',{id:'arrow',viewBox:'0 0 10 10',refX:8,refY:5,markerWidth:7,markerHeight:7,orient:'auto-start-reverse'},defs);el('path',{d:'M0,0 L10,5 L0,10 z',fill:'#e2463b'},m);
+ for(const s of STATIONS){
+  const {x,y,w,h}=geo(s.id);
+  const g=el('g',{class:'st','data-id':s.id,tabindex:0,role:'button','aria-label':s.name+'：跳到它的第一个步骤'},$('stations'));
+  el('rect',{class:'box',x,y,width:w,height:h,rx:10},g);
+  el('text',{class:'role',x:x+14,y:y+22},g,s.role);
+  el('text',{class:'name',x:x+14,y:y+46},g,s.name);
+  const op=el('text',{class:'op',x:x+14,y:y+78},g,s.idle);
+  const pill=el('g',{class:'pill',visibility:'hidden'},g);el('rect',{x:x+w-70,y:y+10,width:58,height:20,rx:10},pill);const pt=el('text',{x:x+w-41,y:y+24,'text-anchor':'middle'},pill,'');
+  if(s.id==='display'){el('rect',{class:'scr-old',x:x+128,y:y+34,width:84,height:52,rx:4},g);nodes.scr=el('rect',{class:'scr-new',x:x+128,y:y+34,width:84,height:52,rx:4},g);nodes.scrT=el('text',{class:'scr-t',x:x+170,y:y+65,'text-anchor':'middle'},g,'F−1');}
+  const jump=()=>{const i=STEPS.findIndex(st=>st.a===s.id);if(i>=0){stop();go(i);}};
+  g.addEventListener('click',jump);g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();jump();}});
+  nodes[s.id]={g,op,pill,pt};
+ }
+ // BufferQueue 槽位（应用进程）与图层快照（SF 进程）
+ const wb=el('g',{class:'wg'},$('widgets')),bx=COLS[3],by=BANDS[0].y+46;
+ el('rect',{class:'frame',x:bx,y:by,width:SW,height:112,rx:10},wb);el('text',{class:'wt',x:bx+14,y:by+20},wb,'BufferQueue 槽位（示例 3 块）');
+ nodes.slots={};
+ ['A','B','C'].forEach((k,i)=>{const sx=bx+14+i*80,g=el('g',{class:'slot','data-s':'FREE'},wb);el('rect',{x:sx,y:by+30,width:70,height:72,rx:7},g);el('text',{class:'sl',x:sx+35,y:by+52,'text-anchor':'middle'},g,k);const ss=el('text',{class:'ss',x:sx+35,y:by+72,'text-anchor':'middle'},g,'');const so=el('text',{class:'so',x:sx+35,y:by+90,'text-anchor':'middle'},g,'');nodes.slots[k]={g,ss,so};});
+ const wl=el('g',{class:'wg'},$('widgets')),ly=BANDS[1].y+46;
+ el('rect',{class:'frame',x:bx,y:ly,width:SW,height:112,rx:10},wl);el('text',{class:'wt',x:bx+14,y:ly+20},wl,'图层快照（本轮合成输入）');
+ nodes.layers=[0,1,2].map(i=>el('text',{class:'lyr',x:bx+14,y:ly+46+i*22},wl,''));
+}
+// 两个执行者之间的连线：同层水平，相邻层垂直，跨两层从列间空隙绕行，避免压住中间的方框
+function linkPath(a,b){
+ const A=geo(a),B=geo(b);
+ if(A.band===B.band){
+  const y=A.y+A.h/2;
+  if(Math.abs(A.c-B.c)===1){const x1=A.c<B.c?A.x+A.w:A.x,x2=A.c<B.c?B.x:B.x+B.w;return `M${x1},${y} L${x2},${y}`;}
+  const yb=A.y+A.h,dip=yb+16;return `M${A.x+A.w/2},${yb} C${A.x+A.w/2},${dip} ${B.x+B.w/2},${dip} ${B.x+B.w/2},${yb}`;
+ }
+ const down=A.band<B.band,y1=down?A.y+A.h:A.y,y2=down?B.y:B.y+B.h,x1=A.x+A.w/2,x2=B.x+B.w/2;
+ if(Math.abs(A.band-B.band)===1){const my=(y1+y2)/2;return A.c===B.c?`M${x1},${y1} L${x2},${y2}`:`M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`;}
+ const gx=COLS[Math.max(A.c,B.c)]-(COLS[1]-COLS[0]-SW)/2,yA=A.y+A.h/2,yB=B.y+B.h/2,sg=yB>yA?1:-1;
+ const ax=A.c<B.c?A.x+A.w:A.x,bx=B.c<A.c?B.x+B.w:B.x;
+ return `M${ax},${yA} Q${gx},${yA} ${gx},${yA+sg*20} L${gx},${yB-sg*20} Q${gx},${yB} ${bx},${yB}`;
+}
+function linksOf(s){const out=(s.from||[]).filter(f=>f!==s.a).map(f=>[f,s.a]);if(s.to)out.push([s.a,s.to]);return out;}
+function busyAt(id,t){return STEPS.some(s=>s.a===id&&s.t[0]<=t&&t<s.t[1])||EXTRA.some(x=>x.a===id&&x.t[0]<=t&&t<x.t[1]);}
+function lastOp(id,i){for(let k=i;k>=0;k--)if(STEPS[k].a===id)return STEPS[k].op;return null;}
+function deriveState(i){
+ const s={};
+ s.A=i>=I.reuse?['DEQUEUED','RT 再次写入']:i>=I.release?['FREE','等 release fence']:['ACQUIRED','SF / 显示 F−1'];
+ s.B=i<I.dequeue?['FREE','空闲']:i<I.queue?['DEQUEUED','RT / GPU 写入']:i<I.blastAcq?['QUEUED','在队列中']:i<I.txn?['ACQUIRED','BLAST 持有']:i<I.scanout?['ACQUIRED','SF 持有']:['ACQUIRED','正在显示'];
+ s.C=['FREE','空闲'];
+ s.hot={dequeue:'B',queue:'B',blastAcq:'B',txn:'B',scanout:'B',release:'A',reuse:'A'}[STEPS[i].id]||'';
+ s.acq=i<I.queue?['none','尚未产生']:i<I.gpuDone?['pending','未 signal：GPU 还在写']:['signaled','已 signal：可以安全读'];
+ s.rel=i<I.release?['none','A 仍在显示']:i<I.reuse?['pending','未 signal：仍在扫描 A']:['signaled','已 signal：A 可复用'];
+ s.scr=i<I.scanout?['none','显示 F−1']:['on','开始扫描 F'];
+ const decided=i>=I.validate,app=i>=I.commit?'buffer B':'buffer A';
+ s.layers=['StatusBar  · '+(decided?'DEVICE':'待定'),'App 窗口   · '+app+' · '+(decided?'DEVICE':'待定'),'NavBar     · '+(decided?'CLIENT（模糊）':'待定')];
+ s.layerHot=STEPS[i].id==='commit'?1:STEPS[i].id==='validate'||STEPS[i].id==='client'?2:-1;
+ return s;
+}
+const LANES=[['ui','UI','app'],['rt','RT','app'],['blast','BLAST','app'],['vsync','EventThr','sf'],['sf','SF 主线程','sf'],['re','RenderEng','sf'],['gpu','GPU','hw'],['hwc','HWC/DPU','hw'],['display','面板','hw']];
+const T_MAX=50,pct=t=>(t/T_MAX*100).toFixed(3)+'%';
+function buildTimeline(){
+ const tl=$('tl');tl.style.paddingTop='18px';nodes.bars=[];
+ for(const [id,label,p] of LANES){
+  const row=h('div','tl-row');row.dataset.p=p;row.append(h('b',null,label));const tr=h('div','tl-track');row.append(tr);tl.append(row);
+  STEPS.forEach((s,i)=>{if(s.a!==id)return;const b=h('button','tl-bar');b.dataset.p=p;b.style.left=pct(s.t[0]);b.style.width=`calc(${pct(s.t[1]-s.t[0])} + 1px)`;b.title=String(i+1).padStart(2,'0')+' '+s.title;b.setAttribute('aria-label','步骤 '+(i+1)+'：'+s.title);b.addEventListener('click',()=>{stop();go(i);});tr.append(b);nodes.bars[i]=b;});
+  EXTRA.filter(x=>x.a===id).forEach(x=>{const b=h('span','tl-bar extra');b.style.left=pct(x.t[0]);b.style.width=pct(x.t[1]-x.t[0]);b.title=x.title;tr.append(b);});
+ }
+ tl.append(h('div','tl-axis'));
+ const grid=h('div','tl-grid');grid.style.top='18px';
+ for(const [t,cls,txt,top] of [[0,'hw','HW VSync 0',0],[16.67,'hw','16.7',0],[33.33,'hw','33.3 ← F 开始扫描',0],[2,'app','VSync-app',1],[18.2,'sf','VSync-sf',1]]){const v=h('div','vl '+cls);v.style.left=pct(t);const sp=h('span',null,txt);if(top){sp.style.bottom='auto';sp.style.top='-17px';}v.append(sp);grid.append(v);}
+ nodes.ph=h('div','playhead');grid.append(nodes.ph);tl.append(grid);
+}
+function hl(line){
+ const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+ let code=line,cm='';const ci=line.search(/\/\/|\/\*/);if(ci>=0){code=line.slice(0,ci);cm=line.slice(ci);}
+ const parts=code.split(/("(?:[^"\\]|\\.)*")/);
+ const body=parts.map((p,i)=>i%2?'<span class="s">'+esc(p)+'</span>':esc(p).replace(/\b(void|bool|int|long|const|auto|return|if|else|for|while|switch|case|private|public|final|status_t|true|false|nullptr|this|new|std)\b/g,'<span class="k">$1</span>')).join('');
+ return body+(cm?'<span class="c">'+esc(cm)+'</span>':'');
+}
+function renderCode(s){
+ const box=$('c-blocks');box.replaceChildren();
+ $('c-kind').textContent=s.code.some(c=>c.pseudo)?'示意伪代码':'本地源码摘录';
+ for(const c of s.code){
+  const blk=h('div','cblock'),head=h('div','cfile'+(c.pseudo?' pseudo':''));
+  if(c.pseudo){head.textContent=c.pseudo;}
+  else{const nums=c.ln.map(l=>+l.split('|')[0]);const a=h('a',null,F[c.f]);a.href=ROOT+F[c.f];a.target='_blank';a.rel='noopener';head.append(a,h('span',null,'L'+nums[0]+(nums.length>1?'–'+nums[nums.length-1]:'')));}
+  const pre=h('pre','code');let prev=null;
+  c.ln.forEach((l,k)=>{
+   let n='',txt=l;
+   if(!c.pseudo){const p=l.indexOf('|');n=+l.slice(0,p);txt=l.slice(p+1);if(prev!=null&&n>prev+1){const g=h('div','ln gap');g.append(h('i',null,'⋯'),h('code',null,'    ⋯'));pre.append(g);}prev=n;}
+   const row=h('div','ln'+(c.hl&&c.hl.includes(n)?' hl':''));const ci=h('code');ci.innerHTML=hl(txt);row.append(h('i',null,c.pseudo?String(k+1):String(n)),ci);pre.append(row);
+  });
+  blk.append(head,pre);box.append(blk);
+ }
+}
+function buildChapters(){
+ CHAPTERS.forEach(([ch,name,sub],k)=>{const b=h('button','chap');b.dataset.ch=k;b.innerHTML='<b><span></span></b><small></small><i></i>';b.querySelector('span').textContent=ch;b.querySelector('b').append(' '+(k+1)+' · '+name);b.querySelector('small').textContent=sub;b.addEventListener('click',()=>{stop();go(STEPS.findIndex(s=>s.ch===k));});$('chapters').append(b);
+  const c=h('button');c.innerHTML='<small></small>';c.prepend(ch);c.querySelector('small').textContent=name;c.addEventListener('click',()=>{stop();go(STEPS.findIndex(s=>s.ch===k));$('chapters').scrollIntoView({block:'start'});});$('chain').append(c);});
+ for(const [myth,truth,id] of MYTHS){const m=h('div','myth');m.append(h('s',null,myth),h('span',null,truth));const b=h('button',null,'看第 '+(I[id]+1)+' 步 →');b.addEventListener('click',()=>{stop();go(I[id]);$('chapters').scrollIntoView({block:'start'});});m.append(b);$('myths').append(m);}
+ const files=new Map();STEPS.forEach((s,i)=>s.code.forEach(c=>{if(!c.pseudo){if(!files.has(c.f))files.set(c.f,[]);files.get(c.f).push(i+1);}}));
+ for(const [k,steps] of files){const li=h('li'),a=h('a');a.href=ROOT+F[k];a.target='_blank';a.rel='noopener';a.append(h('code',null,F[k]));li.append(a,' · 步骤 '+[...new Set(steps)].join(', '));$('src-files').append(li);}
+}
+function pulse(ids){$('ripples').replaceChildren();for(const id of ids||[]){const g=geo(id),r=el('circle',{class:'ripple',cx:g.x+g.w/2,cy:g.y+g.h/2,r:g.w*.62},$('ripples'));void r.getBoundingClientRect();r.classList.add('go');}}
+function setChip(id,[state,text]){const c=$(id);c.dataset.s=state;c.querySelector('span').textContent=text;}
+function update(){
+ const s=STEPS[cur],t=s.t[0],d=deriveState(cur);
+ for(const st of STATIONS){
+  const n=nodes[st.id],active=st.id===s.a,blocked=(s.block||[]).includes(st.id),busy=!active&&!blocked&&busyAt(st.id,t);
+  n.g.classList.toggle('active',active);n.g.classList.toggle('blocked',blocked);n.g.classList.toggle('busy',busy);
+  if(active)n.g.setAttribute('aria-current','step');else n.g.removeAttribute('aria-current');
+  n.pill.setAttribute('visibility',active||busy||blocked?'visible':'hidden');n.pt.textContent=active?'当前':blocked?'阻塞等待':'并行中';
+  let op=st.id===s.a?s.op:lastOp(st.id,cur)||st.idle;
+  if(st.id==='hwv')op=(s.pulse||[]).includes('hwv')?'脉冲 @ '+(s.id==='appVsync'?'0':s.id==='sfVsync'?'16.7':'33.3')+'ms':st.idle;
+  const ex=EXTRA.find(x=>x.a===st.id&&x.t[0]<=t&&t<x.t[1]);if(ex&&!active)op=ex.op;
+  if(st.id==='display')op=cur>=I.scanout?'扫描 F':'显示 F−1';
+  n.op.textContent=op;
+ }
+ const g=geo(s.a);$('packet').setAttribute('transform',`translate(${g.x+g.w-24},${g.y+g.h-6})`);$('packet').querySelector('text').textContent=s.id==='release'||s.id==='reuse'?'A':'F';
+ $('links').replaceChildren();for(const [a,b] of linksOf(s)){const dd=linkPath(a,b);el('path',{class:'link-glow',d:dd},$('links'));el('path',{class:'link',d:dd,'marker-end':'url(#arrow)','data-from':a,'data-to':b},$('links'));}
+ pulse(s.pulse);
+ for(const k of ['A','B','C']){const sl=nodes.slots[k];sl.g.dataset.s=d[k][0];sl.g.classList.toggle('hot',d.hot===k);sl.ss.textContent=d[k][0];sl.so.textContent=d[k][1];}
+ nodes.layers.forEach((n,k)=>{n.textContent=d.layers[k];n.classList.toggle('hot',d.layerHot===k);});
+ nodes.scr.classList.toggle('on',cur>=I.scanout);nodes.scrT.textContent=cur>=I.scanout?'F':'F−1';
+ setChip('chip-art',['on',s.art]);setChip('chip-acq',d.acq);setChip('chip-rel',d.rel);setChip('chip-scr',d.scr);
+ const p=ST[s.a].p;
+ $('s-step').textContent='STEP '+String(cur+1).padStart(2,'0')+' / '+STEPS.length;$('s-chap').textContent=CHAPTERS[s.ch][0]+' · '+CHAPTERS[s.ch][1];
+ $('s-actor').dataset.p=p;$('s-actor').textContent=PROC[p]+' · '+ST[s.a].name;$('s-time').textContent=s.t[0].toFixed(1)+'–'+s.t[1].toFixed(1)+' ms（示意）';
+ $('s-title').textContent=s.title;$('s-fn').textContent=s.fn;$('s-hook').textContent=s.hook;$('s-narr').textContent=s.narr;
+ $('s-pts').replaceChildren(...s.pts.map(x=>h('li',null,x)));$('s-trap').replaceChildren(h('b',null,'容易混淆：'),document.createTextNode(s.trap));
+ renderCode(s);
+ nodes.bars.forEach((b,i)=>{b.classList.toggle('cur',i===cur);b.classList.toggle('past',i<cur);b.setAttribute('aria-pressed',String(i===cur));});
+ nodes.ph.style.left=pct(t);
+ document.querySelectorAll('.chap').forEach((c,k)=>{c.classList.toggle('active',k===s.ch);c.classList.toggle('done',k<s.ch);if(k===s.ch)c.setAttribute('aria-current','step');else c.removeAttribute('aria-current');});
+ $('scrub').value=cur;$('counter').textContent=String(cur+1).padStart(2,'0')+' / '+STEPS.length;
+ $('prev').disabled=$('first').disabled=cur===0;$('next').disabled=$('last').disabled=cur===STEPS.length-1;
+ $('announce').textContent='第 '+(cur+1)+' 步：'+s.title;
+ try{history.replaceState(null,'','#'+s.id);}catch(_){}
+}
+function go(i){cur=Math.max(0,Math.min(STEPS.length-1,i));update();}
+function schedule(){clearTimeout(timer);if(!playing)return;timer=setTimeout(()=>{if(cur>=STEPS.length-1){stop();return;}go(cur+1);schedule();},3600*+$('speed').value);}
+function play(){if(cur>=STEPS.length-1)go(0);playing=true;$('play').textContent='❚❚ 暂停';$('play').setAttribute('aria-label','暂停');schedule();}
+function stop(){playing=false;clearTimeout(timer);$('play').textContent='▶ 播放';$('play').setAttribute('aria-label','播放');}
+function bind(){
+ $('play').addEventListener('click',()=>playing?stop():play());
+ $('prev').addEventListener('click',()=>{stop();go(cur-1);});$('next').addEventListener('click',()=>{stop();go(cur+1);});
+ $('first').addEventListener('click',()=>{stop();go(0);});$('last').addEventListener('click',()=>{stop();go(STEPS.length-1);});
+ $('scrub').addEventListener('input',e=>{stop();go(+e.target.value);});
+ $('speed').addEventListener('change',schedule);
+ $('open-help').addEventListener('click',()=>$('help').showModal());$('open-sources').addEventListener('click',()=>$('sources').showModal());
+ document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.closest('dialog').close()));
+ document.addEventListener('keydown',e=>{
+  if(document.querySelector('dialog[open]')||e.metaKey||e.ctrlKey||e.altKey)return;
+  const tag=e.target.tagName;if(tag==='SELECT'||tag==='INPUT'&&e.target.type!=='range')return;
+  if(e.key==='ArrowRight'||e.key==='ArrowLeft'){if(tag==='INPUT')return;e.preventDefault();stop();go(cur+(e.key==='ArrowRight'?1:-1));}
+  else if(e.key==='Home'||e.key==='End'){if(tag==='INPUT')return;e.preventDefault();stop();go(e.key==='Home'?0:STEPS.length-1);}
+  else if(e.key===' '&&tag!=='BUTTON'&&!e.target.closest('.st')){e.preventDefault();playing?stop():play();}
+  else if(/^[1-7]$/.test(e.key)){stop();go(STEPS.findIndex(s=>s.ch===+e.key-1));}
+  else if(e.key==='?'){$('help').showModal();}
+ });
+}
+buildStage();buildTimeline();buildChapters();bind();
+go(Math.max(0,I[location.hash.slice(1)]??0));
+</script>
+</body>
+</html>
