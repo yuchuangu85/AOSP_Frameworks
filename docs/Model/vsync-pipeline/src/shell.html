@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>一帧的旅程 · Android 渲染管线可视化（AOSP android17）</title>
-<meta name="description" content="从 View 请求刷新到 VSYNC、Choreographer、measure/layout/draw、RenderThread、BLAST、SurfaceFlinger、HWC 上屏的完整源码级可视化。">
+<meta name="description" content="基于 AOSP 源码讲解 View、VSYNC、Choreographer、RenderThread、BLAST、SurfaceFlinger 与 HWC；动画为参数化流程示意，不代表真机精确时序或掉帧归因。">
 <meta name="color-scheme" content="dark light">
 <script>
   // Theme: 'auto' follows the OS; explicit choice is remembered. Runs before CSS to avoid a flash.
@@ -92,8 +92,8 @@
         <div class="quote">
           <p><b>一句话版本：</b>UI 线程把“需要重绘”变成一次 traversal 预约；Choreographer 等到 APP VSYNC 才执行它；
             measure/layout 之后，<code>draw</code> 只是把绘制指令录进 RenderNode 的 DisplayList；
-            真正的 GPU 绘制发生在 RenderThread，完成后把 GraphicBuffer 连同 SurfaceControl Transaction 交给 SurfaceFlinger；
-            SF 在<b>晚于 APP 一个 appWorkDuration 的 SF VSYNC 相位</b>取走 buffer、合成、交给 HWC；DISPLAY VSYNC 开始扫描时 present fence signal，被替换下来的上一帧 buffer 才回到队列。
+            RenderThread 提交 GPU 命令，应用侧 BLAST 消费 BufferQueue，并把 GraphicBuffer 与 acquire fence 通过 Transaction 交给 SurfaceFlinger；
+            SF 在<b>目标 SF VSYNC 相位</b>检查事务并合成、交给 HWC；present fence 描述异步呈现完成，旧 buffer 的归还与安全复用由 release 路径和 fence 依赖控制。
             本页默认 appWorkDuration + sfWorkDuration ≤ 一个周期，APP 绘制与 SF 合成落在同一帧内；实际相位由设备配置决定（见“相位的意义”）。</p>
           <p class="mono" style="margin-bottom:0;color:var(--dim);font-size:12px">requestLayout → scheduleTraversals → VSYNC → doFrame → relayout/measure/layout/record → syncAndDrawFrame → RenderThread → queueBuffer + BLAST → SF latch/compose/present → HWC → panel</p>
         </div>
@@ -110,8 +110,8 @@
       <div class="stat-grid">
         <div class="stat" data-tone="ui"><div class="k">Processes</div><div class="v">2+1<span>个进程</span></div><div class="d">核心两端是 App（UI + RenderThread）与 SurfaceFlinger；窗口尺寸变化时，relayout 还会跨到 system_server 的 WMS。</div></div>
         <div class="stat" data-tone="rt"><div class="k">Threads</div><div class="v">5<span>条关键线程</span></div><div class="d">UI、RenderThread、SF 主线程、HWC/显示、以及 VSYNC 分发线程。</div></div>
-        <div class="stat" data-tone="sf"><div class="k">Latency</div><div class="v">2~3<span>个 VSYNC</span></div><div class="d">从触发刷新到像素可见；三缓冲会再多一拍生产窗口。</div></div>
-        <div class="stat" data-tone="hwc"><div class="k">Budget</div><div class="v">16.7<span>ms / 帧</span></div><div class="d">60Hz 下每拍预算；UI + RT + 合成共享同一条截止线。</div></div>
+        <div class="stat" data-tone="sf"><div class="k">Latency</div><div class="v">2~3<span>拍示意</span></div><div class="d">延迟随触发相位、配置和排队变化，不是固定帧数。</div></div>
+        <div class="stat" data-tone="hwc"><div class="k">Period</div><div class="v">16.7<span>ms / 拍</span></div><div class="d">60Hz 的显示周期；UI、RT、SF 与 GPU 各有目标和依赖。</div></div>
       </div>
 
       <div class="flow-strip reveal" id="flowStrip">{{FLOW}}</div>
@@ -119,7 +119,7 @@
       <div class="keypoints">
         <div class="kp reveal">
           <h4><span class="ico">01</span>为什么必须等 VSYNC？</h4>
-          <p>立即绘制会与显示扫描撕裂，也无法把 CPU/GPU 的完成时间对齐到固定节拍。VSYNC 把“生产一帧”变成离散的时隙：请求 → 下一拍 APP VSYNC 开始绘制 → 同一帧的 SF VSYNC 相位消费 → DISPLAY VSYNC 上屏。</p>
+          <p>普通 View 更新由 Choreographer 对齐节拍并合并请求；是否撕裂还取决于 buffer 交接与显示同步，不能说离开 VSYNC 就必然撕裂。这里用请求 → APP 唤醒 → SF 接纳事务 → 显示节拍表示流水线主链。</p>
         </div>
         <div class="kp reveal">
           <h4><span class="ico">02</span>draw 不等于画完</h4>
@@ -140,11 +140,10 @@
         <div class="txt">
           <div class="sec-eyebrow">01 / ANIMATED MODEL</div>
           <h2>一帧的时间轴：谁在什么时候做什么</h2>
-          <p>同一份模拟，两种看法。<b>时间轴</b>按毫秒画出连续几帧在 UI / RenderThread / GPU / BufferQueue / SF 上的重叠，以及 VSYNC 截止线；
-            <b>步骤</b>把焦点帧的 18 次交接等距排开，看清谁交给谁、传了什么。两者共用一个播放头和下方的状态面板。
-            时序由参数推算：唤醒点按 present − sfWorkDuration、再减 appWorkDuration 计算，是否掉帧由“queueBuffer 与 acquire fence 是否早于本帧 SF 唤醒点”自动判定。</p>
+          <p><b>时间轴</b>表示 UI / RenderThread / GPU / BufferQueue / SF 的重叠；<b>步骤</b>与<b>进程舞台</b>使用同一组事件。
+            动画只描述固定刷新率、单 layer、DEVICE 合成与三个示意 slot。唤醒相位、layer 背压和 GPU 依赖参与计算；“按时 / 延后 / 跳过”不是 FrameTimeline 的真实 jank 分类，也不能代替真机 trace 归因。</p>
         </div>
-        <div class="section-side">INTERACTIVE · PARAMETRIC<br>耗时为示意量级，规则以源码语义为准</div>
+        <div class="section-side">ILLUSTRATIVE MODEL<br>流程示意，非精确时序或归因工具</div>
       </div>
 
       <div class="studio reveal" id="studio">
@@ -176,6 +175,8 @@
             <div class="fp-grid-params">
               <div class="fp-row"><span class="lbl">刷新率</span><div class="seg" id="fpsSeg"><button data-fps="60">60Hz</button><button data-fps="90">90Hz</button><button data-fps="120">120Hz</button></div></div>
               <div class="fp-row"><span class="lbl">duration</span><div class="seg" id="durSeg"><button data-dur="half">P/2 + P/2</button><button data-dur="phase">AOSP PhaseOffsets</button><button data-dur="custom">自定义</button></div></div>
+              <label class="switch calm"><input type="checkbox" id="backpressureToggle" checked><span class="track"></span><span class="lbl">layer backpressure</span></label>
+              <label class="switch calm" title="假定满足首个事务、单层简单更新与非 early 配置等条件"><input type="checkbox" id="unsignaledToggle" checked><span class="track"></span><span class="lbl">满足未完成 latch 条件</span></label>
               <label class="fp-slider">appWorkDuration<input type="range" id="aDRange" min="0.5" max="40" step="0.1"><output id="aDV"></output></label>
               <label class="fp-slider">sfWorkDuration<input type="range" id="sDRange" min="0.5" max="40" step="0.1"><output id="sDV"></output></label>
               <label class="fp-slider">F1 · UI 负载<input type="range" id="uiLoad" min="0.5" max="5" step="0.1"><output id="uiLoadV"></output></label>
@@ -232,14 +233,14 @@
           <div class="pp-right">
             <div class="pp-stats">
               <div class="pp-stat"><span>相对 VSYNC-app</span><b id="ppVsync">等待中</b></div>
-              <div class="pp-stat"><span>预期 → 实际上屏</span><b id="ppPresent">—</b></div>
+              <div class="pp-stat"><span>示意目标 → 呈现</span><b id="ppPresent">—</b></div>
               <div class="pp-stat"><span>当前时刻</span><b id="ppElapsed">0.0 ms</b></div>
-              <div class="pp-stat"><span>判定</span><b id="ppFrame">进行中</b></div>
+              <div class="pp-stat"><span>示意结果</span><b id="ppFrame">进行中</b></div>
             </div>
-            <div class="budget" title="VSYNC-app → VSYNC-sf 的生产预算 = appWorkDuration；就绪 = queueBuffer 与 acquire fence 都完成">
+            <div class="budget" title="示意接纳目标；是否要求 acquire fence 先 signal 由所选 latch 条件决定，并非统一硬截止线">
               <span class="fill" id="budgetFill"></span>
               <span class="mark" style="left:100%"></span>
-              <span class="txt"><span>生产预算</span><span id="budgetTxt">0.0 ms</span></span>
+              <span class="txt"><span>接纳目标</span><span id="budgetTxt">0.0 ms</span></span>
             </div>
             <div class="pp-hint" aria-live="polite"><i></i><span id="ppHint"></span></div>
           </div>
@@ -282,10 +283,10 @@
       </div>
 
       <p style="color:var(--dim);font-size:11.5px;line-height:1.8;margin:14px 2px 0;max-width:980px">
-        注：各段耗时为示意量级，具体随设备、场景与刷新率变化；时序规则来自源码：唤醒点 wakeup = vsync − workDuration − readyDuration（VSyncDispatchTimerQueue.cpp）；
-        SF 不会提前消费预测上屏时刻未到的 buffer（frameIsEarly）；acquire fence 未 signal 的事务不就绪；同一次唤醒有多个就绪 buffer 时只 latch 最新的；
-        上一帧 present fence 未 signal 时 SF 跳过 commit（wouldBackpressureHwc）；buffer N 在 N+1 上屏后释放；dequeue 需要 FREE slot（3 个）。
-        未建模：latch-unsignaled、VRR、多 layer / SurfaceView、Vulkan 与 GL 的差异、RenderEngine 的具体耗时。
+        注：源码支持 wakeup = vsync − workDuration − readyDuration、条件式未完成 latch，以及 BLAST 默认 layer backpressure。
+        本例把事务限制在目标 SF 唤醒之后，按本应完成的历史 present fence 表示 SF 背压；仅在关闭 layer 背压时演示同轮覆盖。
+        旧 buffer 的 release 回传可早于 fence signal；本例用后续提交与显示节拍分别示意两者，不承诺实际回收时间。
+        未还原：frameIsEarly 全部阈值、背压宽限期、多 layer / SurfaceView、client composition、VRR、vendor EGL/HWC 和真实队列容量。
       </p>
     </div>
   </section>
@@ -347,9 +348,9 @@
             <div class="rung"><div class="rl">APP 工作 + queueBuffer<small>measure / layout / record / GPU / BLAST</small></div><div class="bar"><i class="b2" style="--w:50%"></i></div><div class="rv">≈ 25 ms</div></div>
             <div class="rung"><div class="rl">SF VSYNC · 合成 + present<small>APP 唤醒 + appWorkDuration</small></div><div class="bar"><i class="b3" style="--w:60%"></i></div><div class="rv">≈ 28 ms</div></div>
             <div class="rung"><div class="rl">DISPLAY VSYNC · V2 上屏<small>present fence · 开始扫描输出</small></div><div class="bar"><i class="b4" style="--w:66%"></i></div><div class="rv">33.3 ms</div></div>
-            <div class="rung"><div class="rl">V3 · 下一帧替换本帧<small>本帧 buffer 拿到 release fence</small></div><div class="bar"><i class="b4" style="--w:100%"></i></div><div class="rv">≈ 50 ms</div></div>
+            <div class="rung"><div class="rl">V3 · 后续帧呈现<small>旧 buffer 的 release fence signal 示例</small></div><div class="bar"><i class="b4" style="--w:100%"></i></div><div class="rv">≈ 50 ms</div></div>
           </div>
-          <p class="ladder-note">上图为“一次正常刷新”的累计延迟示意：触发点若刚好错过上一拍，就要等下一个 APP VSYNC；绘制与 queueBuffer 完成后，SF 在<b>晚 appWorkDuration 的 SF VSYNC 相位</b>接手合成，DISPLAY VSYNC（V2）开始扫描输出；本帧 buffer 要等下一帧在 V3 替换它后才释放。若 queueBuffer 晚于本帧 SF 唤醒，则整体顺延一拍。</p>
+          <p class="ladder-note">上图仅是一组累计延迟示例，不是固定 2~3 拍的保证。事务未赶上接纳时机可能延后；acquire fence 晚于唤醒时，仍需结合未完成 latch 条件与后续 GPU 依赖判断。release 回传可以早于这里画出的 signal 时刻，重新 dequeue 也不等于可立即覆盖像素。</p>
         </div>
         <div class="lat-side">
           <div class="note-card">
@@ -358,7 +359,7 @@
           </div>
           <div class="note-card">
             <h4><span class="n">B</span>三缓冲买到的是“生产窗口”，不是“零延迟”</h4>
-            <p>BufferQueue 默认 3 个 slot（具体由 <code>BLASTBufferQueue</code> / 配置决定）。app 可以在 SF 消费前一帧时继续生产下一帧，避免生产者被消费者卡死；代价是最多可能排队 1~2 帧，延迟增加。</p>
+            <p>本页选择三个 slot 作为直观示例；真实容量由 <code>maxAcquiredBufferCount</code>、<code>maxDequeuedBufferCount</code>、异步模式与配置共同决定。更多可用 buffer 能增加流水线重叠，也可能增加排队延迟，并不固定多一拍。</p>
           </div>
           <div class="note-card">
             <h4><span class="n">C</span>相位的意义：相位差 = appWorkDuration，由配置决定</h4>
@@ -383,14 +384,14 @@ T_visible ≈ (V_app - T_trigger)          <span class="cm">// 等待 APP VSYNC<
 
       <div class="note-card" style="margin-top:16px">
         <h4><span class="n">D</span>三缓冲与队列的直观模型</h4>
-        <p style="margin-bottom:12px">生产者（RenderThread）只从 <code>FREE</code> 队列取 slot；<code>DEQUEUED</code> 表示正在绘制；<code>QUEUED</code> 表示已入队等 SF；SF <code>acquire</code> 后进入 <code>LATCHED</code>，合成后进入 <code>DISPLAY</code>；下一帧 buffer 替换它并上屏后，拿到 release fence 回到 <code>FREE</code>（若在 latch 前就被新 buffer 覆盖，会被直接 release 并记为 dropped）。</p>
+        <p style="margin-bottom:12px">实际队列主状态为 <code>FREE → DEQUEUED → QUEUED → ACQUIRED → FREE</code>，另有 SHARED 模式。现代窗口的消费者是应用侧 BLAST；SF latch 与显示不是 BufferQueue slot 状态。下面保留主链示意，但把队列所有权与 SF 的使用分开：release 可把 slot 归还，下一次写入仍须遵守随 dequeue 返回的 fence。</p>
         <div class="flow-strip" style="padding:10px">
           <div class="flow-step" style="cursor:default"><span class="n">SLOT · FREE</span><span class="t">可被生产者 dequeue</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
-          <div class="flow-step" style="cursor:default"><span class="n">→ DEQUEUED</span><span class="t">RenderThread 正在写入</span><span class="l" style="--lane:var(--rt)">RENDERTHREAD</span></div>
-          <div class="flow-step" style="cursor:default"><span class="n">→ QUEUED</span><span class="t">已提交，等 SF acquire</span><span class="l" style="--lane:var(--bq)">BLAST TX</span></div>
-          <div class="flow-step" style="cursor:default"><span class="n">→ LATCHED</span><span class="t">SF 用于本次合成</span><span class="l" style="--lane:var(--sf)">SURFACEFLINGER</span></div>
-          <div class="flow-step" style="cursor:default"><span class="n">→ DISPLAY</span><span class="t">扫描输出中，被下一帧替换后释放</span><span class="l" style="--lane:var(--hwc)">HWC</span></div>
-          <div class="flow-step" style="cursor:default"><span class="n">→ FREE</span><span class="t">release 回生产者</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ DEQUEUED</span><span class="t">写入受 release fence 约束</span><span class="l" style="--lane:var(--rt)">RENDERTHREAD</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ QUEUED</span><span class="t">已入队，等待 BLAST acquire</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ ACQUIRED</span><span class="t">BLAST 持有并提交事务</span><span class="l" style="--lane:var(--sf)">BLAST TX</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">SF / DISPLAY 使用</span><span class="t">latch 与显示不是 slot 状态</span><span class="l" style="--lane:var(--hwc)">HWC</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ FREE</span><span class="t">slot 归还不等于 fence signal</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
         </div>
       </div>
     </div>
@@ -403,10 +404,9 @@ T_visible ≈ (V_app - T_trigger)          <span class="cm">// 等待 APP VSYNC<
         <div class="txt">
           <div class="sec-eyebrow">04 / JANK &amp; DEADLINES</div>
           <h2>掉帧：不是“慢”，而是“晚于截止线”</h2>
-          <p>60Hz 下，APP VSYNC 到本帧 SF VSYNC 只有约 8&nbsp;ms（示意）。UI 线程的 traversal、RenderThread 的绘制、queueBuffer 与 BLAST 提交都在这段预算内；
-            任何一段超出、错过本帧 SF 相位，帧就会顺延到下一个 SF 相位，DISPLAY V2 只能重复上一帧，表现为 dropped / janky frame。</p>
+          <p>本例的 appWorkDuration 为约 8&nbsp;ms，不是 60Hz 设备的统一预算。错过事务接纳时机可能延后显示，但“晚显示”与“从未显示而被丢弃”不同；GPU fence 晚于 SF 唤醒也不必然错过呈现。真实 jank 还需 FrameTimeline 的预测、阈值与状态共同判断。</p>
         </div>
-        <div class="section-side">DEADLINE = SF VSYNC（本帧相位）<br>MISS → NEXT SF → DISPLAY V3</div>
+        <div class="section-side">FRAME TIMELINE + TRACE<br>区分接纳、呈现、丢弃与依赖等待</div>
       </div>
 
       <div class="jank-grid">
@@ -432,7 +432,7 @@ T_visible ≈ (V_app - T_trigger)          <span class="cm">// 等待 APP VSYNC<
           <h4>SurfaceFlinger：合成超预算</h4>
           <ul>
             <li>client composition 过多（GPU 合成），RenderEngine 耗时增加。</li>
-            <li>latch buffer 时等待 acquire fence，或 Transaction 在错误的节拍提交。</li>
+            <li>事务因 acquire fence 未就绪留队，或先 latch 后在后续合成 / 呈现路径等待依赖。</li>
             <li>主线程被其它事务/回调占用，错过本次 refresh。</li>
             <li>典型证据：SF 的 commit / latch / composite / present 跨越 VSYNC。</li>
           </ul>
@@ -442,7 +442,7 @@ T_visible ≈ (V_app - T_trigger)          <span class="cm">// 等待 APP VSYNC<
           <ul>
             <li>三缓冲被占满，app 的 dequeueBuffer 阻塞，UI 线程反过来被拖慢。</li>
             <li>SF 长时间不 release，生产者没有空闲 slot。</li>
-            <li>典型证据：BufferQueue 深度持续为 3，queueBuffer/dequeueBuffer 出现长等待。</li>
+            <li>典型证据：结合实际队列容量、持有数量与 fence 状态检查 queueBuffer/dequeueBuffer 等待。</li>
           </ul>
         </div>
       </div>

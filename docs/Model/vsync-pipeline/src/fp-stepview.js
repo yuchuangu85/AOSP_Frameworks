@@ -56,7 +56,7 @@ window.FP = window.FP || {};
       el('line', { x1: LABEL, x2: W - 10, y1: laneY[l.key], y2: laneY[l.key], stroke: l.color, 'stroke-opacity': 0.22, 'stroke-dasharray': '2 4' }, svg);
     });
     el('text', { x: W - 12, y: H - 8, fill: 'var(--sv-dim)', 'font-size': 11, 'text-anchor': 'end' }, svg,
-      'F' + frame.k + ' · 因果顺序（等距，不按时间比例）');
+      'F' + frame.k + ' · 事件起点顺序（等距，区间可并行）');
 
     this.vs = [];
     seq.forEach(function (s, i) {
@@ -72,7 +72,7 @@ window.FP = window.FP || {};
     var idx = {}; seq.forEach(function (s, i) { idx[s.id] = i; });
     this.edges = [];
     seq.forEach(function (s, i) {
-      (s.step.from || []).forEach(function (fid) {
+      FP.predecessors(s.step, frame).forEach(function (fid) {
         var j = idx[fid]; if (j == null) return;
         var a = pos[j], b = pos[i], ipc = s.step.ipc && fid !== 'gpu';
         var d = a.y === b.y ? 'M' + (a.x + NW / 2) + ',' + a.y + ' H' + (b.x - NW / 2)

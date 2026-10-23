@@ -148,7 +148,7 @@
     "同步屏障必须成对：postTraversalBarrier() 之后必须走到 doTraversal() 的 removeTraversalBarrier()。一旦泄漏，UI 线程所有同步消息永久阻塞，表现为完全卡死而不是掉帧；android17 的 mAtomicTraversalBarrier 用于缓解这个风险。",
     "不要在 onMeasure/onLayout 里调 requestLayout()：同帧会多跑一趟完整 measure+layout，并打印 Log.w requestLayout() improperly called by ... during layout；若第二趟仍触发，则被推迟到下一帧，表现为布局慢一拍。",
     "按旧版本记忆 grep mTraversalRunnable 或 TraversalRunnable 会一无所获：android17 已改为 TraversalCallback implements Choreographer.VsyncCallback，回调签名是 onVsync(FrameData)。",
-    "invalidate() 不触发 measure：它只清 PFLAG_DRAWN、置 PFLAG_DIRTY 并写 mDirty，走的是 draw 路径；只有 PFLAG_FORCE_LAYOUT（来自 requestLayout 或 forceLayout）才会让 View.measure 真正执行。"
+    "invalidate() 本身不请求重新布局，通常只触发重绘；View.measure() 是否进入测量分支取决于 forceLayout || needsLayout。除 PFLAG_FORCE_LAYOUT 外，父级传入的 MeasureSpec 变化也可能使 needsLayout 成立（View.java:28801-28815）；进入该分支后，缓存未命中才调用 onMeasure()，命中则先复用缓存尺寸（View.java:28821-28849）。"
   ],
   "traceTags": [
     "Choreographer#doFrame",

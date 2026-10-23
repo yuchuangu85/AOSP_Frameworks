@@ -102,7 +102,7 @@ window.FP = window.FP || {};
     // BufferQueue slots (app band) and SF frame inputs (sf band), as in the relay page
     var bx = COLS[3], by = BANDS[0].y + 46, wb = el('g', { 'class': 'pv-wg' }, gW);
     el('rect', { 'class': 'frame', x: bx, y: by, width: SW, height: 112, rx: 10 }, wb);
-    el('text', { 'class': 'wt', x: bx + 14, y: by + 20 }, wb, 'BufferQueue 槽位（3 块）');
+    el('text', { 'class': 'wt', x: bx + 14, y: by + 20 }, wb, 'BufferQueue（3 个示意槽位）');
     n.slots = [0, 1, 2].map(function (i) {
       var sx = bx + 14 + i * 80, g = el('g', { 'class': 'pv-slot', 'data-s': 'FREE' }, wb);
       el('rect', { x: sx, y: by + 30, width: 70, height: 72, rx: 7 }, g);
@@ -156,7 +156,7 @@ window.FP = window.FP || {};
       n.packetT.textContent = 'F' + f.k;
       n.links.innerHTML = '';
       var pairs = [];
-      (FROM[cur.id] || (cur.step.from || []).map(function (id) { return AT[id]; })).forEach(function (a) { if (a && a !== actor) pairs.push([a, actor]); });
+      (FROM[cur.id] || FP.predecessors(cur.step, f).map(function (id) { return AT[id]; })).forEach(function (a) { if (a && a !== actor) pairs.push([a, actor]); });
       if (TO[cur.id]) pairs.push([actor, TO[cur.id]]);
       pairs.forEach(function (pr) {
         var d = linkPath(pr[0], pr[1]);
@@ -173,20 +173,21 @@ window.FP = window.FP || {};
       var c = null; segs.forEach(function (sg) { if (t >= sg.t0 && t < sg.t1) c = sg; });
       var o = n.slots[r];
       o.g.setAttribute('data-s', c ? c.state : 'FREE'); o.g.classList.toggle('hot', !!c && c.k === f.k);
-      o.ss.textContent = c ? c.state : 'FREE'; o.so.textContent = c ? 'F' + c.k : '空闲';
+      o.ss.textContent = c ? (c.state === 'ACQUIRED' ? 'ACQ' : c.state) : 'FREE'; o.so.textContent = c ? 'F' + c.k : '空闲';
     });
     var acq = t < f.queue1 ? '尚未产生' : t < f.fence ? 'pending：GPU 还在写' : 'signaled';
     n.lines[0].textContent = 'F' + f.k + ' 事务 · ' + (t < f.txn ? '未到达' : t < f.latch ? '已入队，等 VSYNC-sf' : f.dropped ? 'dropped' : '已 latch');
     n.lines[1].textContent = 'acquire fence · ' + acq;
-    n.lines[2].textContent = '预期上屏 V' + Math.round(f.expected / sim.P) + (f.dropped ? ' · 被跳过' : ' · 实际 V' + Math.round(f.present / sim.P));
+    n.lines[2].textContent = '示意目标 V' + Math.round(f.expected / sim.P) + (f.dropped ? ' · 跳过' : ' · 呈现 V' + Math.round(f.present / sim.P));
     n.lines.forEach(function (l, k) { l.classList.toggle('hot', (k === 0 && cur.id === 'latch') || (k === 1 && cur.id === 'gpu')); });
     // relay-style lamps
     var prev = sim.frames[f.k - 1], rel = f.k === 0 ? null : prev;
     lamp('pvArt', 'on', cur.step.packet);
     lamp('pvAcq', t < f.queue1 ? '' : t < f.fence ? 'pending' : 'signaled', acq);
     var relT = rel ? rel.release : (sim.slots[2][0] || {}).t1;
-    lamp('pvRel', t < relT ? (t >= f.latch ? 'pending' : '') : 'signaled',
-      (rel ? 'F' + rel.k : 'F−1') + (t < relT ? ' 仍被持有' : ' 已 release，slot 可复用'));
+    var relSignal = rel ? rel.releaseFence : f.present;
+    lamp('pvRel', t < relT ? '' : t < relSignal ? 'pending' : 'signaled',
+      (rel ? 'F' + rel.k : 'F−1') + (t < relT ? ' 尚未归还' : t < relSignal ? ' 已归还 slot，fence pending' : ' 已归还，fence signaled'));
     var on2 = null; sim.display.forEach(function (d) { if (t >= d.t0 && t < d.t1) on2 = d; });
     lamp('pvScr', on2 && on2.k === f.k ? 'on' : '', on2 && on2.k >= 0 ? '扫描 F' + on2.k : '显示上一帧内容');
   };

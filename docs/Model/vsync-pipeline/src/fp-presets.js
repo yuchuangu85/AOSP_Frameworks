@@ -15,15 +15,19 @@ window.FP = window.FP || {};
     { key: 'aosp60', label: 'AOSP 默认 · 60Hz', fps: 60, dur: 'phase', load: {}, frames: 3, cont: true, focus: 0,
       note: '不设任何 sysprop 时用 PhaseOffsets（app = sf = 1ms）：appWorkDuration = P，sfWorkDuration = P − 1ms，APP 唤醒到上屏约 2 个周期。' },
     { key: 'aosp120', label: 'AOSP 默认 · 120Hz', fps: 120, dur: 'phase', load: {}, frames: 3, cont: true, focus: 0,
-      note: '周期 < 15ms 时用 high_fps offset（app = 2ms，sf = 1ms）：appWorkDuration = 2P − 1ms，约 3 个周期上屏，三个 slot 同时在用。' },
+      note: '周期 < 15ms 时用 high_fps offset（app = 2ms，sf = 1ms）：appWorkDuration = 2P − 1ms，目标约 3 个周期后上屏。动画仍使用三个示意 slot，不代表真机容量。' },
     { key: 'ui', label: 'UI 超时', fps: 60, dur: 'half', load: { ui: 2.2 }, frames: 2, cont: false, focus: 1,
       note: 'F1 的 measure / layout / draw 变为 2.2×，queueBuffer 越过本帧 SF 唤醒点，顺延一个周期上屏，期间屏幕重复上一帧。' },
     { key: 'uicont', label: 'UI 超时 · 连续动画', fps: 60, dur: 'half', load: { ui: 2.2 }, frames: 3, cont: true, focus: 1,
-      note: '同样的 F1 超时，但动画还在继续：F2 按时就绪，SF 在同一次唤醒里只保留最新 buffer，迟到的 F1 被跳过（dropped）。' },
-    { key: 'gpu', label: 'GPU 超时', fps: 60, dur: 'half', load: { gpu: 4 }, frames: 2, cont: false, focus: 1,
-      note: 'F1 的 queueBuffer 按时完成，但 GPU 执行了 4×，acquire fence 晚于 SF 唤醒点，事务未就绪，顺延一个周期。' },
+      note: 'F1 迟到后，BLAST 默认开启的 layer backpressure 保留 F1；同轮的 F2 自动时间戳事务继续留队，而不是必然覆盖 F1。' },
+    { key: 'drop', label: '关闭 layer 背压', fps: 60, dur: 'half', load: { ui: 2.2 }, frames: 3, cont: true, focus: 1, backpressure: false,
+      note: '对照场景：显式关闭 layer backpressure，同轮可应用的 F2 覆盖 F1。此处的 dropped 不是普通 BLAST 窗口的默认结论。' },
+    { key: 'gpu', label: 'GPU 延迟', fps: 60, dur: 'half', load: { gpu: 4 }, frames: 2, cont: false, focus: 1,
+      note: '假定满足单层简单更新、首个事务和 late 配置等条件：GPU fence 虽晚于 SF 唤醒，仍可先 latch；能否按时还取决于呈现前 GPU 依赖是否完成。' },
+    { key: 'gpuwait', label: 'GPU · 等完成再 latch', fps: 60, dur: 'half', load: { gpu: 4 }, frames: 2, cont: false, focus: 1, latchUnsignaled: false,
+      note: '对照场景：不满足或禁用未完成 latch，SF 等待 acquire fence signal 后再接纳事务。本例因此顺延一次刷新；并非所有 GPU 延迟都如此。' },
     { key: 'sf', label: 'SF 超时', fps: 60, dur: 'half', load: { sf: 5 }, frames: 3, cont: true, focus: 1,
-      note: 'F1 按时交付，但 SF 的 latch + composite + HWC 变为 5×，越过了预期的 HW VSYNC，本帧晚一个周期上屏；F1 的 present fence 未 signal 时 SF 会 backpressure 跳过 commit，按时交付的 F2 也被推迟。' }
+      note: 'F1 的 SF 工作量为 5×，越过目标显示节拍；后续提交还受 SF 主线程与本应完成的历史 present fence 约束。不是见到上一帧 fence pending 就一律停顿。' }
   ];
   FP.PRESET = {};
   FP.PRESETS.forEach(function (p) { FP.PRESET[p.key] = p; });
@@ -37,7 +41,8 @@ window.FP = window.FP || {};
     return { aD: aD, sD: sD };
   }
 
-  /* params: { fps, dur: 'half'|'phase'|'custom', aD, sD, load:{ui,rt,gpu,sf}, frames, cont, loadFrame } */
+  /* latchUnsignaled selects an eligible single-layer late-config scenario,
+     not an unconditional promise made by debug.sf.auto_latch_unsignaled. */
   FP.resolveParams = function (p) {
     var fps = Number(p.fps) || 60;
     var P = 1000 / fps, aD, sD;
@@ -52,12 +57,15 @@ window.FP = window.FP || {};
       load: { ui: load.ui || 1, rt: load.rt || 1, gpu: load.gpu || 1, sf: load.sf || 1 },
       loadFrame: p.loadFrame == null ? 1 : p.loadFrame,
       frames: p.frames === 2 ? 2 : 3,
-      cont: p.cont !== false
+      cont: p.cont !== false,
+      backpressure: p.backpressure !== false,
+      latchUnsignaled: p.latchUnsignaled !== false
     };
   };
 
   FP.paramsFromPreset = function (key) {
     var pr = FP.PRESET[key] || FP.PRESETS[0];
-    return { fps: pr.fps, dur: pr.dur, load: Object.assign({}, pr.load), frames: pr.frames, cont: pr.cont, loadFrame: 1 };
+    return { fps: pr.fps, dur: pr.dur, load: Object.assign({}, pr.load), frames: pr.frames, cont: pr.cont, loadFrame: 1,
+      backpressure: pr.backpressure !== false, latchUnsignaled: pr.latchUnsignaled !== false };
   };
 })(window.FP);

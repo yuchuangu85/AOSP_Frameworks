@@ -70,7 +70,7 @@ html[data-theme-pref=auto] .theme-btn .i-auto,html[data-theme-pref=light] .theme
 .fp-slotname{position:absolute;right:calc(100% + 6px);top:2px;font-family:var(--mono);font-size:8.5px;color:var(--dim);white-space:nowrap}
 .fp-seg{position:absolute;top:1px;bottom:1px;border-radius:3px;font-family:var(--mono);font-size:8px;line-height:15px;padding:0 3px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#0b1220;transition:opacity .2s,box-shadow .2s}
-.fp-seg.st-DEQUEUED{background:var(--lane-rt)} .fp-seg.st-QUEUED{background:var(--lane-bq)} .fp-seg.st-LATCHED{background:var(--lane-sf)} .fp-seg.st-DISPLAY{background:var(--lane-display)}
+.fp-seg.st-DEQUEUED{background:var(--lane-rt)} .fp-seg.st-QUEUED{background:var(--lane-bq)} .fp-seg.st-ACQUIRED{background:var(--lane-sf)}
 .fp-seg.is-other{opacity:.45} .fp-seg.is-active{box-shadow:0 0 0 1px #fff,0 0 14px -2px #fff}
 .fp-band{position:absolute;top:50px;height:16px;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;z-index:3}
 .fp-band span{font-family:var(--mono);font-size:8.5px;white-space:nowrap;color:#e2e8f0;padding:0 4px}
@@ -101,6 +101,7 @@ svg.fp-arrows{position:absolute;left:0;top:0;pointer-events:none;z-index:5;overf
 .board-legend[data-mode=step] .lg-step,.board-legend[data-mode=proc] .lg-proc{display:inline-flex}
 
 /* panel: chain + state chips */
+.pp-left,.pp-right{min-width:0;overflow-wrap:anywhere}
 .pp-refs{list-style:none;padding:0;margin:12px 0 0;display:flex;flex-direction:column;gap:4px;counter-reset:c}
 .pp-refs li{font-family:var(--mono);font-size:11px;color:var(--dim);padding:3px 8px;border-left:2px solid var(--line);transition:.2s}
 .pp-refs li.on{color:#c8d8f5;border-left-color:rgba(110,168,254,.6)}
@@ -186,7 +187,7 @@ svg.fp-arrows{position:absolute;left:0;top:0;pointer-events:none;z-index:5;overf
 .pv-slot rect{stroke:var(--pv-box-stroke);stroke-width:1.2;fill:var(--pv-box);transition:fill .3s}
 .pv-slot .sl{font:700 11px var(--mono);fill:var(--pv-ink)} .pv-slot .ss{font:700 9.5px var(--mono);fill:var(--pv-ink)} .pv-slot .so{font:9.5px var(--sans);fill:var(--pv-muted)}
 .pv-slot[data-s=DEQUEUED] rect{fill:rgba(56,189,248,.22)} .pv-slot[data-s=QUEUED] rect{fill:rgba(251,191,36,.22)}
-.pv-slot[data-s=LATCHED] rect{fill:rgba(167,139,250,.24)} .pv-slot[data-s=DISPLAY] rect{fill:rgba(251,113,133,.24)}
+.pv-slot[data-s=ACQUIRED] rect{fill:rgba(167,139,250,.24)}
 .pv-slot.hot rect{stroke:var(--hot);stroke-width:2.5}
 .pv-wg .lyr{font:11px var(--mono);fill:var(--pv-op)} .pv-wg .lyr.hot{fill:var(--hot);font-weight:700}
 .pv-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:10px}
@@ -221,7 +222,7 @@ svg.fp-arrows{position:absolute;left:0;top:0;pointer-events:none;z-index:5;overf
 .stage h2{display:flex;align-items:baseline;gap:.42em;flex-wrap:nowrap}
 .stage h2 .stage-num{flex:none;font-size:1.5em;line-height:1;letter-spacing:-.04em;opacity:1;
   -webkit-text-stroke:1.2px color-mix(in srgb,var(--lane) 75%,transparent)}
-.stage h2 .stage-title{min-width:0}
+.stage h2 .stage-title{min-width:0;overflow-wrap:anywhere}
 .stage-head .jump{flex:none;margin-top:30px}
 .stage-summary,.callchain{margin-left:0;max-width:none}
 .stage-grid{padding-left:0}

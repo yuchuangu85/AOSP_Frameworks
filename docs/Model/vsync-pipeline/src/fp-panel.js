@@ -8,8 +8,8 @@ window.FP = window.FP || {};
   var $ = function (id) { return document.getElementById(id); };
   var CB = ['INPUT', 'ANIMATION', 'INSETS_ANIMATION', 'TRAVERSAL', 'COMMIT'];
   var VIEW = ['measure / layout', 'draw 录制', 'sync → RT', 'RT 绘制 + queue', 'GPU → fence'];
-  var BUF = ['FREE', 'DEQUEUED', 'QUEUED · 事务→SF', 'LATCHED', 'DISPLAY', 'RELEASED'];
-  var VERDICT = { ontime: '按时', late: '晚', dropped: '被跳过' };
+  var BUF = ['FREE', 'DEQUEUED', 'QUEUED', 'ACQUIRED · BLAST 持有', '已归还 slot'];
+  var VERDICT = { ontime: '示意按时', late: '示意延后', dropped: '示意跳过' };
 
   function chips(host, items) {
     host.innerHTML = '';
@@ -42,7 +42,7 @@ window.FP = window.FP || {};
       var stage = $('ppStage');
       stage.textContent = 'STAGE ' + String(s.stage).padStart(2, '0');
       stage.style.setProperty('--pc', cur.dropped ? 'var(--hot)' : FP.LANE[cur.lane].color);
-      $('ppTitle').textContent = cur.dropped ? 'F' + f.k + ' 在 latch 时被跳过（dropped）' : s.title;
+      $('ppTitle').textContent = cur.dropped ? 'F' + f.k + ' 被同轮新事务覆盖（无 layer 背压示例）' : s.title;
       $('ppDesc').textContent = s.desc;
       var refs = $('ppRefs'); refs.innerHTML = '';
       s.chain.forEach(function (c) { var li = FP.h('li', '', refs); li.textContent = c; });
@@ -82,10 +82,10 @@ window.FP = window.FP || {};
     set(this.view, [phase(t, f.doframe1, f.trav1), phase(t, f.trav1, f.draw1), phase(t, f.sync0, f.sync1),
       phase(t, f.rt0, f.queue1), phase(t, f.gpu0, f.fence)]);
     var b = 0;
-    if (t >= f.rt0) b = 1; if (t >= f.queue1) b = 2;
-    if (!f.dropped) { if (t >= f.latch) b = 3; if (t >= f.present) b = 4; }
-    if (t >= f.release) b = 5;
-    set(this.buf, BUF.map(function (_, k) { return k === b ? (f.dropped && b === 5 ? 'act drop' : 'act') : k < b ? 'done' : ''; }));
+    if (t >= f.dequeue0) b = 1; if (t >= f.queue1) b = 2;
+    if (t >= f.acquire) b = 3;
+    if (t >= f.release) b = 4;
+    set(this.buf, BUF.map(function (_, k) { return k === b ? (f.dropped && b === 4 ? 'act drop' : 'act') : k < b ? 'done' : ''; }));
 
     // slot cards
     if (this.slotEls) {
@@ -94,14 +94,16 @@ window.FP = window.FP || {};
         var cur2 = null; segs.forEach(function (sg) { if (t >= sg.t0 && t < sg.t1) cur2 = sg; });
         var e = self.slotEls[r], st = cur2 ? cur2.state : 'FREE';
         e.dataset.state = st; e.querySelector('.state').textContent = st;
-        e.querySelector('.sbar i').style.width = ({ FREE: '10%', DEQUEUED: '38%', QUEUED: '66%', LATCHED: '86%', DISPLAY: '100%' })[st];
+        e.querySelector('.sbar i').style.width = ({ FREE: '10%', DEQUEUED: '38%', QUEUED: '66%', ACQUIRED: '86%' })[st];
         e.querySelector('.owner b').textContent = cur2 ? 'F' + cur2.k : '—';
         e.classList.toggle('is-focus', !!cur2 && cur2.k === f.k);
       });
-      var waiting = sim.frames.filter(function (g) { return g.slotWait && t >= g.sync1 && t < g.rt0; })[0];
-      this.note.innerHTML = '<div class="t"><span class="dot"></span>BUFFERQUEUE · 3 个 slot</div><p' + (waiting ? ' class="warn"' : '') + '>' +
+      var waiting = sim.frames.filter(function (g) { return g.slotWait && t >= g.sync1 && t < g.dequeue0; })[0];
+      var fenceWait = sim.frames.filter(function (g) { return g.fenceWait && t >= g.dequeue0 && t < g.rt0; })[0];
+      this.note.innerHTML = '<div class="t"><span class="dot"></span>BUFFERQUEUE · 3 个示意 slot</div><p' + (waiting || fenceWait ? ' class="warn"' : '') + '>' +
         (waiting ? 'F' + waiting.k + ' 的 dequeueBuffer 正在阻塞：要等 F' + (waiting.k - 3) + ' 被下一帧替换后才有 FREE slot。'
-          : 'buffer N 在 N+1 上屏后释放；被跳过的 buffer 在 latch 时直接释放。') + '</p>';
+          : fenceWait ? 'F' + fenceWait.k + ' 已取得 slot，安全写入仍受 release fence 约束。'
+          : 'ACQUIRED 表示 BLAST 持有，与 SF latch / 显示状态分离；归还 slot、fence signal 与安全写入不是同一事件。') + '</p>';
     }
   };
 })(window.FP);

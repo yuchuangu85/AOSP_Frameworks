@@ -163,13 +163,12 @@ html[data-theme=dark] .miss-marker .mm-label{color:#ffb3bf;background:#3a1d27;bo
 html[data-theme=dark] .slot{background:var(--panel-2);border-color:var(--line)}
 html[data-theme=dark] .slot[data-state=DEQUEUED]{border-color:var(--lane-rt);box-shadow:none}
 html[data-theme=dark] .slot[data-state=QUEUED]{border-color:var(--lane-bq);box-shadow:none}
-html[data-theme=dark] .slot[data-state=LATCHED]{border-color:var(--lane-sf);box-shadow:none}
-html[data-theme=dark] .slot[data-state=DISPLAY]{border-color:var(--lane-display);box-shadow:none}
+html[data-theme=dark] .slot[data-state=ACQUIRED]{border-color:var(--lane-sf);box-shadow:none}
 html[data-theme=dark] .slot[data-state=DEQUEUED] .state{color:var(--lane-rt)} html[data-theme=dark] .slot[data-state=QUEUED] .state{color:var(--lane-bq)}
-html[data-theme=dark] .slot[data-state=LATCHED] .state{color:var(--lane-sf)} html[data-theme=dark] .slot[data-state=DISPLAY] .state{color:var(--lane-display)}
+html[data-theme=dark] .slot[data-state=ACQUIRED] .state{color:var(--lane-sf)}
 html[data-theme=dark] .slot .sbar i{background:var(--accent)}
 html[data-theme=dark] .pv-slot[data-s=DEQUEUED] rect{fill:rgba(240,163,58,.22)} html[data-theme=dark] .pv-slot[data-s=QUEUED] rect{fill:rgba(197,138,249,.22)}
-html[data-theme=dark] .pv-slot[data-s=LATCHED] rect{fill:rgba(88,166,255,.24)} html[data-theme=dark] .pv-slot[data-s=DISPLAY] rect{fill:rgba(229,192,123,.24)}
+html[data-theme=dark] .pv-slot[data-s=ACQUIRED] rect{fill:rgba(88,166,255,.24)}
 html[data-theme=dark] .pv-chip{background:var(--panel-2);border-color:var(--line)}
 html[data-theme=dark] .pv-st .scr.is-focus,html[data-theme=dark] .pv-st.is-focus .scr{fill:#e5c07b}
 

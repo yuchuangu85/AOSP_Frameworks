@@ -35,7 +35,13 @@ def github_base():
     m = re.search(r'github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?$', url)
     owner, repo = (m.group(1), m.group(2)) if m else ('yuchuangu85', 'AOSP_Frameworks')
     head = _git('rev-parse', 'HEAD')
-    ref = head if head and _git('branch', '-r', '--contains', head) else (_git('branch', '--show-current') or 'main')
+    ref = head if head and _git('branch', '-r', '--contains', head) else ''
+    if not ref:
+        # A local docs-only commit can still cite the identical published source.
+        ancestor = _git('merge-base', 'HEAD', 'origin/HEAD')
+        if ancestor and not _git('diff', '--name-only', ancestor, '--', 'base', 'native'):
+            ref = ancestor
+    ref = ref or (_git('branch', '--show-current') or 'main')
     return 'https://github.com/%s/%s/blob/%s/' % (owner, repo, ref)
 
 # Relative path from the generated page back to the repo root, for "本地文件" links.

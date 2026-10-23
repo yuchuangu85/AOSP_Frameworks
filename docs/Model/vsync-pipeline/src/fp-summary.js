@@ -43,7 +43,7 @@ window.FP = window.FP || {};
     ['queueBuffer 时图已经画好了', 'buffer 带着未 signal 的 acquire fence 交出，GPU 可能还在写。', 'queue'],
     ['SF 直接消费应用的 BufferQueue', '现代窗口由应用进程内的 BLAST 消费，再经事务交给 SF。', 'queue'],
     ['SF 合成一定要用 GPU', 'DEVICE 层由显示硬件直接叠加，只有 CLIENT 层才动用 RenderEngine。', 'comp'],
-    ['present 返回就上屏了', 'present 只是提交；下一次硬件 VSync 才开始扫描，旧 buffer 还要等 release fence。', 'hwc']
+    ['present 返回就上屏了', 'present / ON_COMPLETE 可以携带仍 pending 的 fence；回调、呈现 signal 与 buffer 安全复用需要分别判断。', 'hwc']
   ];
   FP.buildMyths = function () {
     var host = document.getElementById('mythList'); if (!host) return;
@@ -64,11 +64,11 @@ window.FP = window.FP || {};
     if (!built) return;
     var S = FP.stepTimes(f), fmt = FP.fmt;
     var head = document.getElementById('summaryTimeHead');
-    if (head) head.textContent = '时刻 · F' + f.k + '（' + (FP.PRESET[FP.currentPreset] ? FP.PRESET[FP.currentPreset].label : '自定义') + '）';
+      if (head) head.textContent = '示意时刻 · F' + f.k + '（' + (FP.PRESET[FP.currentPreset] ? FP.PRESET[FP.currentPreset].label : '自定义') + '）';
     FP.STEPS.forEach(function (st) {
       var td = rows[st.id].querySelector('[data-time]'), x = S[st.id];
       rows[st.id].classList.toggle('is-skip', !x || !!(x && x.dropped));
-      if (!x) td.innerHTML = st.id === 'release' ? '<span class="sum-skip">无下一帧，留在屏幕上</span>' : '<span class="sum-skip">跳过（dropped）</span>';
+      if (!x) td.innerHTML = st.id === 'release' ? '<span class="sum-skip">本例未模拟后续归还</span>' : '<span class="sum-skip">跳过（dropped）</span>';
       else if (x.dropped) td.innerHTML = '<span class="sum-skip">' + fmt(x.t0) + ' · dropped</span>';
       else td.textContent = x.kind === 'block' ? fmt(x.t0) + '–' + fmt(x.t1) + ' ms' : fmt(x.t0) + ' ms';
     });

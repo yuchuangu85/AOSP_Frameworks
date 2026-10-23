@@ -50,7 +50,7 @@ window.FP = window.FP || {};
     $('scrub').max = String(sim.total); $('timeTotal').textContent = FP.fmt(sim.total);
     syncControls();
     FP.currentPreset = S.preset; FP.updateSummary(sim, f);
-    var vt = { ontime: '按时上屏', late: '晚 ' + f.late + ' 帧', dropped: '被跳过' }[f.verdict];
+    var vt = { ontime: '示意按时', late: '示意延后 ' + f.late + ' 帧', dropped: '示意跳过' }[f.verdict];
     $('studioLive').innerHTML = '<i></i>F' + S.focus + ' · ' + sim.p.fps + ' Hz';
     $('studioBadges').innerHTML = '<span class="tag"><b>P</b> ' + FP.fmt(sim.P) + ' ms</span><span class="tag"><b>app</b> ' + FP.fmt(sim.aD) +
       ' ms</span><span class="tag"><b>sf</b> ' + FP.fmt(sim.sD) + ' ms</span><span class="tag v-' + f.verdict + '"><b>F' + S.focus + '</b> ' + vt + '</span>';
@@ -76,6 +76,8 @@ window.FP = window.FP || {};
     [['aD', sim.aD], ['sD', sim.sD]].forEach(function (x) { var r = $(x[0] + 'Range'); r.value = x[1]; r.disabled = p.dur !== 'custom'; $(x[0] + 'V').textContent = FP.fmt(x[1]) + ' ms'; });
     ['ui', 'rt', 'gpu', 'sf'].forEach(function (k) { $(k + 'Load').value = p.load[k] || 1; $(k + 'LoadV').textContent = (p.load[k] || 1).toFixed(1) + '×'; });
     $('contToggle').checked = p.cont; $('othersToggle').checked = S.showOthers; $('arrowsToggle').checked = S.arrows;
+    $('backpressureToggle').checked = sim.p.backpressure;
+    $('unsignaledToggle').checked = sim.p.latchUnsignaled;
     $('boardWrap').hidden = S.mode !== 'time'; $('stepWrap').hidden = S.mode !== 'step'; $('procWrap').hidden = S.mode !== 'proc';
     $('boardLegend').dataset.mode = S.mode;
   }
@@ -154,6 +156,8 @@ window.FP = window.FP || {};
     ['aD', 'sD'].forEach(function (k) { $(k + 'Range').addEventListener('input', function (e) { custom(function (p) { p[k] = Number(e.target.value); }); }); });
     ['ui', 'rt', 'gpu', 'sf'].forEach(function (k) { $(k + 'Load').addEventListener('input', function (e) { custom(function (p) { p.load[k] = Number(e.target.value); }); }); });
     $('contToggle').addEventListener('change', function (e) { custom(function (p) { p.cont = e.target.checked; p.frames = e.target.checked ? 3 : 2; }); });
+    $('backpressureToggle').addEventListener('change', function (e) { custom(function (p) { p.backpressure = e.target.checked; }); });
+    $('unsignaledToggle').addEventListener('change', function (e) { custom(function (p) { p.latchUnsignaled = e.target.checked; }); });
     $('othersToggle').addEventListener('change', function (e) { S.showOthers = e.target.checked; recompute(); });
     $('arrowsToggle').addEventListener('change', function (e) { S.arrows = e.target.checked; recompute(); });
     $('playBtn').addEventListener('click', function () { autoplayDone = true; S.playing ? pause() : play(); });

@@ -10,8 +10,8 @@ window.FP = window.FP || {};
   FP.EDGE_LABEL = {
     'req>vreq': '', 'vreq>vapp': 'requestNextVsync · binder', 'vapp>doframe': 'VSYNC 事件 · BitTube',
     'draw>sync': '', 'sync>rtdraw': 'syncFrameState', 'rtdraw>gpu': 'GPU 命令', 'queue>txn': 'Transaction · oneway binder',
-    'txn>vsf': 'scheduleCommit', 'vsf>latch': 'commit()', 'gpu>latch': 'acquire fence', 'hwc>present': 'present fence',
-    'present>release': 'release fence'
+    'txn>vsf': 'scheduleCommit', 'vsf>latch': 'commit()', 'gpu>latch': 'acquire fence', 'gpu>present': 'GPU 完成依赖', 'hwc>present': 'present fence',
+    'hwc>release': '后续替换提交的 release fence'
   };
   function el(tag, attrs, parent) {
     var e = document.createElementNS(NS, tag);
@@ -38,9 +38,14 @@ window.FP = window.FP || {};
     var f = tb.sim.frames[tb.opt.focus]; if (!f) return;
     var S = FP.stepTimes(f), total = tb.sim.total;
     FP.STEPS.forEach(function (st) {
-      var dst = S[st.id]; if (!dst || !st.from) return;
-      st.from.forEach(function (fid) {
-        var src = S[fid]; if (!src || src.lane === dst.lane) return;
+      var dst = S[st.id]; if (!dst) return;
+      var from = FP.predecessors(st, f), next;
+      if (st.id === 'release' && !f.dropped) {
+        next = tb.sim.frames.filter(function (g) { return g.k > f.k && !g.dropped; })[0];
+        if (next) from.push('hwc');
+      }
+      from.forEach(function (fid) {
+        var src = next ? FP.stepTimes(next)[fid] : S[fid]; if (!src || src.lane === dst.lane) return;
         if (src.t1 > total || dst.t0 > total) return;
         var x1 = tb.xAt(src.t1), y1 = tb.laneY(src.lane), x2 = tb.xAt(dst.t0), y2 = tb.laneY(dst.lane);
         if (x2 < x1) x2 = x1;

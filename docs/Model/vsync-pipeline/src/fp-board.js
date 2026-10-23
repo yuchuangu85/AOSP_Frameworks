@@ -6,7 +6,7 @@ window.FP = window.FP || {};
   'use strict';
   var LANE_H = { UI: 58, RT: 48, GPU: 36, BQ: 72, SCHED: 42, SF: 48, DISPLAY: 44 };
   FP.LANE_H = LANE_H;
-  var STATE_SHORT = { DEQUEUED: 'DEQ', QUEUED: 'QUEUED', LATCHED: 'LATCHED', DISPLAY: 'DISPLAY' };
+  var STATE_SHORT = { DEQUEUED: 'DEQ', QUEUED: 'QUEUED', ACQUIRED: 'ACQUIRED' };
   function h(tag, cls, parent, html) {
     var e = document.createElement(tag); if (cls) e.className = cls;
     if (html != null) e.innerHTML = html; if (parent) parent.appendChild(e); return e;
