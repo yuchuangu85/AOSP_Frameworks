@@ -1,0 +1,148 @@
+{
+  "id": "stage-03",
+  "num": 3,
+  "title": "VSYNC 送达：onVsync→doFrame",
+  "subtitle": "BitTube 唤醒 UI 线程，一次 vsync 变成五段严格排序的回调：input → animation → insets → traversal → commit",
+  "lane": "UI",
+  "durationHint": "从 onVsync 到 traversal 结束通常 2~8 ms，必须早于 appWorkDuration + sfWorkDuration（60Hz 典型 8~12 ms）",
+  "summary": "SF 的 app EventThread 在 dispatchEvent() 里为每个消费者补上 frameInterval 并生成多组 FrameTimeline，然后 EventThreadConnection::postEvent() 通过 BitTube（socketpair）把 DisplayEventReceiver::Event 写出去。app 侧的 native Looper 在 epoll 上等到 fd 可读，DisplayEventDispatcher::handleEvent() 一次性排空管道、只保留最后一个 vsync，再 dispatchVsync() → JNI → Java DisplayEventReceiver.dispatchVsync() → FrameDisplayEventReceiver.onVsync()。onVsync 不直接绘制，而是把 timestampNanos 转成一条异步 Message 投给 FrameHandler，由 UI 线程的 Looper 在 doFrame() 里执行：先算 jitter、必要时 resync 到下一拍、填 FrameInfo，再依次 doCallbacks(CALLBACK_INPUT) → CALLBACK_ANIMATION → CALLBACK_INSETS_ANIMATION → CALLBACK_TRAVERSAL → CALLBACK_COMMIT。vsyncId 全程跟随：SF 的 TokenManager 生成，经 VsyncEventData → FrameData → FrameTimeline.getVsyncId() 暴露给 app，再随 Transaction 回到 SF 的 FrameTimeline 做端到端比对。",
+  "callchain": [
+    "android::impl::EventThread::dispatchEvent()  // 补 frameInterval + generateFrameTimeline",
+    "android::EventThreadConnection::postEvent()",
+    "android::DisplayEventReceiver::sendEvents()",
+    "android::gui::BitTube::sendObjects()  // SOCK_SEQPACKET",
+    "android::Looper::pollInner()  // epoll 唤醒 app UI 线程",
+    "android::DisplayEventDispatcher::handleEvent()",
+    "android::DisplayEventDispatcher::processPendingEvents()",
+    "android::NativeDisplayEventReceiver::dispatchVsync()  // JNI CallVoidMethod",
+    "android.view.DisplayEventReceiver.dispatchVsync()",
+    "android.view.Choreographer$FrameDisplayEventReceiver.onVsync()",
+    "android.view.Choreographer$FrameHandler.handleMessage()  // MSG_DO_FRAME",
+    "android.view.Choreographer$FrameDisplayEventReceiver.run()",
+    "android.view.Choreographer.doFrame()",
+    "android.view.Choreographer.doCallbacks()",
+    "android.view.ViewRootImpl.doTraversal()  // CALLBACK_TRAVERSAL 内"
+  ],
+  "sections": [
+    {
+      "heading": "SF 侧出口：dispatchEvent 补全数据后写 BitTube",
+      "html": "<p><code>EventThread::dispatchEvent()</code>（EventThread.cpp:769）对每个消费者做两件事：先用 <code>mCallback.getVsyncPeriod(consumer-&gt;mOwnerUid)</code> 取<em>该 uid 实际生效的</em> frame period（注意是 per-consumer，不同 uid 可以有不同帧率），写回 <code>copy.vsync.vsyncData.frameInterval</code>；再 <code>generateFrameTimeline()</code> 把 EventThread.cpp:712 的多 timeline 展开：以 preferred 那条为 <code>multiplier == 0</code>，向前后各展开若干条（容量 <code>VsyncEventData::kFrameTimelinesCapacity = 7</code>），<code>deadlineTimestamp</code> 必须大于本拍 <code>timestamp</code> 才有效，每条都通过 <code>mTokenManager-&gt;generateTokenForPredictions()</code>（FrameTimeline.cpp:1294）分配一个单调自增的 <code>vsyncId</code>，并登记到 SF 的 <code>mPredictions</code> 环形表里，供之后按 id 反查 deadline/expectedPresentationTime。</p><p>写管道的是 <code>EventThreadConnection::postEvent()</code>（EventThread.cpp:283）：非 frame-rate-override 类事件先 <code>mPendingEvents.emplace_back(event)</code>，再 <code>DisplayEventReceiver::sendEvents(&amp;mChannel, mPendingEvents.data(), mPendingEvents.size())</code>，即 <code>gui::BitTube::sendObjects()</code>（BitTube.cpp:148）。BitTube 是 <code>socketpair(AF_UNIX, SOCK_SEQPACKET)</code>（BitTube.cpp:49）——<strong>一条消息就是一个完整 Event，不会出现半个事件</strong>；源码里对 <code>msg_nosignal</code> 的部分写有断言注释提醒 “partial events were dropped” 只在异常时发生。返回 <code>-EAGAIN</code>（管道满）只打 <code>ALOGW</code> 不重试（源码注释 “TODO: Try again if pipe is full.”），<code>EPIPE</code> 等则把该连接从 EventThread 摘掉。</p>"
+    },
+    {
+      "heading": "app 侧入口：epoll 唤醒后的“排空 + 只留最后一个”",
+      "html": "<p>执行线程在这里第一次切到 app：BitTube 的接收 fd 在 <code>DisplayEventDispatcher::initialize()</code>（native/libs/gui/DisplayEventDispatcher.cpp:53）里被 <code>mLooper-&gt;addFd(mReceiver.getFd(), 0, Looper::EVENT_INPUT, …)</code> 挂到 MessageQueue 自己的 native Looper 上，于是它的可读事件是在 app UI 线程执行 <code>MessageQueue.nativePollOnce()</code>（base/core/jni/android_os_MessageQueue.cpp:223，内部 <code>mLooper-&gt;pollOnce()</code>）时被 epoll 发现并派发的——也就是说 <strong>onVsync 的 C++ 部分跑在 UI 线程的 <code>nativePollOnce</code> 栈里</strong>，不是在 SF 线程。</p><p><code>DisplayEventDispatcher::handleEvent()</code>（同文件 113 行）先判 <code>EVENT_ERROR|EVENT_HANGUP</code>（管道对端消失，返回 0 移除回调）与 <code>EVENT_INPUT</code>，然后 <code>processPendingEvents()</code> <strong>循环 <code>recvObjects</code> 直到读空</strong>，并且只保留最后一条 vsync（源码注释：“Later vsync events will just overwrite the info from earlier ones. That's fine, we only care about the most recent.”）。这意味着<em>如果 app 主线程被卡了两拍，中间那拍的 vsync 会被静默丢弃</em>，Choreographer 拿到的是最新一拍，靠 jitter 计算去感知跳帧。</p><p>随后 <code>mWaitingForVsync = false</code> 并 <code>dispatchVsync(timestamp, displayId, count, vsyncData)</code>，JNI 侧 <code>NativeDisplayEventReceiver::dispatchVsync</code> 用 <code>CallVoidMethod</code> 回调 Java 的 <code>DisplayEventReceiver.dispatchVsync()</code>（DisplayEventReceiver.java:362），后者把 native 填充好的 <code>mVsyncEventData</code> 一起交给子类：<code>onVsync(timestampNanos, physicalDisplayId, frame, mVsyncEventData)</code>。<strong>兜底路径</strong>：若 <code>mWaitingForVsync</code> 仍为真且 <code>now − mLastScheduleVsyncTime &gt; WAITING_FOR_VSYNC_TIMEOUT</code>（源码常量 300ms），会打 “Vsync time out!” 并用当前时间 + 空 vsyncData 伪造一次 dispatch；这个空数据在 doFrame 里会走到 <code>frameIntervalNanos == 0</code> 分支并打印 “Vsync data empty due to timeout”（Choreographer.java:1127）。</p>"
+    },
+    {
+      "heading": "onVsync 为什么还要绕一条 Handler 消息",
+      "html": "<p><code>FrameDisplayEventReceiver.onVsync()</code>（Choreographer.java:1594）刻意<strong>不</strong>在回调里直接跑帧逻辑，而是把事件转成一条 Message 投给 <code>FrameHandler</code>。源码注释给出了理由：防止源源不断的 vsync 事件把消息队列里的其他消息饿死；只有当队列里没有早于 frame time 的消息时，这条 vsync 消息才会被立刻处理，否则更早的普通消息先跑。</p><p>三个容易漏的细节：<ul><li>若 <code>timestampNanos &gt; now</code>（硬件时间基不对，落在未来），直接<em>截断为 <code>now</code></em> 并仅在 DEBUG_JANK 下告警 “Check that graphics HAL is generating vsync timestamps using the correct timebase”，不会拒绝这一拍。</li><li><code>mHavePendingVsync</code> 为真时只是打日志 “Already have a pending vsync event. There should only be one at a time.”，<strong>不会丢弃新事件</strong>，仍然覆盖 <code>mTimestampNanos/mFrame/mLastVsyncEventData</code> 并 post。</li><li>Message 用 <code>msg.setAsynchronous(true)</code> 且 <code>sendMessageAtTime(msg, timestampNanos / NANOS_PER_MS)</code>——投递时间等于 vsync 时刻，因此这条消息在队列里排在所有“本该在 vsync 之前完成”的消息之后。</li></ul>真正执行的是同一个类的 <code>run()</code>（Choreographer.java:1638）：<code>mHavePendingVsync = false; doFrame(mTimestampNanos, mFrame, mLastVsyncEventData)</code>。所以 <strong>onVsync → doFrame 之间隔着一次消息队列调度</strong>，主线程繁忙时会引入额外延迟，这正是 jitter 的来源之一。</p>"
+    },
+    {
+      "heading": "doFrame：jitter 修正、resync 与跳帧告警",
+      "html": "<p><code>doFrame()</code>（Choreographer.java:1074）先评估 buffer stuffing 状态，再用带 offset 的帧时间 <code>mFrameData.update(offsetFrameTimeNanos, vsyncEventData)</code> 填充 <code>FrameData</code>，并打上 <code>Choreographer#doFrame &lt;vsyncId&gt;</code> 的 trace。之后在 <code>mLock</code> 里做三件事：</p><ol><li><code>if (!mFrameScheduled) { traceMessage(\"Frame not scheduled\"); return; }</code>——这一拍在别处已经被消费（比如 FPSDivisor 或 frame-time 回退分支提前 return），直接丢掉。</li><li>算 jitter：<code>jitterNanos = startNanos − frameTimeNanos</code>（Choreographer.java:1123）。若 <code>jitterNanos &gt;= frameIntervalNanos</code>，说明主线程已经错过至少一整拍：把 <code>frameTimeNanos</code> 重新对齐到 <code>startNanos − (jitterNanos % frameIntervalNanos)</code>，算出 <code>skippedFrames = jitterNanos / frameIntervalNanos</code>，达到 <code>SKIPPED_FRAME_WARNING_LIMIT</code>（属性 <code>debug.choreographer.skipwarning</code>，默认 30）就打印 “Skipped N frames! The application may be doing too much work on its main thread.”；然后 <code>mFrameData.update(frameTimeNanos, mDisplayEventReceiver, jitterNanos)</code> 重新挑 timeline（先在本地 7 条里找 deadline 不早于 <code>原 deadline + jitter</code> 的，找不到才 binder 调 <code>getLatestVsyncEventData()</code>，源码注释说明 binder 是 O(ms) 级、只在必要时用），并置 <code>resynced = true</code>，额外开一条 <code>Choreographer#doFrame - resynced to %d in %.1fms</code> 的 trace。</li><li>回退与降频判定：<code>frameTimeNanos &lt; mLastFrameTimeNanos</code> 时视为时间倒退，仅打日志并 <code>scheduleVsyncLocked()</code> 等下一拍；<code>mFPSDivisor &gt; 1</code> 时按 <code>frameIntervalNanos * mFPSDivisor</code> 跳过若干拍。</li></ol><p>都通过后调用 <code>mFrameInfo.setVsync(intendedFrameTimeNanos, frameTimeNanos, vsyncEventData.preferredFrameTimeline().vsyncId, deadline, startNanos, frameInterval, frameTimeNanos)</code>（Choreographer.java:1183，落到 android.graphics.FrameInfo 的 <code>FRAME_TIMELINE_VSYNC_ID/INTENDED_VSYNC/VSYNC/FRAME_DEADLINE/…</code> 槽位），然后 <code>mFrameScheduled = false; mLastFrameTimeNanos = frameTimeNanos;</code>，最后 <code>AnimationUtils.lockAnimationClock()</code> 并进入五段回调。</p>"
+    },
+    {
+      "heading": "五段回调的严格顺序与 vsyncId 的端到端传递",
+      "html": "<p>顺序在 <code>doFrame()</code> 尾部硬编码（Choreographer.java:1199-1211）：<code>CALLBACK_INPUT(0)</code> → <code>CALLBACK_ANIMATION(1)</code> → <code>CALLBACK_INSETS_ANIMATION(2)</code> → <code>CALLBACK_TRAVERSAL(3)</code> → <code>CALLBACK_COMMIT(4)</code>，中间用 <code>mFrameInfo.markInputHandlingStart()/markAnimationsStart()/markPerformTraversalsStart()</code> 打三个时间戳（base/graphics/java/android/graphics/FrameInfo.java:123/128/133）。设计意图：input 可能触发动画，所以 input 先跑；animation 与 insets_animation 分开是因为 inset 动画要把多个 controller 的 <code>setInsetsAndAlpha()</code> 结果“攒”起来一次性下发给 view 树；traversal 负责 measure/layout/draw；commit 在绘制之后，用于让 <code>FrameInfo</code> 的 frame time 反映 traversal 期间实际发生的延迟（注释明确 commit 阶段的 <code>getFrameTime()</code> 可能被更新）。</p><p><code>doCallbacks()</code>（Choreographer.java:1229）用 <strong><code>now = System.nanoTime()</code></strong> 而不是 frameTime 去 <code>extractDueCallbacksLocked(now / NANOS_PER_MS)</code>，源码注释解释了原因：一帧里更早的阶段可能 post 出本应属于后续阶段的回调（如 input 触发动画启动），用 now 判定才能让它们在同一帧的后续阶段执行；每次回调的 trace 名取自 <code>CALLBACK_TRACE_TITLES = {\"input\", \"animation\", \"insets_animation\", \"traversal\", \"commit\"}</code>（Choreographer.java:313）。</p><p><strong>vsyncId 怎么从 SF 到 app</strong>：SF 的 <code>TokenManager</code> 在 generateFrameTimeline 时分配 id → <code>VsyncEventData::FrameTimeline.vsyncId</code> 随 BitTube 到 app → JNI 用反射/缓存构造 <code>DisplayEventReceiver.VsyncEventData.FrameTimeline</code> 对象（<code>createJavaVsyncEventData()</code>，android_view_DisplayEventReceiver.cpp:164）→ <code>Choreographer.FrameData.update()</code> 逐个 <code>FrameTimeline.update(vsyncId, expectedPresentationTime, deadline)</code>（Choreographer.java:1484）→ 回调里通过 <code>FrameData.getPreferredFrameTimeline().getVsyncId()</code> 或 <code>Choreographer.getVsyncId()</code> 取出（后者在 <code>mInDoFrameCallback</code> 之外调用会返回未定义值并打 “unsync-vsync-id” 告警）。app 再把它交给 SF：<code>SurfaceControl.Transaction.setFrameTimelineVsync(long)</code>（SurfaceControl.java:5664，native 侧 <code>nativeSetFrameTimelineVsync</code>），本仓库可见的调用点是 <code>InsetsAnimationThreadControlRunner</code>（base/core/java/android/view/InsetsAnimationThreadControlRunner.java:108）；HWUI 里的调用点在 frameworks/libs/hwui，<strong>不在本仓库，源码中未体现</strong>。SF 收到后按 id 从 <code>mPredictions</code> 表里取出预测值，与实际 present fence 比对，据此判定 jank 类型（SurfaceFlinger 侧 FrameTimeline）。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "symbol": "EventThread::dispatchEvent",
+      "lines": "769-794",
+      "code": "void EventThread::dispatchEvent(const DisplayEventReceiver::Event& event,\n                                const DisplayEventConsumers& consumers) {\n    for (const auto& consumer : consumers) {\n        DisplayEventReceiver::Event copy = event;\n        if (event.header.type == DisplayEventType::DISPLAY_EVENT_VSYNC) {\n            const Period frameInterval = mCallback.getVsyncPeriod(consumer->mOwnerUid);\n            copy.vsync.vsyncData.frameInterval = frameInterval.ns();\n            generateFrameTimeline(copy.vsync.vsyncData, frameInterval.ns(), copy.header.timestamp,\n                                  event.vsync.vsyncData.preferredExpectedPresentationTime(),\n                                  event.vsync.vsyncData.preferredDeadlineTimestamp());\n        }\n        switch (consumer->postEvent(copy)) {\n            case NO_ERROR:\n                break;\n\n            case -EAGAIN:\n                // TODO: Try again if pipe is full.\n                ALOGW(\"Failed dispatching %s for %s\", toString(event).c_str(),\n                      toString(*consumer).c_str());\n                break;\n\n            default:\n                // Treat EPIPE and other errors as fatal.\n                removeDisplayEventConnectionLocked(consumer);\n        }\n    }",
+      "note": "SF 侧出口：每个消费者先补 frameInterval 并生成 per-uid 的 FrameTimeline（含 vsyncId），再 postEvent 写 BitTube。"
+    },
+    {
+      "file": "native/libs/gui/DisplayEventDispatcher.cpp",
+      "symbol": "DisplayEventDispatcher::handleEvent",
+      "lines": "113-155",
+      "code": "int DisplayEventDispatcher::handleEvent(int, int events, void*) {\n    if (events & (Looper::EVENT_ERROR | Looper::EVENT_HANGUP)) {\n        ALOGE(\"Display event receiver pipe was closed or an error occurred.  \"\n              \"events=0x%x\",\n              events);\n        return 0; // remove the callback\n    }\n\n    if (!(events & Looper::EVENT_INPUT)) {\n        ALOGW(\"Received spurious callback for unhandled poll event.  \"\n              \"events=0x%x\",\n              events);\n        return 1; // keep the callback\n    }\n\n    // Drain all pending events, keep the last vsync.\n    nsecs_t vsyncTimestamp;\n    PhysicalDisplayId vsyncDisplayId;\n    uint32_t vsyncCount;\n    VsyncEventData vsyncEventData;\n    if (processPendingEvents(&vsyncTimestamp, &vsyncDisplayId, &vsyncCount, &vsyncEventData)) {\n        ALOGV(\"dispatcher %p ~ Vsync pulse: timestamp=%\" PRId64\n              \", displayId=%s, count=%d, vsyncId=%\" PRId64,\n              this, ns2ms(vsyncTimestamp), to_string(vsyncDisplayId).c_str(), vsyncCount,\n              vsyncEventData.preferredVsyncId());\n        mWaitingForVsync = false;\n        mLastVsyncCount = vsyncCount;\n        dispatchVsync(vsyncTimestamp, vsyncDisplayId, vsyncCount, vsyncEventData);\n    }\n\n    if (mWaitingForVsync) {\n        const nsecs_t currentTime = systemTime(SYSTEM_TIME_MONOTONIC);\n        const nsecs_t vsyncScheduleDelay = currentTime - mLastScheduleVsyncTime;\n        if (vsyncScheduleDelay > WAITING_FOR_VSYNC_TIMEOUT) {\n            ALOGW(\"Vsync time out! vsyncScheduleDelay=%\" PRId64 \"ms\", ns2ms(vsyncScheduleDelay));\n            mWaitingForVsync = false;\n            dispatchVsync(currentTime, vsyncDisplayId /* displayId is not used */,\n                          ++mLastVsyncCount, vsyncEventData /* empty data */);\n        }\n    }\n\n    return 1; // keep the callback\n}",
+      "note": "app 侧入口：epoll 可读后排空管道、只留最后一个 vsync，然后 dispatchVsync 回 Java；末尾是 300ms 超时后伪造一次 vsync 的兜底。"
+    },
+    {
+      "file": "base/core/java/android/view/Choreographer.java",
+      "symbol": "FrameDisplayEventReceiver.onVsync",
+      "lines": "1594-1635",
+      "code": "        public void onVsync(long timestampNanos, long physicalDisplayId, int frame,\n                VsyncEventData vsyncEventData) {\n            try {\n                if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {\n                    Trace.traceBegin(Trace.TRACE_TAG_VIEW,\n                            \"Choreographer#onVsync \"\n                                    + vsyncEventData.preferredFrameTimeline().vsyncId);\n                }\n                // Post the vsync event to the Handler.\n                // The idea is to prevent incoming vsync events from completely starving\n                // the message queue.  If there are no messages in the queue with timestamps\n                // earlier than the frame time, then the vsync event will be processed immediately.\n                // Otherwise, messages that predate the vsync event will be handled first.\n                long now = System.nanoTime();\n                if (timestampNanos > now) {\n                    if (DEBUG_JANK) {\n                        Log.w(TAG, \"Frame time is \" + ((timestampNanos - now) * 0.000001f)\n                                + \" ms in the future!  Check that graphics HAL is generating vsync \"\n                                + \"timestamps using the correct timebase.\");\n                    }\n                    timestampNanos = now;\n                }\n\n                if (mHavePendingVsync) {\n                    if (DEBUG_JANK) {\n                        Log.w(TAG, \"Already have a pending vsync event.  There should only be \"\n                                + \"one at a time.\");\n                    }\n                } else {\n                    mHavePendingVsync = true;\n                }\n\n                mTimestampNanos = timestampNanos;\n                mFrame = frame;\n                mLastVsyncEventData.copyFrom(vsyncEventData);\n                Message msg = Message.obtain(mHandler, this);\n                msg.setAsynchronous(true);\n                mHandler.sendMessageAtTime(msg, timestampNanos / TimeUtils.NANOS_PER_MS);\n            } finally {\n                Trace.traceEnd(Trace.TRACE_TAG_VIEW);\n            }\n        }",
+      "note": "onVsync 定义在 Choreographer 的内部类 FrameDisplayEventReceiver（Choreographer.java:1579）里：截断未来时间戳、置 mHavePendingVsync、把事件转成异步 Message 投到 timestampNanos；真正的 doFrame 由 run() 在消息队列里执行。"
+    },
+    {
+      "file": "base/core/java/android/view/Choreographer.java",
+      "symbol": "doFrame 回调派发段",
+      "lines": "1199-1211",
+      "code": "            AnimationUtils.lockAnimationClock(frameTimeNanos / TimeUtils.NANOS_PER_MS);\n\n            mFrameInfo.markInputHandlingStart();\n            doCallbacks(Choreographer.CALLBACK_INPUT);\n\n            mFrameInfo.markAnimationsStart();\n            doCallbacks(Choreographer.CALLBACK_ANIMATION);\n            doCallbacks(Choreographer.CALLBACK_INSETS_ANIMATION);\n\n            mFrameInfo.markPerformTraversalsStart();\n            doCallbacks(Choreographer.CALLBACK_TRAVERSAL);\n\n            doCallbacks(Choreographer.CALLBACK_COMMIT);",
+      "note": "五段回调的硬编码顺序与三个 FrameInfo 时间戳打点：input → animation → insets_animation → traversal → commit。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mHavePendingVsync",
+      "type": "boolean（FrameDisplayEventReceiver）",
+      "desc": "标记“已有一条 vsync 消息在队列里”。为 true 时 onVsync 只打 DEBUG_JANK 日志、不丢弃事件；run() 执行时置回 false。它只用于诊断，不参与流控。"
+    },
+    {
+      "name": "mTimestampNanos / mFrame / mLastVsyncEventData",
+      "type": "long / int / VsyncEventData（FrameDisplayEventReceiver）",
+      "desc": "onVsync 写入、run() 读出，把“native 回调上下文”里的数据搬到“Looper 消息上下文”。mLastVsyncEventData 是深拷贝（copyFrom），避免 Java 侧引用被下一次 onVsync 覆盖。"
+    },
+    {
+      "name": "mFrameData",
+      "type": "Choreographer.FrameData",
+      "desc": "一帧的时间线载体：mFrameTimeNanos + FrameTimeline[frameTimelinesLength] + preferredFrameTimelineIndex。update() 在 doFrame 开始时、resync 时各填一次；回调内通过 getPreferredFrameTimeline() 取 vsyncId/deadline/expectedPresentationTime。"
+    },
+    {
+      "name": "mFrameScheduled / mCallbacksRunning",
+      "type": "boolean / boolean",
+      "desc": "mFrameScheduled 表示“本帧已向 SF 预约过 vsync”，进入 doFrame 派发段后置 false；mCallbacksRunning 表示 doCallbacks 正在执行，用于 removeCallbacks 等路径的一致性判断（例如在回调中 remove 自己）。"
+    },
+    {
+      "name": "mFrameInfo",
+      "type": "android.graphics.FrameInfo（Choreographer.java:307）",
+      "desc": "13 个 long 槽位的数组，索引常量如 FRAME_TIMELINE_VSYNC_ID(1)、INTENDED_VSYNC(2)、VSYNC(3)、HANDLE_INPUT_START(5)、ANIMATION_START(6)、PERFORM_TRAVERSALS_START(7)、FRAME_DEADLINE(9)、ANIMATION_TIME(13)。setVsync() 在 doFrame 里一次写满，随后由 FrameMetrics 上报。"
+    },
+    {
+      "name": "mInDoFrameCallback",
+      "type": "volatile boolean",
+      "desc": "只在 trace 可用时被置真，用于 getVsyncId()/FrameData 的“必须在回调内调用”检查；在回调外调用 getVsyncId() 会打 \"unsync-vsync-id\" 告警。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "Choreographer#onVsync <vsyncId>",
+      "value": "atrace slice（Trace.TRACE_TAG_VIEW）",
+      "desc": "包住整个 onVsync（含 post 消息），trace 名里带 vsyncId，可与 SF 侧同一 id 的 VSYNC 轨道对齐，直接看出跨进程投递延迟。"
+    },
+    {
+      "name": "Choreographer#doFrame <vsyncId> / Choreographer#doFrame - resynced to <id> in Xms",
+      "value": "atrace slice",
+      "desc": "doFrame 主体；发生 resync 时会额外嵌套一层带 id 与毫秒数的 slice，是判断“这一帧是否已经晚了一拍”的最直接证据。"
+    },
+    {
+      "name": "input / animation / insets_animation / traversal / commit",
+      "value": "atrace slice（CALLBACK_TRACE_TITLES）",
+      "desc": "五个回调阶段的独立 slice，配合 FrameInfo 的三个 mark 时间戳，可定位时间花在输入分发、动画还是 measure/layout/draw。"
+    },
+    {
+      "name": "Skipped N frames! / Vsync data empty due to timeout",
+      "value": "logcat（tag Choreographer，级别 I）",
+      "desc": "skippedFrames 达到 debug.choreographer.skipwarning（默认 30）才打印，属于重度过载信号；后者说明走了 300ms 超时兜底、vsyncData 为空。"
+    }
+  ],
+  "pitfalls": [
+    "onVsync 到达 ≠ 立刻 doFrame。onVsync 只是 post 一条消息；且消息按 timestampNanos 排序，只有当队列里没有更早的消息时才会立即执行。主线程繁忙时这段排队时间会直接变成 jitter，别把 onVsync 的时间戳当成帧开始时间。",
+    "doFrame 的 frameTimeNanos 不等于硬件 vsync：jitter >= 一个 frameInterval 时它被重写成 startNanos 对齐到 period 的值（resync），buffer stuffing 恢复期还会再减一个 frameInterval。要硬件时间是 FrameInfo 的 INTENDED_VSYNC，或 SF 侧 atrace 的 VSYNC 轨道。",
+    "processPendingEvents 只保留最后一个 vsync：主线程连续卡两拍时中间那拍被静默丢弃，不会补发；因此“掉帧”在 app 侧表现为一次大 jitter，而不是多条 doFrame。",
+    "mHavePendingVsync 为 true 只打日志（\"There should only be one at a time.\"），不会丢事件，所以 logcat 里看到它并不代表丢帧；真正的丢帧要结合 resync slice 与 skipped frames 判断。"
+  ],
+  "traceTags": [
+    "Choreographer#onVsync",
+    "Choreographer#doFrame",
+    "Choreographer#doFrame - resynced to",
+    "input",
+    "animation",
+    "traversal",
+    "commit"
+  ],
+  "next": "stage-04"
+}

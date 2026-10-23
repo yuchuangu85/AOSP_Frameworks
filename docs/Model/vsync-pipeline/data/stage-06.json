@@ -1,0 +1,193 @@
+{
+  "id": "stage-06",
+  "num": 6,
+  "title": "RenderThread 绘制与 BLAST 提交",
+  "subtitle": "RenderNode 树在 RT 上烘焙成 GPU 命令，eglSwapBuffers 内完成 dequeue/queue，BLAST 立刻以 Transaction 提交 SF",
+  "lane": "RT",
+  "durationHint": "约 3~8 ms（同步 + Skia 录制回放 + GPU 提交 + queueBuffer），dequeue 阻塞时可再叠加 0~16 ms",
+  "summary": "UI 线程在 DrawFrameTask::postAndWait 把这一帧投给 RenderThread 后阻塞等同步；RenderThread 在 DrawFrames <vsyncId> 里执行 syncFrameState 把 RenderNode 树、DisplayList、属性动画同步过来，并在可以放手时立刻 unblockUiThread。随后 CanvasContext::draw 取到 Frame（eglBeginFrame）→ SkiaOpenGLPipeline::draw 把整棵树回放到 FBO 0 → skgpu::ganesh::FlushAndSubmit 提交 GPU 命令 → EglManager::swapBuffers 调用 eglSwapBuffersWithDamageKHR，GL 路径下 dequeueBuffer/queueBuffer 由 EGL 驱动经 ANativeWindow hook 完成；Vulkan 路径（SkiaVulkanPipeline）则由 VulkanSurface 显式调用 dequeueBuffer/queueBuffer。queueBuffer 走 Surface::hook_queueBuffer → BufferQueueProducer::queueBuffer 把 slot 置为 QUEUED 并回调 onFrameAvailable；BLASTBufferQueue 不再等 SF latch，而是立刻 acquireBuffer 并 apply 一条带 apply token 的 Transaction（setBuffer）把 buffer 交给 SurfaceFlinger，最后通过 TransactionCompletedListener 拿回 applied/present 结果；buffer 的回收则走 releaseBufferCallback（binder onReleaseBuffer 或 BufferReleaseChannel socket）。",
+  "callchain": [
+    "DrawFrameTask::drawFrame()",
+    "DrawFrameTask::postAndWait()",
+    "DrawFrameTask::run()",
+    "DrawFrameTask::syncFrameState()",
+    "CanvasContext::prepareTree()",
+    "DrawFrameTask::unblockUiThread()",
+    "CanvasContext::draw()",
+    "EglManager::beginFrame()",
+    "SkiaOpenGLPipeline::draw()",
+    "SkiaOpenGLPipeline::swapBuffers()",
+    "EglManager::swapBuffers()",
+    "Surface::hook_queueBuffer()",
+    "BufferQueueProducer::queueBuffer()",
+    "BLASTBufferQueue::onFrameAvailable()",
+    "BLASTBufferQueue::acquireNextBufferLocked()",
+    "SurfaceComposerClient::Transaction::apply()",
+    "TransactionCompletedListener::onTransactionCompleted()"
+  ],
+  "sections": [
+    {
+      "heading": "谁触发、谁执行：UI 线程交棒给 RenderThread",
+      "html": "<p>触发者是 UI 线程：<code>ViewRootImpl</code> 在 Choreographer 的 VSYNC 回调里做完 measure/layout/draw 之后，通过 <code>ThreadedRenderer</code> 调用 <code>DrawFrameTask::drawFrame()</code>（<code>base/libs/hwui/renderthread/DrawFrameTask.cpp:72</code>）。它记录 <code>mSyncQueued</code> 时间戳，然后 <code>postAndWait()</code>（同文件 <code>:82</code>）把 <code>run()</code> 投进 RenderThread 的 <code>RenderTask</code> 队列，并阻塞等待：<code>postAndWait()</code> 先持 <code>mLock</code> 投递任务，再 <code>mSignal.wait(mLock)</code>——wait 期间会释放 <code>mLock</code>，被 signal 后重新持锁返回（<code>DrawFrameTask.cpp:82-87</code>）。</p><p>执行线程变成 <code>RenderThread</code>——一个 <code>PRIORITY_DISPLAY</code> 的普通 pthread，见 <code>RenderThread.cpp:421</code> 的 <code>setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY)</code>。它在 <code>threadLoop()</code> 里 <code>waitForWork()</code>（<code>:429</code>）睡在任务队列上，醒来 <code>processQueue()</code>（<code>:430</code>）执行刚投递的 <code>DrawFrameTask::run()</code>。</p><p>这就是 Android 图形栈第一个关键的线程边界：<strong>UI 线程负责“描述”，RenderThread 负责“录制 + 提交”</strong>。两侧唯一的同步原语是 <code>DrawFrameTask</code> 的 <code>mLock</code> + <code>mSignal</code>（Condition）：UI 线程在 <code>postAndWait()</code> 里等它，RT 在 <code>unblockUiThread()</code> 里持 <code>mLock</code> 并 <code>mSignal.signal()</code>（<code>:219-221</code>）。状态通过 <code>DrawFrameTask</code> 携带的 <code>FrameInfo</code> 与同步后的 <code>RenderNode</code> 树传递。</p>"
+    },
+    {
+      "heading": "同步与解阻塞：syncFrameState 与 unblockUiThread",
+      "html": "<p><code>DrawFrameTask::run()</code>（<code>DrawFrameTask.cpp:89</code>）第一件事是 <code>mContext-&gt;setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued)</code>（<code>:94</code>）记录任务排队时长，并设置 SDR/HDR 比率与 HardwareBuffer 参数；随后进入 <code>syncFrameState(info)</code>，其第一步才把 <code>FrameInfo</code> 里的 vsync 信息灌给 <code>TimeLord::vsyncReceived()</code>（<code>DrawFrameTask.cpp:177</code> 调用）（<code>base/libs/hwui/renderthread/TimeLord.cpp:31</code>），后者维护 <code>mFrameTimeNanos</code>、<code>mFrameVsyncId</code>、<code>mFrameDeadline</code> 与 <code>mFrameIntervalNanos</code>；这是 RT 侧对 VSYNC 的“本地时钟”。</p><p><code>syncFrameState(info)</code>（<code>:106</code> 调用，定义在 <code>:169</code>）本身<strong>不加任何锁</strong>：它能安全读写 UI 线程那侧的 RenderNode 树（staging 属性、DisplayList、属性动画、图片资源），靠的是 UI 线程此刻正阻塞在 <code>mSignal</code> 上不会修改它们。随后 <code>makeCurrent()</code>、apply 各 <code>DeferredLayerUpdater</code>，并调用 <code>CanvasContext::prepareTree()</code>（<code>CanvasContext.cpp:506</code>）构建本帧要绘制的 <code>RenderNode</code> 列表与 dirty 区域。完成同步后若 <code>canUnblockUiThread</code> 为真，就 <code>unblockUiThread()</code>（<code>:125-127</code>）唤醒 UI 线程——这是“渲染线程与 UI 线程并行”的关键点：UI 线程可以立刻开始下一帧的 measure/layout，而 GPU 命令还没提交完。</p><p>注意代码注释里的那句“From this point on anything in \"this\" is *UNSAFE TO ACCESS*”：解阻塞之后 <code>DrawFrameTask</code> 的成员可能已被 UI 线程复用，所以后续只能用提前拷贝出来的 <code>context</code>/回调局部变量。这是阅读这段代码时最容易忽略的并发约束。</p>"
+    },
+    {
+      "heading": "从 RenderNode 树到 GPU 命令：CanvasContext::draw 与 SkiaPipeline",
+      "html": "<p><code>CanvasContext::draw()</code>（<code>CanvasContext.cpp:672</code>）先 <code>mDamageAccumulator.finish(&amp;dirty)</code> 拿到合并后的脏区，判断是否可以整帧跳过（<code>Properties::skipEmptyFrames</code> 且 dirty 为空且 surface 不需要重绘时记 <code>SkippedFrameReason::NothingToDraw</code> 并直接回调 frame commit 监听者）。</p><p>真正绘制时：<code>markIssueDrawCommandsStart()</code> 打点 → <code>getFrame()</code> 取 <code>Frame</code>（<code>SkiaOpenGLPipeline::getFrame</code> → <code>EglManager::beginFrame</code>，<code>EglManager.cpp:592</code>，内部 <code>eglQuerySurface</code> 取宽高、<code>queryBufferAge</code> 取 buffer age、<code>eglBeginFrame</code>）→ <code>mRenderPipeline-&gt;draw(...)</code>（<code>:742</code>）。</p><p><code>SkiaOpenGLPipeline::draw()</code>（<code>base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:116</code>）先用 <code>GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0, STENCIL_BUFFER_SIZE, fboInfo)</code> 把 <code>fFBOID = 0</code> 包成 Skia 的 backend render target，再 <code>SkSurfaces::WrapBackendRenderTarget(...)</code> 得到 <code>SkSurface</code>，然后 <code>renderFrame(...)</code> 把 <code>SkiaDisplayList</code> 回放到这块 surface，最后 <code>skgpu::ganesh::FlushAndSubmit(surface)</code>（<code>:182</code>，trace 名 <code>flush commands</code>）把 GPU 命令真正提交。</p><p><strong>注意这里没有 queueBuffer</strong>：此刻只是把命令写进了 GL 命令流，buffer 的 dequeue 与 queue 都还没发生，真正的边界在 <code>eglSwapBuffers</code>。</p>"
+    },
+    {
+      "heading": "dequeueBuffer / eglSwapBuffers / queueBuffer 的真实顺序",
+      "html": "<p>GL 路径下 hwui 侧只有一步：<code>SkiaOpenGLPipeline::swapBuffers()</code>（<code>SkiaOpenGLPipeline.cpp:194</code>）先 <code>currentFrameInfo-&gt;markSwapBuffers()</code>（<code>:201</code>，jank 指标以此刻为准），再判断 <code>*requireSwap = drawResult.success || mEglManager.damageRequiresSwap()</code>，为真时调 <code>mEglManager.swapBuffers(frame, screenDirty)</code>（<code>:209</code>）。</p><p><code>EglManager::swapBuffers()</code>（<code>EglManager.cpp:621</code>）做两件事：<code>frame.map(screenDirty, rects)</code> 把脏区转成 EGL 坐标，然后 <code>eglSwapBuffersWithDamageKHR(...)</code>。真正的顺序由 EGL 驱动 + <code>EGL_ANDROID_*</code> native window hook 完成：<strong>dequeueBuffer（等一个 FREE slot）→ GPU 把刚提交的命令渲染进这个 buffer → queueBuffer（带上 GPU 完成 fence 作为 acquire fence）</strong>。所以源码里搜不到 hwui 直接调 <code>queueBuffer</code> 的位置——调用点是 <code>Surface::hook_queueBuffer()</code>（<code>native/libs/gui/Surface.cpp:614</code>），由 EGL 驱动在 swap 内部回调进来。</p><p><strong>Vulkan 路径不同</strong>（<code>SkiaVulkanPipeline</code>，由 <code>ro.hwui.use_vulkan</code> / <code>debug.hwui.renderer</code> 选择）：hwui 自己管理 native window。<code>VulkanManager::dequeueNextBuffer</code>（<code>VulkanManager.cpp:583</code>）→ <code>VulkanSurface::dequeueNativeBuffer</code> 里显式 <code>mNativeWindow-&gt;dequeueBuffer(...)</code>（<code>VulkanSurface.cpp:409</code>），并把 dequeue fence 导入为 VkSemaphore；提交后 <code>VulkanManager::swapBuffers</code>（<code>:766</code>）→ <code>VulkanSurface::presentCurrentBuffer</code>（<code>VulkanSurface.cpp:496</code>）显式 <code>mNativeWindow-&gt;queueBuffer(...)</code>（<code>:520</code>），GPU 完成 fence 作为 acquire fence。两条路径的 window 外面都包着 <code>ReliableSurface</code>：它通过 <code>ANativeWindow_setDequeueBufferInterceptor</code>（<code>ReliableSurface.cpp:57</code>）拦截 dequeue，<code>reserveNext()</code>（<code>:74</code>）可预先 dequeue 一个备用 buffer，dequeue 失败时用 fallback buffer 兜底，避免 RT 因 dequeue 错误崩溃或丢失 surface。</p><p>两个 fence 语义要分清：<strong>acquire fence</strong> 由生产者提供，表示“GPU 什么时候写完这个 buffer，消费者/合成器可以读”；<strong>present fence</strong> 由 SF 在真正上屏（或 present）后给出，表示“这一帧什么时候可见”。前者随 <code>queueBuffer</code> 传给 BufferQueue，后者只能从 <code>TransactionCompletedListener</code> 的 <code>ON_COMPLETE</code> 回调里拿到。</p><p><code>Surface::queueBuffer</code> → <code>queueBufferImpl</code>（<code>:1330</code>）→ <code>BufferQueueProducer::queueBuffer</code>（<code>BufferQueueProducer.cpp:976</code>）；返回后 <code>Surface::onBufferQueuedLocked</code>（<code>:1428</code>）更新 <code>mNextFrameNumber</code>、transform hint 与 <code>mConsumerRunningBehind</code>。</p>"
+    },
+    {
+      "heading": "BufferQueueProducer::queueBuffer 内部：slot 状态机与帧号",
+      "html": "<p>进入 <code>BufferQueueProducer::queueBuffer</code>（<code>BufferQueueProducer.cpp:976</code>）后，先 <code>input.deflate(...)</code> 解出 <code>acquireFence</code>、crop、transform、dataspace、scalingMode 等（acquireFence 为 null 直接 <code>BAD_VALUE</code>）。持 <code>mCore-&gt;mMutex</code> 后校验 <code>mSlots[slot].mBufferState.isDequeued()</code>，然后：</p><ul><li><code>mSlots[slot].mFence = acquireFence;</code> 与 <code>mSlots[slot].mBufferState.queue();</code>（<code>:1082-1083</code>）——slot 从 DEQUEUED 迁移到 QUEUED；</li><li><code>++mCore-&gt;mFrameCounter; currentFrameNumber = mCore-&gt;mFrameCounter;</code>（<code>:1087-1088</code>）——全局单调递增的帧号，SF 与 FrameTimeline 都用它对齐；</li><li>构造 <code>BufferItem item</code>（带 <code>mGraphicBuffer</code>、<code>mFence</code>、<code>mFrameNumber</code>），把 fence 的 <code>FenceTime</code> 塞进 <code>newFrameEventsEntry</code> 交给 <code>addAndGetFrameTimestamps</code>。</li></ul><p>释放锁之后才回调监听者（<code>:1270</code> 的 <code>frameAvailableListener-&gt;onFrameAvailable(item)</code>），并用 <code>mCallbackMutex</code>/<code>mCurrentCallbackTicket</code> 保证回调按帧序执行。<strong>即 queueBuffer 的临界区很窄，重活都在回调里</strong>。</p><p>回调之后、返回之前还有一步 CPU 节流（<code>:1281-1285</code>）：当 <code>connectedApi == NATIVE_WINDOW_API_EGL</code> 且 <code>enableEglCpuThrottling</code> 为真时，执行 <code>lastQueuedFence-&gt;waitForever(\"Throttling EGL Production\")</code>，等的是<strong>上一次</strong> queue 的 acquire fence（<code>lastQueuedFence = std::move(mLastQueueBufferFence)</code>），从而只允许两帧 GPU 工作在途。<code>enableEglCpuThrottling</code> 默认 true；在 <code>bq_producer_backpressure_control</code> flag 打开且 <code>setProducerThrottlingEnabled(false)</code> 时，只在 <code>mAsyncMode || mDequeueBufferCannotBlock</code> 下保留（<code>:1222-1233</code>）。Vulkan 路径 connectedApi 不是 EGL，不走这段等待。</p><p><code>BufferItem</code> 传的是 <code>sp&lt;GraphicBuffer&gt;</code> 句柄（gralloc buffer 的引用），跨进程时不会拷像素；<code>mConsumerIsSurfaceFlinger</code> 为真时连 <code>item.mGraphicBuffer</code> 都保留，因为 BufferQueue 就在 SF 进程内，没有 Binder 调用。</p>"
+    },
+    {
+      "heading": "BLAST：queueBuffer 之后不再等 latch，而是立刻提交 Transaction",
+      "html": "<p>这是 android17 与旧 BufferQueue 模型最大的差别。旧模型里 <code>queueBuffer</code> 只是把 buffer 放进 SF 侧 BufferQueue 的队列，等 SF 下一次合成时 <code>acquireBuffer</code> 才 latch。BLAST 把这段拆开：</p><ol><li><code>BufferQueueProducer::queueBuffer</code> 回调 <code>BLASTBufferQueue::onFrameAvailable()</code>（<code>native/libs/gui/BLASTBufferQueue.cpp:779</code>）。它只把 <code>mNumFrameAvailable++</code>（<code>:829</code>）记进“影子队列”，然后调 <code>acquireNextBufferLocked(std::nullopt)</code>（<code>:864</code>）。</li><li><code>acquireNextBufferLocked()</code>（<code>:567</code>）用 <code>mBufferItemConsumer-&gt;acquireBuffer(&amp;bufferItem, 0, false)</code>（<code>:600</code>）自己当消费者把 buffer 拿回来，<code>mNumAcquired++</code> 并记 <code>mLastAcquiredFrameNumber</code>。</li><li>构造 <code>SurfaceComposerClient::Transaction</code>，<code>t-&gt;setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId, releaseBufferCallback, dequeueTime)</code>（<code>:667</code>）连同 dataspace/HDR/damage/crop/transform 一起写入，并 <code>addTransactionCompletedCallback(makeTransactionCallbackThunk(), nullptr)</code>（<code>:672</code>）。</li><li><code>mergePendingTransactions(t, bufferItem.mFrameNumber)</code>（<code>:723</code>）合入 <code>mergeWithNextTransaction</code> 挂起的交易；然后 <code>t-&gt;setApplyToken(mApplyToken).apply(false, true)</code>（<code>:726</code>）——<strong>one-way 的 <code>ISurfaceComposer::setTransactionState</code></strong>，一步跨进程送到 SF。</li></ol><p>apply 成功会置 <code>mAppliedLastTransaction = true</code>、<code>mLastAppliedFrameNumber</code>、<code>mSetBufferBarrier = true</code>（<code>:738-740</code>）；失败则 <code>LOG_ALWAYS_FATAL</code>。也就是说：<strong>BLAST 下 queueBuffer 之后 buffer 几乎立刻（同一调用栈内）就进了 SF 的 Transaction 队列</strong>，合成时机由 SF 的 apply token 与 latch 逻辑决定，而不是由 BufferQueue 的占用决定。</p>"
+    },
+    {
+      "heading": "同步提交与单 buffer 模式：mergeWithNextTransaction / transaction ready callback",
+      "html": "<p>当 UI 线程需要“这一帧的改动必须和下一个 buffer 一起生效”时（例如 <code>SurfaceControl.Transaction</code> 的同步提交），走的是 <code>mergeWithNextTransaction()</code>（<code>BLASTBufferQueue.cpp:1100</code>）：若 <code>mLastAcquiredFrameNumber &gt;= frameNumber</code> 说明目标帧已被 acquire，直接 <code>t-&gt;setApplyToken(mApplyToken).apply()</code>；否则把交易塞进 <code>mPendingTransactions</code> 并 <code>t-&gt;clear()</code>，等 <code>acquireNextBufferLocked</code> 里 <code>mergePendingTransactions</code> 合并。</p><p>另一条路径是 <code>syncNextTransaction()</code>（<code>:887</code>）配合 <code>mTransactionReadyCallback</code> / <code>mSyncTransaction</code> / <code>mAcquireSingleBuffer</code>（<code>BLASTBufferQueue.h:324</code> 默认 <code>true</code>）：此时 <code>onFrameAvailable</code> 会把 buffer 装进复用的 <code>mSyncTransaction</code> 而<strong>不立刻 apply</strong>，等客户端调 <code>mTransactionReadyCallback</code> 时才把整条交易连同 buffer 一起提交，保证“这组 SurfaceControl 属性 + 这一个 buffer”原子生效。因为要复用同一条 <code>mSyncTransaction</code>，代码在 <code>:796-802</code> 会把上一次塞进去的 buffer 先 <code>releaseBuffer</code> 掉以尽早腾出 slot。</p><blockquote>理解要点：BLAST 的“同步”不是等 buffer，而是<strong>让 buffer 与 Transaction 同生共死</strong>——buffer 不再单独进 SF 的队列，而是 Transaction 的一个字段。</blockquote>"
+    },
+    {
+      "heading": "三缓冲 / slot 状态机与 dequeue 阻塞条件",
+      "html": "<p>slot 状态定义在 <code>native/libs/gui/include/gui/BufferSlot.h:35</code> 的 <code>struct BufferState</code>，用 <code>mDequeueCount</code>/<code>mQueueCount</code>/<code>mAcquireCount</code>/<code>mShared</code> 四个计数表达五种状态：FREE / DEQUEUED / QUEUED / ACQUIRED / SHARED（同文件 <code>:50-58</code> 的状态表）。<code>isFree()</code> 的实现是 <code>!isAcquired() &amp;&amp; !isDequeued() &amp;&amp; !isQueued()</code>。</p><p>dequeue 是否阻塞由 <code>BufferQueueProducer::waitForFreeSlotThenRelock()</code>（<code>BufferQueueProducer.cpp:347</code>）决定，条件不止“有没有 free slot”：</p><ul><li>在已经 queue 过 buffer（<code>mCore-&gt;mBufferHasBeenQueued</code>）之后，已 dequeue 的数量 <code>dequeuedCount &gt;= mCore-&gt;mMaxDequeuedBufferCount</code> 直接 <code>INVALID_OPERATION</code>（默认值 1，见 <code>BufferQueueCore.cpp:121</code>；检查在 <code>BufferQueueProducer.cpp:372-373</code>）；</li><li><code>mCore-&gt;mQueue.size() &gt; maxBufferCount</code>（tooManyBuffers）也会等，防止生产者跑太快把内存吃光；</li><li>非阻塞模式（<code>mDequeueBufferCannotBlock</code> 或 <code>mAsyncMode</code>）且 acquired 未超限时返回 <code>WOULD_BLOCK</code>，否则调用虚函数 <code>waitForBufferRelease(lock, mDequeueTimeout)</code>（<code>:438</code>）：基类实现是 <code>mDequeueCondition.wait/wait_for</code>（<code>:448-460</code>）；BLAST 的 <code>BBQBufferQueueProducer</code> 覆写它，解锁后在 <code>BufferReleaseReader::readBlocking</code> 上等 SF 经 BufferReleaseChannel 发来的 release，读到后直接 <code>bbq-&gt;releaseBufferCallback(...)</code>（<code>BLASTBufferQueue.cpp:1302-1331</code>）。</li></ul><p>BLAST 侧还有自己的上限：<code>mMaxAcquiredBuffers</code> 默认 1（<code>BLASTBufferQueue.h:206</code>），<code>acquireNextBufferLocked</code> 在 <code>mNumAcquired &gt;= (mMaxAcquiredBuffers + 2)</code> 时直接返回 <code>NO_BUFFER_AVAILABLE</code>（<code>:578</code>）；<code>onFrameAvailable</code> 在同步模式下会 <code>mCallbackCV.wait(_lock)</code> 直到有 buffer 可用（<code>:847-850</code>）。所谓“三缓冲”指的是 slot 总数与 <code>mMaxAcquiredBufferCount + mMaxDequeuedBufferCount</code> 的组合，hwui 侧默认配置不由本文件写死；<strong>三缓冲并不意味着 dequeue 永不阻塞</strong>。</p>"
+    },
+    {
+      "heading": "等待与回传：TransactionCompletedListener、frame commit 回调与 FrameTimeline",
+      "html": "<p>RT 不等待“上屏”，只登记回调。<code>CanvasContext.h:225</code> 的 <code>addFrameCommitListener</code> 把 <code>std::function&lt;void(bool)&gt;</code> 塞进 <code>mFrameCommitCallbacks</code>，<code>CanvasContext::draw</code> 在 <code>didSwap</code> 时以 <code>true</code> 回调（<code>CanvasContext.cpp:878-883</code>），跳过帧时以 <code>false</code> 回调（<code>:719-721</code>）。</p><p>真正的 applied/presented 信息来自 BLAST 侧：<code>Transaction::addTransactionCompletedCallback</code>（<code>native/libs/gui/SurfaceComposerClient.cpp:1990</code>）注册到进程内的 <code>TransactionCompletedListener</code>（实现在 <code>SurfaceComposerClient.cpp</code> 内，构造函数见 <code>:389</code>），SF 通过 <code>ITransactionCompletedListener</code> 把 <code>TransactionStats</code>/<code>SurfaceControlStats</code>（含 <code>presentFence</code>、<code>latchTime</code>、frame number）回调回来，<code>onTransactionCompleted</code>（<code>:481</code> 附近）再按 <code>CallbackId::Type::ON_COMMIT</code> / <code>ON_COMPLETE</code> 分发。buffer 回收<strong>不</strong>主要靠 <code>transactionCallback</code>（<code>BLASTBufferQueue.cpp:389</code>）：它只对 stats 里已失效的旧 buffer 做 <code>releaseBufferCallbackLocked(..., true /* fakeRelease */)</code> 兜底。正常回收走 <code>setBuffer</code> 时登记的 <code>releaseBufferCallback</code>：SF 经 binder <code>ITransactionCompletedListener::onReleaseBuffer</code>（<code>SurfaceComposerClient.cpp:646</code>）、<code>onTransactionCompleted</code> 中 surfaceStats 携带的 previousReleaseFence（<code>:569-572</code>），或 BufferReleaseChannel socket 回到 <code>BLASTBufferQueue::releaseBufferCallback</code>（<code>:481</code>）→ <code>releaseBufferCallbackLocked</code>（<code>:490</code>）。后者先放进 <code>mPendingRelease</code>，按 SF 回传的 <code>currentMaxAcquiredBufferCount</code> 计算 EGL 客户端需要暂扣的数量 <code>numPendingBuffersToHold = max(0, mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount)</code>（<code>:507-508</code>），超出部分才 <code>releaseBuffer</code> 还给 BufferQueue 并尝试 <code>acquireNextBufferLocked</code>（<code>:521-531</code>）——这才是下一帧能 dequeue 到 buffer 的前提。</p><p>FrameTimeline 通路是另一条独立的：<code>CanvasContext::draw</code> 组装 <code>ANativeWindowFrameTimelineInfo ftl</code>（含 <code>frameTimelineVsyncId</code>、<code>startTimeNanos</code>、<code>dequeueBufferDurationNanos</code>、<code>vsyncResyncedJitterNanos</code>），经 <code>SkiaPipeline::setFrameTimelineInfo</code>（<code>base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:620</code>）→ <code>native_window_set_frame_timeline_info</code> → <code>BLASTBufferQueue::setFrameTimelineInfo</code>（<code>BLASTBufferQueue.cpp:1074</code>）压入 <code>mPendingFrameTimelines</code>，在 <code>acquireNextBufferLocked</code> 中按 frame number 匹配后 <code>t-&gt;setFrameTimelineInfo(...)</code>（<code>:719</code>）。所以在 SF 侧看到的 FrameTimeline 归属，是 App 端按帧号对齐带过去的。</p>"
+    },
+    {
+      "heading": "观测手段：trace tag 与计数器",
+      "html": "<p>这一阶段最有效的观测手段是 atrace（<code>atrace -t 10 gfx</code> 或 Perfetto 的 <code>android.graphics</code> / <code>gfx</code> 数据源）：</p><ul><li><code>DrawFrames &lt;vsyncId&gt;</code>（<code>DrawFrameTask.cpp:91</code>）—— RT 上整帧的总括，vsyncId 直接可与 SF 的 FrameTimeline 对齐；</li><li><code>Drawing &lt;l,t,r,b&gt;</code>（<code>CanvasContext.cpp:736</code>）—— 实际脏区，若恒为全屏说明 dirty 计算失效或 <code>mHaveNewSurface</code> 刚置位；</li><li><code>flush commands</code>（<code>SkiaOpenGLPipeline.cpp:181</code>）—— GPU 命令提交耗时；</li><li><code>dequeueBuffer</code>/<code>queueBuffer</code>（<code>BufferQueueProducer</code> 中各自的 <code>ATRACE_CALL()</code>，queueBuffer 的在 <code>BufferQueueProducer.cpp:978</code>；Surface 侧另有 <code>Surface::dequeueBuffer</code> 的切片）—— 阻塞点，若耗时高说明消费端（SF/BLAST 释放）跟不上；</li><li><code>acquireNextBufferLocked</code> 里的 <code>BBQ_TRACE()</code> 与 <code>BLASTBufferQueue::onFrameAvailable</code> 的 <code>BBQ_TRACE()</code>。</li></ul><p>计数器方面：<code>FrameInfoIndex::DequeueBufferDuration</code> / <code>QueueBufferDuration</code>（<code>CanvasContext.cpp:852-853</code>）会随 frame 上报给 <code>gfxinfo</code>；<code>Surface::onBufferQueuedLocked</code> 里的 <code>mConsumerRunningBehind = (output.numPendingBuffers &gt;= 2)</code> 是判断是否掉进三缓冲的快速信号。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+      "symbol": "RenderThread::threadLoop",
+      "lines": "420-452",
+      "code": "bool RenderThread::threadLoop() {\n    setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);\n    Looper::setForThread(mLooper);\n    if (gOnStartHook) {\n        gOnStartHook(\"RenderThread\");\n    }\n    initThreadLocals();\n\n    while (true) {\n        waitForWork();\n        processQueue();\n\n        if (mPendingRegistrationFrameCallbacks.size() && !mFrameCallbackTaskPending) {\n            mVsyncSource->drainPendingEvents();\n            mFrameCallbacks.insert(mPendingRegistrationFrameCallbacks.begin(),\n                                   mPendingRegistrationFrameCallbacks.end());\n            mPendingRegistrationFrameCallbacks.clear();\n            requestVsync();\n        }\n\n        if (!mFrameCallbackTaskPending && !mVsyncRequested && mFrameCallbacks.size()) {\n            // TODO: Clean this up. This is working around an issue where a combination\n            // of bad timing and slow drawing can result in dropping a stale vsync\n            // on the floor (correct!) but fails to schedule to listen for the\n            // next vsync (oops), so none of the callbacks are run.\n            requestVsync();\n        }\n\n        mCacheManager->onThreadIdle();\n    }\n\n    return false;\n}",
+      "note": "RenderThread 是一个自带 Looper 的普通 pthread：先 waitForWork 睡在 RenderTask 队列/VSYNC 上，醒来 processQueue 执行 DrawFrameTask::run；若无帧回调待办会主动 requestVsync。注意这里没有任何 Binder 调用，RT 与 UI 之间只靠 RenderTask 队列和条件变量通信。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "DrawFrameTask::run",
+      "lines": "89-141",
+      "code": "void DrawFrameTask::run() {\n    const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];\n    ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);\n\n    mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);\n    mContext->setTargetSdrHdrRatio(mRenderSdrHdrRatio);\n\n    auto hardwareBufferParams = mHardwareBufferParams;\n    mContext->setHardwareBufferRenderParams(hardwareBufferParams);\n    IRenderPipeline* pipeline = mContext->getRenderPipeline();\n    bool canUnblockUiThread;\n    bool canDrawThisFrame;\n    bool solelyTextureViewUpdates;\n    {\n        TreeInfo info(TreeInfo::MODE_FULL, *mContext);\n        info.forceDrawFrame = mForceDrawFrame;\n        mForceDrawFrame = false;\n        canUnblockUiThread = syncFrameState(info);\n        canDrawThisFrame = !info.out.skippedFrameReason.has_value();\n        solelyTextureViewUpdates = info.out.solelyTextureViewUpdates;\n\n        if (mFrameCommitCallback) {\n            mContext->addFrameCommitListener(std::move(mFrameCommitCallback));\n            mFrameCommitCallback = nullptr;\n        }\n    }\n    // ...\n    // From this point on anything in \"this\" is *UNSAFE TO ACCESS*\n    if (canUnblockUiThread) {\n        unblockUiThread();\n    }\n    // ...\n    if (CC_LIKELY(canDrawThisFrame)) {\n        context->draw(solelyTextureViewUpdates);",
+      "note": "帧在 RT 上真正执行的入口。syncFrameState 把 UI 线程的 RenderNode 树同步过来（并在满足条件时立刻 unblockUiThread，让 UI 线程先去跑下一帧的 measure/layout），然后 context->draw() 进入 GPU 绘制。trace 名 DrawFrames <vsyncId> 是这条链的锚点。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/EglManager.cpp",
+      "symbol": "EglManager::swapBuffers",
+      "lines": "621-646",
+      "code": "bool EglManager::swapBuffers(const Frame& frame, const SkRect& screenDirty) {\n    if (CC_UNLIKELY(Properties::waitForGpuCompletion)) {\n        ATRACE_NAME(\"Finishing GPU work\");\n        fence();\n    }\n\n    EGLint rects[4];\n    frame.map(screenDirty, rects);\n    eglSwapBuffersWithDamageKHR(mEglDisplay, frame.mSurface, rects, screenDirty.isEmpty() ? 0 : 1);\n\n    EGLint err = eglGetError();\n    if (CC_LIKELY(err == EGL_SUCCESS)) {\n        return true;\n    }\n    if (err == EGL_BAD_SURFACE || err == EGL_BAD_NATIVE_WINDOW) {\n        // For some reason our surface was destroyed out from under us\n        // This really shouldn't happen, but if it does we can recover easily\n        // by just not trying to use the surface anymore\n        ALOGW(\"swapBuffers encountered EGL error %d on %p, halting rendering...\", err,\n              frame.mSurface);\n        return false;\n    }\n    LOG_ALWAYS_FATAL(\"Encountered EGL error %d %s during rendering\", err, egl_error_str(err));\n    // Impossible to hit this, but the compiler doesn't know that\n    return false;\n}",
+      "note": "关键事实：hwui 只调用 eglSwapBuffersWithDamageKHR，dequeueBuffer 与 queueBuffer 都发生在 EGL 驱动内部（EGL_ANDROID_* 的 native window hook），所以 AOSP 的 Java/native 层看不到显式 queueBuffer 调用点。"
+    },
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "BLASTBufferQueue::acquireNextBufferLocked",
+      "lines": "667-746",
+      "code": "    t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId,\n                 releaseBufferCallback, dequeueTime);\n    t->setDataspace(mSurfaceControl, static_cast<ui::Dataspace>(bufferItem.mDataSpace));\n    t->setHdrMetadata(mSurfaceControl, bufferItem.mHdrMetadata);\n    t->setSurfaceDamageRegion(mSurfaceControl, bufferItem.mSurfaceDamage);\n    t->addTransactionCompletedCallback(makeTransactionCallbackThunk(), nullptr);\n\n    mSurfaceControlsWithPendingCallback.push(mSurfaceControl);\n    // ...\n    mergePendingTransactions(t, bufferItem.mFrameNumber);\n    if (applyTransaction) {\n        // All transactions on our apply token are one-way. See comment on mAppliedLastTransaction\n        status_t status = t->setApplyToken(mApplyToken).apply(false, true);\n        if (status != OK) {\n            BQA_LOGE(\"Transaction Failure Details: Status: %d (%s), Pending Transactions Merged: \"\n                     \"%zu, Transaction ID: %\" PRIu64 \", Frame Number: %\" PRIu64\n                     \", Buffer Size: %dx%d\",\n                     status, statusToString(status).c_str(), mPendingTransactions.size(),\n                     t->getId(), bufferItem.mFrameNumber, bufferItem.mGraphicBuffer->getWidth(),\n                     bufferItem.mGraphicBuffer->getHeight());\n        }\n        LOG_ALWAYS_FATAL_IF(status != OK,\n                            \"[%s] acquireNextBufferLocked failed to apply transaction. status=%d\",\n                            mName.c_str(), status);\n        mAppliedLastTransaction = true;\n        mLastAppliedFrameNumber = bufferItem.mFrameNumber;\n        mSetBufferBarrier = true;\n    } else {\n        if (mSetBufferBarrier) {\n          t->setBufferHasBarrier(mSurfaceControl, mLastAppliedFrameNumber);\n        }\n        mAppliedLastTransaction = false;\n    }",
+      "note": "acquireNextBufferLocked（定义于 BLASTBufferQueue.cpp:567）的后半段：buffer 被 BLASTBufferQueue 自己 acquire 后，用 setBuffer 挂到 Transaction 上（同时登记 releaseBufferCallback），合并挂起事务后以 one-way 的 apply(false, true) 经 apply token 提交给 SF；不立即 apply 时设置 buffer barrier 保证顺序。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mMaxDequeuedBufferCount",
+      "type": "int（BufferQueueCore）",
+      "desc": "生产者允许同时 dequeue 的 slot 数上限，默认 1（BufferQueueCore.cpp:121）。它是 dequeue 阻塞的第一道闸门：在已 queue 过 buffer（mBufferHasBeenQueued）后，超限直接 INVALID_OPERATION，而不是等待（BufferQueueProducer.cpp:372-373）。由 setMaxDequeuedBufferCount 调整，受 NUM_BUFFER_SLOTS 约束。"
+    },
+    {
+      "name": "BufferState（mDequeueCount / mQueueCount / mAcquireCount / mShared）",
+      "type": "struct，每个 slot 一份",
+      "desc": "BufferSlot.h:35。用四个计数表达 FREE/DEQUEUED/QUEUED/ACQUIRED/SHARED 五态，所有迁移都在 mCore->mMutex 保护下完成；isFree() 是三条取反的与，决定 dequeue 能否拿到 slot。"
+    },
+    {
+      "name": "mNumFrameAvailable",
+      "type": "int32_t（BLASTBufferQueue，GUARDED_BY(mMutex)）",
+      "desc": "BLASTBufferQueue.h:207，默认 0。即 BLAST 的“影子队列”深度：onFrameAvailable 加一，acquireNextBufferLocked 减一。它与 mNumAcquired、mPendingRelease.size() 一起决定 ATRACE_INT 的排队 buffer 数值，是 BLAST 相对旧 BufferQueue 最直接的模型变化载体。"
+    },
+    {
+      "name": "mMaxAcquiredBuffers",
+      "type": "int32_t（BLASTBufferQueue）",
+      "desc": "BLASTBufferQueue.h:206，默认 1。控制 BLAST 一次能从生产者的 BufferQueue 里 acquire 多少 buffer；acquireNextBufferLocked 用 mNumAcquired >= (mMaxAcquiredBuffers + 2) 作为硬上限返回 NO_BUFFER_AVAILABLE，超出部分留在影子队列里等 release。"
+    },
+    {
+      "name": "mSyncTransaction / mTransactionReadyCallback / mAcquireSingleBuffer",
+      "type": "Transaction* / std::function / bool",
+      "desc": "BLAST 的同步提交三件套（BLASTBufferQueue.h:293/295/324）。mAcquireSingleBuffer 默认 true：此时 buffer 装进 mSyncTransaction 后不立刻 apply，等 transaction ready callback 触发才整条提交，实现 SurfaceControl 属性与 buffer 的原子生效。"
+    },
+    {
+      "name": "mLastAppliedFrameNumber / mAppliedLastTransaction / mSetBufferBarrier",
+      "type": "uint64_t / bool / bool",
+      "desc": "记录 BLAST 最近一次 apply 的帧号与状态。acquireNextBufferLocked 在非立即 apply 分支里用 t->setBufferHasBarrier(mSurfaceControl, mLastAppliedFrameNumber)（:743）给后续交易设 buffer barrier，保证 setBuffer 的顺序性——这是 BLAST 正确性的核心不变量。"
+    },
+    {
+      "name": "mFrameCommitCallbacks",
+      "type": "std::vector<std::function<void(bool)>>（CanvasContext）",
+      "desc": "CanvasContext.h:225 的 addFrameCommitListener 向其追加；CanvasContext::draw 在 didSwap/did not draw 两条路径分别以 true/false 调用并 clear（:719-721、:878-883）。它等价于旧模型的“draw 完成”通知，但语义是“buffer 已提交”，不是“已上屏”。"
+    },
+    {
+      "name": "TimeLord::mFrameTimeNanos / mFrameDeadline / mFrameIntervalNanos",
+      "type": "nsecs_t / int64_t",
+      "desc": "TimeLord.cpp:24-29 初始化（frameInterval 默认 16ms，deadline 默认 INT64_MAX），vsyncReceived 只在 intendedVsync 更大时更新。它是 RT 侧的 VSYNC 本地视图，与 Java 侧 UiFrameInfoBuilder 的 FrameInfo 共享同一组 vsyncId/vsync 时间。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "atrace slice（DrawFrameTask.cpp:91）",
+      "desc": "RT 侧整帧总括，时长约 3~8ms（Skia 回放 + GPU 提交 + queueBuffer）。用 vsyncId 与 SF 侧 FrameTimeline 的 expected/actual present 对齐，是判断 App 侧 jank 的第一入口。"
+    },
+    {
+      "name": "Drawing <dirty rect>",
+      "value": "atrace slice（CanvasContext.cpp:736）",
+      "desc": "只有 Skia 回放部分，不含 fence 等待与 swap。异常偏小说明 dirty 计算过于乐观（残影风险），恒为全屏说明 <code>mHaveNewSurface</code> 刚置位或 buffer age 失效。"
+    },
+    {
+      "name": "flush commands",
+      "value": "atrace slice（SkiaOpenGLPipeline.cpp:181）",
+      "desc": "skgpu::ganesh::FlushAndSubmit 的耗时，纯 GPU 命令提交（不是 GPU 执行完成）。持续 >2ms 通常是 shader 编译/纹理上传（GrContext flush 里有 upload）导致的。"
+    },
+    {
+      "name": "dequeueBuffer / queueBuffer",
+      "value": "atrace slice（BufferQueueProducer::dequeueBuffer / queueBuffer 各自的 ATRACE_CALL；queueBuffer 的在 BufferQueueProducer.cpp:978）",
+      "desc": "queueBuffer 内含 <code>lastQueuedFence->waitForever(\"Throttling EGL Production\")</code>（:1284，仅 EGL producer 且 enableEglCpuThrottling 时，等上一帧的 fence）的 CPU 节流等待，是常见的“莫名 5ms”来源；dequeueBuffer 长则说明 BLAST/SF 还没 release 旧 buffer。"
+    },
+    {
+      "name": "FrameInfoIndex::DequeueBufferDuration / QueueBufferDuration",
+      "value": "nsecs，随帧上报 gfxinfo / FrameTimeline",
+      "desc": "CanvasContext.cpp:852-853 从 ANativeWindow_getLastDequeueDuration / getLastQueueDuration 取值写入 FrameInfo，可用 dumpsys gfxinfo 或 Perfetto 的 frame timeline 表读取。"
+    },
+    {
+      "name": "ATRACE_INT(<queued buffer trace>)",
+      "value": "计数器（BLASTBufferQueue.cpp:833）",
+      "desc": "值等于 mNumFrameAvailable + mNumAcquired - mPendingRelease.size()，即 BLAST 眼里当前被占用的 buffer 数。长期 >=3 说明消费端跟不上，App 会被 dequeue 阻塞。"
+    }
+  ],
+  "pitfalls": [
+    "GL 路径在 hwui 里搜不到 queueBuffer 调用点不是代码缺失：dequeueBuffer 与 queueBuffer 都发生在 EGL 驱动内部（queue 在 eglSwapBuffersWithDamageKHR 中），由 EGL 驱动的 native window hook 回调 Surface::hook_queueBuffer。想加日志/断点必须放在 BufferQueueProducer::queueBuffer 或 Surface::queueBufferImpl。Vulkan 路径则相反，VulkanSurface 显式调用 dequeueBuffer（VulkanSurface.cpp:409）与 queueBuffer（:520）。",
+    "queueBuffer 返回 OK ≠ 帧已上屏，甚至 ≠ 帧已进 SF 合成流程。要等 TransactionCompletedListener 的 ON_COMPLETE 回调（带 presentFence）才算“呈现”；把 swapBuffers 返回当作上屏信号会让 latency 统计系统性偏小一个 VSYNC 周期。",
+    "BLAST 下 buffer 不再“留在 SF 的 BufferQueue 里等 latch”，而是被 BLASTBufferQueue 自己 acquireBuffer 后随 Transaction 提交。所以旧的经验“数 BufferQueue 里 queued 的 buffer 判断是否掉帧”在 BLAST 下会得到错答案，应改看 mNumFrameAvailable/mNumAcquired/mPendingRelease 这三个量。",
+    "三缓冲不等于 dequeue 永远不阻塞：mMaxDequeuedBufferCount 默认 1（BufferQueueCore.cpp:121），BLAST 侧 mMaxAcquiredBuffers 默认 1 且硬上限是 +2。只要 SF 迟迟不 release，dequeueBuffer 或 BLAST 的 mCallbackCV 等待仍会发生，表现为丢帧或 RT 卡在 swapBuffers。",
+    "ReliableSurface::reserveNext()（ReliableSurface.cpp:74）会在真正绘制前就预 dequeue 一个 buffer 留作 fallback，clearReservedBuffer 才 cancel。如果在 dequeue/queue 路径上打计数，会看到“多出来的一次 dequeue”，不要误判为丢帧。",
+    "DrawFrameTask::run 里 unblockUiThread 之后，“this”就不再安全：注释明确写了 From this point on anything in \"this\" is *UNSAFE TO ACCESS*。任何在此之后访问 DrawFrameTask 成员（例如 mContext、mFrameInfo）的改动都是数据竞争。",
+    "以为 BLAST 在 transactionCallback 里回收 buffer：那里只对失效的旧 buffer 做 fakeRelease 兜底；正常回收靠 releaseBufferCallback（binder onReleaseBuffer / BufferReleaseChannel），且 EGL 客户端会按 maxAcquiredBufferCount 在 mPendingRelease 里暂扣部分 buffer（BLASTBufferQueue.cpp:490-531）。"
+  ],
+  "traceTags": [
+    "DrawFrames",
+    "Drawing",
+    "flush commands",
+    "dequeueBuffer",
+    "queueBuffer",
+    "acquireNextBufferLocked",
+    "gfx"
+  ],
+  "next": "stage-07"
+}

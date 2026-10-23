@@ -1,0 +1,141 @@
+{
+  "id": "stage-02",
+  "num": 2,
+  "title": "VSYNC 请求：Choreographer→SF",
+  "subtitle": "app 主线程用一次 binder oneway 预约下一拍，SurfaceFlinger 的 EventThread 用预测模型加定时器把它变成一次准时的 vsync",
+  "lane": "SF",
+  "durationHint": "binder 请求本身约 10~100 μs；从请求到事件送达最长一个刷新周期（60Hz 下 16.7 ms）",
+  "summary": "当 app 主线程需要绘制下一帧时，Choreographer.postCallbackDelayedInternal() 先把回调插入 mCallbackQueues，再在 scheduleFrameLocked() 里把 mFrameScheduled 置真并调用 scheduleVsyncLocked() → DisplayEventReceiver.scheduleVsync() → JNI nativeScheduleVsync() → native DisplayEventDispatcher::scheduleVsync()，最后由 DisplayEventReceiver::requestNextVsync() 经 binder oneway 打到 SurfaceFlinger 的 EventThreadConnection::requestNextVsync()。SF 的 app EventThread 把该连接置为 VSyncRequest::Single，threadMain() 发现有人要 vsync 后进入 State::VSync，用 VSyncCallbackRegistration::schedule() 在 VSyncDispatchTimerQueue 预约一次唤醒；定时器到点触发 EventThread::onVsync()，把 VSyncPredictor 预测出的 vsync 时刻封装成 DisplayEventReceiver::Event 塞进 mPendingEvents。这一阶段只完成“预约”，事件真正送到 app 进程是 stage-03 的事。",
+  "callchain": [
+    "android.view.Choreographer.postCallbackDelayedInternal()",
+    "android.view.Choreographer.scheduleFrameLocked()",
+    "android.view.Choreographer.scheduleVsyncLocked()",
+    "android.view.DisplayEventReceiver.scheduleVsync()",
+    "android.view.DisplayEventReceiver.nativeScheduleVsync()  // JNI",
+    "android::DisplayEventDispatcher::scheduleVsync()",
+    "android::DisplayEventReceiver::requestNextVsync()",
+    "android::EventThreadConnection::requestNextVsync()  // binder oneway",
+    "android::impl::EventThread::requestNextVsync()",
+    "android::impl::EventThread::threadMain()  // State::VSync",
+    "android::scheduler::VSyncCallbackRegistration::schedule()",
+    "android::scheduler::VSyncDispatchTimerQueueEntry::schedule()",
+    "android::scheduler::VSyncDispatchTimerQueue::setTimer()",
+    "android::scheduler::VSyncDispatchTimerQueue::timerCallback()",
+    "android::impl::EventThread::onVsync()  // 进入 mPendingEvents"
+  ],
+  "sections": [
+    {
+      "heading": "触发者与门闩：Choreographer 只允许排队一次 vsync",
+      "html": "<p>触发者是 app 主线程上任何想改变画面的人：<code>ViewRootImpl.scheduleTraversals()</code>、动画、<code>View.postOnAnimation()</code>、输入事件处理完后请求重绘等，最终都会落到 <code>Choreographer.postCallbackDelayedInternal()</code>（base/core/java/android/view/Choreographer.java:622）。它在 <code>synchronized (mLock)</code> 里算出 <code>dueTime = now + delayMillis</code>，把 <code>CallbackRecord</code> 按 dueTime 有序插入 <code>mCallbackQueues[callbackType]</code>；若 <code>dueTime &lt;= now</code> 就立即 <code>scheduleFrameLocked(now)</code>，否则投一条 <code>MSG_DO_SCHEDULE_CALLBACK</code> 异步消息到 dueTime 再补发。</p><p><code>scheduleFrameLocked()</code>（同文件 919 行）只有一个职责：用 <code>mFrameScheduled</code> 做门闩，保证“一帧只向 SurfaceFlinger 要一次 vsync”。<strong>关键细节</strong>：如果调用线程不是 Choreographer 绑定的那个 Looper 线程，它不能直接调 native，因为 <code>DisplayEventReceiver</code> 明确“NOT thread safe … methods must only be called on the Looper thread to which it is attached”（DisplayEventReceiver.java 类注释），于是它改投一条 <code>MSG_DO_SCHEDULE_VSYNC</code> 到消息队首，由 <code>doScheduleVsync()</code> 在 Looper 线程上补发。</p><ul><li><code>CALLBACK_INPUT(0)</code>/<code>CALLBACK_ANIMATION(1)</code>/<code>CALLBACK_INSETS_ANIMATION(2)</code>/<code>CALLBACK_TRAVERSAL(3)</code>/<code>CALLBACK_COMMIT(4)</code> 共用同一套请求逻辑，只有 callbackType 不同。</li><li><code>USE_VSYNC</code> 来自系统属性 <code>debug.choreographer.vsync</code>（Choreographer.java:160/164），关掉后退化为 <code>sFrameDelay</code> 的定时消息模式，不再走 SF。</li><li>所有这条路径上的 Message 都调用 <code>msg.setAsynchronous(true)</code>，避免被 sync barrier 挡住——这是后续“同步屏障只挡普通消息、不挡 vsync/输入”的基础。</li></ul>"
+    },
+    {
+      "heading": "跨进程的两条通路：binder 去、BitTube 回",
+      "html": "<p>请求方向是标准 binder oneway：<code>DisplayEventReceiver.scheduleVsync()</code>（DisplayEventReceiver.java:346）调用 <code>@FastNative nativeScheduleVsync</code>，JNI 侧 <code>android_view_DisplayEventReceiver.cpp:374</code> 把它转给 <code>NativeDisplayEventReceiver</code>（继承 <code>DisplayEventDispatcher</code>）的 <code>scheduleVsync()</code>。</p><p><code>DisplayEventDispatcher::scheduleVsync()</code>（native/libs/gui/DisplayEventDispatcher.cpp:79）做两件容易被忽略的事：第一，用 <code>mWaitingForVsync</code> 去重，已经有一次请求挂起时直接返回，不会向 SF 叠加请求；第二，先 <code>processPendingEvents()</code> 把 BitTube 里残留的事件读空（源码注释 “Drain all pending events”），把陈旧的 vsync 丢掉，只保留最新的。之后才 <code>mReceiver.requestNextVsync()</code>。</p><p><code>android::DisplayEventReceiver::requestNextVsync()</code>（native/libs/gui/DisplayEventReceiver.cpp:93）就是 <code>mEventConnection-&gt;requestNextVsync()</code>；<code>mEventConnection</code> 是 <code>gui::IDisplayEventConnection</code> 在本进程的代理（<code>EventThreadConnection</code>），所以这是一次 AIDL oneway binder 调用。<strong>回程完全不用 binder</strong>：连接建立时 <code>DisplayEventReceiver</code> 构造函数调 <code>ISurfaceComposer.createDisplayEventConnection()</code>（native/libs/gui/aidl/android/gui/ISurfaceComposer.aidl:89），拿到连接后立刻 <code>stealReceiveChannel()</code>，SF 端 <code>EventThreadConnection::stealReceiveChannel()</code>（EventThread.cpp:247）把 <code>mChannel.moveReceiveFd()</code> 交出去，经 <code>BitTube::writeToParcel()</code>（BitTube.cpp:117）用 <code>writeDupFileDescriptor</code> 把 socketpair 的 fd 传过来；app 侧再 <code>mLooper-&gt;addFd(mReceiver.getFd(), …)</code>（DisplayEventDispatcher.cpp:53 <code>initialize()</code>）把它挂到 MessageQueue 的 native Looper 上。</p><table><thead><tr><th>通路</th><th>载体</th><th>源码位置</th></tr></thead><tbody><tr><td>请求 SF 发 vsync</td><td>binder oneway（IDisplayEventConnection）</td><td>DisplayEventReceiver.cpp:93</td></tr><tr><td>vsync 回程</td><td>socketpair（AF_UNIX SOCK_SEQPACKET）dup 出的 fd</td><td>BitTube.cpp:49 / 117</td></tr><tr><td>唤醒 app 线程</td><td>native Looper epoll</td><td>DisplayEventDispatcher.cpp:53</td></tr></tbody></table>"
+    },
+    {
+      "heading": "SF 侧状态机：VSyncRequest 与“请求一次只发一次”",
+      "html": "<p><code>EventThread::requestNextVsync()</code>（EventThread.cpp:417）先 <code>mCallback.resync(...)</code> 让调度器与硬件重新对齐，再加锁改状态：<code>None → Single</code> 并 <code>mCondition.notify_all()</code> 唤醒 threadMain；若当前是 <code>SingleSuppressCallback</code> 则改回 <code>Single</code>。第二分支对应“上一拍的 vsync 已派发出去、调度器还在为下一拍保持唤醒”的场景。</p><p>真正的派发判定在 <code>EventThread::shouldConsumeEvent()</code>（EventThread.cpp:669-693）。<strong>这是“请求一次 vsync 只发一次事件”的实现位置</strong>：<code>VSyncRequest::Single</code> 命中一次 vsync 后并不归零，而是降级为 <code>SingleSuppressCallback</code> 并返回 true；下一拍再进来时 <code>SingleSuppressCallback</code> 分支把状态清成 <code>None</code> 并返回 false，于是不会重复投递。枚举注释把这个设计讲得很直白：<code>Single</code> “wakes up for the next two frames to avoid scheduler overhead”，<code>SingleSuppressCallback</code> “only wakes up for the next frame”。也就是说多出来的一拍<em>只唤醒、不派发</em>，目的是让 <code>State::VSync</code> 多维持一帧，避免反复 <code>schedule()/cancel()</code> 定时器带来的开销；如果 app 在这期间又请求，则被 <code>requestNextVsync</code> 拉回 <code>Single</code> 重新获得派发资格。</p><p><code>EventThread::threadMain()</code>（EventThread.cpp:530）是 SF 里唯一产生 vsync 事件的循环线程（pthread 名字就是 “app”）：取 <code>mPendingEvents</code> 队首 → 遍历 <code>mDisplayEventConnections</code> 用 <code>shouldConsumeEvent()</code> 选消费者 → <code>dispatchEvent()</code> → 若存在 <code>vsyncRequest != None</code> 的连接且 <code>mVSyncState</code> 有效，<code>updateState(State::VSync)</code> 并 <code>mVsyncRegistration.schedule({workDuration, readyDuration, lastVsync, committedVsyncOpt})</code>；否则 <code>updateState(State::Idle)</code> 并 <code>mVsyncRegistration.cancel()</code>。<strong>没人要 vsync 时 SF 会 cancel 掉这一整套模型</strong>，这是空闲省电的核心：Idle 状态下 threadMain 仅 <code>mCondition.wait(lock)</code>，硬件 vsync 也可以被关掉。</p><blockquote>源码中未体现：本分支 <code>Scheduler::createEventThread()</code>（Scheduler.cpp:583）只创建了一条名为 “app” 的 EventThread；旧版本中 app/sf/sf-work 三条 EventThread 的划分在当前源码里已不存在，因此“三组 phase offset 对应三条线程”的说法不成立，offset 通过 VsyncConfigSet 的字段（下一节）作用在 app 与 SF 各自的工作时长上。</blockquote>"
+    },
+    {
+      "heading": "定时器 vs 硬件：VSyncDispatchTimerQueue 与 VSyncPredictor",
+      "html": "<p>EventThread 的 <code>schedule()</code> 最终进入 <code>VSyncDispatchTimerQueueEntry::schedule()</code>（VSyncDispatchTimerQueue.cpp:90）。这是“下一拍到底在哪一刻、什么时候唤醒线程”的唯一决策点：先算 <code>nextVsyncTime = tracker.nextAnticipatedVSyncTimeFrom(max(lastVsync, now + workDuration + readyDuration), committedVsync)</code>，再算 <code>nextWakeupTime = nextVsyncTime - workDuration - readyDuration</code>、<code>nextReadyTime = nextVsyncTime - readyDuration</code>，最后 <code>mTimeKeeper-&gt;alarmAt(...)</code> 把定时器设到 <code>nextWakeupTime</code>。</p><p><strong>workDuration 就是相位偏移的现代表达</strong>：它表示“线程要在 vsync 之前多久被叫醒并干完活”。<code>Scheduler::setVsyncConfig()</code>（Scheduler.cpp:802）把 <code>config.appWorkDuration</code> 作为 workDuration、<code>config.sfWorkDuration</code> 作为 readyDuration 喂给 app EventThread（<code>setDuration(config.appWorkDuration, config.sfWorkDuration)</code>），再把 <code>config.sfWorkDuration</code> 作为 SF 合成线程自己的 workDuration。也就是说：<em>app 的唤醒提前量 = appWorkDuration + sfWorkDuration</em>，前半段留给 app 画帧，后半段留给 SF 合成。这两个字段来自 <code>VsyncConfiguration</code> 的 <code>VsyncConfigSet</code>，分 early / earlyGpu / late 三套（VsyncModulator 依场景切换）。当前 <code>debug.sf.use_phase_offsets_as_durations=false</code>（默认）时工厂创建的是 <code>impl::PhaseOffsets</code>（SurfaceFlingerDefaultFactory.cpp:47-53），把 <code>ro.surface_flinger.vsync_event_phase_offset_ns</code> / <code>ro.surface_flinger.vsync_sf_event_phase_offset_ns</code> 以及 <code>debug.sf.early_phase_offset_ns</code>、<code>debug.sf.high_fps_late_app_phase_offset_ns</code> 等属性换算成 <code>sfWorkDuration = vsyncDuration − sfOffset</code>、<code>appWorkDuration = vsyncDuration + (sfOffset − appOffset)</code>（VsyncConfiguration.cpp:120-145、174-195）。头文件里 <code>PhaseOffsets</code> 被注明为 “old implementation … considered as deprecated”；属性置 true 时改用 <code>impl::WorkDuration</code>，直接把配置当 duration 并反算 offset（<code>sfDurationToOffset</code>/<code>appDurationToOffset</code>，VsyncConfiguration.cpp:275-288），且此时若仍设置上述 phase offset 属性会 <code>LOG_ALWAYS_FATAL</code>（<code>validateSysprops()</code>，同文件 245-275）。</p><p><strong>迟到的请求怎么处理</strong>：<code>adjustVsyncIfNeeded()</code>（同文件 132 行）拦两种情况——<code>alreadyDispatchedForVsync</code>（<code>mLastDispatchTime</code> 与目标 vsync 距离小于 <code>mMinVsyncDistance</code>，同一拍不能派发两次）和 <code>nextVsyncTooClose</code>（目标离上一拍不足一个 <code>currentPeriod</code>），两者都会让预测器从 <code>mLastDispatchTime + 偏移</code> 重新取“再下一拍”，即整体顺延一个周期而绝不挤在同一拍上。若目标比已 armed 的还晚（<code>wouldSkipAVsyncTarget</code>/<code>wouldSkipAWakeup</code>），则保持原 armed 计划不抖动。</p><p><strong>定时器补偿 vsync 的意义</strong>：硬件 vsync 是离散脉冲，若每次都等脉冲到了才干活，整条流水线必然晚一个周期，来不及在下一拍合成。因此需要“在预测出的未来 vsync 之前 N 微秒主动醒来”的能力，这就是 <code>VSyncDispatchTimerQueue</code> 存在的理由。<code>timerCallback()</code>（VSyncDispatchTimerQueue.cpp:334）在定时器到点时对每个 armed entry 判 <code>wakeupTime &lt; mIntendedWakeupTime + mTimerSlack + lagAllowance</code>（<code>lagAllowance = max(now − mIntendedWakeupTime, 0)</code>，吸收线程被延迟唤醒的时延），再回调 <code>EventThread::onVsync(vsyncTime, wakeupTime, readyTime)</code>（EventThread.cpp:472）把 <code>makeVSync()</code> 推进 <code>mPendingEvents</code>。定时器负责“准点唤醒”，<code>VSyncPredictor</code> 负责“下一拍是哪一刻”，硬件 vsync 负责纠偏：HWC 回调进 <code>SurfaceFlinger::onComposerHalVsync()</code>（SurfaceFlinger.cpp:2535）→ <code>Scheduler::addResyncSample()</code>（Scheduler.cpp:978，<code>VsyncTimeSource::HwVsyncCallback</code>）→ <code>VsyncSchedule::addResyncSample()</code> → <code>VSyncReactor::addHwVsyncTimestamp()</code>（VSyncReactor.cpp:201）→ <code>VSyncPredictor::addVsyncTimestamp()</code>（VSyncPredictor.cpp:146）用环形缓冲 + 线性回归更新 period/slope，样本不足时以 <code>idealPeriod</code> 锚定。驱动卡死时 threadMain 还有兜底：<code>mState == State::VSync</code> 时 <code>wait_for(1000ms)</code> 超时会打印 “Faking VSYNC due to driver stall” 并伪造一个 vsync（<code>State::SyntheticVSync</code> 下是 16ms）。"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/Choreographer.java",
+      "symbol": "scheduleFrameLocked",
+      "lines": "919-948",
+      "code": "    private void scheduleFrameLocked(long now) {\n        if (!mFrameScheduled) {\n            mFrameScheduled = true;\n            if (USE_VSYNC) {\n                if (DEBUG_FRAMES) {\n                    Log.d(TAG, \"Scheduling next frame on vsync.\");\n                }\n\n                // If running on the Looper thread, then schedule the vsync immediately,\n                // otherwise post a message to schedule the vsync from the UI thread\n                // as soon as possible.\n                if (isRunningOnLooperThreadLocked()) {\n                    scheduleVsyncLocked();\n                } else {\n                    Message msg = mHandler.obtainMessage(MSG_DO_SCHEDULE_VSYNC);\n                    msg.setAsynchronous(true);\n                    mHandler.sendMessageAtFrontOfQueue(msg);\n                }\n            } else {\n                final long nextFrameTime = Math.max(\n                        mLastFrameTimeNanos / TimeUtils.NANOS_PER_MS + sFrameDelay, now);\n                if (DEBUG_FRAMES) {\n                    Log.d(TAG, \"Scheduling next frame in \" + (nextFrameTime - now) + \" ms.\");\n                }\n                Message msg = mHandler.obtainMessage(MSG_DO_FRAME);\n                msg.setAsynchronous(true);\n                mHandler.sendMessageAtTime(msg, nextFrameTime);\n            }\n        }\n    }",
+      "note": "Java 侧的“一帧一次 vsync”门闩：mFrameScheduled 去重，非 Looper 线程时改投 MSG_DO_SCHEDULE_VSYNC；USE_VSYNC=false 时退化为定时消息。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "symbol": "EventThread::requestNextVsync",
+      "lines": "417-429",
+      "code": "void EventThread::requestNextVsync(const sp<EventThreadConnection>& connection) {\n    mCallback.resync(IEventThreadCallback::ResyncCaller::RequestNextVsync);\n\n    std::lock_guard<std::mutex> lock(mMutex);\n\n    if (connection->vsyncRequest == VSyncRequest::None) {\n        connection->vsyncRequest = VSyncRequest::Single;\n        mCondition.notify_all();\n    } else if (connection->vsyncRequest == VSyncRequest::SingleSuppressCallback) {\n        connection->vsyncRequest = VSyncRequest::Single;\n    }\n}\n",
+      "note": "SF 侧的请求入口：None→Single 并唤醒 threadMain；SingleSuppressCallback→Single 表示“上一拍已消费，下一拍别吞掉”。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+      "symbol": "EventThread::shouldConsumeEvent",
+      "lines": "637-693",
+      "code": "bool EventThread::shouldConsumeEvent(const DisplayEventReceiver::Event& event,\n                                     const sp<EventThreadConnection>& connection) const {\n\n    // ...（省略 throttleVsync lambda 与 hotplug / mode / hdcp 等其它事件类型分支）\n\n        case DisplayEventType::DISPLAY_EVENT_VSYNC:\n            switch (connection->vsyncRequest) {\n                case VSyncRequest::None:\n                    return false;\n                case VSyncRequest::SingleSuppressCallback:\n                    connection->vsyncRequest = VSyncRequest::None;\n                    return false;\n                case VSyncRequest::Single: {\n                    if (throttleVsync()) {\n                        return false;\n                    }\n                    connection->vsyncRequest = VSyncRequest::SingleSuppressCallback;\n                    return true;\n                }\n                case VSyncRequest::Periodic:\n                    if (throttleVsync()) {\n                        return false;\n                    }\n                    return true;\n                default:\n                    // We don't throttle vsync if the app set a vsync request rate\n                    // since there is no easy way to do that and this is a very\n                    // rare case\n                    return event.vsync.count % vsyncPeriod(connection->vsyncRequest) == 0;\n            }",
+      "note": "“请求一次只发一次”的核心：Single 命中后降级为 SingleSuppressCallback，下一拍把它清成 None 并返回 false；throttleVsync（见函数头部，已省略）负责按 uid 帧率相位或 VSync throttle 接口再过一道。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+      "symbol": "VSyncDispatchTimerQueueEntry::schedule",
+      "lines": "90-118",
+      "code": "ScheduleResult VSyncDispatchTimerQueueEntry::schedule(VSyncDispatch::ScheduleTiming timing,\n                                                      VSyncTracker& tracker, nsecs_t now) {\n    SFTRACE_NAME(\"VSyncDispatchTimerQueueEntry::schedule\");\n    auto nextVsyncTime =\n            tracker.nextAnticipatedVSyncTimeFrom(std::max(timing.lastVsync,\n                                                          now + timing.workDuration +\n                                                                  timing.readyDuration),\n                                                 timing.committedVsyncOpt.value_or(\n                                                         timing.lastVsync));\n    auto nextWakeupTime = nextVsyncTime - timing.workDuration - timing.readyDuration;\n\n    bool const wouldSkipAVsyncTarget =\n            mArmedInfo && (nextVsyncTime > (mArmedInfo->mActualVsyncTime + mMinVsyncDistance));\n    bool const wouldSkipAWakeup =\n            mArmedInfo && ((nextWakeupTime > (mArmedInfo->mActualWakeupTime + mMinVsyncDistance)));\n    SFTRACE_FORMAT_INSTANT(\"%s: wouldSkipAVsyncTarget=%d wouldSkipAWakeup=%d\", mName.c_str(),\n                           wouldSkipAVsyncTarget, wouldSkipAWakeup);\n    if (wouldSkipAVsyncTarget || wouldSkipAWakeup) {\n        nextVsyncTime = mArmedInfo->mActualVsyncTime;\n    } else {\n        nextVsyncTime = adjustVsyncIfNeeded(tracker, nextVsyncTime);\n    }\n    nextWakeupTime = std::max(now, nextVsyncTime - timing.workDuration - timing.readyDuration);\n\n    auto const nextReadyTime = nextVsyncTime - timing.readyDuration;\n    mScheduleTiming = timing;\n    mArmedInfo = {nextWakeupTime, nextVsyncTime, nextReadyTime};\n    return ScheduleResult{TimePoint::fromNs(nextWakeupTime), TimePoint::fromNs(nextVsyncTime)};\n}",
+      "note": "把 workDuration/readyDuration 换算成 wakeup/ready/vsync 三个时间点，并处理“会跳过一拍”的两种退化情况。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mFrameScheduled",
+      "type": "boolean（Choreographer.java:212）",
+      "desc": "本帧是否已经向 SF 预约过 vsync。postCallbackDelayedInternal/CallbackRecord 侧只在它为 false 时才发起请求；doFrame 成功走到派发区间后置 false。所有读写都在 mLock 内。"
+    },
+    {
+      "name": "VSyncRequest vsyncRequest",
+      "type": "enum class（EventThread.h，per EventThreadConnection）",
+      "desc": "连接级别的 vsync 订阅状态（EventThread.h:61）：None=-2 / Single=-1 / SingleSuppressCallback=0 / Periodic=1，后续值表示 period（由 setVsyncRate 的 int 强转而来）。Single 会为接下来两帧保持唤醒以减少调度器开销，SingleSuppressCallback 只再唤醒一帧但不派发事件。它决定 shouldConsumeEvent 是否把这一拍的 vsync 投给该连接。"
+    },
+    {
+      "name": "VSyncDispatch::ScheduleTiming",
+      "type": "struct { nsecs_t workDuration; nsecs_t readyDuration; nsecs_t lastVsync; std::optional<nsecs_t> committedVsyncOpt; }（VSyncDispatch.h:102）",
+      "desc": "EventThread 每次 schedule() 传给调度器的工作量描述。workDuration+readyDuration 就是“提前唤醒多久”，直接决定 wakeupTime，是相位偏移的实际落点。"
+    },
+    {
+      "name": "VsyncEventData.frameTimelines / preferredFrameTimelineIndex",
+      "type": "FrameTimeline[7] + uint32_t（native/libs/gui/include/gui/VsyncEventData.h:31）",
+      "desc": "一次 vsync 可携带最多 kFrameTimelinesCapacity=7 个候选帧时间线，每个含 vsyncId、deadlineTimestamp、expectedPresentationTime；preferredFrameTimelineIndex 指向 multiplier==0 的那一条，即平台推荐的最早可用 timeline（deadlineTimestamp 必须大于本拍 vsync 时间戳，EventThread::generateFrameTimeline 保证）。"
+    },
+    {
+      "name": "mIntendedWakeupTime",
+      "type": "nsecs_t（VSyncDispatchTimerQueue）",
+      "desc": "当前定时器被设置到的目标时刻；timerCallback 用 now − mIntendedWakeupTime 得到 lagAllowance 来吸收延迟唤醒；cancelTimer() 时置 kInvalidTime。"
+    },
+    {
+      "name": "mWaitingForVsync",
+      "type": "bool（native DisplayEventDispatcher）",
+      "desc": "app 侧一次请求的在途标记：为 true 时重复的 scheduleVsync() 直接返回；收到 vsync 或超过 WAITING_FOR_VSYNC_TIMEOUT=300ms 时清掉。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "Choreographer#scheduleVsyncLocked",
+      "value": "atrace slice（Trace.TRACE_TAG_VIEW）",
+      "desc": "只包住 mDisplayEventReceiver.scheduleVsync() 一行，在 Perfetto 里能看到请求发生的精确时刻，可用来算“请求→vsync”的等待时长。"
+    },
+    {
+      "name": "VSyncDispatchTimerQueueEntry::schedule",
+      "value": "SF trace slice，附带 wouldSkipAVsyncTarget=…/wouldSkipAWakeup=… 与 alreadyDispatchedForVsync/nextVsyncTooClose instant",
+      "desc": "直接反映调度器把这一拍排到了哪个 vsync、是否被迫顺延；是排查“请求了但没来/来晚了”的第一现场。"
+    },
+    {
+      "name": "VSYNC-app",
+      "value": "TracedOrdinal<int> 计数器轨道（EventThread.cpp:317 构造名 \"VSYNC-%s\"）",
+      "desc": "SF 侧每次 onVsync 把 TracedOrdinal<int> 在 0/1 之间翻转并把值写成 atrace 计数器（EventThread.cpp:317 构造名 \"VSYNC-%s\"，TracedOrdinal::trace() 用 SFTRACE_INT64）。Perfetto 上是一条取值 0/1 交替的轨道，可与 app 侧 Choreographer#onVsync 对齐检查跳拍。"
+    },
+    {
+      "name": "EventThread state（Idle/VSync/SyntheticVSync）",
+      "value": "atrace async track \"EventThreadState-app\"",
+      "desc": "updateState() 用 SFTRACE_ASYNC_FOR_TRACK_BEGIN/END 打点；能看出 SF 是否因为没人要 vsync 而进入 Idle（省电）或被 synthetic vsync 驱动。"
+    }
+  ],
+  "pitfalls": [
+    "不要把 scheduleVsync() 当成可叠加的“攒请求”：native DisplayEventDispatcher 用 mWaitingForVsync 去重，SF 侧 requestNextVsync 在非 None 状态下也基本幂等。丢了这一拍只能等下一拍，app 侧 300ms（WAITING_FOR_VSYNC_TIMEOUT）超时兜底才会伪造一次事件，中间是掉帧而不是补发。",
+    "定时器给出的 vsyncTimestamp 是预测值而非硬件时间戳。VSyncPredictor 在样本不足（少于 kMinimumSamplesForPrediction）时按 idealPeriod 锚定，主题/息屏/VRR 切换后会有短暂误差；把预测值当成硬件时间戳去做严格相位对齐会得到错误的结论。",
+    "PhaseOffsets 已被标注 deprecated，实际默认走 WorkDuration 实现；按旧文档去调 debug.sf.phase_offset_ns 可能在当前分支不生效，应以 debug.sf.*work_duration* 之类属性与 VsyncConfigSet 的实际字段为准。",
+    "mFrameScheduled 是“已预约”门闩而非“回调已跑”：doFrame 里遇到 frame time 回退、FPSDivisor 跳帧、buffer stuffing 的 DELAY_FRAME 分支时都会提前 scheduleVsyncLocked() 后 return，此时不会再重复请求，但这一帧的回调也不会执行。"
+  ],
+  "traceTags": [
+    "Choreographer#scheduleVsyncLocked",
+    "VSyncDispatchTimerQueueEntry::schedule",
+    "VSYNC-app",
+    "EventThreadState-app"
+  ],
+  "next": "stage-03"
+}

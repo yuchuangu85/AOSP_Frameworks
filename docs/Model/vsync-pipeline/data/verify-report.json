@@ -1,0 +1,322 @@
+[
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "28723-28753",
+  "symbol": "requestLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "3307-3335",
+  "symbol": "scheduleTraversals",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "3347-3367",
+  "symbol": "doTraversal / postTraversalBarrier",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "20/20 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1199-1211",
+  "symbol": "doCallbacks",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "9/9 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "919-948",
+  "symbol": "scheduleFrameLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "lines": "417-429",
+  "symbol": "EventThread::requestNextVsync",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "lines": "637-693",
+  "symbol": "EventThread::shouldConsumeEvent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+  "lines": "90-118",
+  "symbol": "VSyncDispatchTimerQueueEntry::schedule",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "lines": "769-794",
+  "symbol": "EventThread::dispatchEvent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/libs/gui/DisplayEventDispatcher.cpp",
+  "lines": "113-155",
+  "symbol": "DisplayEventDispatcher::handleEvent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "39/39 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1594-1635",
+  "symbol": "FrameDisplayEventReceiver.onVsync",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "40/40 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 3,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1199-1211",
+  "symbol": "doFrame 回调派发段",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "9/9 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "10282-10313",
+  "symbol": "mWindowSession.relayoutAsync2 / relayout2",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "32/32 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/IWindowSession.aidl",
+  "lines": "89-96",
+  "symbol": "relayout / relayout2",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "7/7 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5472-5485",
+  "symbol": "performMeasure",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "14/14 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5538-5557",
+  "symbol": "performLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "17/17 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5940-5977",
+  "symbol": "performDraw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "32/32 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "24306-24324",
+  "symbol": "updateDisplayListIfDirty",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "17/17 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/ThreadedRenderer.java",
+  "lines": "730-788",
+  "symbol": "updateRootDisplayList",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "21/21 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "72-93",
+  "symbol": "DrawFrameTask::drawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "17/17 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+  "lines": "420-452",
+  "symbol": "RenderThread::threadLoop",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "28/28 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "89-141",
+  "symbol": "DrawFrameTask::run",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/renderthread/EglManager.cpp",
+  "lines": "621-646",
+  "symbol": "EglManager::swapBuffers",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "667-746",
+  "symbol": "BLASTBufferQueue::acquireNextBufferLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "31/31 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "3119-3153",
+  "symbol": "SurfaceFlinger::commit",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "32/32 lines",
+  "symbolInRange": false
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/Layer.cpp",
+  "lines": "1506-1534",
+  "symbol": "Layer::latchBufferImpl",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+  "lines": "131-170",
+  "symbol": "CompositionEngine::present",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "34/34 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+  "lines": "416-453",
+  "symbol": "Display::presentFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "lines": "658-691",
+  "symbol": "HWComposer::presentAndGetReleaseFences",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/Layer.cpp",
+  "lines": "711-749",
+  "symbol": "Layer::callReleaseBufferCallback",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "1302-1341",
+  "symbol": "BBQBufferQueueProducer::waitForBufferRelease",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "35/35 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "3775-3825",
+  "symbol": "SurfaceFlinger::onCompositionPresented",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ }
+]

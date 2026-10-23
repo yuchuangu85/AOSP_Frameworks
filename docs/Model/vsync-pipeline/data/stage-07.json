@@ -1,0 +1,172 @@
+{
+  "id": "stage-07",
+  "num": 7,
+  "title": "SurfaceFlinger 合成一拍与上屏提交",
+  "subtitle": "VSYNC 唤醒 SF 主线程 → 应用 BLAST 事务并 latch buffer → HWC/GPU 合成 → present",
+  "lane": "SF",
+  "durationHint": "约 2~8 ms（SF 单帧 commit+composite 的 CPU 时间；GPU/HWC 侧异步完成）",
+  "summary": "VSYNC 到达后，<code>MessageQueue::vsyncCallback</code> 在 SF 的调度线程上生成 <code>VsyncId</code>，经 <code>Handler::dispatchFrame</code> 把工作投递到 SurfaceFlinger 主线程（scheduler 线程）。Scheduler 以 <code>commit</code>/<code>composite</code> 两段式驱动 <code>ICompositor</code>：<code>SurfaceFlinger::commit</code> 先调用 <code>updateLayerSnapshots</code>，把 BLAST Transaction 经 <code>TransactionHandler::flushTransactions</code> 应用到 <code>LayerLifecycleManager</code>，重建 <code>frontend::LayerSnapshot</code>，再对每个有 ready frame 的 layer 调用 <code>latchBufferImpl</code>（acquire fence 未就绪的事务通常已被 <code>TransactionHandler</code> 的 ready filter 留在队列里，latch 内的 <code>fenceHasSignaled</code> 只是兜底），必要时 <code>commitTransactions</code> → <code>commitTransactionsLocked</code> → <code>doCommitTransactions</code> 把 <code>mDrawingState</code> 换成 <code>mCurrentState</code>。随后 <code>SurfaceFlinger::composite</code> 组装 <code>CompositionRefreshArgs</code> 并调用 <code>CompositionEngine::present</code>：每个 Output 先 <code>prepare</code>（只做 rebuildLayerStacks/uncacheBuffers），再在 <code>Output::present</code> 的 <code>prepareFrame</code>/<code>prepareFrameAsync</code> 里经 <code>Display::chooseCompositionStrategy</code> 让 HWC validate（或 presentOrValidate 跳过 validate）决定 overlay 还是 client composition，<code>finishFrame</code> 用 RenderEngine 完成 client composition，最后由 <code>Display::presentFrame</code> 调 <code>HWComposer::presentAndGetReleaseFences</code> 提交。整条链路在 SF 主线程串行执行，必须在 <code>sfWorkDuration</code> 内完成，否则这一拍的上屏时间被推迟到下一个 VSYNC。",
+  "callchain": [
+    "SurfaceFlinger::setTransactionState",
+    "TransactionHandler::queueTransaction",
+    "MessageQueue::vsyncCallback",
+    "MessageQueue::Handler::dispatchFrame",
+    "MessageQueue::Handler::handleMessage",
+    "Scheduler::onFrameSignal",
+    "SurfaceFlinger::commit",
+    "SurfaceFlinger::updateLayerSnapshots",
+    "TransactionHandler::collectTransactions",
+    "TransactionHandler::flushTransactions",
+    "LayerLifecycleManager::applyTransactions",
+    "LayerSnapshotBuilder::update",
+    "Layer::latchBufferImpl",
+    "SurfaceFlinger::commitTransactions",
+    "SurfaceFlinger::commitTransactionsLocked",
+    "SurfaceFlinger::doCommitTransactions",
+    "SurfaceFlinger::composite",
+    "CompositionEngine::present",
+    "Output::prepare",
+    "Output::present",
+    "Output::prepareFrame",
+    "Display::chooseCompositionStrategy",
+    "HWComposer::getDeviceCompositionChanges",
+    "Output::finishFrame",
+    "Output::presentFrameAndReleaseLayers",
+    "Display::presentFrame",
+    "HWComposer::presentAndGetReleaseFences"
+  ],
+  "sections": [
+    {
+      "heading": "谁在什么时候叫醒 SF：VSYNC 回调与 commit/composite 两段式",
+      "html": "<p>VSYNC 到来时，<code>VSyncDispatch</code> 在 SF 的调度线程上回调 <code>MessageQueue::vsyncCallback</code>（<code>native/services/surfaceflinger/Scheduler/MessageQueue.cpp:59</code>）：它翻转 trace 上的 VSYNC-sf 信号、用 <code>TokenManager</code> 按 <code>{targetWakeupTime, readyTime, vsyncTime}</code> 生成 <code>VsyncId</code>，然后 <code>Handler::dispatchFrame</code> 通过 <code>Looper::sendMessage</code> 把 <code>Message</code> 投到 SF 主线程的 looper。</p><p><code>Handler::handleMessage</code>（同文件 :44）调用 <code>Scheduler::onFrameSignal</code>（<code>Scheduler.cpp:411</code>）。后者构造 <code>FrameTargeter::BeginFrameArgs</code>——<code>frameBeginTime</code>、<code>vsyncId</code>、<code>expectedVsyncTime</code>、<code>sfWorkDuration</code>——然后分两段调用 <code>ICompositor</code>：先 <code>compositor.commit()</code>（<code>Scheduler.cpp:467</code>，实现是 <code>SurfaceFlinger::commit</code>），返回 true（有事务或有新 buffer）才继续 <code>compositor.composite()</code>（<code>Scheduler.cpp:505</code>，实现是 <code>SurfaceFlinger::composite</code>）；否则走 <code>onCommitNotComposited</code>，这一拍直接空转。</p><blockquote>注意：android17 这棵树里<strong>不存在</strong> <code>SurfaceFlinger::onMessageRefresh</code>（<code>grep -n onMessageRefresh</code> 无结果）。旧版本“onMessageRefresh 里 commit+composite”的描述已失效，实际入口是 <code>Scheduler::onFrameSignal</code> + <code>ICompositor::commit/composite</code>（<code>Scheduler/include/scheduler/interface/ICompositor.h:43-48</code>）。</blockquote>"
+    },
+    {
+      "heading": "事务应用：从 BLAST Transaction 到只读 LayerSnapshot",
+      "html": "<p>事务的跨进程入口是 app 侧 <code>SurfaceComposerClient::Transaction::apply()</code>。BLAST 用的是 <code>apply(false, true)</code>，即 <strong>oneway</strong> binder（<code>BLASTBufferQueue.cpp:726</code>，<code>SurfaceComposerClient.cpp:1146/1190</code>），app 不等 SF 返回。服务端路径：<code>SurfaceFlinger::setTransactionState</code>（<code>SurfaceFlinger.cpp:5579</code>）→ <code>mTransactionHandler.queueTransaction(...)</code>（<code>:5720</code>）→ <code>setTransactionFlags(eTransactionFlushNeeded, ...)</code>（<code>:5729</code>）请求下一次 SF 帧。下一拍 <code>commit</code> 中 <code>clearTransactionFlags(eTransactionFlushNeeded)</code>（<code>:3135</code>）决定是否 flush。真正消费发生在 <code>updateLayerSnapshots</code>（<code>SurfaceFlinger.cpp:2771</code>）：先 <code>mTransactionHandler.collectTransactions()</code>，把 created layers、新事务一次性搬进 <code>frontend::Update</code>，然后 <code>mLayerLifecycleManager.addLayers()</code>，再 <code>mTransactionHandler.flushTransactions()</code>（<code>:2807</code>）取出<strong>已就绪</strong>的事务，<code>mLayerLifecycleManager.applyTransactions()</code> 把它们写进 <code>RequestedLayerState</code>，再 <code>mLayerHierarchyBuilder.update()</code> 更新层级。</p><p>随后 <code>LayerSnapshotBuilder::update(args)</code> 依据 hierarchy 与 lifecycle manager 生成/复用 <code>frontend::LayerSnapshot</code>（字段如 <code>isVisible</code>、<code>contentDirty</code>、<code>changes</code>、<code>transformedBoundsWithoutTransparentRegion</code>、<code>outputFilter</code>）。快照是<strong>只读</strong>的中间表示：CompositionEngine、LayerFE 读的是快照，不再直接读 <code>Layer</code> 的 <code>mDrawingState</code>。这就是 android17 的 FrontEnd 架构。</p><p>接下来 <code>applyTransactionsLocked</code>（:5501）处理 display 事务与 callback handles，<code>traverseLegacyLayers</code> 对每个 <code>Layer</code> 调 <code>commitTransaction()</code>；若本拍需要合成，<code>updateLayerSnapshots</code> 末尾调用 <code>commitTransactions()</code>（:2990）→ <code>commitTransactionsLocked</code>（:4803）→ <code>doCommitTransactions</code>（:5236），其中有 <code>mDrawingState = mCurrentState;</code>。注意在 FrontEnd 架构下这<strong>不是唯一的提交点</strong>：层属性与 buffer 的状态主要由 <code>LayerLifecycleManager</code> 的 <code>RequestedLayerState</code> 承载，经 <code>LayerSnapshotBuilder</code> 生成 <code>LayerSnapshot</code>，<code>LayerLifecycleManager::commitChanges()</code>（<code>:2978</code>）清除本帧变更标记；<code>mCurrentState</code>/<code>mDrawingState</code> 主要还承载 display 状态与 legacy Layer 的少量状态。</p>"
+    },
+    {
+      "heading": "latch：acquire fence 没 signaled 就整帧不消费",
+      "html": "<p><strong>fence 就绪首先由事务队列把关</strong>：<code>flushTransactions</code> 只放出通过 ready filter 的事务（<code>addTransactionReadyFilters</code>，<code>SurfaceFlinger.cpp:5478</code>）。<code>transactionReadyBufferCheck</code>（<code>:5359</code>）对带 buffer 的 state 检查：buffer barrier 未满足返回 <code>NotReadyBarrier</code>；开启 backpressure 且该 layer 本帧已有待提交 buffer 时返回 <code>NotReady</code>；acquire fence 仍 <code>Unsignaled</code> 时，若 <code>shouldLatchUnsignaled</code>（<code>:5543</code>）允许且是简单 buffer 更新则为 <code>NotReadyUnsignaled</code>（可提前 latch 未信号 buffer），否则 <code>NotReady</code>，事务留在队列里等下一拍（<code>:5428-5455</code>）。另有 <code>transactionReadyTimelineCheck</code>（<code>:5315</code>）按 desiredPresentTime / frame timeline 拦住“太早”的事务。</p><p>latch 在 <code>updateLayerSnapshots</code> 的后半段逐 layer 执行：<code>layer->hasReadyFrame()</code> 为真（或需要释放上一帧 buffer）才有资格，随后调用 <code>Layer::latchBufferImpl</code>（<code>Layer.cpp:1506</code>）。它先 <code>latchSidebandStream</code>，然后检查 <code>mDrawingState.buffer &amp;&amp; !fenceHasSignaled()</code>：如果队首 buffer 的 acquire fence 还没信号，就 <code>mFlinger->onLayerUpdate()</code> 并 <strong>return false</strong>——这一帧对该 layer 不 latch，SF 会请求再排一次合成。由于前面的 ready filter 已过滤掉大多数 fence 未就绪的事务，这里只是兜底。</p><p>通过 fence 检查后，<code>latchBufferStatsAndHandles</code> 记录 acquire signal time、latch time，并把 <code>SurfaceFrame</code> 标记为 <code>PresentState::Presented</code>（<code>Layer::addSurfaceFramePresentedForBuffer</code>，:461，内部 <code>mFrameTimeline->addSurfaceFrame</code>），再 <code>gatherBufferInfo()</code> 把新 buffer 的 crop/transform/dataspace 等采进 <code>mBufferInfo</code>；只有 latch 成功，<code>LayerSnapshot::contentDirty</code> 才为真，才会 <code>invalidateLayerStack</code> 把脏区丢给 Output 的 <code>dirtyRegion</code>。</p><p>内存/IPC 上要分清：BLAST 下 buffer 不是 SF 主动从 BufferQueue 里 acquire 的——<code>BufferData</code>（<code>native/libs/gui/include/gui/LayerState.h:115</code>）随 Transaction 一起 parcel 过来，携带 <code>acquireFence</code>、<code>releaseBufferListener</code>、<code>releaseBufferEndpoint</code>、<code>frameNumber</code>、<code>producerId</code>；SF 侧本树<strong>没有</strong>对 <code>IGraphicBufferConsumer::acquireBuffer</code> 的调用（<code>grep acquireBuffer native/services/surfaceflinger</code> 无命中），<code>Layer</code> 也不再持有 <code>BufferQueueConsumer</code>。GraphicBuffer 的 handle 通过 binder 的 fd dup 共享同一块 gralloc 内存，不做拷贝。</p>"
+    },
+    {
+      "heading": "合成决策与执行：HWC overlay 还是 GPU client composition",
+      "html": "<p><code>SurfaceFlinger::composite</code>（:3330）先填 <code>CompositionRefreshArgs</code>：<code>outputs</code>、<code>layers</code>、<code>frameInterval</code>、<code>scheduledFrameTime</code>、<code>bufferIdsToUncache</code>、<code>updatingGeometryThisFrame</code>，并算出 <code>refreshStartTime</code>；然后 <code>mCompositionEngine->present(refreshArgs)</code>（<code>CompositionEngine.cpp:131</code>）。<code>present</code> 的顺序是：<code>preComposition</code> → 每个 <code>output->prepare(args, latchedLayers)</code> → <code>offloadOutputs</code> → 每个 output 的 <code>present(args)</code> 拿到 future 并发提交 → <code>Waiting on HWC</code> 统一 wait → <code>postComposition</code>。</p><p><code>Output::prepare</code> 只做 <code>rebuildLayerStacks</code> 与 <code>uncacheBuffers</code>（<code>Output.cpp:441-448</code>）。合成策略是在 <code>Output::present</code> 里决定的：依次 <code>updateCompositionState</code> → <code>planComposition</code> → <code>writeCompositionState</code> → <code>beginFrame</code>，然后按 <code>canPredictCompositionStrategy</code> 选择 <code>prepareFrameAsync()</code>（预测式：沿用上一帧的 composition 策略，HWC validate 在 HwcAsyncWorker 上与 GPU 合成并行，预测失败则重做）或 <code>prepareFrame()</code>（<code>:494-498</code>）。<code>prepareFrame</code> 调 <code>chooseCompositionStrategy</code>（<code>:1187</code>），后者调 <code>HWComposer::getDeviceCompositionChanges</code>（<code>HWComposer.cpp:537</code>），最终触发 HWC 的 <code>validateDisplay</code>（<code>HWC2.cpp:519</code>）。若无 client composition 且不会过早上屏（<code>canSkipValidate</code>，<code>HWComposer.cpp:562-577</code>），SF 改调 <code>presentOrValidate</code>（<code>:584</code>）：HWC 若直接 present 成功（<code>state == 1</code>），就同时拿回 present/release fence 并置 <code>validateWasSkipped = true</code>，后面的 <code>presentAndGetReleaseFences</code> 只 <code>executeCommands</code> 即返回（<code>:668-674</code>）。HWC 返回每层的 composition type（DEVICE/CLIENT/SOLID_COLOR/CURSOR…）和 display request，SF 用 <code>Display::applyCompositionStrategy</code>（<code>Display.cpp:295</code>）落实。能被 HWC 直接扫描的层走 overlay，不产生 GPU 工作；被 HWC 拒绝的层（缩放/混合/效果/格式限制）退化为 client composition，由 <code>Output::finishFrame</code>（<code>Output.cpp:1312</code>）调 <code>composeSurfaces</code>（<code>:1337</code>），用 <code>RenderEngine</code> 画进 client target（<code>RenderSurface</code> dequeue 的 buffer），再 <code>mRenderSurface-&gt;queueBuffer(...)</code>（<code>:1348</code>），最终经 <code>HWComposer::setClientTarget</code>（<code>HWComposer.cpp:525</code>）交给 HWC 合成。</p><p>最后 <code>Display::presentFrame</code>（<code>Display.cpp:416</code>）调 <code>hwc.presentAndGetReleaseFences(...)</code>，取 <code>presentFence</code> 与每层 <code>releaseFence</code>，return 给 Output，Output 再在 <code>presentFrameAndReleaseLayers</code>（<code>Output.cpp:1726</code>）里把每层 release fence 交给 <code>LayerFE::setReleaseFence</code>（<code>:1783</code>）。<code>offloadOutputs</code> 会在多 display 时把部分 output 的这一步挪到 HwcAsyncWorker 线程（<code>presentFrameAndReleaseLayersAsync</code>，<code>:1207</code>），主线程在 <code>Waiting on HWC</code> 汇合。<strong>present 本身是阻塞的</strong>：HWC 的 presentDisplay 要等 client target / overlay buffer 的 acquire fence，必要时还要 sleep 到 <code>earliestPresentTime</code>。</p>"
+    },
+    {
+      "heading": "同一帧内的 SF 相位：APP 与 SF 如何接力，以及耗时预算",
+      "html": "<p>app 与 SF 收到的是<strong>同一路硬件 VSYNC</strong>，但相位不同：<code>VsyncConfiguration::PhaseOffsets::getDefaultOffsets</code>（<code>Scheduler/VsyncConfiguration.cpp:161</code>）把 <code>mVsyncPhaseOffsetNs</code>（appOffset）与 <code>mSfVSyncPhaseOffsetNs</code>（sfOffset）配成一对。是否“同一周期内接力”取决于配置：只有 <code>appWorkDuration + sfWorkDuration ≤ 刷新周期</code> 时，app 在 V_app 绘制提交、SF 在同一周期更晚的 V_sf 合成才能成立。按 AOSP 的 <code>PhaseOffsets</code> 默认值（<code>vsync_event_phase_offset_ns</code> 与 <code>vsync_sf_event_phase_offset_ns</code> 都是 1ms，<code>VsyncConfiguration.cpp:89-90</code>），<code>sfWorkDuration = period - sfOffset</code>，<code>appOffsetToDuration</code> 结果小于一个周期时还会再加一个周期（<code>:150-158</code>）。因此 60Hz 下 app 从唤醒到 present 约 2 个周期；high fps 下 late app/sf offset 默认 2ms/1ms（<code>:95-96</code>），约 3 个周期。若设置了 <code>debug.sf.use_phase_offsets_as_durations</code>，则走 <code>WorkDuration</code>（<code>SurfaceFlingerDefaultFactory.cpp:46-50</code>），由 app/sf duration 直接决定。</p><p>如果 Transaction 到达 SF 时，本帧的 SF 相位已经跑完 present，SF 就只能等下一帧的 SF 相位再消费，于是多等一拍。<code>appOffsetToDuration</code> 表达的就是这个预算边界：app 的 deadline 是它所对准的那次 SF 唤醒；赶不上时顺延到下一次 SF 唤醒。</p><p>latch 与 present 各自有一把 fence：<strong>acquire fence</strong> 决定 buffer 能不能被 latch（<code>fenceHasSignaled</code>），<strong>present fence</strong>（HWC2 语义：本帧开始扫描输出时 signal）给出它什么时候真正出现在面板上；buffer 什么时候能还给 producer 则由逐层的 <strong>release fence</strong> 决定。两者都不在 SF 主线程上阻塞等待，所以 SF 的 CPU 时间不等于上屏时间。</p><p>预算上，SF 从 <code>frameBeginTime</code> 起算，必须在 <code>sfWorkDuration</code> 内完成 commit+latch+composite；<code>HWComposer::presentAndGetReleaseFences</code> 里的 <code>std::this_thread::sleep_until(*earliestPresentTime)</code>（<code>HWComposer.cpp:676-679</code>）是显式的“等到最早可上屏时刻”。超时的后果不是丢这一帧，而是 <code>expectedPresentTime</code> 与实际 present 错位，FrameTimeline 判定为 jank（app 侧表现为掉帧、SurfaceFlinger 侧表现为 sf jank）。</p>"
+    },
+    {
+      "heading": "线程、IPC 与内存：这一拍的数据是怎么进来的",
+      "html": "<p>触发者是 VSYNC：<code>VSyncDispatch</code> 在调度线程上触发，SF 的工作最终在 <strong>SurfaceFlinger 主线程</strong>（scheduler thread 的 looper）串行执行；<code>MessageQueue</code> 只负责“什么时候跑”，不负责“跑什么”。app 侧 BLAST 的事务走 <code>SurfaceComposerClient::Transaction</code> 的 <strong>oneway</strong> binder（<code>apply(false, true)</code>）进入 SF 的 <code>TransactionHandler</code> 队列，Transaction 里携带 <code>BufferData</code>（含 GraphicBuffer handle 与 acquire fence fd），fd 通过 binder 的 dup 语义跨进程共享，不做像素拷贝。</p><p>合成阶段如果再拆：<code>CompositionEngine::present</code> 的 <code>output-&gt;prepare</code> 与 <code>output-&gt;present</code>（含 <code>finishFrame</code>）在 SF 主线程执行，client composition 的 GPU 命令由 SF 主线程提交给 RenderEngine（内部是 EGL/GL 或 Vulkan），但 GPU 执行是异步的，SF 只拿 acquire fence；<code>offloadOutputs</code> 允许把多 display 的 present 调用挪到别的线程，源码注释明确“HWC 调用会阻塞且可能很慢”。所以“SF 主线程耗时”与“这一帧的上屏时间”之间隔着 GPU 与 HWC 两段异步尾巴。</p><p>观测上最实用的是三处：<code>commit &lt;vsyncId&gt;</code> / <code>composite &lt;vsyncId&gt;</code>（<code>SurfaceFlinger.cpp:3012/3342</code>，名字来自 <code>__func__</code>）、<code>Transaction Handling</code>、<code>Composition</code>/<code>Waiting on HWC</code> 的 slice 组合，配合 <code>dumpsys SurfaceFlinger --latency</code> 的 desired/actual present 三元组；如果要看事务本身，用 transaction tracing（<code>mTransactionTracing-&gt;addCommittedTransactions</code>，<code>SurfaceFlinger.cpp</code> 内 updateLayerSnapshots 分支）或 Perfetto 的 transaction slice。源码中未体现的部分：HWC 内部调度与面板时序，只能靠 present fence 与 vendor trace。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "SurfaceFlinger::commit",
+      "lines": "3119-3153",
+      "code": "    bool mustComposite = mMustComposite.exchange(false);\n    {\n        const bool powerModeChangeInProgress = mPowerModeInProgressCount > 0 ||\n                (mustComposite ? mPowerModeChangeInProgress.exchange(false)\n                               : mPowerModeChangeInProgress.load());\n        scheduler::FrameTimelineDisplayState displayState = {\n                .poweredOn = FTL_FAKE_GUARD(mStateLock, getDisplayDeviceLocked(pacesetterId))\n                                     ->getPowerMode() == hal::PowerMode::ON,\n                .modeChangeInProgress = mScheduler->getVsyncSchedule()->isModeChangeInProgress(),\n                .powerModeChangeInProgress = powerModeChangeInProgress,\n        };\n        mFrameTimeline->setSfWakeUp(ftl::to_underlying(vsyncId),\n                                    pacesetterFrameTargetPtr->frameBeginTime().ns(),\n                                    Fps::fromPeriodNsecs(vsyncPeriod.ns()),\n                                    mScheduler->getPacesetterRefreshRate(), displayState);\n\n        const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded);\n        bool transactionsAreEmpty = false;\n        mustComposite |=\n                updateLayerSnapshots(vsyncId, pacesetterFrameTargetPtr->frameBeginTime().ns(),\n                                     pacesetterFrameTargetPtr->expectedPresentTime().ns(),\n                                     flushTransactions, transactionsAreEmpty);\n\n        // A display transaction for hotplug reconnect may have just destroyed the original.\n        pacesetterFrameTargetPtr = mScheduler->pacesetterFrameTarget();\n\n        // Tell VsyncTracker that we are going to present this frame before scheduling\n        // setTransactionFlags which will schedule another SF frame. This was if the tracker\n        // needs to adjust the vsync timeline, it will be done before the next frame.\n        if (mustComposite) {\n            mScheduler->getVsyncSchedule()\n                    ->getTracker()\n                    .onFrameBegin(pacesetterFrameTargetPtr->expectedPresentTime(),\n                                  pacesetterFrameTargetPtr->lastSignaledFrameTime());\n        }",
+      "note": "SurfaceFlinger::commit（定义于 SurfaceFlinger.cpp:2996，开头以 SFTRACE_NAME 打出 “commit <vsyncId>” 切片，:3012）的核心段：清 eTransactionFlushNeeded 决定是否 flush 事务，调用 updateLayerSnapshots 应用事务并 latch，得到 mustComposite 决定是否 composite；同时把本帧告知 VsyncTracker，供下一拍修正 vsync 模型。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "symbol": "Layer::latchBufferImpl",
+      "lines": "1506-1534",
+      "code": "bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,\n                            nsecs_t expectedPresentTime, bool bgColorOnly)\n        REQUIRES(mFlinger->mStateLock) {\n    SFTRACE_FORMAT_INSTANT(\"latchBuffer %s - %\" PRIu64, getDebugName(),\n                           getDrawingState().frameNumber);\n\n    bool refreshRequired = latchSidebandStream(recomputeVisibleRegions);\n\n    if (refreshRequired) {\n        return refreshRequired;\n    }\n\n    // If the head buffer's acquire fence hasn't signaled yet, return and\n    // try again later\n    if (mDrawingState.buffer && !fenceHasSignaled()) {\n        SFTRACE_NAME(\"!fenceHasSignaled()\");\n        mFlinger->onLayerUpdate();\n        return false;\n    }\n    latchBufferStatsAndHandles(latchTime, expectedPresentTime, bgColorOnly);\n\n    // Capture the old state of the layer for comparisons later\n    BufferInfo oldBufferInfo = mBufferInfo;\n    mPreviousFrameNumber = mCurrentFrameNumber;\n    mCurrentFrameNumber = mDrawingState.frameNumber;\n    gatherBufferInfo();\n\n    if (mBufferInfo.mBuffer) {\n        // We latched a buffer that will be presented soon. Clear the previously presented layer",
+      "note": "latch 的前置条件是 acquire fence 已 signaled；否则 onLayerUpdate 请求重试并直接返回 false，本拍该 layer 不消费新 buffer。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+      "symbol": "CompositionEngine::present",
+      "lines": "131-170",
+      "code": "void CompositionEngine::present(CompositionRefreshArgs& args) {\n    SFTRACE_CALL();\n    ALOGV(__FUNCTION__);\n\n    preComposition(args);\n\n    {\n        // latchedLayers is used to track the set of front-end layer state that\n        // has been latched across all outputs for the prepare step, and is not\n        // needed for anything else.\n        LayerFESet latchedLayers;\n\n        for (const auto& output : args.outputs) {\n            output->prepare(args, latchedLayers);\n        }\n    }\n\n    // Offloading the HWC call for `present` allows us to simultaneously call it\n    // on multiple displays. This is desirable because these calls block and can\n    // be slow.\n    offloadOutputs(args.outputs);\n\n    ui::DisplayVector<ftl::Future<std::monostate>> presentFutures;\n    for (const auto& output : args.outputs) {\n        presentFutures.push_back(output->present(args));\n        if (auto displayId = output->getDisplayId(); displayId) {\n            panopticon::terminate(std::to_string(displayId->value));\n        }\n    }\n\n    {\n        SFTRACE_NAME(\"Waiting on HWC\");\n        for (auto& future : presentFutures) {\n            // TODO(b/185536303): Call ftl::Future::wait() once it exists, since\n            // we do not need the return value of get().\n            future.get();\n        }\n    }\n    postComposition(args);\n}",
+      "note": "present 的三段式：preComposition → 各 Output::prepare（含 HWC validate/合成策略）→ 各 Output::present 并发提交并等待 HWC。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+      "symbol": "Display::presentFrame",
+      "lines": "416-453",
+      "code": "compositionengine::Output::FrameFences Display::presentFrame() {\n    auto fences = impl::Output::presentFrame();\n\n    const auto halDisplayIdOpt = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>);\n    if (mIsDisconnected || !halDisplayIdOpt) {\n        return fences;\n    }\n\n    auto& hwc = getCompositionEngine().getHwComposer();\n\n    const TimePoint startTime = TimePoint::now();\n\n    if (isPowerHintSessionEnabled() && getState().earliestPresentTime) {\n        mPowerAdvisor->setHwcPresentDelayedTime(*halDisplayIdOpt, *getState().earliestPresentTime);\n    }\n\n    hwc.presentAndGetReleaseFences(*halDisplayIdOpt, getState().earliestPresentTime);\n\n    if (isPowerHintSessionEnabled()) {\n        mPowerAdvisor->setHwcPresentTiming(*halDisplayIdOpt, startTime, TimePoint::now());\n    }\n\n    fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);\n\n    // TODO(b/121291683): Change HWComposer call to return entire map\n    for (const auto* layer : getOutputLayersOrderedByZ()) {\n        auto hwcLayer = layer->getHwcLayer();\n        if (!hwcLayer) {\n            continue;\n        }\n\n        fences.layerFences.emplace(hwcLayer, hwc.getLayerReleaseFence(*halDisplayIdOpt, hwcLayer));\n    }\n\n    hwc.clearReleaseFences(*halDisplayIdOpt);\n\n    return fences;\n}",
+      "note": "真正把帧交给 HWC 的位置：presentAndGetReleaseFences 触发 presentDisplay 并取回每层 release fence，presentFence 随后被 SurfaceFlinger 用于 FrameTimeline 与回调。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "VsyncId",
+      "type": "int64 token",
+      "desc": "TokenManager 按 {targetWakeupTime, readyTime, vsyncTime} 生成的 vsync 编号，贯穿 MessageQueue、FrameTarget、FrameTimeline、Transaction 的 frameTimelineInfo，用于把 app/SF 两侧的同一拍对齐。"
+    },
+    {
+      "name": "frontend::LayerSnapshot",
+      "type": "struct（FrontEnd/LayerSnapshot.h）",
+      "desc": "android17 FrontEnd 的只读层状态快照，含 isVisible、contentDirty、changes、transformedBoundsWithoutTransparentRegion、outputFilter、gameMode 等；LayerSnapshotBuilder 每拍按需重建，CompositionEngine/LayerFE 读快照而非 Layer。"
+    },
+    {
+      "name": "SurfaceFlinger::mDrawingState / mCurrentState",
+      "type": "State",
+      "desc": "mCurrentState 是事务累积态，mDrawingState 是当前绘制态；doCommitTransactions 里 mDrawingState = mCurrentState 是唯一提交点，原子地切换整棵层状态。"
+    },
+    {
+      "name": "CompositionRefreshArgs",
+      "type": "struct（CompositionEngine/include/compositionengine/CompositionRefreshArgs.h）",
+      "desc": "一次合成的输入：outputs、layers、frameInterval、scheduledFrameTime、refreshStartTime、bufferIdsToUncache、internalDisplayRotationFlags 等，由 SurfaceFlinger::composite 填充后交给 CompositionEngine::present。"
+    },
+    {
+      "name": "HWComposer::DisplayData::lastPresentFence",
+      "type": "sp<Fence>",
+      "desc": "HWC presentDisplay（或 presentOrValidate 直接 present）返回的 present fence（HWC2 语义：本帧开始扫描输出时 signal），HWComposer::getPresentFence 直接返回它；SF 用 FenceTime 包装后交给 FrameTimeline 与 transaction callback。"
+    },
+    {
+      "name": "Layer::mBufferInfo",
+      "type": "BufferInfo",
+      "desc": "latch 后采样的 buffer 描述：mBuffer（GraphicBuffer）、mFrameNumber、mCrop、mTransform、mDataspace、mDesiredPresentTime、mReleaseBufferEndpoint 等，是合成与回调的直接数据源。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "commit <vsyncId> / composite <vsyncId>",
+      "value": "SFTRACE_NAME(ftl::Concat(__func__, ' ', vsyncId))（SurfaceFlinger.cpp:3012、3342）",
+      "desc": "Perfetto 里按 commit / composite 加 vsyncId 过滤（切片名不带 SurfaceFlinger:: 前缀）：commit 测量事务应用+latch，composite 测量合成+present。"
+    },
+    {
+      "name": "Transaction Handling / LayerSnapshotBuilder:update",
+      "value": "SFTRACE_NAME slice",
+      "desc": "定位事务应用与快照构建耗时；事务过多或层级变化大时这两个 slice 会明显变长。"
+    },
+    {
+      "name": "Composition / Waiting on HWC",
+      "value": "ASYNC_FOR_TRACK + SFTRACE_NAME",
+      "desc": "Composition 覆盖整个 composite 阶段，Waiting on HWC 是等待 present future 的时间，直接对应 HWC presentDisplay 阻塞时长。"
+    },
+    {
+      "name": "latchBuffer <layer> - <frame>",
+      "value": "SFTRACE_FORMAT_INSTANT",
+      "desc": "每个被 latch 的 layer 一个 instant，配合 dumpsys SurfaceFlinger --latency 可核对 latch 时间与期望 present 时间的偏差。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency",
+      "value": "命令行",
+      "desc": "输出各 layer 的 desiredPresent/actualPresent/帧序号三元组，是判断 SF 是否按时上屏最直接的手段。"
+    }
+  ],
+  "pitfalls": [
+    "不要套用旧版本行号与函数名：本树没有 SurfaceFlinger::onMessageRefresh，主循环是 Scheduler::onFrameSignal 调 ICompositor::commit/composite；commitTransactions/commitTransactionsLocked 只是 updateLayerSnapshots 内部的子步骤。",
+    "latchBufferImpl 在 SF 主线程且持 mStateLock 执行，加任何同步等待（锁、binder、fence wait）都会拉长整帧 SF 预算，表现为所有 layer 一起掉帧。",
+    "acquire fence 未 signaled 时 SF 不是“等 fence”：通常在 TransactionHandler 的 transactionReadyBufferCheck 就判为 NotReady，事务留在队列里（除非 latchUnsignaled 允许）；latchBufferImpl 的 fenceHasSignaled 只是兜底，本拍不 latch 并请求下一次合成；因此 app 侧 GPU 太慢会让 SF 多做一次空合成，而不是简单延后这一帧。",
+    "HWC 流程不是固定的 validate→present：无 client composition 时可走 presentOrValidate 一次完成（validateWasSkipped，HWComposer.cpp:562-597）；可预测时 prepareFrameAsync 让 validate 与 GPU 合成并行，预测失败要重做。client composition 还会叠加 RenderEngine 的 GPU 时间与 client target acquire fence 等待，不能只用 overlay 场景估预算。",
+    "以为 BLAST 的 Transaction::apply 是同步 binder：BBQ 用 apply(false, true) 的 oneway 调用（BLASTBufferQueue.cpp:726），app 侧不等 SF；SF 只是 queueTransaction 并 setTransactionFlags(eTransactionFlushNeeded)，真正应用在下一次 commit。"
+  ],
+  "traceTags": [
+    "VSYNC-sf",
+    "commit",
+    "composite",
+    "Transaction Handling",
+    "LayerSnapshotBuilder:update",
+    "latchBuffer",
+    "Composition",
+    "Waiting on HWC",
+    "postComposition"
+  ],
+  "next": "stage-08"
+}

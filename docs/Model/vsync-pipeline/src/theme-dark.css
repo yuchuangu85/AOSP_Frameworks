@@ -1,0 +1,175 @@
+/* ============================================================
+   Dark theme — palette from AOSP_Frame_Rendering_Flow.html
+   bg #0f1420 · panel #171e2e · panel2 #1d2639 · line #2b3650
+   text #dfe6f3 · muted #8d9ab3 · accent #5fb3ff
+   ui #4cc38a · rt #f0a33a · bq #c58af9 · sch #ff7b8a · sf #58a6ff · hw #e5c07b · vs #ff5d73
+   Flat panels, no glow; applied via html[data-theme=dark].
+   ============================================================ */
+html[data-theme=dark]{
+  --studio-bg:#171e2e;
+  color-scheme:dark;
+  --bg:#0f1420; --bg-2:#121826; --panel:#171e2e; --panel-2:#1d2639;
+  --line:#2b3650; --line-2:#3a4766;
+  --text:#dfe6f3; --text-2:#c3cde0; --muted:#8d9ab3; --dim:#6b7891;
+  --ui:#4cc38a; --rt:#f0a33a; --bq:#c58af9; --sf:#58a6ff; --hwc:#e5c07b; --vsync:#ff5d73;
+  --accent:#5fb3ff; --danger:#ff5d73; --ok:#4cc38a;
+  --shadow:0 18px 40px -24px rgba(0,0,0,.7);
+  --lane-ui:#4cc38a; --lane-rt:#f0a33a; --lane-gpu:#56c2c7; --lane-bq:#c58af9;
+  --lane-sched:#ff7b8a; --lane-sf:#58a6ff; --lane-display:#e5c07b;
+  --f0:#5fb3ff; --f1:#f0a33a; --f2:#ff7b8a; --f3:#4cc38a; --f4:#c58af9;
+  --hot:#ff5d73; --arrow:#4a5878; --arrow-on:#dfe6f3;
+  --sv-node:#1d2639; --sv-node-cur:#24406a; --sv-node-done:#1a2a24; --sv-text:#dfe6f3; --sv-dim:#6b7891;
+  --sv-edge:#4a5878; --sv-edge-on:#8fb8ff; --sv-vs-bg:#3a1d27; --sv-vs-text:#ffb3bf; --sv-badge-text:#0f1420;
+  --pv-app:#4cc38a; --pv-app-soft:rgba(76,195,138,.05); --pv-sf:#58a6ff; --pv-sf-soft:rgba(88,166,255,.05);
+  --pv-hw:#e5c07b; --pv-hw-soft:rgba(229,192,123,.05);
+  --pv-box:#1d2639; --pv-box-stroke:#2b3650; --pv-box-active:#24406a; --pv-ink:#dfe6f3; --pv-muted:#8d9ab3; --pv-op:#b9c6dd;
+  --pv-hatch-bg:#2a2412; --pv-hatch:#7a6a3c; --pv-busy:#3c6e57; --pv-warn:#e5c07b;
+  --logo-stroke:#5fb3ff;
+}
+html[data-theme=dark] body{background:var(--bg)}
+html[data-theme=dark] body::before{background:linear-gradient(180deg,#111727 0%,#0f1420 40%,#0f1420 100%)}
+html[data-theme=dark] body::after{opacity:.35}
+html[data-theme=dark] ::selection{background:rgba(95,179,255,.3);color:#fff}
+html[data-theme=dark] a{color:var(--accent)}
+html[data-theme=dark] .scroll-progress{box-shadow:none}
+
+/* chrome */
+html[data-theme=dark] .topbar{background:rgba(15,20,32,.92);border-bottom-color:var(--line)}
+html[data-theme=dark] .brand .logo{background:var(--panel-2);border-color:var(--line);box-shadow:none}
+html[data-theme=dark] .nav a{color:var(--muted)}
+html[data-theme=dark] .nav a:hover{background:var(--panel-2);color:var(--text)}
+html[data-theme=dark] .nav a.is-active{background:var(--panel-2);box-shadow:inset 0 0 0 1px var(--line);color:var(--text)}
+html[data-theme=dark] .nav .nav-cta{color:#0f1420;background:var(--accent);border-color:var(--accent)}
+html[data-theme=dark] .theme-btn{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .eyebrow{color:var(--muted);background:var(--panel);border-color:var(--line)}
+html[data-theme=dark] .hero h1{background:none;-webkit-background-clip:border-box;background-clip:border-box;color:var(--text)}
+html[data-theme=dark] .hero h1 em{background:none;-webkit-background-clip:border-box;background-clip:border-box;color:var(--accent)}
+html[data-theme=dark] .hero .lede code,html[data-theme=dark] .prose code,html[data-theme=dark] .note-card code{color:#b9c6dd;background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .hero-meta .chip,html[data-theme=dark] .term{background:var(--panel);border-color:var(--line);color:var(--text-2)}
+html[data-theme=dark] .term:hover{border-color:var(--accent);background:var(--panel-2);color:var(--text)}
+html[data-theme=dark] .btn{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+html[data-theme=dark] .btn:hover{border-color:var(--accent);background:var(--panel-2)}
+html[data-theme=dark] .btn.primary{background:var(--accent);border-color:var(--accent);color:#0f1420;box-shadow:none}
+html[data-theme=dark] .btn.primary:hover{background:#7cc2ff}
+html[data-theme=dark] section.band,html[data-theme=dark] .stage{border-top-color:var(--line)}
+html[data-theme=dark] .sec-eyebrow{color:var(--accent)}
+html[data-theme=dark] .section-head h2{border-left:4px solid var(--accent);padding-left:12px}
+html[data-theme=dark] .thesis .quote{border-left-color:var(--accent)}
+html[data-theme=dark] .thesis .quote .mono{color:#b9c6dd}
+/* cards & panels: flat #171e2e on #0f1420 */
+html[data-theme=dark] .stat,html[data-theme=dark] .card,html[data-theme=dark] .kp,html[data-theme=dark] .note-card,
+html[data-theme=dark] .jank-card,html[data-theme=dark] .obs,html[data-theme=dark] .flow-strip,html[data-theme=dark] .myth,
+html[data-theme=dark] .sum-wrap{background:var(--panel);border-color:var(--line);box-shadow:none}
+html[data-theme=dark] .stat::after{background:linear-gradient(90deg,transparent,var(--line),transparent)}
+html[data-theme=dark] .flow-step:hover{background:var(--panel-2);border-color:var(--line-2)}
+html[data-theme=dark] .kp h4 .ico,html[data-theme=dark] .card-h .ico{background:var(--panel-2);color:var(--accent)}
+html[data-theme=dark] .note-card h4 .n{border-color:var(--line);color:var(--accent)}
+html[data-theme=dark] .callchain{background:#111827;border:1px dashed var(--line)}
+html[data-theme=dark] .callchain .cc{color:#b9c6dd;background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .prose em{border-bottom-color:var(--line-2)}
+html[data-theme=dark] .prose th,html[data-theme=dark] .sources-table th,html[data-theme=dark] .sum-table th{background:var(--panel-2)}
+html[data-theme=dark] .prose td,html[data-theme=dark] .sources-table td,html[data-theme=dark] .sum-table td,html[data-theme=dark] .obs p{border-color:var(--line)}
+html[data-theme=dark] .kv .row .n,html[data-theme=dark] .rung .rv,html[data-theme=dark] .sources-table .fp{color:var(--text)}
+html[data-theme=dark] .metric .m-val{color:var(--accent)}
+html[data-theme=dark] .warn-item::before{background:rgba(229,192,123,.12);color:#e5c07b}
+html[data-theme=dark] .taglist span,html[data-theme=dark] .trace-tags span{color:#b9c6dd;background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .rung .bar{background:var(--panel-2)}
+html[data-theme=dark] .rung .bar .b1{background:var(--lane-ui)} html[data-theme=dark] .rung .bar .b2{background:var(--lane-rt)}
+html[data-theme=dark] .rung .bar .b3{background:var(--lane-sf)} html[data-theme=dark] .rung .bar .b4{background:var(--lane-display)}
+html[data-theme=dark] .sources-table .stg a,html[data-theme=dark] .sum-s a{color:var(--accent);border-color:var(--line)}
+html[data-theme=dark] .verify-bar{background:rgba(76,195,138,.08);border-color:#3c6e57;color:#9fd8bb}
+html[data-theme=dark] .verify-bar .ok{background:rgba(76,195,138,.18);color:#9fd8bb} html[data-theme=dark] .verify-bar b{color:#c9ecd9}
+html[data-theme=dark] .stage-rail{background:rgba(23,30,46,.96);border-color:var(--line);box-shadow:0 12px 30px -18px rgba(0,0,0,.8)}
+html[data-theme=dark] .stage-rail a:hover,html[data-theme=dark] .stage-rail a.is-active{color:var(--text);background:var(--panel-2)}
+html[data-theme=dark] .to-top{background:var(--panel);border-color:var(--line)}
+html[data-theme=dark] .to-top:hover{border-color:var(--accent);background:var(--panel-2)}
+html[data-theme=dark] .sum-e code{color:#b9c6dd} html[data-theme=dark] .sum-time{color:var(--text)}
+html[data-theme=dark] .sum-row.is-cur{background:rgba(95,179,255,.1)}
+html[data-theme=dark] .myth{box-shadow:inset 3px 0 0 color-mix(in srgb,var(--lane) 70%,transparent)}
+
+/* code: Flow page's pre #0b0f18 with panel2 header, One Dark-ish tokens */
+html[data-theme=dark] .snippet,html[data-theme=dark] .formula,html[data-theme=dark] .obs pre{background:#0b0f18;border-color:var(--line);box-shadow:none}
+html[data-theme=dark] .snippet-head{background:var(--panel-2);border-bottom-color:var(--line)}
+html[data-theme=dark] .snippet-head .fpath{color:var(--muted)} html[data-theme=dark] .snippet-head .fpath b{color:var(--text)}
+html[data-theme=dark] .snippet-head .src-links a{color:var(--accent);border-bottom-color:rgba(95,179,255,.35)}
+html[data-theme=dark] .snippet pre{color:#c9d1e0}
+html[data-theme=dark] .snippet-note{background:var(--panel);border-top:1px solid var(--line)}
+html[data-theme=dark] .tok-k,html[data-theme=dark] .formula .k{color:#c678dd} html[data-theme=dark] .tok-s{color:#98c379}
+html[data-theme=dark] .tok-c,html[data-theme=dark] .formula .cm{color:#6b7891;font-style:italic} html[data-theme=dark] .tok-n,html[data-theme=dark] .formula .n{color:#d19a66}
+html[data-theme=dark] .tok-t{color:#e5c07b} html[data-theme=dark] .tok-f{color:#61afef} html[data-theme=dark] .tok-p{color:#56b6c2} html[data-theme=dark] .tok-a{color:#e5c07b}
+/* studio */
+html[data-theme=dark] .studio{background:var(--panel);border-color:var(--line);box-shadow:none}
+html[data-theme=dark] .studio::before{display:none}
+html[data-theme=dark] .studio-title .live{color:var(--ok);background:rgba(76,195,138,.1);border-color:#3c6e57}
+html[data-theme=dark] .tag{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .fp-controls,html[data-theme=dark] .fp-state,html[data-theme=dark] .slots{background:#141a29;border-top-color:var(--line)}
+html[data-theme=dark] .fp-params{background:var(--panel)}
+html[data-theme=dark] .seg{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .seg button.on{background:var(--accent);color:#0f1420}
+html[data-theme=dark] .switch.calm input:checked + .track{background:rgba(95,179,255,.45);border-color:var(--accent)}
+html[data-theme=dark] .pp{background:var(--panel);border-top-color:var(--line)}
+html[data-theme=dark] .pp-right{border-left-color:var(--line)}
+html[data-theme=dark] .pp-refs li{font-family:Menlo,Consolas,monospace}
+html[data-theme=dark] .pp-refs li.on{color:var(--text);border-left-color:var(--accent);background:rgba(95,179,255,.08)}
+html[data-theme=dark] .pp-refs li.cur{color:#fff;border-left-color:#fff;background:rgba(95,179,255,.22)}
+html[data-theme=dark] .pp-packet{color:#e5c07b}
+html[data-theme=dark] .pp-stat{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .budget{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .budget .fill{background:linear-gradient(90deg,rgba(76,195,138,.6),rgba(95,179,255,.6))}
+html[data-theme=dark] .budget .fill.warn{background:linear-gradient(90deg,rgba(240,163,58,.7),rgba(255,93,115,.75))}
+/* chips: exactly the Flow page's chip states */
+html[data-theme=dark] .fp-chips .chip{border-color:var(--line);color:var(--muted);background:none}
+html[data-theme=dark] .fp-chips .chip.done{border-color:#3c6e57;color:#9fd8bb;background:rgba(76,195,138,.1)}
+html[data-theme=dark] .fp-chips .chip.act{border-color:var(--accent);color:#fff;background:rgba(95,179,255,.3);box-shadow:0 0 8px rgba(95,179,255,.5)}
+html[data-theme=dark] .fp-chips .chip.act.drop{border-color:var(--hot);background:rgba(255,93,115,.3);box-shadow:0 0 8px rgba(255,93,115,.45)}
+html[data-theme=dark] .fp-chips .chip.q{border-color:#7a6a3c;color:#e5c07b}
+html[data-theme=dark] .transport{background:#141a29;border-top-color:var(--line)}
+html[data-theme=dark] .play-btn{background:var(--accent);border-color:var(--accent);color:#0f1420;box-shadow:none}
+html[data-theme=dark] .play-btn:hover{background:#7cc2ff}
+html[data-theme=dark] input[type=range].scrub::-webkit-slider-runnable-track{background:var(--line-2)}
+html[data-theme=dark] input[type=range].scrub::-webkit-slider-thumb{background:var(--accent);box-shadow:0 0 0 3px rgba(95,179,255,.25)}
+html[data-theme=dark] input[type=range].scrub::-moz-range-track{background:var(--line-2)}
+html[data-theme=dark] input[type=range].scrub::-moz-range-thumb{background:var(--accent)}
+
+/* time board */
+html[data-theme=dark] .ruler{border-bottom-color:var(--line)}
+html[data-theme=dark] .vsync .vline{background:linear-gradient(180deg,rgba(255,93,115,.85),rgba(255,93,115,.06))}
+html[data-theme=dark] .vsync .vdia{background:#3a1d27;border-color:var(--vsync);box-shadow:none}
+html[data-theme=dark] .vsync .vlab{color:#ffb3bf} html[data-theme=dark] .vsync .vsub{color:rgba(255,179,191,.6)}
+html[data-theme=dark] .pin .pin-n{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+html[data-theme=dark] .pin:hover .pin-n{border-color:var(--accent);box-shadow:none}
+html[data-theme=dark] .pin.is-past .pin-n{color:#0f1420;background:var(--accent);border-color:var(--accent)}
+html[data-theme=dark] .pin .pin-tip{background:var(--panel-2);border:1px solid var(--line)}
+html[data-theme=dark] .lane + .lane{border-top-color:rgba(43,54,80,.6)}
+html[data-theme=dark] .blk{background:color-mix(in srgb,var(--lane) 22%,#171e2e);border-color:color-mix(in srgb,var(--lane) 55%,#171e2e);box-shadow:none;filter:none}
+html[data-theme=dark] .blk .blk-label{color:var(--text);text-shadow:none}
+html[data-theme=dark] .blk.is-active{background:color-mix(in srgb,var(--lane) 40%,#171e2e);border-color:var(--lane);box-shadow:0 0 0 1px var(--lane),0 0 10px -2px var(--lane);filter:none}
+html[data-theme=dark] .blk.is-dashed{background:repeating-linear-gradient(115deg,color-mix(in srgb,var(--lane) 12%,transparent) 0 6px,transparent 6px 12px)}
+html[data-theme=dark] .fp-blk.is-wait{background:repeating-linear-gradient(115deg,rgba(255,93,115,.18) 0 5px,transparent 5px 10px);border-color:rgba(255,93,115,.55)}
+html[data-theme=dark] .fp-blk.is-wait .blk-label{color:#ffb3bf}
+html[data-theme=dark] .fp-seg{color:#0f1420}
+html[data-theme=dark] .fp-band.app{background:rgba(76,195,138,.12);border-color:rgba(76,195,138,.45)}
+html[data-theme=dark] .fp-band.sf{background:rgba(88,166,255,.12);border-color:rgba(88,166,255,.45)}
+html[data-theme=dark] .fp-arrow.is-active{filter:none}
+html[data-theme=dark] .fp-edge-label{background:var(--panel-2);border-color:var(--line);color:var(--text-2)}
+html[data-theme=dark] .fp-edge-label.ipc{color:#e5c07b;border-color:#7a6a3c}
+html[data-theme=dark] .playhead .ph-line{background:#fff;box-shadow:none}
+html[data-theme=dark] .playhead .ph-cap{box-shadow:0 0 0 3px rgba(95,179,255,.25)}
+html[data-theme=dark] .playhead .ph-time{background:var(--panel-2);border-color:var(--line);color:var(--text)}
+html[data-theme=dark] .miss-marker .mm-line{background:repeating-linear-gradient(180deg,var(--hot) 0 4px,transparent 4px 7px);box-shadow:none}
+html[data-theme=dark] .miss-marker .mm-label{color:#ffb3bf;background:#3a1d27;border-color:rgba(255,93,115,.5)}
+
+/* slot cards + process stage slots */
+html[data-theme=dark] .slot{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .slot[data-state=DEQUEUED]{border-color:var(--lane-rt);box-shadow:none}
+html[data-theme=dark] .slot[data-state=QUEUED]{border-color:var(--lane-bq);box-shadow:none}
+html[data-theme=dark] .slot[data-state=LATCHED]{border-color:var(--lane-sf);box-shadow:none}
+html[data-theme=dark] .slot[data-state=DISPLAY]{border-color:var(--lane-display);box-shadow:none}
+html[data-theme=dark] .slot[data-state=DEQUEUED] .state{color:var(--lane-rt)} html[data-theme=dark] .slot[data-state=QUEUED] .state{color:var(--lane-bq)}
+html[data-theme=dark] .slot[data-state=LATCHED] .state{color:var(--lane-sf)} html[data-theme=dark] .slot[data-state=DISPLAY] .state{color:var(--lane-display)}
+html[data-theme=dark] .slot .sbar i{background:var(--accent)}
+html[data-theme=dark] .pv-slot[data-s=DEQUEUED] rect{fill:rgba(240,163,58,.22)} html[data-theme=dark] .pv-slot[data-s=QUEUED] rect{fill:rgba(197,138,249,.22)}
+html[data-theme=dark] .pv-slot[data-s=LATCHED] rect{fill:rgba(88,166,255,.24)} html[data-theme=dark] .pv-slot[data-s=DISPLAY] rect{fill:rgba(229,192,123,.24)}
+html[data-theme=dark] .pv-chip{background:var(--panel-2);border-color:var(--line)}
+html[data-theme=dark] .pv-st .scr.is-focus,html[data-theme=dark] .pv-st.is-focus .scr{fill:#e5c07b}
+

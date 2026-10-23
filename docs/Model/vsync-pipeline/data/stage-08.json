@@ -1,0 +1,178 @@
+{
+  "id": "stage-08",
+  "num": 8,
+  "title": "HWC/DRM 上屏与 buffer 回传闭环",
+  "subtitle": "presentDisplay → present fence / release fence → 经 transaction callback 或 socket 回到 app，next frame 的 dequeue 才被解锁",
+  "lane": "HWC",
+  "durationHint": "一个刷新周期：16.7 ms@60Hz / 11.1 ms@90Hz / 8.3 ms@120Hz（scanout 节拍；SF 侧 CPU 时间叠加其上）",
+  "summary": "SF 把这一帧交给 HWC 后，<code>HWComposer::presentAndGetReleaseFences</code>（<code>HWComposer.cpp:658</code>）调用 <code>HWC2::Display::present</code> → <code>AidlComposer::presentDisplay</code>，拿到 <strong>present fence</strong>（HWC2 语义：本帧开始扫描输出时 signal；HWC1 时代叫 retire fence）和每层 <strong>release fence</strong>（表示 SF/HWC 不再读这个 buffer）。<code>Output::presentFrameAndReleaseLayers</code> 把 release fence 交给各 <code>LayerFE</code>；回到 SF，<code>onCompositionPresented</code>（<code>SurfaceFlinger.cpp:3775</code>）把 present fence 包成 <code>FenceTime</code> 交给 <code>FrameTimeline::setSfPresent</code>，并对每个 layer 调 <code>prepareReleaseCallbacks</code>（合并 release fence）与 <code>Layer::releasePendingBuffer</code>。后者只把 callbackHandles 交给 <code>TransactionCallbackInvoker</code>（<code>Layer.cpp:814-836</code>）。正常回收是“延后一帧”的：buffer N 被 N+1 替换并完成合成后，N 的 previousReleaseFence 由 <code>TransactionCallbackInvoker::sendCallbacks</code> 经 surfaceStats（binder <code>onTransactionCompleted</code>）或 <code>BufferReleaseChannel</code>（unix domain socket）送回 app，进入 <code>BLASTBufferQueue::releaseBufferCallback</code> → <code>mPendingRelease</code>（按 maxAcquiredBufferCount 暂扣）→ <code>BufferQueueConsumer::releaseBuffer</code> → <code>IProducerListener::onBufferReleased</code>，下一次 dequeueBuffer 才有空闲 slot。<code>Layer::callReleaseBufferCallback</code>（:711）只用于 buffer 在 latch 前被覆盖（立即释放并记 dropped）、EARLY_RELEASE 以及 <code>~Layer</code>。FrameTimeline 在后续 setSfPresent 发现 present fence 已 signal 时才完成上一帧的 jank 分类，经 <code>JankTracker::onJankData</code> 推给 app 的 <code>SurfaceControl.JankData</code> 监听者。端到端典型 2~3 个 VSYNC。",
+  "callchain": [
+    "CompositionEngine::Display::presentFrame",
+    "HWComposer::presentAndGetReleaseFences",
+    "HWC2::Display::present",
+    "AidlComposer::presentDisplay",
+    "Output::presentFrameAndReleaseLayers",
+    "LayerFE::setReleaseFence",
+    "SurfaceFlinger::onCompositionPresented",
+    "FrameTimeline::setSfPresent",
+    "Layer::prepareReleaseCallbacks",
+    "Layer::releasePendingBuffer",
+    "TransactionCallbackInvoker::addCallbackHandles",
+    "TransactionCallbackInvoker::sendCallbacks",
+    "BufferReleaseChannel::ProducerEndpoint::writeReleaseFence",
+    "BufferReleaseReader::readBlocking",
+    "BLASTBufferQueue::releaseBufferCallback",
+    "BLASTBufferQueue::releaseBufferCallbackLocked",
+    "BufferQueueConsumer::releaseBuffer",
+    "IProducerListener::onBufferReleased",
+    "BufferQueueProducer::dequeueBuffer",
+    "FrameTimeline::flushPendingPresentFences",
+    "JankTracker::onJankData"
+  ],
+  "sections": [
+    {
+      "heading": "源码边界：HWC HAL 之下不属于本仓库",
+      "html": "<p>本仓库只到 HAL 客户端侧：<code>HWComposer</code>/<code>HWC2</code>（<code>native/services/surfaceflinger/DisplayHardware/</code>）通过 AIDL 接口 <code>aidl::android::hardware::graphics::composer3::IComposer</code> 调 vendor 实现（<code>AidlComposer::presentDisplay</code>，<code>AidlComposerHal.cpp:748</code>，内部 <code>writer-&gt;get().presentDisplay(displayId)</code>）。HAL 服务内部如何编程 DRM/KMS（atomic commit、plane 分配、DSI 时序、面板扫描）不在本仓库；内核 <code>drivers/gpu/drm</code> 也不在。任何“DRM atomic 何时生效”的结论都需要另外的源码或 trace，本文只到 present fence 与 presentation timestamp 为止。</p><p>能确定的是契约：<code>presentDisplay</code> 返回一个 present fence（HWC2 语义：这一帧开始扫描输出时 signal；“retire fence”是 HWC1 的旧称，含义不同），随后扫描输出按面板时序进行，什么时候真正点亮像素由 HWC/显示子系统决定。SF 侧用 <code>HWComposer::getPresentFence</code>（<code>HWComposer.cpp:637</code>）取这个 fence，用 <code>getPresentTimestamp</code>（:642，读 <code>lastPresentTimestamp</code>）取 HWC 上报的最近一次呈现时间戳。</p><p>当 HWC 不提供 present fence 时，<code>Layer</code> 会用 <code>getPresentTimestamp</code> 反推：<code>actualPresentTime = now - ((now - presentTimestamp) % vsyncPeriod)</code>（<code>Layer.cpp:1479-1498</code> 一带），并把结果写进 <code>TimeStats</code>/<code>FrameTracer</code>。这说明“实际呈现时间”在源码里是<strong>推算</strong>而非直接量测。</p>"
+    },
+    {
+      "heading": "present fence：present 是阻塞调用，fence 才是异步信号",
+      "html": "<p><code>HWComposer::presentAndGetReleaseFences</code> 里有两件事值得注意：一是若 <code>displayData.validateWasSkipped</code> 为真，它不调 present 而是 <code>executeCommands</code> 把之前攒下的 HWC 命令 flush 掉；二是 present 之前可以 <code>std::this_thread::sleep_until(*earliestPresentTime)</code>（:676-679），把帧硬等到“最早可上屏时刻”，用于避免过早提交导致的排队。若前面 <code>presentOrValidate</code> 已直接 present 成功，present/release fence 在 <code>getDeviceCompositionChanges</code> 阶段就已取回（<code>HWComposer.cpp:589-596</code>）。之后 <code>hwcDisplay-&gt;present(&amp;displayData.lastPresentFence)</code>（<code>HWC2::Display::present</code>，<code>HWC2.cpp:413</code>）一次拿回 present fence 与全部 layer 的 release fence（<code>getReleaseFences</code>，<code>HWC2.cpp:382</code>）。</p><p>fence 语义要分清：<strong>present fence</strong> 在这一帧开始扫描输出时 signal（此时上一帧随之被替换下屏）；<strong>release fence</strong> 是逐层的，表示这一层的 buffer 可以被 producer 重新写入。release fence 才是 buffer 回收的解锁条件，present fence 只用于时间线与功耗/延迟统计。SF 把两者都包成 <code>FenceTime</code>，<code>FrameTarget::setPresentFence</code> 保存，<code>presentFenceForPreviousFrame</code> 供下一拍在 <code>postComposition</code> 中判断上一帧的 present fence 是否已及时 signal。</p><p>可靠性上源码自己留了退路：<code>mHasReliablePresentFences</code>（<code>SurfaceFlinger.cpp:3830</code> 一带）为 false 时 <code>presentLatency</code> 直接置零，不做推测；注释也指出有些设备的 HWC 不阻塞上一帧的 present fence（<code>:3508-3512</code>）。因此把 present fence 信号时间当成“scanout 时刻”是不严谨的。</p>"
+    },
+    {
+      "heading": "buffer 回收：TransactionCallbackInvoker、binder 与 BufferReleaseChannel",
+      "html": "<p><strong>正常路径是“下一帧替换后才释放上一帧”</strong>：buffer N 在屏上时，SF/HWC 仍可能读它；只有 N+1 被 latch 并完成合成，N 才能还给 app。具体链路：</p><ol><li><code>Output::presentFrameAndReleaseLayers</code>（<code>Output.cpp:1726</code>）为每层取 HWC release fence（client composition 层与 client target acquire fence 合并，<code>:1761-1780</code>），交给 <code>LayerFE::setReleaseFence</code>（<code>:1783</code>）。</li><li><code>onCompositionPresented</code> 对每个 layer 调 <code>Layer::prepareReleaseCallbacks</code>（<code>SurfaceFlinger.cpp:3860</code>，<code>Layer.cpp:787</code>）：把 fence future 放进当前 <code>CallbackHandle</code> 的 <code>fenceMerger</code>，并记下 <code>previousReleaseCallbackId</code>（即被替换的旧 buffer N）。</li><li><code>Layer::releasePendingBuffer</code>（<code>SurfaceFlinger.cpp:3864/3872</code> 调用，<code>Layer.cpp:814-836</code>）<strong>本身不回调 app</strong>：它只给 handle 填上 <code>bufferReleaseChannel</code>、transformHint、<code>currentMaxAcquiredBufferCount</code> 等，然后 <code>addCallbackHandles</code> 交给 <code>TransactionCallbackInvoker</code>。</li><li><code>TransactionCallbackInvoker</code> 用 <code>fenceMerger.waitAndGetFence</code> 得到 previousReleaseFence，写进 <code>surfaceStats</code>；有 BufferReleaseChannel 时同时压入 <code>mBufferReleases</code>（<code>TransactionCallbackInvoker.cpp:129-150</code>）。<code>sendCallbacks</code> 里 <code>writeReleaseFence</code> 走 socket（<code>:158-169</code>，<code>fence_handling</code> flag 打开时改在后台线程发送），同时 <code>ITransactionCompletedListener::onTransactionCompleted</code> 走 binder；app 侧在 surfaceStats 的 <code>previousReleaseCallbackId</code> 上找到对应回调（<code>SurfaceComposerClient.cpp:568-573</code>）。</li></ol><p><code>Layer::callReleaseBufferCallback</code>（<code>Layer.cpp:711</code>）直接调 <code>listener-&gt;onReleaseBuffer(...)</code>（binder）和 <code>mBufferReleaseChannel-&gt;writeReleaseFence(...)</code>（socket），但只在特殊路径使用：<code>releasePreviousBuffer</code>（<code>:853-879</code>）中，若 drawing state 里的 buffer N 在 latch 前就被新事务覆盖，立即用其 acquire fence 释放并标 <code>addSurfaceFrameDroppedForBuffer</code>；或 <code>EARLY_RELEASE_ENABLED</code> 时用 <code>mLastClientCompositionFence</code> 提前释放；以及 <code>~Layer</code>（<code>:173</code>）。</p><p>app 进程接收端：<code>BLASTBufferQueue</code> 创建 <code>BufferReleaseReader</code>（<code>BLASTBufferQueue.cpp:1209</code>，epoll 监听 channel fd 与一个 eventfd）。<code>BufferQueueProducer::dequeueBuffer</code> 判定无空闲 slot 时调 <code>waitForBufferRelease</code>（<code>BufferQueueProducer.cpp:438</code>），BBQ 覆写版本（<code>BLASTBufferQueue.cpp:1302</code>）阻塞在 <code>readBlocking</code> 上，拿到 release 后 <code>bbq-&gt;releaseBufferCallback</code> → <code>releaseBufferCallbackLocked</code>（<code>:490</code>）。这里还有一层 <strong><code>mPendingRelease</code></strong>：对 EGL 客户端按 SF 回传的 <code>currentMaxAcquiredBufferCount</code>（随刷新率变化）算出 <code>numPendingBuffersToHold = max(0, mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount)</code>（<code>:507-508</code>），只把超出部分 <code>releaseBuffer</code> 给 <code>BufferQueueConsumer::releaseBuffer</code>（<code>BufferQueueConsumer.cpp:509</code>），后者无锁回调 <code>onBufferReleased()</code>（<code>:588</code>）。</p><p>为什么要有 socket：binder 线程池耗尽或阻塞时，release 回调会拖慢 buffer 回收。channel 用 socket 传 flatten 后的 <code>ReleaseCallbackId</code> + fence fd；SF 侧写失败只打 log（<code>callReleaseBufferCallback</code> 容忍 EPIPE/ECONNRESET，因为 <code>~Layer</code> 也会走到这里），不会阻塞 present。</p>"
+    },
+    {
+      "heading": "FrameTimeline：present fence 如何变成端到端可见的时间线",
+      "html": "<p><code>SurfaceFlinger::onCompositionPresented</code>（<code>SurfaceFlinger.cpp:3775</code>）是所有回传的汇聚点：取各 display 的 present fence，pacesetter 的交给 <code>mTransactionCallbackInvoker.addPresentFence</code>（随 transaction callback 回给 app），同时 <code>targeter-&gt;setPresentFence</code> 保存；若该 display 用了 client composition，再取 <code>RenderSurface::getClientTargetAcquireFence</code> 作为 GPU 完成 fence。最后 <code>mFrameTimeline-&gt;setSfPresent(presentTime, presentFence, gpuFence)</code>。</p><p><code>FrameTimeline::setSfPresent</code>（<code>Scheduler/FrameTimeline.cpp:1420</code>）把 fence 塞进 <code>mPendingPresentFences</code> 并调 <code>flushPendingPresentFences</code>（:2095）：present fence 是按序信号的，遇到第一个仍 <code>SIGNAL_TIME_PENDING</code> 的就停，已信号的那些调 <code>DisplayFrame::onPresent(signalTime, ...)</code> 并 <code>trace(...)</code> 写出 FrameTimeline 的 proto。也就是说 <strong>第 N 帧的 jank 判定要在第 N+1 帧的 <code>setSfPresent</code> 里才完成</strong>——时间线按拍推进，而不是帧一 present 就立刻出结论。</p><p>逐层那一侧：latch 时 <code>Layer::addSurfaceFramePresentedForBuffer</code>（:461）已把 <code>SurfaceFrame</code> 以 <code>PresentState::Presented</code> 交给 FrameTimeline；被丢弃的 buffer 走 <code>addSurfaceFrameDroppedForBuffer</code>。分类完成后 <code>FrameTimeline.cpp:1077</code> 构造 <code>gui::JankData</code>，<code>:1102</code> 调 <code>JankTracker::onJankData</code>，后者把数据投到低优先级后台线程再 fan-out 给 app 注册的 <code>SurfaceControl.JankData</code>/JankStats 监听者（<code>OnJankDataListener</code>）。app 侧的 <code>FrameMetrics</code> 与 JankStats 就是这条链的最终消费者。</p>"
+    },
+    {
+      "heading": "端到端延迟模型：为什么典型是 2~3 个 VSYNC",
+      "html": "<p>把两阶段拼起来：<code>requestLayout</code> 置脏 → 下一拍 appOffset 时 Choreographer 的 <code>doFrame</code>（<code>CALLBACK_TRAVERSAL</code>）→ RenderThread 绘制 → <code>queueBuffer</code> 以 BLAST Transaction 提交 → SF 在它对准的那次 sfOffset 唤醒时消费（赶不上则顺延一次） → <code>commit</code>（latch+快照）→ <code>composite</code>（HWC validate/present 或 GPU client composition）→ present fence → 面板扫描。若 app 在 SF 相位之后才交帧，就多等一拍；若 SF 合成超过 <code>sfWorkDuration</code>，上屏再顺延一拍。所以 2 个 VSYNC 是顺利路径，3 个是常见抖动路径。</p><p>刷新率直接缩放整条预算：60Hz=16.67ms、90Hz=11.11ms、120Hz=8.33ms 一个周期；<code>PhaseOffsets</code>（<code>VsyncConfiguration.cpp:161</code>）把 app 与 SF 的唤醒点错开，<code>appWorkDuration = vsyncDuration + (sfOffset - appOffset)</code>，结果小于一个周期时再加一个周期（<code>:150-158</code>）。只有 <code>appWorkDuration + sfWorkDuration ≤ 周期</code> 时 app 与 SF 才能在同一周期内接力；这取决于配置。按 AOSP 默认 offset（app/sf 都是 1ms，high fps 下 late 为 2ms/1ms，<code>:89-96</code>），app 唤醒到 present 在 60Hz 下约 2 个周期、高刷下约 3 个周期；<code>VsyncModulator</code> 会在 <code>onTransactionCommit</code>（<code>VsyncModulator.cpp:107</code>）等时机切换 early/late/earlyGpu 三套偏移，以适配“有事务提交/有 GPU 合成”的不同场景。</p><p>LTPO 与 PSR 只能作概念说明并标注边界：本仓库可见的是 <code>RefreshRateSelector</code>、<code>LayerHistory</code> 之类的软件选择与 vote 逻辑，面板可变刷新率的硬件行为、以及 PSR（Panel Self Refresh）在面板/DDIC 侧的自刷新与退出延迟，<strong>源码中未体现</strong>（在 vendor HAL/内核/面板固件中）。因此不能用 SF 侧 present 时间戳精确推断 LTPO 切频时刻或 PSR 退出开销。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "symbol": "HWComposer::presentAndGetReleaseFences",
+      "lines": "658-691",
+      "code": "status_t HWComposer::presentAndGetReleaseFences(\n        HalDisplayId displayId,\n        std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) {\n    SFTRACE_CALL();\n\n    RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);\n\n    auto& displayData = mDisplayData[displayId];\n    auto& hwcDisplay = displayData.hwcDisplay;\n\n    if (displayData.validateWasSkipped) {\n        // explicitly flush all pending commands\n        auto error = static_cast<hal::Error>(mComposer->executeCommands(hwcDisplay->getId()));\n        RETURN_IF_HWC_ERROR_FOR(\"executeCommands\", error, displayId, UNKNOWN_ERROR);\n        RETURN_IF_HWC_ERROR_FOR(\"present\", displayData.presentError, displayId, UNKNOWN_ERROR);\n        return NO_ERROR;\n    }\n\n    if (earliestPresentTime) {\n        SFTRACE_NAME(\"wait for earliest present time\");\n        std::this_thread::sleep_until(*earliestPresentTime);\n    }\n\n    auto error = hwcDisplay->present(&displayData.lastPresentFence);\n    RETURN_IF_HWC_ERROR_FOR(\"present\", error, displayId, UNKNOWN_ERROR);\n\n    std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;\n    error = hwcDisplay->getReleaseFences(&releaseFences);\n    RETURN_IF_HWC_ERROR_FOR(\"getReleaseFences\", error, displayId, UNKNOWN_ERROR);\n\n    displayData.releaseFences = std::move(releaseFences);\n\n    return NO_ERROR;\n}",
+      "note": "present 的真实调用点：先处理 validateWasSkipped 的 executeCommands 分支，按需 sleep 到 earliestPresentTime，然后 present 并一次性取回各层 release fence。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "symbol": "Layer::callReleaseBufferCallback",
+      "lines": "711-749",
+      "code": "void Layer::callReleaseBufferCallback(const sp<ITransactionCompletedListener>& listener,\n                                      const sp<GraphicBuffer>& buffer, uint64_t framenumber,\n                                      const sp<Fence>& releaseFence) {\n    if (!listener && !mBufferReleaseChannel) {\n        return;\n    }\n\n    SFTRACE_FORMAT_INSTANT(\"callReleaseBufferCallback %s - %\" PRIu64, getDebugName(), framenumber);\n\n    ReleaseCallbackId callbackId{buffer->getId(), framenumber};\n    const sp<Fence>& fence = releaseFence ? releaseFence : Fence::NO_FENCE;\n    uint32_t currentMaxAcquiredBufferCount =\n            mFlinger->getMaxAcquiredBufferCountForCurrentRefreshRate(mOwnerUid);\n\n    if (FlagManager::getInstance().monitor_buffer_fences()) {\n        buffer->getDependencyMonitor().addEgress(FenceTime::makeValid(fence), \"Layer release\");\n    }\n\n    if (listener) {\n        listener->onReleaseBuffer(callbackId, fence, currentMaxAcquiredBufferCount,\n                                  false /* removeFromCache */);\n    }\n\n    if (!mBufferReleaseChannel) {\n        return;\n    }\n\n    status_t status = mBufferReleaseChannel->writeReleaseFence(callbackId, fence,\n                                                               currentMaxAcquiredBufferCount);\n    if (status != OK) {\n        int error = -status;\n        // callReleaseBufferCallback is called during Layer's destructor. In this case, it's\n        // expected to receive connection errors.\n        if (error != EPIPE && error != ECONNRESET) {\n            ALOGD(\"[%s] writeReleaseFence failed. error %d (%s)\", getDebugName(), error,\n                  strerror(error));\n        }\n    }\n}",
+      "note": "直接释放的出口：binder 的 ITransactionCompletedListener::onReleaseBuffer 与 BufferReleaseChannel socket 的 writeReleaseFence，maxAcquiredBufferCount 随当前刷新率计算。它只在 releasePreviousBuffer（latch 前被覆盖 / EARLY_RELEASE）与 ~Layer 中调用；正常逐帧回收走 TransactionCallbackInvoker。"
+    },
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "BBQBufferQueueProducer::waitForBufferRelease",
+      "lines": "1302-1341",
+      "code": "    status_t waitForBufferRelease(std::unique_lock<std::mutex>& bufferQueueLock,\n                                  nsecs_t timeout) const override {\n        ATRACE_CALL();\n        const auto startTime = std::chrono::steady_clock::now();\n\n        // BufferQueue has already checked if we have a free buffer. If there's an unread interrupt,\n        // we want to ignore it. This must be done before unlocking the BufferQueue lock to ensure\n        // we don't miss an interrupt.\n        mBufferReleaseReader->clearInterrupts();\n        UnlockGuard unlockGuard{bufferQueueLock};\n\n        ReleaseCallbackId id;\n        sp<Fence> fence;\n        uint32_t maxAcquiredBufferCount;\n        status_t status =\n                mBufferReleaseReader->readBlocking(id, fence, maxAcquiredBufferCount, timeout);\n        if (status == TIMED_OUT) {\n            return TIMED_OUT;\n        } else if (status != OK) {\n            // Waiting was interrupted or an error occurred. BufferQueueProducer will check if we\n            // have a free buffer and call this method again if not.\n            return OK;\n        }\n\n        sp<BLASTBufferQueue> bbq = mBLASTBufferQueue.promote();\n        if (!bbq) {\n            return OK;\n        }\n\n        bbq->releaseBufferCallback(id, fence, maxAcquiredBufferCount);\n        const nsecs_t durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(\n                                              std::chrono::steady_clock::now() - startTime)\n                                              .count();\n        // Provide a callback for Choreographer to start buffer stuffing recovery when blocked\n        // on buffer release.\n        std::function<void(const nsecs_t)> callbackCopy = bbq->getWaitForBufferReleaseCallback();\n        if (callbackCopy) callbackCopy(durationNanos);\n\n        return OK;\n    }",
+      "note": "app 进程侧等待 buffer 回收：epoll 上阻塞读 BufferReleaseChannel，拿到 fence 后回调 BLASTBufferQueue，再触发 BufferQueue 的 release 与 onBufferReleased。"
+    },
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "SurfaceFlinger::onCompositionPresented",
+      "lines": "3775-3825",
+      "code": "void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId,\n                                            const scheduler::FrameTargeters& frameTargeters,\n                                            nsecs_t presentStartTime) {\n    SFTRACE_CALL();\n\n    ui::PhysicalDisplayMap<PhysicalDisplayId, std::shared_ptr<FenceTime>> presentFences;\n    ui::PhysicalDisplayMap<PhysicalDisplayId, const sp<Fence>> gpuCompositionDoneFences;\n\n    for (const auto& [id, targeter] : frameTargeters) {\n        auto presentFence = getHwComposer().getPresentFence(id);\n\n        if (id == pacesetterId) {\n            mTransactionCallbackInvoker.addPresentFence(presentFence);\n        }\n\n        if (auto fenceTime = targeter->setPresentFence(std::move(presentFence));\n            fenceTime->isValid()) {\n            presentFences.try_emplace(id, std::move(fenceTime));\n        }\n\n        ftl::FakeGuard guard(mStateLock);\n        if (const auto display = getCompositionDisplayLocked(id);\n            display && display->getState().usesClientComposition) {\n            gpuCompositionDoneFences\n                    .try_emplace(id, display->getRenderSurface()->getClientTargetAcquireFence());\n        }\n    }\n    // ...（中间省略 pacesetter fence 提取与 presentTime 采样，见 onCompositionPresented 全文）\n    const TimePoint presentTime = TimePoint::now();\n\n    // Set presentation information before calling Layer::releasePendingBuffer, such that jank\n    // information from previous' frame classification is already available when sending jank info\n    // to clients, so they get jank classification as early as possible.\n    mFrameTimeline->setSfPresent(presentTime.ns(), pacesetterPresentFenceTime,\n                                 pacesetterGpuCompositionDoneFenceTime);\n\n    // We use the CompositionEngine::getLastFrameRefreshTimestamp() which might",
+      "note": "present fence 汇聚：pacesetter 的 present fence 交给 transaction callback，同时进入 FrameTimeline::setSfPresent，第 N+1 帧时完成第 N 帧的 jank 分类。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "presentFence",
+      "type": "sp<Fence> → FenceTime",
+      "desc": "HWC presentDisplay（或 presentOrValidate 直接 present）返回，HWComposer 保存在 DisplayData::lastPresentFence。HWC2 语义：本帧开始扫描输出时 signal（retire fence 是 HWC1 旧称）。SF 用它做 FrameTimeline 的 actual present、present latency 统计与 transaction callback，不是 buffer 回收条件。"
+    },
+    {
+      "name": "releaseFence",
+      "type": "sp<Fence>（逐 layer）",
+      "desc": "HWComposer::getLayerReleaseFence 从 DisplayData::releaseFences 取，经 LayerFE::setReleaseFence → Layer::prepareReleaseCallbacks 合并；表示该 layer 的旧 buffer 不再被读取。被替换后作为 previousReleaseFence 经 TransactionCallbackInvoker（surfaceStats / BufferReleaseChannel）回到 app，再经 BBQ 的 mPendingRelease 交给 BufferQueueConsumer::releaseBuffer，对应 slot 才变成 free。"
+    },
+    {
+      "name": "scheduler::SurfaceFrame",
+      "type": "class（Scheduler/FrameTimeline.h:193）",
+      "desc": "FrameTimeline 的逐帧记录，含 token、ownerPid/Uid、layerId、desiredPresentTime、actual queue/acquire/latch time 与 PresentState（Presented/Dropped/Unknown）；latch、drop、present 各阶段填不同字段，最终用于 jank 分类。"
+    },
+    {
+      "name": "gui::BufferReleaseChannel::ProducerEndpoint",
+      "type": "unix domain socket endpoint",
+      "desc": "SF 端持有，writeReleaseFence 把 ReleaseCallbackId + fence fd + maxAcquiredBufferCount flatten 后写入 socket；app 端 ConsumerEndpoint 读取。Layer 与 TransactionCallbackInvoker 都可能写它，失败只记 log。"
+    },
+    {
+      "name": "BufferReleaseReader",
+      "type": "class（BLASTBufferQueue.cpp:1209）",
+      "desc": "app 进程内 epoll 封装，同时监听 BufferReleaseChannel fd 与 eventfd；readBlocking 可被 notifyBufferReleased 的 eventfd 中断，避免 release 回调阻塞 dequeue。"
+    },
+    {
+      "name": "CompositorTiming",
+      "type": "struct",
+      "desc": "构造时使用预期 vsync deadline、刷新率周期、vsyncPhase（= late.sfOffset 换算值）与 presentLatency；随 transaction callback 回给 app，供 Choreographer/CompositorTiming 计算下一帧的最佳提交时刻。"
+    },
+    {
+      "name": "FrameTarget::presentFenceForPreviousFrame",
+      "type": "FenceTimePtr",
+      "desc": "上一拍保存的 present fence，postComposition 中用于 PowerAdvisor 估算上一帧 present fence 的 signal 延迟；源码注释说明部分设备不保证其已信号。"
+    },
+    {
+      "name": "mPendingRelease / mCurrentMaxAcquiredBufferCount",
+      "type": "std::deque<ReleasedBuffer> / uint32_t（BLASTBufferQueue）",
+      "desc": "releaseBufferCallbackLocked（BLASTBufferQueue.cpp:490-531）先把 release 放进 mPendingRelease；对 EGL 客户端按 SF 回传的 currentMaxAcquiredBufferCount（随刷新率变化）计算 numPendingBuffersToHold = max(0, mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount)，只释放超出部分，从而在低刷新率下降低排队延迟。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "presentAndGetReleaseFences",
+      "value": "SFTRACE_CALL + \"wait for earliest present time\" 子 slice",
+      "desc": "Perfetto 中直接定位 HWC presentDisplay 的阻塞时长；sleep 子 slice 存在时说明被 earliestPresentTime 限流。"
+    },
+    {
+      "name": "Waiting on HWC",
+      "value": "CompositionEngine::present 内 SFTRACE_NAME",
+      "desc": "等待 present future 的总时间，与 presentAndGetReleaseFences 时间对照可区分是 display 多/单、是否被 offload。"
+    },
+    {
+      "name": "releasePendingBuffer <layer> - <frame>",
+      "value": "SFTRACE_FORMAT_INSTANT",
+      "desc": "每次把 callback handles/ release channel 交给 TransactionCallbackInvoker 时打点，用于核对 release 是否按帧推进。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency",
+      "value": "命令行三元组",
+      "desc": "desiredPresentTime / actualPresentTime / frameNumber，可看出实际 present 与期望值的偏差（是否错过一拍）。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --timestats / FrameTimeline proto",
+      "value": "命令行 + Perfetto FrameTimeline",
+      "desc": "按 layer/uid 统计 jank 类型；Perfetto 的 FrameTimeline track 直接展示 expected vs actual present 与 jank 分类，来源是 FrameTimeline::DisplayFrame::trace。"
+    },
+    {
+      "name": "app 侧 JankStats / FrameMetrics",
+      "value": "Java API",
+      "desc": "OnJankDataListener 与 FrameMetrics 的 TOTAL_DURATION/DEADLINE 等，最终数据来自 SF 的 JankTracker 回传，可闭环验证端到端是否掉帧。"
+    }
+  ],
+  "pitfalls": [
+    "present fence 不等于 scanout 完成的精确时刻：HWC 可能不阻塞上一帧 present fence（SurfaceFlinger.cpp:3508 注释），mHasReliablePresentFences 为 false 时 presentLatency 直接置零；把 Fence 的 signalTime 当“面板点亮时刻”会系统性低估延迟。",
+    "release fence 不等于“app 马上能画”：还受 maxAcquiredBufferCount（随刷新率变化）限制；dequeueBuffer 被阻塞时 waitForBufferRelease 会走 socket 阻塞读，Choreographer 侧还会触发 buffer stuffing 恢复回调，表现为 app 线程卡在 dequeue。",
+    "不要以为 SF 在 releasePendingBuffer 里直接回调 app：它只把 callbackHandles 交给 TransactionCallbackInvoker（Layer.cpp:814-836），release 随 surfaceStats（binder）或 BufferReleaseChannel（socket）一起发出；callReleaseBufferCallback 只用于 latch 前被覆盖的 buffer、EARLY_RELEASE 与 ~Layer。看 trace 时若只有 writeReleaseFence 没有 onReleaseBuffer，不代表 buffer 没回收。",
+    "jank 分类滞后一拍：FrameTimeline 在下一帧 setSfPresent 时才 flush 上一帧 pending present fence，实时看 trace 会看到“jank 出现在下一帧的 slice 上”；按时间戳对齐，不要按 slice 位置对齐。",
+    "LTPO/PSR/DRM atomic 的行为不在本仓库（vendor HAL、内核、面板固件），用 SF 侧时间戳推断切频/自刷新开销属于越界结论。",
+    "把“release fence 到达 app”当作 slot 立即 free：BBQ 对 EGL 客户端会按 maxAcquiredBufferCount 在 mPendingRelease 里暂扣 buffer（BLASTBufferQueue.cpp:507-531），低刷新率下 app 看到的可用 buffer 比 slot 总数少。"
+  ],
+  "traceTags": [
+    "presentAndGetReleaseFences",
+    "wait for earliest present time",
+    "Waiting on HWC",
+    "postComposition",
+    "releasePendingBuffer",
+    "callReleaseBufferCallback",
+    "TransactionCallbackInvoker::sendCallbacks",
+    "PendingRelease",
+    "FrameTimeline"
+  ],
+  "next": ""
+}

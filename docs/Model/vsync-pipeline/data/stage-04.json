@@ -1,0 +1,169 @@
+{
+  "id": "stage-04",
+  "num": 4,
+  "title": "performTraversals 前段：要窗口、量尺寸、摆位置",
+  "subtitle": "先向 WMS 做一次 relayout 拿到 frame、insets 与 SurfaceControl，再自顶向下 measure 与 layout",
+  "lane": "UI",
+  "durationHint": "relayout 一次 binder 往返约 0.3~2 ms；measure+layout 随层级约 1~10 ms（经验量级，源码本身不含耗时数据）",
+  "summary": "performTraversals() 在 UI 线程的 traversal 回调里同步执行，先做 no_host、not_added、paused_for_sync 三重防御，再置 mIsInTraversal 与 mWillDrawSoon。measureHierarchy() 生成 root 的 MeasureSpec；开了 PRIVATE_FLAG_OPTIMIZE_MEASURE 且双 EXACTLY 时只记录尺寸并置 mViewMeasureDeferred，把测量推迟到 relayout 之后。relayoutWindow() 经 IWindowSession 与 system_server 的 WMS.relayoutWindow()（持 mGlobalLock）往返，回填 WindowRelayoutResult 与 SurfaceControl；客户端随后 setFrame()、setWindowCrop()、applyTransactionOnDraw()。最后 performMeasure()/performLayout() 递归驱动 View.measure 与 View.layout。",
+  "callchain": [
+    "ViewRootImpl.doTraversal(frameTimeNanos)",
+    "ViewRootImpl.performTraversals(frameTimeNanos)",
+    "ViewRootImpl.measureHierarchy(host, lp, res, desiredWindowWidth, desiredWindowHeight, shouldOptimizeMeasure)",
+    "ViewRootImpl.getRootMeasureSpec(windowSize, measurement, privateFlags)",
+    "ViewRootImpl.performMeasure(childWidthMeasureSpec, childHeightMeasureSpec)",
+    "View.measure(widthMeasureSpec, heightMeasureSpec)",
+    "View.onMeasure(widthMeasureSpec, heightMeasureSpec) -> View.setMeasuredDimension()",
+    "ViewRootImpl.relayoutWindow(params, viewVisibility, insetsPending)",
+    "ViewRootImpl.updateSurfaceControl(viewVisibility)  // WindowManager.useClientSurface() 时",
+    "IWindowSession.relayout2() / relayout() 或 relayoutAsync2() / relayoutAsync()",
+    "com.android.server.wm.Session.relayout(window, attrs, requestedWidth, requestedHeight, viewFlags, flags, seq, syncSeqId, outRelayoutResult, outSurface)",
+    "com.android.server.wm.WindowManagerService.relayoutWindow(session, client, attrs, ...)",
+    "ViewRootImpl.setFrame(mTmpFrames.frame) -> InsetsController.onFrameChanged(frame)",
+    "WindowLayout.computeSurfaceSize(...) -> SurfaceControl.setTransformHint(...) -> SurfaceControl.Transaction.setWindowCrop(...)",
+    "ViewRootImpl.applyTransactionOnDraw(mTransaction)",
+    "ViewRootImpl.performLayout(lp, mWidth, mHeight)",
+    "View.layout(0, 0, measuredWidth, measuredHeight) -> View.setFrame(l, t, r, b) -> View.onLayout(changed, l, t, r, b)",
+    "ViewGroup.onLayout(...) -> child.layout(...)  // 递归"
+  ],
+  "sections": [
+    {
+      "heading": "入口：performTraversals 在什么条件下真正干活",
+      "html": "<p>traversal 回调最终落在 <code>ViewRootImpl.doTraversal(long frameTimeNanos)</code>（ViewRootImpl.java:3347）：先清 <code>mTraversalScheduled</code>、<code>removeTraversalBarrier()</code>，再调 <code>performTraversals(frameTimeNanos)</code>（ViewRootImpl.java:3924）。入参是 VSYNC 时间戳，全程在 UI 线程同步执行。</p><p>performTraversals 一进来先做三重防御：<code>if (host == null || !mAdded) return;</code>（ViewRootImpl.java:3935-3938，会把 <code>mLastPerformTraversalsSkipDrawReason</code> 记为 no_host 或 not_added）；<code>if (mNumPausedForSync &gt; 0) return;</code>（ViewRootImpl.java:3940-3951，记为 paused_for_sync），后者是 BLAST 同步事务尚未完成时主动跳过整帧。随后 <code>mIsInTraversal = true; mWillDrawSoon = true;</code>（ViewRootImpl.java:3953-3954）。<code>mWillDrawSoon</code> 会让 <code>ViewRootImpl.invalidate()</code> 里的 <code>if (!mWillDrawSoon) scheduleTraversals();</code> 短路，避免在自己的 traversal 里再排一帧。</p><p>然后取 <code>lp = mWindowAttributes</code>、<code>viewVisibility = getHostVisibility()</code>、<code>viewVisibilityChanged</code> 与 <code>shouldOptimizeMeasure = shouldOptimizeMeasure(lp)</code>（ViewRootImpl.java:3975；判定条件是 <code>PRIVATE_FLAG_OPTIMIZE_MEASURE</code>，见 ViewRootImpl.java:3907），并计算 <code>desiredWindowWidth/Height</code>（WRAP_CONTENT 时用 <code>getWindowBoundsInsetSystemBars()</code> 或 <code>Display.getRealSize()</code>）。这几个量决定后面走哪条路径、要不要 relayout。</p><p>需要强调的执行线程事实：从这里到 draw 结束，全部是 <code>Choreographer.doFrame()</code> 在 UI 线程 Handler 里同步调用下来的，没有任何工作被丢到别的线程；RenderThread 的介入要等到 Transaction 应用与 DisplayList 同步（属后续阶段）。</p>"
+    },
+    {
+      "heading": "先量尺寸：measureHierarchy、getRootMeasureSpec 与 mViewMeasureDeferred",
+      "html": "<p><code>measureHierarchy()</code>（ViewRootImpl.java:3625）在这一帧里可能被调用两次：第一次在 relayout 之前（ViewRootImpl.java:4099），第二次在 <code>mApplyInsetsRequested</code> 触发重新 dispatch insets 之后（ViewRootImpl.java:4139）。它的逻辑分两支：</p><ul><li>当 <code>lp.width == WRAP_CONTENT</code> 时做对话框宽度试探：先按 <code>config_prefDialogWidth</code> 量一次，若结果带 <code>MEASURED_STATE_TOO_SMALL</code>，就用 <code>(baseSize + desiredWindowWidth) / 2</code> 再量一次。这是本帧内唯一会连续 performMeasure 两次的地方。</li><li>否则直接 <code>getRootMeasureSpec(desiredWindowWidth, lp.width, lp.privateFlags)</code>（ViewRootImpl.java:5704）生成 root 的 spec：<code>MATCH_PARENT</code> 对应 <code>EXACTLY(windowSize)</code>，<code>WRAP_CONTENT</code> 对应 <code>AT_MOST(windowSize)</code>，固定值对应 <code>EXACTLY(rootDimension)</code>。</li></ul><p><strong>预测量优化</strong>：当 <code>forRootSizeOnly</code>（即 shouldOptimizeMeasure）为真且两个 spec 都是 EXACTLY 时，<code>setMeasuredRootSizeFromSpec()</code>（ViewRootImpl.java:3713）只把 <code>mMeasuredWidth/mMeasuredHeight</code> 记下来并置 <code>mViewMeasureDeferred = true</code>，不真正 measure。真正测量被推迟到 relayout 拿到 frame 之后（ViewRootImpl.java:4597-4603，用 <code>frame.width()/frame.height()</code> 构造两个 EXACTLY spec 再调 performMeasure）。这样就避免了先用猜测尺寸量一遍、拿到真实 frame 再量一遍的双倍开销。</p><p>注意因此在本版本中 <strong>measure 不一定发生在 relayout 之前</strong>，顺序取决于 shouldOptimizeMeasure 与 spec 是否双 EXACTLY。这一点与很多旧版本的线性叙述不同。</p>"
+    },
+    {
+      "heading": "relayoutWindow：一次 binder 往返换回 frame、insets 与 SurfaceControl",
+      "html": "<p>是否 relayout 由 ViewRootImpl.java:4201-4202 的条件决定：<code>if (mFirst || windowShouldResize || viewVisibilityChanged || params != null || mForceNextWindowRelayout)</code>。不满足时走 <code>maybeHandleWindowMove(frame)</code>（ViewRootImpl.java:5190），只更新 <code>mAttachInfo.mWindowLeft/Top</code>，完全没有 IPC。</p><p><code>relayoutWindow()</code>（ViewRootImpl.java:10191）体内的关键步骤：</p><ol><li>若 <code>WindowManager.useClientSurface()</code> 且窗口不是 locally managed，先 <code>updateSurfaceControl(viewVisibility)</code>（ViewRootImpl.java:10195）。BLAST 模型下 layer 由客户端创建，WMS 只管 parent 与 geometry。</li><li><code>canRelayoutAsync(relayoutSyncReason)</code>（ViewRootImpl.java:10137）判断能否异步：先用 <code>mWindowLayout.computeFrames()</code> 在本地算出 <code>mTmpFrames</code>，比较新老 frame 的位置与尺寸，只有位置或尺寸变了才必须同步（要拿 BLAST 的 syncSeqId）。<strong>android17 新增</strong>：<code>relayoutAsync = !positionChanged || !sizeChanged;</code>，命中就走 oneway 的 <code>relayoutAsync2()</code> 或 <code>relayoutAsync()</code>，否则才走同步的 <code>relayout2()</code> 或 <code>relayout()</code>。</li><li>同步路径（ViewRootImpl.java:10301-10313）<code>relayoutResult |= mWindowSession.relayout(mWindow, params, requestedWidth, requestedHeight, viewVisibility, flags, mRelayoutSeq, seqId, mRelayoutResult, mSurfaceControl);</code>，这是一次<strong>同步 binder 往返</strong>，会阻塞 UI 线程直到 system_server 返回。</li><li>返回后依次执行 <code>onClientWindowFramesChanged(mTmpFrames)</code>、<code>handleInsetsControlChanged(mTempInsets, mRelayoutResult.activeControls)</code>、<code>WindowLayout.computeSurfaceSize(...)</code> 得到 <code>mSurfaceSize</code>、<code>mSurfaceControl.setTransformHint(SurfaceControl.rotationToBufferTransform(...))</code>、按需 <code>mTransaction.setWindowCrop(...)</code>，最后 <code>applyTransactionOnDraw(mTransaction)</code>（ViewRootImpl.java:10454）把 Transaction 交给渲染管线。</li></ol><p>IPC 数据契约写在 <code>base/core/java/android/view/IWindowSession.aidl</code>：<code>int relayout(IWindow window, in WindowManager.LayoutParams attrs, int requestedWidth, int requestedHeight, int viewVisibility, int flags, int seq, int lastSyncSeqId, out @nullable WindowRelayoutResult outRelayoutResult, out SurfaceControl outSurface)</code>（IWindowSession.aidl:89-91）。输入是 Parcelable 的 <code>WindowManager.LayoutParams</code>；输出是 <code>WindowRelayoutResult</code>（含 <code>ClientWindowFrames frames</code>、<code>MergedConfiguration mergedConfiguration</code>、<code>InsetsState insetsState</code>、<code>InsetsSourceControl.Array activeControls</code>）与一个 <code>SurfaceControl</code> 句柄。所有 out 参数都是 binder 驱动的 writeToParcel/readFromParcel，没有共享内存；像素缓冲区本身走 BLASTBufferQueue 与 gralloc，不在这里传。</p>"
+    },
+    {
+      "heading": "WMS 侧：Session.relayout 到 WindowManagerService.relayoutWindow",
+      "html": "<p>服务端入口 <code>Session.relayout()</code>（base/services/core/java/com/android/server/wm/Session.java:290）只加一个 trace（<code>mRelayoutTag = \"relayoutWindow: \" + mPackageName</code>，Session.java:782），再转 <code>mService.relayoutWindow(...)</code>。<code>relayout2</code>、<code>relayoutAsync</code>、<code>relayoutAsync2</code>（Session.java:301-322）复用同一个实现，区别只在 <code>outRelayoutResult</code> 与 <code>outSurface</code> 是否为空。</p><p><code>WindowManagerService.relayoutWindow()</code>（base/services/core/java/com/android/server/wm/WindowManagerService.java:2548）的签名与 AIDL 一一对应，关键点：</p><ul><li>先 <code>Binder.clearCallingIdentity()</code>，再进入 <code>synchronized (mGlobalLock)</code>。这是 WMS 的全局锁，所有窗口事务串行，也是 relayout 可能被别的窗口操作拖慢的根本原因。</li><li><code>windowForClient(session, client)</code> 拿到 <code>WindowState</code>；随后比较 <code>win.mRelayoutSeq</code> 与客户端传入的 <code>seq</code>，旧请求直接 <code>return 0</code> 丢弃，这是 relayout 的过期保护。</li><li><code>win.cancelAndRedraw(syncSeqId)</code> 判定是否需要置 <code>RELAYOUT_RES_CANCEL_AND_REDRAW</code>：客户端已经报告过 sync draw 但服务端还没完成同步时，不允许做非同步 draw。</li><li>之后是 <code>win.setRequestedSize(requestedWidth, requestedHeight)</code>、<code>displayPolicy.adjustWindowParamsLw(win, attrs)</code>、以及 <code>sanitizePrivateFlags</code>/<code>sanitizeFlagSlippery</code>/<code>sanitizeInputFeatures</code> 一串参数净化，最终把新 frame 写回 <code>outRelayoutResult.frames</code>、把 <code>InsetsState</code> 写回 <code>outRelayoutResult.insetsState</code>。</li></ul><p>需要如实说明边界：<code>relayoutWindow</code> 本体在 2548 行之后有数百行，涉及窗口动画、drag resize、insets 计算、SurfaceControl reparent 等大量分支；本仓库只保证该文件与函数存在、行号可核。具体分支语义应逐段读源码，本文不做推测。</p>"
+    },
+    {
+      "heading": "客户端 Transaction：本版本设了哪些、没设哪些",
+      "html": "<p>关于常见的 setPosition、setWindowCrop、setBufferSize 三件套，必须按本仓库源码纠正：<code>ViewRootImpl</code> 中<strong>只出现了 setWindowCrop</strong>，分别在 ViewRootImpl.java:10375（拖拽 resize 时按 <code>mWinFrameInScreen</code> 裁剪，避免露出上一次 relayout 的垃圾内容）、ViewRootImpl.java:10381（绘制被禁用时按 <code>mSurfaceSize</code> 裁剪，让 input 能命中窗口）、ViewRootImpl.java:10387（正常情况下 <code>setWindowCrop(sc, null)</code> 清掉 fluid resize 期间的临时裁剪）。实际出现的 Transaction 操作还包括：</p><ul><li><code>mTransaction.setOpaque(mSurfaceControl, opaque)</code>（ViewRootImpl.java:10453）；</li><li><code>mTransaction.setTransparentRegionHint(sc, mTransparentRegion)</code>（ViewRootImpl.java:4672）；</li><li><code>mTransaction.setClientDrawnCornerRadius(...)</code>（ViewRootImpl.java:5229）；</li><li><code>mTransaction.setDefaultFrameRateCompatibility(...)</code> 与 <code>setColorSpaceAgnostic(...)</code>（ViewRootImpl.java:4293、4307）；</li><li><code>mTransaction.setRecoverableFromBufferStuffing(mSurfaceControl)</code>（ViewRootImpl.java:3095）。</li></ul><p><code>SurfaceControl.Transaction</code> 里当然仍有 <code>setPosition(SurfaceControl, float, float)</code>（base/core/java/android/view/SurfaceControl.java:3663）与 <code>setBufferSize(...)</code>（SurfaceControl.java:3705），但 <strong>ViewRootImpl 不再调用它们</strong>：窗口在屏幕上的位置与父层关系由 WMS 侧的 WindowState/WindowContainer 层次与 geometry 决定，客户端只用 crop 加 transform hint 做修正。这一条与不少旧版本分析文章不同，必须以本仓库源码为准；本阶段的可验证结论是 ViewRootImpl 里没有 setPosition/setBufferSize 的调用点。</p>"
+    },
+    {
+      "heading": "measure 与 layout 的真实执行路径",
+      "html": "<p><code>performMeasure()</code>（ViewRootImpl.java:5472）只是包一层 <code>Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"measure\")</code>，然后 <code>mView.measure(specW, specH)</code>，最后回写 <code>mMeasuredWidth/mMeasuredHeight</code> 并清 <code>mViewMeasureDeferred</code>。</p><p><code>View.measure()</code>（View.java:28787）逻辑：先算 <code>forceLayout = (mPrivateFlags &amp; PFLAG_FORCE_LAYOUT) == PFLAG_FORCE_LAYOUT</code>，再算 <code>specChanged</code>、<code>isSpecExactly</code>、<code>matchesSpecSize</code>、<code>needsLayout</code>；只有 <code>forceLayout || needsLayout</code> 才真正走 <code>onMeasure()</code>。命中 <code>mMeasureCache</code> 时直接 <code>setMeasuredDimensionRaw()</code> 并置 <code>PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT</code>。若 <code>onMeasure</code> 忘了调 <code>setMeasuredDimension()</code>，会抛 <code>IllegalStateException</code>；成功则置 <code>PFLAG_LAYOUT_REQUIRED</code>。</p><p><code>ViewGroup.measureChildren()</code>（ViewGroup.java:7111）遍历 <code>mChildren</code>，跳过 <code>GONE</code> 的子 View，对每个子 View 调 <code>measureChild()</code>，后者用 <code>getChildMeasureSpec()</code> 把父 spec 与子 LayoutParams 合成为子 spec。measure 是自顶向下、按需递归：只有 forceLayout 或 needsLayout 的分支才继续往下，否则整棵子树被跳过。</p><p><code>performLayout()</code>（ViewRootImpl.java:5538）置 <code>mInLayout = true</code>、<code>mScrollMayChange = true</code>，Trace 名为 layout 的 slice 后调 <code>host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight())</code>（ViewRootImpl.java:5554）。<code>View.layout()</code>（View.java:26040）：若 <code>PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT</code> 置位则先补一次 <code>onMeasure</code>（这是 measure cache 命中路径的必要补偿），再 <code>setOpticalFrame()</code> 或 <code>setFrame()</code>，若 changed 或 <code>PFLAG_LAYOUT_REQUIRED</code> 则调 <code>onLayout()</code> 并清标志，最后清 <code>PFLAG_FORCE_LAYOUT</code> 并置 <code>PFLAG3_IS_LAID_OUT</code>。</p><p><code>View.onLayout()</code> 是空实现（View.java:26157-26158），<code>ViewGroup.onLayout()</code> 是 abstract（ViewGroup.java:6603），由 LinearLayout、FrameLayout、ConstraintLayout 等自己实现，并在其中对每个 child 调 <code>child.layout(...)</code> 递归下去。<code>View.setFrame()</code>（View.java:26174）在位置真正变化时会 <code>invalidate(sizeChanged)</code> 并在可见时置 <code>PFLAG_DRAWN</code>、<code>invalidateParentCaches()</code>，这就是 layout 阶段顺带产生脏区的原因，也是下一阶段 draw 的输入。</p>"
+    },
+    {
+      "heading": "耗时与掉帧风险",
+      "html": "<ul><li><strong>relayout 是同步 binder</strong>：一旦 <code>canRelayoutAsync</code> 判定失败（窗口位置或尺寸真的变了，例如旋转、分屏拖动、弹窗尺寸变化），UI 线程会阻塞在 <code>mWindowSession.relayout2()</code> 上，等待 WMS 在 <code>mGlobalLock</code> 下处理完。窗口动画、转场、其它窗口的 add/remove 都会和它抢同一把锁。</li><li><strong>measure/layout 是 UI 线程上的同步递归</strong>：深度嵌套（RecyclerView 内嵌 ConstraintLayout 再加多层 LinearLayout weight）会让耗时线性甚至超线性增长，因为每层都可能触发两遍 onMeasure（weight 分配与 wrap_content 测量）。</li><li><strong>风险模型</strong>：这一切都发生在 <code>Choreographer#doFrame</code> 的 traversal 段内，后面还要留出 draw（生成 DisplayList）、sync（BLAST 同步事务）与 RenderThread 的 GPU 提交时间。总时长超过到 deadline 的预算，下一拍 VSYNC 就取不到新 buffer，<code>Choreographer.doFrame()</code> 会打印 Skipped N frames（Choreographer.java:1133）并记为 jank。</li><li><strong>观测</strong>：<code>measure</code> 与 <code>layout</code> 两个 trace slice（ViewRootImpl.java:5476、5552）；客户端 relayout 的 trace 名形如 <code>&lt;mTag&gt;-relayoutWindow#first=%b/resize=%b/vis=%b/params=%b/force=%b/seqId=%d</code>（ViewRootImpl.java:4204-4208）；WMS 侧 <code>relayoutWindow: &lt;pkg&gt;</code>（Session.java:290-299）；以及 relayoutWindow 内部投的 <code>relayoutSync</code> instant，它要么带 old 到 new 的 frame 尺寸位置，要么带同步原因字符串。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "mWindowSession.relayoutAsync2 / relayout2",
+      "lines": "10282-10313",
+      "code": "        if (relayoutAsync) {\n            if (WindowManager.useClientSurface()) {\n                final SurfaceControl surfaceControl = getSurfaceControlForRelayout(viewVisibility);\n                mWindowSession.relayoutAsync2(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, surfaceControl);\n                if (surfaceControl != null\n                        && (mViewFrameInfo.flags & FrameInfo.FLAG_WINDOW_VISIBILITY_CHANGED) != 0\n                        && !mWindowLayout.isLocallyManaged()) {\n                    relayoutResult |= RELAYOUT_RES_FIRST_TIME;\n                }\n            } else {\n                mWindowSession.relayoutAsync(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId);\n            }\n        } else {\n            if (WindowManager.useClientSurface()) {\n                final SurfaceControl surfaceControl = getSurfaceControlForRelayout(viewVisibility);\n                relayoutResult |= mWindowSession.relayout2(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, surfaceControl, mRelayoutResult);\n            } else {\n                relayoutResult |= mWindowSession.relayout(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, mRelayoutResult, mSurfaceControl);\n            }\n            mRelayoutRequested = true;",
+      "note": "relayoutWindow 的 IPC 分发：relayoutAsync 为真时走 oneway 的 relayoutAsync2/relayoutAsync（不返回结果），否则走同步的 relayout2/relayout（把 mRelayoutResult 与 mSurfaceControl 作为 out 参数传出）。这是 android17 的异步化改造核心。"
+    },
+    {
+      "file": "base/core/java/android/view/IWindowSession.aidl",
+      "symbol": "relayout / relayout2",
+      "lines": "89-96",
+      "code": "    int relayout(IWindow window, in WindowManager.LayoutParams attrs, int requestedWidth,\n            int requestedHeight, int viewVisibility, int flags, int seq, int lastSyncSeqId,\n            out @nullable WindowRelayoutResult outRelayoutResult, out SurfaceControl outSurface);\n\n    // TODO(b/308662081): Remove \"2\" methods and switch original methods to the new implemetantion.\n    int relayout2(IWindow window, in WindowManager.LayoutParams attrs, int requestedWidth,\n            int requestedHeight, int viewVisibility, int flags, int seq, int lastSyncSeqId,\n            in SurfaceControl surface, out @nullable WindowRelayoutResult outRelayoutResult);",
+      "note": "binder 契约：out WindowRelayoutResult 回传 frame/配置/InsetsState/activeControls，out SurfaceControl 回传 layer 句柄；relayout2 改为 in SurfaceControl，即客户端把自己的 SurfaceControl 传进去由 WMS reparent。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "performMeasure",
+      "lines": "5472-5485",
+      "code": "    private void performMeasure(int childWidthMeasureSpec, int childHeightMeasureSpec) {\n        if (mView == null) {\n            return;\n        }\n        Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"measure\");\n        try {\n            mView.measure(childWidthMeasureSpec, childHeightMeasureSpec);\n        } finally {\n            Trace.traceEnd(Trace.TRACE_TAG_VIEW);\n        }\n        mMeasuredWidth = mView.getMeasuredWidth();\n        mMeasuredHeight = mView.getMeasuredHeight();\n        mViewMeasureDeferred = false;\n    }",
+      "note": "performMeasure 只负责 Trace、调用 mView.measure 并把结果缓存到 mMeasuredWidth/mMeasuredHeight；真正的递归在 View.measure 与 onMeasure 里。trace slice 名就是 measure。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "performLayout",
+      "lines": "5538-5557",
+      "code": "    private void performLayout(WindowManager.LayoutParams lp, int desiredWindowWidth,\n            int desiredWindowHeight) {\n        mScrollMayChange = true;\n        mInLayout = true;\n\n        final View host = mView;\n        if (host == null) {\n            return;\n        }\n        if (DEBUG_ORIENTATION || DEBUG_LAYOUT) {\n            Log.v(mTag, \"Laying out \" + host + \" to (\" +\n                    host.getMeasuredWidth() + \", \" + host.getMeasuredHeight() + \")\");\n        }\n\n        Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"layout\");\n        try {\n            host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());\n\n            mInLayout = false;\n            int numViewsRequestingLayout = mLayoutRequesters.size();",
+      "note": "performLayout 置 mInLayout 后调用 host.layout(0,0,measuredW,measuredH)，随后检查 mLayoutRequesters 以处理布局期请求布局的第二趟。trace slice 名是 layout。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mTmpFrames",
+      "type": "ClientWindowFrames",
+      "desc": "ViewRootImpl.java:937。relayout 的输出承载者，含 frame、displayFrame、attachedFrame、compatScale 等矩形。canRelayoutAsync 会先在本地用 WindowLayout.computeFrames 填充它做比较，同步 relayout 时则被 WMS 的返回值覆盖。"
+    },
+    {
+      "name": "mRelayoutResult",
+      "type": "WindowRelayoutResult",
+      "desc": "ViewRootImpl.java:1300。作为 out 参数传给 IWindowSession.relayout2/relayout，回填 frames、mergedConfiguration、insetsState、activeControls，以及 syncSeqId 与 activityWindowInfo。"
+    },
+    {
+      "name": "mSurfaceControl",
+      "type": "SurfaceControl",
+      "desc": "ViewRootImpl.java:902。本窗口的 layer 句柄。useClientSurface 时由客户端经 updateSurfaceControl() 创建或从缓存复制，relayout 时作为 in 参数交给 WMS reparent，或作为 out 参数由 WMS 回填。"
+    },
+    {
+      "name": "mTransaction",
+      "type": "SurfaceControl.Transaction",
+      "desc": "ViewRootImpl 内复用的 Transaction 对象，relayoutWindow 里累积 setWindowCrop，performTraversals 其它分支累积 setOpaque、setTransparentRegionHint、setClientDrawnCornerRadius，最终统一由 applyTransactionOnDraw(mTransaction)（ViewRootImpl.java:10454）提交。"
+    },
+    {
+      "name": "mViewMeasureDeferred",
+      "type": "boolean",
+      "desc": "ViewRootImpl.java:664。shouldOptimizeMeasure 且 root spec 双 EXACTLY 时置 true（ViewRootImpl.java:3690），表示尚未真正 measure；relayout 拿到 frame 后由 performMeasure 消费并清零（ViewRootImpl.java:5484）。"
+    },
+    {
+      "name": "mMeasuredWidth / mMeasuredHeight",
+      "type": "int",
+      "desc": "performMeasure 之后缓存的根 View 测量结果，relayoutWindow 用它们乘以 mAttachInfo.mApplicationScale 得到 requestedWidth/requestedHeight 发给 WMS（ViewRootImpl.java:10278-10279）。"
+    },
+    {
+      "name": "mInLayout / mLayoutRequesters",
+      "type": "boolean / ArrayList<View>",
+      "desc": "ViewRootImpl.java:1104-1105。mInLayout 供 View.isLayoutRequested 的调用方判断是否在布局趟中；mLayoutRequesters 收集布局期间发起 requestLayout 的 View，用于决定是否跑第二趟或推迟到下一帧。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "measure",
+      "value": "trace slice，ViewRootImpl.java:5476",
+      "desc": "整棵视图树的测量区间。若它与上一级 traversal slice 的占比很高，说明布局层级过深或 onMeasure 里有重活。"
+    },
+    {
+      "name": "layout",
+      "value": "trace slice，ViewRootImpl.java:5552",
+      "desc": "整棵视图树的布局区间。出现两次 layout slice 即意味着本帧跑了第二趟，通常是布局期 requestLayout 导致。"
+    },
+    {
+      "name": "<mTag>-relayoutWindow#first=.../resize=.../vis=.../params=.../force=.../seqId=...",
+      "value": "trace slice，名称构造见 ViewRootImpl.java:4204-4208",
+      "desc": "客户端 relayout 的入口 slice，名字里直接标出触发原因与 seqId，可据此判断是首帧、尺寸变化、可见性变化还是属性变化。"
+    },
+    {
+      "name": "relayoutWindow: <pkg>",
+      "value": "system_server 侧 trace，Session.java:290-299，tag 取自 Session.java:782",
+      "desc": "WMS 处理 relayout 的区间，包含等待 mGlobalLock 的时间。与客户端 slice 的时间差就是 binder 往返加锁竞争的开销。"
+    },
+    {
+      "name": "Choreographer#doFrame <vsyncId>",
+      "value": "trace slice，Choreographer.java:1109-1110",
+      "desc": "父 slice。measure 加 layout 加 draw 加 sync 必须塞进这个 slice 到 deadline 之间的预算里。"
+    }
+  ],
+  "pitfalls": [
+    "误以为每次 traversal 都会 relayout：只有 mFirst、windowShouldResize、viewVisibilityChanged、params 非空或 mForceNextWindowRelayout 才走（ViewRootImpl.java:4201-4202），否则只调 maybeHandleWindowMove 更新 mAttachInfo.mWindowLeft/Top。",
+    "误以为 relayout 一定同步阻塞：canRelayoutAsync 命中时走 oneway 的 relayoutAsync/relayoutAsync2，不等待结果；只有位置或尺寸真变了才退回同步的 relayout2/relayout。",
+    "误以为 measure 一定在 relayout 之前：开了 PRIVATE_FLAG_OPTIMIZE_MEASURE 且 root spec 双 EXACTLY 时，measureHierarchy 只记录尺寸并置 mViewMeasureDeferred，真正 measure 发生在 relayout 之后。",
+    "误以为客户端负责 setPosition/setBufferSize：本版本 ViewRootImpl 只调 setWindowCrop、setOpaque、setClientDrawnCornerRadius 等；setPosition/setBufferSize 的 API 在 SurfaceControl.Transaction 里存在，但 ViewRootImpl 中没有调用点，位置与尺寸由 WMS 侧的窗口层次与 geometry 决定。",
+    "在 onMeasure 里分配对象或做 IO：一帧内 onMeasure 可能被调用两次，任何分配都会放大 GC 压力，而 GC 停顿直接吃掉 traversal 的 deadline 预算。",
+    "measure 缓存不是万能的：requestLayout() 会清 mMeasureCache（View.java:28730），每次真实布局请求都会重新测量；频繁 requestLayout 等于主动放弃缓存收益。"
+  ],
+  "traceTags": [
+    "measure",
+    "layout",
+    "relayoutWindow",
+    "relayoutSync",
+    "Choreographer#doFrame"
+  ],
+  "next": "stage-05"
+}

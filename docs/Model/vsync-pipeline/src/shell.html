@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一帧的旅程 · Android 渲染管线可视化（AOSP android17）</title>
+<meta name="description" content="从 View 请求刷新到 VSYNC、Choreographer、measure/layout/draw、RenderThread、BLAST、SurfaceFlinger、HWC 上屏的完整源码级可视化。">
+<meta name="color-scheme" content="dark light">
+<script>
+  // Theme: 'auto' follows the OS; explicit choice is remembered. Runs before CSS to avoid a flash.
+  (function () {
+    var pref = 'auto';
+    try { pref = localStorage.getItem('fp-theme') || 'auto'; } catch (e) {}
+    var light = pref === 'light' || (pref === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches);
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+    document.documentElement.setAttribute('data-theme-pref', pref);
+  })();
+</script>
+<style>{{STYLE}}</style>
+</head>
+<body>
+<div class="scroll-progress" id="scrollProgress"></div>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top" style="text-decoration:none;color:inherit">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--logo-stroke,#bfe0ff)" stroke-width="1.6" stroke-linecap="round">
+          <rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 9h5M7 12h8"/>
+        </svg>
+      </span>
+      <span>Frame Pipeline <small>AOSP · android17</small></span>
+    </a>
+    <nav class="nav" id="nav">
+      {{NAV}}
+    </nav>
+    <button class="theme-btn" id="themeBtn" type="button" aria-label="切换配色：跟随系统 / 浅色 / 深色" title="配色：跟随系统">
+      <svg class="i-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>
+      <svg class="i-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <svg class="i-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+    </button>
+  </div>
+</header>
+
+<nav class="stage-rail" id="stageRail" aria-label="阶段快速导航">{{RAIL}}</nav>
+<button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">↑</button>
+
+<main id="top">
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <div class="wrap">
+      <span class="eyebrow"><span class="pulse"></span>源码实证 · android17-release · HEAD {{HEAD}}</span>
+      <h1>一帧的<em>旅程</em></h1>
+      <p class="lede">
+        从 <code>View.requestLayout()</code> 写下的一次脏标记，到 <code>Choreographer</code> 接住 VSYNC、
+        <code>performTraversals()</code> 走完 measure / layout / draw，再到 RenderThread 的 GPU 绘制、
+        BLAST Transaction 跨进程提交、SurfaceFlinger 合成、HWC 点亮面板——
+        把 16.7&nbsp;ms 拆成 <b>8 个阶段、5 条线程、3 个进程角色</b>，每一段都能在源码里对上号。
+      </p>
+      <div class="hero-meta">
+        <span class="chip"><span class="dot" style="background:var(--ui)"></span>5 条执行线程</span>
+        <span class="chip"><span class="dot" style="background:var(--rt)"></span>3 个进程角色</span>
+        <span class="chip"><span class="dot" style="background:var(--sf)"></span>2~3 个 VSYNC 上屏</span>
+        <span class="chip"><span class="dot" style="background:var(--hwc)"></span>{{SNIPPET_COUNT}} 段源码引用</span>
+      </div>
+      <div class="hero-actions">
+        <a class="btn primary" href="#anatomy">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          播放一帧的时间轴
+        </a>
+        <a class="btn" href="#stage-01">从第 1 阶段开始读</a>
+        <span class="hint">滚动到动画区域后会自动开始 · 支持拖拽 / 变速 / 掉帧演示</span>
+      </div>
+    </div>
+    <div class="scroll-cue">SCROLL TO TRACE</div>
+  </section>
+
+  <!-- ================= OVERVIEW ================= -->
+  <section class="band" id="overview">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">00 / OVERVIEW</div>
+          <h2>渲染不是一条直线，<br>而是一条被 VSYNC 驱动的流水线</h2>
+          <p>应用进程负责“生产”一帧，SurfaceFlinger 负责“消费并合成”一帧，显示硬件在固定的节拍上扫描输出。
+            真正决定体验的，不是某一段代码有多快，而是每一段能否在 VSYNC 截止时间前完成交接。</p>
+        </div>
+        <div class="section-side">APP PROCESS → SF PROCESS → DISPLAY<br>ONE FRAME · TWO BOUNDARIES</div>
+      </div>
+
+      <div class="thesis">
+        <div class="quote">
+          <p><b>一句话版本：</b>UI 线程把“需要重绘”变成一次 traversal 预约；Choreographer 等到 APP VSYNC 才执行它；
+            measure/layout 之后，<code>draw</code> 只是把绘制指令录进 RenderNode 的 DisplayList；
+            真正的 GPU 绘制发生在 RenderThread，完成后把 GraphicBuffer 连同 SurfaceControl Transaction 交给 SurfaceFlinger；
+            SF 在<b>晚于 APP 一个 appWorkDuration 的 SF VSYNC 相位</b>取走 buffer、合成、交给 HWC；DISPLAY VSYNC 开始扫描时 present fence signal，被替换下来的上一帧 buffer 才回到队列。
+            本页默认 appWorkDuration + sfWorkDuration ≤ 一个周期，APP 绘制与 SF 合成落在同一帧内；实际相位由设备配置决定（见“相位的意义”）。</p>
+          <p class="mono" style="margin-bottom:0;color:var(--dim);font-size:12px">requestLayout → scheduleTraversals → VSYNC → doFrame → relayout/measure/layout/record → syncAndDrawFrame → RenderThread → queueBuffer + BLAST → SF latch/compose/present → HWC → panel</p>
+        </div>
+        <div class="term-cloud" aria-label="关键术语">
+          <span class="term">VSYNC</span><span class="term">Choreographer</span><span class="term">DisplayEventReceiver</span>
+          <span class="term">EventThread</span><span class="term">VSyncDispatch</span><span class="term">performTraversals</span>
+          <span class="term">DisplayList</span><span class="term">RenderNode</span><span class="term">RenderThread</span>
+          <span class="term">CanvasContext</span><span class="term">BLAST</span><span class="term">BufferQueue</span>
+          <span class="term">SurfaceFlinger</span><span class="term">Layer</span><span class="term">CompositionEngine</span>
+          <span class="term">HWC</span><span class="term">present fence</span><span class="term">FrameTimeline</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat" data-tone="ui"><div class="k">Processes</div><div class="v">2+1<span>个进程</span></div><div class="d">核心两端是 App（UI + RenderThread）与 SurfaceFlinger；窗口尺寸变化时，relayout 还会跨到 system_server 的 WMS。</div></div>
+        <div class="stat" data-tone="rt"><div class="k">Threads</div><div class="v">5<span>条关键线程</span></div><div class="d">UI、RenderThread、SF 主线程、HWC/显示、以及 VSYNC 分发线程。</div></div>
+        <div class="stat" data-tone="sf"><div class="k">Latency</div><div class="v">2~3<span>个 VSYNC</span></div><div class="d">从触发刷新到像素可见；三缓冲会再多一拍生产窗口。</div></div>
+        <div class="stat" data-tone="hwc"><div class="k">Budget</div><div class="v">16.7<span>ms / 帧</span></div><div class="d">60Hz 下每拍预算；UI + RT + 合成共享同一条截止线。</div></div>
+      </div>
+
+      <div class="flow-strip reveal" id="flowStrip">{{FLOW}}</div>
+
+      <div class="keypoints">
+        <div class="kp reveal">
+          <h4><span class="ico">01</span>为什么必须等 VSYNC？</h4>
+          <p>立即绘制会与显示扫描撕裂，也无法把 CPU/GPU 的完成时间对齐到固定节拍。VSYNC 把“生产一帧”变成离散的时隙：请求 → 下一拍 APP VSYNC 开始绘制 → 同一帧的 SF VSYNC 相位消费 → DISPLAY VSYNC 上屏。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">02</span>draw 不等于画完</h4>
+          <p>UI 线程的 <code>draw</code> 只负责把绘制指令记录为 DisplayList；RenderThread 的 <code>CanvasContext::draw</code> 才真正提交 GPU，并通过 BufferQueue 把 buffer 交给 SF。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">03</span>卡顿是“交接失败”</h4>
+          <p>一帧掉落，往往不是某段代码慢，而是 queueBuffer 晚于 SF 的取帧时刻，或 SF 合成超过预算。看 trace 时要找“哪一段越过了哪个 VSYNC”。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ANATOMY / ANIMATION ================= -->
+  <section class="band" id="anatomy">
+    <div class="wrap-wide">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">01 / ANIMATED MODEL</div>
+          <h2>一帧的时间轴：谁在什么时候做什么</h2>
+          <p>同一份模拟，两种看法。<b>时间轴</b>按毫秒画出连续几帧在 UI / RenderThread / GPU / BufferQueue / SF 上的重叠，以及 VSYNC 截止线；
+            <b>步骤</b>把焦点帧的 18 次交接等距排开，看清谁交给谁、传了什么。两者共用一个播放头和下方的状态面板。
+            时序由参数推算：唤醒点按 present − sfWorkDuration、再减 appWorkDuration 计算，是否掉帧由“queueBuffer 与 acquire fence 是否早于本帧 SF 唤醒点”自动判定。</p>
+        </div>
+        <div class="section-side">INTERACTIVE · PARAMETRIC<br>耗时为示意量级，规则以源码语义为准</div>
+      </div>
+
+      <div class="studio reveal" id="studio">
+        <div class="studio-head">
+          <div class="studio-title"><span class="live" id="studioLive"><i></i>F0 · 60 Hz</span>一帧的完整生命周期</div>
+          <div class="studio-badges" id="studioBadges"></div>
+        </div>
+
+        <div class="fp-controls" aria-label="场景与视图">
+          <div class="fp-row"><span class="lbl">场景</span><div class="seg" id="presetSeg" role="group" aria-label="预设场景"></div></div>
+          <p class="fp-note" id="presetNote"></p>
+          <div class="fp-row">
+            <span class="lbl">视图</span>
+            <div class="seg" id="modeSeg" role="group" aria-label="视图模式"><button data-mode="time">时间轴 · ms</button><button data-mode="step">步骤 · 因果</button><button data-mode="proc">进程舞台</button></div>
+            <span class="lbl">焦点帧</span>
+            <div class="seg" id="focusSeg" role="group" aria-label="焦点帧"><button data-focus="0">F0</button><button data-focus="1">F1</button><button data-focus="2">F2</button></div>
+            <label class="switch calm"><input type="checkbox" id="othersToggle" checked><span class="track"></span><span class="lbl">显示其他帧</span></label>
+            <label class="switch calm"><input type="checkbox" id="arrowsToggle" checked><span class="track"></span><span class="lbl">交接箭头</span></label>
+            <label class="switch calm"><input type="checkbox" id="contToggle"><span class="track"></span><span class="lbl">连续动画</span></label>
+          </div>
+          <div class="fp-row">
+            <span class="lbl">宽度</span>
+            <div class="seg" id="zoomSeg" role="group" aria-label="时间轴缩放"><button data-zoom="fit">适应宽度</button><button data-zoom="2">2×</button><button data-zoom="4">4×</button><button data-zoom="6">6×</button></div>
+            <label class="switch calm" title="播放时自动横向滚动，让播放头保持在视野里；手动滚动后自动关闭"><input type="checkbox" id="followToggle" checked><span class="track"></span><span class="lbl">跟随播放头</span></label>
+            <span class="fp-hint" id="zoomHint"></span>
+          </div>
+          <details class="fp-params">
+            <summary>VSYNC 与负载参数（改动后场景变为“自定义”）</summary>
+            <div class="fp-grid-params">
+              <div class="fp-row"><span class="lbl">刷新率</span><div class="seg" id="fpsSeg"><button data-fps="60">60Hz</button><button data-fps="90">90Hz</button><button data-fps="120">120Hz</button></div></div>
+              <div class="fp-row"><span class="lbl">duration</span><div class="seg" id="durSeg"><button data-dur="half">P/2 + P/2</button><button data-dur="phase">AOSP PhaseOffsets</button><button data-dur="custom">自定义</button></div></div>
+              <label class="fp-slider">appWorkDuration<input type="range" id="aDRange" min="0.5" max="40" step="0.1"><output id="aDV"></output></label>
+              <label class="fp-slider">sfWorkDuration<input type="range" id="sDRange" min="0.5" max="40" step="0.1"><output id="sDV"></output></label>
+              <label class="fp-slider">F1 · UI 负载<input type="range" id="uiLoad" min="0.5" max="5" step="0.1"><output id="uiLoadV"></output></label>
+              <label class="fp-slider">F1 · RT 负载<input type="range" id="rtLoad" min="0.5" max="6" step="0.1"><output id="rtLoadV"></output></label>
+              <label class="fp-slider">F1 · GPU 负载<input type="range" id="gpuLoad" min="0.5" max="6" step="0.1"><output id="gpuLoadV"></output></label>
+              <label class="fp-slider">F1 · SF 负载<input type="range" id="sfLoad" min="0.5" max="6" step="0.1"><output id="sfLoadV"></output></label>
+              <span class="fp-hint">唤醒点：SF = present − sfWorkDuration，APP = SF − appWorkDuration。负载只作用于 F1，其余帧保持 1×。</span>
+            </div>
+          </details>
+        </div>
+
+        <div class="board-wrap" id="boardWrap">
+          <div class="board" id="board">
+            <div class="board-body" id="boardBody">
+              <div class="pins" id="pins"></div>
+              <div class="ruler" id="ruler"></div>
+              <div class="lanes" id="lanes"></div>
+              <div class="playhead" id="playhead"><span class="ph-line"></span><span class="ph-cap"></span><span class="ph-time">0.0 ms</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="fp-stepwrap" id="stepWrap" hidden>
+          <div class="fp-stepscroll" id="stepScroll"><div class="sv-lanes" id="stepLanes" aria-hidden="true"></div><svg id="stepSvg" role="img" aria-label="一帧的因果步骤图"></svg></div>
+        </div>
+        <div class="fp-procwrap" id="procWrap" hidden>
+          <div class="fp-procscroll"><svg id="procSvg" viewBox="0 0 1200 542" role="img" aria-labelledby="procDesc"><desc id="procDesc">应用进程、SurfaceFlinger 进程与硬件三层舞台。红色圆点是焦点帧当前所在的执行者，红色流动线是本步的交接路径。</desc></svg></div>
+          <div class="pv-strip" aria-label="交接物状态">
+            <div class="pv-chip" id="pvArt"><i class="lamp"></i><div><b>此刻交接物</b><span></span></div></div>
+            <div class="pv-chip" id="pvAcq"><i class="lamp"></i><div><b>焦点帧 buffer · acquire fence</b><span></span></div></div>
+            <div class="pv-chip" id="pvRel"><i class="lamp"></i><div><b>上一帧 buffer · release fence</b><span></span></div></div>
+            <div class="pv-chip" id="pvScr"><i class="lamp"></i><div><b>屏幕</b><span></span></div></div>
+          </div>
+        </div>
+
+        <div class="board-hint">← 左右滑动查看完整时间轴；播放时会自动跟随 →</div>
+        <div class="board-legend" id="boardLegend">
+          <span class="lg lg-time"><i style="background:var(--f0)"></i>F0</span><span class="lg lg-time"><i style="background:var(--f1)"></i>F1</span><span class="lg lg-time"><i style="background:var(--f2)"></i>F2（块顶部色条 = 帧）</span>
+          <span class="lg lg-time"><i style="background:var(--hot)"></i>红色斜纹 = 等待</span>
+          <span class="lg lg-time">虚线箭头 = 跨进程 · 青色 = fence</span>
+          <span class="lg lg-step">等距排列，按因果顺序；节点下方是时刻（ms）</span>
+          <span class="lg lg-proc">红点 = 焦点帧所在执行者 · 红色流动线 = 本步交接 · 波纹 = VSYNC · 虚线框 = 并行中 · 斜纹 = 阻塞等待；点击方框跳到它的第一步</span>
+          <span class="spacer"></span>
+          <span class="lg"><kbd>Space</kbd> 播放 / 暂停</span><span class="lg"><kbd>←</kbd><kbd>→</kbd> 单步</span>
+        </div>
+
+        <div class="pp" id="phasePanel">
+          <div class="pp-left">
+            <div class="pp-eyebrow"><span class="stage-chip" id="ppStage">STAGE 01</span><span id="ppPhase">STEP 01 / 18</span></div>
+            <h3 id="ppTitle">请求刷新</h3>
+            <p id="ppDesc"></p>
+            <ol class="pp-refs" id="ppRefs" aria-label="调用链"></ol>
+            <div class="pp-packet" id="ppPacket"></div>
+          </div>
+          <div class="pp-right">
+            <div class="pp-stats">
+              <div class="pp-stat"><span>相对 VSYNC-app</span><b id="ppVsync">等待中</b></div>
+              <div class="pp-stat"><span>预期 → 实际上屏</span><b id="ppPresent">—</b></div>
+              <div class="pp-stat"><span>当前时刻</span><b id="ppElapsed">0.0 ms</b></div>
+              <div class="pp-stat"><span>判定</span><b id="ppFrame">进行中</b></div>
+            </div>
+            <div class="budget" title="VSYNC-app → VSYNC-sf 的生产预算 = appWorkDuration；就绪 = queueBuffer 与 acquire fence 都完成">
+              <span class="fill" id="budgetFill"></span>
+              <span class="mark" style="left:100%"></span>
+              <span class="txt"><span>生产预算</span><span id="budgetTxt">0.0 ms</span></span>
+            </div>
+            <div class="pp-hint" aria-live="polite"><i></i><span id="ppHint"></span></div>
+          </div>
+        </div>
+        <div class="fp-state">
+          <div><div class="lbl">Choreographer 回调（同一次 doFrame）</div><div class="fp-chips" id="rowCb"></div></div>
+          <div><div class="lbl">View 三大流程 → RenderThread → GPU</div><div class="fp-chips" id="rowView"></div></div>
+          <div><div class="lbl">焦点帧 buffer 所有权</div><div class="fp-chips" id="rowBuf"></div></div>
+        </div>
+
+        <div class="transport">
+          <div class="group">
+            <button class="play-btn" id="playBtn" aria-label="播放/暂停">
+              <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button class="btn small ghost icon" id="prevStep" aria-label="上一步">◀</button>
+            <button class="btn small ghost icon" id="nextStep" aria-label="下一步">▶</button>
+          </div>
+          <div class="scrub-wrap">
+            <input class="scrub" id="scrub" type="range" min="0" max="50" value="0" step="0.05" aria-label="时间轴">
+            <div class="time-read"><b id="timeNow">0.0</b> / <span id="timeTotal">50.0</span> ms</div>
+          </div>
+          <div class="group divider"></div>
+          <div class="group" aria-label="播放速度">
+            <div class="seg" id="speedSeg">
+              <button data-speed="0.5">0.5×</button>
+              <button data-speed="1" class="on">1×</button>
+              <button data-speed="2">2×</button>
+            </div>
+          </div>
+          <div class="group">
+            <button class="btn small ghost" id="restartBtn" title="回到起点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+              重播
+            </button>
+          </div>
+        </div>
+
+        <div class="slots" id="slots"></div>
+      </div>
+
+      <p style="color:var(--dim);font-size:11.5px;line-height:1.8;margin:14px 2px 0;max-width:980px">
+        注：各段耗时为示意量级，具体随设备、场景与刷新率变化；时序规则来自源码：唤醒点 wakeup = vsync − workDuration − readyDuration（VSyncDispatchTimerQueue.cpp）；
+        SF 不会提前消费预测上屏时刻未到的 buffer（frameIsEarly）；acquire fence 未 signal 的事务不就绪；同一次唤醒有多个就绪 buffer 时只 latch 最新的；
+        上一帧 present fence 未 signal 时 SF 跳过 commit（wouldBackpressureHwc）；buffer N 在 N+1 上屏后释放；dequeue 需要 FREE slot（3 个）。
+        未建模：latch-unsignaled、VRR、多 layer / SurfaceView、Vulkan 与 GL 的差异、RenderEngine 的具体耗时。
+      </p>
+    </div>
+  </section>
+
+  <!-- ================= STAGE SUMMARY ================= -->
+  <section class="band" id="summary">
+    <div class="wrap-wide">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">01.5 / STAGE OVERVIEW</div>
+          <h2>阶段总览：18 次交接，谁在哪里做什么</h2>
+          <p>一行一个交接点，顺序与上面的步骤视图一致：执行它的进程与线程、入口函数、交给下一阶段的东西。
+            “时刻”一列跟随动画当前的场景与焦点帧；正在播放的那一步会高亮。点击步骤名可以在动画中定位，点击右侧编号跳到对应的源码章节。</p>
+        </div>
+        <div class="section-side">GENERATED FROM fp-steps.js<br>与动画同源</div>
+      </div>
+      <div class="sum-wrap reveal">
+        <table class="sum-table">
+          <thead><tr><th>#</th><th>阶段</th><th>进程 / 线程</th><th>入口函数</th><th>产出 / 交给下一阶段</th><th id="summaryTimeHead">时刻</th><th>章节</th></tr></thead>
+          <tbody id="summaryBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= STAGES ================= -->
+  <section class="band" id="stages">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">02 / STAGES IN SOURCE</div>
+          <h2>八个阶段，逐帧拆解</h2>
+          <p>每个阶段都标出执行线程、关键调用链与源码位置。代码片段来自当前仓库（android17-release, HEAD {{HEAD}}），
+            构建时会逐行核对引用与源码是否一致。</p>
+        </div>
+        <div class="section-side">8 STAGES · {{SNIPPET_COUNT}} SNIPPETS<br>{{CITED_FILE_COUNT}} SOURCE FILES</div>
+      </div>
+      {{STAGE_SECTIONS}}
+    </div>
+  </section>
+
+  <!-- ================= LATENCY ================= -->
+  <section class="band" id="latency">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">03 / LATENCY MODEL</div>
+          <h2>上屏延迟：那 2~3 个 VSYNC 花在哪了</h2>
+          <p>把每一段的交接时间相加，就得到从“用户操作/业务调用”到“像素可见”的延迟。它不是单个函数的耗时，而是流水线中每个等待点的总和。</p>
+        </div>
+        <div class="section-side">T_visible ≈ Σ QUEUEING + Σ WORK<br>60 HZ → 16.67 MS / TICK</div>
+      </div>
+
+      <div class="latency-grid">
+        <div>
+          <div class="ladder" id="ladder">
+            <div class="rung"><div class="rl">T0 · 触发<small>requestLayout / invalidate</small></div><div class="bar"><i class="b1" style="--w:4%"></i></div><div class="rv">0 ms</div></div>
+            <div class="rung"><div class="rl">APP VSYNC<small>Choreographer.doFrame → traversal 开始</small></div><div class="bar"><i class="b1" style="--w:33%"></i></div><div class="rv">16.7 ms</div></div>
+            <div class="rung"><div class="rl">APP 工作 + queueBuffer<small>measure / layout / record / GPU / BLAST</small></div><div class="bar"><i class="b2" style="--w:50%"></i></div><div class="rv">≈ 25 ms</div></div>
+            <div class="rung"><div class="rl">SF VSYNC · 合成 + present<small>APP 唤醒 + appWorkDuration</small></div><div class="bar"><i class="b3" style="--w:60%"></i></div><div class="rv">≈ 28 ms</div></div>
+            <div class="rung"><div class="rl">DISPLAY VSYNC · V2 上屏<small>present fence · 开始扫描输出</small></div><div class="bar"><i class="b4" style="--w:66%"></i></div><div class="rv">33.3 ms</div></div>
+            <div class="rung"><div class="rl">V3 · 下一帧替换本帧<small>本帧 buffer 拿到 release fence</small></div><div class="bar"><i class="b4" style="--w:100%"></i></div><div class="rv">≈ 50 ms</div></div>
+          </div>
+          <p class="ladder-note">上图为“一次正常刷新”的累计延迟示意：触发点若刚好错过上一拍，就要等下一个 APP VSYNC；绘制与 queueBuffer 完成后，SF 在<b>晚 appWorkDuration 的 SF VSYNC 相位</b>接手合成，DISPLAY VSYNC（V2）开始扫描输出；本帧 buffer 要等下一帧在 V3 替换它后才释放。若 queueBuffer 晚于本帧 SF 唤醒，则整体顺延一拍。</p>
+        </div>
+        <div class="lat-side">
+          <div class="note-card">
+            <h4><span class="n">A</span>为什么不是“越快越好”，而是“对齐节拍”</h4>
+            <p>显示控制器按固定周期扫描 framebuffer。若在扫描中途替换内容会撕裂；若生产完成得太晚，SF 只能重复上一帧。VSYNC 把连续时间离散化，所有生产者/消费者都对齐到同一组节拍上。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">B</span>三缓冲买到的是“生产窗口”，不是“零延迟”</h4>
+            <p>BufferQueue 默认 3 个 slot（具体由 <code>BLASTBufferQueue</code> / 配置决定）。app 可以在 SF 消费前一帧时继续生产下一帧，避免生产者被消费者卡死；代价是最多可能排队 1~2 帧，延迟增加。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">C</span>相位的意义：相位差 = appWorkDuration，由配置决定</h4>
+            <p>APP 与 SF 的唤醒点都从同一个预期上屏时刻倒推，二者相差 appWorkDuration。appWorkDuration + sfWorkDuration ≤ 一个周期时（如本页的 8.3ms + 8.3ms），APP 画完、SF 同周期合成、下一拍上屏；本帧赶不上 SF 唤醒才顺延一个周期。</p>
+            <p>配置来源：代码默认是 <code>PhaseOffsets</code>（周期 ≥15ms 时 app = sf = 1ms，高刷时 app = 2ms、sf = 1ms），换算后 APP 唤醒到上屏 60Hz 约 2P、高刷约 3P；设置 <code>debug.sf.use_phase_offsets_as_durations</code> 后改用 <code>WorkDuration</code>，运行时还可被 <code>DisplayModeSpecs.workDuration</code> 覆盖，<code>VsyncModulator</code> 会在 late / early / earlyGpu 之间切换。真机用 <code>dumpsys SurfaceFlinger --vsync</code> 查看。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="formula reveal">
+<span class="cm">// 一帧的可见时间（简化模型；APP / SF / DISPLAY 三个相位见下）</span>
+T_visible ≈ (V_app - T_trigger)          <span class="cm">// 等待 APP VSYNC</span>
+          + T_app_work                    <span class="cm">// UI + RenderThread：relayout / measure / layout / record / GPU / queueBuffer</span>
+          + (V_sf - T_queue)              <span class="cm">// 本帧 SF VSYNC 相位；错过则 + 一个刷新周期</span>
+          + T_sf_work                     <span class="cm">// SF：commit / latch / compose / HWC present</span>
+          + (V_display - T_present)       <span class="cm">// 等 DISPLAY VSYNC（V2）扫描上屏</span>
+
+<span class="cm">// 相位关系：V_sf = V_display - sfWorkDuration；V_app = V_sf - appWorkDuration</span>
+<span class="cm">// 本页示意：60Hz，appWorkDuration ≈ sfWorkDuration ≈ 8.3ms（同周期接力）</span>
+<span class="cm">// AOSP 默认 PhaseOffsets：60Hz 时 V_app→V_display ≈ 2P，高刷 ≈ 3P</span>
+      </div>
+
+      <div class="note-card" style="margin-top:16px">
+        <h4><span class="n">D</span>三缓冲与队列的直观模型</h4>
+        <p style="margin-bottom:12px">生产者（RenderThread）只从 <code>FREE</code> 队列取 slot；<code>DEQUEUED</code> 表示正在绘制；<code>QUEUED</code> 表示已入队等 SF；SF <code>acquire</code> 后进入 <code>LATCHED</code>，合成后进入 <code>DISPLAY</code>；下一帧 buffer 替换它并上屏后，拿到 release fence 回到 <code>FREE</code>（若在 latch 前就被新 buffer 覆盖，会被直接 release 并记为 dropped）。</p>
+        <div class="flow-strip" style="padding:10px">
+          <div class="flow-step" style="cursor:default"><span class="n">SLOT · FREE</span><span class="t">可被生产者 dequeue</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ DEQUEUED</span><span class="t">RenderThread 正在写入</span><span class="l" style="--lane:var(--rt)">RENDERTHREAD</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ QUEUED</span><span class="t">已提交，等 SF acquire</span><span class="l" style="--lane:var(--bq)">BLAST TX</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ LATCHED</span><span class="t">SF 用于本次合成</span><span class="l" style="--lane:var(--sf)">SURFACEFLINGER</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ DISPLAY</span><span class="t">扫描输出中，被下一帧替换后释放</span><span class="l" style="--lane:var(--hwc)">HWC</span></div>
+          <div class="flow-step" style="cursor:default"><span class="n">→ FREE</span><span class="t">release 回生产者</span><span class="l" style="--lane:var(--bq)">BUFFERQUEUE</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= JANK ================= -->
+  <section class="band" id="jank">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">04 / JANK &amp; DEADLINES</div>
+          <h2>掉帧：不是“慢”，而是“晚于截止线”</h2>
+          <p>60Hz 下，APP VSYNC 到本帧 SF VSYNC 只有约 8&nbsp;ms（示意）。UI 线程的 traversal、RenderThread 的绘制、queueBuffer 与 BLAST 提交都在这段预算内；
+            任何一段超出、错过本帧 SF 相位，帧就会顺延到下一个 SF 相位，DISPLAY V2 只能重复上一帧，表现为 dropped / janky frame。</p>
+        </div>
+        <div class="section-side">DEADLINE = SF VSYNC（本帧相位）<br>MISS → NEXT SF → DISPLAY V3</div>
+      </div>
+
+      <div class="jank-grid">
+        <div class="jank-card reveal">
+          <h4>UI 线程：traversal 超预算</h4>
+          <ul>
+            <li>层级过深 / 重复 measure：<code>performMeasure</code> 与 <code>performLayout</code> 耗时上升。</li>
+            <li>绘制指令过多：<code>draw</code> 录制 DisplayList 变慢，RenderNode 树过大。</li>
+            <li>主线程被 Input、Binder、业务逻辑占用，<code>doFrame</code> 被推迟。</li>
+            <li>典型证据：<code>Choreographer#doFrame</code> 或 traversal 回调变长，随后出现 skipped frame 告警。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>RenderThread / GPU：绘制与提交超预算</h4>
+          <ul>
+            <li>GPU 负载过高（过度绘制、大图、复杂 Shader），<code>CanvasContext::draw</code> 拉长。</li>
+            <li><code>dequeueBuffer</code> 等不到 free slot：队列被 SF 占满，生产者阻塞。</li>
+            <li>queueBuffer 晚于本帧 SF 相位：BLAST Transaction 只能等下一帧 SF 相位。</li>
+            <li>典型证据：DrawFrame / GPU completion / BufferQueueProducer#queueBuffer 越过 SF VSYNC 相位与 DISPLAY V2。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>SurfaceFlinger：合成超预算</h4>
+          <ul>
+            <li>client composition 过多（GPU 合成），RenderEngine 耗时增加。</li>
+            <li>latch buffer 时等待 acquire fence，或 Transaction 在错误的节拍提交。</li>
+            <li>主线程被其它事务/回调占用，错过本次 refresh。</li>
+            <li>典型证据：SF 的 commit / latch / composite / present 跨越 VSYNC。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>Buffer 与背压</h4>
+          <ul>
+            <li>三缓冲被占满，app 的 dequeueBuffer 阻塞，UI 线程反过来被拖慢。</li>
+            <li>SF 长时间不 release，生产者没有空闲 slot。</li>
+            <li>典型证据：BufferQueue 深度持续为 3，queueBuffer/dequeueBuffer 出现长等待。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="jank-cta reveal">
+        <p><b>把掉帧放进时间轴：</b>打开“掉帧演示”，UI 线程的 measure/layout 与绘制时间被拉长，queueBuffer 越过本帧 SF VSYNC 相位与 DISPLAY V2，原本应在 V2 显示的帧要等下一帧 SF 相位合成、到 V3 才上屏，V2 只能重复上一帧。</p>
+        <button class="btn small" id="jankDemoBtn" data-jank="1">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          在动画中演示掉帧
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= OBSERVE ================= -->
+  <section class="band" id="observe">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">05 / OBSERVABILITY</div>
+          <h2>怎么在真机上看到这条流水线</h2>
+          <p>看 trace 的顺序建议：先确认“哪一帧”掉了（FrameTimeline / gfxinfo），再定位“哪一段”越过了哪个 VSYNC（Choreographer / DrawFrame / SF / HWC），最后才去优化具体代码。</p>
+        </div>
+        <div class="section-side">PERFETTO · FRAME TIMELINE<br>DUMPSYS · TRACE TAGS</div>
+      </div>
+
+      <div class="observe-grid">
+        <div class="obs reveal">
+          <div class="obs-h">采集一帧级 trace <span class="tag">perfetto</span></div>
+          <pre>adb shell perfetto -o /data/misc/perfetto-traces/frame.perfetto-trace \
+  -t 10s sched freq idle binder_driver \
+  gfx view wm am surfaceflinger</pre>
+          <p>把 trace 拉回本地后用 Perfetto UI 打开；优先展开 Choreographer、DrawFrame、BufferQueue、SurfaceFlinger、HWC 的 slice。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">FrameTimeline / gfxinfo <span class="tag">frame stats</span></div>
+          <pre>adb shell dumpsys gfxinfo &lt;package&gt; framestats
+adb shell dumpsys SurfaceFlinger --timestats -dump
+adb shell dumpsys SurfaceFlinger --latency &lt;layer-name&gt;</pre>
+          <p>framestats 给出每一帧各阶段耗时；SurfaceFlinger 的 timestats / latency 用于确认 present 与掉帧，而不是只看 app 侧。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">VSYNC 与刷新率 <span class="tag">scheduler</span></div>
+          <pre>adb shell dumpsys SurfaceFlinger --vsync
+adb shell dumpsys SurfaceFlinger --scheduler
+adb shell dumpsys display</pre>
+          <p>看当前 display 的刷新率、vsync period、phase offset 与 layer 状态；判断是否是 SF 侧错过了取帧节拍。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">View 侧确认 <span class="tag">view hierarchy</span></div>
+          <pre>adb shell dumpsys activity top
+adb shell dumpsys gfxinfo &lt;package&gt; reset
+adb shell dumpsys gfxinfo &lt;package&gt;</pre>
+          <p>结合 hierarchy 深度、invalidate 次数与 janky frames 比例，判断问题来自 measure/layout 还是绘制指令。</p>
+        </div>
+      </div>
+
+      <div class="trace-tags" id="traceTags">{{TRACETAGS}}</div>
+    </div>
+  </section>
+
+  <!-- ================= SOURCES ================= -->
+  <section class="band" id="sources">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">06 / SOURCE INDEX</div>
+          <h2>源码索引与核验</h2>
+          <p>下表汇总页面引用的源码文件与函数。构建脚本会检查每个片段的路径、行号与代码是否能在仓库中对应上；不引用 <code>docs/</code> 目录中的任何内容。</p>
+        </div>
+        <div class="section-side">VERIFIED AGAINST<br>HEAD {{HEAD}}</div>
+      </div>
+      <div class="verify-bar"><span class="ok">✓</span><div><b>引用核验：</b><span>{{VERIFY_SUMMARY}}</span></div></div>
+      {{SOURCES}}
+    </div>
+  </section>
+
+  <!-- ================= MYTHS ================= -->
+  <section class="band" id="myths">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">07 / MISCONCEPTIONS</div>
+          <h2>六个常见误解</h2>
+          <p>每条都能跳回动画里对应的步骤，看源码里真实发生了什么。</p>
+        </div>
+        <div class="section-side">FROM claude/android-frame-relay</div>
+      </div>
+      <div class="myths" id="mythList"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap in">
+    <div>
+      <b>Frame Pipeline Explorer</b> · 基于 AOSP <code>android17-release</code>（HEAD <code>{{HEAD}}</code>）源码整理<br>
+      仅使用 <code>base/</code> 与 <code>native/</code> 下的实现；未参考 <code>docs/</code>。时间轴为示意，不代表实测耗时。
+    </div>
+    <div class="right">
+      生成于 <span id="buildDate">{{BUILD_DATE}}</span><br>
+      <span style="color:var(--dim)">8 stages · {{SNIPPET_COUNT}} snippets · {{CITED_FILE_COUNT}} files</span>
+    </div>
+  </div>
+</footer>
+
+<script>window.PIPELINE_DATA = {{DATA}};</script>
+<script>{{SCRIPT}}</script>
+</body>
+</html>

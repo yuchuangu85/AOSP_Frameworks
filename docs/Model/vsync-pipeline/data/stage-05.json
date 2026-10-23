@@ -1,0 +1,188 @@
+{
+  "id": "stage-05",
+  "num": 5,
+  "title": "绘制录制：DisplayList 与帧提交",
+  "subtitle": "UI 线程把 View 树录制成 RenderNode DisplayList，再交给 RenderThread",
+  "lane": "UI",
+  "durationHint": "量级：亚毫秒~数毫秒（随视图树规模与脏区大小增长；源码中未给出具体数值）",
+  "summary": "Choreographer 的 traversal 回调进入 ViewRootImpl.performTraversals() 后，performDraw() 在 UI 线程发起这一拍绘制。硬件加速路径下 ViewRootImpl.draw() 不直接画像素：它先清空 mDirty、处理 invalidateRoot 与 HDR/同步组等事务，然后调用 ThreadedRenderer.draw(mView, mAttachInfo, this)。后者的 updateRootDisplayList() 是该帧真正的“录制”阶段：updateViewTreeDisplayList() 触发 View.updateDisplayListIfDirty()，逐层 RenderNode.beginRecording() → View.draw()/ViewGroup.dispatchDraw() → 子 View 通过 drawRenderNode() 把子 DisplayList 挂进父 DisplayList → endRecording()，最终把根 DisplayList 写进 mRootNode。录制完成后 syncAndDrawFrame(FrameInfo) 经 JNI 进入 RenderProxy::syncAndDrawFrame()，即 DrawFrameTask::drawFrame()：把任务 post 到 RenderThread 队列并 wait 一个 Condition，直到 RT 上的 syncFrameState()/prepareTree() 把 RenderNode 树同步完才 signal 唤醒。因此 UI 线程只是“提交 + 等同步”，真正的 GPU 绘制在 RenderThread 的 CanvasContext::draw() 里继续。",
+  "callchain": [
+    "Choreographer.doFrame(long, int)",
+    "Choreographer.doTraversal()",
+    "ViewRootImpl.performTraversals(long)",
+    "ViewRootImpl.performDraw(SurfaceSyncGroup)",
+    "ViewRootImpl.draw(boolean, SurfaceSyncGroup, boolean)",
+    "ThreadedRenderer.draw(View, AttachInfo, DrawCallbacks)",
+    "ThreadedRenderer.updateRootDisplayList(View, DrawCallbacks)",
+    "ThreadedRenderer.updateViewTreeDisplayList(View)",
+    "View.updateDisplayListIfDirty()",
+    "RenderNode.beginRecording(int, int)",
+    "View.draw(Canvas)",
+    "ViewGroup.dispatchDraw(Canvas)",
+    "View.draw(Canvas, ViewGroup, long)",
+    "View.updateDisplayListIfDirty()",
+    "View.drawBackground(Canvas)",
+    "RecordingCanvas.drawRenderNode(RenderNode)",
+    "RenderNode.endRecording()",
+    "HardwareRenderer.syncAndDrawFrame(FrameInfo)",
+    "HardwareRenderer.nSyncAndDrawFrame(long, long[], int)",
+    "android_view_ThreadedRenderer_syncAndDrawFrame()",
+    "RenderProxy.syncAndDrawFrame()",
+    "DrawFrameTask.drawFrame()",
+    "DrawFrameTask.postAndWait()",
+    "DrawFrameTask.run()",
+    "DrawFrameTask.syncFrameState(TreeInfo&)",
+    "CanvasContext.prepareTree(TreeInfo&, int64_t*, int64_t, RenderNode*)",
+    "DrawFrameTask.unblockUiThread()",
+    "CanvasContext.draw(bool)"
+  ],
+  "sections": [
+    {
+      "heading": "这一拍的触发者与执行线程",
+      "html": "<p>触发者在 Choreographer：VSYNC 到来后 <code>Choreographer.doFrame(long, int)</code> 依次跑 input/animation/insets_animation/traversal/commit 五类回调（<code>CALLBACK_TRACE_TITLES</code>，<code>Choreographer.java:313-315</code>），traversal 回调就是 <code>ViewRootImpl.performTraversals(long)</code>（<code>ViewRootImpl.java:3924</code>）。它与测量、布局在<strong>同一个线程</strong>——ViewRootImpl 所属的 UI 线程（应用主线程或 ViewRootImpl 所在的线程），整段 <code>Choreographer#doFrame</code> 时间片都属于该线程。</p><p>performTraversals 在完成测量/布局后，用 <code>mAttachInfo.mDrawingTime = frameTimeNanos / TimeUtils.NANOS_PER_MS;</code>（<code>ViewRootImpl.java:4902</code>）把本帧时间戳带入绘制，然后调用 <code>performDraw(mActiveSurfaceSyncGroup)</code>（<code>ViewRootImpl.java:4903</code>）。performDraw 先判屏幕状态（<code>Display.STATE_OFF</code> 且不要求上报时直接返回，并记录 <code>mLastPerformDrawSkippedReason = \"screen_off\"</code>），再以 <code>Trace.traceBegin(Trace.TRACE_TAG_VIEW, mDrawTrace)</code> 开启切片。注意 trace 名字不是固定字符串：<code>mDrawTrace = \"draw-\" + mTag</code>（<code>ViewRootImpl.java:1362</code>），<code>mTag</code> 默认是 <code>\"ViewRootImpl\"</code>，在调试属性打开时会被改写成 <code>VRI[...]</code> 形式（<code>ViewRootImpl.java:2035</code>），所以抓 trace 时要按前缀 <code>draw-</code> 过滤，而不是硬匹配一个常量。</p><p>performDraw 里的布尔返回值有明确语义：它返回 <code>usingAsyncReport</code>（<code>ViewRootImpl.java:6364</code>），表示本帧是否已经通过 SurfaceSyncGroup / SurfaceHolder 异步上报绘制完成。若为 false，performDraw 会走 <code>handleSyncRequestWhenNoAsyncDraw()</code> 立即把 pending Transaction 用 BLAST apply token 应用（<code>ViewRootImpl.java:6034-6037</code>、<code>6045-6064</code>）。这条路径决定了窗口 Transaction（含 buffer 提交）与绘制如何同步，是理解“掉帧为何表现为 Transaction 迟到”的关键。</p>"
+    },
+    {
+      "heading": "performDraw → draw()：硬件加速分岔与 dirty 的真实含义",
+      "html": "<p><code>ViewRootImpl.draw(boolean, SurfaceSyncGroup, boolean)</code>（<code>ViewRootImpl.java:6161</code>）先取 <code>final Rect dirty = mDirty;</code>（<code>6211</code>）。若 <code>fullRedrawNeeded</code> 为真则把 dirty 设成整窗（<code>6221-6223</code>）。随后按 <code>isHardwareEnabled()</code> 分岔：</p><ul><li><strong>硬件路径</strong>：处理 <code>accessibilityFocusDirty || mInvalidateRootRequested</code> 时调用 <code>mAttachInfo.mThreadedRenderer.invalidateRoot()</code>（<code>6274-6276</code>），然后<strong>立刻 <code>dirty.setEmpty()</code></strong>（<code>6278</code>），再做 <code>updateContentDrawBounds()</code>、HDR ratio（<code>6297-6303</code>）、<code>prepareCornerRadiiForDraw()</code>、SurfaceSyncGroup 注册（<code>6307-6317</code>），最后 <code>mAttachInfo.mThreadedRenderer.draw(mView, mAttachInfo, this);</code>（<code>6320</code>）。这里的 <code>this</code> 是 ViewRootImpl 自己——它实现了 <code>ThreadedRenderer.DrawCallbacks</code>（<code>ViewRootImpl.java:339</code>），<code>onPreDraw(RecordingCanvas)</code> 负责 <code>canvas.translate(-mHardwareXOffset, -mHardwareYOffset)</code>（<code>5729-5740</code>），<code>onPostDraw(RecordingCanvas)</code> 负责焦点框等（<code>5743-5750</code>）。</li><li><strong>软件路径</strong>：走 <code>drawSoftware(surface, mAttachInfo, xOffset, yOffset, scalingRequired, dirty, surfaceInsets)</code>（<code>6353</code>），内部 <code>mSurface.lockCanvas(dirty)</code> 拿软件 Canvas 直接画，没有 RenderNode、没有 RenderThread。</li></ul><blockquote>关键事实：硬件加速下 <code>mDirty</code> 被 <code>setEmpty()</code> 清空，<strong>dirty 矩形并不直接等于 GPU 的绘制范围</strong>。真正的“要重绘哪一块”由 hwui 侧 damage 累加器在 RT 上算：<code>CanvasContext::prepareTree()</code> 设置 <code>info.damageAccumulator = &amp;mDamageAccumulator;</code>（<code>base/libs/hwui/renderthread/CanvasContext.cpp:548</code>），<code>CanvasContext::draw()</code> 里 <code>mDamageAccumulator.finish(&amp;dirty);</code>（<code>CanvasContext.cpp:686</code>），随后才 <code>ATRACE_FORMAT(\"Drawing \" RECT_STRING, ...)</code>（<code>CanvasContext.cpp:736</code>）。所以不要把 ViewRootImpl 的 dirty rect 当成 damage。</blockquote>"
+    },
+    {
+      "heading": "录制：updateDisplayListIfDirty 与 RenderNode 树",
+      "html": "<p>录制的入口是 <code>ThreadedRenderer.updateViewTreeDisplayList(View)</code>（<code>ThreadedRenderer.java:721-728</code>）：先置 <code>View.PFLAG_DRAWN</code>，把 <code>PFLAG_INVALIDATED</code> 暂存到 <code>view.mRecreateDisplayList</code> 并清除原标志（这样录制过程中还能继续 invalidate），再调用 <code>view.updateDisplayListIfDirty()</code>。<code>View.updateDisplayListIfDirty()</code>（<code>View.java:24306</code>）先判 <code>canHaveDisplayList()</code>——即 <code>mAttachInfo != null &amp;&amp; mAttachInfo.mThreadedRenderer != null</code>（<code>View.java:24296-24298</code>）。只有三种情况会重录：<code>PFLAG_DRAWING_CACHE_VALID</code> 未置、<code>!renderNode.hasDisplayList()</code>、或 <code>mRecreateDisplayList</code>。</p><p>真正录制发生在 <code>final RecordingCanvas canvas = renderNode.beginRecording(width, height);</code>（<code>24339</code>）与 <code>renderNode.endRecording();</code>（<code>24377</code>）之间，录完还会 <code>setDisplayListProperties(renderNode)</code> 把 alpha/平移等属性同步到 native 节点（<code>24378</code>）。录制时先 <code>canvas.translate(-mScrollX, -mScrollY)</code>（<code>24351</code>），若 <code>PFLAG_SKIP_DRAW</code> 成立则直接 <code>dispatchDraw(canvas)</code> 走“无背景容器”快路（<code>24358-24359</code>），否则调用 <code>draw(canvas)</code> 走标准七步流程（背景→内容 <code>onDraw</code>→子 View <code>dispatchDraw</code>→前景/装饰→焦点高亮，<code>View.java:25493-25545</code>）。</p><p>DisplayList 树是这样拼起来的：<code>ViewGroup.dispatchDraw(Canvas)</code>（<code>ViewGroup.java:4390</code>）对每个子 View 调 <code>drawChild(...)</code>，而 <code>drawChild</code> 就是 <code>child.draw(canvas, this, drawingTime)</code>（<code>ViewGroup.java:4704-4706</code>）。内部方法 <code>View.draw(Canvas, ViewGroup, long)</code>（<code>View.java:25170</code>）在 <code>drawsWithRenderNode(canvas)</code> 为真时（<code>25158-25162</code>：<code>mAttachInfo.mHardwareAccelerated &amp;&amp; canvas.isHardwareAccelerated()</code>）不把子 View 的内容画进父 Canvas，而是 <code>renderNode = updateDisplayListIfDirty();</code>（<code>25252</code>）拿到子节点，再在 <code>View.java:25384-25387</code> 处执行 <code>((RecordingCanvas) canvas).drawRenderNode(renderNode);</code>，把子 DisplayList 作为一条引用指令挂进父 DisplayList。背景同理：<code>drawBackground()</code> 在硬件路径下把 Drawable 录进 <code>mBackgroundRenderNode</code>，然后 <code>((RecordingCanvas) canvas).drawRenderNode(renderNode)</code>（<code>View.java:25736-25746</code>，录制逻辑见 <code>25797-25832</code>）。最终 <code>ThreadedRenderer.updateRootDisplayList()</code> 在 <code>mRootNodeNeedsUpdate || !mRootNode.hasDisplayList()</code> 时（<code>769</code>）对根节点录一条 <code>drawRenderNode(view.updateDisplayListIfDirty())</code>（<code>777</code>），形成“根节点 → View 树”的完整 RenderNode 树。注意这里是<strong>同进程指针</strong>：<code>RenderNode</code> 的 Java 对象持有 native 指针，DisplayList 存在进程内 native 堆（hwui），不是 binder/Parcel 传递，UI 线程与 RenderThread 共享同一份。</p>"
+    },
+    {
+      "heading": "跨线程同步：syncAndDrawFrame → DrawFrameTask::postAndWait",
+      "html": "<p>录制结束后，<code>ThreadedRenderer.draw()</code>（<code>ThreadedRenderer.java:827-859</code>）先 <code>attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();</code>（<code>828</code>，即 <code>ViewFrameInfo.drawStart = System.nanoTime()</code>，<code>ViewFrameInfo.java:64-66</code>），再 <code>updateRootDisplayList(view, callbacks)</code>，然后 <code>final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();</code>（<code>846</code>）与 <code>int syncResult = syncAndDrawFrame(frameInfo);</code>（<code>848</code>）。<code>getUpdatedFrameInfo()</code>（<code>ViewRootImpl.java:723-732</code>）把当前 ViewRootImpl 的 <code>mViewFrameInfo.populateFrameInfo(frameInfo)</code> 填入 <code>FLAGS/DRAW_START/INPUT_EVENT_ID</code>，再 <code>reset()</code>，因为 Choreographer 是 ThreadLocal、FrameInfo 也是按线程复用的一份数组。</p><p>FrameInfo 是 14 个 int64 的数组（<code>base/graphics/java/android/graphics/FrameInfo.java:44</code> 的 <code>frameInfo = new long[FRAME_INFO_SIZE]</code>，<code>FRAME_INFO_SIZE = ANIMATION_TIME + 1</code>；native 侧 <code>UI_THREAD_FRAME_INFO_SIZE = 14</code>，<code>base/libs/hwui/FrameInfo.h:34</code>）。<code>syncAndDrawFrame(FrameInfo)</code> 实际是 <code>nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length)</code>（<code>HardwareRenderer.java:595-597</code>）。到 JNI 层 <code>android_view_ThreadedRenderer_syncAndDrawFrame()</code>（<code>base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:464-473</code>）：先 <code>LOG_ALWAYS_FATAL_IF(frameInfoSize != UI_THREAD_FRAME_INFO_SIZE, ...)</code> 校验长度，然后 <code>env-&gt;GetLongArrayRegion(frameInfo, 0, frameInfoSize, proxy-&gt;frameInfo())</code> <strong>把 Java long[] 拷贝进 DrawFrameTask 的内嵌 C 数组 mFrameInfo</strong>，再 <code>return proxy-&gt;syncAndDrawFrame();</code>。跨语言边界只传这 14 个时间戳，视图内容本身走 native 指针。</p><p><code>RenderProxy::syncAndDrawFrame()</code> 只有一行 <code>return mDrawFrameTask.drawFrame();</code>（<code>base/libs/hwui/renderthread/RenderProxy.cpp:237-239</code>）。<code>DrawFrameTask::drawFrame()</code> 记录 <code>mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);</code> 后调用 <code>postAndWait()</code>：持锁 <code>mLock</code> 把 <code>run()</code> post 到 <code>mRenderThread-&gt;queue()</code>，然后 <code>mSignal.wait(mLock)</code> 阻塞 UI 线程。RT 上 <code>DrawFrameTask::run()</code> 以 <code>mContext-&gt;setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued)</code> 先量化排队延迟，然后 <code>syncFrameState(info)</code>：刷新 vsync 给 TimeLord（<code>vsyncReceived</code>）、<code>mContext-&gt;makeCurrent()</code>、apply 各 <code>DeferredLayerUpdater</code>、<code>mContext-&gt;setContentDrawBounds(mContentDrawBounds)</code>，最后 <code>mContext-&gt;prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode)</code>（<code>DrawFrameTask.cpp:169-217</code>）。</p><p>同步点的精妙处在于 §<code>canUnblockUiThread</code>：<code>bool canUnblockUiThread = syncFrameState(info);</code>，返回值就是 <code>info.prepareTextures</code>（纹理缓存还有空间）。若为真，run() 在 <code>if (canUnblockUiThread) unblockUiThread();</code>（<code>DrawFrameTask.cpp:125-127</code>，<code>unblockUiThread()</code> 即 <code>mSignal.signal()</code>，<code>219-222</code>）后立刻放行 UI 线程，RT 继续 <code>context-&gt;draw(solelyTextureViewUpdates)</code>（<code>141</code>）。若 <code>prepareTextures</code> 为 false（纹理缓存已满），则走 <code>if (!canUnblockUiThread) unblockUiThread();</code>（<code>DrawFrameTask.cpp:159-160</code>）：UI 线程要一直等到 <code>context-&gt;draw()</code> 与 <code>frameCompleteCallback</code> 都结束才被放行，此时 RT 绘制耗时会整段计入 UI 线程。<strong>所以在常规路径（canUnblockUiThread 为真）下，UI 线程的 DrawFrameTask 耗时 ≈ 排队 + prepareTree，不等于 GPU 绘制耗时</strong>，这也解释了为什么“UI 线程 draw 很快但依然掉帧”。</p>"
+    },
+    {
+      "heading": "录制与 GPU 绘制分离：FrameInfo、damage、hardware layer 与掉帧风险",
+      "html": "<p>本阶段最需要建立的心智模型是<strong>两段式</strong>：UI 线程做 CPU 侧的 DisplayList 录制（把 Canvas 调用变成 native DisplayList 的绘制指令 + 属性），并把 RenderNode 树的脏状态同步给 RT；RenderThread 才做 DisplayList 展开/Skia 录制回放、上传纹理、提交 GPU 命令、dequeue/queue BufferQueue buffer，最后经 SurfaceFlinger/HWC 上屏。<code>Choreographer.doFrame</code> 之后的 UI 线程工作必须在本帧 deadline（FrameInfo 里的 <code>FrameDeadline</code>，<code>FrameInfoIndex::FrameDeadline</code>，<code>base/libs/hwui/FrameInfo.h:46</code>）前完成同步，否则 RT 会拿不到这一拍的更新，表现为 jank；而 RT 侧的 GPU 工作则要赶在下一个 vsync 的 SwapBuffers 前完成。</p><p><strong>hardware layer</strong>：当 View 的 layerType 为 <code>LAYER_TYPE_HARDWARE</code> 时，View 对应的 RenderNode 自带一块离屏层（<code>LayerType::RenderLayer</code>）：<code>prepareTree</code> 遍历到它时，<code>RenderNode::pushLayerUpdate()</code>（<code>base/libs/hwui/RenderNode.cpp:186-209</code>）经 <code>CanvasContext::createOrUpdateLayer</code> 建/更新层，再 <code>info.layerUpdateQueue-&gt;enqueueLayerWithDamage(this, dirty)</code> 放进 <code>CanvasContext</code> 的 <code>mLayerUpdateQueue</code>（<code>CanvasContext.cpp:550</code>）；真正把层内容画进离屏层发生在 <code>CanvasContext::draw()</code> 里，<code>mRenderPipeline-&gt;draw(..., &amp;mLayerUpdateQueue, ...)</code>（<code>CanvasContext.cpp:743</code>）先 renderLayers 再画主帧。注意不要和 <code>DeferredLayerUpdater</code> 混淆：后者服务的是 TextureView/SurfaceTexture 的外部纹理，DrawFrameTask 在 <code>syncFrameState()</code> 里逐个 <code>apply()</code> 的就是它（<code>DrawFrameTask.cpp:182-189</code>）。层的意义是“内容可复用，变换在合成时做”，因此动画期间不必重录 DisplayList；但层一旦失效就要整层重录 + 重新上传纹理，代价比直接画更大。</p><p><strong>GL 还是 Vulkan</strong>：RenderThread 用哪条 pipeline 由 <code>Properties::peekRenderPipelineType()</code>（<code>base/libs/hwui/Properties.cpp:216-227</code>）决定：默认值取 <code>ro.hwui.use_vulkan</code>（为真则 <code>\"skiavk\"</code>，否则 <code>\"skiagl\"</code>），可被 <code>debug.hwui.renderer</code>（<code>PROPERTY_RENDERER</code>）覆盖，结果为 <code>SkiaVulkan</code> 或 <code>SkiaGL</code>，进程内一旦确定不可再改（<code>overrideRenderPipelineType</code> 会 fatal）。本阶段 UI 线程录制与两者无关，差异全部在 RT 侧的 draw/swap（见下一阶段）。</p><p><strong>damage/脏区</strong>：<code>mRecreateDisplayList</code>、<code>PFLAG_DRAWING_CACHE_VALID</code> 决定“录不录”，RT 侧的 <code>mDamageAccumulator</code>（<code>CanvasContext.cpp:548/686</code>）决定“画多大一块”。二者都不等于 ViewRootImpl 的 <code>mDirty</code>（硬件路径已被 <code>setEmpty()</code>）。如果 <code>mDamageAccumulator.finish(&amp;dirty)</code> 得到空 dirty 且 <code>Properties::skipEmptyFrames</code> 成立，RT 可能直接跳过绘制（<code>CanvasContext.cpp:694-699</code> 的 skippedFrameReason 判定），这属于正常省电路径而非丢帧。</p><p><strong>内容边界</strong>：<code>mContentDrawBounds</code> 的来源链是 <code>HardwareRenderer.setContentDrawBounds(int,int,int,int)</code>（<code>HardwareRenderer.java:1039</code>）→ JNI <code>android_view_ThreadedRenderer_setContentDrawBounds</code>（<code>android_graphics_HardwareRenderer.cpp:618-621</code>）→ <code>RenderProxy::setContentDrawBounds</code>（<code>RenderProxy.cpp:444-445</code>）→ <code>DrawFrameTask::setContentDrawBounds</code> → <code>syncFrameState()</code> 里 <code>mContext-&gt;setContentDrawBounds(mContentDrawBounds)</code>（<code>DrawFrameTask.cpp:190</code>）。在 AOSP 中 <code>DecorView.onContentDrawn()</code> 恒 <code>return false;</code>（<code>base/core/java/com/android/internal/policy/DecorView.java:1847-1849</code>），因此默认窗口路径不会改写它；除测试代码外，<code>base/</code> 内没有别的 Java 调用者，这一点在源码中就是这样。</p><p><strong>典型耗时与掉帧风险</strong>：录制成本基本与“被标记要重录的 View 数 × 各自 Canvas 指令数”成正比；<code>invalidate()</code> 一个深层 View 只会让它自己及祖先链的 <code>PFLAG_INVALIDATED</code> 置位，父节点若 display list 仍有效则走 <code>dispatchGetDisplayList()</code> 只重建子树（<code>View.java:24318-24324</code>）。常见风险：自定义 View 在 <code>onDraw</code> 里 new 对象/建 Paint、在 <code>onDraw</code> 里读磁盘或做字符串拼接、把 <code>invalidate()</code> 放在动画每帧（导致整层重录）、<code>requestLayout()</code> 与 <code>invalidate()</code> 同时调用造成同一帧测量+录制双成本、以及 layer 滥用导致显存与上传带宽双爆。源码中未体现任何“绘制耗时阈值”的硬编码判定，<code>JankTracker</code> 等统计逻辑不在本阶段文件内。</p>"
+    },
+    {
+      "heading": "观测手段：trace tag、FrameMetrics 与 gfxinfo",
+      "html": "<p>UI 线程侧可直接按以下切片归因：<code>Choreographer#doFrame &lt;vsyncId&gt;</code>（<code>Choreographer.java:1110</code>，带 mVsyncId）、traversal 回调切片（trace 标题来自 <code>CALLBACK_TRACE_TITLES</code>，即 <code>\"input\", \"animation\", \"insets_animation\", \"traversal\", \"commit\"</code>，<code>Choreographer.java:313-315</code>；注意这一版<strong>不是</strong> <code>Choreographer#doTraversal</code>）、<code>draw-ViewRootImpl</code>（<code>ViewRootImpl.java:1362</code> + <code>5963</code>）、<code>Record View#draw()</code>（<code>ThreadedRenderer.java:731</code>）以及 <code>syncFrameState</code>/<code>DrawFrames &lt;vsyncId&gt;</code>（<code>DrawFrameTask.cpp:83/91/170</code>）。RT 侧继续看 <code>CanvasContext::draw</code> 内的 <code>Drawing &lt;l,t,r,b&gt;</code>（<code>CanvasContext.cpp:736</code>）、<code>swap chain stuffed</code>（<code>502</code>）与 FrameTimeline 的 instant 事件（<code>CanvasContext.cpp:795/901/972/1064</code>）。</p><p>量化侧：<code>FrameMetrics</code> 用 <code>mTimingData = new long[Index.FRAME_STATS_COUNT]</code>（<code>base/core/java/android/view/FrameMetrics.java:276/333</code>，<code>FRAME_STATS_COUNT = 25</code>），其中 <code>Index.DRAW_START = 8</code>（<code>FrameMetrics.java:258</code>）与 native <code>FrameInfoIndex::DrawStart</code>（<code>FrameInfo.h:45</code>，值 8）对齐。用 <code>adb shell dumpsys gfxinfo &lt;pkg&gt; framestats</code> 可拿到每帧的 DrawStart/FrameCompleted 等列；配合 Perfetto 的 <code>Choreographer#doFrame</code>–<code>DrawFrames</code>–<code>Drawing</code> 三段切片，就能区分“录制慢（UI）”还是“GPU/合成慢（RT/SF）”。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "performDraw",
+      "lines": "5940-5977",
+      "code": "    private boolean performDraw(@Nullable SurfaceSyncGroup surfaceSyncGroup) {\n        mLastPerformDrawSkippedReason = null;\n        if (mAttachInfo.mDisplayState == Display.STATE_OFF && !mReportNextDraw) {\n            mLastPerformDrawSkippedReason = \"screen_off\";\n            if (!mLastDrawScreenOff) {\n                logAndTrace(\"Not drawing due to screen off\");\n            }\n            mLastDrawScreenOff = true;\n            return false;\n        } else if (mView == null) {\n            mLastPerformDrawSkippedReason = \"no_root_view\";\n            return false;\n        }\n\n        if (mLastDrawScreenOff) {\n            logAndTrace(\"Resumed drawing after screen turned on\");\n            mLastDrawScreenOff = false;\n        }\n\n        final boolean fullRedrawNeeded = mFullRedrawNeeded || surfaceSyncGroup != null;\n        mFullRedrawNeeded = false;\n\n        mIsDrawing = true;\n        Trace.traceBegin(Trace.TRACE_TAG_VIEW, mDrawTrace);\n\n        addFrameCommitCallbackIfNeeded();\n\n        boolean usingAsyncReport;\n\n        try {\n            usingAsyncReport = draw(fullRedrawNeeded, surfaceSyncGroup, mSyncBuffer);\n            if (mAttachInfo.mThreadedRenderer != null && !usingAsyncReport) {\n                mAttachInfo.mThreadedRenderer.setFrameCallback(null);\n            }\n        } finally {\n            mIsDrawing = false;\n            Trace.traceEnd(Trace.TRACE_TAG_VIEW);\n        }",
+      "note": "performDraw 在 UI 线程上先做屏幕状态与 mView 判空检查，然后以 mDrawTrace 开切片并调用 draw(fullRedrawNeeded, surfaceSyncGroup, mSyncBuffer)；返回值 usingAsyncReport 决定本帧是否走异步上报（影响 pending Transaction 何时 apply）。"
+    },
+    {
+      "file": "base/core/java/android/view/View.java",
+      "symbol": "updateDisplayListIfDirty",
+      "lines": "24306-24324",
+      "code": "    public RenderNode updateDisplayListIfDirty() {\n        final RenderNode renderNode = mRenderNode;\n        if (!canHaveDisplayList()) {\n            // can't populate RenderNode, don't try\n            return renderNode;\n        }\n\n        if ((mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == 0\n                || !renderNode.hasDisplayList()\n                || (mRecreateDisplayList)) {\n            // Don't need to recreate the display list, just need to tell our\n            // children to restore/recreate theirs\n            if (renderNode.hasDisplayList()\n                    && !mRecreateDisplayList) {\n                mPrivateFlags |= PFLAG_DRAWN | PFLAG_DRAWING_CACHE_VALID;\n                mPrivateFlags &= ~PFLAG_DIRTY_MASK;\n                dispatchGetDisplayList();\n\n                return renderNode; // no work needed",
+      "note": "只有缓存失效、DisplayList 不存在或 mRecreateDisplayList 为真才重录；父节点 DisplayList 仍有效时仅 dispatchGetDisplayList() 重建子树，避免整树重录。"
+    },
+    {
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "symbol": "updateRootDisplayList",
+      "lines": "730-788",
+      "code": "    private void updateRootDisplayList(View view, DrawCallbacks callbacks) {\n        Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"Record View#draw()\");\n        updateViewTreeDisplayList(view);\n\n        // ...\n        if (mRootNodeNeedsUpdate || !mRootNode.hasDisplayList()) {\n            RecordingCanvas canvas = mRootNode.beginRecording(mSurfaceWidth, mSurfaceHeight);\n            try {\n                final int saveCount = canvas.save();\n                canvas.translate(mInsetLeft, mInsetTop);\n                callbacks.onPreDraw(canvas);\n\n                canvas.enableZ();\n                canvas.drawRenderNode(view.updateDisplayListIfDirty());\n                canvas.disableZ();\n\n                callbacks.onPostDraw(canvas);\n                canvas.restoreToCount(saveCount);\n                mRootNodeNeedsUpdate = false;\n            } finally {\n                mRootNode.endRecording();\n            }\n        }\n        Trace.traceEnd(Trace.TRACE_TAG_VIEW);\n    }",
+      "note": "录制根 DisplayList：Trace 切片名为 Record View#draw()；先 updateViewTreeDisplayList() 触发整树录制，再把 View 的根 RenderNode 通过 canvas.drawRenderNode() 挂进 mRootNode，并在 onPreDraw/onPostDraw 中插入窗口级绘制。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "DrawFrameTask::drawFrame",
+      "lines": "72-93",
+      "code": "int DrawFrameTask::drawFrame() {\n    LOG_ALWAYS_FATAL_IF(!mContext, \"Cannot drawFrame with no CanvasContext!\");\n\n    mSyncResult = SyncResult::OK;\n    mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);\n    postAndWait();\n\n    return mSyncResult;\n}\n\nvoid DrawFrameTask::postAndWait() {\n    ATRACE_CALL();\n    AutoMutex _lock(mLock);\n    mRenderThread->queue().post([this]() { run(); });\n    mSignal.wait(mLock);\n}\n\nvoid DrawFrameTask::run() {\n    const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];\n    ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);\n\n    mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);",
+      "note": "UI 线程与 RenderThread 的核心同步点：drawFrame() 记录 mSyncQueued 后 postAndWait() 把 run() 投递到 RT 队列并 wait；RT 侧 run() 计算排队延迟 setSyncDelayDuration()。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mRenderNode",
+      "type": "final RenderNode（View.java:5804）",
+      "desc": "每个 View 一个 native RenderNode，持有该 View 的 DisplayList 与绘制属性；临时 detach 时 DisplayList 被清除，attach 后重建。是“录制”的载体，不是 Bitmap。"
+    },
+    {
+      "name": "PFLAG_DRAWING_CACHE_VALID / mRecreateDisplayList",
+      "type": "int 私有标志 / boolean",
+      "desc": "View.updateDisplayListIfDirty() 用它判断是否复用 DisplayList；ThreadedRenderer.updateViewTreeDisplayList() 把 PFLAG_INVALIDATED 暂存成 mRecreateDisplayList 后清除原标志，使录制期间仍可 invalidate。"
+    },
+    {
+      "name": "mRootNodeNeedsUpdate",
+      "type": "boolean（声明于 ThreadedRenderer.java:263）",
+      "desc": "invalidateRoot() 置 true（ThreadedRenderer.java:818），表示根 DisplayList 需要重录（如 insets/滚动偏移变化、窗口背景变化）；updateRootDisplayList() 录完后置 false（:782）。"
+    },
+    {
+      "name": "mSyncQueued",
+      "type": "int64_t（DrawFrameTask.h:125）",
+      "desc": "UI 线程调用 drawFrame() 的单调时钟时间；RT 用它算 setSyncDelayDuration()，即任务在队列里等了多少纳秒，是判断“RT 是否被上帧拖住”的直接指标。"
+    },
+    {
+      "name": "mFrameInfo[UI_THREAD_FRAME_INFO_SIZE]",
+      "type": "int64_t[14]（DrawFrameTask.h:127）",
+      "desc": "由 JNI GetLongArrayRegion 从 Java FrameInfo.long[14] 拷入，含 Vsync/IntendedVsync/FrameDeadline/FrameInterval/FrameTimelineVsyncId 等；用于 vsyncReceived()、FrameTimeline 与 jank 归因。"
+    },
+    {
+      "name": "mSyncResult",
+      "type": "int（DrawFrameTask.h:124，enum SyncResult）",
+      "desc": "syncFrameState() 累积的同步结果：UIRedrawRequired=1<<0、LostSurfaceRewardIfFound=1<<1、ContextIsStopped=1<<2、FrameDropped=1<<3；返回 Java 后驱动 ViewRootImpl.invalidate() 或强制 relayout。"
+    },
+    {
+      "name": "mDamageAccumulator",
+      "type": "DamageAccumulator（CanvasContext）",
+      "desc": "RT 侧脏区累加器：prepareTree() 把它塞进 TreeInfo（CanvasContext.cpp:548），CanvasContext::draw() 用 finish(&dirty) 得出本帧实际绘制区域（686），与 ViewRootImpl.mDirty 无关。"
+    },
+    {
+      "name": "mCurrentRecordingCanvas",
+      "type": "RecordingCanvas（RenderNode.java:487）",
+      "desc": "RenderNode 单飞录制令牌；beginRecording() 时若非空直接抛 IllegalStateException（缺少 endRecording），endRecording() 会 finishRecording() 并 recycle()。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "Choreographer#doFrame <vsyncId>",
+      "value": "trace slice（Choreographer.java:1110）",
+      "desc": "UI 线程一帧总入口；其下包含 input/animation/traversal/commit 回调，traversal 回调即 ViewRootImpl.performTraversals。"
+    },
+    {
+      "name": "draw-ViewRootImpl / VRI[...]",
+      "value": "trace slice（ViewRootImpl.java:1362、5963）",
+      "desc": "performDraw 的切片，按前缀 draw- 过滤；调试属性开启时 mTag 变为 VRI[...]，名字随之变化。"
+    },
+    {
+      "name": "Record View#draw()",
+      "value": "trace slice（ThreadedRenderer.java:731）",
+      "desc": "纯粹 CPU 录制阶段，包含 updateDisplayListIfDirty + 根节点 drawRenderNode；时长直接反映视图树录制成本。"
+    },
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "trace slice（DrawFrameTask.cpp:91）",
+      "desc": "RenderThread 上处理本帧的切片，内含 syncFrameState(syncFrameState 切片) 与 CanvasContext::draw；与 UI 线程切片对照可看出排队延迟。"
+    },
+    {
+      "name": "Drawing <l,t,r,b>",
+      "value": "trace slice（CanvasContext.cpp:736）",
+      "desc": "RT 实际开始 GPU 绘制的脏区；若为全屏矩形说明 damage 累积到全屏（常见于 invalidateRoot 或 layer 内容变化）。"
+    },
+    {
+      "name": "dumpsys gfxinfo <pkg> framestats",
+      "value": "每帧 25 列时序（FrameMetrics.java:276）",
+      "desc": "取 DrawStart（索引 8）到 FrameCompleted 的差值量化“录制+同步”与整帧耗时；与 Perfetto 对齐使用。"
+    }
+  ],
+  "pitfalls": [
+    "误把 ViewRootImpl.mDirty 当作 GPU 绘制脏区：硬件加速路径里 dirty 在 6258-6278 处被 setEmpty()，真正 damage 由 RT 侧 mDamageAccumulator 在 CanvasContext::prepareTree/draw 中计算（CanvasContext.cpp:548/686）。",
+    "误把 UI 线程 DrawFrameTask 的耗时当作 GPU 绘制耗时：DrawFrameTask::run() 在 syncFrameState() 成功后即可 unblockUiThread()（DrawFrameTask.cpp:125-127、219-222），GPU 绘制在其后异步继续，UI 线程的切片只覆盖“排队+prepareTree”。例外是 prepareTextures 为 false（纹理缓存满）时，UI 线程要等到 draw 结束才放行（DrawFrameTask.cpp:159-160）。",
+    "在 onDraw() 里调用 invalidate()/requestLayout()：会把父链 PFLAG_INVALIDATED 置位并让 mRecreateDisplayList 为真，导致下一帧整条路径重录；正确做法是动画驱动属性（RenderNode 属性/ViewPropertyAnimator）而不重录 DisplayList。",
+    "以为硬件路径下“dirty 为空就不画”：performDraw 的触发条件是 !dirty.isEmpty() || mIsAnimating || accessibilityFocusDirty（ViewRootImpl.java:6259），但硬件路径还会因 RenderThread 的动画/回调或 invalidateRoot 产生帧；反之 RT 侧 damage 为空且 skipEmptyFrames 时也会跳过绘制。",
+    "上 trace 时按固定字符串硬匹配 Choreographer#doTraversal：本版 CALLBACK_TRACE_TITLES 是 input/animation/insets_animation/traversal/commit 五项（Choreographer.java:313-315），traversal 切片名就是 traversal，帧级切片才叫 Choreographer#doFrame <vsyncId>。",
+    "把 FrameDrawingCallback 当成“帧结束回调”：ThreadedRenderer.registerRtFrameCallback()（ThreadedRenderer.java:478-483）注册的回调在 RT 上执行且只对下一帧有效，同步结果由 FrameDrawingCallback.onFrameDraw(int, long) 返回的 FrameCommitCallback 上报（HardwareRenderer.java:1097-1118）。",
+    "把 LAYER_TYPE_HARDWARE 和 TextureView 混为一谈：前者是 RenderNode 自带的 RenderLayer，经 RenderNode::pushLayerUpdate 入 LayerUpdateQueue、在 CanvasContext::draw 里先渲染离屏层（RenderNode.cpp:186-209）；后者才走 DeferredLayerUpdater::apply（DrawFrameTask.cpp:182-189）。"
+  ],
+  "traceTags": [
+    "Choreographer#doFrame",
+    "traversal",
+    "draw-ViewRootImpl",
+    "Record View#draw()",
+    "syncFrameState",
+    "DrawFrames",
+    "Drawing"
+  ],
+  "next": "stage-06"
+}
