@@ -1,0 +1,146 @@
+{
+  "stages": [
+    {
+      "id": "launcher-declare",
+      "title": "Provider 声明与 Launcher 选择",
+      "actor": "host",
+      "summary": "以桌面 Widget 展示，先要有一个可发现的 AppWidget Provider，再由 Launcher 选择并建立一个实例。Provider 不是 ContentProvider，也不是每个 Widget 对应一个持续运行的绘制进程。",
+      "chain": ["Manifest Receiver + appwidget metadata", "AppWidgetProviderInfo", "Launcher 选择 Provider 组件"],
+      "facts": [
+        "提供方应用在 Manifest 声明 BroadcastReceiver，监听 APPWIDGET_UPDATE，并以 android.appwidget.provider 元数据指向尺寸、initialLayout、配置 Activity 等信息。AppWidgetProvider 本身继承 BroadcastReceiver。",
+        "系统发现并保存 Provider 信息，Launcher 可通过 AppWidgetManager 查询可用 Provider。安装应用或声明 Receiver 并不会自动把一个实例放入桌面。用户添加、恢复已有桌面或已授权的 pin 流程才会建立 Host 与 Provider 的关系。",
+        "本场景选择第三方应用与 Launcher 分属不同进程。提供方回调实际运行在 Receiver 的 ActivityInfo.processName 所指定进程，通常是应用主进程，也可以由清单 android:process 改变；不是按 appWidgetId 新建一个进程。",
+        "当前仓库没有 Launcher3 的工作区实现。选择界面、数据库、网格坐标和具体 Launcher 类名不由本页推测；框架边界与测试宿主示例分开标注。"
+      ],
+      "boundary": "普通用户添加第三方 Widget、已授权、无配置 Activity、无集合、无 mask 的 XML 路径。实际 Launcher 包名、PID 与产品实现未知。",
+      "snippets": [
+        {"file": "base/core/java/android/appwidget/AppWidgetProvider.java", "symbol": "AppWidgetProvider", "lines": "42", "code": "public class AppWidgetProvider extends BroadcastReceiver {", "note": "Provider 的组件类型是广播接收器。"},
+        {"file": "base/tests/appwidgets/AppWidgetProviderTest/AndroidManifest.xml", "lines": "8-15", "code": "<receiver android:name=\"TestAppWidgetProvider\"\n     android:exported=\"true\">\n    <intent-filter>\n        <action android:name=\"android.appwidget.action.APPWIDGET_UPDATE\"/>\n    </intent-filter>\n    <meta-data android:name=\"android.appwidget.provider\"\n         android:resource=\"@xml/appwidget_info\"/>\n</receiver>", "note": "仓库内 Provider 测试应用的真实声明，不是 Launcher3 源码。"}
+      ]
+    },
+    {
+      "id": "launcher-host",
+      "title": "Launcher 创建 Host 并开始监听",
+      "actor": "host",
+      "summary": "AppWidgetHost 是 Launcher 进程中的框架对象，不是 system_server 中的服务。它用稳定的 hostId 标识宿主，向 AppWidgetService 注册 IAppWidgetHost 回调。",
+      "chain": ["Launcher: AppWidgetHost", "startListening", "同步 Binder", "system_server: host.callbacks = callbacks", "pending updates 返回 Launcher"],
+      "facts": [
+        "Host 的默认构造器使用 context.getMainLooper() 建立 UpdateHandler。Launcher 通常在主线程建立容器和处理回调；框架也存在显式指定 Looper 的构造器。",
+        "startListening 将 callbacks、宿主包名、hostId 与已有 appWidgetIds 交给 system_server。服务端 HostId 还包含调用 UID，不能仅凭一个整数冒充其他宿主。",
+        "服务端注册 callback 后，可返回已有 Widget 的 pending updates；AppWidgetHost 在 startListening 当前调用栈直接分发这些返回值。它与后续 oneway Binder 回调经过 Handler 的路径不同。",
+        "HostId 表示一组宿主实例，appWidgetId 表示某一个 Widget 实例，Provider ComponentName 表示实现组件，layoutId 表示内容资源；四者不是同一个 ID。停止监听不等于删除 Widget 绑定。"
+      ],
+      "boundary": "模型选择 Launcher 主线程调用 startListening，且 Host 在线。桌面生命周期何时启停监听取决于实际 Launcher；本仓库测试在 onStart/onStop 启停。",
+      "snippets": [
+        {"file": "base/core/java/android/appwidget/AppWidgetHost.java", "lines": "221-223", "code": "public AppWidgetHost(Context context, int hostId) {\n    this(context, hostId, null, context.getMainLooper());\n}", "note": "默认宿主回调 Handler 使用主 Looper。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetHost.java", "lines": "274-275", "code": "updates = mService.startListening(\n        mCallbacks, mContextOpPackageName, mHostId, idsToUpdate).getList();", "note": "Launcher 将回调端点交给系统服务。"},
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "lines": "1417-1419", "code": "HostId id = new HostId(Binder.getCallingUid(), hostId, callingPackage);\nHost host = lookupOrAddHostLocked(id);\nhost.callbacks = callbacks;", "note": "system_server 只持有 Host 状态和远程回调，不创建 Launcher View。"}
+      ]
+    },
+    {
+      "id": "launcher-bind",
+      "title": "分配 appWidgetId，并授权绑定 Provider",
+      "actor": "system",
+      "summary": "Launcher 先申请一个实例 ID，再绑定提供方组件。system_server 检查调用身份、权限、用户与 Provider 状态后，建立 Widget → Host / Provider 两侧关系。",
+      "chain": ["Launcher.allocateAppWidgetId", "system_server 创建 Widget 记录", "bindAppWidgetIdIfAllowed", "授权 / 用户 / Provider 校验", "widget.host + widget.provider"],
+      "facts": [
+        "allocateAppWidgetId 是同步 Binder 调用，服务端分配 ID、创建 Widget 并关联 Host。它尚未指定 Provider，更不意味着已经有桌面 View。模型中的 42 只是教学值。",
+        "bindAppWidgetIdIfAllowed 最终调用 IAppWidgetService.bindAppWidgetId。服务检查宿主包名与 UID、跨用户可访问性、绑定权限 / allowlist、ID、Provider 是否存在及是否 zombie。",
+        "绑定权限或其他条件不满足时返回 false。Launcher 可通过 ACTION_APPWIDGET_BIND 请求用户授权，授权成功后再继续；取消则应清理分配的 ID。本场景不把此条件分支误写成必然弹窗。",
+        "绑定成功设置 widget.provider 与 options，将 Widget 加入 provider.widgets，并记录必需配置是否 pending。它不是 bindService，也不会为普通 XML Widget 建立永久的远端绘制连接。",
+        "有必需配置 Activity 时，Launcher 还需要启动配置并处理结果；内容由应用侧代码提交，可在 onUpdate、配置 Activity 或自行安排的任务中完成。绑定时发送广播与配置完成不是同一个事件；Host 配置代理的完成补发还受 conversion flag 和 pending 条件控制。"
+      ],
+      "boundary": "只演示校验成功且无配置 Activity 的路径。bind 前必须先分配 ID；Host 开始监听与创建 View 的精确时机可由 Launcher 调整。",
+      "snippets": [
+        {"file": "base/core/java/android/appwidget/AppWidgetHost.java", "lines": "323-328", "code": "public int allocateAppWidgetId() {\n    if (mService == null) {\n        return -1;\n    }\n    try {\n        return mService.allocateAppWidgetId(mContextOpPackageName, mHostId);", "note": "Launcher 申请 ID 的 Binder 边界。"},
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "lines": "1505-1513", "code": "HostId id = new HostId(Binder.getCallingUid(), hostId, callingPackage);\nHost host = lookupOrAddHostLocked(id);\n\nWidget widget = new Widget();\nwidget.appWidgetId = appWidgetId;\nwidget.host = host;\n\nhost.widgets.add(widget);\naddWidgetLocked(widget);", "note": "ID 对应服务端关系记录，不对应一棵已创建的 View。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetManager.java", "lines": "1491-1492", "code": "return mService.bindAppWidgetId(mPackageName, appWidgetId,\n        profileId, provider, options);", "note": "绑定目标包含 Provider 组件和用户。"},
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "lines": "1791-1795", "code": "// A special permission or allowlisting is required to bind widgets.\nif (!mSecurityPolicy.hasCallerBindPermissionOrBindWhiteListedLocked(\n        callingPackage)) {\n    return false;\n}", "note": "绑定不是任意应用都可无条件完成的操作。"},
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "lines": "1838-1842", "code": "widget.provider = provider;\nwidget.options = (options != null) ? cloneIfLocalBinder(options) : new Bundle();\nwidget.isFirstConfigActivityPending = provider.info != null\n        && provider.info.configure != null\n        && (provider.info.widgetFeatures & WIDGET_FEATURE_CONFIGURATION_OPTIONAL) == 0;", "note": "关系绑定与配置 pending 状态分开记录。"}
+      ]
+    },
+    {
+      "id": "launcher-provider",
+      "title": "系统调度广播，Provider 进程生成内容",
+      "actor": "provider",
+      "summary": "绑定触发系统广播；清单 Receiver 在提供方进程中接收，AppWidgetProvider.onReceive 再调用业务实现的 onEnabled / onUpdate。生成 RemoteViews 的是应用，不是 Launcher，也不是 system_server。",
+      "chain": ["system_server: sendEnableAndUpdateIntentLocked", "系统广播调度", "Provider ActivityThread 主线程", "AppWidgetProvider.onReceive", "应用 onUpdate", "updateAppWidget"],
+      "facts": [
+        "Provider 的首个绑定实例触发启用与更新逻辑；后续实例只发更新。当前源码可按配置将 enable/update 合成一个广播，或发送两个广播。合并广播在 AppWidgetProvider 内先分发 enabled，再分发 update。",
+        "跨进程广播先到 Provider 的 IApplicationThread，再由 ActivityThread 的主线程处理清单 Receiver。onUpdate 因此默认在 Receiver 所在进程主线程中执行；应用可把耗时数据工作另行调度，但那不是框架替它完成。",
+        "onUpdate 本身不强制框架生成 RemoteViews；真正生成布局和 Action、调用 AppWidgetManager.updateAppWidget 的是应用覆写的方法，或配置 Activity / 自行安排的更新任务。",
+        "Provider 不要求为保留桌面像素而常驻。Launcher 内已有的 View 树与服务端缓存描述不依赖每一帧都回到 Provider；但强停、卸载、用户锁定、mask 和资源变更等生命周期事件仍可能改变内容。",
+        "周期广播与应用主动 updateAppWidget 是不同触发源；updatePeriodMillis 的周期限制不能被说成所有主动更新的统一限频。配置界面与 Provider 初次广播也可能交错，不把旧文档的简化顺序当作当前代码的强保证。"
+      ],
+      "boundary": "模型选择系统允许投递广播、无必需配置且应用 onUpdate 主动提交内容。Receiver 冷启动与进程调度细节未计时，也不把应用业务代码的执行作为系统必然保证。",
+      "snippets": [
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "lines": "1854-1863", "code": "final int widgetCount = provider.widgets.size();\nif (widgetCount == 1) {\n    // If we are binding the very first widget from a provider, we will send\n    // a combined broadcast or 2 separate broadcasts to tell the provider that\n    // it's ready, and we need them to provide the update now.\n    sendEnableAndUpdateIntentLocked(provider, new int[]{appWidgetId});\n} else {\n    // For any widget other then the first one, we just send update intent\n    // as we normally would.\n    sendUpdateIntentLocked(provider, new int[]{appWidgetId}, true);", "note": "首个 Provider 实例与后续实例的触发区别。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetProvider.java", "lines": "61-71", "code": "if (AppWidgetManager.ACTION_APPWIDGET_ENABLE_AND_UPDATE.equals(action)) {\n    this.onReceive(context, new Intent(intent)\n            .setAction(AppWidgetManager.ACTION_APPWIDGET_ENABLED));\n    this.onReceive(context, new Intent(intent)\n            .setAction(AppWidgetManager.ACTION_APPWIDGET_UPDATE));\n} else if (AppWidgetManager.ACTION_APPWIDGET_UPDATE.equals(action)) {\n    Bundle extras = intent.getExtras();\n    if (extras != null) {\n        int[] appWidgetIds = extras.getIntArray(AppWidgetManager.EXTRA_APPWIDGET_IDS);\n        if (appWidgetIds != null && appWidgetIds.length > 0) {\n            this.onUpdate(context, AppWidgetManager.getInstance(context), appWidgetIds);", "note": "广播解析之后才进入应用的 onUpdate。"},
+        {"file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java", "symbol": "sendEnableAndUpdateIntentLocked", "lines": "3700-3708", "code": "private void sendEnableAndUpdateIntentLocked(@NonNull Provider p, int[] appWidgetIds) {\n    final boolean canSendCombinedBroadcast = mIsCombinedBroadcastEnabled && p.info != null\n            && p.info.isExtendedFromAppWidgetProvider;\n    if (!canSendCombinedBroadcast) {\n        // If this function is called by mistake, send two separate broadcasts instead\n        sendEnableIntentLocked(p);\n        sendUpdateIntentLocked(p, appWidgetIds, true);\n        return;\n    }", "note": "合并条件不只是一个默认 flag，也要求 Provider 继承标记。"},
+        {"file": "base/core/java/android/app/ActivityThread.java", "symbol": "scheduleReceiver", "lines": "1253-1266", "code": "public final void scheduleReceiver(Intent intent, ActivityInfo info,\n        CompatibilityInfo compatInfo, int resultCode, String data, Bundle extras,\n        boolean ordered, boolean assumeDelivered, int sendingUser, int processState,\n        int sendingUid, String sendingPackage) {\n// ...\n    sendMessage(H.RECEIVER, r);\n}", "note": "IApplicationThread 接收入口先投消息，并非在 Binder 线程直接调用 Provider。"},
+        {"file": "base/core/java/android/app/ActivityThread.java", "lines": "5384-5387", "code": "sCurrentBroadcastIntent.set(data.intent);\nreceiver.setPendingResult(data);\nreceiver.onReceive(context.getReceiverRestrictedContext(),\n        data.intent);", "note": "ActivityThread 处理 Receiver 时才调用应用的 onReceive。"}
+      ]
+    },
+    {
+      "id": "launcher-view",
+      "title": "在 Launcher 创建容器，并拉取当前缓存",
+      "actor": "host",
+      "summary": "AppWidgetHost.createView 创建的是 Launcher 进程内的 AppWidgetHostView，注册实例 listener 后同步拉取服务缓存。它既可能立即拿到完整 RemoteViews，也可能暂时只有初始布局。",
+      "chain": ["AppWidgetHost.createView", "onCreateView", "setAppWidget", "setListener", "getAppWidgetViews", "listener.updateAppWidget"],
+      "facts": [
+        "createView 调用 onCreateView 创建容器，设置交互处理器与 Provider 信息，注册 ID 对应 listener，最后返回 HostView；它不自动把容器放进 Launcher 的工作区。",
+        "setListener 在本地映射中保存 appWidgetId → listener，然后经同步 Binder 取 getAppWidgetViews，再在当前调用线程直接更新。若 Launcher 在主线程调用，初始化 apply 也在该线程。",
+        "Provider 更新先到、HostView 后建：createView 可从服务缓存取回最新描述。HostView 先建、Provider 更新后到：先用默认 / initialLayout 内容，随后 listener 回调替换。两种交错都成立，不存在通用的固定先后顺序。",
+        "初始内容不一定需要换对象：若 layoutId、根 ID 等条件兼容，可以直接 reapply 初始树。本例额外选择初始 widget_initial 与业务 widget_status 的布局 ID 不同，因此新建业务树；模型的 initialContent 是阶段标记，不是通用对象身份规则，tree=null 也不能被解释为 Launcher 没有任何 View。"
+      ],
+      "boundary": "本例选择 HostView / 工作区先建、Provider 随后提交，并假定初始布局与业务布局 ID 不同，不可复用。两个布局名均为教学数据，不代表系统强制如此；初始布局绘制时间与失败回退不在本场景中模拟。",
+      "snippets": [
+        {"file": "base/core/java/android/appwidget/AppWidgetHost.java", "symbol": "createView", "lines": "499-509", "code": "public final AppWidgetHostView createView(Context context, int appWidgetId,\n        AppWidgetProviderInfo appWidget) {\n    if (mService == null) {\n        return null;\n    }\n    AppWidgetHostView view = onCreateView(context, appWidgetId, appWidget);\n    view.setInteractionHandler(mInteractionHandler);\n    view.setAppWidget(appWidgetId, appWidget);\n    setListener(appWidgetId, view);\n\n    return view;", "note": "创建并返回 Launcher 内的 HostView，不负责工作区放置。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetHost.java", "symbol": "setListener", "lines": "627-639", "code": "public void setListener(int appWidgetId, @NonNull AppWidgetHostListener listener) {\n    synchronized (mListeners) {\n        mListeners.put(appWidgetId, listener);\n    }\n    RemoteViews views = null;\n    try {\n        views = mService.getAppWidgetViews(mContextOpPackageName, appWidgetId);\n// ...\n    listener.updateAppWidget(views);", "note": "拉取缓存后直接调用，而不是再投一个 Handler 消息。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetHostView.java", "lines": "811-815", "code": "defaultView = new RemoteViewsWrapper(mInfo.providerInfo.applicationInfo, layoutId)\n        .apply(mContext, this, mInteractionLogger, null, mColorResources);\nif (!(defaultView instanceof AdapterView)) {\n    // AdapterView does not support onClickListener\n    defaultView.setOnClickListener(this::onDefaultViewClicked);", "note": "没有业务内容时可以由宿主 inflate 初始布局，不需要 Provider 逐帧绘制。"}
+      ]
+    },
+    {
+      "id": "launcher-workspace",
+      "title": "两次挂接：HostView 到桌面，内容到 HostView",
+      "actor": "host",
+      "summary": "看到 Widget 需要两层父子关系：Launcher 把 HostView 放进工作区；框架把 RemoteViews 内容放进 HostView。两次 addView 都发生在 Launcher 进程，但调用责任不同。",
+      "chain": ["Launcher 工作区", "AppWidgetHostView", "RemoteViews 内容根", "TextView / ImageView / Button"],
+      "facts": [
+        "Launcher 集成层负责网格位置、大小、拖动、持久化与 HostView 的父容器。AppWidgetHost.createView 只返回容器，不知道 Launcher 工作区的实现。",
+        "仓库测试宿主 addAppWidgetView 在 mHost.createView 后调用 mAppWidgetContainer.addView。该调用证明宿主放置责任，但测试 Activity 不是 Launcher3，不能据此编造 Launcher3 的 Workspace 类或具体方法。",
+        "新树路径 AppWidgetHostView.applyContent 的 addView(content) 是把内容加入 HostView，不是把整个 Widget 放进桌面。两层父子关系可能按不同顺序建立；reapply 成功时保留原对象及父子关系，不再重复 addView(content)。",
+        "普通 XML 内容没有因 appWidgetId 自动获得独立 Window / ViewRootImpl / Surface。它是 Launcher 窗口中的普通子树；宿主自定义嵌入、额外窗口或特殊协议不由此结论覆盖。"
+      ],
+      "boundary": "工作区那一层为 Launcher 必需的集成责任，具体产品调用点在当前仓库中未知。模型选择先放容器、再接入业务内容，不宣称这是所有 Launcher 的唯一时序。",
+      "snippets": [
+        {"file": "base/tests/appwidgets/AppWidgetHostTest/src/com/android/tests/appwidgethost/AppWidgetHostActivity.java", "symbol": "addAppWidgetView", "lines": "134-142", "code": "void addAppWidgetView(int appWidgetId, AppWidgetProviderInfo appWidget) {\n    // Inflate the AppWidget's RemoteViews\n    AppWidgetHostView view = mHost.createView(this, appWidgetId, appWidget);\n\n    // Add it to the list\n    LinearLayout.LayoutParams layoutParams = new LinearLayout.LayoutParams(\n            LinearLayout.LayoutParams.MATCH_PARENT,\n            LinearLayout.LayoutParams.WRAP_CONTENT);\n    mAppWidgetContainer.addView(view, layoutParams);", "note": "测试宿主示例，不是 Launcher3 工作区实现。"},
+        {"file": "base/core/java/android/appwidget/AppWidgetHostView.java", "lines": "658-665", "code": "if (!recycled) {\n    prepareView(content);\n    addView(content);\n}\n\nif (mView != content) {\n    removeView(mView);\n    mView = content;", "note": "框架建立内容 → HostView 这第二层关系。"}
+      ]
+    },
+    {
+      "id": "launcher-draw",
+      "title": "Launcher 绘制整个窗口，SurfaceFlinger 后续合成",
+      "actor": "host",
+      "summary": "Widget 内容接入之后，随 Launcher 的常规 View 渲染链路显示。普通 XML Widget 不把自己的像素从 Provider 进程传给 Launcher，也不是每个 Widget 单独创建 RenderThread。",
+      "chain": ["Launcher 主线程: traversal / measure / layout / draw", "硬件路径: Launcher RenderThread / HWUI", "Launcher 窗口 Buffer", "SurfaceFlinger 进程", "HWC / 显示系统"],
+      "facts": [
+        "内容变化触发 requestLayout / invalidate，窗口根 ViewRootImpl 调度 traversal。Widget 子树与桌面其他 View 一起参与 Launcher 窗口树的布局和绘制。",
+        "本场景选择硬件加速：主线程更新窗口 DisplayList，经 ThreadedRenderer / DrawFrameTask 把工作交给同一 Launcher 进程内的 RenderThread，再由 HWUI 处理窗口输出。RemoteViews 的异步 apply Executor 与 RenderThread 是两种不同职责。",
+        "Launcher 窗口的 Surface / BLASTBufferQueue 承接绘制结果，再把 Buffer 与 fence 经显示链路交给 SurfaceFlinger。普通 Widget 本身不是独立的窗口 Buffer 生产者；也不能反推 Launcher 整个进程永远只有一个 Surface。",
+        "SurfaceFlinger 是独立系统服务进程，处理 Launcher 窗口图层与其他图层的 latch / 合成，再衔接 HWC 和显示系统。它不执行 TextView.setText 或 Provider 的 onUpdate。HWC 的具体实现与进程分布取决于设备。",
+        "软件绘制分支也存在，不能把 RenderThread 说成所有设备所有 Widget 的必经步骤。apply 返回、内容 addView、Buffer 提交、present 调用均不单独证明物理像素已经显示。"
+      ],
+      "boundary": "这是当前源码的通用窗口渲染衔接，不是 Launcher3 实机 trace。只模拟因果观察点，不模拟刷新周期、GPU 时间、合成策略、fence 时刻或上屏测量。",
+      "snippets": [
+        {"file": "base/core/java/android/view/ViewGroup.java", "lines": "5251-5254", "code": "requestLayout();\ninvalidate(true);\naddViewInner(child, index, params, false);\n}", "note": "挂接子 View 会请求后续布局 / 重绘，不是即时显示。"},
+        {"file": "base/core/java/android/view/ThreadedRenderer.java", "symbol": "draw", "lines": "827-848", "code": "void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks) {\n    attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();\n\n    updateRootDisplayList(view, callbacks);\n// ...\n    final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();\n\n    int syncResult = syncAndDrawFrame(frameInfo);", "note": "主线程准备窗口树的 DisplayList 并请求硬件绘制。"},
+        {"file": "base/libs/hwui/renderthread/DrawFrameTask.cpp", "symbol": "DrawFrameTask::postAndWait", "lines": "82-87", "code": "void DrawFrameTask::postAndWait() {\n    ATRACE_CALL();\n    AutoMutex _lock(mLock);\n    mRenderThread->queue().post([this]() { run(); });\n    mSignal.wait(mLock);\n}", "note": "移交给进程内 RenderThread，不是另起一个 Widget 进程。"},
+        {"file": "native/services/surfaceflinger/surfaceflinger.rc", "lines": "1-4", "code": "service surfaceflinger /system/bin/surfaceflinger\n    class core animation\n    user system\n    group graphics drmrpc readproc", "note": "SurfaceFlinger 是独立系统服务进程，不是 Launcher 的线程。"},
+        {"file": "base/core/java/android/view/ViewRootImpl.java", "lines": "3330-3331", "code": "mChoreographer.postVsyncCallback(\n        Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);", "note": "当前 checkout 的 traversal 调度入口，不套用旧版 Runnable 名称。"},
+        {"file": "native/libs/gui/BLASTBufferQueue.cpp", "lines": "667-672", "code": "t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId,\n             releaseBufferCallback, dequeueTime);\nt->setDataspace(mSurfaceControl, static_cast<ui::Dataspace>(bufferItem.mDataSpace));\nt->setHdrMetadata(mSurfaceControl, bufferItem.mHdrMetadata);\nt->setSurfaceDamageRegion(mSurfaceControl, bufferItem.mSurfaceDamage);\nt->addTransactionCompletedCallback(makeTransactionCallbackThunk(), nullptr);", "note": "窗口 Buffer 与 fence 被放入 SurfaceControl transaction，不传 Java View。"},
+        {"file": "native/services/surfaceflinger/SurfaceFlinger.cpp", "lines": "3448", "code": "mCompositionEngine->present(refreshArgs);", "note": "通用合成阶段的提交点；调用本身并非物理显示证据。"}
+      ]
+    }
+  ]
+}
