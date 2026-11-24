@@ -1,0 +1,456 @@
+{
+ "id": "sh-request-start",
+ "title": "Shell Transitions.requestStartTransition",
+ "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+ "sig": "public void requestStartTransition(@NonNull IBinder transitionToken,",
+ "span": [
+  1337,
+  1426
+ ],
+ "notes": [
+  {
+   "at": 1,
+   "quote": "public void requestStartTransition(@NonNull IBinder transitionToken,",
+   "kind": "ipc",
+   "text": "入口：WM Core 经 TransitionPlayerImpl 投递，已被 mMainExecutor 切到 Shell 主线程执行。"
+  },
+  {
+   "at": 2,
+   "quote": "@Nullable TransitionRequestInfo request) {",
+   "kind": "data",
+   "text": "request 携带 type/flags/triggerTask/displayChanges，是后续全部分支的唯一数据源。"
+  },
+  {
+   "at": 3,
+   "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Transition requested (#%d): %s %s\",",
+   "kind": "trace",
+   "text": "仅当 ProtoLog 开关打开才输出，用于把 debugId、token 与请求内容关联排查。"
+  },
+  {
+   "at": 4,
+   "quote": "request.getDebugId(), transitionToken, request);",
+   "kind": "note",
+   "text": "首行就解引用 request：它虽标 @Nullable，为 null 会在此处 NPE，早于下面的判空。"
+  },
+  {
+   "at": 5,
+   "quote": "if (transitionToken == null) {",
+   "kind": "branch",
+   "text": "token 是 mKnownTransitions 的键，为 null 无法登记与合并，必须在下发前拦下。"
+  },
+  {
+   "at": 6,
+   "quote": "throw new IllegalArgumentException(\"Null transitionToken specified for",
+   "kind": "branch",
+   "text": "抛异常而非忽略：未捕获会冒泡到主线程 Runnable，可能拖垮 Shell 并让 WM 重建。"
+  },
+  {
+   "at": 7,
+   "quote": "+ request);",
+   "kind": "data",
+   "text": "把 request 拼进异常信息，便于从日志反查是哪种请求参数缺失。"
+  },
+  {
+   "at": 9,
+   "quote": "if (mKnownTransitions.containsKey(transitionToken)) {",
+   "kind": "state",
+   "text": "同一 token 只允许登记一次；命中说明 Core 重发或存在回环 bug。"
+  },
+  {
+   "at": 10,
+   "quote": "throw new RuntimeException(\"Transition already started \" + transitionT",
+   "kind": "state",
+   "text": "直接抛出：若放行会用新 active 覆盖旧的，导致原 handler 与 wct 丢失。"
+  },
+  {
+   "at": 12,
+   "quote": "final ActiveTransition active = new ActiveTransition(transitionToken);",
+   "kind": "state",
+   "text": "先建壳后填字段；此刻 mInfo 仍为 null，getTrack() 返回 -1。"
+  },
+  {
+   "at": 13,
+   "quote": "WindowContainerTransaction wct = null;",
+   "kind": "data",
+   "text": "延迟分配：仅当 handler 回包或需改窗口模式时才 new，省掉多余跨进程事务。"
+  },
+  {
+   "at": 15,
+   "quote": "// If we have sleep, we use a special handler and we try to finish eve",
+   "kind": "note",
+   "text": "注释给出设计意图：sleep 走专用 handler 并尽快收尾，避免休眠被动画拖住。"
+  },
+  {
+   "at": 16,
+   "quote": "if (request.getType() == TRANSIT_SLEEP) {",
+   "kind": "branch",
+   "text": "sleep 绕过 dispatchRequest，因普通 planner 不处理休眠，分发必然返回 null。"
+  },
+  {
+   "at": 17,
+   "quote": "mSleepHandler.handleRequestOnly(transitionToken, request);",
+   "kind": "state",
+   "text": "由 SleepHandler 直接消化请求；若它内部失败，该过渡无人负责后续收尾。"
+  },
+  {
+   "at": 18,
+   "quote": "active.mHandler = mSleepHandler;",
+   "kind": "state",
+   "text": "记录同一 handler 实例，后续 ready/finish 靠它回调 onTransitionConsumed 做清理。"
+  },
+  {
+   "at": 19,
+   "quote": "} else {",
+   "kind": "branch",
+   "text": "与非 sleep 分支的分界：从这里开始走逐 planner 分发链路。"
+  },
+  {
+   "at": 20,
+   "quote": "RequestResult requestResult =",
+   "kind": "data",
+   "text": "返回值可能为 null（无 handler 认领），必须先判空再解引用。"
+  },
+  {
+   "at": 21,
+   "quote": "dispatchRequestWithTracing(transitionToken, request, /* skip= */ null)",
+   "kind": "trace",
+   "text": "带 Trace 包装的 dispatchRequest：逆序遍历 handlers，取第一个返回非 null 者。"
+  },
+  {
+   "at": 22,
+   "quote": "if (requestResult != null) {",
+   "kind": "branch",
+   "text": "null 表示无人认领，mHandler 保持为空，后续以空事务直接启动该过渡。"
+  },
+  {
+   "at": 23,
+   "quote": "active.mHandler = requestResult.mHandler;",
+   "kind": "state",
+   "text": "记录认领者；ready 阶段的 wct 必须由同一 handler 提供，否则状态错配。"
+  },
+  {
+   "at": 24,
+   "quote": "active.mInterestedPlanners = requestResult.mInterest;",
+   "kind": "state",
+   "text": "决定 mixpatcher 下哪些 planner 参与 plan；为 null 会让后续遍历空指针。"
+  },
+  {
+   "at": 25,
+   "quote": "wct = requestResult.mWct;",
+   "kind": "data",
+   "text": "接管 handler 产生的容器事务；可为 null，下面多处会按需重新分配。"
+  },
+  {
+   "at": 26,
+   "quote": "if (com.android.window.flags.Flags.transitMixpatcherBase()) {",
+   "kind": "branch",
+   "text": "aconfig 开关决定走 mixpatcher 还是旧 handler 逻辑，两路径互斥且日志不同。"
+  },
+  {
+   "at": 27,
+   "quote": "if (requestResult.mHandler != null) {",
+   "kind": "branch",
+   "text": "handler 非空说明旧 handler 抢先认领，需降级成 legacy planner 排序。"
+  },
+  {
+   "at": 28,
+   "quote": "// Legacy handling expects that the handler which responded to the req",
+   "kind": "note",
+   "text": "注释说明 legacy 语义：响应请求的 handler 必须最先收到 plan 回调。"
+  },
+  {
+   "at": 29,
+   "quote": "// is the first to animate, so insert legacy planner as interest.",
+   "kind": "note",
+   "text": "因此把 LegacyPlanner 塞进 interest，保证它排在最前面先被 plan。"
+  },
+  {
+   "at": 30,
+   "quote": "active.mInterestedPlanners = List.of(mMixpatchLegacyPlanner);",
+   "kind": "state",
+   "text": "用不可变单元素列表覆盖原 interest；漏掉会让 legacy 动画顺序错乱。"
+  },
+  {
+   "at": 31,
+   "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Transition (#%d): request redirected",
+   "kind": "trace",
+   "text": "记录「被重定向到 legacy handler」，是排查动画未走新 planner 的首要线索。"
+  },
+  {
+   "at": 32,
+   "quote": "+ \"legacy handler %s\", request.getDebugId(),",
+   "kind": "data",
+   "text": "拼接 debugId 作为日志占位参数，便于与 Core 侧日志对齐时间线。"
+  },
+  {
+   "at": 33,
+   "quote": "active.mHandler.getClass().getSimpleName());",
+   "kind": "data",
+   "text": "该分支已保证 mHandler 非空，取类名安全，不会 NPE。"
+  },
+  {
+   "at": 34,
+   "quote": "} else {",
+   "kind": "branch",
+   "text": "handler 为空的正常 mixpatcher 路径，只打印 planner 列表。"
+  },
+  {
+   "at": 35,
+   "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Transition (#%d): request redirected",
+   "kind": "trace",
+   "text": "记录转向 mixpatcher 的 planner 集合，用于核对重定向目标。"
+  },
+  {
+   "at": 36,
+   "quote": "+ \"%s\", request.getDebugId(), active.mInterestedPlanners);",
+   "kind": "data",
+   "text": "打印完整 planner 列表，可验证注册顺序是否与预期一致。"
+  },
+  {
+   "at": 38,
+   "quote": "} else if (active.mHandler != null) {",
+   "kind": "branch",
+   "text": "旧路径下只有确实存在 handler 才打印 handled by，避免输出 null。"
+  },
+  {
+   "at": 39,
+   "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Transition (#%d): request handled by",
+   "kind": "trace",
+   "text": "旧路径的认领日志，二分定位是哪个 handler 吃掉了该请求。"
+  },
+  {
+   "at": 40,
+   "quote": "request.getDebugId(), active.mHandler.getClass().getSimpleName());",
+   "kind": "data",
+   "text": "此处已判空，安全取出 handler 类名作为日志参数。"
+  },
+  {
+   "at": 43,
+   "quote": "if (request.getDisplayChanges() != null) {",
+   "kind": "branch",
+   "text": "旋转/尺寸变化须在下发前转成容器事务，否则 Core 与 Shell 的 display 状态不一致。"
+  },
+  {
+   "at": 44,
+   "quote": "final List<TransitionRequestInfo.DisplayChange> changes = request",
+   "kind": "data",
+   "text": "取出变更列表引用，后续循环只读遍历，不修改原请求。"
+  },
+  {
+   "at": 45,
+   "quote": ".getDisplayChanges();",
+   "kind": "data",
+   "text": "链式调用 getter 完成赋值，跨行书写以满足行宽限制。"
+  },
+  {
+   "at": 47,
+   "quote": "for (int i = 0; i < changes.size(); i++) {",
+   "kind": "branch",
+   "text": "逐条处理：一次请求可携带多处 display 变更。"
+  },
+  {
+   "at": 48,
+   "quote": "TransitionRequestInfo.DisplayChange change = changes.get(i);",
+   "kind": "data",
+   "text": "缓存当前元素，避免循环体内重复走列表索引。"
+  },
+  {
+   "at": 49,
+   "quote": "if (change.getStartRotation() != change.getEndRotation()",
+   "kind": "branch",
+   "text": "起止旋转不同即真旋转，必须通知 DisplayController 更新。"
+  },
+  {
+   "at": 50,
+   "quote": "|| (change.getStartAbsBounds() != null",
+   "kind": "branch",
+   "text": "或边界变化；先判空 start 边界，防止后续 equals 触发 NPE。"
+  },
+  {
+   "at": 51,
+   "quote": "&& !change.getStartAbsBounds().equals(change.getEndAbsBounds()))) {",
+   "kind": "branch",
+   "text": "边界不等才算变更；相等则跳过，避免把空变更广播给所有 listener。"
+  },
+  {
+   "at": 52,
+   "quote": "// Is a display change, so dispatch to all displayChange listeners",
+   "kind": "note",
+   "text": "注释点明需广播给全部 displayChange listener（如 PIP、分屏）。"
+  },
+  {
+   "at": 53,
+   "quote": "if (wct == null) {",
+   "kind": "data",
+   "text": "首次需要时才分配事务，避免无变更时的空构造与跨进程开销。"
+  },
+  {
+   "at": 54,
+   "quote": "wct = new WindowContainerTransaction();",
+   "kind": "data",
+   "text": "新建空事务；若 handler 已带 wct 则直接复用它继续追加。"
+  },
+  {
+   "at": 56,
+   "quote": "mDisplayController.onDisplayChangeRequested(wct, change.getDisplayId()",
+   "kind": "state",
+   "text": "把变更写入 wct；漏调用会导致旋转后 Shell 层 bounds 与裁剪错位。"
+  },
+  {
+   "at": 57,
+   "quote": "change.getStartAbsBounds(), change.getEndAbsBounds(),",
+   "kind": "data",
+   "text": "传起止边界，供计算缩放比例与裁剪区域。"
+  },
+  {
+   "at": 58,
+   "quote": "change.getStartRotation(), change.getEndRotation(),",
+   "kind": "data",
+   "text": "传起止旋转角度，供计算动画插值方向。"
+  },
+  {
+   "at": 59,
+   "quote": "change.getEndInsetsState(), change.getEndDisplayAreaInfo());",
+   "kind": "data",
+   "text": "传结束态 insets 与 DisplayAreaInfo，供 Shell 更新避让与层级信息。"
+  },
+  {
+   "at": 64,
+   "quote": "final boolean isOccludingKeyguard = request.getType() == TRANSIT_KEYGU",
+   "kind": "branch",
+   "text": "汇总两种「会遮挡 keyguard」的来源，供下面的 freeform 修正判断。"
+  },
+  {
+   "at": 65,
+   "quote": "|| ((request.getFlags() & TRANSIT_FLAG_KEYGUARD_OCCLUDING) != 0);",
+   "kind": "branch",
+   "text": "flag 位同样算遮挡；漏判会让 freeform 任务留在锁屏之上。"
+  },
+  {
+   "at": 66,
+   "quote": "if (isOccludingKeyguard && request.getTriggerTask() != null",
+   "kind": "branch",
+   "text": "需遮挡 keyguard 且有触发任务，否则没有可修正的窗口。"
+  },
+  {
+   "at": 67,
+   "quote": "&& request.getTriggerTask().getWindowingMode() == WINDOWING_MODE_FREEF",
+   "kind": "branch",
+   "text": "只处理 freeform；分屏与全屏不动，避免误改用户已有布局。"
+  },
+  {
+   "at": 68,
+   "quote": "// This freeform task is on top of keyguard, so its windowing mode sho",
+   "kind": "note",
+   "text": "注释给出原因：freeform 任务压在 keyguard 上会显示异常。"
+  },
+  {
+   "at": 69,
+   "quote": "// fullscreen.",
+   "kind": "note",
+   "text": "结论：应改为全屏。"
+  },
+  {
+   "at": 70,
+   "quote": "if (wct == null) {",
+   "kind": "data",
+   "text": "再次懒分配；此前的 display 变更分支可能已经建好事务。"
+  },
+  {
+   "at": 71,
+   "quote": "wct = new WindowContainerTransaction();",
+   "kind": "data",
+   "text": "新建事务以承载下面的窗口模式与边界改动。"
+  },
+  {
+   "at": 73,
+   "quote": "wct.setWindowingMode(request.getTriggerTask().token, WINDOWING_MODE_FU",
+   "kind": "state",
+   "text": "把任务改为全屏；失败则 keyguard 上仍出现浮窗，遮挡与焦点都会异常。"
+  },
+  {
+   "at": 74,
+   "quote": "wct.setBounds(request.getTriggerTask().token, null);",
+   "kind": "state",
+   "text": "传 null 边界表示按全屏重算；保留旧 freeform 边界会得到错误尺寸。"
+  },
+  {
+   "at": 76,
+   "quote": "if (com.android.window.flags.Flags.transitMixpatcherBase()) {",
+   "kind": "branch",
+   "text": "mixpatcher 开启则走新链路，此处的提前 return 是整条路径的关键分叉。"
+  },
+  {
+   "at": 77,
+   "quote": "mMixpatcher.startTransition(transitionToken, request.getType(), wct,",
+   "kind": "state",
+   "text": "交给 mixpatcher 记录并调度；注意此处的 wct 可能为 null。"
+  },
+  {
+   "at": 78,
+   "quote": "active.mInterestedPlanners);",
+   "kind": "data",
+   "text": "传 planner 兴趣列表；若前面被 legacy 分支覆盖，这里只剩 legacy planner。"
+  },
+  {
+   "at": 79,
+   "quote": "return;",
+   "kind": "branch",
+   "text": "提前返回：不写 mKnownTransitions/mPendingTransitions，登记改由 mixpatcher 负责。"
+  },
+  {
+   "at": 81,
+   "quote": "mKnownTransitions.put(transitionToken, active);",
+   "kind": "state",
+   "text": "登记为已知过渡，onTransitionReady 靠它取 handler；缺失会走 fallback 重建。"
+  },
+  {
+   "at": 82,
+   "quote": "mOrganizer.startTransition(transitionToken, wct != null && wct.isEmpty",
+   "kind": "ipc",
+   "text": "跨 binder 通知 WM Core 启动该过渡；空事务降级为 null，省一次编解码。"
+  },
+  {
+   "at": 83,
+   "quote": "// Currently, WMCore only does one transition at a time. If it makes a",
+   "kind": "note",
+   "text": "注释前提：WMCore 同一时刻只收集一个过渡。"
+  },
+  {
+   "at": 84,
+   "quote": "// is already collecting that transition on core-side, so it will be t",
+   "kind": "note",
+   "text": "故发出 requestStart 时 Core 已在收集该过渡。"
+  },
+  {
+   "at": 85,
+   "quote": "// become ready. There may already be pending transitions added as par",
+   "kind": "note",
+   "text": "它将是下一个 ready 者，但队列里可能已有 startNew 直接加入的项。"
+  },
+  {
+   "at": 86,
+   "quote": "// `startNewTransition` but if we have a request now, it means WM crea",
+   "kind": "note",
+   "text": "出现 request 说明 WM 先建了 request 过渡。"
+  },
+  {
+   "at": 87,
+   "quote": "// transition before it acknowledged any of the pending `startNew` tra",
+   "kind": "note",
+   "text": "时间上早于对 pending startNew 的确认，故顺序应排在最前。"
+  },
+  {
+   "at": 88,
+   "quote": "// it at the front.",
+   "kind": "note",
+   "text": "结论：插到队首，保持与 Core 侧真实发生顺序一致。"
+  },
+  {
+   "at": 89,
+   "quote": "mPendingTransitions.add(0, active);",
+   "kind": "state",
+   "text": "插队首而非队尾；误用 add 会让过渡按错误次序播放并可能死锁等待。"
+  }
+ ]
+}

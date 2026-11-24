@@ -1,0 +1,666 @@
+{
+  "id": "cc-prepare",
+  "title": "CanvasContext::prepareTree",
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "sig": "void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued, RenderNode* target)",
+  "span": [
+    506,
+    650
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo,",
+      "kind": "thread",
+      "text": "RenderThread 帧准备入口，处理 UI 线程同步过来的 TreeInfo/帧信息，为后续 draw 铺路"
+    },
+    {
+      "at": 2,
+      "quote": "RenderNode* target) {",
+      "kind": "thread",
+      "text": "target 是主目标节点（窗口内容根节点），其余根节点只做实时动画模式的准备"
+    },
+    {
+      "at": 3,
+      "quote": "mRenderThread.removeFrameCallback(this);",
+      "kind": "thread",
+      "text": "先撤销已注册的帧回调，避免本次同步期间重复触发 onFrame 导致一帧被准备两次"
+    },
+    {
+      "at": 5,
+      "quote": "// Make sure we have a valid device info",
+      "kind": "note",
+      "text": "原注释：先确保 DeviceInfo 已知最大纹理尺寸（说明 GL 能力已探测）"
+    },
+    {
+      "at": 6,
+      "quote": "if (!DeviceInfo::get()->hasMaxTextureSize()) {",
+      "kind": "state",
+      "text": "DeviceInfo 还没有最大纹理尺寸，通常是 GL 上下文尚未创建，此时信息不可用"
+    },
+    {
+      "at": 7,
+      "quote": "(void)mRenderThread.requireGrContext();",
+      "kind": "state",
+      "text": "强制创建 GrContext 探测 GPU 能力；返回值忽略，失败则后续 draw 阶段才暴露"
+    },
+    {
+      "at": 10,
+      "quote": "// If the previous frame was dropped we don't need to hold onto it, so",
+      "kind": "note",
+      "text": "原注释：上帧被丢弃时不必保留它的结构，继续沿用上一帧的结构"
+    },
+    {
+      "at": 11,
+      "quote": "// just keep using the previous frame's structure instead",
+      "kind": "note",
+      "text": "（承接）跳过帧不新建 FrameInfo，避免把被跳的帧算成新的一帧统计"
+    },
+    {
+      "at": 12,
+      "quote": "const auto reason = wasSkipped(mCurrentFrameInfo);",
+      "kind": "state",
+      "text": "wasSkipped 读上次留下的跳过原因；nullopt 表示上帧正常，本帧需开新帧"
+    },
+    {
+      "at": 13,
+      "quote": "if (reason.has_value()) {",
+      "kind": "branch",
+      "text": "有跳过原因：本帧不新建 FrameInfo，沿用旧帧以补报被跳帧信息"
+    },
+    {
+      "at": 14,
+      "quote": "// Use the oldest skipped frame in case we skip more than a single fra",
+      "kind": "note",
+      "text": "只记录最早被跳的那一帧：连续跳多帧时保留第一次的 vsyncId 与起始时间"
+    },
+    {
+      "at": 15,
+      "quote": "if (!mSkippedFrameInfo) {",
+      "kind": "state",
+      "text": "mSkippedFrameInfo 已有值说明前面已记过被跳帧，直接跳过不覆盖"
+    },
+    {
+      "at": 16,
+      "quote": "switch (*reason) {",
+      "kind": "branch",
+      "text": "按跳过原因分流：资源类原因算“本应绘制却被跳”，状态类原因不算"
+    },
+    {
+      "at": 17,
+      "quote": "case SkippedFrameReason::AlreadyDrawn:",
+      "kind": "branch",
+      "text": "AlreadyDrawn：同一 vsync 已出过帧，UI 的绘制请求晚于截止时间"
+    },
+    {
+      "at": 18,
+      "quote": "case SkippedFrameReason::NoBuffer:",
+      "kind": "branch",
+      "text": "NoBuffer：dequeueBuffer 失败，BufferQueue 当前无可用缓冲"
+    },
+    {
+      "at": 19,
+      "quote": "case SkippedFrameReason::NoOutputTarget:",
+      "kind": "branch",
+      "text": "NoOutputTarget：Surface 已销毁或未设置，没有可输出的目标"
+    },
+    {
+      "at": 20,
+      "quote": "mSkippedFrameInfo.emplace();",
+      "kind": "state",
+      "text": "首次被跳帧才创建记录对象，swap 时上报 FrameTimeline/JankTracker"
+    },
+    {
+      "at": 21,
+      "quote": "mSkippedFrameInfo->vsyncId =",
+      "kind": "data",
+      "text": "记录被跳帧的 vsyncId，取当前帧信息里的 FrameTimelineVsyncId"
+    },
+    {
+      "at": 22,
+      "quote": "mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);",
+      "kind": "data",
+      "text": "（续）该 id 可反查 SurfaceFlinger 同一次 vsync，便于归因是谁错过截止"
+    },
+    {
+      "at": 23,
+      "quote": "mSkippedFrameInfo->startTime =",
+      "kind": "data",
+      "text": "记录被跳帧的起始时间 FrameStartTime，用于算 UI 提交到放弃的延迟"
+    },
+    {
+      "at": 24,
+      "quote": "mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime);",
+      "kind": "data",
+      "text": "（续）该时间与 vsyncId 一起在 swap 时上报，供 jank 归因使用"
+    },
+    {
+      "at": 25,
+      "quote": "break;",
+      "kind": "note",
+      "text": "资源类原因记录完毕，跳出 switch"
+    },
+    {
+      "at": 26,
+      "quote": "case SkippedFrameReason::DrawingOff:",
+      "kind": "branch",
+      "text": "DrawingOff：窗口不可见/正在关闭，本来就不该出帧"
+    },
+    {
+      "at": 27,
+      "quote": "case SkippedFrameReason::ContextIsStopped:",
+      "kind": "branch",
+      "text": "ContextIsStopped：CanvasContext 已 stop，UI 线程不再驱动绘制"
+    },
+    {
+      "at": 28,
+      "quote": "case SkippedFrameReason::NothingToDraw:",
+      "kind": "branch",
+      "text": "NothingToDraw：没有可绘制内容（如只有填充层），无需出帧"
+    },
+    {
+      "at": 29,
+      "quote": "// Do not report those as skipped frames as there was no frame expecte",
+      "kind": "note",
+      "text": "原注释：这三种不是“期望绘制却被跳过”，不上报为 skipped frame"
+    },
+    {
+      "at": 30,
+      "quote": "// drawn",
+      "kind": "note",
+      "text": "（承接）否则停绘/无内容场景会污染 jank 统计与 FrameTimeline 上报"
+    },
+    {
+      "at": 31,
+      "quote": "break;",
+      "kind": "note",
+      "text": "状态类原因不记录，跳出 switch，mSkippedFrameInfo 保持为空"
+    },
+    {
+      "at": 34,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "上帧未被跳过（正常路径）：向 JankTracker 申请本帧 FrameInfo"
+    },
+    {
+      "at": 35,
+      "quote": "mCurrentFrameInfo = mJankTracker.startFrame();",
+      "kind": "state",
+      "text": "startFrame 生成新 FrameInfo 并推进 jank 统计序列，后续字段写入其中"
+    },
+    {
+      "at": 36,
+      "quote": "mSkippedFrameInfo.reset();",
+      "kind": "state",
+      "text": "清空旧的被跳帧记录，避免陈旧 vsyncId 混进本次上报"
+    },
+    {
+      "at": 39,
+      "quote": "mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);",
+      "kind": "data",
+      "text": "导入 UI 线程采集的帧信息（vsync、deadline、frameInterval 等）"
+    },
+    {
+      "at": 40,
+      "quote": "mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;",
+      "kind": "thread",
+      "text": "记录 UI 线程把 DrawFrameTask post 到 RenderThread 的时刻，用于算同步耗时"
+    },
+    {
+      "at": 41,
+      "quote": "mCurrentFrameInfo->markSyncStart();",
+      "kind": "trace",
+      "text": "标记 SyncStart 时刻，draw 完成时据此算 RenderThread 侧忙时"
+    },
+    {
+      "at": 43,
+      "quote": "info.damageAccumulator = &mDamageAccumulator;",
+      "kind": "data",
+      "text": "把共享的 DamageAccumulator 交给 TreeInfo，节点 prepare 时累积脏区"
+    },
+    {
+      "at": 44,
+      "quote": "info.colorArea = &mColorArea;",
+      "kind": "data",
+      "text": "把 ColorArea 借给 TreeInfo，供强制反色等场景做颜色区域预扫描"
+    },
+    {
+      "at": 45,
+      "quote": "info.layerUpdateQueue = &mLayerUpdateQueue;",
+      "kind": "data",
+      "text": "把 LayerUpdateQueue 借给 TreeInfo，收集需更新/重绘的 RenderLayer"
+    },
+    {
+      "at": 46,
+      "quote": "info.damageGenerationId = mDamageId++;",
+      "kind": "state",
+      "text": "分配新的 damageGenerationId（后置自增），供节点判断脏区是否已过期"
+    },
+    {
+      "at": 47,
+      "quote": "info.out.skippedFrameReason = std::nullopt;",
+      "kind": "state",
+      "text": "先清空跳过原因，后续任一检查失败再写入具体原因"
+    },
+    {
+      "at": 49,
+      "quote": "mAnimationContext->startFrame(info.mode);",
+      "kind": "state",
+      "text": "通知 AnimationContext 本帧开始，按 mode 只推进 RT 可处理的动画"
+    },
+    {
+      "at": 51,
+      "quote": "if (target) {",
+      "kind": "branch",
+      "text": "有主目标节点才做颜色区域预扫描，窗口场景才有该节点"
+    },
+    {
+      "at": 52,
+      "quote": "determineColors(target);",
+      "kind": "state",
+      "text": "determineColors 做反色预扫描；失败最多颜色区域为空，不阻断主流程"
+    },
+    {
+      "at": 55,
+      "quote": "for (const sp<RenderNode>& node : mRenderNodes) {",
+      "kind": "note",
+      "text": "遍历本 context 的所有根节点（窗口内容、背景/填充层）依次准备绘制树"
+    },
+    {
+      "at": 56,
+      "quote": "// Only the primary target node will be drawn full - all other nodes w",
+      "kind": "note",
+      "text": "原注释：只有主目标节点全量准备，其他节点用实时动画模式"
+    },
+    {
+      "at": 57,
+      "quote": "// real time mode. In case of a window, the primary node is the window",
+      "kind": "note",
+      "text": "（承接）窗口场景下主节点是内容，其余是非 client/filler 层"
+    },
+    {
+      "at": 58,
+      "quote": "// node(s) are non client / filler nodes.",
+      "kind": "note",
+      "text": "（承接）这样避免对填充层做无谓的完整脏区与动画计算"
+    },
+    {
+      "at": 59,
+      "quote": "info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MO",
+      "kind": "branch",
+      "text": "节点等于 target 用 MODE_FULL，否则 MODE_RT_ONLY 只处理 RT 动画"
+    },
+    {
+      "at": 60,
+      "quote": "node->prepareTree(info);",
+      "kind": "state",
+      "text": "对单个节点同步绘制树：更新属性、算脏区、推进动画并生成 DisplayList"
+    },
+    {
+      "at": 61,
+      "quote": "GL_CHECKPOINT(MODERATE);",
+      "kind": "trace",
+      "text": "GL checkpoint MODERATE：调试构建下校验该节点准备后 GL 状态未损坏"
+    },
+    {
+      "at": 63,
+      "quote": "mAnimationContext->runRemainingAnimations(info);",
+      "kind": "state",
+      "text": "跑完剩余动画（RT 动画器等），把本帧动画产生的脏区并入"
+    },
+    {
+      "at": 64,
+      "quote": "GL_CHECKPOINT(MODERATE);",
+      "kind": "trace",
+      "text": "checkpoint：确认动画阶段没留下非法 GL 状态"
+    },
+    {
+      "at": 66,
+      "quote": "freePrefetchedLayers();",
+      "kind": "state",
+      "text": "释放本帧未再使用的预取 RenderLayer，否则显存会持续增长"
+    },
+    {
+      "at": 67,
+      "quote": "GL_CHECKPOINT(MODERATE);",
+      "kind": "trace",
+      "text": "checkpoint：确认释放预取层后 GL 仍正常"
+    },
+    {
+      "at": 69,
+      "quote": "mIsDirty = true;",
+      "kind": "state",
+      "text": "标记 context 有未上屏内容；draw 后由 swap 清 dirty，影响下次是否重绘"
+    },
+    {
+      "at": 71,
+      "quote": "if (CC_UNLIKELY(!hasOutputTarget())) {",
+      "kind": "branch",
+      "text": "无输出目标（Surface 为空/已销毁）时无法上屏，直接放弃本帧"
+    },
+    {
+      "at": 72,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::NoOutputTarget;",
+      "kind": "state",
+      "text": "记为 NoOutputTarget，让上层区分“缺 Surface”与普通掉帧"
+    },
+    {
+      "at": 73,
+      "quote": "mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason)",
+      "kind": "trace",
+      "text": "同步写入 FrameInfo，供 FrameTimeline 上报该跳过原因"
+    },
+    {
+      "at": 74,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "提前返回：不 reserve 缓冲也不 post 回调，等 Surface 重建后再驱动"
+    },
+    {
+      "at": 77,
+      "quote": "if (CC_LIKELY(mSwapHistory.size() && !info.forceDrawFrame)) {",
+      "kind": "branch",
+      "text": "有 swap 历史且非强制绘制时才做 vsync 去重，否则必须真的画"
+    },
+    {
+      "at": 78,
+      "quote": "nsecs_t latestVsync = mRenderThread.timeLord().latestVsync();",
+      "kind": "data",
+      "text": "取 TimeLord 推算的最近 vsync 时间，与上次 swap 的 vsync 比较"
+    },
+    {
+      "at": 79,
+      "quote": "SwapHistory& lastSwap = mSwapHistory.back();",
+      "kind": "data",
+      "text": "lastSwap 取 SwapHistory 最新一条（back 即最近一次上屏记录）"
+    },
+    {
+      "at": 80,
+      "quote": "nsecs_t vsyncDelta = std::abs(lastSwap.vsyncTime - latestVsync);",
+      "kind": "data",
+      "text": "算本帧 vsync 与上次上屏 vsync 的绝对差值，判断是否同一脉冲"
+    },
+    {
+      "at": 81,
+      "quote": "// The slight fudge-factor is to deal with cases where",
+      "kind": "note",
+      "text": "原注释：2ms 宽容差是为处理 vsync 被推算出来的情况"
+    },
+    {
+      "at": 82,
+      "quote": "// the vsync was estimated due to being slow handling the signal.",
+      "kind": "note",
+      "text": "（承接）信号处理慢时 TimeLord 会估算 vsync，时间戳存在偏差"
+    },
+    {
+      "at": 83,
+      "quote": "// See the logic in TimeLord#computeFrameTimeNanos or in",
+      "kind": "note",
+      "text": "（承接）估算逻辑见 TimeLord::computeFrameTimeNanos 与 Choreographer"
+    },
+    {
+      "at": 84,
+      "quote": "// Choreographer.java for details on when this happens",
+      "kind": "note",
+      "text": "（承接）所以不能要求 vsyncDelta 严格为 0"
+    },
+    {
+      "at": 85,
+      "quote": "if (vsyncDelta < 2_ms) {",
+      "kind": "branch",
+      "text": "差值小于 2ms 视为同一 vsync 已出帧，再画会白耗 GPU 并挤占下一帧"
+    },
+    {
+      "at": 86,
+      "quote": "// Already drew for this vsync pulse, UI draw request missed",
+      "kind": "note",
+      "text": "原注释：本 vsync 已绘制过，UI 的绘制请求错过了 RT 动画截止时间"
+    },
+    {
+      "at": 87,
+      "quote": "// the deadline for RT animations",
+      "kind": "note",
+      "text": "（承接）记 AlreadyDrawn 跳过 draw，交由下面逻辑 post 下一帧回调"
+    },
+    {
+      "at": 88,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::AlreadyDrawn;",
+      "kind": "state",
+      "text": "写入跳过原因；draw 前会检查该值并改为注册下个 vsync 回调"
+    },
+    {
+      "at": 90,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "无 swap 历史或 forceDrawFrame 时不做去重，必须真正绘制"
+    },
+    {
+      "at": 91,
+      "quote": "info.out.skippedFrameReason = std::nullopt;",
+      "kind": "state",
+      "text": "显式清空跳过原因，保证本帧继续进入 reserve/draw 流程"
+    },
+    {
+      "at": 94,
+      "quote": "// TODO: Do we need to abort out if the backdrop is added but not read",
+      "kind": "note",
+      "text": "原注释：TODO 背景层已添加但未就绪是否该中止，是否算合法组合"
+    },
+    {
+      "at": 95,
+      "quote": "// be an allowable combination?",
+      "kind": "note",
+      "text": "（承接）即 backdrop 未就绪时是否算可绘制，目前未特殊处理"
+    },
+    {
+      "at": 96,
+      "quote": "if (mRenderNodes.size() > 2 && !mRenderNodes[1]->isRenderable()) {",
+      "kind": "branch",
+      "text": "根节点多于 2 个（[0] 内容、[1] 背景层）且背景层不可渲染"
+    },
+    {
+      "at": 97,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::NothingToDraw;",
+      "kind": "state",
+      "text": "说明本帧没有实际内容可画，记 NothingToDraw 以免空转一次 draw"
+    },
+    {
+      "at": 100,
+      "quote": "if (!info.out.skippedFrameReason) {",
+      "kind": "branch",
+      "text": "前面所有检查通过（无跳过原因）才尝试预取下一个缓冲"
+    },
+    {
+      "at": 101,
+      "quote": "int err = mNativeSurface->reserveNext();",
+      "kind": "ipc",
+      "text": "reserveNext 向 BufferQueue 预取 buffer，减少 draw 时 dequeue 的阻塞"
+    },
+    {
+      "at": 102,
+      "quote": "if (err != OK) {",
+      "kind": "branch",
+      "text": "预取失败（BufferQueue 断开/超时）说明本帧取不到缓冲，无法出图"
+    },
+    {
+      "at": 103,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::NoBuffer;",
+      "kind": "state",
+      "text": "记 NoBuffer：表明是缓冲不可得，而非内容或 Surface 本身缺失"
+    },
+    {
+      "at": 104,
+      "quote": "mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason)",
+      "kind": "trace",
+      "text": "写入 FrameInfo，随帧一起上报跳过原因"
+    },
+    {
+      "at": 105,
+      "quote": "ALOGW(\"reserveNext failed, error = %d (%s)\", err, strerror(-err));",
+      "kind": "note",
+      "text": "打印错误码与文案，便于区分是 TIMED_OUT 还是 NO_INIT/DEAD_OBJECT"
+    },
+    {
+      "at": 106,
+      "quote": "if (err != TIMED_OUT) {",
+      "kind": "branch",
+      "text": "超时的 Surface 仍可能恢复，其他错误（如管道断开）视为永久失效"
+    },
+    {
+      "at": 107,
+      "quote": "// A timed out surface can still recover, but assume others are perman",
+      "kind": "note",
+      "text": "原注释：超时可恢复，其余错误假定 Surface 已死，直接放弃"
+    },
+    {
+      "at": 108,
+      "quote": "setSurface(nullptr);",
+      "kind": "state",
+      "text": "setSurface(nullptr) 销毁 ReliableSurface 并解除引用，等上层重建 Surface"
+    },
+    {
+      "at": 109,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "不 draw 也不 post 回调，彻底放弃本帧，避免对死 Surface 继续排队"
+    },
+    {
+      "at": 112,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "已有跳过原因时不再预取缓冲，只把原因登记到帧信息"
+    },
+    {
+      "at": 113,
+      "quote": "mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason)",
+      "kind": "trace",
+      "text": "把跳过原因写进 FrameInfo，供上报和调用方判断是否 draw"
+    },
+    {
+      "at": 116,
+      "quote": "bool postedFrameCallback = false;",
+      "kind": "state",
+      "text": "标志本帧是否已 post 帧回调，避免下面重复注册导致空转一帧"
+    },
+    {
+      "at": 117,
+      "quote": "if (info.out.hasAnimations || info.out.skippedFrameReason) {",
+      "kind": "branch",
+      "text": "有 RT 动画要继续推进，或本帧被跳需下帧补偿时才考虑 post"
+    },
+    {
+      "at": 118,
+      "quote": "if (CC_UNLIKELY(!Properties::enableRTAnimations || !mEnableRTAnimation",
+      "kind": "state",
+      "text": "RT 动画被全局/实例开关关闭时无法自驱动，必须让 UI 线程重绘"
+    },
+    {
+      "at": 119,
+      "quote": "info.out.requiresUiRedraw = true;",
+      "kind": "state",
+      "text": "设 requiresUiRedraw，让 UI 下个 vsync 重新同步，避免动画停住"
+    },
+    {
+      "at": 121,
+      "quote": "if (!info.out.requiresUiRedraw) {",
+      "kind": "branch",
+      "text": "UI 已确定会重绘时不要 post RT 回调，否则与 UI 线程抢同一帧"
+    },
+    {
+      "at": 122,
+      "quote": "// If animationsNeedsRedraw is set don't bother posting for an RT anim",
+      "kind": "note",
+      "text": "原注释：requiresUiRedraw 为真时 post RT 动画只会和 UI 线程互相打架"
+    },
+    {
+      "at": 123,
+      "quote": "// as we will just end up fighting the UI thread.",
+      "kind": "note",
+      "text": "（承接）所以跳过 post，把下一帧交给 UI 线程驱动"
+    },
+    {
+      "at": 124,
+      "quote": "mRenderThread.postFrameCallback(this);",
+      "kind": "thread",
+      "text": "注册到 RenderThread，下个 vsync 回调 onFrame 继续推进 RT 动画"
+    },
+    {
+      "at": 125,
+      "quote": "postedFrameCallback = true;",
+      "kind": "state",
+      "text": "记下已 post，避免下面 AnimatedImage 逻辑重复注册回调"
+    },
+    {
+      "at": 129,
+      "quote": "if (!postedFrameCallback &&",
+      "kind": "branch",
+      "text": "尚未 post 且存在 AnimatedImage 下一帧延迟需求时，才走延迟调度"
+    },
+    {
+      "at": 130,
+      "quote": "info.out.animatedImageDelay != TreeInfo::Out::kNoAnimatedImageDelay) {",
+      "kind": "branch",
+      "text": "animatedImageDelay 为 -1 表示无需调度动画图片的下一帧"
+    },
+    {
+      "at": 131,
+      "quote": "// Subtract the time of one frame so it can be displayed on time.",
+      "kind": "note",
+      "text": "原注释：提前一帧的时间减去，保证动画图能按时显示"
+    },
+    {
+      "at": 132,
+      "quote": "const nsecs_t kFrameTime = mRenderThread.timeLord().frameIntervalNanos",
+      "kind": "data",
+      "text": "取当前帧间隔，作为立即 post 还是延迟 post 的阈值"
+    },
+    {
+      "at": 133,
+      "quote": "if (info.out.animatedImageDelay <= kFrameTime) {",
+      "kind": "branch",
+      "text": "延迟不超过一帧时立即 post，下个 vsync 就会被回调"
+    },
+    {
+      "at": 134,
+      "quote": "mRenderThread.postFrameCallback(this);",
+      "kind": "thread",
+      "text": "立刻注册回调，省掉为等一帧而多排一条延迟消息"
+    },
+    {
+      "at": 135,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "延迟大于一帧：必须发延迟消息，等快到时间再唤醒"
+    },
+    {
+      "at": 136,
+      "quote": "const auto delay = info.out.animatedImageDelay - kFrameTime;",
+      "kind": "data",
+      "text": "实际延迟 = 动画延迟 - 一帧，提前量防止消息晚到导致掉帧"
+    },
+    {
+      "at": 137,
+      "quote": "int genId = mGenerationID;",
+      "kind": "state",
+      "text": "快照当前 mGenerationID，用于判断延迟消息执行时 context 是否已换代"
+    },
+    {
+      "at": 138,
+      "quote": "mRenderThread.queue().postDelayed(delay, [this, genId]() {",
+      "kind": "thread",
+      "text": "把延迟任务投进 RenderThread 消息队列，到期后再 post 帧回调"
+    },
+    {
+      "at": 139,
+      "quote": "if (mGenerationID == genId) {",
+      "kind": "thread",
+      "text": "只有 generation 未变（Surface 未换、context 未 pause/stop）才继续"
+    },
+    {
+      "at": 140,
+      "quote": "mRenderThread.postFrameCallback(this);",
+      "kind": "thread",
+      "text": "generation 一致说明 context 仍有效，注册帧回调继续推进动画"
+    }
+  ]
+}

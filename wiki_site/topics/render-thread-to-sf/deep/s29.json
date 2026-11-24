@@ -1,0 +1,45 @@
+{
+  "step": "s29",
+  "title": "composeSurfaces：RenderEngine 把 client 层画进 client target",
+  "tldr": "HWC 扛不住的层在这里用 GPU 画进 client target，返回的 fence 表示可以拿去合成了。",
+  "why": "没有 client 合成这条路，任何 HWC 表达不了的层就彻底画不出来：圆角、阴影、背景模糊、HDR 到 SDR 的色调映射、非整数缩放、不支持的 dataspace 转换、带 crop 的旋转，全属于这一类。真实后果不是「画得难看」，而是这一层从画面上直接消失——HWC 已经被告知它必须由 CLIENT 合成，而这里没画，client target 里那块区域就是上一次的残留或者纯黑。另一个方向是性能：client 合成意味着整块屏幕要过一遍 GPU，如果这里对每个层都无条件重画、跳过 mClientCompositionRequestCache 的复用判断，静态界面也会一直占满 GPU，功耗直接上台阶。",
+  "concepts": [
+    { "term": "client target", "text": "GPU 合成的目标 buffer，由 RenderSurface 的 BufferQueue dequeue 出来。" },
+    { "term": "LayerSettings", "text": "RenderEngine 的输入契约：源 buffer、alpha、混合、几何、色彩、模糊/lut，一层一份。" },
+    { "term": "draw fence", "text": "RenderEngine 返回的 GPU 完成信号，当作 client target 的 acquire fence。" },
+    { "term": "reusedClientComposition", "text": "请求缓存命中：这帧要画的东西和上次完全一样，直接复用上次的 client target。" }
+  ],
+  "walk": [
+    { "call": "std::optional<base::unique_fd> Output::composeSurfaces(", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1390", "what": "返回值是 GPU 的 fence；前半段先判断要不要做。" },
+    { "call": "if (!hasClientComposition) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1402", "what": "全 DEVICE 合成时整段跳过，这是最常见的快路径。" },
+    { "call": "renderengine::DisplaySettings clientCompositionDisplay =", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1416", "what": "组装屏幕级参数：dataspace、亮度、色彩矩阵、旋转。" },
+    { "call": "generateClientCompositionRequests(supportsProtectedContent,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1424", "what": "逐层筛出要 client 合成（或需清 client target）的层，转成 LayerSettings。" },
+    { "call": "const bool clientComposition = layer->requiresClientComposition();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1582", "what": "每层自己决定：HWC 说要 CLIENT，或被强制 client（截图/圆角/模糊）。" },
+    { "call": "if (mClientCompositionRequestCache->exists(tex->getBuffer()->getId(),", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1433", "what": "缓存命中：这帧和上一帧要画的一样，直接用上次的 buffer。" },
+    { "call": ".drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1472", "what": "真正的 GPU 提交；后面 .get() 立刻等 fence，不是异步。" },
+    { "call": "const auto fence = std::move(fenceResult).value_or(Fence::NO_FENCE);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1480", "what": "失败时退化成 NO_FENCE：不报错也不重试，后面照样 queue。" },
+    { "call": "for (auto* clientComposedLayer : clientCompositionLayersFE) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1504", "what": "把 fence 记到每个被 GPU 合成的层上，供帧统计使用。" },
+    { "call": "return base::unique_fd(fence->dup());", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1508", "what": "dup 一份 fd 交出去，caller 拿它当 client target 的 acquire fence。" },
+    { "call": "optReadyFence = composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1337", "what": "调用点：finishFrame 里画完立刻把 buffer 交回给 HWC。" },
+    { "call": "mRenderSurface->queueBuffer(std::move(*optReadyFence), getHdrSdrRatio(buffer));", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1348", "what": "client target 连同 draw fence 入队，HWC 下次 validate 就能读到。" }
+  ],
+  "state": [
+    { "field": "OutputCompositionState.reusedClientComposition", "before": "false", "after": "缓存命中时置 true（1437）", "note": "SF 用它统计 GpuReuse，也决定 hint session 要不要报 GPU 时间" },
+    { "field": "RenderSurface::mTexture", "before": "上一次 dequeue 的 client target 纹理", "after": "换成新 dequeue 的那块（RenderSurface.cpp:183-191）", "note": "queueBuffer 之后会被换掉，下一帧必须重新 dequeue" },
+    { "field": "LayerFE 的 wasClientComposed", "before": "nullptr（1569 先清空）", "after": "画完后设成本帧 fence（1504-1506）", "note": "Layer::setWasClientComposed 用它算 GPU 合成的帧统计" },
+    { "field": "RenderEngine 的 draw fence", "before": "无", "after": "composeSurfaces 的返回值（1508）", "note": "dup 出的 fd 交给 queueBuffer 当 acquire fence，所有权要分清" }
+  ],
+  "threads": "SF 主线程，finishFrame 在 Output::present 里同步调用。注意 drawLayers 虽然是 ftl::Future，RenderEngine::drawLayers 实际是在当前线程把 drawLayersInternal 跑完再返回（RenderEngine.cpp:92），所以后面的 .get() 立即返回，它只是接口形态。真正的跨线程风险在 SkiaRenderEngine::drawLayersInternal 开头那把 mRenderingMutex（SkiaRenderEngine.cpp:894）：主线程和 offload 合成的后台线程会在这把锁上串行。",
+  "pitfalls": [
+    "dequeueRenderBuffer 失败时 finishFrame 直接 return（Output.cpp:1331-1333），这一帧没有任何 GPU 合成，但 present 照旧——结果是 client 层位置上是旧内容或黑块，而日志只有一行 ALOGW。",
+    "缓存命中（1433）不校验 buffer 是否真的一样，只看 buffer id + display 设置 + layer 列表；override buffer 或 luts 这些没进 key 的状态一变，命中就是错的画面，排查时先关掉缓存验证。",
+    "fence 失败退化成 NO_FENCE（1480）意味着 HWC 可能立刻读到还没画完的 client target：这类花屏只在 GPU 异常/内存压力下出现，别指望在正常流程里复现。",
+    "usesClientComposition 为 false 时必须整段跳过（1402），否则会白白 dequeue 一块 client target 并占用一个 buffer slot，三缓冲下直接减少可用槽位。"
+  ],
+  "debug": [
+    "perfetto 抓 sf：搜 drawLayers / composeSurfaces 的 slice（SkiaRenderEngine.cpp:889 的 SFTRACE_FORMAT 打的是 drawLayersInternal），紧邻的 CG_Re_drawLayers slice 是 RenderEngine 自己的耗时口径。",
+    "traceCompositionSummary（SurfaceFlinger.cpp:3653）那条 \"Layers: N ...\" 里大写字母就是走了 GPU 合成的层，和这里的 clientCompositionLayers 数量对不上说明筛选逻辑有问题。",
+    "dumpsys SurfaceFlinger 里该 display 段的 reusedClientComposition 与 RenderEngine 相关统计，判断是「GPU 真慢」还是「缓存没命中反复重画」。"
+  ],
+  "next": "第 30 步「present：交给 HWC 并取 release fence」：client target 已入队，presentFrameAndReleaseLayers 把这一帧推给 HWC 并逐层定下 release fence。"
+}

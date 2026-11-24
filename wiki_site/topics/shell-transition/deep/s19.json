@@ -1,0 +1,35 @@
+{
+  "step": "s19",
+  "title": "playTransition：建层级、分派 handler",
+  "tldr": "track 置忙后，Shell 重排 leash 的 z 序并 show 根节点，再交给 handler 播。",
+  "why": "没有 setupAnimHierarchy，动画期的 z 序就完全依赖 WMS 传来的顺序和 SF 的默认 layer：正在关闭的 Activity 的 leash 可能盖在正在打开的之上，用户看到新页面被旧页面的残影压着闪一下。更基础的是根 leash 不 show，整片区域在动画期间不可见——屏幕直接黑一块。而没有 mHandler 记账，onFinish 和 onTransitionConsumed 就找不到该由谁释放 anim surface，泄漏的 SurfaceControl 会一直留在 SF 里。",
+  "concepts": [
+    { "term": "leash", "text": "WMS 给每个 Change 造的一层空 SurfaceControl，包住真实窗口。动画只能搬 leash。" },
+    { "term": "z 序重排", "text": "Change 列表按 top 到 bottom 排，setupAnimHierarchy 从底部往上设 layer。" }
+  ],
+  "walk": [
+    { "call": "setupAnimHierarchy(active.mInfo, active.mStartT);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1062", "what": "只改 startT：先 show 根 leash，再按 z 序摆每个 change，然后才交给 handler。" },
+    { "call": "t.show(info.getRoot(i).getLeash());", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:713", "what": "根 leash 是动画期间的顶层父节点，不 show 的话这一层（乃至整片区域）不可见。" },
+    { "call": "setUpSurface(info.getChanges().get(i), info, i, t);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:718", "what": "从底部往上（717 倒序）设 layer、reparent 到根 leash、修正 crop，i 就是目标 z。" },
+    { "call": "boolean consumed = active.mHandler.startAnimation(token, active.mInfo, active.mStartT, active.mFinishT, (wct) -> onFinish(token, wct));", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1068", "what": "先给 request 阶段认领的 handler 一次机会；finish 回调固定绑到 onFinish。" },
+    { "call": "if (consumed) { ... return; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1070", "what": "它接了就直接返回，不再轮询别的 handler，避免两套动画对象抢同一批 leash。" },
+    { "call": "active.mHandler = dispatchTransition(token, active.mInfo, active.mStartT, active.mFinishT, (wct) -> onFinish(token, wct), active.mHandler);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1083", "what": "没接就倒序轮询其余 handler，skip 传入刚试过的那个；返回值记下来供 merge。" }
+  ],
+  "state": [
+    { "field": "Track.mActiveTransition", "before": "null（track 空闲）", "after": "ready（961，进 playTransition 之前就已经置忙）", "note": "置忙发生在 processReadyQueue，不在 playTransition 里" },
+    { "field": "ActiveTransition.mHandler", "before": "request 阶段认领的 handler，可能为 null", "after": "实际接手播动画的 handler（dispatchTransition 的返回值，1083）", "note": "mergeAnimation 和 onTransitionConsumed 都要回到同一个 handler" },
+    { "field": "active.mStartT", "before": "WMS 合并后的起始事务", "after": "追加了根 leash 的 show 与每个 change 的 layer、position、crop（1062、713、718）", "note": "finishT 不动，那是 WMS 生成的还原事务" }
+  ],
+  "threads": "wmshell.main。playTransition 由 processReadyQueue 调用（970），而 processReadyQueue 又被 onFinish（1333）和 dispatchReady（909）调用，整条链单线程但可重入；全程不持 mGlobalLock。",
+  "pitfalls": [
+    "track 置忙不是 playTransition 干的，是 processReadyQueue 在 961 设的；playTransition 只负责建层级和分派。",
+    "mHandler 非空不代表一定由它播：1068 返回 false 之后仍会走 dispatchTransition（1083），只是用 skip 参数跳过一次，不会再问它第二遍。",
+    "setupAnimHierarchy 只改 active.mStartT，绝不动 finishT。还原是 WMS 的 buildFinishTransaction 生成的，Shell 在这里补一笔会双重 reparent。",
+    "所有 handler 都不接会抛 IllegalStateException（1120 到 1121，日志写着 maybe the default handler is broken），这是 SystemUI 崩，不是转场被丢弃。"
+  ],
+  "debug": [
+    "perfetto / atrace 抓 wm：slice playTransition: <type>（1045 到 1046），以及 instant <Handler>#startAnimation animated <type>（1074）",
+    "ProtoLog WM_SHELL_TRANSITIONS：Playing animation for %s（1055）看进度，try firstHandler %s（1066）看先问了谁"
+  ],
+  "next": "第 28 步「handler 分派链：谁先接谁播」：分派顺序本身就是优先级，决定了你看到哪套动画。"
+}

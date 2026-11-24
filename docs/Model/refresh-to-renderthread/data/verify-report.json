@@ -1,0 +1,322 @@
+[
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "28723-28753",
+  "symbol": "public void requestLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "21449-21492",
+  "symbol": "public void invalidate(boolean",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "36/36 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/ViewGroup.java",
+  "lines": "6199-6232",
+  "symbol": "public void onDescendantInvalidated",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "28/28 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "2841-2869",
+  "symbol": "public void requestLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "3306-3335",
+  "symbol": "void scheduleTraversals",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "30/30 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "3337-3380",
+  "symbol": "void doTraversal",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "41/41 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "11445-11451",
+  "symbol": "final class TraversalCallback",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "7/7 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "646-682",
+  "symbol": "public void postVsyncCallback",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "34/34 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "919-948",
+  "symbol": "private void scheduleFrameLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1267-1294",
+  "symbol": "private void scheduleVsyncLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/core/jni/android_view_DisplayEventReceiver.cpp",
+  "lines": "374-383",
+  "symbol": "static void nativeScheduleVsync",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "lines": "417-428",
+  "symbol": "void EventThread::requestNextVsync",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1594-1635",
+  "symbol": "public void onVsync",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "40/40 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1199-1211",
+  "symbol": "doCallbacks",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "9/9 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/core/java/android/view/Choreographer.java",
+  "lines": "1123-1135",
+  "symbol": "jitterNanos",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "13/13 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+  "lines": "769-800",
+  "symbol": "void EventThread::dispatchEvent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "30/30 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "10191-10235",
+  "symbol": "ViewRootImpl::relayoutWindow",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "44/44 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "10278-10312",
+  "symbol": "IWindowSession::relayoutAsync2",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "35/35 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/IWindowSession.aidl",
+  "lines": "89-116",
+  "symbol": "relayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "25/25 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "10368-10390",
+  "symbol": "SurfaceControl::Transaction::setWindowCrop",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "23/23 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "3625-3669",
+  "symbol": "measureHierarchy",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "43/43 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5538-5582",
+  "symbol": "performLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "41/41 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5519-5536",
+  "symbol": "requestLayoutDuringLayout",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "18/18 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "28798-28842",
+  "symbol": "View::measure",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "39/39 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "5940-5977",
+  "symbol": "performDraw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "32/32 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/core/java/android/view/ViewRootImpl.java",
+  "lines": "6259-6301",
+  "symbol": "ViewRootImpl::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "34/34 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/core/java/android/view/ThreadedRenderer.java",
+  "lines": "769-786",
+  "symbol": "RenderNode::beginRecording",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "16/16 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/core/java/android/view/View.java",
+  "lines": "24306-24350",
+  "symbol": "updateDisplayListIfDirty",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "37/37 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "base/core/java/android/view/ThreadedRenderer.java",
+  "lines": "827-859",
+  "symbol": "ThreadedRenderer::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+  "lines": "590-600",
+  "symbol": "HardwareRenderer::syncAndDrawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp",
+  "lines": "464-473",
+  "symbol": "android_view_ThreadedRenderer_syncAndDrawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "72-87",
+  "symbol": "DrawFrameTask::drawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "13/13 lines",
+  "symbolInRange": true
+ }
+]

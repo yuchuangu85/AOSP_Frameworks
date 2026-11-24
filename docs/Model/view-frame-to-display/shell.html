@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN" data-register="paper"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://fonts.googleapis.com; script-src 'unsafe-inline'; img-src data:; font-src https://fonts.gstatic.com; base-uri 'none'">
+<title>从 App VSync 到屏幕呈现｜Android 图形管线源码图解</title>
+<link rel="stylesheet" href="kit.css" data-ve-kit>
+<script>
+  (function () {
+    let pref = 'auto';
+    try { pref = localStorage.getItem('fp-theme') || 'auto'; } catch (_) {}
+    if (!['auto', 'light', 'dark'].includes(pref)) pref = 'auto';
+    document.documentElement.dataset.themePref = pref;
+    document.documentElement.dataset.theme = pref === 'light' || pref === 'auto' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  })();
+</script>
+<style>
+:root{color-scheme:light;--bg:#f7f7f4;--surface:#ffffff;--border:#e3e3dc;--border-bright:#8e8e8a;--text:#17191c;--text-dim:#575c63;--accent:#2c4cd0;--accent-dim:rgba(44,76,208,.12);--ok:#1d7443;--warn:#836000;--risk:#b3301d;--info:#1b6a94;--node-top:var(--surface);--lift:rgb(18 22 20 / .12);--halo:22%;--stage:none;--paper:#f9f8f3;--ink:#182e30;--muted:#465e60;--leaf:#07635a;--wash:#e2efea;--line:#c5d1ca;--codebg:#f0f2ec;--control-bg:#fffef9;--control-border:#899e95;--focus:#ba671f;--ch:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;--song:"Songti SC","Noto Serif CJK SC","SimSun",serif;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+html[data-theme="light"]{color-scheme:light;--bg:#f7f7f4;--surface:#ffffff;--border:#e3e3dc;--border-bright:#8e8e8a;--text:#17191c;--text-dim:#575c63;--accent:#2c4cd0;--accent-dim:rgba(44,76,208,.12);--ok:#1d7443;--warn:#836000;--risk:#b3301d;--info:#1b6a94;--node-top:var(--surface);--lift:rgb(18 22 20 / .12);--halo:22%;--stage:none;--paper:#f9f8f3;--ink:#182e30;--muted:#465e60;--leaf:#07635a;--wash:#e2efea;--line:#c5d1ca;--codebg:#f0f2ec;--control-bg:#fffef9;--control-border:#899e95;--focus:#ba671f}
+html[data-theme="dark"]{color-scheme:dark;--bg:#111316;--surface:#181b1f;--border:#262a30;--border-bright:#62676c;--text:#e8e8e3;--text-dim:#9ba1a9;--accent:#93a6ff;--accent-dim:rgba(147,166,255,.14);--ok:#6cc492;--warn:#e3b94d;--risk:#f0806b;--info:#6fb8dc;--node-top:color-mix(in srgb,var(--text) 7%,var(--surface));--lift:rgb(0 0 0 / .45);--halo:32%;--stage:radial-gradient(circle at 1px 1px,color-mix(in srgb,var(--text) 13%,transparent) 1px,transparent 1.5px) 0 0 / 20px 20px;--paper:#111316;--ink:#e8e8e3;--muted:#9ba1a9;--leaf:#93a6ff;--wash:#20262d;--line:#30363d;--codebg:#1a1f26;--control-bg:#181b1f;--control-border:#62676c;--focus:#7db5ff}
+*{box-sizing:border-box}html{scroll-padding-top:12px}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.72 var(--ch);overflow-wrap:anywhere}
+main#atlas{display:block;max-width:1160px;width:100%;margin:auto;padding:22px clamp(16px,4vw,64px) 70px}
+#atlas :is(p,li,summary,button,input,select){font-family:var(--ch)}#atlas p{max-width:none;margin:0 0 .6em;color:inherit}
+#atlas h1,#atlas h2,#atlas h3,#atlas h4{color:var(--ink);letter-spacing:0;margin:0;line-height:1.28}#atlas h1,#atlas h2{font-family:var(--song)}#atlas h1{max-width:none;font-size:clamp(32px,4.6vw,60px);font-weight:700;margin:.22em 0 .25em}#atlas h2{font-size:clamp(26px,3vw,38px);margin:.18em 0 .35em}#atlas h3{font:700 20px/1.45 var(--ch);margin:.5em 0}#atlas h4{font:700 16px/1.5 var(--ch)}
+#atlas section,#atlas header,#atlas figure,#atlas details,#atlas nav{max-width:none;margin:0}#atlas section.major{padding-top:48px}#atlas header{display:block}#atlas .strap,.sectionno,#atlas .id,.lane b,.rev{font:600 12px/1.5 var(--mono);letter-spacing:.07em}#atlas .strap{border-bottom:2px solid var(--ink);display:flex;justify-content:space-between;gap:12px;align-items:center;padding:0 0 9px;color:var(--muted)}#atlas .lede{max-width:52em;font-size:clamp(16px,1.5vw,19px)}a,#atlas a{color:var(--leaf);text-underline-offset:3px}a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+#atlas .nav{display:flex;flex-wrap:wrap;align-items:center;gap:.4em 1.3em;font-size:14px;padding:8px 0;border-bottom:1px solid var(--line)}#atlas .theme-button{display:grid;place-items:center;width:2.2rem;height:2rem;margin-left:auto;padding:0;border-color:var(--control-border);background:var(--control-bg);color:var(--ink);font-size:1.1rem;line-height:1}#atlas .theme-button:hover{border-color:var(--leaf);color:var(--leaf)}
+#atlas .overview{margin:20px 0 0;border:1px solid var(--line);border-top:3px solid var(--leaf);background:var(--control-bg);padding:14px clamp(12px,2.3vw,30px)}
+#atlas .origin{font-weight:650;margin:0 0 7px}.lane{display:grid;grid-template-columns:98px 1fr;gap:10px;border-top:1px solid var(--line);padding:7px 0;align-items:baseline}.lane b{color:var(--muted)}.lane div{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px}.lane a{font-weight:650;text-decoration:none}.lane a:hover{text-decoration:underline}.lane i{color:var(--muted);font:14px var(--ch)}.join{display:inline;background:var(--wash);padding:1px 5px}
+#atlas figcaption{font:14px/1.6 var(--ch);color:var(--muted);padding-top:8px;border-top:1px dashed var(--line);max-width:none;margin:4px 0 0}#atlas .sectionno,.rev{color:var(--leaf)}#atlas .desc{color:var(--muted);max-width:58em}
+#atlas .answers{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:18px 0 0}#atlas .answers article{border-top:1px solid var(--line);padding:7px 0}#atlas .answers h3{font-size:16px;margin:0 0 4px}#atlas .answers p{font-size:14px;margin:0;color:var(--muted)}
+#atlas summary{cursor:pointer;color:var(--ink);line-height:1.55}#atlas details{padding:0;border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}#atlas details>summary{padding:10px 3px;font-weight:650}#atlas details[open]>summary{color:var(--leaf)}#atlas summary::marker{color:var(--leaf)}#atlas .id{display:inline-block;min-width:2.5em;color:var(--muted);margin:0 .3em}#atlas .groupname{margin:22px 0 2px;font:650 13px/1.6 var(--ch);color:var(--muted)}
+#atlas .stagegrid,#atlas .factorbody{margin:0 0 10px;padding:0 0 4px clamp(2px,3vw,38px)}#atlas dl{display:grid;grid-template-columns:6em 1fr;gap:7px 18px;margin:6px 0 10px}#atlas dt{color:var(--muted);font:650 14px/1.7 var(--ch)}#atlas dd{margin:0;max-width:60em}
+#atlas .stage-steps{display:grid;gap:8px;margin:12px 0 14px;padding:10px 12px 10px 34px;border:1px solid var(--line);background:color-mix(in srgb,var(--wash) 48%,transparent);font-size:14px}#atlas .stage-steps li{padding-left:4px}#atlas .stage-steps li::marker{color:var(--leaf);font:650 12px var(--mono)}#atlas .stage-steps b{display:block;color:var(--ink);font-weight:700}#atlas .stage-steps span{display:block;color:var(--muted)}
+#atlas .refrow,#atlas .links{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;margin:6px 0}#atlas .refrow a,.chiplink{font:12px/1.6 var(--mono);padding:2px 5px;background:var(--codebg);color:var(--leaf);border-radius:3px;text-decoration:none}#atlas .links a{font-size:13px}#atlas .refrow a:hover,#atlas .links a:hover{text-decoration:underline}#atlas .mini{font:650 12px/1.65 var(--ch);color:var(--muted)}#atlas summary .tag{display:inline-block;margin:0 .6em 0 .3em;color:var(--muted);font:500 12px var(--ch)}
+#atlas .filters{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;background:var(--wash);padding:10px 12px;margin:12px 0}#atlas .filters label{display:grid;gap:2px;color:var(--ink);font-size:12px;font-weight:650}
+#atlas :is(select,input,button){font-size:14px;color:var(--ink);border:1px solid var(--control-border);background:var(--control-bg);border-radius:4px;padding:7px 10px;max-width:100%}#atlas button{cursor:pointer}#atlas .filters select{max-width:260px}#atlas #count{font-size:13px}#atlas .case{padding:4px 0}#atlas .case summary{font-size:18px}#atlas .caseitems{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px;margin:.7em 0 1em}#atlas .caseitems article{border-top:1px dotted var(--line);padding:6px 0}#atlas .caseitems p{font-size:15px;margin:.25em 0}#atlas .note{color:var(--muted);font-size:14px}#atlas .diag{padding:.2em 0 .2em 1.4em;margin:.3em 0}#atlas .diag li{padding:.3em 0 .55em;max-width:60em}
+#atlas code,#atlas pre{font-family:var(--mono)}#atlas pre{background:var(--codebg);color:var(--ink);padding:8px 12px;overflow:auto;font-size:12px;line-height:1.55;border:1px solid var(--line);white-space:pre;tab-size:4;max-height:55vh;margin:6px 0}
+#atlas .refitem{padding-left:10px}#atlas .refitem summary{font:14px/1.58 var(--mono)}#atlas .refitem:target,#atlas .factor:target,#atlas .stage:target{background:var(--wash)}#atlas footer{border-top:1px solid var(--line);color:var(--muted);margin-top:32px;padding-top:10px;font-size:13px}
+[hidden]{display:none!important}
+@media(max-width:680px){#atlas .answers,#atlas .caseitems{grid-template-columns:1fr;gap:4px}#atlas .lane{grid-template-columns:1fr;gap:1px}#atlas dl{grid-template-columns:1fr;gap:0}#atlas dd{margin:0 0 .65em}#atlas .stagegrid,#atlas .factorbody{padding:0 3px}#atlas .strap{font-size:10px}#atlas .filters label{max-width:100%}#atlas .filters select{max-width:min(260px,75vw)}#atlas .theme-button{margin-left:0}}
+@media print{#atlas .filters,#atlas .nav{display:none}#atlas .major{break-before:auto}#atlas .refrow{font-size:9pt}#atlas{padding:0}#sources{break-before:page}}
+</style></head><body><main id="atlas">
+<header id="top"><div class="strap"><span>ANDROID GRAPHICS · 源码图谱</span><span>android17-release / @@REV@@</span></div>
+<h1>从 App VSync 到屏幕呈现</h1>
+<p class="lede">应用把 View 树的变化画进窗口缓冲；SurfaceFlinger（SF）在自己的帧回调里选择可用的图层内容，再交给显示硬件。<b>两条链在缓冲和事务处汇合，不是一次从 App 直调到屏幕的调用。</b></p></header>
+<figure class="overview" aria-label="应用与 SurfaceFlinger 两条调度路径的汇合图">
+<p class="origin">同一个显示节奏，两条调度路径</p>
+<div class="lane"><b>APP · UI</b><div><a href="#a1">App VSync</a><i>投递 →</i><a href="#a2">doFrame / 动画</a><i>按需触发 →</i><a href="#a4">测量布局</a><i>及 →</i><a href="#a5">绘制指令</a></div></div>
+<div class="lane"><b>APP · RT/GPU</b><div><a href="#r1">交接渲染树</a><i>同步、回放 →</i><a href="#r3">GPU 绘窗</a><i>提交 →</i><a href="#r4">窗口 buffer + fence</a><i>由 BLAST 装入 →</i><a class="join" href="#r5">图层事务</a></div></div>
+<div class="lane"><b>SF · 主线程</b><div><a href="#s1">SF VSync 回调</a><i>投递 →</i><a href="#s2">commit</a><i>从就绪事务中 →</i><a class="join" href="#s3">选状态 / latch</a><i>有需要才 →</i><a href="#s4">composite</a></div></div>
+<div class="lane"><b>DISPLAY</b><div><a href="#s5">DEVICE / CLIENT / 混合</a><i>交给 HWC →</i><a href="#s6">present 与显示栅栏</a><i>旧缓冲经 →</i><a href="#s7">release 供后续复用</a></div></div>
+<figcaption>读图方式：箭头表示数据交接或条件调用，不是等比例时间轴。SF 的回调可在 App 的 GPU 尚未完成时到来；本轮可能采用新缓冲、沿用旧内容，或根本不做合成。</figcaption>
+</figure>
+<nav class="nav" aria-label="章节"><a href="#clocks">两种 VSync</a><a href="#path">逐阶段流程</a><a href="#cases">典型对照</a><a href="#factors">影响因素索引</a><a href="#diagnose">真机如何定位</a><a href="#sources">源码与边界</a><button class="theme-button" id="themeBtn" type="button" title="切换配色" aria-label="切换配色"><span aria-hidden="true" id="themeIcon">☾</span></button></nav>
+<div class="answers"><article><h3>树深 ≠ 每帧全树重画</h3><p>先数受约束或失效的子树，再数实际重测、重录和 GPU 覆盖的区域。</p></article><article><h3>图片多 ≠ 每帧重新解码</h3><p>区分首次加载、纹理是否驻留、实际绘制次数，以及最后覆盖多少像素。</p></article><article><h3>同帧动画 ≠ 多线程并行</h3><p>相同帧时刻可以推进多个动画。决定压力的是谁更新、更新什么、失效范围有多大。</p></article></div>
+<section class="major" id="clocks"><span class="sectionno">01 / CLOCKS</span><h2>“收到 VSync”有两个不同的执行点</h2>
+<p><b>上游时基：</b>HWC 报告硬件 VSYNC 样本；SF 用有效样本校准显示节奏，而不是在硬件回调内画图。调度器用预测目标减去就绪与工作提前量安排唤醒。EventThread 收到回调后构造含目标和就绪时间的事件，再给订阅的应用连接分发。App 收到的事件时间戳不是物理面板此刻显示了新内容。</p>
+<p><b>两个接收者：</b>App 的接收器把事件投给 UI Looper；SF 自己注册的 <code>sf</code> 回调则把 frame signal 投给 SF 主 Looper。事务会请求或合并调度，但一条事务、一个 App VSync、一次 SF 唤醒、一次显示刷新并非一一对应。本文的“SF 收到 VSync”指后者，不指测试注入。</p>
+<p><b>预算不是周期：</b>固定 60 / 90 / 120 Hz 的理想刷新周期由 1000 ÷ Hz 得到，约为 16.67 / 11.11 / 8.33 ms；这不是 App 独占的 UI 时间，也不是本页实测。要看被选中的 FrameTimeline 的 deadline 与 expected presentation time、实际唤醒、流水线重叠及是否错过采纳机会。</p>
+@@CLOCKREF@@</section>
+<section class="major" id="path"><span class="sectionno">02 / HANDOFFS</span><h2>跟踪一帧：从回调到旧缓冲归还</h2>
+<p class="desc">每个节点都列出执行者、输入、实际动作、产物、分支及视图影响。按因果关系分组：测量可能穿插在窗口协商前后；RT 提前放行后，UI 与绘制可重叠；SF 可独立处理别的窗口。点击阶段可展开。</p>
+@@STAGES@@
+<figure class="overview" aria-label="追踪同一窗口前后两个缓冲的三个同步边界"><p class="origin">别把三种 fence 当成同一个“绘制完成”</p>
+<div class="lane"><b>新缓冲 B</b><div><strong>acquire fence</strong><i>保护读：</i>App 可以先交 B，消费者实际读 B 要满足生产端写入依赖。<a href="#r5">看 BLAST 如何携带它</a></div></div>
+<div class="lane"><b>显示输出 D</b><div><strong>present fence</strong><i>跟踪呈现：</i>D 的送显调用返回与有效显示栅栏发信号不是一回事。<a href="#s6">看时间戳何时回收</a></div></div>
+<div class="lane"><b>旧缓冲 A</b><div><strong>release fence</strong><i>保护重写：</i>A 的槽可归还；下次生产者要满足旧消费者的依赖才可覆盖。<a href="#s7">看背压怎样返回应用</a></div></div>
+<figcaption>A、B 是同一窗口的不同缓冲，D 是整个显示输出。获得缓冲、选中缓冲、提交显示、资源可安全重用分别回答不同的问题，不能只凭一条回调证明全部完成。</figcaption></figure></section>
+<section class="major" id="cases"><span class="sectionno">03 / COMPARISONS</span><h2>把数量固定，改变一种工作</h2><p class="desc">以下是由源码分支推出的对照，不是跑分结果。每个案例都链接到可以核对的阶段。</p>@@CASES@@</section>
+<section class="major" id="factors"><span class="sectionno">04 / WORKLOAD INDEX</span><h2>一项视图变化，会把工作送到哪里？</h2>
+<p class="desc">按阶段或关键词筛选。每项都说明作用机制、一个不成立的推断，以及可区分两者的观察方法。这里覆盖所追踪 View → HWUI → SF 主线的可辨别因素；业务代码、驱动和面板中的任意行为不可能由 framework 穷举。</p>
+<div class="filters" id="tools" hidden><label>影响阶段<select id="where"><option value="">全部阶段</option>@@OPTIONS@@</select></label><label>搜索因素<input id="query" type="search" placeholder="例如：图片、动画、透明、fence"></label><button id="clear" type="button">重置</button><span id="count" role="status"></span></div>
+@@FACTORS@@</section>
+<section class="major" id="diagnose"><span class="sectionno">05 / FIELD GUIDE</span><h2>找到最先错过目标的那一段</h2>
+<ol class="diag"><li><b>先锁定是哪一帧、哪一个窗口。</b> 在真机 Perfetto 采集可用的 FrameTimeline、gfx/view、sched、Binder 及设备支持的 GPU/fence 数据。选现象对应的窗口 SurfaceFrame，结合进程、layer 名、时间及 token 关联 DisplayFrame；不要用“时间上离得最近”代替关联。App token 与 display frame token 不是必须相等的同一个编号。@@TRACEID@@</li>
+<li><b>判断是没被调度到，还是被工作占满。</b> 查 UI 线程上 <code>Choreographer#doFrame</code> 的实际开始，分解 input、animation、traversal、measure、layout、draw。与线程 runnable/running/阻塞状态对齐；若自定义回调内部混有绑定或解码，添加应用 trace 标记，而不是按 slice 名称猜。@@TRACEUI@@</li>
+<li><b>沿同一缓冲看交接和等待。</b> 找 RT 的 <code>DrawFrames</code>、sync、资源准备、issue/swap、queue，再看 GPU 完成、acquire 依赖、BLAST 的 frameNumber。queue 早而 GPU 晚、RT 等空槽、UI 等 RT 是三种不同机制。FrameMetrics 的 DRAW 是录制区间、GPU_DURATION 是特定时间戳之差；TOTAL 不是各项相加，也不是 input-to-photon。@@TRACERT@@</li>
+<li><b>最后检查 SF 所作的选择。</b> 看 SF 的 frame signal / commit、该层的事务与 latch、合成类型以及 present fence。区分 pending、dropped、已提交和已呈现。FrameTimeline 将未完成的 present fence 留待处理；trace 缺轨道或 fence 无效时，结论应是“无法判定”，不是耗时为零。@@TRACESF@@</li>
+<li><b>用对照求本机上限，而非寻找通用 N。</b> 固定设备、分辨率、实际刷新模式、素材尺寸与可见面积、动画轨迹、缓存冷热和温度；分别测试同属性的 1、8、24、48 个可见对象（示例梯度，可自定）。分别对照“各子项平移 / 移动共同父项 / 改宽高 / 重绘内容”。记录实际活跃属性数、每帧调用次数、各阶段耗时分布、相对 deadline 的余量和晚呈现占比；多次重复、分开首帧与稳态。若 GPU、后台抢占、降频或窗口策略同时变化，不把差值全算在 View 数量上。</li></ol>
+</section>
+<section class="major" id="sources"><span class="sectionno">06 / PROVENANCE</span><h2>源码、证据强度与范围</h2>
+<p><b>直接证据：</b>仓库 README 标注 android17-release；本页引用固定在本地快照 <code>@@COMMIT@@</code>。路径相对本仓库，并非声称与某个未核实的上游 tag 完全一致。下列行均嵌入页面，离线也可查看。</p>
+<p><b>推论：</b>“影响因素”和对照描述的是某一条件如何增加工作或依赖，不是每帧都执行的保证。无前序事件、无有效 Surface、绘制取消、空 damage 或无新事务等分支可以跳过大段工作。</p>
+<p><b>未知：</b>本文主线是普通硬件加速 View 窗口与物理显示；软件绘制、独立 Surface、RT-only 和多输出在差异处说明。不是对游戏引擎、Compose 重组、网页内部排版、显示驱动或面板扫描电路的实现追踪。厂商 overlay 能力、DVFS、热限频、内存带宽、调度抢占及外部生产者负载须实测。显示 fence 不是逐像素光学证据；端到端发光需设备侧测量。</p>
+<details id="evidence"><summary>本页引用的 @@NREF@@ 段源码（@@NFILE@@ 个文件，含行号）</summary>@@EVIDENCE@@</details></section>
+<footer>Android 图形管线 · 阅读顺序不代表耗时比例。　<a href="#top">回到流程图 ↑</a></footer>
+</main>
+<script>
+const q=document.getElementById('query'), w=document.getElementById('where'), rows=Array.from(document.querySelectorAll('details.factor'));
+function filterRows(){const term=q.value.trim().toLowerCase();let n=0;for(const r of rows){r.hidden=!!((w.value&&!r.dataset.stages.split(' ').includes(w.value))||(term&&!r.textContent.toLowerCase().includes(term)));if(!r.hidden)n++;}document.getElementById('count').textContent='命中 '+n+' / '+rows.length+' 项'+(n?'':'，可重置或换关键词');}
+function reset(){q.value='';w.value='';filterRows();}
+document.getElementById('tools').hidden=false;q.addEventListener('input',filterRows);w.addEventListener('change',filterRows);document.getElementById('clear').addEventListener('click',reset);filterRows();
+function reveal(){const id=location.hash.slice(1),el=document.getElementById(id);if(!el)return;if(el.classList.contains('factor')&&el.hidden)reset();for(let p=el;p;p=p.parentElement){if(p.tagName==='DETAILS')p.open=true;}requestAnimationFrame(()=>el.scrollIntoView({block:'start'}));}
+addEventListener('hashchange',reveal);document.addEventListener('click',e=>{const a=e.target.closest('a[href^="#"]');if(a&&a.hash===location.hash)reveal();});if(location.hash)addEventListener('load',reveal);
+const themeButton=document.getElementById('themeBtn'),themeIcon=document.getElementById('themeIcon'),themeNames={auto:'跟随系统',light:'浅色',dark:'深色'};
+function applyTheme(pref){const light=pref==='light'||pref==='auto'&&matchMedia('(prefers-color-scheme: light)').matches,root=document.documentElement;root.dataset.themePref=pref;root.dataset.theme=light?'light':'dark';const label='配色：'+themeNames[pref];themeButton.title=label+'，点击切换';themeButton.setAttribute('aria-label',label+'，点击切换');themeButton.setAttribute('aria-pressed',String(!light));themeIcon.textContent=light?'☾':'☀';}
+themeButton.addEventListener('click',()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';try{localStorage.setItem('fp-theme',next);}catch(_){}applyTheme(next);});
+const themeMedia=matchMedia('(prefers-color-scheme: light)');
+const onThemeMediaChange=()=>{if(document.documentElement.dataset.themePref==='auto')applyTheme('auto');};
+if(themeMedia.addEventListener)themeMedia.addEventListener('change',onThemeMediaChange);else themeMedia.addListener(onThemeMediaChange);
+applyTheme(document.documentElement.dataset.themePref||'auto');
+</script>
+</body></html>

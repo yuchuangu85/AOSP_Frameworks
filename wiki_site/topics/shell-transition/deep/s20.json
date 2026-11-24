@@ -1,0 +1,38 @@
+{
+  "step": "s20",
+  "title": "Handler 播放动画",
+  "tldr": "被选中的 handler 把一份 TransitionInfo 拆成若干条 leash 动画，并在最后一条播完后调 finishCallback。",
+  "why": "没有这一层：startT 里只有 WMS 写好的终态位置与可见性，没有任何随时间变化的属性，Activity 会直接「跳」到目标位置——用户看到的是白屏后画面一帧闪切、列表里上一屏内容凭空消失、返回时桌面直接顶上来而不是滑入。handler 是唯一给这一拍赋予时间轴的角色；它返回 false 不接，转场就永远停在 PLAYING，屏幕冻在动画起点。",
+  "concepts": [
+    { "term": "WindowAnimation", "text": "一个 leash 配一个 Animation 打包成的可启动对象；start() 后逐帧写事务，结束或取消时回调 onAnimFinish。" },
+    { "term": "TransitionFinishCallback", "text": "handler 播完必须调的回调；Transitions 收到后走 onFinish（apply finishT + finishTransition）。不调，转场永不结束。" }
+  ],
+  "walk": [
+    { "call": "startAnimation(transition, info, startTransaction, finishTransaction, finishCallback)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:338", "what": "唯一真正播动画的重载；playTransition 认领到这个 handler 后，它接手整份 info 的所有 change。" },
+    { "call": "finishCallback.onTransitionFinished(null /* wct */)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:358", "what": "全静止/无动画/INVISIBLE 时立刻收工：先 apply 起始事务再宣告播完，避免转场停在 PLAYING。" },
+    { "call": "mTransitionAnimators.put(transition, animations)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:367", "what": "登记「这个 token 有一批动画在跑」，列表被 onAnimFinish 清空才是 finish 的触发条件。" },
+    { "call": "loadAnimation(type, info, change, wallpaperTransit, isDreamTransition)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:523", "what": "按 transi type + change 的 mode 选一个系统 Animation；返回 null 表示这条 change 不参与动画。" },
+    { "call": "buildWindowAnimation(a, change, change.getLeash(), onAnimFinish, mTransactionPool, mMainExecutor, animRelOffset, cornerRadius, clipRect, ...)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:655", "what": "把 Animation 绑到 leash 上生成 WindowAnimation；完成回调统一走 onAnimFinish 做引用计数。" },
+    { "call": "startTransaction.apply()", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:676", "what": "把起始位置、裁剪、背景层、可见性合成一次上屏；必须在动画 start 之前，否则第一帧就是错的。" },
+    { "call": "animations.forEach(WindowAnimation::start)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:688", "what": "在 mAnimExecutor（非 Shell 主线程）上启动，避免 ValueAnimator 的首帧计算卡住主线程。" },
+    { "call": "finishTransition(transition, info, finishCallback, isTaskTransition)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:696", "what": "一条动画都没建出来时立刻收尾：清两张表、释放 surface、回调 onTransitionFinished。" }
+  ],
+  "state": [
+    { "field": "mTransitionAnimators / mFinishCallbacks", "before": "没有这个 token", "after": "token → animations 列表、token → finishCallback", "note": "两张表同一个 key，finishTransition 里一起清" },
+    { "field": "startTransaction", "before": "已写入可见性、位置、crop，未提交", "after": "已 apply（676）", "note": "apply startT 是 handler 的责任，onFinish 只会 clear 它" },
+    { "field": "animations 列表", "before": "N 条（含旋转、bounds 变化、ActivityWrap 等分支产出）", "after": "0 条", "note": "空列表是唯一的 finish 触发条件" }
+  ],
+  "threads": "startAnimation 在 wmshell.main（Shell 主线程）执行，不持 mGlobalLock；动画 start 被丢到 mAnimExecutor，逐帧事务在 Choreographer 回调里 apply，完成回调再 post 回 mainExecutor。",
+  "pitfalls": [
+    "返回 true 只表示「我接了这个转场」，不代表动画播完。真正的播完信号是 finishCallback.onTransitionFinished，由 onAnimFinish 的引用计数决定。",
+    "早退分支（TRANSIT_WAKE、isAllNoAnimation、isAllStationary、TRANSIT_FLAG_INVISIBLE）没有动画，必须自己 apply(startT) 并立刻回调；忘了回调就是永久 PLAYING。",
+    "DefaultTransitionHandler 假设自己 apply startT；RemoteTransitionHandler 相反——把 startT 交给远端后立刻 startTransaction.clear()（RemoteTransitionHandler.java:217），远端不 apply，画面就停在旧状态。",
+    "动画在 mAnimExecutor 上 start，而 onFinish 回到主线程，日志里「动画结束」和「onFinish」之间可能隔一帧，不要据此判断掉帧。"
+  ],
+  "debug": [
+    "adb shell protoLog enable com.android.systemui WM_SHELL_TRANSITIONS，在 logcat 里对「Playing animation for / start default transition animation / animated by」三行定位 handler。",
+    "adb shell dumpsys SurfaceFlinger --list | grep -E \"Transition Root|ActivityWrap|animation-background\" 看这一拍到底建了哪些图层。",
+    "perfetto 抓 sched + gfx + wm，量 startAnimation 到 finishTransition 之间的帧数与 apply 间隔。"
+  ],
+  "next": "动画已经在 leash 上跑起来了，接下来要问「这些 leash 挂在哪、背景层从哪来」→ 第 30 步「动画落地：背景层与可动画容器」。"
+}

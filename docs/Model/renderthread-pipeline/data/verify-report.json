@@ -1,0 +1,362 @@
+[
+ {
+  "stage": 1,
+  "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+  "lines": "175-183",
+  "symbol": "RenderThread::getInstance",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "9/9 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+  "lines": "221-233",
+  "symbol": "RenderThread::initThreadLocals",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "12/12 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+  "lines": "420-452",
+  "symbol": "RenderThread::threadLoop",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "28/28 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "base/libs/hwui/renderthread/RenderProxy.cpp",
+  "lines": "49-68",
+  "symbol": "RenderProxy::RenderProxy",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "20/20 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "72-87",
+  "symbol": "DrawFrameTask::drawFrame / DrawFrameTask::postAndWait",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "13/13 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "89-127",
+  "symbol": "DrawFrameTask::run",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "34/34 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/libs/hwui/renderthread/RenderProxy.cpp",
+  "lines": "229-239",
+  "symbol": "RenderProxy::frameInfo / RenderProxy::syncAndDrawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "9/9 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp",
+  "lines": "464-473",
+  "symbol": "android_view_ThreadedRenderer_syncAndDrawFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "169-191",
+  "symbol": "DrawFrameTask::syncFrameState",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "21/21 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "192-217",
+  "symbol": "info.out.skippedFrameReason",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/libs/hwui/renderthread/TimeLord.cpp",
+  "lines": "31-51",
+  "symbol": "TimeLord::vsyncReceived",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "19/19 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "base/libs/hwui/TreeInfo.h",
+  "lines": "66-90",
+  "symbol": "MODE_FULL",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "23/23 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "506-546",
+  "symbol": "CanvasContext::prepareTree",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "38/38 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "548-572",
+  "symbol": "CanvasContext::prepareTree",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "21/21 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "599-619",
+  "symbol": "ReliableSurface::reserveNext",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "20/20 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "base/libs/hwui/RenderNode.cpp",
+  "lines": "228-266",
+  "symbol": "RenderNode::prepareTreeImpl",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "672-704",
+  "symbol": "CanvasContext::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "726-749",
+  "symbol": "CanvasContext::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "17/17 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "751-781",
+  "symbol": "IRenderPipeline::setFrameTimelineInfo",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "31/31 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "783-823",
+  "symbol": "CanvasContext::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "35/35 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+  "lines": "116-160",
+  "symbol": "SkiaOpenGLPipeline::draw",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "41/41 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+  "lines": "168-192",
+  "symbol": "SkiaPipeline::renderFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "21/21 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+  "lines": "194-214",
+  "symbol": "SkiaOpenGLPipeline::swapBuffers",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "16/16 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+  "lines": "340-365",
+  "symbol": "SkiaPipeline::renderFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "20/20 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+  "lines": "194-214",
+  "symbol": "SkiaOpenGLPipeline::swapBuffers",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "16/16 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/libs/hwui/renderthread/EglManager.cpp",
+  "lines": "592-603",
+  "symbol": "EglManager::beginFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "11/11 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "base/libs/hwui/renderthread/EglManager.cpp",
+  "lines": "621-652",
+  "symbol": "EglManager::swapBuffers / EglManager::fence",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/libs/gui/Surface.cpp",
+  "lines": "614-626",
+  "symbol": "Surface::hook_queueBuffer",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "13/13 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "567-595",
+  "symbol": "BLASTBufferQueue::acquireNextBufferLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "713-746",
+  "symbol": "setApplyToken",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "779-803",
+  "symbol": "BLASTBufferQueue::onFrameAvailable",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "22/22 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "lines": "1196-1225",
+  "symbol": "SurfaceComposerClient::Transaction::apply",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "lines": "89-138",
+  "symbol": "DrawFrameTask::run",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+  "lines": "878-911",
+  "symbol": "didProduceBuffer",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+  "lines": "590-625",
+  "symbol": "SkiaPipeline::getFrameTimestamps",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "34/34 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "native/libs/gui/SurfaceComposerClient.cpp",
+  "lines": "537-563",
+  "symbol": "ON_COMPLETE",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ }
+]

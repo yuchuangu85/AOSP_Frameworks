@@ -1,0 +1,39 @@
+{
+  "step": "s38",
+  "title": "中止：abort 不是「不回滚」",
+  "tldr": "abort 只保证状态和顺序不乱：不播动画、不重放，转场照样排队走完 finish，所以画面可能直接跳过去。",
+  "why": "如果不这么做：被 abort 的转场（空转场、所有 change 都被遮挡、或 core 发现同步超时）若直接从队列里删掉，它占的 anim surface 和 core 侧的 finish 顺序就断了——后一个转场会跟它乱序 finish，用户看到的是窗口卡在半路或者干脆不消失。反过来，如果 abort 之后又把原动画补播一遍，用户会看到一个本该被取消的入场动画。",
+  "concepts": [
+    { "term": "onTransitionConsumed(abort=true)", "text": "通知 handler「这个转场归你但不会播了」，让它释放挂的 listener 与 leash。" },
+    { "term": "anim surface", "text": "core 为动画造的临时 Surface（root leash、snapshot），abort 时立刻释放。" },
+    { "term": "mAborted", "text": "Shell 侧 ActiveTransition 的标记；带它进队列后仍占位，被消费时只补 apply。" }
+  ],
+  "walk": [
+    { "call": "void abort()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1949", "what": "core 入口：已 abort 直接返回，PENDING 直跳 ABORT，其余走完整流程。" },
+    { "call": "mState = STATE_ABORT;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1962", "what": "先改状态再 abort sync，保证回调回来时 onTransactionReady 走 abort 分支。" },
+    { "call": "mSyncEngine.abort(mSyncId);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1967", "what": "不等参与者画完，直接让 SyncGroup finishNow，从而回调 onTransactionReady。" },
+    { "call": "if (mState == STATE_ABORT) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2069", "what": "onTransactionReady 立刻返回：不造 TransitionInfo，也不通知 Shell。" },
+    { "call": "private void onAbort(ActiveTransition transition)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1161", "what": "Shell 侧的另一半：转场已 ready 但没东西可动画时在这里标记不播。" },
+    { "call": "transition.mHandler.onTransitionConsumed(transition.mToken, true /* aborted */, transition.mFinishT);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1169", "what": "让 handler 释放自己挂的东西；此时 finishT 还没 apply。" },
+    { "call": "releaseSurfaces(transition.mInfo);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1173", "what": "立刻释放 root leash 与 snapshot，不等 finish——abort 唯一「提前」做的事。" },
+    { "call": "if (ready.mAborted) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:962", "what": "轮到它却已标记 abort：补 apply 起始事务后直接 finish，不进 playTransition。" }
+  ],
+  "state": [
+    { "field": "ActiveTransition.mAborted", "before": "false", "after": "true（1163 行）", "note": "它在 track 队列里仍占一个位置" },
+    { "field": "Track.mReadyTransitions", "before": "包含该 token 且前面还有排队（size>1）", "after": "原样保留，1176 行直接 return 等前一个播完", "note": "排在队首时才会被立刻消费" },
+    { "field": "Transition.mState（core）", "before": "STATE_STARTED（collecting 阶段也可能）", "after": "STATE_ABORT", "note": "core 与 Shell 各自的 abort 语义不同，见 pitfalls" },
+    { "field": "Transition.mSyncId", "before": "有效的 sync id", "after": "-1（2085 行清空）", "note": "标记这份 Transition 不再持有 SyncSet" }
+  ],
+  "threads": "Transitions.onAbort/processReadyQueue 在 Shell 主线程；Transition.abort 在持 mGlobalLock 的 WMS 线程（多为 binder 线程）。两边通过 oneway 的 ITransitionPlayer 单向通知，互不等待。",
+  "pitfalls": [
+    "abort 不等于回滚：core 的 abort 分支只是 commitVisibleActivities 提交当前请求的可见性，已经 hide 的窗口不会重新 show，所以画面是跳变而不是「回到动画开始前的样子」。",
+    "两个 abort 不是同一件事：Transition.abort() 把 core 推到 STATE_ABORT 且不会再调 Shell 的 onTransitionReady；Transitions.onAbort() 处理的是已经 ready 的转场，core 那边仍是 PLAYING，最后要靠 finishTransition 收尾。",
+    "被 abort 的转场仍占着 track 队列的位置（1175 行注释：This still went into the queue to maintain the correct finish ordering），想靠删掉它来加速是错的。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS：看 Aborting Transition: %d（Transition.java:1961）和 Sync group N timeout 谁先出现。",
+    "Shell 侧的 Non-visible anim so abort（899 行）与 No transition roots in ... so abort（856 行）属于 WM_SHELL_TRANSITIONS，用 adb shell dumpsys activity service SystemUIService WMShell 抓。",
+    "Perfetto 里看 ShellTransition.WM_ABORT_TIME_NS 是否有值：有就是 core 侧 abort（PerfettoTransitionTracer.java:164），没有但画面跳了多半是 Shell 侧 no-op abort。"
+  ],
+  "next": "第 39 步「旋转与睡眠的特殊处理」。"
+}

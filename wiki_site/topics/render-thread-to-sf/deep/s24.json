@@ -1,0 +1,49 @@
+{
+  "step": "s24",
+  "title": "Layer::setBuffer / 快照：buffer 落到 Layer 的 drawing state",
+  "tldr": "buffer 写进 drawing state，fence 记成 FenceTime，latch 时才真等。",
+  "why": "没有这一步，SF 只知道「这个 Layer 的属性变了」，不知道有块新 buffer 要显示，composite 会一直画旧内容。它还把 acquire fence 一路带到 latch：如果这里不记 fence 或记错（fenceChanged 的判断），latchBufferImpl 就无从判断 GPU 是否写完，SF 会在 GPU 还在渲染时读这块 buffer——屏幕上是花屏与块状撕裂，且只在重载时出现。此外 release 回调的身份与 buffer 的先后顺序也在这里定下，写错会让 buffer 迟迟回不到 app。",
+  "concepts": [
+    { "term": "drawing state", "text": "Layer 里已生效的状态：commit 时写、composite 时读，与 snapshot 是两份。" },
+    { "term": "previousBuffer", "text": "setBuffer 先把旧 buffer 挪到这里，等 release 回调才真正还回去，避免 SF 还在读就被回收。" },
+    { "term": "FenceTime", "text": "对 fence fd 的封装，能查 signal 时间；SF 用它算 acquire 耗时与 frame timeline。" },
+    { "term": "mCallbackHandleAcquireTimeOrFence", "text": "给回调用的 acquire 信息：fence 已 signal 就存时间，否则存 fence 本身，回调不会早发。" },
+    { "term": "releasePreviousBuffer", "text": "把上一块 buffer 的释放推给 release 回调，present 之后才真正 releaseBuffer。" }
+  ],
+  "walk": [
+    { "call": "bool SurfaceFlinger::updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs, nsecs_t expectedPresentTimeNs, bool flushTransactions, bool& outTransactionsAreEmpty)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2771", "what": "commit 里的这一段：flush → 快照 → 落 Layer → latch 全在这里。" },
+    { "call": "mTransactionHandler.collectTransactions();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2789", "what": "把 lockless 队列里的事务搬到可 flush 的地方，仍未加 mStateLock。" },
+    { "call": "update.transactions = mTransactionHandler.flushTransactions();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2807", "what": "按 readiness 过滤后取出一批就绪事务（barrier/fence/presentTime 未到的留下次）。" },
+    { "call": "mLayerLifecycleManager.applyTransactions(update.transactions);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2824", "what": "先更新 frontend 的 requested state：这里就已经记下了新 buffer 的帧号。" },
+    { "call": "mLayerSnapshotBuilder.update(args);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2883", "what": "重建只读快照（几何、可见性、contentDirty），合成阶段读的是它而不是 Layer。" },
+    { "call": "mustComposite |= applyTransactionsLocked(update.transactions);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2906", "what": "持 mStateLock 把事务真正落到 legacy Layer 上，setBuffer 就在这里被调。" },
+    { "call": "if (layer->setBuffer(composerState.externalTexture, *s.bufferData, postTime, desiredPresentTime, isAutoTimestamp, frameTimelineInfo, gameMode, systemContentPriority)) {", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:6043", "what": "唯一调用点：只有带 eBufferChanged 的事务才进来，接着记进待呈现集合。" },
+    { "call": "bool Layer::setBuffer(std::shared_ptr<renderengine::ExternalTexture>& buffer, const BufferData& bufferData, nsecs_t postTime, nsecs_t desiredPresentTime, bool isAutoTimestamp, const FrameTimelineInfo& info, gui::GameMode gameMode, int32_t systemContentPriority)", "ref": "native/services/surfaceflinger/Layer.cpp:921", "what": "要求已持 mFlinger->mStateLock；只搬指针，不做 IPC。" },
+    { "call": "if (mDrawingState.buffer) { releasePreviousBuffer(); }", "ref": "native/services/surfaceflinger/Layer.cpp:927", "what": "旧 buffer 先挪去等 release，不能在这里直接还给 producer。" },
+    { "call": "mDrawingState.previousBuffer = std::move(mDrawingState.buffer); mDrawingState.buffer = std::move(buffer);", "ref": "native/services/surfaceflinger/Layer.cpp:958", "what": "新 buffer 生效、旧 buffer 进 previousBuffer，一进一出保持引用。" },
+    { "call": "mDrawingState.acquireFence = bufferData.flags.test(BufferData::BufferDataChange::fenceChanged) ? bufferData.acquireFence : Fence::NO_FENCE;", "ref": "native/services/surfaceflinger/Layer.cpp:960", "what": "只有带 fence 的事务才换 fence，否则 NO_FENCE——判错会等错一个 fence。" },
+    { "call": "if (mDrawingState.acquireFenceTime->getSignalTime() == Fence::SIGNAL_TIME_PENDING) { mCallbackHandleAcquireTimeOrFence = mDrawingState.acquireFence; }", "ref": "native/services/surfaceflinger/Layer.cpp:964", "what": "还没 signal 就把 fence 本身留给回调，已 signal 则只记时间戳。" }
+  ],
+  "state": [
+    { "field": "Layer::mDrawingState.buffer", "before": "旧 ExternalTexture（可能为空）", "after": "本帧 ExternalTexture（959）", "note": "旧值进 previousBuffer，等 release 回调才放手" },
+    { "field": "Layer::mDrawingState.acquireFence", "before": "上一帧的 fence", "after": "bufferData.acquireFence 或 NO_FENCE（960）", "note": "latchBufferImpl 等的就是它" },
+    { "field": "mDrawingState.frameNumber", "before": "上一帧号", "after": "bufferData.frameNumber（954）", "note": "SF 侧与 app frameNumber 对账的唯一来源" },
+    { "field": "mCallbackHandleAcquireTimeOrFence", "before": "上一帧的值", "after": "signal 时间或 fence 本身（964–971）", "note": "决定回调里报 acquire 时间还是带 fence" },
+    { "field": "mLayersWithQueuedFrames", "before": "上一拍的集合", "after": "emplace(layer, gameMode)（6048）", "note": "present 后按它逐层发 release" },
+    { "field": "mLayerLifecycleManager（frontend）", "before": "上一笔 requested state", "after": "applyTransactions 后的新 state（2824）", "note": "与 legacy Layer 的 drawing state 是两份，别混读" }
+  ],
+  "threads": "整段在 SF main thread 的 commit 里；2837 起持 mStateLock，Layer::setBuffer 声明 REQUIRES(mFlinger->mStateLock)。buffer 的 resolve（getExternalTextureFromBufferData，5654）发生在更早的 binder 线程，所以 setBuffer 只是搬指针与记账，不会阻塞在 IPC 上。",
+  "pitfalls": [
+    "fenceChanged 的判断（960）不能省：同一块 buffer 的后续事务不带 fence 时必须用 NO_FENCE；误用旧 fence 会让 latch 等一个已经 signal 过的 fence，看起来很快，实际少了同步。",
+    "setBuffer 不 release 旧 buffer：只是挪到 previousBuffer（927/958），真正 release 在 present 之后。这期间旧 buffer 不能被 producer 复用，三缓冲就是被这样占住的。",
+    "buffer 为 null 是合法路径（939–945）：resetDrawingStateBufferInfo 清空状态并置 eTransactionNeeded，别把它当错误日志去查。",
+    "2824 之后 frontend snapshot 已更新，但 legacy Layer 要到 2906 才更新：在这两步之间读 Layer 的 buffer 会读到旧值。",
+    "6048 把 layer 塞进 mLayersWithQueuedFrames 与 setBuffer 是否成功无关；有客户端合成/被遮挡的情况仍靠 willReleaseBufferOnLatch 与 latch 结果决定这一帧到底出不出。"
+  ],
+  "debug": [
+    "perfetto 里 SFTRACE_FORMAT 的 setBuffer <layer> - hasBuffer=true（925）与 SFTRACE_FORMAT_INSTANT 的 setBuffer <layer> - <frameNumber>（955）成对出现，能确认哪个帧号落到了哪一层。",
+    "perfetto 里 LayerSnapshotBuilder:update（2882）与 DisplayCallbackAndStatsUpdates（2905）把「建快照」和「落 Layer + latch」分成两段，便于区分是谁慢。",
+    "dumpsys SurfaceFlinger 里该 Layer 段可看 frameNumber 与 buffer 状态；frameNumber 前进了但画面没变，往下查 latch（第 25 步）。"
+  ],
+  "next": "第 25 步「latchBufferImpl：等 acquire fence」：buffer 已挂到 Layer 的 drawing state，合成前必须确认它可以安全读。"
+}

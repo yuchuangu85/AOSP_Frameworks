@@ -1,0 +1,1470 @@
+<!doctype html>
+<html lang="zh-CN" data-register="blueprint">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="基于当前 AOSP 源码，动画呈现 InputDispatcher 已发送事件的 FINISHED/ACK 超时、解除和恢复机制。">
+  <title>Input Dispatch Timeout ANR · AOSP 输入应答模型</title>
+  <script>
+    (function () {
+      let pref = 'auto';
+      try { pref = localStorage.getItem('fp-theme') || 'auto'; } catch (_) {}
+      document.documentElement.dataset.themePref = pref;
+      document.documentElement.dataset.theme = pref === 'light' || pref === 'auto' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    })();
+  </script>
+  <style>:root {
+  --bg: #0c0e11; --band: #101215; --panel: #15181d; --raised: #1b1f25; --line: #303840;
+  --text: #edf0f3; --text-2: #c3c9d0; --muted: #93a0ac;
+  --accent: #78b8f8; --accent-soft: #182b3e; --danger: #ff8787; --danger-soft: #341f24;
+  --ok: #6bd5ad; --ok-soft: #162d25; --warn: #e9c76d; --warn-soft: #332d1f;
+  --sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+  --mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace; color-scheme: dark;
+}
+html[data-theme="light"] {
+  --bg: #f6f8fa; --band: #edf1f4; --panel: #fff; --raised: #f1f4f7; --line: #ced8e1;
+  --text: #19232d; --text-2: #384b5b; --muted: #5a6c7a;
+  --accent: #155faa; --accent-soft: #e8f2fc; --danger: #b52c39; --danger-soft: #ffedf0;
+  --ok: #157554; --ok-soft: #e5f5ed; --warn: #8b6400; --warn-soft: #fff6d7; color-scheme: light;
+}
+* { box-sizing: border-box; letter-spacing: 0; }
+html { scroll-behavior: smooth; scroll-padding-top: 78px; }
+body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font: 15px/1.7 var(--sans); -webkit-font-smoothing: antialiased; }
+h1, h2, h3, p, figure, pre { margin: 0; }
+h1, h2, h3 { font-family: var(--sans); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button, input, select { font: inherit; }
+button, select { color: var(--text); }
+code, pre, output { font-family: var(--mono); }
+code { font-size: .85em; overflow-wrap: anywhere; }
+svg { display: block; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.wrap { max-width: 1440px; width: 100%; margin: 0 auto; padding: 0 32px; }
+.topbar { position: sticky; top: 0; z-index: 20; background: var(--bg); border-bottom: 1px solid var(--line); }
+.topbar-in { min-height: 62px; display: flex; align-items: center; gap: 24px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 650; white-space: nowrap; }
+.brand:hover { text-decoration: none; }
+.brand small { font: 10px var(--mono); color: var(--muted); margin-left: 9px; }
+.logo { display: grid; place-items: center; border: 1px solid var(--line); border-radius: 6px; width: 30px; height: 30px; color: var(--accent); }
+.logo svg, .icon-button svg { width: 18px; height: 18px; }
+.nav { display: flex; gap: 24px; margin-left: auto; }
+.nav a { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.icon-button { display: inline-grid; place-items: center; width: 34px; height: 34px; flex: 0 0 34px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text-2); cursor: pointer; }
+.icon-button:hover { color: var(--accent); border-color: var(--accent); }
+.play-button, .play-button:hover { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.intro { padding-top: 32px; padding-bottom: 27px; }
+.eyebrow, .sec-eyebrow { color: var(--muted); font: 10px/1.6 var(--mono); }
+.eyebrow { display: flex; align-items: center; gap: 9px; }
+.eyebrow i, .connection-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: 0 0 6px; }
+h1 { font-size: 37px; line-height: 1.3; font-weight: 720; margin: 12px 0 10px; }
+h1 > span { color: var(--danger); }
+.lede { font-size: 17px; color: var(--text-2); }
+.lede strong { color: var(--text); font-weight: 600; }
+.intro-meta { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px 24px; font-size: 10px; color: var(--muted); }
+.studio-band { padding: 24px 0 48px; background: var(--band); border-top: 1px solid var(--line); }
+.section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 22px; }
+.sec-eyebrow { margin-bottom: 6px; }
+h2 { font-size: 27px; font-weight: 650; line-height: 1.4; }
+.studio-band h2 { font-size: 23px; }
+.source-tag { font: 10px/1.7 var(--mono); color: var(--muted); }
+.studio { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: clip; }
+.scenario-bar { display: flex; align-items: center; gap: 12px; padding: 13px 20px; border-bottom: 1px solid var(--line); }
+.scenario-bar > label { font-size: 12px; color: var(--muted); }
+select { border: 1px solid var(--line); border-radius: 5px; min-height: 33px; padding: 5px 27px 5px 10px; background: var(--raised); font-size: 12px; max-width: 100%; }
+.scenario-bar select { min-width: 210px; }
+.scenario-bar p { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; }
+.result-tag, .case-tag { border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px; font-size: 10px; white-space: nowrap; }
+.result-tag { color: var(--text-2); }
+.transport { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+.play-controls { display: flex; gap: 5px; }
+.speed-label { display: flex; gap: 7px; align-items: center; font-size: 10px; color: var(--muted); }
+.speed-label select { min-height: 32px; }
+.scrub-wrap { display: flex; align-items: center; gap: 14px; flex: 1; min-width: 100px; }
+input[type="range"] { min-width: 0; accent-color: var(--accent); cursor: pointer; }
+#scrub { width: 100%; margin: 0; }
+#timeNow { width: 69px; flex-shrink: 0; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
+.connection-state { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ok); white-space: nowrap; }
+.connection-state.bad { color: var(--danger); }
+.connection-state.bad i { border-radius: 1px; background: var(--danger); }
+.stage { display: grid; grid-template-columns: 1.2fr .78fr 1fr; padding: 23px 24px; gap: 25px; align-items: stretch; }
+.actor { min-width: 0; }
+.actor-kind { font: 9px/1.6 var(--mono); color: var(--muted); }
+.actor h3 { font-size: 17px; margin: 4px 0 16px; font-weight: 600; line-height: 1.4; }
+.queue-title { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.queue-title code { font-size: 11px; color: var(--text-2); }
+.queue-title > span { color: var(--muted); font-size: 9px; }
+.queue-title b { color: var(--text); font: 500 11px var(--mono); }
+.queue { min-height: 49px; padding: 7px; border: 1px solid var(--line); border-radius: 5px; display: flex; gap: 5px; align-items: start; flex-wrap: wrap; background: var(--bg); }
+.outbound-queue { min-height: 37px; }
+.queue-empty { color: var(--muted); font: 9px/1.8 var(--mono); padding: 3px; }
+.queue-transfer { display: flex; justify-content: space-between; gap: 6px; padding: 8px 0; color: var(--muted); font-size: 8px; }
+.queue-transfer code { font-size: 8px; }
+.event-chip { display: grid; gap: 2px; min-width: 88px; flex: 1; max-width: 160px; border: 1px solid var(--warn); background: var(--warn-soft); color: var(--warn); border-radius: 4px; padding: 7px; }
+.event-chip strong { font: 600 10px/1.5 var(--mono); }
+.event-chip small { font: 8px/1.5 var(--mono); }
+.event-chip.overdue { border-color: var(--danger); color: var(--danger); background: var(--danger-soft); }
+.event-chip.outbound { color: var(--accent); border-color: var(--line); background: var(--raised); }
+.queue-note { color: var(--muted); font-size: 9px; margin-top: 12px; line-height: 1.9; }
+.channel { min-width: 0; text-align: center; padding-top: 38px; }
+.channel-heading { font: 600 13px/1.5 var(--mono); display: block; }
+.channel-kind { font: 8px/1.8 var(--mono); color: var(--muted); }
+.channel-wire { height: 65px; position: relative; margin: 14px 0 0; }
+.channel-wire b { color: var(--muted); font-size: 10px; font-weight: 500; }
+.channel-wire code { color: var(--muted); font-size: 8px; position: absolute; top: 40px; left: 0; width: 100%; }
+.wire { display: block; position: absolute; left: 0; top: 31px; width: 100%; height: 1px; background: var(--line); }
+.wire::after { content: ""; width: 7px; height: 7px; position: absolute; right: 1px; top: -3px; border-top: 1px solid var(--muted); border-right: 1px solid var(--muted); transform: rotate(45deg); }
+.ack-wire .wire::after { left: 1px; right: auto; transform: rotate(-135deg); }
+.channel-wire.active .wire { background: var(--accent); }
+.ack-wire.active .wire { background: var(--ok); }
+.channel-wire.active b { color: var(--accent); }
+.ack-wire.active b { color: var(--ok); }
+.packet { position: absolute; left: 0; top: 27px; width: 8px; height: 8px; border-radius: 2px; background: var(--accent); opacity: 0; }
+.ack-wire .packet { background: var(--ok); }
+.channel-callout { font-size: 9px; line-height: 1.8; color: var(--muted); padding: 9px 3px 0; border-top: 1px solid var(--line); margin-top: 9px; }
+.app-status { font-size: 11px; color: var(--warn); margin: -3px 0 10px; min-height: 19px; }
+.looper-stage { min-height: 110px; display: grid; align-content: center; gap: 5px; padding: 13px; background: var(--raised); border: 1px solid var(--line); border-radius: 6px; }
+.looper-stage.blocked { border-style: dashed; border-color: var(--warn); background: var(--warn-soft); }
+.looper-stage.handling { border-color: var(--accent); }
+.looper-stage.done { border-color: var(--ok); background: var(--ok-soft); }
+.looper-symbol { color: var(--muted); margin-bottom: 3px; }
+.looper-symbol svg { width: 19px; height: 19px; }
+.looper-stage b { color: var(--text-2); font-size: 11px; font-weight: 500; overflow-wrap: anywhere; }
+.looper-stage > span:not(.looper-symbol) { font-size: 9px; color: var(--muted); }
+.work-progress { height: 3px; background: var(--line); margin-top: 5px; overflow: hidden; }
+.work-progress i { display: block; height: 100%; width: 0; background: var(--accent); }
+.app-boundaries { padding-top: 11px; display: grid; gap: 7px; }
+.app-boundaries > div { display: grid; grid-template-columns: 5px 1fr auto; gap: 7px; align-items: center; }
+.app-boundaries i { width: 5px; height: 5px; border: 1px solid var(--muted); border-radius: 50%; }
+.app-boundaries span { font-size: 9px; color: var(--muted); }
+.app-boundaries code { font-size: 8px; color: var(--muted); }
+.app-boundaries .done i { border-color: var(--ok); background: var(--ok); }
+.app-boundaries .done code { color: var(--ok); }
+.watch-strip { display: grid; grid-template-columns: 1.4fr .7fr 1fr; padding: 15px 24px; gap: 24px; align-items: center; border-top: 1px solid var(--line); background: var(--raised); }
+.tracker { min-width: 0; }
+.tracker-entries { display: flex; flex-wrap: wrap; gap: 5px; min-height: 29px; align-items: center; }
+.tracker-entry { font: 9px/1.5 var(--mono); color: var(--warn); border: 1px solid var(--line); padding: 5px 7px; border-radius: 4px; }
+.tracker-entry.first { border-color: var(--warn); }
+.deadline-clock { border-left: 1px solid var(--line); padding-left: 24px; display: grid; gap: 2px; min-width: 0; }
+.deadline-clock > span { font-size: 9px; color: var(--muted); }
+.deadline-clock strong { font: 500 29px/1.4 var(--mono); color: var(--warn); font-variant-numeric: tabular-nums; }
+.deadline-clock small { font: 11px var(--mono); color: var(--muted); }
+.deadline-clock > code { font-size: 8px; color: var(--muted); }
+.timeout-rule { display: grid; gap: 5px; min-width: 0; }
+.timeout-rule code { font-size: 11px; color: var(--text-2); }
+.timeout-rule span { color: var(--muted); font-size: 9px; }
+.verdict { padding: 13px 24px; background: var(--warn-soft); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 3px 18px; }
+.verdict b { font-size: 12px; font-weight: 600; }
+.verdict > span { color: var(--muted); font-size: 10px; grid-column: 1; }
+.verdict > code { grid-column: 2; grid-row: 1 / 3; align-self: center; max-width: 330px; text-align: right; color: var(--warn); font-size: 9px; }
+.verdict.danger { background: var(--danger-soft); }
+.verdict.danger > code { color: var(--danger); }
+.verdict.ok { background: var(--ok-soft); }
+.verdict.ok > code { color: var(--ok); }
+.verdict.idle { background: var(--raised); }
+.policy-path { display: grid; grid-template-columns: 1fr 20px 1.1fr 20px 1fr 20px 1fr; gap: 10px; align-items: center; padding: 13px 24px; border-bottom: 1px solid var(--line); }
+.policy-path > span { display: grid; gap: 2px; min-width: 0; }
+.policy-path b { font-size: 10px; color: var(--muted); font-weight: 500; }
+.policy-path small { font-size: 8px; color: var(--muted); overflow-wrap: anywhere; }
+.policy-path i { font: 16px var(--mono); text-align: center; color: var(--muted); }
+.policy-path .reached b { color: var(--danger); }
+.timeline { padding: 15px 24px 20px; }
+.timeline-head { display: flex; justify-content: space-between; gap: 15px; font-size: 9px; color: var(--muted); margin-bottom: 8px; }
+.timeline-board { display: flex; gap: 12px; }
+.timeline-labels { width: 47px; flex-shrink: 0; padding-top: 25px; }
+.timeline-labels > div { height: 41px; display: grid; align-content: center; font-size: 9px; line-height: 1.6; }
+.timeline-labels small { color: var(--muted); font: 7px var(--mono); }
+.timeline-plot { position: relative; flex: 1; min-width: 0; }
+.ruler { position: relative; height: 25px; border-bottom: 1px solid var(--line); }
+.tick { position: absolute; top: 0; font: 8px/1.6 var(--mono); color: var(--muted); }
+.tick::after { content: ""; width: 1px; height: 5px; position: absolute; left: 0; top: 20px; background: var(--line); }
+.time-row { position: relative; height: 41px; border-bottom: 1px solid var(--line); }
+.time-segment { position: absolute; top: 5px; height: 16px; padding: 0 5px; overflow: hidden; white-space: nowrap; color: var(--warn); background: var(--warn-soft); border-radius: 2px; font: 8px/16px var(--mono); }
+.time-segment.work { top: 25px; height: 8px; background: var(--accent-soft); border: 1px dashed var(--accent); }
+.time-segment.ack { background: var(--ok-soft); color: var(--ok); }
+.time-segment.late { background: var(--danger-soft); color: var(--danger); }
+.deadline-mark { position: absolute; top: 0; height: 36px; width: 1px; border-left: 1px dashed var(--danger); }
+.deadline-mark b { position: absolute; top: 27px; left: 4px; font: 7px/1 var(--mono); color: var(--danger); font-weight: 400; white-space: nowrap; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); pointer-events: none; }
+.playhead::before { content: ""; position: absolute; width: 5px; height: 5px; left: -2px; background: var(--accent); }
+.parameter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 25px; padding: 12px 24px; border-top: 1px solid var(--line); background: var(--raised); }
+.parameter-row label { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 10px; }
+.parameter-row input { width: 90px; }
+.parameter-row output { min-width: 45px; color: var(--text-2); font-size: 9px; }
+.parameter-row select { font-size: 10px; min-height: 28px; }
+.parameter-row > span { color: var(--muted); font-size: 9px; }
+.phase-panel { display: grid; grid-template-columns: 1.12fr 1fr; border-top: 1px solid var(--line); }
+.phase-copy { padding: 23px 24px; min-height: 242px; }
+.phase-eyebrow { display: flex; gap: 14px; font: 10px/1.7 var(--mono); color: var(--accent); margin-bottom: 9px; }
+.phase-eyebrow span + span { color: var(--muted); }
+.phase-copy h3 { font-size: 18px; font-weight: 600; line-height: 1.6; margin-bottom: 10px; }
+.phase-copy p { font-size: 12px; color: var(--text-2); line-height: 1.9; }
+.phase-copy > a { display: inline-block; font: 9px/1.8 var(--mono); margin-top: 14px; overflow-wrap: anywhere; }
+.event-list { padding: 12px; margin: 0; list-style: none; border-left: 1px solid var(--line); max-height: 302px; overflow-y: auto; }
+.event-list li { margin: 0; padding: 0; }
+.event-list button { display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; border: 0; border-radius: 4px; width: 100%; background: transparent; color: var(--muted); font-size: 10px; line-height: 1.7; text-align: left; cursor: pointer; }
+.event-list button code { font-size: 9px; width: 42px; flex-shrink: 0; }
+.event-list button.current { color: var(--text); background: var(--accent-soft); }
+.event-list button.past { color: var(--text-2); }
+.event-list button.current::after { content: "●"; color: var(--accent); margin-left: auto; }
+figcaption { font-size: 10px; color: var(--muted); line-height: 1.9; }
+figcaption > span { color: var(--accent); font: 10px/1.6 var(--mono); margin-right: 10px; }
+.studio > figcaption { padding: 12px 24px; border-top: 1px solid var(--line); background: var(--raised); }
+.band { border-top: 1px solid var(--line); padding: 52px 0; }
+.lifecycle { display: grid; grid-template-columns: 1fr 24px 1.2fr 24px 1.4fr; gap: 18px; padding: 12px 0 25px; align-items: center; }
+.lifecycle > div { display: grid; gap: 8px; min-width: 0; }
+.lifecycle span { color: var(--text-2); font-size: 13px; }
+.lifecycle code { font-size: 11px; }
+.lifecycle small { font-size: 10px; color: var(--muted); }
+.lifecycle-wait code { color: var(--warn); }
+.lifecycle i { font: 18px var(--mono); color: var(--muted); }
+.mechanism-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 35px; padding: 30px 0; margin-top: 25px; border-top: 1px solid var(--line); }
+.mechanism-grid article { min-width: 0; }
+.mechanism-grid h3, .diagnostic-grid h3 { font-size: 16px; margin: 6px 0 12px; font-weight: 600; }
+.mechanism-grid p { font-size: 12px; line-height: 1.9; color: var(--text-2); }
+.mechanism-grid a { display: block; margin-top: 13px; font-size: 10px; }
+.subtleties { display: grid; grid-template-columns: 1fr 1fr; gap: 25px 40px; border-top: 1px solid var(--line); padding-top: 30px; }
+.subtleties > div, .boundary-grid > div { min-width: 0; }
+.subtleties > div + div { border-left: 1px solid var(--line); padding-left: 35px; }
+.case-tag { display: inline-block; font: 9px/1.8 var(--mono); }
+.case-tag.warn { color: var(--warn); border-color: var(--warn); }
+.case-tag.danger { color: var(--danger); border-color: var(--danger); }
+.case-tag.info { color: var(--accent); border-color: var(--accent); }
+.subtleties h3, .boundary-grid h3 { font-size: 17px; font-weight: 600; margin-top: 10px; }
+.subtleties p, .boundary-grid p { font-size: 12px; color: var(--text-2); line-height: 1.9; }
+.mini-queue { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px 0; }
+.mini-queue span { color: var(--warn); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 8px 13px; }
+.mini-queue .done { color: var(--ok); border-style: dashed; }
+.deadline-example { display: grid; gap: 7px; padding: 18px 0; font: 11px/1.6 var(--mono); }
+.deadline-example code { margin-left: 15px; font: inherit; }
+.danger-text { color: var(--danger); }
+.subtleties figcaption { grid-column: 1 / -1; }
+#diagnosis { background: var(--band); }
+.boundary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; padding-bottom: 24px; }
+.boundary-grid > div + div { padding-left: 35px; border-left: 1px solid var(--line); }
+.boundary-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 15px; padding: 22px 0; font-size: 12px; }
+.boundary-flow b { font-weight: 500; color: var(--warn); }
+.boundary-flow code { font-size: 11px; }
+.boundary-grid a { display: inline-block; margin-top: 12px; font-size: 10px; }
+.diagnostic-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; padding-top: 28px; margin-top: 28px; border-top: 1px solid var(--line); }
+.diagnostic-grid pre { font: 10px/1.9 var(--mono); color: var(--text-2); padding: 14px; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; overflow-x: auto; margin-bottom: 13px; }
+.diagnostic-grid p { font-size: 12px; color: var(--text-2); line-height: 1.9; }
+.scope-note { padding: 18px 0; }
+.scope-note b { font-size: 12px; font-weight: 600; }
+.scope-note p { font-size: 12px; color: var(--text-2); line-height: 1.9; max-width: 110ch; margin-top: 9px; }
+.source-list { border-top: 1px solid var(--line); margin: 12px 0 20px; }
+.source-entry { border-bottom: 1px solid var(--line); }
+.source-entry summary { display: flex; align-items: baseline; gap: 18px; padding: 17px 0; cursor: pointer; list-style: none; }
+.source-entry summary::-webkit-details-marker { display: none; }
+.source-entry summary::before { content: "+"; font: 17px var(--mono); color: var(--accent); width: 14px; flex-shrink: 0; }
+.source-entry[open] summary::before { content: "−"; }
+.source-entry summary b { font-size: 13px; font-weight: 550; }
+.source-entry summary span { margin-left: auto; font: 9px/1.8 var(--mono); color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.source-summary { font-size: 12px; color: var(--text-2); line-height: 1.9; padding: 0 0 18px 32px; }
+.snippet { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 0 0 18px 32px; }
+.snippet-head { display: flex; align-items: center; gap: 15px; padding: 10px 14px; background: var(--raised); }
+.snippet-head a { font: 10px/1.8 var(--mono); overflow-wrap: anywhere; }
+.snippet-head span { font: 9px/1.8 var(--mono); color: var(--muted); white-space: nowrap; margin-left: auto; }
+.snippet pre { font: 10px/1.8 var(--mono); padding: 16px; background: var(--bg); color: var(--text-2); overflow: auto; max-height: 350px; }
+.snippet code { font: inherit; white-space: pre; overflow-wrap: normal; }
+.snippet-note { font-size: 10px; line-height: 1.8; padding: 10px 14px; color: var(--muted); background: var(--raised); }
+footer { border-top: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; min-height: 76px; font-size: 10px; color: var(--muted); }
+@media (max-width: 1100px) {
+  .brand small { display: none; }
+  .nav { gap: 18px; }
+  .scenario-bar p { display: none; }
+  .result-tag { margin-left: auto; }
+  .stage { grid-template-columns: 1.2fr .68fr 1fr; padding: 20px 18px; gap: 16px; }
+  .actor-kind { font-size: 8px; }
+  .app-boundaries > div { grid-template-columns: 5px 1fr; }
+  .app-boundaries code { grid-column: 2; }
+  .watch-strip { padding: 15px 18px; gap: 18px; }
+}
+@media (max-width: 760px) {
+  .wrap { padding-left: 18px; padding-right: 18px; }
+  .topbar-in { gap: 12px; min-height: 57px; }
+  .brand { font-size: 12px; gap: 7px; }
+  .logo { width: 25px; height: 25px; }
+  .nav { gap: 13px; }
+  .nav a { font-size: 10px; }
+  .nav a:nth-child(2), .nav a:nth-child(3) { display: none; }
+  #themeBtn { width: 30px; height: 30px; flex-basis: 30px; }
+  .intro { padding-top: 25px; padding-bottom: 24px; }
+  h1 { font-size: 30px; line-height: 1.35; max-width: 330px; }
+  .lede { font-size: 14px; line-height: 1.9; }
+  .intro-meta { gap: 6px 18px; font-size: 9px; }
+  .intro-meta > span:last-child { display: none; }
+  .studio-band { padding-top: 20px; }
+  .section-head { align-items: start; gap: 12px; margin-bottom: 18px; }
+  .studio-band h2 { font-size: 20px; max-width: 220px; }
+  .source-tag { max-width: 100px; text-align: right; font-size: 8px; }
+  .scenario-bar { padding: 12px; gap: 8px; flex-wrap: wrap; }
+  .scenario-bar > label { font-size: 10px; }
+  .scenario-bar select { min-width: 0; width: calc(100% - 34px); font-size: 11px; }
+  .result-tag { font-size: 8px; padding: 2px 6px; margin-left: 32px; }
+  .transport { flex-wrap: wrap; gap: 10px; padding: 10px 12px; }
+  .speed-label { font-size: 0; gap: 0; }
+  .speed-label select { width: 62px; font-size: 11px; }
+  .scrub-wrap { flex-basis: 100%; order: 4; }
+  .connection-state { margin-left: auto; font-size: 9px; }
+  .stage { grid-template-columns: 1fr; padding: 17px 13px; gap: 19px; }
+  .actor h3 { font-size: 16px; margin: 4px 0 12px; }
+  .dispatcher { display: grid; grid-template-columns: 1fr; }
+  .queue-title code { font-size: 10px; }
+  .queue-title > span { font-size: 9px; }
+  .queue-transfer { padding: 7px 0; }
+  .queue-note { font-size: 9px; margin-top: 8px; }
+  .queue-note br { display: none; }
+  .event-chip { min-width: 81px; max-width: none; padding: 6px; }
+  .event-chip strong { font-size: 9px; }
+  .event-chip small { font-size: 7px; }
+  .channel { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; padding-top: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+  .channel-heading { font-size: 11px; text-align: left; }
+  .channel-kind { text-align: right; font-size: 7px; align-self: center; }
+  .channel-wire { margin-top: 10px; height: 57px; }
+  .channel-wire b { font-size: 9px; }
+  .channel-wire code { font-size: 7px; top: 35px; }
+  .wire { top: 27px; }
+  .packet { top: 23px; }
+  .channel-callout { grid-column: 1 / -1; margin-top: 0; padding-top: 8px; font-size: 8px; }
+  .app { border-top: 1px solid var(--line); padding-top: 13px; }
+  .app-status { font-size: 10px; }
+  .looper-stage { min-height: 101px; }
+  .app-boundaries { gap: 8px; }
+  .app-boundaries > div { grid-template-columns: 5px 1fr auto; }
+  .app-boundaries code { grid-column: 3; font-size: 8px; }
+  .watch-strip { grid-template-columns: 1fr 1fr; gap: 13px; padding: 14px 13px; }
+  .tracker { grid-column: 1 / -1; }
+  .deadline-clock { border-left: 0; padding-left: 0; }
+  .deadline-clock strong { font-size: 27px; }
+  .timeout-rule code { font-size: 9px; }
+  .timeout-rule span { font-size: 8px; }
+  .verdict { display: grid; grid-template-columns: 1fr; padding: 13px; gap: 5px; }
+  .verdict b { font-size: 11px; }
+  .verdict > span { font-size: 9px; }
+  .verdict > code { grid-column: 1; grid-row: auto; text-align: left; max-width: none; font-size: 8px; }
+  .policy-path { grid-template-columns: 1fr 14px 1fr; padding: 12px 13px; gap: 10px; }
+  .policy-path i:nth-of-type(2) { display: none; }
+  .policy-path b { font-size: 9px; }
+  .policy-path small { font-size: 7px; }
+  .timeline { padding: 13px 13px 17px; }
+  .timeline-head { font-size: 8px; flex-wrap: wrap; gap: 3px; }
+  .timeline-labels { width: 34px; }
+  .timeline-labels > div { font-size: 8px; }
+  .timeline-board { gap: 7px; }
+  .tick { font-size: 7px; }
+  .time-segment { font-size: 7px; padding: 0 3px; }
+  .deadline-mark b { font-size: 6px; left: 2px; }
+  .parameter-row { padding: 12px 13px; gap: 10px; }
+  .parameter-row label { width: 100%; font-size: 9px; }
+  .parameter-row input { flex: 1; }
+  .parameter-row > span { font-size: 8px; }
+  .phase-panel { grid-template-columns: 1fr; }
+  .phase-copy { padding: 19px 14px; min-height: 250px; }
+  .phase-copy h3 { font-size: 16px; }
+  .phase-copy p { font-size: 11px; }
+  .event-list { border-left: 0; border-top: 1px solid var(--line); max-height: 220px; padding: 9px; }
+  .event-list button { font-size: 9px; }
+  .event-list button code { font-size: 8px; width: 37px; }
+  .studio > figcaption { padding: 12px; font-size: 9px; }
+  .band { padding: 38px 0; }
+  h2 { font-size: 23px; }
+  .lifecycle { grid-template-columns: 1fr; gap: 14px; padding-top: 5px; }
+  .lifecycle > i { transform: rotate(90deg); justify-self: start; margin-left: 9px; }
+  .lifecycle span { font-size: 12px; }
+  .lifecycle code { font-size: 10px; }
+  .lifecycle small { font-size: 9px; }
+  .mechanism-grid { grid-template-columns: 1fr; gap: 26px; padding-top: 25px; }
+  .mechanism-grid h3, .diagnostic-grid h3 { font-size: 15px; }
+  .mechanism-grid p { font-size: 11px; }
+  .subtleties { grid-template-columns: 1fr; gap: 24px; }
+  .subtleties > div + div { border-left: 0; padding-left: 0; padding-top: 24px; border-top: 1px solid var(--line); }
+  .subtleties h3, .boundary-grid h3 { font-size: 16px; }
+  .subtleties p, .boundary-grid p { font-size: 11px; }
+  .subtleties figcaption { grid-column: 1; }
+  .mini-queue span { font-size: 10px; padding: 7px 11px; }
+  .boundary-grid { grid-template-columns: 1fr; gap: 25px; }
+  .boundary-grid > div + div { border-left: 0; padding-left: 0; padding-top: 25px; border-top: 1px solid var(--line); }
+  .boundary-flow { gap: 12px; }
+  .diagnostic-grid { grid-template-columns: 1fr; gap: 26px; }
+  .diagnostic-grid pre { font-size: 9px; padding: 12px; }
+  .diagnostic-grid p, .scope-note p { font-size: 11px; }
+  .source-entry summary { flex-wrap: wrap; gap: 3px 10px; padding: 15px 0; }
+  .source-entry summary b { font-size: 12px; flex: 1; }
+  .source-entry summary span { width: 100%; text-align: left; font-size: 8px; margin-left: 24px; }
+  .source-summary { padding-left: 0; font-size: 11px; }
+  .snippet { margin-left: 0; }
+  .snippet-head { flex-wrap: wrap; gap: 4px; padding: 9px; }
+  .snippet-head a { font-size: 8px; }
+  .snippet-head span { font-size: 8px; }
+  .snippet pre { font-size: 9px; padding: 12px; }
+  .snippet-note { font-size: 9px; }
+  footer { flex-wrap: wrap; gap: 8px; padding-top: 20px; padding-bottom: 20px; font-size: 9px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .packet { display: none; } }
+@media print { .topbar, .transport, .parameter-row, .event-list { display: none; } .wrap { max-width: none; } .phase-panel { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <header class="topbar"><div class="topbar-in wrap"><a class="brand" href="#top"><span class="logo"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></svg></span><span>Input Pipeline <small>AOSP · SOURCE MODEL</small></span></a><nav class="nav" aria-label="章节导航"><a href="#simulation">应答模型</a><a href="#mechanism">计时机制</a><a href="#diagnosis">归因边界</a><a href="#sources">源码证据</a></nav><button class="icon-button" id="themeBtn" title="切换配色" aria-label="切换明暗配色"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2m-7.07-15.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button></div></header>
+  <main id="top">
+    <section class="intro wrap"><div class="eyebrow"><i></i> SOURCE-BACKED / CONNECTION ACK TIMEOUT</div><h1>Input Dispatch Timeout <span>ANR</span></h1><p class="lede">事件已经发给窗口，<strong>但对应的完成应答迟迟没有被清理</strong>。</p><div class="intro-meta"><span>发布成功 ≠ 应用开始处理</span><span>调用 finish ≠ 服务端已解除等待</span><span>源码快照 <code>24bc82b5d25d</code></span></div></section>
+
+    <section id="simulation" class="studio-band"><div class="wrap">
+      <div class="section-head"><div><div class="sec-eyebrow">01 / LIVE MODEL</div><h2>发出事件，等回一个 FINISHED</h2></div><span class="source-tag">单窗口连接 · 示意时间 · 非设备 trace</span></div>
+      <figure class="studio" id="studio">
+        <div class="scenario-bar"><label for="scenario">场景</label><select id="scenario"></select><p id="scenarioDesc"></p><span class="result-tag" id="scenarioResult"></span></div>
+        <div class="transport"><div class="play-controls"><button class="icon-button" id="restartBtn" title="重置到起点" aria-label="重置到起点"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5"/></svg></button><button class="icon-button" id="prevStep" title="上一步" aria-label="上一步"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.971 4.285A2 2 0 0 1 17 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432zM21 20V4"/></svg></button><button class="icon-button play-button" id="playBtn" title="播放" aria-label="播放"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg></button><button class="icon-button" id="nextStep" title="下一步" aria-label="下一步"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.029 4.285A2 2 0 0 0 7 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432zM3 4v16"/></svg></button></div><label class="speed-label" for="speed">速度<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label><div class="scrub-wrap"><input id="scrub" type="range" min="0" max="10000" step="10" value="2800" aria-label="模拟时刻"><output id="timeNow">2.80 s</output></div><span class="connection-state" id="connectionState"><i></i><code>responsive = true</code></span></div>
+
+        <div class="stage">
+          <div class="dispatcher actor"><span class="actor-kind">SYSTEM_SERVER / NATIVE THREAD</span><h3>InputDispatcher</h3><div class="queue-title"><code>outboundQueue</code><span>待发布 <b id="outboundCount">0</b></span></div><div class="queue outbound-queue" id="outboundQueue"></div><div class="queue-transfer"><span>发布成功后移入 ↓</span><code>deliveryTime + timeout</code></div><div class="queue-title"><code>waitQueue</code><span>已发未完成 <b id="waitCount">1</b></span></div><div class="queue wait-queue" id="waitQueue"></div><p class="queue-note">服务端保留的是 DispatchEntry 等待记录，<br>应用收到事件不等于这条记录已移除。</p></div>
+          <div class="channel" id="channel"><span class="channel-heading">InputChannel</span><span class="channel-kind">AF_UNIX · SOCK_SEQPACKET</span><div class="channel-wire outbound-wire" id="sendWire"><b>发送事件 →</b><span class="wire"></span><span class="packet" id="sendPacket"></span><code id="sendLabel">MotionEvent · seq 101</code></div><div class="channel-wire ack-wire" id="ackWire"><b>← 完成应答 FINISHED</b><span class="wire"></span><span class="packet" id="ackPacket"></span><code id="ackLabel">seq 101 · handled = true</code></div><div class="channel-callout" id="channelCallout">发布成功，不保证应用已消费</div></div>
+          <div class="app actor"><span class="actor-kind">APP PROCESS / RECEIVER LOOPER</span><h3>窗口 A · 输入接收线程</h3><div class="app-status" id="appStatus">Looper 被其他任务占用</div><div class="looper-stage" id="looperStage"><span class="looper-symbol"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2"/><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg></span><b id="appWork">其他任务 / 等待锁 / 同步调用</b><span id="appEvent">E1 尚未消费</span><div class="work-progress"><i id="workProgress"></i></div></div><div class="app-boundaries"><div id="consumeState"><i></i><span>接收 / consume</span><code id="consumeValue">尚未执行</code></div><div id="finishState"><i></i><span>finishInputEvent</span><code id="finishValue">尚未调用</code></div><div id="ackState"><i></i><span>服务端 ACK 清理</span><code id="ackValue">尚未发生</code></div></div></div>
+        </div>
+
+        <div class="watch-strip"><div class="tracker"><div class="queue-title"><code>AnrTracker</code><span>(deadline, token A)</span></div><div class="tracker-entries" id="trackerEntries"></div></div><div class="deadline-clock"><span id="clockLabel">最早截止还剩</span><strong id="remaining">3.20 <small>s</small></strong><code id="nextDeadline">E1 · deadline 6.00 s</code></div><div class="timeout-rule"><code>now ≥ firstTimeout()</code><span id="ruleState">等待截止，或匹配的 FINISHED 先到</span></div></div>
+        <div class="verdict" id="verdict"><b id="verdictTitle">已经发送，仍未收到完成应答</b><span id="verdictDesc">事件在 waitQueue，AnrTracker 跟踪它的截止时间。</span><code id="reasonLabel">本例尚无 ANR 历史</code></div>
+        <div class="policy-path"><span id="detectHop"><b>最早 deadline 到期</b><small>responsive=false / eraseToken(A)</small></span><i>→</i><span id="notifyHop"><b>排入 policy 通知</b><small>waitQueue 不因此清空 / 合成取消事件</small></span><i>→</i><span id="wmsHop"><b>JNI → IMS → WMS</b><small>复核窗口、PID 与 Activity</small></span><i>→</i><span id="amsHop"><b>后续 ANR 处理</b><small>并非无条件立即弹窗</small></span></div>
+
+        <div class="timeline" id="timeline"><div class="timeline-head"><span>服务端等待区间</span><span>实线 = 已发未 ACK　虚线 = 应用处理　竖线 = deadline</span></div><div class="timeline-board"><div class="timeline-labels" id="timelineLabels"></div><div class="timeline-plot" id="timelinePlot"><div class="ruler" id="ruler"></div><div id="timeRows"></div><div class="playhead" id="playhead"></div></div></div></div>
+        <div class="parameter-row" id="parameters"><label>发布 → finish<input type="range" id="delayRange" min="400" max="8000" step="100" value="6500"><output id="delayValue">6.50 s</output></label><label>finish → ACK 清理<input type="range" id="ackRange" min="100" max="6500" step="100" value="100"><output id="ackDelayValue">0.10 s</output></label><label>窗口 timeout<select id="timeout"><option value="2000">2 s</option><option value="5000" selected>5 s（基础默认）</option><option value="8000">8 s</option></select></label><span>时长为教学参数，非阶段性能测量。</span></div>
+        <div class="phase-panel"><div class="phase-copy"><div class="phase-eyebrow"><span id="phaseCount"></span><span id="phaseTime"></span></div><h3 id="phaseTitle"></h3><p id="phaseDesc"></p><a id="phaseRef" href="#source-publish"></a></div><ol class="event-list" id="eventList" aria-label="源码因果步骤"></ol></div>
+        <figcaption><span>Fig. 1</span> 发布成功即登记 deadline；消费、处理与 finish 都不能代替服务端按 seq 清理。上报后停止重复追踪该连接，但原等待记录可以继续存在。时间为示意，ACK 与超时同刻时本模型先清理 ACK，不代表真实并发顺序。</figcaption>
+      </figure>
+    </div></section>
+
+    <section class="band" id="mechanism"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">02 / DEADLINE & IDENTITY</div><h2>计时跟着 DispatchEntry，不跟着回调名称</h2></div></div>
+      <figure class="mechanism-figure"><div class="lifecycle"><div><span>等待发布</span><code>outboundQueue</code><small>未成功发布不插入该条 tracker</small></div><i>→</i><div class="lifecycle-wait"><span>发布成功</span><code>waitQueue + AnrTracker</code><small>deadline = deliveryTime + timeout</small></div><i>→</i><div><span>收到完成并按 seq 清理</span><code>erase(entry) + erase(deadline, token)</code><small>handled=false 也表示完成</small></div></div><figcaption><span>Fig. 2</span> startDispatchCycleLocked 在 publish 尝试前填写时间，成功后入 waitQueue 并登记 tracker。若 WOULD_BLOCK 则保留 outbound，不将本次未发出的条目登记为 ACK 超时。</figcaption></figure>
+      <div class="mechanism-grid"><article><div class="sec-eyebrow">REGISTER / 登记</div><h3>服务端已发送，不等于客户端已读</h3><p>InputChannel 传输与应用 Looper 执行是不同边界。主线程正在跑其他任务、被锁阻塞，或等待同步调用时，事件可以已经进入服务端 <code>waitQueue</code>，而应用回调还没开始。</p><a href="#source-publish">发布与计时源码 →</a></article><article><div class="sec-eyebrow">FINISH / 完成</div><h3>finish 是完成协议，不是下一帧上屏</h3><p><code>finishInputEvent</code> 交回 sequence 与 handled，经 native 发送 FINISHED。服务端匹配 <code>seq</code> 清理该条记录。渲染完成、业务消费成功与输入完成确认，不是同一个条件。</p><a href="#source-finish">finish 与应答源码 →</a></article><article><div class="sec-eyebrow">EXPIRE / 超时</div><h3>先按最早截止触发，再按连接处理</h3><p><code>AnrTracker</code> 维护 (timeoutTime, connectionToken) 的有序集合。选中到期项后，连接标记不响应并移除该 token 的追踪；不是把所有输入事件直接丢掉，也不是不断为同一未恢复连接重复通知。</p><a href="#source-timeout">超时检测源码 →</a></article></div>
+      <figure class="subtleties"><div><span class="case-tag warn">ONE ACK ≠ ALL DONE</span><h3>一个 seq，只解除一个等待</h3><div class="mini-queue"><span class="done">E1 ✓</span><span>E2 · 等待</span><span>E3 · 等待</span></div><p>ACK 到来不是把连接的全部计时重置为 5 秒。超时后的恢复也检查剩余队列：仍有过期事件，就仍不响应。</p></div><div><span class="case-tag danger">TRIGGER ≠ REASON ENTRY</span><h3>先发出的，不一定先到期</h3><div class="deadline-example"><span>E1 <code>1 s + 8 s = 9 s</code></span><span class="danger-text">E2 <code>2.2 s + 2 s = 4.2 s</code></span></div><p>窗口 timeout 改变只影响新发送项。E2 能先触发，但 <code>onAnrLocked</code> 的 reason 使用 waitQueue 中最早发送且未完成的 E1。</p></div><figcaption><span>Fig. 3</span> 多个事件可以同时在途；最早 deadline、队头记录和当前应用回调需要分别看待。</figcaption></figure>
+    </div></section>
+
+    <section class="band" id="diagnosis"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">03 / WHAT THE TIMEOUT PROVES</div><h2>证明完成信号迟到，不直接证明某行代码慢</h2></div></div>
+      <figure class="boundary-figure"><div class="boundary-grid"><div><span class="case-tag danger">CONNECTION TIMEOUT</span><h3>目标已找到，已发送，等 FINISHED</h3><div class="boundary-flow"><code>waitQueue</code><span>→</span><b>完成应答缺席</b></div><p>定位 Looper 调度、输入处理、异步阶段及应答清理。主线程阻塞很常见，但不是从 ANR 类型就能推导出的唯一根因。</p></div><div><span class="case-tag info">NO FOCUSED WINDOW</span><h3>目标尚不可用，事件还在等待分发</h3><div class="boundary-flow"><code>mPendingEvent</code><span>→</span><b>焦点目标缺席</b></div><p>这是另一条状态与计时路径。缺窗口、缺焦点或窗口未具备资格，不能用“已送达后不 ACK”的模型解释。</p><a href="../no-focused-window-anr/index.html">查看 No Focus ANR 模型 →</a></div></div><figcaption><span>Fig. 4</span> 本页的 Input Dispatch Timeout 特指已发送连接的完成应答超时；不是所有 Input ANR 的总称。</figcaption></figure>
+      <div class="diagnostic-grid"><article><h3>沿同一事件时间窗还原</h3><pre>adb shell dumpsys input
+adb shell dumpsys window</pre><p>对齐事件 ID、connection、waitQueue、发布时间与窗口 timeout；再结合 InputDispatcher / app trace，区分“未被接收”“处理中”“finish 后尚未清理”。</p></article><article><h3>超时检测与弹窗是不同阶段</h3><pre>... is not responding. Waited ... ms for ...
+notifyWindowUnresponsive
+notifyWindowResponsive</pre><p>native command 释放锁后进入 Java policy。WMS 尝试按窗口 token、PID 与 Activity 归因；AMS 还受进程状态和 ANR 策略影响。事后 idle 栈或一次 dump 不能重现此前的等待。</p></article></div>
+    </div></section>
+
+    <section class="band" id="sources"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">04 / SOURCE EVIDENCE</div><h2>动画判定对应当前仓库的实现</h2></div><span class="source-tag" id="citationCount"></span></div><div class="scope-note"><b>模型与证据范围</b><p>源码快照 <code>24bc82b5d25d</code>。单窗口连接、1 至 3 个非批量化 MotionEvent、成功发布、固定示意调度；不模拟 key fallback、批量合并、完整多窗口触摸、完整策略弹窗与进程退出。普通窗口应用接收器通常绑定主线程；自定义 receiver 可以绑定其他 Looper。生成的取消事件仅标注，未逐条加入示意队列，恢复阶段假设它们没有额外过期项。</p><p>finish → ACK 清理的时段合并展示 native 输出、通道响应与服务端 command 清理的间隔，不声称该间隔通常很长。deadline 处画检测点、policy 的视觉转场延迟均不是调度实时保证。基础默认 5 s 仍受 HW multiplier 与窗口配置影响。</p></div><div class="source-list"><details class="source-entry" id="source-publish"><summary><b>发布成功后，按每条派发记录等待完成回执</b><span>InputDispatcher::startDispatchCycleLocked / 2 段</span></summary><p class="source-summary">本证据对应当前仓库 base/、native/ 源码版本 76a71e299faf8979c87b88d872b5811fa81a71eb。目标连接已存在，startDispatchCycleLocked 为派发记录设置 deliveryTime 和 timeoutTime；只有发布成功后才移入 waitQueue，并在连接仍 responsive 时登记 AnrTracker。这不是等待焦点窗口出现的 no-focused-window ANR。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L3893-3905</span></div><pre><code>void InputDispatcher::startDispatchCycleLocked(nsecs_t currentTime,
+                                               const std::shared_ptr&lt;Connection&gt;&amp; connection) {
+// ...
+    while (connection-&gt;status == Connection::Status::NORMAL &amp;&amp; !connection-&gt;outboundQueue.empty()) {
+        std::unique_ptr&lt;DispatchEntry&gt;&amp; dispatchEntry = connection-&gt;outboundQueue.front();
+        dispatchEntry-&gt;deliveryTime = currentTime;
+        const std::chrono::nanoseconds timeout = getDispatchingTimeoutLocked(connection);
+        dispatchEntry-&gt;timeoutTime = currentTime + timeout.count();</code></pre><p class="snippet-note">计时基准是本轮派发传入的 currentTime，不是 entry.eventTime，也不是 Java onInputEvent 开始执行的时刻。循环没有等待上一条 ACK 才发送下一条的前置条件；同一连接可有多个在途记录，同一轮循环也可能使用相同 currentTime。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L3996-4034</span></div><pre><code>        // Check the result.
+        if (status) {
+// ...
+            return;
+        }
+
+        // Re-enqueue the event on the wait queue.
+        const nsecs_t timeoutTime = dispatchEntry-&gt;timeoutTime;
+        connection-&gt;waitQueue.emplace_back(std::move(dispatchEntry));
+        connection-&gt;outboundQueue.erase(connection-&gt;outboundQueue.begin());
+        traceOutboundQueueLength(*connection);
+        if (connection-&gt;responsive) {
+            mAnrTracker.insert(timeoutTime, connection-&gt;getToken());
+        }
+        traceWaitQueueLength(*connection);
+    }</code></pre><p class="snippet-note">status 非零会先返回；包括 WOULD_BLOCK 的失败发布不会将这条 outbound 记录登记为已发送等待。成功发布才转入 waitQueue；该队列可以同时保留多个未完成 seq。responsive=false 时成功发布也不继续为该连接登记 ANR 唤醒。</p></div></details>
+<details class="source-entry" id="source-receive"><summary><b>应用接收事件，保存传输序号并进入 ViewRootImpl</b><span>dispatchInputEvent / 3 段</span></summary><p class="source-summary">当前 Java 接收路径先记录 Java event sequence 与 native dispatch seq 的映射，再调用 WindowInputEventReceiver.onInputEvent。普通事件经 processRawInputEvent 入队处理；收到回调不等于发送 FINISHED，也不意味着 Dispatcher 已清除等待。</p><div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/view/InputEventReceiver.java" target="_blank" rel="noopener noreferrer">base/core/java/android/view/InputEventReceiver.java</a><span>L276-282</span></div><pre><code>    // Called from native code.
+    @SuppressWarnings(&quot;unused&quot;)
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    private void dispatchInputEvent(int seq, InputEvent event) {
+        mSeqMap.put(event.getSequenceNumber(), seq);
+        onInputEvent(event);
+    }</code></pre><p class="snippet-note">event.getSequenceNumber() 是 Java 事件对象序号，参数 seq 是传输派发序号，不能直接混用。mSeqMap 保存映射；不要据此文件较早的单事件注释推断当前 native 不能有多个事件在途，实际并发边界以 publish 中的循环和 waitQueue 为准。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/view/ViewRootImpl.java" target="_blank" rel="noopener noreferrer">base/core/java/android/view/ViewRootImpl.java</a><span>L11453-11467</span></div><pre><code>    final class WindowInputEventReceiver extends InputEventReceiver {
+// ...
+        @Override
+        public void onInputEvent(InputEvent event) {
+            processRawInputEvent(event);
+        }</code></pre><p class="snippet-note">这是普通 View 窗口的 Java 接收入口，不是系统统一的所有 InputConsumer 实现。接收器在同文件 1898-1899 行绑定 Looper.myLooper()，通常是该 ViewRoot 所属的 UI 线程；JNI 不会为每条事件新建线程。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/view/ViewRootImpl.java" target="_blank" rel="noopener noreferrer">base/core/java/android/view/ViewRootImpl.java</a><span>L11660-11683</span></div><pre><code>    public void processRawInputEvent(InputEvent event) {
+// ...
+        if (processedEvents != null) {
+            if (processedEvents.isEmpty()) {
+                // InputEvent consumed by mInputCompatHandler
+                mInputEventReceiver.finishInputEvent(event, true);
+            } else {
+                for (int i = 0; i &lt; processedEvents.size(); i++) {
+                    enqueueInputEvent(
+                            processedEvents.get(i), mInputEventReceiver,
+                            QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY, true);
+                }
+            }
+        } else {
+            enqueueInputEvent(event, mInputEventReceiver, 0, true);
+        }</code></pre><p class="snippet-note">普通分支携带 mInputEventReceiver 入队，后续处理完成才能经该 receiver 回传。兼容处理可能直接消费或转换事件，不能将所有输入都画成完全相同的一次 View 回调；enqueueInputEvent 在 11249-11252 行按 processImmediately 选择处理或调度。</p></div></details>
+<details class="source-entry" id="source-finish"><summary><b>处理完成后，Java 经 JNI 请求发送 FINISHED</b><span>finishInputEvent / 5 段</span></summary><p class="source-summary">ViewRootImpl 汇总 handled 状态，由 InputEventReceiver 将 Java 对象序号还原成 native seq，再经 JNI 进入 NativeInputEventReceiver。finish 请求可能因 socket 暂不可写而留在本地 outbound 队列，因此 Java finish 返回与 Dispatcher 收到 ACK 是不同事件。</p><div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/view/ViewRootImpl.java" target="_blank" rel="noopener noreferrer">base/core/java/android/view/ViewRootImpl.java</a><span>L11347-11368</span></div><pre><code>    private void finishInputEvent(QueuedInputEvent q) {
+// ...
+        if (q.mReceiver != null) {
+            boolean handled = (q.mFlags &amp; QueuedInputEvent.FLAG_FINISHED_HANDLED) != 0;
+            boolean modified = (q.mFlags &amp; QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY) != 0;
+            if (modified &amp;&amp; mInputCompatHandler != null) {
+// ...
+                if (processedEvent != null) {
+                    q.mReceiver.finishInputEvent(processedEvent, handled);
+                }
+            } else {
+                q.mReceiver.finishInputEvent(q.mEvent, handled);
+            }</code></pre><p class="snippet-note">InputStage 链在同文件 7970-7977 行走到末端时调用此方法；handled 来自 FLAG_FINISHED_HANDLED，而不是是否绘制一帧。handled=false 也必须完成回执，不表示仍在等待；兼容转换另有处理分支。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/view/InputEventReceiver.java" target="_blank" rel="noopener noreferrer">base/core/java/android/view/InputEventReceiver.java</a><span>L220-238</span></div><pre><code>    public final void finishInputEvent(InputEvent event, boolean handled) {
+        if (event == null) {
+            throw new IllegalArgumentException(&quot;event must not be null&quot;);
+        }
+        if (mReceiverPtr == 0) {
+            Log.w(TAG, &quot;Attempted to finish an input event but the input event &quot;
+                    + &quot;receiver has already been disposed.&quot;);
+        } else {
+            int index = mSeqMap.indexOfKey(event.getSequenceNumber());
+            if (index &lt; 0) {
+                Log.w(TAG, &quot;Attempted to finish an input event that is not in progress.&quot;);
+            } else {
+                int seq = mSeqMap.valueAt(index);
+                mSeqMap.removeAt(index);
+                nativeFinishInputEvent(mReceiverPtr, seq, handled);
+            }
+        }
+        event.recycleIfNeededAfterDispatch();
+    }</code></pre><p class="snippet-note">只对映射中仍在处理的事件调用 nativeFinishInputEvent，并删除 Java 本地映射；这不是删除 system_server 的 waitQueue。213-218 行约定必须在接收器所绑定的同一 Looper 线程调用。dispose 或找不到映射时不会正常发送这条完成信号。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/jni/android_view_InputEventReceiver.cpp" target="_blank" rel="noopener noreferrer">base/core/jni/android_view_InputEventReceiver.cpp</a><span>L784-798</span></div><pre><code>static void nativeFinishInputEvent(JNIEnv* env, jclass clazz, jlong receiverPtr,
+        jint seq, jboolean handled) {
+    sp&lt;NativeInputEventReceiver&gt; receiver =
+            reinterpret_cast&lt;NativeInputEventReceiver*&gt;(receiverPtr);
+    status_t status = receiver-&gt;finishInputEvent(seq, handled);
+    if (status == OK || status == WOULD_BLOCK) {
+        return; // normal operation
+    }
+    if (status != DEAD_OBJECT) {
+        std::string message =
+                android::base::StringPrintf(&quot;Failed to finish input event.  status=%s(%d)&quot;,
+                                            statusToString(status).c_str(), status);
+        jniThrowRuntimeException(env, message.c_str());
+    }
+}</code></pre><p class="snippet-note">这是应用进程内部的 Java→native 调用，不是一次向 system_server 发起的 Binder finish RPC。WOULD_BLOCK 也正常返回，不能把方法返回绘制为 Dispatcher 已确认完成。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/jni/android_view_InputEventReceiver.cpp" target="_blank" rel="noopener noreferrer">base/core/jni/android_view_InputEventReceiver.cpp</a><span>L274-285</span></div><pre><code>status_t NativeInputEventReceiver::finishInputEvent(uint32_t seq, bool handled) {
+    if (kDebugDispatchCycle) {
+        LOG(INFO) &lt;&lt; &quot;channel &#39;&quot; &lt;&lt; mName &lt;&lt; &quot;&#39; ~ Finished input event, seq=&quot; &lt;&lt; seq;
+    }
+
+    Finish finish{
+            .seq = seq,
+            .handled = handled,
+    };
+    mOutboundQueue.emplace(finish);
+    return processOutboundEvents();
+}</code></pre><p class="snippet-note">把 seq 与 handled 封装为 Finish，先入接收器自己的 mOutboundQueue，再尝试发送。该队列属于应用侧 native receiver，与 InputDispatcher 的 connection.outboundQueue 不是同一个对象。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/jni/android_view_InputEventReceiver.cpp" target="_blank" rel="noopener noreferrer">base/core/jni/android_view_InputEventReceiver.cpp</a><span>L361-397</span></div><pre><code>status_t NativeInputEventReceiver::processOutboundEvents() {
+// ...
+    while (true) {
+        std::optional&lt;OutboundEvent&gt; outbound = mOutboundQueue.popWithTimeout(0ms);
+        if (!outbound.has_value()) {
+            break;
+        }
+
+        status_t status;
+        if (std::holds_alternative&lt;Finish&gt;(*outbound)) {
+            const Finish&amp; finish = std::get&lt;Finish&gt;(*outbound);
+            status = mInputConsumer-&gt;sendFinishedSignal(finish.seq, finish.handled);
+// ...
+        }
+// ...
+        if (status == WOULD_BLOCK) {
+// ...
+            mOutboundQueue.emplace(*outbound);
+            setFdEvents(ALOOPER_EVENT_INPUT | ALOOPER_EVENT_OUTPUT);
+            return WOULD_BLOCK; // try again later
+        }</code></pre><p class="snippet-note">Finish 分支交给 InputConsumer。省略部分包含 Timeline 分支与成功后继续循环；当返回 WOULD_BLOCK 时，消息放回本地队列并关注 OUTPUT，等待再次可写。FINISHED 与用于绘制指标的 TIMELINE 是两类消息，后者不能代替 ACK。</p></div></details>
+<details class="source-entry" id="source-socket"><summary><b>通过 InputChannel socket 回传 seq 与 handled</b><span>InputConsumer::sendFinishedSignal / 3 段</span></summary><p class="source-summary">InputConsumer 发送 FINISHED 消息，InputPublisher 解码同一消息。批处理可能把一个 Java 完成动作展开为多个 native seq 的完成信号；事件处理是否消费和传输是否完成是两个维度。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/libs/input/InputConsumer.cpp" target="_blank" rel="noopener noreferrer">native/libs/input/InputConsumer.cpp</a><span>L746-792</span></div><pre><code>status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled) {
+// ...
+    // Send finished signals for the batch sequence chain first.
+    size_t seqChainCount = mSeqChains.size();
+    if (seqChainCount) {
+// ...
+        for (size_t i = seqChainCount; i &gt; 0;) {
+// ...
+            const SeqChain&amp; seqChain = mSeqChains[i];
+            if (seqChain.seq == currentSeq) {
+                currentSeq = seqChain.chain;
+                chainSeqs[chainIndex++] = currentSeq;
+                mSeqChains.erase(mSeqChains.begin() + i);
+            }
+        }
+        status_t status = OK;
+        while (!status &amp;&amp; chainIndex &gt; 0) {
+            chainIndex--;
+            status = sendUnchainedFinishedSignal(chainSeqs[chainIndex], handled);
+        }
+// ...
+    }
+
+    // Send finished signal for the last message in the batch.
+    return sendUnchainedFinishedSignal(seq, handled);
+}</code></pre><p class="snippet-note">先完成批次序号链，再完成最后一个 seq。省略部分包括 seq=0 的错误检查和发送失败时重建未完成的链。动画若一事件对应一 seq，必须标为简化，不应宣称真实 MotionEvent 批次只需删除一个 native 派发条目。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/libs/input/InputConsumer.cpp" target="_blank" rel="noopener noreferrer">native/libs/input/InputConsumer.cpp</a><span>L824-841</span></div><pre><code>status_t InputConsumer::sendUnchainedFinishedSignal(uint32_t seq, bool handled) {
+    InputMessage msg;
+    msg.header.type = InputMessage::Type::FINISHED;
+    msg.header.seq = seq;
+    msg.body.finished.handled = handled;
+    msg.body.finished.consumeTime = getConsumeTime(seq);
+    status_t result = mChannel-&gt;sendMessage(&amp;msg);
+    if (result == OK) {
+        // Remove the consume time if the socket write succeeded. We will not need to ack this
+        // message anymore. If the socket write did not succeed, we will try again and will still
+        // need consume time.
+        popConsumeTime(seq);
+
+        // Trace the event processing timeline - event was just finished
+        ATRACE_ASYNC_END(mProcessingTraceTag.c_str(), /*cookie=*/seq);
+    }
+    return result;
+}</code></pre><p class="snippet-note">FINISHED 的 header 携带 seq，body 携带 handled 与 consumeTime。handled=false 仍然是完成信号；写 socket 成功也不等于对端已消费或清理 waitQueue。这里没有等待 GPU 完成或屏幕呈现。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/libs/input/InputTransport.cpp" target="_blank" rel="noopener noreferrer">native/libs/input/InputTransport.cpp</a><span>L748-769</span></div><pre><code>android::base::Result&lt;InputPublisher::ConsumerResponse&gt; InputPublisher::receiveConsumerResponse() {
+    android::base::Result&lt;InputMessage&gt; result = mChannel-&gt;receiveMessage();
+// ...
+    const InputMessage&amp; msg = *result;
+    if (msg.header.type == InputMessage::Type::FINISHED) {
+// ...
+        return Finished{
+                .seq = msg.header.seq,
+                .handled = msg.body.finished.handled,
+                .consumeTime = msg.body.finished.consumeTime,
+        };
+    }</code></pre><p class="snippet-note">system_server 发布端读取 socket 并还原 Finished。seq 是匹配原派发条目的键；handled 供后处理使用，而不是 ACK 是否存在的开关。另有 TIMELINE 消息分支，不能将其画为 FINISHED。</p></div></details>
+<details class="source-entry" id="source-ack"><summary><b>Dispatcher 读取 ACK，按 seq 清理单条等待</b><span>InputDispatcher::handleReceiveCallback / 3 段</span></summary><p class="source-summary">连接 fd 回调读取 Finished 后安排完成命令，再按 seq 移除一条 waitQueue 记录，并用该记录保存的 timeoutTime 与 connectionToken 删除一条 AnrTracker 索引。其他事件仍在等待；若连接曾不响应，还需检查剩余队列。收到任意消息不等于清空连接等待。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L4137-4185</span></div><pre><code>int InputDispatcher::handleReceiveCallback(int events, sp&lt;IBinder&gt; connectionToken) {
+    std::scoped_lock _l(mLock);
+    std::shared_ptr&lt;Connection&gt; connection = mConnectionManager.getConnection(connectionToken);
+// ...
+        nsecs_t currentTime = now();
+        bool gotOne = false;
+        status_t status = OK;
+        for (;;) {
+            Result&lt;InputPublisher::ConsumerResponse&gt; result =
+                    connection-&gt;inputPublisher.receiveConsumerResponse();
+            if (!result.ok()) {
+                status = result.error().code();
+                break;
+            }
+
+            if (std::holds_alternative&lt;InputPublisher::Finished&gt;(*result)) {
+                const InputPublisher::Finished&amp; finish =
+                        std::get&lt;InputPublisher::Finished&gt;(*result);
+                finishDispatchCycleLocked(currentTime, connection, finish.seq, finish.handled,
+                                          finish.consumeTime);
+// ...
+            }
+            gotOne = true;
+        }
+        if (gotOne) {
+            runCommandsLockedInterruptable();</code></pre><p class="snippet-note">省略连接有效性、fd 错误检查及 Timeline 指标分支。一次回调循环可读多个完成消息；currentTime 是接收回调的采样时间，不是 Java 回调开始时间，也不是来自 FINISHED 的 consumeTime。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L4076-4092</span></div><pre><code>void InputDispatcher::finishDispatchCycleLocked(nsecs_t currentTime,
+                                                const std::shared_ptr&lt;Connection&gt;&amp; connection,
+                                                uint32_t seq, bool handled, nsecs_t consumeTime) {
+// ...
+    if (connection-&gt;status != Connection::Status::NORMAL) {
+        return;
+    }
+
+    // Notify other system components and prepare to start the next dispatch cycle.
+    auto command = [this, currentTime, connection, seq, handled, consumeTime]() REQUIRES(mLock) {
+        doDispatchCycleFinishedCommand(currentTime, connection, seq, handled, consumeTime);
+    };
+    postCommandLocked(std::move(command));
+}</code></pre><p class="snippet-note">只有 NORMAL 连接继续安排完成命令。postCommandLocked 是 Dispatcher 内部命令队列，并不表示跳到应用主线程或系统主线程；具体删除等待记录发生在下面的 doDispatchCycleFinishedCommand。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L6700-6752</span></div><pre><code>void InputDispatcher::doDispatchCycleFinishedCommand(nsecs_t finishTime,
+                                                     const std::shared_ptr&lt;Connection&gt;&amp; connection,
+                                                     uint32_t seq, bool handled,
+                                                     nsecs_t consumeTime) {
+// ...
+    auto entryIt = std::find_if(connection-&gt;waitQueue.begin(), connection-&gt;waitQueue.end(),
+                                [seq](auto&amp; e) { return e-&gt;seq == seq; });
+    if (entryIt != connection-&gt;waitQueue.end()) {
+        std::unique_ptr&lt;DispatchEntry&gt; dispatchEntry = std::move(*entryIt);
+        connection-&gt;waitQueue.erase(entryIt);
+
+        const sp&lt;IBinder&gt;&amp; connectionToken = connection-&gt;getToken();
+        mAnrTracker.erase(dispatchEntry-&gt;timeoutTime, connectionToken);
+        if (!connection-&gt;responsive) {
+            connection-&gt;responsive = isConnectionResponsive(*connection);
+            if (connection-&gt;responsive) {
+                // The connection was unresponsive, and now it&#39;s responsive.
+                processConnectionResponsiveLocked(*connection);
+            }
+        }
+        traceWaitQueueLength(*connection);</code></pre><p class="snippet-note">ACK 只解除匹配 seq 的等待，不重置整个窗口计时。AnrTracker::erase 在 AnrTracker.cpp:30-39 明确只删一条相同 (timeoutTime, token)，即使有重复键也不全删。省略的 6708-6731 行先做 seq 查找、耗时统计与按键 fallback；因为该过程可能释放锁，清理前必须重新查找。handled=false 的按键可能生成新的 fallback，但原记录仍按完成路径移除；本函数在 6771 行再尝试 startDispatchCycleLocked。</p></div></details>
+<details class="source-entry" id="source-timeout"><summary><b>最早期限触发超时，诊断原因取队首记录</b><span>AnrTracker::firstTimeout / 3 段</span></summary><p class="source-summary">AnrTracker 按最早 timeoutTime 选择到期连接；检测到期后设置 responsive=false 并 eraseToken，避免持续为同一失响应连接唤醒。这不会清空 waitQueue。onAnrLocked 生成 reason 时仍取 waitQueue.front()，所以窗口 timeout 改变时，触发到期的记录未必就是 reason 描述的最老记录。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/AnrTracker.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/AnrTracker.cpp</a><span>L56-67</span></div><pre><code>// If empty() is false, return the time at which the next connection should cause an ANR
+// If empty() is true, return LLONG_MAX
+nsecs_t AnrTracker::firstTimeout() const {
+    if (mAnrTimeouts.empty()) {
+        return std::numeric_limits&lt;nsecs_t&gt;::max();
+    }
+    return mAnrTimeouts.begin()-&gt;first;
+}
+
+const sp&lt;IBinder&gt;&amp; AnrTracker::firstToken() const {
+    return mAnrTimeouts.begin()-&gt;second;
+}</code></pre><p class="snippet-note">AnrTracker.h:45-54 将 mAnrTimeouts 定义为 (timeoutTime, token) 的 multiset，允许重复，不储存 seq。触发选最小期限，不是直接选 waitQueue.front()。AnrTracker.cpp:42-50 的 eraseToken 只遍历这个索引容器，不接触连接 waitQueue。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L1143-1179</span></div><pre><code>nsecs_t InputDispatcher::processAnrsLocked() {
+    const nsecs_t currentTime = now();
+    nsecs_t nextAnrCheck = LLONG_MAX;
+// ...
+    // Check if any connection ANRs are due
+    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());
+    if (currentTime &lt; nextAnrCheck) { // most likely scenario
+        return nextAnrCheck;          // everything is normal. Let&#39;s check again at nextAnrCheck
+    }
+
+    // If we reached here, we have an unresponsive connection.
+    std::shared_ptr&lt;Connection&gt; connection =
+            mConnectionManager.getConnection(mAnrTracker.firstToken());
+    if (connection == nullptr) {
+        ALOGE(&quot;Could not find connection for entry %&quot; PRId64, mAnrTracker.firstTimeout());
+        // As we no longer have entry for this connection, remove it form Anr tracker to prevent
+        // samme error being logged multiple times.
+        mAnrTracker.eraseToken(mAnrTracker.firstToken());
+        return nextAnrCheck;
+    }
+    connection-&gt;responsive = false;
+    // Stop waking up for this unresponsive connection
+    mAnrTracker.eraseToken(connection-&gt;getToken());
+    onAnrLocked(connection);
+    return LLONG_MIN;</code></pre><p class="snippet-note">完整函数在 1143 行开始；本段是 connection ACK 超时分支，不含前面的 no-focused-window 分支。在检测运行时 currentTime 已到期限才触发，而不是保证纳秒级准点执行。eraseToken 移除同一连接的所有计时索引，不删除未完成派发记录，也不自动断开 channel。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L6792-6833</span></div><pre><code>void InputDispatcher::onAnrLocked(const std::shared_ptr&lt;Connection&gt;&amp; connection) {
+// ...
+    if (connection-&gt;waitQueue.empty()) {
+        ALOGI(&quot;Not raising ANR because the connection %s has recovered&quot;,
+              connection-&gt;getInputChannelName().c_str());
+        return;
+    }
+// ...
+    DispatchEntry&amp; oldestEntry = *connection-&gt;waitQueue.front();
+// ...
+    const nsecs_t currentWait = now() - oldestEntry.deliveryTime;
+    std::string reason =
+            android::base::StringPrintf(&quot;%s is not responding. Waited %&quot; PRId64 &quot;ms for %s&quot;,
+                                        connection-&gt;getInputChannelName().c_str(),
+                                        ns2ms(currentWait),
+                                        oldestEntry.eventEntry-&gt;getDescription().c_str());
+// ...
+    const int32_t eventId = oldestEntry.eventEntry-&gt;id;
+    const nsecs_t eventTime = oldestEntry.eventEntry-&gt;eventTime;
+    const std::chrono::milliseconds timeoutDuration = std::chrono::milliseconds(ns2ms(currentWait));
+    processConnectionUnresponsiveLocked(*connection, std::move(reason), eventId, eventTime,
+                                        timeoutDuration);
+
+    // Stop waking up for events on this connection, it is already unresponsive
+    cancelEventsForAnrLocked(connection);
+}</code></pre><p class="snippet-note">6804-6809 行明确解释：新事件可因窗口 timeout 变短而先到期，但 reason 仍选最早发送的队首事件。timeoutDuration 是队首已经等待的时长，未必等于当前配置阈值。cancelEventsForAnrLocked 在 2346-2371 行合成取消输入，不清空 waitQueue，也明确不直接断开连接；不要把注释所说 policy 延长超时画成此处实际返回新期限。</p></div></details>
+<details class="source-entry" id="source-policy"><summary><b>超时通知经 JNI、IMS、WMS 归因后进入 AMS</b><span>InputDispatcher::runCommandsLockedInterruptable / 8 段</span></summary><p class="source-summary">InputDispatcher 将失响应通知排为内部命令，执行时释放 mLock；NativeInputManager 通过 JNI 回调同一 system_server 内的 IMS，继而由 InputManagerCallback 进入 WMS AnrController。WMS 根据实际 input token、窗口和进程归因，ActivityRecord 或 pid 路径进入 AMS；这不是检测瞬间必然出现弹框。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L1672-1688</span></div><pre><code>bool InputDispatcher::runCommandsLockedInterruptable() {
+    if (mCommandQueue.empty()) {
+        return false;
+    }
+
+    do {
+        auto command = std::move(mCommandQueue.front());
+        mCommandQueue.pop_front();
+        // Commands are run with the lock held, but may release and re-acquire the lock from within.
+        command();
+    } while (!mCommandQueue.empty());
+    return true;
+}
+
+void InputDispatcher::postCommandLocked(Command&amp;&amp; command) {
+    mCommandQueue.push_back(command);
+}</code></pre><p class="snippet-note">命令追加到队尾、从队首执行。已经排队的 unresponsive 通知不会被后排入的 ACK 完成及恢复命令越过；动画的视觉转场延迟必须保留这个因果顺序。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L6905-6923</span></div><pre><code>void InputDispatcher::sendWindowUnresponsiveCommandLocked(
+        const sp&lt;IBinder&gt;&amp; token, std::optional&lt;gui::Pid&gt; pid, std::string reason, int32_t eventId,
+        nsecs_t eventTime, std::chrono::milliseconds timeoutDuration) {
+    auto command = [this, token, pid, r = std::move(reason), eventId, eventTime,
+                    timeoutDuration]() REQUIRES(mLock) {
+        scoped_unlock unlock(mLock);
+        mPolicy.notifyWindowUnresponsive(token, pid, r, eventId, eventTime, timeoutDuration);
+    };
+    postCommandLocked(std::move(command));
+}
+
+void InputDispatcher::sendWindowResponsiveCommandLocked(const sp&lt;IBinder&gt;&amp; token,
+                                                        std::optional&lt;gui::Pid&gt; pid) {
+    auto command = [this, token, pid]() REQUIRES(mLock) {
+        scoped_unlock unlock(mLock);
+        mPolicy.notifyWindowResponsive(token, pid);
+    };
+    postCommandLocked(std::move(command));
+}</code></pre><p class="snippet-note">同文件 6930-6949 行的 processConnectionUnresponsiveLocked 为普通窗口从 WindowInfo.ownerPid 取可选 pid，再进入本方法；monitor 另走 monitor pid。失响应与恢复都经排队命令，执行 callback 前释放 Dispatcher 锁；不是派发锁内同步持锁进入 WMS，也不是新建独立 ANR 线程。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/jni/com_android_server_input_InputManagerService.cpp" target="_blank" rel="noopener noreferrer">base/services/core/jni/com_android_server_input_InputManagerService.cpp</a><span>L1354-1391</span></div><pre><code>void NativeInputManager::notifyWindowUnresponsive(const sp&lt;IBinder&gt;&amp; token,
+                                                  std::optional&lt;gui::Pid&gt; pid,
+                                                  const std::string&amp; reason, int32_t eventId,
+                                                  nsecs_t eventTime,
+                                                  std::chrono::milliseconds timeoutDuration) {
+// ...
+    JNIEnv* env = jniEnv();
+    ScopedLocalFrame localFrame(env);
+
+    jobject tokenObj = javaObjectForIBinder(env, token);
+    ScopedLocalRef&lt;jstring&gt; reasonObj(env, env-&gt;NewStringUTF(reason.c_str()));
+
+    env-&gt;CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowUnresponsive, tokenObj,
+                        pid.value_or(gui::Pid{0}).val(), pid.has_value(), reasonObj.get(), eventId,
+                        eventTime, timeoutDuration.count());
+    checkAndClearExceptionFromCallback(env, &quot;notifyWindowUnresponsive&quot;);
+}
+
+void NativeInputManager::notifyWindowResponsive(const sp&lt;IBinder&gt;&amp; token,
+                                                std::optional&lt;gui::Pid&gt; pid) {
+// ...
+    env-&gt;CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowResponsive, tokenObj,
+                        pid.value_or(gui::Pid{0}).val(), pid.has_value());
+    checkAndClearExceptionFromCallback(env, &quot;notifyWindowResponsive&quot;);
+}</code></pre><p class="snippet-note">JNI 调用的是现有 IMS Java 对象，pid 是否有效由额外布尔值传递；不能把缺失 pid 当真实 pid=0 归因。这里传递的是用于识别窗口的 IBinder token，但 CallVoidMethod 本身不是跨进程 Binder transact，也不自动切换到 system_server 主线程。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/input/InputManagerService.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/input/InputManagerService.java</a><span>L2670-2696</span></div><pre><code>    // Native callback
+    @SuppressWarnings(&quot;unused&quot;)
+    private void notifyWindowUnresponsive(
+            IBinder token,
+            int pid,
+            boolean isPidValid,
+            String reason,
+            int eventId,
+            long eventTimeNs,
+            long timeoutDurationMs) {
+        OptionalInt optionalPid = isPidValid ? OptionalInt.of(pid) : OptionalInt.empty();
+        TimeoutRecord timeoutRecord =
+                TimeoutRecord.forInputDispatchWindowUnresponsive(
+                        timeoutMessage(optionalPid, reason));
+
+        if (android.app.Flags.includeAnrInfo()) {
+            setAnrInfoInTimeoutRecord(timeoutRecord, eventId, eventTimeNs, timeoutDurationMs);
+        }
+        mWindowManagerCallbacks.notifyWindowUnresponsive(token, optionalPid, timeoutRecord);
+    }
+
+    // Native callback
+    @SuppressWarnings(&quot;unused&quot;)
+    private void notifyWindowResponsive(IBinder token, int pid, boolean isPidValid) {
+        mWindowManagerCallbacks.notifyWindowResponsive(token,
+                isPidValid ? OptionalInt.of(pid) : OptionalInt.empty());
+    }</code></pre><p class="snippet-note">IMS 创建 WindowUnresponsive 类型 TimeoutRecord，再同步调用 WindowManagerCallbacks。includeAnrInfo 只控制额外事件信息记录，不是正式 ACK 超时 ANR 的总开关；恢复走独立 notifyWindowResponsive 回调。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/wm/InputManagerCallback.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/wm/InputManagerCallback.java</a><span>L111-122</span></div><pre><code>    @Override
+    public void notifyWindowUnresponsive(
+            @NonNull IBinder token,
+            @NonNull OptionalInt pid,
+            @NonNull TimeoutRecord timeoutRecord) {
+        mService.mAnrController.notifyWindowUnresponsive(token, pid, timeoutRecord);
+    }
+
+    @Override
+    public void notifyWindowResponsive(@NonNull IBinder token, @NonNull OptionalInt pid) {
+        mService.mAnrController.notifyWindowResponsive(token, pid);
+    }</code></pre><p class="snippet-note">该适配器连接 IMS 回调与 WMS.mAnrController，两个 Java 调用均是 system_server 内部调用。本阶段不要与应用中的 android.app.AnrController 或 Java 主线程 Handler 回调混淆。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/wm/AnrController.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/wm/AnrController.java</a><span>L271-309</span></div><pre><code>    private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,
+            TimeoutRecord timeoutRecord) {
+// ...
+        synchronized (mService.mGlobalLock) {
+// ...
+            InputTarget target = mService.getInputTargetFromToken(inputToken);
+            if (target == null) {
+                return false;
+            }
+            windowState = target.getWindowState();
+            pid = target.getPid();
+            if (windowState != null) {
+                // Blame the activity if the input token belongs to the window. If the target is
+                // embedded, then we will blame the pid instead.
+                activity = (windowState.mInputChannelToken == inputToken)
+                        ? windowState.mActivityRecord : null;
+                aboveSystem = isWindowAboveSystem(windowState);
+            } else {
+// ...
+                activity = null;
+                aboveSystem = true;
+            }
+// ...
+        }
+        if (activity != null) {
+            activity.inputDispatchingTimedOut(timeoutRecord, pid);
+        } else {
+            mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);
+        }
+        dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);
+        return true;</code></pre><p class="snippet-note">嵌入目标或没有 Activity 的窗口直接按实际 target pid 归因，不保证所有事件都走 Activity。入口 247-259 行在 token 解析失败时尝试可选 pid；315-320 行是 pid 兜底。这里进入 AMS 的调用在退出 WMS 全局锁之后。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/wm/ActivityRecord.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/wm/ActivityRecord.java</a><span>L6819-6845</span></div><pre><code>    public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {
+// ...
+            synchronized (mAtmService.mGlobalLock) {
+// ...
+                anrActivity = getWaitingHistoryRecordLocked();
+                anrApp = app;
+                blameActivityProcess =  hasProcess()
+                        &amp;&amp; (app.getPid() == windowPid || windowPid == INVALID_PID);
+            }
+
+            if (blameActivityProcess) {
+                return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,
+                        anrActivity.shortComponentName, anrActivity.info.applicationInfo,
+                        shortComponentName, app, false, timeoutRecord);
+            } else {
+                // In this case another process added windows using this activity token.
+                // So, we call the generic service input dispatch timed out method so
+                // that the right process is blamed.
+                long timeoutMillis = mAtmService.mAmInternal.inputDispatchingTimedOut(
+                        windowPid, false /* aboveSystem */, timeoutRecord);
+                return timeoutMillis &lt;= 0;</code></pre><p class="snippet-note">Activity 路径仍核对窗口 pid 与 Activity 进程，避免其他进程借用 Activity token 时误归因。mAmInternal 的对应本地转发实现在 ActivityManagerService.java:18452-18465；这里的 boolean/timeoutMillis 不能解释成 native 当前必然据此延长已触发连接的期限，WMS 本调用处并未消费返回值。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/am/ActivityManagerService.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/am/ActivityManagerService.java</a><span>L19328-19363</span></div><pre><code>    boolean inputDispatchingTimedOut(ProcessRecord proc, String activityShortComponentName,
+            ApplicationInfo aInfo, String parentShortComponentName,
+            WindowProcessController parentProcess, boolean aboveSystem,
+            TimeoutRecord timeoutRecord) {
+// ...
+            if (proc != null) {
+// ...
+                synchronized (mGlobalLock) {
+// ...
+                    if (proc.isDebugging()) {
+                        return false;
+                    }
+
+                    if (proc.getActiveInstrumentation() != null) {
+// ...
+                        finishInstrumentationLocked(proc, Activity.RESULT_CANCELED, info);
+                        return true;
+                    }
+                }
+                mAnrHelper.appNotResponding(proc, activityShortComponentName, aInfo,
+                        parentShortComponentName, parentProcess, aboveSystem, timeoutRecord,
+                        /*isContinuousAnr*/ true);
+            }
+
+            return true;</code></pre><p class="snippet-note">普通有效进程进入 AnrHelper；调试、instrumentation、进程已消失等存在不同处理。pid 重载在 19304-19321 行先查 ProcessRecord。AnrHelper.java:123-187 会检查重复请求、提交早期堆栈收集、排入 mAnrRecords 并启动 AnrConsumerThread。因此 native 超时通知、AMS 受理、异步采集与最终弹框是不同边界，不能给它们伪造相同时间。</p></div></details>
+<details class="source-entry" id="source-recovery"><summary><b>迟到 ACK 可恢复连接，但需检查剩余所有等待</b><span>isConnectionResponsive / 3 段</span></summary><p class="source-summary">超时后连接仍可接收 FINISHED。每次按 seq 清理后，只有剩余 waitQueue 没有已经超时的记录，才将失响应连接恢复为 responsive 并通知 policy；不是任意一条 ACK 都能让整条连接恢复，也不要求队列完全为空。恢复通知不等于撤销已经执行或排队的全部 ANR 工作。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L540-552</span></div><pre><code>/**
+ * Connection is responsive if it has no events in the waitQueue that are older than the
+ * current time.
+ */
+bool isConnectionResponsive(const Connection&amp; connection) {
+    const nsecs_t currentTime = now();
+    for (const auto&amp; dispatchEntry : connection.waitQueue) {
+        if (dispatchEntry-&gt;timeoutTime &lt; currentTime) {
+            return false;
+        }
+    }
+    return true;
+}</code></pre><p class="snippet-note">调用点见 ack：删除当前 seq 后才扫描剩余记录。有未超时的在途事件也可恢复，不需要 waitQueue.empty()。此处超时比较是 timeoutTime &lt; now()；processAnrsLocked 的到期条件是检测时 currentTime &gt;= nextAnrCheck，动画应明确自己的同刻事件排序，不能声称两处比较符完全相同。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L6955-6968</span></div><pre><code>void InputDispatcher::processConnectionResponsiveLocked(const Connection&amp; connection) {
+    const sp&lt;IBinder&gt;&amp; connectionToken = connection.getToken();
+    std::optional&lt;gui::Pid&gt; pid;
+    if (connection.isFocusMonitor) {
+        pid = mConnectionManager.findMonitorPidByToken(connectionToken);
+    } else {
+        // The connection is a window
+        const sp&lt;WindowInfoHandle&gt; handle = mWindowInfos.findWindowHandle(connectionToken);
+        if (handle != nullptr) {
+            pid = handle-&gt;getInfo()-&gt;ownerPid;
+        }
+    }
+    sendWindowResponsiveCommandLocked(connectionToken, pid);
+}</code></pre><p class="snippet-note">恢复通知仍携带 connection token 与可选 ownerPid，通过 policy 阶段列出的 sendWindowResponsiveCommandLocked、JNI、IMS 与 InputManagerCallback 路径进入 WMS，不是应用主动调用 AMS 恢复接口。不要凭此推断已移除的旧 AnrTracker 索引被全部重建。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/wm/AnrController.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/wm/AnrController.java</a><span>L348-366</span></div><pre><code>    private boolean notifyWindowResponsive(@NonNull IBinder inputToken) {
+        final int pid;
+        synchronized (mService.mGlobalLock) {
+            InputTarget target = mService.getInputTargetFromToken(inputToken);
+            if (target == null) {
+                return false;
+            }
+            pid = target.getPid();
+        }
+        mService.mAmInternal.inputDispatchingResumed(pid);
+        return true;
+    }
+
+    /**
+     * Notify a window owned by the provided pid was responsive after previously being unresponsive.
+     */
+    private void notifyWindowResponsive(int pid) {
+        mService.mAmInternal.inputDispatchingResumed(pid);
+    }</code></pre><p class="snippet-note">330-338 行入口先按 token，失败再尝试可选 pid。ActivityManagerService.java:18469-18476 的 inputDispatchingResumed 按 pid 找到进程并调用 mAppErrors.handleDismissAnrDialogs；这不是回滚已发生的超时，也不是通用取消 AnrHelper 队列的接口。</p></div></details>
+<details class="source-entry" id="source-configuration"><summary><b>基础默认 5 秒，实际采用窗口与环境配置</b><span>UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS / 6 段</span></summary><p class="source-summary">5000 ms 是未乘倍率的基础常量，不是所有设备、窗口和场景都固定 5 秒。Java 和 native 各自使用硬件超时倍率；派发优先读取有效窗口的 dispatchingTimeout，monitor 另有配置。进程 instrumentation 或 wrapper 可产生较长的窗口超时，且已经发送的记录保存自己的 deadline。</p><div class="snippet"><div class="snippet-head"><a href="../../../native/libs/input/android/os/IInputConstants.aidl" target="_blank" rel="noopener noreferrer">native/libs/input/android/os/IInputConstants.aidl</a><span>L23-26</span></div><pre><code>    // This should be multiplied by the value of the system property ro.hw_timeout_multiplier before
+    // use. A pre-multiplied constant is available in Java in
+    // android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS.
+    const int UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS = 5000; // 5 seconds</code></pre><p class="snippet-note">基础默认值为 5000 ms。演示选 5 秒时须注明硬件倍率为 1、窗口未使用其他覆盖值；不能将任意 connection ANR 都标成从物理输入发生后精确 5 秒。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/core/java/android/os/InputConstants.java" target="_blank" rel="noopener noreferrer">base/core/java/android/os/InputConstants.java</a><span>L23-27</span></div><pre><code>public class InputConstants {
+    public static final int DEFAULT_DISPATCHING_TIMEOUT_MILLIS =
+            IInputConstants.UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS
+            * Build.HW_TIMEOUT_MULTIPLIER;
+}</code></pre><p class="snippet-note">Java 默认值已经包含 Build.HW_TIMEOUT_MULTIPLIER。WMS 构造普通窗口超时信息时使用的是这条 Java 配置链，不应在动画中再次无条件叠乘 native 倍率。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L125-129</span></div><pre><code>// Default input dispatching timeout if there is no focused application or paused window
+// from which to determine an appropriate dispatching timeout.
+const std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(
+        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *
+        HwTimeoutMultiplier());</code></pre><p class="snippet-note">native 兜底默认值同样包含 HwTimeoutMultiplier()。是否采用兜底由下面 getDispatchingTimeoutLocked 的实际分支决定，不能仅凭这段默认值注释替代窗口超时选择逻辑。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/services/inputflinger/dispatcher/InputDispatcher.cpp" target="_blank" rel="noopener noreferrer">native/services/inputflinger/dispatcher/InputDispatcher.cpp</a><span>L1195-1205</span></div><pre><code>std::chrono::nanoseconds InputDispatcher::getDispatchingTimeoutLocked(
+        const std::shared_ptr&lt;Connection&gt;&amp; connection) {
+    if (connection-&gt;isFocusMonitor) {
+        return mMonitorDispatchingTimeout;
+    }
+    const sp&lt;WindowInfoHandle&gt; window = mWindowInfos.findWindowHandle(connection-&gt;getToken());
+    if (window != nullptr) {
+        return window-&gt;getDispatchingTimeout(DEFAULT_INPUT_DISPATCHING_TIMEOUT);
+    }
+    return DEFAULT_INPUT_DISPATCHING_TIMEOUT;
+}</code></pre><p class="snippet-note">实际选择顺序是 focus monitor 自己的配置、对应 WindowInfo 的配置、最后 native 默认值。publish 为每个 DispatchEntry 保存 timeoutTime；窗口配置更新不等于这里追溯重写全部已发送记录。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../native/libs/gui/include/gui/WindowInfo.h" target="_blank" rel="noopener noreferrer">native/libs/gui/include/gui/WindowInfo.h</a><span>L307-310</span></div><pre><code>    inline std::chrono::nanoseconds getDispatchingTimeout(
+            std::chrono::nanoseconds defaultValue) const {
+        return mInfo.token ? std::chrono::nanoseconds(mInfo.dispatchingTimeout) : defaultValue;
+    }</code></pre><p class="snippet-note">有效窗口 token 存在时直接使用 WindowInfo.dispatchingTimeout，不是再额外叠加默认 5 秒或硬件倍率。普通窗口赋值链已核对：InputMonitor.java:253-259 → WindowState.java:1792-1795 → ActivityRecord.mInputDispatchingTimeoutMillis；InputWindowHandleWrapper.java:132-137 将值写入 handle。</p></div>
+<div class="snippet"><div class="snippet-head"><a href="../../../base/services/core/java/com/android/server/wm/WindowProcessController.java" target="_blank" rel="noopener noreferrer">base/services/core/java/com/android/server/wm/WindowProcessController.java</a><span>L1482-1493</span></div><pre><code>    /**
+     * Get the current dispatching timeout. If instrumentation is currently taking place, return
+     * a longer value. Shorter timeout is returned otherwise.
+     * @return The timeout in milliseconds
+     */
+    public long getInputDispatchingTimeoutMillis() {
+        synchronized (mAtm.mGlobalLock) {
+            return isInstrumenting() || isUsingWrapper()
+                    ? INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS :
+                    DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
+        }
+    }</code></pre><p class="snippet-note">当前源码中 instrumentation 或 wrapper 返回较长阈值；ActivityTaskManagerService.java:345 定义该值为 60 * 1000 ms。其 5586-5597 行把进程配置提供给 ActivityRecord.setProcess（ActivityRecord.java:2177-2184），再由窗口信息传播。演示动态 timeout 改变应说明这是配置情景，不应声称运行中所有窗口都会无条件自动切换。</p></div></details></div><div class="scope-note"><b>三个独立的验证层</b><p>摘录匹配核对引用文本；机制复核核对条件、执行者与因果；浏览器测试核对模型操作与布局。以上不等于真机、厂商系统、实际调度耗时或 ANR 对话框证据。</p></div></div></section>
+  </main>
+  <footer class="wrap"><span>AOSP Input Pipeline / Input Dispatch Timeout ANR</span><span>源码驱动 · 单文件离线 · 2026-10-28</span></footer>
+  <noscript><p class="wrap">动画需要 JavaScript，静态原理与源码仍可阅读。</p></noscript>
+  <script id="sourceData" type="application/json">{"stages":[{"id":"publish","title":"发布成功后，按每条派发记录等待完成回执","summary":"本证据对应当前仓库 base/、native/ 源码版本 76a71e299faf8979c87b88d872b5811fa81a71eb。目标连接已存在，startDispatchCycleLocked 为派发记录设置 deliveryTime 和 timeoutTime；只有发布成功后才移入 waitQueue，并在连接仍 responsive 时登记 AnrTracker。这不是等待焦点窗口出现的 no-focused-window ANR。","snippets":[{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::startDispatchCycleLocked","lines":"3893-3905","code":"void InputDispatcher::startDispatchCycleLocked(nsecs_t currentTime,\n                                               const std::shared_ptr\u003cConnection>& connection) {\n// ...\n    while (connection->status == Connection::Status::NORMAL && !connection->outboundQueue.empty()) {\n        std::unique_ptr\u003cDispatchEntry>& dispatchEntry = connection->outboundQueue.front();\n        dispatchEntry->deliveryTime = currentTime;\n        const std::chrono::nanoseconds timeout = getDispatchingTimeoutLocked(connection);\n        dispatchEntry->timeoutTime = currentTime + timeout.count();","note":"计时基准是本轮派发传入的 currentTime，不是 entry.eventTime，也不是 Java onInputEvent 开始执行的时刻。循环没有等待上一条 ACK 才发送下一条的前置条件；同一连接可有多个在途记录，同一轮循环也可能使用相同 currentTime。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"mAnrTracker.insert","lines":"3996-4034","code":"        // Check the result.\n        if (status) {\n// ...\n            return;\n        }\n\n        // Re-enqueue the event on the wait queue.\n        const nsecs_t timeoutTime = dispatchEntry->timeoutTime;\n        connection->waitQueue.emplace_back(std::move(dispatchEntry));\n        connection->outboundQueue.erase(connection->outboundQueue.begin());\n        traceOutboundQueueLength(*connection);\n        if (connection->responsive) {\n            mAnrTracker.insert(timeoutTime, connection->getToken());\n        }\n        traceWaitQueueLength(*connection);\n    }","note":"status 非零会先返回；包括 WOULD_BLOCK 的失败发布不会将这条 outbound 记录登记为已发送等待。成功发布才转入 waitQueue；该队列可以同时保留多个未完成 seq。responsive=false 时成功发布也不继续为该连接登记 ANR 唤醒。"}]},{"id":"receive","title":"应用接收事件，保存传输序号并进入 ViewRootImpl","summary":"当前 Java 接收路径先记录 Java event sequence 与 native dispatch seq 的映射，再调用 WindowInputEventReceiver.onInputEvent。普通事件经 processRawInputEvent 入队处理；收到回调不等于发送 FINISHED，也不意味着 Dispatcher 已清除等待。","snippets":[{"file":"base/core/java/android/view/InputEventReceiver.java","symbol":"dispatchInputEvent","lines":"276-282","code":"    // Called from native code.\n    @SuppressWarnings(\"unused\")\n    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)\n    private void dispatchInputEvent(int seq, InputEvent event) {\n        mSeqMap.put(event.getSequenceNumber(), seq);\n        onInputEvent(event);\n    }","note":"event.getSequenceNumber() 是 Java 事件对象序号，参数 seq 是传输派发序号，不能直接混用。mSeqMap 保存映射；不要据此文件较早的单事件注释推断当前 native 不能有多个事件在途，实际并发边界以 publish 中的循环和 waitQueue 为准。"},{"file":"base/core/java/android/view/ViewRootImpl.java","symbol":"WindowInputEventReceiver","lines":"11453-11467","code":"    final class WindowInputEventReceiver extends InputEventReceiver {\n// ...\n        @Override\n        public void onInputEvent(InputEvent event) {\n            processRawInputEvent(event);\n        }","note":"这是普通 View 窗口的 Java 接收入口，不是系统统一的所有 InputConsumer 实现。接收器在同文件 1898-1899 行绑定 Looper.myLooper()，通常是该 ViewRoot 所属的 UI 线程；JNI 不会为每条事件新建线程。"},{"file":"base/core/java/android/view/ViewRootImpl.java","symbol":"processRawInputEvent","lines":"11660-11683","code":"    public void processRawInputEvent(InputEvent event) {\n// ...\n        if (processedEvents != null) {\n            if (processedEvents.isEmpty()) {\n                // InputEvent consumed by mInputCompatHandler\n                mInputEventReceiver.finishInputEvent(event, true);\n            } else {\n                for (int i = 0; i \u003c processedEvents.size(); i++) {\n                    enqueueInputEvent(\n                            processedEvents.get(i), mInputEventReceiver,\n                            QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY, true);\n                }\n            }\n        } else {\n            enqueueInputEvent(event, mInputEventReceiver, 0, true);\n        }","note":"普通分支携带 mInputEventReceiver 入队，后续处理完成才能经该 receiver 回传。兼容处理可能直接消费或转换事件，不能将所有输入都画成完全相同的一次 View 回调；enqueueInputEvent 在 11249-11252 行按 processImmediately 选择处理或调度。"}]},{"id":"finish","title":"处理完成后，Java 经 JNI 请求发送 FINISHED","summary":"ViewRootImpl 汇总 handled 状态，由 InputEventReceiver 将 Java 对象序号还原成 native seq，再经 JNI 进入 NativeInputEventReceiver。finish 请求可能因 socket 暂不可写而留在本地 outbound 队列，因此 Java finish 返回与 Dispatcher 收到 ACK 是不同事件。","snippets":[{"file":"base/core/java/android/view/ViewRootImpl.java","symbol":"finishInputEvent","lines":"11347-11368","code":"    private void finishInputEvent(QueuedInputEvent q) {\n// ...\n        if (q.mReceiver != null) {\n            boolean handled = (q.mFlags & QueuedInputEvent.FLAG_FINISHED_HANDLED) != 0;\n            boolean modified = (q.mFlags & QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY) != 0;\n            if (modified && mInputCompatHandler != null) {\n// ...\n                if (processedEvent != null) {\n                    q.mReceiver.finishInputEvent(processedEvent, handled);\n                }\n            } else {\n                q.mReceiver.finishInputEvent(q.mEvent, handled);\n            }","note":"InputStage 链在同文件 7970-7977 行走到末端时调用此方法；handled 来自 FLAG_FINISHED_HANDLED，而不是是否绘制一帧。handled=false 也必须完成回执，不表示仍在等待；兼容转换另有处理分支。"},{"file":"base/core/java/android/view/InputEventReceiver.java","symbol":"finishInputEvent","lines":"220-238","code":"    public final void finishInputEvent(InputEvent event, boolean handled) {\n        if (event == null) {\n            throw new IllegalArgumentException(\"event must not be null\");\n        }\n        if (mReceiverPtr == 0) {\n            Log.w(TAG, \"Attempted to finish an input event but the input event \"\n                    + \"receiver has already been disposed.\");\n        } else {\n            int index = mSeqMap.indexOfKey(event.getSequenceNumber());\n            if (index \u003c 0) {\n                Log.w(TAG, \"Attempted to finish an input event that is not in progress.\");\n            } else {\n                int seq = mSeqMap.valueAt(index);\n                mSeqMap.removeAt(index);\n                nativeFinishInputEvent(mReceiverPtr, seq, handled);\n            }\n        }\n        event.recycleIfNeededAfterDispatch();\n    }","note":"只对映射中仍在处理的事件调用 nativeFinishInputEvent，并删除 Java 本地映射；这不是删除 system_server 的 waitQueue。213-218 行约定必须在接收器所绑定的同一 Looper 线程调用。dispose 或找不到映射时不会正常发送这条完成信号。"},{"file":"base/core/jni/android_view_InputEventReceiver.cpp","symbol":"nativeFinishInputEvent","lines":"784-798","code":"static void nativeFinishInputEvent(JNIEnv* env, jclass clazz, jlong receiverPtr,\n        jint seq, jboolean handled) {\n    sp\u003cNativeInputEventReceiver> receiver =\n            reinterpret_cast\u003cNativeInputEventReceiver*>(receiverPtr);\n    status_t status = receiver->finishInputEvent(seq, handled);\n    if (status == OK || status == WOULD_BLOCK) {\n        return; // normal operation\n    }\n    if (status != DEAD_OBJECT) {\n        std::string message =\n                android::base::StringPrintf(\"Failed to finish input event.  status=%s(%d)\",\n                                            statusToString(status).c_str(), status);\n        jniThrowRuntimeException(env, message.c_str());\n    }\n}","note":"这是应用进程内部的 Java→native 调用，不是一次向 system_server 发起的 Binder finish RPC。WOULD_BLOCK 也正常返回，不能把方法返回绘制为 Dispatcher 已确认完成。"},{"file":"base/core/jni/android_view_InputEventReceiver.cpp","symbol":"NativeInputEventReceiver::finishInputEvent","lines":"274-285","code":"status_t NativeInputEventReceiver::finishInputEvent(uint32_t seq, bool handled) {\n    if (kDebugDispatchCycle) {\n        LOG(INFO) \u003c\u003c \"channel '\" \u003c\u003c mName \u003c\u003c \"' ~ Finished input event, seq=\" \u003c\u003c seq;\n    }\n\n    Finish finish{\n            .seq = seq,\n            .handled = handled,\n    };\n    mOutboundQueue.emplace(finish);\n    return processOutboundEvents();\n}","note":"把 seq 与 handled 封装为 Finish，先入接收器自己的 mOutboundQueue，再尝试发送。该队列属于应用侧 native receiver，与 InputDispatcher 的 connection.outboundQueue 不是同一个对象。"},{"file":"base/core/jni/android_view_InputEventReceiver.cpp","symbol":"NativeInputEventReceiver::processOutboundEvents","lines":"361-397","code":"status_t NativeInputEventReceiver::processOutboundEvents() {\n// ...\n    while (true) {\n        std::optional\u003cOutboundEvent> outbound = mOutboundQueue.popWithTimeout(0ms);\n        if (!outbound.has_value()) {\n            break;\n        }\n\n        status_t status;\n        if (std::holds_alternative\u003cFinish>(*outbound)) {\n            const Finish& finish = std::get\u003cFinish>(*outbound);\n            status = mInputConsumer->sendFinishedSignal(finish.seq, finish.handled);\n// ...\n        }\n// ...\n        if (status == WOULD_BLOCK) {\n// ...\n            mOutboundQueue.emplace(*outbound);\n            setFdEvents(ALOOPER_EVENT_INPUT | ALOOPER_EVENT_OUTPUT);\n            return WOULD_BLOCK; // try again later\n        }","note":"Finish 分支交给 InputConsumer。省略部分包含 Timeline 分支与成功后继续循环；当返回 WOULD_BLOCK 时，消息放回本地队列并关注 OUTPUT，等待再次可写。FINISHED 与用于绘制指标的 TIMELINE 是两类消息，后者不能代替 ACK。"}]},{"id":"socket","title":"通过 InputChannel socket 回传 seq 与 handled","summary":"InputConsumer 发送 FINISHED 消息，InputPublisher 解码同一消息。批处理可能把一个 Java 完成动作展开为多个 native seq 的完成信号；事件处理是否消费和传输是否完成是两个维度。","snippets":[{"file":"native/libs/input/InputConsumer.cpp","symbol":"InputConsumer::sendFinishedSignal","lines":"746-792","code":"status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled) {\n// ...\n    // Send finished signals for the batch sequence chain first.\n    size_t seqChainCount = mSeqChains.size();\n    if (seqChainCount) {\n// ...\n        for (size_t i = seqChainCount; i > 0;) {\n// ...\n            const SeqChain& seqChain = mSeqChains[i];\n            if (seqChain.seq == currentSeq) {\n                currentSeq = seqChain.chain;\n                chainSeqs[chainIndex++] = currentSeq;\n                mSeqChains.erase(mSeqChains.begin() + i);\n            }\n        }\n        status_t status = OK;\n        while (!status && chainIndex > 0) {\n            chainIndex--;\n            status = sendUnchainedFinishedSignal(chainSeqs[chainIndex], handled);\n        }\n// ...\n    }\n\n    // Send finished signal for the last message in the batch.\n    return sendUnchainedFinishedSignal(seq, handled);\n}","note":"先完成批次序号链，再完成最后一个 seq。省略部分包括 seq=0 的错误检查和发送失败时重建未完成的链。动画若一事件对应一 seq，必须标为简化，不应宣称真实 MotionEvent 批次只需删除一个 native 派发条目。"},{"file":"native/libs/input/InputConsumer.cpp","symbol":"InputConsumer::sendUnchainedFinishedSignal","lines":"824-841","code":"status_t InputConsumer::sendUnchainedFinishedSignal(uint32_t seq, bool handled) {\n    InputMessage msg;\n    msg.header.type = InputMessage::Type::FINISHED;\n    msg.header.seq = seq;\n    msg.body.finished.handled = handled;\n    msg.body.finished.consumeTime = getConsumeTime(seq);\n    status_t result = mChannel->sendMessage(&msg);\n    if (result == OK) {\n        // Remove the consume time if the socket write succeeded. We will not need to ack this\n        // message anymore. If the socket write did not succeed, we will try again and will still\n        // need consume time.\n        popConsumeTime(seq);\n\n        // Trace the event processing timeline - event was just finished\n        ATRACE_ASYNC_END(mProcessingTraceTag.c_str(), /*cookie=*/seq);\n    }\n    return result;\n}","note":"FINISHED 的 header 携带 seq，body 携带 handled 与 consumeTime。handled=false 仍然是完成信号；写 socket 成功也不等于对端已消费或清理 waitQueue。这里没有等待 GPU 完成或屏幕呈现。"},{"file":"native/libs/input/InputTransport.cpp","symbol":"InputPublisher::receiveConsumerResponse","lines":"748-769","code":"android::base::Result\u003cInputPublisher::ConsumerResponse> InputPublisher::receiveConsumerResponse() {\n    android::base::Result\u003cInputMessage> result = mChannel->receiveMessage();\n// ...\n    const InputMessage& msg = *result;\n    if (msg.header.type == InputMessage::Type::FINISHED) {\n// ...\n        return Finished{\n                .seq = msg.header.seq,\n                .handled = msg.body.finished.handled,\n                .consumeTime = msg.body.finished.consumeTime,\n        };\n    }","note":"system_server 发布端读取 socket 并还原 Finished。seq 是匹配原派发条目的键；handled 供后处理使用，而不是 ACK 是否存在的开关。另有 TIMELINE 消息分支，不能将其画为 FINISHED。"}]},{"id":"ack","title":"Dispatcher 读取 ACK，按 seq 清理单条等待","summary":"连接 fd 回调读取 Finished 后安排完成命令，再按 seq 移除一条 waitQueue 记录，并用该记录保存的 timeoutTime 与 connectionToken 删除一条 AnrTracker 索引。其他事件仍在等待；若连接曾不响应，还需检查剩余队列。收到任意消息不等于清空连接等待。","snippets":[{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::handleReceiveCallback","lines":"4137-4185","code":"int InputDispatcher::handleReceiveCallback(int events, sp\u003cIBinder> connectionToken) {\n    std::scoped_lock _l(mLock);\n    std::shared_ptr\u003cConnection> connection = mConnectionManager.getConnection(connectionToken);\n// ...\n        nsecs_t currentTime = now();\n        bool gotOne = false;\n        status_t status = OK;\n        for (;;) {\n            Result\u003cInputPublisher::ConsumerResponse> result =\n                    connection->inputPublisher.receiveConsumerResponse();\n            if (!result.ok()) {\n                status = result.error().code();\n                break;\n            }\n\n            if (std::holds_alternative\u003cInputPublisher::Finished>(*result)) {\n                const InputPublisher::Finished& finish =\n                        std::get\u003cInputPublisher::Finished>(*result);\n                finishDispatchCycleLocked(currentTime, connection, finish.seq, finish.handled,\n                                          finish.consumeTime);\n// ...\n            }\n            gotOne = true;\n        }\n        if (gotOne) {\n            runCommandsLockedInterruptable();","note":"省略连接有效性、fd 错误检查及 Timeline 指标分支。一次回调循环可读多个完成消息；currentTime 是接收回调的采样时间，不是 Java 回调开始时间，也不是来自 FINISHED 的 consumeTime。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::finishDispatchCycleLocked","lines":"4076-4092","code":"void InputDispatcher::finishDispatchCycleLocked(nsecs_t currentTime,\n                                                const std::shared_ptr\u003cConnection>& connection,\n                                                uint32_t seq, bool handled, nsecs_t consumeTime) {\n// ...\n    if (connection->status != Connection::Status::NORMAL) {\n        return;\n    }\n\n    // Notify other system components and prepare to start the next dispatch cycle.\n    auto command = [this, currentTime, connection, seq, handled, consumeTime]() REQUIRES(mLock) {\n        doDispatchCycleFinishedCommand(currentTime, connection, seq, handled, consumeTime);\n    };\n    postCommandLocked(std::move(command));\n}","note":"只有 NORMAL 连接继续安排完成命令。postCommandLocked 是 Dispatcher 内部命令队列，并不表示跳到应用主线程或系统主线程；具体删除等待记录发生在下面的 doDispatchCycleFinishedCommand。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::doDispatchCycleFinishedCommand","lines":"6700-6752","code":"void InputDispatcher::doDispatchCycleFinishedCommand(nsecs_t finishTime,\n                                                     const std::shared_ptr\u003cConnection>& connection,\n                                                     uint32_t seq, bool handled,\n                                                     nsecs_t consumeTime) {\n// ...\n    auto entryIt = std::find_if(connection->waitQueue.begin(), connection->waitQueue.end(),\n                                [seq](auto& e) { return e->seq == seq; });\n    if (entryIt != connection->waitQueue.end()) {\n        std::unique_ptr\u003cDispatchEntry> dispatchEntry = std::move(*entryIt);\n        connection->waitQueue.erase(entryIt);\n\n        const sp\u003cIBinder>& connectionToken = connection->getToken();\n        mAnrTracker.erase(dispatchEntry->timeoutTime, connectionToken);\n        if (!connection->responsive) {\n            connection->responsive = isConnectionResponsive(*connection);\n            if (connection->responsive) {\n                // The connection was unresponsive, and now it's responsive.\n                processConnectionResponsiveLocked(*connection);\n            }\n        }\n        traceWaitQueueLength(*connection);","note":"ACK 只解除匹配 seq 的等待，不重置整个窗口计时。AnrTracker::erase 在 AnrTracker.cpp:30-39 明确只删一条相同 (timeoutTime, token)，即使有重复键也不全删。省略的 6708-6731 行先做 seq 查找、耗时统计与按键 fallback；因为该过程可能释放锁，清理前必须重新查找。handled=false 的按键可能生成新的 fallback，但原记录仍按完成路径移除；本函数在 6771 行再尝试 startDispatchCycleLocked。"}]},{"id":"timeout","title":"最早期限触发超时，诊断原因取队首记录","summary":"AnrTracker 按最早 timeoutTime 选择到期连接；检测到期后设置 responsive=false 并 eraseToken，避免持续为同一失响应连接唤醒。这不会清空 waitQueue。onAnrLocked 生成 reason 时仍取 waitQueue.front()，所以窗口 timeout 改变时，触发到期的记录未必就是 reason 描述的最老记录。","snippets":[{"file":"native/services/inputflinger/dispatcher/AnrTracker.cpp","symbol":"AnrTracker::firstTimeout","lines":"56-67","code":"// If empty() is false, return the time at which the next connection should cause an ANR\n// If empty() is true, return LLONG_MAX\nnsecs_t AnrTracker::firstTimeout() const {\n    if (mAnrTimeouts.empty()) {\n        return std::numeric_limits\u003cnsecs_t>::max();\n    }\n    return mAnrTimeouts.begin()->first;\n}\n\nconst sp\u003cIBinder>& AnrTracker::firstToken() const {\n    return mAnrTimeouts.begin()->second;\n}","note":"AnrTracker.h:45-54 将 mAnrTimeouts 定义为 (timeoutTime, token) 的 multiset，允许重复，不储存 seq。触发选最小期限，不是直接选 waitQueue.front()。AnrTracker.cpp:42-50 的 eraseToken 只遍历这个索引容器，不接触连接 waitQueue。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"processAnrsLocked","lines":"1143-1179","code":"nsecs_t InputDispatcher::processAnrsLocked() {\n    const nsecs_t currentTime = now();\n    nsecs_t nextAnrCheck = LLONG_MAX;\n// ...\n    // Check if any connection ANRs are due\n    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());\n    if (currentTime \u003c nextAnrCheck) { // most likely scenario\n        return nextAnrCheck;          // everything is normal. Let's check again at nextAnrCheck\n    }\n\n    // If we reached here, we have an unresponsive connection.\n    std::shared_ptr\u003cConnection> connection =\n            mConnectionManager.getConnection(mAnrTracker.firstToken());\n    if (connection == nullptr) {\n        ALOGE(\"Could not find connection for entry %\" PRId64, mAnrTracker.firstTimeout());\n        // As we no longer have entry for this connection, remove it form Anr tracker to prevent\n        // samme error being logged multiple times.\n        mAnrTracker.eraseToken(mAnrTracker.firstToken());\n        return nextAnrCheck;\n    }\n    connection->responsive = false;\n    // Stop waking up for this unresponsive connection\n    mAnrTracker.eraseToken(connection->getToken());\n    onAnrLocked(connection);\n    return LLONG_MIN;","note":"完整函数在 1143 行开始；本段是 connection ACK 超时分支，不含前面的 no-focused-window 分支。在检测运行时 currentTime 已到期限才触发，而不是保证纳秒级准点执行。eraseToken 移除同一连接的所有计时索引，不删除未完成派发记录，也不自动断开 channel。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::onAnrLocked","lines":"6792-6833","code":"void InputDispatcher::onAnrLocked(const std::shared_ptr\u003cConnection>& connection) {\n// ...\n    if (connection->waitQueue.empty()) {\n        ALOGI(\"Not raising ANR because the connection %s has recovered\",\n              connection->getInputChannelName().c_str());\n        return;\n    }\n// ...\n    DispatchEntry& oldestEntry = *connection->waitQueue.front();\n// ...\n    const nsecs_t currentWait = now() - oldestEntry.deliveryTime;\n    std::string reason =\n            android::base::StringPrintf(\"%s is not responding. Waited %\" PRId64 \"ms for %s\",\n                                        connection->getInputChannelName().c_str(),\n                                        ns2ms(currentWait),\n                                        oldestEntry.eventEntry->getDescription().c_str());\n// ...\n    const int32_t eventId = oldestEntry.eventEntry->id;\n    const nsecs_t eventTime = oldestEntry.eventEntry->eventTime;\n    const std::chrono::milliseconds timeoutDuration = std::chrono::milliseconds(ns2ms(currentWait));\n    processConnectionUnresponsiveLocked(*connection, std::move(reason), eventId, eventTime,\n                                        timeoutDuration);\n\n    // Stop waking up for events on this connection, it is already unresponsive\n    cancelEventsForAnrLocked(connection);\n}","note":"6804-6809 行明确解释：新事件可因窗口 timeout 变短而先到期，但 reason 仍选最早发送的队首事件。timeoutDuration 是队首已经等待的时长，未必等于当前配置阈值。cancelEventsForAnrLocked 在 2346-2371 行合成取消输入，不清空 waitQueue，也明确不直接断开连接；不要把注释所说 policy 延长超时画成此处实际返回新期限。"}]},{"id":"policy","title":"超时通知经 JNI、IMS、WMS 归因后进入 AMS","summary":"InputDispatcher 将失响应通知排为内部命令，执行时释放 mLock；NativeInputManager 通过 JNI 回调同一 system_server 内的 IMS，继而由 InputManagerCallback 进入 WMS AnrController。WMS 根据实际 input token、窗口和进程归因，ActivityRecord 或 pid 路径进入 AMS；这不是检测瞬间必然出现弹框。","snippets":[{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::runCommandsLockedInterruptable","lines":"1672-1688","code":"bool InputDispatcher::runCommandsLockedInterruptable() {\n    if (mCommandQueue.empty()) {\n        return false;\n    }\n\n    do {\n        auto command = std::move(mCommandQueue.front());\n        mCommandQueue.pop_front();\n        // Commands are run with the lock held, but may release and re-acquire the lock from within.\n        command();\n    } while (!mCommandQueue.empty());\n    return true;\n}\n\nvoid InputDispatcher::postCommandLocked(Command&& command) {\n    mCommandQueue.push_back(command);\n}","note":"命令追加到队尾、从队首执行。已经排队的 unresponsive 通知不会被后排入的 ACK 完成及恢复命令越过；动画的视觉转场延迟必须保留这个因果顺序。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::sendWindowUnresponsiveCommandLocked","lines":"6905-6923","code":"void InputDispatcher::sendWindowUnresponsiveCommandLocked(\n        const sp\u003cIBinder>& token, std::optional\u003cgui::Pid> pid, std::string reason, int32_t eventId,\n        nsecs_t eventTime, std::chrono::milliseconds timeoutDuration) {\n    auto command = [this, token, pid, r = std::move(reason), eventId, eventTime,\n                    timeoutDuration]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyWindowUnresponsive(token, pid, r, eventId, eventTime, timeoutDuration);\n    };\n    postCommandLocked(std::move(command));\n}\n\nvoid InputDispatcher::sendWindowResponsiveCommandLocked(const sp\u003cIBinder>& token,\n                                                        std::optional\u003cgui::Pid> pid) {\n    auto command = [this, token, pid]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyWindowResponsive(token, pid);\n    };\n    postCommandLocked(std::move(command));\n}","note":"同文件 6930-6949 行的 processConnectionUnresponsiveLocked 为普通窗口从 WindowInfo.ownerPid 取可选 pid，再进入本方法；monitor 另走 monitor pid。失响应与恢复都经排队命令，执行 callback 前释放 Dispatcher 锁；不是派发锁内同步持锁进入 WMS，也不是新建独立 ANR 线程。"},{"file":"base/services/core/jni/com_android_server_input_InputManagerService.cpp","symbol":"NativeInputManager::notifyWindowUnresponsive","lines":"1354-1391","code":"void NativeInputManager::notifyWindowUnresponsive(const sp\u003cIBinder>& token,\n                                                  std::optional\u003cgui::Pid> pid,\n                                                  const std::string& reason, int32_t eventId,\n                                                  nsecs_t eventTime,\n                                                  std::chrono::milliseconds timeoutDuration) {\n// ...\n    JNIEnv* env = jniEnv();\n    ScopedLocalFrame localFrame(env);\n\n    jobject tokenObj = javaObjectForIBinder(env, token);\n    ScopedLocalRef\u003cjstring> reasonObj(env, env->NewStringUTF(reason.c_str()));\n\n    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowUnresponsive, tokenObj,\n                        pid.value_or(gui::Pid{0}).val(), pid.has_value(), reasonObj.get(), eventId,\n                        eventTime, timeoutDuration.count());\n    checkAndClearExceptionFromCallback(env, \"notifyWindowUnresponsive\");\n}\n\nvoid NativeInputManager::notifyWindowResponsive(const sp\u003cIBinder>& token,\n                                                std::optional\u003cgui::Pid> pid) {\n// ...\n    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowResponsive, tokenObj,\n                        pid.value_or(gui::Pid{0}).val(), pid.has_value());\n    checkAndClearExceptionFromCallback(env, \"notifyWindowResponsive\");\n}","note":"JNI 调用的是现有 IMS Java 对象，pid 是否有效由额外布尔值传递；不能把缺失 pid 当真实 pid=0 归因。这里传递的是用于识别窗口的 IBinder token，但 CallVoidMethod 本身不是跨进程 Binder transact，也不自动切换到 system_server 主线程。"},{"file":"base/services/core/java/com/android/server/input/InputManagerService.java","symbol":"notifyWindowUnresponsive","lines":"2670-2696","code":"    // Native callback\n    @SuppressWarnings(\"unused\")\n    private void notifyWindowUnresponsive(\n            IBinder token,\n            int pid,\n            boolean isPidValid,\n            String reason,\n            int eventId,\n            long eventTimeNs,\n            long timeoutDurationMs) {\n        OptionalInt optionalPid = isPidValid ? OptionalInt.of(pid) : OptionalInt.empty();\n        TimeoutRecord timeoutRecord =\n                TimeoutRecord.forInputDispatchWindowUnresponsive(\n                        timeoutMessage(optionalPid, reason));\n\n        if (android.app.Flags.includeAnrInfo()) {\n            setAnrInfoInTimeoutRecord(timeoutRecord, eventId, eventTimeNs, timeoutDurationMs);\n        }\n        mWindowManagerCallbacks.notifyWindowUnresponsive(token, optionalPid, timeoutRecord);\n    }\n\n    // Native callback\n    @SuppressWarnings(\"unused\")\n    private void notifyWindowResponsive(IBinder token, int pid, boolean isPidValid) {\n        mWindowManagerCallbacks.notifyWindowResponsive(token,\n                isPidValid ? OptionalInt.of(pid) : OptionalInt.empty());\n    }","note":"IMS 创建 WindowUnresponsive 类型 TimeoutRecord，再同步调用 WindowManagerCallbacks。includeAnrInfo 只控制额外事件信息记录，不是正式 ACK 超时 ANR 的总开关；恢复走独立 notifyWindowResponsive 回调。"},{"file":"base/services/core/java/com/android/server/wm/InputManagerCallback.java","symbol":"notifyWindowUnresponsive","lines":"111-122","code":"    @Override\n    public void notifyWindowUnresponsive(\n            @NonNull IBinder token,\n            @NonNull OptionalInt pid,\n            @NonNull TimeoutRecord timeoutRecord) {\n        mService.mAnrController.notifyWindowUnresponsive(token, pid, timeoutRecord);\n    }\n\n    @Override\n    public void notifyWindowResponsive(@NonNull IBinder token, @NonNull OptionalInt pid) {\n        mService.mAnrController.notifyWindowResponsive(token, pid);\n    }","note":"该适配器连接 IMS 回调与 WMS.mAnrController，两个 Java 调用均是 system_server 内部调用。本阶段不要与应用中的 android.app.AnrController 或 Java 主线程 Handler 回调混淆。"},{"file":"base/services/core/java/com/android/server/wm/AnrController.java","symbol":"notifyWindowUnresponsive","lines":"271-309","code":"    private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,\n            TimeoutRecord timeoutRecord) {\n// ...\n        synchronized (mService.mGlobalLock) {\n// ...\n            InputTarget target = mService.getInputTargetFromToken(inputToken);\n            if (target == null) {\n                return false;\n            }\n            windowState = target.getWindowState();\n            pid = target.getPid();\n            if (windowState != null) {\n                // Blame the activity if the input token belongs to the window. If the target is\n                // embedded, then we will blame the pid instead.\n                activity = (windowState.mInputChannelToken == inputToken)\n                        ? windowState.mActivityRecord : null;\n                aboveSystem = isWindowAboveSystem(windowState);\n            } else {\n// ...\n                activity = null;\n                aboveSystem = true;\n            }\n// ...\n        }\n        if (activity != null) {\n            activity.inputDispatchingTimedOut(timeoutRecord, pid);\n        } else {\n            mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);\n        }\n        dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);\n        return true;","note":"嵌入目标或没有 Activity 的窗口直接按实际 target pid 归因，不保证所有事件都走 Activity。入口 247-259 行在 token 解析失败时尝试可选 pid；315-320 行是 pid 兜底。这里进入 AMS 的调用在退出 WMS 全局锁之后。"},{"file":"base/services/core/java/com/android/server/wm/ActivityRecord.java","symbol":"inputDispatchingTimedOut","lines":"6819-6845","code":"    public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {\n// ...\n            synchronized (mAtmService.mGlobalLock) {\n// ...\n                anrActivity = getWaitingHistoryRecordLocked();\n                anrApp = app;\n                blameActivityProcess =  hasProcess()\n                        && (app.getPid() == windowPid || windowPid == INVALID_PID);\n            }\n\n            if (blameActivityProcess) {\n                return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,\n                        anrActivity.shortComponentName, anrActivity.info.applicationInfo,\n                        shortComponentName, app, false, timeoutRecord);\n            } else {\n                // In this case another process added windows using this activity token.\n                // So, we call the generic service input dispatch timed out method so\n                // that the right process is blamed.\n                long timeoutMillis = mAtmService.mAmInternal.inputDispatchingTimedOut(\n                        windowPid, false /* aboveSystem */, timeoutRecord);\n                return timeoutMillis \u003c= 0;","note":"Activity 路径仍核对窗口 pid 与 Activity 进程，避免其他进程借用 Activity token 时误归因。mAmInternal 的对应本地转发实现在 ActivityManagerService.java:18452-18465；这里的 boolean/timeoutMillis 不能解释成 native 当前必然据此延长已触发连接的期限，WMS 本调用处并未消费返回值。"},{"file":"base/services/core/java/com/android/server/am/ActivityManagerService.java","symbol":"inputDispatchingTimedOut","lines":"19328-19363","code":"    boolean inputDispatchingTimedOut(ProcessRecord proc, String activityShortComponentName,\n            ApplicationInfo aInfo, String parentShortComponentName,\n            WindowProcessController parentProcess, boolean aboveSystem,\n            TimeoutRecord timeoutRecord) {\n// ...\n            if (proc != null) {\n// ...\n                synchronized (mGlobalLock) {\n// ...\n                    if (proc.isDebugging()) {\n                        return false;\n                    }\n\n                    if (proc.getActiveInstrumentation() != null) {\n// ...\n                        finishInstrumentationLocked(proc, Activity.RESULT_CANCELED, info);\n                        return true;\n                    }\n                }\n                mAnrHelper.appNotResponding(proc, activityShortComponentName, aInfo,\n                        parentShortComponentName, parentProcess, aboveSystem, timeoutRecord,\n                        /*isContinuousAnr*/ true);\n            }\n\n            return true;","note":"普通有效进程进入 AnrHelper；调试、instrumentation、进程已消失等存在不同处理。pid 重载在 19304-19321 行先查 ProcessRecord。AnrHelper.java:123-187 会检查重复请求、提交早期堆栈收集、排入 mAnrRecords 并启动 AnrConsumerThread。因此 native 超时通知、AMS 受理、异步采集与最终弹框是不同边界，不能给它们伪造相同时间。"}]},{"id":"recovery","title":"迟到 ACK 可恢复连接，但需检查剩余所有等待","summary":"超时后连接仍可接收 FINISHED。每次按 seq 清理后，只有剩余 waitQueue 没有已经超时的记录，才将失响应连接恢复为 responsive 并通知 policy；不是任意一条 ACK 都能让整条连接恢复，也不要求队列完全为空。恢复通知不等于撤销已经执行或排队的全部 ANR 工作。","snippets":[{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"isConnectionResponsive","lines":"540-552","code":"/**\n * Connection is responsive if it has no events in the waitQueue that are older than the\n * current time.\n */\nbool isConnectionResponsive(const Connection& connection) {\n    const nsecs_t currentTime = now();\n    for (const auto& dispatchEntry : connection.waitQueue) {\n        if (dispatchEntry->timeoutTime \u003c currentTime) {\n            return false;\n        }\n    }\n    return true;\n}","note":"调用点见 ack：删除当前 seq 后才扫描剩余记录。有未超时的在途事件也可恢复，不需要 waitQueue.empty()。此处超时比较是 timeoutTime \u003c now()；processAnrsLocked 的到期条件是检测时 currentTime >= nextAnrCheck，动画应明确自己的同刻事件排序，不能声称两处比较符完全相同。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::processConnectionResponsiveLocked","lines":"6955-6968","code":"void InputDispatcher::processConnectionResponsiveLocked(const Connection& connection) {\n    const sp\u003cIBinder>& connectionToken = connection.getToken();\n    std::optional\u003cgui::Pid> pid;\n    if (connection.isFocusMonitor) {\n        pid = mConnectionManager.findMonitorPidByToken(connectionToken);\n    } else {\n        // The connection is a window\n        const sp\u003cWindowInfoHandle> handle = mWindowInfos.findWindowHandle(connectionToken);\n        if (handle != nullptr) {\n            pid = handle->getInfo()->ownerPid;\n        }\n    }\n    sendWindowResponsiveCommandLocked(connectionToken, pid);\n}","note":"恢复通知仍携带 connection token 与可选 ownerPid，通过 policy 阶段列出的 sendWindowResponsiveCommandLocked、JNI、IMS 与 InputManagerCallback 路径进入 WMS，不是应用主动调用 AMS 恢复接口。不要凭此推断已移除的旧 AnrTracker 索引被全部重建。"},{"file":"base/services/core/java/com/android/server/wm/AnrController.java","symbol":"notifyWindowResponsive","lines":"348-366","code":"    private boolean notifyWindowResponsive(@NonNull IBinder inputToken) {\n        final int pid;\n        synchronized (mService.mGlobalLock) {\n            InputTarget target = mService.getInputTargetFromToken(inputToken);\n            if (target == null) {\n                return false;\n            }\n            pid = target.getPid();\n        }\n        mService.mAmInternal.inputDispatchingResumed(pid);\n        return true;\n    }\n\n    /**\n     * Notify a window owned by the provided pid was responsive after previously being unresponsive.\n     */\n    private void notifyWindowResponsive(int pid) {\n        mService.mAmInternal.inputDispatchingResumed(pid);\n    }","note":"330-338 行入口先按 token，失败再尝试可选 pid。ActivityManagerService.java:18469-18476 的 inputDispatchingResumed 按 pid 找到进程并调用 mAppErrors.handleDismissAnrDialogs；这不是回滚已发生的超时，也不是通用取消 AnrHelper 队列的接口。"}]},{"id":"configuration","title":"基础默认 5 秒，实际采用窗口与环境配置","summary":"5000 ms 是未乘倍率的基础常量，不是所有设备、窗口和场景都固定 5 秒。Java 和 native 各自使用硬件超时倍率；派发优先读取有效窗口的 dispatchingTimeout，monitor 另有配置。进程 instrumentation 或 wrapper 可产生较长的窗口超时，且已经发送的记录保存自己的 deadline。","snippets":[{"file":"native/libs/input/android/os/IInputConstants.aidl","symbol":"UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS","lines":"23-26","code":"    // This should be multiplied by the value of the system property ro.hw_timeout_multiplier before\n    // use. A pre-multiplied constant is available in Java in\n    // android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS.\n    const int UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS = 5000; // 5 seconds","note":"基础默认值为 5000 ms。演示选 5 秒时须注明硬件倍率为 1、窗口未使用其他覆盖值；不能将任意 connection ANR 都标成从物理输入发生后精确 5 秒。"},{"file":"base/core/java/android/os/InputConstants.java","symbol":"DEFAULT_DISPATCHING_TIMEOUT_MILLIS","lines":"23-27","code":"public class InputConstants {\n    public static final int DEFAULT_DISPATCHING_TIMEOUT_MILLIS =\n            IInputConstants.UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS\n            * Build.HW_TIMEOUT_MULTIPLIER;\n}","note":"Java 默认值已经包含 Build.HW_TIMEOUT_MULTIPLIER。WMS 构造普通窗口超时信息时使用的是这条 Java 配置链，不应在动画中再次无条件叠乘 native 倍率。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"DEFAULT_INPUT_DISPATCHING_TIMEOUT","lines":"125-129","code":"// Default input dispatching timeout if there is no focused application or paused window\n// from which to determine an appropriate dispatching timeout.\nconst std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(\n        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *\n        HwTimeoutMultiplier());","note":"native 兜底默认值同样包含 HwTimeoutMultiplier()。是否采用兜底由下面 getDispatchingTimeoutLocked 的实际分支决定，不能仅凭这段默认值注释替代窗口超时选择逻辑。"},{"file":"native/services/inputflinger/dispatcher/InputDispatcher.cpp","symbol":"InputDispatcher::getDispatchingTimeoutLocked","lines":"1195-1205","code":"std::chrono::nanoseconds InputDispatcher::getDispatchingTimeoutLocked(\n        const std::shared_ptr\u003cConnection>& connection) {\n    if (connection->isFocusMonitor) {\n        return mMonitorDispatchingTimeout;\n    }\n    const sp\u003cWindowInfoHandle> window = mWindowInfos.findWindowHandle(connection->getToken());\n    if (window != nullptr) {\n        return window->getDispatchingTimeout(DEFAULT_INPUT_DISPATCHING_TIMEOUT);\n    }\n    return DEFAULT_INPUT_DISPATCHING_TIMEOUT;\n}","note":"实际选择顺序是 focus monitor 自己的配置、对应 WindowInfo 的配置、最后 native 默认值。publish 为每个 DispatchEntry 保存 timeoutTime；窗口配置更新不等于这里追溯重写全部已发送记录。"},{"file":"native/libs/gui/include/gui/WindowInfo.h","symbol":"getDispatchingTimeout","lines":"307-310","code":"    inline std::chrono::nanoseconds getDispatchingTimeout(\n            std::chrono::nanoseconds defaultValue) const {\n        return mInfo.token ? std::chrono::nanoseconds(mInfo.dispatchingTimeout) : defaultValue;\n    }","note":"有效窗口 token 存在时直接使用 WindowInfo.dispatchingTimeout，不是再额外叠加默认 5 秒或硬件倍率。普通窗口赋值链已核对：InputMonitor.java:253-259 → WindowState.java:1792-1795 → ActivityRecord.mInputDispatchingTimeoutMillis；InputWindowHandleWrapper.java:132-137 将值写入 handle。"},{"file":"base/services/core/java/com/android/server/wm/WindowProcessController.java","symbol":"getInputDispatchingTimeoutMillis","lines":"1482-1493","code":"    /**\n     * Get the current dispatching timeout. If instrumentation is currently taking place, return\n     * a longer value. Shorter timeout is returned otherwise.\n     * @return The timeout in milliseconds\n     */\n    public long getInputDispatchingTimeoutMillis() {\n        synchronized (mAtm.mGlobalLock) {\n            return isInstrumenting() || isUsingWrapper()\n                    ? INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS :\n                    DEFAULT_DISPATCHING_TIMEOUT_MILLIS;\n        }\n    }","note":"当前源码中 instrumentation 或 wrapper 返回较长阈值；ActivityTaskManagerService.java:345 定义该值为 60 * 1000 ms。其 5586-5597 行把进程配置提供给 ActivityRecord.setProcess（ActivityRecord.java:2177-2184），再由窗口信息传播。演示动态 timeout 改变应说明这是配置情景，不应声称运行中所有窗口都会无条件自动切换。"}]}],"identity":{"snapshot":"24bc82b5d25dd6ebc97e8c3401fa1678cd9f3ba5","sourceRoot":"repository root","inspectedDate":"2026-10-28","excerptOnly":true,"files":{"native/services/inputflinger/dispatcher/InputDispatcher.cpp":{"sha256":"4598e3a96e0196a5965be2a4232736ba7e14616c8435b201ab6d394e44b762c9","dirty":false},"base/core/java/android/view/InputEventReceiver.java":{"sha256":"3abd21629bc1b3998f17732e9fcb91f462540cd24ec439571883949d08789aef","dirty":false},"base/core/java/android/view/ViewRootImpl.java":{"sha256":"ea114069943ffcc8a6c8b87c85ee194213951637716fddd453ff4ec4341f80dd","dirty":false},"base/core/jni/android_view_InputEventReceiver.cpp":{"sha256":"f114a0157e0dc50d16907cc9b319be3f1a18ecfebb079a6bc4cfdb5c36cfbe9e","dirty":false},"native/libs/input/InputConsumer.cpp":{"sha256":"cac11b9ab408ca5287a84d16c1b0b20c4261e5adccc2bb2b29d3ecbd4c60a951","dirty":false},"native/libs/input/InputTransport.cpp":{"sha256":"569f6dfb4c06c79e665cbdf249c17389857ee99efb67e0a92dd2112c7e025a6e","dirty":false},"native/services/inputflinger/dispatcher/AnrTracker.cpp":{"sha256":"9255da90aeb509575c873cfb1c12c13c4eacb5a7363fdf052e0321f6a6f53f64","dirty":false},"base/services/core/jni/com_android_server_input_InputManagerService.cpp":{"sha256":"0a71ebf0fb6697a1f21a6abe0e14e53d4b961e40a4baace0b8dedb0d5b8c08c5","dirty":false},"base/services/core/java/com/android/server/input/InputManagerService.java":{"sha256":"df0e4cc78508383cd60fd2cd534ba450a0df2071b211ee21115fa71f35470dc1","dirty":false},"base/services/core/java/com/android/server/wm/InputManagerCallback.java":{"sha256":"1d8071ad6092421d995c4bb67f8476dde9dc3a847b658b6b5b51b5d8c90761e1","dirty":false},"base/services/core/java/com/android/server/wm/AnrController.java":{"sha256":"0c463d107c17bf3ebdc7783f3743369bf853dd48bf43a57787a7bfd94cfbde93","dirty":false},"base/services/core/java/com/android/server/wm/ActivityRecord.java":{"sha256":"a1eeca1ee02e9e60f4e2f61f083d05c1c769dadd234e142e162c086e6c2aaf82","dirty":false},"base/services/core/java/com/android/server/am/ActivityManagerService.java":{"sha256":"17923170a97fb001c3892ab4e0d71f9e249f9ea0b427a7aaf29916aae5208797","dirty":false},"native/libs/input/android/os/IInputConstants.aidl":{"sha256":"e2d2b7dc949fc803cd8e9a201b05ba6809a47e049c46c200120b04ec71e49726","dirty":false},"base/core/java/android/os/InputConstants.java":{"sha256":"71c26b63948785766f73c499229817303b953c2067239138f07ff7f95e2d460a","dirty":false},"native/libs/gui/include/gui/WindowInfo.h":{"sha256":"c5b2543f2c36d2edfc1dbe65f3b34bc27aa4736ddd6e0bcd4b04be81564befbb","dirty":false},"base/services/core/java/com/android/server/wm/WindowProcessController.java":{"sha256":"d90c18dbb24a39979de649e9de0649d081afe8b86271adfcf9f5e416bfd8d19a","dirty":false}}},"icons":{"play":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z\"/>\u003c/svg>","pause":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003crect x=\"14\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\"/>\u003crect x=\"5\" y=\"3\" width=\"5\" height=\"18\" rx=\"1\"/>\u003c/svg>","scan":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2\"/>\u003c/svg>","restart":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8M3 3v5h5\"/>\u003c/svg>","previous":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M13.971 4.285A2 2 0 0 1 17 6v12a2 2 0 0 1-3.029 1.715l-9.997-5.998a2 2 0 0 1-.003-3.432zM21 20V4\"/>\u003c/svg>","next":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M10.029 4.285A2 2 0 0 0 7 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432zM3 4v16\"/>\u003c/svg>","sun":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003ccircle cx=\"12\" cy=\"12\" r=\"4\"/>\u003cpath d=\"M12 2v2M12 20v2m-7.07-15.07 1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41\"/>\u003c/svg>","cpu":"\u003csvg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\">\u003cpath d=\"M12 20v2M12 2v2M17 20v2M17 2v2M2 12h2M2 17h2M2 7h2M20 12h2M20 17h2M20 7h2M7 20v2M7 2v2\"/>\u003crect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\"/>\u003crect x=\"8\" y=\"8\" width=\"8\" height=\"8\" rx=\"1\"/>\u003c/svg>"},"thirdPartyNotices":"# Lucide Icons\n\nSelected inline icons are from Lucide: https://github.com/lucide-icons/lucide\n\nISC License\n\nCopyright (c) 2026 Lucide Icons and Contributors\n\nPermission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.\n"}</script>
+  <script>(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.InputTimeoutModel = api;
+})(typeof globalThis === 'object' ? globalThis : this, function () {
+  'use strict';
+
+  const scenarios = [
+    { id: 'looper', label: 'Looper 被其他任务占用', delay: 6500, ackDelay: 100, cause: '已发入通道，但接收线程尚未消费', result: '超时后恢复' },
+    { id: 'handler', label: '输入处理链耗时', delay: 6500, ackDelay: 100, cause: '事件已进入应用处理，处理链迟迟不结束', result: '超时后恢复' },
+    { id: 'deferred', label: '延迟调用 finish', delay: 6500, ackDelay: 100, cause: '可见处理已结束，但接收器或异步阶段尚未 finish', result: '超时后恢复' },
+    { id: 'ack-delay', label: 'finish 后 ACK 尚未清理', delay: 600, ackDelay: 6000, cause: 'finish 已调用，Dispatcher 尚未完成 FINISHED 清理', result: '超时后恢复' },
+    { id: 'normal', label: '正常完成', delay: 600, ackDelay: 100, cause: '处理、finish、服务端清理均在截止前完成', result: '不触发 ANR' },
+    { id: 'unhandled', label: 'handled = false 仍正常完成', delay: 600, ackDelay: 100, cause: 'Motion 未被业务消费，但 FINISHED 仍确认本次完成', result: '不触发 ANR' },
+    { id: 'multi', label: '多个在途事件，各有截止时间', delay: null, ackDelay: null, cause: 'E1 的 ACK 只删除 E1；E2、E3 仍独立等待', result: 'E2 触发超时' },
+    { id: 'changed-timeout', label: '新事件使用更短 timeout', delay: null, ackDelay: null, cause: 'E2 更晚发送，却有更早 deadline；reason 仍描述最早发送的 E1', result: 'E2 到期 / E1 入日志' },
+  ];
+  const clamp = (value, min, max, fallback) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+
+  function build(options = {}) {
+    const scenario = scenarios.find(item => item.id === options.scenario) || scenarios[0];
+    const delay = clamp(options.delay, 400, 8000, scenario.delay || 6500);
+    const ackDelay = clamp(options.ackDelay, 100, 6500, scenario.ackDelay || 100);
+    const timeout = clamp(options.timeout, 1000, 8000, 5000);
+    let entries;
+    const create = (id, seq, delivery, start, workEnd, finish, ack, limit, action, handled = true) => ({
+      id, seq, delivery, start, workEnd, finish, ack, timeout: limit, deadline: delivery + limit,
+      enqueue: delivery - 250, eventTime: Math.max(0, delivery - 600), action, handled,
+    });
+    if (scenario.id === 'multi') {
+      entries = [create('E1', 101, 1000, 1150, 1600, 1600, 1700, 5000, 'DOWN'),
+        create('E2', 102, 1500, 1800, 7600, 7600, 7700, 5000, 'MOVE'),
+        create('E3', 103, 1900, 7800, 8100, 8100, 8200, 5000, 'UP')];
+    } else if (scenario.id === 'changed-timeout') {
+      entries = [create('E1', 101, 1000, 1150, 7500, 7500, 7600, 8000, 'DOWN'),
+        create('E2', 102, 2200, 7700, 8100, 8100, 8200, 2000, 'UP')];
+    } else {
+      const delivery = 1000;
+      const finish = delivery + delay;
+      const start = scenario.id === 'looper' ? finish - 250 : delivery + 100;
+      const workEnd = scenario.id === 'deferred' || scenario.id === 'ack-delay' ? delivery + 300 : finish;
+      entries = [create('E1', 101, delivery, start, workEnd, finish, finish + ackDelay, timeout, 'DOWN', scenario.id !== 'unhandled')];
+    }
+    const lastAck = Math.max(...entries.map(entry => entry.ack));
+    const customTiming = scenario.delay !== null && (delay !== scenario.delay || ackDelay !== scenario.ackDelay || timeout !== 5000);
+    const description = customTiming ? `自定义参数：发布后 ${(delay / 1000).toFixed(2)} s 调用 finish，再经 ${(ackDelay / 1000).toFixed(2)} s 清理 ACK；窗口 timeout 为 ${(timeout / 1000).toFixed(2)} s。` : scenario.cause;
+    const model = { scenario, entries, delay, ackDelay, timeout, customTiming, description, duration: Math.max(10000, lastAck + 500), schedule: [] };
+    const push = (id, time, title, description, ref, entry, kind = 'info') => model.schedule.push({ id, time, title, description, ref, entry: entry && entry.id, kind });
+    push('origin', 0, '目标窗口已存在，本页追踪已发送连接', '示意选择一个正常注册的窗口连接 A。输入通过 InputChannel 的 socket 传输，不是每个事件都走 Binder；不涉及 no-focused-window 等待。', 'publish');
+    for (const entry of entries) {
+      push(`enqueue-${entry.id}`, entry.enqueue, `${entry.id} 放入 outboundQueue`, '窗口目标已确定，事件正等待发布。还没发布成功的 outbound 条目不登记为本次 ACK 超时；这不代表整个系统不存在其他等待或超时。', 'publish', entry);
+      push(`publish-${entry.id}`, entry.delivery, `${entry.id} 发布成功，开始等待 FINISHED`, `seq=${entry.seq}。deliveryTime=${entry.delivery} ms，deadline=deliveryTime+${entry.timeout} ms。Dispatcher 侧条目进入 waitQueue，AnrTracker 登记 (deadline, token A)。应用可能还没开始消费。`, 'publish', entry, 'wait');
+      push(`consume-${entry.id}`, entry.start, `${entry.id} 进入应用的输入处理链`, '应用接收线程从 InputChannel 读取事件，经 NativeInputEventReceiver / WindowInputEventReceiver 进入 ViewRootImpl。服务端 waitQueue 条目此时仍保留，不因“已读到”而解除。', 'receive', entry, 'info');
+      if (entry.workEnd < entry.finish) push(`work-${entry.id}`, entry.workEnd, `${entry.id} 可见处理结束，但尚未 finish`, '这一步只是示意的业务处理边界。接收器或异步输入阶段还未发出最终完成信号；普通 View 回调的返回不应被等同为所有输入阶段都完成。', 'finish', entry, 'wait');
+      push(`finish-${entry.id}`, entry.finish, `${entry.id} 调用 finishInputEvent`, `接收器在绑定的 Looper 线程提交 seq=${entry.seq}、handled=${entry.handled}，native 发送 FINISHED。handled 表示是否消费，不是是否完成；finish 调用本身也不等于服务端记录已经移除。`, 'finish', entry, 'ok');
+      push(`ack-${entry.id}`, entry.ack, `${entry.id} FINISHED 按 seq 清理`, `Dispatcher 匹配 seq=${entry.seq}，从 waitQueue 移除这个条目，并 erase 对应 (timeoutTime, token)。其他事件的等待仍保留；若连接曾超时，还需检查剩余队列是否仍有过期项。`, 'ack', entry, 'ok');
+    }
+    if (scenario.id === 'changed-timeout') push('config', 1800, '窗口 timeout 从 8 s 改为 2 s', '已发送 E1 仍保留原 deadline=9.0 s；新 E2 使用 2 s 得到 deadline=4.2 s。这些数值是演示配置，不是设备默认值。', 'configuration');
+
+    const timeline = [];
+    entries.forEach(entry => {
+      timeline.push({ time: entry.delivery, order: 1, type: 'publish', entry });
+      timeline.push({ time: entry.ack, order: 0, type: 'ack', entry });
+      timeline.push({ time: entry.deadline, order: 2, type: 'check', entry });
+    });
+    timeline.sort((a, b) => a.time - b.time || a.order - b.order);
+    let responsive = true;
+    let wait = [];
+    let tracked = [];
+    const incidents = [];
+    const recoveries = [];
+    for (const event of timeline) {
+      if (event.type === 'publish') {
+        wait.push(event.entry);
+        if (responsive) tracked.push(event.entry);
+      } else if (event.type === 'ack') {
+        wait = wait.filter(entry => entry.seq !== event.entry.seq);
+        tracked = tracked.filter(entry => entry.seq !== event.entry.seq);
+        if (!responsive && !wait.some(entry => entry.deadline < event.time)) {
+          responsive = true;
+          recoveries.push(event.time);
+        }
+      } else if (responsive && tracked.some(entry => entry.deadline <= event.time)) {
+        const trigger = [...tracked].sort((a, b) => a.deadline - b.deadline || a.seq - b.seq)[0];
+        const oldest = [...wait].sort((a, b) => a.delivery - b.delivery || a.seq - b.seq)[0];
+        if (!oldest) continue;
+        responsive = false;
+        tracked = [];
+        const nextAck = Math.min(...entries.filter(entry => entry.ack > event.time).map(entry => entry.ack));
+        // Keep the visual command transition before the later FIFO ACK cleanup command.
+        const policyTime = event.time + Math.min(200, (nextAck - event.time) / 2);
+        incidents.push({ time: event.time, trigger: trigger.id, reasonEntry: oldest.id, reasonWait: event.time - oldest.delivery, policyTime });
+      }
+    }
+    for (const incident of incidents) {
+      push(`timeout-${incident.time}`, incident.time, `${incident.trigger} 的截止时间到达，连接 A 标记不响应`, `processAnrsLocked 选中最早到期项。responsive=false；eraseToken(A) 清除该连接所有 tracker 登记，停止重复唤醒，但不清空原 waitQueue。reason 使用最早发送且仍未完成的 ${incident.reasonEntry}，已等待 ${incident.reasonWait} ms。`, 'timeout', null, 'danger');
+      push(`policy-${incident.time}`, incident.policyTime, '执行 unresponsive 通知，进入 Java policy', 'onAnrLocked 先前已排队通知并生成取消事件。现在按 command FIFO 执行，释放 Dispatcher 锁后经 JNI 到 IMS / WMS；后续 ACK 清理与恢复命令不会越过已排队的通知。Java 继续核对归因，并非立即无条件弹窗或杀进程。', 'policy', null, 'danger');
+    }
+    recoveries.forEach(time => push(`recover-${time}`, time, '剩余 waitQueue 无过期项，连接恢复响应', 'ACK 清理后 isConnectionResponsive 检查整个剩余队列。恢复通知不等于撤销之前的 ANR 历史，也不等于所有业务工作、渲染或画面已经完成。', 'recovery', null, 'ok'));
+    model.incidents = incidents;
+    model.recoveries = recoveries;
+    model.schedule.sort((a, b) => a.time - b.time);
+    return model;
+  }
+
+  function at(model, value) {
+    const t = clamp(value, 0, model.duration, 0);
+    const incidents = model.incidents.filter(item => item.time <= t);
+    const lastIncident = incidents[incidents.length - 1] || null;
+    const recovered = lastIncident && model.recoveries.some(time => time >= lastIncident.time && time <= t);
+    const responsive = !lastIncident || Boolean(recovered);
+    const entries = model.entries.map(entry => {
+      const published = t >= entry.delivery;
+      const acked = t >= entry.ack;
+      const inWait = published && !acked;
+      const phase = acked ? 'acked' : t >= entry.finish ? 'ack-flight' : t >= entry.workEnd ? 'deferred' : t >= entry.start ? 'handling' : published ? 'channel' : t >= entry.enqueue ? 'outbound' : 'incoming';
+      const tracker = inWait && responsive && !model.incidents.some(incident => incident.time <= t && incident.time >= entry.delivery);
+      return { ...entry, published, acked, inWait, phase, tracker, overdue: inWait && t > entry.deadline,
+        progress: published ? Math.max(0, Math.min(1, (Math.min(t, entry.ack) - entry.delivery) / entry.timeout)) : 0 };
+    });
+    const waitQueue = entries.filter(entry => entry.inWait);
+    const outboundQueue = entries.filter(entry => entry.phase === 'outbound');
+    const tracker = entries.filter(entry => entry.tracker).sort((a, b) => a.deadline - b.deadline || a.seq - b.seq);
+    const next = tracker[0] || null;
+    const activeIndex = Math.max(0, model.schedule.findLastIndex(event => event.time <= t));
+    const completed = entries.every(entry => entry.acked);
+    const live = waitQueue.find(entry => entry.phase === 'handling' || entry.phase === 'deferred') || waitQueue[0] || entries[entries.length - 1];
+    let appState = completed ? '已完成本例输入' : live.phase === 'ack-flight' ? 'finish 已提交，等待服务端清理' : live.phase === 'handling' ? '正在输入处理链中' : live.phase === 'deferred' ? '处理已结束，finish 尚未调用' : live.phase === 'channel' ? '通道已发布，Looper 尚未消费' : '等待事件发布';
+    if (model.scenario.id === 'looper' && t >= 800 && t < model.entries[0].start) appState = 'Looper 被其他任务占用';
+    return { t, entries, waitQueue, outboundQueue, tracker, next, responsive, incident: lastIncident,
+      incidentCount: incidents.length, recovered: Boolean(recovered), policyReached: Boolean(lastIncident && t >= lastIncident.policyTime),
+      completed, live, appState, activeIndex, active: model.schedule[activeIndex],
+      remaining: next ? Math.max(0, next.deadline - t) : null,
+      oldest: waitQueue[0] || null,
+    };
+  }
+  return { scenarios, build, at };
+});
+</script>
+  <script>(function () {
+  'use strict';
+  const { scenarios, build, at } = InputTimeoutModel;
+  const $ = id => document.getElementById(id);
+  const data = JSON.parse($('sourceData').textContent);
+  const options = { scenario: 'looper' };
+  const seconds = time => `${(time / 1000).toFixed(2)} s`;
+  const setText = (id, text) => { $(id).textContent = text; };
+  let model = build(options);
+  let time = 2800;
+  let playing = false;
+  let animation = 0;
+  let lastTick = null;
+  let lastStep = -1;
+
+  for (const scenario of scenarios) {
+    const option = document.createElement('option');
+    option.value = scenario.id;
+    option.textContent = scenario.label;
+    $('scenario').append(option);
+  }
+
+  function queue(container, entries, type, state) {
+    container.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement('span');
+      empty.className = 'queue-empty';
+      empty.textContent = type === 'outbound' ? '∅ / 无待发布条目' : state.completed ? '∅ / 本例原始事件已清理' : '∅ / 无已发未完成原始事件';
+      container.append(empty);
+    }
+    for (const entry of entries) {
+      const chip = document.createElement('div');
+      chip.className = `event-chip${entry.overdue ? ' overdue' : ''}${type === 'outbound' ? ' outbound' : ''}`;
+      const title = document.createElement('strong');
+      title.textContent = `${entry.id} · seq ${entry.seq}`;
+      const first = document.createElement('small');
+      const second = document.createElement('small');
+      first.textContent = type === 'outbound' ? '尚未发布成功' : `sent ${seconds(entry.delivery)}`;
+      second.textContent = type === 'outbound' ? '未登记本条 tracker' : `due ${seconds(entry.deadline)}`;
+      chip.append(title, first, second);
+      container.append(chip);
+    }
+  }
+
+  function timeline() {
+    $('ruler').replaceChildren();
+    $('timeRows').replaceChildren();
+    $('timelineLabels').replaceChildren();
+    for (let tickTime = 0; tickTime <= model.duration - 500; tickTime += 2000) {
+      const tick = document.createElement('span');
+      tick.className = 'tick';
+      tick.style.left = `${100 * tickTime / model.duration}%`;
+      tick.textContent = `${tickTime / 1000}s`;
+      $('ruler').append(tick);
+    }
+    for (const entry of model.entries) {
+      const label = document.createElement('div');
+      const title = document.createElement('b');
+      title.textContent = entry.id;
+      const seq = document.createElement('small');
+      seq.textContent = `seq ${entry.seq}`;
+      label.append(title, seq);
+      $('timelineLabels').append(label);
+      const row = document.createElement('div');
+      row.className = 'time-row';
+      const segment = (start, end, label, kind) => {
+        if (end <= start) return;
+        const span = document.createElement('span');
+        span.className = `time-segment ${kind}`;
+        span.style.left = `${100 * start / model.duration}%`;
+        span.style.width = `${100 * (end - start) / model.duration}%`;
+        span.textContent = label;
+        span.title = `${entry.id} ${label}: ${seconds(start)} → ${seconds(end)}`;
+        row.append(span);
+      };
+      segment(entry.delivery, Math.min(entry.deadline, entry.ack), '已发 · 等待 FINISHED', 'waiting');
+      segment(entry.deadline, entry.ack, '已过期 · 尚未完成', 'late');
+      segment(entry.start, entry.finish, '', 'work');
+      segment(entry.ack, model.duration, 'ACK ✓', 'ack');
+      const deadline = document.createElement('span');
+      deadline.className = 'deadline-mark';
+      deadline.style.left = `${100 * entry.deadline / model.duration}%`;
+      const deadlineLabel = document.createElement('b');
+      deadlineLabel.textContent = `${(entry.deadline / 1000).toFixed(1)}s`;
+      deadline.append(deadlineLabel);
+      row.append(deadline);
+      $('timeRows').append(row);
+    }
+  }
+
+  function rebuild() {
+    model = build(options);
+    time = Math.min(time, model.duration);
+    setText('scenarioDesc', model.description);
+    const custom = model.scenario.delay !== null;
+    setText('scenarioResult', `${model.customTiming ? '自定义 / ' : ''}${model.incidents.length ? model.scenario.id === 'changed-timeout' ? 'E2 触发 / E1 入日志' : '超时后恢复' : '不触发 ANR'}`);
+    $('parameters').hidden = !custom;
+    $('delayRange').value = model.delay;
+    $('ackRange').value = model.ackDelay;
+    $('timeout').value = model.timeout;
+    setText('delayValue', seconds(model.delay));
+    setText('ackDelayValue', seconds(model.ackDelay));
+    $('scrub').max = model.duration;
+    $('eventList').replaceChildren();
+    model.schedule.forEach((event, index) => {
+      const li = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.step = index;
+      const stamp = document.createElement('code');
+      stamp.textContent = seconds(event.time);
+      const text = document.createElement('span');
+      text.textContent = event.title;
+      button.append(stamp, text);
+      button.addEventListener('click', () => { pause(); seek(event.time); });
+      li.append(button);
+      $('eventList').append(li);
+    });
+    lastStep = -1;
+    timeline();
+    render();
+  }
+
+  function packet(id, ratio, visible, reverse) {
+    const node = $(id);
+    const width = Math.max(0, node.parentElement.clientWidth - 8);
+    node.style.transform = `translateX(${(reverse ? 1 - ratio : ratio) * width}px)`;
+    node.style.opacity = visible ? '1' : '0';
+  }
+
+  function render() {
+    const state = at(model, time);
+    $('scrub').value = state.t;
+    setText('timeNow', seconds(state.t));
+    setText('outboundCount', state.outboundQueue.length);
+    setText('waitCount', state.waitQueue.length);
+    queue($('outboundQueue'), state.outboundQueue, 'outbound', state);
+    queue($('waitQueue'), state.waitQueue, 'wait', state);
+    $('connectionState').className = `connection-state${state.responsive ? '' : ' bad'}`;
+    $('connectionState').querySelector('code').textContent = `responsive = ${state.responsive}`;
+    const live = state.live;
+    const sent = [...state.entries].reverse().find(entry => entry.published) || state.entries[0];
+    const receiving = state.entries.find(entry => state.t >= entry.delivery - 250 && state.t < entry.delivery);
+    const finishing = state.entries.find(entry => state.t >= entry.finish && state.t < entry.ack);
+    packet('sendPacket', receiving ? (state.t - receiving.delivery + 250) / 250 : 0, Boolean(receiving), false);
+    packet('ackPacket', finishing ? (state.t - finishing.finish) / (finishing.ack - finishing.finish) : 0, Boolean(finishing), true);
+    $('sendWire').classList.toggle('active', sent.published);
+    $('ackWire').classList.toggle('active', state.entries.some(entry => state.t >= entry.finish));
+    setText('sendLabel', `${receiving ? receiving.id : sent.id} · Motion ${receiving ? receiving.action : sent.action} · seq ${receiving ? receiving.seq : sent.seq}`);
+    const ackEntry = finishing || [...state.entries].reverse().find(entry => state.t >= entry.finish) || state.entries[0];
+    setText('ackLabel', `seq ${ackEntry.seq} · handled = ${ackEntry.handled}`);
+    setText('channelCallout', finishing ? 'finish 已调用，服务端清理尚未发生' : state.completed ? '原始事件的 FINISHED 均已按 seq 清理' : '发布成功，不保证应用已消费');
+    setText('appStatus', state.appState);
+    const blocked = model.scenario.id === 'looper' && state.t >= 800 && state.t < model.entries[0].start;
+    const handling = live.phase === 'handling';
+    const deferred = live.phase === 'deferred';
+    $('looperStage').className = `looper-stage${blocked ? ' blocked' : handling || deferred ? ' handling' : state.completed ? ' done' : ''}`;
+    setText('appWork', blocked ? '其他任务 / 等待锁 / 同步调用' : handling ? `${live.id} · ViewRootImpl 输入阶段` : deferred ? `${live.id} · 可见处理已结束，等待 finish` : live.phase === 'ack-flight' ? `${live.id} · FINISHED 已提交 native` : state.completed ? '本例输入处理已完成' : '等待 InputChannel 的读回调');
+    setText('appEvent', `${live.id} · seq ${live.seq} · ${live.action}${blocked ? ' / 尚未消费' : ''}`);
+    const progress = blocked ? (state.t - 800) / (model.entries[0].start - 800) : (state.t - live.start) / (live.workEnd - live.start);
+    $('workProgress').style.width = `${100 * Math.max(0, Math.min(1, progress))}%`;
+    const consumeDone = state.t >= live.start;
+    const finishDone = state.t >= live.finish;
+    const ackDone = state.t >= live.ack;
+    [['consumeState', consumeDone], ['finishState', finishDone], ['ackState', ackDone]].forEach(([id, done]) => $(id).classList.toggle('done', done));
+    setText('consumeValue', consumeDone ? `${live.id} · ${seconds(live.start)}` : '尚未执行');
+    setText('finishValue', finishDone ? `${live.id} · ${seconds(live.finish)}` : '尚未调用');
+    setText('ackValue', ackDone ? `${live.id} · ${seconds(live.ack)}` : '尚未清理');
+
+    $('trackerEntries').replaceChildren();
+    if (!state.tracker.length) {
+      const empty = document.createElement('span');
+      empty.className = 'queue-empty';
+      empty.textContent = state.incident && !state.responsive ? '∅ / 已 eraseToken(A)，不再重复唤醒' : '∅ / 无当前登记项';
+      $('trackerEntries').append(empty);
+    }
+    state.tracker.forEach((entry, index) => {
+      const tag = document.createElement('span');
+      tag.className = `tracker-entry${index === 0 ? ' first' : ''}`;
+      tag.textContent = `${entry.id} (${(entry.deadline / 1000).toFixed(2)}s, A)`;
+      $('trackerEntries').append(tag);
+    });
+    $('remaining').replaceChildren();
+    if (state.next) {
+      $('remaining').append(document.createTextNode((state.remaining / 1000).toFixed(2) + ' '));
+      const unit = document.createElement('small'); unit.textContent = 's'; $('remaining').append(unit);
+    } else setText('remaining', state.recovered ? '恢复' : state.incident ? '到期' : 'OFF');
+    setText('clockLabel', state.next ? '最早截止还剩' : state.incident ? '本轮连接超时历史' : '无当前 ACK 计时项');
+    setText('nextDeadline', state.next ? `${state.next.id} · deadline ${seconds(state.next.deadline)}` : state.incident ? `${state.incident.trigger} · at ${seconds(state.incident.time)}` : '等发布成功后登记');
+    $('remaining').style.color = state.incident && !state.responsive ? 'var(--danger)' : state.recovered || state.completed ? 'var(--ok)' : 'var(--warn)';
+    setText('ruleState', !state.responsive ? '已标记不响应，等待队列恢复' : state.completed ? '本例原始等待记录已清理' : '匹配的 FINISHED 先清理，可解除该项');
+
+    let title = '尚未发布，不登记这个事件的 ACK 超时';
+    let desc = '目标连接已确定；只有成功发布的条目才进入 waitQueue 与 AnrTracker。';
+    let tone = 'idle';
+    if (!state.responsive) {
+      title = `${state.incident.trigger} 截止到期，连接 A 已标记不响应`;
+      desc = state.policyReached ? '已通知 policy；waitQueue 原始记录仍在。其他连接可继续工作，后续弹窗与进程处理另有策略。' : 'eraseToken(A) 停止重复追踪，不是清空 waitQueue；onAnrLocked 随后排队通知 policy。';
+      tone = 'danger';
+    } else if (state.recovered) {
+      title = '剩余队列已无过期项，连接恢复响应';
+      desc = 'notifyWindowResponsive 可进入恢复处理；已经发生的 ANR 历史不会被迟到 ACK 抹除。';
+      tone = 'ok';
+    } else if (state.completed) {
+      title = 'FINISHED 已按 seq 清理，本例未发生 ANR';
+      desc = model.scenario.id === 'unhandled' ? 'handled=false 说明未消费，但完成信号仍有效。Motion 场景不涉及 key fallback。' : 'waitQueue 与 tracker 中对应条目已移除，不再等待这个事件。';
+      tone = 'ok';
+    } else if (state.waitQueue.length) {
+      title = finishing ? 'finish 已调用，服务端仍未清理对应记录' : '事件已发送，服务端还在等完成应答';
+      desc = model.entries.length > 1 ? '每条 DispatchEntry 各有 deadline；一个 ACK 不会把其他等待统一清除或重新计时。' : '应用消费事件、开始处理、调用 finish，与 Dispatcher 完成 FINISHED 清理是不同边界。';
+      tone = '';
+    }
+    $('verdict').className = `verdict ${tone}`;
+    setText('verdictTitle', title);
+    setText('verdictDesc', desc);
+    setText('reasonLabel', state.incident ? `触发 ${state.incident.trigger} / reason ${state.incident.reasonEntry} / Waited ${state.incident.reasonWait} ms` : '本例尚无 ANR 历史');
+    ['detectHop', 'notifyHop'].forEach(id => $(id).classList.toggle('reached', Boolean(state.incident)));
+    ['wmsHop', 'amsHop'].forEach(id => $(id).classList.toggle('reached', state.policyReached));
+    $('playhead').style.left = `${100 * state.t / model.duration}%`;
+    if (lastStep !== state.activeIndex) {
+      lastStep = state.activeIndex;
+      setText('phaseCount', `STEP ${String(state.activeIndex + 1).padStart(2, '0')} / ${model.schedule.length}`);
+      setText('phaseTime', seconds(state.active.time));
+      setText('phaseTitle', state.active.title);
+      setText('phaseDesc', state.active.description);
+      const stage = data.stages.find(stage => stage.id === state.active.ref);
+      $('phaseRef').href = `#source-${state.active.ref}`;
+      $('phaseRef').textContent = stage ? `${stage.title} ↗` : '';
+      $('eventList').querySelectorAll('button').forEach((button, index) => {
+        button.className = index === state.activeIndex ? 'current' : index < state.activeIndex ? 'past' : '';
+        if (index === state.activeIndex) button.setAttribute('aria-current', 'step');
+        else button.removeAttribute('aria-current');
+      });
+    }
+    document.documentElement.dataset.qa = JSON.stringify({ scenario: model.scenario.id, t: state.t, duration: model.duration,
+      wait: state.waitQueue.map(entry => entry.id), outbound: state.outboundQueue.map(entry => entry.id),
+      tracker: state.tracker.map(entry => entry.id), next: state.next && state.next.id, responsive: state.responsive,
+      incidents: state.incidentCount, incident: state.incident, recovered: state.recovered, completed: state.completed,
+      policyReached: state.policyReached, active: state.active.id, playing, delay: model.delay, ackDelay: model.ackDelay, timeout: model.timeout,
+      entries: state.entries.map(entry => ({ id: entry.id, phase: entry.phase, deadline: entry.deadline, handled: entry.handled, ack: entry.ack })) });
+  }
+
+  function playIcon() {
+    $('playBtn').innerHTML = playing ? data.icons.pause : data.icons.play;
+    const label = playing ? '暂停' : '播放';
+    $('playBtn').title = label;
+    $('playBtn').setAttribute('aria-label', label);
+  }
+  function pause() { playing = false; lastTick = null; cancelAnimationFrame(animation); playIcon(); }
+  function seek(value) { time = Math.max(0, Math.min(model.duration, value)); render(); }
+  function tick(timestamp) {
+    if (!playing) return;
+    if (lastTick !== null) time += Math.min(100, timestamp - lastTick) * Number($('speed').value);
+    lastTick = timestamp;
+    if (time >= model.duration) { time = model.duration; pause(); }
+    render();
+    if (playing) animation = requestAnimationFrame(tick);
+  }
+  function play() { if (time >= model.duration) time = 0; playing = true; lastTick = null; playIcon(); animation = requestAnimationFrame(tick); render(); }
+  function step(direction) {
+    pause();
+    const events = model.schedule.filter(event => direction > 0 ? event.time > time + .01 : event.time < time - .01);
+    const event = direction > 0 ? events[0] : events[events.length - 1];
+    seek(event ? event.time : direction > 0 ? model.duration : 0);
+  }
+  $('playBtn').addEventListener('click', () => playing ? (pause(), render()) : play());
+  $('restartBtn').addEventListener('click', () => { pause(); seek(0); });
+  $('prevStep').addEventListener('click', () => step(-1));
+  $('nextStep').addEventListener('click', () => step(1));
+  $('scrub').addEventListener('input', event => { pause(); seek(Number(event.target.value)); });
+  $('scenario').addEventListener('change', event => { pause(); options.scenario = event.target.value; delete options.delay; delete options.ackDelay; delete options.timeout; time = 0; rebuild(); });
+  [['delayRange', 'delay'], ['ackRange', 'ackDelay'], ['timeout', 'timeout']].forEach(([id, key]) => {
+    $(id).addEventListener(id === 'timeout' ? 'change' : 'input', event => { pause(); options[key] = Number(event.target.value); rebuild(); });
+  });
+  $('phaseRef').addEventListener('click', () => { const target = document.querySelector($('phaseRef').getAttribute('href')); if (target) target.open = true; });
+  document.querySelectorAll('a[href^="#source-"]').forEach(link => link.addEventListener('click', () => { const target = document.querySelector(link.getAttribute('href')); if (target) target.open = true; }));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { pause(); render(); } });
+  document.addEventListener('keydown', event => {
+    if (/INPUT|SELECT|TEXTAREA|BUTTON/.test(event.target.tagName) || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.code === 'Space') { event.preventDefault(); playing ? (pause(), render()) : play(); }
+    if (event.code === 'ArrowRight') { event.preventDefault(); step(1); }
+    if (event.code === 'ArrowLeft') { event.preventDefault(); step(-1); }
+  });
+  const prefs = ['auto', 'light', 'dark'];
+  function theme(pref) {
+    document.documentElement.dataset.themePref = pref;
+    document.documentElement.dataset.theme = pref === 'light' || pref === 'auto' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    $('themeBtn').title = `配色：${{ auto: '跟随系统', light: '浅色', dark: '深色' }[pref]}`;
+    $('themeBtn').setAttribute('aria-label', `${$('themeBtn').title}，切换配色`);
+  }
+  $('themeBtn').addEventListener('click', () => { const pref = prefs[(prefs.indexOf(document.documentElement.dataset.themePref) + 1) % prefs.length]; try { localStorage.setItem('fp-theme', pref); } catch (_) {} theme(pref); });
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (document.documentElement.dataset.themePref === 'auto') theme('auto'); });
+  setText('citationCount', `${data.stages.length} 组机制 / ${data.stages.reduce((n, stage) => n + stage.snippets.length, 0)} 段源码`);
+  theme(document.documentElement.dataset.themePref);
+  rebuild();
+})();
+</script>
+</body>
+</html>

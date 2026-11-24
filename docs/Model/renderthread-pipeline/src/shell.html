@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RenderThread 解剖 · 一帧的 GPU 绘制流水线（AOSP android17）</title>
+<meta name="description" content="从 UI 线程交棒到 DrawFrameTask、syncFrameState、prepareTree、CanvasContext::draw、Skia/GPU、EGL swap、BLAST Transaction 的 RenderThread 源码级可视化。">
+<meta name="color-scheme" content="dark">
+<style>{{STYLE}}</style>
+</head>
+<body>
+<div class="scroll-progress" id="scrollProgress"></div>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top" style="text-decoration:none;color:inherit">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#bfe0ff" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 9h5M7 12h8"/></svg>
+      </span>
+      <span>RenderThread <small>Deep dive · android17</small></span>
+    </a>
+    <nav class="nav" id="nav">{{NAV}}</nav>
+  </div>
+</header>
+
+<nav class="stage-rail" id="stageRail" aria-label="阶段快速导航">{{RAIL}}</nav>
+<button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">↑</button>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <span class="eyebrow"><span class="pulse"></span>源码实证 · android17-release · HEAD {{HEAD}}</span>
+      <h1>RenderThread<br><em>解剖</em></h1>
+      <p class="lede">
+        APP VSYNC 后，UI 线程先做 traversal、measure/layout 与 DisplayList 录制；<b>整个 APP→SF 的预算只有 8.3ms</b>，
+        UI 绘制约 2.6ms + 交棒 0.4ms 后，RenderThread 只剩约 5.3ms。真正的同步、资源准备、DisplayList 回放、GPU 命令提交和 <code>queueBuffer</code> 都发生在一条常驻的
+        <code>RenderThread</code> 上。这个页面沿着 <code>DrawFrameTask → syncFrameState → prepareTree →
+        CanvasContext::draw → Skia/GPU → EGL swap → BLAST</code>，把每一段源码展开。
+      </p>
+      <div class="hero-meta">
+        <span class="chip"><span class="dot" style="background:var(--rt)"></span>1 条常驻 RT</span>
+        <span class="chip"><span class="dot" style="background:var(--ui)"></span>UI 只阻塞到 prepareTree</span>
+        <span class="chip"><span class="dot" style="background:var(--gpu,#fb923c)"></span>GPU 异步提交</span>
+        <span class="chip"><span class="dot" style="background:var(--bq)"></span>{{SNIPPET_COUNT}} 段源码引用</span>
+      </div>
+      <div class="hero-actions">
+        <a class="btn primary" href="#anatomy">播放 RT 的一帧</a>
+        <a class="btn" href="#stage-01">从线程模型开始</a>
+        <span class="hint">播放 / 暂停 / 拖拽 / 慢帧对比 · 9 个阶段对应源码</span>
+      </div>
+    </div>
+    <div class="scroll-cue">TRACE THE RENDER THREAD</div>
+  </section>
+
+  <section class="band" id="overview">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">00 / OVERVIEW</div>
+          <h2>UI 线程画“意图”，<br>RenderThread 把它变成 GPU 命令</h2>
+          <p>这不是又一遍 measure/layout/draw 总览：这里只关心 UI 交棒之后，RenderThread 内部到底做了什么，
+            以及每个同步点、每个 fence、每个队列在什么时候把责任交给下一个角色。</p>
+        </div>
+        <div class="section-side">RENDERTHREAD · GPU · EGL · BLAST<br>ONE FRAME · NINE STAGES</div>
+      </div>
+
+      <div class="thesis">
+        <div class="quote">
+          <p><b>一句话版本：</b>UI 线程在 <code>syncAndDrawFrame()</code> 里把任务投进 RT 队列并阻塞；
+            RT 的 <code>DrawFrameTask::run()</code> 先 <code>syncFrameState()</code> 同步 RenderNode 树和纹理，
+            再 <code>prepareTree()</code> 更新属性、动画与 damage；一旦树同步完成，UI 就可以被解除阻塞去准备下一帧。
+            随后 <code>CanvasContext::draw()</code> 回放 DisplayList、提交 GPU，<code>eglSwapBuffers</code>
+            触发 dequeue/queueBuffer；BLAST 把 buffer 连同 Transaction 直接提交给 SurfaceFlinger。
+            RT 不会等上屏，只登记 callback 与 fence。</p>
+          <p class="mono" style="margin-bottom:0;color:var(--dim);font-size:12px">syncAndDrawFrame → DrawFrameTask::postAndWait → threadLoop → syncFrameState → prepareTree → unblockUiThread → CanvasContext::draw → Skia → eglSwapBuffers → queueBuffer → BLAST → callbacks/fences</p>
+        </div>
+        <div class="term-cloud" aria-label="关键术语">
+          <span class="term">RenderProxy</span><span class="term">RenderThread</span><span class="term">WorkQueue</span>
+          <span class="term">DrawFrameTask</span><span class="term">FrameInfo</span><span class="term">TreeInfo</span>
+          <span class="term">RenderNode</span><span class="term">Damage</span><span class="term">CanvasContext</span>
+          <span class="term">SkiaOpenGLPipeline</span><span class="term">EglManager</span><span class="term">ReliableSurface</span>
+          <span class="term">acquire fence</span><span class="term">present fence</span><span class="term">BLAST</span>
+          <span class="term">Transaction</span><span class="term">FrameTimeline</span><span class="term">HintSession</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat" data-tone="rt"><div class="k">Thread</div><div class="v">1<span>条常驻线程</span></div><div class="d">每进程一个 RenderThread（PRIORITY_DISPLAY），所有绘制任务串行执行。</div></div>
+        <div class="stat" data-tone="ui"><div class="k">Blocking</div><div class="v">1<span>个 UI 阻塞窗口</span></div><div class="d">UI 在 postAndWait 等到 syncFrameState 结束；之后立即解阻，GPU 继续异步。</div></div>
+        <div class="stat" data-tone="sf"><div class="k">Budget</div><div class="v">8.3<span>ms APP 总预算</span></div><div class="d">APP VSYNC → SF VSYNC 共 8.3ms；UI 绘制约 2.6ms + 交棒 0.4ms，RT 只剩约 5.3ms。</div></div>
+        <div class="stat" data-tone="bq"><div class="k">Fences</div><div class="v">3<span>类关键 fence</span></div><div class="d">acquire fence 控制 buffer 可用；present/retire fence 控制上屏与回收；transaction callback 报告 applied。</div></div>
+      </div>
+
+      <div class="flow-strip reveal" id="flowStrip">{{FLOW}}</div>
+
+      <div class="keypoints">
+        <div class="kp reveal">
+          <h4><span class="ico">01</span>RT 不是“另一个 draw 线程”</h4>
+          <p>它持有 EGL context、RenderState、CacheManager 与 GPU context；UI 线程的 <code>draw</code> 只录制 DisplayList，真正的 GPU 回放与资源上传在 RT 上完成。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">02</span>UI 只等“树同步”，不等 GPU</h4>
+          <p><code>syncFrameState</code> 完成 <code>prepareTree</code> 后即可 <code>unblockUiThread()</code>；UI 可继续下一帧，而 RT 仍在回放命令、等 fence、queueBuffer。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">03</span>RT 不等待显示</h4>
+          <p>RT 只负责把 buffer 和 Transaction 交给系统，登记 commit/present callback。上屏、retire、buffer 回收由 SurfaceFlinger / HWC 的时间线驱动。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="anatomy">
+    <div class="wrap-wide">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">01 / ANIMATED MODEL</div>
+          <h2>RenderThread 的一帧：8.3ms 里只分到 5.3ms</h2>
+          <p>APP 在 0.0ms 醒来，约 2.6ms 完成 traversal/measure/layout/DisplayList 录制，再加约 0.4ms 交棒；3.0ms 后 RT 才真正接管。
+            SF VSYNC 在 8.3ms，因此 RT 的 syncFrameState、prepareTree、draw、Skia/GPU、eglSwap 与 BLAST 只有约 5.3ms。
+            打开“慢帧演示”可以看到 RT 慢下来后 queueBuffer 越过 8.3ms 的后果。</p>
+        </div>
+        <div class="section-side">INTERACTIVE · 60 Hz · NOT TO SCALE<br>示意时序，量级与源码语义为准</div>
+      </div>
+
+      <div class="studio reveal" id="studio">
+        <div class="studio-head">
+          <div class="studio-title"><span class="live"><i></i>FRAME · RENDER THREAD</span>一帧的 RT 内部流程</div>
+          <div class="studio-badges">
+            <span class="tag"><b>APP</b> VSYNC 0</span>
+            <span class="tag"><b>UI</b> 3.0ms</span>
+            <span class="tag"><b>RT</b> 5.3ms</span>
+            <span class="tag"><b>SF</b> VSYNC 8.3ms</span>
+            <span class="tag"><b>QUEUE</b> 8.0ms</span>
+          </div>
+        </div>
+
+        <div class="board-wrap" id="boardWrap">
+          <div class="board" id="board">
+            <div class="board-body" id="boardBody">
+              <div class="pins" id="pins"></div>
+              <div class="ruler" id="ruler"></div>
+              <div class="lanes" id="lanes"></div>
+              <div class="playhead" id="playhead"><span class="ph-line"></span><span class="ph-cap"></span><span class="ph-time">0.0 ms</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="board-hint">← 左右滑动查看完整时间轴 →</div>
+        <div class="board-legend">
+          <span class="lg"><i style="background:var(--ui)"></i>APP · UI Thread</span>
+          <span class="lg"><i style="background:var(--rt)"></i>RenderThread</span>
+          <span class="lg"><i style="background:var(--gpu,#fb923c)"></i>GPU</span>
+          <span class="lg"><i style="background:var(--bq)"></i>BufferQueue / BLAST</span>
+          <span class="lg"><i style="background:#22d3ee"></i>Callback / Fence</span>
+          <span class="spacer"></span>
+          <span class="lg">点击阶段编号跳转到对应章节</span>
+          <span class="lg"><kbd>Space</kbd> 播放 / 暂停</span>
+        </div>
+
+        <div class="pp" id="phasePanel">
+          <div class="pp-left">
+            <div class="pp-eyebrow"><span class="stage-chip" id="ppStage">STAGE 02</span><span id="ppPhase">PHASE 01 / 09</span></div>
+            <h3 id="ppTitle">APP VSYNC → UI 交棒：3.0ms 应用绘制</h3>
+            <p id="ppDesc">APP 在 0.0ms 醒来，UI 先完成 traversal、measure/layout 与 DisplayList 录制；约 3.0ms 后才进入 syncAndDrawFrame，把任务交给 RenderThread。</p>
+            <div class="pp-refs" id="ppRefs"></div>
+          </div>
+          <div class="pp-right">
+            <div class="pp-stats">
+              <div class="pp-stat"><span>相对 APP VSYNC</span><b id="ppVsync">+0.0 ms</b></div>
+              <div class="pp-stat"><span>queue 完成</span><b id="ppPresent">queueBuffer · 8.0 ms</b></div>
+              <div class="pp-stat"><span>触发后</span><b id="ppElapsed">+0.0 ms</b></div>
+              <div class="pp-stat"><span>帧号</span><b id="ppFrame">FRAME F</b></div>
+            </div>
+            <div class="budget" title="APP VSYNC → SF VSYNC 的 8.3ms 总预算；RT 只有约 5.3ms">
+              <span class="fill" id="budgetFill"></span>
+              <span class="mark" style="left:100%"></span>
+              <span class="txt"><span>APP 预算</span><span id="budgetTxt">0.0 / 8.3 ms</span></span>
+            </div>
+            <div class="pp-hint"><i></i><span id="ppHint">UI 在 postAndWait 中等待 syncFrameState 完成。</span></div>
+          </div>
+        </div>
+
+        <div class="transport">
+          <div class="group">
+            <button class="play-btn" id="playBtn" aria-label="播放/暂停">
+              <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+          </div>
+          <div class="scrub-wrap">
+            <input class="scrub" id="scrub" type="range" min="0" max="10" value="0" step="0.02" aria-label="时间轴">
+            <div class="time-read"><b id="timeNow">0.0</b> / <span id="timeTotal">10.0</span> ms</div>
+          </div>
+          <div class="group divider"></div>
+          <div class="group" aria-label="播放速度">
+            <div class="seg" id="speedSeg">
+              <button data-speed="0.5">0.5×</button>
+              <button data-speed="1" class="on">1×</button>
+              <button data-speed="2">2×</button>
+            </div>
+          </div>
+          <div class="group">
+            <label class="switch" title="拉长 sync/prepareTree/GPU，观察 queueBuffer 越过 deadline">
+              <input type="checkbox" id="jankToggle">
+              <span class="track"></span>
+              <span class="lbl">慢帧演示</span>
+            </label>
+          </div>
+          <div class="group">
+            <button class="btn small ghost" id="restartBtn" title="回到起点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+              重播
+            </button>
+          </div>
+        </div>
+
+        <div class="slots" id="slots"></div>
+      </div>
+
+      <p style="color:var(--dim);font-size:11.5px;line-height:1.8;margin:14px 2px 0;max-width:1000px">
+        注：时间轴中的持续时间为示意量级，用于表达同步点、异步 fence 与队列交接的先后关系；真实耗时随视图规模、GPU、设备与刷新率变化。
+        RT 的实际工作必须在 APP VSYNC 后 8.3ms 内完成 queueBuffer；页面用 8.3ms 作为 APP 总预算参照，不代表硬实时保证。
+      </p>
+    </div>
+  </section>
+
+  <section class="band" id="stages">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">02 / SOURCE STAGES</div>
+          <h2>九个阶段，逐段对应源码</h2>
+          <p>从线程创建、UI 交棒、树同步、prepareTree、CanvasContext::draw、Skia 管线、EGL swap、BLAST 提交，
+            到回调/fence/排障。每段都给出源码位置与逐行核验的代码片段。</p>
+        </div>
+        <div class="section-side">9 STAGES · {{SNIPPET_COUNT}} SNIPPETS<br>{{CITED_FILE_COUNT}} SOURCE FILES</div>
+      </div>
+      {{STAGE_SECTIONS}}
+    </div>
+  </section>
+
+  <section class="band" id="concurrency">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">03 / CONCURRENCY &amp; FENCES</div>
+          <h2>谁在等谁：UI、RT、GPU 与 BufferQueue 的并发边界</h2>
+          <p>理解 RenderThread 的关键不是背调用链，而是知道每个同步点阻塞谁、不阻塞谁。下面把一帧里重要的等待关系单独拆出来。</p>
+        </div>
+        <div class="section-side">BLOCKING WINDOWS<br>ASYNC FENCES</div>
+      </div>
+
+      <div class="latency-grid">
+        <div>
+          <div class="ladder" id="ladder">
+            <div class="rung"><div class="rl">UI · postAndWait<small>等待 syncFrameState</small></div><div class="bar"><i class="b1" style="--w:22%"></i></div><div class="rv">≈ 0.4–1.8 ms</div></div>
+            <div class="rung"><div class="rl">RT · sync + prepareTree<small>同步 RenderNode 树 / 属性 / damage</small></div><div class="bar"><i class="b2" style="--w:40%"></i></div><div class="rv">≈ 1.4–3.4 ms</div></div>
+            <div class="rung"><div class="rl">RT · CanvasContext::draw + Skia<small>回放 DisplayList / GPU 提交</small></div><div class="bar"><i class="b3" style="--w:72%"></i></div><div class="rv">≈ 3–7 ms</div></div>
+            <div class="rung"><div class="rl">GPU · 异步执行<small>RT 不阻塞等待 GPU 完成</small></div><div class="bar"><i class="b3" style="--w:84%"></i></div><div class="rv">async</div></div>
+            <div class="rung"><div class="rl">BLAST · Transaction 提交<small>RT 只提交，不等 SF 上屏</small></div><div class="bar"><i class="b4" style="--w:92%"></i></div><div class="rv">≈ 7–8 ms</div></div>
+            <div class="rung"><div class="rl">Fence / callback<small>commit / present / release 回传</small></div><div class="bar"><i class="b4" style="--w:100%"></i></div><div class="rv">异步</div></div>
+          </div>
+          <p class="ladder-note">UI 线程只在 <code>postAndWait</code> 期间被阻塞；解阻后可以开始下一帧。RT 的 <code>draw</code> 与 GPU 执行是异步的：<code>flushAndSubmit</code> 只负责提交命令，GPU 完成由 fence 回传。</p>
+        </div>
+        <div class="lat-side">
+          <div class="note-card">
+            <h4><span class="n">A</span>为什么 UI 不能等 GPU？</h4>
+            <p>如果 UI 等 GPU 完成，下一帧的输入、动画和 measure/layout 都会被 GPU 延迟串行化。hwui 把 <code>CanvasContext::draw</code> 留在 RT，UI 只等“树同步”这个较短的阶段。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">B</span>为什么 RT 不能等 SF？</h4>
+            <p>RT 的职责是把 buffer 与 Transaction 交给系统。上屏时刻由 SurfaceFlinger / HWC 的 VSYNC 与 fence 决定；如果 RT 同步等待上屏，就会阻塞下一帧的 GPU 提交。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">C</span>哪些操作会反过来阻塞 RT？</h4>
+            <p><code>dequeueBuffer</code> 等不到 free slot、<code>prepareTextures</code> 纹理缓存耗尽、GPU 上下文丢失/重建、<code>waitOnFences</code> 等 acquire fence，都会让 RT 的“异步”变成实际阻塞。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="formula reveal">
+<span class="cm">// RT 一帧的 CPU 时间（简化）</span>
+T_rt ≈ T_syncFrameState + T_prepareTree + T_issueDrawCommands + T_swapAndQueue
+     <span class="cm">// T_issueDrawCommands = DisplayList 回放 + flush/submit（不含 GPU 完成）</span>
+
+<span class="cm">// UI 阻塞窗口（简化）</span>
+T_ui_blocked ≈ T_syncFrameState + T_prepareTree
+             <span class="cm">// unblockUiThread 之后 UI 线程继续下一帧</span>
+
+<span class="cm">// 帧是否赶上 deadline</span>
+deadline (8.3ms) ≥ T_ui_draw + T_ui_post_wait + T_rt_work + T_queue_and_transaction
+      </div>
+
+      <div class="jank-grid" style="margin-top:18px">
+        <div class="jank-card reveal">
+          <h4>RT 内部：同步/准备变慢</h4>
+          <ul>
+            <li>RenderNode 树大、属性更新多：<code>prepareTree</code> 遍历成本上升。</li>
+            <li>纹理上传/图片解码：<code>prepareTextures</code>、<code>uploadIfNeeded</code> 占用 RT。</li>
+            <li>动画回调/属性动画在 RT 上执行，<code>AnimationContext</code> 超出预算。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>GPU / EGL：提交或换缓冲变慢</h4>
+          <ul>
+            <li>过度绘制、复杂 Shader、大图层：<code>SkiaOpenGLPipeline::draw</code> 变长。</li>
+            <li><code>dequeueBuffer</code> 等不到 free slot：BufferQueue 被填满。</li>
+            <li><code>eglSwapBuffers</code> 被 GPU/驱动阻塞，RT 無法继续下一帧。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>BLAST / SF：交接延迟</h4>
+          <ul>
+            <li>Transaction 错过 SF 的取帧相位：本帧只能下一拍上屏。</li>
+            <li>acquire fence 未 signal：latch 不成立，SF 请求重合成。</li>
+            <li>RT 侧只登记 callback；上屏延迟不直接阻塞 RT。</li>
+          </ul>
+        </div>
+        <div class="jank-card reveal">
+          <h4>观测要点</h4>
+          <ul>
+            <li><code>DrawFrames &lt;vsyncId&gt;</code> 总括 RT 一帧。</li>
+            <li><code>flush commands</code> / <code>queueBuffer</code> / <code>Transaction apply</code> 定位交接点。</li>
+            <li>FrameTimeline 对齐 GPU completion、present、release。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="troubleshoot">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">04 / TROUBLESHOOTING</div>
+          <h2>怎么在 Perfetto 里定位 RenderThread</h2>
+          <p>先看 <code>DrawFrames</code> 总耗时，再拆 sync/prepare/draw/swap 四段；不要只看 UI 线程的 doFrame，
+            GPU 与 BufferQueue 的问题可能让 RT 在 draw 或 dequeue 上阻塞。</p>
+        </div>
+        <div class="section-side">PERFETTO · FRAME TIMELINE<br>DUMPSYS · TRACE TAGS</div>
+      </div>
+
+      <div class="observe-grid">
+        <div class="obs reveal">
+          <div class="obs-h">抓 RT 一帧的 trace <span class="tag">perfetto</span></div>
+          <pre>adb shell perfetto -o /data/misc/perfetto-traces/rt.perfetto-trace \
+  -t 10s sched freq idle binder_driver \
+  gfx view wm surfaceflinger</pre>
+          <p>重点看 <code>DrawFrames</code>、<code>syncFrameState</code>、<code>prepareTree</code>、<code>Drawing</code>、
+            <code>flush commands</code>、<code>queueBuffer</code>、<code>Transaction apply</code> 的切片。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">gfxinfo / FrameTimeline <span class="tag">frame stats</span></div>
+          <pre>adb shell dumpsys gfxinfo &lt;package&gt; framestats
+adb shell dumpsys SurfaceFlinger --timestats -dump
+adb shell dumpsys SurfaceFlinger --latency &lt;layer&gt;</pre>
+          <p>framestats 给出每帧阶段耗时；FrameTimeline 把 app 的 queue、GPU completion 与 SF present 对齐。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">RT 线程与优先级 <span class="tag">runtime</span></div>
+          <pre>adb shell ps -T -p &lt;pid&gt; | grep RenderThread
+adb shell debuggerd -b &lt;pid&gt;   # 看 RT 是否卡在 fence/dequeue
+adb shell dumpsys gfxinfo &lt;package&gt;</pre>
+          <p>如果 RT 卡在 <code>dequeueBuffer</code>、<code>eglSwapBuffers</code> 或 <code>waitForeverOnFence</code>，
+            问题通常不在 DisplayList 录制。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">Renderer 属性与计数器 <span class="tag">hwui</span></div>
+          <pre>adb shell setprop debug.hwui.profile true
+adb shell setprop debug.hwui.overdraw show
+adb shell dumpsys gfxinfo &lt;package&gt;</pre>
+          <p>结合帧统计、overdraw 与 GPU completion，区分 CPU 录制、GPU 执行、BufferQueue 背压。</p>
+        </div>
+      </div>
+      <div class="trace-tags" id="traceTags">{{TRACETAGS}}</div>
+    </div>
+  </section>
+
+  <section class="band" id="sources">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">05 / SOURCE INDEX</div>
+          <h2>源码索引与核验</h2>
+          <p>下表汇总页面引用的文件与函数。构建脚本会逐条核对 snippet 的路径、行号与源码内容；仅使用当前仓库
+            <code>base/</code> 与 <code>native/</code> 实现。</p>
+        </div>
+        <div class="section-side">VERIFIED AGAINST<br>HEAD {{HEAD}}</div>
+      </div>
+      <div class="verify-bar"><span class="ok">✓</span><div><b>引用核验：</b><span>{{VERIFY_SUMMARY}}</span></div></div>
+      {{SOURCES}}
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap in">
+    <div>
+      <b>RenderThread Deep Dive</b> · 基于 AOSP <code>android17-release</code>（HEAD <code>{{HEAD}}</code>）源码整理<br>
+      仅使用 <code>base/</code> 与 <code>native/</code> 下的实现；时间轴为示意，不代表实测耗时。
+    </div>
+    <div class="right">生成于 {{BUILD_DATE}}<br><span style="color:var(--dim)">9 stages · {{SNIPPET_COUNT}} snippets · {{CITED_FILE_COUNT}} files</span></div>
+  </div>
+</footer>
+
+<script>window.PIPELINE_DATA = {{DATA}};</script>
+<script>{{SCRIPT}}</script>
+</body>
+</html>

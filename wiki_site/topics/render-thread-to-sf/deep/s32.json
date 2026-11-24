@@ -1,0 +1,45 @@
+{
+  "step": "s32",
+  "title": "release fence 回流，唤醒下一帧",
+  "tldr": "RT 在 dequeueBuffer 里阻塞读 socket，release fence 到了 slot 才 FREE。",
+  "why": "没有这条回流，三缓冲一旦吃满就再也没有人能解套：dequeue 拿不到槽位，RT 卡在 swap 里，UI 线程紧接着卡在 postAndWait 的 mSignal 上，整个 app 界面停住而进程仍然健康，这种现场最难判。更隐蔽的是「唤醒」和「拿到槽位」被混为一谈：BBQ 还会因为 queueBuffer 里的一次 notifyBufferReleased 主动打断等待，让 dequeue 回去重数槽位，所以等待被唤醒不等于有 buffer 可用；把这层理解错，就容易把一次正常的中断当成丢帧。",
+  "concepts": [
+    { "term": "BBQBufferQueueProducer", "text": "BufferQueueProducer 的子类，只覆盖 waitForBufferRelease。" },
+    { "term": "BufferReleaseReader", "text": "epoll 同时监听 release socket 与 eventfd，分别送 fence 和「可能有槽位」。" },
+    { "term": "UnlockGuard", "text": "读 socket 前放开 BufferQueue 的 mMutex，否则 queueBuffer 进不来。" },
+    { "term": "mPendingRelease", "text": "收到 release fence 后不立刻归还，先按 maxAcquired 扣住若干帧，用延迟换掉帧稳定性。" }
+  ],
+  "walk": [
+    { "call": "status_t status = waitForFreeSlotThenRelock(FreeSlotCaller::Dequeue, lock, &found);", "ref": "native/libs/gui/BufferQueueProducer.cpp:536", "what": "dequeueBuffer 的 while 循环：每次回来都重新数一遍槽位，拿到才退出。" },
+    { "call": "if (status_t status = waitForBufferRelease(lock, mDequeueTimeout); status == TIMED_OUT)", "ref": "native/libs/gui/BufferQueueProducer.cpp:438", "what": "只有确认「确实没有 FREE slot」才走到等待；BBQ 覆盖的正是这一处虚函数。" },
+    { "call": "status_t waitForBufferRelease(std::unique_lock<std::mutex>& bufferQueueLock, nsecs_t timeout) const override", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1302", "what": "BBQ 的覆盖实现；timeout 来自 mDequeueTimeout，而 BBQ 把它设成 INT64_MAX。" },
+    { "call": "UnlockGuard unlockGuard{bufferQueueLock};", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1311", "what": "放掉 BufferQueue 的锁再去等：不放手 queueBuffer 永远进不来。" },
+    { "call": "mBufferReleaseReader->readBlocking(id, fence, maxAcquiredBufferCount, timeout)", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1317", "what": "阻塞读；返回值可能是 OK / WOULD_BLOCK / TIMED_OUT，三者语义不同。" },
+    { "call": "epoll_wait(mEpollFd.get(), &event, 1 /*maxevents*/, timeoutMs)", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1535", "what": "真正的阻塞点；两个 fd 任一可读都醒，因此醒来不代表有 release。" },
+    { "call": "if (event.data.fd == mEventFd.get()) { clearInterrupts(); return WOULD_BLOCK; }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1548", "what": "queueBuffer 末尾会写 eventfd（1561-1564），把这次等待打断。" },
+    { "call": "result = recvmsg(mFd, &msg, 0);", "ref": "native/libs/gui/BufferReleaseChannel.cpp:157", "what": "fence fd 在 SCM_RIGHTS 里，其余在 iovec 里；EAGAIN 表示还没到。" },
+    { "call": "bbq->releaseBufferCallback(id, fence, maxAcquiredBufferCount);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1331", "what": "读出来的东西交回 BBQ，这一刻才动 mSubmitted / mPendingRelease。" },
+    { "call": "mBufferItemConsumer->releaseBuffer(it->second, releaseFence);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:549", "what": "真正把 slot 置 FREE 的一行；在这之前这块 buffer 仍算 acquired。" }
+  ],
+  "state": [
+    { "field": "BufferQueueSlot（mSlots[].mBufferState）", "before": "acquired（被 SF 占着或被 app 扣在 mPendingRelease 里）", "after": "free（走到 BLASTBufferQueue.cpp:549 之后）", "note": "收到 release fence 还不够，必须穿过 mPendingRelease 的门槛" },
+    { "field": "BLASTBufferQueue::mPendingRelease", "before": "0..N 条已收到但没有归还的 buffer", "after": "截断到 numPendingBuffersToHold（507-524）", "note": "EGL 客户端按 mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount 扣帧，其它 API 直接放行" },
+    { "field": "RenderThread 线程状态", "before": "RUNNING", "after": "阻塞在 epoll_wait（已放开 mMutex）", "note": "UI 线程此时可能正卡在 postAndWait，等的是同一个 RT——RT 被 buffer 拖住就是整机掉帧" },
+    { "field": "BufferReleaseReader 的 eventfd 计数", "before": "0", "after": "1（interruptBlockingRead 写一次）", "note": "BufferQueueProducer.cpp:1205 的 mCore->notifyBufferReleased() 触发，作用是让 dequeue 重试而不是宣布有 buffer" }
+  ],
+  "threads": "发起方是 app 的 RenderThread：GL 路径的 dequeue 藏在 eglSwapBuffersWithDamageKHR 内部（EglManager.cpp:629），Vulkan 路径显式调 VulkanSurface::dequeueNativeBuffer → mNativeWindow->dequeueBuffer（VulkanSurface.cpp:409），最终都落到 BufferQueueProducer::dequeueBuffer（466）→ waitForFreeSlotThenRelock → BBQ 的 waitForBufferRelease。等待期间不持 mMutex（1311 的 UnlockGuard）。写端在 surfaceflinger 进程：主线程或 BackgroundExecutor 线程调 sendmsg（BufferReleaseChannel.cpp:244）。socket 是 SOCK_SEQPACKET 的 socketpair（274），consumer 侧被 shutdown 成只读并设为非阻塞（320/336），阻塞能力来自 epoll 而不是 socket 本身。",
+  "pitfalls": [
+    "BLAST 路径没有超时兜底：BLASTBufferQueue::initialize 把 producer 的 dequeueTimeout 设成 INT64_MAX（BLASTBufferQueue.cpp:200），所以 readBlocking 的 timeoutMs 是 -1。等待只能被 eventfd 或 release 消息打断，一旦 SF 侧没发 release，这里就是永久阻塞。",
+    "被唤醒 ≠ 拿到槽位：readBlocking 可能因 eventfd 返回 WOULD_BLOCK，waitForBufferRelease 把这个以及其它错误都当 OK 返回（1318-1323），外层 while 再数一遍。把「返回 OK」当成「有 buffer」就写错了。",
+    "收到 release fence ≠ 立刻 FREE：BBQ 先塞进 mPendingRelease（510-518），再按 507-524 的阈值逐条放行。release 迟到不影响正确性，只影响延迟，所以「SF 早就 present 了为什么还卡」要往这一层查。",
+    "等待时必须先放锁：UnlockGuard 要在 epoll 之前构造（1311）。在持 mMutex 的情况下等 fence，queueBuffer 进不来，就是自锁。",
+    "dequeue 也可能卡在别处：CanvasContext::draw 处理 TIMED_OUT 时会重新 postFrameCallback 重试（CanvasContext.cpp:812-817），但 BBQ 的 INT64_MAX 让这条兜底基本走不到——看到 dequeue 卡住先确认是不是这条路径。",
+    "dequeue 的阻塞点不在 prepareTree：ReliableSurface 的 buffer 预取被 DISABLE_BUFFER_PREFETCH 关掉了（ReliableSurface.cpp:31），reserveNext 直接返回 OK（74-77），所以真正阻塞的是驱动在 eglSwapBuffers 里的 dequeue，或 VulkanSurface::dequeueNativeBuffer（409）。CanvasContext.cpp:606 的 NoBuffer 分支在当前配置下走不到。"
+  ],
+  "debug": [
+    "perfetto / atrace 搜 waitForBufferRelease（BLASTBufferQueue.cpp:1304 的 ATRACE_CALL）与 dequeueBuffer（BufferQueueProducer.cpp:466）：RT 线程上这段一开始，就说明卡在等 buffer，而不是卡在画。",
+    "adb shell dumpsys SurfaceFlinger --latency <layer>：三列里的 frameReady 与 actualPresent 对比，能看出 release 落后了几帧；BBQ 侧还有 ATRACE_INT 的 PendingRelease 与 QueuedBuffer 计数（BLASTBufferQueue.cpp:534-536）。",
+    "打 BQA_LOGV 看「releaseBufferCallback <id>」（494）与「released <id>」（548）：前者是收到 fence，后者是真正释放，两者之间隔着 mPendingRelease 的扣帧窗口。"
+  ],
+  "next": "第 33 步「分支：跳帧」——并不是每一帧都会走到 queueBuffer，先看 RT 什么条件下决定这一帧根本不交 buffer。"
+}

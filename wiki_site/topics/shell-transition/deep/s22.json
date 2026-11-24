@@ -1,0 +1,39 @@
+{
+  "step": "s22",
+  "title": "动画结束，onFinish 收尾",
+  "tldr": "最后一个动画回调进来后，Transitions 把合并后的 finishT 一次 apply，再调 finishTransition(token, wct)。",
+  "why": "没有这一步：leash 还挂在动画父节点、背景层还在、layer 还是动画期的值，而 WMS 已经认为转场结束并按新布局算好下一帧——两套状态同时存在于 SF，用户看到关闭动画结束后窗口闪一下，或者返回桌面时任务卡还在原位停了半秒。合并场景更明显：被吸收的那次转场不会自己播、也不会自己收，全靠主的 onFinish 把 merge 完的 finishT 一起 apply 掉。",
+  "concepts": [
+    { "term": "ActiveTransition", "text": "Shell 侧对一次在途转场的持有物：token、TransitionInfo、startT/finishT、handler、mAborted、mMerged。" },
+    { "term": "mMerged", "text": "被吸收进这次转场的其它 ActiveTransition；它们不再单独播放，事务在主的 onFinish 里合并，然后逐个 finishTransition。" }
+  ],
+  "walk": [
+    { "call": "track.mActiveTransition = null", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1264", "what": "先把 track 置空，防止 finish 过程中重入时又找到这个 active。" },
+    { "call": "mObservers.get(i).onTransitionFinished(active.mToken, active.mAborted)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1267", "what": "通知 Shell 内部观察者动画确实结束了；此刻 finishT 还没 apply，它们必须只用 token 判断。" },
+    { "call": "active.mStartT.clear()", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1274", "what": "startT 早被 handler apply 过，这里只释放 native 引用；字段保持非 null 以便后面判 malformed。" },
+    { "call": "fullFinish.merge(toMerge.mFinishT)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1294", "what": "把被合并转场的 finishT 并进主动画那一份，一次 apply 覆盖所有层级。" },
+    { "call": "fullFinish.apply()", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1301", "what": "唯一一次把还原操作交给 SF：挂回父链、重置 layer/alpha、摘掉 wrap 与背景层。" },
+    { "call": "mOrganizer.finishTransition(active.mToken, wct)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1306", "what": "用同步 binder 通知 WMS：可以提交可见性、跑 cleanup、把状态推到 FINISHED。" },
+    { "call": "mOrganizer.finishTransition(merged.mToken, null /* wct */)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1320", "what": "被合并的每个 token 也必须单独 finish，漏一个 WMS 就永远留着它。" },
+    { "call": "processReadyQueue(track)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1333", "what": "track 空了立刻放行排队的下一个 ready，否则两次动画之间会凭空多一帧空档。" }
+  ],
+  "state": [
+    { "field": "Track.mActiveTransition", "before": "指向 active", "after": "null", "note": "此后任何重入都会命中最前面那个空 track 检查" },
+    { "field": "mKnownTransitions", "before": "含主 token 与所有合并 token", "after": "全部 remove", "note": "重复 finish 会打 Trying to finish a non-existent transition" },
+    { "field": "active.mStartT", "before": "已 apply，引用仍在", "after": "clear() 但字段非 null", "note": "nullness 被用来区分 malformed transition" },
+    { "field": "SurfaceControl.Transaction finishT", "before": "已构造未提交", "after": "已 apply（1301）", "note": "WMS 侧对应的 mFinishTransaction 随后会 close" }
+  ],
+  "threads": "onFinish 在 wmshell.main 执行（1243 有 assertCurrentThread），不持 mGlobalLock；mOrganizer.finishTransition 是同步 binder，进 WMS 后才在 mGlobalLock 内跑完整段收尾。",
+  "pitfalls": [
+    "顺序不能反：先 apply(finishT) 再 finishTransition。反过来 WMS 会按动画期的父链和 layer 收尾，Shell 的还原变成迟到的修正。",
+    "fullFinish 可能为 null（主与所有合并方都没有事务），每处都有 null 判断；不要假设一定有事务可 apply。",
+    "handler 忘了 apply(startT) 不会报错：这里只 clear()，那份起始状态静默消失，表现为动画从终态开始。",
+    "releaseSurfaces(active.mInfo) 在 finishTransition 之前（1305）：默认会立刻释放动画用的 surface，所以 WMS 随后 cleanup 操作的是已释放的 leash；只有 releaseAllTransitionSurfacesOnIdle 打开时才推迟到 idle。"
+  ],
+  "debug": [
+    "adb shell protoLog enable com.android.systemui WM_SHELL_TRANSITIONS，数「Transition animation finished (aborted=%b)」的输出次数应与 finish 次数一致。",
+    "adb shell dumpsys SurfaceFlinger --list | grep -E \"Transition Root|ActivityWrap|animation-background\"：转场结束后应为空。",
+    "adb shell dumpsys window > /data/local/tmp/w.txt 后 grep -i transition，看还有没有留在 playing/finishing 的转场。"
+  ],
+  "next": "onFinish 里那两行的先后本身就是契约 → 第 33 步「finish 的顺序契约」。"
+}

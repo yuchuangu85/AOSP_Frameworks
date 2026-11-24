@@ -1,0 +1,131 @@
+{
+  "step": "s12",
+  "title": "进入 RenderPipeline::draw",
+  "tldr": "取 Frame 与脏区后，一次虚调用把 frame/damage/layers 交给后端 pipeline。",
+  "why": "CanvasContext 自己不认识任何 GPU API：它只负责把这一帧需要的一切——Frame 的尺寸与 bufferAge、窗口脏区、光照、layer 更新队列、根节点列表——打包成一次虚调用。这层抽象决定了两件事：同一份 RT 代码可以在 GL 与 Vulkan 之间切换（debug.hwui.renderer），以及 draw 的入参必须自洽——脏区算错，pipeline 就只重画一部分，屏幕上留下残影；layerUpdateQueue 没被清，下一帧就会重复更新同一个 TextureView。这一行返回之后，CPU 侧的准备工作全部结束，剩下的是纯 GPU 命令生成。",
+  "concepts": [
+    {
+      "term": "IRenderPipeline",
+      "text": "RT 内部对图形后端的唯一抽象；makeCurrent / getFrame / draw / swapBuffers 是它的四件套。"
+    },
+    {
+      "term": "Frame",
+      "text": "本帧的宽高与 bufferAge，由 EglManager::beginFrame 从 EGLSurface 查出。"
+    },
+    {
+      "term": "dirty vs windowDirty",
+      "text": "dirty 是树里累积的脏区；windowDirty 是它折算到窗口坐标后的结果，给 EGL 报 damage 用。"
+    },
+    {
+      "term": "layerUpdateQueue",
+      "text": "本帧要更新的硬件层（TextureView、视频）清单，pipeline 在回放 display list 之前先处理它。"
+    },
+    {
+      "term": "DrawResult",
+      "text": "draw 的返回值：success、commandSubmissionTime、presentFence。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "ScopedActiveContext activeContext(this);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:726",
+      "what": "把当前 context 挂到线程局部，绘制期间 getActiveContext() 才拿得到它。"
+    },
+    {
+      "call": "mCurrentFrameInfo->markIssueDrawCommandsStart();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:730",
+      "what": "打 IssueDrawCommandsStart，帧耗时从这里开始算「录制/提交」段。"
+    },
+    {
+      "call": "Frame frame = getFrame();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:732",
+      "what": "向 pipeline 要本帧的尺寸与 bufferAge；硬件 buffer 场景直接返回逻辑尺寸。"
+    },
+    {
+      "call": "SkRect windowDirty = computeDirtyRect(frame, &dirty);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:734",
+      "what": "把脏区折算成窗口坐标；bufferAge=0 或换了 surface 时直接退化成整屏。"
+    },
+    {
+      "call": "ATRACE_FORMAT(\"Drawing \" RECT_STRING, SK_RECT_ARGS(dirty));",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:736",
+      "what": "trace 名字里直接带脏区，perfetto 上就能看出这一帧画了多大一块。"
+    },
+    {
+      "call": "drawResult = mRenderPipeline->draw(",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:742",
+      "what": "一次虚调用把 frame/脏区/光照/layer 队列/根节点全部交出去。"
+    },
+    {
+      "call": "mOpaque, mLightInfo, mRenderNodes, &(profiler()), mBufferParams, profilerLock());",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:744",
+      "what": "入参尾巴：是否不透明、光照、根节点列表、视觉 profiler、硬件 buffer 参数、profiler 锁。"
+    },
+    {
+      "call": "uint64_t frameCompleteNr = getFrameNumber();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:747",
+      "what": "记下即将提交的帧号，供 FrameTimeline 与后面的 present 回调对账。"
+    },
+    {
+      "call": "waitOnFences();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:749",
+      "what": "等之前排进 CommonPool 的 frame work 收尾，不是等 GPU 画完。"
+    },
+    {
+      "call": "if (mRenderPipeline->hasRenderTarget()) {",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:751",
+      "what": "只有真的有 render target（不是硬件 buffer）才值得上报 FrameTimeline 信息。"
+    },
+    {
+      "call": "mRenderPipeline->setFrameTimelineInfo(ftl);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:779",
+      "what": "把 frameNumber/vsyncId 与 dequeue 时长交给 EGL，随 buffer 报到 SF。"
+    }
+  ],
+  "state": [
+    {
+      "field": "FrameInfo 的 IssueDrawCommandsStart",
+      "before": "上一帧的值或 0",
+      "after": "当前单调时钟（730）",
+      "note": "SyncStart→IssueDrawCommandsStart 是同步耗时，IssueDrawCommandsStart→SwapBuffers 是回放提交耗时"
+    },
+    {
+      "field": "Frame::mBufferAge",
+      "before": "0（新 surface 或首次）",
+      "after": "1..N，由 EGL buffer age 查询给出（EglManager.cpp:599）",
+      "note": "0 强制整屏重画；>1 时要把这几帧的历史 damage join 进来（1290-1303）"
+    },
+    {
+      "field": "CanvasContext::mLastFrameWidth / mLastFrameHeight",
+      "before": "上一帧的 viewport",
+      "after": "本帧 frame 的尺寸（1259-1263）",
+      "note": "尺寸一变就把 dirty 清空→整屏重画，这是防花屏的兜底"
+    },
+    {
+      "field": "CanvasContext::mLayerUpdateQueue",
+      "before": "prepareTree 期间 enqueue 的硬件层",
+      "after": "pipeline 处理完并 clear（SkiaOpenGLPipeline.cpp:184）",
+      "note": "没清干净下一帧会重复更新同一层，表现为 TextureView 反复重绘"
+    },
+    {
+      "field": "FrameInfo 的 CommandSubmissionCompleted",
+      "before": "0",
+      "after": "max(drawResult.commandSubmissionTime, SwapBuffers)（790-791）",
+      "note": "GL 后端返回的 commandSubmissionTime 是 kUnknownTime(-1)，所以实际等于 SwapBuffers 的时间"
+    }
+  ],
+  "threads": "全程在 RenderThread 上，pipeline 也归 RT 独占，draw 内部不需要额外加锁（唯一带锁的是 profilerLock，只保护视觉 profiler 的数据）。此刻 UI 线程已经在录下一帧，两边靠 display list / staging 隔离；GPU 命令生成与 UI 的录制可以同时进行，这正是前面提前放行 UI 换来的收益。",
+  "pitfalls": [
+    "GL 后端的 draw 恒返回 success=true（SkiaOpenGLPipeline.cpp:191），所以 requireSwap 实际由 mEglManager.damageRequiresSwap() 决定（207），而它的条件是 setDamage 扩展可用且 swapBehavior 为 BufferAge（EglManager.cpp:617-619）；把 DrawResult.success 当「这帧有没有内容」会判断错。",
+    "computeDirtyRect 在 bufferAge=0 或 surface 刚换时会把 dirty 清空→整屏（1264-1266），所以「只改了一个像素」也可能变成全屏重画；局部更新失效先查 bufferAge，而不是查 View 的 invalidate。",
+    "frameCompleteNr 在 swapBuffers 之前取（747），它是「即将提交」的帧号；要拿上屏帧号得等 present 之后的回调，别拿它当 SF 的 present 序号。",
+    "第 744 行传进去的是整个 mRenderNodes 列表而不是单个 target 节点；漏传非 client 节点/WebView 那几棵根树，对应内容会整帧不出现。"
+  ],
+  "debug": [
+    "perfetto 里找 Drawing <rect> slice（CanvasContext.cpp:736）：rect 是本帧 damage，slice 长度是 GPU 提交耗时；和 syncFrameState 的长度一比就能分出「CPU 同步重」还是「GPU 重」",
+    "adb shell setprop debug.hwui.renderer skiavk（Properties.h:138，取值见 Properties.cpp:222）切到 Vulkan pipeline，同样的代码走 SkiaVulkanPipeline::draw，用来验证问题是否 GL 特有",
+    "adb shell setprop debug.hwui.profile visual_bars（Properties.h:93-94）把每帧耗时画成屏幕上的条形图，没有 perfetto 时也能肉眼比较帧时长",
+    "adb shell setprop debug.hwui.show_dirty_regions true（Properties.h:103）把窗口脏区直接画出来，确认 damage 与本次 draw 的范围一致"
+  ],
+  "next": "第 13 步「GL 后端：绑定 FBO 与 surface」：SkiaOpenGLPipeline::draw 先用 damageFrame 把脏区报给 EGL，再把 FBO 0 包成 SkSurface 交给 SkiaPipeline::renderFrame。"
+}

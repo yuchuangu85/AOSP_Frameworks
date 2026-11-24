@@ -1,0 +1,90 @@
+{
+  "id": "gl-swap",
+  "title": "SkiaOpenGLPipeline::swapBuffers",
+  "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+  "sig": "bool SkiaOpenGLPipeline::swapBuffers(",
+  "span": [
+    194,
+    214
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, IRenderPipeli",
+      "kind": "note",
+      "text": "入口：RenderThread 上把 GL 帧提交合成器；frame 带 EGLSurface，drawResult 为 draw() 结果"
+    },
+    {
+      "at": 2,
+      "quote": "const SkRect& screenDirty, FrameInfo* currentFrameInfo,",
+      "kind": "data",
+      "text": "screenDirty 为本次脏区，供 EGL damage 交换只上屏损区；currentFrameInfo 供时间戳与 jank 统计"
+    },
+    {
+      "at": 3,
+      "quote": "bool* requireSwap) {",
+      "kind": "state",
+      "text": "出参 requireSwap 回传 CanvasContext::draw：true 才计入 swap 历史并上报 FrameMetrics"
+    },
+    {
+      "at": 4,
+      "quote": "GL_CHECKPOINT(LOW);",
+      "kind": "trace",
+      "text": "调试构建检查此前未清的 GL 错误，有错即 fatal；release 为空宏，无开销"
+    },
+    {
+      "at": 6,
+      "quote": "// Even if we decided to cancel the frame, from the perspective of jan",
+      "kind": "note",
+      "text": "注释：即使本帧被放弃、并未真正上屏，jank 指标仍按已 swap 计时"
+    },
+    {
+      "at": 7,
+      "quote": "// metrics the frame was swapped at this point",
+      "kind": "note",
+      "text": "承上：所以先无条件打 SwapBuffers 时间戳，再决定是否真交换"
+    },
+    {
+      "at": 8,
+      "quote": "currentFrameInfo->markSwapBuffers();",
+      "kind": "trace",
+      "text": "把 FrameInfo.SwapBuffers 记为当前单调时钟，作 jank/FrameTimeline 基准；必须先于任何失败返回执行"
+    },
+    {
+      "at": 10,
+      "quote": "if (mHardwareBuffer) {",
+      "kind": "branch",
+      "text": "离屏渲染到 AHardwareBuffer 时无 EGL 窗口表面，无法 eglSwapBuffers，故走此分支"
+    },
+    {
+      "at": 11,
+      "quote": "return false;",
+      "kind": "state",
+      "text": "返回 false 表示未上屏；requireSwap 保持初值 false，不进 swap 历史与帧回调路径"
+    },
+    {
+      "at": 14,
+      "quote": "*requireSwap = drawResult.success || mEglManager.damageRequiresSwap();",
+      "kind": "branch",
+      "text": "draw 成功、或 BufferAge 交换方式下存在损伤（需按 buffer age 重绘）才要求交换；否则整帧跳过"
+    },
+    {
+      "at": 16,
+      "quote": "if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, scree",
+      "kind": "branch",
+      "text": "需交换时调 EglManager::swapBuffers→eglSwapBuffersWithDamageKHR；表面被销毁则失败"
+    },
+    {
+      "at": 17,
+      "quote": "return false;",
+      "kind": "state",
+      "text": "交换失败返回 false：本帧视为未上屏，CanvasContext 清表面并置全脏区，下帧整帧重绘"
+    },
+    {
+      "at": 20,
+      "quote": "return *requireSwap;",
+      "kind": "state",
+      "text": "返回 requireSwap：true 已提交合成器，false 表示本帧跳过交换但仍计入帧统计"
+    }
+  ]
+}

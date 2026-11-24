@@ -1,0 +1,111 @@
+{
+  "step": "s14",
+  "title": "Transition.onTransactionReady：造 TransitionInfo",
+  "tldr": "全链路中枢：SyncSet 交上来的合并事务在这里变成 (TransitionInfo, startT, finishT) 三件套，再推给 Shell。",
+  "why": "没有这一步，合并事务只是一堆没有语义的 Surface 操作：没人知道哪个窗口在开、哪个在关、动画该往哪个方向做；也没有 mStartTransaction / mFinishTransaction 这对「动画前」和「动画后」的事务，Shell 收到的只能是 null。退化成超时路径后事务被硬 apply，用户看到的是一次没有动画的硬切，中间还夹一帧没合成完的画面（黑闪）。这一步同时定了 mTargets（到底谁参与动画），并把可见性提交、finishT 组装、cleanupT 组装串在同一次调用里——漏掉任何一环，后面 Shell 都补不回来。",
+  "concepts": [
+    {
+      "term": "TransitionInfo",
+      "text": "跨进程描述一次转场：type/flags、每个 Change 的 leash 与 mode、每个 display 的根 leash。"
+    },
+    {
+      "term": "mTargets",
+      "text": "从 mParticipants 里筛出、真正要动画的容器，按 z 序排列；info 里的每个 Change 对应一个 target。"
+    },
+    {
+      "term": "cleanup transaction",
+      "text": "专门摘掉转场临时 surface（snapshot、根 leash）的事务，finishTransition 时必 apply，防止泄漏。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public void onTransactionReady(int syncId, SurfaceControl.Transaction transaction) {",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2034",
+      "what": "入口。先比 syncId == mSyncId，不匹配说明是别的 sync 的回调，直接丢弃。"
+    },
+    {
+      "call": "if (mState == STATE_ABORT) {",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2069",
+      "what": "中止分支：把事务 merge 进 pending transaction 后收尾，不造 info、不发给 player。"
+    },
+    {
+      "call": "mState = STATE_PLAYING;",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2096",
+      "what": "正式推进状态：此后 isCollecting() 为 false，再也不能 collect，也不能改参与者。"
+    },
+    {
+      "call": "mStartTransaction = transaction;",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2097",
+      "what": "把 SyncSet 合并出来的事务升格为 startT，同时新建 mFinishTransaction 留给下一步填。"
+    },
+    {
+      "call": "mTargets = calculateTargets(mParticipants, mChanges);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2117",
+      "what": "从参与者里筛出真正要动画的容器并按 z 序排好；info 的 Change 与它一一对应。"
+    },
+    {
+      "call": "final TransitionInfo info = calculateTransitionInfo(mType, mFlags, mTargets, transaction);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2124",
+      "what": "组 info：造根 leash 与每个 Change 的 leash，把 show/alpha/位置写进 startT。"
+    },
+    {
+      "call": "buildFinishTransaction(mFinishTransaction, info, participantDisplays);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2249",
+      "what": "生成还原事务（第 21 步）；必须在发 player 之前造好，Shell 才能在同一份对象里拿到。"
+    },
+    {
+      "call": "mController.getTransitionPlayer().onTransitionReady(",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2260",
+      "what": "把 (token, info, startT, finishT) 交给 Shell；失败则 postCleanupOnFailure 收尾。"
+    },
+    {
+      "call": "info.releaseAnimSurfaces();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2298",
+      "what": "释放 WMS 手里的根 leash / snapshot 引用；SurfaceControl 已 parcel 给 Shell。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Transition.mState",
+      "before": "STATE_STARTED",
+      "after": "STATE_PLAYING",
+      "note": "Transition.java:2096；之后 collect 不再生效"
+    },
+    {
+      "field": "Transition.mStartTransaction",
+      "before": "null",
+      "after": "SyncSet 合并出的那一笔（含 show/reparent/layer）",
+      "note": "由 Shell 在动画开始时 apply"
+    },
+    {
+      "field": "Transition.mFinishTransaction",
+      "before": "null",
+      "after": "新建事务 + reparent/layer/alpha 还原指令",
+      "note": "由 buildFinishTransaction 填，Shell 在 finish 前 apply"
+    },
+    {
+      "field": "Transition.mCleanupTransaction",
+      "before": "null",
+      "after": "摘 snapshot 与根 leash 的事务",
+      "note": "finishTransition 里必 apply"
+    },
+    {
+      "field": "TransitionInfo 的 Changes / Roots",
+      "before": "空",
+      "after": "每个 target 一个 Change，每个参与 display 一个 Root",
+      "note": "这就是 Shell 拿到的全部素材"
+    }
+  ],
+  "threads": "在 BLASTSyncEngine.finishNow 的回调里同步跑，WMS 的 surface placement 线程 + mGlobalLock；造 leash、组 info、建 finishT 全在锁内，所以这里多花的时间直接算进这一帧。",
+  "pitfalls": [
+    "它叫 onTransactionReady，但不是「事务已上屏」：这只是一笔待 apply 的事务对象，真正上屏要等 Shell 在动画开始时 apply，甚至可能超时。",
+    "abort 分支在造 info 之前就 return，所以 Shell 根本收不到这次转场的 onTransitionReady，别在 Shell 侧等它。",
+    "这个方法叫「造 TransitionInfo」，实际却串了可见性提交、leash、info、finishT、cleanupT、调 player 六件事；只读前几行会严重低估它的职责。"
+  ],
+  "debug": [
+    "adb shell dumpsys window transitions 看这次 transition 的 type/flags/participants 与 targets 是否对得上",
+    "ProtoLog WM_DEBUG_WINDOW_TRANSITIONS：\"Calling onTransitionReady: %s\" 打的就是 info",
+    "perfetto: 搜 \"onTransactionReady\" slice，它下面挂着 calculateTransitionInfo 与 buildFinishTransaction"
+  ],
+  "next": "info 已成型，最后一件事是把动画改动还原回去 → 第 21 步「生成『还原事务』finishT」。"
+}

@@ -1,0 +1,184 @@
+{
+  "id": "stage-05",
+  "num": 5,
+  "title": "第 5 拍：合成决策与 HWC validate",
+  "subtitle": "每个 layer 交给 DPU 扫出还是留给 GPU 画，由 HWC validate 的结果在 SF 主线程上定下来",
+  "lane": "HWC",
+  "durationHint": "量级：亚毫秒~数毫秒（HWC validate 是跨进程 HAL 调用，慢屏/多屏时可达数毫秒）",
+  "summary": "SurfaceFlinger::composite（native/services/surfaceflinger/SurfaceFlinger.cpp:3330）在算好 refreshArgs 后调 CompositionEngine::present（CompositionEngine.cpp:131）：先 preComposition，再让每个 Output prepare（rebuildLayerStacks），然后并行 present。Output::present（Output.cpp:450）里做完颜色、几何与 composition state 的写入后，进入 prepareFrame → chooseCompositionStrategy（Display.cpp:248），后者把“是否有 client composition”和 expectedPresentTime 交给 HWComposer::getDeviceCompositionChanges（HWComposer.cpp:537）。这一步能跳过 validate（presentOrValidate），否则调 HWC2::Display::validate（HWC2.cpp:515）拿到 changedTypes、displayRequests、layerRequests、clientTargetProperty 与 layerLuts，再 applyCompositionStrategy 落到每个 OutputLayer 的 hwcCompositionType。结果决定本帧哪些 layer 走 DEVICE/SOLID_COLOR 由 DPU 扫出（overlay），哪些回落到 CLIENT 由 GPU 画。这一拍不产生任何像素，它只回答一个问题：这一帧由谁来画。决策一旦落定，后面要么是一串 HWC plane 配置，要么是一次完整的 GPU 合成，二者成本差一个数量级，所以 validate 的结果直接决定了整帧的开销形状。",
+  "callchain": [
+    "SurfaceFlinger::composite()",
+    "CompositionEngine::present()",
+    "Output::prepare()",
+    "Output::present()",
+    "Output::prepareFrame()",
+    "Display::chooseCompositionStrategy()",
+    "HWComposer::getDeviceCompositionChanges()",
+    "HWC2::Display::presentOrValidate()",
+    "HWC2::Display::validate()",
+    "Display::applyCompositionStrategy()",
+    "OutputLayer::writeCompositionTypeToHWC()"
+  ],
+  "sections": [
+    {
+      "heading": "决策发生在哪一层、哪个线程",
+      "html": "<p>SF 主线程在 <code>SurfaceFlinger::composite</code>（SurfaceFlinger.cpp:3330）里组好 <code>CompositionRefreshArgs</code>（outputs、frameInterval、scheduledFrameTime、colorTransformMatrix 等），随即 <code>mCompositionEngine-&gt;present(refreshArgs)</code>（3448）。<code>CompositionEngine::present</code>（CompositionEngine.cpp:131-170）的顺序是：<code>preComposition</code> → 对每个 output <code>output-&gt;prepare(args, latchedLayers)</code> → <code>offloadOutputs(args.outputs)</code> → 对每个 output <code>output-&gt;present(args)</code> 收集 <code>ftl::Future</code> → 在 <code>SFTRACE_NAME(\"Waiting on HWC\")</code> 里逐个 <code>future.get()</code> → <code>postComposition</code>。</p><p>注意两处并发：<strong>（1）</strong> 多物理屏时 <code>offloadOutputs</code> 会把除最后一个以外的 HWC-enabled output 标成 <code>offloadPresentNextFrame()</code>，下一个 <code>Output::present</code> 走 <code>presentFrameAndReleaseLayersAsync</code>（Output.cpp:1207-1215）在 <code>mHwComposerAsyncWorker</code> 线程上做；<strong>（2）</strong> GPU-composited 的显示可以由 <code>SurfaceFlinger::offloadGpuCompositedDisplays</code>（SurfaceFlinger.cpp:3304-3328）丢到 <code>BackgroundExecutor</code> 上的另一个 <code>mOffloadedCompositionEngine</code> 去 present。所以 trace 上 HWC validate/present 不一定都在 SF 主线程。</p>"
+    },
+    {
+      "heading": "chooseCompositionStrategy：把 HWC 的意见翻译成 layer 的 composition type",
+      "html": "<p><code>Display::chooseCompositionStrategy</code>（Display.cpp:248-293）做三件事：</p><ol><li>算 <code>requiresClientComposition = anyLayersRequireClientComposition()</code>（265），即是否存在至少一个 layer 已经落在 CLIENT 类型上。</li><li>调 <code>hwc.getDeviceCompositionChanges(*halDisplayId, requiresClientComposition, getState().earliestPresentTime, getState().expectedPresentTime, getState().frameInterval, outChanges)</code>（275-278）。失败只 <code>ALOGE(\"chooseCompositionStrategy failed for %s: %d (%s)\")</code> 并返回 false，不抛异常。</li><li>成功时顺手记 ADPF：<code>mPowerAdvisor-&gt;setHwcValidateTiming(...)</code> 与 <code>setSkippedValidate(..., hwc.getValidateSkipped(*halDisplayId))</code>（285-290）。</li></ol><p>拿到 <code>DeviceRequestedChanges</code>（HWComposer.h:94-107，含 <code>changedTypes / displayRequests / layerRequests / clientTargetProperty / layerLuts</code>）后，<code>Output::prepareFrame</code>（Output.cpp:1177-1205）先给没有被 HWC 改动过的 layer 补上它当前 <code>hwcCompositionType</code>（1189-1195），再把 changes 存进 <code>outputState.previousDeviceRequestedChanges</code>，最后 <code>applyCompositionStrategy(changes)</code>。<code>Display::applyCompositionStrategy</code>（Display.cpp:295-308）除了把 changedTypes/displayRequests/layerRequests/clientTargetProperty/layerLuts 逐项落到 layer（297-301），还重新计算两个总开关：<code>state.usesClientComposition = anyLayersRequireClientComposition()</code>、<code>state.usesDeviceComposition = !allLayersRequireClientComposition()</code>（306-307）。这两个布尔量就是后续 GPU 合成是否要跑的唯一依据。</p>"
+    },
+    {
+      "heading": "validate 的 skip 与 fallback",
+      "html": "<p><code>HWComposer::getDeviceCompositionChanges</code>（HWComposer.cpp:537-635）第一件事是判断能不能完全跳过 validate（557-577）：</p><blockquote>若本帧有 client composition（<code>frameUsesClientComposition</code>）→ 必须 validate；若 composer 不支持 expectedPresentTime → 可跳过；否则只有当 <code>std::chrono::steady_clock::now() &gt;= earliestPresentTime</code> 时才可跳过，避免“提前呈现”。</blockquote><p>可跳过时调 <code>hwcDisplay-&gt;presentOrValidate(...)</code>（584），返回 <code>state == 1</code> 表示 present 已经成功，此时取 <code>getReleaseFences</code>、记 <code>displayData.lastPresentFence</code>、<code>validateWasSkipped = true</code> 后直接返回（589-597）。否则（或本来不能跳过）走 <code>hwcDisplay-&gt;validate(...)</code>（600-601），再依次 <code>getChangedCompositionTypes</code> / <code>getRequests</code> / <code>getClientTargetProperty</code> / <code>getRequestedLuts</code>（610-625），最后 <code>acceptChanges()</code>（631）把意见固定下来。日志里 “SkipValidate failed, Falling back to SLOW validate/present”（603）就是这个回落点。</p><p>注意错误处理：<code>if (!hasChangesError(error))</code> 才 RETURN_IF_HWC_ERROR（604-606），也就是 <code>HAS_CHANGES</code> 这类“有改动”的错误码本身是正常返回，validate 失败不等于丢帧。</p>"
+    },
+    {
+      "heading": "per-layer：SF 先给建议，HWC 能否决",
+      "html": "<p>每个 layer 的初始 composition type 来自前端快照（<code>outputIndependentState-&gt;compositionType</code>）。<code>OutputLayer::writeStateToHWC</code>（OutputLayer.cpp:662-725）里会先做一次本地修正：如果请求的是 <code>SOLID_COLOR</code> 但存在 <code>state.overrideInfo.buffer</code>（被换成了一张 buffer），就改成 <code>DEVICE</code>（685-687）；然后写几何、per-frame 状态，再由 <code>writeCompositionTypeToHWC</code>（1080-1104）最终下发给 HWC：</p><ul><li>若 <code>isClientCompositionForced(isPeekingThrough)</code> 为真，强制 <code>CLIENT</code>（1085-1088），例如 peek-through 的模糊层。</li><li>类型与上次相同且不是“从 skipped 恢复”就跳过 HAL 调用（1093-1094），这是避免每帧重复下发的关键。</li><li>调用 <code>hwcLayer-&gt;setCompositionType(requestedCompositionType)</code>，失败只 ALOGE（1097-1102）。</li></ul><p>validate 之后，HWC 的 <code>changedTypes</code> 会经 <code>Display::applyChangedTypesToLayers</code>（Display.cpp:326 起）覆盖对应 layer 的 <code>hwcCompositionType</code>，所以<strong>最终类型以 HWC 的 validation 结果为准</strong>。可查询的最终态是 <code>OutputLayer::requiresClientComposition()</code>：<code>!state.hwc || state.hwc-&gt;hwcCompositionType == Composition::CLIENT</code>（OutputLayer.cpp:1137-1140）；<code>isHardwareCursor()</code> 则判 <code>CURSOR</code>（1142-1145）。</p>"
+    },
+    {
+      "heading": "client / device / overlay 到底谁画",
+      "html": "<p>三种 composition type 对应三条完全不同的路径：</p><table><thead><tr><th>类型</th><th>谁执行</th><th>后续阶段</th></tr></thead><tbody><tr><td><code>DEVICE</code></td><td>HWC/DPU 直接读 layer buffer 扫出（overlay plane，无 GPU 参与）</td><td>present 时只下发 plane 配置</td></tr><tr><td><code>SOLID_COLOR</code></td><td>DPU 用纯色 plane 填充，不读 buffer</td><td>无 GPU 工作</td></tr><tr><td><code>CLIENT</code></td><td>GPU：SF 用 RenderEngine 把所有 CLIENT layer 合到 client target</td><td>下一拍 stage-06</td></tr></tbody></table><p><code>usesClientComposition</code> 为真只表示“至少有一个 CLIENT layer”，此时 <code>Output::dequeueRenderBuffer</code>（Output.cpp:1371-1388）才会去 <code>mRenderSurface-&gt;dequeueBuffer</code>；<code>usesDeviceComposition</code> 为真表示“至少有一个非 CLIENT layer”。两者同时为真就是最常见的混合合成：上层 UI overlay 走 DPU，个别带圆角/模糊/色彩转换的层回落 GPU。</p><p>HWC 还会通过 <code>layerRequests</code> 要求某个 layer 清缓存或改 clear 行为，通过 <code>displayRequests</code> 要求 SF 做整体颜色变换；<code>clientTargetProperty</code> 则告诉 SF 该用什么 dataspace/亮度去准备 client target——这些都会影响下一拍 GPU 合成的输出格式。</p>"
+    },
+    {
+      "heading": "validate 之后、present 之前：决策如何兑现",
+      "html": "<p>决策落定后，<code>Output::present</code> 继续：<code>prepareFrame()</code>（或预测路径的 <code>prepareFrameAsync()</code>）→ <code>devOptRepaintFlash</code> → <code>finishFrame(std::move(result))</code> → <code>presentFrameAndReleaseLayers(flushEvenWhenDisabled)</code>（Output.cpp:498-516）。其中 <code>finishFrame</code>（1312-1349）在 <code>usesClientComposition</code> 时 <code>dequeueRenderBuffer</code> + <code>composeSurfaces</code>，把 GPU 合成的 ready fence 通过 <code>mRenderSurface-&gt;queueBuffer(...)</code>（1348）交给 HWC 侧（对应 <code>FramebufferSurface::advanceFrame</code> 里的 <code>setClientTarget</code>）。</p><p>随后 <code>presentFrameAndReleaseLayers</code>（1726-1798）调 <code>presentFrame()</code>（基类 1828-1834，返回 client target 的 acquire fence；<code>Display::presentFrame</code> 在 Display.cpp:416-453 里再调 <code>hwc.presentAndGetReleaseFences(...)</code> 并取每层 release fence）。这正是 <code>CompositionEngine::present</code> 里 “Waiting on HWC” 那段在等的东西：<strong>present 的耗时既包含 HAL 下发，也包含等待 HWC 接管 buffer</strong>。</p><p>一个常见误区是把 validate 当成“SF 决定一切”。实际上 SF 只提供请求与几何，HWC 可以在 validate 中否决任何一层（改成 CLIENT），也可以只要求改某层的 clear/缓存行为；SF 必须无条件接受并在同一帧内重新组织合成——这正是 <code>previousDeviceRequestedChanges</code> 与预测机制存在的原因。</p>"
+    },
+    {
+      "heading": "排障：validate 相关的典型现象",
+      "html": "<ul><li><strong>整屏掉到 GPU 合成</strong>：看 <code>usesDeviceComposition</code> 是否为 false、以及 HWC 是否把大量 layer 放进 <code>changedTypes</code>；常见原因是格式（如 HDR/10bit）、缩放比例超限、旋转或圆角要求，HWC 无法用 plane 承接。</li><li><strong>validate 很慢</strong>：perfetto 里 <code>chooseCompositionStrategy for &lt;display&gt;</code> slice 会拉长，多屏时尤其明显；注意它可能跑在 <code>mHwComposerAsyncWorker</code> 线程上，不在 SF 主线程。</li><li><strong>composition type 每帧抖动</strong>：会连续出现 <code>CompositionStrategyPredictionMiss</code>（Output.cpp:1272），预测机制失效，validate 无法跳过。</li><li><strong>画面缺层/闪黑</strong>：检查被 HWC 改成 CLIENT 的层是否真的被 <code>generateClientCompositionRequests</code> 收录（下一拍），以及 <code>clientTargetProperty</code> 指定的 dataspace 是否与实际 buffer 匹配。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+      "symbol": "Display::chooseCompositionStrategy",
+      "lines": "248-292",
+      "code": "bool Display::chooseCompositionStrategy(\n        std::optional<android::HWComposer::DeviceRequestedChanges>* outChanges) {\n    SFTRACE_FORMAT(\"%s for %s\", __func__, getNamePlusId().c_str());\n    ALOGV(__FUNCTION__);\n\n    if (mIsDisconnected) {\n        return false;\n    }\n\n    // If we don't have a HWC display, then we are done.\n    const auto halDisplayId = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>);\n    if (!halDisplayId) {\n        return false;\n    }\n\n    // Get any composition changes requested by the HWC device, and apply them.\n    auto& hwc = getCompositionEngine().getHwComposer();\n    const bool requiresClientComposition = anyLayersRequireClientComposition();\n\n    const TimePoint hwcValidateStartTime = TimePoint::now();\n\n    const auto physicalDisplayId = getDisplayIdVariant().and_then(asPhysicalDisplayId);\n\n    if (physicalDisplayId && getState().readbackBuffer) {\n        hwc.setReadbackBuffer(*physicalDisplayId, getState().readbackBuffer, Fence::NO_FENCE);\n    }\n\n    if (status_t result = hwc.getDeviceCompositionChanges(*halDisplayId, requiresClientComposition,\n                                                          getState().earliestPresentTime,\n                                                          getState().expectedPresentTime,\n                                                          getState().frameInterval, outChanges);\n        result != NO_ERROR) {\n        ALOGE(\"chooseCompositionStrategy failed for %s: %d (%s)\", getName().c_str(), result,\n              strerror(-result));\n        return false;\n    }\n\n    if (isPowerHintSessionEnabled()) {\n        mPowerAdvisor->setHwcValidateTiming(getId(), hwcValidateStartTime, TimePoint::now());\n        if (auto halDisplayId = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>)) {\n            mPowerAdvisor->setSkippedValidate(*halDisplayId, hwc.getValidateSkipped(*halDisplayId));\n        }\n    }\n\n    return true;",
+      "note": "合成决策的入口：先算 requiresClientComposition，再把 earliestPresentTime/expectedPresentTime/frameInterval 一起交给 HWComposer::getDeviceCompositionChanges；成功后记录 ADPF 的 validate 耗时与 skipped 状态。"
+    },
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "symbol": "HWC2::Display::validate",
+      "lines": "562-606",
+      "code": "    const bool canSkipValidate = [&] {\n        // We must call validate if we have client composition\n        if (frameUsesClientComposition) {\n            return false;\n        }\n\n        // If composer supports getting the expected present time, we can skip\n        // as composer will make sure to prevent early presentation\n        if (!earliestPresentTime) {\n            return true;\n        }\n\n        // composer doesn't support getting the expected present time. We can only\n        // skip validate if we know that we are not going to present early.\n        return std::chrono::steady_clock::now() >= *earliestPresentTime;\n    }();\n\n    displayData.validateWasSkipped = false;\n    SFTRACE_FORMAT(\"NextFrameInterval %d_Hz\", frameInterval.getIntValue());\n    if (canSkipValidate) {\n        sp<Fence> outPresentFence = Fence::NO_FENCE;\n        uint32_t state = UINT32_MAX;\n        error = hwcDisplay->presentOrValidate(expectedPresentTime, frameInterval.getPeriodNsecs(),\n                                              &numTypes, &numRequests, &outPresentFence, &state);\n        if (!hasChangesError(error)) {\n            RETURN_IF_HWC_ERROR_FOR(\"presentOrValidate\", error, displayId, UNKNOWN_ERROR);\n        }\n        if (state == 1) { // Present Succeeded.\n            std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;\n            error = hwcDisplay->getReleaseFences(&releaseFences);\n            displayData.releaseFences = std::move(releaseFences);\n            displayData.lastPresentFence = outPresentFence;\n            displayData.validateWasSkipped = true;\n            displayData.presentError = error;\n            return NO_ERROR;\n        }\n        // Present failed but Validate ran.\n    } else {\n        error = hwcDisplay->validate(expectedPresentTime, frameInterval.getPeriodNsecs(), &numTypes,\n                                     &numRequests);\n    }\n    ALOGV(\"SkipValidate failed, Falling back to SLOW validate/present\");\n    if (!hasChangesError(error)) {\n        RETURN_IF_HWC_ERROR_FOR(\"validate\", error, displayId, BAD_INDEX);\n    }",
+      "note": "canSkipValidate 的判定与两条路径：能跳就 presentOrValidate（state==1 直接成功），否则 validate 拿 changedTypes/requests；HAS_CHANGES 类错误码不算失败，会继续往下走。"
+    },
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/HWC2.cpp",
+      "symbol": "HWC2::Display::validate",
+      "lines": "515-529",
+      "code": "Error Display::validate(nsecs_t expectedPresentTime, int32_t frameIntervalNs, uint32_t* outNumTypes,\n                        uint32_t* outNumRequests) {\n    uint32_t numTypes = 0;\n    uint32_t numRequests = 0;\n    auto intError = mComposer.validateDisplay(mId, expectedPresentTime, frameIntervalNs, &numTypes,\n                                              &numRequests);\n    auto error = static_cast<Error>(intError);\n    if (error != Error::NONE && !hasChangesError(error)) {\n        return error;\n    }\n\n    *outNumTypes = numTypes;\n    *outNumRequests = numRequests;\n    return error;\n}",
+      "note": "HWC2 对 Composer HAL validateDisplay 的薄封装：把 numTypes/numRequests 透出，并保留 hasChangesError 语义（错误但仍有改动时也算成功返回）。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+      "symbol": "OutputLayer::writeCompositionTypeToHWC",
+      "lines": "1080-1104",
+      "code": "void OutputLayer::writeCompositionTypeToHWC(HWC2::Layer* hwcLayer,\n                                            Composition requestedCompositionType,\n                                            bool isPeekingThrough, bool skipLayer) {\n    auto& outputDependentState = editState();\n\n    if (isClientCompositionForced(isPeekingThrough)) {\n        // If we are forcing client composition, we need to tell the HWC\n        requestedCompositionType = Composition::CLIENT;\n    }\n\n    // Set the requested composition type with the HWC whenever it changes\n    // We also resend the composition type when this layer was previously skipped, to ensure that\n    // the composition type is up-to-date.\n    if (outputDependentState.hwc->hwcCompositionType != requestedCompositionType ||\n        (outputDependentState.hwc->layerSkipped && !skipLayer)) {\n        outputDependentState.hwc->hwcCompositionType = requestedCompositionType;\n\n        if (auto error = hwcLayer->setCompositionType(requestedCompositionType);\n            error != hal::Error::NONE) {\n            ALOGE(\"[%s] Failed to set composition type %s: %s (%d)\", getLayerFE().getDebugName(),\n                  to_string(requestedCompositionType).c_str(), to_string(error).c_str(),\n                  static_cast<int32_t>(error));\n        }\n    }\n}",
+      "note": "最终下发 composition type 的地方：isClientCompositionForced 时强改 CLIENT；类型没变且不是从 skipped 恢复就跳过 HAL 调用；调用失败只记 ALOGE，不中断本帧。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "HWComposer::DeviceRequestedChanges",
+      "type": "struct（HWComposer.h:94-107）",
+      "desc": "HWC validate 的返回集合：changedTypes（HWC2::Layer* → Composition）、displayRequests、layerRequests、clientTargetProperty、layerLuts。SF 逐项 apply 后才算决策完成。"
+    },
+    {
+      "name": "OutputCompositionState::usesClientComposition / usesDeviceComposition",
+      "type": "bool / bool",
+      "desc": "由 Display::applyCompositionStrategy 重算（Display.cpp:306-307）。前者决定要不要 dequeue client target 并跑 RenderEngine，后者表示至少有一层走 DPU。"
+    },
+    {
+      "name": "OutputLayerCompositionState::Hwc::hwcCompositionType",
+      "type": "aidl Composition（默认 INVALID）",
+      "desc": "OutputLayerCompositionState.h:146-147；最近一次下发给 HWC 的类型。与 snapshot 里的 compositionType 不同：前者是下发值，后者是 SF 的建议值。"
+    },
+    {
+      "name": "OutputLayer::requiresClientComposition()",
+      "type": "bool",
+      "desc": "判定式是 !state.hwc || hwcCompositionType == CLIENT（OutputLayer.cpp:1137-1140）。anyLayersRequireClientComposition()/allLayersRequireClientComposition() 都基于它。"
+    },
+    {
+      "name": "mHwComposerAsyncWorker",
+      "type": "std::unique_ptr<HwcAsyncWorker>",
+      "desc": "Output 上的 HWC 异步执行器：预测路径用 chooseCompositionStrategyAsync 把 validate 丢上去（Output.cpp:1217-1223），present 也可能通过 presentFrameAndReleaseLayersAsync（1207-1215）offload。"
+    },
+    {
+      "name": "CompositionStrategyPredictionState",
+      "type": "enum（DISABLED / SUCCESS / FAIL）",
+      "desc": "Output.cpp:1198、1269-1270。预测成功时直接用上一帧的 changes 并复用 dequeue 的 buffer，避免重复 validate；失败会打 CompositionStrategyPredictionMiss 并重算。"
+    },
+    {
+      "name": "validateWasSkipped",
+      "type": "bool（HWComposer::DisplayData 内）",
+      "desc": "presentOrValidate 成功时置 true（HWComposer.cpp:594），后续 presentAndGetReleaseFences 会据此执行 flush 命令；dumpsys 与 ADPF 的 setSkippedValidate 都读它。"
+    },
+    {
+      "name": "isClientCompositionForced()",
+      "type": "bool",
+      "desc": "writeCompositionTypeToHWC 里的强制 CLIENT 开关（OutputLayer.cpp:1085-1088），与 peek-through、layer 被 override 等场景相关；它优先于 snapshot 给出的建议类型。"
+    },
+    {
+      "name": "ClientCompositionRequestCache",
+      "type": "std::unique_ptr<...>",
+      "desc": "下一拍会用到：若 client composition 的请求集合与上一个 buffer 完全相同，就复用已经画好的 client target，不再跑 RenderEngine（Output.cpp:1432-1445）。"
+    },
+    {
+      "name": "expectedPresentTime / earliestPresentTime",
+      "type": "TimePoint",
+      "desc": "来自 Scheduler 的帧目标，validate 时同时传给 HWC（Display.cpp:276-278）。它们决定 HWC 是否被允许”延后呈现“，也决定 canSkipValidate 是否安全。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "chooseCompositionStrategy for <display>",
+      "value": "SFTRACE_FORMAT（Display.cpp:250）",
+      "desc": "包住整个 validate 与 ADPF 记账，是这一拍的主 slice；多屏时每个 display 一条。"
+    },
+    {
+      "name": "NextFrameInterval <Hz>",
+      "value": "SFTRACE_FORMAT（HWComposer.cpp:580）",
+      "desc": "validate 前打出的帧间隔，用来判断 HWC 是否收到正确的 frameInterval（影响它的 plane 选择）。"
+    },
+    {
+      "name": "Waiting on HWC",
+      "value": "SFTRACE_NAME（CompositionEngine.cpp:162）",
+      "desc": "CompositionEngine::present 里等待所有 output 的 present future，包含 HWC present 的跨进程耗时。"
+    },
+    {
+      "name": "CompositionStrategyPredictionMiss / Hit",
+      "value": "SFTRACE_NAME（Output.cpp:1272、1281）",
+      "desc": "预测命中率下降会导致 validate 无法跳过、dequeue 重复，是 GPU 合成开销上升的前兆。"
+    },
+    {
+      "name": "Composition <vsyncId>",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:3341）",
+      "desc": "SF composite 的外层 slice，内部包含 CompositionEngine::present；与 CG_Sf_Composite panopticon slice 对齐。"
+    },
+    {
+      "name": "presentFrameAndReleaseLayers for <display>",
+      "value": "SFTRACE_FORMAT（Output.cpp:1727）",
+      "desc": "present 与 release fence 分发的耗时，可与 HWC present fence 对照。"
+    }
+  ],
+  "traceTags": [
+    "Composition <vsyncId>",
+    "chooseCompositionStrategy for <display>",
+    "NextFrameInterval <Hz>",
+    "Waiting on HWC",
+    "presentFrameAndReleaseLayers for <display>",
+    "CompositionStrategyPredictionMiss"
+  ],
+  "pitfalls": [
+    "本版源码里没有 HWComposer::validateDisplay 这个函数：SF 侧入口是 HWComposer::getDeviceCompositionChanges，HWC2 封装是 HWC2::Display::validate，HAL 层才是 Composer::validateDisplay。按老代码 grep validateDisplay 只能命中 HAL 与注释。",
+    "canSkipValidate 为真时 SF 一帧都不 validate（validateWasSkipped=true，HWComposer.cpp:594），changedTypes 为空、composition type 沿用上一帧；如果 HWC 能力或 layer 属性变了而 SF 没察觉，这一帧的类型可能与实际不符。",
+    "layer 的最终类型以 HWC validate 结果为准：Display::applyChangedTypesToLayers（Display.cpp:326 起）会覆盖 hwcCompositionType。把 snapshot 里的 compositionType 当最终值去分析 overlay 数量会算错。",
+    "validate 返回错误并不等于丢帧：hasChangesError(error) 为真时（例如 HAS_CHANGES）会继续读取 changedTypes/requests（HWComposer.cpp:604-611），只有非 changes 类错误才 RETURN_IF_HWC_ERROR。",
+    "allLayersRequireClientComposition() 为真时 usesDeviceComposition 为 false（Display.cpp:307），整屏都要 GPU 画；此时 composeSurfaces 必然执行，是 GPU 合成热点，别在 DPU 侧找原因。",
+    "validate/present 不一定在 SF 主线程：预测路径的 validate 跑在 mHwComposerAsyncWorker（Output.cpp:1217-1223），present 可能被 presentFrameAndReleaseLayersAsync 或 SurfaceFlinger::offloadGpuCompositedDisplays（SurfaceFlinger.cpp:3304-3328）搬到别的线程/另一个 CompositionEngine。按线程过滤 trace 时会漏。",
+    "SOLID_COLOR 在有 overrideInfo.buffer 时会被改成 DEVICE（OutputLayer.cpp:685-687），isClientCompositionForced 又会把某些层强改 CLIENT；只看 snapshot 的 compositionType 会漏掉这两种覆盖。"
+  ],
+  "next": "stage-06"
+}

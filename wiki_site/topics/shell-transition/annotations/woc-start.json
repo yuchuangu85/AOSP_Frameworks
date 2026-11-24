@@ -1,0 +1,564 @@
+{
+  "id": "woc-start",
+  "title": "WindowOrganizerController.startTransition",
+  "file": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+  "sig": "private IBinder startTransition(@WindowManager.TransitionType int type, @Nullable IBinder transitionToken, @Nullable WindowContainerTransaction t)",
+  "span": [
+    341,
+    449
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private IBinder startTransition(@WindowManager.TransitionType int type",
+      "kind": "note",
+      "text": "私有实现入口，两个公开重载都转调此处；type 仅新建时有效，token 为空则新建 transition。"
+    },
+    {
+      "at": 2,
+      "quote": "@Nullable IBinder transitionToken, @Nullable WindowContainerTransactio",
+      "kind": "note",
+      "text": "token 为 null 由 WM 新建；非 null 则复用已在收集的 transition；t 为空时内部补一个空 WCT。"
+    },
+    {
+      "at": 3,
+      "quote": "enforceTaskPermission(\"startTransition()\");",
+      "kind": "ipc",
+      "text": "先校验 MANAGE_ACTIVITY_TASKS，无权限抛 SecurityException，阻止三方应用操控窗口层级。"
+    },
+    {
+      "at": 4,
+      "quote": "final CallerInfo caller = new CallerInfo();",
+      "kind": "data",
+      "text": "在清身份前抓取 pid/uid，记录的是真实 shell 进程；后续 ActionChain 与权限校验都用它归因。"
+    },
+    {
+      "at": 5,
+      "quote": "final long ident = Binder.clearCallingIdentity();",
+      "kind": "ipc",
+      "text": "清 Binder 调用身份，让内部检查按 system 通过；必须成对恢复，否则本线程残留错误 uid 污染后续调用。"
+    },
+    {
+      "at": 6,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try/finally 包住全部逻辑，唯一职责是任何 return 或抛出时都能恢复 Binder 身份，避免串号。"
+    },
+    {
+      "at": 7,
+      "quote": "synchronized (mGlobalLock) {",
+      "kind": "lock",
+      "text": "所有窗口状态读写都在 mGlobalLock 内；外层 Binder 线程持锁，若 apply 卡住会阻塞其他窗口事务。"
+    },
+    {
+      "at": 8,
+      "quote": "Transition transition = Transition.fromBinder(transitionToken);",
+      "kind": "state",
+      "text": "用 token 反查 Transition；类型不符时 fromBinder 捕获 ClassCastException 返回 null。"
+    },
+    {
+      "at": 9,
+      "quote": "if (transition == null && transitionToken != null) {",
+      "kind": "branch",
+      "text": "给了 token 却查不到对象，说明 controller 已丢失该 transition（如已 abort），是内部状态不一致。"
+    },
+    {
+      "at": 10,
+      "quote": "Slog.wtf(TAG, \"Requested transition was lost (controller isn't trackin",
+      "kind": "trace",
+      "text": "Slog.wtf 会落盘进崩溃报告，便于定位 shell 与 WM 之间 transition 生命周期错位。"
+    },
+    {
+      "at": 11,
+      "quote": "+ transitionToken + \" \" + t);",
+      "kind": "trace",
+      "text": "日志拼上 token 与 WCT，方便从 bugreport 还原当时请求的完整内容。"
+    },
+    {
+      "at": 12,
+      "quote": "return null;",
+      "kind": "branch",
+      "text": "返回 null 不抛异常，shell 会当作启动失败；此时未创建任何 transition，锁内状态未被修改。"
+    },
+    {
+      "at": 14,
+      "quote": "if (mTransitionController.isFlushing() && transition == null) {",
+      "kind": "branch",
+      "text": "isFlushing 即无 TransitionPlayer 注册（兼容模式），仍接受 WCT，但只能走 legacy 一次性应用路径。"
+    },
+    {
+      "at": 15,
+      "quote": "Slog.w(TAG, \"Using shell transitions API for legacy transitions.\");",
+      "kind": "trace",
+      "text": "提示当前 shell transition 未启用、走兼容路径，用于排查为何没有转场动画。"
+    },
+    {
+      "at": 16,
+      "quote": "if (t == null) {",
+      "kind": "branch",
+      "text": "兼容模式下必须带 WCT，没有 WCT 就没有可应用的变更，无法模拟一次转场。"
+    },
+    {
+      "at": 17,
+      "quote": "throw new IllegalArgumentException(\"Can't use legacy transitions in\"",
+      "kind": "branch",
+      "text": "抛 IllegalArgumentException，Binder 层包成 RemoteException，调用方需自行处理。"
+    },
+    {
+      "at": 18,
+      "quote": "+ \" compatibility mode with no WCT.\");",
+      "kind": "trace",
+      "text": "异常文案点明兼容模式缺 WCT 不可用，只用于定位调用点，不参与控制流。"
+    },
+    {
+      "at": 20,
+      "quote": "applyTransaction(t, -1 /* syncId */,",
+      "kind": "state",
+      "text": "同步应用整个 WCT（syncId=-1），窗口层级在此刻真实变更；失败会抛 RuntimeException 传回 shell。"
+    },
+    {
+      "at": 21,
+      "quote": "mService.mChainTracker.startLegacy(\"wrongLegacyTransit\"), caller);",
+      "kind": "state",
+      "text": "legacy 链不绑定 Transition，只做看门狗记账；wrongLegacyTransit 标明这是兼容路径的误用来源。"
+    },
+    {
+      "at": 22,
+      "quote": "mService.mChainTracker.end();",
+      "kind": "state",
+      "text": "结束 ActionChain 会话；start/end 不配对会触发 improperly balanced 的 wtf 并清栈。"
+    },
+    {
+      "at": 23,
+      "quote": "return null;",
+      "kind": "branch",
+      "text": "兼容模式不产生 transition，返回 null 让 shell 走无转场流程；调用方拿不到 token。"
+    },
+    {
+      "at": 25,
+      "quote": "final WindowContainerTransaction wct =",
+      "kind": "data",
+      "text": "wct 为空时新建空事务，后续代码统一按非空处理，省掉满屏判空。"
+    },
+    {
+      "at": 26,
+      "quote": "t != null ? t : new WindowContainerTransaction();",
+      "kind": "data",
+      "text": "优先用调用方传入的事务，保证 shell 的一次性变更与 transition 启动在同一批操作里应用。"
+    },
+    {
+      "at": 27,
+      "quote": "if (transition == null) {",
+      "kind": "branch",
+      "text": "transition 为空即「新建 transition」分支；非空走下面的续跑分支，两者 ready 语义完全不同。"
+    },
+    {
+      "at": 28,
+      "quote": "if (type < 0) {",
+      "kind": "branch",
+      "text": "新建必须给合法 type；type<0 只允许续跑已有 transition，否则无法计算收集类型。"
+    },
+    {
+      "at": 29,
+      "quote": "throw new IllegalArgumentException(\"Can't create transition with no ty",
+      "kind": "branch",
+      "text": "抛 IllegalArgumentException 阻止生成非法 transition，避免后续动画与收集类型为空指针。"
+    },
+    {
+      "at": 31,
+      "quote": "// This is a direct call from shell, so the entire transition lifecycl",
+      "kind": "note",
+      "text": "源码注释：此路径由 shell 直接调用，整个生命周期都包在传入的 WCT 里。"
+    },
+    {
+      "at": 32,
+      "quote": "// contained in the provided transaction if provided. Thus, we can set",
+      "kind": "note",
+      "text": "源码注释续：因此 apply 之后可以立刻 setReady，不必等外部再通知一次。"
+    },
+    {
+      "at": 33,
+      "quote": "// immediately after apply.",
+      "kind": "note",
+      "text": "注释收尾；下面的 needsSetReady 就是据此推出的判据。"
+    },
+    {
+      "at": 34,
+      "quote": "final boolean needsSetReady = t != null;",
+      "kind": "data",
+      "text": "只有调用方给了 WCT 才需在 apply 后显式 setReady；空事务不改窗口状态，无需等待。"
+    },
+    {
+      "at": 35,
+      "quote": "final Transition nextTransition = new Transition(type, 0 /* flags */,",
+      "kind": "state",
+      "text": "构造新 Transition，flags=0，绑定当前 controller 与 BLASTSyncEngine；构造失败则整次调用抛异常。"
+    },
+    {
+      "at": 36,
+      "quote": "mTransitionController, mService.mWindowManager.mSyncEngine);",
+      "kind": "state",
+      "text": "syncEngine 用于把本次 transition 纳入 BLAST 同步集，SurfaceFlinger 事务据此合并。"
+    },
+    {
+      "at": 37,
+      "quote": "final Transition.ReadyCondition wctApplied = new Transition.ReadyCondi",
+      "kind": "state",
+      "text": "建 ready 条件作为「WCT 已应用」的等待项，只有 meet 之后 transition 才可能整体 ready。"
+    },
+    {
+      "at": 38,
+      "quote": "\"start WCT applied\", true /* newTrackerOnly */);",
+      "kind": "state",
+      "text": "newTrackerOnly=true 只在新建 tracker 上生效，避免被旧 tracker 历史状态误判为已完成。"
+    },
+    {
+      "at": 39,
+      "quote": "nextTransition.mReadyTracker.add(wctApplied);",
+      "kind": "state",
+      "text": "条件挂到 readyTracker；漏挂则 transition 永远 ready 不了，且没有任何日志提示。"
+    },
+    {
+      "at": 40,
+      "quote": "nextTransition.calcParallelCollectType(wct);",
+      "kind": "state",
+      "text": "按 WCT 内容算并行收集类型，决定本次 transition 能否与其他 transition 并行收集。"
+    },
+    {
+      "at": 41,
+      "quote": "nextTransition.mLogger.mFromPlayer = true;",
+      "kind": "trace",
+      "text": "标记该 transition 由 transition player（shell）发起，仅用于 protolog/dumpsys 归因。"
+    },
+    {
+      "at": 42,
+      "quote": "mTransitionController.startCollectOrQueueExternal(nextTransition,",
+      "kind": "state",
+      "text": "尝试立即收集或入队；返回 false 表示已排队，lambda 会等到真正开始收集时才回调。"
+    },
+    {
+      "at": 43,
+      "quote": "(deferred) -> {",
+      "kind": "note",
+      "text": "OnStartCollect 回调；deferred=true 表示迟些才开始收集，此时应用 WCT 必须走 deferred 变体。"
+    },
+    {
+      "at": 44,
+      "quote": "final ActionChain chain = mService.mChainTracker.start(",
+      "kind": "state",
+      "text": "为本段应用建立 startNewTransit 链，链绑定 nextTransition 供看门狗追踪。"
+    },
+    {
+      "at": 45,
+      "quote": "\"startNewTransit\", nextTransition);",
+      "kind": "state",
+      "text": "链名固定为 startNewTransit，dumpsys 与 ANR 报告里据此定位新建转场的应用阶段。"
+    },
+    {
+      "at": 46,
+      "quote": "nextTransition.start();",
+      "kind": "state",
+      "text": "正式启动 transition 进入 collecting；未启动就 apply，shell 会收到不可能的 finish 回调。"
+    },
+    {
+      "at": 47,
+      "quote": "nextTransition.mLogger.mStartWCT = wct;",
+      "kind": "trace",
+      "text": "记录起始 WCT 供 protolog 分析，仅在调试开关打开时有可忽略的开销。"
+    },
+    {
+      "at": 48,
+      "quote": "applyTransaction(wct, -1 /* syncId */, chain, caller, deferred);",
+      "kind": "state",
+      "text": "应用 WCT；deferred=true 时异常被吞掉（调用早已跨 looper 返回），但变更可能静默丢失。"
+    },
+    {
+      "at": 49,
+      "quote": "wctApplied.meet();",
+      "kind": "state",
+      "text": "meet 掉「WCT 已应用」条件，允许 transition 继续推进；漏掉会长期卡在 ready 之前。"
+    },
+    {
+      "at": 50,
+      "quote": "if (needsSetReady) {",
+      "kind": "branch",
+      "text": "仅当调用方传了 WCT 才补 setReady；空事务窗口状态未变，收尾交给 shell 自己。"
+    },
+    {
+      "at": 51,
+      "quote": "setAllReadyIfNeeded(nextTransition, wct);",
+      "kind": "state",
+      "text": "有启动 Activity 等未完成条件时 setAllReadyIfNeeded 内部直接 return，不会强行置 ready。"
+    },
+    {
+      "at": 53,
+      "quote": "mService.mChainTracker.end();",
+      "kind": "state",
+      "text": "结束链会话清栈；不 end 会触发 improperly balanced 告警，掩盖真正的不配对问题。"
+    },
+    {
+      "at": 54,
+      "quote": "}, canDropDuringDisplayChange(wct) /* noopIfDuringDisplayChange */);",
+      "kind": "data",
+      "text": "canDropDuringDisplayChange 为 true 时，若有 display 变更正在收集，本次可被 noop 掉防闪烁。"
+    },
+    {
+      "at": 55,
+      "quote": "return nextTransition.getToken();",
+      "kind": "state",
+      "text": "把新转场 token 返回给 shell，shell 后续用它 finishTransition；此处不暴露 transition 对象。"
+    },
+    {
+      "at": 57,
+      "quote": "// The transition already started collecting before sending a request ",
+      "kind": "note",
+      "text": "源码注释：token 分支的 transition 早已在请求 shell 前开始收集，这里只负责启动与 apply。"
+    },
+    {
+      "at": 58,
+      "quote": "// so just start here.",
+      "kind": "note",
+      "text": "注释收尾，说明为何下面的异常分支只记 failsafe 而不重建 transition。"
+    },
+    {
+      "at": 59,
+      "quote": "if (!transition.isCollecting() && !transition.isForcePlaying()) {",
+      "kind": "branch",
+      "text": "既不在 collecting 也非 forcePlaying，说明 shell 响应过慢或状态错乱，继续 start 会破坏 WM 状态。"
+    },
+    {
+      "at": 60,
+      "quote": "Slog.e(TAG, \"Trying to start a transition that isn't collecting. This ",
+      "kind": "trace",
+      "text": "Slog.e 明说 WM 状态可能已不正确并要求提 bug，便于线上发现这个竞态。"
+    },
+    {
+      "at": 61,
+      "quote": "+ \" means Shell took too long to respond to a request. WM State may be",
+      "kind": "trace",
+      "text": "日志续行，指出根因是 shell 花了太久才响应 startTransition 请求。"
+    },
+    {
+      "at": 62,
+      "quote": "+ \" incorrect now, please file a bug\");",
+      "kind": "trace",
+      "text": "日志收尾；该路径不做状态修复，只保证不崩溃、不产生非法转场。"
+    },
+    {
+      "at": 63,
+      "quote": "final ActionChain chain = mService.mChainTracker.startFailsafe(\"startT",
+      "kind": "state",
+      "text": "建 failsafe 链标记这次应用发生在错误时序，便于事后审计与告警。"
+    },
+    {
+      "at": 64,
+      "quote": "chain.detachTransition();",
+      "kind": "state",
+      "text": "detach 掉错误关联的 transition，防止 failsafe 链把后续 finish 记到别的转场上。"
+    },
+    {
+      "at": 65,
+      "quote": "applyTransaction(wct, -1 /*syncId*/, chain, caller);",
+      "kind": "state",
+      "text": "仍应用 WCT 以免 shell 的窗口变更丢失，但不推进 transition 状态机。"
+    },
+    {
+      "at": 66,
+      "quote": "mService.mChainTracker.end();",
+      "kind": "state",
+      "text": "结束 failsafe 链会话；未配对同样会触发 wtf 告警。"
+    },
+    {
+      "at": 67,
+      "quote": "return transition.getToken();",
+      "kind": "branch",
+      "text": "返回原 token，shell 会以为启动成功；该路径只记录不修复，可能留下半成品转场。"
+    },
+    {
+      "at": 69,
+      "quote": "// Currently, application of wct can span multiple looper loops (ie.",
+      "kind": "note",
+      "text": "源码注释：WCT 应用可能跨多个 looper 循环（如 waitAsyncStart），需要 ready 条件兜底。"
+    },
+    {
+      "at": 70,
+      "quote": "// waitAsyncStart), so add a condition to ensure that it finishes appl",
+      "kind": "note",
+      "text": "注释收尾，解释下面为何要建 wctApplied 条件。"
+    },
+    {
+      "at": 71,
+      "quote": "final Transition.ReadyCondition wctApplied;",
+      "kind": "data",
+      "text": "声明 ready 条件变量；t 为空时保持 null，后续每个使用点都必须判空。"
+    },
+    {
+      "at": 72,
+      "quote": "if (t != null) {",
+      "kind": "branch",
+      "text": "只有给了 WCT 才需等其应用完成；空事务不影响就绪判定，直接跳过。"
+    },
+    {
+      "at": 73,
+      "quote": "wctApplied = new Transition.ReadyCondition(\"start WCT applied\", false)",
+      "kind": "state",
+      "text": "newTrackerOnly=false 允许已有 tracker 也算入该条件，适配跨 looper 的延迟 apply。"
+    },
+    {
+      "at": 74,
+      "quote": "transition.mReadyTracker.add(wctApplied);",
+      "kind": "state",
+      "text": "挂到 readyTracker；漏挂则 apply 结束后 ready 判定看不到这次 WCT，转场无法收尾。"
+    },
+    {
+      "at": 75,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "else 分支：无 WCT 就不建条件，避免无谓拖延 ready。"
+    },
+    {
+      "at": 76,
+      "quote": "wctApplied = null;",
+      "kind": "data",
+      "text": "置 null 后下面两处 meet 都要判空，否则 NPE 会直接把 Binder 调用打挂。"
+    },
+    {
+      "at": 78,
+      "quote": "transition.mLogger.mStartWCT = wct;",
+      "kind": "trace",
+      "text": "记录起始 WCT 供 protolog，dumpsys 时能看到本次转场携带的具体变更。"
+    },
+    {
+      "at": 79,
+      "quote": "if (transition.shouldApplyOnDisplayThread()) {",
+      "kind": "branch",
+      "text": "含旋转等 display 变更时须在 display 线程应用，否则配置分发顺序错乱会导致闪屏。"
+    },
+    {
+      "at": 80,
+      "quote": "mService.mH.post(() -> {",
+      "kind": "thread",
+      "text": "投递到 WM Handler（display 线程）执行；Binder 线程随后立即返回 token，apply 变异步。"
+    },
+    {
+      "at": 81,
+      "quote": "synchronized (mService.mGlobalLock) {",
+      "kind": "lock",
+      "text": "handler 内重新取 mGlobalLock：切线程后原锁已释放，必须在锁内改窗口状态。"
+    },
+    {
+      "at": 82,
+      "quote": "final ActionChain chain = mService.mChainTracker.start(",
+      "kind": "state",
+      "text": "在 display 线程建 startTransit 链，链绑定同一 transition 保持看门狗归因一致。"
+    },
+    {
+      "at": 83,
+      "quote": "\"startTransit\", transition);",
+      "kind": "state",
+      "text": "链名 startTransit 会出现在 dumpsys 与 ANR 报告，用于识别异步应用阶段。"
+    },
+    {
+      "at": 84,
+      "quote": "transition.start();",
+      "kind": "state",
+      "text": "在 display 线程启动 transition；在错误线程调用会触发线程断言或状态不一致。"
+    },
+    {
+      "at": 85,
+      "quote": "applyTransaction(wct, -1 /* syncId */, chain, caller);",
+      "kind": "state",
+      "text": "异步路径不传 deferred，异常直接抛在 handler 线程，本次 WCT 应用失败且无人接住。"
+    },
+    {
+      "at": 86,
+      "quote": "if (wctApplied != null) {",
+      "kind": "branch",
+      "text": "wctApplied 可能为 null（调用方没给 WCT），此时无需 meet。"
+    },
+    {
+      "at": 87,
+      "quote": "wctApplied.meet();",
+      "kind": "state",
+      "text": "meet 掉应用条件，允许 transition 走向 ready；这是异步路径唯一解锁点。"
+    },
+    {
+      "at": 89,
+      "quote": "mService.mChainTracker.end();",
+      "kind": "state",
+      "text": "结束链会话保证栈平衡；异常路径不 end 会留下未闭合链。"
+    },
+    {
+      "at": 92,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "同步分支：已在正确线程或无需 display 变更，直接在当前线程 apply。"
+    },
+    {
+      "at": 93,
+      "quote": "final ActionChain chain = mService.mChainTracker.start(\"startTransit\",",
+      "kind": "state",
+      "text": "建 startTransit 链并绑定 transition，与异步分支保持同一套看门狗语义。"
+    },
+    {
+      "at": 94,
+      "quote": "transition);",
+      "kind": "state",
+      "text": "链名续行，标明这是同步启动路径。"
+    },
+    {
+      "at": 95,
+      "quote": "transition.start();",
+      "kind": "state",
+      "text": "同步启动 transition 进入 collecting；此后 shell 可继续下发 WCT 或 finish。"
+    },
+    {
+      "at": 96,
+      "quote": "applyTransaction(wct, -1 /* syncId */, chain, caller);",
+      "kind": "state",
+      "text": "同步应用 WCT，异常向上抛给调用方，由 Binder 层转成 RemoteException。"
+    },
+    {
+      "at": 97,
+      "quote": "if (wctApplied != null) {",
+      "kind": "branch",
+      "text": "再次判空，覆盖 t==null 即只启动转场、无窗口变更的调用。"
+    },
+    {
+      "at": 98,
+      "quote": "wctApplied.meet();",
+      "kind": "state",
+      "text": "meet 应用条件，避免 transition 因等待一个不存在的 WCT 而永不 ready。"
+    },
+    {
+      "at": 100,
+      "quote": "mService.mChainTracker.end();",
+      "kind": "state",
+      "text": "结束链会话清栈；同步路径的异常会在 finally 恢复身份后继续抛出。"
+    },
+    {
+      "at": 102,
+      "quote": "// Since the transition is already provided, it means WMCore is determ",
+      "kind": "note",
+      "text": "源码注释：token 已由外部提供，就绪生命周期由 WMCore 在 WCT 之外决定。"
+    },
+    {
+      "at": 103,
+      "quote": "// \"readiness lifecycle\" outside the provided transaction, so don't se",
+      "kind": "note",
+      "text": "注释收尾：所以这里不调 setAllReady，把 ready 交给后续 finishTransition。"
+    },
+    {
+      "at": 104,
+      "quote": "return transition.getToken();",
+      "kind": "state",
+      "text": "返回同一个 token；调用方据此继续 polish/finish，token 不匹配就无法结束转场。"
+    },
+    {
+      "at": 107,
+      "quote": "Binder.restoreCallingIdentity(ident);",
+      "kind": "ipc",
+      "text": "在 finally 恢复 Binder 身份，防止锁内 return 后本线程残留 system 身份。"
+    }
+  ]
+}

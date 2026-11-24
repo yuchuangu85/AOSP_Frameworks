@@ -1,0 +1,44 @@
+{
+  "step": "s34",
+  "title": "分支：buffer 被替换",
+  "tldr": "队尾那帧可丢弃时，queueBuffer 用新帧原位顶掉它：旧帧从未上屏，buffer 立刻回 free 列表。",
+  "why": "这条分支解释最难查的一类现象：日志里每一帧 queue 都成功、帧号连续递增、SF 的 present 记录也一帧不少，可中间那帧的内容从没出现在屏幕上——因为它被新帧覆盖在队列里，从未被 acquire。不知道这条路径，就会去怀疑 SF 合成漏帧或 GPU 花屏。反过来说，异步生产者与虚拟显示又确实靠它做背压：不允许替换，producer 就只能阻塞在 dequeue 上，把显示侧的慢速直接传染给采集或投屏的一方。",
+  "concepts": [
+    { "term": "mIsDroppable", "text": "入队时打在 item 上的标记；只有 async 或共享 buffer 时才为 true。" },
+    { "term": "bufferReplaced", "text": "QueueBufferOutput 里的布尔和帧号，说明这一帧顶掉了哪一帧。" },
+    { "term": "onFrameReplaced", "text": "替换发生时取代 onFrameAvailable 的消费者回调；BLAST 的实现是空函数。" },
+    { "term": "mQueueBufferCanDrop", "text": "连接时按 dequeueTimeout 定；BBQ 设成 INT64_MAX，于是恒为 false。" }
+  ],
+  "walk": [
+    { "call": "status_t err = mGraphicBufferProducer->queueBuffer(slot, igbpInput, &igbpOutput);", "ref": "native/libs/gui/Surface.cpp:1386", "what": "RT 侧唯一出口，锁已经主动放掉（1378-1385 的注释解释为什么必须放）。" },
+    { "call": "if (igbpOutput.bufferReplaced) {", "ref": "native/libs/gui/Surface.cpp:1390", "what": "回到 Surface 后唯一处理替换的地方：只记帧号，不做任何补救。" },
+    { "call": "mLastReplacedFrameId = igbpOutput.bufferReplacedFrameId;", "ref": "native/libs/gui/Surface.cpp:1391", "what": "留一个 optional 帧号，只能通过 ANativeWindow query 读走。" },
+    { "call": "if (last.mIsDroppable) {", "ref": "native/libs/gui/BufferQueueProducer.cpp:1159", "what": "替换的前提：队列尾部那一帧在入队时被打上了可丢弃。" },
+    { "call": "mCore->mFreeBuffers.push_back(last.mSlot);", "ref": "native/libs/gui/BufferQueueProducer.cpp:1174", "what": "旧 buffer 立刻回 free 列表，不等任何 fence，也从未交给消费者。" },
+    { "call": "output->bufferReplaced = true;", "ref": "native/libs/gui/BufferQueueProducer.cpp:1175", "what": "与 bufferReplacedFrameId 一起置位；外层还要求旧 slot 不是 shared。" },
+    { "call": "item.mSurfaceDamage |= last.mSurfaceDamage;", "ref": "native/libs/gui/BufferQueueProducer.cpp:1186", "what": "被顶掉那帧的 damage 必须合并进新帧，否则那块区域永远不重画。" },
+    { "call": "mCore->mQueue.editItemAt(mCore->mQueue.size() - 1) = item;", "ref": "native/libs/gui/BufferQueueProducer.cpp:1190", "what": "原位覆盖，队列长度不变——所以消费者侧看不到「多了一帧」。" },
+    { "call": "frameReplacedListener->onFrameReplaced(item);", "ref": "native/libs/gui/BufferQueueProducer.cpp:1272", "what": "取代 onFrameAvailable 的回调；走的是 else-if，二者不会同时触发。" },
+    { "call": "void BLASTBufferQueue::onFrameReplaced(const BufferItem& item)", "ref": "native/libs/gui/BLASTBufferQueue.cpp:872", "what": "BLAST 的实现什么也不做，注释说它不缓存未 acquire 的 item。" }
+  ],
+  "state": [
+    { "field": "QueueBufferOutput.bufferReplaced / bufferReplacedFrameId", "before": "false / 0（BufferQueueProducer.cpp:1145 先置假）", "after": "true / 被顶掉那一帧的 frameNumber（1175-1176）", "note": "只在队列尾可丢弃且非 shared 时才变 true" },
+    { "field": "mSlots[last.mSlot].mBufferState", "before": "queued", "after": "free，并进入 mFreeBuffers（1162 freeQueued + 1174）", "note": "这块 buffer 从未上屏，但立刻可以被 producer 再 dequeue" },
+    { "field": "BufferQueueCore 的 mQueue", "before": "长度 n，尾部可丢弃", "after": "长度仍是 n，尾部换成新 item（1190）", "note": "长度不变，是 SF 侧完全看不到这一帧的直接原因" },
+    { "field": "Surface::mLastReplacedFrameId", "before": "nullopt", "after": "被替换的帧号（1391；批量路径 1557）", "note": "只有 query NATIVE_WINDOW_GET_LAST_REPLACED_FRAME_ID 能读到（Surface.cpp:2060）" }
+  ],
+  "threads": "在 RenderThread 上：Surface::queueBufferImpl 先放掉 Surface::mMutex 再调 producer->queueBuffer（1386），后者持 BufferQueueCore::mMutex 完成替换，然后在 mCallbackMutex 下回调 onFrameReplaced。BLASTBufferQueue 的 onFrameReplaced 是空实现（872-875），因此 app 侧没有任何线程被这次替换唤醒，SF 侧也没有对应事务。",
+  "pitfalls": [
+    "标准 app + BLAST 路径基本走不到这条分支：BBQ 在 initialize 里把 dequeueTimeout 设成 INT64_MAX（BLASTBufferQueue.cpp:200），connect 时 mQueueBufferCanDrop 因此为 false（BufferQueueProducer.cpp:1521），setAsyncMode 只被虚拟显示用（SurfaceComposerClient.cpp:2431/2451），所以 mIsDroppable 恒 false（1108-1127）。真正命中的是虚拟显示/异步生产者与共享 buffer 模式，不是普通窗口。",
+    "命中也没有消费者痕迹：onFrameReplaced 是空函数（BLASTBufferQueue.cpp:872-875），不会像 onFrameAvailable 那样把帧推成 Transaction，SF 的事务列表里根本没有这一帧。",
+    "bufferReplaced 不等于「内容丢了」：damage 被合并进新帧（1182-1187），屏幕变化不会缺；丢掉的只是那一帧的中间状态。",
+    "hwui 的 EGL / Vulkan 路径都不读 mLastReplacedFrameId：Surface.cpp:1390 只把它存在 Surface 内部，perfetto 里不会出现任何 replaced 标记。要确认只能走 query（Surface.cpp:2060，或 system/window.h:1002 的 ANativeWindow_getLastReplacedFrameId），返回 NOT_ENOUGH_DATA 表示还没替换过。",
+    "批量路径是另一条：Surface::queueBuffers 只检查 last 输出的 bufferReplaced（1556-1557），逐条输出则在 1573-1576 分别填，别只对着一处看。"
+  ],
+  "debug": [
+    "打开 BufferQueue 的 verbose 日志，找「queueBuffer: buffer replaced in queue since last was droppable」（BufferQueueProducer.cpp:1192-1194），同时能看到 slot 号；Surface 侧对应 queueBuffer 返回值仍是 NO_ERROR。",
+    "adb shell dumpsys SurfaceFlinger --list 拿 layer 名，再 --latency <layer> 看三列：被替换的帧只有 desired、没有 actual present 记录，这是最直接的证据。",
+    "在客户端代码里读 ANativeWindow_getLastReplacedFrameId（native/libs/nativewindow/include/system/window.h:1002 → Surface.cpp:2060）：返回 NOT_ENOUGH_DATA 表示从未替换过，否则返回值就是被顶掉的帧号。"
+  ],
+  "next": "第 35 步「分支：Vulkan 路径」——同一条 swap 语义换到 Vulkan 后端，requireSwap 与 fence 时机都不一样。"
+}

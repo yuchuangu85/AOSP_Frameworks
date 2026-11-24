@@ -1,0 +1,49 @@
+{
+  "step": "s20",
+  "title": "BLASTBufferQueue::onFrameAvailable：app 侧消费者回调",
+  "tldr": "记进 shadow 队列，再分三路：sync 事务、等旧回调、正常 acquire 后立刻 apply。",
+  "why": "没有这一步，queueBuffer 只是在 app 进程里入了个队：没有 Transaction，buffer 永远到不了 SurfaceFlinger，屏幕一帧都不会更新。更关键的是它决定「合并还是立刻交」：如果无脑每帧 acquire+apply，SF 每帧要处理一串事务，动画帧精确对齐就没了；如果漏掉 sync 事务的等待分支，BLAST 的 sync 语义会破，窗口动画会出现错位或丢帧。同时这里也是 app 侧主动丢帧的唯一位置。",
+  "concepts": [
+    { "term": "shadow queue（mNumFrameAvailable）", "text": "BLAST 自己记的「已 queue 未 acquire」帧数，涨到 2 就主动丢一帧。" },
+    { "term": "sync transaction", "text": "syncNextTransaction 交进来的事务：这一帧的 buffer 必须写进去，并由 SF 收到后回调。" },
+    { "term": "mSyncedFrameNumbers", "text": "已被 sync 事务占用、还没被 SF 结清的帧号集合；非空说明上一拍 sync 还挂着。" },
+    { "term": "mCallbackCV", "text": "BLAST 的条件变量：等空 buffer、等 shadow 队列清空都在它上面睡，睡时放掉 mMutex。" },
+    { "term": "mTransactionReadyCallback", "text": "sync 路径出锁后要交回给调用方的回调；只有 mAcquireSingleBuffer 时才被清空并触发。" }
+  ],
+  "walk": [
+    { "call": "void BLASTBufferQueue::onFrameAvailable(const BufferItem& item)", "ref": "native/libs/gui/BLASTBufferQueue.cpp:779", "what": "由 ConsumerBase 在 queueBuffer 里同步调进来，item 就是刚入队那一帧。" },
+    { "call": "UNIQUE_LOCK_WITH_ASSERTION(mMutex);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:784", "what": "整段持 BLAST 的 mMutex，所有 wait 都会临时放锁再睡。" },
+    { "call": "bool waitForTransactionCallback = !mSyncedFrameNumbers.empty();", "ref": "native/libs/gui/BLASTBufferQueue.cpp:786", "what": "上一拍 sync 还没结清，这一帧只能被丢掉或并进去。" },
+    { "call": "const bool syncTransactionSet = mTransactionReadyCallback != nullptr;", "ref": "native/libs/gui/BLASTBufferQueue.cpp:788", "what": "这一帧是否属于某个 sync 事务，后面的分支全靠它分叉。" },
+    { "call": "auto bufferData = mSyncTransaction->getAndClearBuffer(mSurfaceControl);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:796", "what": "sync 事务里旧 buffer 先换出来并立刻 release，抢一个空 slot 再往下走。" },
+    { "call": "while (mNumFrameAvailable > 0) { acquireAndReleaseBuffer(); }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:812", "what": "等旧回调时把 shadow 队列里的帧全部 acquire 完再 release，等于主动丢帧。" },
+    { "call": "while (mNumFrameAvailable > 0) { mCallbackCV.wait(_lock); }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:821", "what": "sync 前必须清空 shadow 队列，否则等不到「刚到的这帧」。" },
+    { "call": "mNumFrameAvailable++;", "ref": "native/libs/gui/BLASTBufferQueue.cpp:829", "what": "登记这一帧；之后 acquire 成功才减回去（acquireNextBufferLocked 610）。" },
+    { "call": "if (waitForTransactionCallback && mNumFrameAvailable >= 2) { acquireAndReleaseBuffer(); }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:830", "what": "两帧在飞就丢掉最老的一帧，避免 shadow 队列无限涨。" },
+    { "call": "mSyncedFrameNumbers.emplace(item.mFrameNumber);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:844", "what": "先登记再等 buffer：避免等的过程中被 release 回调把帧抢走。" },
+    { "call": "while (acquireNextBufferLocked(mSyncTransaction) == BufferQueue::NO_BUFFER_AVAILABLE) { mCallbackCV.wait(_lock); }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:847", "what": "sync 路径必须拿到 buffer，没有就睡——这是 RT 上第二个无超时等待点。" },
+    { "call": "->addTransactionCommittedCallback(makeTransactionCommittedCallbackThunk(), nullptr);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:855", "what": "确认这块 buffer 真被 SF commit 后才回调，sync 的语义就靠它落地。" },
+    { "call": "acquireNextBufferLocked(std::nullopt);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:864", "what": "正常路径：自己造事务、写 buffer、立刻 apply，不等任何回调。" },
+    { "call": "prevCallback(prevTransaction);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:868", "what": "出锁之后才把 sync 事务交给调用方，避免持锁时重入。" }
+  ],
+  "state": [
+    { "field": "mNumFrameAvailable", "before": "n", "after": "n+1（829），或先丢一帧后仍是 n（830–832）", "note": "它是 shadow 队列长度，不是 BufferQueue 的 mQueue" },
+    { "field": "mSyncedFrameNumbers", "before": "可能为空", "after": "含本帧 frameNumber（844）", "note": "release/commit 时擦除（553）" },
+    { "field": "mNumAcquired", "before": "k", "after": "k+1（acquireNextBufferLocked 628）", "note": "上限 mMaxAcquiredBuffers+2（578）" },
+    { "field": "mTransactionReadyCallback / mSyncTransaction", "before": "非空（sync 模式）", "after": "nullptr（857–861）", "note": "只在 mAcquireSingleBuffer 时清，并把旧值交给 prevCallback" },
+    { "field": "mPendingRelease", "before": "r", "after": "release 回调里追加（releaseBuffer 路径）", "note": "ATRACE_INT PendingRelease（534）可直接观测" }
+  ],
+  "threads": "跑在 RenderThread 上（queueBuffer 的同步回调），持 BLAST 的 mMutex。此时 BufferQueueProducer 已放掉 mCore->mMutex，但仍持 mCallbackMutex（BufferQueueProducer.cpp:1264），所以这里任何一次 wait 都会同时卡住 RT 和这条队列的后续回调。sync 路径的 while+wait（847）没有超时，SF 迟迟不还 buffer 时表现为 onFrameAvailable slice 极长。",
+  "pitfalls": [
+    "sync 分支的 while + mCallbackCV.wait（847–850）无超时：SF 不 release 就一直睡在 RT 上。perfetto 里看到的是 onFrameAvailable 拉长，而不是 queueBuffer 拉长——按 queueBuffer 找会找不到原因。",
+    "mNumFrameAvailable>=2 时的 acquireAndReleaseBuffer（830–832）是主动丢帧：丢的是队列里最老的一帧，日志只有 BQA_LOGV，表现出来像「SF 少收到一帧」。",
+    "sync 事务路径下不 apply（applyTransaction=false，595）：事务由调用方 flush，在这里翻 Transaction::apply 是找不到的，别据此判断 BLAST 没提交。",
+    "回调的同步性依赖 consumer 在本地：BLAST 用同进程的 createBufferQueue（190），所以没有 binder 跳转；SF 侧的 BLAST 队列与 app 侧行为不同，结论不能直接搬。"
+  ],
+  "debug": [
+    "perfetto 搜 slice 名 onFrameAvailable - <layer>(f:N,a:M)（BBQ_TRACE，785/836）：括号里就是 shadow 与 acquire 计数，能直接看出丢帧与积压。",
+    "atrace 里的 ATRACE_INT(QueuedBuffer - <name>BLAST#<id>)（833–834，trace 名在 initialize 里拼）曲线等于 mNumFrameAvailable + mNumAcquired - mPendingRelease。",
+    "dumpsys SurfaceFlinger --latency 对比 frameNumber 与 present 时间：连续帧号但有空洞就是这里丢的，不是 SF 丢的。"
+  ],
+  "next": "第 21 步「acquireNextBufferLocked」：从 BufferQueue 取出一条 BufferItem（连 acquire fence），准备写进 Transaction。"
+}

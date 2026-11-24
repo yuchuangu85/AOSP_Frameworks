@@ -1,0 +1,38 @@
+{
+  "step": "s28",
+  "title": "给 SyncSet 挂超时：卡住的兜底",
+  "tldr": "syncSet 一开就排延时消息：到点还没画完就不等了，把已有事务合并上屏。",
+  "why": "参与者可能永远画不完：App 进程还没 fork 出来、主线程被前一个 ANR 卡住、SurfaceView 卡在 GPU。没有超时，这个 syncId 会一直是 active：被它拦住的 mSyncTransaction 都不提交，屏幕停在旧的一帧；更糟的是 hasActiveSync() 一直为 true，createAndStartCollecting 对后续每个请求都返回 null（1819），用户感知是「点了没反应」，而且一次卡住会连锁到之后所有转场。",
+  "concepts": [
+    { "term": "mOnTimeout", "text": "SyncGroup 构造时绑好的 Runnable，只负责抢 mGlobalLock 再调 onTimeout。" },
+    { "term": "readiness timeout", "text": "容器都画完了却没人 setReady 的情况，日志会单独报 timed-out because not ready。" },
+    { "term": "mIsTimedOut", "text": "超时后置 true；只在指标上报里用到（2941），把原因记成 APP_TRANSITION_TIMEOUT。" }
+  ],
+  "walk": [
+    { "call": "scheduleTimeout(s, timeoutMs);", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:521", "what": "startSyncSet 的最后一步：sync 刚 active 就把超时排上，没有「等稳定了再排」。" },
+    { "call": "mHandler.postDelayed(s.mOnTimeout, timeoutMs);", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:539", "what": "定时落在 WMS 的 mHandler 上；timeoutMs 由 Transition 传进来（2s 或 5s）。" },
+    { "call": "synchronized (mWm.mGlobalLock) {", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:156", "what": "到点后先抢锁再处理，避免和正在进行的布局并发改窗口树。" },
+    { "call": "if (!mActiveSyncs.contains(this)) return;", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:409", "what": "已经 finish 的 group 直接退出，重复的延时消息在这里被丢掉。" },
+    { "call": "mListener.onSyncGroupTimeout(isReadinessTimeout);", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:455", "what": "通知 Transition：超时了；Transition 侧只置 mIsTimedOut（4425）。" },
+    { "call": "finishNow();", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:456", "what": "不等了：合并已有事务、强制 finishSync 没画完的容器，然后回调 onTransactionReady。" },
+    { "call": "transition.mType == TRANSIT_CHANGE ? CHANGE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:446", "what": "超时时长的来源：CHANGE 2000ms，其余 5000ms（TC:122-124）。" }
+  ],
+  "state": [
+    { "field": "Transition.mIsTimedOut", "before": "false", "after": "true", "note": "Transition:4425，全代码唯一的写入点" },
+    { "field": "SyncGroup.mRootMembers 的 sync 状态", "before": "部分容器停在 SYNC_STATE_WAITING_FOR_DRAW", "after": "全部清回 SYNC_STATE_NONE", "note": "finishNow→finishSync:3503" },
+    { "field": "BLASTSyncEngine.mActiveSyncs", "before": "含本 group", "after": "移除（293）", "note": "hasActiveSync() 变 false，排队的 sync 才会接着启动（297-310）" }
+  ],
+  "threads": "定时器是 WMS 的 mHandler（主线程）；mOnTimeout 先 synchronized (mWm.mGlobalLock) 再干活，所以 onTimeout→finishNow→Transition.onTransactionReady 整条链都在持锁状态下跑。",
+  "pitfalls": [
+    "超时不等于取消：finishNow 之后 onTransactionReady 照常执行，mState 被写成 PLAYING（Transition:2096），没画完的容器按当前状态收编——动画可能缺一层，但不会没有。",
+    "超时早于 Shell 回传 startTransition 时，状态会从 COLLECTING 直接跳 PLAYING，只在 Transition:2091-2094 打一行 error 就继续；之后 Shell 再调 start() 也只 warn（Transition:883-887）。",
+    "还有第二个超时：事务发出去后等 SF commit 回调（283，BLAST_TIMEOUT_DURATION=5000，WindowState:777），日志是 never received commit callback. Application ANR likely to follow.（263-265），两者含义完全不同。",
+    "onTimeout 只看 mActiveSyncs.contains(this)（409）：group 已经 finish 后残留的延时消息什么也不做，也不会泄漏。"
+  ],
+  "debug": [
+    "adb logcat -s BLASTSyncEngine 看 Sync group <id> timeout（155）与 Unfinished container: ...（419），后者会逐窗口打出 syncState 和 drawState（430-432），是最直接的定位线索。",
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_SYNC_ENGINE，看 tryFinish 里的 Unfinished container / Unfinished dependencies（203-213）。",
+    "perfetto 里搜 slice onTransactionCommitTimeout（262）：出现就说明连 commit 回调都没等到，App 侧大概率要 ANR。"
+  ],
+  "next": "第 7 步「把 WindowContainer 收进 SyncSet」：兜底排好了，接下来决定谁参与、从什么状态开始。"
+}

@@ -1,0 +1,95 @@
+{
+  "step": "s13",
+  "title": "合并事务并回调 listener",
+  "tldr": "把整组容器攒下的 sync 事务并成一笔，挂一个「SF 真 commit 了没」的守护，再把 (syncId, merged) 交给 Transition。",
+  "why": "不合并，每个容器各自一笔事务上屏，Shell 拿到的 startT 只是其中一笔：动画面板里一部分窗口已经在新位置、另一部分还在旧位置，动画第一帧就错位；而且没有统一的事务对象，Shell 的 finishT 也没法保证跟 startT 在同一帧生效。回调发不出去，链路直接断在这里：Transition.onTransactionReady 不被调用，mStartTransaction 永远是 null，最后只能等 SyncSet 超时把事务硬 apply——用户看到的是没有动画的一次跳变，中间还夹一帧黑。",
+  "concepts": [
+    {
+      "term": "merged transaction",
+      "text": "把每个容器的 mSyncTransaction 递归 merge 进来的一笔大事务，就是 Shell 拿到的 startT。"
+    },
+    {
+      "term": "TransactionCommittedListener",
+      "text": "SF 真正把事务 commit 到屏幕后触发的回调；这里用它确认「已上屏」，而不是「已发出」。"
+    },
+    {
+      "term": "orphan transaction",
+      "text": "同步期间整棵子树被移除时，那些没主的操作兜到这里，最后也并进 merged，防止丢操作。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "private void finishNow() {",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:219",
+      "what": "tryFinish 通过后进来；超时（onTimeout）和 abort 也走这里，所以它必须容忍「还没画完」。"
+    },
+    {
+      "call": "SurfaceControl.Transaction merged = mWm.mTransactionFactory.get();",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:224",
+      "what": "开一笔空事务当聚合容器，先把 orphan 操作并进来。"
+    },
+    {
+      "call": "wc.finishSync(merged, this, false /* cancel */);",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:277",
+      "what": "逐根成员递归：子树的 mSyncTransaction 并进 merged，并把 mSyncState 复位。"
+    },
+    {
+      "call": "merged.addTransactionCommittedListener(Runnable::run,",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:281",
+      "what": "给合并事务挂 commit 监听：SF 真上屏之后才回调 onCommitted。"
+    },
+    {
+      "call": "mHandler.postDelayed(callback, BLAST_TIMEOUT_DURATION);",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:283",
+      "what": "兜底：时限内没收到 commit 就自己 apply，并打「Application ANR likely」预警。"
+    },
+    {
+      "call": "mListener.onTransactionReady(mSyncId, merged);",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:291",
+      "what": "回调 listener（就是 Transition）；调用外面包着一段名为 onTransactionReady 的 trace。"
+    },
+    {
+      "call": "mActiveSyncs.remove(this);",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:293",
+      "what": "从活跃集合摘掉；若有排队中的 sync 立刻启动下一个。"
+    }
+  ],
+  "state": [
+    {
+      "field": "WindowContainer.mSyncState",
+      "before": "SYNC_STATE_READY 或 WAITING_FOR_DRAW",
+      "after": "SYNC_STATE_NONE",
+      "note": "finishSync 里复位（WindowContainer.java:3503），容器从此刻起重新接受普通事务"
+    },
+    {
+      "field": "WindowContainer.mSyncGroup",
+      "before": "指向本 SyncGroup",
+      "after": "null",
+      "note": "不复位的话该容器的下一笔事务会继续被旧 sync 拦住"
+    },
+    {
+      "field": "merged（新建的 SurfaceControl.Transaction）",
+      "before": "空事务",
+      "after": "整组容器的 show/reparent/layer/alpha 操作 + orphan 操作",
+      "note": "最终成为 Transition.mStartTransaction"
+    },
+    {
+      "field": "BLASTSyncEngine.mActiveSyncs",
+      "before": "含本 sync",
+      "after": "不含；mPendingSyncSets 非空则立刻 startSync 下一个",
+      "note": "队列按启动时间顺序排"
+    }
+  ],
+  "threads": "同步跑在 WMS 的 surface placement 线程上（finishNow 由 tryFinish 直接调用），持 mGlobalLock；只有 :283 的 postDelayed 超时回调稍后在 wms.mH 上跑，再自己进 mGlobalLock。",
+  "pitfalls": [
+    "finishNow 也会被 onTimeout 和 abort 调用，所以「走到 finishNow」不等于「参与者都画完了」；区分看是不是从 tryFinish:215 进来的。",
+    "回调是持锁同步发出的：Transition.onTransactionReady 的工作全部算在 surface placement 这一趟里，它慢就直接拖慢这一帧。",
+    "onTransactionReady 早、commit 晚：commit 回调可能迟到甚至超时，别把「已回调 listener」当成「已上屏」。"
+  ],
+  "debug": [
+    "adb shell dumpsys window 搜 \"WM sent Transaction\"（超时日志）定位哪一笔事务没收到 commit",
+    "ProtoLog WM_DEBUG_SYNC_ENGINE：\"SyncGroup %d: Finished!\"",
+    "perfetto: 对比 \"onTransactionReady\" slice 与 \"<syncName>#<id>-committed\" instant 的间隔"
+  ],
+  "next": "合并好的事务马上要变成 startT，先补上可见性 → 第 18 步「提交可见性：先让窗口『该显示就显示』」。"
+}

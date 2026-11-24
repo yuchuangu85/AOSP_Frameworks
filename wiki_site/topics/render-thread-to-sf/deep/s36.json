@@ -1,0 +1,44 @@
+{
+  "step": "s36",
+  "title": "诊断：atrace / dumpsys / perfetto",
+  "tldr": "atrace 抓切片，dumpsys 看每帧，perfetto 对齐三端时间线。",
+  "why": "前面 35 步里，每一段都可能成为瓶颈，而它们的症状都是「掉帧」：UI 采集慢、RT 同步慢、GPU 慢、等 release、SF 合成慢、HWC present 慢。没有这条观测链，只能靠猜——看到卡顿就去改 damage 或怀疑 GPU，代价是几轮无效修改。可观测的点一旦固定下来，判断就变成机械动作：先看 UI 线程有没有 Delay，再看 RT 的 DrawFrames 与 Drawing 之间差多少，再看 queueBuffer 到 SF onCompositionPresented 隔了几拍，最后看 latch 等 fence 的时间。把这条链走顺，才有资格谈优化。",
+  "concepts": [
+    { "term": "atrace 分类与 app 级 tracing", "text": "gfx、view、sched 三类要一起抓，-a 包名才含 app 进程内的点。" },
+    { "term": "SFTRACE", "text": "SurfaceFlinger 侧 trace 宏，tag 是 gfx，与 app 切片在同一条时间轴。" },
+    { "term": "FrameTimeline", "text": "SF 维护的帧时间线，把 app 的 vsyncId 与 SF 的 present 关联起来。" },
+    { "term": "dumpsys --latency", "text": "按 layer 输出 desired/actual/ready 三列，看这一帧何时上屏。" }
+  ],
+  "walk": [
+    { "call": "ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId)", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:91", "what": "RT 一帧的总切片，名字里带 vsyncId，perfetto 里可以直接拿它对齐 SF 的帧。" },
+    { "call": "ATRACE_CALL();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:170", "what": "syncFrameState 切片：从 DrawFrames 开始到它结束，就是 RT 同步 UI 状态的耗时。" },
+    { "call": "ATRACE_FORMAT(\"Drawing \" RECT_STRING, SK_RECT_ARGS(dirty))", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:736", "what": "回放+提交的切片，名字里带 damage 矩形；没有这个切片就说明这一帧被跳过了。" },
+    { "call": "ATRACE_FORMAT(\"frameTimelineInfo(frameNumber=%llu, vsyncId=%lld, inputEventId=0x%\" PRIx32 \")\", frameCompleteNr, vsyncId, inputEventId)", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:757", "what": "instant 事件，把 frameNumber 与 vsyncId 写进 trace。" },
+    { "call": "ATRACE_CALL();", "ref": "native/libs/gui/Surface.cpp:1482", "what": "Surface::queueBuffer 切片，给出交 buffer 的耗时。" },
+    { "call": "ATRACE_CALL();", "ref": "native/libs/gui/BLASTBufferQueue.cpp:1304", "what": "waitForBufferRelease 切片：出现在 RT 线程上就说明卡在等 buffer，不是卡在画。" },
+    { "call": "SFTRACE_FORMAT_INSTANT(\"latchBuffer %s - %\" PRIu64, getDebugName(), getDrawingState().frameNumber)", "ref": "native/services/surfaceflinger/Layer.cpp:1509", "what": "每层 latch 的 instant 事件，带上 layer 名与帧号。" },
+    { "call": "SFTRACE_CALL();", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3778", "what": "onCompositionPresented 切片：从 present 开始到 release 发完，全在这一段里。" },
+    { "call": "{\"--latency\"s, argsMainThreadDumper(&SurfaceFlinger::dumpStats)}", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:6675", "what": "--latency <layer> 的入口，落到 dumpStats（6731）。" },
+    { "call": "{\"--frametimeline\"s, argsDumper(&SurfaceFlinger::dumpFrameTimeline)}", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:6671", "what": "配 -jank / -all 用，解析在 FrameTimeline::parseArgs（2257）。" }
+  ],
+  "state": [
+    { "field": "atrace 打开的分类", "before": "未启用", "after": "gfx + view + sched + app 级（-a <包名>）", "note": "少了 gfx 就看不到 RT/SF 的切片，少了 -a 就看不到 app 进程内的点" },
+    { "field": "Layer::mFrameStatsHistorySize", "before": "0（刚 clear 或层刚创建）", "after": "随 present 递增（Layer.cpp:1502）", "note": "--latency 输出的行数由它决定，刚 clear 过就是空的" },
+    { "field": "FrameTimeline 的 SF present 记录", "before": "无本帧", "after": "setSfPresent 写入 presentTime 与 present fence（SurfaceFlinger.cpp:3822）", "note": "--frametimeline -jank 用的就是这批数据" }
+  ],
+  "threads": "抓取本身不改变时序：atrace/perfetto 通过 per-CPU buffer 收集，trace 点分别打在三类线程上——app 的 UI 线程（Choreographer/doFrame，view 分类）、app 的 RenderThread（DrawFrames/Drawing/queueBuffer）、surfaceflinger 主线程（onCompositionPresented/latchBuffer）。对齐时要按线程看，不能只看总时长：同一帧在三个线程上是三段串联的区间。",
+  "pitfalls": [
+    "只抓 gfx 会缺一半：app 的 view 分类（UI 线程 doFrame）与 sched 分类（调度延迟）必须一起抓，否则「掉帧是 UI 慢还是 RT 慢」这种判断做不出来。atrace 的三个分类见 atrace.cpp:103/107/131。",
+    "trace 切片名不等于函数名：DrawFrames 带 vsyncId 后缀（DrawFrameTask.cpp:91），Drawing 带矩形后缀（736），直接搜「CanvasContext::draw」在 perfetto 里搜不到。",
+    "dumpsys --latency 只对已存在的 layer 名生效：名字要先从 --list（SurfaceFlinger.cpp:6677）取，而且要用 SF 侧的 layer 名（通常带包名/Activity 前缀），传错名字输出是空的。",
+    "--latency 的三列来自 FrameTimeline 而不是原始 fence 数组（Layer.cpp:623 的 dumpFrameStats 调 generateFrameStats），所以它只在 FrameTimeline 有记录时才有内容；刚 clearStats 过会看不到历史。",
+    "把「静止界面没有 buffer 流量」当异常：debug.hwui.skip_empty_damage 默认是 true（Properties.h:109 / Properties.cpp:134），静止时 RT 本来就不 swap（第 33 步）。"
+  ],
+  "debug": [
+    "adb shell atrace -a <包名> -t 5 gfx view sched：抓 5 秒，重点看 RenderThread 线程上的 DrawFrames / Drawing / queueBuffer / waitForBufferRelease，以及 UI 线程上的 doFrame；-a 的作用见 atrace.cpp:1093 的帮助文本。",
+    "adb shell dumpsys SurfaceFlinger --list 取 layer 名，再 adb shell dumpsys SurfaceFlinger --latency <layer>：每行三列 desiredPresent / actualPresent / frameReady（格式在 Layer.cpp:631），实际 present 迟于 desired 就是掉帧。",
+    "adb shell dumpsys SurfaceFlinger --frametimeline -jank：单帧 jank 归因（AppDeadlineMissed / SurfaceFlingerDeadlineMissed / DroppedFrame 等），比在 trace 里肉眼比时间准。",
+    "验证跳帧：adb shell setprop debug.hwui.skip_empty_damage false（Properties.h:109）关掉跳过逻辑，若掉帧消失就说明问题不在绘制而在「该画没画」的判定；再把 debug.hwui.show_dirty_regions 设为 true（Properties.h:103，实现在 SkiaVulkanPipeline.cpp:105 一带）把 damage 画在屏幕上直接看脏区。"
+  ],
+  "next": "回到第 1 步「录制 display list」——UI 线程下一次 draw 会重新走完整条链，本主题的闭环到这里完成。"
+}

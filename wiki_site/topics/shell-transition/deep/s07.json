@@ -1,0 +1,96 @@
+{
+  "step": "s07",
+  "title": "组装 TransitionRequestInfo 并检查可播性",
+  "tldr": "把「要播什么」打包成 TransitionRequestInfo，oneway 发给 Shell，自己不等回包继续收集。",
+  "why": "没有这一步，Shell 就不知道该播哪种动画、从哪个任务开始、有没有指定外部 remote。退一步说，如果 WMS 自己拍脑袋播默认动画，从桌面点图标进应用和从通知进应用会共用同一套缩放，方向、起始 bounds、圆角全错，表现为窗口从屏幕中间（而不是图标位置）飞出来。另一种坏情况是这里被写成阻塞调用：Shell 主线程一忙（上一段动画在收尾、正在截图），startActivity 就跟着卡住，用户点图标半天没反应。",
+  "concepts": [
+    {
+      "term": "TransitionRequestInfo",
+      "text": "跨进程描述转场请求：type、triggerTask、remote、displayChanges、syncId。"
+    },
+    {
+      "term": "oneway",
+      "text": "AIDL 里标在接口上表示调用方写入 binder 即返回，不等对方执行完，也收不到对方抛的异常。"
+    },
+    {
+      "term": "mIsPlayerEnabled",
+      "text": "Transition 的开关；置假表示这次不交给 Shell 播，之后直接 apply 并 finish。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (mIsWaitingForDisplayEnabled && !Flags.fallbackTransitionPlayer())",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1002",
+      "what": "display 还没 enable 就请求 Shell，会得到 bounds 都不对的转场，这里放弃动画。"
+    },
+    {
+      "call": "transition.mIsPlayerEnabled = false;",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1006",
+      "what": "打上这个标记，后面 onTransactionReady 就不会把 info 发给 Shell，而是自己收尾。"
+    },
+    {
+      "call": "mHandler.post(() -> mAtm.mWindowOrganizerController.startTransition(",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1008",
+      "what": "替 Shell 补一次 startTransition（WCT 为 null）；用 post 避免持锁栈内重入。"
+    },
+    {
+      "call": "if (isFlushing() || transition.isAborted())",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1012",
+      "what": "Shell 正在 flush 或转场已 abort 时不再请求，collecting 的就地 abort。"
+    },
+    {
+      "call": "final TransitionRequestInfo request = new TransitionRequestInfo(transition.mType,",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1053",
+      "what": "打包 type、triggerTask、pip、remote、displayChanges、syncId。"
+    },
+    {
+      "call": "getTransitionPlayer().requestStartTransition(transition.getToken(), request)",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1060",
+      "what": "唯一的跨进程出口。oneway 所以立刻返回，WMS 继续收集，不在这等 Shell。"
+    },
+    {
+      "call": "transition.start();",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1066",
+      "what": "catch RemoteException 分支：player 挂了就自己 start，退化成无动画，但状态机不悬空。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Transition.mLogger.mRequest",
+      "before": "null",
+      "after": "本次的 TransitionRequestInfo",
+      "note": "Perfetto 与 dumpsys 里出现的是这份 request，不是 Transition 本身"
+    },
+    {
+      "field": "Transition.mIsPlayerEnabled",
+      "before": "true",
+      "after": "false（仅 display 未 enable 分支）",
+      "note": "置假后 onTransactionReady 走直接 apply 分支（Transition.java:2252）"
+    },
+    {
+      "field": "Transition.mRemoteDelegate",
+      "before": "null",
+      "after": "remoteTransition.getAppThread()",
+      "note": "只有指定了外部 remote（如 Launcher）时才设置"
+    },
+    {
+      "field": "Transition.mState",
+      "before": "STATE_COLLECTING",
+      "after": "STATE_COLLECTING（不变）",
+      "note": "请求不是启动；STARTED 要等 Shell 回调 startTransition"
+    }
+  ],
+  "threads": "在 WMS 线程、持 mGlobalLock 执行；1060 的 oneway 调用写完 binder 就返回，不会把 WMS 阻塞在 Shell 上。",
+  "pitfalls": [
+    "正常路径里这里没有 transition.start()。start 由 Shell 回调 IWindowOrganizerController.startTransition 触发（第 14 步）。把 requestStartTransition 当启动点，是读这段代码最常见的误解。",
+    "1060 不判空是有前提的：mTransitionPlayers 为空时 requestTransitionIfNeeded 在 913 行就 return null，走不到这里；关掉 fallback flag 又没有 player 时，getTransitionPlayer() 才返回 null。",
+    "1002 那支把 mIsPlayerEnabled 置假后仍然 return transition，看起来「成功了」，其实这次转场不会有动画——排查「开机第一屏没动画」要盯这一行。",
+    "RemoteException 分支（1064-1067）只 start 不重试请求：player 是在这一瞬间死的，转场照样往下走，靠 onTransactionReady 检出 player 缺失再兜底。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager 看 \"Requesting StartTransition: %s\"",
+    "perfetto（atrace 打 window_manager）里 SyncSet/track 上找 requestStartTransition 的异步切片，对照 WMS 侧 start time 看 Shell 迟了多久",
+    "adb shell wm shell transitions：Shell 侧 Pending Transitions 里能看到对应 token 与 request id"
+  ],
+  "next": "请求已经发出，看它怎么落到 SystemUI 的线程上 → 第 12 步「Shell 收到 request（oneway）」。"
+}

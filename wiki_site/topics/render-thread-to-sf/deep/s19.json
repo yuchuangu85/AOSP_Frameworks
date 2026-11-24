@@ -1,0 +1,49 @@
+{
+  "step": "s19",
+  "title": "BufferQueueProducer::queueBuffer：buffer 真正入队",
+  "tldr": "slot 标 QUEUED、frameNumber 自增，出锁后回调 BLAST；EGL 下还要等上一帧 fence。",
+  "why": "没有这一步，app 画完的 buffer 只停在自己进程里：slot 仍是 DEQUEUED，BufferQueueCore::mQueue 里没有 BufferItem，consumer 永远等不到 onFrameAvailable，BLAST 也就没有东西能塞进 Transaction，屏幕停在上一帧。反过来，这一步必须在持锁时就把 frameNumber 与 acquire fence 定下来并保证回调有序：frameNumber 与 fence 一旦错配，SF 会等错 fence，或者直接读到 GPU 还没写完的 buffer，表现为花屏与块状撕裂。",
+  "concepts": [
+    { "term": "QueueBufferInput", "text": "Surface 传来的入参包：时间戳、crop、transform、damage 与 acquire fence。" },
+    { "term": "mCore->mFrameCounter", "text": "队列内单调自增的帧号，每次 queueBuffer 加一；BLAST 与 SF 靠它对齐同一帧。" },
+    { "term": "bufferReplaced", "text": "队列尾部 buffer 可丢（droppable）时被新帧原位替换，旧帧永不上屏，输出里打这个标记。" },
+    { "term": "EGL CPU throttling", "text": "出锁后用上一帧的 acquire fence 等 GPU 画完，最多允许两块未完成，压住 CPU 跑太快。" },
+    { "term": "callbackTicket", "text": "回调顺序票号：出主锁后按票号排队调 onFrameAvailable，保证同一队列的回调不乱序。" }
+  ],
+  "walk": [
+    { "call": "status_t BufferQueueProducer::queueBuffer(int slot, const QueueBufferInput& input, QueueBufferOutput* output)", "ref": "native/libs/gui/BufferQueueProducer.cpp:976", "what": "slot 来自 dequeue；整段在调用者线程（RT）上同步跑完，中间没有任何 binder。" },
+    { "call": "input.deflate(&requestedPresentTimestamp, &isAutoTimestamp, &dataSpace, &crop, &scalingMode, &transform, &acquireFence, &stickyTransform, &getFrameTimestamps);", "ref": "native/libs/gui/BufferQueueProducer.cpp:990", "what": "把入参拆成局部变量，后面全程用它们，不再碰 input。" },
+    { "call": "if (acquireFence == nullptr) { BQ_LOGE(\"queueBuffer: fence is NULL\"); return BAD_VALUE; }", "ref": "native/libs/gui/BufferQueueProducer.cpp:998", "what": "没有 fence 直接失败：slot 不会入队，这一帧静默消失，只有一行 log。" },
+    { "call": "std::lock_guard<std::mutex> lock(mCore->mMutex);", "ref": "native/libs/gui/BufferQueueProducer.cpp:1026", "what": "拿 BufferQueueCore 的锁，从这里到 1240 是队列临界区。" },
+    { "call": "mSlots[slot].mFence = acquireFence; mSlots[slot].mBufferState.queue();", "ref": "native/libs/gui/BufferQueueProducer.cpp:1082", "what": "fence 落到 slot，状态从 DEQUEUED 变 QUEUED——consumer 从此可以 acquire。" },
+    { "call": "++mCore->mFrameCounter; currentFrameNumber = mCore->mFrameCounter;", "ref": "native/libs/gui/BufferQueueProducer.cpp:1087", "what": "本帧的 frameNumber 在这里定死，之后 BLAST/SF 都认这一个数。" },
+    { "call": "mCore->mQueue.push_back(item);", "ref": "native/libs/gui/BufferQueueProducer.cpp:1149", "what": "队列空时直接入队，并记下 consumerListener 准备回调。" },
+    { "call": "if (last.mIsDroppable) {", "ref": "native/libs/gui/BufferQueueProducer.cpp:1159", "what": "队列非空且尾部可丢才替换；BLAST 队列 droppable 恒为 false，见 pitfalls。" },
+    { "call": "callbackTicket = mNextCallbackTicket++;", "ref": "native/libs/gui/BufferQueueProducer.cpp:1219", "what": "出锁前取票号，回调靠它排队，保证顺序与入队顺序一致。" },
+    { "call": "while (callbackTicket != mCurrentCallbackTicket) { mCallbackCondition.wait(lock); }", "ref": "native/libs/gui/BufferQueueProducer.cpp:1265", "what": "持 mCallbackMutex 等票：上一个回调没结束，RT 就停在这里。" },
+    { "call": "frameAvailableListener->onFrameAvailable(item);", "ref": "native/libs/gui/BufferQueueProducer.cpp:1270", "what": "BLAST 的 onFrameAvailable 就在 RT 上被同步叫起，Binder 都没有。" },
+    { "call": "lastQueuedFence->waitForever(\"Throttling EGL Production\");", "ref": "native/libs/gui/BufferQueueProducer.cpp:1284", "what": "EGL 生产者在出锁后等上一帧的 GPU fence，这才是 RT 常见的阻塞点。" }
+  ],
+  "state": [
+    { "field": "mCore->mFrameCounter", "before": "N", "after": "N+1（1087）", "note": "输出里 nextFrameNumber 也用它算（1212）" },
+    { "field": "mSlots[slot].mBufferState", "before": "DEQUEUED（producer 持有）", "after": "QUEUED（1083）", "note": "只有 consumer acquire 或取消才能再变" },
+    { "field": "mSlots[slot].mFence", "before": "上一次的旧 fence", "after": "本帧 acquireFence（1082）", "note": "随后被写进 BufferItem.mFence 交给 consumer" },
+    { "field": "BufferQueueCore::mQueue", "before": "n 项", "after": "n+1 项（1149），或尾部原位替换不变（1190）", "note": "队列长度是内存里的真实积压" },
+    { "field": "output->bufferReplaced", "before": "未定", "after": "false（1145）或 true（1175）", "note": "Surface 据此判断这帧是否被吞" },
+    { "field": "mLastQueueBufferFence", "before": "上一帧的 acquireFence", "after": "本帧 acquireFence（1237）", "note": "下一次 queueBuffer 的 throttling 等它" },
+    { "field": "mNextCallbackTicket / mCurrentCallbackTicket", "before": "k / k", "after": "k+1 / k+1（1219 与 1275）", "note": "两者不等就是有回调还没跑完" }
+  ],
+  "threads": "在调用 swapBuffers 的那个线程上同步执行——app 里就是 RenderThread，Surface::queueBufferImpl 直接调 producer，没有 binder。临界区只有 mCore->mMutex 那段（1026–1240）；回调必须出主锁，但仍持 mCallbackMutex（1264），所以 BLAST 的 onFrameAvailable 同样发生在 RT 上：BLAST 一旦在里面 wait，RT 就停住。",
+  "pitfalls": [
+    "这个版本的 queueBuffer 不等空 slot：队列满时的等待在 dequeueBuffer 里（waitForFreeSlotThenRelock，BufferQueueProducer.cpp:536；真正睡眠在 waitForBufferRelease，448）。把 queueBuffer 当成会因「队列满」阻塞的地方，排查顺序会全错。",
+    "BLAST 建的队列 droppable 恒为 false：initialize 里 setDequeueTimeout(INT64_MAX)（BLASTBufferQueue.cpp:199）会让 mQueueBufferCanDrop 置 false（BufferQueueProducer.cpp:1855），consumerIsSurfaceFlinger 也是 false，所以 1159 的替换分支不会进，buffer 永远 push_back——积压表现为 mQueue 变长与 dequeueBuffer 被 maxDequeued 挡住（373）。",
+    "真正的阻塞点是 1284 的 lastQueuedFence->waitForever：它等的是上一帧的 GPU fence，不是 SF 的 release。RT 卡在这里时 SF 侧完全正常，perfetto 上只会看到 queueBuffer 末尾拉长。",
+    "回调在 mCallbackMutex 下按票号串行（1264–1277）：BLAST 在 onFrameAvailable 里 wait 会把同一队列的下一次回调一起堵住。"
+  ],
+  "debug": [
+    "perfetto/atrace 找 queueBuffer slice（ATRACE_CALL，978），紧挨着它的就是 BBQ_TRACE 生成的 onFrameAvailable - <layer>(f:a:a) slice；后者紧跟说明回调同步，出现大空隙说明卡在回调里的 wait 或 throttling。",
+    "atrace 里的 ATRACE_INT(mCore->mConsumerName)（1214）是队列深度曲线：台阶式上涨就是 consumer 没跟上。",
+    "dumpsys SurfaceFlinger --latency <layer> 看该层每帧的 queued/present 时间戳是否连续；配合 dumpsys SurfaceFlinger 里对应 Layer 的 frameNumber 判断是 app 侧积压还是 SF 侧慢。"
+  ],
+  "next": "第 20 步「BLASTBufferQueue::onFrameAvailable」：buffer 已进队列，app 侧 consumer 回调被同步叫起，决定是立刻 acquire，还是并进 sync 事务等下一拍。"
+}

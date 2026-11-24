@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>AOSP 源码级解剖 · 索引</title>
+<style>
+  :root {
+    --bg: #06080c; --panel: rgba(255,255,255,0.035); --line: rgba(255,255,255,0.10);
+    --tx: #e8eef6; --tx2: #a9b4c2; --tx3: #6f7c8c; --amber: #ffb454; --teal: #33d6c0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f4f6f8; --panel: #ffffff; --line: rgba(14,24,38,0.12); --tx: #16202c; --tx2: #43505f; --tx3: #778394; --amber: #9a5900; --teal: #0a7365; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 56px 40px 80px; background: var(--bg); color: var(--tx);
+    font: 14px/1.7 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+    min-height: 100vh;
+    background-image: radial-gradient(1100px 520px at 12% -10%, rgba(255,180,84,0.10), transparent 60%),
+                      radial-gradient(900px 460px at 92% 0%, rgba(51,214,192,0.08), transparent 55%);
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  .kicker { font: 11px/1 ui-monospace, Menlo, monospace; letter-spacing: .16em; color: var(--amber); text-transform: uppercase; }
+  h1 { margin: 12px 0 8px; font-size: 32px; letter-spacing: -0.01em; }
+  .sub { margin: 0 0 34px; color: var(--tx2); max-width: 720px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
+  a.card {
+    display: block; padding: 24px 26px; border-radius: 16px; border: 1px solid var(--line);
+    background: var(--panel); text-decoration: none; color: inherit; transition: border-color .18s, transform .18s;
+  }
+  a.card:hover { border-color: var(--amber); transform: translateY(-2px); }
+  .card h2 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0 0 14px; color: var(--tx2); font-size: 13px; }
+  .meta { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { font: 10.5px/1.8 ui-monospace, Menlo, monospace; padding: 0 8px; border-radius: 5px;
+    border: 1px solid var(--line); color: var(--tx3); }
+  .pill.hot { color: var(--amber); border-color: rgba(255,180,84,0.35); }
+  .pill.ok { color: var(--teal); border-color: rgba(51,214,192,0.35); }
+  footer { margin-top: 34px; color: var(--tx3); font-size: 11.5px; }
+  code { font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="kicker">AOSP · android17-release · 源码级解剖</div>
+  <h1>两条链路的源码级 HTML wiki</h1>
+  <p class="sub">每个主题都是单文件、离线、可交互：42/36 步精读、逐行注释、方法清单、文件结构、四类图，支持亮/暗色与深链。</p>
+
+  <div class="cards">
+    <a class="card" href="shell-transition.html">
+      <h2>Shell Transition 全链路</h2>
+      <p>谁发起转场 → WMS 建 Transition 与 SyncSet → Shell 认领 handler → 播动画 → finishT 挂回 → 事务收尾。</p>
+      <div class="meta">
+        <span class="pill hot">42 步</span>
+        <span class="pill hot">13 函数逐行</span>
+        <span class="pill">732 条行注释</span>
+        <span class="pill ok">42 篇精读</span>
+      </div>
+    </a>
+    <a class="card" href="render-thread-to-sf.html">
+      <h2>RenderThread → SurfaceFlinger 全链路</h2>
+      <p>UI 交棒 → RT 同步 display list → 回放 draw op → swapBuffer → BLAST 事务 → SF latch/合成/present → release fence 回流。</p>
+      <div class="meta">
+        <span class="pill hot">36 步</span>
+        <span class="pill hot">10 函数逐行</span>
+        <span class="pill">10 张卡片</span>
+        <span class="pill ok">36 篇精读</span>
+      </div>
+    </a>
+  </div>
+
+  <footer>
+    构建：<code>python3 wiki_site/build.py --topic &lt;slug&gt;</code> · 校验：<code>python3 wiki_site/verify.py --topic &lt;slug&gt;</code> · 主题数据在 <code>wiki_site/topics/</code>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,94 @@
+{
+  "step": "s31",
+  "title": "构造 leash：给动画一个可搬的手柄",
+  "tldr": "在 startT 里给每个 Change 找一个可搬的 SurfaceControl，并额外造一个根 leash 把整个 display 的参与内容包成一层。",
+  "why": "没有 leash，Shell 只能直接动容器自己的 SurfaceControl：动画期间 WMS 一旦 reparent 或重新 assignLayer（新 Activity 被塞进 Task、z 序重排），Shell 手里那个 SurfaceControl 就失效，画面会跳一下或漂到别处；同一层被两边写事务，谁后 apply 谁赢，动画会被瞬间打回终点。根 leash 再往上一层，让 Shell 用一个父节点就能整体位移/缩放整场转场，收尾时把它 reparent 到 null 即可一次性摘干净，不用逐层处理。",
+  "concepts": [
+    {
+      "term": "leash",
+      "text": "一层容器 SurfaceControl（setContainerLayer），不含 buffer，只承载子层并接收动画写入。"
+    },
+    {
+      "term": "根 leash（Transition Root）",
+      "text": "每个 display 一个，名为 Transition Root: <容器名>，偏移量记在 TransitionInfo.mRoots。"
+    },
+    {
+      "term": "windowingLayer",
+      "text": "DisplayContent 下专门放窗口内容的层；DisplayContent 是树根，不能拿屏幕级 surface 做动画。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "calculateTransitionRoots(out, sortedTargets, startT);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3421",
+      "what": "先给「有参与者的 display」造根；跨 display 时还要给起始 display 补一个。"
+    },
+    {
+      "call": "createAndAddRootLeash(outInfo, leashReference, dc, null /* startWindowingLayer */,",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3382",
+      "what": "leashReference 是参与者中直接挂在共同祖先下的那一层，根 leash 就建在它旁边。"
+    },
+    {
+      "call": "final SurfaceControl.Builder rootLeashBuilder = leashReference.makeAnimationLeash();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3394",
+      "what": "makeAnimationLeash 即 makeSurface().setContainerLayer()，父节点默认取它的父 surface。"
+    },
+    {
+      "call": ".setName(\"Transition Root: \" +",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3398",
+      "what": "层名进 SurfaceFlinger，winscope 与 dumpsys SurfaceFlinger 里可直接搜到。"
+    },
+    {
+      "call": "startT.setLayer(rootLeash, leashReference.getLastLayer());",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3405",
+      "what": "先 assignLayersForStartTransaction 再定层号，保证根 leash 与参与者的 z 序一致。"
+    },
+    {
+      "call": "outInfo.addRootLeash(displayId, rootLeash, bounds.left, bounds.top);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3406",
+      "what": "根 leash 连同偏移量记进 TransitionInfo.mRoots，Shell 侧据此把 leash 挂到动画层下。"
+    },
+    {
+      "call": "getLeashSurface(target, startT));",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3440",
+      "what": "每个 Change 的 leash：普通容器用自己的 surface，WindowToken 可能换成固定旋转 leash。"
+    },
+    {
+      "call": "return asDC.getWindowingLayer();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:3298",
+      "what": "DisplayContent 是树根，改用 windowingLayer，避免动画动到硬件屏幕级 surface。"
+    }
+  ],
+  "state": [
+    {
+      "field": "TransitionInfo.mRoots",
+      "before": "空（刚 new 出来的 info）",
+      "after": "每个参与 display 一个 Root(leash, offsetLeft, offsetTop)",
+      "note": "Shell 靠它建动画层并摆放整场转场"
+    },
+    {
+      "field": "TransitionInfo.Change.mLeash",
+      "before": "无",
+      "after": "容器自己的 surface（或固定旋转 leash）",
+      "note": "Shell 只能动这个 leash，不能动容器本身"
+    },
+    {
+      "field": "SurfaceFlinger 中的层",
+      "before": "无",
+      "after": "新增 \"Transition Root: <容器名>\" 容器层，父为 leashReference 的父 surface（DisplayContent 则用自己的）",
+      "note": "收尾靠 finishT 把它 reparent 成 null"
+    }
+  ],
+  "threads": "在 onTransactionReady → calculateTransitionInfo 里同步执行，持 mGlobalLock；build 会立刻在 SF 里建出这一层（一次同步 binder），但属性写入都在 startT 中，随 startT 一起生效。",
+  "pitfalls": [
+    "根 leash 是整场转场的父节点，不是某个 Activity 的 leash；Shell 必须把它 show 出来，否则动画层是空的，动什么都没画面。",
+    "getLeashSurface 的 t 参数在 buildFinishTransaction 里传 null（Transition.java:1318），意思是「只取已有 leash，不要新建」；传了 t 可能为 WindowToken 现造固定旋转 leash，finishT 与 startT 就不是同一个 surface 了。",
+    "PiP 有特例：当唯一 target 是 pinned task 时，leashReference 被换成 ancestor.getTopChild()（Transition.java:3375-3381），保证 PiP 全程在最上面——读这段别以为 leashReference 总是那个 target 自己。"
+  ],
+  "debug": [
+    "adb shell dumpsys SurfaceFlinger --list | grep 'Transition Root' 看还有没有没摘掉的根 leash（泄漏第一现场）",
+    "winscope 里看转场起始帧，动画层的名字就是 \"Transition Root: <容器名>\"",
+    "perfetto: window_manager tag 下 calculateTransitionRoots 的调用栈，确认根 leash 建在哪个 display 上"
+  ],
+  "next": "leash 备好，回到调用方看这些零件怎么被组装 → 第 20 步「Transition.onTransactionReady：造 TransitionInfo」。"
+}

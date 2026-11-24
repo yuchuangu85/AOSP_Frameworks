@@ -1,0 +1,378 @@
+{
+ "id": "gl-draw",
+ "title": "SkiaOpenGLPipeline::draw",
+ "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+ "sig": "IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(",
+ "span": [
+  116,
+  192
+ ],
+ "notes": [
+  {
+   "at": 1,
+   "quote": "IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(",
+   "kind": "state",
+   "text": "入口：RenderThread 帧循环调用，先备好 FBO0 与 EGLSurface 才能直接在窗口缓冲上画这一帧。"
+  },
+  {
+   "at": 2,
+   "quote": "const Frame& frame, const SkRect& screenDirty, const SkRect& dirty,",
+   "kind": "data",
+   "text": "frame 给出宽高与 EGLSurface；screenDirty 供 swapBuffers，dirty 是本帧真正的脏区。"
+  },
+  {
+   "at": 3,
+   "quote": "const LightGeometry& lightGeometry, LayerUpdateQueue* layerUpdateQueue",
+   "kind": "data",
+   "text": "lightGeometry 描述光源几何；layerUpdateQueue 是本帧待上传的 texture layer 清单。"
+  },
+  {
+   "at": 4,
+   "quote": "const Rect& contentDrawBounds, bool opaque, const LightInfo& lightInfo",
+   "kind": "data",
+   "text": "contentDrawBounds 限定内容绘制区域；opaque 为真时可不混背景，lightInfo 给光源颜色。"
+  },
+  {
+   "at": 5,
+   "quote": "const std::vector<sp<RenderNode>>& renderNodes, FrameInfoVisualizer* p",
+   "kind": "data",
+   "text": "renderNodes 是回放根节点列表，nodes[0] 会被当作根；profiler 用于可视化调试叠加。"
+  },
+  {
+   "at": 6,
+   "quote": "const HardwareBufferRenderParams& bufferParams, std::mutex& profilerLo",
+   "kind": "data",
+   "text": "bufferParams 给出 HardwareBuffer 的变换与色彩空间；profilerLock 保护 profiler 并发访问。"
+  },
+  {
+   "at": 7,
+   "quote": "if (!isCapturingSkp() && !mHardwareBuffer) {",
+   "kind": "branch",
+   "text": "未抓 SKP 且非 HardwareBuffer 出帧时才走 EGL damage；抓帧分支不能污染真实窗口 surface。"
+  },
+  {
+   "at": 8,
+   "quote": "mEglManager.damageFrame(frame, dirty);",
+   "kind": "ipc",
+   "text": "eglSetDamageRegionKHR 按 buffer age 上报脏区；失败即 LOG_ALWAYS_FATAL 直接 abort。"
+  },
+  {
+   "at": 11,
+   "quote": "SkColorType colorType = getSurfaceColorType();",
+   "kind": "state",
+   "text": "读取 surface 的 SkColorType（源自 EGL 配置）决定 GL 内部格式；只读，不改任何渲染状态。"
+  },
+  {
+   "at": 12,
+   "quote": "// setup surface for fbo0",
+   "kind": "note",
+   "text": "注释：下面为默认帧缓冲 0 构造 GrGLFramebufferInfo，明确绘制目标是窗口 EGLSurface 而非离屏 FBO。"
+  },
+  {
+   "at": 13,
+   "quote": "GrGLFramebufferInfo fboInfo;",
+   "kind": "data",
+   "text": "fboInfo 描述 GL 后端 render target，先声明再按 colorType 填 fFormat，两者必须一一对应。"
+  },
+  {
+   "at": 14,
+   "quote": "fboInfo.fFBOID = 0;",
+   "kind": "data",
+   "text": "fFBOID=0 即默认帧缓冲，说明本帧直接画在 EGLSurface 上，不额外申请离屏 FBO。"
+  },
+  {
+   "at": 15,
+   "quote": "if (colorType == kRGBA_F16_SkColorType) {",
+   "kind": "branch",
+   "text": "RGBA_F16 用于线性/广色域渲染，fFormat 必须是 GL_RGBA16F，否则精度与 bpp 全错。"
+  },
+  {
+   "at": 16,
+   "quote": "fboInfo.fFormat = GL_RGBA16F;",
+   "kind": "data",
+   "text": "填半浮点 GL 格式，与 colorType 成对；配错会让 Skia 按错误字节数读写而花屏。"
+  },
+  {
+   "at": 17,
+   "quote": "} else if (colorType == kN32_SkColorType) {",
+   "kind": "branch",
+   "text": "kN32 是默认 8888 路径，绝大多数设备走这个分支，也是兼容性最好的格式。"
+  },
+  {
+   "at": 18,
+   "quote": "// Note: The default preference of pixel format is RGBA_8888, when oth",
+   "kind": "note",
+   "text": "注释说明默认首选 RGBA_8888；出现其他像素格式时要在此扩展判断，不能静默沿用。"
+  },
+  {
+   "at": 19,
+   "quote": "// pixel format is available, we should branch out and do more check.",
+   "kind": "note",
+   "text": "注释续行：提示新像素格式必须补分支检查，否则会掉到下面的 fatal。"
+  },
+  {
+   "at": 20,
+   "quote": "fboInfo.fFormat = GL_RGBA8;",
+   "kind": "data",
+   "text": "GL_RGBA8 与 8888 对齐，是 N32 下的唯一正确内部格式。"
+  },
+  {
+   "at": 21,
+   "quote": "} else if (colorType == kRGBA_1010102_SkColorType) {",
+   "kind": "branch",
+   "text": "10bit 面板/HDR 走 RGBA_1010102，每通道 10 位，用于广色域内容。"
+  },
+  {
+   "at": 22,
+   "quote": "fboInfo.fFormat = GL_RGB10_A2;",
+   "kind": "data",
+   "text": "GL_RGB10_A2 的 bpp 与 8888 不同，错填会让 Skia 写越界或截断颜色。"
+  },
+  {
+   "at": 23,
+   "quote": "} else if (colorType == kAlpha_8_SkColorType) {",
+   "kind": "branch",
+   "text": "Alpha_8 只用于阴影/遮罩类单通道目标，不参与正常画面合成。"
+  },
+  {
+   "at": 24,
+   "quote": "fboInfo.fFormat = GL_R8;",
+   "kind": "data",
+   "text": "GL_R8 单通道格式，与 kAlpha_8 对应；多填通道会浪费带宽并改变布局。"
+  },
+  {
+   "at": 25,
+   "quote": "} else {",
+   "kind": "branch",
+   "text": "未知 colorType 说明 EGL 配置与 Skia 认知不一致，此时无法安全渲染。"
+  },
+  {
+   "at": 26,
+   "quote": "LOG_ALWAYS_FATAL(\"Unsupported color type.\");",
+   "kind": "note",
+   "text": "LOG_ALWAYS_FATAL：配置不匹配立刻 abort，避免带病继续用错误 bpp 写坏 buffer。"
+  },
+  {
+   "at": 29,
+   "quote": "auto backendRT = GrBackendRenderTargets::MakeGL(frame.width(), frame.h",
+   "kind": "data",
+   "text": "用 frame 宽高、0 个 MSAA 采样和模板位建 GL render target；尺寸必须与 surface 严格一致。"
+  },
+  {
+   "at": 30,
+   "quote": "STENCIL_BUFFER_SIZE, fboInfo);",
+   "kind": "data",
+   "text": "STENCIL_BUFFER_SIZE 供 clipPath 等模板裁剪使用；缺模板会让复杂 clip 走慢路径甚至画错。"
+  },
+  {
+   "at": 32,
+   "quote": "SkSurfaceProps props(mColorMode == ColorMode::Default ? 0 : SkSurfaceP",
+   "kind": "branch",
+   "text": "ColorMode::Default 时不加 dither；非默认（广色域）需抖动掩盖渐变 banding。"
+  },
+  {
+   "at": 33,
+   "quote": "kUnknown_SkPixelGeometry);",
+   "kind": "data",
+   "text": "像素几何标为 unknown：硬件 surface 无需告知 subpixel 排列，仅影响文字光栅化提示。"
+  },
+  {
+   "at": 35,
+   "quote": "SkASSERT(mRenderThread.getGrContext() != nullptr);",
+   "kind": "thread",
+   "text": "断言 GrContext 已就绪：它绑定当前线程 GL 上下文，为空说明 makeCurrent 未成功。"
+  },
+  {
+   "at": 36,
+   "quote": "sk_sp<SkSurface> surface;",
+   "kind": "data",
+   "text": "surface 稍后按分支二选一赋值：硬件 buffer 的 SkSurface 或窗口 backing 的 wrap 结果。"
+  },
+  {
+   "at": 37,
+   "quote": "SkMatrix preTransform;",
+   "kind": "data",
+   "text": "preTransform 是画布前置矩阵：HardwareBuffer 出帧可能带旋转/缩放，普通路径为单位矩阵。"
+  },
+  {
+   "at": 38,
+   "quote": "if (mHardwareBuffer) {",
+   "kind": "branch",
+   "text": "mHardwareBuffer 非空表示给 SurfaceControl 出帧，绕开窗口 EGLSurface。"
+  },
+  {
+   "at": 39,
+   "quote": "surface = getBufferSkSurface(bufferParams);",
+   "kind": "data",
+   "text": "按 bufferParams 把 HardwareBuffer 包成 SkSurface；失败返回空会在下面解引用直接崩溃。"
+  },
+  {
+   "at": 40,
+   "quote": "preTransform = bufferParams.getTransform();",
+   "kind": "data",
+   "text": "取 buffer 的变换（如旋转 90°），随后要作用到光源中心与 clip 上，保证坐标一致。"
+  },
+  {
+   "at": 41,
+   "quote": "} else {",
+   "kind": "branch",
+   "text": "普通窗口路径：把刚构造的 backend render target 包成 SkSurface 使用。"
+  },
+  {
+   "at": 42,
+   "quote": "surface = SkSurfaces::WrapBackendRenderTarget(mRenderThread.getGrConte",
+   "kind": "data",
+   "text": "WrapBackendRenderTarget 直接复用 FBO0，不新分配显存，因此不影响帧缓冲布局。"
+  },
+  {
+   "at": 43,
+   "quote": "getSurfaceOrigin(), colorType,",
+   "kind": "data",
+   "text": "origin 为 kBottomLeft（GL 约定），colorType 须与 fboInfo.fFormat 匹配，否则倒置或花屏。"
+  },
+  {
+   "at": 44,
+   "quote": "mSurfaceColorSpace, &props);",
+   "kind": "data",
+   "text": "mSurfaceColorSpace 决定是否做色彩转换；传错会导致偏色或额外转换开销。"
+  },
+  {
+   "at": 45,
+   "quote": "preTransform = SkMatrix::I();",
+   "kind": "data",
+   "text": "非 HardwareBuffer 路径没有额外变换，用单位矩阵避免坐标被二次映射。"
+  },
+  {
+   "at": 48,
+   "quote": "SkPoint lightCenter = preTransform.mapPoint({lightGeometry.center.x, l",
+   "kind": "data",
+   "text": "把光源中心经 preTransform 映射到 buffer 坐标系；不映射则旋转出帧时阴影方向错误。"
+  },
+  {
+   "at": 49,
+   "quote": "LightGeometry localGeometry = lightGeometry;",
+   "kind": "data",
+   "text": "复制一份 lightGeometry，避免改写调用方 CanvasContext 持有的光源数据。"
+  },
+  {
+   "at": 50,
+   "quote": "localGeometry.center.x = lightCenter.fX;",
+   "kind": "data",
+   "text": "写入映射后的 x 坐标，与下一行共同构成新光源位置，必须在 updateLighting 前完成。"
+  },
+  {
+   "at": 51,
+   "quote": "localGeometry.center.y = lightCenter.fY;",
+   "kind": "data",
+   "text": "写入映射后的 y 坐标；两行任一漏写都会让光照中心偏移。"
+  },
+  {
+   "at": 52,
+   "quote": "LightingInfo::updateLighting(localGeometry, lightInfo);",
+   "kind": "state",
+   "text": "把光源推入 RenderState 的 LightingInfo 全局状态，供后续 draw op 在 RT 线程读取。"
+  },
+  {
+   "at": 53,
+   "quote": "renderFrame(*layerUpdateQueue, dirty, renderNodes, opaque, contentDraw",
+   "kind": "data",
+   "text": "回放整帧：先上传待更新 layer，再按 clip 与 opaque 画 renderNodes；异常会直达 RT 循环。"
+  },
+  {
+   "at": 54,
+   "quote": "preTransform);",
+   "kind": "data",
+   "text": "传入 preTransform，SkiaPipeline 会先 concat 到 canvas，保证硬件 buffer 旋转后坐标正确。"
+  },
+  {
+   "at": 56,
+   "quote": "// Draw visual debugging features",
+   "kind": "note",
+   "text": "注释：下面是可选的视觉调试层（脏区高亮、profile 条形图）。"
+  },
+  {
+   "at": 57,
+   "quote": "if (CC_UNLIKELY(Properties::showDirtyRegions ||",
+   "kind": "branch",
+   "text": "CC_UNLIKELY 标记冷路径：仅 showDirtyRegions 为真或 profileType 非 None 时才进入。"
+  },
+  {
+   "at": 58,
+   "quote": "ProfileType::None != Properties::getProfileType())) {",
+   "kind": "branch",
+   "text": "profileType 非 None 表示用户在跑绘制/GPU 耗时统计，需要在同一 surface 上叠画。"
+  },
+  {
+   "at": 59,
+   "quote": "std::scoped_lock lock(profilerLock);",
+   "kind": "lock",
+   "text": "profilerLock 与 dumper 等线程互斥，防止 FrameInfoVisualizer 在绘制中被并发读取。"
+  },
+  {
+   "at": 60,
+   "quote": "SkCanvas* profileCanvas = surface->getCanvas();",
+   "kind": "data",
+   "text": "复用同一 canvas 叠画调试信息，不新建 surface，因此不影响最终提交的像素。"
+  },
+  {
+   "at": 61,
+   "quote": "SkiaProfileRenderer profileRenderer(profileCanvas, frame.width(), fram",
+   "kind": "data",
+   "text": "包装成 SkiaProfileRenderer，把 profile 数据转成 Skia 指令；宽高取 frame 的值。"
+  },
+  {
+   "at": 62,
+   "quote": "profiler->draw(profileRenderer);",
+   "kind": "data",
+   "text": "profiler 为空会解引用崩溃，但 CanvasContext 恒传 &profiler()，此处不做判空。"
+  },
+  {
+   "at": 65,
+   "quote": "{",
+   "kind": "note",
+   "text": "内层作用域：让 ATRACE_NAME 的 trace 段只覆盖 flush 提交阶段。"
+  },
+  {
+   "at": 66,
+   "quote": "ATRACE_NAME(\"flush commands\");",
+   "kind": "trace",
+   "text": "打 flush commands trace 点，Perfetto 里可直接看到本帧 GPU 提交耗时。"
+  },
+  {
+   "at": 67,
+   "quote": "skgpu::ganesh::FlushAndSubmit(surface);",
+   "kind": "data",
+   "text": "FlushAndSubmit 把 Skia 延迟绘制指令真正下发 GL 并提交；漏掉则本帧不会上屏。"
+  },
+  {
+   "at": 69,
+   "quote": "layerUpdateQueue->clear();",
+   "kind": "state",
+   "text": "清空已上传 layer 队列，避免下一帧重复上传同一批 texture layer 浪费带宽。"
+  },
+  {
+   "at": 71,
+   "quote": "// Log memory statistics",
+   "kind": "note",
+   "text": "注释：调试级别打开时打印资源缓存占用情况。"
+  },
+  {
+   "at": 72,
+   "quote": "if (CC_UNLIKELY(Properties::debugLevel != kDebugDisabled)) {",
+   "kind": "branch",
+   "text": "debugLevel != kDebugDisabled 说明开了 hwui 调试属性，才做统计以免线上额外开销。"
+  },
+  {
+   "at": 73,
+   "quote": "dumpResourceCacheUsage();",
+   "kind": "data",
+   "text": "dumpResourceCacheUsage 输出 Skia 资源缓存大小，用于排查显存增长与泄漏。"
+  },
+  {
+   "at": 76,
+   "quote": "return {true, IRenderPipeline::DrawResult::kUnknownTime, android::base",
+   "kind": "data",
+   "text": "返回成功但时间未知且无 fence：GL 路径靠随后 swapBuffers 做同步，不做 HardwareBuffer 回调。"
+  }
+ ]
+}

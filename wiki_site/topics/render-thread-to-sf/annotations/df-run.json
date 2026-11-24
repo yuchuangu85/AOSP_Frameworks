@@ -1,0 +1,354 @@
+{
+  "id": "df-run",
+  "title": "DrawFrameTask::run",
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "sig": "void DrawFrameTask::run()",
+  "span": [
+    89,
+    167
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void DrawFrameTask::run() {",
+      "kind": "note",
+      "text": "渲染线程入口：UI线程在mSignal上等本函数放行，末尾必须unblockUiThread，否则UI永久挂起。"
+    },
+    {
+      "at": 2,
+      "quote": "const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::Fr",
+      "kind": "data",
+      "text": "从mFrameInfo取FrameTimelineVsyncId做本帧时间线标识随trace上报；槽位空则为0，不参与绘制决策。"
+    },
+    {
+      "at": 3,
+      "quote": "ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);",
+      "kind": "trace",
+      "text": "开DrawFrames的atrace区间并标上vsyncId；仅systrace/Perfetto可见，埋点本身不改绘制路径。"
+    },
+    {
+      "at": 5,
+      "quote": "mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSy",
+      "kind": "trace",
+      "text": "用单调钟减mSyncQueued算出UI线程从drawFrame()排队到渲染线程开跑的延迟，交给context做帧耗时归因。"
+    },
+    {
+      "at": 6,
+      "quote": "mContext->setTargetSdrHdrRatio(mRenderSdrHdrRatio);",
+      "kind": "data",
+      "text": "把UI线程设的SDR/HDR亮度比mRenderSdrHdrRatio下发，绘制时按此比例做色彩映射，避免高光溢出。"
+    },
+    {
+      "at": 8,
+      "quote": "auto hardwareBufferParams = mHardwareBufferParams;",
+      "kind": "data",
+      "text": "按值拷贝HardwareBuffer参数：放行UI线程后this可能被复用，必须本地持有一份成员快照。"
+    },
+    {
+      "at": 9,
+      "quote": "mContext->setHardwareBufferRenderParams(hardwareBufferParams);",
+      "kind": "state",
+      "text": "把快照下发context，layer据此把内容渲染进硬件buffer（如SurfaceControl直出场景）。"
+    },
+    {
+      "at": 10,
+      "quote": "IRenderPipeline* pipeline = mContext->getRenderPipeline();",
+      "kind": "state",
+      "text": "取IRenderPipeline指针，末尾用它判断hasHardwareBuffer并flush出帧，指针生命周期由context保证。"
+    },
+    {
+      "at": 11,
+      "quote": "bool canUnblockUiThread;",
+      "kind": "state",
+      "text": "声明放行标志：syncFrameState返回纹理缓存是否够用，决定在哪一步唤醒UI线程。"
+    },
+    {
+      "at": 12,
+      "quote": "bool canDrawThisFrame;",
+      "kind": "state",
+      "text": "声明可画标志：本帧无skippedFrameReason才为true，决定走draw还是跳过路径。"
+    },
+    {
+      "at": 13,
+      "quote": "bool solelyTextureViewUpdates;",
+      "kind": "state",
+      "text": "声明纯TextureView标志：只有TextureView内容更新时draw可省掉部分重绘工作。"
+    },
+    {
+      "at": 14,
+      "quote": "{",
+      "kind": "note",
+      "text": "开块作用域：TreeInfo及同步结果须在块内析构，避免放行UI线程后栈上info仍被访问。"
+    },
+    {
+      "at": 15,
+      "quote": "TreeInfo info(TreeInfo::MODE_FULL, *mContext);",
+      "kind": "state",
+      "text": "构造MODE_FULL的TreeInfo作为prepareTree输出载体，承接跳过原因、动画标记等同步结果。"
+    },
+    {
+      "at": 16,
+      "quote": "info.forceDrawFrame = mForceDrawFrame;",
+      "kind": "state",
+      "text": "把forceDrawNextFrame()置的标记传给info，使本帧即使无变更也强制走绘制。"
+    },
+    {
+      "at": 17,
+      "quote": "mForceDrawFrame = false;",
+      "kind": "state",
+      "text": "立即清mForceDrawFrame，保证强制绘制只生效一帧，否则每帧白耗GPU。"
+    },
+    {
+      "at": 18,
+      "quote": "canUnblockUiThread = syncFrameState(info);",
+      "kind": "thread",
+      "text": "在渲染线程同步树：apply layer、prepareTree、上传纹理；返回false表示纹理缓存不足，需继续挡住UI线程重试。"
+    },
+    {
+      "at": 19,
+      "quote": "canDrawThisFrame = !info.out.skippedFrameReason.has_value();",
+      "kind": "branch",
+      "text": "只有没有skippedFrameReason才认为可画；丢surface或context已停止时置位，本帧改走跳过分支。"
+    },
+    {
+      "at": 20,
+      "quote": "solelyTextureViewUpdates = info.out.solelyTextureViewUpdates;",
+      "kind": "state",
+      "text": "取solelyTextureViewUpdates，draw时据此选择只更新TextureView的轻量路径。"
+    },
+    {
+      "at": 22,
+      "quote": "if (mFrameCommitCallback) {",
+      "kind": "branch",
+      "text": "UI线程若设了frame commit回调（部分SurfaceView场景），需在draw前挂到context才收得到本帧swap。"
+    },
+    {
+      "at": 23,
+      "quote": "mContext->addFrameCommitListener(std::move(mFrameCommitCallback));",
+      "kind": "state",
+      "text": "把回调移交给CanvasContext，buffer swap成功后由context触发；晚于draw注册会丢掉本帧通知。"
+    },
+    {
+      "at": 24,
+      "quote": "mFrameCommitCallback = nullptr;",
+      "kind": "state",
+      "text": "移交后置空成员，防止下一帧误判仍有待注册回调而重复add。"
+    },
+    {
+      "at": 28,
+      "quote": "// Grab a copy of everything we need",
+      "kind": "note",
+      "text": "以下把本帧所需成员全拷到局部量：放行UI线程后DrawFrameTask可被复用，之后只能碰局部副本。"
+    },
+    {
+      "at": 29,
+      "quote": "CanvasContext* context = mContext;",
+      "kind": "note",
+      "text": "裸指针拷mContext，之后不再经this访问；context由UI线程保证活到本帧结束。"
+    },
+    {
+      "at": 30,
+      "quote": "std::function<std::function<void(bool)>(int32_t, int64_t)> frameCallba",
+      "kind": "data",
+      "text": "移出mFrameCallback：工厂函数接收syncResult与帧号，返回可选的commit回调。"
+    },
+    {
+      "at": 31,
+      "quote": "std::move(mFrameCallback);",
+      "kind": "data",
+      "text": "std::move后成员已空，此处完成移交，局部量随后被enqueueFrameWork的lambda按值捕获。"
+    },
+    {
+      "at": 32,
+      "quote": "std::function<void()> frameCompleteCallback = std::move(mFrameComplete",
+      "kind": "data",
+      "text": "同样移出frameCompleteCallback，draw结束后在渲染线程同步invoke。"
+    },
+    {
+      "at": 33,
+      "quote": "mFrameCallback = nullptr;",
+      "kind": "state",
+      "text": "显式清空mFrameCallback，避免任务复用时同一回调被执行两次。"
+    },
+    {
+      "at": 34,
+      "quote": "mFrameCompleteCallback = nullptr;",
+      "kind": "state",
+      "text": "显式清空mFrameCompleteCallback，保证帧完成通知至多一次。"
+    },
+    {
+      "at": 36,
+      "quote": "// From this point on anything in \"this\" is *UNSAFE TO ACCESS*",
+      "kind": "note",
+      "text": "关键不变量：此后访问this成员即UB，UI线程可能已复用或析构本task。"
+    },
+    {
+      "at": 37,
+      "quote": "if (canUnblockUiThread) {",
+      "kind": "thread",
+      "text": "纹理缓存够用时提前放行UI线程，让其开始下一vsync录制，减少因等render而掉帧。"
+    },
+    {
+      "at": 38,
+      "quote": "unblockUiThread();",
+      "kind": "lock",
+      "text": "加mLock后signal，唤醒postAndWait()里等待的UI线程；与postAndWait的加锁顺序防丢信号。"
+    },
+    {
+      "at": 41,
+      "quote": "// Even if we aren't drawing this vsync pulse the next frame number wi",
+      "kind": "note",
+      "text": "即使本帧不画，context的帧号仍会递增，capture时读到的帧号依然准确，故无条件下传。"
+    },
+    {
+      "at": 42,
+      "quote": "if (CC_UNLIKELY(frameCallback)) {",
+      "kind": "branch",
+      "text": "少见分支：存在frameCallback时，要把它排到本帧draw之后执行才能拿到真实sync结果。"
+    },
+    {
+      "at": 43,
+      "quote": "context->enqueueFrameWork([frameCallback, context, syncResult = mSyncR",
+      "kind": "thread",
+      "text": "把回调包成lambda投进context帧工作队列，在draw后同一渲染线程执行，避免与绘制竞争。"
+    },
+    {
+      "at": 44,
+      "quote": "frameNr = context->getFrameNumber()]() {",
+      "kind": "data",
+      "text": "按值捕获syncResult、context与getFrameNumber()，均为值捕获，防止放行UI线程后悬垂。"
+    },
+    {
+      "at": 45,
+      "quote": "auto frameCommitCallback = frameCallback(syncResult, frameNr);",
+      "kind": "data",
+      "text": "在帧工作里执行用户回调，产出可选的frame commit回调；用户返回空则无后续注册。"
+    },
+    {
+      "at": 46,
+      "quote": "if (frameCommitCallback) {",
+      "kind": "branch",
+      "text": "用户回调返回了commit回调才注册，否则跳过，避免空function进监听列表。"
+    },
+    {
+      "at": 47,
+      "quote": "context->addFrameCommitListener(std::move(frameCommitCallback));",
+      "kind": "state",
+      "text": "把commit回调移入CanvasContext监听列表，swap成功后由context回调到UI线程。"
+    },
+    {
+      "at": 52,
+      "quote": "if (CC_LIKELY(canDrawThisFrame)) {",
+      "kind": "branch",
+      "text": "主路径：未被跳过才真正绘制；跳过时进else分支做flush与fence收尾。"
+    },
+    {
+      "at": 53,
+      "quote": "context->draw(solelyTextureViewUpdates);",
+      "kind": "state",
+      "text": "在渲染线程录制并提交本帧（含swap），solelyTextureViewUpdates决定是否走轻量路径。"
+    },
+    {
+      "at": 54,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "跳过绘制的兜底分支：无surface或context停止时不能draw，但GPU队列与fence仍需收尾。"
+    },
+    {
+      "at": 55,
+      "quote": "#ifdef __ANDROID__",
+      "kind": "note",
+      "text": "仅Android编译：layoutlib无GrDirectContext，不能手动flush。"
+    },
+    {
+      "at": 56,
+      "quote": "// Do a flush in case syncFrameState performed any texture uploads. Si",
+      "kind": "note",
+      "text": "注释：syncFrameState可能已产生纹理上传/删除，跳过draw后这些命令会滞留队列。"
+    },
+    {
+      "at": 57,
+      "quote": "// the draw() call, those uploads (or deletes) will end up sitting in ",
+      "kind": "note",
+      "text": "注释续行：命令不提交就拖到下帧，抬高下帧起始耗时。"
+    },
+    {
+      "at": 58,
+      "quote": "// Do them now",
+      "kind": "note",
+      "text": "注释：故此处主动flush，把滞留的上传命令立刻提交掉。"
+    },
+    {
+      "at": 59,
+      "quote": "if (GrDirectContext* grContext = mRenderThread->getGrContext()) {",
+      "kind": "branch",
+      "text": "取GrContext，为空（非GPU后端或context已拆）则整段跳过，不强求flush。"
+    },
+    {
+      "at": 60,
+      "quote": "grContext->flushAndSubmit();",
+      "kind": "state",
+      "text": "flushAndSubmit把队列里的纹理上传立即提交给GPU，避免跨帧滞留造成下帧卡顿。"
+    },
+    {
+      "at": 62,
+      "quote": "#endif",
+      "kind": "note",
+      "text": "结束__ANDROID__条件：非Android构建无flush，直接进waitOnFences同步。"
+    },
+    {
+      "at": 63,
+      "quote": "// wait on fences so tasks don't overlap next frame",
+      "kind": "note",
+      "text": "注释：等fence，防止本帧未完成时下帧任务又用同一组buffer。"
+    },
+    {
+      "at": 64,
+      "quote": "context->waitOnFences();",
+      "kind": "state",
+      "text": "阻塞等GPU fence完成；不等会让下帧在同一buffer上竞争，可能撕裂或读到半成品。"
+    },
+    {
+      "at": 67,
+      "quote": "if (CC_UNLIKELY(frameCompleteCallback)) {",
+      "kind": "branch",
+      "text": "少见分支：设了帧完成回调时，即使没画也必须通知，否则调用方一直等。"
+    },
+    {
+      "at": 68,
+      "quote": "std::invoke(frameCompleteCallback);",
+      "kind": "thread",
+      "text": "在渲染线程同步invoke完成回调；回调内若再阻塞等渲染线程会自死锁。"
+    },
+    {
+      "at": 71,
+      "quote": "if (!canUnblockUiThread) {",
+      "kind": "thread",
+      "text": "syncFrameState说纹理缓存不足时UI线程一直被挡着，这里补一次放行，让它先回收纹理再重试。"
+    },
+    {
+      "at": 72,
+      "quote": "unblockUiThread();",
+      "kind": "lock",
+      "text": "signal唤醒UI线程，其postAndWait返回后携带FrameDropped等结果重试prepareTree。"
+    },
+    {
+      "at": 75,
+      "quote": "if (pipeline->hasHardwareBuffer()) {",
+      "kind": "branch",
+      "text": "硬件buffer模式（SurfaceControl直出）需把本帧内容flush进buffer并回传fence给合成侧。"
+    },
+    {
+      "at": 76,
+      "quote": "auto fence = pipeline->flush();",
+      "kind": "state",
+      "text": "pipeline->flush()生成GPU fence，表示buffer内容已可被合成器消费。"
+    },
+    {
+      "at": 77,
+      "quote": "hardwareBufferParams.invokeRenderCallback(std::move(fence), 0);",
+      "kind": "ipc",
+      "text": "把fence和slot 0交给invokeRenderCallback通知BufferQueue本帧就绪；fence为空对端无法同步。"
+    }
+  ]
+}

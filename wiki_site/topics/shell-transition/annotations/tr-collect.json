@@ -1,0 +1,192 @@
+{
+  "id": "tr-collect",
+  "title": "Transition.collect",
+  "file": "base/services/core/java/com/android/server/wm/Transition.java",
+  "sig": "void collect(@NonNull WindowContainer wc)",
+  "span": [
+    903,
+    939
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void collect(@NonNull WindowContainer wc) {",
+      "kind": "note",
+      "text": "收集入口，运行在 WM 的 android.display 线程；把 wc 登记进本 Transition，供后续动画与事务同步使用。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mState < STATE_COLLECTING) {",
+      "kind": "state",
+      "text": "守卫：mState 仍为 STATE_PENDING 说明收集窗口未打开；此时登记参与者会让 mChanges 与状态机错位，故直接抛异常。"
+    },
+    {
+      "at": 3,
+      "quote": "throw new IllegalStateException(\"Transition hasn't started collecting.",
+      "kind": "note",
+      "text": "抛 IllegalStateException 打断调用方，让「未开始收集就登记」的时序错误暴露出来，而非静默产出空动画。"
+    },
+    {
+      "at": 5,
+      "quote": "if (!isCollecting()) {",
+      "kind": "branch",
+      "text": "isCollecting() 仅 COLLECTING/STARTED 为真；已播放则返回 false，避免改动已 merge 的事务。"
+    },
+    {
+      "at": 6,
+      "quote": "// Too late, transition already started playing, so don't collect.",
+      "kind": "note",
+      "text": "注释：太晚了——事务已开始播放，加入的容器无法再参与本次动画，只能放弃收集。"
+    },
+    {
+      "at": 7,
+      "quote": "return;",
+      "kind": "state",
+      "text": "静默丢弃该 wc：不生成 ChangeInfo、不进 SyncSet，防止晚到的窗口把已下发的 Transaction 拖成同步超时或闪烁。"
+    },
+    {
+      "at": 9,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS, \"Collecting i",
+      "kind": "trace",
+      "text": "WM_DEBUG_WINDOW_TRANSITIONS 开启时打印 mSyncId 与 wc，用于定位容器被哪次事务收集。"
+    },
+    {
+      "at": 10,
+      "quote": "mSyncId, wc);",
+      "kind": "trace",
+      "text": "实参：mSyncId 为 Transaction 同步 id，wc 的 toString 给层级信息，便于对齐 dumpsys。"
+    },
+    {
+      "at": 11,
+      "quote": "// Snapshot before checking if this is a participant in case it has be",
+      "kind": "note",
+      "text": "注释：必须先快照父链再判断参与者——判断前 wc 可能已被 reparent，晚快照会把错误的父链当作起始状态。"
+    },
+    {
+      "at": 12,
+      "quote": "snapshotStartState(getAnimatableParent(wc), true /* addReadyGroup */);",
+      "kind": "state",
+      "text": "沿可动画父链快照起始状态并加 ready group；父容器可能是 promotion 目标，漏快照则无动画。"
+    },
+    {
+      "at": 13,
+      "quote": "if (mParticipants.contains(wc)) return;",
+      "kind": "branch",
+      "text": "幂等：wc 已在 mParticipants 说明本次已收集，重复走后续流程会重复 merge 事务并重复登记 SyncSet 屏障。"
+    },
+    {
+      "at": 14,
+      "quote": "// Transient-hide may be hidden later, so no need to request redraw.",
+      "kind": "note",
+      "text": "注释：transient-hide 的容器稍后可能被隐藏，因此不必为它请求重绘、不必等待首帧。"
+    },
+    {
+      "at": 15,
+      "quote": "// Also, recents transition can play without waiting for its host to d",
+      "kind": "note",
+      "text": "注释：recents 动画允许不等宿主窗口绘制就播放，所以同样跳过同步集合。"
+    },
+    {
+      "at": 16,
+      "quote": "if (!isInTransientHide(wc) && !isLaunchingRecents(wc)) {",
+      "kind": "branch",
+      "text": "仅当既非 transient-hide 也非 recents 启动时才纳入同步集合；否则动画会一直等一个永远不会来的首帧而超时。"
+    },
+    {
+      "at": 17,
+      "quote": "mSyncEngine.addToSyncSet(mSyncId, wc);",
+      "kind": "state",
+      "text": "在 SyncEngine 为 mSyncId 登记 wc 的绘制屏障；漏登记会让事务在该窗口未就绪时就 apply，造成跳帧或黑屏。"
+    },
+    {
+      "at": 19,
+      "quote": "if (wc.asWindowToken() != null && wc.asWindowToken().mRoundedCornerOve",
+      "kind": "branch",
+      "text": "圆角/挖孔 overlay：只同步事务不建 ChangeInfo；其 Surface 常挂 root(null) 无法 reparent。"
+    },
+    {
+      "at": 20,
+      "quote": "// Only need to sync the transaction (SyncSet) without ChangeInfo beca",
+      "kind": "note",
+      "text": "注释：这类 overlay 仅需 SyncSet 同步事务，不需要 ChangeInfo，因为挖孔与圆角 overlay 从不做动画。"
+    },
+    {
+      "at": 21,
+      "quote": "// rounded corner overlay never need animations. Especially their surf",
+      "kind": "note",
+      "text": "注释：它们从不参与动画，因此无需起始/目标状态，也无需 leash 与 reparent 计算。"
+    },
+    {
+      "at": 22,
+      "quote": "// in root (null, see WindowToken#makeSurface()) that cannot reparent.",
+      "kind": "note",
+      "text": "Surface 可能挂在 root(null)（WindowToken#makeSurface()），无法 reparent，故提前返回。"
+    },
+    {
+      "at": 23,
+      "quote": "return;",
+      "kind": "state",
+      "text": "提前返回：保留第 17 行 SyncSet 注册，不写 mChanges、不进 mParticipants，免建多余状态。"
+    },
+    {
+      "at": 25,
+      "quote": "ChangeInfo info = mChanges.get(wc);",
+      "kind": "data",
+      "text": "取已有 ChangeInfo：同一 wc 可能已被可见性等路径写过，复用可保住已设置的 flags 与目标状态，不覆盖。"
+    },
+    {
+      "at": 26,
+      "quote": "if (info == null) {",
+      "kind": "branch",
+      "text": "仅首次收集才新建；无条件重建会丢掉先前 updateTransientFlags 写入的 FLAG_TRANSIENT_HIDE 等标记。"
+    },
+    {
+      "at": 27,
+      "quote": "info = new ChangeInfo(wc);",
+      "kind": "data",
+      "text": "构造 ChangeInfo 承载 wc 的起始/目标状态与 flags，是后续动画解析与事务 merge 的载体。"
+    },
+    {
+      "at": 28,
+      "quote": "updateTransientFlags(info);",
+      "kind": "state",
+      "text": "刷新 transient 标志：wc 在 mTransientHideTasks 内则置 FLAG_TRANSIENT_HIDE。"
+    },
+    {
+      "at": 29,
+      "quote": "mChanges.put(wc, info);",
+      "kind": "data",
+      "text": "以 wc 为键登记进 mChanges，finishTransition 与动画解析靠它遍历；漏登记则该容器不出现在动画和事务中。"
+    },
+    {
+      "at": 31,
+      "quote": "mParticipants.add(wc);",
+      "kind": "state",
+      "text": "标记为已参与：既实现第 13 行幂等，也让 getParticipants/finishTransition 统计到本次事务涉及的全部容器。"
+    },
+    {
+      "at": 32,
+      "quote": "recordDisplay(wc.getDisplayContent());",
+      "kind": "data",
+      "text": "把 wc 的 DisplayContent 记入 mTargetDisplays 并快照 on-top task；display 空则跳过。"
+    },
+    {
+      "at": 33,
+      "quote": "if (info.mShowWallpaper) {",
+      "kind": "branch",
+      "text": "仅当该变更会显示壁纸时才收集壁纸 token；无条件收集会把无关壁纸拉进同步集合，拖慢动画首帧。"
+    },
+    {
+      "at": 34,
+      "quote": "// Collect the wallpaper token (for isWallpaper(wc)) so it is part of ",
+      "kind": "note",
+      "text": "注释：收集顶层壁纸 token，使 isWallpaper(wc) 成立，从而让壁纸进入 sync set 参与同步。"
+    },
+    {
+      "at": 35,
+      "quote": "wc.mDisplayContent.mWallpaperController.collectTopWallpapers(this);",
+      "kind": "state",
+      "text": "把顶层壁纸 token 也收进本事务，保证壁纸与上层窗口同帧；漏收会导致壁纸先动或后动的撕裂感。"
+    }
+  ]
+}

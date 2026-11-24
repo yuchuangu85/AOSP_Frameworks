@@ -1,0 +1,44 @@
+{
+  "step": "s31",
+  "title": "onCompositionPresented：释放 buffer",
+  "tldr": "present 后 SF 记账，release fence 经 socket 回 app，释放上一块 buffer。",
+  "why": "没有这一步，buffer 只进不出：app 手里的槽位全部处于 acquired，dequeueBuffer 永远拿不到空槽，RT 会卡在 swap 上，UI 线程随后的 syncAndDrawFrame 也跟着停住，画面冻结但进程一切正常。同时 present fence 与 present 时间不会写进 TimeStats 和 FrameTimeline，jank 分类、--latency 直方图、FrameMetrics 的 DisplayPresentTime 全部缺失，任何「这一帧到底什么时候上屏」的推断都变成猜。release fence 还必须发对人：发早一帧就是 SF 还在读的时候把 buffer 还给 app，表现为撕裂或花屏。",
+  "concepts": [
+    { "term": "release fence", "text": "SF 表示「用完这块 buffer」的 fence；app 靠它判断何时能重新 dequeue。" },
+    { "term": "previousReleaseCallbackId", "text": "本次要释放的是被本帧替换掉的上一块 buffer（bufferId + frameNumber），不是刚上屏的那块。" },
+    { "term": "mFrameLatencyNeeded", "text": "只有真正 latch 到新 buffer 的帧才为 true，否则 present 回调直接返回。" },
+    { "term": "BufferReleaseChannel", "text": "SF 与 app 之间的一对 socketpair，release fence 以 fd 附带发送，不占 binder。" }
+  ],
+  "walk": [
+    { "call": "void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId, const scheduler::FrameTargeters& frameTargeters, nsecs_t presentStartTime)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3775", "what": "composite 末尾直接调用，跑在主线程；入参是 present 开始时间，不是 fence 时间。" },
+    { "call": "if (!mBufferInfo.mFrameLatencyNeeded) return;", "ref": "native/services/surfaceflinger/Layer.cpp:1438", "what": "这一帧没 latch 到新 buffer 的层什么都不做：纯 SurfaceControl、重合成都不会有回调。" },
+    { "call": "layer->onCompositionPresented(pacesetterDisplay.get(), pacesetterGpuCompositionDoneFenceTime, pacesetterPresentFenceTime, compositorTiming, gameMode)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3869", "what": "逐层把 present fence 与 client 合成信息写进 TimeStats / FrameTracer。" },
+    { "call": "layer->releasePendingBuffer(presentTime.ns())", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3872", "what": "记账完立刻推 release：presentTime 会成为 callback 里的 dequeueReadyTime。" },
+    { "call": "handle.bufferReleaseChannel = mBufferReleaseChannel;", "ref": "native/services/surfaceflinger/Layer.cpp:816", "what": "出队时把 socket 端点、maxAcquired、transformHint 塞进 handle。" },
+    { "call": "mFlinger->getTransactionCallbackInvoker().addCallbackHandles(std::move(mDrawingState.callbackHandles))", "ref": "native/services/surfaceflinger/Layer.cpp:833", "what": "handle 的持有者换成 invoker，Layer 侧随即 clear。" },
+    { "call": "mBufferReleases.emplace_back(std::move(handle.name), std::move(handle.bufferReleaseChannel), handle.previousReleaseCallbackId, ...)", "ref": "native/services/surfaceflinger/TransactionCallbackInvoker.cpp:118", "what": "带 channel 的 handle 才生成一条 release；没有 channel 就走 binder 回调。" },
+    { "call": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3985", "what": "传 false：这是 present 时机，不是 commit 时机；同一函数平时也被 commit 用。" },
+    { "call": "bufferRelease.channel->writeReleaseFence(bufferRelease.callbackId, fence, bufferRelease.currentMaxAcquiredBufferCount)", "ref": "native/services/surfaceflinger/TransactionCallbackInvoker.cpp:258", "what": "真正写 fd 的一行；fence 先经 FenceMerger 合过，才允许发给 app。" },
+    { "call": "status_t BufferReleaseChannel::ProducerEndpoint::writeReleaseFence(const ReleaseCallbackId& callbackId, const sp<Fence>& fence, uint32_t maxAcquiredBufferCount)", "ref": "native/libs/gui/BufferReleaseChannel.cpp:202", "what": "一条 SOCK_SEQPACKET 消息，fence 放在 SCM_RIGHTS 的 fd 里。" }
+  ],
+  "state": [
+    { "field": "Layer::mBufferInfo.mFrameLatencyNeeded", "before": "true（latch 时 gatherBufferInfo 置位，Layer.cpp:1321）", "after": "false（Layer.cpp:1503）", "note": "与 mFrameStatsHistorySize++ 一起更新；下一帧 latch 才会重新变 true" },
+    { "field": "Layer::mDrawingState.callbackHandles", "before": "非空：每笔带 buffer 的 transaction 一个 handle", "after": "空（Layer.cpp:835 clear）", "note": "handle 被 move 进 TransactionCallbackInvoker，Layer 不再持有" },
+    { "field": "TransactionCallbackInvoker::mBufferReleases", "before": "空", "after": "每个带 channel 的 handle 一条，sendCallbacks 结束即 clear（TransactionCallbackInvoker.cpp:273）", "note": "里面有 channel、callbackId、maxAcquiredBufferCount" },
+    { "field": "Layer::mPreviousReleaseCallbackId", "before": "上一轮 latch 的 {bufferId, frameNumber}", "after": "本轮 latch 的 {bufferId, frameNumber}（Layer.cpp:1300）", "note": "所以 present 释放的是刚被替换掉的那块，不是刚上屏的那块" }
+  ],
+  "threads": "composite 与 onCompositionPresented 都在 surfaceflinger 主线程：SurfaceFlinger::run 调 Scheduler::run（SurfaceFlinger.cpp:627），Scheduler::onFrameSignal 里调 compositor.composite（Scheduler.cpp:501），再在 composite 末尾进 onCompositionPresented（SurfaceFlinger.cpp:3522）。此刻主线程已持 mStateLock——3795 的 ftl::FakeGuard 是「断言已持有」而非加锁。writeReleaseFence 的执行线程取决于 fence_handling 开关：打开时被挪到 BackgroundExecutor 的线程（TransactionCallbackInvoker.cpp:227），关闭时就在主线程同步写完（161）。读端在 app 进程的 RenderThread。",
+  "pitfalls": [
+    "释放的不是刚上屏的 buffer：writeReleaseFence 带的 callbackId 来自 mPreviousReleaseCallbackId（Layer.cpp:1300/828），也就是被本帧替换掉的那一块。按字面理解成「上屏即释放」，就无法解释多缓冲为什么还会卡住。",
+    "没有新 buffer 的层不参与：Layer.cpp:1438 直接 return，纯 SurfaceControl、只重新合成的帧不会有任何 release 回调，等回调的代码会一直等。",
+    "release 有第二条路径：latch 新 buffer 时若发现上一块已被替换，会立刻在 Layer::releasePreviousBuffer 里调 callReleaseBufferCallback（Layer.cpp:862），走 Layer.cpp:738 的 writeReleaseFence，与 present 时机无关。early release 打开时还会用 mLastClientCompositionFence（873-877）。",
+    "释放有两种落地时机：fence_handling 关时 writeReleaseFence 就在 SF 主线程同步写（TransactionCallbackInvoker.cpp:161），开会挪到 BackgroundExecutor（227）。perfetto 里量「主线程上的 writeReleaseFence」可能是零，也可能很贵，取决于这个 flag。",
+    "mLayersWithBuffersRemoved 是另一类：层已经不在任何显示器上（3852-3865），present 时用 prepareReleaseCallbacks + releasePendingBuffer 把 buffer 还回去，原因与正常 present 完全不同，dump 时要分开看。"
+  ],
+  "debug": [
+    "atrace / perfetto 抓 gfx 分类，找 onCompositionPresented 切片（SurfaceFlinger.cpp:3778 的 SFTRACE_CALL），与 app 侧 DrawFrames / Drawing 切片对齐看 SF 是在哪一拍开始处理这一帧",
+    "instant 事件搜 layer 名：「callReleaseBufferCallback <name> - <frameNumber>」（Layer.cpp:718）与「releasePendingBuffer <name> - <frameNumber>」（Layer.cpp:822）能直接看出释放的是哪一帧",
+    "adb shell dumpsys SurfaceFlinger --latency <layer>：走 SurfaceFlinger.cpp:6675 → dumpStats（6731）→ Layer::dumpFrameStats（623），每行三列 desiredPresent / actualPresent / frameReady，actual 那列就来自这里的 present fence"
+  ],
+  "next": "第 32 步「release fence 回流，唤醒下一帧」：fence 已经是 socket 里的一条消息，接着看 app 的 dequeueBuffer 怎么被它唤醒。"
+}

@@ -1,0 +1,102 @@
+{
+  "id": "tr-start",
+  "title": "Transition.start",
+  "file": "base/services/core/java/com/android/server/wm/Transition.java",
+  "sig": "void start() {",
+  "span": [
+    880,
+    898
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void start() {",
+      "kind": "state",
+      "text": "由 TransitionController 在 WM 线程调用；形式启动后才视为 ready，即便参与者已全部绘制完。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mState < STATE_COLLECTING) {",
+      "kind": "branch",
+      "text": "mState 为 STATE_PENDING(-1) 表示还没开始收集，此刻启动无合法参与者，故抛异常而非静默降级。"
+    },
+    {
+      "at": 3,
+      "quote": "throw new IllegalStateException(\"Can't start Transition which isn't co",
+      "kind": "note",
+      "text": "抛 IllegalStateException 中断调用方；若放行，未收集参与者的过渡会被标记已启动，ready 同步无对象。"
+    },
+    {
+      "at": 4,
+      "quote": "} else if (mState >= STATE_STARTED) {",
+      "kind": "branch",
+      "text": "已处于 STARTED/PLAYING/ABORT/FINISHED（>=1）均属重复启动，走告警分支保持幂等而非再抛异常。"
+    },
+    {
+      "at": 5,
+      "quote": "Slog.w(TAG, \"Transition already started id=\" + mSyncId + \" state=\" + m",
+      "kind": "trace",
+      "text": "仅打 warn 日志，带 mSyncId 与 mState 便于定位重复 start 的调用来源；不修改任何状态。"
+    },
+    {
+      "at": 6,
+      "quote": "// The transition may be aborted (STATE_ABORT) or timed out (STATE_PLA",
+      "kind": "note",
+      "text": "注释前提：abort 或 SyncGroup#finishNow 超时会把状态推过 STARTED，故不能靠回滚状态恢复。"
+    },
+    {
+      "at": 7,
+      "quote": "// SyncGroup#finishNow), so do not revert the state to STATE_STARTED.",
+      "kind": "note",
+      "text": "由此决定：重复 start 只告警后返回，绝不把 mState 改回 STARTED，以免破坏已 abort/超时的状态。"
+    },
+    {
+      "at": 8,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "提前返回：跳过 applyReady、计时与 updateAnimatingState，重复启动不重发 ready 也不刷新动画态。"
+    },
+    {
+      "at": 10,
+      "quote": "mState = STATE_STARTED;",
+      "kind": "state",
+      "text": "推进到 STATE_STARTED(1)：isCollecting 仍为真，但 applyReady 内部的 mState 拦截从此放行。"
+    },
+    {
+      "at": 11,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS, \"Starting Tra",
+      "kind": "trace",
+      "text": "ProtoLog 仅在 WM_DEBUG_WINDOW_TRANSITIONS 开启时输出，便于按 mSyncId 对齐 winscope。"
+    },
+    {
+      "at": 12,
+      "quote": "mSyncId);",
+      "kind": "data",
+      "text": "续上一行实参 mSyncId，即同步组 id；为负说明未 prepareSync，后续 setReady 会被忽略。"
+    },
+    {
+      "at": 13,
+      "quote": "applyReady();",
+      "kind": "state",
+      "text": "重新评估 allReady 并调 mSyncEngine.setReady；刚变 ready 则记 mReadyTimeNs 并通知已填充。"
+    },
+    {
+      "at": 15,
+      "quote": "mLogger.mStartTimeNs = SystemClock.elapsedRealtimeNanos();",
+      "kind": "data",
+      "text": "记录启动时刻纳秒时间，作为 TransitionLogger 的 started 耗时基准；缺失会让耗时显示异常。"
+    },
+    {
+      "at": 17,
+      "quote": "mController.updateAnimatingState();",
+      "kind": "state",
+      "text": "让 controller 进入 animating 态：为各 display 开 high-perf hint 并安排帧刷新可见性。"
+    },
+    {
+      "at": 18,
+      "quote": "reportFullscreenRequestFallbackResult();",
+      "kind": "note",
+      "text": "mPendingFullscreenRequest 非空时上报全屏请求回退结果，避免请求方等待超时；为空则立即返回。"
+    }
+  ]
+}

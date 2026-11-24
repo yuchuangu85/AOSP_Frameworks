@@ -1,0 +1,47 @@
+{
+  "step": "s27",
+  "title": "Output::prepare：重建 layer stack，算出谁真的可见",
+  "tldr": "每块屏各自从 z 序最上层往下遍历，扣掉被上层不透明区盖住的部分，没剩下可见区的层不进合成。",
+  "why": "layer stack 不重建的后果不是黑屏，而是更隐蔽的「多画」与「少画」。不重建时，已被完全遮挡的层仍留在 OutputLayer 列表里，照样进 HWC 的 validate、照样占 DPU 的 overlay 名额，一旦超过硬件层数上限，本来能 DEVICE 合成的层会被踢回 CLIENT 合成，GPU 负载凭空变高、功耗上升，而画面上完全看不出错。反过来，如果 visibleRegion 算错（比如没扣掉上层的不透明区域），本该剔除的层留在列表里，而它下面的层又因为「上面还有东西」被扣掉一块，结果是中间那层看起来被挖了个洞。这类 bug 只在特定层级组合下出现，靠单层调试永远发现不了。",
+  "concepts": [
+    { "term": "layer stack", "text": "这块屏这一帧要合成的层列表，按 z 序排；Output::prepare 负责把它算对。" },
+    { "term": "visibleRegion", "text": "层真正露在屏幕上的区域，等于它的投影减去上层所有不透明区域的并集。" },
+    { "term": "CoverageState", "text": "遍历累积器：aboveOpaqueLayers、aboveCoveredLayers 与 dirtyRegion。" },
+    { "term": "outputLayer", "text": "LayerFE 在某个 Output 上的投影对象，持有每屏每帧的 visibleRegion 等。" }
+  ],
+  "walk": [
+    { "call": "void Output::prepare(const compositionengine::CompositionRefreshArgs& refreshArgs,", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:441", "what": "入口只做两件事：重建层栈、处理要 uncache 的 buffer。" },
+    { "call": "rebuildLayerStacks(refreshArgs, geomSnapshots);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:446", "what": "第一件事：算出本帧的可见层集合与脏区。" },
+    { "call": "if (!outputState.isEnabled || CC_LIKELY(!refreshArgs.updatingOutputGeometryThisFrame)) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:531", "what": "关键门：几何没变就直接 return，沿用上一帧的层栈。" },
+    { "call": "collectVisibleLayers(refreshArgs, coverage);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:542", "what": "真正开始遍历所有候选层。" },
+    { "call": "for (auto layer : reversed(refreshArgs.layers)) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:558", "what": "逆序＝front-to-back：先处理上层，下层才能被正确扣除。" },
+    { "call": "coverage.aboveCoveredLayers.orSelf(visibleRegion);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:706", "what": "把本层加进「已经盖住下面」的区域，供更下层算 coveredRegion。" },
+    { "call": "visibleRegion.subtractSelf(coverage.aboveOpaqueLayers);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:715", "what": "扣掉上层不透明部分，剩下的才是本层真正可见的区域。" },
+    { "call": "if (visibleRegion.isEmpty()) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:717", "what": "判定之一：被完全盖住就直接返回，不创建 outputLayer。" },
+    { "call": "drawRegion.andSelf(outputState.displaySpace.getBoundsAsRect());", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:775", "what": "再和屏幕范围求交：投影完全在屏外的层同样不算可见。" },
+    { "call": "auto outputLayer = ensureOutputLayer(prevOutputLayerIndex, layerFE);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:784", "what": "通过所有检查才算可见：复用旧的或在 pending 列表里新建一个。" },
+    { "call": "outputLayerState.visibleRegion = visibleRegion;", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:804", "what": "把结果写进 outputLayer，后面所有合成步骤都读这份值。" },
+    { "call": "finalizePendingOutputLayers();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:568", "what": "pending 整体换成 current，没被加进去的层这一拍就此消失。" },
+    { "call": "output->prepare(args, latchedLayers);", "ref": "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp:144", "what": "调用点：CE 对每个 output 串行 prepare，共享一份 latchedLayers。" }
+  ],
+  "state": [
+    { "field": "OutputCompositionState.undefinedRegion", "before": "上一帧的值", "after": "屏幕范围减去上层不透明区域（549）", "note": "表示「不知道下面是什么」的区域，影响能否复用上一帧" },
+    { "field": "OutputCompositionState.dirtyRegion", "before": "上一帧残留的脏区", "after": "orSelf(coverage.dirtyRegion) 累加（550）", "note": "beginFrame 用它判断这一拍要不要真的 recompose" },
+    { "field": "OutputLayerCompositionState.visibleRegion", "before": "上一帧算出的可见区", "after": "本帧重算的 visibleRegion（804）", "note": "generateClientCompositionRequests 用它裁 clip，dump 里也看得到" },
+    { "field": "Output::mPendingOutputLayersOrderedByZ", "before": "空", "after": "遍历中逐个 emplace，末尾 reverse 并整体替换 current（impl/Output.h:269-272）", "note": "没进 pending 的层就等于这一拍被剔除" },
+    { "field": "CoverageState.latchedLayers", "before": "空", "after": "每个候选层插入一次（577）", "note": "同一个层出现在多个 output 上时，几何快照一帧只取一次" }
+  ],
+  "threads": "主线程对主 refreshArgs 的每个 output 串行调 prepare；被 offload 的副屏走另一份 mOffloadedCompositionEngine（SurfaceFlinger.cpp:3324），它的 prepare 跑在 BackgroundExecutor 的线程上。这一层不加锁：layer 与 output 的数据由各自那条合成线程独占，代价是主线程与 offload 线程不能碰同一个 output。",
+  "pitfalls": [
+    "门在 531：updatingOutputGeometryThisFrame 为 false 时整段跳过。改了层的可见性却没有把 mVisibleRegionsDirty 立起来，就是「改了没效果」，排查时先确认这个 flag（SurfaceFlinger.cpp:3360 给它的）。",
+    "遍历是 reversed（558），从 front 到 back。把这行改成顺序遍历的「优化」会让遮挡剔除彻底失效：下层先算，aboveOpaqueLayers 还是空的。",
+    "两个 early return（717、776）都在 ensureOutputLayer 之前，所以被剔除的层连 outputLayerState 都不会被写，dumpsys 里看到的是它上一次可见时的值。",
+    "本层可见性由 visibleRegion 决定，但最终裁剪用的是 outputSpaceVisibleRegion（807-808，还要再减去 shadow 区）：层本体被上层盖住但阴影还露着时，它仍然要进合成。"
+  ],
+  "debug": [
+    "perfetto 抓 sf：prepare 落在 Output::prepare / rebuildLayerStacks 的 slice（443、534 的 SFTRACE_CALL），门没开时后者根本不出现。",
+    "dumpsys SurfaceFlinger 里每个 output layer 段的 visibleRegion / coveredRegion / output visibleRegion（OutputLayerCompositionState.cpp:53、62），能直接看出某层是不是被剔了。",
+    "对照 composition summary（SurfaceFlinger.cpp:3653 的 \"Layers: N ...\" instant）：某层莫名出现在 GPU 大写串里，通常是可见区没剔干净、挤掉了 DPU 名额。"
+  ],
+  "next": "第 28 步「HWC 决定合成方式」：可见层集合定了，接下来问 HWC 每层是 DEVICE 还是 CLIENT 合成。"
+}

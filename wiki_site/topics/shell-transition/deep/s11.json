@@ -1,0 +1,89 @@
+{
+  "step": "s11",
+  "title": "Transition 进入 STARTED",
+  "tldr": "Shell 回传的启动事务落到 WMS 后，Transition 被推到 STARTED，并第一次真正把「参与者齐了没」推给 SyncSet。",
+  "why": "没有这一步，转场会一直停在 COLLECTING。collect 期间就算所有 ready 条件都已满足，applyReady() 也会因为 mState < STATE_STARTED 直接 return（Transition.java:1239），SyncSet 的 mReady 永远保持 false，BLASTSyncEngine 的 SyncSet.tryFinish 在第 199 行直接返回 false。结果是参与者早就画完了却没人触发 onTransactionReady：动画不播，窗口停在旧帧，用户看到「点了没反应，几百毫秒后画面硬切」。更糟的是 TransitionController.mCollectingTransition 还指着这个不收口的转场，后面的转场请求会直接复用它、合并进来一起卡住。",
+  "concepts": [
+    {
+      "term": "ready-group",
+      "text": "一个 DisplayContent 算一个 ready-group；要等它下面所有要动的容器都 ready 才算齐。"
+    },
+    {
+      "term": "applyReady",
+      "text": "Transition 把 allReady() 的结果同步给 SyncSet 的唯一出口，但只在 STARTED 之后才真正下发。"
+    },
+    {
+      "term": "mCollectingTransition",
+      "text": "TransitionController 里「当前还在收集」的那一个；同一时刻只能有一个，新请求会复用它而不是新建。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "transition.start();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:435",
+      "what": "Shell 回传 WCT 之前先推进状态（display 线程分支则 post 到 mH 再做）。"
+    },
+    {
+      "call": "void start() {",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:880",
+      "what": "入口。先挡两条：还没 COLLECTING 就抛异常；已 >= STARTED 只打警告并返回，绝不回退状态。"
+    },
+    {
+      "call": "mState = STATE_STARTED;",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:889",
+      "what": "状态推进点。isCollecting() 此时仍为 true，还能继续收参与者，但状态只会往前走。"
+    },
+    {
+      "call": "applyReady();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:892",
+      "what": "补发 readiness：collect 时 met 的条件被 mState 挡掉，这里第一次落到 SyncSet。"
+    },
+    {
+      "call": "boolean changed = mSyncEngine.setReady(mSyncId, ready);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1245",
+      "what": "把 allReady() 的结果写进 SyncGroup.mReady；只有 false→true 的跳变才继续往下。"
+    },
+    {
+      "call": "mWm.mWindowPlacerLocked.requestTraversal();",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:327",
+      "what": "ready 后主动要一次 traversal，让下一趟 surface placement 去检查能不能收口。"
+    },
+    {
+      "call": "mController.updateAnimatingState();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:896",
+      "what": "告诉 controller 真在跑了：打开 display 的 perf hint、暂停 snapshot 持久化。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Transition.mState",
+      "before": "STATE_COLLECTING (=0)",
+      "after": "STATE_STARTED (=1)",
+      "note": "唯一推进点在 Transition.java:889；之后重复调 start() 只打 log"
+    },
+    {
+      "field": "SyncGroup.mReady",
+      "before": "false（collect 期间的 applyReady 被 mState 挡掉）",
+      "after": "true（若 allReady() 成立）",
+      "note": "false→true 时才 requestTraversal"
+    },
+    {
+      "field": "Transition.mLogger.mStartTimeNs",
+      "before": "0",
+      "after": "elapsedRealtimeNanos()",
+      "note": "perfetto 的 start 起点，与 mSendTimeNs 相减就是 WMS 侧这段耗时"
+    }
+  ],
+  "threads": "跑在发起 startTransition 的 binder 线程（或 mH 的 display 线程，走 shouldApplyOnDisplayThread 分支），两条路径都在 mGlobalLock 内，所以状态推进实际是串行的。",
+  "pitfalls": [
+    "不要以为这里是 PENDING→STARTED：PENDING 已被 startCollecting 推到 COLLECTING，真正的迁移是 COLLECTING→STARTED。",
+    "start() 里的 applyReady() 可能立刻把 sync 标成 ready（参与者早就画完时），下一趟 surface placement 就 finishNow，所以 start 之后不保证还有若干帧缓冲。",
+    "重复调 start() 不会覆盖已推进的状态：mState >= STARTED 时只 Slog.w 然后 return，因为此时可能已被 abort 或 SyncGroup 超时推到别的状态。"
+  ],
+  "debug": [
+    "adb shell dumpsys window transitions | grep -A3 \"Transition #\" 看 state 是否停在 COLLECTING",
+    "ProtoLog group WM_DEBUG_WINDOW_TRANSITIONS，过滤 \"Starting Transition\" 与 \"Set transition ready\"",
+    "perfetto: 在 wm_transition 里看 \"playing\" 的 async trace 之前是否出现过 Start 那一段"
+  ],
+  "next": "状态到了 STARTED，下一步等参与者真画完 → 第 16 步「参与者逐帧绘制，SyncSet 收集完成」。"
+}

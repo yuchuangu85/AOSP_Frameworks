@@ -1,0 +1,204 @@
+{
+  "id": "stage-02",
+  "num": 2,
+  "title": "Scheduler：commit 与 composite",
+  "subtitle": "VSyncDispatch 的 timer 线程发 vsyncId，SF 主线程先 commit 再决定要不要 composite",
+  "lane": "SF",
+  "durationHint": "量级：commit 通常亚毫秒~数毫秒（取决于事务量与 latch），composite 由 GPU 合成量决定；整段必须在下一个 vsync 前完成（源码中未体现固定阈值）",
+  "summary": "SF 的 vsync 来自 VSyncDispatch：MessageQueue::vsyncCallback 在 dispatch 的 timer 线程上被调用，先用 TokenManager::generateTokenForPredictions 为 (targetWakeupTime, readyTime, vsyncTime) 生成 VsyncId，再通过 Handler::dispatchFrame 用 mFramePending 去重后 sendMessage 到 SF 主线程（这是整条链路里唯一一次线程切换）。主线程 Handler::handleMessage 调 Scheduler::onFrameSignal：构造 FrameTargeter::BeginFrameArgs 给 pacesetter 与各 follower display 调 beginFrame 算出 expectedPresentTime，然后调 ICompositor::commit。commit 返回 false 就只上报 FrameTimeline 的 NotComposited 并直接返回，不做合成；只有返回 true 才继续走 ICompositor::composite，最后对每个 display 调 FrameTargeter::endFrame 收尾。android17 的 native 代码里已经没有 onMessageRefresh（全仓库 grep 无命中），刷新被显式拆成 commit/composite 两个阶段。由于 SF 只在需要时才向 VSyncDispatch 注册回调，没有事务时它根本不会醒——所谓「空转」是没有注册 vsync，而不是空跑循环。",
+  "callchain": [
+    "MessageQueue::vsyncCallback()",
+    "MessageQueue::Handler::dispatchFrame()",
+    "MessageQueue::Handler::handleMessage()",
+    "Scheduler::onFrameSignal()",
+    "FrameTargeter::beginFrame()",
+    "SurfaceFlinger::commit()",
+    "SurfaceFlinger::updateLayerSnapshots()",
+    "SurfaceFlinger::composite()",
+    "FrameTargeter::endFrame()"
+  ],
+  "sections": [
+    {
+      "heading": "触发者与线程：一次 vsync 回调要跨两个线程",
+      "html": "<p>SF 自己不轮询 vsync，它向 <code>scheduler::VSyncDispatch</code> 注册回调。<code>MessageQueue::initVsyncInternal(dispatch, tokenManager, workDuration)</code> 把 <code>getVsyncSchedule()-&gt;getDispatch()</code> 与 TokenManager 装进来（Scheduler.cpp:91-93），<code>onNewVsyncScheduleLocked</code> 创建 <code>VSyncCallbackRegistration</code> 并绑定 <code>&amp;MessageQueue::vsyncCallback</code>，名字就叫 <code>\"sf\"</code>（MessageQueue.cpp:111-130）。</p><p><strong>线程一</strong>：<code>vsyncCallback</code> 跑在 VSyncDispatch 的 timer 线程上（MessageQueue.cpp:101-107 的注释明确提到 callback 可能运行在 timer thread，因此析构 registration 必须释放锁后做，否则会死锁）。它做三件事：翻转 <code>TracedOrdinal&lt;int&gt; value = {\"VSYNC-sf\", 0}</code> 计数器（62 行、MessageQueue.h:130）；在 <code>mVsync.mutex</code> 下更新 <code>lastCallbackTime</code> 并清掉 <code>scheduledFrameTimeOpt</code>（65-69）；用 <code>tokenManager-&gt;generateTokenForPredictions({targetWakeupTime, readyTime, vsyncTime})</code> 生成这次的 <code>VsyncId</code>（71-72）。</p><p><strong>线程二</strong>：<code>Handler::dispatchFrame</code> 用 <code>mFramePending.exchange(true)</code> 做去重（重复的 vsync 只会排队一次），把 vsyncId/expectedVsyncTime 存进两个 atomic 成员，然后 <code>mQueue.mLooper-&gt;sendMessage(...)</code> 把工作甩到 SF 主线程（32-38）。主线程 <code>handleMessage</code> 先清 pending 标志，再调 <code>mQueue.onFrameSignal(...)</code>（44-47）。<code>onFrameSignal</code> 在 <code>MessageQueue</code> 里是纯虚函数（MessageQueue.h:115），实现就是 <code>Scheduler::onFrameSignal</code>——因为 <code>Scheduler : public IEventThreadCallback, android::impl::MessageQueue</code>（Scheduler.h:81）。</p><p>所以一次 vsync 处理 = timer 线程算 id 并投递 + 主线程干完整活。这也意味着 <strong>vsyncCallback 的耗时不能算进 SF 主线程</strong>，排查上要分开看。</p>"
+    },
+    {
+      "heading": "按需注册：没有事务时 SF 不注册 vsync，这就是「空转」",
+      "html": "<p><code>MessageQueue::scheduleFrame(workDurationSlack)</code> 是唯一给 VSyncDispatch 排下一拍的地方（191-200）：</p><blockquote>const auto workDuration = Duration(mVsync.workDuration.get() - workDurationSlack);<br>mVsync.scheduledFrameTimeOpt = mVsync.registration-&gt;schedule({.workDuration = workDuration.ns(), .readyDuration = 0, .lastVsync = mVsync.lastCallbackTime.ns()});</blockquote><p><code>workDuration</code> 来自 VsyncModulator 的 <code>sfWorkDuration</code>（Scheduler.cpp:416-422 把它放进 BeginFrameArgs），<code>readyDuration</code> 固定 0，<code>lastVsync</code> 用上一次回调时间做相位基准——这就是 SF 与 app 处在同一个 vsync 相位、但工作窗口不同的机制——app 那一侧的 EventThread 复用的正是同一个 VsyncSchedule：<code>std::make_unique&lt;android::impl::EventThread&gt;(\"app\", getVsyncSchedule(), tokenManager, *this, workDuration, readyDuration)</code>（Scheduler.cpp:583-588）。</p><p>关键结论：<strong>SF 只在需要时注册 vsync</strong>。真正触发注册的是事务到达路径 <code>setTransactionFlags</code>（SurfaceFlinger.cpp:5297-5313）里「标志从无到有」那一次 <code>scheduleCommit</code>，以及 commit 内部发现还需要下一拍的各种分支（例如 display mode set pending、HWC 背压，3022-3067）。没有事务、没有 mustComposite 时，<code>scheduleFrame</code> 不会被调用，SF 主线程就停在 <code>waitMessage()</code> 的 <code>mLooper-&gt;pollOnce(-1)</code> 上（MessageQueue.cpp:148-168）。</p><p>这就是「SF 空转」的准确含义：不是 SF 空跑循环，而是<strong>根本没有注册 vsync 回调</strong>。反过来说，如果 trace 里看到 SF 每个 vsync 都醒但 commit 一直返回 false，那就是有东西在持续注册 vsync（例如某个动画层的 frame rate 投票、或者 requestNextVsync），需要往上报者查。</p>"
+    },
+    {
+      "heading": "onFrameSignal 的第一段：beginFrame 先算出 expectedPresentTime",
+      "html": "<p><code>Scheduler::onFrameSignal</code> 拿到 (vsyncId, expectedVsyncTime) 后先构造 <code>FrameTargeter::BeginFrameArgs</code>（411-422）：</p><blockquote>{.frameBeginTime = mClock-&gt;now(), .vsyncId = vsyncId, .expectedVsyncTime = expectedVsyncTime, .sfWorkDuration = mVsyncModulator-&gt;getVsyncConfig().sfWorkDuration, .hwcMinWorkDuration = ..., .debugPresentTimeDelay = debugPresentDelay}</blockquote><p><code>BeginFrameArgs</code> 的结构定义在 FrameTargeter.h:134-141，<code>debugPresentTimeDelay</code> 是调试注入 jank 用的。随后对 pacesetter display 调 <code>targeterPtr-&gt;beginFrame(beginFrameArgs, *pacesetterPtr-&gt;schedulePtr)</code>（424-425）——<strong>beginFrame 的作用是把 vsync 时间换算成这个 display 真正可以上屏的 expectedPresentTime</strong>；此前 Scheduler 还从 <code>mDebugPresentDelay</code> 取了一次一次性延迟（413-414）。</p><p>接着对每个 follower display 分别处理（438-468）：用 <code>display.schedulePtr-&gt;vsyncDeadlineAfter(expectedVsyncTime)</code> 推出它自己的 vsync 时刻（442-444），必要时用 <code>countPresentFencesPendingAt</code> 检查是否还有未 signal 的 present fence，若 follower 已经背压且不是「只挂一个 fence 且下一拍就能解决」的情况，就 <code>SFTRACE_FORMAT_INSTANT(\"Avoiding backpressure for follower display %lu\")</code> 并跳过这个 display（447-463）。</p><p>这一段决定了本帧「谁参与合成、目标上屏时刻是多少」。它不改任何 layer 状态，只读 fence 与 display 配置，因此不需要 <code>mStateLock</code> 的写权限。</p>"
+    },
+    {
+      "heading": "commit：返回 true 才有资格 composite",
+      "html": "<p>这是本阶段最核心的一行（Scheduler.cpp:470-474）：</p><blockquote>if (!compositor.commit(pacesetterPtr-&gt;displayId, targets)) {<br>&nbsp;&nbsp;&nbsp;&nbsp;compositor.sendNotifyExpectedPresentHint(pacesetterPtr-&gt;displayId);<br>&nbsp;&nbsp;&nbsp;&nbsp;mSchedulerCallback.onCommitNotComposited();<br>&nbsp;&nbsp;&nbsp;&nbsp;return;<br>}</blockquote><p><code>ICompositor::commit</code> 的契约写在接口注释里（native/services/surfaceflinger/Scheduler/include/scheduler/interface/ICompositor.h:41-43）：<em>Commits transactions for layers and displays. Returns whether any state has been invalidated, i.e. whether a frame should be composited for each display.</em> 也就是 <strong>commit 既做「应用事务」，又回答「这一拍到底要不要合成」</strong>。</p><p>返回 false 时的三个动作都有含义：<code>sendNotifyExpectedPresentHint</code> 把预期上屏时间提示给 SurfaceControl 的调用方；<code>mSchedulerCallback.onCommitNotComposited()</code> 落到 <code>SurfaceFlinger::onCommitNotComposited()</code>（SurfaceFlinger.cpp:5158-5159）→ <code>mFrameTimeline-&gt;onCommitNotComposited()</code>（FrameTimeline.cpp:1432-1439），给当前 DisplayFrame 记一次「commit 了但没合成」并重置它；然后直接 return，不做 composite、不调 endFrame。</p><p>SurfaceFlinger::commit 一侧的返回逻辑（2996-3202）：初始化 <code>mustComposite = mMustComposite.exchange(false)</code>（3119），再 <code>mustComposite |= updateLayerSnapshots(...)</code>（3137-3140），中途还有多个 early return false：display 被移除（3022-3032）、mode set 未完成（3035-3057）、HWC 背压且策略要求退让（3059-3067）。最终 <code>return mustComposite &amp;&amp; CC_LIKELY(mBootStage != BootStage::BOOTLOADER)</code>（3201）——即使在开机动画之前 <code>mustComposite</code> 为真也不合成。所以「commit 返回 false」不是错误，而是「这一拍没有需要上屏的状态变化」。</p>"
+    },
+    {
+      "heading": "composite：只有到这里才碰 GPU / HWC",
+      "html": "<p>commit 返回 true 后，Scheduler 重新取一次 pacesetter（注释：pacesetter 可能在 commit 期间变更或新注册，477-481），组装 <code>FrameTargeters</code>（把本帧 presentable 的 display 的 targeter 收进来，483-489），然后调 <code>compositor.composite(pacesetterId, targeters)</code>（501）。</p><p><code>ICompositor::composite</code> 的注释（ICompositor.h:45-48）写明：<em>Composites a frame for each display. CompositionEngine performs GPU and/or HAL composition via RenderEngine and the Composer HAL, respectively.</em> 对应实现是 <code>SurfaceFlinger::composite</code>（3330 起），它开了一个 <code>SFTRACE_ASYNC_FOR_TRACK_BEGIN(..., \"Composition\", WorkloadTracer::COMPOSITION_TRACE_COOKIE)</code> 的异步 slice，最终把 GPU 合成（RenderEngine）与 HWC 合成分别下发。</p><p>合成完有三步收尾（501-509）：<code>sendNotifyExpectedPresentHint</code>、<code>compositor.sample()</code>（RegionSamplingThread 采样，用于 HDR/白点/自适应亮度）、以及遍历每个 targeter 调 <code>endFrame(*resultOpt)</code>。若某个 display 没有返回 CompositeResult，直接 <code>LOG_ALWAYS_FATAL_IF(!resultOpt)</code> 崩掉——这是契约而不是容错。</p><p>还有一段调试用的「注入 jank」逻辑：<code>mPacesetterFrameDurationFractionToSkip &gt; 0</code> 时按期望帧时长的一定比例 <code>std::this_thread::sleep_for(skipDuration)</code>，并打 <code>\"Injecting jank for %f%% of the frame\"</code>（491-499）。这是 SF 自带的 jank 注入开关，线上不会有值，但看 trace 时要知道这段耗时是人为的。</p>"
+    },
+    {
+      "heading": "为什么 android17 没有 onMessageRefresh：两段式把「判定」与「执行」拆开",
+      "html": "<p>在旧的 SF 里，vsync 消息最终走一个叫 <code>onMessageRefresh</code> 的入口，把所有事情（apply transactions、latch、合成、present）串在一个函数里。android17 的实现里<strong>全仓库检索 <code>native/</code> 已经没有任何 <code>onMessageRefresh</code> 命中</strong>；取而代之的是 <code>ICompositor</code> 定义的两段式接口（ICompositor.h:37-58）：<code>configure()</code> / <code>commit()</code> / <code>composite()</code> / <code>sendNotifyExpectedPresentHint()</code> / <code>sample()</code>。</p><p>拆开的好处是「判定」与「执行」解耦：<code>commit</code> 只回答「有没有东西要上屏」，而且它可以在不合成的情况下推进状态（例如只 latch 了 buffer 但 damage 为空、或者只有不影响可见内容的几何变化）；<code>composite</code> 才真正分配 GPU/HWC 资源。这让 SF 在空闲时能以「commit 返回 false」的极低成本掠过一拍——这也是为什么 trace 里经常能看到 <code>commit</code> 有 slice 而 <code>Composition</code> 没有。</p><p>代价是状态必须在两段之间保持一致：<code>onFrameSignal</code> 在 commit 与 composite 之间重新取 <code>pacesetterFrameTargetPtr</code>（478），并注释说明「pacesetter 可能在 commit 期间变化或新注册」。<code>targeters</code> 也必须在 composite 前重新组装（480-489），否则会用到失效的 pointer。<strong>看代码时务必注意这两处「重新取」不是冗余，而是两段式的必然要求。</strong></p>"
+    },
+    {
+      "heading": "与 display / HWC 的边界：present fence 在 endFrame 里闭环",
+      "html": "<p>Scheduler 是「时间与决策」层，物理上屏完全交给 CompositionEngine/HWC：</p><table><thead><tr><th>层</th><th>本阶段涉及的动作</th><th>说明</th></tr></thead><tbody><tr><td>Scheduler</td><td>vsyncCallback / beginFrame / commit 判定 / composite 调用 / endFrame</td><td>不碰 GPU、不碰 HWC 的 buffer，只处理时间与 fence 计数</td></tr><tr><td>SurfaceFlinger</td><td>commit（apply transactions、快照、latch）、composite（CompositionEngine::present）</td><td>真正的 GPU/HWC 交互在 CompositionEngine 与 RenderEngine</td></tr><tr><td>FrameTimeline</td><td>setSfWakeUp（commit 开头）、setSfPresent（composite 之后）</td><td>把 SF 的唤醒与上屏时刻写进 frame timeline，供 app 侧 jank 归因</td></tr><tr><td>HWC</td><td>validate / present / presentFence</td><td>present fence 回到 FrameTargeter::setPresentFence，参与下一帧的背压判断</td></tr></tbody></table><p>commit 一开头就把本拍信息写进 FrameTimeline：<code>mFrameTimeline-&gt;setSfWakeUp(vsyncId, frameBeginTime, vsyncPeriod 的 Fps, ...)</code>（3130-3133），实现里再 <code>onSfWakeUp</code> 并把 predictions 带上（FrameTimeline.cpp:1411-1418）；composite 之后由 <code>mFrameTimeline-&gt;setSfPresent(presentTime, presentFence, gpuFence)</code>（SurfaceFlinger.cpp:3822、FrameTimeline.cpp:1420-1430）收尾。两端一配，就能算出「SF 从 wake 到 present 用了多久」——这是判断 SF 侧是否超时的第一手数据。</p>"
+    },
+    {
+      "heading": "排障：怎么判断这一拍是「没活干」还是「干不完」",
+      "html": "<p>先分清三种情况：</p><ol><li><strong>没活干</strong>：trace 里没有 <code>onFrameSignal</code>/<code>commit</code> slice，只有 app 侧的 vsync——说明 SF 压根没被唤醒（没有事务触发 scheduleCommit）。</li><li><strong>commit 了但没合成</strong>：有 <code>commit</code> slice、没有 <code>Composition</code> slice，且 <code>onCommitNotComposited</code> 被调用。看 <code>SurfaceFlinger::commit</code> 的 early return 分支（3022-3067）与 <code>mustComposite</code> 的来源（<code>mMustComposite.exchange</code> / <code>updateLayerSnapshots</code> 返回值）。</li><li><strong>干不完</strong>：<code>commit</code> 或 <code>Composition</code> 的 slice 长度超过 <code>VsyncWorkDuration-sf</code>，或 <code>commit</code> 尾部出现 <code>refresh rate selection</code>、<code>updateInputFlinger</code> 等长尾。</li></ol><p>可用的观测点：<code>VSYNC-sf</code>（MessageQueue.h:130，每次回调翻转的计数器，用来数 SF 实际收到几拍）、<code>VsyncWorkDuration-sf</code>（MessageQueue.h:126-127，当前 sfWorkDuration）、commit 自己的 slice 名带 vsyncId（<code>SFTRACE_NAME(Concat(__func__, ' ', vsyncId))</code>，3012）、<code>\"Commit\"</code>（3068）、<code>\"Composition\"</code>（3332）、<code>\"Refresh Rate Selection\"</code>（3174）、以及 follower 背压时的 <code>\"Avoiding backpressure for follower display %lu\"</code>（459-460）。</p><p>一个常见误判：看到 <code>commit</code> 里有 <code>setSfWakeUp</code> 就以为「已经合成」——它只是记账，真正合成在 <code>composite</code> 里，成功与否要看 <code>endFrame</code> 是否被调用。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+      "symbol": "MessageQueue::Handler::dispatchFrame",
+      "lines": "32-70",
+      "code": "void MessageQueue::Handler::dispatchFrame(VsyncId vsyncId, TimePoint expectedVsyncTime) {\n    if (!mFramePending.exchange(true)) {\n        mVsyncId = vsyncId;\n        mExpectedVsyncTime = expectedVsyncTime;\n        mQueue.mLooper->sendMessage(sp<MessageHandler>::fromExisting(this), Message());\n    }\n}\n\nbool MessageQueue::Handler::isFramePending() const {\n    return mFramePending.load();\n}\n\nvoid MessageQueue::Handler::handleMessage(const Message&) {\n    mFramePending.store(false);\n    mQueue.onFrameSignal(mQueue.mCompositor, mVsyncId, mExpectedVsyncTime);\n}\n\nMessageQueue::MessageQueue(ICompositor& compositor)\n      : MessageQueue(compositor, sp<Handler>::make(*this)) {}\n\nconstexpr bool kAllowNonCallbacks = true;\n\nMessageQueue::MessageQueue(ICompositor& compositor, sp<Handler> handler)\n      : mCompositor(compositor),\n        mLooper(sp<Looper>::make(kAllowNonCallbacks)),\n        mHandler(std::move(handler)) {}\n\nvoid MessageQueue::vsyncCallback(nsecs_t vsyncTime, nsecs_t targetWakeupTime, nsecs_t readyTime) {\n    SFTRACE_CALL();\n    // Trace VSYNC-sf\n    mVsync.value = (mVsync.value + 1) % 2;\n\n    const auto expectedVsyncTime = TimePoint::fromNs(vsyncTime);\n    {\n        std::lock_guard lock(mVsync.mutex);\n        mVsync.lastCallbackTime = expectedVsyncTime;\n        mVsync.scheduledFrameTimeOpt.reset();\n    }\n",
+      "note": "一次 vsync 的两个线程：dispatchFrame 用 mFramePending.exchange 去重后 sendMessage 到 SF 主线程；vsyncCallback 则运行在 VSyncDispatch 的 timer 线程上，翻转 VSYNC-sf 计数器、清 scheduledFrameTimeOpt、用 TokenManager 为 (targetWakeupTime, readyTime, vsyncTime) 生成 VsyncId，再交给 dispatchFrame。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "symbol": "Scheduler::onFrameSignal",
+      "lines": "411-425",
+      "code": "void Scheduler::onFrameSignal(ICompositor& compositor, VsyncId vsyncId,\n                              TimePoint expectedVsyncTime) {\n    const auto debugPresentDelay = mDebugPresentDelay.load();\n    mDebugPresentDelay.store(std::nullopt);\n\n    const FrameTargeter::BeginFrameArgs beginFrameArgs =\n            {.frameBeginTime = mClock->now(),\n             .vsyncId = vsyncId,\n             .expectedVsyncTime = expectedVsyncTime,\n             .sfWorkDuration = mVsyncModulator->getVsyncConfig().sfWorkDuration,\n             .hwcMinWorkDuration = getCurrentVsyncConfigs().hwcMinWorkDuration,\n             .debugPresentTimeDelay = debugPresentDelay};\n\n    ftl::NonNull<const Display*> pacesetterPtr = pacesetterPtrLocked();\n    pacesetterPtr->targeterPtr->beginFrame(beginFrameArgs, *pacesetterPtr->schedulePtr);",
+      "note": "onFrameSignal 的第一段：把 (frameBeginTime, vsyncId, expectedVsyncTime, sfWorkDuration, hwcMinWorkDuration) 打包成 FrameTargeter::BeginFrameArgs，然后对 pacesetter display 调 beginFrame，把 vsync 时刻换算成真正可上屏的 expectedPresentTime。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+      "symbol": "compositor.commit",
+      "lines": "470-509",
+      "code": "        if (!compositor.commit(pacesetterPtr->displayId, targets)) {\n            compositor.sendNotifyExpectedPresentHint(pacesetterPtr->displayId);\n            mSchedulerCallback.onCommitNotComposited();\n            return;\n        }\n    }\n\n    // The pacesetter may have changed or been registered anew during commit.\n    pacesetterPtr = pacesetterPtrLocked();\n\n    FrameTargeters targeters;\n    targeters.try_emplace(pacesetterPtr->displayId, pacesetterPtr->targeterPtr.get());\n\n    for (auto& [id, display] : mDisplays) {\n        if (id == pacesetterPtr->displayId) continue;\n        if (!ftl::contains(presentableDisplays, id)) continue;\n\n        FrameTargeter& targeter = *display.targeterPtr;\n        targeters.try_emplace(id, &targeter);\n    }\n\n    if (CC_UNLIKELY(mPacesetterFrameDurationFractionToSkip > 0.f)) {\n        const auto period = pacesetterPtr->targeterPtr->target().expectedFrameDuration();\n        const auto skipDuration = Duration::fromNs(\n                static_cast<nsecs_t>(period.ns() * mPacesetterFrameDurationFractionToSkip));\n        SFTRACE_FORMAT(\"Injecting jank for %f%% of the frame (%\" PRId64 \" ns)\",\n                       mPacesetterFrameDurationFractionToSkip * 100, skipDuration.ns());\n        std::this_thread::sleep_for(skipDuration);\n        mPacesetterFrameDurationFractionToSkip = 0.f;\n    }\n\n    const auto resultsPerDisplay = compositor.composite(pacesetterPtr->displayId, targeters);\n    compositor.sendNotifyExpectedPresentHint(pacesetterPtr->displayId);\n    compositor.sample();\n\n    for (const auto& [id, targeter] : targeters) {\n        const auto resultOpt = resultsPerDisplay.get(id);\n        LOG_ALWAYS_FATAL_IF(!resultOpt);\n        targeter->endFrame(*resultOpt);\n    }",
+      "note": "两段式的分水岭：commit 返回 false 就 sendNotifyExpectedPresentHint + onCommitNotComposited 然后 return；只有 true 才重新取 pacesetter、重组 FrameTargeters、调 composite，最后对每个 targeter 调 endFrame（缺失 CompositeResult 直接 LOG_ALWAYS_FATAL）。中间那段是 debug 用的注入 jank。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/include/scheduler/interface/ICompositor.h",
+      "symbol": "ICompositor",
+      "lines": "37-48",
+      "code": "struct ICompositor {\n    // Configures physical displays, processing hotplug and/or mode setting via the Composer HAL.\n    virtual void configure() = 0;\n\n    // Commits transactions for layers and displays. Returns whether any state has been invalidated,\n    // i.e. whether a frame should be composited for each display.\n    virtual bool commit(PhysicalDisplayId pacesetterId, const scheduler::FrameTargets&) = 0;\n\n    // Composites a frame for each display. CompositionEngine performs GPU and/or HAL composition\n    // via RenderEngine and the Composer HAL, respectively.\n    virtual CompositeResultsPerDisplay composite(PhysicalDisplayId pacesetterId,\n                                                 const scheduler::FrameTargeters&) = 0;",
+      "note": "Scheduler 依赖的接口契约就写在这几行注释里：commit 负责提交 layer/display 事务并回答「这一拍是否有状态失效需要合成」，composite 才真正通过 RenderEngine 与 Composer HAL 做 GPU/HAL 合成。两段式的设计意图在这里最清楚。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mFramePending",
+      "type": "std::atomic_bool（MessageQueue::Handler，MessageQueue.h:89）",
+      "desc": "vsync 消息的去重闸门：dispatchFrame 里 exchange(true) 返回 false 才 sendMessage（33），handleMessage 一开始 store(false)（45）。它的作用是保证「同一时刻最多只排一个 onFrameSignal」，避免主线程积压多个 vsync 消息后连着跑两拍。"
+    },
+    {
+      "name": "mVsyncId / mExpectedVsyncTime",
+      "type": "std::atomic<VsyncId> / std::atomic<TimePoint>",
+      "desc": "Handler 在投递前写入（33-36），主线程 handleMessage 里读出并传给 onFrameSignal（46）。用 atomic 是因为写发生在 timer 线程、读发生在主线程，中间靠 Looper 消息做 happens-before。"
+    },
+    {
+      "name": "mVsync.registration",
+      "type": "std::unique_ptr<scheduler::VSyncCallbackRegistration>（MessageQueue.h:125，受 mVsync.mutex 保护）",
+      "desc": "SF 与 VSyncDispatch 之间的注册句柄，绑定的回调就是 MessageQueue::vsyncCallback，注册名 \"sf\"（MessageQueue.cpp:116-122）。scheduleFrame/setDuration 都通过它 schedule/update；析构必须在锁外做，否则会和 timer 线程互相等待（101-108 注释）。"
+    },
+    {
+      "name": "mVsync.workDuration",
+      "type": "TracedOrdinal<std::chrono::nanoseconds>{\"VsyncWorkDuration-sf\"}",
+      "desc": "SF 每拍的工作预算，来自 VsyncModulator 的 sfWorkDuration（Scheduler.cpp:420），通过 setDuration 更新（MessageQueue.cpp:138-146）。它决定 VSyncDispatch 何时唤醒 SF：越短越早醒，代价是功耗。"
+    },
+    {
+      "name": "mVsync.scheduledFrameTimeOpt",
+      "type": "std::optional<scheduler::ScheduleResult>",
+      "desc": "本次 schedule 的结果（回调时间 + expectedVsyncTime），成功调度后写入（196-199）；vsyncCallback 收到回调时清空（68）。getScheduledFrameResult() 优先返回 mFramePending 的信息，其次才是它（202-211）——这是「SF 下一拍什么时候醒」的唯一查询入口。"
+    },
+    {
+      "name": "mVsync.tokenManager",
+      "type": "scheduler::TokenManager*",
+      "desc": "VsyncId 的生成器。initVsyncInternal 时注入（84），vsyncCallback 里用 generateTokenForPredictions({targetWakeupTime, readyTime, vsyncTime}) 生成本次 vsyncId（71-72）。这个 id 会一路传到 FrameTimeline、SF 的 commit/composite 以及 app 的 Choreographer，是跨进程对齐同一帧的唯一标识。"
+    },
+    {
+      "name": "FrameTargeter::BeginFrameArgs",
+      "type": "struct（frameBeginTime / vsyncId / expectedVsyncTime / sfWorkDuration / hwcMinWorkDuration / debugPresentTimeDelay）",
+      "desc": "Scheduler 传给每个 display targeter 的输入（Scheduler.cpp:416-422，定义在 FrameTargeter.h:134-141）。frameBeginTime 是 SF 真正开始干活的时刻，expectedVsyncTime 是目标上屏 vsync，两者之差就是 SF 的预算。"
+    },
+    {
+      "name": "FrameTargets / FrameTargeters",
+      "type": "PhysicalDisplayMap<PhysicalDisplayId, const FrameTarget*> / ...<FrameTargeter*>",
+      "desc": "Scheduler 与 ICompositor 之间传的 display 集合（ICompositor.h:32-33）。commit 用 const FrameTarget*（只读目标），composite 用 FrameTargeter*（要回写结果）。这个区分本身就是两段式的一部分。"
+    },
+    {
+      "name": "mustComposite",
+      "type": "bool（SurfaceFlinger::commit 内局部变量）",
+      "desc": "commit 的返回值主体：初值 <code>mMustComposite.exchange(false)</code>（3119），再由 <code>updateLayerSnapshots</code> 的返回值与全局 changes 累积（3137-3140）。最终 <code>return mustComposite &amp;&amp; mBootStage != BootStage::BOOTLOADER</code>（3201）——开机动画前永远不合成。"
+    },
+    {
+      "name": "mSchedulerCallback / ISchedulerCallback::onCommitNotComposited",
+      "type": "接口回调（ISchedulerCallback.h:34）",
+      "desc": "commit 返回 false 时 Scheduler 回调到 SF（Scheduler.cpp:472 → SurfaceFlinger.cpp:5158-5159），最终进 FrameTimeline::onCommitNotComposited（FrameTimeline.cpp:1432-1439）：给当前 DisplayFrame 记一次「提交了但没合成」并重置，避免把这一拍算成掉帧。"
+    },
+    {
+      "name": "mPacesetterFrameDurationFractionToSkip",
+      "type": "float",
+      "desc": "调试用的 jank 注入比例（Scheduler.cpp:491-499）：按 expectedFrameDuration 的比例 sleep 并打 \"Injecting jank for %f%% of the frame\"。线上恒为 0；看 trace 时若见到这条 slice，先排除人为干扰。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "\"VSYNC-sf\"",
+      "value": "TracedOrdinal<int> 计数器（MessageQueue.h:130，每次 vsyncCallback 翻转：MessageQueue.cpp:62）",
+      "desc": "SF 实际收到多少拍 vsync 的计数器（0/1 交替，数跳变次数即可）。与 app 侧 Choreographer 的 vsync 计数对齐，可判断某一拍 SF 是否被唤醒。"
+    },
+    {
+      "name": "\"VsyncWorkDuration-sf\"",
+      "value": "TracedOrdinal<Duration>（MessageQueue.h:126-127）",
+      "desc": "当前 sfWorkDuration。commit+composite 的实际耗时若长期接近它，说明 SF 贴着 deadline 跑，容易因调度抖动掉帧。"
+    },
+    {
+      "name": "commit \"<vsyncId>\"",
+      "value": "SFTRACE_NAME(Concat(__func__, ' ', vsyncId))（SurfaceFlinger.cpp:3012）",
+      "desc": "带 vsyncId 的 commit slice，可与 app 侧同 vsyncId 的 doFrame 对齐，判断延迟发生在 app 还是 SF。"
+    },
+    {
+      "name": "\"Commit\"",
+      "value": "SFTRACE_NAME_FOR_TRACK（SurfaceFlinger.cpp:3068）",
+      "desc": "WorkloadTracer 视角下的 commit 区间，专门用于 ADPF/workload 归因；可与 \"Composition\" 配对看两段各占多少。"
+    },
+    {
+      "name": "\"Composition\"（SFTRACE_ASYNC_FOR_TRACK_BEGIN / END）",
+      "value": "SurfaceFlinger.cpp:3332",
+      "desc": "composite 的异步 slice（异步是因为 GPU 合成可能跨线程）。它存在与否就是「这一拍有没有真合成」的直接判据。"
+    },
+    {
+      "name": "\"Refresh Rate Selection\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:3174）",
+      "desc": "commit 尾部的刷新率决策区间（chooseRefreshRateForContent + initiateDisplayModeChanges）。它变长通常意味着有层在频繁改 frame rate 投票。"
+    },
+    {
+      "name": "\"Avoiding backpressure for follower display %lu\"",
+      "value": "SFTRACE_FORMAT_INSTANT（Scheduler.cpp:459-460）",
+      "desc": "follower display 因 present fence 未 signal 被本帧跳过时的 instant。出现它说明多屏场景下有 display 正在背压，主屏节奏不受影响但副屏掉帧。"
+    },
+    {
+      "name": "\"Injecting jank for %f%% of the frame\"",
+      "value": "SFTRACE_FORMAT（Scheduler.cpp:495-496）",
+      "desc": "人为注入 jank 的标记（mPacesetterFrameDurationFractionToSkip）。测试环境看到它就不要把这段耗时算进真实性能。"
+    }
+  ],
+  "pitfalls": [
+    "误以为 vsync 回调直接在 SF 主线程执行：vsyncCallback 跑在 VSyncDispatch 的 timer 线程，必须经过 Handler::dispatchFrame 的 sendMessage 才切到主线程。把两者的耗时分在一起统计会误判。",
+    "误以为 onFrameSignal 每拍都跑：SF 的 vsync 是按需注册的（MessageQueue::scheduleFrame），没有事务触发 scheduleCommit 时根本不注册，主线程停在 pollOnce(-1)。trace 里没有 onFrameSignal 不等于 SF 卡住。",
+    "误以为 commit 返回 false 是错误：它是 ICompositor 契约里的正常结果（\"Returns whether any state has been invalidated\"），Scheduler 会走 onCommitNotComposited 记账后直接返回，连 endFrame 都不调。",
+    "误以为 commit 成功就一定上屏：最终返回值还有一道 mBootStage != BootStage::BOOTLOADER 的判断（SurfaceFlinger.cpp:3201），开机动画之前 mustComposite 为真也不合成。",
+    "误以为 commit 与 composite 之间 display 集合不变：onFrameSignal 明确在 commit 之后重新取 pacesetter（478，注释说它可能在 commit 期间变化）并重组 FrameTargeters，直接用 commit 前的指针会是 use-after-free 风险。",
+    "误以为 mFramePending 只是性能优化：它保证同一时刻最多只有一个 onFrameSignal 在排队，去掉后主线程积压时会连着跑多拍 vsync，导致「一次唤醒处理多个过期 vsync」的行为。",
+    "误把 \"Injecting jank\" 当成真实卡顿：那是 mPacesetterFrameDurationFractionToSkip 触发的调试 sleep（491-499），仅测试用。",
+    "误以为 SF 用和 app 相同的 vsync 源就会同时醒：两者共用 VSyncDispatch 的相位，但注册的是不同的 workDuration/readyDuration（SF 的 readyDuration 固定为 0，MessageQueue.cpp:197-199），所以唤醒时刻并不相同。"
+  ],
+  "traceTags": [
+    "VSYNC-sf",
+    "VsyncWorkDuration-sf",
+    "Commit",
+    "Composition",
+    "Refresh Rate Selection",
+    "onFrameSignal",
+    "onCommitNotComposited",
+    "Avoiding backpressure for follower display"
+  ],
+  "next": "stage-03"
+}

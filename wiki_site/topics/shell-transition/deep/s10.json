@@ -1,0 +1,111 @@
+{
+  "step": "s10",
+  "title": "Shell 回调 startTransition，事务落到 WMS",
+  "tldr": "Shell 把 WCT 交回 WMS，WMS 在全局锁里推进到 STARTED 并应用这份事务。",
+  "why": "没有这一步，转场会永远停在 COLLECTING：WMS 认为「我请求过 Shell 了」，Shell 认为「我在等 WMS 正式开播」，两边互等，用户看到的是点了图标之后画面不动、几百毫秒后 sync 超时、窗口硬跳出来。另一种坏情况是 WCT 应用得太晚：Shell 想在转场开始前先摆好背景/壁纸/快照，如果它晚于参与者绘制才落地，动画起点就会缺一层，表现为启动时闪一下黑底或壁纸瞬间跳位。",
+  "concepts": [
+    {
+      "term": "ReadyCondition",
+      "text": "转场 ready 的条件项；WMS 给「start WCT 已应用」也建一个，meet 前不许 ready。"
+    },
+    {
+      "term": "deferTransitionReady",
+      "text": "应用 WCT 期间临时把 sync 的 ready 按住，避免 WCT 应用一半时转场被判 ready 而提前开播。"
+    },
+    {
+      "term": "isForcePlaying",
+      "text": "转场因超时被强制开播时置真；Shell 迟到的 startTransition 仍被接受。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public void startTransition(@NonNull IBinder transitionToken,",
+      "ref": "base/core/java/android/window/WindowOrganizer.java:105",
+      "what": "Shell 侧入口，WindowOrganizer 是 TaskOrganizer 基类，转场 API 也挂这。"
+    },
+    {
+      "call": "getWindowOrganizerController().startTransition(transitionToken, t);",
+      "ref": "base/core/java/android/window/WindowOrganizer.java:108",
+      "what": "过 binder 进 system_server 的 WindowOrganizerController，WCT 随访。"
+    },
+    {
+      "call": "startTransition(-1 /* unused type */, transitionToken, t);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:338",
+      "what": "转到私有实现，type 传 -1 表示「转场已经存在，不需要新建」。"
+    },
+    {
+      "call": "Transition transition = Transition.fromBinder(transitionToken)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:348",
+      "what": "用 token 找回 WMS 侧对象；这是 Shell 与 WMS 之间唯一的身份对齐方式。"
+    },
+    {
+      "call": "if (transition == null && transitionToken != null)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:349",
+      "what": "token 认不出就 Slog.wtf 并返回 null：说明转场已被回收，Shell 响应太慢。"
+    },
+    {
+      "call": "if (!transition.isCollecting() && !transition.isForcePlaying())",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:399",
+      "what": "failsafe：Shell 回得太晚、转场已不在 collecting，就把 WCT 直接 apply。"
+    },
+    {
+      "call": "transition.mReadyTracker.add(wctApplied)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:414",
+      "what": "给「start WCT 应用完」建一个 ready 条件，应用结束前这个转场不可能 ready。"
+    },
+    {
+      "call": "transition.start();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:435",
+      "what": "状态推进到 STARTED 并立刻 applyReady：display 早已 ready 时 sync 此刻开门。"
+    },
+    {
+      "call": "applyTransaction(wct, -1 /* syncId */, chain, caller);",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:436",
+      "what": "syncId 传 -1：不新建 sync，改动落到容器已挂好的 mSyncTransaction。"
+    },
+    {
+      "call": "wctApplied.meet();",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:438",
+      "what": "打勾：start WCT 应用完，转场现在才允许变 ready。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Transition.mState",
+      "before": "STATE_COLLECTING",
+      "after": "STATE_STARTED",
+      "note": "start() 在 applyTransaction 之前调用，所以 WCT 应用期间转场已是 STARTED"
+    },
+    {
+      "field": "Transition.mLogger.mStartWCT",
+      "before": "null",
+      "after": "Shell 回传的 WCT（t 为 null 时是一个空 WCT）",
+      "note": "空 WCT 也照样记；WCT 为 null 时 365 行会补一个 new WindowContainerTransaction()"
+    },
+    {
+      "field": "Transition.mReadyTracker.mConditions",
+      "before": "不含 \"start WCT applied\"",
+      "after": "有该条件，meet 后移入 mMet",
+      "note": "meet 之前 applyReady 一律判不 ready"
+    },
+    {
+      "field": "BLASTSyncEngine.SyncGroup.mSyncId",
+      "before": "startCollecting 分配的 N",
+      "after": "仍是 N（syncId 传 -1，不新建）",
+      "note": "新 sync 只能由 startCollecting / startSyncSet 产生"
+    }
+  ],
+  "threads": "Shell 在 wmshell.main 发起 binder 调用；WMS 侧在 binder 线程进入，整段持 mGlobalLock。旋转场景走 shouldApplyOnDisplayThread 分支时（419 行）改 post 到 mService.mH 执行。",
+  "pitfalls": [
+    "brief 里写的 applyTransaction(t, syncId) 实际传的是 -1（436 行）。-1 的含义在 761 行：不新建 sync，WCT 的窗口树改动立即生效，Surface 写入落到容器已有的 mSyncTransaction 上。真正的 syncId 来自第 5 步的 startCollecting。",
+    "空 WCT 在 Shell 侧已经被换成 null（Transitions.java:1418），所以 WMS 这里 t == null 是常态；365 行会补一个空 WCT，不要以为参数丢了。",
+    "token 认不出不抛异常，只 Slog.wtf 并 return null（349-353）。看到 \"Requested transition was lost\" 说明 Shell 响应太慢、转场已被 finish 回收，问题不在这一段。",
+    "applyTransaction 只在 WCT 非空时才 deferTransitionReady（714 行），空 WCT 不会按 ready，也不会触发 continueTransitionReady。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager 看 \"Starting Transition %d\" 与 \"Trying to start a transition that isn't collecting\"",
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_ORGANIZER 看每条 WCT 的 syncId（\"Apply window transaction, syncId=%d\"），确认是 -1 还是真实 id",
+    "perfetto：filter window_manager，看 startTransition 到 onTransactionReady 之间的耗时；异常长说明 WCT 应用把 ready 挡住了"
+  ],
+  "next": "WMS 已经 STARTED，接下来看状态机内部到底改了什么 → 第 15 步「Transition 进入 STARTED」。"
+}

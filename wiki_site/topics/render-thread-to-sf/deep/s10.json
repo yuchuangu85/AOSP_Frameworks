@@ -1,0 +1,109 @@
+{
+  "step": "s10",
+  "title": "unblockUiThread：先把 UI 放走",
+  "tldr": "同步一结束 RT 就 signal 放走 UI；UI 回去录下一帧，RT 继续回放与 swap。",
+  "why": "UI 线程从 postAndWait 进来就是为了等这一下。如果等到 draw 和 swap 都做完才 signal，UI 与 RT 就被串成一根链：每帧的绘制时间直接累加到下一帧的录制开始时间上，60Hz 只有 16.6ms 预算，UI 会立刻吃满。提前放走 UI 是整条流水线成立的前提，代价是 RT 接下来读的内容必须和 UI 之后写的内容物理隔离——上一步把 staging move 成 display list，就是为了让这次放行安全。反过来，同步没做完就放同样是灾难：UI 会在 RT 读 staging 的同时重录，move 出来的是半份内容。",
+  "concepts": [
+    {
+      "term": "mSignal / mLock",
+      "text": "UI 在 postAndWait 里等、RT 在 unblockUiThread 里 signal，共用这对 Mutex+Condition。"
+    },
+    {
+      "term": "canUnblockUiThread",
+      "text": "syncFrameState 的返回值，为真表示同步已完整、UI 现在改树不会和 RT 打架。"
+    },
+    {
+      "term": "延迟放行",
+      "text": "canUnblockUiThread 为假时放行被挪到 draw 之后（159-161），UI 多等一整段绘制。"
+    },
+    {
+      "term": "「this」不可再访问",
+      "text": "放走 UI 前必须把 context 和回调搬到局部变量（117-122）；之后 UI 可能已经复用同一个 DrawFrameTask。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "canUnblockUiThread = syncFrameState(info);",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:106",
+      "what": "同步的结果直接决定要不要现在放人，这一行是整条流水线的分叉点。"
+    },
+    {
+      "call": "// From this point on anything in \"this\" is *UNSAFE TO ACCESS*",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:124",
+      "what": "注释划出边界：往下只能碰局部变量，this 随时可能被 UI 拿去录下一帧。"
+    },
+    {
+      "call": "if (canUnblockUiThread) {",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:125",
+      "what": "只有同步完整完成才提前放；纹理 pin 失败时走 159 的延后路径。"
+    },
+    {
+      "call": "unblockUiThread();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:126",
+      "what": "RT 侧的放行点：紧跟同步、在 draw 之前，UI 的等待时间到这里为止。"
+    },
+    {
+      "call": "void DrawFrameTask::unblockUiThread() {",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:219",
+      "what": "实现只有取锁 + signal 两行，没有任何状态需要计算。"
+    },
+    {
+      "call": "AutoMutex _lock(mLock);",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:220",
+      "what": "必须和 UI 侧 wait 用同一把锁，否则 signal 可能落在 wait 之前被丢掉。"
+    },
+    {
+      "call": "mSignal.signal();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:221",
+      "what": "唤醒停在 postAndWait 上的 UI 线程，drawFrame 随即返回 mSyncResult。"
+    },
+    {
+      "call": "if (!canUnblockUiThread) {",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:159",
+      "what": "延后放行分支：draw 与 swap 都做完了才 signal，UI 这一帧被整段拉长。"
+    },
+    {
+      "call": "mSignal.wait(mLock);",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:86",
+      "what": "UI 侧的对应等待点：持锁睡下，醒来时同步一定已经完成。"
+    }
+  ],
+  "state": [
+    {
+      "field": "DrawFrameTask::mSignal",
+      "before": "无信号，UI 线程在 postAndWait 里睡着",
+      "after": "已 signal（221），UI 被唤醒并返回 drawFrame",
+      "note": "postAndWait 是在持锁状态下 post 任务再 wait（84-86），所以 RT 不可能在 UI 睡下之前就 signal"
+    },
+    {
+      "field": "DrawFrameTask::mSyncResult",
+      "before": "OK 或被 syncFrameState 置过的位",
+      "after": "不再变化，但 UI 醒来后通过 drawFrame 的返回值读走（79）",
+      "note": "Java 侧按位解释它：丢 surface 就 requestLayout，要重画就 invalidate"
+    },
+    {
+      "field": "DrawFrameTask::mFrameCallback / mFrameCompleteCallback",
+      "before": "UI 在本帧 set 的回调，挂在 task 上",
+      "after": "空（121-122），所有权已转给局部变量",
+      "note": "必须在放行之前搬走，否则 UI 下一帧重新 set 时会把它覆盖掉"
+    },
+    {
+      "field": "DrawFrameTask::mContext",
+      "before": "RT 独占使用",
+      "after": "仍要用，但只通过 117 行拷出的局部指针 context 访问",
+      "note": "UI 醒来后可能重设 task 的 context（比如 surface 重建），字段本身不再可信"
+    }
+  ],
+  "threads": "unblockUiThread 本身在 RenderThread 上执行（持 mLock），它唤醒的是 UI 线程在 postAndWait（86）上的等待。从这一刻起两个线程真正并行：UI 走 Choreographer 下一拍、往 staging 录下一帧；RT 在同一个 run() 里继续 draw 与 swapBuffers。之后 run() 里对 this 的任何访问都是数据竞争——124 行那句注释不是提醒，是硬约束。",
+  "pitfalls": [
+    "canUnblockUiThread=false（纹理 pin 失败）时 UI 要等到 draw 结束才醒，这个 vsync 的 UI 工作直接顺延一拍；偶发的单帧超长先看这里，而不是先怀疑 GPU。",
+    "同步没完成就 signal 等于允许 UI 覆盖 staging；现在顺序是 syncFrameState 返回后才可能 signal（106 → 125），重构 run 时不能把放行提到 prepareTree 之前。",
+    "放走 UI 之后 run() 里再碰 mContext/mFrameCallback 就是 UAF；117-122 的局部拷贝是必须的，不是风格问题。",
+    "signal 与 wait 必须共用 mLock（84 / 220）；把 AutoMutex 当成多余去掉，signal 就可能落在 UI 睡下之前，这一帧 UI 会一直睡到下一次唤醒。"
+  ],
+  "debug": [
+    "perfetto 上看同一 vsync：UI 的 doFrame 会在 DrawFrames 还没结束时重新开始，两轨的重叠区间就是提前放行挣来的并行窗口；unblockUiThread 本身没有 slice，只能这样定位",
+    "UI 侧对应的 slice 叫 postAndWait（DrawFrameTask.cpp:83 的 ATRACE_CALL），它的长度就是同步耗时；如果它约等于 DrawFrames 全长，说明这一帧根本没被提前放行"
+  ],
+  "next": "第 11 步「跳过判定：这一帧要不要画」：UI 放走之后 RT 才在 CanvasContext::draw 里判断有没有东西可画，没东西就直接收尾不交 buffer。"
+}

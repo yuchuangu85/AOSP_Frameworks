@@ -1,0 +1,185 @@
+{
+  "id": "stage-06",
+  "num": 6,
+  "title": "第 6 拍：RenderEngine GPU 合成",
+  "subtitle": "凡是 HWC 不肯用 overlay 接的层，都由 RenderEngine 在 GPU 上合进 client target，再交给 HWC 扫出",
+  "lane": "GPU",
+  "durationHint": "量级：数百微秒~数毫秒（GPU 执行不计入 SF 主线程，但 fence 会占满下一帧的预算）",
+  "summary": "当 validate 的结果让 usesClientComposition 为真，Output::finishFrame（native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1312）会先 dequeueRenderBuffer 拿到 client target，再调 composeSurfaces（1390）。composeSurfaces 生成 DisplaySettings 与每个 CLIENT layer 的 LayerSettings，命中 ClientCompositionRequestCache 就直接复用上个 buffer（1432-1445），否则调 RenderEngine::drawLayers（1471-1474）并 .get() 等它把命令提交完。RenderEngine 是线程化的：RenderEngineThreaded::drawLayers 把任务丢到 RE 线程并返回 future，SkiaRenderEngine::drawLayersInternal 把 ExternalTexture 包成 SkSurface、waitFence 后逐层 draw，最后 flushAndSubmit 产出一根 GPU fence 作为 ready fence。Output::finishFrame 用 mRenderSurface->queueBuffer(readyFence) 把 buffer 交出去，最终由 FramebufferSurface::advanceFrame 调 HWComposer::setClientTarget 成为 HWC 的 client target。这一拍的成本几乎全在 GPU 上，SF 主线程只负责准备与交接；因此排障时要同时看两条时间线：SF 侧的 dequeue、提交、queueBuffer，以及 GPU 侧的 fence 何时 signal。任何一条变长，下一帧都会更晚开始。这也是为什么 GPU 合成帧常常在 trace 上看着 SF 很快、整体却更慢。",
+  "callchain": [
+    "Output::finishFrame()",
+    "Output::dequeueRenderBuffer()",
+    "RenderSurface::dequeueBuffer()",
+    "Output::composeSurfaces()",
+    "Output::generateClientCompositionRequests()",
+    "RenderEngine::drawLayers()",
+    "RenderEngineThreaded::drawLayers()",
+    "SkiaRenderEngine::drawLayersInternal()",
+    "SkiaRenderEngine::flushAndSubmit()",
+    "RenderSurface::queueBuffer()",
+    "FramebufferSurface::advanceFrame()",
+    "HWComposer::setClientTarget()"
+  ],
+  "sections": [
+    {
+      "heading": "什么时候真的要用 GPU",
+      "html": "<p>总开关是上一拍定下的 <code>outputState.usesClientComposition</code>（Display.cpp:306）。它一旦为真，<code>Output::dequeueRenderBuffer</code>（Output.cpp:1371-1388）才会去 <code>mRenderSurface-&gt;dequeueBuffer(bufferFence)</code>，失败时打 <em>“Dequeuing buffer for display [%s] failed, bailing out of client composition for this frame”</em> 并放弃本帧 GPU 合成。</p><p>调用点有两个：<strong>（1）</strong> 普通路径在 <code>Output::finishFrame</code>（1312-1349）：<code>updateProtectedContentState</code> → <code>dequeueRenderBuffer</code> → <code>composeSurfaces</code> → <code>mRenderSurface-&gt;queueBuffer</code>；<strong>（2）</strong> 预测路径在 <code>Output::prepareFrameAsync</code>（1225-1286）：它先把 validate 丢给 <code>chooseCompositionStrategyAsync</code>，同时按上一帧的 changes 提前 dequeue + compose，把结果放进 <code>GpuCompositionResult</code>（<code>fence</code> + 可复用的 <code>buffer</code>，见 CompositionEngine/include/compositionengine/impl/GpuCompositionResult.h:24-36）。预测命中时 <code>finishFrame</code> 直接复用 <code>result.fence</code>（1323-1324），省掉一次 dequeue 与一次完整 GPU 合成。</p>"
+    },
+    {
+      "heading": "composeSurfaces 的输入与短路",
+      "html": "<p><code>Output::composeSurfaces</code>（Output.cpp:1390-1509）开头三个判断决定了这一拍是否真的跑 GPU：</p><ol><li><code>hasClientComposition = outputState.usesClientComposition</code>，为假时 <code>setExpensiveRenderingExpected(false)</code> 并直接返回空 fd（1397-1405）。这个 <code>TracedOrdinal</code> 会把名字渲染成 “hasClientComposition &lt;display&gt;”，在 trace 上一眼可辨。</li><li><code>tex == nullptr</code>（dequeue 失败）时打 <em>“Buffer not valid for display [%s], bailing out of client composition for this frame”</em> 并返回（1407-1412）。</li><li><code>generateClientCompositionDisplaySettings(tex)</code> 产出 <code>renderengine::DisplaySettings</code>（物理尺寸、clip、outputDataspace、maxLuminance 等），<code>generateClientCompositionRequests(...)</code> 产出 <code>std::vector&lt;LayerFE::LayerSettings&gt;</code> 并收集被 client 合成的 <code>LayerFE*</code>（1416-1427）。</li></ol><p>短路点：若 <code>mClientCompositionRequestCache</code> 认为“同样的 buffer id + 同样的 DisplaySettings + 同样的 layer 请求”已经画过，就打 <code>SFTRACE_NAME(\"ClientCompositionCacheHit\")</code>、置 <code>outputCompositionState.reusedClientComposition = true</code>，直接返回已有 buffer 的 fence（1432-1441），完全跳过 GPU。命中失败时打 <code>\"ClientCompositionCacheMiss\"</code> 并把本帧请求写进 cache（1442-1445）。</p>"
+    },
+    {
+      "heading": "RenderEngine：一次跨线程的 GPU 合成",
+      "html": "<p>真正画之前，<code>composeSurfaces</code> 先算一次“贵不贵”（1451-1460）：有背景模糊的 layer、或任何一个 layer 的 <code>sourceDataspace != outputDataspace</code>（需要色彩空间转换），就 <code>setExpensiveRenderingExpected(true)</code>，注释说明这是为了让 GPU 提频、保证这帧能赶上 deadline。随后把 <code>LayerFE::LayerSettings</code> 转成 <code>renderengine::LayerSettings</code>（1462-1468），记录 <code>renderEngineStart</code>，调 <code>renderEngine.drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex, std::move(fd)).get()</code>（1470-1474）。</p><p>这里的 <code>drawLayers</code> 是 <code>RenderEngineThreaded</code> 的版本（native/libs/renderengine/threaded/RenderEngineThreaded.cpp:276-298）：它把 <code>bufferFence</code> 的 fd release 出来、把闭包塞进 <code>mFunctionCalls</code> 并 <code>mCondition.notify_one()</code>，返回一个 <code>std::future&lt;FenceResult&gt;</code>。真正干活在 RE 线程：<code>SkiaRenderEngine::drawLayersInternal</code>（skia/SkiaRenderEngine.cpp:885）里 <code>getOrCreateBackendTexture(buffer-&gt;getBuffer(), true)</code> 把 client target 包成后端纹理（925）、<code>waitFence(context, bufferFence)</code> 等这块 buffer 可用（928）、<code>getOrCreateSurface(display.outputDataspace)</code> 拿到 <code>SkSurface</code>（930），逐层 draw（含模糊、圆角、色彩转换），最后 <code>flushAndSubmit(context, dstSurface)</code> 得到 fence fd 并 <code>resultPromise-&gt;set_value(std::move(drawFence))</code>（1636-1648）。</p><p>所以 SF 主线程在 <code>.get()</code> 上等的是<strong>“RE 线程完成命令提交”</strong>，不是 GPU 执行完成；GPU 的完成由那根 fence 表示，交给后面的 HWC 去等。</p>"
+    },
+    {
+      "heading": "GL 与 Vulkan 的边界在哪",
+      "html": "<p>SF 与 CompositionEngine 只认 <code>RenderEngine</code> 抽象：<code>virtual ftl::Future&lt;FenceResult&gt; drawLayers(const DisplaySettings&amp;, const std::vector&lt;LayerSettings&gt;&amp;, const std::shared_ptr&lt;ExternalTexture&gt;&amp;, base::unique_fd&amp;&amp;)</code>（native/libs/renderengine/include/renderengine/RenderEngine.h:244）。后端在进程启动时选定：<code>mRenderEngine = renderengine::RenderEngine::create(builder.build())</code>（SurfaceFlinger.cpp:960），由 <code>RenderEngine::create</code> 里的 <code>createInstanceFactory</code> 决定是 GL/Ganesh、Vulkan/Ganesh 还是 Graphite。</p><p>差异只体现在 <code>flushAndSubmit</code> 的实现与 fence 产物上：<code>SkiaGLRenderEngine::flushAndSubmit</code>（skia/SkiaGLRenderEngine.cpp:353）与 <code>GaneshVkRenderEngine::flushAndSubmit</code>（skia/GaneshVkRenderEngine.cpp:86）各自返回 <code>base::unique_fd</code> 作为 GPU 完成 fence，再由 <code>sp&lt;Fence&gt;::make(...)</code> 包成 <code>FenceResult</code>（<code>base::expected&lt;sp&lt;Fence&gt;, status_t&gt;</code>，native/libs/ui/include/ui/FenceResult.h:27）。<strong>SF 侧代码不感知后端</strong>，唯一的可观测差异是 fence 类型（sync_file vs 驱动自有机制）以及 trace 里 RE 内部 slice 的形态。</p><p>另一个跨进程/跨进程边界的点：client target 的 <code>AHardwareBuffer</code>/<code>GraphicBuffer</code> 通过 <code>ExternalTexture</code> 交给 RE，若 RE 与应用不在同一进程（OOPR 场景），这层包装背后是真实的 buffer 共享而非拷贝；本阶段源码里没有内存拷贝路径。</p>"
+    },
+    {
+      "heading": "client target 怎么变成 HWC 的输入",
+      "html": "<p>composeSurfaces 返回的 <code>std::optional&lt;base::unique_fd&gt;</code> 就是 client target 的 ready fence。<code>Output::finishFrame</code> 把它交给 <code>mRenderSurface-&gt;queueBuffer(std::move(*optReadyFence), getHdrSdrRatio(buffer))</code>（Output.cpp:1348）。<code>RenderSurface::queueBuffer</code>（CompositionEngine/src/RenderSurface.cpp:201-248）做两件事：</p><ol><li>若 <code>state.usesClientComposition || state.flipClientTarget</code>，调 <code>mNativeWindow-&gt;queueBuffer(mNativeWindow.get(), mTexture-&gt;getBuffer()-&gt;getNativeBuffer(), dup(readyFence))</code>（223-225）把 buffer 交回这条显示内部 BufferQueue 的生产者侧；失败时对非虚拟屏直接 <code>LOG_ALWAYS_FATAL</code>（232）。</li><li>无论哪种情况都调 <code>mDisplaySurface-&gt;advanceFrame(hdrSdrRatio)</code>（244）。在 HWC 显示上这就是 <code>FramebufferSurface::advanceFrame</code>（DisplayHardware/FramebufferSurface.cpp:92-128）：<code>mRendererConsumer-&gt;acquireBuffer(&amp;item, 0, false, ...)</code> 取回刚 queue 的 buffer（95），<code>HwcSlotTracker::getSlot</code> 决定要不要把 GraphicBuffer 重新下发（117-118），然后 <code>mHwc.setClientTarget(mDisplayId, hwcSlot, item.mFence, hwcBuffer, mDataspace, hdrSdrRatio)</code>（120-121）。</li></ol><p><code>HWComposer::setClientTarget</code>（DisplayHardware/HWComposer.cpp:525-535）只是转给 <code>HWC2::Display::setClientTarget</code>（DisplayHardware/HWC2.cpp:462-470），最终落到 Composer HAL 的 <code>setClientTarget</code>。<strong>这条内部 BufferQueue（<code>BufferItemConsumer</code> + <code>Surface</code>，FramebufferSurface.cpp:57-62）是 SF 自己的</strong>，与应用图层的 BLAST BufferQueue 无关，别把两者混在一起分析。</p>"
+    },
+    {
+      "heading": "三根 fence 与同步语义",
+      "html": "<p>这一拍同时存在三根关键的 fence，方向各不相同：</p><ul><li><strong>bufferFence（进）</strong>：client target 上一次被使用后的 acquire fence，<code>RenderSurface::dequeueBuffer</code> 从 <code>mNativeWindow-&gt;dequeueBuffer</code> 拿到 fd（RenderSurface.cpp:156），一路传到 <code>SkiaRenderEngine::drawLayersInternal</code> 的 <code>waitFence(context, bufferFence)</code>（928）。RE 线程在这里阻塞，直到这块 buffer 真的可以被写。</li><li><strong>draw fence（出）</strong>：<code>flushAndSubmit</code> 的产物（SkiaRenderEngine.cpp:1636），也就是 <code>composeSurfaces</code> 返回、<code>queueBuffer</code> 里 <code>dup(readyFence)</code> 交给 BufferQueue 的那根（RenderSurface.cpp:223-225），再作为 <code>item.mFence</code> 成为 HWC 的 client target acquire fence。</li><li><strong>present fence（回）</strong>：HWC presentDisplay 之后由 <code>Display::presentFrame</code> 取回（CompositionEngine/src/Display.cpp:432-438），在 <code>Output::presentFrameAndReleaseLayers</code>（Output.cpp:1742-1784）里变成每个 layer 的 release fence；<code>FramebufferSurface::onFrameCommitted</code> 还会把它与上一帧的 acquire fence 合并（<code>Fence::merge(\"FramebufferSurface-Acquire+Present\", ...)</code>，FramebufferSurface.cpp:135-142）后才 release buffer。</li></ul><p>另外两处记账：<code>TimeStats::recordRenderEngineDuration(renderEngineStart, FenceTime(fence))</code>（Output.cpp:1495-1502）把 GPU 合成耗时记进 timestats；ADPF 打开时 <code>setHintSessionGpuStart/setHintSessionGpuFence</code>（1481-1493）把 GPU fence 报给调度器。每个被 client 合成的 layer 还会 <code>setWasClientComposed(fence)</code>（1504-1506），供上层查询它的完成状态。</p>"
+    },
+    {
+      "heading": "排障：GPU 合成变慢或变多时看什么",
+      "html": "<ul><li><strong>GPU 合成比例异常</strong>：先看 validate 侧（上一拍）是否把该层改成了 CLIENT；再看 <code>ClientCompositionCacheHit</code> 是否消失——cache miss 增多意味着每帧都要重画。</li><li><strong>SF 主线程卡在 .get()</strong>：<code>composeSurfaces</code> 里的 <code>drawLayers(...).get()</code> 在等 RE 线程，RE 线程又被 <code>waitFence</code> 卡住时，原因是 client target 的 bufferFence 太晚——往往来自上一帧 GPU 还没画完。</li><li><strong>queueBuffer 直接 fatal</strong>：<code>RenderSurface::queueBuffer</code> 对非虚拟屏的失败是 <code>LOG_ALWAYS_FATAL(\"ANativeWindow::queueBuffer failed with error: %d\")</code>（RenderSurface.cpp:232），线上表现为 SF 崩溃而不是掉帧。</li><li><strong>画面颜色/亮度不对</strong>：看 <code>clientTargetProperty</code> 指定的 dataspace 是否被正确应用到 <code>DisplaySettings.outputDataspace</code>，以及 RE 是否因此走了色彩转换（这会同时触发 expensiveRendering）。</li><li><strong>保护内容</strong>：<code>updateProtectedContentState</code>（Output.cpp:1351-1369）决定是否把 RenderSurface 设为 protected；若 RE 不支持保护内容，该路径会退化，表现为黑屏而非报错。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "symbol": "Output::composeSurfaces",
+      "lines": "1390-1434",
+      "code": "std::optional<base::unique_fd> Output::composeSurfaces(\n        const Region& debugRegion, std::shared_ptr<renderengine::ExternalTexture> tex,\n        base::unique_fd& fd) {\n    SFTRACE_CALL();\n    ALOGV(__FUNCTION__);\n\n    const auto& outputState = getState();\n    const TracedOrdinal<bool> hasClientComposition =\n            {CC_UNLIKELY(SFTRACE_ENABLED())\n                     ? base::StringPrintf(\"hasClientComposition %s\", mNamePlusId.c_str())\n                     : \"\",\n             outputState.usesClientComposition};\n    if (!hasClientComposition) {\n        setExpensiveRenderingExpected(false);\n        return base::unique_fd();\n    }\n\n    if (tex == nullptr) {\n        ALOGW(\"Buffer not valid for display [%s], bailing out of \"\n              \"client composition for this frame\",\n              mName.c_str());\n        return {};\n    }\n\n    ALOGV(\"hasClientComposition\");\n\n    renderengine::DisplaySettings clientCompositionDisplay =\n            generateClientCompositionDisplaySettings(tex);\n\n    // Generate the client composition requests for the layers on this output.\n    auto& renderEngine = getCompositionEngine().getRenderEngine();\n    const bool supportsProtectedContent = renderEngine.supportsProtectedContent();\n    std::vector<LayerFE*> clientCompositionLayersFE;\n    std::vector<LayerFE::LayerSettings> clientCompositionLayers =\n            generateClientCompositionRequests(supportsProtectedContent,\n                                              clientCompositionDisplay.outputDataspace,\n                                              clientCompositionLayersFE);\n    appendRegionFlashRequests(debugRegion, clientCompositionLayers);\n\n    OutputCompositionState& outputCompositionState = editState();\n    // Check if the client composition requests were rendered into the provided graphic buffer. If\n    // so, we can reuse the buffer and avoid client composition.\n    if (mClientCompositionRequestCache) {\n        if (mClientCompositionRequestCache->exists(tex->getBuffer()->getId(),\n                                                   clientCompositionDisplay,",
+      "note": "GPU 合成的入口：hasClientComposition 与 tex 两个闸门、生成 DisplaySettings/LayerSettings，并在 ClientCompositionRequestCache 命中时直接复用已有 client target（置 reusedClientComposition 后返回）。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "symbol": "RenderEngine::drawLayers",
+      "lines": "1465-1509",
+      "code": "                   std::back_inserter(clientRenderEngineLayers),\n                   [](LayerFE::LayerSettings& settings) -> renderengine::LayerSettings {\n                       return settings;\n                   });\n\n    const nsecs_t renderEngineStart = systemTime();\n    auto fenceResult = renderEngine\n                               .drawLayers(clientCompositionDisplay, clientRenderEngineLayers, tex,\n                                           std::move(fd))\n                               .get();\n\n    if (mClientCompositionRequestCache && fenceStatus(fenceResult) != NO_ERROR) {\n        // If rendering was not successful, remove the request from the cache.\n        mClientCompositionRequestCache->remove(tex->getBuffer()->getId());\n    }\n    const auto fence = std::move(fenceResult).value_or(Fence::NO_FENCE);\n    if (isPowerHintSessionEnabled()) {\n        if (fence != Fence::NO_FENCE && fence->isValid() &&\n            !outputCompositionState.reusedClientComposition) {\n            setHintSessionRequiresRenderEngine(true);\n            if (isPowerHintSessionGpuReportingEnabled()) {\n                // the order of the two calls here matters as we should check if the previously\n                // tracked fence has signaled first and archive the previous start time\n                setHintSessionGpuStart(TimePoint::now());\n                setHintSessionGpuFence(\n                        std::make_unique<FenceTime>(sp<Fence>::make(dup(fence->get()))));\n            }\n        }\n    }\n\n    if (auto timeStats = getCompositionEngine().getTimeStats()) {\n        if (fence->isValid()) {\n            timeStats->recordRenderEngineDuration(renderEngineStart,\n                                                  std::make_shared<FenceTime>(fence));\n        } else {\n            timeStats->recordRenderEngineDuration(renderEngineStart, systemTime());\n        }\n    }\n\n    for (auto* clientComposedLayer : clientCompositionLayersFE) {\n        clientComposedLayer->setWasClientComposed(fence);\n    }\n\n    return base::unique_fd(fence->dup());\n}",
+      "note": "真正调用 GPU 的地方：LayerSettings 转换 → renderEngine.drawLayers(...).get() 等 RE 线程提交 → 处理失败与 fence、记 TimeStats/ADPF、对每个 client 合成 layer setWasClientComposed，最后返回 fence 的 dup。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+      "symbol": "Output::finishFrame",
+      "lines": "1312-1349",
+      "code": "void Output::finishFrame(GpuCompositionResult&& result) {\n    SFTRACE_CALL();\n    ALOGV(__FUNCTION__);\n    const auto& outputState = getState();\n    if (!outputState.isEnabled) {\n        return;\n    }\n\n    std::optional<base::unique_fd> optReadyFence;\n    std::shared_ptr<renderengine::ExternalTexture> buffer;\n    base::unique_fd bufferFence;\n    if (outputState.strategyPrediction == CompositionStrategyPredictionState::SUCCESS) {\n        optReadyFence = std::move(result.fence);\n    } else {\n        if (result.bufferAvailable()) {\n            buffer = std::move(result.buffer);\n            bufferFence = std::move(result.fence);\n        } else {\n            updateProtectedContentState();\n            if (!dequeueRenderBuffer(&bufferFence, &buffer)) {\n                return;\n            }\n        }\n        // Repaint the framebuffer (if needed), getting the optional fence for when\n        // the composition completes.\n        optReadyFence = composeSurfaces(Region::INVALID_REGION, buffer, bufferFence);\n    }\n    if (!optReadyFence) {\n        return;\n    }\n    if (isPowerHintSessionEnabled() && !isPowerHintSessionGpuReportingEnabled()) {\n        // get fence end time to know when gpu is complete in display\n        setHintSessionGpuFence(\n                std::make_unique<FenceTime>(sp<Fence>::make(dup(optReadyFence->get()))));\n    }\n    // swap buffers (presentation)\n    mRenderSurface->queueBuffer(std::move(*optReadyFence), getHdrSdrRatio(buffer));\n}",
+      "note": "把 composeSurfaces 的结果交给显示：预测命中直接复用 result.fence，否则 dequeue+compose；最后 mRenderSurface->queueBuffer(readyFence) 把 client target 推给 HWC 侧。"
+    },
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp",
+      "symbol": "HWComposer::setClientTarget",
+      "lines": "109-128",
+      "code": "    if (mFrameData && mFrameData->mBuffer != item.mGraphicBuffer) {\n        mPreviousFrameData.swap(mFrameData);\n    }\n    mFrameData = {item.mGraphicBuffer, item.mFence};\n    mDataspace = static_cast<Dataspace>(item.mDataSpace);\n\n    // If HWC hasn't seen the buffer before, or the buffer has changed, send it to HWC. Otherwise,\n    // all we need is the slot itself.\n    auto [requiresRefresh, hwcSlot] = mHwcSlotTracker.getSlot(mFrameData->mBuffer);\n    sp<GraphicBuffer> hwcBuffer = requiresRefresh ? mFrameData->mBuffer : nullptr;\n\n    status_t result = mHwc.setClientTarget(mDisplayId, hwcSlot, mFrameData->mFence, hwcBuffer,\n                                           mDataspace, hdrSdrRatio);\n    if (result != NO_ERROR) {\n        ALOGE(\"error posting framebuffer: %s (%d)\", strerror(-result), result);\n        return result;\n    }\n\n    return NO_ERROR;\n}",
+      "note": "client target 进入 HWC 的最后一步：从内部 BufferItemConsumer acquireBuffer 取回 buffer，按 slot 决定是否重传 GraphicBuffer，再调 mHwc.setClientTarget；失败只 ALOGE 并返回错误码。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "renderengine::ExternalTexture",
+      "type": "abstract（native/libs/renderengine/include/renderengine/ExternalTexture.h:37）",
+      "desc": "client target 的 GPU 侧包装，带 hasSameBuffer/getWidth/getId/getUsage 等；RenderSurface 用 Usage::WRITEABLE 创建（RenderSurface.cpp:185-190），并缓存到 mTextureCache 复用。"
+    },
+    {
+      "name": "Output::mRenderSurface",
+      "type": "compositionengine::RenderSurface",
+      "desc": "持有 mNativeWindow（内部 BufferQueue 的 producer 侧）、mTexture、mTextureCache；dequeueBuffer/queueBuffer/advanceFrame 都在这里串起来（RenderSurface.cpp:150-248）。"
+    },
+    {
+      "name": "FramebufferSurface::mRendererConsumer",
+      "type": "sp<BufferItemConsumer>",
+      "desc": "FramebufferSurface.cpp:57-62 创建，usage 为 HW_FB|HW_RENDER|HW_COMPOSER；advanceFrame 里 acquireBuffer 拿回 client target，onFrameCommitted 里 releaseBuffer（95、138）。"
+    },
+    {
+      "name": "renderengine::DisplaySettings",
+      "type": "struct（renderengine/DisplaySettings.h:40）",
+      "desc": "物理显示矩形、clip、outputDataspace、maxLuminance、colorTransform 等；由 Output::generateClientCompositionDisplaySettings 生成，决定 RE 的投影与色彩处理。"
+    },
+    {
+      "name": "renderengine::LayerSettings",
+      "type": "struct",
+      "desc": "每个 CLIENT layer 的绘制参数（source buffer、geometry、alpha、roundedCorners、blur 等）；由 LayerFE::LayerSettings 转换而来（Output.cpp:1462-1468）。"
+    },
+    {
+      "name": "FenceResult",
+      "type": "base::expected<sp<Fence>, status_t>",
+      "desc": "native/libs/ui/include/ui/FenceResult.h:27，配 fenceStatus()（:29-31）。drawLayers 的 future 值就是它；composeSurfaces 用 std::move(fenceResult).value_or(Fence::NO_FENCE) 取 fence。"
+    },
+    {
+      "name": "GpuCompositionResult",
+      "type": "struct { base::unique_fd fence; shared_ptr<ExternalTexture> buffer; }",
+      "desc": "CompositionEngine/include/compositionengine/impl/GpuCompositionResult.h:24-36。预测路径的产物，bufferAvailable() 为真时 finishFrame 复用而不是重新 dequeue。"
+    },
+    {
+      "name": "ClientCompositionRequestCache",
+      "type": "std::unique_ptr<ClientCompositionRequestCache>",
+      "desc": "按 buffer id + DisplaySettings + layer 请求做命中判断（Output.cpp:1432-1445）；命中时整帧跳过 GPU，是“静止画面零 GPU 合成”的关键。"
+    },
+    {
+      "name": "reusedClientComposition",
+      "type": "bool（OutputCompositionState）",
+      "desc": "cache 命中时置 true（1437）；ADPF 上报里会据此跳过 GPU fence 相关统计（1483）。"
+    },
+    {
+      "name": "RenderEngineThreaded::mFunctionCalls",
+      "type": "队列 + mThreadMutex/mCondition",
+      "desc": "RenderEngineThreaded.cpp:283-296：SF 侧只入队并返回 future，真正执行在 RE 线程（trace “REThreaded::drawLayers”）。这决定了 .get() 等的是提交而不是 GPU 完成。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "hasClientComposition <display>",
+      "value": "TracedOrdinal（Output.cpp:1397-1401）",
+      "desc": "该帧这个 display 是否有 GPU 合成；配合下面的 slice 可判断 GPU 合成占比。"
+    },
+    {
+      "name": "REThreaded::drawLayers",
+      "value": "SFTRACE_NAME（RenderEngineThreaded.cpp:289）",
+      "desc": "RE 线程上的实际绘制 slice；与 SF 主线程的 composeSurfaces 配对可算排队延迟。"
+    },
+    {
+      "name": "SkiaRenderEngine::drawLayersInternal for <display>",
+      "value": "SFTRACE_FORMAT（skia/SkiaRenderEngine.cpp:889-890）",
+      "desc": "含 waitFence、逐层 draw 与 flushAndSubmit，是 GPU 合成 CPU 侧耗时的主指标。"
+    },
+    {
+      "name": "ClientCompositionCacheHit / ClientCompositionCacheMiss",
+      "value": "SFTRACE_NAME（Output.cpp:1436、1442）",
+      "desc": "命中率下降说明 layer 请求每帧都在变（如动画、模糊），GPU 合成无法省。"
+    },
+    {
+      "name": "recordRenderEngineDuration / GPU composition",
+      "value": "TimeStats（Output.cpp:1495-1502）+ composition coverage（SurfaceFlinger.cpp:3560-3565）",
+      "desc": "dumpsys SurfaceFlinger --timestats 里的 RenderEngine 耗时；coverage 里的 Gpu/GpuReuse 位表示本帧是否真的跑了 GPU。"
+    },
+    {
+      "name": "drawLayers / queueBuffer / setClientTarget 连续三点",
+      "value": "Perfetto 上的三个 slice",
+      "desc": "composeSurfaces 结束 → RenderSurface::queueBuffer → FramebufferSurface::advanceFrame 的跨度，就是 client target 从 GPU 到 HWC 的交接延迟。"
+    }
+  ],
+  "traceTags": [
+    "hasClientComposition <display>",
+    "REThreaded::drawLayers",
+    "SkiaRenderEngine::drawLayersInternal for <display>",
+    "ClientCompositionCacheHit",
+    "ClientCompositionCacheMiss",
+    "FramebufferSurface-Acquire+Present"
+  ],
+  "pitfalls": [
+    "composeSurfaces 里的 drawLayers(...).get() 等的是 RE 线程把命令提交完，不是 GPU 执行完；GPU 的完成由返回的 fence 表示。把 .get() 的耗时当 GPU 渲染时间会高估 CPU 侧压力、低估 GPU 排队。",
+    "RenderSurface::queueBuffer 对非虚拟屏的 queue 失败是 LOG_ALWAYS_FATAL（RenderSurface.cpp:232），线上表现是 SF 崩溃（native crash）而不是掉帧；看到 queueBuffer 相关 tombstone 要查 client target 的内部 BufferQueue 是否被耗尽。",
+    "ClientCompositionRequestCache 命中时整帧不跑 GPU（1432-1441），画面仍然正确；此时 trace 上没有 RE slice 也没有新 fence，只返回上一帧的 buffer fence，别误判为“GPU 合成丢了”。",
+    "client target 走的是 display 内部的 BufferItemConsumer BufferQueue（FramebufferSurface.cpp:57-62），不是应用图层的 BLAST BufferQueue；把两者当同一条链会导致 buffer 计数与 release 路径全错。",
+    "HwcSlotTracker 命中时 setClientTarget 的 hwcBuffer 参数是 nullptr（只下发 slot，FramebufferSurface.cpp:117-121），HWC 复用上次的 GraphicBuffer；如果误以为每帧都重传 buffer，会错判 IPC 与内存开销来源。",
+    "预测路径（prepareFrameAsync）在 validate 还没回来时就已经 dequeue+compose 了；预测失败会打 CompositionStrategyPredictionMiss 并重算，于是同一帧可能出现两次 dequeue/一次被丢弃的 buffer，buffer 计数会短暂抖动。",
+    "RE 在 waitFence(context, bufferFence) 上阻塞时，SF 主线程正卡在 .get()；如果观测到 RE 线程长时间停在 waitFence，根因通常是上一帧 GPU 尚未完成，而不是本帧 layer 太多。"
+  ],
+  "next": "stage-07"
+}

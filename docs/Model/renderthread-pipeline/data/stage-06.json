@@ -1,0 +1,184 @@
+{
+  "id": "stage-06",
+  "num": 6,
+  "title": "第 6 拍：Skia 回放与 GPU 提交",
+  "subtitle": "把 RenderNode 树回放成 Skia 绘制命令，画进 FBO 0，再 flushAndSubmit 与 swapBuffers 交出去",
+  "lane": "RT",
+  "durationHint": "量级：亚毫秒~数毫秒（命令录制/回放为主，GPU 实际执行时间不计入本线程）",
+  "summary": "CanvasContext::draw 把脏区、windowDirty、mRenderNodes 与 LayerUpdateQueue 交给 mRenderPipeline->draw(...) 后，工作落到 Skia 侧。SkiaOpenGLPipeline::draw 先用 EglManager::damageFrame 经 eglSetDamageRegionKHR 把脏区告诉驱动，再按 SkColorType 选 GL 内部格式，用 GrBackendRenderTargets::MakeGL 把 FBO 0 包成后端渲染目标，WrapBackendRenderTarget 得到 SkSurface；随后 SkiaPipeline::renderFrame 先 renderLayersImpl 把更新的 layer 画到各自 surface，再 renderFrameImpl 设 device clip restriction、按需 clear、用 RenderNodeDrawable 递归回放 DisplayList（SkiaDisplayList::draw 只是 mDisplayList.draw(canvas)）；最后 FlushAndSubmit 提交命令，swapBuffers 走 eglSwapBuffersWithDamageKHR 交出 buffer。Vulkan 形状相同，但会返回真实 submissionTime 与 presentFence；此时像素仍在 GPU 的命令队列里：本阶段只负责把命令排进队列并交出 buffer，像素什么时候真的出现在屏幕上、release fence 什么时候回来，都要等 SurfaceFlinger 的合成与 HWC 上屏结束之后才知道；本阶段内除了 waitOnFences 与可选的 GPU 完成等待，没有别的同步点。",
+  "callchain": [
+    "IRenderPipeline::draw()",
+    "SkiaOpenGLPipeline::draw()",
+    "EglManager::damageFrame()",
+    "SkiaPipeline::renderFrame()",
+    "SkiaGpuPipeline::renderLayersImpl()",
+    "SkiaPipeline::renderLayerImpl()",
+    "SkiaPipeline::renderFrameImpl()",
+    "RenderNodeDrawable::onDraw()",
+    "SkiaDisplayList::draw()",
+    "skgpu::ganesh::FlushAndSubmit()",
+    "SkiaOpenGLPipeline::swapBuffers()",
+    "EglManager::swapBuffers()"
+  ],
+  "sections": [
+    {
+      "heading": "三层的管线族：IRenderPipeline → SkiaPipeline → SkiaGpuPipeline → GL/VK",
+      "html": "<p>接口在 <code>IRenderPipeline</code>（base/libs/hwui/renderthread/IRenderPipeline.h），核心就四个纯虚函数：<code>draw()</code>、<code>swapBuffers()</code>、<code>flush()</code>、<code>setSurface()</code>，外加 <code>DrawResult</code> 三件套 <code>success / commandSubmissionTime / presentFence</code>（IRenderPipeline.h:61-69）。</p><p>实现分三层：<code>SkiaPipeline</code> 实现公共的 <code>renderFrame / renderFrameImpl / renderLayers / getFrameTimestamps</code> 等（pipeline/skia/SkiaPipeline.h:39）；<code>SkiaGpuPipeline</code> 继承它并补上 <code>mHardwareBuffer</code>、<code>createOrUpdateLayer</code>、<code>renderLayersImpl</code> 的 GPU 版本（platform/android/pipeline/skia/SkiaGpuPipeline.h:25）；<code>SkiaOpenGLPipeline</code> 与 <code>SkiaVulkanPipeline</code> 再各自实现 <code>draw / swapBuffers / getFrame / flush</code>（platform/android/pipeline/skia/SkiaOpenGLPipeline.h:33、SkiaVulkanPipeline.h:33）。<strong>注意实现文件都在 base/libs/hwui/pipeline/skia/，头文件在 platform/android 与 platform/host 两份</strong>，读代码时容易只看到 host 版那个空实现。</p><p>同目录还有 <code>SkiaIpcPipeline.cpp</code>、<code>SkiaCpuPipeline.cpp</code>，本阶段不展开；WebView 的 functor 走 <code>WebViewFunctorManager</code>，也不在本阶段调用链上。</p>"
+    },
+    {
+      "heading": "FBO 0：把 EGL 默认 framebuffer 包成 SkSurface",
+      "html": "<p>入口先处理 damage：<code>if (!isCapturingSkp() &amp;&amp; !mHardwareBuffer) mEglManager.damageFrame(frame, dirty)</code>（SkiaOpenGLPipeline.cpp:122-124）。<code>damageFrame</code> 只在 <code>EglExtensions.setDamage</code> 且 <code>mSwapBehavior == SwapBehavior::BufferAge</code> 时生效，用 <code>frame.map()</code> 把脏区映射成 4 个 EGLint 后调 <code>eglSetDamageRegionKHR</code>（EglManager.cpp:604-615）。</p><p>然后是格式选择：<code>getSurfaceColorType()</code>（即 SkiaPipeline::mSurfaceColorType）决定 <code>GrGLFramebufferInfo::fFormat</code>——F16 用 GL_RGBA16F，N32 用 GL_RGBA8，1010102 用 GL_RGB10_A2，Alpha_8 用 GL_R8，其他 <code>LOG_ALWAYS_FATAL</code>（126-142）。<code>fFBOID = 0</code>，因为 hwui 直接渲染到 EGL surface 的默认 framebuffer。</p><p>紧接着 <code>GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0, STENCIL_BUFFER_SIZE, fboInfo)</code>（144-145，第三个参数是 sample count 0，第四个是模板缓冲大小），再 <code>SkSurfaces::WrapBackendRenderTarget(...)</code>，origin 由 <code>getSurfaceOrigin()</code> 给出——OpenGL 下是 <code>kBottomLeft_GrSurfaceOrigin</code>（SkiaOpenGLPipeline.h:52）。有 <code>mHardwareBuffer</code> 时改走 <code>getBufferSkSurface(bufferParams)</code> 并用 <code>bufferParams.getTransform()</code> 当 preTransform（153-161），这时根本不碰 EGL。</p>"
+    },
+    {
+      "heading": "renderFrame：先画 layer，再回放主树",
+      "html": "<p><code>SkiaPipeline::renderFrame</code>（SkiaPipeline.cpp:340-365）的顺序值得记牢：<strong>（1）</strong> 若开了 SKP 捕获则临时把 <code>Properties::skpCaptureEnabled</code> 置真；<strong>（2）</strong> <code>tryCapture(surface, nodes[0], layers)</code> 决定这一帧是画到 surface 还是录成 SkPicture；<strong>（3）</strong> <code>renderLayersImpl(layers, opaque)</code>——<strong>把所有有更新的 layer 先画完</strong>；<strong>（4）</strong> <code>renderFrameImpl(...)</code> 回放主树；<strong>（5）</strong> <code>endCapture(surface)</code>；<strong>（6）</strong> 调试开 <code>debugOverdraw</code> 时再叠加一层 overdraw。</p><p>为什么 layer 要先画：layer 的内容在自己的 <code>SkSurface</code> 上渲染，主树回放时只需要把 layer 的 snapshot 当图片贴上来（RenderNodeDrawable.cpp:343-345）。<code>renderLayerImpl</code>（SkiaPipeline.cpp:81-131）做的事很直白：拿 layer surface 的 canvas，设 device clip restriction 为 layerDamage，<code>clear(SK_ColorTRANSPARENT)</code>，然后构造 <code>RenderNodeDrawable root(layerNode, layerCanvas, false)</code> 并 <code>forceDraw</code>；trace 上表现为 “draw layers” 里嵌套若干 “drawLayer [name] W x H”。</p>"
+    },
+    {
+      "heading": "renderFrameImpl：clip restriction、clear、单节点与多节点",
+      "html": "<p><code>renderFrameImpl</code>（SkiaPipeline.cpp:374-479）先做三件全局设置：<code>SkAutoCanvasRestore saver(canvas, true)</code>；把 <code>clip</code>（就是 CanvasContext 传下来的 dirty，帧区域）经 <code>preTransform.mapRect(clip).roundOut()</code> 变成 <code>clipRestriction</code>，非 SKP 捕获时用 <code>canvas-&gt;androidFramework_setDeviceClipRestriction</code> 直接限制设备绘制区域（这是 HWUI 特有优化，避免为每一层 clip 建 saveLayer）；然后 <code>canvas-&gt;concat(preTransform)</code>。<strong>SKP 捕获时改为 drawAnnotation</strong>（380-387），因为捕获文件要包含全帧内容。</p><p>接着 <code>if (!opaque) canvas-&gt;clear(SK_ColorTRANSPARENT)</code>（390-392）：<strong>opaque 窗口不清屏</strong>，靠 buffer age 与 damage 保证正确性。节点数为 1 时（394-398）直接 <code>RenderNodeDrawable root(nodes[0].get(), canvas); root.draw(canvas);</code>，并且尊重 <code>nodes[0]-&gt;nothingToDraw()</code>。</p><p>多节点时（402-478）布局是 <code>nodes[0]</code>=backdrop、<code>nodes[1]</code>=content、<code>2..</code>=overlay：只有 content 没完全覆盖 backdrop 时，才在右/下补画 backdrop 的边；content 相对 backdrop 平移并被 <code>contentDrawBounds</code> 裁剪后绘制；剩下的 overlay 节点按顺序各自 <code>forceDraw</code>。这套逻辑服务的是窗口缩放/2-up 分屏场景。</p>"
+    },
+    {
+      "heading": "DisplayList 的回放：SkiaRecordingCanvas 录、SkiaDisplayList::draw 放",
+      "html": "<p>UI 线程录制阶段（stage-05 之前）用 <code>SkiaRecordingCanvas</code>：<code>initDisplayList</code> 里优先 <code>renderNode-&gt;detachAvailableList()</code> 复用旧 DisplayList，否则 <code>new SkiaDisplayList()</code>，再 <code>mDisplayList-&gt;attachRecorder(&amp;mRecorder, SkIRect::MakeWH(width, height))</code>，最终 <code>SkiaCanvas::reset(&amp;mRecorder)</code>（SkiaRecordingCanvas.cpp:59-74）。收尾 <code>finishRecording(destination)</code> 里 <code>destination-&gt;setStagingDisplayList(DisplayList(finishRecording()))</code>（104-106）——注意是 <strong>staging</strong> DisplayList，要等 prepareTree 的 MODE_FULL 才 swap 成当前 DisplayList。</p><p>RT 侧回放时：<code>RenderNodeDrawable::onDraw</code>（RenderNodeDrawable.cpp:134-140）在非重排序场景下直接 <code>forceDraw</code>；<code>forceDraw</code>（160-194）先做 <code>isRenderable()/nothingToDraw()</code> 剪枝，再 <code>drawContent</code>；<code>drawContent</code> 在无 layer 或无 alpha 的普通路径上只做一件事——<code>displayList-&gt;draw(canvas)</code>（400）。而 <code>SkiaDisplayList::draw</code> 的实现只有一行：<code>mDisplayList.draw(canvas)</code>（SkiaDisplayList.h:167）——<code>mDisplayList</code> 是 <code>DisplayListData</code>（SkiaDisplayList.h:202），也就是录制下来的 Skia 命令流。</p><p>结构上，<code>SkiaDisplayList</code> 还持有 <code>std::deque&lt;RenderNodeDrawable&gt; mChildNodes</code>（:178，注释解释为什么必须用 deque：<code>mDisplayList</code> 里存的是指向这些元素的指针，不能搬迁），以及 <code>mProjectedOutline / mParentMatrix</code> 两个只在 draw 遍历期有效的缓存（:216-228 附近），用来避免为投影节点把矩阵 OP 重放一遍。</p>"
+    },
+    {
+      "heading": "提交：flushAndSubmit 与 swapBuffers，OpenGL 与 Vulkan 的差别",
+      "html": "<p>回放结束后 OpenGL 侧在 <code>ATRACE_NAME(\"flush commands\")</code> 保护下调用 <code>skgpu::ganesh::FlushAndSubmit(surface)</code>（SkiaOpenGLPipeline.cpp:180-183），然后 <code>layerUpdateQueue-&gt;clear()</code>（184），返回 <code>{true, kUnknownTime, {}}</code>（191）——<strong>OpenGL 报不出命令提交时间，presentFence 也是空 fd</strong>。</p><p>Vulkan 侧同样是 <code>renderFrame</code>，但结束调用 <code>vulkanManager().finishFrame(backBuffer.get())</code>，返回 <code>VkDrawResult</code>，再包成 <code>{true, drawResult.submissionTime, std::move(drawResult.presentFence)}</code>（SkiaVulkanPipeline.cpp:115-128）。所以 <code>FrameInfoIndex::CommandSubmissionCompleted</code> 只有在 Vulkan 下才有真实值（CanvasContext.cpp:790-791 取 <code>max(commandSubmissionTime, SwapBuffers)</code>，OpenGL 下就退化成 SwapBuffers）。</p><p>swap 的判定也不同：OpenGL 的 <code>*requireSwap = drawResult.success || mEglManager.damageRequiresSwap()</code>，然后 <code>mEglManager.swapBuffers(frame, screenDirty)</code> → <code>eglSwapBuffersWithDamageKHR</code>（SkiaOpenGLPipeline.cpp:207-213 → EglManager.cpp:621-646）；Vulkan 的 <code>*requireSwap = drawResult.success</code>，再 <code>vulkanManager().swapBuffers(mVkSurface, screenDirty, std::move(drawResult.presentFence))</code>（SkiaVulkanPipeline.cpp:141-147）。两边的第一句都是 <code>currentFrameInfo-&gt;markSwapBuffers()</code>——<strong>即使最终取消这一帧，从 jank 统计角度看它也算一次 swap</strong>（注释原文如此）。</p><p>这里就是 hwui 与 BufferQueue 的边界：<code>eglSwapBuffers*</code> 内部通过驱动把 buffer 交回 ANativeWindow 背后的 producer，而 hwui 在 <code>ReliableSurface</code> 构造时已经给这个 window 装了 interceptor（<code>ANativeWindow_setQueueBufferInterceptor / setPerformInterceptor / setQueryInterceptor</code>，ReliableSurface.cpp:61-71）。真正的 queueBuffer → BLASTBufferQueue → SurfaceFlinger 事务属于 stage-07。</p>"
+    },
+    {
+      "heading": "CPU / GPU 分工与 fence 语义（哪一段是异步的）",
+      "html": "<p>本阶段全部在 RenderThread 的 CPU 上下文里执行：遍历 RenderNode 树、生成 Skia draw ops（<code>mDisplayList.draw(canvas)</code> 只是把已录制的命令流再喂给 SkCanvas，不是重新录制）、把命令组织成 GrOp 列表。<code>FlushAndSubmit</code> 把这些 op 提交给 Ganesh，驱动把 GL 命令批量下发——<strong>函数返回时 GPU 通常还没执行完</strong>。</p><p>fence 语义分三处：<strong>（1）</strong> <code>DrawResult.presentFence</code>：Vulkan 会带一个 fence fd，OpenGL 恒为空（SkiaOpenGLPipeline.cpp:191）；<strong>（2）</strong> <code>flush()</code>：OpenGL 用 <code>EglManager::createReleaseFence(true, &amp;sync, &amp;fence)</code>，若驱动不支持 native fence 则 <code>eglClientWaitSyncKHR</code> 自己等 1 秒再返回 -1（SkiaOpenGLPipeline.cpp:261-274），只有 HardwareBuffer 路径会用到它（DrawFrameTask.cpp:163-166）；<strong>（3）</strong> 隐式同步：<code>eglSwapBuffersWithDamageKHR</code> 时驱动会等待“这一 buffer 上次被消费”的 acquire fence。</p><p>源码里没有出现在 <code>SkiaOpenGLPipeline::draw</code> 返回前等待 GPU 的代码：显式 GPU 等待只有 <code>Properties::waitForGpuCompletion</code> 打开时 <code>EglManager::swapBuffers</code> 里的 <code>fence()</code>（EglManager.cpp:621-626）。Vulkan 侧多一个 <code>presentFence</code> 交给 swapchain，由 <code>VulkanManager</code> 内部处理。窗口何时真的上屏、retire fence 何时回来，见 stage-07/stage-08。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "symbol": "SkiaOpenGLPipeline::draw",
+      "lines": "116-160",
+      "code": "IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(\n        const Frame& frame, const SkRect& screenDirty, const SkRect& dirty,\n        const LightGeometry& lightGeometry, LayerUpdateQueue* layerUpdateQueue,\n        const Rect& contentDrawBounds, bool opaque, const LightInfo& lightInfo,\n        const std::vector<sp<RenderNode>>& renderNodes, FrameInfoVisualizer* profiler,\n        const HardwareBufferRenderParams& bufferParams, std::mutex& profilerLock) {\n    if (!isCapturingSkp() && !mHardwareBuffer) {\n        mEglManager.damageFrame(frame, dirty);\n    }\n\n    SkColorType colorType = getSurfaceColorType();\n    // setup surface for fbo0\n    GrGLFramebufferInfo fboInfo;\n    fboInfo.fFBOID = 0;\n    if (colorType == kRGBA_F16_SkColorType) {\n        fboInfo.fFormat = GL_RGBA16F;\n    } else if (colorType == kN32_SkColorType) {\n        // Note: The default preference of pixel format is RGBA_8888, when other\n        // pixel format is available, we should branch out and do more check.\n        fboInfo.fFormat = GL_RGBA8;\n    } else if (colorType == kRGBA_1010102_SkColorType) {\n        fboInfo.fFormat = GL_RGB10_A2;\n    } else if (colorType == kAlpha_8_SkColorType) {\n        fboInfo.fFormat = GL_R8;\n    } else {\n        LOG_ALWAYS_FATAL(\"Unsupported color type.\");\n    }\n\n    auto backendRT = GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0,\n                                                    STENCIL_BUFFER_SIZE, fboInfo);\n\n    SkSurfaceProps props(mColorMode == ColorMode::Default ? 0 : SkSurfaceProps::kAlwaysDither_Flag,\n                         kUnknown_SkPixelGeometry);\n\n    SkASSERT(mRenderThread.getGrContext() != nullptr);\n    sk_sp<SkSurface> surface;\n    SkMatrix preTransform;\n    if (mHardwareBuffer) {\n        surface = getBufferSkSurface(bufferParams);\n        preTransform = bufferParams.getTransform();\n    } else {\n        surface = SkSurfaces::WrapBackendRenderTarget(mRenderThread.getGrContext(), backendRT,\n                                                      getSurfaceOrigin(), colorType,\n                                                      mSurfaceColorSpace, &props);\n        preTransform = SkMatrix::I();",
+      "note": "OpenGL 后端的 draw 前半：先 damageFrame 设脏区，再按 SkColorType 选 GL 内部格式，用 fFBOID=0 + STENCIL_BUFFER_SIZE 组出 GrBackendRenderTarget，最后 WrapBackendRenderTarget 得到 SkSurface（HardwareBuffer 路径换成 getBufferSkSurface + preTransform）。"
+    },
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "symbol": "SkiaPipeline::renderFrame",
+      "lines": "168-192",
+      "code": "    renderFrame(*layerUpdateQueue, dirty, renderNodes, opaque, contentDrawBounds, surface,\n                preTransform);\n\n    // Draw visual debugging features\n    if (CC_UNLIKELY(Properties::showDirtyRegions ||\n                    ProfileType::None != Properties::getProfileType())) {\n        std::scoped_lock lock(profilerLock);\n        SkCanvas* profileCanvas = surface->getCanvas();\n        SkiaProfileRenderer profileRenderer(profileCanvas, frame.width(), frame.height());\n        profiler->draw(profileRenderer);\n    }\n\n    {\n        ATRACE_NAME(\"flush commands\");\n        skgpu::ganesh::FlushAndSubmit(surface);\n    }\n    layerUpdateQueue->clear();\n\n    // Log memory statistics\n    if (CC_UNLIKELY(Properties::debugLevel != kDebugDisabled)) {\n        dumpResourceCacheUsage();\n    }\n\n    return {true, IRenderPipeline::DrawResult::kUnknownTime, android::base::unique_fd{}};\n}",
+      "note": "关键的一行是 renderFrame(...)：主树回放全部委托给 SkiaPipeline。之后在 “flush commands” trace 里 skgpu::ganesh::FlushAndSubmit(surface) 提交命令、layerUpdateQueue->clear()，并返回 success=true、commandSubmissionTime 未知、空 presentFence 的 DrawResult。"
+    },
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "symbol": "SkiaOpenGLPipeline::swapBuffers",
+      "lines": "194-214",
+      "code": "bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, IRenderPipeline::DrawResult& drawResult,\n                                     const SkRect& screenDirty, FrameInfo* currentFrameInfo,\n                                     bool* requireSwap) {\n    GL_CHECKPOINT(LOW);\n\n    // Even if we decided to cancel the frame, from the perspective of jank\n    // metrics the frame was swapped at this point\n    currentFrameInfo->markSwapBuffers();\n\n    if (mHardwareBuffer) {\n        return false;\n    }\n\n    *requireSwap = drawResult.success || mEglManager.damageRequiresSwap();\n\n    if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, screenDirty)))) {\n        return false;\n    }\n\n    return *requireSwap;\n}",
+      "note": "swapBuffers：先 markSwapBuffers（即使取消也算一次 swap），HardwareBuffer 直接 false；requireSwap = drawResult.success || damageRequiresSwap()，再交给 EglManager::swapBuffers（内部 eglSwapBuffersWithDamageKHR）。"
+    },
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+      "symbol": "SkiaPipeline::renderFrame",
+      "lines": "340-365",
+      "code": "void SkiaPipeline::renderFrame(const LayerUpdateQueue& layers, const SkRect& clip,\n                               const std::vector<sp<RenderNode>>& nodes, bool opaque,\n                               const Rect& contentDrawBounds, sk_sp<SkSurface> surface,\n                               const SkMatrix& preTransform) {\n    bool previousSkpEnabled = Properties::skpCaptureEnabled;\n    if (mPictureCapturedCallback) {\n        Properties::skpCaptureEnabled = true;\n    }\n\n    // Initialize the canvas for the current frame, that might be a recording canvas if SKP\n    // capture is enabled.\n    SkCanvas* canvas = tryCapture(surface.get(), nodes[0].get(), layers);\n\n    // draw all layers up front\n    renderLayersImpl(layers, opaque);\n\n    renderFrameImpl(clip, nodes, opaque, contentDrawBounds, canvas, preTransform);\n\n    endCapture(surface.get());\n\n    if (CC_UNLIKELY(Properties::debugOverdraw)) {\n        renderOverdraw(clip, nodes, contentDrawBounds, surface, preTransform);\n    }\n\n    Properties::skpCaptureEnabled = previousSkpEnabled;\n}",
+      "note": "renderFrame 的顺序就是本阶段的主干：tryCapture → renderLayersImpl（先把更新过的 layer 画到各自 surface）→ renderFrameImpl（回放主树）→ endCapture → 可选 overdraw。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "IRenderPipeline::DrawResult",
+      "type": "struct { bool success; nsecs_t commandSubmissionTime; unique_fd presentFence; }",
+      "desc": "IRenderPipeline.h:61-69。commandSubmissionTime 未知时是 kUnknownTime(-1)，OpenGL 恒为 -1；presentFence 只有 Vulkan 会填。"
+    },
+    {
+      "name": "SkiaOpenGLPipeline::mEglSurface / mEglManager / mNativeWindow / mSwapBehavior",
+      "type": "EGLSurface / EglManager& / sp<ANativeWindow> / SwapBehavior",
+      "desc": "platform/android/pipeline/skia/SkiaOpenGLPipeline.h:74-77。mSwapBehavior 决定 eglSetDamageRegionKHR 是否生效（BufferAge 才行），也决定 setPreserveBuffer 是否动作。"
+    },
+    {
+      "name": "SkiaGpuPipeline::mHardwareBuffer",
+      "type": "AHardwareBuffer*",
+      "desc": "platform/android/pipeline/skia/SkiaGpuPipeline.h:51。非空时整条路径绕开 EGL：不 damageFrame、不 eglSwapBuffers，由 Surface.lockHardwareCanvas 场景驱动。"
+    },
+    {
+      "name": "SkiaPipeline::mColorMode / mSurfaceColorType / mSurfaceColorSpace",
+      "type": "ColorMode / SkColorType / sk_sp<SkColorSpace>",
+      "desc": "pipeline/skia/SkiaPipeline.h:145-147。前两者决定 dither flag 与 GrGLFramebufferInfo.fFormat；色彩空间直接进 WrapBackendRenderTarget。"
+    },
+    {
+      "name": "SkiaPipeline::mBLASTBufferQueue",
+      "type": "sp<BLASTBufferQueue>",
+      "desc": "pipeline/skia/SkiaPipeline.h:243。hwui 侧所有 transaction 相关能力（syncNextTransaction / mergeWithNextTransaction / setCornerRadiiCallback 等，SkiaPipeline.h:74-125）都是对它转发，属于 stage-07 的边界。"
+    },
+    {
+      "name": "SkiaDisplayList::mDisplayList",
+      "type": "DisplayListData",
+      "desc": "pipeline/skia/SkiaDisplayList.h:202。录制下来的 Skia 命令流；draw(canvas) 就是 mDisplayList.draw(canvas)（同文件 :167）。"
+    },
+    {
+      "name": "SkiaDisplayList::mChildNodes",
+      "type": "std::deque<RenderNodeDrawable>",
+      "desc": "pipeline/skia/SkiaDisplayList.h:178。必须用 deque，因为 mDisplayList 里存着指向这些元素的指针，不能因扩容搬迁。"
+    },
+    {
+      "name": "RenderNodeDrawable::mProjectedOutline / mParentMatrix",
+      "type": "const Outline* / SkMatrix",
+      "desc": "pipeline/skia/SkiaDisplayList.h 中定义，注释说明只在 draw 遍历期有效：让投影节点不必重放矩阵 OP 就能拿到正确变换。"
+    },
+    {
+      "name": "SkiaPipeline::mCaptureMode",
+      "type": "CaptureMode",
+      "desc": "pipeline/skia/SkiaPipeline.h:212，由 setPictureCapturedCallback 设置（:68-69）。非 None 时 renderFrame 会录 SkPicture，renderFrameImpl 用 annotation 代替 device clip restriction。"
+    },
+    {
+      "name": "SkiaOpenGLPipeline::mSwapBehavior",
+      "type": "renderthread::SwapBehavior",
+      "desc": "SkiaOpenGLPipeline.h:77，默认 kSwap_discardBuffer。setSurface 时据此算 preserveBuffer（SkiaOpenGLPipeline.cpp:252-256），直接影响 opaque 窗口能否依赖上一帧内容。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "flush commands",
+      "value": "ATRACE_NAME（SkiaOpenGLPipeline.cpp:181）",
+      "desc": "包住 skgpu::ganesh::FlushAndSubmit(surface)，衡量“把命令交给驱动”的 CPU 时间。"
+    },
+    {
+      "name": "draw layers",
+      "value": "ATRACE_NAME（SkiaPipeline.cpp:76）",
+      "desc": "renderLayersImpl 的外层，里面会嵌套每个 layer 的 “drawLayer [name] W x H”（SkiaPipeline.cpp:103）。"
+    },
+    {
+      "name": "alpha caused saveLayer %dx%d",
+      "value": "ATRACE_FORMAT（RenderNodeDrawable.cpp:474）",
+      "desc": "出现即代表本帧多了一次离屏 saveLayer，是 overdraw/GPU 带宽的常见来源。"
+    },
+    {
+      "name": "CommandSubmissionCompleted",
+      "value": "FrameInfoIndex，来源 CanvasContext.cpp:790-791",
+      "desc": "Vulkan 下是真实提交时间，OpenGL 下退化为 SwapBuffers；对比 GpuCompleted 可估 GPU 排队深度。"
+    },
+    {
+      "name": "SkiaPipeline::getFrameTimestamps",
+      "value": "ATRACE_FORMAT_INSTANT（SkiaPipeline.cpp:612-616）",
+      "desc": "需要 debug_gpu_present_times flag；能拿到 presentTime 与 acquireFence 的时间戳。"
+    },
+    {
+      "name": "debugLayersUpdates / debugOverdraw",
+      "value": "Properties 调试开关（RenderNodeDrawable.cpp:380-391）",
+      "desc": "打开后 layer 更新会画绿框、overdraw 会叠加色块，用于确认哪个 layer 在被反复重绘。"
+    }
+  ],
+  "pitfalls": [
+    "OpenGL 的 DrawResult.commandSubmissionTime 恒为 kUnknownTime（SkiaOpenGLPipeline.cpp:191），所以 CommandSubmissionCompleted 实际等于 SwapBuffers；把它当 GPU 提交时间做归因会得出错误结论。",
+    "requireSwap 的语义因后端而异：OpenGL 是 success || damageRequiresSwap()，而 damageRequiresSwap() 需要 EGL_KHR_partial_update 且 SwapBehavior::BufferAge（EglManager.cpp:617-619）；Vulkan 只看 success，注释说明 VkManager 恒等价 BufferAge 模式（SkiaVulkanPipeline.cpp:164-165）。",
+    "mHardwareBuffer 存在时 swapBuffers 直接 return false（SkiaOpenGLPipeline.cpp:203-205），不 eglSwap；fence 由 DrawFrameTask 里 pipeline->flush() 的返回值经 HardwareBufferParams 回调交出（DrawFrameTask.cpp:163-166）。",
+    "clear 只在 !opaque 时执行（SkiaPipeline.cpp:390-392）；opaque 窗口的正确性完全依赖 buffer age 与 damage 计算，damage 少算就会残留上一帧像素，且这种残留在 trace 上没有任何报错。",
+    "多节点布局是 nodes[0]=backdrop、nodes[1]=content（SkiaPipeline.cpp:402-414），不是“0 是窗口内容”。把 content 当 backdrop 会导致 content 被裁剪或漏画，尤其在窗口缩放动画期间。",
+    "draw 里没有等待 GPU 的代码：只 FlushAndSubmit。waitOnFences 等的是 CPU 任务（CanvasContext.h:405 的 future），不是 GPU fence；真正等 GPU 只有 Properties::waitForGpuCompletion 时的 EglManager::fence()。",
+    "SKP 捕获模式会绕过 device clip restriction 改用 drawAnnotation（SkiaPipeline.cpp:380-387），所以抓下来的 SKP 是全帧内容，用它的绘制量估算真实帧开销会偏大。"
+  ],
+  "traceTags": [
+    "flush commands",
+    "draw layers",
+    "drawLayer [name] W x H",
+    "alpha caused saveLayer",
+    "450351988: SkiaPipeline::getFrameTimestamps"
+  ],
+  "next": "stage-07"
+}

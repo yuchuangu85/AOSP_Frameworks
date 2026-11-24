@@ -1,0 +1,49 @@
+{
+  "step": "s30",
+  "title": "presentFrameAndReleaseLayers：present 给 HWC，逐层定下 release fence",
+  "tldr": "把帧交给 HWC，同时逐层定下 release fence——app 能不能画下一帧全看它。",
+  "why": "这里是整条链路的收口：前面所有工作（RT 画完、queueBuffer、BLAST 交事务、latch、合成）都只是把一块 buffer 准备好，真正让它「可以被下一帧复用」的动作只有这里的 release fence。fence 定错的后果是双向的：给太早，app 立刻 dequeue 到这块 buffer 开始写，而 GPU/HWC 还在读它，屏幕上是撕裂和花屏；给太晚或者根本不 fulfill，app 的 dequeueBuffer 就一直等，表现为界面画到一半不动了，而且因为 buffer 回不到 FREE，三缓冲很快吃满，最后连 UI 线程都被反压卡住。另外 present 的返回时机很反直觉：presentFrameAndReleaseLayers 返回时帧只是「提交给 HWC」，present fence 还没 signal，名字里的 release 指的是放掉上一帧的 buffer，不是这一帧已经上屏。",
+  "concepts": [
+    { "term": "present fence", "text": "HWC 报的「这一帧已经上屏」的信号，由 Display::presentFrame 从 HWC 取回。" },
+    { "term": "release fence", "text": "这一层 buffer 何时可以被 producer 重用的信号，通常取 HWC 的 per-layer fence。" },
+    { "term": "FrameFences", "text": "present 返回的 FrameFences：presentFence 与每层的 layerFences。" },
+    { "term": "mReleasedLayers", "text": "这一帧已从可见集合里消失的层，拿不到 per-layer fence，只能退而用 present fence。" }
+  ],
+  "walk": [
+    { "call": "void Output::presentFrameAndReleaseLayers(bool flushEvenWhenDisabled) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1726", "what": "收口函数：一次 present + 给每层发 release fence。" },
+    { "call": "auto frame = presentFrame();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1742", "what": "虚函数，Display 覆写后在这里真正调 HWC present。" },
+    { "call": "mRenderSurface->onPresentDisplayCompleted();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1744", "what": "通知 DisplaySurface 这一帧已提交，推进它的缓冲区轮转。" },
+    { "call": "if (auto f = frame.layerFences.find(hwcLayer); f != frame.layerFences.end()) {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1755", "what": "逐层配对 HWC layer 与它本帧的 release fence。" },
+    { "call": "layer->getLayerFE().setReleaseFence(releaseFence);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1783", "what": "把 fence 交给 LayerFE，内部 fulfill promise 唤醒等的人。" },
+    { "call": "layer->getLayerFE().setReleasedBuffer(layer->getLayerFE().getCompositionState()->buffer);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1784", "what": "记下这一帧放掉的 buffer（weak），供 fence 完成后的回调使用。" },
+    { "call": "layer->setReleaseFence(frame.presentFence);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1792", "what": "已消失的层没有 per-layer fence，只能拿 present fence 兜底。" },
+    { "call": "compositionengine::Output::FrameFences Display::presentFrame() {", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:416", "what": "覆写起点：先拿基类的 clientTargetAcquireFence，再进 HWC。" },
+    { "call": "hwc.presentAndGetReleaseFences(*halDisplayIdOpt, getState().earliestPresentTime);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:432", "what": "一行两件事：present，再把 HWC 的 release fence 全取回来。" },
+    { "call": "if (displayData.validateWasSkipped) {", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:668", "what": "快路径：validate 时已经 present 过，这里只 executeCommands 刷命令。" },
+    { "call": "std::this_thread::sleep_until(*earliestPresentTime);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:678", "what": "故意睡到最早 present 时间，防止帧太早出现在屏上。" },
+    { "call": "auto error = hwcDisplay->present(&displayData.lastPresentFence);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:681", "what": "慢路径的 present，present fence 存进 displayData。" },
+    { "call": "fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:438", "what": "把 present fence 拿出来放进 FrameFences。" },
+    { "call": "fences.layerFences.emplace(hwcLayer, hwc.getLayerReleaseFence(*halDisplayIdOpt, hwcLayer));", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:447", "what": "逐层取 fence；查不到时 getLayerReleaseFence 返回 NO_FENCE。" },
+    { "call": "hwc.clearReleaseFences(*halDisplayIdOpt);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:450", "what": "用完就清，否则下一帧会读到这一帧的旧 fence。" }
+  ],
+  "state": [
+    { "field": "LayerFE::mReleaseFence（promise）", "before": "INITIALIZED，等一个结果", "after": "setReleaseFence 后 set_value 并置 FULFILLED（LayerFE.cpp:455-456）", "note": "重复 fulfill 会被 443 的检查静默挡掉" },
+    { "field": "LayerFE::mReleasedBuffer", "before": "上一帧放掉的 buffer（weak）", "after": "本帧的 composition buffer（1784）", "note": "weak 引用，不阻止 buffer 被回收" },
+    { "field": "HWComposer::mDisplayData[id].releaseFences", "before": "本帧刚从 HWC 取回的 per-layer fence", "after": "被 clearReleaseFences 清空（HWComposer.cpp:822）", "note": "注意 read 与 clear 分别在 Display::presentFrame 的首尾" },
+    { "field": "OutputCompositionState.dirtyRegion", "before": "本帧的脏区", "after": "present 前就 clear（1740）", "note": "下一次 beginFrame 靠它判断要不要 recompose" },
+    { "field": "Output::mReleasedLayers", "before": "本帧已消失的层", "after": "发完 present fence 后 clear（1797）", "note": "这些层只拿到 present fence，时间精度比 per-layer 差" }
+  ],
+  "threads": "默认在 SF 主线程同步跑（Output::present 里 514 直接调用）。若 Display 支持 MULTI_THREADED_PRESENT 且 mOffloadPresent 置了，会走 presentFrameAndReleaseLayersAsync（1207）在 HwcAsyncWorker 线程上做，主线程拿 future 继续往后走，直到 CompositionEngine::present 里那轮 future.get()（CompositionEngine.cpp:163-167）才汇合。present 本身是 HWC 的阻塞 IPC，慢屏/多屏时这段直接吃 budget。",
+  "pitfalls": [
+    "release fence 不是 present fence：每层拿的是 HWC 的 per-layer fence（1754-1757），只有没拿到的层才退回 present fence（1792）。两者混用会让部分层被过早复用。",
+    "走了 client 合成的那一帧必须 merge client target 的 acquire fence（1778-1781），否则 GPU 还在写 client target，app 已经把 buffer 拿去重画——自己踩自己，触发条件就是「这帧有 GPU 合成」。",
+    "函数返回时 present fence 还没 signal：把它当成「已上屏」会让所有帧时间统计偏早一个 vsync，jank 归因会整体错位。",
+    "force_slower_follower_gpu_composition 打开时走 1762 那条更保守的路径：把上一帧的 client target acquire fence 也 merge 进来并缓存。两条路径 fence 精度不同，查 fence 相关花屏先确认这个 flag。"
+  ],
+  "debug": [
+    "perfetto 抓 sf：presentFrameAndReleaseFences 相关耗时挂在 \"Waiting on HWC\" slice（CompositionEngine.cpp:162）下，presentAndGetReleaseFences 自己也有 SFTRACE_CALL（HWComposer.cpp:661）。",
+    "atrace 里搜 \"wait for earliest present time\"（HWComposer.cpp:677）：这条 slice 出现就说明这一拍是 SF 主动睡出来的延迟，不是硬件慢。",
+    "dumpsys SurfaceFlinger --latency <layer> 看该层每帧的 actualPresentTime 与 frameReady 时间差：差值稳定但变大是 present 慢，忽大忽小要看 latch 那边。"
+  ],
+  "next": "第 31 步「onCompositionPresented：释放 buffer」：present fence 之后 SF 通知每层 onCompositionPresented，release fence 经 BufferReleaseChannel 发回 app。"
+}

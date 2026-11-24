@@ -1,0 +1,216 @@
+{
+ "id": "tr-build-finish",
+ "title": "Transition.buildFinishTransaction",
+ "file": "base/services/core/java/com/android/server/wm/Transition.java",
+ "sig": "private void buildFinishTransaction(SurfaceControl.Transaction t, TransitionInfo info, DisplayContent[] participantDisplays)",
+ "span": [
+  1313,
+  1347
+ ],
+ "notes": [
+  {
+   "at": 1,
+   "quote": "private void buildFinishTransaction(SurfaceControl.Transaction t, Tran",
+   "kind": "ipc",
+   "text": "生成下发给 Shell 的 finish 事务：动画期 Shell 拥有 surface，须由 WM 构造后跨进程下发。"
+  },
+  {
+   "at": 2,
+   "quote": "DisplayContent[] participantDisplays) {",
+   "kind": "note",
+   "text": "info 提供各 display 的过渡 root leash；participantDisplays 含未参与 target 的显示。"
+  },
+  {
+   "at": 3,
+   "quote": "for (int i = mTargets.size() - 1; i >= 0; --i) {",
+   "kind": "branch",
+   "text": "逆序遍历 mTargets：先恢复子再恢复父，避免父 leash 已被 reparent 后子恢复路径失效。"
+  },
+  {
+   "at": 4,
+   "quote": "final WindowContainer<?> target = mTargets.get(i).mContainer;",
+   "kind": "data",
+   "text": "取该 ChangeInfo 绑定的容器；mTargets 只含真正参与本过渡的容器。"
+  },
+  {
+   "at": 5,
+   "quote": "if (target.getParent() == null) continue;",
+   "kind": "branch",
+   "text": "容器已从层级摘除（如 Activity 销毁）时无原父可挂，跳过以免空父 NPE。"
+  },
+  {
+   "at": 6,
+   "quote": "final SurfaceControl targetLeash = getLeashSurface(target, null /* t *",
+   "kind": "data",
+   "text": "取现有 leash，null 表示不建 fixed-rotation leash；DC 用 windowingLayer。"
+  },
+  {
+   "at": 7,
+   "quote": "final SurfaceControl origParent = getOrigParentSurface(target);",
+   "kind": "data",
+   "text": "取 WM 层级中的原始父 surface；DisplayContent 特判为其自身 surface。"
+  },
+  {
+   "at": 8,
+   "quote": "// Ensure surfaceControls are re-parented back into the hierarchy.",
+   "kind": "note",
+   "text": "把动画期 reparent 到 transition root 下的 leash 挂回原父，恢复 WM 与 SF 层级一致。"
+  },
+  {
+   "at": 9,
+   "quote": "t.reparent(targetLeash, origParent);",
+   "kind": "state",
+   "text": "挂回原父；漏做则结束后 surface 仍留在 root 下，root 摘除后成孤儿，黑屏或残留。"
+  },
+  {
+   "at": 10,
+   "quote": "t.setLayer(targetLeash, target.getLastLayer());",
+   "kind": "state",
+   "text": "恢复 WM 记录的最终 z 序；漏设会层级错乱，如壁纸压住 Activity。"
+  },
+  {
+   "at": 11,
+   "quote": "t.setCornerRadius(targetLeash, 0);",
+   "kind": "state",
+   "text": "清零动画期圆角，否则结束后窗口仍带圆角，与 WM 状态不一致。"
+  },
+  {
+   "at": 12,
+   "quote": "t.setShadowRadius(targetLeash, 0);",
+   "kind": "state",
+   "text": "清零阴影半径，避免动画期放大的阴影残留到已结束窗口。"
+  },
+  {
+   "at": 13,
+   "quote": "t.setAlpha(targetLeash, 1);",
+   "kind": "state",
+   "text": "恢复 alpha=1；淡出动画若不重置，窗口结束后仍半透明甚至不可见。"
+  },
+  {
+   "at": 14,
+   "quote": "// For config-at-end, the end-transform will be reset after the config",
+   "kind": "note",
+   "text": "config-at-end 的 end transform 依赖未下发配置，故 transform 推迟复位。"
+  },
+  {
+   "at": 15,
+   "quote": "// applied in the client (since the transform depends on config). The ",
+   "kind": "note",
+   "text": "该复位在 applyConfigAtTransitionEnd 用 Activity 的 sync transaction 完成。"
+  },
+  {
+   "at": 16,
+   "quote": "// remain here because shell might want to persistently override them.",
+   "kind": "note",
+   "text": "圆角/阴影/alpha 不推迟，因 Shell 希望这些属性可被持久覆盖。"
+  },
+  {
+   "at": 17,
+   "quote": "if (target.asActivityRecord() == null",
+   "kind": "branch",
+   "text": "只有 ActivityRecord 有 config-at-end 语义；非 Activity 一律复位 transform。"
+  },
+  {
+   "at": 18,
+   "quote": "|| (mTargets.get(i).mFlags & ChangeInfo.FLAG_CHANGE_CONFIG_AT_END) == ",
+   "kind": "branch",
+   "text": "FLAG_CHANGE_CONFIG_AT_END 置位时 transform 必须延后，否则终态被提前覆盖。"
+  },
+  {
+   "at": 19,
+   "quote": "resetSurfaceTransform(t, target, targetLeash);",
+   "kind": "state",
+   "text": "复位位置/matrix/crop 到 WM 真实值；漏做会残留缩放位移致窗口错位。"
+  },
+  {
+   "at": 20,
+   "quote": "}",
+   "kind": "note",
+   "text": "config-at-end 分支结束：仅可立即复位者在此处理，置位 Activity 已跳过。"
+  },
+  {
+   "at": 21,
+   "quote": "}",
+   "kind": "note",
+   "text": "单 target 回滚属性已写入 t，逆序保证子先于父恢复。"
+  },
+  {
+   "at": 22,
+   "quote": "// Remove screenshot layers if necessary",
+   "kind": "note",
+   "text": "截图冻结会插入 snapshot 图层，finish 时必须一并清理。"
+  },
+  {
+   "at": 23,
+   "quote": "if (mContainerFreezer != null) {",
+   "kind": "branch",
+   "text": "仅当用到截图冻结才有东西可清；mContainerFreezer 为 null 则跳过。"
+  },
+  {
+   "at": 24,
+   "quote": "mContainerFreezer.cleanUp(t);",
+   "kind": "state",
+   "text": "snapshot reparent 到 null 以 detach；不清理会长期盖住窗口，看似卡住。"
+  },
+  {
+   "at": 25,
+   "quote": "}",
+   "kind": "note",
+   "text": "截图清理结束，detach 指令已并入同一 finish 事务。"
+  },
+  {
+   "at": 26,
+   "quote": "// Need to update layers on involved displays since they were all paus",
+   "kind": "note",
+   "text": "动画期各 display 子层排序被暂停，layer 可能与 WM 期望不一致。"
+  },
+  {
+   "at": 27,
+   "quote": "// the animation played. This puts the layers back into the correct or",
+   "kind": "note",
+   "text": "故 finish 时要重排每个参与 display 的子层，否则 z 序错误延续到下次过渡。"
+  },
+  {
+   "at": 28,
+   "quote": "for (int i = participantDisplays.length - 1; i >= 0; --i) {",
+   "kind": "branch",
+   "text": "用 participantDisplays：非顶层 task 仅顺序变化时该 display 可能无 target。"
+  },
+  {
+   "at": 29,
+   "quote": "assignLayersForFinishTransaction(participantDisplays[i], t);",
+   "kind": "state",
+   "text": "以 finish 模式重算子层，避免把过渡专用 leash 当普通子层排序。"
+  },
+  {
+   "at": 30,
+   "quote": "}",
+   "kind": "note",
+   "text": "所有参与 display 重排完成，layer 顺序已与 WM 一致。"
+  },
+  {
+   "at": 32,
+   "quote": "for (int i = 0; i < info.getRootCount(); ++i) {",
+   "kind": "branch",
+   "text": "正序遍历每个过渡 root（每 display 一个），逐个摘除其 leash。"
+  },
+  {
+   "at": 33,
+   "quote": "t.reparent(info.getRoot(i).getLeash(), null);",
+   "kind": "state",
+   "text": "reparent 到 null 即 detach root；须在 target 挂回原父之后，否则成孤儿。"
+  },
+  {
+   "at": 34,
+   "quote": "}",
+   "kind": "note",
+   "text": "root 全 detach，过渡专用层级从 SurfaceFlinger 消失。"
+  },
+  {
+   "at": 35,
+   "quote": "}",
+   "kind": "note",
+   "text": "不 apply：finish 事务随 onTransitionReady 下发，由 Shell 在 finish 前统一 apply。"
+  }
+ ]
+}

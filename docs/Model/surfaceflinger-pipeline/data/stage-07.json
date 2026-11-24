@@ -1,0 +1,177 @@
+{
+  "id": "stage-07",
+  "num": 7,
+  "title": "present：HWC 提交与 fence 回传",
+  "subtitle": "SurfaceFlinger 主线程把这一拍交给 HWC：先 validate 拿到 composition 变更，再 present 拿到 present fence 与逐 layer release fence",
+  "lane": "HWC",
+  "durationHint": "约 0.3~2 ms（HWC HAL 往返 + earliest present 等待，随 vendor 实现波动）",
+  "summary": "本阶段是“这一帧终于被交给显示硬件”的一拍，发起者是 SurfaceFlinger 主线程：Scheduler::onFrameSignal 在 vsync 后依次调用 ICompositor::commit / composite（Scheduler.cpp:501），SurfaceFlinger::composite 里执行 mCompositionEngine->present(refreshArgs)（SurfaceFlinger.cpp:3448），再由 Output::presentFrameAndReleaseLayers（Output.cpp:1726）调用 Output::presentFrame（Output.cpp:1828；物理显示器的实现在 native/services/surfaceflinger/CompositionEngine/src/Display.cpp:416）。present 之前先 validate：Display::chooseCompositionStrategy → HWComposer::getDeviceCompositionChanges（HWComposer.cpp:537），HWC 可以合并成 presentOrValidate 一次往返，也可以分成 validate + present 两次。真正的展示调用是 HWComposer::presentAndGetReleaseFences（HWComposer.cpp:658）：先 sleep_until(earliestPresentTime) 避免过早呈现，再 hwcDisplay->present(&lastPresentFence) 拿到 present fence，随后 getReleaseFences 拿到每个 HWC layer 的 release fence。HWC HAL 之下的 DRM/KMS 提交与面板点亮不在 AOSP 树内，源码中未体现；这里是应用侧一切“present 时间”数据的源头。整段跑在 SF 主线程上，与 app 的 RenderThread 无关；线程若被 present 阻塞，下一拍的 vsync 处理会整体后移。",
+  "callchain": [
+    "Scheduler::onFrameSignal()",
+    "ICompositor::commit()",
+    "ICompositor::composite()",
+    "SurfaceFlinger::composite()",
+    "CompositionEngine::present()",
+    "Output::present()",
+    "Output::presentFrameAndReleaseLayers()",
+    "compositionengine::impl::Display::presentFrame()",
+    "Output::presentFrame()",
+    "HWComposer::presentAndGetReleaseFences()",
+    "HWC2::Display::present()",
+    "AidlComposer::presentDisplay()"
+  ],
+  "sections": [
+    {
+      "heading": "一、谁触发、在哪个线程、present 在链路里的位置",
+      "html": "<p>触发者是 vsync 之后的 SF 主循环：<code>Scheduler::onFrameSignal()</code>（<code>native/services/surfaceflinger/Scheduler/Scheduler.cpp:411</code>）先 <code>compositor.commit()</code> 把这一拍的事务合入 drawing state，再 <code>compositor.composite()</code>（<code>Scheduler.cpp:501</code>）。<code>SurfaceFlinger::composite()</code>（<code>SurfaceFlinger.cpp:3330</code>）组装 <code>CompositionRefreshArgs</code> 并调用 <code>mCompositionEngine-&gt;present(refreshArgs)</code>（<code>SurfaceFlinger.cpp:3448</code>）。</p><p>这一整段跑在 SurfaceFlinger 主线程上，与 app 侧的 RenderThread 完全无关：后者只负责把 buffer 用 Transaction 递进来（BLAST），latch 与合成都在这里发生。<code>CompositionEngine::present()</code> → 每个 output 的 <code>Output::present()</code> → <code>presentFrameAndReleaseLayers()</code>（<code>native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1726</code>），函数体里先 <code>auto frame = presentFrame()</code>，再 <code>mRenderSurface-&gt;onPresentDisplayCompleted()</code> 释放 GPU 合成的 client target。</p><p><code>presentFrame()</code> 是虚函数：基类 <code>Output::presentFrame()</code>（<code>Output.cpp:1828</code>）只填 <code>clientTargetAcquireFence</code>，物理显示器的实现是 <code>compositionengine::impl::Display::presentFrame()</code>（<code>native/services/surfaceflinger/CompositionEngine/src/Display.cpp:416</code>），它额外调用 <code>hwc.presentAndGetReleaseFences()</code> 并填充 <code>presentFence</code> 与 <code>layerFences</code>。这就是本阶段的边界：过了这一层就是 HWC HAL。</p><p>为什么 SF 自己不能直接写显存：HWC 是 vendor 实现，SF 只能通过 <code>IComposer</code> 下发 layer 组合（composition）与 present 命令，硬件是否走 overlay、是否做色彩管理、何时真正扫出这一帧，都由 HWC 与内核驱动决定。SF 侧能拿到的承诺只有两个 fence：present fence 与 per-layer release fence。</p>"
+    },
+    {
+      "heading": "二、validate 与 present 是两个 HAL 往返，且可以合并",
+      "html": "<p>present 之前必须让 HWC 知道这一帧的 layer 组合：<code>Display::chooseCompositionStrategy()</code>（<code>native/services/surfaceflinger/CompositionEngine/src/Display.cpp:248</code>）调用 <code>HWComposer::getDeviceCompositionChanges()</code>（<code>HWComposer.cpp:537</code>）。后者先判断能否跳过 validate：若 HWC 不支持 expected present time、或当前时刻已过 <code>earliestPresentTime</code>，就允许 skip（<code>HWComposer.cpp:562-577</code>）。</p><p>能 skip 时走 <code>hwcDisplay-&gt;presentOrValidate()</code>：HWC 若返回 <code>state == 1</code> 表示“present 已顺便完成”，此时立刻 <code>getReleaseFences</code>、把 present fence 存进 <code>displayData.lastPresentFence</code>，并把 <code>validateWasSkipped</code> 置真（<code>HWComposer.cpp:581-596</code>）。后续 <code>presentAndGetReleaseFences()</code> 看到 <code>validateWasSkipped</code> 只执行 <code>executeCommands()</code> 然后返回，不会再 present 一次（<code>HWComposer.cpp:668-675</code>）。</p><p>不能 skip 时退回 <code>hwcDisplay-&gt;validate()</code>（<code>HWC2.cpp:515</code>），随后读 <code>getChangedCompositionTypes</code> / <code>getRequests</code> / <code>getClientTargetProperty</code> 并 <code>acceptChanges()</code>（<code>HWComposer.cpp:608-631</code>）。也就是说一帧可能有两次 HAL 往返（validate + present），也可能是合并的一次——trace 上要按 <code>HwcValidateDisplay</code> 与 <code>HwcPresentDisplay</code> 两个 slice 区分。</p>"
+    },
+    {
+      "heading": "三、present 那一次调用做了什么",
+      "html": "<p><code>HWComposer::presentAndGetReleaseFences()</code>（<code>HWComposer.cpp:658</code>）有三段：第一段，若 <code>validateWasSkipped</code> 为真，只 <code>executeCommands()</code> 刷掉挂起的 HWC 命令并回报 <code>presentError</code>；第二段，若有 <code>earliestPresentTime</code>，<code>std::this_thread::sleep_until()</code> 显式睡到该时刻（<code>HWComposer.cpp:676-679</code>），这是 SF 侧唯一一处主动阻塞；第三段，<code>hwcDisplay-&gt;present(&amp;displayData.lastPresentFence)</code> 拿 present fence，再 <code>getReleaseFences(&amp;releaseFences)</code> 拿每层 release fence，并整体替换 <code>displayData.releaseFences</code>。</p><p><code>HWC2::Display::present()</code>（<code>HWC2.cpp:413</code>）只是把 <code>mComposer.presentDisplay(mId, &amp;presentFenceFd)</code> 的 <code>int32</code> 错误码转成 <code>hal::Error</code>，再把 fd 包成 <code>sp&lt;Fence&gt;</code>；真正跨进 HAL 的是 <code>AidlComposer::presentDisplay()</code>（<code>AidlComposerHal.cpp:748</code>）：持共享锁、<code>writer-&gt;get().presentDisplay(displayId)</code> 写命令、<code>execute(display)</code> 下发给 composer HAL、最后 <code>reader-&gt;get().takePresentFence(displayId)</code> 取回 fd 并移交所有权。</p><p>因此 present fence 的所有权链是：HWC service 创建 fd → AidlComposer 取回并置 -1 表示已接管 → HWC2::Display 包 <code>Fence</code> → HWComposer 存 <code>DisplayData::lastPresentFence</code> → Display::presentFrame 读出后放进 <code>FrameFences::presentFence</code>。之后 <code>HWComposer::clearReleaseFences()</code> 清空逐层表，防止下一帧误用旧 fence。</p><p>阻塞语义要分清：源码里唯一显式阻塞是 <code>sleep_until(earliestPresentTime)</code>；<code>presentDisplay()</code> 这个 HAL 调用本身是否阻塞在上一帧 present fence 上，取决于 vendor HWC 实现，<strong>源码中未体现</strong>。所以 trace 上 present 很慢时，先看是 sleep 还是 HAL。</p><p>顺带说明 <code>FrameFences::clientTargetAcquireFence</code> 的来源：只有 <code>usesClientComposition</code> 为真（有 layer 需要 GPU 合成）时才从 <code>mRenderSurface-&gt;getClientTargetAcquireFence()</code> 取，代表 RenderEngine 画完 client target 的 acquire fence；device composition 全 HWC 时它是 NO_FENCE。</p>"
+    },
+    {
+      "heading": "四、HWC 以下的边界：DRM/KMS、面板与 fence 类型",
+      "html": "<p>HWC HAL 之下是 vendor 的 display driver（DRM/KMS、DSI 等），AOSP 树里没有这部分实现：<code>AidlComposer::presentDisplay()</code> 之后只通过 <code>execute(display)</code> 把命令下发到 <code>IComposer</code> service，再由 service 与内核交互，<strong>源码中未体现</strong>具体提交方式。可验证的边界就是 present fence 这个 fd：它由 HWC service 生成，signal 表示“这一帧已经被硬件接收并将在下一个刷新周期点亮”。</p><p>present fence 与 release fence 是两种东西：<code>lastPresentFence</code> 只有一个、代表整帧上屏；<code>releaseFences</code> 是 <code>HWC2::Layer*</code> → <code>sp&lt;Fence&gt;</code> 的映射，代表“该 layer 的上一块 buffer 何时可以还给生产者”。它们都由 HWC 在 present 时一起交出，但 signal 时刻不同——release fence 晚于（或等于）present fence。</p><p>“retire fence”在本版本的 HWC2/AIDL 接口里没有对应 API：<code>HWComposer.h:557</code> 只在注释里把 <code>lastPresentFence</code> 描述为 “signals when the last set op retires”，<code>LegacyFramebufferSurface.h:108</code> 还留着 HWC1 时代的 retire fence 注释。GPU 合成时 client target buffer 的“退役”是用 <code>present fence</code> 与 acquire fence 合并表达的（<code>FramebufferSurface.cpp:130-148</code>，<code>Fence::merge(\"FramebufferSurface-Acquire+Present\", ...)</code>），这部分留给 stage-08 展开。</p><p>面板侧的另一个边界是刷新率与 present 目标的匹配：SF 把 <code>expectedPresentTime</code> 与 <code>frameInterval</code> 一并传给 validate（<code>HWComposer.cpp:584-592</code>），HWC 用它们决定“这一帧是否已经太晚、要不要推迟到下一个刷新周期”。如果模式切换或 doze 导致 interval 变化，validate/present 的时序判断也会随之改变。</p>"
+    },
+    {
+      "heading": "五、观测手段与排障入口",
+      "html": "<p>Perfetto 上先看 SF 主线程的三个 slice：<code>Composition</code>（<code>SurfaceFlinger::composite</code> 的 async track）、<code>HWComposer::presentAndGetReleaseFences</code>（函数名 SFTRACE_CALL）、<code>wait for earliest present time</code>（<code>HWComposer.cpp:677</code>）。若 present 慢但 sleep 很短，问题在 HWC HAL；若 sleep 很久，说明 SF 把这一帧刻意推迟到 <code>earliestPresentTime</code>。</p><p>HAL 侧有 <code>HwcPresentDisplay &lt;id&gt;</code>（<code>AidlComposerHal.cpp:750</code>）与 <code>HwcValidateDisplay</code> / <code>HwcPresentOrValidateDisplay</code>（同文件 884/915）三个 slice，配合 <code>NextFrameInterval &lt;n&gt;_Hz</code>（<code>HWComposer.cpp:580</code>）可以确认这一帧的预期刷新率与是否走了 skip-validate。</p><p>dumpsys 侧：<code>adb shell dumpsys SurfaceFlinger</code> 的 display 段会打印 HWC 的 present fence 时间与 <code>HW_VSYNC_*</code> counter；<code>dumpsys SurfaceFlinger --latency</code> 给出 desired/actual present 直方图；<code>adb shell dumpsys SurfaceFlinger --displaysync</code>（若编译开启）可看 vsync 配置。property <code>service.sf.present_timestamp</code> 反映 present 时间是否来自可信 fence（<code>SurfaceFlinger.cpp:1125</code>）。</p><p>另一个容易忽略的观测点是 <code>HW_VSYNC_ON_&lt;id&gt;</code> 与 <code>HW_VSYNC_&lt;id&gt;</code> 两个 SFTRACE counter（<code>HWComposer.cpp:181/521</code>）：前者是 HWC 的 vsync 开关状态，后者用于对齐硬件 vsync 序号，配合 present fence 的 signal 时间可以判断“晚在提交”还是“晚在硬件刷新”。</p>"
+    },
+    {
+      "heading": "六、常见误解",
+      "html": "<p>误解一：present 返回就代表上屏。present fence 只是 HWC 给出的“将在下一次刷新点亮”的承诺，真正的点亮时刻是 fence signal 时间；<code>presentAndGetReleaseFences()</code> 返回时 fence 往往还没 signal。</p><p>误解二：一次 composite 必然对应一次 present HAL 调用。<code>validateWasSkipped</code> 为真时 present 已在 validate 阶段完成，本阶段的函数只 executeCommands；这种“合并往返”在 trace 上表现为没有 <code>HwcPresentDisplay</code> 而只有 <code>HwcPresentOrValidateDisplay</code>。</p><p>误解三：release fence 越早越好。HWC 的 release fence 必须等该 buffer 不再被 display 读取，提前 release 会让生产者覆写正在扫描的 buffer，表现为撕裂或花屏。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+      "symbol": "HWComposer::presentAndGetReleaseFences",
+      "lines": "658-691",
+      "code": "status_t HWComposer::presentAndGetReleaseFences(\n        HalDisplayId displayId,\n        std::optional<std::chrono::steady_clock::time_point> earliestPresentTime) {\n    SFTRACE_CALL();\n\n    RETURN_IF_INVALID_DISPLAY(displayId, BAD_INDEX);\n\n    auto& displayData = mDisplayData[displayId];\n    auto& hwcDisplay = displayData.hwcDisplay;\n\n    if (displayData.validateWasSkipped) {\n        // explicitly flush all pending commands\n        auto error = static_cast<hal::Error>(mComposer->executeCommands(hwcDisplay->getId()));\n        RETURN_IF_HWC_ERROR_FOR(\"executeCommands\", error, displayId, UNKNOWN_ERROR);\n        RETURN_IF_HWC_ERROR_FOR(\"present\", displayData.presentError, displayId, UNKNOWN_ERROR);\n        return NO_ERROR;\n    }\n\n    if (earliestPresentTime) {\n        SFTRACE_NAME(\"wait for earliest present time\");\n        std::this_thread::sleep_until(*earliestPresentTime);\n    }\n\n    auto error = hwcDisplay->present(&displayData.lastPresentFence);\n    RETURN_IF_HWC_ERROR_FOR(\"present\", error, displayId, UNKNOWN_ERROR);\n\n    std::unordered_map<HWC2::Layer*, sp<Fence>> releaseFences;\n    error = hwcDisplay->getReleaseFences(&releaseFences);\n    RETURN_IF_HWC_ERROR_FOR(\"getReleaseFences\", error, displayId, UNKNOWN_ERROR);\n\n    displayData.releaseFences = std::move(releaseFences);\n\n    return NO_ERROR;\n}",
+      "note": "present 的核心：validateWasSkipped 时只 executeCommands；否则先按 earliestPresentTime 睡到目标时刻，再 present 拿 lastPresentFence、getReleaseFences 拿逐层 release fence。"
+    },
+    {
+      "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+      "symbol": "compositionengine::impl::Display::presentFrame",
+      "lines": "416-452",
+      "code": "compositionengine::Output::FrameFences Display::presentFrame() {\n    auto fences = impl::Output::presentFrame();\n\n    const auto halDisplayIdOpt = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>);\n    if (mIsDisconnected || !halDisplayIdOpt) {\n        return fences;\n    }\n\n    auto& hwc = getCompositionEngine().getHwComposer();\n\n    const TimePoint startTime = TimePoint::now();\n\n    if (isPowerHintSessionEnabled() && getState().earliestPresentTime) {\n        mPowerAdvisor->setHwcPresentDelayedTime(*halDisplayIdOpt, *getState().earliestPresentTime);\n    }\n\n    hwc.presentAndGetReleaseFences(*halDisplayIdOpt, getState().earliestPresentTime);\n\n    if (isPowerHintSessionEnabled()) {\n        mPowerAdvisor->setHwcPresentTiming(*halDisplayIdOpt, startTime, TimePoint::now());\n    }\n\n    fences.presentFence = hwc.getPresentFence(*halDisplayIdOpt);\n\n    // TODO(b/121291683): Change HWComposer call to return entire map\n    for (const auto* layer : getOutputLayersOrderedByZ()) {\n        auto hwcLayer = layer->getHwcLayer();\n        if (!hwcLayer) {\n            continue;\n        }\n\n        fences.layerFences.emplace(hwcLayer, hwc.getLayerReleaseFence(*halDisplayIdOpt, hwcLayer));\n    }\n\n    hwc.clearReleaseFences(*halDisplayIdOpt);\n\n    return fences;",
+      "note": "物理显示器的 presentFrame：算 PowerAdvisor 的 HWC present timing，调 hwc.presentAndGetReleaseFences，然后把 presentFence 与按 Z 序遍历的 layerFences 填进 FrameFences，最后 clearReleaseFences 防止复用旧 fence。"
+    },
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/HWC2.cpp",
+      "symbol": "HWC2::Display::present",
+      "lines": "413-423",
+      "code": "Error Display::present(sp<Fence>* outPresentFence) {\n    int32_t presentFenceFd = -1;\n    auto intError = mComposer.presentDisplay(mId, &presentFenceFd);\n    auto error = static_cast<Error>(intError);\n    if (error != Error::NONE) {\n        return error;\n    }\n\n    *outPresentFence = sp<Fence>::make(presentFenceFd);\n    return Error::NONE;\n}",
+      "note": "HWC2 包装层：把 Composer::presentDisplay 的 int32 错误码转成 hal::Error，并把返回的 fd 包成 sp<Fence>。真正的 IPC 在 AidlComposer::presentDisplay。"
+    },
+    {
+      "file": "native/services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp",
+      "symbol": "AidlComposer::presentDisplay",
+      "lines": "748-775",
+      "code": "Error AidlComposer::presentDisplay(Display display, int* outPresentFence) {\n    const auto displayId = translate<int64_t>(display);\n    SFTRACE_FORMAT(\"HwcPresentDisplay %\" PRId64, displayId);\n\n    Error error = Error::NONE;\n    mMutex.lock_shared();\n    auto writer = getWriter(display);\n    auto reader = getReader(display);\n    if (writer && reader) {\n        writer->get().presentDisplay(displayId);\n        auto slice = panopticon::slice(panopticon::SliceType::CG_Hwc_Present);\n        error = execute(display);\n    } else {\n        error = Error::BAD_DISPLAY;\n    }\n\n    if (error != Error::NONE) {\n        mMutex.unlock_shared();\n        return error;\n    }\n\n    auto fence = reader->get().takePresentFence(displayId);\n    mMutex.unlock_shared();\n    // take ownership\n    *outPresentFence = fence.get();\n    *fence.getR() = -1;\n    return Error::NONE;\n}",
+      "note": "跨进 HAL 的一步：持 mMutex 共享锁、写 presentDisplay 命令、execute 下发、从 reader 取回 present fence fd 并把原 fd 置 -1 表示所有权已转移。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "HWComposer::DisplayData::lastPresentFence",
+      "type": "sp<Fence>，初值 Fence::NO_FENCE（HWComposer.h:557）",
+      "desc": "本帧 HWC present fence；presentAndGetReleaseFences 写入，Display::presentFrame 读出放进 FrameFences，之后被 SurfaceFlinger::onCompositionPresented 取走分发给 FrameTimeline 与 app 的回调。"
+    },
+    {
+      "name": "HWComposer::DisplayData::releaseFences",
+      "type": "std::unordered_map<HWC2::Layer*, sp<Fence>>（HWComposer.h:560）",
+      "desc": "本帧逐 layer 的 release fence 表；present 后用 getReleaseFences 整体替换，Display::presentFrame 按 Z 序读出并入 FrameFences::layerFences，再 clearReleaseFences() 清空。"
+    },
+    {
+      "name": "HWComposer::DisplayData::validateWasSkipped",
+      "type": "bool（HWComposer.h:562）",
+      "desc": "presentOrValidate 已经完成 present 时置真；presentAndGetReleaseFences 据此跳过 present 只 executeCommands，避免一帧 present 两次。"
+    },
+    {
+      "name": "compositionengine::Output::FrameFences",
+      "type": "struct{ presentFence, clientTargetAcquireFence, layerFences, readbackFence }（Output.h:132-137）",
+      "desc": "present 的返回值载体：presentFence 是整帧上屏，layerFences 供 Output::presentFrameAndReleaseLayers 逐个 LayerFE::setReleaseFence，clientTargetAcquireFence 用于 GPU 合成 buffer 的合并释放。"
+    },
+    {
+      "name": "DisplayState::earliestPresentTime",
+      "type": "std::optional<std::chrono::steady_clock::time_point>",
+      "desc": "由 Scheduler 的 FrameTarget 推算并经 Output::updateCompositionState 写入（Output.cpp:934）；presentAndGetReleaseFences 用它 sleep_until，是 SF 主动推迟呈现的手段。"
+    },
+    {
+      "name": "HWC2::Display::mComposer",
+      "type": "android::Hwc2::Composer&（AIDL composer 代理）",
+      "desc": "presentDisplay / validateDisplay / presentOrValidateDisplay 最终都落到它；每次调用都是一次 AIDL IPC，是 present 延迟的主要变量。"
+    },
+    {
+      "name": "HWComposer::DisplayData::presentError",
+      "type": "hal::Error",
+      "desc": "跳过 validate 时 present 的错误被暂存，等到 presentAndGetReleaseFences 才通过 RETURN_IF_HWC_ERROR_FOR 上报，避免错误被吞。"
+    },
+    {
+      "name": "Fence::NO_FENCE",
+      "type": "sp<Fence> 单例",
+      "desc": "表示“无需等待”；HWC 不提供 present/release fence 时会用它，下游必须按“立即可用”处理，不能当成同步点。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "HWComposer::presentAndGetReleaseFences",
+      "value": "SFTRACE_CALL，HWComposer.cpp:661",
+      "desc": "present 阶段的 SF 侧总耗时切片，包含 sleep_until 与两次 HAL 往返（present + getReleaseFences）。"
+    },
+    {
+      "name": "wait for earliest present time",
+      "value": "SFTRACE_NAME，HWComposer.cpp:677",
+      "desc": "显式等待切片；它很长说明 SF 为对齐面板刷新刻意推迟，不是 HWC 慢。"
+    },
+    {
+      "name": "HwcPresentDisplay <displayId>",
+      "value": "SFTRACE_FORMAT，AidlComposerHal.cpp:750",
+      "desc": "HAL 侧 present IPC 的实际耗时；与上层切片对比可判断时间是否消耗在 AIDL/composer service。"
+    },
+    {
+      "name": "HwcValidateDisplay / HwcPresentOrValidateDisplay",
+      "value": "SFTRACE_FORMAT，AidlComposerHal.cpp:884 / 915",
+      "desc": "validate 相关 IPC；出现 PresentOrValidate 且没有 Present 说明走了 skip-validate 合并路径。"
+    },
+    {
+      "name": "NextFrameInterval <n>_Hz",
+      "value": "SFTRACE_FORMAT，HWComposer.cpp:580",
+      "desc": "validate 时的帧间隔（刷新率），用来核对期望 present time 与面板模式是否一致。"
+    },
+    {
+      "name": "service.sf.present_timestamp",
+      "value": "property，SurfaceFlinger.cpp:1125",
+      "desc": "为 1 表示 present 时间来自可信 fence；为 0 表示 HWC 声明 present fence 不可靠，SF 改用 present timestamp 推算。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency",
+      "value": "desired/actual present 直方图",
+      "desc": "直接看本层 desiredPresentTime 与实际 present 的偏差，判断晚是排队还是 HWC 没赶上。"
+    }
+  ],
+  "pitfalls": [
+    "present 返回不代表已上屏：present fence 通常在 present 之后才 signal，真正的点亮时刻要看 fence signal 时间或 FrameTimeline 的 present 时间。",
+    "presentAndGetReleaseFences 里可能一次 present 都不做：validateWasSkipped 为真时它只 executeCommands，此时若在 trace 里找不到 HwcPresentDisplay 是正常现象。",
+    "不要把 present fence 与 release fence 混用：present fence 只有一个、代表整帧；release fence 每 layer 一个、代表该层 buffer 可回收，两者时序与用途都不同。",
+    "sleep_until(earliestPresentTime) 是唯一的显式阻塞点，看到 present 慢先区分这段 sleep 与 HAL 耗时；HAL 内部是否等待上一帧 present fence 由 vendor 实现决定，源码中未体现。",
+    "HWC 不支持 present fence（Capability::PRESENT_FENCE_IS_NOT_RELIABLE）时 presentFence 可能是 NO_FENCE，此时任何依赖 fence signal 的推断都会失效，应改看 present timestamp。",
+    "retire fence 是 HWC1 时代概念，本版本 HWC2/AIDL 接口没有该 API；GPU 合成 buffer 的退役靠 acquire fence 与 present fence 合并（FramebufferSurface.cpp:130-148），不要去找 retireFence 字段。"
+  ],
+  "traceTags": [
+    "HWComposer::presentAndGetReleaseFences",
+    "wait for earliest present time",
+    "HwcPresentDisplay",
+    "HwcValidateDisplay",
+    "HwcPresentOrValidateDisplay",
+    "Composition",
+    "postComposition",
+    "NextFrameInterval"
+  ],
+  "next": "stage-08"
+}

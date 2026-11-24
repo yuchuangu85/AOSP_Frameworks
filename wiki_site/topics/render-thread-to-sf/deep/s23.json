@@ -1,0 +1,47 @@
+{
+  "step": "s23",
+  "title": "SurfaceFlinger::commit：收事务、更新快照、决定这一拍要不要合成",
+  "tldr": "把排队事务并进来、刷 Layer 快照与 latch，返回 mustComposite 决定这一拍合不合成。",
+  "why": "没有 commit，app 交来的事务永远停在 mTransactionHandler 的队列里，Layer 的 buffer 不会更新，屏幕一帧都不变。而它的返回值决定 SF 这一拍走不走合成：false 时 SF 不下发 present，省电且不影响画面；这个判断一旦错了（该合成却返回 false），表现就是「新内容要等再点一下才出来」的卡顿。它还是定义「哪一帧算这一拍」的唯一位置——vsyncId 从这里开始贯穿 latch、frame timeline 与 jank 统计。",
+  "concepts": [
+    { "term": "mustComposite", "text": "本拍要不要合成的总开关：事务 flag、有 buffer latch 到、或有几何/可见性变化，任一成立即可。" },
+    { "term": "eTransactionFlushNeeded", "text": "SF 的事务闸门：BLAST apply 后置位，commit 里取走它决定要不要 flush。" },
+    { "term": "pacesetter", "text": "这一拍负责定节奏的显示器；只有它算 vsyncId 与 expectedPresentTime，其它屏跟着它走。" },
+    { "term": "eTraversalNeeded", "text": "需要重算可见区域的标记，由 Layer 状态变化置位，也是 mustComposite 的来源之一。" },
+    { "term": "applyTransactionsLocked", "text": "持 mStateLock 把事务逐个落到 Layer 上（含 setBuffer），返回是否要 traversal。" }
+  ],
+  "walk": [
+    { "call": "bool SurfaceFlinger::commit(PhysicalDisplayId pacesetterId, const scheduler::FrameTargets& frameTargets)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2996", "what": "SF main thread 每拍的总入口，vsyncId 在这里从 pacesetter 取到（2999）。" },
+    { "call": "if (pacesetterFrameTargetPtr->wouldBackpressureHwc()) { ... scheduleCommit(FrameHint::kNone, slack); return false; }", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3059", "what": "HWC 反压时整拍放弃：连 commit 都不做，只排下一次。" },
+    { "call": "bool mustComposite = mMustComposite.exchange(false);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3119", "what": "取走并清掉 atomic 标记；它来自 scheduleComposite（2517），不是 app 的 apply。" },
+    { "call": "const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3135", "what": "取走 flush 闸门：只有这次为真才会去 collect+flush 事务。" },
+    { "call": "mustComposite |= updateLayerSnapshots(vsyncId, pacesetterFrameTargetPtr->frameBeginTime().ns(), pacesetterFrameTargetPtr->expectedPresentTime().ns(), flushTransactions, transactionsAreEmpty);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3138", "what": "一帧的核心：flush、apply、snapshot、latch 全在这一个调用里。" },
+    { "call": "->getTracker().onFrameBegin(pacesetterFrameTargetPtr->expectedPresentTime(), pacesetterFrameTargetPtr->lastSignaledFrameTime());", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3151", "what": "确认这拍要出帧后才告诉 VsyncTracker，相位调整从下一帧生效。" },
+    { "call": "if (transactionFlushNeeded()) { setTransactionFlags(eTransactionFlushNeeded); }", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3154", "what": "flush 期间又来了事务，重新置闸门，下一拍再处理。" },
+    { "call": "mTransactionCallbackInvoker.sendCallbacks(false /* onCommitOnly */);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3162", "what": "没有事务时提前发空事务回调；有事务就等 3165 的 onCommit 回调。" },
+    { "call": "if (!mustComposite) { updateInputFlinger(vsyncId, pacesetterFrameTargetPtr->frameBeginTime()); }", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3191", "what": "不合成时也不能跳过 input 更新，焦点/触摸区域要跟上。" },
+    { "call": "return mustComposite && CC_LIKELY(mBootStage != BootStage::BOOTLOADER);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3201", "what": "开机动画阶段一律返回 false，外面据此决定要不要 composite。" }
+  ],
+  "state": [
+    { "field": "SurfaceFlinger::mMustComposite", "before": "可能 true（scheduleComposite，2517）", "after": "false（3119 exchange）", "note": "atomic_bool（SurfaceFlinger.h:1435），全局共享" },
+    { "field": "mTransactionFlags", "before": "含 eTransactionFlushNeeded", "after": "清掉（3135）；若 flush 期间又来事务，3154 重新置位", "note": "SFTRACE_INT mTransactionFlags（5303）可直接看" },
+    { "field": "mLastCommittedVsyncId", "before": "上一拍的 vsyncId", "after": "本拍 vsyncId（3197）", "note": "frame timeline 与 jank 判定的锚点" },
+    { "field": "mVisibleRegionsDirty", "before": "上一拍的值", "after": "按 globalChanges 置位（updateLayerSnapshots 2890–2893）", "note": "决定后面 Output::prepare 要不要重建可见层" },
+    { "field": "mLayersWithQueuedFrames", "before": "上一拍的集合", "after": "本拍 latch 到或将要 latch 的层（2958）", "note": "present 之后按它逐层发 release" },
+    { "field": "outTransactionsAreEmpty", "before": "未定", "after": "globalChanges 是否全零（2900）", "note": "决定回调走 3162 还是 3165" }
+  ],
+  "threads": "跑在 SF 的 main thread 上，由 scheduler 的 vsync 回调驱动；mStateLock 只在局部段落拿（updateLayerSnapshots 里 2837 起），因为事务收集与 resolve 已经在 binder 线程做完了。commit 返回 true 后，SF 继续在同一线程里 composite（第 26 步），不换线程。",
+  "pitfalls": [
+    "3059 的反压早退是隐蔽的丢帧源：wouldBackpressureHwc 为真时这一拍连 commit 都不做，perfetto 上只剩一次 scheduleCommit，很容易被误判成「SF 没收到 app 的帧」。",
+    "commit 返回 false 不代表没有事务：它只说明这一拍不用合成（例如所有层都没变），事务回调照样在 3162/3165 发出去。看到回调来了但画面没变是正常的。",
+    "3201 在 BOOTLOADER 阶段恒返回 false：别用开机动画期间的 trace 推正常路径的 mustComposite 逻辑。",
+    "latch 在 commit 里就发生了（updateLayerSnapshots 2953），不是 composite 阶段：把两者混在一起，时间线上会差一整段。",
+    "事务可能这一拍根本不 apply：flushTransactions 会按 readiness 过滤（barrier 未 signal、fence 未 signal、desiredPresentTime 未到都留下批），见 SurfaceFlinger.cpp:2807 与 FrontEnd/TransactionHandler.cpp:50。commit 跑过但 Layer 没有新 buffer 时，先怀疑这个过滤，而不是丢帧。"
+  ],
+  "debug": [
+    "perfetto/atrace 抓 gfx：commit <vsyncId> slice（SFTRACE_NAME，3012）里套着 updateLayerSnapshots（2775）、TransactionHandler:flushTransactions（2779）、LayerSnapshotBuilder:update（2882）与 DisplayCallbackAndStatsUpdates（2905），嵌套关系就是这一拍的耗时分解。",
+    "SFTRACE_INT mTransactionFlags（5303）在 perfetto 里是位图曲线：某一位长期不清，说明没人来 commit 它。",
+    "dumpsys SurfaceFlinger 看各 Display/Layer 段：Layer 的 frameNumber 没前进，就是 commit 没把 buffer 落下去（回第 24 步）。"
+  ],
+  "next": "第 24 步「Layer::setBuffer / 快照」：事务里的 buffer 在 updateLayerSnapshots 里被写进 Layer 的 drawing state，并记下 acquire fence。"
+}

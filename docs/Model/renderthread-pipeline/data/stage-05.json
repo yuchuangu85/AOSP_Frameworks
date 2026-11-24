@@ -1,0 +1,185 @@
+{
+  "id": "stage-05",
+  "num": 5,
+  "title": "第 5 拍：draw 把脏区交给 GPU",
+  "subtitle": "finish 脏区 → computeDirtyRect 合并 bufferAge → pipeline->draw → swapBuffers → didSwap 打点与 commit 回调",
+  "lane": "RT",
+  "durationHint": "量级：亚毫秒~数毫秒（含 GPU 命令提交与纹理上传，随 DisplayList 规模波动）",
+  "summary": "DrawFrameTask::run() 判定 canDrawThisFrame 后调用 context->draw(solelyTextureViewUpdates)（base/libs/hwui/renderthread/DrawFrameTask.cpp:140-141），仍在 RenderThread 上，而 UI 线程可能已被放行去做下一帧的录制。draw 先用 mDamageAccumulator.finish() 取走本帧总脏区，再跑 skip lambda 判断 DrawingOff / NothingToDraw；跳过时并不直接返回，而是先 flushAndSubmit、waitOnFences，再以 didProduceBuffer=false 回调所有 commit listener。正常路径是：markIssueDrawCommandsStart、getFrame() 拿 buffer、computeDirtyRect() 按 bufferAge 并入 mSwapHistory 的历史脏区、用 ATRACE 打出绘图区域、mRenderPipeline->draw(...) 生成并提交 Skia 命令、waitOnFences() 等 CPU 任务、把 ANativeWindowFrameTimelineInfo 交给 native window、swapBuffers() 触发 EGL 或 Vulkan 呈现，最后按 didSwap 回调 listener(true)、更新 mSwapHistory 并上报 JankTracker 与 HintSession。这一拍是 UI 线程与 GPU 之间的分界：脏区在此定型，buffer 在此交换，本帧的成败也在这里就被决定——脏区算错会残留像素，拿不到 buffer 会掉帧，提交失败则要重建整个 surface。",
+  "callchain": [
+    "DrawFrameTask::run()",
+    "CanvasContext::draw()",
+    "DamageAccumulator::finish()",
+    "CanvasContext::computeDirtyRect()",
+    "CanvasContext::getFrame()",
+    "IRenderPipeline::draw()",
+    "SkiaPipeline::renderFrame()",
+    "CanvasContext::waitOnFences()",
+    "IRenderPipeline::setFrameTimelineInfo()",
+    "SkiaOpenGLPipeline::swapBuffers()",
+    "EglManager::swapBuffers()",
+    "FrameInfo::markSwapBuffersCompleted()",
+    "JankTracker::finishFrame()"
+  ],
+  "sections": [
+    {
+      "heading": "触发条件：prepareTree 没给 skip 理由",
+      "html": "<p><code>DrawFrameTask::run()</code> 在 <code>syncFrameState(info)</code> 之后拿到两个布尔量：<code>canUnblockUiThread</code> 与 <code>canDrawThisFrame</code>。后者就是 <code>!info.out.skippedFrameReason.has_value()</code>（DrawFrameTask.cpp:107）。为真走 <code>context-&gt;draw(solelyTextureViewUpdates)</code>；为假走 else 分支：若有 GrContext 就 <code>grContext-&gt;flushAndSubmit()</code>（注释说明这是为了把 syncFrameState 期间排队但没提交的纹理上传/删除做掉），然后 <code>context-&gt;waitOnFences()</code>，理由是“让任务不要和下一帧重叠”（DrawFrameTask.cpp:140-153）。</p><p>注意 <code>canUnblockUiThread</code> 可能先被兑现：如果 syncFrameState 里没有拿不到的信息，UI 线程在 <code>unblockUiThread()</code>（DrawFrameTask.cpp:125-127）就被放行去做下一帧的 measure/layout/draw 录制，而 RT 还在画当前帧。这正是 hwui 的流水线核心：<strong>UI 线程的“下一帧”和 RT 的“当前帧”并行</strong>，同步点由 BLAST/SurfaceControl 的 transaction 与 buffer 数量兜底。</p>"
+    },
+    {
+      "heading": "脏区三段式：finish → clamp 到窗口 → bufferAge 合并",
+      "html": "<p>第一段是 <code>mDamageAccumulator.finish(&amp;dirty)</code>（CanvasContext.cpp:685-686）：把 prepareTree 期间累积在栈顶的 <code>pendingDirty</code> 取出来并 <code>roundOut</code>，同时清空它（DamageAccumulator.cpp:313-320）。</p><p>第二段是 <code>computeDirtyRect(frame, &amp;dirty)</code>（CanvasContext.cpp:1258-1307），返回窗口坐标系下的 <code>windowDirty</code>，并原地改写 <code>dirty</code> 为“这个 buffer 上必须重绘的帧区域”。三种情况直接判全屏：frame 宽高变化（不能依赖上一帧内容）、<code>mHaveNewSurface</code> 为真、<code>frame.bufferAge() == 0</code>（新 buffer）。否则先与窗口矩形求交，交不到就打 ALOGW 并清空。真正的巧思在 bufferAge：当 <code>bufferAge() &gt; 1</code> 时，把 <code>mSwapHistory</code> 里最近 bufferAge-1 帧的 <code>swap.damage</code> 逐个 <code>join</code> 进 <code>dirty</code>（1303 之前），因为这块 buffer 上次被写是 bufferAge 帧之前。最后 <code>dirty</code> 为空则设为整帧。</p><p>第三段在 draw 里：<code>windowDirty</code> 被当作 <code>screenDirty</code> 传给 <code>mRenderPipeline-&gt;draw(frame, windowDirty, dirty, ...)</code>（742-744）与 <code>swapBuffers(frame, drawResult, windowDirty, ...)</code>（787-788）。<strong>两个矩形用途不同</strong>：<code>dirty</code> 决定画布上要重绘多大区域（含历史），<code>windowDirty</code> 决定 EGL 提交时告诉驱动的 damage 区域。</p>"
+    },
+    {
+      "heading": "NothingToDraw 也要收尾：skip 分支的三个副作用",
+      "html": "<p>skip lambda 只有两个条件（CanvasContext.cpp:694-704）：<code>!Properties::isDrawingEnabled() || !mDrawingEnabled</code> → <code>DrawingOff</code>；<code>dirty.isEmpty() &amp;&amp; Properties::skipEmptyFrames &amp;&amp; !surfaceRequiresRedraw()</code> → <code>NothingToDraw</code>。<code>surfaceRequiresRedraw()</code> 在 <code>mHaveNewSurface</code> 为真、或 ANativeWindow 宽高与 <code>mLastFrameWidth/Height</code> 不一致时返回 true（CanvasContext.cpp:1247-1256），防止“空脏区的新 surface 永远不画”。</p><p>命中之后不是直接 return，而是做三件事（705-724）：<strong>（1）</strong> 记 <code>setSkippedFrameReason</code>；<strong>（2）</strong> 有 GrContext 就 <code>flushAndSubmit()</code>，注释写明目的是“保证纹理上传完成并让 Skia 释放 staging buffer”；<strong>（3）</strong> <code>waitOnFences()</code>，然后对每个 <code>mFrameCommitCallbacks</code> 以 <code>false</code>（didProduceBuffer）调用并清空。第三条最容易被忽略：<strong>commit 回调被调到，不等于本帧产出了 buffer</strong>。这个设计的理由是“不要让等待回调的人永久阻塞”。</p>"
+    },
+    {
+      "heading": "一次 draw 的输入：Frame、两个脏区与 DrawResult",
+      "html": "<p>进入正片：<code>ScopedActiveContext activeContext(this)</code>（726）把一个文件级静态指针 <code>sActiveContext</code> 指向当前 context（CanvasContext.cpp:73-86），供 <code>CanvasContext::getActiveContext()</code> 在深层的 functor/WebView 路径里反查。接着写 <code>FrameInterval</code>、<code>markIssueDrawCommandsStart()</code>（727-730），然后 <code>Frame frame = getFrame()</code>。</p><p><code>getFrame()</code>（664-670）分两条：有 <code>mHardwareBuffer</code> 时直接返回由 <code>mBufferParams</code> 换算的逻辑宽高与 bufferAge 0；否则调 <code>mRenderPipeline-&gt;getFrame()</code>——OpenGL 下是 <code>EglManager::beginFrame(mEglSurface)</code>（SkiaOpenGLPipeline.cpp:110-114），Vulkan 下是 <code>vulkanManager().dequeueNextBuffer(mVkSurface)</code>（SkiaVulkanPipeline.cpp:69-72）。也就是说 <strong>dequeueBuffer 发生在 draw 内部、由 pipeline 承担</strong>，与 prepareTree 里的 <code>reserveNext()</code> 预占是两回事。</p><p>返回值 <code>IRenderPipeline::DrawResult</code> 只有三个字段：<code>success</code>、<code>commandSubmissionTime</code>（未知时为 -1）、<code>presentFence</code>（IRenderPipeline.h:61-69）。OpenGL 恒返回 <code>kUnknownTime</code>，Vulkan 才会填真实的提交时间。</p>"
+    },
+    {
+      "heading": "等待点：waitOnFences 等的是 CPU 任务，不是 GPU fence",
+      "html": "<p><code>mFrameFences</code> 的类型是 <code>std::vector&lt;std::future&lt;void&gt;&gt;</code>（CanvasContext.h:405），由 <code>enqueueFrameWork()</code> 通过 <code>CommonPool::async(std::move(func))</code> 填充（CanvasContext.cpp:1235-1237）。<code>waitOnFences()</code> 只是对每个 future 调 <code>fence.get()</code> 并清空（1225-1233），加了一层 <code>ATRACE_CALL</code> 便于观测阻塞时长。</p><p>当前源码里 <code>enqueueFrameWork</code> 唯一的调用点是 <code>DrawFrameTask::run()</code> 中执行 <code>frameCallback</code> 的那段（DrawFrameTask.cpp:130-138）：把用户注册的帧回调丢到线程池，回调返回的 <code>frameCommitCallback</code> 再被 <code>addFrameCommitListener</code> 收进 <code>mFrameCommitCallbacks</code>。所以 <strong>waitOnFences 等的是“帧回调跑完”，不是 GPU 完成</strong>。GPU 侧的显式等待只有两处：<code>Properties::waitForGpuCompletion</code> 为真时 <code>EglManager::swapBuffers</code> 先 <code>fence()</code>（EglManager.cpp:621-626，trace 名 “Finishing GPU work”），以及 Vulkan 用 presentFence 交给 swapchain。</p><p>另一处同步在 <code>swapBuffers</code> 前后：<code>waitOnFences()</code> 在 <code>mRenderPipeline-&gt;draw(...)</code> 之后、<code>swapBuffers</code> 之前调用（749），目的是保证本帧投出去的 CPU 任务（例如 layer 上传、snapshot 生成）在 buffer 被交出前结束。</p>"
+    },
+    {
+      "heading": "FrameTimelineInfo：一帧的身份声明怎么交给 SF",
+      "html": "<p>只有 <code>mRenderPipeline-&gt;hasRenderTarget()</code> 为真才会发 FrameTimeline 信息（CanvasContext.cpp:751-781）。代码先取 <code>FrameTimelineVsyncId</code>，无效（<code>UiFrameInfoBuilder::INVALID_VSYNC_ID</code>）就整段跳过；有效则组 <code>ANativeWindowFrameTimelineInfo</code>：</p><ul><li><code>frameNumber</code> 来自 <code>getFrameNumber()</code>，<code>frameTimelineVsyncId</code>、<code>inputEventId</code>、<code>startTimeNanos</code> 来自本帧 FrameInfo；</li><li><code>useForRefreshRateSelection = solelyTextureViewUpdates</code>，即“本帧只有 TextureView 更新”时允许 SF 用它做刷新率选帧；</li><li><code>skippedFrameVsyncId / skippedFrameStartTimeNanos</code> 来自 <code>mSkippedFrameInfo</code>，把错过的 vsync 也报上去；</li><li><code>vsyncResyncedJitterNanos = Vsync - IntendedVsync</code>，即 vsync 重同步的抖动；</li><li><code>dequeueBufferDurationNanos = syncDelayDuration + getLastDequeueDuration()</code>，把“UI 交棒延迟”和上一次 dequeue 耗时相加；</li><li><code>animationTime</code> 用于 SF 侧的动画时间对齐。</li></ul><p>它不直接走 binder，而是 <code>mRenderPipeline-&gt;setFrameTimelineInfo(ftl)</code> → <code>native_window_set_frame_timeline_info(anw, info)</code>（SkiaPipeline.cpp:620-625），挂在 ANativeWindow 上，随之后的 queueBuffer/BLAST transaction 一起上送 SurfaceFlinger。跨进程细节属于 stage-07/stage-08。</p>"
+    },
+    {
+      "heading": "swapBuffers 之后：didSwap、错误恢复、commit 回调与 JankTracker",
+      "html": "<p><code>mRenderPipeline-&gt;swapBuffers(...)</code> 返回的 <code>didSwap</code> 与 <code>requireSwap</code> 共同决定后半段（CanvasContext.cpp:783-823）：<code>requireSwap</code> 由 pipeline 内部算（OpenGL 是 <code>drawResult.success || mEglManager.damageRequiresSwap()</code>），<code>didSwap</code> 是实际 exchanging 成功与否。若 requireSwap 为真：先 <code>mIsDirty = false</code>，再从 native surface 取错误码——<code>TIMED_OUT</code> 时 <code>postFrameCallback(this)</code> 重试并令 <code>didDraw = false</code>；其他错误或 <code>!didSwap</code> 则 <code>setSurface(nullptr)</code>。随后 <code>mSwapHistory.next()</code>：成功就把 <code>windowDirty</code> 记为 damage，失败则记一个 <code>INT_MAX</code> 的巨型脏区（826-831），保证下一帧必然全屏重绘。</p><p>收尾三件事：<strong>（1）</strong> <code>markSwapBuffersCompleted()</code>（861），再 <code>didSwap</code> 为真时以 <code>true</code> 回调 <code>mFrameCommitCallbacks</code> 并清空（878-883）——这就是 <code>didProduceBuffer</code> 语义：只有真的把 buffer 交出去才算产出；<strong>（2）</strong> <code>mExpectSurfaceStats</code> 为真时走 <code>reportMetricsWithPresentTime()</code>，把本帧 FrameInfo 塞进 <code>mLastFrameMetricsInfos</code>（886-894），等攒满容量后用 <code>getFrameTimestamps()</code> 取回 <code>presentTime</code> 再上报（935-984），否则直接 <code>markFrameCompleted()</code> 并把 <code>GpuCompleted</code> 置为 <code>FrameCompleted</code>、调 <code>mJankTracker.finishFrame(...)</code>（896-910）；<strong>（3）</strong> <code>HintSessionWrapper</code> 的 <code>updateTargetWorkDuration / reportActualWorkDuration</code>（915-927），上报前会扣掉 <code>syncDelayDuration</code>、<code>dequeueBufferDuration</code>、<code>idleDuration</code>，只把“真正干活”的时间报给 ADPF。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "CanvasContext::draw",
+      "lines": "672-704",
+      "code": "void CanvasContext::draw(bool solelyTextureViewUpdates) {\n#ifdef __ANDROID__\n    if (auto grContext = getGrContext()) {\n        if (grContext->abandoned()) {\n            if (grContext->isDeviceLost()) {\n                LOG_ALWAYS_FATAL(\"Lost GPU device unexpectedly\");\n                return;\n            }\n            LOG_ALWAYS_FATAL(\"GrContext is abandoned at start of CanvasContext::draw\");\n            return;\n        }\n    }\n#endif\n    SkRect dirty;\n    mDamageAccumulator.finish(&dirty);\n\n    // reset syncDelayDuration each time we draw\n    const nsecs_t syncDelayDuration = mSyncDelayDuration;\n    const nsecs_t idleDuration = mIdleDuration;\n    mSyncDelayDuration = 0;\n    mIdleDuration = 0;\n\n    const auto skippedFrameReason = [&]() -> std::optional<SkippedFrameReason> {\n        if (!Properties::isDrawingEnabled() || !mDrawingEnabled) {\n            return SkippedFrameReason::DrawingOff;\n        }\n\n        if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {\n            return SkippedFrameReason::NothingToDraw;\n        }\n\n        return std::nullopt;\n    }();",
+      "note": "draw 的开头：先检查 GrContext 是否 abandoned/device lost（都是 LOG_ALWAYS_FATAL），再 finish 脏区、取出并清零 syncDelayDuration 与 idleDuration（供 ADPF 上报用），最后用 skip lambda 判定 DrawingOff / NothingToDraw。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "CanvasContext::draw",
+      "lines": "726-749",
+      "code": "    ScopedActiveContext activeContext(this);\n    mCurrentFrameInfo->set(FrameInfoIndex::FrameInterval) =\n            mRenderThread.timeLord().frameIntervalNanos();\n\n    mCurrentFrameInfo->markIssueDrawCommandsStart();\n\n    Frame frame = getFrame();\n\n    SkRect windowDirty = computeDirtyRect(frame, &dirty);\n\n    ATRACE_FORMAT(\"Drawing \" RECT_STRING, SK_RECT_ARGS(dirty));\n\n    IRenderPipeline::DrawResult drawResult;\n    {\n        // FrameInfoVisualizer accesses the frame events, which cannot be mutated mid-draw\n        // or it can lead to memory corruption.\n        drawResult = mRenderPipeline->draw(\n                frame, windowDirty, dirty, mLightGeometry, &mLayerUpdateQueue, mContentDrawBounds,\n                mOpaque, mLightInfo, mRenderNodes, &(profiler()), mBufferParams, profilerLock());\n    }\n\n    uint64_t frameCompleteNr = getFrameNumber();\n\n    waitOnFences();",
+      "note": "正常绘制路径的骨架：ScopedActiveContext、写 FrameInterval、markIssueDrawCommandsStart、getFrame、computeDirtyRect 得到 windowDirty，ATRACE 打 “Drawing &lt;rect&gt;”，调用 IRenderPipeline::draw 把 12 个参数交给具体管线，然后 waitOnFences。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "IRenderPipeline::setFrameTimelineInfo",
+      "lines": "751-781",
+      "code": "    if (mRenderPipeline->hasRenderTarget()) {\n        // TODO(b/165985262): measure performance impact\n        const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);\n        if (vsyncId != UiFrameInfoBuilder::INVALID_VSYNC_ID) {\n            const auto inputEventId =\n                    static_cast<int32_t>(mCurrentFrameInfo->get(FrameInfoIndex::InputEventId));\n            ATRACE_FORMAT(\n                \"frameTimelineInfo(frameNumber=%llu, vsyncId=%lld, inputEventId=0x%\" PRIx32 \")\",\n                frameCompleteNr, vsyncId, inputEventId);\n            const auto lastDequeueDuration =\n                    syncDelayDuration +\n                    mRenderPipeline->getLastDequeueDuration();\n            const ANativeWindowFrameTimelineInfo ftl = {\n                    .frameNumber = frameCompleteNr,\n                    .frameTimelineVsyncId = vsyncId,\n                    .inputEventId = inputEventId,\n                    .startTimeNanos = mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime),\n                    .useForRefreshRateSelection = solelyTextureViewUpdates,\n                    .skippedFrameVsyncId = mSkippedFrameInfo ? mSkippedFrameInfo->vsyncId\n                                                             : UiFrameInfoBuilder::INVALID_VSYNC_ID,\n                    .skippedFrameStartTimeNanos =\n                            mSkippedFrameInfo ? mSkippedFrameInfo->startTime : 0,\n                    .vsyncResyncedJitterNanos =\n                            mCurrentFrameInfo->get(FrameInfoIndex::Vsync) -\n                            mCurrentFrameInfo->get(FrameInfoIndex::IntendedVsync),\n                    .dequeueBufferDurationNanos = lastDequeueDuration,\n                    .animationTime = mCurrentFrameInfo->get(FrameInfoIndex::AnimationTime),\n            };\n            mRenderPipeline->setFrameTimelineInfo(ftl);\n        }\n    }",
+      "note": "FrameTimeline 身份的组装：vsyncId 无效直接跳过；有效时把 frameNumber、inputEventId、startTime、skippedFrame、vsync 重同步抖动、dequeue 耗时、animationTime 打包进 ANativeWindowFrameTimelineInfo，交给管线挂到 native window 上。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "CanvasContext::draw",
+      "lines": "783-823",
+      "code": "    bool requireSwap = false;\n    bool didDraw = false;\n\n    int error = OK;\n    bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo,\n                                                &requireSwap);\n\n    mCurrentFrameInfo->set(FrameInfoIndex::CommandSubmissionCompleted) = std::max(\n            drawResult.commandSubmissionTime, mCurrentFrameInfo->get(FrameInfoIndex::SwapBuffers));\n\n    if (com::android::graphics::libgui::flags::debug_gpu_present_times()) {\n        const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);\n        ATRACE_FORMAT_INSTANT(\"450351988: %s CommandSubmissionCompleted: vsyncId=%\" PRId64\n                              \" frameNumber=%\" PRIu64 \" time=%\" PRId64\n                              \" (commandSubmissionTime=%\" PRId64 \", swapBuffers=%\" PRId64 \")\",\n                              __func__, vsyncId, frameCompleteNr,\n                              mCurrentFrameInfo->get(FrameInfoIndex::CommandSubmissionCompleted),\n                              drawResult.commandSubmissionTime,\n                              mCurrentFrameInfo->get(FrameInfoIndex::SwapBuffers));\n    }\n\n    mIsDirty = false;\n\n    if (requireSwap) {\n        didDraw = true;\n        // Handle any swapchain errors\n        if (mNativeSurface) {\n            error = mNativeSurface->getAndClearError();\n        }\n        if (error == TIMED_OUT) {\n            // Try again\n            mRenderThread.postFrameCallback(this);\n            // But since this frame didn't happen, we need to mark full damage in the swap\n            // history\n            didDraw = false;\n\n        } else if (error != OK || !didSwap) {\n            // Unknown error, abandon the surface\n            setSurface(nullptr);\n            didDraw = false;\n        }",
+      "note": "swap 与错误恢复：swapBuffers 返回 didSwap，CommandSubmissionCompleted 取 commandSubmissionTime 与 SwapBuffers 的较大值；TIMED_OUT 重试且不记 damage，其他错误直接 setSurface(nullptr)；最后把本帧 damage 写进 SwapHistory。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mSwapHistory",
+      "type": "RingBuffer<SwapHistory, 8>",
+      "desc": "CanvasContext.h:361，注释说明至少需要 4 个（quad buffer）。SwapHistory 有 damage/vsyncTime/swapCompletedTime/dequeueDuration/queueDuration 五个字段（CanvasContext.h:352-358），是 computeDirtyRect 做 bufferAge 合并的唯一数据源。"
+    },
+    {
+      "name": "mFrameCommitCallbacks",
+      "type": "std::vector<std::function<void(bool)>>",
+      "desc": "CanvasContext.h:408，经 addFrameCommitListener 追加（CanvasContext.h:225-227）。参数是 didProduceBuffer：skip 分支回调 false，didSwap 为真回调 true，二者都会之后 clear。"
+    },
+    {
+      "name": "mFrameFences",
+      "type": "std::vector<std::future<void>>",
+      "desc": "CanvasContext.h:405。enqueueFrameWork 用 CommonPool::async 投递任务并保存 future（CanvasContext.cpp:1235-1237），waitOnFences 逐个 get()。它是 CPU 任务屏障，不是 GPU fence。"
+    },
+    {
+      "name": "mDamageAccumulator",
+      "type": "DamageAccumulator",
+      "desc": "CanvasContext.h:379。prepareTree 期间累积，draw 开头 finish(&dirty) 取走并清空；finish 里有 LOG_ALWAYS_FATAL_IF 校验 push/pop 配对（DamageAccumulator.cpp:313-320）。"
+    },
+    {
+      "name": "mHaveNewSurface / mLastFrameWidth / mLastFrameHeight",
+      "type": "bool / int32_t / int32_t",
+      "desc": "CanvasContext.h:378、323、324。三者共同决定 computeDirtyRect 是否强制全屏，也是 surfaceRequiresRedraw() 的判据（CanvasContext.cpp:1247-1256）。"
+    },
+    {
+      "name": "mFrameNumber",
+      "type": "uint64_t",
+      "desc": "CanvasContext.h:363，0 表示未初始化；swap 后清 0（CanvasContext.cpp:855）。与 getFrameNumber() 的取值一起用于 FrameTimeline 与 getFrameTimestamps。"
+    },
+    {
+      "name": "mSyncDelayDuration / mIdleDuration",
+      "type": "nsecs_t",
+      "desc": "CanvasContext.h:421、422。每次 draw 读出后立即清零（689-692），用于从 ADPF 的 actual work duration 里扣除“UI 交棒延迟”和空闲时间。"
+    },
+    {
+      "name": "mExpectSurfaceStats",
+      "type": "bool",
+      "desc": "CanvasContext.h:411。为真时本帧不立即 finishFrame，而是把 FrameInfo 存进 mLastFrameMetricsInfos，等 presentTime 回来再上报（CanvasContext.cpp:886-894、935-984）。"
+    },
+    {
+      "name": "mJankTracker / mHintSessionWrapper",
+      "type": "JankTracker / std::shared_ptr<HintSessionWrapper>",
+      "desc": "CanvasContext.h:395、418。前者在非 expectSurfaceStats 路径立刻 finishFrame；后者把扣减后的实际工时喂给 ADPF。"
+    },
+    {
+      "name": "mDrawingEnabled",
+      "type": "bool",
+      "desc": "CanvasContext.h:376，默认 true，由 setDrawingEnabled 控制（CanvasContext.h:235）。与全局 Properties::isDrawingEnabled() 一起构成 DrawingOff 判定。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "ATRACE_FORMAT（DrawFrameTask.cpp:91）",
+      "desc": "本阶段最外层 slice。CanvasContext::draw 自身没有 ATRACE_CALL，定位耗时要靠它的子 slice。"
+    },
+    {
+      "name": "Drawing <dirty rect>",
+      "value": "ATRACE_FORMAT（CanvasContext.cpp:736）",
+      "desc": "只在通过 skip 判定后出现，格式是 “Drawing L,T,R,B”，也就是要重绘的帧区域；没有这个 slice 说明本帧被 skip 了。"
+    },
+    {
+      "name": "frameTimelineInfo(frameNumber, vsyncId, inputEventId)",
+      "value": "ATRACE_FORMAT（CanvasContext.cpp:757-759）",
+      "desc": "hasRenderTarget 且 vsyncId 有效时才打，可直接对上 SF 侧的帧。"
+    },
+    {
+      "name": "IssueDrawCommandsStart → SwapBuffers → FrameCompleted",
+      "value": "FrameInfoIndex 时间戳（FrameInfo.h:36-74）",
+      "desc": "draw 内部三个阶段的分界；GpuCompleted/SwapBuffersCompleted/DisplayPresentTime 另外由 swap 与 present 回填。"
+    },
+    {
+      "name": "Finishing GPU work",
+      "value": "ATRACE_NAME（EglManager.cpp:623）",
+      "desc": "仅在 Properties::waitForGpuCompletion 打开时出现，代表 CPU 真的在等 GPU 完成（eglCreateSyncKHR + 无限等待）。"
+    },
+    {
+      "name": "450351988: ... CommandSubmissionCompleted",
+      "value": "ATRACE_FORMAT_INSTANT（CanvasContext.cpp:793-802）",
+      "desc": "需要 libgui 的 debug_gpu_present_times flag，用于对齐 GPU present 时间线。"
+    }
+  ],
+  "pitfalls": [
+    "draw() 里没有 ATRACE_CALL，最外层是 “DrawFrames &lt;vsyncId&gt;”；而 “Drawing &lt;rect&gt;” 出现在 skip 判定之后，所以被 skip 的帧在 trace 上看不到它，别据此认为 draw 没被调用。",
+    "NothingToDraw / DrawingOff 分支照样会回调 mFrameCommitCallbacks(false)（CanvasContext.cpp:719-722）。commit 回调被调用只说明“有结果了”，不代表产出了 buffer，判断是否真出帧要看 didProduceBuffer 参数。",
+    "eglSetDamageRegionKHR 收到的是含 bufferAge 回滚的 dirty（SkiaOpenGLPipeline.cpp:123 → EglManager.cpp:604-615），而 eglSwapBuffersWithDamageKHR 收到的是窗口变化区 windowDirty（SkiaOpenGLPipeline.cpp:209 → EglManager.cpp:627-629）。两个矩形不是一回事，对不上时先查 computeDirtyRect 的 bufferAge 分支。",
+    "requireSwap 为真但 didSwap 为假会走 setSurface(nullptr)（CanvasContext.cpp:819-823），代价远大于掉一帧：surface、EGLSurface、BufferQueue 都要重建，后续几帧会出现新的 buffer 序列。",
+    "DequeueBufferDuration 只在 dequeueStart 不早于 SyncStart 时才记录，否则记 0（CanvasContext.cpp:836-852），所以 FrameTimeline 里的 dequeue 耗时会系统性低估先行 dequeue。",
+    "TIMED_OUT 会 postFrameCallback 重试并把 swap.damage 设成 INT_MAX 的巨型脏区（CanvasContext.cpp:826-831），一次 timeout 会放大成“两帧都要全屏重绘”，排查时要看连续帧。",
+    "mExpectSurfaceStats 为真时本帧不会立刻 markFrameCompleted / finishFrame，而是等 presentTime（最多积攒若干帧，CanvasContext.cpp:950-960），gfxinfo 上的 FrameCompleted 会迟到几帧，不要当成绘制变慢。"
+  ],
+  "traceTags": [
+    "DrawFrames <vsyncId>",
+    "Drawing <dirty rect>",
+    "flush commands",
+    "frameTimelineInfo(frameNumber, vsyncId, inputEventId)",
+    "Finishing GPU work"
+  ],
+  "next": "stage-06"
+}

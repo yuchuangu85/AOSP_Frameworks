@@ -1,0 +1,319 @@
+{
+  "stages": [
+    {
+      "id": "publish",
+      "title": "发布成功后，按每条派发记录等待完成回执",
+      "summary": "本证据对应当前仓库 base/、native/ 源码版本 76a71e299faf8979c87b88d872b5811fa81a71eb。目标连接已存在，startDispatchCycleLocked 为派发记录设置 deliveryTime 和 timeoutTime；只有发布成功后才移入 waitQueue，并在连接仍 responsive 时登记 AnrTracker。这不是等待焦点窗口出现的 no-focused-window ANR。",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::startDispatchCycleLocked",
+          "lines": "3893-3905",
+          "code": "void InputDispatcher::startDispatchCycleLocked(nsecs_t currentTime,\n                                               const std::shared_ptr<Connection>& connection) {\n// ...\n    while (connection->status == Connection::Status::NORMAL && !connection->outboundQueue.empty()) {\n        std::unique_ptr<DispatchEntry>& dispatchEntry = connection->outboundQueue.front();\n        dispatchEntry->deliveryTime = currentTime;\n        const std::chrono::nanoseconds timeout = getDispatchingTimeoutLocked(connection);\n        dispatchEntry->timeoutTime = currentTime + timeout.count();",
+          "note": "计时基准是本轮派发传入的 currentTime，不是 entry.eventTime，也不是 Java onInputEvent 开始执行的时刻。循环没有等待上一条 ACK 才发送下一条的前置条件；同一连接可有多个在途记录，同一轮循环也可能使用相同 currentTime。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "mAnrTracker.insert",
+          "lines": "3996-4034",
+          "code": "        // Check the result.\n        if (status) {\n// ...\n            return;\n        }\n\n        // Re-enqueue the event on the wait queue.\n        const nsecs_t timeoutTime = dispatchEntry->timeoutTime;\n        connection->waitQueue.emplace_back(std::move(dispatchEntry));\n        connection->outboundQueue.erase(connection->outboundQueue.begin());\n        traceOutboundQueueLength(*connection);\n        if (connection->responsive) {\n            mAnrTracker.insert(timeoutTime, connection->getToken());\n        }\n        traceWaitQueueLength(*connection);\n    }",
+          "note": "status 非零会先返回；包括 WOULD_BLOCK 的失败发布不会将这条 outbound 记录登记为已发送等待。成功发布才转入 waitQueue；该队列可以同时保留多个未完成 seq。responsive=false 时成功发布也不继续为该连接登记 ANR 唤醒。"
+        }
+      ]
+    },
+    {
+      "id": "receive",
+      "title": "应用接收事件，保存传输序号并进入 ViewRootImpl",
+      "summary": "当前 Java 接收路径先记录 Java event sequence 与 native dispatch seq 的映射，再调用 WindowInputEventReceiver.onInputEvent。普通事件经 processRawInputEvent 入队处理；收到回调不等于发送 FINISHED，也不意味着 Dispatcher 已清除等待。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/view/InputEventReceiver.java",
+          "symbol": "dispatchInputEvent",
+          "lines": "276-282",
+          "code": "    // Called from native code.\n    @SuppressWarnings(\"unused\")\n    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)\n    private void dispatchInputEvent(int seq, InputEvent event) {\n        mSeqMap.put(event.getSequenceNumber(), seq);\n        onInputEvent(event);\n    }",
+          "note": "event.getSequenceNumber() 是 Java 事件对象序号，参数 seq 是传输派发序号，不能直接混用。mSeqMap 保存映射；不要据此文件较早的单事件注释推断当前 native 不能有多个事件在途，实际并发边界以 publish 中的循环和 waitQueue 为准。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "WindowInputEventReceiver",
+          "lines": "11453-11467",
+          "code": "    final class WindowInputEventReceiver extends InputEventReceiver {\n// ...\n        @Override\n        public void onInputEvent(InputEvent event) {\n            processRawInputEvent(event);\n        }",
+          "note": "这是普通 View 窗口的 Java 接收入口，不是系统统一的所有 InputConsumer 实现。接收器在同文件 1898-1899 行绑定 Looper.myLooper()，通常是该 ViewRoot 所属的 UI 线程；JNI 不会为每条事件新建线程。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "processRawInputEvent",
+          "lines": "11660-11683",
+          "code": "    public void processRawInputEvent(InputEvent event) {\n// ...\n        if (processedEvents != null) {\n            if (processedEvents.isEmpty()) {\n                // InputEvent consumed by mInputCompatHandler\n                mInputEventReceiver.finishInputEvent(event, true);\n            } else {\n                for (int i = 0; i < processedEvents.size(); i++) {\n                    enqueueInputEvent(\n                            processedEvents.get(i), mInputEventReceiver,\n                            QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY, true);\n                }\n            }\n        } else {\n            enqueueInputEvent(event, mInputEventReceiver, 0, true);\n        }",
+          "note": "普通分支携带 mInputEventReceiver 入队，后续处理完成才能经该 receiver 回传。兼容处理可能直接消费或转换事件，不能将所有输入都画成完全相同的一次 View 回调；enqueueInputEvent 在 11249-11252 行按 processImmediately 选择处理或调度。"
+        }
+      ]
+    },
+    {
+      "id": "finish",
+      "title": "处理完成后，Java 经 JNI 请求发送 FINISHED",
+      "summary": "ViewRootImpl 汇总 handled 状态，由 InputEventReceiver 将 Java 对象序号还原成 native seq，再经 JNI 进入 NativeInputEventReceiver。finish 请求可能因 socket 暂不可写而留在本地 outbound 队列，因此 Java finish 返回与 Dispatcher 收到 ACK 是不同事件。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "finishInputEvent",
+          "lines": "11347-11368",
+          "code": "    private void finishInputEvent(QueuedInputEvent q) {\n// ...\n        if (q.mReceiver != null) {\n            boolean handled = (q.mFlags & QueuedInputEvent.FLAG_FINISHED_HANDLED) != 0;\n            boolean modified = (q.mFlags & QueuedInputEvent.FLAG_MODIFIED_FOR_COMPATIBILITY) != 0;\n            if (modified && mInputCompatHandler != null) {\n// ...\n                if (processedEvent != null) {\n                    q.mReceiver.finishInputEvent(processedEvent, handled);\n                }\n            } else {\n                q.mReceiver.finishInputEvent(q.mEvent, handled);\n            }",
+          "note": "InputStage 链在同文件 7970-7977 行走到末端时调用此方法；handled 来自 FLAG_FINISHED_HANDLED，而不是是否绘制一帧。handled=false 也必须完成回执，不表示仍在等待；兼容转换另有处理分支。"
+        },
+        {
+          "file": "base/core/java/android/view/InputEventReceiver.java",
+          "symbol": "finishInputEvent",
+          "lines": "220-238",
+          "code": "    public final void finishInputEvent(InputEvent event, boolean handled) {\n        if (event == null) {\n            throw new IllegalArgumentException(\"event must not be null\");\n        }\n        if (mReceiverPtr == 0) {\n            Log.w(TAG, \"Attempted to finish an input event but the input event \"\n                    + \"receiver has already been disposed.\");\n        } else {\n            int index = mSeqMap.indexOfKey(event.getSequenceNumber());\n            if (index < 0) {\n                Log.w(TAG, \"Attempted to finish an input event that is not in progress.\");\n            } else {\n                int seq = mSeqMap.valueAt(index);\n                mSeqMap.removeAt(index);\n                nativeFinishInputEvent(mReceiverPtr, seq, handled);\n            }\n        }\n        event.recycleIfNeededAfterDispatch();\n    }",
+          "note": "只对映射中仍在处理的事件调用 nativeFinishInputEvent，并删除 Java 本地映射；这不是删除 system_server 的 waitQueue。213-218 行约定必须在接收器所绑定的同一 Looper 线程调用。dispose 或找不到映射时不会正常发送这条完成信号。"
+        },
+        {
+          "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+          "symbol": "nativeFinishInputEvent",
+          "lines": "784-798",
+          "code": "static void nativeFinishInputEvent(JNIEnv* env, jclass clazz, jlong receiverPtr,\n        jint seq, jboolean handled) {\n    sp<NativeInputEventReceiver> receiver =\n            reinterpret_cast<NativeInputEventReceiver*>(receiverPtr);\n    status_t status = receiver->finishInputEvent(seq, handled);\n    if (status == OK || status == WOULD_BLOCK) {\n        return; // normal operation\n    }\n    if (status != DEAD_OBJECT) {\n        std::string message =\n                android::base::StringPrintf(\"Failed to finish input event.  status=%s(%d)\",\n                                            statusToString(status).c_str(), status);\n        jniThrowRuntimeException(env, message.c_str());\n    }\n}",
+          "note": "这是应用进程内部的 Java→native 调用，不是一次向 system_server 发起的 Binder finish RPC。WOULD_BLOCK 也正常返回，不能把方法返回绘制为 Dispatcher 已确认完成。"
+        },
+        {
+          "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+          "symbol": "NativeInputEventReceiver::finishInputEvent",
+          "lines": "274-285",
+          "code": "status_t NativeInputEventReceiver::finishInputEvent(uint32_t seq, bool handled) {\n    if (kDebugDispatchCycle) {\n        LOG(INFO) << \"channel '\" << mName << \"' ~ Finished input event, seq=\" << seq;\n    }\n\n    Finish finish{\n            .seq = seq,\n            .handled = handled,\n    };\n    mOutboundQueue.emplace(finish);\n    return processOutboundEvents();\n}",
+          "note": "把 seq 与 handled 封装为 Finish，先入接收器自己的 mOutboundQueue，再尝试发送。该队列属于应用侧 native receiver，与 InputDispatcher 的 connection.outboundQueue 不是同一个对象。"
+        },
+        {
+          "file": "base/core/jni/android_view_InputEventReceiver.cpp",
+          "symbol": "NativeInputEventReceiver::processOutboundEvents",
+          "lines": "361-397",
+          "code": "status_t NativeInputEventReceiver::processOutboundEvents() {\n// ...\n    while (true) {\n        std::optional<OutboundEvent> outbound = mOutboundQueue.popWithTimeout(0ms);\n        if (!outbound.has_value()) {\n            break;\n        }\n\n        status_t status;\n        if (std::holds_alternative<Finish>(*outbound)) {\n            const Finish& finish = std::get<Finish>(*outbound);\n            status = mInputConsumer->sendFinishedSignal(finish.seq, finish.handled);\n// ...\n        }\n// ...\n        if (status == WOULD_BLOCK) {\n// ...\n            mOutboundQueue.emplace(*outbound);\n            setFdEvents(ALOOPER_EVENT_INPUT | ALOOPER_EVENT_OUTPUT);\n            return WOULD_BLOCK; // try again later\n        }",
+          "note": "Finish 分支交给 InputConsumer。省略部分包含 Timeline 分支与成功后继续循环；当返回 WOULD_BLOCK 时，消息放回本地队列并关注 OUTPUT，等待再次可写。FINISHED 与用于绘制指标的 TIMELINE 是两类消息，后者不能代替 ACK。"
+        }
+      ]
+    },
+    {
+      "id": "socket",
+      "title": "通过 InputChannel socket 回传 seq 与 handled",
+      "summary": "InputConsumer 发送 FINISHED 消息，InputPublisher 解码同一消息。批处理可能把一个 Java 完成动作展开为多个 native seq 的完成信号；事件处理是否消费和传输是否完成是两个维度。",
+      "snippets": [
+        {
+          "file": "native/libs/input/InputConsumer.cpp",
+          "symbol": "InputConsumer::sendFinishedSignal",
+          "lines": "746-792",
+          "code": "status_t InputConsumer::sendFinishedSignal(uint32_t seq, bool handled) {\n// ...\n    // Send finished signals for the batch sequence chain first.\n    size_t seqChainCount = mSeqChains.size();\n    if (seqChainCount) {\n// ...\n        for (size_t i = seqChainCount; i > 0;) {\n// ...\n            const SeqChain& seqChain = mSeqChains[i];\n            if (seqChain.seq == currentSeq) {\n                currentSeq = seqChain.chain;\n                chainSeqs[chainIndex++] = currentSeq;\n                mSeqChains.erase(mSeqChains.begin() + i);\n            }\n        }\n        status_t status = OK;\n        while (!status && chainIndex > 0) {\n            chainIndex--;\n            status = sendUnchainedFinishedSignal(chainSeqs[chainIndex], handled);\n        }\n// ...\n    }\n\n    // Send finished signal for the last message in the batch.\n    return sendUnchainedFinishedSignal(seq, handled);\n}",
+          "note": "先完成批次序号链，再完成最后一个 seq。省略部分包括 seq=0 的错误检查和发送失败时重建未完成的链。动画若一事件对应一 seq，必须标为简化，不应宣称真实 MotionEvent 批次只需删除一个 native 派发条目。"
+        },
+        {
+          "file": "native/libs/input/InputConsumer.cpp",
+          "symbol": "InputConsumer::sendUnchainedFinishedSignal",
+          "lines": "824-841",
+          "code": "status_t InputConsumer::sendUnchainedFinishedSignal(uint32_t seq, bool handled) {\n    InputMessage msg;\n    msg.header.type = InputMessage::Type::FINISHED;\n    msg.header.seq = seq;\n    msg.body.finished.handled = handled;\n    msg.body.finished.consumeTime = getConsumeTime(seq);\n    status_t result = mChannel->sendMessage(&msg);\n    if (result == OK) {\n        // Remove the consume time if the socket write succeeded. We will not need to ack this\n        // message anymore. If the socket write did not succeed, we will try again and will still\n        // need consume time.\n        popConsumeTime(seq);\n\n        // Trace the event processing timeline - event was just finished\n        ATRACE_ASYNC_END(mProcessingTraceTag.c_str(), /*cookie=*/seq);\n    }\n    return result;\n}",
+          "note": "FINISHED 的 header 携带 seq，body 携带 handled 与 consumeTime。handled=false 仍然是完成信号；写 socket 成功也不等于对端已消费或清理 waitQueue。这里没有等待 GPU 完成或屏幕呈现。"
+        },
+        {
+          "file": "native/libs/input/InputTransport.cpp",
+          "symbol": "InputPublisher::receiveConsumerResponse",
+          "lines": "748-769",
+          "code": "android::base::Result<InputPublisher::ConsumerResponse> InputPublisher::receiveConsumerResponse() {\n    android::base::Result<InputMessage> result = mChannel->receiveMessage();\n// ...\n    const InputMessage& msg = *result;\n    if (msg.header.type == InputMessage::Type::FINISHED) {\n// ...\n        return Finished{\n                .seq = msg.header.seq,\n                .handled = msg.body.finished.handled,\n                .consumeTime = msg.body.finished.consumeTime,\n        };\n    }",
+          "note": "system_server 发布端读取 socket 并还原 Finished。seq 是匹配原派发条目的键；handled 供后处理使用，而不是 ACK 是否存在的开关。另有 TIMELINE 消息分支，不能将其画为 FINISHED。"
+        }
+      ]
+    },
+    {
+      "id": "ack",
+      "title": "Dispatcher 读取 ACK，按 seq 清理单条等待",
+      "summary": "连接 fd 回调读取 Finished 后安排完成命令，再按 seq 移除一条 waitQueue 记录，并用该记录保存的 timeoutTime 与 connectionToken 删除一条 AnrTracker 索引。其他事件仍在等待；若连接曾不响应，还需检查剩余队列。收到任意消息不等于清空连接等待。",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::handleReceiveCallback",
+          "lines": "4137-4185",
+          "code": "int InputDispatcher::handleReceiveCallback(int events, sp<IBinder> connectionToken) {\n    std::scoped_lock _l(mLock);\n    std::shared_ptr<Connection> connection = mConnectionManager.getConnection(connectionToken);\n// ...\n        nsecs_t currentTime = now();\n        bool gotOne = false;\n        status_t status = OK;\n        for (;;) {\n            Result<InputPublisher::ConsumerResponse> result =\n                    connection->inputPublisher.receiveConsumerResponse();\n            if (!result.ok()) {\n                status = result.error().code();\n                break;\n            }\n\n            if (std::holds_alternative<InputPublisher::Finished>(*result)) {\n                const InputPublisher::Finished& finish =\n                        std::get<InputPublisher::Finished>(*result);\n                finishDispatchCycleLocked(currentTime, connection, finish.seq, finish.handled,\n                                          finish.consumeTime);\n// ...\n            }\n            gotOne = true;\n        }\n        if (gotOne) {\n            runCommandsLockedInterruptable();",
+          "note": "省略连接有效性、fd 错误检查及 Timeline 指标分支。一次回调循环可读多个完成消息；currentTime 是接收回调的采样时间，不是 Java 回调开始时间，也不是来自 FINISHED 的 consumeTime。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::finishDispatchCycleLocked",
+          "lines": "4076-4092",
+          "code": "void InputDispatcher::finishDispatchCycleLocked(nsecs_t currentTime,\n                                                const std::shared_ptr<Connection>& connection,\n                                                uint32_t seq, bool handled, nsecs_t consumeTime) {\n// ...\n    if (connection->status != Connection::Status::NORMAL) {\n        return;\n    }\n\n    // Notify other system components and prepare to start the next dispatch cycle.\n    auto command = [this, currentTime, connection, seq, handled, consumeTime]() REQUIRES(mLock) {\n        doDispatchCycleFinishedCommand(currentTime, connection, seq, handled, consumeTime);\n    };\n    postCommandLocked(std::move(command));\n}",
+          "note": "只有 NORMAL 连接继续安排完成命令。postCommandLocked 是 Dispatcher 内部命令队列，并不表示跳到应用主线程或系统主线程；具体删除等待记录发生在下面的 doDispatchCycleFinishedCommand。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::doDispatchCycleFinishedCommand",
+          "lines": "6700-6752",
+          "code": "void InputDispatcher::doDispatchCycleFinishedCommand(nsecs_t finishTime,\n                                                     const std::shared_ptr<Connection>& connection,\n                                                     uint32_t seq, bool handled,\n                                                     nsecs_t consumeTime) {\n// ...\n    auto entryIt = std::find_if(connection->waitQueue.begin(), connection->waitQueue.end(),\n                                [seq](auto& e) { return e->seq == seq; });\n    if (entryIt != connection->waitQueue.end()) {\n        std::unique_ptr<DispatchEntry> dispatchEntry = std::move(*entryIt);\n        connection->waitQueue.erase(entryIt);\n\n        const sp<IBinder>& connectionToken = connection->getToken();\n        mAnrTracker.erase(dispatchEntry->timeoutTime, connectionToken);\n        if (!connection->responsive) {\n            connection->responsive = isConnectionResponsive(*connection);\n            if (connection->responsive) {\n                // The connection was unresponsive, and now it's responsive.\n                processConnectionResponsiveLocked(*connection);\n            }\n        }\n        traceWaitQueueLength(*connection);",
+          "note": "ACK 只解除匹配 seq 的等待，不重置整个窗口计时。AnrTracker::erase 在 AnrTracker.cpp:30-39 明确只删一条相同 (timeoutTime, token)，即使有重复键也不全删。省略的 6708-6731 行先做 seq 查找、耗时统计与按键 fallback；因为该过程可能释放锁，清理前必须重新查找。handled=false 的按键可能生成新的 fallback，但原记录仍按完成路径移除；本函数在 6771 行再尝试 startDispatchCycleLocked。"
+        }
+      ]
+    },
+    {
+      "id": "timeout",
+      "title": "最早期限触发超时，诊断原因取队首记录",
+      "summary": "AnrTracker 按最早 timeoutTime 选择到期连接；检测到期后设置 responsive=false 并 eraseToken，避免持续为同一失响应连接唤醒。这不会清空 waitQueue。onAnrLocked 生成 reason 时仍取 waitQueue.front()，所以窗口 timeout 改变时，触发到期的记录未必就是 reason 描述的最老记录。",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/AnrTracker.cpp",
+          "symbol": "AnrTracker::firstTimeout",
+          "lines": "56-67",
+          "code": "// If empty() is false, return the time at which the next connection should cause an ANR\n// If empty() is true, return LLONG_MAX\nnsecs_t AnrTracker::firstTimeout() const {\n    if (mAnrTimeouts.empty()) {\n        return std::numeric_limits<nsecs_t>::max();\n    }\n    return mAnrTimeouts.begin()->first;\n}\n\nconst sp<IBinder>& AnrTracker::firstToken() const {\n    return mAnrTimeouts.begin()->second;\n}",
+          "note": "AnrTracker.h:45-54 将 mAnrTimeouts 定义为 (timeoutTime, token) 的 multiset，允许重复，不储存 seq。触发选最小期限，不是直接选 waitQueue.front()。AnrTracker.cpp:42-50 的 eraseToken 只遍历这个索引容器，不接触连接 waitQueue。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "processAnrsLocked",
+          "lines": "1143-1179",
+          "code": "nsecs_t InputDispatcher::processAnrsLocked() {\n    const nsecs_t currentTime = now();\n    nsecs_t nextAnrCheck = LLONG_MAX;\n// ...\n    // Check if any connection ANRs are due\n    nextAnrCheck = std::min(nextAnrCheck, mAnrTracker.firstTimeout());\n    if (currentTime < nextAnrCheck) { // most likely scenario\n        return nextAnrCheck;          // everything is normal. Let's check again at nextAnrCheck\n    }\n\n    // If we reached here, we have an unresponsive connection.\n    std::shared_ptr<Connection> connection =\n            mConnectionManager.getConnection(mAnrTracker.firstToken());\n    if (connection == nullptr) {\n        ALOGE(\"Could not find connection for entry %\" PRId64, mAnrTracker.firstTimeout());\n        // As we no longer have entry for this connection, remove it form Anr tracker to prevent\n        // samme error being logged multiple times.\n        mAnrTracker.eraseToken(mAnrTracker.firstToken());\n        return nextAnrCheck;\n    }\n    connection->responsive = false;\n    // Stop waking up for this unresponsive connection\n    mAnrTracker.eraseToken(connection->getToken());\n    onAnrLocked(connection);\n    return LLONG_MIN;",
+          "note": "完整函数在 1143 行开始；本段是 connection ACK 超时分支，不含前面的 no-focused-window 分支。在检测运行时 currentTime 已到期限才触发，而不是保证纳秒级准点执行。eraseToken 移除同一连接的所有计时索引，不删除未完成派发记录，也不自动断开 channel。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::onAnrLocked",
+          "lines": "6792-6833",
+          "code": "void InputDispatcher::onAnrLocked(const std::shared_ptr<Connection>& connection) {\n// ...\n    if (connection->waitQueue.empty()) {\n        ALOGI(\"Not raising ANR because the connection %s has recovered\",\n              connection->getInputChannelName().c_str());\n        return;\n    }\n// ...\n    DispatchEntry& oldestEntry = *connection->waitQueue.front();\n// ...\n    const nsecs_t currentWait = now() - oldestEntry.deliveryTime;\n    std::string reason =\n            android::base::StringPrintf(\"%s is not responding. Waited %\" PRId64 \"ms for %s\",\n                                        connection->getInputChannelName().c_str(),\n                                        ns2ms(currentWait),\n                                        oldestEntry.eventEntry->getDescription().c_str());\n// ...\n    const int32_t eventId = oldestEntry.eventEntry->id;\n    const nsecs_t eventTime = oldestEntry.eventEntry->eventTime;\n    const std::chrono::milliseconds timeoutDuration = std::chrono::milliseconds(ns2ms(currentWait));\n    processConnectionUnresponsiveLocked(*connection, std::move(reason), eventId, eventTime,\n                                        timeoutDuration);\n\n    // Stop waking up for events on this connection, it is already unresponsive\n    cancelEventsForAnrLocked(connection);\n}",
+          "note": "6804-6809 行明确解释：新事件可因窗口 timeout 变短而先到期，但 reason 仍选最早发送的队首事件。timeoutDuration 是队首已经等待的时长，未必等于当前配置阈值。cancelEventsForAnrLocked 在 2346-2371 行合成取消输入，不清空 waitQueue，也明确不直接断开连接；不要把注释所说 policy 延长超时画成此处实际返回新期限。"
+        }
+      ]
+    },
+    {
+      "id": "policy",
+      "title": "超时通知经 JNI、IMS、WMS 归因后进入 AMS",
+      "summary": "InputDispatcher 将失响应通知排为内部命令，执行时释放 mLock；NativeInputManager 通过 JNI 回调同一 system_server 内的 IMS，继而由 InputManagerCallback 进入 WMS AnrController。WMS 根据实际 input token、窗口和进程归因，ActivityRecord 或 pid 路径进入 AMS；这不是检测瞬间必然出现弹框。",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::runCommandsLockedInterruptable",
+          "lines": "1672-1688",
+          "code": "bool InputDispatcher::runCommandsLockedInterruptable() {\n    if (mCommandQueue.empty()) {\n        return false;\n    }\n\n    do {\n        auto command = std::move(mCommandQueue.front());\n        mCommandQueue.pop_front();\n        // Commands are run with the lock held, but may release and re-acquire the lock from within.\n        command();\n    } while (!mCommandQueue.empty());\n    return true;\n}\n\nvoid InputDispatcher::postCommandLocked(Command&& command) {\n    mCommandQueue.push_back(command);\n}",
+          "note": "命令追加到队尾、从队首执行。已经排队的 unresponsive 通知不会被后排入的 ACK 完成及恢复命令越过；动画的视觉转场延迟必须保留这个因果顺序。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::sendWindowUnresponsiveCommandLocked",
+          "lines": "6905-6923",
+          "code": "void InputDispatcher::sendWindowUnresponsiveCommandLocked(\n        const sp<IBinder>& token, std::optional<gui::Pid> pid, std::string reason, int32_t eventId,\n        nsecs_t eventTime, std::chrono::milliseconds timeoutDuration) {\n    auto command = [this, token, pid, r = std::move(reason), eventId, eventTime,\n                    timeoutDuration]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyWindowUnresponsive(token, pid, r, eventId, eventTime, timeoutDuration);\n    };\n    postCommandLocked(std::move(command));\n}\n\nvoid InputDispatcher::sendWindowResponsiveCommandLocked(const sp<IBinder>& token,\n                                                        std::optional<gui::Pid> pid) {\n    auto command = [this, token, pid]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyWindowResponsive(token, pid);\n    };\n    postCommandLocked(std::move(command));\n}",
+          "note": "同文件 6930-6949 行的 processConnectionUnresponsiveLocked 为普通窗口从 WindowInfo.ownerPid 取可选 pid，再进入本方法；monitor 另走 monitor pid。失响应与恢复都经排队命令，执行 callback 前释放 Dispatcher 锁；不是派发锁内同步持锁进入 WMS，也不是新建独立 ANR 线程。"
+        },
+        {
+          "file": "base/services/core/jni/com_android_server_input_InputManagerService.cpp",
+          "symbol": "NativeInputManager::notifyWindowUnresponsive",
+          "lines": "1354-1391",
+          "code": "void NativeInputManager::notifyWindowUnresponsive(const sp<IBinder>& token,\n                                                  std::optional<gui::Pid> pid,\n                                                  const std::string& reason, int32_t eventId,\n                                                  nsecs_t eventTime,\n                                                  std::chrono::milliseconds timeoutDuration) {\n// ...\n    JNIEnv* env = jniEnv();\n    ScopedLocalFrame localFrame(env);\n\n    jobject tokenObj = javaObjectForIBinder(env, token);\n    ScopedLocalRef<jstring> reasonObj(env, env->NewStringUTF(reason.c_str()));\n\n    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowUnresponsive, tokenObj,\n                        pid.value_or(gui::Pid{0}).val(), pid.has_value(), reasonObj.get(), eventId,\n                        eventTime, timeoutDuration.count());\n    checkAndClearExceptionFromCallback(env, \"notifyWindowUnresponsive\");\n}\n\nvoid NativeInputManager::notifyWindowResponsive(const sp<IBinder>& token,\n                                                std::optional<gui::Pid> pid) {\n// ...\n    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyWindowResponsive, tokenObj,\n                        pid.value_or(gui::Pid{0}).val(), pid.has_value());\n    checkAndClearExceptionFromCallback(env, \"notifyWindowResponsive\");\n}",
+          "note": "JNI 调用的是现有 IMS Java 对象，pid 是否有效由额外布尔值传递；不能把缺失 pid 当真实 pid=0 归因。这里传递的是用于识别窗口的 IBinder token，但 CallVoidMethod 本身不是跨进程 Binder transact，也不自动切换到 system_server 主线程。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/input/InputManagerService.java",
+          "symbol": "notifyWindowUnresponsive",
+          "lines": "2670-2696",
+          "code": "    // Native callback\n    @SuppressWarnings(\"unused\")\n    private void notifyWindowUnresponsive(\n            IBinder token,\n            int pid,\n            boolean isPidValid,\n            String reason,\n            int eventId,\n            long eventTimeNs,\n            long timeoutDurationMs) {\n        OptionalInt optionalPid = isPidValid ? OptionalInt.of(pid) : OptionalInt.empty();\n        TimeoutRecord timeoutRecord =\n                TimeoutRecord.forInputDispatchWindowUnresponsive(\n                        timeoutMessage(optionalPid, reason));\n\n        if (android.app.Flags.includeAnrInfo()) {\n            setAnrInfoInTimeoutRecord(timeoutRecord, eventId, eventTimeNs, timeoutDurationMs);\n        }\n        mWindowManagerCallbacks.notifyWindowUnresponsive(token, optionalPid, timeoutRecord);\n    }\n\n    // Native callback\n    @SuppressWarnings(\"unused\")\n    private void notifyWindowResponsive(IBinder token, int pid, boolean isPidValid) {\n        mWindowManagerCallbacks.notifyWindowResponsive(token,\n                isPidValid ? OptionalInt.of(pid) : OptionalInt.empty());\n    }",
+          "note": "IMS 创建 WindowUnresponsive 类型 TimeoutRecord，再同步调用 WindowManagerCallbacks。includeAnrInfo 只控制额外事件信息记录，不是正式 ACK 超时 ANR 的总开关；恢复走独立 notifyWindowResponsive 回调。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputManagerCallback.java",
+          "symbol": "notifyWindowUnresponsive",
+          "lines": "111-122",
+          "code": "    @Override\n    public void notifyWindowUnresponsive(\n            @NonNull IBinder token,\n            @NonNull OptionalInt pid,\n            @NonNull TimeoutRecord timeoutRecord) {\n        mService.mAnrController.notifyWindowUnresponsive(token, pid, timeoutRecord);\n    }\n\n    @Override\n    public void notifyWindowResponsive(@NonNull IBinder token, @NonNull OptionalInt pid) {\n        mService.mAnrController.notifyWindowResponsive(token, pid);\n    }",
+          "note": "该适配器连接 IMS 回调与 WMS.mAnrController，两个 Java 调用均是 system_server 内部调用。本阶段不要与应用中的 android.app.AnrController 或 Java 主线程 Handler 回调混淆。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "notifyWindowUnresponsive",
+          "lines": "271-309",
+          "code": "    private boolean notifyWindowUnresponsive(@NonNull IBinder inputToken,\n            TimeoutRecord timeoutRecord) {\n// ...\n        synchronized (mService.mGlobalLock) {\n// ...\n            InputTarget target = mService.getInputTargetFromToken(inputToken);\n            if (target == null) {\n                return false;\n            }\n            windowState = target.getWindowState();\n            pid = target.getPid();\n            if (windowState != null) {\n                // Blame the activity if the input token belongs to the window. If the target is\n                // embedded, then we will blame the pid instead.\n                activity = (windowState.mInputChannelToken == inputToken)\n                        ? windowState.mActivityRecord : null;\n                aboveSystem = isWindowAboveSystem(windowState);\n            } else {\n// ...\n                activity = null;\n                aboveSystem = true;\n            }\n// ...\n        }\n        if (activity != null) {\n            activity.inputDispatchingTimedOut(timeoutRecord, pid);\n        } else {\n            mService.mAmInternal.inputDispatchingTimedOut(pid, aboveSystem, timeoutRecord);\n        }\n        dumpAnrStateAsync(activity, windowState, timeoutRecord.mReason);\n        return true;",
+          "note": "嵌入目标或没有 Activity 的窗口直接按实际 target pid 归因，不保证所有事件都走 Activity。入口 247-259 行在 token 解析失败时尝试可选 pid；315-320 行是 pid 兜底。这里进入 AMS 的调用在退出 WMS 全局锁之后。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "symbol": "inputDispatchingTimedOut",
+          "lines": "6819-6845",
+          "code": "    public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {\n// ...\n            synchronized (mAtmService.mGlobalLock) {\n// ...\n                anrActivity = getWaitingHistoryRecordLocked();\n                anrApp = app;\n                blameActivityProcess =  hasProcess()\n                        && (app.getPid() == windowPid || windowPid == INVALID_PID);\n            }\n\n            if (blameActivityProcess) {\n                return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,\n                        anrActivity.shortComponentName, anrActivity.info.applicationInfo,\n                        shortComponentName, app, false, timeoutRecord);\n            } else {\n                // In this case another process added windows using this activity token.\n                // So, we call the generic service input dispatch timed out method so\n                // that the right process is blamed.\n                long timeoutMillis = mAtmService.mAmInternal.inputDispatchingTimedOut(\n                        windowPid, false /* aboveSystem */, timeoutRecord);\n                return timeoutMillis <= 0;",
+          "note": "Activity 路径仍核对窗口 pid 与 Activity 进程，避免其他进程借用 Activity token 时误归因。mAmInternal 的对应本地转发实现在 ActivityManagerService.java:18452-18465；这里的 boolean/timeoutMillis 不能解释成 native 当前必然据此延长已触发连接的期限，WMS 本调用处并未消费返回值。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/am/ActivityManagerService.java",
+          "symbol": "inputDispatchingTimedOut",
+          "lines": "19328-19363",
+          "code": "    boolean inputDispatchingTimedOut(ProcessRecord proc, String activityShortComponentName,\n            ApplicationInfo aInfo, String parentShortComponentName,\n            WindowProcessController parentProcess, boolean aboveSystem,\n            TimeoutRecord timeoutRecord) {\n// ...\n            if (proc != null) {\n// ...\n                synchronized (mGlobalLock) {\n// ...\n                    if (proc.isDebugging()) {\n                        return false;\n                    }\n\n                    if (proc.getActiveInstrumentation() != null) {\n// ...\n                        finishInstrumentationLocked(proc, Activity.RESULT_CANCELED, info);\n                        return true;\n                    }\n                }\n                mAnrHelper.appNotResponding(proc, activityShortComponentName, aInfo,\n                        parentShortComponentName, parentProcess, aboveSystem, timeoutRecord,\n                        /*isContinuousAnr*/ true);\n            }\n\n            return true;",
+          "note": "普通有效进程进入 AnrHelper；调试、instrumentation、进程已消失等存在不同处理。pid 重载在 19304-19321 行先查 ProcessRecord。AnrHelper.java:123-187 会检查重复请求、提交早期堆栈收集、排入 mAnrRecords 并启动 AnrConsumerThread。因此 native 超时通知、AMS 受理、异步采集与最终弹框是不同边界，不能给它们伪造相同时间。"
+        }
+      ]
+    },
+    {
+      "id": "recovery",
+      "title": "迟到 ACK 可恢复连接，但需检查剩余所有等待",
+      "summary": "超时后连接仍可接收 FINISHED。每次按 seq 清理后，只有剩余 waitQueue 没有已经超时的记录，才将失响应连接恢复为 responsive 并通知 policy；不是任意一条 ACK 都能让整条连接恢复，也不要求队列完全为空。恢复通知不等于撤销已经执行或排队的全部 ANR 工作。",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "isConnectionResponsive",
+          "lines": "540-552",
+          "code": "/**\n * Connection is responsive if it has no events in the waitQueue that are older than the\n * current time.\n */\nbool isConnectionResponsive(const Connection& connection) {\n    const nsecs_t currentTime = now();\n    for (const auto& dispatchEntry : connection.waitQueue) {\n        if (dispatchEntry->timeoutTime < currentTime) {\n            return false;\n        }\n    }\n    return true;\n}",
+          "note": "调用点见 ack：删除当前 seq 后才扫描剩余记录。有未超时的在途事件也可恢复，不需要 waitQueue.empty()。此处超时比较是 timeoutTime < now()；processAnrsLocked 的到期条件是检测时 currentTime >= nextAnrCheck，动画应明确自己的同刻事件排序，不能声称两处比较符完全相同。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processConnectionResponsiveLocked",
+          "lines": "6955-6968",
+          "code": "void InputDispatcher::processConnectionResponsiveLocked(const Connection& connection) {\n    const sp<IBinder>& connectionToken = connection.getToken();\n    std::optional<gui::Pid> pid;\n    if (connection.isFocusMonitor) {\n        pid = mConnectionManager.findMonitorPidByToken(connectionToken);\n    } else {\n        // The connection is a window\n        const sp<WindowInfoHandle> handle = mWindowInfos.findWindowHandle(connectionToken);\n        if (handle != nullptr) {\n            pid = handle->getInfo()->ownerPid;\n        }\n    }\n    sendWindowResponsiveCommandLocked(connectionToken, pid);\n}",
+          "note": "恢复通知仍携带 connection token 与可选 ownerPid，通过 policy 阶段列出的 sendWindowResponsiveCommandLocked、JNI、IMS 与 InputManagerCallback 路径进入 WMS，不是应用主动调用 AMS 恢复接口。不要凭此推断已移除的旧 AnrTracker 索引被全部重建。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "notifyWindowResponsive",
+          "lines": "348-366",
+          "code": "    private boolean notifyWindowResponsive(@NonNull IBinder inputToken) {\n        final int pid;\n        synchronized (mService.mGlobalLock) {\n            InputTarget target = mService.getInputTargetFromToken(inputToken);\n            if (target == null) {\n                return false;\n            }\n            pid = target.getPid();\n        }\n        mService.mAmInternal.inputDispatchingResumed(pid);\n        return true;\n    }\n\n    /**\n     * Notify a window owned by the provided pid was responsive after previously being unresponsive.\n     */\n    private void notifyWindowResponsive(int pid) {\n        mService.mAmInternal.inputDispatchingResumed(pid);\n    }",
+          "note": "330-338 行入口先按 token，失败再尝试可选 pid。ActivityManagerService.java:18469-18476 的 inputDispatchingResumed 按 pid 找到进程并调用 mAppErrors.handleDismissAnrDialogs；这不是回滚已发生的超时，也不是通用取消 AnrHelper 队列的接口。"
+        }
+      ]
+    },
+    {
+      "id": "configuration",
+      "title": "基础默认 5 秒，实际采用窗口与环境配置",
+      "summary": "5000 ms 是未乘倍率的基础常量，不是所有设备、窗口和场景都固定 5 秒。Java 和 native 各自使用硬件超时倍率；派发优先读取有效窗口的 dispatchingTimeout，monitor 另有配置。进程 instrumentation 或 wrapper 可产生较长的窗口超时，且已经发送的记录保存自己的 deadline。",
+      "snippets": [
+        {
+          "file": "native/libs/input/android/os/IInputConstants.aidl",
+          "symbol": "UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS",
+          "lines": "23-26",
+          "code": "    // This should be multiplied by the value of the system property ro.hw_timeout_multiplier before\n    // use. A pre-multiplied constant is available in Java in\n    // android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS.\n    const int UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS = 5000; // 5 seconds",
+          "note": "基础默认值为 5000 ms。演示选 5 秒时须注明硬件倍率为 1、窗口未使用其他覆盖值；不能将任意 connection ANR 都标成从物理输入发生后精确 5 秒。"
+        },
+        {
+          "file": "base/core/java/android/os/InputConstants.java",
+          "symbol": "DEFAULT_DISPATCHING_TIMEOUT_MILLIS",
+          "lines": "23-27",
+          "code": "public class InputConstants {\n    public static final int DEFAULT_DISPATCHING_TIMEOUT_MILLIS =\n            IInputConstants.UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS\n            * Build.HW_TIMEOUT_MULTIPLIER;\n}",
+          "note": "Java 默认值已经包含 Build.HW_TIMEOUT_MULTIPLIER。WMS 构造普通窗口超时信息时使用的是这条 Java 配置链，不应在动画中再次无条件叠乘 native 倍率。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "DEFAULT_INPUT_DISPATCHING_TIMEOUT",
+          "lines": "125-129",
+          "code": "// Default input dispatching timeout if there is no focused application or paused window\n// from which to determine an appropriate dispatching timeout.\nconst std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(\n        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *\n        HwTimeoutMultiplier());",
+          "note": "native 兜底默认值同样包含 HwTimeoutMultiplier()。是否采用兜底由下面 getDispatchingTimeoutLocked 的实际分支决定，不能仅凭这段默认值注释替代窗口超时选择逻辑。"
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::getDispatchingTimeoutLocked",
+          "lines": "1195-1205",
+          "code": "std::chrono::nanoseconds InputDispatcher::getDispatchingTimeoutLocked(\n        const std::shared_ptr<Connection>& connection) {\n    if (connection->isFocusMonitor) {\n        return mMonitorDispatchingTimeout;\n    }\n    const sp<WindowInfoHandle> window = mWindowInfos.findWindowHandle(connection->getToken());\n    if (window != nullptr) {\n        return window->getDispatchingTimeout(DEFAULT_INPUT_DISPATCHING_TIMEOUT);\n    }\n    return DEFAULT_INPUT_DISPATCHING_TIMEOUT;\n}",
+          "note": "实际选择顺序是 focus monitor 自己的配置、对应 WindowInfo 的配置、最后 native 默认值。publish 为每个 DispatchEntry 保存 timeoutTime；窗口配置更新不等于这里追溯重写全部已发送记录。"
+        },
+        {
+          "file": "native/libs/gui/include/gui/WindowInfo.h",
+          "symbol": "getDispatchingTimeout",
+          "lines": "307-310",
+          "code": "    inline std::chrono::nanoseconds getDispatchingTimeout(\n            std::chrono::nanoseconds defaultValue) const {\n        return mInfo.token ? std::chrono::nanoseconds(mInfo.dispatchingTimeout) : defaultValue;\n    }",
+          "note": "有效窗口 token 存在时直接使用 WindowInfo.dispatchingTimeout，不是再额外叠加默认 5 秒或硬件倍率。普通窗口赋值链已核对：InputMonitor.java:253-259 → WindowState.java:1792-1795 → ActivityRecord.mInputDispatchingTimeoutMillis；InputWindowHandleWrapper.java:132-137 将值写入 handle。"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowProcessController.java",
+          "symbol": "getInputDispatchingTimeoutMillis",
+          "lines": "1482-1493",
+          "code": "    /**\n     * Get the current dispatching timeout. If instrumentation is currently taking place, return\n     * a longer value. Shorter timeout is returned otherwise.\n     * @return The timeout in milliseconds\n     */\n    public long getInputDispatchingTimeoutMillis() {\n        synchronized (mAtm.mGlobalLock) {\n            return isInstrumenting() || isUsingWrapper()\n                    ? INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS :\n                    DEFAULT_DISPATCHING_TIMEOUT_MILLIS;\n        }\n    }",
+          "note": "当前源码中 instrumentation 或 wrapper 返回较长阈值；ActivityTaskManagerService.java:345 定义该值为 60 * 1000 ms。其 5586-5597 行把进程配置提供给 ActivityRecord.setProcess（ActivityRecord.java:2177-2184），再由窗口信息传播。演示动态 timeout 改变应说明这是配置情景，不应声称运行中所有窗口都会无条件自动切换。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,175 @@
+{
+  "id": "stage-08",
+  "num": 8,
+  "title": "第 8 拍：交棒 RenderThread",
+  "subtitle": "14 个 long 的 FrameInfo 通过 JNI 拷进 native，UI 线程在 postAndWait 上等 RT 把树同步完",
+  "lane": "UI",
+  "durationHint": "量级：UI 阻塞约 0.5~5 ms（等于 RT 的 syncFrameState 时长；RT 排队时更长）",
+  "summary": "ThreadedRenderer.draw（base/core/java/android/view/ThreadedRenderer.java:827）在录制完 DisplayList 后，取 getUpdatedFrameInfo()（ViewRootImpl.java:723）把 Choreographer 帧信息与 ViewFrameInfo 合并成 FrameInfo（frameInfo 是 long[14]，对应 FrameInfo.java:44-106 的 14 个槽），然后调 HardwareRenderer.syncAndDrawFrame（base/graphics/java/android/graphics/HardwareRenderer.java:595）。后者直接进 JNI nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length)，native 侧 android_view_ThreadedRenderer_syncAndDrawFrame（base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:464）先断言长度等于 UI_THREAD_FRAME_INFO_SIZE（14，base/libs/hwui/FrameInfo.h:34），再用 GetLongArrayRegion 把数组拷进 RenderProxy 的 mFrameInfo，转调 RenderProxy::syncAndDrawFrame（RenderProxy.cpp:237）→ DrawFrameTask::drawFrame（DrawFrameTask.cpp:72）。drawFrame 记下 mSyncQueued，随后 postAndWait（82）把 run() 投进 RenderThread 的任务队列并在 mSignal 上阻塞——UI 线程的交棒到此结束，后面是 RT 的 prepareTree/draw。值得强调的是，交棒并不代表 UI 线程退出战斗：它只是把这段工作挂起，等 RenderThread 把 RenderNode 树同步完再继续。整个交接只靠一个互斥量和一个条件变量完成，没有任何数据拷贝，也没有任何跨进程调用。",
+  "callchain": [
+    "ThreadedRenderer.draw()",
+    "ViewRootImpl.getUpdatedFrameInfo()",
+    "HardwareRenderer.syncAndDrawFrame()",
+    "android_view_ThreadedRenderer_syncAndDrawFrame()",
+    "RenderProxy::syncAndDrawFrame()",
+    "DrawFrameTask::drawFrame()",
+    "DrawFrameTask::postAndWait()",
+    "RenderThread::queue().post()",
+    "DrawFrameTask::run()"
+  ],
+  "sections": [
+    {
+      "heading": "交棒前的最后一件事：合并出 14 项 FrameInfo",
+      "html": "<p><code>ThreadedRenderer.draw</code>（827-859）在 <code>updateRootDisplayList</code> 之后调 <code>attachInfo.mViewRootImpl.getUpdatedFrameInfo()</code>（846）。<code>getUpdatedFrameInfo</code>（ViewRootImpl.java:723-732）做的是“合并”：</p><blockquote><code>FrameInfo frameInfo = mChoreographer.mFrameInfo;</code><br/><code>mViewFrameInfo.populateFrameInfo(frameInfo);</code><br/><code>mViewFrameInfo.reset();</code></blockquote><p>Choreographer 已经填好了 vsync 相关槽位（<code>FRAME_TIMELINE_VSYNC_ID</code>、<code>INTENDED_VSYNC</code>、<code>VSYNC</code>、<code>FRAME_DEADLINE</code>、<code>FRAME_START_TIME</code>、<code>FRAME_INTERVAL</code>、<code>ANIMATION_TIME</code> 等，见 FrameInfo.setVsync 111-119），而 <code>ViewFrameInfo.populateFrameInfo</code>（ViewFrameInfo.java:45-49）只补三样：<code>FLAGS</code>、<code>DRAW_START</code>、<code>INPUT_EVENT_ID</code>，随后 <code>reset()</code> 清空避免污染下一帧。</p><p>整个数组长度是 14：<code>public long[] frameInfo = new long[FRAME_INFO_SIZE]</code>（FrameInfo.java:44），而 <code>FRAME_INFO_SIZE = ANIMATION_TIME + 1 = 14</code>（:104-106）。这 14 个槽按固定顺序排列（FLAGS=0 … ANIMATION_TIME=13），是一个<strong>为快速过 JNI 而设计的预打包格式</strong>，注释里明确要求与 native 的 FrameInfo.h 保持同步。</p>"
+    },
+    {
+      "heading": "JNI 这一跳：一次同步调用把数组拷进 native",
+      "html": "<p><code>HardwareRenderer.syncAndDrawFrame</code>（HardwareRenderer.java:595-597）只有一行：<code>return nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length);</code>——把 <code>long[]</code> 直接交给 native，不复制成对象、不装箱。</p><p>native 侧 <code>android_view_ThreadedRenderer_syncAndDrawFrame</code>（android_graphics_HardwareRenderer.cpp:464-473）先做长度断言：<code>LOG_ALWAYS_FATAL_IF(frameInfoSize != UI_THREAD_FRAME_INFO_SIZE, ...)</code>（467-469），其中 <code>UI_THREAD_FRAME_INFO_SIZE = 14</code>（base/libs/hwui/FrameInfo.h:34）。断言通过后用 <code>env-&gt;GetLongArrayRegion(frameInfo, 0, frameInfoSize, proxy-&gt;frameInfo())</code> 把 Java 数组<strong>逐字节拷进</strong> <code>RenderProxy</code> 持有的 <code>mDrawFrameTask.mFrameInfo</code>（<code>int64_t mFrameInfo[UI_THREAD_FRAME_INFO_SIZE]</code>，DrawFrameTask.h:127），最后 <code>return proxy-&gt;syncAndDrawFrame();</code>。</p><p>注意这是一次<strong>同步 JNI 调用</strong>：UI 线程进入 native、发起 RT 任务、等待、拿到 <code>SyncResult</code> 再返回 Java。Java 与 native 之间没有跨进程，只有进程内的线程切换（UI 线程 ↔ RenderThread）。</p>"
+    },
+    {
+      "heading": "postAndWait：UI 线程在这里真正被挂起",
+      "html": "<p><code>RenderProxy::syncAndDrawFrame</code>（RenderProxy.cpp:237-239）只转一手：<code>return mDrawFrameTask.drawFrame();</code>。<code>DrawFrameTask::drawFrame</code>（DrawFrameTask.cpp:72-80）做三件事：把 <code>mSyncResult</code> 重置为 <code>SyncResult::OK</code>；记 <code>mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC)</code>（76）；调 <code>postAndWait()</code>。</p><p><code>postAndWait</code>（82-87）就是交棒点：</p><blockquote><code>AutoMutex _lock(mLock);</code><br/><code>mRenderThread-&gt;queue().post([this]() { run(); });</code><br/><code>mSignal.wait(mLock);</code></blockquote><p>先把 <code>run()</code> 投进 RenderThread 的 <code>TaskQueue</code>，再在条件变量 <code>mSignal</code> 上等待。此时 UI 线程的状态是“已把工作交出去、但还不能继续做下一帧的 traversal”，直到 RT 侧的 <code>run()</code> 调 <code>unblockUiThread()</code>（DrawFrameTask.cpp:219-222）<code>mSignal.signal()</code> 才被唤醒。是否提前放行取决于 syncFrameState 是否需要 UI 线程配合（后面 RT 专题展开）。</p>"
+    },
+    {
+      "heading": "边界：UI 阻塞窗口里 RT 在做什么",
+      "html": "<p>post 之后、<code>run()</code> 真正执行之前，任务只是躺在 <code>TaskQueue</code> 里，RT 可能正在处理上一帧的绘制或动画。这段排队时间是可观测的：<code>run()</code> 的第一件事就是 <code>mContext-&gt;setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued)</code>（93），也就是“从 UI 交棒到 RT 开始同步”的延迟，随后会被记进 FrameInfo 的 <code>SyncQueued</code>→<code>SyncStart</code> 区间。</p><p>因此“UI 线程在 postAndWait 阻塞”并不等于“RT 正在为这帧干活”：</p><ul><li>RT 空闲：阻塞时间 ≈ syncFrameState（prepareTree）时长。</li><li>RT 正在画上一帧：阻塞时间 = 上一帧剩余工作 + 本帧 prepareTree，这就是经典的“UI 被 RT 拖住”。</li><li>RT 侧发现 surface 丢了/不能画：<code>syncResult</code> 里带 <code>SYNC_LOST_SURFACE_REWARD_IF_FOUND</code>，UI 侧会强制下一次 relayout（ThreadedRenderer.java:849-855）。</li></ul><p>本阶段的边界就到 <code>mSignal.wait()</code> 为止：之后发生的一切（syncFrameState、prepareTree、Skia 提交、BLAST queueBuffer）都不在 UI 线程。</p><p>换句话说，UI 线程在这一刻之后就只能等：它能观测到的只有返回值与两个时间戳（交棒时刻、被唤醒时刻）。任何“顺手再做点事”的优化念头都必须放到交棒之前实现，一旦进入 <code>mSignal.wait()</code>，UI 侧已无牌可打。这也是为什么所有 UI 线程优化最终都落在减少 invalidate、简化 View 树、收敛 measure/layout 这三件事上。</p>"
+    },
+    {
+      "heading": "返回值：SyncResult 位掩码如何影响下一帧",
+      "html": "<p><code>DrawFrameTask::drawFrame</code> 返回 <code>mSyncResult</code>，它在 <code>syncFrameState</code> 里被置位（RT 侧）。ThreadedRenderer.draw 只关心两个位：</p><ul><li><code>SYNC_LOST_SURFACE_REWARD_IF_FOUND</code>：surface 丢了，于是 <code>mForceNextWindowRelayout = true</code> 并 <code>requestLayout()</code>（849-855），下一帧会重新 relayout 拿新 SurfaceControl。</li><li><code>SYNC_REDRAW_REQUESTED</code>：RT 需要再画一帧，于是 <code>mViewRootImpl.invalidate()</code>（856-858）。</li></ul><p>此外 RT 侧还可能带 <code>SYNC_FRAME_DROPPED</code>、<code>SYNC_CONTEXT_IS_STOPPED</code>、<code>SYNC_REDRAW_REQUESTED</code> 等位，它们通过 <code>mSyncResult</code> 一次性回传，避免多次跨线程往返。这个设计让 UI 线程只需要一次阻塞就能拿到“这一帧到底怎么了”的全部结论。</p>"
+    },
+    {
+      "heading": "deadline：交棒晚了会怎样",
+      "html": "<p>从 Choreographer 分配 vsync 到 UI 完成 traversal 有明确预算（<code>FrameInfo[FRAME_DEADLINE]</code>）。本阶段处在预算末端：measure、layout、draw 录制都已完成，剩下的是把树同步给 RT 并让 RT 产出 buffer。如果 <code>mSignal.wait</code> 太长，RT 拿到树的时刻就已接近 deadline，绘制与提交必然赶不上这个 vsync——FrameTimeline 上表现为 <code>SyncStart</code> 偏晚、<code>FrameCompleted</code> 超过 <code>FrameDeadline</code>。</p><p>反过来说，<strong>UI 线程这一端唯一能优化的是减少交棒前后自身的工作</strong>（录制量、无效 invalidate、冗余 traversal）；一旦进入 <code>mSignal.wait</code>，UI 线程本身已经没有可优化项，只能靠缩短 RT 的 <code>syncFrameState</code> 或降低 RT 队列排队。</p>"
+    },
+    {
+      "heading": "排障：交棒阶段的观测与常见误解",
+      "html": "<ul><li><strong>看 UI 阻塞时长</strong>：perfetto 上 UI 线程在 <code>nSyncAndDrawFrame</code>/<code>postAndWait</code> 的原地等待（jstack 里是 <code>DrawFrameTask.postAndWait</code> 的 wait），与 RT 侧 <code>DrawFrames &lt;vsyncId&gt;</code> slice 的起点对齐即可算出排队延迟。</li><li><strong>看排队延迟</strong>：<code>setSyncDelayDuration(systemTime - mSyncQueued)</code>（93）会进入 FrameInfo 的 <code>SyncQueued</code>→<code>SyncStart</code>，dumpsys gfxinfo / FrameTimeline 可见。</li><li><strong>看长度断言</strong>：JNI 里 <code>UI_THREAD_FRAME_INFO_SIZE</code> 不匹配是 <code>LOG_ALWAYS_FATAL</code>，Java 侧 <code>FrameInfo</code> 与 native <code>FrameInfo.h</code> 不同步会直接 crash 而不是 jank。</li><li><strong>误解一</strong>：<code>syncAndDrawFrame</code> 返回就代表帧画完了——不是，它只代表树同步与任务提交阶段告一段落，buffer 是否产出要看 RT 侧结果。</li><li><strong>误解二</strong>：UI 线程阻塞是 RT 慢——也可能只是 RT 队列里还有上一帧；两者在 trace 上是不同区间。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ThreadedRenderer.java",
+      "symbol": "ThreadedRenderer::draw",
+      "lines": "827-859",
+      "code": "    void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks) {\n        attachInfo.mViewRootImpl.mViewFrameInfo.markDrawStart();\n\n        updateRootDisplayList(view, callbacks);\n\n        // register animating rendernodes which started animating prior to renderer\n        // creation, which is typical for animators started prior to first draw\n        if (attachInfo.mPendingAnimatingRenderNodes != null) {\n            final int count = attachInfo.mPendingAnimatingRenderNodes.size();\n            for (int i = 0; i < count; i++) {\n                registerAnimatingRenderNode(\n                        attachInfo.mPendingAnimatingRenderNodes.get(i));\n            }\n            attachInfo.mPendingAnimatingRenderNodes.clear();\n            // We don't need this anymore as subsequent calls to\n            // ViewRootImpl#attachRenderNodeAnimator will go directly to us.\n            attachInfo.mPendingAnimatingRenderNodes = null;\n        }\n\n        final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();\n\n        int syncResult = syncAndDrawFrame(frameInfo);\n        if ((syncResult & SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {\n            Log.w(\"HWUI\", \"Surface lost, forcing relayout\");\n            // We lost our surface. For a relayout next frame which should give us a new\n            // surface from WindowManager, which hopefully will work.\n            attachInfo.mViewRootImpl.mForceNextWindowRelayout = true;\n            attachInfo.mViewRootImpl.requestLayout();\n        }\n        if ((syncResult & SYNC_REDRAW_REQUESTED) != 0) {\n            attachInfo.mViewRootImpl.invalidate();\n        }\n    }",
+      "note": "交棒前的主流程：markDrawStart → updateRootDisplayList（录制）→ 注册动画节点 → getUpdatedFrameInfo（合并 14 项）→ syncAndDrawFrame，并按返回的 SyncResult 决定强制 relayout 或 invalidate。"
+    },
+    {
+      "file": "base/graphics/java/android/graphics/HardwareRenderer.java",
+      "symbol": "HardwareRenderer::syncAndDrawFrame",
+      "lines": "590-600",
+      "code": "     * Syncs the RenderNode tree to the render thread and requests a frame to be drawn.\n     *\n     * @hide\n     */\n    @SyncAndDrawResult\n    public int syncAndDrawFrame(@NonNull FrameInfo frameInfo) {\n        return nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length);\n    }\n\n    /**\n     * Suspends any current rendering into the surface but do not do any destruction. This",
+      "note": "Java 侧最后一行桥接：把 long[] frameInfo 与长度直接交给 JNI nSyncAndDrawFrame，没有任何对象分配或拷贝。"
+    },
+    {
+      "file": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp",
+      "symbol": "android_view_ThreadedRenderer_syncAndDrawFrame",
+      "lines": "464-473",
+      "code": "static int android_view_ThreadedRenderer_syncAndDrawFrame(JNIEnv* env, jobject clazz,\n                                                          jlong proxyPtr, jlongArray frameInfo,\n                                                          jint frameInfoSize) {\n    LOG_ALWAYS_FATAL_IF(frameInfoSize != UI_THREAD_FRAME_INFO_SIZE,\n                        \"Mismatched size expectations, given %d expected %zu\", frameInfoSize,\n                        UI_THREAD_FRAME_INFO_SIZE);\n    RenderProxy* proxy = reinterpret_cast<RenderProxy*>(proxyPtr);\n    env->GetLongArrayRegion(frameInfo, 0, frameInfoSize, proxy->frameInfo());\n    return proxy->syncAndDrawFrame();\n}",
+      "note": "native 入口：断言长度等于 UI_THREAD_FRAME_INFO_SIZE（14），用 GetLongArrayRegion 把 Java 数组拷进 RenderProxy 的 mFrameInfo，再转调 RenderProxy::syncAndDrawFrame。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "DrawFrameTask::drawFrame",
+      "lines": "72-87",
+      "code": "int DrawFrameTask::drawFrame() {\n    LOG_ALWAYS_FATAL_IF(!mContext, \"Cannot drawFrame with no CanvasContext!\");\n\n    mSyncResult = SyncResult::OK;\n    mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);\n    postAndWait();\n\n    return mSyncResult;\n}\n\nvoid DrawFrameTask::postAndWait() {\n    ATRACE_CALL();\n    AutoMutex _lock(mLock);\n    mRenderThread->queue().post([this]() { run(); });\n    mSignal.wait(mLock);\n}",
+      "note": "交棒点本身：记录 mSyncQueued、把 run() post 到 RenderThread 的任务队列，然后在 mSignal 上阻塞——UI 线程在这里停下，直到 RT 侧唤醒。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "FrameInfo.frameInfo",
+      "type": "long[14]",
+      "desc": "预打包的帧信息数组（FrameInfo.java:44），下标 0..13 对应 FLAGS/FRAME_TIMELINE_VSYNC_ID/INTENDED_VSYNC/VSYNC/INPUT_EVENT_ID/HANDLE_INPUT_START/ANIMATION_START/PERFORM_TRAVERSALS_START/DRAW_START/FRAME_DEADLINE/FRAME_START_TIME/FRAME_INTERVAL/WORKLOAD_TARGET/ANIMATION_TIME。"
+    },
+    {
+      "name": "UI_THREAD_FRAME_INFO_SIZE",
+      "type": "static constexpr size_t = 14",
+      "desc": "base/libs/hwui/FrameInfo.h:34。JNI 用它做长度断言（android_graphics_HardwareRenderer.cpp:467-469），与 Java 侧 FRAME_INFO_SIZE 必须一致，否则 LOG_ALWAYS_FATAL。"
+    },
+    {
+      "name": "mNativeProxy",
+      "type": "long（Java 侧持有）",
+      "desc": "HardwareRenderer 里保存的 native RenderProxy 指针（jlong）。JNI 侧 reinterpret_cast 回 RenderProxy*（470），是 Java 与 hwui 之间的唯一句柄。"
+    },
+    {
+      "name": "RenderProxy::mDrawFrameTask",
+      "type": "DrawFrameTask",
+      "desc": "RenderProxy 内嵌的 DrawFrameTask（RenderProxy.cpp:237-239 转发），持有 mFrameInfo、mSyncResult、mSyncQueued、mLock/mSignal 以及待应用的 layer 更新列表。"
+    },
+    {
+      "name": "DrawFrameTask::mSyncResult / mSyncQueued",
+      "type": "int / nsecs_t",
+      "desc": "mSyncResult 是 SyncResult 位掩码（OK/LostSurfaceRewardIfFound/ContextIsStopped/UIRedrawRequired/FrameDropped），mSyncQueued 记录交棒时刻（72-76），用于计算 RT 排队延迟。"
+    },
+    {
+      "name": "mLock / mSignal",
+      "type": "Mutex / Condition",
+      "desc": "DrawFrameTask 的等待原语：post 后 mSignal.wait(mLock)（86），RT 侧 unblockUiThread() 里 mSignal.signal()（219-222）。这是 UI 与 RT 之间唯一的同步点。"
+    },
+    {
+      "name": "mChoreographer.mFrameInfo",
+      "type": "FrameInfo",
+      "desc": "线程级（Choreographer 是线程本地单例）共享的帧信息对象；多个 ViewRootImpl 共用，getUpdatedFrameInfo 负责把 per-VRI 的信息合并进去（ViewRootImpl.java:723-732）。"
+    },
+    {
+      "name": "ViewFrameInfo",
+      "type": "flags/drawStart/mInputEventId",
+      "desc": "ViewRootImpl 侧的增量信息（ViewFrameInfo.java:45-49）：FLAGS、DRAW_START、INPUT_EVENT_ID；populateFrameInfo 之后立刻 reset，避免下一帧重复。 "
+    },
+    {
+      "name": "SYNC_LOST_SURFACE_REWARD_IF_FOUND / SYNC_REDRAW_REQUESTED",
+      "type": "int 位掩码",
+      "desc": "ThreadedRenderer.draw 唯二解析的位（ThreadedRenderer.java:849-858）：前者触发强制 relayout，后者触发 invalidate 再画一帧。"
+    },
+    {
+      "name": "RenderThread::queue()",
+      "type": "TaskQueue",
+      "desc": "RenderThread 的任务队列；postAndWait 通过 queue().post([this]{run();}) 投递（DrawFrameTask.cpp:85）。队列里可能还有上一帧的任务，这就是 mSyncDelayDuration 的来源。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "ATRACE_FORMAT（base/libs/hwui/renderthread/DrawFrameTask.cpp:91）",
+      "desc": "RT 侧 run() 的最外层 slice；它开始的时间减去 UI 交棒时间就是排队延迟。"
+    },
+    {
+      "name": "Record View#draw()",
+      "value": "Trace section（ThreadedRenderer.java:731）",
+      "desc": "交棒前最后的录制阶段；它结束后才进入 syncAndDrawFrame。"
+    },
+    {
+      "name": "SyncQueued → SyncStart",
+      "value": "FrameInfoIndex（native 侧记录，来源 setSyncDelayDuration）",
+      "desc": "UI 交棒到 RT 开始同步的间隔，直接量化“UI 被 RT 队列拖住”的程度。"
+    },
+    {
+      "name": "UI 线程 postAndWait 等待时长",
+      "value": "perfetto 上 UI 线程的 blocking 段",
+      "desc": "等于 syncFrameState 时长 + RT 排队；与 RT 的 prepareTree slice 对照可拆出两部分。"
+    },
+    {
+      "name": "SyncResult 位",
+      "value": "DrawFrameTask::drawFrame 返回值（72-79）",
+      "desc": "SYNC_LOST_SURFACE_REWARD_IF_FOUND / SYNC_REDRAW_REQUESTED 等会改变下一帧行为，日志与 trace 上可对应到强制 relayout 或 invalidate。"
+    }
+  ],
+  "traceTags": [
+    "Record View#draw()",
+    "DrawFrames <vsyncId>",
+    "prepareTree",
+    "Drawing <dirty rect>",
+    "draw-<windowTag>"
+  ],
+  "pitfalls": [
+    "FrameInfo 是 14 项（FRAME_INFO_SIZE = ANIMATION_TIME + 1，FrameInfo.java:104-106），且顺序固定；Java 与 native FrameInfo.h 不同步会触发 JNI 里的 LOG_ALWAYS_FATAL，表现为直接 crash 而不是掉帧。",
+    "syncAndDrawFrame 返回不代表这一帧已经画出来：它只覆盖“树同步 + 任务提交”阶段，buffer 是否产出、是否上屏要看 RT 与 SF 侧结果。",
+    "UI 线程在 postAndWait 阻塞的时长 = RT 排队时间 + syncFrameState 时间；把整段都算成“RT 绘制慢”会误判，需要结合 DrawFrames slice 的起点与 setSyncDelayDuration 区分。",
+    "mSignal 是唯一同步点：RT 侧 unblockUiThread() 可以在 syncFrameState 中间提前放行 UI（当它不需要 UI 侧信息时），所以“UI 阻塞到帧画完”并不是必然，具体时机在 RT 侧决定。",
+    "getUpdatedFrameInfo 操作的是 Choreographer 的线程本地 mFrameInfo（ViewRootImpl.java:727），多个 ViewRootImpl 共用同一对象；populate 后必须 reset，否则 DRAW_START/FLAGS 会串到下一个窗口的帧里。",
+    "nSyncAndDrawFrame 是同步 JNI：它内部会阻塞到 RT 把树同步完，因此它出现在 UI 线程的 native 帧里；在 perfetto 里表现为 UI 线程停在 native，而不是 Java 的某一行。"
+  ],
+  "next": "stage-09"
+}

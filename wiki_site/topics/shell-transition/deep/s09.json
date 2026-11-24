@@ -1,0 +1,95 @@
+{
+  "step": "s09",
+  "title": "选择 handler 并决定是否合并",
+  "tldr": "从优先级最高的 handler 往下问「这个转场你接不接」，第一个给出非 null 结果的赢，并带回它的 WCT。",
+  "why": "没有这个认领环节，一个转场只能有写死的播放器。用户能看到的差别：从桌面点图标展开应用时，本该由 Launcher 的 RemoteTransition 从图标位置放大，结果被 Shell 内置的默认缩放顶掉，变成从屏幕中心淡入；分屏、PiP、键锁这类混合转场也因为找不到能同时接管两段动画的 handler，导致两段各播各的、中间黑一帧。认领还决定「谁负责最后调 finish」——没人认领时，play 阶段必须有兜底，否则转场永远收不了尾。",
+  "concepts": [
+    {
+      "term": "RequestResult",
+      "text": "handleRequestOnly 的返回值：一个 WCT、认领的 handler、感兴趣的 planner。"
+    },
+    {
+      "term": "handleRequestOnly",
+      "text": "request 阶段专用的轻量回调，只回答「接不接、要不要预置窗口操作」，不允许在这里启动动画。"
+    },
+    {
+      "term": "mHandlers 的优先级",
+      "text": "列表末尾优先级最高，dispatchRequest 从后往前问；index 0 是默认兜底。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "public RequestResult dispatchRequest(",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1147",
+      "what": "唯一认领入口，被 requestStartTransition 与 mixpatcher 共用，规则一致。"
+    },
+    {
+      "call": "for (int i = mHandlers.size() - 1; i >= 0; --i)",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1150",
+      "what": "倒序遍历：后注册的优先，默认 handler 留在 index 0 最后被问。"
+    },
+    {
+      "call": "RequestResult result = mHandlers.get(i).handleRequestOnly(transition, request)",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1152",
+      "what": "把请求交给 handler 自己判断；默认实现会退化成调旧的 handleRequest。"
+    },
+    {
+      "call": "if (result != null) {",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1153",
+      "what": "第一个非 null 就返回，后面的 handler 连被问的机会都没有——认领是排他的。"
+    },
+    {
+      "call": "if (remote == null) return null;",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java:343",
+      "what": "只有 WMS 在 request 里明确带了外部 remote（Launcher/Recents）它才认领。"
+    },
+    {
+      "call": "return new WindowContainerTransaction();",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java:347",
+      "what": "认领信号是一个空 WCT：非 null 表示「我接了」，内容为空表示不需要预置窗口操作。"
+    },
+    {
+      "call": "return null;",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1157",
+      "what": "没人认领：active.mHandler 保持 null，等到 play 阶段再全量轮询（第 27、28 步）。"
+    },
+    {
+      "call": "public WindowContainerTransaction handleRequest(",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:988",
+      "what": "默认 handler 在 request 阶段永远返回 null，只在 play 阶段接。"
+    }
+  ],
+  "state": [
+    {
+      "field": "ActiveTransition.mHandler",
+      "before": "null",
+      "after": "RemoteTransitionHandler（仅当 request 带 remote）",
+      "note": "普通 Activity 转场仍为 null，属正常"
+    },
+    {
+      "field": "RemoteTransitionHandler.mRequestedRemotes",
+      "before": "无该 token",
+      "after": "token → RemoteTransition",
+      "note": "play 阶段靠这个映射找回 remote，认领和播放靠它串起来"
+    },
+    {
+      "field": "交给 WMS 的 WCT",
+      "before": "空 WindowContainerTransaction（认领时返回）",
+      "after": "null（Transitions.java:1418 把空 WCT 降成 null）",
+      "note": "所以 WMS 侧 startTransition 收到 t == null 是常态"
+    }
+  ],
+  "threads": "在 wmshell.main 上执行（由 requestStartTransition 的 mMainExecutor.execute 进来），只在 Shell 进程内遍历列表，没有跨进程调用。",
+  "pitfalls": [
+    "返回空 WCT 不等于没认领：RemoteTransitionHandler 认领时返回的是 new WindowContainerTransaction()，用 isEmpty() 判断会漏掉；判据只能是 != null。",
+    "标题里的「决定是否合并」并不在这里发生。request 阶段只认领；真正的 merge 在 onTransitionReady / onMerged（第 24 步），那时才有 finishT 合并。",
+    "DefaultTransitionHandler.handleRequest 永远返回 null（988-991 行），所以普通启动转场走完 dispatchRequest 拿到 null 是预期行为，不是 handler 注册丢了。",
+    "skip 参数（1149 行）是给 play 阶段重试用的：已经试过的 handler 会被跳过，request 阶段固定传 null；自己调 dispatchRequest 时别漏传。"
+  ],
+  "debug": [
+    "adb shell dumpsys activity service SystemUIService WMShell transitions：dump 里 \"Handlers (ordered by priority)\" 给出真实顺序，Pending Transitions 的 handler= 显示谁认领了",
+    "perfetto：dispatchRequestWithTracing 会打 \"dispatchRequest: <type>\" 切片和 \"<Handler>#handleRequest handled <type>\" 的 instant 事件（Transitions.java:1129-1136）",
+    "adb shell wm logging enable-text WM_SHELL_TRANSITIONS 看 \"Transition (#%d): request handled by %s\""
+  ],
+  "next": "认领完了，Shell 要把结果和预置 WCT 交回 WMS → 第 14 步「Shell 回调 startTransition，事务落到 WMS」。"
+}

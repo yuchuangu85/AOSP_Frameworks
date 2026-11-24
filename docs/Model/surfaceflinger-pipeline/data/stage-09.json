@@ -1,0 +1,178 @@
+{
+  "id": "stage-09",
+  "num": 9,
+  "title": "回调、buffer 回收与 jank 闭环",
+  "subtitle": "release fence 从 SF 走两条路回到生产者，buffer 回流唤醒 dequeue；jank 分类在 FrameTimeline 里结算并分发给监听者",
+  "lane": "SF",
+  "durationHint": "量级：亚毫秒~数毫秒（release 回调本身很轻，抖动来自 SF 与 app 的调度）",
+  "summary": "本阶段把前面所有 fence 收口。SF 侧在 onCompositionPresented 末尾对 mLayersWithQueuedFrames 逐个 Layer::onCompositionPresented + releasePendingBuffer（SurfaceFlinger.cpp:3868-3873），后者把 callbackHandles 填好 bufferReleaseChannel、transformHint、dequeueReadyTime、currentMaxAcquiredBufferCount 后交给 TransactionCallbackInvoker；TransactionCallbackInvoker::sendCallbacks 把这些 fence 写进 BufferReleaseChannel，并调 ITransactionCompletedListener::onTransactionCompleted 把 presentFence 与 previousReleaseFence 发回应用进程。另一条更直接的路径是 Layer::callReleaseBufferCallback（Layer.cpp:711）：它既 listener->onReleaseBuffer（binder）又 mBufferReleaseChannel->writeReleaseFence（fd 通道），两条路都通向 app。应用侧 BLASTBufferQueue 的 dequeue 会阻塞在 waitForBufferRelease（BLASTBufferQueue.cpp:1302），读到 release 后调 releaseBufferCallback，再把 buffer 真正还给 BufferQueue：BufferQueueConsumer::releaseBuffer（BufferQueueConsumer.cpp:509）把 slot 从 acquired 变 free、塞回 mFreeBuffers、notifyBufferReleased()，最终 onBufferReleased() 唤醒生产者的 dequeue。同一拍里 FrameTimeline 的 SurfaceFrame::onPresent（FrameTimeline.cpp:1052）完成 jank 分类与打分并通过 JankTracker::onJankData 分发给注册了 frametimeline 监听的应用。回看整条链：present fence 决定“何时上屏”，release fence 决定“何时能画下一帧”，而 jank 分类是把两者与预期时间线比较后的结论——三者都必须在同一套 frameNumber/vsyncId 语义下才能对上。",
+  "callchain": [
+    "SurfaceFlinger::onCompositionPresented()",
+    "Layer::releasePendingBuffer()",
+    "TransactionCallbackInvoker::addCallbackHandles()",
+    "TransactionCallbackInvoker::sendCallbacks()",
+    "Layer::callReleaseBufferCallback()",
+    "ITransactionCompletedListener::onReleaseBuffer()",
+    "BufferReleaseChannel::writeReleaseFence()",
+    "BLASTBufferQueue::waitForBufferRelease()",
+    "BLASTBufferQueue::releaseBufferCallback()",
+    "BufferQueueConsumer::releaseBuffer()",
+    "BufferQueueConsumer::onBufferReleased()",
+    "BufferQueueProducer::waitForBufferRelease()",
+    "FrameTimeline::SurfaceFrame::onPresent()",
+    "JankTracker::onJankData()"
+  ],
+  "sections": [
+    {
+      "heading": "一、release 的两条路：binder 回调与 fd 通道",
+      "html": "<p><code>Layer::callReleaseBufferCallback()</code>（<code>Layer.cpp:711</code>）是 SF 通知客户端“某块 buffer 可以还了”的唯一出口，但它内部有两条并行的路径：<code>listener-&gt;onReleaseBuffer(callbackId, fence, currentMaxAcquiredBufferCount, false)</code>（<code>Layer.cpp:731-733</code>）走 <code>ITransactionCompletedListener</code> binder；<code>mBufferReleaseChannel-&gt;writeReleaseFence(callbackId, fence, currentMaxAcquiredBufferCount)</code>（<code>Layer.cpp:738-739</code>）走共享内存/fd 通道。</p><p>为什么两条都要走：前者兼容旧客户端（app 的 <code>TransactionCompletedListener::onReleaseBuffer</code> 直接回调 Java/Kotlin 层），后者是 BLAST 时代为降低 binder 压力新增的通道，BLAST 在 <code>dequeue</code> 里直接 epoll 读它，不必等 binder 线程。任何只观察其中一条的排障都会漏掉另一半。</p><p>进入函数先做两个短路：<code>if (!listener &amp;&amp; !mBufferReleaseChannel) return;</code>（<code>Layer.cpp:714-716</code>），说明没有注册监听也没有通道时静默返回；<code>releaseFence</code> 为空时用 <code>Fence::NO_FENCE</code>（<code>Layer.cpp:721</code>）。随后用 <code>ReleaseCallbackId{buffer-&gt;getId(), framenumber}</code> 组装回调标识，并从 SF 拿 <code>currentMaxAcquiredBufferCount = mFlinger-&gt;getMaxAcquiredBufferCountForCurrentRefreshRate(mOwnerUid)</code>（<code>Layer.cpp:722-723</code>，实现于 <code>SurfaceFlinger.cpp:9338</code>）。</p><p>这个 count 是 BLAST 侧决定“扣住几块 buffer 再还”的输入：SF 在低刷新率时会调低它，让 BLAST 多扣几块以避免延迟上升。也就是说 release 的节奏不是恒定的，会随刷新率与 ownerUid 的策略变化。</p><p>两个通道的失败模式也不同：binder 路径受 app 的 Binder 线程池与回调执行时长影响，channel 路径受 SELinux（fd 传递）与 epoll 唤醒影响。SF 侧 <code>writeReleaseFence</code> 失败只打 <code>ALOGD</code>（<code>Layer.cpp:742-756</code>），不会重试，因此 channel 一旦失效，只能靠 binder 路径兜底。</p>"
+    },
+    {
+      "heading": "二、从 present 到 release：谁在什么时机调用它",
+      "html": "<p>调用点有三类。第一类是 <code>Layer::onCompositionPresented()</code> 之后紧跟着的 <code>Layer::releasePendingBuffer()</code>（<code>Layer.cpp:814</code>）：它把 <code>mDrawingState.callbackHandles</code> 补上 <code>bufferReleaseChannel</code>、<code>transformHint</code>、<code>cornerRadii</code>、<code>dequeueReadyTime</code>、<code>currentMaxAcquiredBufferCount</code>（<code>Layer.cpp:815-822</code>），然后 <code>mFlinger-&gt;getTransactionCallbackInvoker().addCallbackHandles(...)</code> 并清空（<code>Layer.cpp:833-836</code>）。</p><p>第二类是 buffer 被提前替换或 layer 销毁：<code>Layer::releasePreviousBuffer()</code> 在新 buffer 到来但旧 buffer 还没 presented 时直接 <code>callReleaseBufferCallback</code>（<code>Layer.cpp:862-874</code>），<code>Layer::~Layer()</code> 里也会调一次（<code>Layer.cpp:172-176</code>）——注释说明析构时收到 <code>EPIPE</code>/<code>ECONNRESET</code> 是预期行为，不要当错误报警。</p><p>第三类是异步截图/WebView 等旁路（<code>SurfaceFlinger.cpp:8344</code> 的 <code>attachReleaseFenceFutureToLayer</code>、<code>MergeableHierarchy.cpp:110</code>），它们用 <code>prepareReleaseCallbacks(ftl::Future&lt;FenceResult&gt;, layerStack)</code> 把未来才产生的 fence 先登记到 <code>CallbackHandle</code>，等 fence 就绪再回填。</p><p>真正写回应用的时机在 <code>TransactionCallbackInvoker::sendCallbacks()</code>：它先把 <code>mBufferReleases</code> 里的 fence 写入各自的 <code>BufferReleaseChannel</code>（<code>TransactionCallbackInvoker.cpp:158-170</code>），再按 ON_COMMIT / ON_COMPLETE 分发事务回调；<code>ON_COMPLETE</code> 分支里若 <code>surfaceStats.previousReleaseCallbackId</code> 有效，还会顺手把客户端的 release 回调在同一轮 IPC 里执行掉。</p><p><code>releasePendingBuffer</code> 之所以把 <code>dequeueReadyTime</code> 一起填进 handle，是因为应用侧要用它计算“这块 buffer 从 dequeue 到可再次 dequeue”的真实周期（BLAST 的 <code>dequeueTime</code> 会随 <code>setBuffer</code> 进 Transaction，最终出现在 SF 的 <code>SurfaceControlStats</code> 统计里）。</p>"
+    },
+    {
+      "heading": "三、应用侧：dequeue 阻塞如何被 release 唤醒",
+      "html": "<p>BLAST 的 BufferQueue 在应用进程内，dequeue 找不到 free slot 时会进 <code>BBQBufferQueueProducer::waitForBufferRelease()</code>（<code>BLASTBufferQueue.cpp:1302</code>）：它先 <code>mBufferReleaseReader-&gt;clearInterrupts()</code>，再 <code>UnlockGuard</code> 释放 BufferQueue 锁，然后才 <code>readBlocking()</code> 等 release channel 的数据——这个“先清中断再解锁”的顺序是关键，否则会漏掉解锁瞬间到达的 release。</p><p>读到 release 后它调 <code>bbq-&gt;releaseBufferCallback(id, fence, maxAcquiredBufferCount)</code>，再调 <code>getWaitForBufferReleaseCallback()</code> 把本次阻塞时长报给 Choreographer（用于 buffer stuffing 恢复，见 RT 文档 stage-07/09 的 <code>onWaitForBufferRelease</code>），最后返回 OK 让 BufferQueueProducer 重新检查 free slot。</p><p>真正把 slot 变 free 的是 <code>BufferQueueConsumer::releaseBuffer()</code>（<code>BufferQueueConsumer.cpp:509</code>）：校验 slot 仍在 acquired 状态、<code>mSlots[slot].mFence = releaseFence</code>、<code>mBufferState.release()</code>，把 slot 从 <code>mActiveBuffers</code> 移到 <code>mFreeBuffers</code>，然后 <code>mCore-&gt;notifyBufferReleased()</code> 在锁内唤醒等锁者；<code>listener-&gt;onBufferReleased()</code> 特意放在解锁之后调用，避免生产者回调进来再次加锁造成死锁（<code>BufferQueueConsumer.cpp:587-589</code>）。</p><p>所以一次完整的“buffer 回流”是：SF present → release fence → callReleaseBufferCallback → (binder / channel) → BLAST waitForBufferRelease → releaseBufferCallback → BufferQueueConsumer::releaseBuffer → onBufferReleased → BufferQueueProducer 的 dequeue 返回。任何一环慢，都会表现为应用侧 dequeue 变长、甚至 <code>SkippedFrameReason::NoBuffer</code>。</p><p>还有一处容易忽略的顺序：<code>notifyBufferReleased()</code> 在 BufferQueue 锁内唤醒等锁者，而 <code>onBufferReleased()</code> 在解锁后调用；如果生产者监听器同步回调进 BufferQueue（比如直接 dequeue），就依赖这个“锁外回调”的约定，否则会自死锁。</p>"
+    },
+    {
+      "heading": "四、jank 闭环：FrameTimeline 分类 + JankTracker 分发",
+      "html": "<p>present 结算后 <code>SurfaceFrame::onPresent()</code>（<code>FrameTimeline.cpp:1052</code>）被调用：它把 <code>mActuals.presentTime</code> 写好，调 <code>classifyJankLocked(...)</code> 得到 jank type 与 deadline/present 偏差，再用 <code>calculateJankSeverity(...)</code> 算出 <code>mJankSeverity</code>/<code>mJankScore</code>，然后 <code>mTimeStats-&gt;incrementJankyFrames(...)</code> 累加到 dumpsys 统计，并组装 <code>gui::JankData</code>（frameVsyncId、jankTypeLegacy/Experimental、presentDelayNs、jankScore、scheduled/actual app frame time）。</p><p>分发只在 <code>mPredictionState != PredictionState::None</code> 时发生（<code>FrameTimeline.cpp:1071-1072</code>）：也就是说没有 vsync prediction 的帧只做统计、不产生 JankData。<code>JankTracker::onJankData()</code>（<code>native/services/surfaceflinger/Jank/JankTracker.cpp:62</code>）在没有注册 listener（<code>sListenerCount == 0</code>）时直接返回，否则通过低优先级 BackgroundExecutor 投递，按 layerId 找到 listener 才入队缓存。</p><p>这条链解释了“FrameTimeline 数据滞后一拍到数拍”的完整原因：SF present → setSfPresent 入队 → 后续某拍 fence signal 后 flushPendingPresentFences 结算 → SurfaceFrame::onPresent 分类 → JankTracker 分发 → 应用侧的 FrameTimeline/JankData 回调。每一段都可能跨一个 vsync。</p><p>注意 SF 侧 jank 的“迟到”不是 bug：<code>finalizeCurrentDisplayFrame()</code> 在 <code>setSfPresent</code> 结尾就把 display frame 封存了，present 时间只能后续补；而 <code>mDisplayFrames</code> 只保留 64 帧（<code>FrameTimeline.h:681</code>），查询太久远的数据本来就查不到。</p><p>jank 分类的输入里 <code>displayFrameJankTypeLegacy</code> 与 <code>Experimental</code> 两套是并存的：<code>classifyJankLocked</code> 用 display frame 的判定结果作为基础，再叠加本 surface frame 自己的 deadline/present 偏差；最终 <code>gui::JankData</code> 同时携带 legacy 与 experimental 两个字段供不同版本的采样工具读取。</p>"
+    },
+    {
+      "heading": "五、观测：三条链各自的入口",
+      "html": "<p>release 链：SF 侧看 <code>callReleaseBufferCallback &lt;layer&gt; - &lt;framenumber&gt;</code> 的 instant slice（<code>Layer.cpp:718</code>）与 <code>releasePendingBuffer &lt;layer&gt; - &lt;framenumber&gt;</code>（<code>Layer.cpp:822</code>）；跨进程看 <code>TransactionCallbackInvoker::sendCallbacks</code>；应用侧看 <code>waitForBufferRelease</code>（<code>BLASTBufferQueue.cpp:1304</code> ATRACE_CALL）与 <code>BufferQueueConsumer::releaseBuffer</code> 的 ATRACE_CALL。</p><p>jank 链：Perfetto 的 FrameTimeline 数据源（expected/actual surface frame）+ <code>SurfaceFlinger::onCompositionPresented</code> 的 SFTRACE；dumpsys 侧用 <code>adb shell dumpsys gfxinfo &lt;pkg&gt; frametimeline</code> 看 jankType 与 presentType，<code>dumpsys SurfaceFlinger</code> 看 janky frames 计数（来自 <code>TimeStats::incrementJankyFrames</code>）。</p><p>buffer 水位链：应用侧看 BLAST 的 <code>PendingRelease</code> counter 与 <code>mQueuedBufferTrace</code>，SF 侧看 <code>Layer::releasePendingBuffer</code> 的调用频率；如果 SF 一直不调 release 而 present 正常，优先怀疑 listener 未注册或 release channel 未建立（SELinux 会拒绝 fd 传递，sf 代码注释里专门提到这一点）。</p><p>若要看“SF 还 buffer 慢”还是“app 收到后没及时 dequeue”，把 SF 的 <code>callReleaseBufferCallback</code> instant、app 的 <code>waitForBufferRelease</code> 切片、以及下一帧 <code>dequeueBuffer</code> 三者按时间对齐即可：前者晚是 SF 问题，中间晚是 channel/binder 问题，最后晚是 app 自己的调度问题。</p>"
+    },
+    {
+      "heading": "六、常见误解",
+      "html": "<p>误解一：release 回调只走 binder。实际上 <code>callReleaseBufferCallback</code> 同时写 channel，BLAST 优先走 channel；只 hook binder 会看到“回调没来”的假象。</p><p>误解二：release fence 一定非空。<code>releaseFence</code> 为空时用 <code>Fence::NO_FENCE</code>，buffer 立即可复用；把它当同步点会误判时序。</p><p>误解三：buffer 释放后应用立刻能 dequeue。BLAST 的 <code>mPendingRelease</code> 还会按 <code>currentMaxAcquiredBufferCount</code> 扣住若干块，且 producer throttling 与 BufferQueue 的 free list 水位都会影响实际可用时机。</p><p>误解四：jank 数据实时可得。FrameTimeline 要等 present fence signal 才结算，JankTracker 还要等 listener 注册，应用在帧刚画完时问“这帧 jank 了吗”永远拿不到答案。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "symbol": "Layer::callReleaseBufferCallback",
+      "lines": "711-749",
+      "code": "void Layer::callReleaseBufferCallback(const sp<ITransactionCompletedListener>& listener,\n                                      const sp<GraphicBuffer>& buffer, uint64_t framenumber,\n                                      const sp<Fence>& releaseFence) {\n    if (!listener && !mBufferReleaseChannel) {\n        return;\n    }\n\n    SFTRACE_FORMAT_INSTANT(\"callReleaseBufferCallback %s - %\" PRIu64, getDebugName(), framenumber);\n\n    ReleaseCallbackId callbackId{buffer->getId(), framenumber};\n    const sp<Fence>& fence = releaseFence ? releaseFence : Fence::NO_FENCE;\n    uint32_t currentMaxAcquiredBufferCount =\n            mFlinger->getMaxAcquiredBufferCountForCurrentRefreshRate(mOwnerUid);\n\n    if (FlagManager::getInstance().monitor_buffer_fences()) {\n        buffer->getDependencyMonitor().addEgress(FenceTime::makeValid(fence), \"Layer release\");\n    }\n\n    if (listener) {\n        listener->onReleaseBuffer(callbackId, fence, currentMaxAcquiredBufferCount,\n                                  false /* removeFromCache */);\n    }\n\n    if (!mBufferReleaseChannel) {\n        return;\n    }\n\n    status_t status = mBufferReleaseChannel->writeReleaseFence(callbackId, fence,\n                                                               currentMaxAcquiredBufferCount);\n    if (status != OK) {\n        int error = -status;\n        // callReleaseBufferCallback is called during Layer's destructor. In this case, it's\n        // expected to receive connection errors.\n        if (error != EPIPE && error != ECONNRESET) {\n            ALOGD(\"[%s] writeReleaseFence failed. error %d (%s)\", getDebugName(), error,\n                  strerror(error));\n        }\n    }\n}",
+      "note": "SF 通知客户端归还 buffer 的唯一出口：同一把 release fence 既走 listener->onReleaseBuffer（binder），又写 mBufferReleaseChannel（fd 通道）；currentMaxAcquiredBufferCount 由当前刷新率与 ownerUid 决定。"
+    },
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "BBQBufferQueueProducer::waitForBufferRelease",
+      "lines": "1302-1341",
+      "code": "    status_t waitForBufferRelease(std::unique_lock<std::mutex>& bufferQueueLock,\n                                  nsecs_t timeout) const override {\n        ATRACE_CALL();\n        const auto startTime = std::chrono::steady_clock::now();\n\n        // BufferQueue has already checked if we have a free buffer. If there's an unread interrupt,\n        // we want to ignore it. This must be done before unlocking the BufferQueue lock to ensure\n        // we don't miss an interrupt.\n        mBufferReleaseReader->clearInterrupts();\n        UnlockGuard unlockGuard{bufferQueueLock};\n\n        ReleaseCallbackId id;\n        sp<Fence> fence;\n        uint32_t maxAcquiredBufferCount;\n        status_t status =\n                mBufferReleaseReader->readBlocking(id, fence, maxAcquiredBufferCount, timeout);\n        if (status == TIMED_OUT) {\n            return TIMED_OUT;\n        } else if (status != OK) {\n            // Waiting was interrupted or an error occurred. BufferQueueProducer will check if we\n            // have a free buffer and call this method again if not.\n            return OK;\n        }\n\n        sp<BLASTBufferQueue> bbq = mBLASTBufferQueue.promote();\n        if (!bbq) {\n            return OK;\n        }\n\n        bbq->releaseBufferCallback(id, fence, maxAcquiredBufferCount);\n        const nsecs_t durationNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(\n                                              std::chrono::steady_clock::now() - startTime)\n                                              .count();\n        // Provide a callback for Choreographer to start buffer stuffing recovery when blocked\n        // on buffer release.\n        std::function<void(const nsecs_t)> callbackCopy = bbq->getWaitForBufferReleaseCallback();\n        if (callbackCopy) callbackCopy(durationNanos);\n\n        return OK;\n    }",
+      "note": "应用侧 dequeue 的阻塞点：先 clearInterrupts 再解锁 BufferQueue 锁，然后在锁外 readBlocking 等 release；读到后执行 releaseBufferCallback 并把阻塞时长报给 Choreographer。"
+    },
+    {
+      "file": "native/libs/gui/BufferQueueConsumer.cpp",
+      "symbol": "BufferQueueConsumer::releaseBuffer",
+      "lines": "550-592",
+      "code": "        if (!mSlots[slot].mBufferState.isAcquired()) {\n            BQ_LOGE(\"releaseBuffer: attempted to release buffer slot %d \"\n                    \"but its state was %s\", slot,\n                    mSlots[slot].mBufferState.string());\n            return BAD_VALUE;\n        }\n\n#if !COM_ANDROID_GRAPHICS_LIBGUI_FLAGS(BQ_GL_FENCE_CLEANUP)\n        mSlots[slot].mEglDisplay = eglDisplay;\n        mSlots[slot].mEglFence = eglFence;\n#endif\n        mSlots[slot].mFence = releaseFence;\n        mSlots[slot].mBufferState.release();\n\n        // After leaving shared buffer mode, the shared buffer will\n        // still be around. Mark it as no longer shared if this\n        // operation causes it to be free.\n        if (!mCore->mSharedBufferMode && mSlots[slot].mBufferState.isFree()) {\n            mSlots[slot].mBufferState.mShared = false;\n        }\n        // Don't put the shared buffer on the free list.\n        if (!mSlots[slot].mBufferState.isShared()) {\n            mCore->mActiveBuffers.erase(slot);\n            mCore->mFreeBuffers.push_back(slot);\n        }\n\n        if (mCore->mBufferReleasedCbEnabled) {\n            listener = mCore->mConnectedProducerListener;\n        }\n        BQ_LOGV(\"releaseBuffer: releasing slot %d\", slot);\n\n        mCore->notifyBufferReleased();\n\n        VALIDATE_CONSISTENCY();\n    } // Autolock scope\n\n    // Call back without lock held\n    if (listener != nullptr) {\n        listener->onBufferReleased();\n    }\n\n    return NO_ERROR;\n}",
+      "note": "buffer 真正回流的时刻：校验 acquired 状态、写入 release fence、bufferState.release()，把 slot 移到 mFreeBuffers，notifyBufferReleased() 在锁内唤醒，onBufferReleased() 在解锁后回调以免死锁。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+      "symbol": "SurfaceFrame::onPresent",
+      "lines": "1052-1084",
+      "code": "void SurfaceFrame::onPresent(nsecs_t presentTime, int32_t displayFrameJankTypeLegacy,\n                             int32_t displayFrameJankTypeExperimental, Fps refreshRate,\n                             Fps displayFrameRenderRate, nsecs_t displayDeadlineDelta,\n                             nsecs_t displayPresentJitter) {\n    std::scoped_lock lock(mMutex);\n\n    mDisplayFrameRenderRate = displayFrameRenderRate;\n    mActuals.presentTime = presentTime;\n    nsecs_t deadlineDelta = 0;\n    nsecs_t presentDelay = 0;\n\n    classifyJankLocked(displayFrameJankTypeLegacy, displayFrameJankTypeExperimental, refreshRate,\n                       displayFrameRenderRate, &deadlineDelta, &presentDelay);\n    const auto [score, severity] =\n            calculateJankSeverity(mJankType.value(), mExpectedPresentDelta, mActualPresentDelta,\n                                  mRenderRate ? *mRenderRate : mDisplayFrameRenderRate);\n    mJankSeverity = severity;\n    mJankScore = score;\n\n    if (mPredictionState != PredictionState::None) {\n        // Only update janky frames if the app used vsync predictions\n        mTimeStats->incrementJankyFrames({refreshRate, mRenderRate, mOwnerUid, mLayerName,\n                                          mGameMode, mJankType.value(), displayDeadlineDelta,\n                                          displayPresentJitter, deadlineDelta});\n\n        gui::JankData jd;\n        jd.frameVsyncId = mToken;\n        jd.jankTypeLegacy = mJankType.legacy();\n        jd.jankTypeExperimental = mJankType.experimental();\n        jd.frameIntervalNs =\n                (mRenderRate ? *mRenderRate : mDisplayFrameRenderRate).getPeriodNsecs();\n        jd.presentDelayNs = presentDelay;\n        jd.jankScore = mJankScore;",
+      "note": "jank 结算：写 actual presentTime、classifyJankLocked、calculateJankSeverity、incrementJankyFrames，并组装 gui::JankData（frameVsyncId/jankType/presentDelayNs/jankScore）供 JankTracker 分发。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "Layer::mBufferReleaseChannel",
+      "type": "std::shared_ptr<gui::BufferReleaseChannel::ProducerEndpoint>（Layer.h:268）",
+      "desc": "SF 到应用进程的 release fence 通道生产端；由 setBufferReleaseChannel 事务建立，callReleaseBufferCallback 与 TransactionCallbackInvoker 都往它写。"
+    },
+    {
+      "name": "CallbackHandle::bufferReleaseChannel / currentMaxAcquiredBufferCount / dequeueReadyTime",
+      "type": "shared_ptr / uint32_t / nsecs_t（Layer.cpp:815-822 填充）",
+      "desc": "releasePendingBuffer 为每个待回调事务补齐这些字段，决定应用侧拿到 release 时可用的最大 acquire 数与 dequeue 就绪时间。"
+    },
+    {
+      "name": "SurfaceFlinger::getMaxAcquiredBufferCountForCurrentRefreshRate",
+      "type": "uint32_t(uid_t)（SurfaceFlinger.cpp:9338）",
+      "desc": "按当前刷新率与 ownerUid 决定 max acquired buffer count；它同时影响 BLAST 的 mPendingRelease 扣留水位与 buffer 归还节奏。"
+    },
+    {
+      "name": "FrameTimeline::SurfaceFrame::mJankType / mJankScore / mJankSeverity",
+      "type": "JankType / int32_t / int32_t",
+      "desc": "classifyJankLocked 与 calculateJankSeverity 的输出，既进 TimeStats 的 janky 统计，也进 gui::JankData 分发给应用。"
+    },
+    {
+      "name": "JankTracker::sListenerCount / mJankData",
+      "type": "static 计数 / map<layerId, deque<JankData>>（Jank/JankTracker.cpp）",
+      "desc": "没有 listener 时 onJankData 直接返回；有 listener 才通过低优先级 BackgroundExecutor 入队，再由 flushJankData 交付，避免在 SF 主线程做 IPC。"
+    },
+    {
+      "name": "BLASTBufferQueue::mPendingRelease / mCurrentMaxAcquiredBufferCount",
+      "type": "std::deque<ReleasedBuffer> / uint32_t（BLASTBufferQueue.h:233/320）",
+      "desc": "app 侧收到 release 后先扣住若干块再真正 release；扣留数量 = max(0, mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount)，直接受 SF 下发的 count 影响。"
+    },
+    {
+      "name": "BufferQueueCore::mFreeBuffers / mActiveBuffers",
+      "type": "std::vector<int> / std::unordered_set<int>",
+      "desc": "slot 状态机：release 时从 mActiveBuffers 删除并 push 进 mFreeBuffers，这是下一次 dequeue 能拿到 slot 的前提。"
+    },
+    {
+      "name": "BufferQueueConsumer::mCore->mConnectedProducerListener",
+      "type": "sp<IProducerListener>",
+      "desc": "releaseBuffer 在 mBufferReleasedCbEnabled 时取出它，解锁后调 onBufferReleased()；BLAST 下该回调经 AsyncProducerListener 异步化，避免回调里再进 BufferQueue 造成死锁。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "callReleaseBufferCallback <layer> - <framenumber>",
+      "value": "SFTRACE_FORMAT_INSTANT，Layer.cpp:718",
+      "desc": "SF 决定归还某块 buffer 的瞬间；与下一帧 app 的 dequeue 时间对齐，可量出 release 链路延迟。"
+    },
+    {
+      "name": "releasePendingBuffer <layer> - <framenumber>",
+      "value": "SFTRACE_FORMAT_INSTANT，Layer.cpp:822",
+      "desc": "releasePendingBuffer 的每个 callback handle；数量多说明同一帧有多笔事务在等 release。"
+    },
+    {
+      "name": "waitForBufferRelease",
+      "value": "ATRACE_CALL，BLASTBufferQueue.cpp:1304",
+      "desc": "应用侧 dequeue 等 release 的阻塞切片；它很长代表 SF 迟迟不还 buffer 或 channel 没建立。"
+    },
+    {
+      "name": "BufferQueueConsumer::releaseBuffer",
+      "value": "ATRACE_CALL + ATRACE_BUFFER_INDEX，BufferQueueConsumer.cpp:509-510",
+      "desc": "slot 真正变 free 的位置，配合 buffer index 可确认是哪一块被归还。"
+    },
+    {
+      "name": "TransactionCallbackInvoker::sendCallbacks",
+      "value": "SFTRACE_NAME，TransactionCallbackInvoker.cpp:277",
+      "desc": "SF 把 release fence 写入 channel 并回调客户端的位置；与 app 侧 releaseBufferCallback 成对。"
+    },
+    {
+      "name": "FrameTimeline（expected/actual surface frame）",
+      "value": "frame_timeline_event data source",
+      "desc": "jank 闭环的最终产物：看 expected vs actual 的差与 jankType 标注，是验证整套回调是否按时完成的依据。"
+    },
+    {
+      "name": "dumpsys gfxinfo <pkg> frametimeline / SurfaceFlinger janky frames",
+      "value": "TimeStats::incrementJankyFrames 累计",
+      "desc": "前者按帧给 jankType/presentType，后者给整体 janky 比例；两者都来自本阶段的 SurfaceFrame::onPresent。"
+    }
+  ],
+  "pitfalls": [
+    "release 有两条路（binder listener + BufferReleaseChannel），只观察一条会误判“SF 没还 buffer”；BLAST 正常路径优先走 channel。",
+    "Layer 析构时 callReleaseBufferCallback 收到 EPIPE/ECONNRESET 是预期行为（代码注释明确说明），把它当异常会导致误报。",
+    "release fence 可能是 Fence::NO_FENCE，此时 buffer 立即可复用；不要把“有 release 回调”等同于“有 fence 要等”。",
+    "BLAST 收到 release 后并不立即归还：mPendingRelease 会按 mCurrentMaxAcquiredBufferCount 扣留若干块，SF 变刷新率时归还节奏会变，不要用固定阈值判断泄漏。",
+    "JankTracker 在没有 listener 时直接丢弃 JankData（native/services/surfaceflinger/Jank/JankTracker.cpp:62-65），所以“没有 jank 回调”不等于“没有 jank”，要看 TimeStats 的累计值。",
+    "FrameTimeline 只保留 64 帧窗口（FrameTimeline.h:681），且分类要靠后续 fence signal 触发；追查几十拍前的帧本来就查不到，不是数据损坏。"
+  ],
+  "traceTags": [
+    "callReleaseBufferCallback",
+    "releasePendingBuffer",
+    "waitForBufferRelease",
+    "BufferQueueConsumer::releaseBuffer",
+    "TransactionCallbackInvoker::sendCallbacks",
+    "FrameTimeline",
+    "SurfaceFlinger::onCompositionPresented"
+  ],
+  "next": ""
+}

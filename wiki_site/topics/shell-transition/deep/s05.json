@@ -1,0 +1,89 @@
+{
+  "step": "s05",
+  "title": "窗口事务被同一 SyncSet 收编",
+  "tldr": "所有要上屏的 Surface 改动，都不会立刻生效，而是先塞进一个带 syncId 的大事务，等这一拍的参与者全部画完，再一起交给 SurfaceFlinger。",
+  "why": "如果不等：Activity 的新窗口还在绘制、旧窗口已经开始缩小时，两者会被 SF 在不同帧里合成，用户看到的就是「白一下」「闪一下」。syncId 的作用就是把「改了什么」和「画完了没」绑在同一个序号上，保证同一帧里换装。",
+  "concepts": [
+    {
+      "term": "WindowContainerTransaction (WCT)",
+      "text": "一批窗口操作（reparent / 改 bounds / 改可见性 / 改 z 序）的集合，可由 Shell 或 App 提前下发。"
+    },
+    {
+      "term": "syncId",
+      "text": "BLASTSyncEngine 发的序号。带同一 syncId 的 Surface 事务会被 SF 拦到全部到齐后才一起提交。"
+    },
+    {
+      "term": "ready",
+      "text": "setSyncReady 表示「集合已经装完，可以开始等参与者了」，不是「已经等到了」。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "WindowOrganizerController.applyTransaction(t)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:246",
+      "what": "不为同步、只要马上生效的旧式入口：syncId 传 -1，直接执行。"
+    },
+    {
+      "call": "Binder.clearCallingIdentity()",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:252",
+      "what": "跨进程调用已通过权限校验，这里切回 system_server 的身份做实际操作，避免后续调用被误判为调用方 uid。"
+    },
+    {
+      "call": "synchronized (mGlobalLock)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:254",
+      "what": "整段持 WMS 全局锁。任何 WCT 的落地都在锁内，所以 WCT 里的操作顺序 = 最终窗口树顺序。"
+    },
+    {
+      "call": "applySyncTransaction(t, callback)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:265",
+      "what": "真正和转场配合的入口：带 callback 时走同步路径，不带 callback 时退化成 syncId=-1。"
+    },
+    {
+      "call": "prepareSyncWithOrganizer(callback)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:2697",
+      "what": "向 BLASTSyncEngine 申请一个 SyncGroup（内部就是 syncId + 回调），后续所有参与容器都挂到它上面。"
+    },
+    {
+      "call": "startLegacySyncOrQueue(syncGroup, deferred -> {...})",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:297",
+      "what": "Shell 转场开启时，若当前已有 collecting 的转场，就把这次 WCT 排进下一个 sync，避免两个 sync 抢同一个参与者。"
+    },
+    {
+      "call": "setSyncReady(syncId)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:2713",
+      "what": "宣告「操作已经全部灌进集合」，BLAST 开始等待参与者绘制完成；到齐后回调 Transition.onTransactionReady。"
+    }
+  ],
+  "state": [
+    {
+      "field": "BLASTSyncEngine.mSyncSets",
+      "before": "上一个 sync 可能仍在等",
+      "after": "新增一个 SyncGroup（syncId 自增）",
+      "note": "同一时刻允许多个 sync 存在，但参与者不能同时属于两个"
+    },
+    {
+      "field": "WindowContainer 的 sync 归属",
+      "before": "无",
+      "after": "finishSync 时会带上该 syncId",
+      "note": "这是「谁在等谁」的唯一凭据"
+    },
+    {
+      "field": "调用方身份",
+      "before": "Shell / App 的 uid",
+      "after": "system_server（clearCallingIdentity 后恢复）",
+      "note": "finally 里务必 restore"
+    }
+  ],
+  "threads": "执行在 binder 线程（Shell 调过来）或 app 的 binder 线程；整段持 mGlobalLock，所以实际串行化在 WMS 主线程语义下。",
+  "pitfalls": [
+    "把 applyTransaction(t)（syncId=-1）和 applySyncTransaction(t, callback) 混为一谈：前者立刻上屏，不会被转场拦住。",
+    "在持 mGlobalLock 的路径里做耗时操作（比如等 SF 回调），会直接卡住整个 WMS。",
+    "误以为 setSyncReady 之后事务就 apply 了——它只是「装完」，真正提交在 sync 全到齐（第 16 步）。"
+  ],
+  "debug": [
+    "dumpsys activity service com.android.systemui/.SystemUIService（Transitions 段）看 track/队列",
+    "perfetto 过滤 Transition-*-SyncReady#<id> / playing / onTransactionCommitTimeout（这些 trace 名在代码里真实存在）",
+    "cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS 打开转场日志"
+  ],
+  "next": "集合装好了，接下来要等参与者真的画完 → 第 16 步「SyncSet 收集完成」。"
+}

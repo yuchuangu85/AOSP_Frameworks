@@ -1,0 +1,197 @@
+{
+  "id": "stage-02",
+  "num": 2,
+  "title": "调度：scheduleTraversals 与同步屏障",
+  "subtitle": "置 mTraversalScheduled、postSyncBarrier、注册 CALLBACK_TRAVERSAL——都不执行，只排队",
+  "lane": "UI",
+  "durationHint": "量级：单次 scheduleTraversals 亚微秒~数微秒（含一次 MessageQueue.postSyncBarrier）；真正执行在下一个 vsync",
+  "summary": "ViewRootImpl.scheduleTraversals() 是整条 UI 刷新链路的收口：它先 checkThreadCompat()，然后在 mTraversalScheduled 为 false 时做三件事——postTraversalBarrier() 往主线程 MessageQueue 插一个同步屏障（同步消息被挡住、异步消息可穿过，从而保证 traversal 抢在已排队的普通消息之前执行），mChoreographer.postVsyncCallback(Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback) 把一次性的 VsyncCallback 塞进 Choreographer 的 CALLBACK_TRAVERSAL 队列并请求下一帧 vsync，notifyRendererOfFramePending() + pokeDrawLockIfNeeded() 通知 RenderThread 与 WMS 帧即将到来。android17 已经没有 mTraversalRunnable 字段，traversal 入口改成了实现 Choreographer.VsyncCallback 的 TraversalCallback，它的 onVsync(FrameData) 只做一件事：doTraversal(frameData.getFrameTimeNanos())。doTraversal 里再清 mTraversalScheduled、removeTraversalBarrier()，然后才 performTraversals。屏障用 AtomicLong 管理，避免并发（错误用法下）留下永久屏障卡死主线程。换句话说，这一阶段的全部价值在于排序：用一个同步屏障加一条异步消息，把 traversal 精确插到「本轮 UI 消息之后、下一拍 vsync 之前」。",
+  "callchain": [
+    "ViewRootImpl.requestLayout()",
+    "ViewRootImpl.scheduleTraversals()",
+    "ViewRootImpl.postTraversalBarrier()",
+    "Choreographer.postVsyncCallback()",
+    "ViewRootImpl.notifyRendererOfFramePending()",
+    "ViewRootImpl.doTraversal()",
+    "ViewRootImpl.removeTraversalBarrier()",
+    "ViewRootImpl.performTraversals()"
+  ],
+  "sections": [
+    {
+      "heading": "触发者与位置：谁调 scheduleTraversals",
+      "html": "<p>直接调用者只有两类：<code>ViewRootImpl.requestLayout()</code>（ViewRootImpl.java:2846）与 <code>ViewRootImpl.invalidate()</code>（2867）；另外 surface/窗口属性变化也会直接走到它。<strong>它必须在 UI 线程执行</strong>：入口第一行是 <code>checkThreadCompat()</code>（3308），比 <code>requestLayout</code> 用的 <code>checkThread()</code> 宽松（按 ChangeId 决定抛异常还是只打一条 WTF）。</p><p>函数体只有一个 <code>if</code>（3309-3334）：<code>!mTraversalScheduled</code> 时才进入，进入后立刻把它置 true——所以<strong>同一帧内 N 次 requestLayout/invalidate 只会产生一次调度</strong>，这是第一层合并。第二层合并是 <code>mWillDrawSoon</code>（invalidate 里判断），第三层是 <code>Choreographer.mFrameScheduled</code>（stage-03 详述）。</p><p><code>mTraversalScheduled</code> 是 <code>public boolean</code>（ViewRootImpl.java:758），注释里明确它「not safe for concurrent access」，这也是为什么配套的屏障要用 <code>AtomicLong</code> 兜底。</p>"
+    },
+    {
+      "heading": "同步屏障：为什么 traversal 必须抢占普通消息",
+      "html": "<p>代码里那段长达 13 行的注释（3311-3328）是理解同步屏障的关键，它给了可验证的公开 API 契约：</p><blockquote>textView.setText(\"Hello, world!\");<br>textView.getHandler().post(new Runnable() { public void run() { reportNewTextWidth(textView.getWidth()); } });</blockquote><p>注释说这段代码被定义为正确，而<strong>负责保证它的是 MessageQueue 的同步屏障机制</strong>：任何在 scheduleTraversals <em>之后</em> post 的普通消息，都保证在 traversal 跑完之后才执行（异步消息除外）。如果 traversal 只是一个普通消息，它会被排到那条 post 之后，<code>getWidth()</code> 就会读到旧值。</p><p><code>MessageQueue.postSyncBarrier()</code> 的语义（见 base/core/java/android/os/CombinedDeliMessageQueue/MessageQueue.java:1220-1246）是：插入一个屏障后，<strong>同步消息停止派发，异步消息（<code>Message.isAsynchronous()</code>）继续执行</strong>，直到用同一个 token 调 <code>removeSyncBarrier</code>；注释还警示「必须成对调用，否则应用大概率会 hang」。Choreographer 自己投递的 <code>MSG_DO_FRAME</code>/<code>MSG_DO_SCHEDULE_VSYNC</code>/<code>MSG_DO_SCHEDULE_CALLBACK</code> 都带 <code>msg.setAsynchronous(true)</code>（Choreographer.java:640、934、944），所以屏障拦不住它们——这就是屏障加异步消息的组合拳。</p><p>版本注意：android17 的 <code>base/core/java/android/os/</code> 下没有单一的 <code>MessageQueue.java</code>，而是 <code>LegacyMessageQueue</code>/<code>CombinedMessageQueue</code>/<code>CombinedDeliMessageQueue</code> 三个变体目录各自一份实现<strong>（构建时如何选择哪一份，源码树内未体现）</strong>；它们的 postSyncBarrier 契约一致。</p>"
+    },
+    {
+      "heading": "屏障的原子管理：为什么需要一个 AtomicLong",
+      "html": "<p><code>postTraversalBarrier()</code>（3355-3367）不是简单地存一个 int：</p><ul><li><code>mAtomicTraversalBarrier</code> 为 false 时走老路径：<code>mTraversalBarrier = mQueue.postSyncBarrier()</code>（3365），字段注释直接写「not safe for concurrent access」（759）；</li><li>为 true 时用 <code>AtomicLong mTraversalBarrierAtomic</code>（771）做 <code>getAndSet(newBarrier)</code>，若拿到的旧值不是 <code>UNSET_TRAVERSAL_BARRIER</code>（<code>Long.MAX_VALUE</code>，369），说明这次设置<strong>覆盖</strong>了一个尚未移除的屏障，责任在本次调用方，所以要主动 <code>removeSyncBarrier((int) oldBarrier)</code>（3359-3363）。</li></ul><p>字段注释解释了动机（761-770）：这是为了<strong>降低 view root 数据竞争的影响——在竞态访问下多次添加屏障不会导致一个屏障永久留在队列里，把线程活活卡死</strong>。<code>removeTraversalBarrier()</code>（3369-3380）是对称的：原子地把值换回 <code>UNSET_TRAVERSAL_BARRIER</code>，拿到旧值才真正 <code>removeSyncBarrier</code>，从而保证「只移除自己设置的那一个」。</p><p>这里有一个真实的风险边界：如果屏障被设置了却没移除（例如 traversal 里抛异常且 <code>doTraversal</code> 的 <code>removeTraversalBarrier()</code> 没跑到），主线程的同步消息会永远不派发，表现就是<strong>UI 卡死但 vsync 还在来</strong>。这也是为什么 <code>unscheduleTraversals()</code>（3337-3345）存在——取消调度时必须同时 <code>removeTraversalBarrier()</code> 与 <code>Choreographer.removeVsyncCallback(...)</code>。</p>"
+    },
+    {
+      "heading": "postVsyncCallback：只是入队，不执行",
+      "html": "<p>第三个动作是把 traversal 挂到 Choreographer：<code>mChoreographer.postVsyncCallback(Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback)</code>（3330-3331）。<code>Choreographer.postVsyncCallback(int, VsyncCallback)</code>（Choreographer.java:676-682）转调 <code>postCallbackDelayedInternal(callbackType, callback, VSYNC_CALLBACK_TOKEN, 0)</code>，后者做两件事（622-644）：</p><ol><li><code>mCallbackQueues[callbackType].addCallbackLocked(dueTime, action, token)</code>——入队，<code>dueTime = now + 0</code>；</li><li>因为 <code>dueTime &lt;= now</code>，立刻 <code>scheduleFrameLocked(now)</code> 请求下一帧 vsync（这一步在 stage-03 展开）。</li></ol><p>注意 <code>callbackType</code> 是 <code>CALLBACK_TRAVERSAL = 3</code>（351），<code>mCallbackQueues</code> 是按 type 分开的 5 条队列，索引 0..4 对应 <code>CALLBACK_TRACE_TITLES</code> 里的 input/animation/insets_animation/traversal/commit（313-315）。这也解释了为什么 doFrame 里能按固定顺序取回调（stage-04）。</p><p><strong>关键结论：scheduleTraversals 返回时，traversal 一次都没执行。</strong>它做的全是「置位 + 入队 + 插屏障 + 唤醒 RT/WMS」，CPU 时间几乎为零，真正的重活留到下一个 vsync 的 <code>doFrame</code>。这也是「为什么 UI 线程卡顿时，requestLayout 本身看起来很快」的原因。</p>"
+    },
+    {
+      "heading": "android17 没有 mTraversalRunnable：TraversalCallback 取代了它",
+      "html": "<p>老版本里 <code>ViewRootImpl</code> 有一个 <code>mTraversalRunnable</code>（实现 <code>Runnable</code>），通过 <code>Choreographer.postCallback(CALLBACK_TRAVERSAL, mTraversalRunnable, null)</code> 提交。<code>run()</code> 里调 <code>doTraversal()</code>。android17 换成了 <code>VsyncCallback</code> 体系：</p><blockquote>final class TraversalCallback implements Choreographer.VsyncCallback {<br>&nbsp;&nbsp;&nbsp;&nbsp;@Override public void onVsync(Choreographer.FrameData frameData) {<br>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;doTraversal(frameData.getFrameTimeNanos());<br>&nbsp;&nbsp;&nbsp;&nbsp;}<br>}<br>final TraversalCallback mTraversalCallback = new TraversalCallback();</blockquote><p>（ViewRootImpl.java:11445-11451）<code>VsyncCallback</code> 的接口注释（Choreographer.java:1537-1556）说明了动机：回调载荷 <code>FrameData</code> 携带<strong>多个候选帧</strong>的信息，让调用方可以按延迟要求挑合适的那一帧；<code>data</code> 只在 <code>onVsync</code> 内有效，不能带出去用。这比 <code>Runnable</code> 多了一个参数化帧时间的能力。</p><p>对排查的影响：trace 里 <code>Choreographer#doFrame</code> 之后不再有以 <code>mTraversalRunnable</code> 命名的片段，traversal 的执行区间按 type 命名为 <code>traversal</code>（CALLBACK_TRACE_TITLES）。找 traversal 起点要看 <code>Choreographer#doFrame</code> → <code>traversal</code> → <code>performTraversals</code> 这条链。</p>"
+    },
+    {
+      "heading": "doTraversal：清标志、移屏障、再进 performTraversals",
+      "html": "<p><code>doTraversal(long frameTimeNanos)</code>（3347-3353）只有三行有效代码：</p><blockquote>if (mTraversalScheduled) { mTraversalScheduled = false; removeTraversalBarrier(); performTraversals(frameTimeNanos); }</blockquote><p>三个细节值得注意：</p><ul><li><strong>先清标志再干活</strong>：<code>mTraversalScheduled = false</code> 在最前面，保证 <code>performTraversals</code> 期间如果有代码调 <code>requestLayout</code>，能重新调度下一帧（而不是被已置位的标志挡住）。</li><li><strong>屏障必须最先移除</strong>：<code>removeTraversalBarrier()</code> 在 <code>performTraversals</code> 之前，否则 traversal 里任何需要等主线程同步消息的操作都会死锁。</li><li><strong>参数只有一个帧时间</strong>：<code>frameTimeNanos</code> 来自 <code>FrameData.getFrameTimeNanos()</code>，它在 Choreographer 里已经过 jitter 修正（stage-04），所以 <code>performTraversals</code> 拿到的是「本帧的动画基准时间」。</li></ul><p>另外 <code>performTraversals</code> 自己还有一道早退：<code>mNumPausedForSync &gt; 0</code> 时直接 return 并记 <code>mLastPerformTraversalsSkipDrawReason = \"paused_for_sync\"</code>（3940-3951）——BLAST sync 期间不遍历。<code>host == null || !mAdded</code> 也会早退（3935-3938）。</p>"
+    },
+    {
+      "heading": "与 RenderThread / WMS 的边界",
+      "html": "<p>scheduleTraversals 最后两个调用是跨组件的通知，都不阻塞：</p><ul><li><code>notifyRendererOfFramePending()</code>（3265-3269）：若 <code>mAttachInfo.mThreadedRenderer != null</code>，调 <code>mThreadedRenderer.notifyFramePending()</code>。注释说明用途是<strong>让 ThreadedRenderer 知道「马上要来一帧」，用来调整离屏（RT 自驱）动画的调度</strong>。</li><li><code>pokeDrawLockIfNeeded()</code>（2771 起）：与 WindowManager 的 draw lock 相关，用于保证本帧能在 WMS 的等待窗口内完成——具体实现在该方法内部，属于 WMS 交互而非渲染栈。</li></ul><p>这两步都不涉及 binder 同步调用（<code>notifyFramePending</code> 是本地调用），真正的跨进程动作发生在 <code>performTraversals</code> 里的 <code>relayoutWindow</code>（IWindowSession）与 <code>DrawFrameTask</code> 提交时。所以在 trace 上，<code>scheduleTraversals</code> 几乎看不到耗时，但它决定了下一帧的时间起点。</p>"
+    },
+    {
+      "heading": "排障：屏障泄漏与重复调度的识别",
+      "html": "<p>三个高价值检查点：</p><ol><li><strong>主线程卡死但 vsync 仍在来</strong>：典型是同步屏障泄漏。可在 <code>MessageQueue</code> 的 dump 里看到队头是一个 <code>target=null</code> 的屏障消息（<code>postSyncBarrier</code> 投递的 Message 不带 target），后面的同步消息都不派发。此时检查 <code>doTraversal</code> 是否因异常没走到 <code>removeTraversalBarrier()</code>。</li><li><strong>traversal 被重复调度</strong>：如果 trace 里同一个 vsync 出现两次 <code>performTraversals</code> 或一次 vsync 出现多次 <code>doFrame</code>，先看 <code>mTraversalScheduled</code>/<code>mFrameScheduled</code> 是否被错误清零；<code>unscheduleTraversals</code> 与 <code>scheduleTraversals</code> 不配对也会造成重复。</li><li><strong>traversal 被普通消息插队</strong>：说明屏障没插成功（<code>postSyncBarrier</code> 返回 -1 或 <code>mAtomicTraversalBarrier</code> 路径异常）。表现是「setText 之后 post 的 runnable 读到了旧宽度」这类公开 API 契约被破坏。</li></ol><p>可观测点：trace 里 <code>Choreographer#doFrame</code> 下的 <code>traversal</code> 片段（<code>CALLBACK_TRACE_TITLES</code>）、<code>performTraversals</code> 的起止时间、以及 <code>ViewRootImpl</code> 的 <code>mLastPerformTraversalsSkipDrawReason</code>（3949、3965 等赋值的字符串原因，可通过 dumpsys 或调试日志看到跳过原因）。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "void scheduleTraversals",
+      "lines": "3306-3335",
+      "code": "    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)\n    void scheduleTraversals() {\n        checkThreadCompat();\n        if (!mTraversalScheduled) {\n            mTraversalScheduled = true;\n            // The following behavior is load-bearing for public API correctness.\n            // For example, the following code is defined to be correct and the\n            // MessageQueue sync barrier mechanism and its usage here is\n            // responsible for ensuring it:\n            //\n            //   textView.setText(\"Hello, world!\");\n            //   textView.getHandler().post(new Runnable() {\n            //     public void run() {\n            //       // This code will run after traversals have happened\n            //       // and the TextView has been measured with its new text.\n            //       reportNewTextWidth(textView.getWidth());\n            //     }\n            //   });\n            //\n            // Any message posted after scheduling traversals (e.g. via\n            // View#requestLayout or View#invalidate) is guaranteed to run after\n            // the scheduled traversals have occurred unless the message is\n            // specifically \"asynchronous\" - see Message#setAsynchronous\n            postTraversalBarrier();\n            mChoreographer.postVsyncCallback(\n                    Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);\n            notifyRendererOfFramePending();\n            pokeDrawLockIfNeeded();\n        }\n    }",
+      "note": "scheduleTraversals 全貌：唯一的 if 保证合并，进入后立刻置 mTraversalScheduled=true；随后 postTraversalBarrier、postVsyncCallback(CALLBACK_TRAVERSAL)、notifyRendererOfFramePending、pokeDrawLockIfNeeded。中间那段长注释说明了同步屏障对公开 API 契约（setText 后 post 的 runnable 必须看到新宽度）是 load-bearing 的。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "void doTraversal",
+      "lines": "3337-3380",
+      "code": "    void unscheduleTraversals() {\n        checkThreadCompat();\n        if (mTraversalScheduled) {\n            mTraversalScheduled = false;\n            removeTraversalBarrier();\n            mChoreographer.removeVsyncCallback(\n                    Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);\n        }\n    }\n\n    void doTraversal(long frameTimeNanos) {\n        if (mTraversalScheduled) {\n            mTraversalScheduled = false;\n            removeTraversalBarrier();\n            performTraversals(frameTimeNanos);\n        }\n    }\n\n    private void postTraversalBarrier() {\n        int newBarrier = mQueue.postSyncBarrier();\n        if (mAtomicTraversalBarrier) {\n            // Atomically set the barrier\n            final long oldBarrier = mTraversalBarrierAtomic.getAndSet(newBarrier);\n            if (oldBarrier != UNSET_TRAVERSAL_BARRIER) {\n                // We clobbered a set barrier, so it's our responsibility to remove the old one\n                mQueue.removeSyncBarrier((int) oldBarrier);\n            }\n        } else {\n            mTraversalBarrier = newBarrier;\n        }\n    }\n\n    private void removeTraversalBarrier() {\n        if (mAtomicTraversalBarrier) {\n            // Atomically unset the barrier\n            final long oldBarrier = mTraversalBarrierAtomic.getAndSet(UNSET_TRAVERSAL_BARRIER);\n            if (oldBarrier != UNSET_TRAVERSAL_BARRIER) {\n                // We unset a set barrier, so it's our responsibility to remove the old one\n                mQueue.removeSyncBarrier((int) oldBarrier);\n            }\n        } else {\n            mQueue.removeSyncBarrier(mTraversalBarrier);\n        }\n    }",
+      "note": "取消/执行/屏障管理四件套：unscheduleTraversals 同时撤回调与屏障；doTraversal 先清标志、再移屏障、最后 performTraversals；postTraversalBarrier/removeTraversalBarrier 用 AtomicLong 的 getAndSet 保证「只移除自己设置的那一个」，避免并发下留下永久屏障。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "final class TraversalCallback",
+      "lines": "11445-11451",
+      "code": "    final class TraversalCallback implements Choreographer.VsyncCallback {\n        @Override\n        public void onVsync(Choreographer.FrameData frameData) {\n            doTraversal(frameData.getFrameTimeNanos());\n        }\n    }\n    final TraversalCallback mTraversalCallback = new TraversalCallback();",
+      "note": "android17 的 traversal 入口：没有 mTraversalRunnable，只有一个实现 Choreographer.VsyncCallback 的类，onVsync 里把 FrameData.getFrameTimeNanos() 交给 doTraversal。这是 VsyncCallback 取代 Runnable 的直接证据。"
+    },
+    {
+      "file": "base/core/java/android/view/Choreographer.java",
+      "symbol": "public void postVsyncCallback",
+      "lines": "646-682",
+      "code": "    /**\n     * Posts a vsync callback to run on the next frame.\n     * <p>\n     * The callback runs once then is automatically removed.\n     * </p>\n     *\n     * @param callback The vsync callback to run during the next frame.\n     *\n     * @see #removeVsyncCallback\n     */\n    public void postVsyncCallback(@NonNull VsyncCallback callback) {\n        if (callback == null) {\n            throw new IllegalArgumentException(\"callback must not be null\");\n        }\n\n        postCallbackDelayedInternal(CALLBACK_ANIMATION, callback, VSYNC_CALLBACK_TOKEN, 0);\n    }\n\n    /**\n     * Posts a vsync callback to run on the next frame.\n     * <p>\n     * The callback runs once then is automatically removed.\n     * </p>\n     *\n     * @param callbackType The callback type.\n     * @param callback The vsync callback to run during the next frame.\n     *\n     * @see #removeVsyncCallback\n     * @hide\n     */\n    public void postVsyncCallback(int callbackType, @NonNull VsyncCallback callback) {\n        if (callback == null) {\n            throw new IllegalArgumentException(\"callback must not be null\");\n        }\n\n        postCallbackDelayedInternal(callbackType, callback, VSYNC_CALLBACK_TOKEN, 0);\n    }",
+      "note": "两个 postVsyncCallback 重载都只是转调 postCallbackDelayedInternal(callbackType, callback, VSYNC_CALLBACK_TOKEN, 0)，并注明「回调只跑一次、跑完自动移除」。真正的帧调度发生在 postCallbackDelayedInternal 里（stage-03 展开），这里只负责入队。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mTraversalScheduled",
+      "type": "public boolean（ViewRootImpl.java:758）",
+      "desc": "「已有一帧 traversal 在排队」的标志：scheduleTraversals 里为 false 才进入并置 true（3309-3310），doTraversal 里置 false（3349），unscheduleTraversals 里置 false（3340）。字段注释明确 not safe for concurrent access，正常只由 UI 线程访问。"
+    },
+    {
+      "name": "mTraversalBarrier",
+      "type": "int（ViewRootImpl.java:759）",
+      "desc": "非原子路径下的屏障 token，注释同样写 not safe for concurrent access。值为 postSyncBarrier() 的返回值，removeTraversalBarrier 时传回 removeSyncBarrier。"
+    },
+    {
+      "name": "mTraversalBarrierAtomic",
+      "type": "AtomicLong（ViewRootImpl.java:771，初值 UNSET_TRAVERSAL_BARRIER）",
+      "desc": "原子路径下的屏障 token。getAndSet 的返回值用来判断是否「覆盖了别人的屏障」：不为 UNSET_TRAVERSAL_BARRIER 就要主动移除旧的那个（3359-3363、3372-3376）。目的是把并发误用从「永久卡死」降级为「多移除一次」。"
+    },
+    {
+      "name": "mAtomicTraversalBarrier",
+      "type": "final boolean（ViewRootImpl.java:773）",
+      "desc": "由 <code>atomicTraversalBarrier()</code>（ChangeId 开关）在构造时决定，用来在运行时切换原子/非原子屏障路径。同一个 APK 在不同 flag 下行为不同，看代码时要先确认这个值。"
+    },
+    {
+      "name": "UNSET_TRAVERSAL_BARRIER",
+      "type": "static final long = Long.MAX_VALUE（ViewRootImpl.java:369）",
+      "desc": "原子屏障的「无屏障」哨兵值。选 Long.MAX_VALUE 是因为 postSyncBarrier 返回的 token 是递增的非负 int，转成 long 不会撞上这个值。"
+    },
+    {
+      "name": "mTraversalCallback",
+      "type": "final TraversalCallback（ViewRootImpl.java:11451）",
+      "desc": "实现 Choreographer.VsyncCallback 的单例回调对象，作为 postVsyncCallback/removeVsyncCallback 的参数。注意它<strong>不是</strong> Runnable，老代码里的 mTraversalRunnable 已不存在。"
+    },
+    {
+      "name": "Choreographer.CALLBACK_TRAVERSAL",
+      "type": "static final int = 3（Choreographer.java:351）",
+      "desc": "回调类型，索引 mCallbackQueues 的第 4 条队列；trace 名来自 CALLBACK_TRACE_TITLES[3] = traversal（313-315）。doFrame 里它在 CALLBACK_INPUT/ANIMATION/INSETS_ANIMATION 之后、COMMIT 之前执行（1199-1211）。"
+    },
+    {
+      "name": "VSYNC_CALLBACK_TOKEN",
+      "type": "static final Object（Choreographer）",
+      "desc": "postVsyncCallback 用的固定 token，用来标记「这是一次性 vsync 回调」而不是普通 Runnable/FrameCallback。CallbackRecord.run 里按 token 判断如何调用。"
+    },
+    {
+      "name": "mCallbackQueues",
+      "type": "CallbackQueue[5]（Choreographer）",
+      "desc": "按 callbackType 分开的 5 条队列（索引 0..CALLBACK_LAST）。postCallbackDelayedInternal 入队时带 dueTime，doCallbacks 用 <code>extractDueCallbacksLocked(now/1e6)</code> 取出到期回调。这是「同一帧内多次 scheduleTraversals 只会留下一条 traversal 记录」的最后一道合并。"
+    },
+    {
+      "name": "mWillDrawSoon",
+      "type": "boolean（ViewRootImpl.java:775）",
+      "desc": "performTraversals 期间为 true（3954 置、4824 清），invalidate 里用它跳过重复调度（2866）。它与 mTraversalScheduled 的区别：后者表示「已排队未执行」，前者表示「正在执行」。"
+    },
+    {
+      "name": "mNumPausedForSync",
+      "type": "int（ViewRootImpl）",
+      "desc": "BLAST sync 暂停计数。大于 0 时 performTraversals 直接早退并记 <code>mLastPerformTraversalsSkipDrawReason = \"paused_for_sync\"</code>（3940-3951），此时 doTraversal 已经清了 mTraversalScheduled、移了屏障，所以不会泄漏屏障。"
+    },
+    {
+      "name": "notifyRendererOfFramePending()",
+      "type": "void（ViewRootImpl.java:3265-3269）",
+      "desc": "把「帧即将到来」告诉 ThreadedRenderer（<code>mAttachInfo.mThreadedRenderer.notifyFramePending()</code>）。注释说明 ThreadedRenderer 用它来调整离屏（RT 自驱）动画的调度，是 UI 与 RT 在这一阶段的唯一交互。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "\"Choreographer#doFrame <vsyncId>\"",
+      "value": "Trace.traceBegin(TRACE_TAG_VIEW, ...)（Choreographer.java:1109-1110）",
+      "desc": "帧循环的顶层 slice，名字带 vsyncId。它下面依次是 input/animation/insets_animation/traversal/commit 五个片段（CALLBACK_TRACE_TITLES），traversal 的那段就是本阶段调度的产物。"
+    },
+    {
+      "name": "\"traversal\"",
+      "value": "Trace.traceBegin(CALLBACK_TRACE_TITLES[3])（Choreographer.java:1245）",
+      "desc": "CALLBACK_TRAVERSAL 的执行区间。它突然变长说明 performTraversals 慢（measure/layout/draw），而不是 scheduleTraversals 慢。"
+    },
+    {
+      "name": "\"Choreographer#doTraversal\"",
+      "value": "老版本 tag；android17 用 type 名 traversal",
+      "desc": "若在 trace 里找不到 Choreographer#doTraversal，是因为 android17 用 CALLBACK_TRACE_TITLES 的 traversal 命名；确认版本差异后再写检索条件。"
+    },
+    {
+      "name": "\"performTraversals#...\" 与 mLastPerformTraversalsSkipDrawReason",
+      "value": "Trace.instant + 字段（ViewRootImpl.java:3942-3944 等）",
+      "desc": "performTraversals 早退时会打 instant（如 performTraversals#mNumPausedForSync=%d）并记跳过原因字符串；这是「为什么这一帧没画」的直接证据。"
+    },
+    {
+      "name": "MessageQueue 中 target=null 的屏障消息",
+      "value": "dumpsys / MessageQueue dump",
+      "desc": "同步屏障是一条 target 为 null 的 Message。主线程卡死时先确认队头是否是屏障消息，再看它后面的同步消息是否全被挡住——这是屏障泄漏的确定性判据。"
+    },
+    {
+      "name": "\"requestLayoutTracing\"",
+      "value": "Trace.instantForTrack（View.java:28725）",
+      "desc": "定位「谁在调用 scheduleTraversals」的入口（requestLayout 侧）；配合 invalidate 的调用栈，可区分是布局请求还是重绘请求占多数。"
+    }
+  ],
+  "pitfalls": [
+    "误以为 scheduleTraversals 会执行 traversal：它只置位、插屏障、注册回调、通知 RT/WMS，一次都不会进 performTraversals；执行在下一个 vsync 的 doFrame 里。",
+    "误以为同步屏障是性能优化：它是公开 API 契约的一部分——setText 之后 post 的普通消息必须看到新布局，全靠屏障让 traversal 抢在它前面（ViewRootImpl.java:3311-3328 的注释）。",
+    "误以为屏障可以随便多发：postSyncBarrier 的注释明确「必须成对 removeSyncBarrier，否则应用大概率 hang」。mAtomicTraversalBarrier 只是把并发误用的后果从永久卡死降级，不代表可以乱发。",
+    "误以为 mTraversalScheduled 只是优化标志：doTraversal 先清它再 performTraversals，正是为了让遍历期间的 requestLayout 能重新触发下一帧；顺序反了就会丢帧。",
+    "误以为 android17 还有 mTraversalRunnable：已改为实现 Choreographer.VsyncCallback 的 TraversalCallback（ViewRootImpl.java:11445-11451），trace 里也看不到以它命名的片段。",
+    "误以为 doTraversal 里的参数 frameTimeNanos 是「现在」：它是 Choreographer 经过 jitter 修正后的帧时间基准（stage-04），直接用 System.nanoTime() 会破坏动画的时间一致性。",
+    "误以为屏障会拦住 Choreographer 的帧消息：Choreographer 投递的 MSG_DO_FRAME/MSG_DO_SCHEDULE_VSYNC/MSG_DO_SCHEDULE_CALLBACK 都是 setAsynchronous(true)（Choreographer.java:640、934、944），异步消息本就豁免于屏障。",
+    "误以为 unscheduleTraversals 只是标志操作：它必须同时 removeTraversalBarrier 与 removeVsyncCallback，否则取消调度后屏障会永久留在队列里（3370-3379、3342-3343）。"
+  ],
+  "traceTags": [
+    "Choreographer#doFrame",
+    "traversal",
+    "input",
+    "animation",
+    "commit",
+    "performTraversals",
+    "requestLayoutTracing"
+  ],
+  "next": "stage-03"
+}

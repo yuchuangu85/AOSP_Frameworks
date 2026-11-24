@@ -1,0 +1,39 @@
+{
+  "step": "s23",
+  "title": "Transition.finishTransition：关闭事务、apply cleanup",
+  "tldr": "把这次转场从 PLAYING 推到 FINISHED：关掉 start/finish 事务、跑 cleanup、提交可见性，再从 controller 摘除。",
+  "why": "这一步不做：startT/finishT 两份 native 事务一直挂着（每次转场几百字节加 binder 引用，几分钟就能看到内存上涨），参与者的可见性永远停在「转场中」——新 Activity 拿不到焦点、软键盘不弹，后续转场还把同一个人当成仍在动画而排队。用户感觉是「点一下没反应，第二下才动」。",
+  "concepts": [
+    { "term": "ActionChain", "text": "一次窗口操作的因果链记录（startFinish/endPartial），把 wct 应用与 finish 串成同一条 proto/dumpsys 记录，由调用方开链。" },
+    { "term": "commitVisibility(fromTransition=true)", "text": "转场结束才把 requested visible 真正落成 visible；转场期间 canShowWindows() 一直为 false。" }
+  ],
+  "walk": [
+    { "call": "mTransitionController.finishTransition(chain)", "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:533", "what": "Shell 的 finishTransition 落到 WMS 后的实际入口，整段持 mGlobalLock。" },
+    { "call": "mPlayingTransitions.remove(record)", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1214", "what": "先从在播列表摘掉，之后 inTransition() 不再把这次转场算进去。" },
+    { "call": "record.finishTransition(chain)", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1220", "what": "才进入 Transition 自己的收尾，后面几步都在这个方法体内。" },
+    { "call": "mStartTransaction.close(); mFinishTransaction.close()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1532", "what": "两份事务都已交给 Shell 并 apply 过，这里只释放本地副本，避免 native 泄漏。" },
+    { "call": "mCleanupTransaction.apply()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1536", "what": "关掉业务事务后，把 cleanup 事务真正提交给 SF：摘 snapshot 与 root leash。" },
+    { "call": "ar.commitVisibility(false /* visible */, false /* performLayout */, true /* fromTransition */)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1629", "what": "对结束时不该可见的参与者补提交 invisible；之前可能先被 checkEnterPipOnFinish 拦去进 PiP。" },
+    { "call": "mState = STATE_FINISHED", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1823", "what": "状态机最后一跳，此后任何 start/collect 都会命中断言。" },
+    { "call": "cleanUpInternal()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1830", "what": "释放 snapshot 的 native 引用并再兜一次 cleanup；不释放，SF 侧图层内存不会回收。" }
+  ],
+  "state": [
+    { "field": "Transition.mState", "before": "PLAYING", "after": "FINISHED（1823）", "note": "若到这里仍 < PLAYING，1539 会抛 IllegalStateException" },
+    { "field": "mStartTransaction / mFinishTransaction", "before": "非 null（可能已 apply）", "after": "close() 后一起置 null（1534）", "note": "Shell 手里还各有一份副本" },
+    { "field": "mCleanupTransaction", "before": "非 null", "after": "apply() 后置 null", "note": "cleanUpInternal 里还有第二次兜底 apply" },
+    { "field": "TransitionController.mPlayingTransitions", "before": "含 record", "after": "已移除（1214），并在 1221 doNotifyLocked 唤醒等锁方", "note": "inTransition() 从此为 false，下一次转场可放行" }
+  ],
+  "threads": "整段在 WMS 线程、持 mGlobalLock，由 Shell 的同步 binder finishTransition 触发；里面还会调 ensureActivitiesVisible，可能在锁内触发新的布局甚至新的转场。",
+  "pitfalls": [
+    "syncId 不是在这里释放的：BLASTSyncEngine 在 onTransactionReady 返回后就把 SyncSet 从 mActiveSyncs 摘掉（BLASTSyncEngine.java:293）；这一步只是把 Transition 从 controller 摘除。",
+    "mState < STATE_PLAYING 时抛 IllegalStateException（1539）是设计断言，不是可恢复错误；正常路径上 onTransactionReady 已把状态推到 PLAYING。",
+    "finishTransition 会跑 ensureActivitiesVisible、checkEnterPipOnFinish、commitVisibility，全在 mGlobalLock 内；任何慢路径都会直接拖长 Shell 那次同步 binder 调用。",
+    "close() 只释放本地副本，不会撤销已经上屏的事务，别把它当成回滚。"
+  ],
+  "debug": [
+    "adb shell protoLog enable system_server WM_DEBUG_WINDOW_TRANSITIONS，看「Finish Transition: %s」以及其后的「Commit activity becoming invisible: %s」。",
+    "adb shell dumpsys SurfaceFlinger --list | grep -E \"Transition Root|snapshot\"：收尾后不该再有这些层。",
+    "perfetto 抓 wm + gfx：若 finishTransition 切片里出现长时间 ensureActivitiesVisible，卡顿就出在这里。"
+  ],
+  "next": "WMS 收尾完了，Shell 还要释放 track 并放行排队的下一个 → 第 36 步「Track 释放与队列推进」。"
+}

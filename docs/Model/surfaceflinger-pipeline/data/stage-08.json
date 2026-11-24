@@ -1,0 +1,169 @@
+{
+  "id": "stage-08",
+  "num": 8,
+  "title": "display 与 retire：present fence 回传",
+  "subtitle": "present 之后 SF 把 present fence 分发给 FrameTimeline 与 Transaction 回调，并决定旧 buffer 何时真正退役",
+  "lane": "DISPLAY",
+  "durationHint": "量级：亚毫秒~数毫秒（不含 fence 真正 signal 的时间）",
+  "summary": "present 返回到同一拍 composite 的尾部：SurfaceFlinger::composite 在 SurfaceFlinger.cpp:3522 调 onCompositionPresented(pacesetterId, frameTargeters, presentTime)，presentTime 是进 composition engine 前采样的 systemTime()（SurfaceFlinger.cpp:3383）。onCompositionPresented 先用 HWComposer::getPresentFence 逐 display 取回上一阶段的 present fence，把 pacesetter 的那个交给 TransactionCallbackInvoker::addPresentFence（SF:3787），让应用侧 later 的 transaction 回调能拿到 presentFence；然后 mFrameTimeline->setSfPresent（SF:3822）把 sfPresentTime、present fence、GPU composition done fence 交给 FrameTimeline。FrameTimeline 把 (presentFence, DisplayFrame) 压入 mPendingPresentFences 并立即 flush 已经 signal 的 fence，未 signal 的留到下一拍；同一函数最后 finalizeCurrentDisplayFrame，把这一拍封存进 mDisplayFrames 滑动窗口。因此 SF 侧 jank/present 判定天然滞后一拍到数拍。onCompositionPresented 里还会对 mLayersWithQueuedFrames 逐个 Layer::onCompositionPresented + releasePendingBuffer，release 的真正执行在 stage-09。注意 onCompositionPresented 的 presentStartTime 形参在函数体里没有被使用，函数内重新取 TimePoint::now() 作为 presentTime（SF:3817），所以 FrameTimeline 的 actual end time 是收尾时刻而不是合成开始时刻。onCompositionPresented 末尾还会对 mLayersWithQueuedFrames 逐个调 Layer::releasePendingBuffer(SF:3868-3873)，把 release 请求交给 TransactionCallbackInvoker。",
+  "callchain": [
+    "SurfaceFlinger::composite()",
+    "SurfaceFlinger::onCompositionPresented()",
+    "HWComposer::getPresentFence()",
+    "TransactionCallbackInvoker::addPresentFence()",
+    "FrameTimeline::setSfPresent()",
+    "FrameTimeline::flushPendingPresentFences()",
+    "SurfaceFrame::onPresent()",
+    "FrameTimeline::finalizeCurrentDisplayFrame()",
+    "Layer::onCompositionPresented()",
+    "Layer::releasePendingBuffer()"
+  ],
+  "sections": [
+    {
+      "heading": "一、present 之后发生了什么：一次同步的收尾",
+      "html": "<p><code>SurfaceFlinger::composite()</code> 里 present 调用返回后还要做一串收尾：记 <code>mCompositionCoverage</code>、<code>mScheduler-&gt;onCompositionPresented(presentTime)</code>（可能立刻 schedule 下一拍）、然后 <code>onCompositionPresented(pacesetterId, frameTargeters, presentTime)</code>（<code>SurfaceFlinger.cpp:3517-3522</code>）。注意这里是<strong>同步调用</strong>，不是 post 到别的线程，所以 present fence 的分发与 composition 收尾都在 SF 主线程的同一段代码里完成。</p><p><code>onCompositionPresented()</code>（<code>SurfaceFlinger.cpp:3775</code>）开头遍历 <code>frameTargeters</code>：对每个 display <code>getHwComposer().getPresentFence(id)</code>（stage-07 存的 <code>lastPresentFence</code>），对 pacesetter 调 <code>mTransactionCallbackInvoker.addPresentFence(presentFence)</code>（<code>SF:3787</code>）。这一步决定了应用侧 <code>TransactionCompletedListener</code> 最终拿到的 <code>presentFence</code> 是哪一个。</p><p>接着 <code>targeter-&gt;setPresentFence(std::move(presentFence))</code> 把 fence 交给 Scheduler 的 FrameTargeter（用于 follower display 背压判断与 present latency 统计），若 fence 有效就放进 <code>presentFences</code> map。最后 <code>mFrameTimeline-&gt;setSfPresent(...)</code>（<code>SF:3822</code>）交给 FrameTimeline。</p><p>还有一个容易被忽略的细节：<code>onCompositionPresented()</code> 的第三个形参 <code>presentStartTime</code> 在函数体里<strong>一次都没有被使用</strong>（grep 函数体只能命中签名行），真正的 <code>presentTime</code> 是函数内部 <code>TimePoint::now()</code> 取的（<code>SF:3817</code>）。因此 FrameTimeline 的 SF actual end time 反映的是“收尾这一刻”，而不是 composite 进入时刻。</p>"
+    },
+    {
+      "heading": "二、present fence 的三种状态与分类",
+      "html": "<p>第一类是<strong>可靠 present fence</strong>：<code>mHasReliablePresentFences = !getHwComposer().hasCapability(Capability::PRESENT_FENCE_IS_NOT_RELIABLE)</code>（<code>SurfaceFlinger.cpp:983-984</code>），并写进 property <code>service.sf.present_timestamp</code>（<code>SF:1125</code>）。为真时 <code>presentLatency = mPresentLatencyTracker.trackPendingFrame(compositeTime, pacesetterPresentFenceTime)</code>（<code>SF:3830-3832</code>），CompositorTiming 里带上实测 present latency。</p><p>第二类是 HWC 声明不可靠：此时 presentFence 可能是 <code>NO_FENCE</code> 或不可信，SF 在 <code>Layer::onCompositionPresented()</code> 里退回 <code>getPresentTimestamp()</code>，并用 <code>now - ((now - presentTimestamp) % vsyncPeriod)</code> 把时间戳吸附到 vsync 网格上（<code>Layer.cpp:1478-1499</code>），再 <code>mTimeStats-&gt;setPresentTime</code>。</p><p>第三类是 fence 有效但尚未 signal：<code>setSfPresent</code> 照常把它压进 <code>mPendingPresentFences</code>，等到之后某一拍 <code>flushPendingPresentFences()</code> 发现它已 signal 才真正结算（<code>FrameTimeline.cpp:2095-2143</code>）。这就是 FrameTimeline 滞后的机制来源。</p><p>还要区分 present fence 与 GPU composition done fence：<code>gpuCompositionDoneFences</code> 只在 <code>display-&gt;getState().usesClientComposition</code> 为真时取 <code>renderSurface-&gt;getClientTargetAcquireFence()</code>（<code>SF:3795-3800</code>），它代表 RenderEngine 画完 client target 的时刻，与整帧 present 不是一回事。</p><p>addPresentFence 只是登记：application 侧的 <code>presentFence</code> 要等到 SF 下一轮 <code>TransactionCallbackInvoker::sendCallbacks()</code> 才随 <code>transactionStats.presentFence</code> 发出去（RT 文档 stage-09 已从客户端角度讲过），本阶段只负责把 pacesetter 的那个 fence 放进 invoker，避免多 display 时 app 拿到 follower 的 fence。</p>"
+    },
+    {
+      "heading": "三、FrameTimeline：请求-实际两套时间线与滑动窗口",
+      "html": "<p><code>FrameTimeline::setSfPresent()</code>（<code>FrameTimeline.cpp:1420</code>）只做四件事：<code>setActualEndTime(sfPresentTime)</code>、<code>setGpuFence(gpuFence)</code>、把 <code>(presentFence, mCurrentDisplayFrame)</code> <code>emplace_back</code> 进 <code>mPendingPresentFences</code>、<code>flushPendingPresentFences()</code>，最后 <code>finalizeCurrentDisplayFrame()</code>。</p><p><code>finalizeCurrentDisplayFrame()</code>（<code>FrameTimeline.cpp:2145</code>）维护一个 <code>mMaxDisplayFrames</code> 大小的 <code>mDisplayFrames</code> 滑动窗口（<code>FrameTimeline.h:672/681</code>，默认 64 帧），超窗就 pop_front，然后为下一拍新建 <code>DisplayFrame</code>。所以同一个 present fence 的结算可能要等好几拍，历史帧才被丢弃。</p><p><code>flushPendingPresentFences()</code> 的核心是顺序假设：present fence 按提交顺序 signal。它先找第一个已 signal 的索引 <code>getFirstSignalFenceIndex()</code>（<code>FrameTimeline.cpp:2084</code>）；该索引之前的 pending fence 一律当作错误，用 <code>Fence::SIGNAL_TIME_INVALID</code> 结算；从该索引开始逐个 <code>SurfaceFrame::onPresent(signalTime, ...)</code> 并 <code>trace(...)</code>，遇到 PENDING 立即 break。这保证了 FrameTimeline 的 present 时间单调递增。</p>"
+    },
+    {
+      "heading": "四、retire：buffer 什么时候真的可以还给生产者",
+      "html": "<p>present fence signal 意味着这一帧已经被硬件接收，但某个 layer 的旧 buffer 是否还能被覆写，取决于该 layer 的 release fence。对 HWC device composition，release fence 由 <code>getReleaseFences()</code> 给出，经 <code>FrameFences::layerFences</code> 传到 <code>Output::presentFrameAndReleaseLayers()</code>，逐个 <code>layer-&gt;getLayerFE().setReleaseFence(releaseFence)</code>（<code>Output.cpp:1747-1785</code>）。</p><p>对 GPU composition，client target buffer 的“退役”需要同时等 acquire fence 与 present fence：<code>FramebufferSurface::onFrameCommitted()</code>（<code>FramebufferSurface.cpp:130-149</code>）用 <code>Fence::merge(\"FramebufferSurface-Acquire+Present\", mPreviousFrameData-&gt;mFence, mHwc.getPresentFence(mDisplayId))</code> 合成一个 fence 再 <code>releaseBuffer</code>。这正是“retire fence”的现代表达方式。</p><p>调用链是 <code>Output::presentFrameAndReleaseLayers()</code> 里 <code>mRenderSurface-&gt;onPresentDisplayCompleted()</code>（<code>Output.cpp:1744</code>）→ <code>RenderSurface::onPresentDisplayCompleted()</code>（<code>RenderSurface.cpp:250-252</code>）→ <code>mDisplaySurface-&gt;onFrameCommitted()</code> → <code>FramebufferSurface::onFrameCommitted()</code>。注意它只释放<strong>上一帧</strong>的 FrameData，当前帧要等下一帧 present 后才退役。</p><p>本版本 HWC2/AIDL HAL 没有 retire fence API：<code>HWComposer.h:557</code> 的注释把 <code>lastPresentFence</code> 描述为 “signals when the last set op retires”，说明 retire 语义已经并入 present fence；HWC1 时代的 retire fence 只剩 <code>LegacyFramebufferSurface.h:108</code> 这类历史注释，源码中未体现对应 HAL 接口。</p><p>虚拟显示走另一条路：<code>VirtualDisplaySurface::onFrameCommitted()</code>（<code>native/services/surfaceflinger/DisplayHardware/VirtualDisplay/VirtualDisplaySurface.cpp:306</code>）在 GPU display 或 <code>CompositionType::Gpu</code> 时直接 return（GPU 合成在 onRenderFrameAvailable 里已经完成），否则用 <code>mHWC.getPresentFence(halDisplayId)</code> 并把 render buffer 的 acquire fence 与 present fence <code>Fence::merge(\"VD Render Acquire/Present\", ...)</code> 后再 <code>releaseBuffer</code>（同文件 325-340）——与 FramebufferSurface 的物理屏 retire 逻辑同构。</p>"
+    },
+    {
+      "heading": "五、SF 侧 jank 的入口与观测",
+      "html": "<p>FrameTimeline 的 present 结算最终会走到 <code>SurfaceFrame::onPresent()</code>（<code>FrameTimeline.cpp:1052</code>）：它调用 <code>classifyJankLocked(...)</code> 得到 jank type，再 <code>calculateJankSeverity(...)</code> 算分数，然后 <code>mTimeStats-&gt;incrementJankyFrames(...)</code> 并把 <code>gui::JankData</code> 交给 <code>JankTracker::onJankData(layerId, jd)</code>（<code>FrameTimeline.cpp:1084-1103</code>）。这部分的具体判定留到 stage-09 展开。</p><p>观测上最有用的是 Perfetto 的 FrameTimeline 数据源：<code>FrameTimeline::DisplayFrame::trace()</code> 会为每个 display frame 产出 expected/actual 的 <code>frame_timeline_event</code>，per-surface frame 也是这样（<code>FrameTimeline.cpp:1115</code> 起）。它们与 <code>SurfaceFlinger::onCompositionPresented</code>、<code>FrameTimeline::setSfPresent</code> 两个 SFTRACE slice 对时间轴，就能看出 present 是晚在 SF 收尾还是晚在 fence signal。</p><p>另外 <code>onCompositionPresented</code> 尾部还有 <code>mFpsReporter-&gt;dispatchLayerFps(...)</code>、<code>mTimeStats</code>、<code>mFrameTracer</code> 等旁路，它们分别喂给 dumpsys 与 Perfetto 的 FrameTracer 数据源；排查“看起来没卡但 janky 比例高”时要看这些旁路是否与 FrameTimeline 用的是同一个 present fence。</p><p>对于 jank 追溯，还有两个旁路很重要：<code>Layer::onCompositionPresented()</code> 会把 present fence 写进 <code>mTimeStats-&gt;setPresentFence(...)</code> 与 <code>mFrameTracer-&gt;traceFence(..., FrameEvent::PRESENT_FENCE)</code>（<code>Layer.cpp:1473-1477</code>），<code>TimeStats</code> 喂 dumpsys，<code>FrameTracer</code> 喂 Perfetto 的 android.surfaceflinger.frametracer 数据源；两者与 FrameTimeline 互为交叉验证。</p>"
+    },
+    {
+      "heading": "六、常见误解",
+      "html": "<p>误解一：<code>setSfPresent()</code> 之后 FrameTimeline 就有这一帧的 present 时间。实际要等 fence signal 且被后续一次 flush 处理；<code>setSfPresent</code> 只负责入队与封存 display frame。</p><p>误解二：present fence 的顺序一定与提交顺序一致。代码明确假设一致，并把“先提交却后 signal”的 fence 当错误处理（<code>SIGNAL_TIME_INVALID</code>），这种情况下 FrameTimeline 上会出现 present 时间为 invalid 的帧。</p><p>误解三：retire fence 是独立对象。本版本只有 present fence + release fence，GPU 合成时二者被 <code>Fence::merge</code> 合并后才用于释放 client target，不要假设存在 HAL 级 retireFence。</p><p>误解四：<code>mFrameTimeline</code> 与 <code>JankTracker</code> 是一回事。前者负责时间线与分类（DisplayFrame/SurfaceFrame、expected vs actual），后者只是把已分类的 <code>gui::JankData</code> 按 listener 分发出去；两者由 <code>SurfaceFrame::onPresent()</code> 串起来，但生命周期与线程都不同。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "SurfaceFlinger::onCompositionPresented",
+      "lines": "3775-3801",
+      "code": "void SurfaceFlinger::onCompositionPresented(PhysicalDisplayId pacesetterId,\n                                            const scheduler::FrameTargeters& frameTargeters,\n                                            nsecs_t presentStartTime) {\n    SFTRACE_CALL();\n\n    ui::PhysicalDisplayMap<PhysicalDisplayId, std::shared_ptr<FenceTime>> presentFences;\n    ui::PhysicalDisplayMap<PhysicalDisplayId, const sp<Fence>> gpuCompositionDoneFences;\n\n    for (const auto& [id, targeter] : frameTargeters) {\n        auto presentFence = getHwComposer().getPresentFence(id);\n\n        if (id == pacesetterId) {\n            mTransactionCallbackInvoker.addPresentFence(presentFence);\n        }\n\n        if (auto fenceTime = targeter->setPresentFence(std::move(presentFence));\n            fenceTime->isValid()) {\n            presentFences.try_emplace(id, std::move(fenceTime));\n        }\n\n        ftl::FakeGuard guard(mStateLock);\n        if (const auto display = getCompositionDisplayLocked(id);\n            display && display->getState().usesClientComposition) {\n            gpuCompositionDoneFences\n                    .try_emplace(id, display->getRenderSurface()->getClientTargetAcquireFence());\n        }\n    }",
+      "note": "逐 display 取 HWC present fence：pacesetter 的交给 TransactionCallbackInvoker（app 侧事务回调会用到），其余交给 FrameTargeter；client composition 时额外收集 GPU composition done fence。注意这里全部是同步调用。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+      "symbol": "FrameTimeline::finalizeCurrentDisplayFrame",
+      "lines": "2145-2154",
+      "code": "void FrameTimeline::finalizeCurrentDisplayFrame() {\n    while (mDisplayFrames.size() >= mMaxDisplayFrames) {\n        // We maintain only a fixed number of frames' data. Pop older frames\n        mDisplayFrames.pop_front();\n    }\n    mDisplayFrames.push_back(mCurrentDisplayFrame);\n    mCurrentDisplayFrame.reset();\n    mCurrentDisplayFrame = std::make_shared<DisplayFrame>(mTimeStats, mJankClassificationThresholds,\n                                                          &mTraceCookieCounter);\n}",
+      "note": "setSfPresent 结尾调用的封存函数：mDisplayFrames 只保留 mMaxDisplayFrames 帧，超窗先 pop_front，再把当前 DisplayFrame 压入并新建下一拍的对象。这就是 FrameTimeline 只保留 64 帧历史的原因。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+      "symbol": "FrameTimeline::setSfPresent",
+      "lines": "1420-1430",
+      "code": "void FrameTimeline::setSfPresent(nsecs_t sfPresentTime,\n                                 const std::shared_ptr<FenceTime>& presentFence,\n                                 const std::shared_ptr<FenceTime>& gpuFence) {\n    SFTRACE_CALL();\n    std::scoped_lock lock(mMutex);\n    mCurrentDisplayFrame->setActualEndTime(sfPresentTime);\n    mCurrentDisplayFrame->setGpuFence(gpuFence);\n    mPendingPresentFences.emplace_back(std::make_pair(presentFence, mCurrentDisplayFrame));\n    flushPendingPresentFences();\n    finalizeCurrentDisplayFrame();\n}",
+      "note": "FrameTimeline 的入口：记录 actual end time 与 GPU fence，把 (presentFence, currentDisplayFrame) 入队，尝试 flush 已 signal 的 fence，最后封存当前 display frame 并开新的一拍。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+      "symbol": "FrameTimeline::flushPendingPresentFences",
+      "lines": "2095-2118",
+      "code": "void FrameTimeline::flushPendingPresentFences() {\n    const auto firstSignaledFence = getFirstSignalFenceIndex();\n    if (!firstSignaledFence.has_value()) {\n        return;\n    }\n\n    // Perfetto is using boottime clock to void drifts when the device goes\n    // to suspend.\n    const auto monoBootOffset = mUseBootTimeClock\n            ? (systemTime(SYSTEM_TIME_BOOTTIME) - systemTime(SYSTEM_TIME_MONOTONIC))\n            : 0;\n\n    // Present fences are expected to be signaled in order. Mark all the previous\n    // pending fences as errors.\n    for (size_t i = 0; i < firstSignaledFence.value(); i++) {\n        const auto& pendingPresentFence = *mPendingPresentFences.begin();\n        const nsecs_t signalTime = Fence::SIGNAL_TIME_INVALID;\n        auto& displayFrame = pendingPresentFence.second;\n        displayFrame->onPresent(signalTime, mPreviousPredictionPresentTime,\n                                mPreviousActualPresentTime);\n        mPreviousPredictionPresentTime =\n                displayFrame->trace(mSurfaceFlingerPid, monoBootOffset,\n                                    mPreviousPredictionPresentTime, mFilterFramesBeforeTraceStarts);\n        mPendingPresentFences.erase(mPendingPresentFences.begin());",
+      "note": "present fence 的结算：先做 boottime 偏移，然后把第一个已 signal fence 之前的所有 pending fence 当作错误（SIGNAL_TIME_INVALID）结算——体现“present fence 应按序 signal”的强假设。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "FrameTimeline::mPendingPresentFences",
+      "type": "std::vector<std::pair<std::shared_ptr<FenceTime>, std::shared_ptr<DisplayFrame>>>（FrameTimeline.h:673-674）",
+      "desc": "等待 signal 的 present fence 队列，与 DisplayFrame 一一对应；setSfPresent 入队，flushPendingPresentFences 按序结算并移除，未 signal 的会跨越多个 SF 帧。"
+    },
+    {
+      "name": "FrameTimeline::mCurrentDisplayFrame / mDisplayFrames / mMaxDisplayFrames",
+      "type": "shared_ptr<DisplayFrame> / deque / uint32_t（FrameTimeline.h:672/675/681）",
+      "desc": "当前正在攒的 display frame 与已封存的历史窗口；mMaxDisplayFrames 默认 64（kDefaultMaxDisplayFrames），超出就丢弃最老的，jank 查询只能在窗口内进行。"
+    },
+    {
+      "name": "SurfaceFlinger::mHasReliablePresentFences",
+      "type": "bool（SurfaceFlinger.h:1441）",
+      "desc": "由 HWC 的 Capability::PRESENT_FENCE_IS_NOT_RELIABLE 取反得到（SF:983-984），决定 presentLatency 是否统计、以及 Layer 侧是否退回 presentTimestamp 推算。"
+    },
+    {
+      "name": "SurfaceFlinger::mPresentLatencyTracker",
+      "type": "scheduler::PresentLatencyTracker（SurfaceFlinger.h:1616）",
+      "desc": "用 compositeTime 与 present fence 估计“从合成完成到真正 present”的延迟，结果进 CompositorTiming，影响 SF 对下一拍 vsync deadline 的估算。"
+    },
+    {
+      "name": "TransactionCallbackInvoker::mPresentFence",
+      "type": "sp<Fence>（TransactionCallbackInvoker.cpp:154-156 addPresentFence 写入）",
+      "desc": "应用侧 transaction 回调里看到的 presentFence；在 sendCallbacks 时被塞进已 latch 的 transactionStats.presentFence，是 app 判断“这一帧何时上屏”的唯一官方来源。"
+    },
+    {
+      "name": "compositionengine::Output::FrameFences::layerFences",
+      "type": "unordered_map<HWC2::Layer*, sp<Fence>>",
+      "desc": "HWC 给出的逐层 release fence；Output::presentFrameAndReleaseLayers 用它 setReleaseFence，最终决定 Layer 的 buffer 何时可回收（stage-09）。"
+    },
+    {
+      "name": "FramebufferSurface::mPreviousFrameData",
+      "type": "std::optional<FrameData>{mBuffer, mFence}",
+      "desc": "GPU 合成的 client target 上一帧数据；onFrameCommitted 用 acquire+present 合并 fence 释放它，实现 retire 语义，当前帧要等下一帧 present 后才退役。"
+    },
+    {
+      "name": "Fence::SIGNAL_TIME_INVALID",
+      "type": "nsecs_t 常量",
+      "desc": "flushPendingPresentFences 用它标记“顺序错乱、永远等不到”的 pending present fence；帧仍会结算，但 present 时间无效，FrameTimeline 上表现为异常帧。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "SurfaceFlinger::onCompositionPresented",
+      "value": "SFTRACE_CALL，SurfaceFlinger.cpp:3778",
+      "desc": "present 收尾的总切片，包含取 fence、FrameTimeline 结算、Layer releasePendingBuffer 与各种旁路上报。"
+    },
+    {
+      "name": "FrameTimeline::setSfPresent",
+      "value": "SFTRACE_CALL，FrameTimeline.cpp:1424",
+      "desc": "FrameTimeline 入队与 flush 的切片；它很短但决定了后续哪一拍才能结算。"
+    },
+    {
+      "name": "FrameTimeline（Perfetto data source）",
+      "value": "frame_timeline_event，FrameTimeline.cpp:1114 起",
+      "desc": "每个 display frame 与 surface frame 的 expected/actual start/end 事件；Perfetto 的 FrameTimeline 泳道即来自它，可直接看 present 时间。"
+    },
+    {
+      "name": "service.sf.present_timestamp",
+      "value": "property，SurfaceFlinger.cpp:1125",
+      "desc": "1 表示 present fence 可信；0 表示 HWC 声明不可靠，SF 会用 presentTimestamp 推算，jank 数据要打折看。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency",
+      "value": "desired/actual present 直方图",
+      "desc": "与 FrameTimeline 交叉验证：直方图里 actual present 的分布能看出是否稳定掉到下一拍。"
+    },
+    {
+      "name": "SFTRACE INT：HW_VSYNC_* / DEBUG delaying presentation",
+      "value": "HWComposer.cpp:181/521；Output.cpp:937",
+      "desc": "前者看硬件 vsync 状态，后者是 debug 属性人为推迟 present 的标记，排查时先排除人为注入。"
+    }
+  ],
+  "pitfalls": [
+    "setSfPresent 只是入队：present fence 没 signal 前，这一帧在 FrameTimeline 上还没有 actual present 时间；看到“最新一帧缺 present”是正常滞后，不是丢帧。",
+    "present fence 顺序假设很强：先提交却后 signal 的 fence 会被当作错误结算（SIGNAL_TIME_INVALID），此时 jank 数据不可信，需要看 SF 日志是否有 HWC 异常。",
+    "GPU composition 的 client target 释放要等 acquire fence 与 present fence 合并（FramebufferSurface.cpp:130-149），只等 acquire fence 会写到正在扫描的 buffer 上。",
+    "mHasReliablePresentFences 为 false 的设备上 presentFence 不可信，presentLatency 被强制置 0，CompositorTiming 的 snapping 逻辑会接管；跨设备对比 jank 前先查这个 property。",
+    "retire fence 在本版本没有独立 HAL 接口，源码里只有历史注释；不要在 trace 或 dumpsys 里找 retireFence 字段，应看 present fence + release fence 的合并结果。",
+    "mDisplayFrames 只是 64 帧滑动窗口，查询久远帧的 FrameTimeline 数据会查不到；这不是数据丢失 bug 而是设计上限。"
+  ],
+  "traceTags": [
+    "SurfaceFlinger::onCompositionPresented",
+    "FrameTimeline::setSfPresent",
+    "FrameTimeline",
+    "Composition",
+    "postComposition",
+    "HW_VSYNC_ON",
+    "DEBUG delaying presentation"
+  ],
+  "next": "stage-09"
+}

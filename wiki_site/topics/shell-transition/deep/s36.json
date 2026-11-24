@@ -1,0 +1,34 @@
+{
+  "step": "s36",
+  "title": "finish 的顺序契约",
+  "tldr": "apply(finishT) 必须发生在 finishTransition 之前，而 WMS 收到后也要先把随附的 wct 应用掉再收尾。",
+  "why": "顺序反了：WMS 在 finishTransition 里就把参与者按当前父链提交可见性、跑 cleanup 摘 root leash，而 Shell 的 reparent-back 还在路上。SF 会先合成一帧「窗口已按终态布局、leash 却还在动画父节点下」的结果——用户看到关闭动画末尾窗口闪一下、图标错位，或者点击落到错误位置（input window 由 leash 的父链算出）。两帧之后一切恢复，所以这种问题只在慢设备或重负载下偶发，很难复现。",
+  "concepts": [
+    { "term": "finishT", "text": "WMS 造的还原事务：每个 target reparent 回 origParent、layer/alpha 归位、root leash 摘掉；Shell 再往里加 remove。" },
+    { "term": "随 finish 的 WCT", "text": "handler 收尾时想顺手做的窗口操作，随 finishTransition 送回 WMS，在收尾动作之前被 applyTransaction(t, -1) 应用。" }
+  ],
+  "walk": [
+    { "call": "fullFinish.apply()", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1301", "what": "先让还原事务抵达 SF，此时动画层的父链与 layer 已经归位。" },
+    { "call": "mOrganizer.finishTransition(active.mToken, wct)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1306", "what": "再同步通知 WMS；这一行之后 WMS 才开始动参与者状态。" },
+    { "call": "applyTransaction(t, -1 /* syncId */, chain, caller)", "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:531", "what": "WMS 侧第一件事：随附 wct 用 syncId=-1 立刻应用，并且先置 mFinishingTransition 让可见性只记 requested。" },
+    { "call": "mTransitionController.finishTransition(chain)", "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:533", "what": "wct 落地后才真正收尾；顺序反了，wct 里的可见性会覆盖 finish 内 commitVisibility 的结果。" },
+    { "call": "mCleanupTransaction.apply()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1536", "what": "cleanup（摘 snapshot、摘 root leash）在收尾里最后发生，此时 finishT 早已上屏。" }
+  ],
+  "state": [
+    { "field": "SurfaceControl.Transaction finishT", "before": "已构造未提交", "after": "已 apply，随后 WMS 侧 mFinishTransaction.close()", "note": "Shell 与 WMS 各持一份引用：apply 归 Shell，close 归 WMS" },
+    { "field": "Transition.mState", "before": "PLAYING", "after": "FINISHED（Transition.java:1823）", "note": "只有走完 apply → finish 才会到这里" },
+    { "field": "TransitionController.mFinishingTransition", "before": "null", "after": "apply wct 期间为 transition，finish 之后清回 null", "note": "它决定 wct 里的可见性只改 requested，不直接 commit" }
+  ],
+  "threads": "Shell 侧在 wmshell.main；finishTransition 在 IWindowOrganizerController.aidl 里没有声明 oneway，是同步 binder，会阻塞 Shell 主线程直到 WMS 在 mGlobalLock 内跑完整个收尾。",
+  "pitfalls": [
+    "别把 finishTransition 提前到 apply 之前，也别在两者之间插入异步（post 到别的线程再 finish）：中间任何一帧都是错误状态。",
+    "mOrganizer.finishTransition 是同步的，Shell 主线程会等 WMS 整段收尾（含 ensureActivitiesVisible 等遍历），在 WMS 里加耗时逻辑会连带拖慢 track 释放。",
+    "wct 为 null 是常态（handler 没有额外操作）；有 wct 时它是在 finish 之前被应用的，不是之后。",
+    "合并转场的每个 token 也要各走一遍 apply → finish（1320），顺序同样不能反，只是共用主的那份 finishT。"
+  ],
+  "debug": [
+    "adb shell protoLog enable com.android.systemui WM_SHELL_TRANSITIONS 与 adb shell protoLog enable system_server WM_DEBUG_WINDOW_TRANSITIONS，对比「Transition animation finished」与「Finish Transition:」的先后与时间差。",
+    "perfetto 抓 wm + gfx：看 SF 收到 transaction 的切片是否严格早于 WMS 的 finishTransition 切片。"
+  ],
+  "next": "顺序定了，接下来看 finishT 到底挂了什么、cleanup 何时跑、失败怎么兜 → 第 34 步「cleanup 与失败兜底」。"
+}

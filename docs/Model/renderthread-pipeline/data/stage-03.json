@@ -1,0 +1,205 @@
+{
+  "id": "stage-03",
+  "num": 3,
+  "title": "syncFrameState：树同步与纹理上传",
+  "subtitle": "RT 在自己这一拍里重建树状态、跑动画、上传纹理，然后决定什么时候放走 UI 线程",
+  "lane": "RT",
+  "durationHint": "量级：亚毫秒~数毫秒，随 DisplayList 节点数、TextureView 更新数与纹理上传量增长（源码中未体现固定阈值）",
+  "summary": "syncFrameState() 是 RT 线程真正“接手”这一帧的地方。它先把 mFrameInfo 里的 Vsync/IntendedVsync/FrameTimelineVsyncId/FrameDeadline/FrameInterval 喂给 TimeLord::vsyncReceived 做单调性与去重判定，再 makeCurrent() 把 EGL/Vulkan 上下文绑到 RT、unpinImages() 释放上一帧 pin 住的 mutable image，接着对累积的 DeferredLayerUpdater 逐个 apply()（消费 SurfaceTexture 的 buffer 并等 release fence），最后调用 CanvasContext::prepareTree() 遍历整棵 RenderNode 树：主目标节点走 MODE_FULL、其余走 MODE_RT_ONLY，同时跑动画、算 damage、向 BufferQueue reserveNext。结束后把结果收敛成四件事：skippedFrameReason（NoOutputTarget/ContextIsStopped）、hasAnimations 且 requiresUiRedraw→mSyncResult、solelyTextureViewUpdates，以及作为返回值的 info.prepareTextures。这个返回值直接决定 UI 线程是在 draw() 之前就被放走，还是必须陪跑到整帧结束——这是 hwui 在 GPU 纹理缓存紧张时唯一的降级手段；被跳过的帧信息最终会以 skippedFrameVsyncId 的形式交给 SurfaceFlinger 的 frame timeline。",
+  "callchain": [
+    "DrawFrameTask::run()",
+    "DrawFrameTask::syncFrameState()",
+    "TimeLord::vsyncReceived()",
+    "CanvasContext::makeCurrent()",
+    "CanvasContext::unpinImages()",
+    "DeferredLayerUpdater::apply()",
+    "CanvasContext::prepareTree()",
+    "RenderNode::prepareTree()",
+    "SkiaDisplayList::prepareListAndChildren()",
+    "DrawFrameTask::unblockUiThread()"
+  ],
+  "sections": [
+    {
+      "heading": "入口：run() 里的 TreeInfo 决定了本次同步的“模式”",
+      "html": "<p><code>DrawFrameTask::run()</code> 在 RT 上先打 <code>DrawFrames &lt;vsyncId&gt;</code> 的 trace，再构造 <code>TreeInfo info(TreeInfo::MODE_FULL, *mContext)</code>、把 <code>mForceDrawFrame</code> 搬进 <code>info.forceDrawFrame</code> 并立刻清零，然后调用 <code>syncFrameState(info)</code>。之后它只读 <code>info.out</code> 的三个字段：<code>canUnblockUiThread = syncFrameState(info)</code>、<code>canDrawThisFrame = !info.out.skippedFrameReason.has_value()</code>、<code>solelyTextureViewUpdates = info.out.solelyTextureViewUpdates</code>（103-108）。</p><p>为什么模式在入口就定成 <code>MODE_FULL</code>？因为 <code>TreeInfo::TraversalMode</code> 的注释写得很清楚：<code>MODE_FULL</code> 是“the full monty - sync, push, run animators, etc... Used by DrawFrameTask”，且<strong>只有在 UI 线程与 RT 线程都阻塞在 prepare 上时才允许使用</strong>；<code>MODE_RT_ONLY</code> 是“只在 RT 上安全可做的事”（TreeInfo.h:66-76）。而此刻 UI 线程正卡在 <code>mSignal.wait()</code> 里，正是 <code>MODE_FULL</code> 成立的前提。同一个 <code>CanvasContext::prepareTree</code> 在别的调用点（如 <code>buildLayer</code>）可能用别的模式。</p><p>还有一条容易忽略的约束：<code>DrawFrameTask::run()</code> 在调用 <code>syncFrameState</code> 之前先把 <code>mFrameCommitCallback</code> 交给 <code>mContext-&gt;addFrameCommitListener</code>（110-113），保证即使这一帧被 drop，注册的 commit 回调也不会丢。</p>"
+    },
+    {
+      "heading": "TimeLord::vsyncReceived：为什么第一次调用可能是“假同步”",
+      "html": "<p><code>syncFrameState()</code> 的第一件事是把 <code>mFrameInfo</code> 里 5 个时间字段交给 <code>mRenderThread-&gt;timeLord().vsyncReceived(vsync, intendedVsync, vsyncId, frameDeadline, frameInterval)</code>（176-177）。<code>TimeLord</code> 是两个独立判定拼起来的（TimeLord.cpp:31-51）：</p><ul><li><strong>intendedVsync 段</strong>：只有 <code>intendedVsync &gt; mFrameIntendedTimeNanos</code> 才更新 <code>mFrameIntendedTimeNanos</code>、<code>mFrameVsyncId</code>、<code>mFrameDeadline</code>、<code>mFrameIntervalNanos</code>。注释解释了 vsyncId 的处理：<em>intendedVsync 可能因为调度抖动被前推，但我们没办法把 vsyncId 一起前推，所以直接把它重置成 INVALID_VSYNC_ID</em>（<code>mFrameVsyncId = (vsyncId &gt; mFrameVsyncId) ? vsyncId : INVALID_VSYNC_ID</code>）。这意味着“去重后的 vsyncId 可能变成 -1”，下游必须能接受。</li><li><strong>vsync 段</strong>：只有 <code>vsync &gt; mFrameTimeNanos</code> 才返回 true。<strong>返回值才是“这是一帧新的 vsync”的唯一判据</strong>，syncFrameState 虽然没检查返回值，但 <code>CanvasContext::prepareTree</code> 会用 <code>timeLord().latestVsync()</code> 与 <code>mSwapHistory.back().vsyncTime</code> 比较，差值 &lt; 2ms 就判 <code>AlreadyDrawn</code> 丢帧（见 CanvasContext.cpp:582-594）。</li></ul><p>所以“UI 已经画过这一拍、RT 才被叫醒”这种情况不会被重复画两次，而是变成一个带原因的 skipped frame。另外 <code>computeFrameTimeNanos()</code> 里复制了 Choreographer 的抖动修正逻辑（jitter &gt;= frameInterval 时把 frameTime 对齐到 <code>now - jitter % interval</code>，53-64），说明 RT 的时间基准与 UI 侧是同源的。</p>"
+    },
+    {
+      "heading": "makeCurrent / unpinImages / layer apply：顺序不是随意的",
+      "html": "<p><code>syncFrameState</code> 中间这段（178-191）有三步，每一步都有原因：</p><ol><li><code>bool canDraw = mContext-&gt;makeCurrent();</code>：<code>CanvasContext::makeCurrent()</code>（439-459）在 <code>mStopped</code> 时直接返回 false，否则调 <code>mRenderPipeline-&gt;makeCurrent()</code>；<code>Failed</code> 时还会 <code>mHaveNewSurface = true; setSurface(nullptr);</code>。这就是“上下文被停掉/丢失”的检测点，后面 <code>!canDraw</code> 会变成 <code>ContextIsStopped</code>。</li><li><code>mContext-&gt;unpinImages();</code>：<code>CanvasContext.h:121</code> 里就是一行内联 <code>mRenderPipeline-&gt;unpinImages()</code>；<code>SkiaGpuPipeline::unpinImages()</code> 对每个 <code>mPinnedImages</code> 调 <code>skgpu::ganesh::UnpinTexture()</code> 然后 <code>clear()</code>（SkiaGpuPipeline.cpp:130-135）。为什么必须在 prepareTree <strong>之前</strong>：pin 的语义是“把 mutable image 钉在 GPU 缓存里，一直钉到下一次 UI 线程 draw”（SkiaDisplayList.cpp:96-98 注释），而本帧 prepareTree 里的 <code>pinImages()</code> 会重新 pin；不先 unpin 就等于同一批纹理被重复持有，显存会一路涨。</li><li><code>for (mLayers) mLayers[i]-&gt;apply();</code> 然后 <code>mLayers.clear()</code>：<code>DeferredLayerUpdater::apply()</code> 懒建 <code>Layer</code>、设置 colorFilter/alpha，若有 <code>SurfaceTexture</code> 且 <code>mUpdateTexImage</code> 为真，则 <code>ASurfaceTexture_takeConsumerOwnership</code> + <code>ASurfaceTexture_dequeueBuffer(...)</code> 取一帧，用 <code>ImageSlot::createIfNeeded</code> 包成 <code>SkImage</code>，再 <code>updateLayer(...)</code>（DeferredLayerUpdater.cpp:143-230）。dequeue 的 release fence 通过回调 <code>createReleaseFence</code>/<code>fenceWait</code> 交给 EGL 的 <code>eglManager().fenceWait()</code> 或 Vulkan 的 <code>fenceWait()</code>（129-141）——这是 hwui 里最典型的显式同步（explicit fencing）点。</li></ol><p>注意 <code>#ifdef __ANDROID__</code> 包住的是 layer apply，而 <code>mLayers.clear()</code> 在宏外面：即便在 host 构建下也要清空，否则跨帧状态会泄漏。</p>"
+    },
+    {
+      "heading": "prepareTree：MODE_FULL 与 MODE_RT_ONLY 是按节点分的",
+      "html": "<p><code>mContext-&gt;prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode)</code> 才真正遍历树（CanvasContext.cpp:506-650）。开头先 <code>mRenderThread.removeFrameCallback(this)</code>（防止上一帧注册的 RT 动画回调与本帧打架），然后处理“上一帧是否被跳过”：若 <code>mCurrentFrameInfo</code> 带有 skippedFrameReason，就<strong>复用</strong>当前 FrameInfo 并把最老的 skipped 信息记进 <code>mSkippedFrameInfo</code>（只对 AlreadyDrawn/NoBuffer/NoOutputTarget 报告，DrawingOff/ContextIsStopped/NothingToDraw 不报，因为本来就没打算出帧）；否则 <code>mCurrentFrameInfo = mJankTracker.startFrame()</code>。</p><p>接着是模式的关键一行：</p><blockquote>info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);</blockquote><p>代码在 <code>for (const sp&lt;RenderNode&gt;&amp; node : mRenderNodes)</code> 循环里（560-567），注释说明：<strong>只有主目标节点（窗口内容）走 FULL，其余节点（非客户区/filler）以实时模式绘制</strong>。所以 <code>MODE_FULL</code>/<code>MODE_RT_ONLY</code> 不是“整个 context 的属性”，而是“本次遍历中每个节点的属性”，<code>info.mode</code> 在循环里被反复改写。</p><p>之后依次 <code>mAnimationContext-&gt;startFrame(info.mode)</code>（554）、<code>node-&gt;prepareTree(info)</code>、<code>mAnimationContext-&gt;runRemainingAnimations(info)</code>、<code>freePrefetchedLayers()</code>（568-572）。动画结果写进 <code>info.out.hasAnimations</code>/<code>requiresUiRedraw</code>，纹理 pin 结果写进 <code>info.prepareTextures</code>（下面单独讲）。</p><p>遍历完还有三道“是否真的能画”的闸门：无输出目标 → <code>NoOutputTarget</code>（576-580）；与 <code>mSwapHistory.back().vsyncTime</code> 差 &lt; 2ms → <code>AlreadyDrawn</code>（582-594）；<code>mRenderNodes.size() &gt; 2 &amp;&amp; !mRenderNodes[1]-&gt;isRenderable()</code> → <code>NothingToDraw</code>（601-603）。最后 <code>mNativeSurface-&gt;reserveNext()</code> 向 BufferQueue 预定下一块 buffer，失败则 <code>NoBuffer</code>，且非 <code>TIMED_OUT</code> 的错误会直接 <code>setSurface(nullptr)</code> 认定 surface 死亡（605-619）。</p>"
+    },
+    {
+      "heading": "skippedFrameReason：六个值分别从哪来",
+      "html": "<p><code>SkippedFrameReason</code> 只有六个枚举值（base/libs/hwui/SkippedFrameInfo.h:21-28），但产生位置分散在三个函数里，混淆它们会误判掉帧原因：</p><table><thead><tr><th>值</th><th>产生位置</th><th>含义</th></tr></thead><tbody><tr><td><code>NoOutputTarget</code></td><td>syncFrameState 195-199；CanvasContext::prepareTree 576-580</td><td>没有 Surface/SurfaceControl 可用；会让 <code>mSyncResult</code> 同时置 <code>LostSurfaceRewardIfFound</code></td></tr><tr><td><code>ContextIsStopped</code></td><td>syncFrameState 200-204</td><td>有 surface 但 <code>makeCurrent()</code> 返回 false（mStopped/上下文失败）；置 <code>ContextIsStopped</code> 位</td></tr><tr><td><code>AlreadyDrawn</code></td><td>CanvasContext::prepareTree 582-594</td><td>本 vsync 已经画过（差值 &lt; 2ms），UI 的这次请求来晚了</td></tr><tr><td><code>NothingToDraw</code></td><td>CanvasContext::prepareTree 601-603；CanvasContext::draw 699-701</td><td>第二层节点不可渲染，或 dirty 为空且 <code>skipEmptyFrames</code></td></tr><tr><td><code>NoBuffer</code></td><td>CanvasContext::prepareTree 605-616</td><td><code>reserveNext()</code> 失败（BufferQueue/BLAST 侧没 buffer，通常是消费端慢）</td></tr><tr><td><code>DrawingOff</code></td><td>CanvasContext::draw 694-697</td><td><code>Properties::isDrawingEnabled()</code> 或 <code>mDrawingEnabled</code> 为假（调试开关/生命周期）</td></tr></tbody></table><p>syncFrameState 只负责前两个，并且<strong>只在这两个位置</strong>把 <code>skippedFrameReason</code> 转成 <code>mSyncResult</code> 的位；<code>FrameDropped</code> 位则是笼统的“只要有 reason 就置”（212-214）。其余四个值是在 <code>prepareTree</code>/<code>draw</code> 里设置的，所以“返回值里有 FrameDropped 但看不出原因”时，要去 <code>mCurrentFrameInfo</code> 的 skipped reason 或 <code>ftl.skippedFrameVsyncId</code> 里找。</p>"
+    },
+    {
+      "heading": "texture upload 与 UI 解阻塞：prepareTextures 是唯一的闸门",
+      "html": "<p><code>syncFrameState</code> 的返回值是 <code>info.prepareTextures</code>（216），而 <code>TreeInfo</code> 构造时它是 <code>prepareTextures(mode == MODE_FULL)</code>（TreeInfo.cpp:23-29）——所以只有 FULL 遍历才做纹理准备。真正把它置 false 的地方在 <code>SkiaDisplayList::prepareListAndChildren</code>：</p><blockquote>if (info.prepareTextures &amp;&amp; !info.canvasContext.pinImages(mMutableImages)) {<br>&nbsp;&nbsp;&nbsp;&nbsp;info.prepareTextures = false;<br>&nbsp;&nbsp;&nbsp;&nbsp;info.canvasContext.unpinImages();<br>}</blockquote><p>也就是：<strong>一旦某个 DisplayList 的 mutable image 无法 pin 进 GPU 缓存（<code>SkiaGpuPipeline::pinImages</code> 中 <code>PinAsTexture</code> 失败，或 GrContext 为空），就把本帧标记为“纹理没准备好”，并把已 pin 的全部 unpin 掉释放资源</strong>（SkiaDisplayList.cpp:93-105，SkiaGpuPipeline.cpp:115-135）。</p><p>这个 boolean 一路传回 <code>DrawFrameTask::run()</code> 变成 <code>canUnblockUiThread</code>：为 true 时在 <code>context-&gt;draw()</code> <strong>之前</strong>就 <code>unblockUiThread()</code>（125-127），UI 线程立刻回去准备下一帧；为 false 时 UI 线程必须等到 <code>draw()</code> 结束、<code>frameCompleteCallback</code> 执行完之后才在 159-161 被放走。最后 <code>if (!canUnblockUiThread) unblockUiThread();</code> 是兜底，保证<strong>任何路径都不会漏掉 signal</strong>（否则 UI 线程永久阻塞）。</p><p>配套的还有两条“帧被跳过”的收尾：<code>canDrawThisFrame</code> 为假时，run() 会对 <code>grContext-&gt;flushAndSubmit()</code> 手动 flush（注释：syncFrameState 可能已经做了纹理上传/删除，跳过 draw 会让它们堆在队列里），然后 <code>context-&gt;waitOnFences()</code> 等栅栏，避免任务与下一帧重叠（140-153）。也就是说<strong>“丢帧”不代表“没干活”</strong>：纹理上传可能已经发生，必须显式提交并等 fence。</p>"
+    },
+    {
+      "heading": "与 GPU / BufferQueue / BLAST / SF 的边界",
+      "html": "<p>本阶段是“CPU 侧同步”最密集的一段，但恰好<strong>不产生任何上屏动作</strong>：</p><table><thead><tr><th>边界</th><th>本阶段的动作</th><th>说明</th></tr></thead><tbody><tr><td>GPU（EGL/Vulkan 上下文）</td><td><code>makeCurrent()</code>、<code>pinImages/unpinImages</code>（纹理上传的实际发生点是 <code>PinAsTexture</code>）、<code>flushAndSubmit()</code></td><td>上下文绑定与纹理驻留都在 RT 上完成；真正画在 <code>CanvasContext::draw</code> → pipeline</td></tr><tr><td>BufferQueue / BLAST</td><td><code>mNativeSurface-&gt;reserveNext()</code></td><td>只“预定”一块 buffer，失败即 <code>NoBuffer</code>；<code>dequeueBuffer/queueBuffer</code> 在 swapBuffers 路径</td></tr><tr><td>SurfaceTexture（TextureView）</td><td><code>DeferredLayerUpdater::apply()</code> 里的 <code>ASurfaceTexture_dequeueBuffer</code> + release fence 等待</td><td>这是消费者侧取帧，属于 BufferQueue 消费；fence 走 EGL/Vulkan 的 <code>fenceWait</code></td></tr><tr><td>SF / frame timeline</td><td>本阶段只把 skip 信息记进 <code>mSkippedFrameInfo</code>，真正交给 SF 是在 draw 里组 <code>ANativeWindowFrameTimelineInfo</code>（含 <code>skippedFrameVsyncId</code>、<code>useForRefreshRateSelection = solelyTextureViewUpdates</code>）</td><td>所以“SF 侧看到的丢帧”来源于本阶段收集的信息</td></tr></tbody></table><p>一句话概括这层的职责：把 UI 线程留下的“记录下来的绘制命令树”变成一个<strong>GPU 可执行、buffer 已预定、栅栏可等待</strong>的状态，并把“能不能画/该不该画”的判定结果回传给上层。</p>"
+    },
+    {
+      "heading": "排障：syncFrameState 慢或丢帧怎么定位",
+      "html": "<p>按信号从粗到细：</p><ol><li><strong>先看是不是 skip</strong>：FrameMetrics 里若这一帧被报为 skipped，检查 <code>skippedFrameReason</code>。六个值里 <code>NoBuffer</code>/<code>AlreadyDrawn</code> 属“节奏问题”（消费端慢或 UI 来晚），<code>NoOutputTarget</code>/<code>ContextIsStopped</code> 属“生命周期问题”（Surface 丢了/被 stop），<code>NothingToDraw</code>/<code>DrawingOff</code> 多半是预期行为，不用当 jank 治。</li><li><strong>再看 sync 耗时</strong>：<code>FrameMetrics.SYNC_DURATION</code> = <code>IssueDrawCommandsStart - SyncStart</code>（FrameMetrics.java:296-298），即 prepareTree + 纹理准备的纯 RT 耗时；如果它大而 <code>COMMAND_ISSUE_DURATION</code> 小，问题在树同步/纹理；反之在绘制下发。</li><li><strong>区分“等 buffer”与“画得慢”</strong>：Perfetto 里出现 <code>swap chain stuffed</code>（CanvasContext.cpp:502）说明 swapchain 堵住，RT 在等 BufferQueue 而不是在画，此时 <code>reserveNext</code> 或 swapBuffers 会长期占住 RT，进而让 UI 线程卡在 <code>mSignal.wait()</code> 上。</li><li><strong>纹理</strong>：trace 里搜 <code>Bitmap#prepareToDraw</code>（SkiaGpuPipeline.cpp:140）与 <code>PinAsTexture</code> 相关 slice；如果 <code>prepareTextures</code> 频繁变 false，表现是“UI 线程阻塞时间被拉长到整帧”，这是显存/纹理缓存压力的典型症状。</li><li><strong>动画</strong>：<code>info.out.hasAnimations &amp;&amp; info.out.requiresUiRedraw</code> 会置 <code>SYNC_REDRAW_REQUESTED</code>，Java 侧 <code>invalidate()</code> 再来一帧；如果每帧都置位，说明动画无法在 RT 上自驱（例如有 WebView functor），此时 UI 每帧都要参与，jank 会明显上升。</li></ol>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "DrawFrameTask::syncFrameState",
+      "lines": "169-191",
+      "code": "bool DrawFrameTask::syncFrameState(TreeInfo& info) {\n    ATRACE_CALL();\n    int64_t vsync = mFrameInfo[static_cast<int>(FrameInfoIndex::Vsync)];\n    int64_t intendedVsync = mFrameInfo[static_cast<int>(FrameInfoIndex::IntendedVsync)];\n    int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];\n    int64_t frameDeadline = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameDeadline)];\n    int64_t frameInterval = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameInterval)];\n    mRenderThread->timeLord().vsyncReceived(vsync, intendedVsync, vsyncId, frameDeadline,\n            frameInterval);\n    bool canDraw = mContext->makeCurrent();\n    mContext->unpinImages();\n\n#ifdef __ANDROID__\n    for (size_t i = 0; i < mLayers.size(); i++) {\n        if (mLayers[i]) {\n            mLayers[i]->apply();\n        }\n    }\n#endif\n\n    mLayers.clear();\n    mContext->setContentDrawBounds(mContentDrawBounds);\n    mContext->prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode);",
+      "note": "syncFrameState 的前半段：把 mFrameInfo 的 5 个时间字段喂给 TimeLord、makeCurrent 检测上下文是否可用、unpinImages 释放上一帧 pin 住的 mutable image、逐个 apply 累积的 DeferredLayerUpdater（消费 SurfaceTexture 的 buffer），最后把 contentDrawBounds 与整块 uiFrameInfo 交给 prepareTree。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "info.out.skippedFrameReason",
+      "lines": "192-217",
+      "code": "\n    // This is after the prepareTree so that any pending operations\n    // (RenderNode tree state, prefetched layers, etc...) will be flushed.\n    bool hasTarget = mContext->hasOutputTarget();\n    if (CC_UNLIKELY(!hasTarget || !canDraw)) {\n        if (!hasTarget) {\n            mSyncResult |= SyncResult::LostSurfaceRewardIfFound;\n            info.out.skippedFrameReason = SkippedFrameReason::NoOutputTarget;\n        } else {\n            // If we have a surface but can't draw we must be stopped\n            mSyncResult |= SyncResult::ContextIsStopped;\n            info.out.skippedFrameReason = SkippedFrameReason::ContextIsStopped;\n        }\n    }\n\n    if (info.out.hasAnimations) {\n        if (info.out.requiresUiRedraw) {\n            mSyncResult |= SyncResult::UIRedrawRequired;\n        }\n    }\n    if (info.out.skippedFrameReason) {\n        mSyncResult |= SyncResult::FrameDropped;\n    }\n    // If prepareTextures is false, we ran out of texture cache space\n    return info.prepareTextures;\n}",
+      "note": "这是 DrawFrameTask::syncFrameState 的后半段“判定 + 收敛”：hasOutputTarget/makeCurrent 失败转成 NoOutputTarget/ContextIsStopped 并置对应的 mSyncResult 位；hasAnimations 且 requiresUiRedraw 转成 UIRedrawRequired；任何 skippedFrameReason 都置 FrameDropped；返回值是 info.prepareTextures——它决定 UI 线程能否在 draw 之前被放走。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/TimeLord.cpp",
+      "symbol": "TimeLord::vsyncReceived",
+      "lines": "31-51",
+      "code": "bool TimeLord::vsyncReceived(nsecs_t vsync, nsecs_t intendedVsync, int64_t vsyncId,\n                             int64_t frameDeadline, nsecs_t frameInterval) {\n    if (intendedVsync > mFrameIntendedTimeNanos) {\n        mFrameIntendedTimeNanos = intendedVsync;\n\n        // The intendedVsync might have been advanced to account for scheduling\n        // jitter. Since we don't have a way to advance the vsync id we just\n        // reset it.\n        mFrameVsyncId = (vsyncId > mFrameVsyncId) ? vsyncId : UiFrameInfoBuilder::INVALID_VSYNC_ID;\n        mFrameDeadline = frameDeadline;\n        if (frameInterval > 0) {\n            mFrameIntervalNanos = frameInterval;\n        }\n    }\n\n    if (vsync > mFrameTimeNanos) {\n        mFrameTimeNanos = vsync;\n        return true;\n    }\n    return false;\n}",
+      "note": "两段独立判定：intendedVsync 前进才更新 vsyncId/deadline/frameInterval（且 vsyncId 无法同步前推时重置为 INVALID_VSYNC_ID）；vsync 前进才返回 true，返回值是“这是新一帧”的唯一判据。"
+    },
+    {
+      "file": "base/libs/hwui/TreeInfo.h",
+      "symbol": "MODE_FULL",
+      "lines": "66-90",
+      "code": "public:\n    enum TraversalMode {\n        // The full monty - sync, push, run animators, etc... Used by DrawFrameTask\n        // May only be used if both the UI thread and RT thread are blocked on the\n        // prepare\n        MODE_FULL,\n        // Run only what can be done safely on RT thread. Currently this only means\n        // animators, but potentially things like SurfaceTexture updates\n        // could be handled by this as well if there are no listeners\n        MODE_RT_ONLY,\n    };\n\n    TreeInfo(TraversalMode mode, renderthread::CanvasContext& canvasContext);\n\n    TraversalMode mode;\n    // TODO: Remove this? Currently this is used to signal to stop preparing\n    // textures if we run out of cache space.\n    bool prepareTextures;\n    renderthread::CanvasContext& canvasContext;\n    // TODO: buildLayer uses this to suppress running any animations, but this\n    // should probably be refactored somehow. The reason this is done is\n    // because buildLayer is not setup for injecting the animationHook, as well\n    // as this being otherwise wasted work as all the animators will be\n    // re-evaluated when the frame is actually drawn\n    bool runAnimations = true;",
+      "note": "TraversalMode 的两种模式及其使用前提写在这段注释里：MODE_FULL 是 DrawFrameTask 用的全量同步，且只有 UI/RT 都阻塞在 prepare 上时才合法；MODE_RT_ONLY 只做 RT 安全的事。prepareTextures 的注释点明它是“纹理缓存耗尽时中止准备”的开关，正好是 syncFrameState 的返回值。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "info.mode",
+      "type": "TreeInfo::TraversalMode（MODE_FULL / MODE_RT_ONLY）",
+      "desc": "遍历模式。入口构造为 MODE_FULL（DrawFrameTask.cpp:103），但 CanvasContext::prepareTree 在循环里按 node 是否为 target 改写：主目标节点 FULL、其余 RT_ONLY（CanvasContext.cpp:564）。它同时决定 prepareTextures 的初值（TreeInfo.cpp:25）和 mAnimationContext->startFrame(mode)。"
+    },
+    {
+      "name": "info.prepareTextures",
+      "type": "bool",
+      "desc": "纹理准备开关，初值 = (mode == MODE_FULL)。prepareTree 过程中若某个 DisplayList 的 pinImages 失败会被置 false 并触发 unpinImages（SkiaDisplayList.cpp:99-105）。它是 syncFrameState 的返回值，直接决定 UI 线程能否提前解阻塞。"
+    },
+    {
+      "name": "info.out.hasAnimations",
+      "type": "bool",
+      "desc": "本帧树里是否存在动画，由动画求值阶段写入；只有 evaluateAnimations 为真时才有意义（TreeInfo.h:114-115）。与 requiresUiRedraw 组合决定是否置 SyncResult::UIRedrawRequired。"
+    },
+    {
+      "name": "info.out.requiresUiRedraw",
+      "type": "bool",
+      "desc": "动画无法由 RT 自驱（例如 hasFunctors 为真、或 Properties::enableRTAnimations/mEnableRTAnimations 关闭）时置位（CanvasContext.cpp:622-625），最终变成 SYNC_REDRAW_REQUESTED 让 UI 下一帧再画。"
+    },
+    {
+      "name": "info.out.skippedFrameReason",
+      "type": "std::optional<SkippedFrameReason>",
+      "desc": "本帧是否被跳过以及原因。nullopt 表示可画；有值则 run() 不调 draw()。可能由 syncFrameState（NoOutputTarget/ContextIsStopped）或 CanvasContext::prepareTree/draw（AlreadyDrawn/NoBuffer/NothingToDraw/DrawingOff）设置。"
+    },
+    {
+      "name": "info.out.solelyTextureViewUpdates",
+      "type": "bool",
+      "desc": "默认 true，用于告诉 SF 本帧是否只有 TextureView 更新，从而决定是否用 vsyncId 做刷新率选择（TreeInfo.h:133-136）；它最终变成 ANativeWindowFrameTimelineInfo.useForRefreshRateSelection。"
+    },
+    {
+      "name": "info.out.animatedImageDelay",
+      "type": "nsecs_t（哨兵 kNoAnimatedImageDelay = -1）",
+      "desc": "AnimatedImageDrawable 的下一帧延迟。CanvasContext::prepareTree 末尾据此决定是立刻 postFrameCallback 还是 postDelayed（CanvasContext.cpp:634-649），是实现“RT 自己驱动的 GIF 播放”的关键字段。"
+    },
+    {
+      "name": "info.damageGenerationId / damageAccumulator / colorArea",
+      "type": "int64_t / DamageAccumulator* / ColorArea*",
+      "desc": "由 CanvasContext::prepareTree 填充（548-552）。damageGenerationId 用 mDamageId++ 保证本帧 damage 计算有唯一世代；damageAccumulator 累积脏区，draw 时 finish 出 dirty rect；colorArea 决定 HDR/色彩空间。"
+    },
+    {
+      "name": "mSyncQueued（作为 prepareTree 入参 syncQueued）",
+      "type": "int64_t",
+      "desc": "syncFrameState 把 drawFrame 里记下的时刻当作 syncQueued 传进 prepareTree，后者写入 mCurrentFrameInfo 的 FrameInfoIndex::SyncQueued 并立刻 markSyncStart()（CanvasContext.cpp:544-546）。这就是 SYNC_QUEUED / SYNC_START 两个 FrameMetrics 字段的来源。"
+    },
+    {
+      "name": "mCurrentFrameInfo / mSkippedFrameInfo",
+      "type": "FrameInfo* / std::optional<SkippedFrameInfo>",
+      "desc": "当前帧的 FrameInfo（来自 mJankTracker.startFrame()）与“最早被跳过那一帧”的快照。若上一帧带了 skippedFrameReason 就复用当前 FrameInfo 而不新开一个，避免把连续丢帧算成多帧（CanvasContext.cpp:515-542）。"
+    },
+    {
+      "name": "mLayers",
+      "type": "std::vector<sp<DeferredLayerUpdater>>",
+      "desc": "本帧要 apply 的 layer updater 列表，syncFrameState 里逐个 apply 后 clear()。它是跨帧累积的（由 RenderProxy::pushLayerUpdate 填充），apply() 内部会消费 SurfaceTexture 的 buffer 并等 release fence。"
+    },
+    {
+      "name": "canDraw / hasTarget",
+      "type": "bool",
+      "desc": "两个独立的可用性判定：canDraw 来自 makeCurrent()（上下文/停止状态），hasTarget 来自 hasOutputTarget()（Surface/SurfaceControl）。二者任一为假都会让本帧 skip，但映射到不同的 SkippedFrameReason 与不同的 mSyncResult 位。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "syncFrameState",
+      "value": "ATRACE_CALL（DrawFrameTask.cpp:170）",
+      "desc": "RT 侧同步阶段的顶层 slice。把它拆成“TimeLord/makeCurrent（前）”“layer apply”“prepareTree（后）”三段看，就能区分是 TreeView 更新慢还是树同步慢。"
+    },
+    {
+      "name": "FrameMetrics.SYNC_DURATION（metric id 5）",
+      "value": "IssueDrawCommandsStart - SyncStart",
+      "desc": "由 FrameMetrics.DURATIONS 决定（FrameMetrics.java:296-298），即 prepareTree + 纹理准备的纯耗时。它就是本阶段在用户可见指标里的直接投影。"
+    },
+    {
+      "name": "skipped frame 原因分布",
+      "value": "FrameTimeline 的 skippedFrameVsyncId / skippedFrameStartTimeNanos",
+      "desc": "CanvasContext::draw 组装 ANativeWindowFrameTimelineInfo 时带上 mSkippedFrameInfo 的 vsyncId 与 startTime（CanvasContext.cpp:769-772）；按 SkipsReason 归类统计即可定位“丢帧是节奏问题还是生命周期问题”。"
+    },
+    {
+      "name": "\"Drawing <l,t,r,b>\"",
+      "value": "ATRACE_FORMAT（CanvasContext.cpp:736）",
+      "desc": "带 dirty rect 的绘制 slice。若 syncFrameState 很长但 Drawing 的 rect 很小，说明时间花在准备而不是像素上。"
+    },
+    {
+      "name": "\"swap chain stuffed\"",
+      "value": "ATRACE_NAME（CanvasContext.cpp:502），判定逻辑在 466-504",
+      "desc": "isSwapChainStuffed() 需要 3 帧 swap 历史；只要任一帧的 dequeueDuration 与 queueDuration 都 < 6ms（SLOW_THRESHOLD）就判为不堵，或相邻两帧 swapCompletedTime 相差超过 3 个 frameInterval（说明已经实质性丢过帧、队列已恢复）也判为不堵；否则打这条 tag。出现它说明 RT 在等 BufferQueue 消费端，而不是在画。"
+    },
+    {
+      "name": "\"Bitmap#prepareToDraw %dx%d\"",
+      "value": "ATRACE_FORMAT（SkiaGpuPipeline.cpp:140）",
+      "desc": "单张 bitmap 的 pin/unpin + flushAndSubmit 路径，是纹理上传成本的直接观测点；频繁出现且尺寸大时要怀疑纹理缓存压力。"
+    },
+    {
+      "name": "frameInterval / RenderRate",
+      "value": "TimeLord::frameIntervalNanos() / ATRACE_INT RenderRate",
+      "desc": "在 vsyncReceived 里随帧更新（frameInterval > 0 时）。本阶段的 AlreadyDrawn 判定（2ms）与 swap 历史比较都以它为基准，帧率切换时这些阈值行为会变化。"
+    }
+  ],
+  "pitfalls": [
+    "误以为 MODE_FULL 是整个 CanvasContext 的属性：它是 per-node 的，只有等于 prepareTree 的 target 参数（ViewRootImpl 的 RootRenderNode）才走 FULL，其余节点走 MODE_RT_ONLY（CanvasContext.cpp:560-567）。",
+    "误以为 unpinImages 是可选的清理：pin 的语义是“钉到下一次 UI 线程 draw”，本帧 prepareTree 会重新 pin；不先 unpin 会让同一批 mutable image 被重复持有，显存单调上涨（SkiaDisplayList.cpp:96-105）。",
+    "误以为 syncFrameState 返回 true 表示“这一帧会画”：返回值是 info.prepareTextures，只表示“纹理准备好了、UI 可以先走”；是否真的画取决于 info.out.skippedFrameReason（run 里用 canDrawThisFrame 判断）。",
+    "误以为 UI 线程一定在 syncFrameState 之后立刻解阻塞：canUnblockUiThread 只取 prepareTextures；为 false 时 UI 要陪跑到 draw 与 frameCompleteCallback 之后（DrawFrameTask.cpp:125-127、159-161）。",
+    "误以为丢帧就没做事：synced 但 skipped 时 run() 仍会 grContext->flushAndSubmit() 提交 syncFrameState 期间的纹理上传/删除，并 waitOnFences() 等栅栏，否则这些操作会堆到下一帧（140-153）。",
+    "误把 AlreadyDrawn 当 bug：它是“本 vsync 已经画过”的正确判定，阈值是对 mSwapHistory.back().vsyncTime 的 2ms 宽容（注释说明是为了容纳 vsync 估算误差），帧率越高这个窗口越窄。",
+    "误以为 TimeLord::lastVsyncId() 总是有效：调度抖动导致 intendedVsync 前推时，vsyncId 会被重置为 INVALID_VSYNC_ID(-1)，下游对 -1 必须有分支（TimeLord.cpp:36-39）。",
+    "误以为 reserveNext() 失败都是致命的：TIMED_OUT 可以恢复（只记 NoBuffer 并继续），其它错误会直接 setSurface(nullptr) 认定 surface 死亡（CanvasContext.cpp:605-619）。",
+    "误以为 hasAnimations 就一定要 UI 重画：只有 requiresUiRedraw 也置位时才置 UIRedrawRequired；RT 能自驱的动画只会 postFrameCallback 让 RT 自己再来一帧。"
+  ],
+  "traceTags": [
+    "syncFrameState",
+    "DrawFrames",
+    "Drawing",
+    "frameTimelineInfo",
+    "swap chain stuffed",
+    "Bitmap#prepareToDraw",
+    "queue mFrameCallbackTask to run after"
+  ],
+  "next": "stage-04"
+}

@@ -1,0 +1,528 @@
+{
+  "id": "sk-render",
+  "title": "SkiaPipeline::renderFrameImpl",
+  "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+  "sig": "void SkiaPipeline::renderFrameImpl(const SkRect& clip, const std::vector<sp<RenderNode>>& nodes, bool opaque, const Rect& contentDrawBounds, SkCanvas* canvas, const SkMatrix& preTransform)",
+  "span": [
+    374,
+    479
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void SkiaPipeline::renderFrameImpl(const SkRect& clip,",
+      "kind": "note",
+      "text": "renderFrameImpl 入口：在 RT 线程把已装配的渲染节点画到传入 canvas，完成一帧输出。"
+    },
+    {
+      "at": 2,
+      "quote": "const std::vector<sp<RenderNode>>& nodes, bool opaque,",
+      "kind": "note",
+      "text": "nodes 是待绘节点列表，opaque 表示整块画面是否不透明，决定要不要清屏。"
+    },
+    {
+      "at": 3,
+      "quote": "const Rect& contentDrawBounds, SkCanvas* canvas,",
+      "kind": "note",
+      "text": "clip 是脏区矩形，contentDrawBounds 是内容区域，preTransform 是画布前置变换。"
+    },
+    {
+      "at": 4,
+      "quote": "const SkMatrix& preTransform) {",
+      "kind": "note",
+      "text": "函数体开始；此时 canvas 已由 renderFrame 准备好，本函数只负责绘制。"
+    },
+    {
+      "at": 5,
+      "quote": "SkAutoCanvasRestore saver(canvas, true);",
+      "kind": "state",
+      "text": "SkAutoCanvasRestore 保存 canvas 栈状态，析构自动恢复，防止本帧裁剪与变换泄漏。"
+    },
+    {
+      "at": 6,
+      "quote": "auto clipRestriction = preTransform.mapRect(clip).roundOut();",
+      "kind": "data",
+      "text": "preTransform 映射脏区 clip 后 roundOut 向外取整，避免浮点裁剪丢掉边缘像素。"
+    },
+    {
+      "at": 7,
+      "quote": "if (CC_UNLIKELY(isCapturingSkp())) {",
+      "kind": "branch",
+      "text": "正在录制 SKP 时不能改 device clip，走注释分支，否则录出的文件内容会被裁掉。"
+    },
+    {
+      "at": 8,
+      "quote": "canvas->drawAnnotation(SkRect::Make(clipRestriction), \"AndroidDeviceCl",
+      "kind": "trace",
+      "text": "录制模式下把设备裁剪区写成 AndroidDeviceClipRestriction 注释，供回放还原脏区语义。"
+    },
+    {
+      "at": 9,
+      "quote": "nullptr);",
+      "kind": "note",
+      "text": "annotation 无附加数据传 nullptr，该分支不改变任何 canvas 状态。"
+    },
+    {
+      "at": 10,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "非录制路径：正常渲染时才真正设置设备裁剪。"
+    },
+    {
+      "at": 11,
+      "quote": "// clip drawing to dirty region only when not recording SKP files (whi",
+      "kind": "note",
+      "text": "注释：只在非录制时裁到脏区，因为 SKP 必须包含每帧全部绘制操作。"
+    },
+    {
+      "at": 12,
+      "quote": "// draw ops on every frame)",
+      "kind": "note",
+      "text": "注释续行：录制文件要完整，所以录制分支不做脏区裁剪。"
+    },
+    {
+      "at": 13,
+      "quote": "canvas->androidFramework_setDeviceClipRestriction(clipRestriction);",
+      "kind": "state",
+      "text": "设置设备级裁剪矩形，把绘制限制在本帧脏区内，减少 GPU 无效填充。"
+    },
+    {
+      "at": 15,
+      "quote": "canvas->concat(preTransform);",
+      "kind": "state",
+      "text": "canvas->concat(preTransform) 把前置变换并入当前矩阵，后续绘制都在该空间下进行。"
+    },
+    {
+      "at": 17,
+      "quote": "if (!opaque) {",
+      "kind": "branch",
+      "text": "opaque 为 false 说明窗口有透明区域，必须清屏，否则会残留上一帧像素。"
+    },
+    {
+      "at": 18,
+      "quote": "canvas->clear(SK_ColorTRANSPARENT);",
+      "kind": "state",
+      "text": "clear(SK_ColorTRANSPARENT) 清整块画布为全透明；不透明帧跳过此步以省带宽。"
+    },
+    {
+      "at": 21,
+      "quote": "if (1 == nodes.size()) {",
+      "kind": "branch",
+      "text": "单节点是最常见的普通窗口路径，直接画根节点，省去分层与裁剪逻辑。"
+    },
+    {
+      "at": 22,
+      "quote": "if (!nodes[0]->nothingToDraw()) {",
+      "kind": "branch",
+      "text": "nothingToDraw 为真表示节点不可见（尺寸为 0 或被裁空），跳过以避免空遍历。"
+    },
+    {
+      "at": 23,
+      "quote": "RenderNodeDrawable root(nodes[0].get(), canvas);",
+      "kind": "data",
+      "text": "用 nodes[0] 构造 RenderNodeDrawable，它是 RenderNode 到 SkCanvas 的绘制适配层。"
+    },
+    {
+      "at": 24,
+      "quote": "root.draw(canvas);",
+      "kind": "data",
+      "text": "root.draw 回放 display list 产生实际绘制，这条路径不加额外裁剪。"
+    },
+    {
+      "at": 26,
+      "quote": "} else if (0 == nodes.size()) {",
+      "kind": "branch",
+      "text": "0 个节点表示本帧无内容，前面已按 opaque 决定是否清屏，直接结束。"
+    },
+    {
+      "at": 27,
+      "quote": "// nothing to draw",
+      "kind": "note",
+      "text": "空注释，说明该分支确实没有任何绘制动作。"
+    },
+    {
+      "at": 28,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "多节点路径：至少 2 个节点，按 backdrop、content、overlay 三层语义绘制。"
+    },
+    {
+      "at": 29,
+      "quote": "// It there are multiple render nodes, they are laid out as follows:",
+      "kind": "note",
+      "text": "多节点布局约定：#0 背景板、#1 内容、#2 起浮层，后面绘制顺序依赖此约定。"
+    },
+    {
+      "at": 30,
+      "quote": "// #0 - backdrop (content + caption)",
+      "kind": "note",
+      "text": "#0 backdrop 含背景与 caption，覆盖整个窗口区域。"
+    },
+    {
+      "at": 31,
+      "quote": "// #1 - content (local bounds are at (0,0), will be translated and cli",
+      "kind": "note",
+      "text": "#1 content 局部坐标从 (0,0) 起，绘制时需平移到 backdrop 并裁剪到其范围。"
+    },
+    {
+      "at": 32,
+      "quote": "// #2 - additional overlay nodes",
+      "kind": "note",
+      "text": "#2 及以后是附加浮层，如输入法或对话框，绘制在内容之上。"
+    },
+    {
+      "at": 33,
+      "quote": "// Usually the backdrop cannot be seen since it will be entirely cover",
+      "kind": "note",
+      "text": "正常状态下内容完全覆盖背景板，用户看不到 backdrop。"
+    },
+    {
+      "at": 34,
+      "quote": "// While",
+      "kind": "note",
+      "text": "注释转折词，说明存在例外场景，即下一句的 resizing。"
+    },
+    {
+      "at": 35,
+      "quote": "// resizing however it might become partially visible. The following r",
+      "kind": "note",
+      "text": "resize 过程中内容可能缩小，backdrop 边缘暂时露出，需要额外补画。"
+    },
+    {
+      "at": 36,
+      "quote": "// the",
+      "kind": "note",
+      "text": "注释续行，指出上一句的主语是背景板。"
+    },
+    {
+      "at": 37,
+      "quote": "// backdrop against the content and draw the remaining part of it. It",
+      "kind": "note",
+      "text": "绘制循环先用 content 裁剪 backdrop，只画露出的那一部分。"
+    },
+    {
+      "at": 38,
+      "quote": "// content",
+      "kind": "note",
+      "text": "注释续行，引出下一句的主语 content。"
+    },
+    {
+      "at": 39,
+      "quote": "// cropped to the backdrop (since that indicates a shrinking of the wi",
+      "kind": "note",
+      "text": "再把内容裁剪到 backdrop，表示窗口正在收缩。"
+    },
+    {
+      "at": 40,
+      "quote": "//",
+      "kind": "note",
+      "text": "空注释行，分隔布局说明与下面的具体实现。"
+    },
+    {
+      "at": 41,
+      "quote": "// Additional nodes will be drawn on top with no particular clipping s",
+      "kind": "note",
+      "text": "附加浮层在最上层绘制，不做特殊裁剪，层级完全由列表顺序决定。"
+    },
+    {
+      "at": 43,
+      "quote": "// Usually the contents bounds should be mContentDrawBounds - however",
+      "kind": "note",
+      "text": "注释：内容边界通常应取 mContentDrawBounds，但本实现会做位置微调。"
+    },
+    {
+      "at": 44,
+      "quote": "// move it towards the fixed edge to give it a more stable appearance",
+      "kind": "note",
+      "text": "注释续行：把内容朝固定边移动以获得稳定观感，属当前权宜处理。"
+    },
+    {
+      "at": 45,
+      "quote": "// If there is no content bounds we ignore the layering as stated abov",
+      "kind": "note",
+      "text": "注释续行：没有内容边界时放弃上述分层，从节点 2 起按普通浮层处理。"
+    },
+    {
+      "at": 47,
+      "quote": "// Backdrop bounds in render target space",
+      "kind": "note",
+      "text": "计算 backdrop 在渲染目标空间的边界，作为补画与内容对齐的基准。"
+    },
+    {
+      "at": 48,
+      "quote": "const Rect backdrop = nodeBounds(*nodes[0]);",
+      "kind": "data",
+      "text": "nodeBounds(*nodes[0]) 取背景板节点在目标空间的矩形，用于判定内容是否露边。"
+    },
+    {
+      "at": 50,
+      "quote": "// Bounds that content will fill in render target space (note content",
+      "kind": "note",
+      "text": "计算内容在渲染目标空间要填充的区域，注意内容节点自身 bounds 可能更大。"
+    },
+    {
+      "at": 51,
+      "quote": "// bigger)",
+      "kind": "note",
+      "text": "注释续行：所以下面用 contentDrawBounds 的宽高，而不是节点 bounds。"
+    },
+    {
+      "at": 52,
+      "quote": "Rect content(contentDrawBounds.getWidth(), contentDrawBounds.getHeight",
+      "kind": "data",
+      "text": "以 contentDrawBounds 的宽高构造 content 矩形，此时原点仍在 (0,0)。"
+    },
+    {
+      "at": 53,
+      "quote": "content.translate(backdrop.left, backdrop.top);",
+      "kind": "data",
+      "text": "把 content 平移到 backdrop 左上角，两者坐标系对齐后才能做包含判断。"
+    },
+    {
+      "at": 54,
+      "quote": "if (!content.contains(backdrop) && !nodes[0]->nothingToDraw()) {",
+      "kind": "branch",
+      "text": "内容未完全包含背景板、且背景板有内容时，才需补画露出的右、下边。"
+    },
+    {
+      "at": 55,
+      "quote": "// Content doesn't entirely overlap backdrop, so fill around content (",
+      "kind": "note",
+      "text": "该分支目的：内容没盖满背景板，需补画四周露出的背景。"
+    },
+    {
+      "at": 57,
+      "quote": "// Note: in the future, if content doesn't snap to backdrop's left/top",
+      "kind": "note",
+      "text": "注释：若将来内容不贴 backdrop 左上角，还需补画左、上两边。"
+    },
+    {
+      "at": 58,
+      "quote": "// also fill left/top. Currently, both 2up and freeform position conte",
+      "kind": "note",
+      "text": "注释续行：2up 与 freeform 都把内容定位在左上角，故当前只需补右下。"
+    },
+    {
+      "at": 59,
+      "quote": "// of",
+      "kind": "note",
+      "text": "注释续行，结束这段补画边界的说明。"
+    },
+    {
+      "at": 60,
+      "quote": "// the backdrop, so this isn't necessary.",
+      "kind": "note",
+      "text": "空注释，分隔设计说明与补画实现。"
+    },
+    {
+      "at": 61,
+      "quote": "RenderNodeDrawable backdropNode(nodes[0].get(), canvas);",
+      "kind": "data",
+      "text": "为 backdrop 构造 RenderNodeDrawable，右侧与底部两处补画复用它。"
+    },
+    {
+      "at": 62,
+      "quote": "if (content.right < backdrop.right) {",
+      "kind": "branch",
+      "text": "content 右边界小于 backdrop 右边界，说明右侧露出，需要补画。"
+    },
+    {
+      "at": 63,
+      "quote": "// draw backdrop to right side of content",
+      "kind": "note",
+      "text": "补画背景板在内容右侧的那条窄区域。"
+    },
+    {
+      "at": 64,
+      "quote": "SkAutoCanvasRestore acr(canvas, true);",
+      "kind": "state",
+      "text": "SkAutoCanvasRestore 保护本次裁剪，离开作用域自动恢复，不影响后续绘制。"
+    },
+    {
+      "at": 65,
+      "quote": "canvas->clipRect(SkRect::MakeLTRB(content.right, backdrop.top, backdro",
+      "kind": "data",
+      "text": "clipRect 限定只画 content.right 到 backdrop.right、纵向覆盖 backdrop 的竖条。"
+    },
+    {
+      "at": 66,
+      "quote": "backdrop.bottom));",
+      "kind": "data",
+      "text": "竖条下边界取 backdrop.bottom，使补画区域与背景板等高。"
+    },
+    {
+      "at": 67,
+      "quote": "backdropNode.draw(canvas);",
+      "kind": "data",
+      "text": "在已裁剪的画布上绘制背景板，像素只落在右侧窄条内。"
+    },
+    {
+      "at": 69,
+      "quote": "if (content.bottom < backdrop.bottom) {",
+      "kind": "branch",
+      "text": "content 底边小于 backdrop 底边，说明底部露出，需要补画。"
+    },
+    {
+      "at": 70,
+      "quote": "// draw backdrop to bottom of content",
+      "kind": "note",
+      "text": "补画背景板在内容下方的那条横区域。"
+    },
+    {
+      "at": 71,
+      "quote": "// Note: bottom fill uses content left/right, to avoid overdrawing lef",
+      "kind": "note",
+      "text": "注释续行：底部补画用 content 左右边界，避免与右侧补画重叠产生 overdraw。"
+    },
+    {
+      "at": 72,
+      "quote": "SkAutoCanvasRestore acr(canvas, true);",
+      "kind": "state",
+      "text": "再次保存画布状态，使两次补画的裁剪互不干扰。"
+    },
+    {
+      "at": 73,
+      "quote": "canvas->clipRect(SkRect::MakeLTRB(content.left, content.bottom, conten",
+      "kind": "data",
+      "text": "clipRect 限定横条：左右取 content，上边界 content.bottom，下边界 backdrop.bottom。"
+    },
+    {
+      "at": 74,
+      "quote": "backdrop.bottom));",
+      "kind": "data",
+      "text": "横条下边界到 backdrop.bottom，保证补满窗口底部。"
+    },
+    {
+      "at": 75,
+      "quote": "backdropNode.draw(canvas);",
+      "kind": "data",
+      "text": "绘制背景板，填掉内容下方空白，避免 resize 时窗口底部出现空洞。"
+    },
+    {
+      "at": 79,
+      "quote": "RenderNodeDrawable contentNode(nodes[1].get(), canvas);",
+      "kind": "data",
+      "text": "为内容节点构造 RenderNodeDrawable，下面按 backdrop 是否为空决定对齐方式。"
+    },
+    {
+      "at": 80,
+      "quote": "if (!backdrop.isEmpty()) {",
+      "kind": "branch",
+      "text": "backdrop 非空才把内容对齐到背景板；为空说明没有真实窗口区域可参考。"
+    },
+    {
+      "at": 81,
+      "quote": "// content node translation to catch up with backdrop",
+      "kind": "note",
+      "text": "内容节点需从自身坐标平移，才能与背景板位置重合。"
+    },
+    {
+      "at": 82,
+      "quote": "float dx = backdrop.left - contentDrawBounds.left;",
+      "kind": "data",
+      "text": "dx 是水平平移量，等于 backdrop.left 减 contentDrawBounds.left。"
+    },
+    {
+      "at": 83,
+      "quote": "float dy = backdrop.top - contentDrawBounds.top;",
+      "kind": "data",
+      "text": "dy 是垂直平移量；dx、dy 同时为 0 说明内容已与背景板对齐。"
+    },
+    {
+      "at": 85,
+      "quote": "SkAutoCanvasRestore acr(canvas, true);",
+      "kind": "state",
+      "text": "保存画布状态，使下面的平移与裁剪只作用于内容节点。"
+    },
+    {
+      "at": 86,
+      "quote": "canvas->translate(dx, dy);",
+      "kind": "state",
+      "text": "translate 应用 dx、dy，把内容坐标系搬到 backdrop 坐标系。"
+    },
+    {
+      "at": 87,
+      "quote": "const SkRect contentLocalClip =",
+      "kind": "data",
+      "text": "声明 contentLocalClip，保存内容局部坐标下的裁剪矩形。"
+    },
+    {
+      "at": 88,
+      "quote": "SkRect::MakeXYWH(contentDrawBounds.left, contentDrawBounds.top,",
+      "kind": "data",
+      "text": "裁剪矩形原点取 contentDrawBounds 的 left、top，即内容自身坐标。"
+    },
+    {
+      "at": 89,
+      "quote": "backdrop.getWidth(), backdrop.getHeight());",
+      "kind": "data",
+      "text": "裁剪尺寸取 backdrop 的宽高，保证内容不会画出窗口范围。"
+    },
+    {
+      "at": 90,
+      "quote": "canvas->clipRect(contentLocalClip);",
+      "kind": "state",
+      "text": "clipRect 裁掉超出 backdrop 的内容，实现窗口收缩时的内容裁切。"
+    },
+    {
+      "at": 91,
+      "quote": "contentNode.draw(canvas);",
+      "kind": "data",
+      "text": "绘制内容节点；比窗口大的部分已被上一行裁掉。"
+    },
+    {
+      "at": 92,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "backdrop 为空的分支：没有对齐参考，直接按原坐标画内容。"
+    },
+    {
+      "at": 93,
+      "quote": "SkAutoCanvasRestore acr(canvas, true);",
+      "kind": "state",
+      "text": "同样保存画布状态，防止内容内部的变换污染后续浮层。"
+    },
+    {
+      "at": 94,
+      "quote": "contentNode.draw(canvas);",
+      "kind": "data",
+      "text": "直接绘制内容节点，不平移也不裁剪，退化为普通绘制。"
+    },
+    {
+      "at": 97,
+      "quote": "// remaining overlay nodes, simply defer",
+      "kind": "note",
+      "text": "剩余节点是浮层，按列表顺序依次绘制，层级自下而上。"
+    },
+    {
+      "at": 98,
+      "quote": "for (size_t index = 2; index < nodes.size(); index++) {",
+      "kind": "branch",
+      "text": "浮层从索引 2 开始，索引 0、1 已分别作为 backdrop 与 content 处理过。"
+    },
+    {
+      "at": 99,
+      "quote": "if (!nodes[index]->nothingToDraw()) {",
+      "kind": "branch",
+      "text": "跳过不可见浮层，nothingToDraw 为真时不产生任何绘制。"
+    },
+    {
+      "at": 100,
+      "quote": "SkAutoCanvasRestore acr(canvas, true);",
+      "kind": "state",
+      "text": "每个浮层独立恢复画布状态，避免一个浮层的变换影响下一个。"
+    },
+    {
+      "at": 101,
+      "quote": "RenderNodeDrawable overlayNode(nodes[index].get(), canvas);",
+      "kind": "data",
+      "text": "为当前浮层构造 RenderNodeDrawable。"
+    },
+    {
+      "at": 102,
+      "quote": "overlayNode.draw(canvas);",
+      "kind": "data",
+      "text": "绘制浮层，位置由节点自身变换决定，不做额外裁剪。"
+    }
+  ]
+}

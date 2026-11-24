@@ -1,0 +1,188 @@
+{
+  "id": "stage-08",
+  "num": 8,
+  "title": "BLAST：把 buffer 当作 Transaction 提交",
+  "subtitle": "queueBuffer 之后 buffer 不再躺在 BufferQueue 里等 SF latch，而是被 BLAST 装进 Transaction，用 apply token 单向提交给 SurfaceFlinger",
+  "lane": "BQ",
+  "durationHint": "约 0.1~1 ms（仅应用侧构建与 apply 提交，不含 SF 侧 latch/合成）",
+  "summary": "BLAST 把 BufferQueue 搬进了应用进程：BufferQueueProducer::queueBuffer() 末尾的 onFrameAvailable() 是一次同进程同步调用，直接进入 BLASTBufferQueue::onFrameAvailable()（BLASTBufferQueue.cpp:779）。它维护一个影子队列 mNumFrameAvailable，然后调用 acquireNextBufferLocked()：从 BufferQueueConsumer 取走 BufferItem，把 buffer / acquire fence / frameNumber / dataspace / damage / destination frame 等全部翻译成 SurfaceComposerClient::Transaction 的 layer_state_t 更新。若此前有 settle 到这一帧的 pending 事务则先 merge，随后 t->setApplyToken(mApplyToken).apply(false /*sync*/, true /*oneWay*/) 通过 binder 调 ISurfaceComposer::setTransactionState() 发给 SF。于是“显示一帧”的语义从 BufferQueue 的 available/latch 变成了 Transaction 的 applied/presented，acquire fence 也由 SF 在 latch 时消费。这一步之所以要单独讲，是因为它把“帧的可见性”从 BufferQueue 的队列语义换成了 Transaction 的提交语义：SF 的 latch 时机被推到 apply 之后，后续 jank 归因（是 applied 慢还是 present 慢）完全取决于这一层维护的两笔账。",
+  "callchain": [
+    "BufferQueueProducer::queueBuffer()",
+    "BLASTBufferItemConsumer::onFrameAvailable()",
+    "BLASTBufferQueue::onFrameAvailable()",
+    "BLASTBufferQueue::acquireNextBufferLocked()",
+    "BufferQueueConsumer::acquireBuffer()",
+    "SurfaceComposerClient::Transaction::setBuffer()",
+    "SurfaceComposerClient::Transaction::setFrameTimelineInfo()",
+    "BLASTBufferQueue::mergePendingTransactions()",
+    "SurfaceComposerClient::Transaction::setApplyToken()",
+    "SurfaceComposerClient::Transaction::apply()",
+    "ISurfaceComposer::setTransactionState()",
+    "SurfaceFlinger::setTransactionState()",
+    "TransactionCallbackInvoker::sendCallbacks()",
+    "ITransactionCompletedListener::onTransactionCompleted()"
+  ],
+  "sections": [
+    {
+      "heading": "一、为什么 buffer 不再“留在 BufferQueue 等 SF”",
+      "html": "<p>传统模型里 BufferQueue 的消费者在 SurfaceFlinger 进程内，queueBuffer 之后 buffer 停在队列里，等 SF 在下一拍 <code>acquireBuffer()</code> / latch。BLAST 换掉了这个拓扑：<code>BLASTBufferQueue::createBufferQueue()</code>（<code>BLASTBufferQueue.cpp:1352-1376</code>）用 <code>BufferQueue::createBufferQueue</code> 的变体在本进程内建了一对 producer/consumer，consumer 是本进程的 <code>BLASTBufferItemConsumer</code>，SF 那边只看到 <code>layer_state_t::eBufferChanged</code>。</p><p>这带来一个直接后果：<code>BufferQueueProducer::queueBuffer()</code> 调 <code>frameAvailableListener-&gt;onFrameAvailable(item)</code> 时并不经过 binder，而是同步函数调用，且就发生在调用 queueBuffer 的那个线程——对 hwui 来说就是 RenderThread。换句话说，本阶段的 Transaction 构建与 apply 的 binder 往返时间，全都记在 RenderThread 的 queueBuffer 上。</p><p>另一条注释值得记住：BLAST 的 BufferQueue 在应用进程内，“so it is guaranteed that the BufferQueue is inside SurfaceFlinger's process and there will be no Binder call”（<code>BufferQueueProducer.cpp:1242-1246</code> 附近的 <code>mConsumerIsSurfaceFlinger</code> 分支）。所以 <code>item.mGraphicBuffer.clear()</code> 这个省掉 GraphicBuffer 引用的优化在 BLAST 下不生效，buffer 句柄依旧要留在本地供 Transaction 使用。</p><p>顺带解释一个常被问到的现象：BLAST 下 <code>dumpsys SurfaceFlinger</code> 里该 layer 的 buffer 状态更新频率与应用的 queueBuffer 并不一一对应，因为中间还隔着 <code>mNumFrameAvailable</code> 的影子队列和 <code>mPendingTransactions</code>；trace 上要同时看 <code>onFrameAvailable</code> 的 f/a 计数与 SF 侧的 <code>TransactionCallbackInvoker::sendCallbacks</code>。</p>"
+    },
+    {
+      "heading": "二、acquireNextBufferLocked：BufferItem 到 Transaction 的翻译",
+      "html": "<p>函数开头有两道水位闸门：<code>mNumFrameAvailable == 0</code> 直接 <code>NO_BUFFER_AVAILABLE</code>；<code>mNumAcquired &gt;= (mMaxAcquiredBuffers + 2)</code> 也返回 <code>NO_BUFFER_AVAILABLE</code>（注释说明即使做了检查，消费者仍可能因为已 acquire 满而失败）。<code>mMaxAcquiredBuffers</code> 默认 1，且 BufferQueue 内部允许比 max 多 1（<code>BLASTBufferQueue.h:205-207</code>），所以实际可能挂着 3 块。</p><p>随后 <code>mBufferItemConsumer-&gt;acquireBuffer(&amp;bufferItem, 0, false)</code> 取帧，<code>rejectBuffer()</code> 在 <code>SCALING_MODE_FREEZE</code> 且尺寸不匹配时拒收并递归重试；接受后 <code>mNumAcquired++</code>、<code>mLastAcquiredFrameNumber</code> 更新，<code>ReleaseCallbackId(buffer-&gt;getId(), frameNumber)</code> 对应的 <code>BufferItem</code> 存进 <code>mSubmitted</code>，等 release 回调来认领。</p><p>翻译动作全部落在 Transaction 上：<code>t-&gt;setBuffer()</code> 带 buffer、dup 过的 acquire fence、frameNumber、producerId、release 回调与 dequeueTime；接着 dataspace、HdrMetadata、<code>setSurfaceDamageRegion</code>、<code>addTransactionCompletedCallback</code>、destination frame（或 <code>eIgnoreDestinationFrame</code>）、buffer crop、transform、<code>setAutoRefresh</code>、<code>setDesiredPresentTime</code>。这是一次“把 BufferItem 的全部语义搬进 layer_state_t”的过程。</p><p>FrameTimeline 也在这里对齐：<code>mPendingFrameTimelines</code> 是一个按 frameNumber 排序的队列，先丢弃 <code>&lt; bufferItem.mFrameNumber</code> 的陈旧项，只有队首 frameNumber 完全相等时才 <code>t-&gt;setFrameTimelineInfo()</code> 并 pop。对不上就整条 timeline 信息丢失——这是“有帧但没有 FrameTimeline 记录”的常见原因。</p>"
+    },
+    {
+      "heading": "三、apply token、事务合并与 buffer barrier",
+      "html": "<p><code>mApplyToken</code> 默认是 <code>sp&lt;BBinder&gt;::make()</code>（<code>BLASTBufferQueue.h:305-306</code>），注释写得很直白：用这个 token 排队的事务不会被同一客户端其它部分的事务堵住。<code>SurfaceComposerClient::Transaction::apply()</code> 里 <code>applyToken</code> 随 <code>setTransactionState()</code> 一起送到 SF，SF 依据 token 对事务做串行化，所以 BLAST 的事务与 ViewRootImpl 的 <code>applyAsync</code> 事务互不阻塞。</p><p>合并有两条路径：<code>mergePendingTransactions()</code> 在 acquire 时把 <code>mPendingTransactions</code> 里 <code>targetFrameNumber &lt;= currentFrameNumber</code> 的事务 <code>merge()</code> 进来；<code>mergeWithNextTransaction(t, frameNumber)</code>（<code>BLASTBufferQueue.cpp:1100-1112</code>）则相反——如果 <code>mLastAcquiredFrameNumber &gt;= frameNumber</code> 就立刻 <code>t-&gt;setApplyToken(mApplyToken).apply()</code>，否则把事务压进 <code>mPendingTransactions</code> 并 <code>t-&gt;clear()</code> 以免被别处重复提交。</p><p>同步事务是另一套机制：<code>syncNextTransaction()</code> 建立 <code>mSyncTransaction</code> 与 <code>mTransactionReadyCallback</code>，<code>onFrameAvailable()</code> 在 <code>mTransactionReadyCallback != nullptr</code> 时把 buffer 装进 <code>mSyncTransaction</code>、登记 <code>mSyncedFrameNumbers</code>、加 <code>addTransactionCommittedCallback</code>，并在 <code>mAcquireSingleBuffer</code> 为真时把 callback 交还给调用者。</p><p><code>mSetBufferBarrier</code> / <code>setBufferHasBarrier()</code> 解决的是顺序问题：若上一笔 buffer 事务已经单向发出但状态未知，后续事务会带上 barrier，SF 必须等那笔 buffer 事务先落定才能应用，避免“属性更新跑到了 buffer 前面”导致画面错位。</p>"
+    },
+    {
+      "heading": "四、apply 之后：binder 边界与 SF 的消费",
+      "html": "<p><code>Transaction::apply(bool synchronous, bool oneWay)</code>（<code>SurfaceComposerClient.cpp:1146</code>）做四件事：把各 listener 的回调 id 折进 <code>layer_state_t.listeners</code>、<code>cacheBuffers()</code>、按参数置 <code>ISurfaceComposer::eOneWay</code>、取 <code>mApplyToken</code> 后 <code>sf-&gt;setTransactionState(std::move(state), applyToken)</code>。之后 <code>clear()</code> 清状态；只有 <code>synchronous</code> 为真才会 <code>syncCallback-&gt;wait()</code>。</p><p>BLAST 走的是 <code>apply(false, true)</code>（<code>BLASTBufferQueue.cpp:726-727</code>）——既不同步又 one-way，返回时 SF 还没 latch，更不能假设已经 present。任何“apply 之后立刻读屏幕内容/读 presentFence”的假设都是错的。</p><p>SF 侧接收后进入 <code>SurfaceFlinger::setTransactionState()</code>（<code>native/services/surfaceflinger/SurfaceFlinger.cpp:5579</code>），在下一拍由 <code>commitTransactions()</code> → <code>commitTransactionsLocked()</code> → <code>Layer::latchBufferImpl()</code> 消费 buffer 与 acquire fence；合成完成后 <code>mTransactionCallbackInvoker.sendCallbacks()</code>（<code>SurfaceFlinger.cpp:3985</code>）把 <code>latchTime</code>、<code>presentFence</code>、<code>SurfaceControlStats</code> 回给客户端的 <code>TransactionCompletedListener</code>。</p><p>也就是说：这一阶段结束时 buffer 只是“提交了”，真正的 latch、合成、present 都在 SF 的下一拍。与 GPU 的边界同样在这里断开——应用侧 swap 只提交命令，GPU 完成由 release/present fence 反映，而不是 eglSwapBuffers 的返回值。</p>"
+    },
+    {
+      "heading": "五、BufferReleaseChannel：release 回调不再挤占 binder",
+      "html": "<p>BLAST 的 buffer 什么时候能还给 BufferQueue，取决于 SF 何时丢弃旧 buffer 或何时完成 present。这条信息走的是独立通道：<code>updateBufferReleaseProducer()</code>（<code>BLASTBufferQueue.cpp:1453-1461</code>）单独发一笔 <code>setBufferReleaseChannel()</code> 事务，注释说明这是为了避免 SELinux 拒发 fd 时把整笔事务一起丢掉。</p><p>应用侧 <code>BufferReleaseReader</code> 用 epoll 监听 channel fd，<code>BBQBufferQueueProducer::waitForBufferRelease()</code> 在 BufferQueue 锁外阻塞读，读到后调 <code>releaseBufferCallback()</code>。<code>releaseBufferCallbackLocked()</code> 并不立刻把 buffer 还回去：它先压进 <code>mPendingRelease</code>，再按 <code>isEGL ? max(0, mMaxAcquiredBuffers - mCurrentMaxAcquiredBufferCount) : 0</code> 计算要“扣住”几块（<code>BLASTBufferQueue.cpp:490-538</code>），只有超出的部分才 <code>releaseBuffer()</code> 真正归还，并在 <code>mSyncedFrameNumbers</code> 为空时顺手 <code>acquireNextBufferLocked()</code> 拉下一帧。</p><p>这个“扣住”的设计是为了低刷新率下不增加延迟，代价是 buffer 归还变慢；如果 SF 一直不回 release，应用侧最终会在 dequeue 上阻塞，表现就是上一阶段的 <code>SkippedFrameReason::NoBuffer</code>。</p>"
+    },
+    {
+      "heading": "六、排障：这一层最容易出现的三类现象",
+      "html": "<p>第一类是“apply 成功但画面不动”：check <code>mNumFrameAvailable</code>、<code>mNumAcquired</code>、<code>mPendingRelease.size()</code> 三者的差值（<code>BLASTBufferQueue.h:192-196</code> 的注释给出这个等式，<code>mQueuedBufferTrace</code> 就是它），三者相等且不为 0 说明 buffer 全被扣住。</p><p>第二类是“属性更新丢帧”：<code>mergeWithNextTransaction()</code> 把事务藏进 <code>mPendingTransactions</code> 后，只由后续 acquire 的 <code>mergePendingTransactions()</code> 或显式 <code>applyPendingTransactions(frameNumber)</code>（<code>BLASTBufferQueue.cpp:1113-1119</code>）取回；如果目标帧号一直不被 acquire，事务就一直不发出，源码中没有为这个队列设置超时。</p><p>第三类是“trace 里 quantum 对不上”：<code>BBQ_TRACE</code> 展开为 <code>ATRACE_FORMAT(\"%s - %s(f:%u,a:%u)\")</code>（<code>BLASTBufferQueue.cpp:92-94</code>），slice 名里带 <code>f:</code>（mNumFrameAvailable）与 <code>a:</code>（mNumAcquired），可直接对照 <code>Transaction::setFrameTimelineInfo</code> 的 instant 事件确认哪一帧丢了 timeline。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "BLASTBufferQueue::acquireNextBufferLocked",
+      "lines": "567-595",
+      "code": "status_t BLASTBufferQueue::acquireNextBufferLocked(\n        const std::optional<SurfaceComposerClient::Transaction*> transaction) {\n    // Check if we have frames available and we have not acquired the maximum number of buffers.\n    // Even with this check, the consumer can fail to acquire an additional buffer if the consumer\n    // has already acquired (mMaxAcquiredBuffers + 1) and the new buffer is not droppable. In this\n    // case mBufferItemConsumer->acquireBuffer will return with NO_BUFFER_AVAILABLE.\n    if (mNumFrameAvailable == 0) {\n        BQA_LOGV(\"Can't acquire next buffer. No available frames\");\n        return BufferQueue::NO_BUFFER_AVAILABLE;\n    }\n\n    if (mNumAcquired >= (mMaxAcquiredBuffers + 2)) {\n        BQA_LOGV(\"Can't acquire next buffer. Already acquired max frames %d max:%d + 2\",\n                 mNumAcquired, mMaxAcquiredBuffers);\n        return BufferQueue::NO_BUFFER_AVAILABLE;\n    }\n\n    if (mSurfaceControl == nullptr) {\n        BQA_LOGE(\"ERROR : surface control is null\");\n        return NAME_NOT_FOUND;\n    }\n\n    SurfaceComposerClient::Transaction localTransaction;\n    bool applyTransaction = true;\n    SurfaceComposerClient::Transaction* t = &localTransaction;\n    if (transaction) {\n        t = *transaction;\n        applyTransaction = false;\n    }",
+      "note": "函数签名与两道水位闸门都在这一段：mNumFrameAvailable 为 0、或 mNumAcquired >= mMaxAcquiredBuffers + 2 时返回 NO_BUFFER_AVAILABLE；mSurfaceControl 为空返回 NAME_NOT_FOUND。末尾决定用调用者传入的 mSyncTransaction 还是本地事务（applyTransaction 标志）。"
+    },
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "setApplyToken",
+      "lines": "713-746",
+      "code": "    if (!mPendingFrameTimelines.empty() &&\n        mPendingFrameTimelines.front().first == bufferItem.mFrameNumber) {\n        ATRACE_FORMAT_INSTANT(\"Transaction::setFrameTimelineInfo frameNumber: %\" PRIu64\n                              \" vsyncId: %\" PRId64,\n                              bufferItem.mFrameNumber,\n                              mPendingFrameTimelines.front().second.vsyncId);\n        t->setFrameTimelineInfo(mPendingFrameTimelines.front().second);\n        mPendingFrameTimelines.pop();\n    }\n\n    mergePendingTransactions(t, bufferItem.mFrameNumber);\n    if (applyTransaction) {\n        // All transactions on our apply token are one-way. See comment on mAppliedLastTransaction\n        status_t status = t->setApplyToken(mApplyToken).apply(false, true);\n        if (status != OK) {\n            BQA_LOGE(\"Transaction Failure Details: Status: %d (%s), Pending Transactions Merged: \"\n                     \"%zu, Transaction ID: %\" PRIu64 \", Frame Number: %\" PRIu64\n                     \", Buffer Size: %dx%d\",\n                     status, statusToString(status).c_str(), mPendingTransactions.size(),\n                     t->getId(), bufferItem.mFrameNumber, bufferItem.mGraphicBuffer->getWidth(),\n                     bufferItem.mGraphicBuffer->getHeight());\n        }\n        LOG_ALWAYS_FATAL_IF(status != OK,\n                            \"[%s] acquireNextBufferLocked failed to apply transaction. status=%d\",\n                            mName.c_str(), status);\n        mAppliedLastTransaction = true;\n        mLastAppliedFrameNumber = bufferItem.mFrameNumber;\n        mSetBufferBarrier = true;\n    } else {\n        if (mSetBufferBarrier) {\n          t->setBufferHasBarrier(mSurfaceControl, mLastAppliedFrameNumber);\n        }\n        mAppliedLastTransaction = false;\n    }",
+      "note": "同一函数的收尾：FrameTimeline 按 frameNumber 精确匹配、merge 进 pending 事务，然后 setApplyToken(...).apply(false, true) 单向提交；失败直接 LOG_ALWAYS_FATAL，成功则记 mAppliedLastTransaction 与 mSetBufferBarrier。非 apply 分支会给事务打 buffer barrier。"
+    },
+    {
+      "file": "native/libs/gui/BLASTBufferQueue.cpp",
+      "symbol": "BLASTBufferQueue::onFrameAvailable",
+      "lines": "779-803",
+      "code": "void BLASTBufferQueue::onFrameAvailable(const BufferItem& item) {\n    std::function<void(SurfaceComposerClient::Transaction*)> prevCallback = nullptr;\n    SurfaceComposerClient::Transaction* prevTransaction = nullptr;\n\n    {\n        UNIQUE_LOCK_WITH_ASSERTION(mMutex);\n        BBQ_TRACE();\n        bool waitForTransactionCallback = !mSyncedFrameNumbers.empty();\n\n        const bool syncTransactionSet = mTransactionReadyCallback != nullptr;\n        BQA_LOGV(\"onFrameAvailable-start syncTransactionSet=%s\", boolToString(syncTransactionSet));\n\n        if (syncTransactionSet) {\n            // If we are going to re-use the same mSyncTransaction, release the buffer that may\n            // already be set in the Transaction. This is to allow us a free slot early to continue\n            // processing a new buffer.\n            if (!mAcquireSingleBuffer) {\n                auto bufferData = mSyncTransaction->getAndClearBuffer(mSurfaceControl);\n                if (bufferData) {\n                    BQA_LOGD(\"Releasing previous buffer when syncing: framenumber=%\" PRIu64,\n                             bufferData->frameNumber);\n                    releaseBuffer(bufferData->generateReleaseCallbackId(),\n                                  bufferData->acquireFence);\n                }\n            }",
+      "note": "queueBuffer 回调进入 BLAST 的第一步：加 mMutex、打 BBQ_TRACE、(f:%u,a:%u) 计数进 trace，在 sync 事务场景下先把上一块挂在 mSyncTransaction 上的 buffer 释放掉以腾出 slot，再决定 flush 影子队列还是等待。"
+    },
+    {
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "symbol": "SurfaceComposerClient::Transaction::apply",
+      "lines": "1196-1225",
+      "code": "        }\n    }\n\n    // If both ISurfaceComposer::eEarlyWakeupStart and ISurfaceComposer::eEarlyWakeupEnd are set\n    // it is equivalent for none\n    uint32_t wakeupFlags = ISurfaceComposer::eEarlyWakeupStart | ISurfaceComposer::eEarlyWakeupEnd;\n    if ((mState.mFlags & wakeupFlags) == wakeupFlags) {\n        mState.mFlags &= ~(wakeupFlags);\n    }\n    sp<IBinder> applyToken = mApplyToken ? mApplyToken : getDefaultApplyToken();\n\n    sp<ISurfaceComposer> sf(ComposerService::getComposerService());\n    TransactionState state = std::move(mState);\n    status_t binderStatus = sf->setTransactionState(std::move(state), applyToken);\n\n    if (mLogCallPoints) {\n        ALOG(LOG_DEBUG, LOG_SURFACE_CONTROL_REGISTRY, \"Transaction %\" PRIu64 \" applied\",\n             mState.mId);\n    }\n\n    // Clear the current states and flags\n    clear();\n\n    if (synchronous && binderStatus == OK) {\n        syncCallback->wait();\n    }\n\n    mStatus = NO_ERROR;\n    return binderStatus;\n}",
+      "note": "apply 的收尾：取 applyToken、把 TransactionState move 给 sf->setTransactionState()（binder），随后 clear()；只有 synchronous 才 wait SyncCallback。BLAST 用的是 one-way，因此这里立即返回。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "BLASTBufferQueue::mApplyToken",
+      "type": "sp<IBinder>，默认 sp<BBinder>::make()（BLASTBufferQueue.h:306）",
+      "desc": "SF 侧按 token 对事务排队，使 BLAST 的 buffer 事务不被同客户端其它事务阻塞；由 setApplyToken() 注入，apply 时随 setTransactionState 一起发送。"
+    },
+    {
+      "name": "BLASTBufferQueue::mNumFrameAvailable / mNumAcquired",
+      "type": "int32_t，默认 0（BLASTBufferQueue.h:207-208）",
+      "desc": "影子队列两张账：前者是已 queueBuffer 但还没被 BLAST acquire 的帧数，后者是已 acquire 并提交给 SF 的帧数；两者与 mPendingRelease.size() 的差值是“在 BLAST 里的 buffer 总数”。"
+    },
+    {
+      "name": "BLASTBufferQueue::mMaxAcquiredBuffers",
+      "type": "int32_t，默认 1（BLASTBufferQueue.h:206）",
+      "desc": "acquire 上限的基准；BufferQueue 内部允许比它多 acquire 1 块，所以 acquireNextBufferLocked 用 mNumAcquired >= mMaxAcquiredBuffers + 2 作为闸门。"
+    },
+    {
+      "name": "BLASTBufferQueue::mSubmitted",
+      "type": "ftl::SmallMap<ReleaseCallbackId, BufferItem>",
+      "desc": "已提交给 SF 但还没 release 的 buffer 账本，release 回调凭 ReleaseCallbackId(bufferId, frameNumber) 来认领并 decrement mNumAcquired；BBQ 被销毁时由客户端统一释放。"
+    },
+    {
+      "name": "BLASTBufferQueue::mPendingTransactions",
+      "type": "std::vector<std::tuple<uint64_t, SurfaceComposerClient::Transaction>>",
+      "desc": "被 mergeWithNextTransaction 暂存的事务，按目标 frameNumber 排序；只有 acquire 到 >= 该帧号时才会 merge 并 apply，没有超时机制（源码中未体现兜底）。"
+    },
+    {
+      "name": "BLASTBufferQueue::mPendingFrameTimelines",
+      "type": "std::queue<std::pair<uint64_t, FrameTimelineInfo>>",
+      "desc": "setFrameTimelineInfo 推入的 (frameNumber, info) 队列；acquire 时先丢陈旧项、再要求 frameNumber 严格相等才绑定，错位就丢 timeline。"
+    },
+    {
+      "name": "BLASTBufferQueue::mSyncTransaction / mTransactionReadyCallback / mAcquireSingleBuffer",
+      "type": "Transaction* / std::function / bool",
+      "desc": "同步事务三件套：syncNextTransaction() 建立、onFrameAvailable 装入 buffer 并登记 mSyncedFrameNumbers、mAcquireSingleBuffer 决定是持续同步还是一次性同步。"
+    },
+    {
+      "name": "SurfaceComposerClient::Transaction::mApplyToken",
+      "type": "sp<IBinder>",
+      "desc": "apply() 里优先用它，为空才回落到进程级 getDefaultApplyToken()；它决定事务在 SF 的排队序列。"
+    },
+    {
+      "name": "TransactionCompletedListener::mReleaseBufferCallbacks",
+      "type": "unordered_map<ReleaseCallbackId, ReleaseBufferCallback>",
+      "desc": "release 回调的登记表；setBuffer 时注册，SF 通过 BufferReleaseChannel 或 onTransactionCompleted 里的 previousReleaseCallbackId 触发后 pop，保证只回调一次。"
+    },
+    {
+      "name": "BLASTBufferQueue::mBufferReleaseProducer",
+      "type": "shared_ptr<gui::BufferReleaseChannel::ProducerEndpoint>",
+      "desc": "与 SF 共享的 release fence 通道生产端；open 于 createBufferQueue，随 setBufferReleaseChannel 事务发给 SF，使 release 不占用 transaction 回调的 binder。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "BBQ_TRACE：onFrameAvailable / acquireNextBufferLocked",
+      "value": "ATRACE_FORMAT，BLASTBufferQueue.cpp:92-94",
+      "desc": "slice 名形如 “acquireNextBufferLocked - <name>(f:N,a:M)”，f/a 直接给出影子队列与已 acquire 数，是判断 BLAST 内部堆积最快的手段。"
+    },
+    {
+      "name": "Transaction::setFrameTimelineInfo（instant）",
+      "value": "ATRACE_FORMAT_INSTANT，BLASTBufferQueue.cpp:714-717",
+      "desc": "frameNumber 与 vsyncId 配对成功的瞬间；若某帧只有 “dropping stale frameNumber” 而没有这一条，说明 FrameTimeline 已错位。"
+    },
+    {
+      "name": "TransactionCallbackInvoker::sendCallbacks",
+      "value": "SFTRACE_NAME，TransactionCallbackInvoker.cpp:277",
+      "desc": "SF 完成合成后回传 latchTime / presentFence 的切面；与客户端的 onTransactionCompleted 成对出现，用来量 SF 侧延迟。"
+    },
+    {
+      "name": "mQueuedBufferTrace（ATRACE_INT）",
+      "value": "BLASTBufferQueue.h:192-196 / onFrameAvailable 内 ATRACE_INT",
+      "desc": "counter 值 = mNumFrameAvailable + mNumAcquired - mPendingRelease.size()，Android Studio profiler 读的就是它；长期 >3 说明 release 跟不上。"
+    },
+    {
+      "name": "BufferQueue pending 数",
+      "value": "ATRACE_INT(mCore->mConsumerName, queue.size())，BufferQueueProducer.cpp:1214",
+      "desc": "BLAST 场景下这个 counter 通常为 0（consumer 就在本进程且立即 acquire），若持续非 0，说明 onFrameAvailable 被阻塞在 mCallbackMutex 或 mCallbackCV 上。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency / layer 信息",
+      "value": "SF 侧 Layer 统计",
+      "desc": "可看到 desiredPresentTime 与实际 present 的偏差；BLAST 的 setDesiredPresentTime 来自 BufferItem::mTimestamp，偏差大说明 SF 排期被推迟。"
+    },
+    {
+      "name": "gfxinfo framestats 的 acquire/present 列",
+      "value": "FrameTimeline（frameNumber 对齐后）",
+      "desc": "本阶段写入的 frameNumber 与 FrameTimelineInfo 决定这些列能否对上；断链时 framestats 里会出现空行。"
+    }
+  ],
+  "pitfalls": [
+    "onFrameAvailable 是同步调用而不是 binder 回调：BLAST 的 Transaction 构建、merge 与 apply 全部发生在 RenderThread 调用 queueBuffer 的栈里，queueBuffer 的耗时天然包含这一段，不能把它当成“纯入队”。",
+    "BLAST 的 apply 是 apply(false, true)（不同步 + one-way）：返回 OK 只代表 Parcel 已发出，buffer 还没有被 SF latch，此时读 presentFence、读屏幕内容都不成立。",
+    "Transaction::setBuffer 末尾那个空 lambda 的 addTransactionCompletedCallback 不能删（注释 b/230380821）：没有它，buffer 被 latch 但不提前释放时，客户端收不到 release 回调，会表现为 buffer 永久泄漏、随后 dequeue 阻塞。",
+    "mergeWithNextTransaction 在目标帧号尚未 acquire 时把事务塞进 mPendingTransactions 并 clear() 掉原事务；源码里没有给这个队列任何超时，如果那一帧永远不来，这笔属性更新就永远不生效。",
+    "mPendingFrameTimelines 只接受 frameNumber 完全相等的匹配，且 acquire 时会先 pop 掉更老的项；一旦发生跳帧，timeline 会连续错位，表现为 FrameTimeline 缺帧但画面正常。",
+    "不要把 BufferQueue 的 “available” 与 SF 的 “applied/presented” 混为一谈：本阶段结束时状态是“事务已提交”，latchTime/presentFence 要等 TransactionCompletedListener 回调才存在。"
+  ],
+  "traceTags": [
+    "onFrameAvailable",
+    "acquireNextBufferLocked",
+    "Transaction::setFrameTimelineInfo",
+    "TransactionCallbackInvoker::sendCallbacks",
+    "SurfaceFlinger::setTransactionState",
+    "releaseBufferCallback",
+    "PendingRelease"
+  ],
+  "next": "stage-09"
+}

@@ -1,0 +1,384 @@
+{
+  "id": "surf-queue",
+  "title": "Surface::queueBufferImpl",
+  "file": "native/libs/gui/Surface.cpp",
+  "sig": "status_t Surface::queueBufferImpl(const sp<GraphicBuffer>& buffer, const sp<Fence>& fence, const SurfaceQueueBufferInput* maybeSurfaceInput, SurfaceQueueBufferOutput* surfaceOutput)",
+  "span": [
+    1330,
+    1412
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "status_t Surface::queueBufferImpl(const sp<GraphicBuffer>& buffer, con",
+      "kind": "note",
+      "text": "函数入口：把 buffer 与元数据提交给 BufferQueue，全程持 mMutex 保护 slot 状态。"
+    },
+    {
+      "at": 2,
+      "quote": "const SurfaceQueueBufferInput* maybeSurfaceInput,",
+      "kind": "note",
+      "text": "maybeSurfaceInput 可为空；非空表示调用方显式提供元数据（Canvas/HWC），空则走 Surface 内部时间戳路径。"
+    },
+    {
+      "at": 3,
+      "quote": "SurfaceQueueBufferOutput* surfaceOutput) {",
+      "kind": "note",
+      "text": "surfaceOutput 可空，回传替换标志与尺寸；返回值透传 IGBP::queueBuffer 结果。"
+    },
+    {
+      "at": 4,
+      "quote": "if (buffer == nullptr) {",
+      "kind": "branch",
+      "text": "buffer 为空直接拒绝：后续 getSlotFromBufferLocked 需用指针反查 slot，空指针无法定位槽位。"
+    },
+    {
+      "at": 5,
+      "quote": "return BAD_VALUE;",
+      "kind": "state",
+      "text": "返回 BAD_VALUE，调用方不再触碰 IGBP，避免把空 buffer 提交给 BufferQueue 造成 SF 侧崩溃。"
+    },
+    {
+      "at": 8,
+      "quote": "IGraphicBufferProducer::QueueBufferOutput igbpOutput;",
+      "kind": "state",
+      "text": "栈上构造 igbpOutput 承接 IGBP 回传（宽高、transformHint、pending 数、帧时间戳），锁外调用后仍需有效。"
+    },
+    {
+      "at": 9,
+      "quote": "IGraphicBufferProducer::QueueBufferInput igbpInput;",
+      "kind": "state",
+      "text": "igbpInput 先声明在锁外作用域：它持有 sp 引用，跨线程传给 IGBP 前必须保证生命周期覆盖整个调用。"
+    },
+    {
+      "at": 10,
+      "quote": "int slot;",
+      "kind": "state",
+      "text": "slot 声明在锁块外：锁内反查、锁外作为 IGBP::queueBuffer 的第一个参数使用。"
+    },
+    {
+      "at": 11,
+      "quote": "{",
+      "kind": "lock",
+      "text": "开锁作用域：igbpInput 构造与 slot 反查必须在 mMutex 下完成，块结束时 Autolock 析构自动解锁。"
+    },
+    {
+      "at": 12,
+      "quote": "Mutex::Autolock lock(mMutex);",
+      "kind": "lock",
+      "text": "Autolock 构造即 acquire mMutex（不可重入），保护 mSlots/mLeakedBuffers 等成员。"
+    },
+    {
+      "at": 14,
+      "quote": "if (mLeakedBuffers.contains(buffer)) {",
+      "kind": "state",
+      "text": "mLeakedBuffers 记录 Surface 已销毁而 app 仍持有的 buffer；命中说明这是重复 queue 的泄漏场景。"
+    },
+    {
+      "at": 15,
+      "quote": "SURF_LOGE(\"Surface::queueBuffer given a leaked buffer! Deleting extra ",
+      "kind": "branch",
+      "text": "打印泄漏告警：app 侧 buffer 泄漏后仍调用 queueBuffer，需要吞掉本次调用而不是让上层崩溃。"
+    },
+    {
+      "at": 16,
+      "quote": "mLeakedBuffers.erase(buffer);",
+      "kind": "state",
+      "text": "从 mLeakedBuffers 移除该 buffer，避免后续同一指针反复命中泄漏分支。"
+    },
+    {
+      "at": 17,
+      "quote": "if (!mIsConnected) {",
+      "kind": "branch",
+      "text": "Surface 已 disconnect 时 IGBP 不可用，泄漏 buffer 直接静默返回，不访问已断开队列。"
+    },
+    {
+      "at": 18,
+      "quote": "return OK;",
+      "kind": "state",
+      "text": "返回 OK 而非错误：断开场景下泄漏 buffer 的重复入队视为无害，保持 app 侧调用兼容。"
+    },
+    {
+      "at": 22,
+      "quote": "slot = getSlotFromBufferLocked(buffer);",
+      "kind": "state",
+      "text": "用 buffer 指针在 mSlots 中反查 slot 并锁定该槽（内部校验 buffer 归属），失败返回负错误码。"
+    },
+    {
+      "at": 23,
+      "quote": "if (slot < 0) {",
+      "kind": "branch",
+      "text": "slot < 0 表示 buffer 不属于本 Surface 或已失效，错误码直接透传，不进入 IGBP。"
+    },
+    {
+      "at": 24,
+      "quote": "return slot;",
+      "kind": "state",
+      "text": "透传 BAD_VALUE/BAD_INDEX 等负值，调用方据此判定非法 buffer 并放弃本次提交。"
+    },
+    {
+      "at": 26,
+      "quote": "if (mSharedBufferSlot == slot && mSharedBufferHasBeenQueued) {",
+      "kind": "branch",
+      "text": "共享 buffer 路径：mSharedBufferSlot 已被 queue 过时提前返回 OK，防止同一帧重复入队。"
+    },
+    {
+      "at": 27,
+      "quote": "return OK;",
+      "kind": "state",
+      "text": "重复 queue 静默成功，保持 queueBuffer 幂等；真正入队由首次调用完成。"
+    },
+    {
+      "at": 30,
+      "quote": "if (maybeSurfaceInput != nullptr) {",
+      "kind": "branch",
+      "text": "分支：调用方显式给出 SurfaceQueueBufferInput 时按其字段构造输入，否则回退 Surface 内部元数据。"
+    },
+    {
+      "at": 31,
+      "quote": "igbpInput =",
+      "kind": "data",
+      "text": "按 maybeSurfaceInput 各字段整体构造 QueueBufferInput，保证 IGBP 元数据来源一致、不混用。"
+    },
+    {
+      "at": 32,
+      "quote": "IGraphicBufferProducer::QueueBufferInput(maybeSurfaceInput->timestamp,",
+      "kind": "data",
+      "text": "timestamp：帧呈现时间戳，BufferQueue 据此计算 frameTimestamps 并做 VSync 对齐。"
+    },
+    {
+      "at": 33,
+      "quote": "maybeSurfaceInput->isAutoTimestamp,",
+      "kind": "data",
+      "text": "isAutoTimestamp：为 true 时忽略调用方 timestamp，由 BufferQueue 用当前时间填充。"
+    },
+    {
+      "at": 34,
+      "quote": "maybeSurfaceInput->dataSpace,",
+      "kind": "data",
+      "text": "dataSpace：像素色彩空间/格式描述，合成端据此解释 buffer，错填会导致颜色或 HDR 异常。"
+    },
+    {
+      "at": 35,
+      "quote": "maybeSurfaceInput->crop,",
+      "kind": "data",
+      "text": "crop：内容有效区域，合成器按此裁剪；空 Rect 表示使用整块 buffer。"
+    },
+    {
+      "at": 36,
+      "quote": "maybeSurfaceInput->scalingMode,",
+      "kind": "data",
+      "text": "scalingMode：缩放策略（FREEZE/SCALE_TO_WINDOW/SCALE_CROP），决定合成时是否拉伸。"
+    },
+    {
+      "at": 37,
+      "quote": "maybeSurfaceInput->transform,",
+      "kind": "data",
+      "text": "transform：本帧需应用的旋转/翻转位掩码，由 HWC 或 GPU 在合成前执行。"
+    },
+    {
+      "at": 38,
+      "quote": "maybeSurfaceInput->fence,",
+      "kind": "data",
+      "text": "fence：GPU 渲染完成同步 fence，BufferQueue 等其信号后才让消费端读取该 buffer。"
+    },
+    {
+      "at": 39,
+      "quote": "maybeSurfaceInput->stickyTransform,",
+      "kind": "data",
+      "text": "stickyTransform：跨帧保持的 transform 位（如视频方向），不随单帧清除。"
+    },
+    {
+      "at": 40,
+      "quote": "maybeSurfaceInput->getFrameTimestamps);",
+      "kind": "data",
+      "text": "getFrameTimestamps：请求回传帧时间戳，surfaceOutput->frameTimestamps 依赖此标志。"
+    },
+    {
+      "at": 42,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "回退分支：未提供 surfaceInput 时由 Surface 自己组装元数据，是常规 queue 路径。"
+    },
+    {
+      "at": 43,
+      "quote": "getQueueBufferInputLocked(buffer, fence, mTimestamp, &igbpInput);",
+      "kind": "state",
+      "text": "getQueueBufferInputLocked 从 mCrop/mTransform/mTimestamp 等成员填充输入，需持锁。"
+    },
+    {
+      "at": 44,
+      "quote": "applyGrallocMetadataLocked(buffer, igbpInput);",
+      "kind": "state",
+      "text": "applyGrallocMetadataLocked 把 gralloc 私有元数据转成 IGBP 输入字段（HDR/宽色域），必须持锁。"
+    },
+    {
+      "at": 46,
+      "quote": "igbpInput.slot = slot;",
+      "kind": "data",
+      "text": "把锁内算出的 slot 写入 igbpInput：IGBP::queueBuffer 以 slot 定位槽位，两处必须一致。"
+    },
+    {
+      "at": 48,
+      "quote": "nsecs_t now = systemTime();",
+      "kind": "trace",
+      "text": "记录调用前时间点，锁外 queueBuffer 返回后据此算出 mLastQueueDuration（含 IPC 与回调）。"
+    },
+    {
+      "at": 49,
+      "quote": "// Drop the lock temporarily while we touch the underlying producer. I",
+      "kind": "lock",
+      "text": "注释：调用 IGBP 前必须释放 mMutex，否则 BufferQueue 同步回调 Surface 侧方法时重入死锁。"
+    },
+    {
+      "at": 50,
+      "quote": "// BufferQueue, the following should be allowable:",
+      "kind": "note",
+      "text": "注释：本地 BufferQueue 下该链合法：queueBuffer 触发 onFrameAvailable 再回 Surface。"
+    },
+    {
+      "at": 51,
+      "quote": "//",
+      "kind": "note",
+      "text": "注释：以下列出 queueBuffer 期间可能同步发生的嵌套调用，说明为何不能在持锁状态调用 IGBP。"
+    },
+    {
+      "at": 52,
+      "quote": "//    Surface::queueBuffer",
+      "kind": "note",
+      "text": "注释：链起点为 Surface::queueBuffer（本函数），在锁外发起 IGBP 调用。"
+    },
+    {
+      "at": 53,
+      "quote": "// -> IConsumerListener::onFrameAvailable callback triggers automatica",
+      "kind": "note",
+      "text": "注释：入队后 BufferQueue 同步触发消费者 onFrameAvailable，回调实现可能立即 acquire/release。"
+    },
+    {
+      "at": 54,
+      "quote": "// ->   implementation calls IGraphicBufferConsumer::acquire/release i",
+      "kind": "note",
+      "text": "注释：消费者在回调里立刻 acquire/release buffer，使 buffer 归还并触发释放通知。"
+    },
+    {
+      "at": 55,
+      "quote": "// -> SurfaceListener::onBufferReleased callback triggers automaticall",
+      "kind": "note",
+      "text": "注释：buffer 释放触发 SurfaceListener::onBufferReleased，仍在调用栈上。"
+    },
+    {
+      "at": 56,
+      "quote": "// ->   implementation calls Surface::dequeueBuffer",
+      "kind": "note",
+      "text": "注释：释放回调中可能再调 Surface::dequeueBuffer，故 mMutex 必须已释放，否则重入死锁。"
+    },
+    {
+      "at": 57,
+      "quote": "status_t err = mGraphicBufferProducer->queueBuffer(slot, igbpInput, &i",
+      "kind": "ipc",
+      "text": "锁外同步调用 IGBP::queueBuffer：一次 binder 到 SurfaceFlinger，err 为最终结果并透传给调用方。"
+    },
+    {
+      "at": 58,
+      "quote": "{",
+      "kind": "lock",
+      "text": "重新取锁的作用域：回传结果与 onBufferQueuedLocked 都要在锁内更新 Surface 状态。"
+    },
+    {
+      "at": 59,
+      "quote": "Mutex::Autolock lock(mMutex);",
+      "kind": "lock",
+      "text": "Autolock 再次 acquire mMutex；即使仍在 IGBP 返回路径上，块结束也自动释放。"
+    },
+    {
+      "at": 61,
+      "quote": "if (igbpOutput.bufferReplaced) {",
+      "kind": "state",
+      "text": "bufferReplaced 表示 BufferQueue 用新 buffer 顶替了本次入队（如异步模式下帧被替换）。"
+    },
+    {
+      "at": 62,
+      "quote": "mLastReplacedFrameId = igbpOutput.bufferReplacedFrameId;",
+      "kind": "state",
+      "text": "记录被替换帧 id 到 mLastReplacedFrameId，供上层统计掉帧与追踪替换来源。"
+    },
+    {
+      "at": 64,
+      "quote": "mLastQueueDuration = systemTime() - now;",
+      "kind": "trace",
+      "text": "mLastQueueDuration = 当前时间 - now，统计本次入队耗时（含 binder IPC 与回调），用于卡顿诊断。"
+    },
+    {
+      "at": 65,
+      "quote": "if (err != OK) {",
+      "kind": "branch",
+      "text": "err != OK 时打印错误，但仍继续 onBufferQueuedLocked 与回传，保证帧号等状态跟 IGBP 同步。"
+    },
+    {
+      "at": 66,
+      "quote": "SURF_LOGE(\"queueBuffer: error queuing buffer, %d\", err);",
+      "kind": "branch",
+      "text": "SURF_LOGE 输出错误码：DEAD_OBJECT 常见于 SurfaceFlinger 已死，调用方需重建 Surface。"
+    },
+    {
+      "at": 69,
+      "quote": "onBufferQueuedLocked(slot, fence, igbpOutput);",
+      "kind": "state",
+      "text": "onBufferQueuedLocked 持锁更新状态：帧计数、时间戳、mSharedBufferHasBeenQueued。"
+    },
+    {
+      "at": 72,
+      "quote": "if (surfaceOutput != nullptr) {",
+      "kind": "branch",
+      "text": "surfaceOutput 非空时把 IGBP 回传结果拷给调用方，供上层帧统计与 dequeue 决策使用。"
+    },
+    {
+      "at": 73,
+      "quote": "surfaceOutput->bufferReplaced = igbpOutput.bufferReplaced;",
+      "kind": "data",
+      "text": "回传 bufferReplaced：告知调用方本帧是否被替换，影响掉帧统计与重绘判断。"
+    },
+    {
+      "at": 74,
+      "quote": "surfaceOutput->width = igbpOutput.width;",
+      "kind": "data",
+      "text": "回传 width：BufferQueue 当前默认 buffer 宽度，producer 侧重分配后可能变化。"
+    },
+    {
+      "at": 75,
+      "quote": "surfaceOutput->height = igbpOutput.height;",
+      "kind": "data",
+      "text": "回传 height：当前默认 buffer 高度，与 width 一起用于上层尺寸判断。"
+    },
+    {
+      "at": 76,
+      "quote": "surfaceOutput->transformHint = igbpOutput.transformHint;",
+      "kind": "data",
+      "text": "回传 transformHint：BufferQueue 建议的旋转方向，dequeue 时据此预旋转以省一次合成变换。"
+    },
+    {
+      "at": 77,
+      "quote": "surfaceOutput->numPendingBuffers = igbpOutput.numPendingBuffers;",
+      "kind": "data",
+      "text": "回传 numPendingBuffers：已入队未消费的帧数，反映管线积压与生产端是否该减速。"
+    },
+    {
+      "at": 78,
+      "quote": "surfaceOutput->nextFrameNumber = igbpOutput.nextFrameNumber;",
+      "kind": "data",
+      "text": "回传 nextFrameNumber：下一帧帧号，调用方可据此预测丢帧并对齐时间戳。"
+    },
+    {
+      "at": 79,
+      "quote": "surfaceOutput->frameTimestamps = std::move(igbpOutput.frameTimestamps)",
+      "kind": "data",
+      "text": "std::move 转移 frameTimestamps 容器避免深拷贝；move 后 igbpOutput 内该字段不再使用。"
+    },
+    {
+      "at": 82,
+      "quote": "return err;",
+      "kind": "state",
+      "text": "返回 IGBP 的 status_t：BAD_VALUE/DEAD_OBJECT 由调用方决定重试或销毁 Surface。"
+    }
+  ]
+}

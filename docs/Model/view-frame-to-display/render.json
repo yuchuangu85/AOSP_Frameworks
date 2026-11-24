@@ -1,0 +1,850 @@
+{
+  "stages": [
+    {
+      "id": "r1",
+      "title": "UI 把这一帧交给 RenderThread",
+      "actor": "应用 UI 线程 → 应用 RenderThread",
+      "input": "录制后的树与属性、FrameInfo；首次绘制前启动的部分动画节点也可在这里注册。",
+      "action": "ThreadedRenderer.draw 调 syncAndDrawFrame；JNI 把 Java 帧信息复制到 RenderProxy。DrawFrameTask 记下入队时间，把 run 投递到 RenderThread 队列，调用线程在条件变量上等待。",
+      "steps": [
+        ["1. 复制帧上下文", "ThreadedRenderer 把 Choreographer 写入的 FrameInfo、目标时间和 UI 侧暂存属性传入 native，再由 JNI 交给 RenderProxy。"],
+        ["2. 排入 RT 队列", "RenderProxy 创建或提交 DrawFrameTask，记录任务进入时间，把 run 投递到 RenderThread 的任务队列；这一步只是排队，不是已经开始 GPU 绘制。"],
+        ["3. UI 等待同步结果", "UI 线程通过 postAndWait 等 RT 返回 sync result，例如是否需要重绘、Surface 是否有效、哪些节点可以同步。等待的是 RT 的条件变量信号，不是 GPU 或显示 present fence。"],
+        ["4. 继续后续回调", "RT 到达安全放行点后唤醒 UI，UI 才能继续本次 doFrame 的剩余回调；如果 RT 排队、被抢占或等待资源，UI 的墙钟时间会变长。"]
+      ],
+      "output": "RT 队列接收一次任务。UI 要等下一阶段的安全放行点，拿到 sync result（例如需重绘或 Surface 丢失）才返回；随后才能继续本次 Choreographer 的剩余回调。",
+      "branch": "条件变量等的是 RT 发出的信号，不是 GPU fence。已有 RT 工作或线程迟迟未获 CPU 时，UI 即使已录完 DisplayList 也会等。",
+      "impact": "只看到 UI 在 syncAndDrawFrame 里很久，不宜归因给 View.onDraw；先分清 RT 排队、同步本身和延后唤醒。",
+      "refs": [
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          829,
+          849
+        ],
+        [
+          "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp",
+          464,
+          472
+        ],
+        [
+          "base/libs/hwui/renderthread/RenderProxy.cpp",
+          237,
+          239
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          72,
+          93
+        ],
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          827,
+          848
+        ],
+        [
+          "base/graphics/java/android/graphics/HardwareRenderer.java",
+          595,
+          597
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          72,
+          92
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          99,
+          108
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          125,
+          140
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          147,
+          161
+        ],
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          849,
+          858
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1208,
+          1212
+        ]
+      ]
+    },
+    {
+      "id": "r2",
+      "title": "同步渲染树，推进 RT 动画",
+      "actor": "应用 RenderThread；UI 暂时等待",
+      "input": "FrameInfo、staging 属性/DisplayList、上次渲染后的树与工作集。",
+      "action": "syncFrameState 更新帧时钟、绑定上下文并 prepareTree。目标根用 MODE_FULL，同步属性与 DisplayList；沿记录过的子节点推进动画、累计旧/新范围的 damage、准备可变纹理与离屏层。",
+      "steps": [
+        ["1. 准备本帧上下文", "RT 取出 FrameInfo，更新当前帧时间和渲染上下文，确认 Surface、RenderNode 树和图形上下文仍可用。"],
+        ["2. 同步 UI 暂存状态", "syncFrameState 以目标根的 MODE_FULL 递归同步 staging 属性和 DisplayList；静态节点可以复用，但变化节点仍要被访问并传播变更。"],
+        ["3. 推进 RT 动画", "对允许在 RT 执行的动画按帧时间更新节点属性，比较变化前后的范围并累计 damage；这条路径不等于所有 Java Animator 都自动搬到 RT。"],
+        ["4. 准备纹理与离屏层", "为动态图片、滤镜或离屏 RenderNode 准备纹理资源和工作队列。资源准备失败时会延后 UI 放行，避免 UI 误以为本帧已经安全完成。"]
+      ],
+      "output": "得到可绘制性、脏区域和图层更新队列；允许时在 context->draw 之前唤醒 UI，以便它准备下一帧。",
+      "branch": "pinImages 失败会清掉 prepareTextures，本次不能提前唤醒 UI；稍后再 signal，仍不是等待物理显示。无输出目标、上下文停止或已画过同一脉冲等可跳过新帧。已获准独立运行的动画可由 RT 自行追帧。",
+      "impact": "RenderNode 数/变化范围、活跃动画、动态图片与纹理工作集会改变 RT 同步成本；静态子树免于 UI 重录，不等于 RT 完全不用访问。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          99,
+          108
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          124,
+          145
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          155,
+          161
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          178,
+          216
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          554,
+          568
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          582,
+          594
+        ],
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          235,
+          250
+        ],
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          266,
+          274
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaDisplayList.cpp",
+          93,
+          125
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          621,
+          631
+        ]
+      ]
+    },
+    {
+      "id": "r3",
+      "title": "取得目标缓冲，Skia 发出 GPU 工作",
+      "actor": "应用 RenderThread → 图形驱动 / GPU",
+      "input": "已准备的 RenderNode 树、damage、待更新的 HWUI 离屏层和窗口 Surface。",
+      "action": "CanvasContext.draw 结算 damage，getFrame 取得本次渲染目标，按 buffer age 修正要重画的范围。Skia 先更新脏离屏层，再在窗口目标回放内容。GL 走 FlushAndSubmit；Vulkan 管线 finishFrame 提交，并可导出一个表示生产端写入完成的 fence。",
+      "steps": [
+        ["1. 决定这次要画多少", "CanvasContext 根据新旧 damage、buffer age 和 Surface 状态决定本次需要清理或重画的区域；空 damage 在允许的条件下可以跳过整帧。"],
+        ["2. 先更新离屏资源", "脏的 RenderNode 离屏层、滤镜缓存或动态纹理先由 Skia 更新，随后主窗口目标按节点顺序回放 DisplayList。"],
+        ["3. 发出 GPU 命令", "Skia 将路径、文字、纹理采样、裁剪、变换和混合翻译成 GL 或 Vulkan 工作；这里处理的是像素和资源，不再执行 Java View 的 measure/layout。"],
+        ["4. 提交并携带依赖", "GL 走 FlushAndSubmit，Vulkan 走 finishFrame；提交返回的 CPU 时间不等于 GPU 已完成，生产端 fence 只表示消费者读取前需要满足的写入依赖。"]
+      ],
+      "output": "GPU 工作已提交；缓冲及其写入依赖将交给窗口队列。CPU 提交时间、GPU 完成时间是两个事件。",
+      "branch": "空 damage 在允许跳帧且表面无需重画时直接返回。Vulkan 可见 dequeue；默认禁用 ReliableSurface 的预取，不可把 prepareTree 中 reserveNext 当作每帧实际 dequeue。GL 的取缓冲细节还经过 EGL/驱动。",
+      "impact": "真正光栅面积、过绘、滤镜、阴影、纹理采样与上传、输出格式和 GPU 竞争主要作用在这里；长 RT slice 也可能在等空闲缓冲，而非都在算像素。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          685,
+          705
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          730,
+          745
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          1281,
+          1304
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          349,
+          361
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+          168,
+          184
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp",
+          115,
+          127
+        ],
+        [
+          "base/libs/hwui/renderthread/VulkanManager.cpp",
+          711,
+          725
+        ],
+        [
+          "base/libs/hwui/renderthread/VulkanSurface.cpp",
+          403,
+          414
+        ],
+        [
+          "base/libs/hwui/renderthread/ReliableSurface.cpp",
+          29,
+          33
+        ],
+        [
+          "base/libs/hwui/renderthread/ReliableSurface.cpp",
+          74,
+          77
+        ]
+      ]
+    },
+    {
+      "id": "r4",
+      "title": "把窗口缓冲排入 BufferQueue",
+      "actor": "应用生产端：RT / EGL 或 Vulkan → Surface / BufferQueueProducer",
+      "input": "本次 GraphicBuffer、生产写入完成依赖、damage、帧号与可选时间线。",
+      "action": "有效 VSYNC ID 可与即将 queue 的 frameNumber 绑定。GL 由 EGL swap；Vulkan 把生产端代码命名为 presentFence 的 fd 传给 ANativeWindow::queueBuffer；Surface 转交生产者，BufferQueue 记录 acquire fence、帧号与槽位，通知消费者。",
+      "steps": [
+        ["1. 绑定帧元数据", "将本次窗口 buffer、frameNumber、damage 和可选的 FrameTimeline/VSYNC ID 关联起来，便于下游把缓冲和目标呈现时刻对应。"],
+        ["2. 交给 ANativeWindow", "GL 通过 EGL swap，Vulkan 将生产端写入完成依赖传给 ANativeWindow::queueBuffer；这个命名为 presentFence 的 fd 在此处仍是消费者读取前的 acquire 依赖。"],
+        ["3. 更新 BufferQueue 槽位", "Surface 转到 BufferQueueProducer，记录 GraphicBuffer、槽位、帧号和 fence，并把槽位从 DEQUEUED 推进到 QUEUED。"],
+        ["4. 通知消费者", "队列通过 onFrameAvailable 等路径通知 BLAST/消费者。队列已接收只说明 buffer 进入下游，不说明 SF 已经 latch 或显示器已经 present。"]
+      ],
+      "output": "普通非共享槽由 DEQUEUED 变为 QUEUED。队列接收的是缓冲引用及同步依赖，不是逐个 View、图片或绘图命令。",
+      "branch": "队尾可丢弃时可被替换并触发 onFrameReplaced；不能默认队列永远三缓冲或每个已 queue 的帧都会呈现。生产端 presentFence 在这一边是供消费者读之前满足的 acquire 依赖，不是显示器的 present fence。",
+      "impact": "普通窗口里，增多 View 通常改变本次入队时间而非每帧 buffer 数。队列拥塞、分配或下游未释放，可反过来拖慢后续帧。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          751,
+          768
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          778,
+          791
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+          194,
+          213
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp",
+          130,
+          147
+        ],
+        [
+          "base/libs/hwui/renderthread/VulkanManager.cpp",
+          766,
+          774
+        ],
+        [
+          "base/libs/hwui/renderthread/VulkanSurface.cpp",
+          518,
+          527
+        ],
+        [
+          "native/libs/gui/Surface.cpp",
+          1378,
+          1389
+        ],
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          1082,
+          1092
+        ],
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          1101,
+          1107
+        ],
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          1180,
+          1201
+        ],
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          1267,
+          1273
+        ]
+      ]
+    },
+    {
+      "id": "r5",
+      "title": "BLAST 取出缓冲，提交图层事务",
+      "actor": "客户端 BLAST / 本地消费者回调 → Binder → SurfaceFlinger",
+      "input": "onFrameAvailable、可取得的 BufferItem，以及窗口对应的 SurfaceControl。",
+      "action": "BLAST 在客户端创建队列并注册监听器。普通路径 acquireBuffer(..., false) 取出槽位但不阻塞等画完；查验尺寸、跟踪在途缓冲，将 buffer、复制的 acquire fence、帧号、damage、色彩元数据写入 setBuffer 等事务操作。匹配的 FrameTimeline 信息与 pending 事务合并，通常以 one-way apply 送入 SF。",
+      "steps": [
+        ["1. 客户端取出队列项", "BLAST 收到 onFrameAvailable 后调用 acquireBuffer(..., false)，取得可用 BufferItem；它不在这里同步等待 GPU 已经完成，而是携带 acquire fence 继续交接。"],
+        ["2. 检查并登记缓冲", "BLAST 核对尺寸、transform、damage 和 buffer ID，追踪仍在途的槽位，避免把同一缓冲的 release/复用关系弄错。"],
+        ["3. 组装 Layer 事务", "把 buffer、acquire fence、frameNumber、damage、dataspace 等写入 SurfaceControl.Transaction 的 setBuffer 等操作，并合并匹配的 FrameTimeline 信息。"],
+        ["4. 发给 SurfaceFlinger", "普通路径通过 one-way Binder apply 送入 SF 的事务队列。此刻只是 SF 收到待处理状态，后面还要经过 commit 的目标时间、barrier、背压和 fence 准入。"]
+      ],
+      "output": "槽归 BLAST 消费者（ACQUIRED）；SF 接收待处理事务。二者均不代表 SF 已 latch、显示已更新或缓冲能写下一帧。",
+      "branch": "有同步事务时，将 buffer 放进调用方的事务并等待/回调，而非立即单发；超限可取不到、尺寸不符可释放并重试。后续 release 回调经 BLAST 把旧槽及 release fence 退回，取得槽的生产者仍须遵守写前依赖。",
+      "impact": "普通 View 的层级到此已扁平化为窗口像素。此时起更应查看独立 Surface 数、事务同步、缓冲覆盖时序及 fence，而非统计这个窗口的 ImageView 数。",
+      "refs": [
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          190,
+          209
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          839,
+          869
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          567,
+          600
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          619,
+          631
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          653,
+          672
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          713,
+          726
+        ],
+        [
+          "native/libs/gui/SurfaceComposerClient.cpp",
+          1188,
+          1209
+        ],
+        [
+          "native/libs/gui/BufferItemConsumer.cpp",
+          219,
+          236
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          543,
+          550
+        ],
+        [
+          "native/libs/gui/include/gui/BufferSlot.h",
+          60,
+          82
+        ]
+      ]
+    }
+  ],
+  "factors": [
+    {
+      "name": "RT 队列占用与 UI 同步等待",
+      "category": "线程与调度",
+      "stages": [
+        "r1",
+        "r2"
+      ],
+      "mechanism": "提交的 DrawFrameTask 必须轮到 RT 才能开始 sync；同进程此前的图形工作、阻塞或抢占可让 UI 在 postAndWait 内停住。",
+      "boundary": "UI 的墙钟等待包含排队；不是 UI 录制耗时，也不是证明 GPU 正忙。CanvasContext::waitOnFences 在此处收集的是 CommonPool 帧工作的 future，不是显示 fence。",
+      "probe": "按同一 VSYNC ID 对齐 UI 的 syncAndDrawFrame、RT DrawFrames；用 sched 轨区分 runnable 等待、运行、睡眠。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          72,
+          94
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          1225,
+          1237
+        ]
+      ]
+    },
+    {
+      "name": "渲染树深度、有效节点数与 DisplayList 重用",
+      "category": "渲染树与动画",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "RT 递归访问 DisplayList 内实际记录的子 RenderNode，压入/弹出变换，处理 staging、动画和 damage；多分支与深变换都可能增加遍历成本。绘制时可快速剔除裁剪外节点。",
+      "boundary": "View 实例总数、RenderNode 遍历数、GPU 实际覆盖像素不是同一个量；复用 DisplayList 不表示屏幕像素自动保留。",
+      "probe": "分别比对 UI Record、RT prepareTree 与 GPU 时长；尝试相同显示内容、不同容器深度，在相同刷新率下比较。",
+      "refs": [
+        [
+          "base/libs/hwui/pipeline/skia/SkiaDisplayList.cpp",
+          115,
+          126
+        ],
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          228,
+          240
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          234,
+          246
+        ]
+      ]
+    },
+    {
+      "name": "同一帧 N 个 RT 属性动画",
+      "category": "渲染树与动画",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "每个活跃节点的 AnimatorManager 迭代动画、推进属性/矩阵，并在动画前后标记 damage。N 个独立节点同时动，与只动一个父容器的变换，动画器数和损伤区域可能不同。",
+      "boundary": "RT-only 只有不要求 UI 重绘且配置允许时才继续；不是 N 个 View 并行占 N 个线程。没有“第 N 个必掉帧”的源码阈值。即使免 UI 重录，整窗覆盖仍可能很重。",
+      "probe": "固定总像素、素材、设备和刷新率，比较单父节点位移与 N 子节点位移；再固定 N 改尺寸。按 VSYNC ID 看 RT CPU 和 GPU 完成。",
+      "refs": [
+        [
+          "base/libs/hwui/AnimatorManager.cpp",
+          115,
+          126
+        ],
+        [
+          "base/libs/hwui/AnimatorManager.cpp",
+          137,
+          150
+        ],
+        [
+          "base/libs/hwui/AnimatorManager.cpp",
+          158,
+          165
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          621,
+          631
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          1119,
+          1135
+        ]
+      ]
+    },
+    {
+      "name": "图片数量：唯一纹理、尺寸、可变性与缓存",
+      "category": "图片与资源",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "拆开统计不同位图数、源像素/格式、目标像素、每帧修改数和是否可复用。首次使用/像素改变可产生上传；可变图片被记录并尝试 pin 成纹理，失败会停止本轮预备并延后放行 UI。",
+      "boundary": "十个 View 共享已驻留位图不等于上传十次；即便共享，绘制到多个目标位置仍有采样与覆盖成本。hardware bitmap 不走此处普通 bitmap 的 prepareToDraw 上传分支。",
+      "probe": "对比同一位图复用、多张唯一位图、每帧改像素三组；分别看 UI、RT 同步、GPU 和纹理内存，不用压缩文件 KB 替代解码像素。",
+      "refs": [
+        [
+          "base/graphics/java/android/graphics/Bitmap.java",
+          2724,
+          2736
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaGpuPipeline.cpp",
+          115,
+          127
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaGpuPipeline.cpp",
+          137,
+          149
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaRecordingCanvas.cpp",
+          227,
+          242
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaDisplayList.cpp",
+          93,
+          105
+        ],
+        [
+          "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+          212,
+          216
+        ]
+      ]
+    },
+    {
+      "name": "动图、矢量图与刷新频度",
+      "category": "图片与资源",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "prepareListAndChildren 检查动图是否到下一帧，取得最短下次更新延迟；脏矢量还会检查变换后的 bounds 是否与屏幕相交；CanvasContext 据延迟安排 RT 帧。",
+      "boundary": "多张静图并不因数量自动请求连续帧；多个动图更新时刻是否聚集、是否运行/可见、路径内容是否真的变化均影响成本。",
+      "probe": "相同像素范围分别播放/暂停，保持素材数不变；看 RT 自驱帧频、damage 和 GPU 工作量。",
+      "refs": [
+        [
+          "base/libs/hwui/pipeline/skia/SkiaDisplayList.cpp",
+          139,
+          169
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          634,
+          648
+        ]
+      ]
+    },
+    {
+      "name": "重叠、半透明、离屏层与 overdraw",
+      "category": "像素与特效",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "同一片像素的重复绘制/混合可能增大填充和带宽成本。节点 alpha 小于 1 时，已有 layer 或无内部重叠可缩放 alpha；其他条件下可走 saveLayerAlpha，在离屏面组合后再回写。",
+      "boundary": "alpha 动画并非固定只改一个廉价浮点数，也非每次都强制创建新层。HWUI 离屏层不是 SurfaceFlinger 的独立显示层。",
+      "probe": "保持层数不变，只改重叠面积、透明度或背景冗余；结合 overdraw 可视化和 GPU 时长，关闭调试覆盖后再量 baseline。",
+      "refs": [
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          433,
+          441
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          460,
+          475
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          353,
+          361
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          374,
+          397
+        ]
+      ]
+    },
+    {
+      "name": "RenderEffect、背景模糊、Z 阴影与裁剪",
+      "category": "像素与特效",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "滤镜可要求层快照与图像过滤；背景滤镜依赖在其之前画好的内容并会主动标脏。Z 重排与阴影绘制、路径/揭示裁剪和抗锯齿还引入不同工作。作用面积、模糊半径、路径复杂度、缓存命中都值得分开看。",
+      "boundary": "单个全屏变动的背景模糊可能比很多小图标贵；没有从节点数直接推导时长或 GPU pass 数的可靠公式。静态滤镜也不保证总能复用结果。",
+      "probe": "控制节点数，依次关滤镜/阴影、减少裁剪路径或缩小特效区域，对比 GPU 与 RT；区分 View 内滤镜和 SF 跨窗口模糊。",
+      "refs": [
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          275,
+          309
+        ],
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          266,
+          275
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          489,
+          500
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/ReorderBarrierDrawables.cpp",
+          49,
+          55
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/ReorderBarrierDrawables.cpp",
+          124,
+          135
+        ]
+      ]
+    },
+    {
+      "name": "硬件层复用还是每帧更新",
+      "category": "像素与特效",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "硬件层能把内容缓存为可再合成的 surface；仅变换外层时可不重画层内，但子树内容改动会把 layer damage 入队，渲染时先更新脏层再绘到主目标。",
+      "boundary": "层本身占用图形内存；频繁更新的大层可能增加中间写入和采样。缓存 DisplayList（命令）≠缓存离屏层（像素）。",
+      "probe": "用不变内容的平移，对比同样平移但每帧改变内部绘制；同时看 layer update、RT 和 GPU。",
+      "refs": [
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          171,
+          182
+        ],
+        [
+          "base/libs/hwui/RenderNode.cpp",
+          186,
+          210
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          349,
+          358
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp",
+          243,
+          255
+        ]
+      ]
+    },
+    {
+      "name": "脏区域、缓冲年龄、窗口尺寸与像素格式",
+      "category": "像素与特效",
+      "stages": [
+        "r3",
+        "r4"
+      ],
+      "mechanism": "视口改变、新表面或 bufferAge 为 0 会要求整面重画；旧缓冲可能需合并数帧历史 damage。尺寸、格式或 usage 不兼容还可能触发重分配。HDR/宽色域按设备支持选择格式/色彩空间。",
+      "boundary": "只有小 View 发生修改，实际 repaint 也可能更大；分辨率影响的是实际缓冲像素而非 dp。HDR 不等于本版本所有路径都用 FP16。",
+      "probe": "记录缓冲实际宽高/format、damage、旋转或 resize；将首次或变尺寸帧与稳定帧分组。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          1258,
+          1279
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          1286,
+          1304
+        ],
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          567,
+          574
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+          481,
+          510
+        ]
+      ]
+    },
+    {
+      "name": "TextureView、SurfaceView 与视频/相机的独立生产者",
+      "category": "跨进程图层",
+      "stages": [
+        "r2",
+        "r3",
+        "r4",
+        "r5"
+      ],
+      "mechanism": "TextureView 在硬件 RecordingCanvas 录制 drawTextureLayer，内容通常采样入宿主窗口；SurfaceView 创建自己的 SurfaceControl、BLAST 图层和队列，可由视频/相机等单独填充。",
+      "boundary": "增加普通 ImageView 主要加宿主绘制工作；增加独立 Surface 则可能增加 SF/HWC 图层、生产端节拍及 fence 依赖。容器 SurfaceControl 不一定是有像素或占硬件 plane 的层。",
+      "probe": "在图层跟踪中区分宿主和独立 surface；分别关联其 frameNumber、VSYNC ID 和 producer，别用宿主 UI 帧数推断视频帧数。",
+      "refs": [
+        [
+          "base/core/java/android/view/TextureView.java",
+          420,
+          439
+        ],
+        [
+          "base/core/java/android/view/TextureView.java",
+          549,
+          565
+        ],
+        [
+          "base/core/java/android/view/SurfaceView.java",
+          1819,
+          1840
+        ],
+        [
+          "base/core/java/android/view/SurfaceView.java",
+          1860,
+          1870
+        ]
+      ]
+    },
+    {
+      "name": "槽位耗尽、消费者滞后与写前 release fence",
+      "category": "队列与同步",
+      "stages": [
+        "r1",
+        "r3",
+        "r4",
+        "r5"
+      ],
+      "mechanism": "下游长期持有旧 buffer 时，下一次 dequeue 可能找不到空闲槽而等待；即便已取回某个槽，生产者仍须满足旧使用者的 release fence 才能覆写。等待可表现为 RT 新帧迟到以及随后 UI 的同步等待。",
+      "boundary": "dequeue/queue 长、GPU 真正执行长、等待 GPU 依赖是不同诊断。单次等待不能断言 SF 慢，也不能用固定三槽模型替代设备配置。",
+      "probe": "看 BufferQueue 长度、dequeue 等待、release 回调与 fence 信号，匹配具体 layer/frameNumber；把线程 runnable 和 sleep 分开。",
+      "refs": [
+        [
+          "native/libs/gui/BufferQueueProducer.cpp",
+          422,
+          441
+        ],
+        [
+          "native/libs/gui/include/gui/BufferSlot.h",
+          60,
+          81
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          543,
+          550
+        ],
+        [
+          "base/libs/hwui/renderthread/VulkanManager.cpp",
+          593,
+          616
+        ],
+        [
+          "base/libs/hwui/renderthread/CanvasContext.cpp",
+          202,
+          215
+        ]
+      ]
+    },
+    {
+      "name": "事务合并、多个 Surface 同步与尺寸切换",
+      "category": "队列与同步",
+      "stages": [
+        "r4",
+        "r5"
+      ],
+      "mechanism": "普通单窗口 buffer 通常独立发事务；同步提交则可能把多个更新合入同一事务，等待相应缓冲或前序回调。错误尺寸的 buffer 可被拒绝，同步重用事务时此前设入的 buffer 也可能被释放。",
+      "boundary": "事务数量不是 View 数，也不总等于 buffer 数。apply 返回只表示客户端提交边界；某帧是否接纳、何时真正显示要继续追 SF。",
+      "probe": "关联 onFrameAvailable、bufferId/frameNumber、transactionId 及 SF latch；查等待表面是否来自另一个生产者或 resize。",
+      "refs": [
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          619,
+          625
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          723,
+          745
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          791,
+          824
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          839,
+          868
+        ]
+      ]
+    },
+    {
+      "name": "自绘路径、网格与自定义 Shader",
+      "category": "像素与特效",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "同一个自绘 View 可以只画一个矩形，也可录制大量 Path/Mesh、每帧更新网格数据或用 AGSL 在大片像素上多次采样。命令数、几何复杂度、单像素算法与覆盖面积是四种不同压力。",
+      "boundary": "不能依据 onDraw 调用次数推算 GPU 工作；复杂 shader 合入绘制管线，不必然对应额外 SF 图层或固定数量的 pass。",
+      "probe": "固定画布大小，单独改变路径复杂度、网格更新率、采样次数；再固定程序仅缩小作用面积，对比录制、RT、GPU。",
+      "refs": [
+        [
+          "base/libs/hwui/RecordingCanvas.cpp",
+          1060,
+          1067
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaRecordingCanvas.cpp",
+          359,
+          362
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/SkiaDisplayList.cpp",
+          107,
+          112
+        ],
+        [
+          "base/graphics/java/android/graphics/RuntimeShader.java",
+          45,
+          60
+        ]
+      ]
+    },
+    {
+      "name": "冷/热图形缓存、字形图集与回前台",
+      "category": "图片与资源",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "HWUI 给 Skia 配置 GPU 资源、字形图集、路径 mask 和持久图形缓存。内存 trim 可回收未锁定资源或释放 GPU 资源；即使 View 树相同，回前台、首次字体/效果与连续稳定帧可能不同。",
+      "boundary": "缓存有设备/策略差异；只凭一次首帧尖峰不能认定 shader 编译或字体贴图未命中。",
+      "probe": "分冷启、回前台、稳定热帧，并记录内存 trim、纹理/字体工作集及图形缓存相关事件；不要用已预热的平均值代替首帧。",
+      "refs": [
+        [
+          "base/libs/hwui/renderthread/CacheManager.cpp",
+          62,
+          76
+        ],
+        [
+          "base/libs/hwui/renderthread/CacheManager.cpp",
+          104,
+          114
+        ],
+        [
+          "base/libs/hwui/renderthread/CacheManager.cpp",
+          127,
+          142
+        ]
+      ]
+    },
+    {
+      "name": "WebView / 外部绘制回调",
+      "category": "像素与特效",
+      "stages": [
+        "r2",
+        "r3"
+      ],
+      "mechanism": "单一宿主 View 可承载 WebView 的整块外部绘制。HWUI 记录 GL/Vulkan functor；GL 路径先 flush，特定离屏/复杂裁剪条件下还有临时渲染目标或模板裁剪。",
+      "boundary": "这是外部绘制接入点，不等于所有 WebView 帧都走同一 GL 分支；网页脚本、排版与进程内渲染耗时须另追。",
+      "probe": "把 WebView 更新与宿主树普通绘制分开；比较复杂 clip 的开关，检查对应 GPU/浏览器进程轨，而非只数 Android View。",
+      "refs": [
+        [
+          "base/libs/hwui/pipeline/skia/SkiaRecordingCanvas.cpp",
+          195,
+          205
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/GLFunctorDrawable.cpp",
+          85,
+          105
+        ],
+        [
+          "base/libs/hwui/pipeline/skia/GLFunctorDrawable.cpp",
+          152,
+          175
+        ]
+      ]
+    }
+  ]
+}

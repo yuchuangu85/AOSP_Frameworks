@@ -1,0 +1,56 @@
+{
+  "ok": true,
+  "artifact": "index.html",
+  "artifactSha256": "abf61b38acf8d51dcdacfdb83845d0bf63f567b233a1d208697008a5aceb9ffa",
+  "browser": "154.0.8037.98",
+  "viewports": [
+    1440,
+    768,
+    390,
+    360
+  ],
+  "scenarioChecks": 32,
+  "checks": [
+    "all scenario outcomes",
+    "queue and tracker state",
+    "multi-event ACK isolation",
+    "different deadline ordering",
+    "late recovery",
+    "timing controls",
+    "play/pause/speed",
+    "step navigation",
+    "seeking",
+    "playhead-bound bidirectional motion",
+    "source anchors",
+    "theme persistence",
+    "text bounds",
+    "offline loading"
+  ],
+  "screenshots": [
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-initial-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-timeout.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-different-deadlines.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-scene.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-mechanism.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-1440-diagnosis.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-768-initial-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-768-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-initial-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-timeout.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-different-deadlines.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-scene.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-mechanism.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-390-diagnosis.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-360-initial-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/input-timeout-anr-360-light.png"
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "limits": [
+    "illustrative local model",
+    "no Android device or vendor validation",
+    "no actual ANR dialog or timing validation"
+  ]
+}

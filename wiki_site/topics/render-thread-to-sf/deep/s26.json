@@ -1,0 +1,44 @@
+{
+  "step": "s26",
+  "title": "composite：把这一拍的输入打包给 CompositionEngine",
+  "tldr": "把脏区、几何变更与有帧的层装进 refreshArgs，交给 CompositionEngine::present。",
+  "why": "没有这一步，commit 之后就没有任何东西驱动合成：latch 到的 buffer 停在 Layer 里，屏幕一直显示上一帧，而且事务已经 commit 过、SF 不会再有新的 commit flag，画面就永久停在那一拍——这不是掉一帧，是彻底不刷新。第二个容易忽略的点是这里的输入全是快照而不是活对象：refreshArgs.layers 来自 mLayerSnapshotBuilder，layersWithQueuedFrames 来自 commit 阶段攒的集合，composite 期间 app 再来 transaction 也不会进这一拍。所以挑错层的后果特别有误导性：漏掉只在副屏上的层，副屏停在旧内容而主屏完全正常，很容易被当成副屏硬件问题。",
+  "concepts": [
+    { "term": "CompositionRefreshArgs", "text": "一次合拍的输入：输出列表、layer 快照、脏区标志、亮度与色彩设置、frameInterval。" },
+    { "term": "layersWithQueuedFrames", "text": "本拍真正 latch 到新 buffer 的层集合；只有它们需要新的 release fence，也决定报哪些帧。" },
+    { "term": "offload 合成", "text": "把纯 GPU 合成的副屏丢给后台线程去 present，主线程只等 future，避免多屏互相拖累。" },
+    { "term": "pacesetter", "text": "这一拍负责定节拍的显示器，所有帧时间以它的 vsyncId 与 expectedPresentTime 为准。" }
+  ],
+  "walk": [
+    { "call": "CompositeResultsPerDisplay SurfaceFlinger::composite(", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3330", "what": "入口：pacesetterId 定节拍，frameTargeters 是所有要出帧的屏。" },
+    { "call": "compositionengine::CompositionRefreshArgs refreshArgs;", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3344", "what": "新建一份空的合成输入，下面逐字段填。" },
+    { "call": "refreshArgs.bufferIdsToUncache = std::move(mBufferIdsToUncache);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3356", "what": "move 语义：待 uncache 的 buffer 清单交给 CE 在 prepare 里处理。" },
+    { "call": "refreshArgs.updatingOutputGeometryThisFrame = mVisibleRegionsDirty;", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3360", "what": "可见区脏了才重建 layer stack，这就是第 27 步的门。" },
+    { "call": "refreshArgs.refreshStartTime = presentTime;", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3384", "what": "进 CE 之前打一个时间点，后面所有帧统计以它为起点。" },
+    { "call": "addOutputsToRefreshArgs(pacesetterId, refreshArgs, frameTargeters);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3387", "what": "挑出可以异步合成的副屏，返回一份 offload 专用 refreshArgs。" },
+    { "call": "prepareLayersForComposition(refreshArgs, kCursorOnly, layers);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3393", "what": "逐层 onPreComposition 并建 release fence 的 promise/future。" },
+    { "call": "refreshArgs.layersWithQueuedFrames.push_back(layerFE);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3426", "what": "只收本拍真有新帧、且属于主线程 layerStack 的层。" },
+    { "call": "attachReleaseFenceFutureToLayer(layer.get(), layerFE.get(),", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3436", "what": "不在任何屏上的层也补一个 fence future，防止 promise 永不 fulfill。" },
+    { "call": "mCompositionEngine->present(refreshArgs);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:3448", "what": "交棒：CE 内部先对每个 output prepare，再逐个 present。" }
+  ],
+  "state": [
+    { "field": "SurfaceFlinger::mBufferIdsToUncache", "before": "待 uncache 的 buffer id 列表", "after": "被 move 空（3356）", "note": "move 之后本地就是空 vector，重复 composite 不会重复 uncache" },
+    { "field": "SurfaceFlinger::mGeometryDirty", "before": "可能为 true", "after": "被 exchange(false) 清掉（3361）", "note": "读一次就清零，所以同一拍内不能读第二次" },
+    { "field": "CompositionRefreshArgs.layersWithQueuedFrames", "before": "空 vector（3413 reserve）", "after": "本拍 latch 到的 LayerFE 列表（3419-3429）", "note": "主线程与 offload 线程按 layerStack 分流，不是全给主线程" },
+    { "field": "SurfaceFlinger::mLayersWithQueuedFrames", "before": "commit 阶段 latch 出来的层集合", "after": "composite 结尾 clear（3567）", "note": "不清的话下一拍会把旧层当成有新帧，多算 release fence" },
+    { "field": "SurfaceFlinger::mCompositionCoverage", "before": "上一拍的覆盖统计", "after": "先 clear（3526）再按每屏 state 重填（3530-3549）", "note": "HWC / GPU / GPU-reuse 三种覆盖，直接决定 vsync 要不要升频" }
+  ],
+  "threads": "SF 主线程。中途 offloadGpuCompositedDisplays（3304）会把纯 GPU 合成副屏的 refreshArgs 丢给 BackgroundExecutor 的线程池，主线程继续走自己的 present，直到 3497 的 offloadedCompositionFuture->wait() 才汇合。3335 的 FTL_FAKE_GUARD(mStateLock, mDisplays) 只是「锁应被持有」的 debug 断言，合成路径本身不持 mStateLock。",
+  "pitfalls": [
+    "refreshArgs 里装的是快照：layers 来自 mLayerSnapshotBuilder，composite 期间 app 再来的 transaction 不会进这一拍。看到「画面慢一帧」时别怀疑这里，它按设计就是一拍的边界。",
+    "3522 的 onCompositionPresented 在 composite 内部就调了，此时 present fence 还没 signal——名字里的 Presented 指「已提交给 HWC」，不是「已上屏」。拿它当上屏时间来算延迟会偏早一个 vsync。",
+    "mLayersWithQueuedFrames 在 3567 被 clear：任何想在 present 之后再遍历「本拍有帧的层」的改动，必须自己先存一份。",
+    "offload 只挪走副屏的 present 阶段，prepare 也一样在那边跑（另一份 mOffloadedCompositionEngine）：同一 layerStack 的屏如果被两个 CE 各自 prepare，就会出现同层被合成两次。分流逻辑在 3408-3429，别随手改成「全给主线程」。"
+  ],
+  "debug": [
+    "perfetto 抓 sf：SFTRACE_NAME 的 composite <vsyncId>（3342）与 SFTRACE_ASYNC 的 Composition（3332）夹住的区间，就是这一步 + CE 的耗时。",
+    "traceCompositionSummary（3461）会打一条 \"Layers: N ...\" 的 instant（3653），GPU 合成大写、DPU 合成小写，一眼看出这一拍谁走 GPU。",
+    "dumpsys SurfaceFlinger 的每个 display 段里有 usesClientComposition / usesDeviceComposition 与 coverage 记录，对照 3530-3549 的取值判断这拍走了哪条路。"
+  ],
+  "next": "第 27 步「Output::prepare：算可见层」：CompositionEngine 拿到 refreshArgs 后，对每个 output 调 prepare，重建 layer stack。"
+}

@@ -1,0 +1,126 @@
+{
+  "step": "s11",
+  "title": "跳过判定：这一帧要不要画",
+  "tldr": "damage 为空且 surface 不需要重画时，这一帧记 NothingToDraw，不交任何 buffer。",
+  "why": "60Hz 下大量帧其实没有内容变化：静态页面、动画暂停、只改了不可见属性。不跳过就是每 16ms 白跑一遍 display list 回放、GPU 提交和一次 buffer 入队，费电、发热，还会把 buffer 队列占满，反过来拖慢真正要画的帧。跳过必须是「彻底不交 buffer」而不是「画一帧空的」——不 swap，SurfaceFlinger 才不会认为有新帧，present 时间线也不会被无效帧污染。但跳过头同样致命：刚换了 surface、窗口尺寸变了、上一帧的内容已经不在了，都要求必须整屏重画一次，漏判就是花屏或残影。",
+  "concepts": [
+    {
+      "term": "damage（dirty）",
+      "text": "本帧所有脏节点矩形的并集，由 DamageAccumulator::finish 给出（686）；为空表示没有任何内容变化。"
+    },
+    {
+      "term": "skipEmptyFrames",
+      "text": "debug.hwui.skip_empty_damage，默认 true；关掉它可以让每帧都真的画一次。"
+    },
+    {
+      "term": "surfaceRequiresRedraw",
+      "text": "新 surface、窗口尺寸变化时必须整屏重画（1247-1255），此时脏区为空也不能跳。"
+    },
+    {
+      "term": "didProduceBuffer",
+      "text": "commit 回调的参数，false 表示这一帧没交 buffer，SurfaceFlinger 侧根本不会看到新帧。"
+    },
+    {
+      "term": "DrawingOff vs NothingToDraw",
+      "text": "drawing_enabled 为 false 是前者，脏区为空是后者；两者都不画，但原因和排查方向完全不同。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mDamageAccumulator.finish(&dirty);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:686",
+      "what": "取出遍历期间累积的脏区，这是本帧「有没有东西要画」的唯一依据。"
+    },
+    {
+      "call": "if (!Properties::isDrawingEnabled() || !mDrawingEnabled) {",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:695",
+      "what": "全局或本 context 被关掉绘制，直接 DrawingOff，和脏区无关。"
+    },
+    {
+      "call": "if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:699",
+      "what": "三个条件同时成立才跳：没脏区、开关打开、surface 不需要重画。"
+    },
+    {
+      "call": "return SkippedFrameReason::NothingToDraw;",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:700",
+      "what": "记为「没有内容可画」，与 NoBuffer/AlreadyDrawn 这些「想画但画不了」区分开。"
+    },
+    {
+      "call": "mCurrentFrameInfo->setSkippedFrameReason(*skippedFrameReason);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:706",
+      "what": "把原因写进 FrameInfo，同时打一条 instant trace 并置 SkippedFrame 标志。"
+    },
+    {
+      "call": "grContext->flushAndSubmit();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:712",
+      "what": "即使不画也要把之前的纹理上传提交掉，否则 Skia 的 staging buffer 一直占内存。"
+    },
+    {
+      "call": "waitOnFences();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:718",
+      "what": "等之前排的 frame fence 收尾，避免任务重叠到下一帧。"
+    },
+    {
+      "call": "std::invoke(func, false /* didProduceBuffer */);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:720",
+      "what": "通知 commit 回调「这帧没有 buffer」；不回调会让等待方永远挂住。"
+    },
+    {
+      "call": "canDrawThisFrame = !info.out.skippedFrameReason.has_value();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:107",
+      "what": "prepareTree 阶段已判过一轮（没 surface、没 buffer、同 vsync 画过），这里并成要不要 draw。"
+    },
+    {
+      "call": "context->waitOnFences();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:152",
+      "what": "prepareTree 判跳时走 else 分支：不 draw 不 swap，只把 fence 收干净。"
+    }
+  ],
+  "state": [
+    {
+      "field": "CanvasContext::mCurrentFrameInfo 的 SkippedFrameReason",
+      "before": "nullopt（552 / 596 清过）",
+      "after": "NothingToDraw 或 DrawingOff（706）",
+      "note": "setSkippedFrameReason 会打 instant trace 并置 SkippedFrame 标志（FrameInfo.cpp:78-82）"
+    },
+    {
+      "field": "CanvasContext::mFrameCommitCallbacks",
+      "before": "本帧注册的若干回调（Java frameCommitCallback 也在这里）",
+      "after": "全部以 didProduceBuffer=false 调用后清空（719-722）",
+      "note": "跳过路径必须回调，否则 WebView/Compose 的等待方永远等不到这一帧的结果"
+    },
+    {
+      "field": "CanvasContext::mSwapHistory",
+      "before": "最近几次真正 swap 的记录",
+      "after": "不追加（只有 806 的 requireSwap 分支才 next()）",
+      "note": "跳过帧不参与 bufferAge 与 isSwapChainStuffed 的判断，队列健康度统计会滞后"
+    },
+    {
+      "field": "CanvasContext::mIsDirty",
+      "before": "true（prepareTree:574 置的）",
+      "after": "仍为 true（跳过路径 723 就 return，没走到 804）",
+      "note": "surface 恢复绘制时（setStopped(false):378）靠它决定要不要补一帧"
+    },
+    {
+      "field": "CanvasContext::mSkippedFrameInfo",
+      "before": "nullopt 或上一次「真·跳帧」的 vsyncId/startTime",
+      "after": "不变——draw 阶段的跳过不写它",
+      "note": "只有 prepareTree 阶段的 AlreadyDrawn/NoBuffer/NoOutputTarget 才会以 skippedFrameVsyncId 报给 SF（520-537、769）"
+    }
+  ],
+  "threads": "判定发生在 RT 的 CanvasContext::draw 里，是纯本地状态判断，不加锁也不跨线程。surfaceRequiresRedraw 会去查 ANativeWindow 的宽高（1247-1255），读的是 Surface 的共享状态，但这一刻只有 RT 在碰它。UI 侧完全不知道这一帧被跳过——它拿到的只是 syncFrameState 的结果，skip 对 UI 是不可见的。",
+  "pitfalls": [
+    "跳过帧不 swap，也就不进 mSwapHistory（806 分支）；连续跳过之后 bufferAge 与 swap history 都停在旧值，下一帧按旧 buffer 内容算 damage——逻辑是对的，但很容易被误读成「脏区算多了」。",
+    "prepareTree 阶段的跳过（NoOutputTarget/NoBuffer/AlreadyDrawn，576-619）和 draw 阶段的跳过（694-704）是两处独立判定，条件完全不同；只查一处会漏掉一半「没画」的情况。",
+    "draw 阶段的跳过不会以 skippedFrameVsyncId 上报给 SF：520-537 的 switch 明确把 NothingToDraw/DrawingOff/ContextIsStopped 排除在外（注释写着「没有帧被期待」，见 533-536），所以 FrameTimeline 上没有它不代表 SF 认为它被跳过。",
+    "跳过不是零成本：仍然 flushAndSubmit（712）并 waitOnFences（718），GPU 可能还在干活；别因为 perfetto 上没看到 Drawing 就断定这一拍 GPU 空闲。"
+  ],
+  "debug": [
+    "perfetto 里搜 instant slice \"Frame skipped: NothingToDraw\"（FrameInfo.cpp:79 的 ATRACE_FORMAT_INSTANT），六种跳过原因各有一条，比对着代码猜快得多",
+    "adb shell setprop debug.hwui.skip_empty_damage false（Properties.h:109，默认 true 见 Properties.cpp:134）强制每帧都画：画面恢复正常就说明是脏区没标出来，而不是绘制坏了",
+    "adb shell setprop debug.hwui.drawing_enabled false（Properties.h:226）走 DrawingOff 分支，用来区分「没内容」和「被关掉」",
+    "adb shell dumpsys gfxinfo <pkg> 的 Janky frames 只统计真正 swap 的帧（mJankTracker.finishFrame 在 requireSwap 分支里，908），跳过帧不计入，统计对不上时先确认这一帧到底有没有 swap"
+  ],
+  "next": "第 12 步「进入 RenderPipeline::draw」：没被跳过时，CanvasContext::draw 把 frame、窗口脏区和 layer 更新队列交给当前 pipeline。"
+}

@@ -1,0 +1,95 @@
+{
+  "step": "s29",
+  "title": "容器落到具体 syncId 上",
+  "tldr": "把参与转场的容器挂进某个 syncId，从此它的 Surface 改动不再直接上屏，而是攒着等这次 sync 收尾。",
+  "why": "没有这一步，WMS 对窗口树的改动会立刻写进 display 的 pending transaction 并随下一帧 apply。用户看到的是：启动动画还没开始，新窗口就已经以最终大小贴在屏幕上，没有缩放/淡入的起点；或者旧窗口先消失、新窗口后出现，中间闪一帧白或黑。转场动画需要「尚未落地的起点快照」，syncId 就是把落地时间点往后推的那张凭据。",
+  "concepts": [
+    {
+      "term": "syncId / SyncGroup",
+      "text": "BLASTSyncEngine 分配的自增序号，标识一组正在等 Surface 落地的改动。"
+    },
+    {
+      "term": "prepareSync",
+      "text": "把整棵容器子树标成参与 sync；之后 getSyncTransaction 返回 mSyncTransaction。"
+    },
+    {
+      "term": "root member",
+      "text": "直接 addToSync 登记的容器；子孙只靠 prepareSync 递归挂上，不重复计入。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "mSyncEngine.addToSyncSet(mSyncId, wc)",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:919",
+      "what": "collect 判断这个容器需要等（非 transient hide），才交给引擎；被跳过的容器不进 sync。"
+    },
+    {
+      "call": "void addToSyncSet(int id, WindowContainer wc)",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:542",
+      "what": "用 id 找回 SyncGroup 再转调；id 失效会 NPE，说明该 sync 已结束。"
+    },
+    {
+      "call": "if (mRootMembers.contains(wc))",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:333",
+      "what": "幂等去重：同一容器被重复 collect 不会重复登记，否则等待计数永远凑不齐。"
+    },
+    {
+      "call": "final SyncGroup dependency = wc.getSyncGroup()",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:337",
+      "what": "查它是否已被别的 sync 持有；是的话不硬抢，改成给自己加依赖，让两个 sync 串行。"
+    },
+    {
+      "call": "wc.setSyncGroup(this)",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:365",
+      "what": "记下归属；容器已属于别的 group 时这里抛 IllegalStateException。"
+    },
+    {
+      "call": "wc.prepareSync()",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:367",
+      "what": "递归把整棵子树置 SYNC_STATE_READY，这一步才是「后续 Surface 写入改走 sync 事务」的开关。"
+    },
+    {
+      "call": "return mSyncTransaction;",
+      "ref": "base/services/core/java/com/android/server/wm/WindowContainer.java:2857",
+      "what": "开关生效后，所有 getSyncTransaction() 的写入落到这个 per-container 事务，先不上屏。"
+    },
+    {
+      "call": "outMergedTransaction.merge(mSyncTransaction)",
+      "ref": "base/services/core/java/com/android/server/wm/WindowContainer.java:3498",
+      "what": "收尾时把攒下的写入并进 SyncGroup 的大事务，最终一次性交给 SurfaceFlinger。"
+    }
+  ],
+  "state": [
+    {
+      "field": "SyncGroup.mRootMembers",
+      "before": "空（该 syncId 刚 startSyncSet）",
+      "after": "包含 wc",
+      "note": "只登记直接加进来的容器；子孙靠 prepareSync 递归挂"
+    },
+    {
+      "field": "WindowContainer.mSyncState",
+      "before": "SYNC_STATE_NONE",
+      "after": "SYNC_STATE_READY",
+      "note": "此处的 READY 是「已挂上 sync」，不是「已画完」"
+    },
+    {
+      "field": "WindowContainer.mSyncGroup",
+      "before": "null（或从父链继承到的 group）",
+      "after": "指向该 SyncGroup",
+      "note": "getSyncGroup 会沿父链向上找，所以子容器也认这个 group"
+    }
+  ],
+  "threads": "在 WMS 主线程、持 mGlobalLock 时执行，由 Transition.collect 同步调用；BLASTSyncEngine 自己不加锁，完全依赖调用方已持锁。",
+  "pitfalls": [
+    "SYNC_STATE_READY 这个名字会骗人：prepareSync 一进来就置 READY，此时一帧都还没画；onSyncFinishedDrawing 画的也是同一个值（WindowContainer.java:3417）。判断「画完了没」要看 isSyncFinished（WindowContainer.java:3515）。",
+    "syncId 只是 WMS 的整数，不会发给 SurfaceFlinger。SF 只回 transaction committed 回调，WMS 用 addTransactionCommittedListener（BLASTSyncEngine.java:281）把它映射回自己的 SyncGroup。",
+    "一个容器不能被两个 sync 同时等：addToSync 遇到冲突是加 dependency 而不是把容器搬过去（341-362），但 setSyncGroup 是硬约束，真重复登记就崩。",
+    "addToSync 只登记 root member，prepareSync 却递归挂整棵子树。所以一个不可见的子孙会让 isSyncFinished 直接返回 true（WindowContainer.java:3516），删窗口也能「凑齐」这次 sync。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_SYNC_ENGINE，然后 adb logcat -s WindowManager 看 \"SyncGroup %d: Adding to group: %s\" 与 \"Finished!\"",
+    "adb logcat -s BLASTSyncEngine：sync 冲突与依赖会以 Slog.w 打出 \"SyncGroup X conflicts with Y\"",
+    "perfetto（atrace 打 window_manager）里找 \"SyncGroup <name>#<id>-committed\" 这类 instant 事件，对应 BLASTSyncEngine.java:238"
+  ],
+  "next": "容器挂上去了，接下来 App 的 relayout 与 Shell 的 WCT 都要落进这个 sync → 第 9 步「窗口事务被同一 SyncSet 收编」。"
+}

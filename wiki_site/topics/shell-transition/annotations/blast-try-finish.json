@@ -1,0 +1,108 @@
+{
+  "id": "blast-try-finish",
+  "title": "BLASTSyncEngine.SyncSet.tryFinish",
+  "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+  "sig": "private boolean tryFinish() {",
+  "span": [
+    198,
+    217
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private boolean tryFinish() {",
+      "kind": "note",
+      "text": "判定本组能否收尾的私有入口：返回 true 表示已执行 finishNow；调用方必须已持有 mGlobalLock。"
+    },
+    {
+      "at": 2,
+      "quote": "if (!mReady) return false;",
+      "kind": "state",
+      "text": "mReady 由 setReady 置位，尚未就绪时直接退出，避免提前下发事务并回调 onTransactionReady。"
+    },
+    {
+      "at": 3,
+      "quote": "ProtoLog.v(WM_DEBUG_SYNC_ENGINE, \"SyncGroup %d: onSurfacePlacement che",
+      "kind": "trace",
+      "text": "仅在 WM_DEBUG_SYNC_ENGINE 打开时打印，用于定位哪一轮 surface placement 在检查本组，无副作用。"
+    },
+    {
+      "at": 4,
+      "quote": "mSyncId, mRootMembers);",
+      "kind": "trace",
+      "text": "日志参数：mSyncId 与根成员集合，便于判断本组还在等哪些容器。"
+    },
+    {
+      "at": 5,
+      "quote": "if (!mDependencies.isEmpty()) {",
+      "kind": "branch",
+      "text": "依赖组未清空则本组不得先完成，否则跨组同步事务乱序，Transition 动画会错帧。"
+    },
+    {
+      "at": 6,
+      "quote": "ProtoLog.v(WM_DEBUG_SYNC_ENGINE, \"SyncGroup %d:  Unfinished dependenci",
+      "kind": "trace",
+      "text": "打印未完成的依赖组，诊断是谁卡住本组；依赖来自跨组共享 WindowContainer 的冲突。"
+    },
+    {
+      "at": 7,
+      "quote": "mSyncId, mDependencies);",
+      "kind": "trace",
+      "text": "日志参数：本组 mSyncId 与阻塞它的 mDependencies 列表。"
+    },
+    {
+      "at": 8,
+      "quote": "return false;",
+      "kind": "branch",
+      "text": "留在 mActiveSyncs 等下一轮 onSurfacePlacement 重试；不移除不通知，靠 mOnTimeout 兜底超时。"
+    },
+    {
+      "at": 10,
+      "quote": "for (int i = mRootMembers.size() - 1; i >= 0; --i) {",
+      "kind": "data",
+      "text": "倒序遍历全部根成员容器；任一未完成整组就不能结束，全部通过才进入 finishNow。"
+    },
+    {
+      "at": 11,
+      "quote": "final WindowContainer wc = mRootMembers.valueAt(i);",
+      "kind": "data",
+      "text": "按下标取出 wc 作为判定对象；mRootMembers 只含根，子级由 isSyncFinished 递归。"
+    },
+    {
+      "at": 12,
+      "quote": "if (!wc.isSyncFinished(this)) {",
+      "kind": "branch",
+      "text": "不可见算完成、WAITING_FOR_DRAW 算未完成，其余递归子树；false 说明还有窗口没画完。"
+    },
+    {
+      "at": 13,
+      "quote": "ProtoLog.v(WM_DEBUG_SYNC_ENGINE, \"SyncGroup %d:  Unfinished container:",
+      "kind": "trace",
+      "text": "打印未完成的容器，帮助定位是哪个 WindowContainer 拖延了整个同步组。"
+    },
+    {
+      "at": 14,
+      "quote": "mSyncId, wc);",
+      "kind": "trace",
+      "text": "日志参数：本组 mSyncId 与未完成的 wc。"
+    },
+    {
+      "at": 15,
+      "quote": "return false;",
+      "kind": "branch",
+      "text": "仍有容器等绘制或事务提交就返回 false；此处放行会提前 merge 事务，导致闪烁或动画起点错误。"
+    },
+    {
+      "at": 18,
+      "quote": "finishNow();",
+      "kind": "state",
+      "text": "条件齐备才真正收尾：合并事务、回调 onTransactionReady、移出 mActiveSyncs，再调度下一个 pending。"
+    },
+    {
+      "at": 19,
+      "quote": "return true;",
+      "kind": "state",
+      "text": "告知 onSurfacePlacement 本组已完成，由它清除其它组的 mDependencies 并让更早启动的组插队重试。"
+    }
+  ]
+}

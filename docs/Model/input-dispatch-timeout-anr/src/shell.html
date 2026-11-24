@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN" data-register="blueprint">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="基于当前 AOSP 源码，动画呈现 InputDispatcher 已发送事件的 FINISHED/ACK 超时、解除和恢复机制。">
+  <title>Input Dispatch Timeout ANR · AOSP 输入应答模型</title>
+  <link rel="stylesheet" href="kit.css" data-ve-kit>
+  <script>
+    (function () {
+      let pref = 'auto';
+      try { pref = localStorage.getItem('fp-theme') || 'auto'; } catch (_) {}
+      document.documentElement.dataset.themePref = pref;
+      document.documentElement.dataset.theme = pref === 'light' || pref === 'auto' && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    })();
+  </script>
+  <style>{{STYLE}}</style>
+</head>
+<body>
+  <header class="topbar"><div class="topbar-in wrap"><a class="brand" href="#top"><span class="logo">{{ICON_SCAN}}</span><span>Input Pipeline <small>AOSP · SOURCE MODEL</small></span></a><nav class="nav" aria-label="章节导航"><a href="#simulation">应答模型</a><a href="#mechanism">计时机制</a><a href="#diagnosis">归因边界</a><a href="#sources">源码证据</a></nav><button class="icon-button" id="themeBtn" title="切换配色" aria-label="切换明暗配色">{{ICON_SUN}}</button></div></header>
+  <main id="top">
+    <section class="intro wrap"><div class="eyebrow"><i></i> SOURCE-BACKED / CONNECTION ACK TIMEOUT</div><h1>Input Dispatch Timeout <span>ANR</span></h1><p class="lede">事件已经发给窗口，<strong>但对应的完成应答迟迟没有被清理</strong>。</p><div class="intro-meta"><span>发布成功 ≠ 应用开始处理</span><span>调用 finish ≠ 服务端已解除等待</span><span>源码快照 <code>{{REVISION}}</code></span></div></section>
+
+    <section id="simulation" class="studio-band"><div class="wrap">
+      <div class="section-head"><div><div class="sec-eyebrow">01 / LIVE MODEL</div><h2>发出事件，等回一个 FINISHED</h2></div><span class="source-tag">单窗口连接 · 示意时间 · 非设备 trace</span></div>
+      <figure class="studio" id="studio">
+        <div class="scenario-bar"><label for="scenario">场景</label><select id="scenario"></select><p id="scenarioDesc"></p><span class="result-tag" id="scenarioResult"></span></div>
+        <div class="transport"><div class="play-controls"><button class="icon-button" id="restartBtn" title="重置到起点" aria-label="重置到起点">{{ICON_RESTART}}</button><button class="icon-button" id="prevStep" title="上一步" aria-label="上一步">{{ICON_PREVIOUS}}</button><button class="icon-button play-button" id="playBtn" title="播放" aria-label="播放">{{ICON_PLAY}}</button><button class="icon-button" id="nextStep" title="下一步" aria-label="下一步">{{ICON_NEXT}}</button></div><label class="speed-label" for="speed">速度<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label><div class="scrub-wrap"><input id="scrub" type="range" min="0" max="10000" step="10" value="2800" aria-label="模拟时刻"><output id="timeNow">2.80 s</output></div><span class="connection-state" id="connectionState"><i></i><code>responsive = true</code></span></div>
+
+        <div class="stage">
+          <div class="dispatcher actor"><span class="actor-kind">SYSTEM_SERVER / NATIVE THREAD</span><h3>InputDispatcher</h3><div class="queue-title"><code>outboundQueue</code><span>待发布 <b id="outboundCount">0</b></span></div><div class="queue outbound-queue" id="outboundQueue"></div><div class="queue-transfer"><span>发布成功后移入 ↓</span><code>deliveryTime + timeout</code></div><div class="queue-title"><code>waitQueue</code><span>已发未完成 <b id="waitCount">1</b></span></div><div class="queue wait-queue" id="waitQueue"></div><p class="queue-note">服务端保留的是 DispatchEntry 等待记录，<br>应用收到事件不等于这条记录已移除。</p></div>
+          <div class="channel" id="channel"><span class="channel-heading">InputChannel</span><span class="channel-kind">AF_UNIX · SOCK_SEQPACKET</span><div class="channel-wire outbound-wire" id="sendWire"><b>发送事件 →</b><span class="wire"></span><span class="packet" id="sendPacket"></span><code id="sendLabel">MotionEvent · seq 101</code></div><div class="channel-wire ack-wire" id="ackWire"><b>← 完成应答 FINISHED</b><span class="wire"></span><span class="packet" id="ackPacket"></span><code id="ackLabel">seq 101 · handled = true</code></div><div class="channel-callout" id="channelCallout">发布成功，不保证应用已消费</div></div>
+          <div class="app actor"><span class="actor-kind">APP PROCESS / RECEIVER LOOPER</span><h3>窗口 A · 输入接收线程</h3><div class="app-status" id="appStatus">Looper 被其他任务占用</div><div class="looper-stage" id="looperStage"><span class="looper-symbol">{{ICON_CPU}}</span><b id="appWork">其他任务 / 等待锁 / 同步调用</b><span id="appEvent">E1 尚未消费</span><div class="work-progress"><i id="workProgress"></i></div></div><div class="app-boundaries"><div id="consumeState"><i></i><span>接收 / consume</span><code id="consumeValue">尚未执行</code></div><div id="finishState"><i></i><span>finishInputEvent</span><code id="finishValue">尚未调用</code></div><div id="ackState"><i></i><span>服务端 ACK 清理</span><code id="ackValue">尚未发生</code></div></div></div>
+        </div>
+
+        <div class="watch-strip"><div class="tracker"><div class="queue-title"><code>AnrTracker</code><span>(deadline, token A)</span></div><div class="tracker-entries" id="trackerEntries"></div></div><div class="deadline-clock"><span id="clockLabel">最早截止还剩</span><strong id="remaining">3.20 <small>s</small></strong><code id="nextDeadline">E1 · deadline 6.00 s</code></div><div class="timeout-rule"><code>now ≥ firstTimeout()</code><span id="ruleState">等待截止，或匹配的 FINISHED 先到</span></div></div>
+        <div class="verdict" id="verdict"><b id="verdictTitle">已经发送，仍未收到完成应答</b><span id="verdictDesc">事件在 waitQueue，AnrTracker 跟踪它的截止时间。</span><code id="reasonLabel">本例尚无 ANR 历史</code></div>
+        <div class="policy-path"><span id="detectHop"><b>最早 deadline 到期</b><small>responsive=false / eraseToken(A)</small></span><i>→</i><span id="notifyHop"><b>排入 policy 通知</b><small>waitQueue 不因此清空 / 合成取消事件</small></span><i>→</i><span id="wmsHop"><b>JNI → IMS → WMS</b><small>复核窗口、PID 与 Activity</small></span><i>→</i><span id="amsHop"><b>后续 ANR 处理</b><small>并非无条件立即弹窗</small></span></div>
+
+        <div class="timeline" id="timeline"><div class="timeline-head"><span>服务端等待区间</span><span>实线 = 已发未 ACK　虚线 = 应用处理　竖线 = deadline</span></div><div class="timeline-board"><div class="timeline-labels" id="timelineLabels"></div><div class="timeline-plot" id="timelinePlot"><div class="ruler" id="ruler"></div><div id="timeRows"></div><div class="playhead" id="playhead"></div></div></div></div>
+        <div class="parameter-row" id="parameters"><label>发布 → finish<input type="range" id="delayRange" min="400" max="8000" step="100" value="6500"><output id="delayValue">6.50 s</output></label><label>finish → ACK 清理<input type="range" id="ackRange" min="100" max="6500" step="100" value="100"><output id="ackDelayValue">0.10 s</output></label><label>窗口 timeout<select id="timeout"><option value="2000">2 s</option><option value="5000" selected>5 s（基础默认）</option><option value="8000">8 s</option></select></label><span>时长为教学参数，非阶段性能测量。</span></div>
+        <div class="phase-panel"><div class="phase-copy"><div class="phase-eyebrow"><span id="phaseCount"></span><span id="phaseTime"></span></div><h3 id="phaseTitle"></h3><p id="phaseDesc"></p><a id="phaseRef" href="#source-publish"></a></div><ol class="event-list" id="eventList" aria-label="源码因果步骤"></ol></div>
+        <figcaption><span>Fig. 1</span> 发布成功即登记 deadline；消费、处理与 finish 都不能代替服务端按 seq 清理。上报后停止重复追踪该连接，但原等待记录可以继续存在。时间为示意，ACK 与超时同刻时本模型先清理 ACK，不代表真实并发顺序。</figcaption>
+      </figure>
+    </div></section>
+
+    <section class="band" id="mechanism"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">02 / DEADLINE & IDENTITY</div><h2>计时跟着 DispatchEntry，不跟着回调名称</h2></div></div>
+      <figure class="mechanism-figure"><div class="lifecycle"><div><span>等待发布</span><code>outboundQueue</code><small>未成功发布不插入该条 tracker</small></div><i>→</i><div class="lifecycle-wait"><span>发布成功</span><code>waitQueue + AnrTracker</code><small>deadline = deliveryTime + timeout</small></div><i>→</i><div><span>收到完成并按 seq 清理</span><code>erase(entry) + erase(deadline, token)</code><small>handled=false 也表示完成</small></div></div><figcaption><span>Fig. 2</span> startDispatchCycleLocked 在 publish 尝试前填写时间，成功后入 waitQueue 并登记 tracker。若 WOULD_BLOCK 则保留 outbound，不将本次未发出的条目登记为 ACK 超时。</figcaption></figure>
+      <div class="mechanism-grid"><article><div class="sec-eyebrow">REGISTER / 登记</div><h3>服务端已发送，不等于客户端已读</h3><p>InputChannel 传输与应用 Looper 执行是不同边界。主线程正在跑其他任务、被锁阻塞，或等待同步调用时，事件可以已经进入服务端 <code>waitQueue</code>，而应用回调还没开始。</p><a href="#source-publish">发布与计时源码 →</a></article><article><div class="sec-eyebrow">FINISH / 完成</div><h3>finish 是完成协议，不是下一帧上屏</h3><p><code>finishInputEvent</code> 交回 sequence 与 handled，经 native 发送 FINISHED。服务端匹配 <code>seq</code> 清理该条记录。渲染完成、业务消费成功与输入完成确认，不是同一个条件。</p><a href="#source-finish">finish 与应答源码 →</a></article><article><div class="sec-eyebrow">EXPIRE / 超时</div><h3>先按最早截止触发，再按连接处理</h3><p><code>AnrTracker</code> 维护 (timeoutTime, connectionToken) 的有序集合。选中到期项后，连接标记不响应并移除该 token 的追踪；不是把所有输入事件直接丢掉，也不是不断为同一未恢复连接重复通知。</p><a href="#source-timeout">超时检测源码 →</a></article></div>
+      <figure class="subtleties"><div><span class="case-tag warn">ONE ACK ≠ ALL DONE</span><h3>一个 seq，只解除一个等待</h3><div class="mini-queue"><span class="done">E1 ✓</span><span>E2 · 等待</span><span>E3 · 等待</span></div><p>ACK 到来不是把连接的全部计时重置为 5 秒。超时后的恢复也检查剩余队列：仍有过期事件，就仍不响应。</p></div><div><span class="case-tag danger">TRIGGER ≠ REASON ENTRY</span><h3>先发出的，不一定先到期</h3><div class="deadline-example"><span>E1 <code>1 s + 8 s = 9 s</code></span><span class="danger-text">E2 <code>2.2 s + 2 s = 4.2 s</code></span></div><p>窗口 timeout 改变只影响新发送项。E2 能先触发，但 <code>onAnrLocked</code> 的 reason 使用 waitQueue 中最早发送且未完成的 E1。</p></div><figcaption><span>Fig. 3</span> 多个事件可以同时在途；最早 deadline、队头记录和当前应用回调需要分别看待。</figcaption></figure>
+    </div></section>
+
+    <section class="band" id="diagnosis"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">03 / WHAT THE TIMEOUT PROVES</div><h2>证明完成信号迟到，不直接证明某行代码慢</h2></div></div>
+      <figure class="boundary-figure"><div class="boundary-grid"><div><span class="case-tag danger">CONNECTION TIMEOUT</span><h3>目标已找到，已发送，等 FINISHED</h3><div class="boundary-flow"><code>waitQueue</code><span>→</span><b>完成应答缺席</b></div><p>定位 Looper 调度、输入处理、异步阶段及应答清理。主线程阻塞很常见，但不是从 ANR 类型就能推导出的唯一根因。</p></div><div><span class="case-tag info">NO FOCUSED WINDOW</span><h3>目标尚不可用，事件还在等待分发</h3><div class="boundary-flow"><code>mPendingEvent</code><span>→</span><b>焦点目标缺席</b></div><p>这是另一条状态与计时路径。缺窗口、缺焦点或窗口未具备资格，不能用“已送达后不 ACK”的模型解释。</p><a href="../no-focused-window-anr/index.html">查看 No Focus ANR 模型 →</a></div></div><figcaption><span>Fig. 4</span> 本页的 Input Dispatch Timeout 特指已发送连接的完成应答超时；不是所有 Input ANR 的总称。</figcaption></figure>
+      <div class="diagnostic-grid"><article><h3>沿同一事件时间窗还原</h3><pre>adb shell dumpsys input
+adb shell dumpsys window</pre><p>对齐事件 ID、connection、waitQueue、发布时间与窗口 timeout；再结合 InputDispatcher / app trace，区分“未被接收”“处理中”“finish 后尚未清理”。</p></article><article><h3>超时检测与弹窗是不同阶段</h3><pre>... is not responding. Waited ... ms for ...
+notifyWindowUnresponsive
+notifyWindowResponsive</pre><p>native command 释放锁后进入 Java policy。WMS 尝试按窗口 token、PID 与 Activity 归因；AMS 还受进程状态和 ANR 策略影响。事后 idle 栈或一次 dump 不能重现此前的等待。</p></article></div>
+    </div></section>
+
+    <section class="band" id="sources"><div class="wrap"><div class="section-head"><div><div class="sec-eyebrow">04 / SOURCE EVIDENCE</div><h2>动画判定对应当前仓库的实现</h2></div><span class="source-tag" id="citationCount"></span></div><div class="scope-note"><b>模型与证据范围</b><p>源码快照 <code>{{REVISION}}</code>。单窗口连接、1 至 3 个非批量化 MotionEvent、成功发布、固定示意调度；不模拟 key fallback、批量合并、完整多窗口触摸、完整策略弹窗与进程退出。普通窗口应用接收器通常绑定主线程；自定义 receiver 可以绑定其他 Looper。生成的取消事件仅标注，未逐条加入示意队列，恢复阶段假设它们没有额外过期项。</p><p>finish → ACK 清理的时段合并展示 native 输出、通道响应与服务端 command 清理的间隔，不声称该间隔通常很长。deadline 处画检测点、policy 的视觉转场延迟均不是调度实时保证。基础默认 5 s 仍受 HW multiplier 与窗口配置影响。</p></div><div class="source-list">{{SOURCES}}</div><div class="scope-note"><b>三个独立的验证层</b><p>摘录匹配核对引用文本；机制复核核对条件、执行者与因果；浏览器测试核对模型操作与布局。以上不等于真机、厂商系统、实际调度耗时或 ANR 对话框证据。</p></div></div></section>
+  </main>
+  <footer class="wrap"><span>AOSP Input Pipeline / Input Dispatch Timeout ANR</span><span>源码驱动 · 单文件离线 · 2026-10-28</span></footer>
+  <noscript><p class="wrap">动画需要 JavaScript，静态原理与源码仍可阅读。</p></noscript>
+  <script id="sourceData" type="application/json">{{DATA}}</script>
+  <script>{{MODEL}}</script>
+  <script>{{APP}}</script>
+</body>
+</html>

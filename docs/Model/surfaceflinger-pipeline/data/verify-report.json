@@ -1,0 +1,362 @@
+[
+ {
+  "stage": 1,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "779-803",
+  "symbol": "BLASTBufferQueue::onFrameAvailable",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "22/22 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "713-746",
+  "symbol": "acquireNextBufferLocked",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "5716-5731",
+  "symbol": "queueTransaction",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "14/14 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 1,
+  "file": "native/libs/gui/include/gui/LayerState.h",
+  "lines": "115-156",
+  "symbol": "BufferData",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "36/36 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+  "lines": "32-70",
+  "symbol": "MessageQueue::Handler::dispatchFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "31/31 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+  "lines": "411-425",
+  "symbol": "Scheduler::onFrameSignal",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "13/13 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+  "lines": "470-509",
+  "symbol": "compositor.commit",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 2,
+  "file": "native/services/surfaceflinger/Scheduler/include/scheduler/interface/ICompositor.h",
+  "lines": "37-48",
+  "symbol": "ICompositor",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "2771-2800",
+  "symbol": "SurfaceFlinger::updateLayerSnapshots",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "30/30 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "2881-2920",
+  "symbol": "mLayerSnapshotBuilder.update",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "37/37 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "2922-2959",
+  "symbol": "latchBufferImpl",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "35/35 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 3,
+  "file": "native/services/surfaceflinger/FrontEnd/LayerSnapshot.h",
+  "lines": "67-110",
+  "symbol": "LayerSnapshot",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "42/42 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "native/services/surfaceflinger/Layer.cpp",
+  "lines": "1506-1534",
+  "symbol": "Layer::latchBufferImpl",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "24/24 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "native/services/surfaceflinger/Layer.cpp",
+  "lines": "1259-1288",
+  "symbol": "Layer::addSurfaceFramePresentedForBuffer",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "27/27 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "native/libs/gui/include/gui/LayerState.h",
+  "lines": "115-145",
+  "symbol": "BufferData",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "28/28 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 4,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "2911-2953",
+  "symbol": "Layer::latchBufferImpl",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "40/40 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+  "lines": "248-292",
+  "symbol": "Display::chooseCompositionStrategy",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "36/36 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "lines": "562-606",
+  "symbol": "HWC2::Display::validate",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "42/42 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "native/services/surfaceflinger/DisplayHardware/HWC2.cpp",
+  "lines": "515-529",
+  "symbol": "HWC2::Display::validate",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "14/14 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 5,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+  "lines": "1080-1104",
+  "symbol": "OutputLayer::writeCompositionTypeToHWC",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "22/22 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "lines": "1390-1434",
+  "symbol": "Output::composeSurfaces",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "39/39 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "lines": "1465-1509",
+  "symbol": "RenderEngine::drawLayers",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "40/40 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "lines": "1312-1349",
+  "symbol": "Output::finishFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "37/37 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 6,
+  "file": "native/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp",
+  "lines": "109-128",
+  "symbol": "HWComposer::setClientTarget",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "17/17 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+  "lines": "658-691",
+  "symbol": "HWComposer::presentAndGetReleaseFences",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+  "lines": "416-452",
+  "symbol": "compositionengine::impl::Display::presentFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "26/26 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/DisplayHardware/HWC2.cpp",
+  "lines": "413-423",
+  "symbol": "HWC2::Display::present",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 7,
+  "file": "native/services/surfaceflinger/DisplayHardware/AidlComposerHal.cpp",
+  "lines": "748-775",
+  "symbol": "AidlComposer::presentDisplay",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "25/25 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+  "lines": "3775-3801",
+  "symbol": "SurfaceFlinger::onCompositionPresented",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "22/22 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+  "lines": "2145-2154",
+  "symbol": "FrameTimeline::finalizeCurrentDisplayFrame",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "10/10 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+  "lines": "1420-1430",
+  "symbol": "FrameTimeline::setSfPresent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "11/11 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 8,
+  "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+  "lines": "2095-2118",
+  "symbol": "FrameTimeline::flushPendingPresentFences",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "22/22 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "native/services/surfaceflinger/Layer.cpp",
+  "lines": "711-749",
+  "symbol": "Layer::callReleaseBufferCallback",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "33/33 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "lines": "1302-1341",
+  "symbol": "BBQBufferQueueProducer::waitForBufferRelease",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "35/35 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "native/libs/gui/BufferQueueConsumer.cpp",
+  "lines": "550-592",
+  "symbol": "BufferQueueConsumer::releaseBuffer",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "36/36 lines",
+  "symbolInRange": true
+ },
+ {
+  "stage": 9,
+  "file": "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+  "lines": "1052-1084",
+  "symbol": "SurfaceFrame::onPresent",
+  "ok": true,
+  "ratio": 1.0,
+  "msg": "29/29 lines",
+  "symbolInRange": true
+ }
+]

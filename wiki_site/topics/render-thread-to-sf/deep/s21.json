@@ -1,0 +1,48 @@
+{
+  "step": "s21",
+  "title": "acquireNextBufferLocked：取出 BufferItem 与 acquire fence",
+  "tldr": "从 BufferQueue 取一帧，带 acquire fence 写进 Transaction。",
+  "why": "没有这一步，buffer 只是躺在 BufferQueue 的队列里，SurfaceFlinger 根本不知道有新内容，合成时只会画 Layer 上那块旧 buffer。它同时是 acquire fence 从 producer 传到 SF 的唯一通道：漏掉 fence 的 dup（655）会让 SF 在 GPU 还没写完时就读这块 buffer，表现为花屏和块状撕裂，而且只在重载时出现。这里还决定了 release 回调的身份（bufferId + frameNumber）：身份写错，SF 还 buffer 时 app 找不到对应 slot，三缓冲很快吃满，UI 线程被 dequeueBuffer 反压。",
+  "concepts": [
+    { "term": "BufferItem", "text": "消费端拿到的一帧：graphicBuffer、crop、transform、damage 与 acquireFence。" },
+    { "term": "ReleaseCallbackId", "text": "bufferId + frameNumber 组成的回调身份，SF 释放时靠它找回 mSubmitted。" },
+    { "term": "mSubmitted", "text": "已 acquire 未 release 的 BufferItem 表，release 回调按 id 查它。" },
+    { "term": "mLastBufferInfo", "text": "BLAST 缓存的一帧元数据（尺寸、transform、scalingMode、crop），判断是否匹配。" },
+    { "term": "rejectBuffer", "text": "尺寸或 transform 与请求不符就放掉并递归取下一帧，避免把不匹配的 buffer 交给 SF。" }
+  ],
+  "walk": [
+    { "call": "status_t BLASTBufferQueue::acquireNextBufferLocked(const std::optional<SurfaceComposerClient::Transaction*> transaction)", "ref": "native/libs/gui/BLASTBufferQueue.cpp:567", "what": "传 std::nullopt 就是正常路径自建事务；传了指针就是 sync 路径。" },
+    { "call": "if (mNumFrameAvailable == 0) { return BufferQueue::NO_BUFFER_AVAILABLE; }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:573", "what": "shadow 队列空就没有可取的帧，直接失败返回。" },
+    { "call": "if (mNumAcquired >= (mMaxAcquiredBuffers + 2)) { return BufferQueue::NO_BUFFER_AVAILABLE; }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:578", "what": "已占的 buffer 超过上限就收手，防止把 Producer 的 slot 全占死。" },
+    { "call": "if (transaction) { t = *transaction; applyTransaction = false; }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:592", "what": "sync 模式复用调用方事务，且不在这里 apply（交给 flush）。" },
+    { "call": "status_t status = mBufferItemConsumer->acquireBuffer(&bufferItem, 0 /* expectedPresent */, false);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:600", "what": "把 slot 从 QUEUED 变 ACQUIRED，fence 就在 bufferItem.mFence。" },
+    { "call": "mNumFrameAvailable--;", "ref": "native/libs/gui/BLASTBufferQueue.cpp:610", "what": "shadow 队列减一，与 onFrameAvailable 的 ++ 配对。" },
+    { "call": "if (rejectBuffer(bufferItem)) { mBufferItemConsumer->releaseBuffer(bufferItem, Fence::NO_FENCE); return acquireNextBufferLocked(transaction); }", "ref": "native/libs/gui/BLASTBufferQueue.cpp:619", "what": "不匹配就还回去再取下一帧（625 的递归），可能连跳多帧。" },
+    { "call": "mNumAcquired++; mLastAcquiredFrameNumber = bufferItem.mFrameNumber;", "ref": "native/libs/gui/BLASTBufferQueue.cpp:628", "what": "记账：之后 release 回调靠 mSubmitted 与这个帧号配对。" },
+    { "call": "mSubmitted.emplace_or_replace(releaseCallbackId, bufferItem);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:631", "what": "把 BufferItem 存起来，SF 还 buffer 时按 id 找它。" },
+    { "call": "sp<Fence> fence = bufferItem.mFence ? sp<Fence>::make(bufferItem.mFence->dup()) : Fence::NO_FENCE;", "ref": "native/libs/gui/BLASTBufferQueue.cpp:654", "what": "fence 必须 dup：原 fd 会被 BufferQueue 复用，直接传会提前 signal。" },
+    { "call": "t->setSurfaceDamageRegion(mSurfaceControl, bufferItem.mSurfaceDamage);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:671", "what": "damage 也从 BufferItem 搬进事务，最终影响 SF 的可见区域计算。" },
+    { "call": "t->setTransform(mSurfaceControl, bufferItem.mTransform);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:686", "what": "transform/scalingMode/crop 一路写进事务，写完才轮到 setBuffer 交接。" }
+  ],
+  "state": [
+    { "field": "mNumFrameAvailable", "before": "n（>=1）", "after": "n-1（610）", "note": "与 onFrameAvailable 的 ++ 是同一计数器" },
+    { "field": "mNumAcquired", "before": "k", "after": "k+1（628）", "note": "releaseBuffer 里再减（546）" },
+    { "field": "mLastAcquiredFrameNumber", "before": "上一帧号", "after": "bufferItem.mFrameNumber（629）", "note": "mergeWithNextTransaction 用它判断要不要挂起（1103）" },
+    { "field": "mSubmitted", "before": "不含本帧", "after": "emplace_or_replace({bufferId, frameNumber}, bufferItem)（631）", "note": "release 回调按 id 查表" },
+    { "field": "BufferQueue slot 状态", "before": "QUEUED", "after": "ACQUIRED", "note": "acquireBuffer 内部改的；SF release 后才回 FREE" },
+    { "field": "mLastBufferInfo", "before": "上一帧元数据", "after": "本帧尺寸/transform/scalingMode/crop（649–651）", "note": "SF 侧靠它判断 buffer 是否匹配" }
+  ],
+  "threads": "被 onFrameAvailable 调用时在 RT 上（正常路径）；也被 transactionCommittedCallback 调用（release 之后补取，BLASTBufferQueue.cpp:530），那时在 TransactionCompletedListener 的回调线程上。整段持 BLAST 的 mMutex，再往下 acquireBuffer 会拿 BufferQueue 的 mCore->mMutex。",
+  "pitfalls": [
+    "NO_BUFFER_AVAILABLE 有两个来源（573 没帧、578 已达 mMaxAcquiredBuffers+2），正常路径拿到就直接返回、不重试，只有 sync 路径会 while+wait（onFrameAvailable 847）。看到「acquire 失败但不卡住」是设计如此，下一帧或 release 回调会补上（530）。",
+    "acquire 之后如果事务 apply 失败，735 是 LOG_ALWAYS_FATAL_IF，进程直接 abort——所以这类问题的现场在 tombstone 里，logcat 里没有异常。",
+    "rejectBuffer 的递归（625）没有次数上限：请求尺寸与实际 buffer 长期不匹配会一直递归下去，栈和帧延迟都遭殃。",
+    "mSubmitted 用 bufferId + frameNumber 做键（630）：同一块 GraphicBuffer 被复用时只有帧号能区分，帧号来源必须是 BufferItem 而不是自己算的计数。"
+  ],
+  "debug": [
+    "BQA_LOGV 的 acquireNextBufferLocked size=.. mFrameNumber=.. applyTransaction=..（748–754）能看出这一帧是否被 apply、是否被 merge 进挂起事务。",
+    "perfetto 里 acquireBuffer 的 slice 属于 BufferQueue 侧；BLAST 侧只有 BBQ_TRACE 的 frame=<n>（611），两者对不上说明 acquire 卡在 BufferQueue 锁或 consumer 限流上。",
+    "dumpsys SurfaceFlinger 里该 Layer 段的 queued/acquired 计数与 buffer id，可以和 mSubmitted 的键一一对应。"
+  ],
+  "next": "第 22 步「Transaction 交给 SurfaceFlinger」：buffer、fence、frameNumber 已经在事务里，setApplyToken 之后 oneWay apply 出去。"
+}

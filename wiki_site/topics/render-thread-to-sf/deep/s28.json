@@ -1,0 +1,46 @@
+{
+  "step": "s28",
+  "title": "getDeviceCompositionChanges：问 HWC 每一层怎么合",
+  "tldr": "validate 后 HWC 告诉我们哪些层它扛不住、要改成 GPU 合成，以及 client target 怎么配。",
+  "why": "少了这一步，SF 只能自己猜每层该怎么合。把 DPU 扛不住的层硬塞给 HWC——带圆角、模糊、非整数缩放、不支持的 dataspace 或需要色调映射的层——validate 会报错或者直接拒绝，轻则那一帧退化成全屏 GPU 合成、功耗和耗时翻倍，重则 present 失败、黑屏一拍。更隐蔽的是 client target 的协商：HWC 通过 getClientTargetProperty 告诉我们它要什么 dataspace、什么像素格式、多亮的白点，不采纳它的答复，GPU 画出来的 buffer 与 HWC 期望的不一致，表现是偏色、过曝、或者 HDR 内容在 SDR 屏上发灰。这类问题在模拟器和单测里完全看不出来，只有真机才有。",
+  "concepts": [
+    { "term": "validate", "text": "HWC 的「预演」：不改硬件状态，只回报这一组层它能不能合、想怎么改。" },
+    { "term": "DeviceRequestedChanges", "text": "HWC 的答复包：changedTypes、layerRequests、clientTargetProperty 等。" },
+    { "term": "skip validate", "text": "纯 DEVICE 合成且上一帧没被 present 挡住时，可跳过 validate 直接 present。" },
+    { "term": "client target", "text": "GPU 合成时的目标 buffer；dataspace 与像素格式由 HWC 提要求、SF 配置。" }
+  ],
+  "walk": [
+    { "call": "status_t HWComposer::getDeviceCompositionChanges(", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:537", "what": "frameUsesClientComposition 这个入参决定能不能走 skip validate。" },
+    { "call": "if (!hwcDisplay->isConnected()) {", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:548", "what": "屏断了直接 NO_ERROR 返回，outChanges 保持 nullopt。" },
+    { "call": "const bool canSkipValidate = [&] {", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:562", "what": "快路径判定：有 client 合成、或会太早 present，就必须 validate。" },
+    { "call": "hwcDisplay->presentOrValidate(expectedPresentTime, frameInterval.getPeriodNsecs(),", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:584", "what": "快路径：一次 IPC 既 present 又顺带拿 validate 结果。" },
+    { "call": "if (state == 1) { // Present Succeeded.", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:589", "what": "present 成功就收 release fence 返回，本帧不再有答复包。" },
+    { "call": "hwcDisplay->validate(expectedPresentTime, frameInterval.getPeriodNsecs(), &numTypes,", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:600", "what": "慢路径：真正跑 validate，拿到变更数量。" },
+    { "call": "error = hwcDisplay->getChangedCompositionTypes(&changedTypes);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:610", "what": "取 HWC 要求改的层与目标类型（通常是被踢回 CLIENT）。" },
+    { "call": "error = hwcDisplay->getClientTargetProperty(&clientTargetProperty);", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:620", "what": "取 client target 的 dataspace / 亮度 / 像素格式要求。" },
+    { "call": "outChanges->emplace(DeviceRequestedChanges{std::move(changedTypes), std::move(displayRequests),", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:627", "what": "打包成答复；这行之前 outChanges 一直是 nullopt。" },
+    { "call": "error = hwcDisplay->acceptChanges();", "ref": "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp:631", "what": "必须 accept，否则下一轮 validate 还带着这次变更。" },
+    { "call": "bool success = chooseCompositionStrategy(&changes);", "ref": "native/services/surfaceflinger/CompositionEngine/src/Output.cpp:1187", "what": "CE 侧调用点，在 prepareFrame 里，紧接着就 apply。" },
+    { "call": "state.usesClientComposition = anyLayersRequireClientComposition();", "ref": "native/services/surfaceflinger/CompositionEngine/src/Display.cpp:306", "what": "答复落地的时刻：全屏是否有层要 GPU 合成，由它决定。" }
+  ],
+  "state": [
+    { "field": "OutputCompositionState.usesClientComposition / usesDeviceComposition", "before": "上一帧的结论", "after": "applyCompositionStrategy 重新算出（Display.cpp:306-307）", "note": "任何一层 requiresClientComposition，usesClientComposition 就是 true" },
+    { "field": "HWComposer::mDisplayData[id].releaseFences", "before": "上一帧的 per-layer fence", "after": "快路径成功时换成 HWC 现场回报的（591-593）", "note": "慢路径要等 presentAndGetReleaseFences 才填" },
+    { "field": "HWComposer::mDisplayData[id].validateWasSkipped", "before": "false", "after": "快路径 present 成功时置 true（594）", "note": "presentAndGetReleaseFences 靠它决定 executeCommands 还是再 present 一次" },
+    { "field": "OutputCompositionState.previousDeviceRequestedChanges", "before": "上一拍的 changes", "after": "本拍 changes（Output.cpp:1199）", "note": "合成策略预测拿它和本拍结果比对，决定能不能复用上次的 GPU 结果" },
+    { "field": "OutputCompositionState.dataspace / clientTargetBrightness", "before": "上一帧的 client target 配置", "after": "按 HWC 要求改写，同时写进 RenderSurface（Display.cpp:374-380）", "note": "不跟着改就会偏色 / 过曝，而且只在真机上能看出来" }
+  ],
+  "threads": "默认在 SF 主线程：Output::prepareFrame → Display::chooseCompositionStrategy → hwc，validate 与 present 都是 HWC 的 AIDL IPC，会阻塞。开启合成策略预测时 Display::prepareFrameAsync 会把这次调用丢给 HwcAsyncWorker 线程（Output.cpp:1240），主线程同时去 dequeue client target 并开画，等到 hwcResult.get() 才汇合。这段 IPC 是 SF 每拍的关键路径之一。",
+  "pitfalls": [
+    "快路径（589）不是「validate 成功」，而是「上一次 present 成功且状态没变」。这时 outChanges 是 nullopt，调用方必须能处理空答复，否则会拿空包去 apply。",
+    "漏掉 acceptChanges（631）会让后续 validate 一直带着这次变更：表现是「改过一次合成方式之后再也改不回去」，而且日志里一切正常。",
+    "validate 失败只是 return false，看着无害；但 Output::prepareFrame 里 success 为 false 就跳过 applyCompositionStrategy（Output.cpp:1201），outputState 停在 resetCompositionStrategy 的默认值——usesClientComposition=true（Output.cpp:1816）。整屏退化成 GPU 合成，功耗直接翻倍。",
+    "earliestPresentTime 有值时 presentAndGetReleaseFences 会 sleep_until（HWComposer.cpp:678）：为了不让帧太早出现在屏上，SF 主动睡，这段时间算进 present 阶段，看 perfetto 时别当成 HWC 慢。"
+  ],
+  "debug": [
+    "perfetto 抓 sf：getDeviceCompositionChanges 有 SFTRACE_CALL（542），validate / presentOrValidate 的 IPC 耗时都挂在这条 slice 下。",
+    "dumpsys SurfaceFlinger 里每层的 \"composition\" 字段（OutputLayerCompositionState.cpp:46）直接写着 DEVICE / CLIENT / SOLID_COLOR，答复的结果一目了然。",
+    "用 sfdo_forceClientComposition（SurfaceFlinger.cpp:9803）把 mDebugDisableHWC 打开，强制全屏 client 合成：问题消失就是 HWC 合成路径的问题，这是最快的归因手段。"
+  ],
+  "next": "第 29 步「GPU 合成路径（client composition）」：答复里被标成 CLIENT 的层，接下来要由 RenderEngine 画进 client target。"
+}

@@ -1,0 +1,125 @@
+{
+  "step": "s09",
+  "title": "RenderNode::syncDisplayList：staging 变 display list",
+  "tldr": "把节点 staging 槽 move 成 mDisplayList，前后各 damage 一次；此后内容只读。",
+  "why": "遍历到某个节点时，UI 录好的内容还在 staging 槽里，而 staging 是 UI 随时可以重录的地方——RT 不能拿它当回放的数据源。不在这里做一次交接，RT 要么读到半份 display list（画出来的东西错了但不会崩），要么读到已被释放的 draw op（直接崩）。syncDisplayList 干三件事：把新 list 的子节点引用加上、把旧 list 放掉、把整块 move 过来，并在 move 前后各 damage 一次，保证旧内容的消失和新内容的出现都被重绘覆盖。它只在 mNeedsDisplayListSync 为真时发生——漏掉这个前置条件，节点内容就永远停在第一次录制的样子。",
+  "concepts": [
+    {
+      "term": "staging display list",
+      "text": "UI 线程录制的槽（setStagingDisplayList:80）；RT 不读它，它只是交接前的暂存区。"
+    },
+    {
+      "term": "mNeedsDisplayListSync",
+      "text": "UI 每录一次就置 true（82），syncDisplayList 消费后置 false（565）；它是「这节点有新内容」的唯一信号。"
+    },
+    {
+      "term": "move 语义",
+      "text": "SkiaDisplayListWrapper 的 move 只搬指针并清空源，不复制 draw op，所以交接成本是 O(1)。"
+    },
+    {
+      "term": "mParentCount",
+      "text": "子节点被多少个 display list 引用；sync 前先加新的、删旧的再减，避免中途掉到 0 被摘掉。"
+    },
+    {
+      "term": "前后各 damage 一次",
+      "text": "旧内容消失（568）与新内容出现（570）都要进 damage，否则局部更新会留下旧像素。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "if (mNeedsDisplayListSync) {",
+      "ref": "base/libs/hwui/RenderNode.cpp:564",
+      "what": "只有 UI 重新录过才同步；只改属性（没重录）的节点走别的分支。"
+    },
+    {
+      "call": "damageSelf(info);",
+      "ref": "base/libs/hwui/RenderNode.cpp:568",
+      "what": "先按旧 display list damage 一次：旧内容要擦掉，尺寸或可见性可能都变了。"
+    },
+    {
+      "call": "syncDisplayList(observer, &info);",
+      "ref": "base/libs/hwui/RenderNode.cpp:569",
+      "what": "交接本体，见 431 行开始的实现。"
+    },
+    {
+      "call": "damageSelf(info);",
+      "ref": "base/libs/hwui/RenderNode.cpp:570",
+      "what": "再按新 display list damage 一次：新内容必须被真的画出来。"
+    },
+    {
+      "call": "if (mStagingDisplayList) {",
+      "ref": "base/libs/hwui/RenderNode.cpp:434",
+      "what": "staging 可能为空（UI 主动 discardStagingDisplayList），空则跳过引用计数。"
+    },
+    {
+      "call": "mStagingDisplayList.updateChildren([](RenderNode* child) { child->incParentRefCount(); });",
+      "ref": "base/libs/hwui/RenderNode.cpp:435",
+      "what": "先给新 list 的子节点加引用，保证 move 期间它们不会被当成无主节点回收。"
+    },
+    {
+      "call": "deleteDisplayList(observer, info);",
+      "ref": "base/libs/hwui/RenderNode.cpp:437",
+      "what": "放掉旧 list：减旧子节点引用，计数归零时通知 observer「可能要从树上摘掉」。"
+    },
+    {
+      "call": "mDisplayList = std::move(mStagingDisplayList);",
+      "ref": "base/libs/hwui/RenderNode.cpp:438",
+      "what": "O(1) 交接：内容归 mDisplayList，staging 变空，RT 从此只读这一份。"
+    },
+    {
+      "call": "mDisplayList.syncContents(syncData);",
+      "ref": "base/libs/hwui/RenderNode.cpp:442",
+      "what": "给 WebView functor 等同步 force dark 设置，内容是原地修改，不换对象。"
+    },
+    {
+      "call": "handleForceDark(info);",
+      "ref": "base/libs/hwui/RenderNode.cpp:443",
+      "what": "强制深色：直接改 mDisplayList 里 draw op 的颜色，staging 不受影响。"
+    }
+  ],
+  "state": [
+    {
+      "field": "RenderNode::mDisplayList",
+      "before": "上一帧的 display list（回放读的就是它）",
+      "after": "刚 move 过来的新 list，之后只读（438）",
+      "note": "staging 里的内容在 move 之前对屏幕完全不可见"
+    },
+    {
+      "field": "RenderNode::mStagingDisplayList",
+      "before": "UI 本帧录制的 display list",
+      "after": "空（被 move 走）",
+      "note": "空着时 updateChildren 是无操作；UI 下次 beginRecording 会重新赋值"
+    },
+    {
+      "field": "RenderNode::mNeedsDisplayListSync",
+      "before": "true（setStagingDisplayList:82）",
+      "after": "false（565，在 sync 之前就清掉）",
+      "note": "同步的唯一触发条件，比「staging 非空」更严格"
+    },
+    {
+      "field": "RenderNode::mDamageGenerationId",
+      "before": "上一帧的 damageGenerationId",
+      "after": "info.damageGenerationId（damageSelf:157）",
+      "note": "damageSelf 顺手把节点记成「本帧已访问」，同帧再来一次就会升成整屏 damage"
+    },
+    {
+      "field": "子节点的 mParentCount",
+      "before": "被旧 display list 引用",
+      "after": "旧引用减、新引用加，净变化通常为 0",
+      "note": "先加后减（435 在 437 之前），中间不会出现 0"
+    }
+  ],
+  "threads": "在 RenderThread 上执行，改的却是 UI 线程写的 RenderNode 字段。安全前提是此刻 UI 被 mSignal 扣住（unblockUiThread 还没发生），并且只有 MODE_FULL 的遍历会走 pushStagingDisplayListChanges（RenderNode.cpp:267）；RT 自己驱动的动画帧（prepareAndDraw，CanvasContext.cpp:1132）是 MODE_RT_ONLY，不会碰 display list。",
+  "pitfalls": [
+    "只有 MODE_FULL 才同步（267），RT 自己触发的动画帧走 MODE_RT_ONLY（CanvasContext.cpp:1132）；动画期间 UI 新录的内容要等下一次 UI 帧才上屏，看起来像「动画盖住了刚改的文字」。",
+    "435 的 inc 必须在 437 的 delete 之前：顺序反了父计数会先掉到 0，触发 onMaybeRemovedFromTree（601-608）把节点标成待删；TreeObserver 的注释虽然承认节点可能被「复活」（TreeInfo.h:57-63），但依赖复活在多根共享子树下很脆弱。",
+    "mDisplayList 之后还会被原地修改（syncContents:442、handleForceDark 里的 applyColorTransform），所以它不是不可变快照；谁把它当「稳定数据」跨帧缓存，切深色模式时就会看到颜色错乱。",
+    "同步只由 mNeedsDisplayListSync 触发，而这个标志只由 setStagingDisplayList（82）置真；绕过它直接改 staging 内容的代码路径不会触发同步，改了也白改。"
+  ],
+  "debug": [
+    "adb shell setprop debug.hwui.show_layers_updates true（Properties.h:65，判断点在 RenderNodeDrawable.cpp:380）让每次硬件层更新闪一下，用来区分「内容没同步」还是「层没更新」",
+    "RenderNode#output()（RenderNode.java:1563 → RenderNode.cpp:94）打印的是 mDisplayList 而不是 staging：看不到刚录的内容，就说明 syncDisplayList 还没跑",
+    "syncDisplayList 自身没有 atrace 打点，只能在 perfetto 里看外层的 prepareTree（RenderNode.cpp:138）和 syncFrameState（DrawFrameTask.cpp:170）"
+  ],
+  "next": "第 10 步「unblockUiThread：先把 UI 放走」：同步一结束，RT 立刻 signal 让 UI 线程回去录下一帧。"
+}

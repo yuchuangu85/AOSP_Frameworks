@@ -1,0 +1,234 @@
+{
+  "id": "df-sync",
+  "title": "DrawFrameTask::syncFrameState",
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "sig": "bool DrawFrameTask::syncFrameState(TreeInfo& info)",
+  "span": [
+    169,
+    217
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "bool DrawFrameTask::syncFrameState(TreeInfo& info) {",
+      "kind": "state",
+      "text": "函数入口，运行在renderthread：把UI线程准备好的树状态同步到GPU线程，返回值表示UI线程能否提前解除阻塞"
+    },
+    {
+      "at": 2,
+      "quote": "ATRACE_CALL();",
+      "kind": "trace",
+      "text": "打atrace切片syncFrameState，供Perfetto/systrace观察本帧同步阶段耗时，定位掉帧来源"
+    },
+    {
+      "at": 3,
+      "quote": "int64_t vsync = mFrameInfo[static_cast<int>(FrameInfoIndex::Vsync)];",
+      "kind": "data",
+      "text": "从mFrameInfo取出本帧vsync时间戳，作为TimeLord时间轴基准，供动画按正确时刻插值"
+    },
+    {
+      "at": 4,
+      "quote": "int64_t intendedVsync = mFrameInfo[static_cast<int>(FrameInfoIndex::In",
+      "kind": "data",
+      "text": "取UI线程期望的vsync(IntendedVsync)，与vsync的偏差是jank检测和帧时间线偏移的依据"
+    },
+    {
+      "at": 5,
+      "quote": "int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTim",
+      "kind": "data",
+      "text": "取FrameTimeline的vsyncId，用于在FrameTimeline/Perfetto里唯一标识这一帧"
+    },
+    {
+      "at": 6,
+      "quote": "int64_t frameDeadline = mFrameInfo[static_cast<int>(FrameInfoIndex::Fr",
+      "kind": "data",
+      "text": "取本帧截止时间frameDeadline，TimeLord据此判断是否已过deadline，过晚则本帧jank"
+    },
+    {
+      "at": 7,
+      "quote": "int64_t frameInterval = mFrameInfo[static_cast<int>(FrameInfoIndex::Fr",
+      "kind": "data",
+      "text": "取当前显示器帧间隔(刷新率倒数)，TimeLord据此推算下一帧预期时间，做vsync平滑"
+    },
+    {
+      "at": 8,
+      "quote": "mRenderThread->timeLord().vsyncReceived(vsync, intendedVsync, vsyncId,",
+      "kind": "thread",
+      "text": "本帧5个时间戳在此之前全部取自UI线程写入的mFrameInfo，先喂TimeLord再prepareTree"
+    },
+    {
+      "at": 9,
+      "quote": "frameInterval);",
+      "kind": "data",
+      "text": "frameInterval随同传入，让TimeLord能计算预测帧时间；若vsync被判过期则时间轴不推进"
+    },
+    {
+      "at": 10,
+      "quote": "bool canDraw = mContext->makeCurrent();",
+      "kind": "state",
+      "text": "在GPU线程把EGL/GL上下文设为当前；context已stop或surface重建会返回false，本帧不可绘制"
+    },
+    {
+      "at": 11,
+      "quote": "mContext->unpinImages();",
+      "kind": "state",
+      "text": "释放上一帧pin住的graphic buffer，否则生产者无法取回缓冲，导致SurfaceFlinger卡帧或buffer泄漏"
+    },
+    {
+      "at": 13,
+      "quote": "#ifdef __ANDROID__",
+      "kind": "note",
+      "text": "仅Android(非layoutlib)才处理DeferredLayerUpdater，因为硬件层依赖ASurfaceTexture"
+    },
+    {
+      "at": 14,
+      "quote": "for (size_t i = 0; i < mLayers.size(); i++) {",
+      "kind": "note",
+      "text": "遍历UI线程pushLayerUpdate推入的待更新硬件层(TextureView/Video)，逐个在本帧应用"
+    },
+    {
+      "at": 15,
+      "quote": "if (mLayers[i]) {",
+      "kind": "data",
+      "text": "判空：层可能已被removeLayerUpdate移出，且sp包装可能为空，跳过避免空指针崩溃"
+    },
+    {
+      "at": 16,
+      "quote": "mLayers[i]->apply();",
+      "kind": "state",
+      "text": "执行apply()把alpha/颜色滤镜/新dequeue的SurfaceTexture缓冲提交到Layer，不做则画面不更新"
+    },
+    {
+      "at": 19,
+      "quote": "#endif",
+      "kind": "note",
+      "text": "Android专用分支结束，后续逻辑对layoutlib同样生效"
+    },
+    {
+      "at": 21,
+      "quote": "mLayers.clear();",
+      "kind": "state",
+      "text": "清空层更新列表：这些sp只对本帧有效，不清会在下一帧重复apply同一份旧缓冲"
+    },
+    {
+      "at": 22,
+      "quote": "mContext->setContentDrawBounds(mContentDrawBounds);",
+      "kind": "state",
+      "text": "把UI线程设定的绘制区域写入CanvasContext，用于绘制裁剪与dirty区域/内容边界计算"
+    },
+    {
+      "at": 23,
+      "quote": "mContext->prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode);",
+      "kind": "state",
+      "text": "核心同步：遍历RenderNode树(damage、属性、动画)、预取层、并写info.out，目标节点走MODE_FULL"
+    },
+    {
+      "at": 25,
+      "quote": "// This is after the prepareTree so that any pending operations",
+      "kind": "note",
+      "text": "注释说明：刻意放在prepareTree之后，让RenderNode树状态与预取层等挂起操作先被flush"
+    },
+    {
+      "at": 26,
+      "quote": "// (RenderNode tree state, prefetched layers, etc...) will be flushed.",
+      "kind": "note",
+      "text": "因此下面的输出目标检查看到的是本帧最终状态，而非prepareTree之前的旧状态"
+    },
+    {
+      "at": 27,
+      "quote": "bool hasTarget = mContext->hasOutputTarget();",
+      "kind": "state",
+      "text": "查询是否仍有输出目标(NativeSurface/HardwareBuffer/SurfaceControl)，任一存在即可绘制"
+    },
+    {
+      "at": 28,
+      "quote": "if (CC_UNLIKELY(!hasTarget || !canDraw)) {",
+      "kind": "branch",
+      "text": "无输出目标或上下文已停止，任一成立就丢帧；CC_UNLIKELY标记为冷路径，下面按原因分别记录"
+    },
+    {
+      "at": 29,
+      "quote": "if (!hasTarget) {",
+      "kind": "branch",
+      "text": "优先归因于无输出目标，即surface已被销毁或尚未创建，此时不该继续draw()"
+    },
+    {
+      "at": 30,
+      "quote": "mSyncResult |= SyncResult::LostSurfaceRewardIfFound;",
+      "kind": "state",
+      "text": "置LostSurfaceRewardIfFound位，UI线程据此走surface重建并在奖励帧逻辑里补偿"
+    },
+    {
+      "at": 31,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::NoOutputTarget;",
+      "kind": "state",
+      "text": "跳过原因设为NoOutputTarget，run()据此不调用draw()，FrameTimeline会上报该帧未绘制"
+    },
+    {
+      "at": 32,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "否则说明有surface但makeCurrent失败，属于渲染上下文已被停止的情形"
+    },
+    {
+      "at": 33,
+      "quote": "// If we have a surface but can't draw we must be stopped",
+      "kind": "note",
+      "text": "注释：有surface却不能绘制，只可能是CanvasContext被stop(如上下文丢失/窗口移除)"
+    },
+    {
+      "at": 34,
+      "quote": "mSyncResult |= SyncResult::ContextIsStopped;",
+      "kind": "state",
+      "text": "置ContextIsStopped位，告知UI线程渲染线程已暂停，需重新setContext或重建上下文"
+    },
+    {
+      "at": 35,
+      "quote": "info.out.skippedFrameReason = SkippedFrameReason::ContextIsStopped;",
+      "kind": "state",
+      "text": "跳过原因设为ContextIsStopped，上层据此等待而非立刻重试，避免空转"
+    },
+    {
+      "at": 39,
+      "quote": "if (info.out.hasAnimations) {",
+      "kind": "branch",
+      "text": "树中存在动画时才需判断UI线程是否要介入，无动画则无需额外重绘请求"
+    },
+    {
+      "at": 40,
+      "quote": "if (info.out.requiresUiRedraw) {",
+      "kind": "branch",
+      "text": "requiresUiRedraw表示动画含RT/TimeLord跑不了的functor，必须由UI线程下一帧重绘"
+    },
+    {
+      "at": 41,
+      "quote": "mSyncResult |= SyncResult::UIRedrawRequired;",
+      "kind": "state",
+      "text": "置UIRedrawRequired位，RenderProxy在drawFrame返回后据此向UI线程post重绘"
+    },
+    {
+      "at": 44,
+      "quote": "if (info.out.skippedFrameReason) {",
+      "kind": "branch",
+      "text": "prepareTree期间可能已写入跳过原因(如AlreadyDrawn/NoBuffer/DrawingOff)"
+    },
+    {
+      "at": 45,
+      "quote": "mSyncResult |= SyncResult::FrameDropped;",
+      "kind": "state",
+      "text": "置FrameDropped位，run()据此跳过draw()，只做纹理flush与waitOnFences"
+    },
+    {
+      "at": 47,
+      "quote": "// If prepareTextures is false, we ran out of texture cache space",
+      "kind": "note",
+      "text": "注释：返回false即纹理缓存空间耗尽，UI线程要继续阻塞，等绘制消费完再放行"
+    },
+    {
+      "at": 48,
+      "quote": "return info.prepareTextures;",
+      "kind": "data",
+      "text": "返回值直接作为canUnblockUiThread：prepareTextures为false时UI线程不解锁，防纹理内存超限"
+    }
+  ]
+}

@@ -1,0 +1,501 @@
+{
+  "stages": [
+    {
+      "id": "focused-application-route",
+      "title": "Focused application: the application-handle route",
+      "summary": "WMS publishes an ActivityRecord's InputApplicationHandle through InputManagerService and JNI. InputDispatcher tracks that application independently of any focused window. These excerpts describe the local checkout, not a version-independent Android contract.",
+      "snippets": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "symbol": "DisplayContent.setFocusedApp",
+          "lines": "4501-4527",
+          "code": "    boolean setFocusedApp(ActivityRecord newFocus) {\n// ...\n        if (mFocusedApp == newFocus) {\n            return false;\n        }\n// ...\n        mFocusedApp = newFocus;\n// ...\n        getInputMonitor().setFocusedAppLw(newFocus);\n        return true;",
+          "note": "Changing the focused ActivityRecord publishes an application handle; it does not establish an input-window focus token. Omitted code validates the display and updates task bookkeeping."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputMonitor.java",
+          "symbol": "InputMonitor.setFocusedAppLw",
+          "lines": "530-534",
+          "code": "    void setFocusedAppLw(ActivityRecord newApp) {\n        // Focused app has changed.\n        mService.mInputManager.setFocusedApplication(mDisplayId,\n                newApp != null ? newApp.getInputApplicationHandle(true /* update */) : null);\n    }",
+          "note": "The focused-application update carries an InputApplicationHandle, not an input-channel token."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/input/InputManagerService.java",
+          "symbol": "InputManagerService.setFocusedApplication",
+          "lines": "1418-1420",
+          "code": "    public void setFocusedApplication(int displayId, InputApplicationHandle application) {\n        mNative.setFocusedApplication(displayId, application);\n    }",
+          "note": "Java forwards this update to its native implementation, separately from SurfaceControl focus transactions."
+        },
+        {
+          "file": "base/services/core/jni/com_android_server_input_InputManagerService.cpp",
+          "symbol": "NativeInputManager::setFocusedApplication",
+          "lines": "1500-1509",
+          "code": "void NativeInputManager::setFocusedApplication(JNIEnv* env, ui::LogicalDisplayId displayId,\n                                               jobject applicationHandleObj) {\n    if (!applicationHandleObj) {\n        return;\n    }\n    std::shared_ptr<InputApplicationHandle> applicationHandle =\n            android_view_InputApplicationHandle_getHandle(env, applicationHandleObj);\n    applicationHandle->updateInfo();\n    mInputManager->getDispatcher().setFocusedApplication(displayId, applicationHandle);\n}",
+          "note": "Current-checkout caveat: a null Java application handle returns here. Do not claim that Java setFocusedApplication(null) reaches InputDispatcher to clear its map or reset its timer. A direct native dispatcher call has different behavior."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::setFocusedApplicationLocked",
+          "lines": "5869-5888",
+          "code": "void InputDispatcher::setFocusedApplicationLocked(\n        ui::LogicalDisplayId displayId,\n        const std::shared_ptr<InputApplicationHandle>& inputApplicationHandle) {\n    std::shared_ptr<InputApplicationHandle> oldFocusedApplicationHandle =\n            getValueByKey(mFocusedApplicationHandlesByDisplay, displayId);\n\n    if (sharedPointersEqual(oldFocusedApplicationHandle, inputApplicationHandle)) {\n        return; // This application is already focused. No need to wake up or change anything.\n    }\n\n    // Set the new application handle.\n    if (inputApplicationHandle != nullptr) {\n        mFocusedApplicationHandlesByDisplay[displayId] = inputApplicationHandle;\n    } else {\n        mFocusedApplicationHandlesByDisplay.erase(displayId);\n    }\n\n    // No matter what the old focused application was, stop waiting on it because it is\n    // no longer focused.\n    resetNoFocusedWindowTimeoutLocked();",
+          "note": "A changed application handle resets the current wait. Merely setting an application does not arm a no-focused-window timer; an unchanged handle returns without resetting."
+        }
+      ]
+    },
+    {
+      "id": "focused-window-route",
+      "title": "Focused window: the transaction and window-info route",
+      "summary": "Window focus is requested with an input-channel token in a SurfaceControl transaction. SurfaceFlinger sends window information and focus requests from BackgroundExecutor; InputDispatcher resolves the request against its window information. WMS having requested focus does not prove native input focus has taken effect.",
+      "snippets": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputMonitor.java",
+          "symbol": "InputMonitor.requestFocus",
+          "lines": "517-527",
+          "code": "    private void requestFocus(IBinder focusToken, String windowName) {\n        if (focusToken == mInputFocus) {\n            return;\n        }\n\n        mInputFocus = focusToken;\n        mInputFocusRequestTimeMillis = SystemClock.uptimeMillis();\n        mInputTransaction.setFocusedWindow(mInputFocus, windowName, mDisplayId);\n        EventLog.writeEvent(LOGTAG_INPUT_FOCUS, \"Focus request \" + windowName,\n                \"reason=UpdateInputWindows\");\n        ProtoLog.v(WM_DEBUG_FOCUS_LIGHT, \"Focus requested for window=%s\", windowName);",
+          "note": "mInputFocus and mInputFocusRequestTimeMillis describe WMS's request. They are not an acknowledgement that FocusResolver has granted native focus."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputMonitor.java",
+          "symbol": "InputMonitor.UpdateInputForAllWindowsConsumer.updateInputWindows",
+          "lines": "607-613",
+          "code": "            mDisplayContent.forAllWindows(this, true /* traverseTopToBottom */);\n            updateInputFocusRequest(mRecentsAnimationInputConsumer);\n\n            if (!mUpdateInputWindowsImmediately) {\n                mDisplayContent.getPendingTransaction().merge(mInputTransaction);\n                mDisplayContent.scheduleAnimation();\n            }",
+          "note": "The normal non-immediate path merges the input transaction into the display's pending transaction and schedules animation. This is not an immediate native focus update."
+        },
+        {
+          "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          "symbol": "SurfaceFlinger::updateInputFlinger",
+          "lines": "4836-4884",
+          "code": "void SurfaceFlinger::updateInputFlinger(VsyncId vsyncId, TimePoint frameTime) {\n// ...\n    BackgroundExecutor::getInstance().sendCallbacks(\n            {[updateWindowInfo, windowInfos = std::move(windowInfos),\n              displayInfos = std::move(displayInfos),\n              inputWindowCommands = std::move(mInputWindowCommands), inputFlinger = mInputFlinger,\n              this, visibleWindowsChanged, vsyncId, frameTime]() mutable {\n                SFTRACE_NAME(\"BackgroundExecutor::updateInputFlinger\");\n                if (updateWindowInfo) {\n                    mWindowInfosListenerInvoker\n                            ->windowInfosChanged(gui::WindowInfosUpdate{std::move(windowInfos),\n                                                                        std::move(displayInfos),\n                                                                        ftl::to_underlying(vsyncId),\n                                                                        frameTime.ns()},\n                                                 inputWindowCommands.releaseListeners(),\n                                                 /* forceImmediateCall= */ visibleWindowsChanged ||\n                                                         !inputWindowCommands.getFocusRequests()\n                                                                  .empty());\n// ...\n                for (const auto& focusRequest : inputWindowCommands.getFocusRequests()) {\n                    inputFlinger->setFocusedWindow(focusRequest);\n                }\n            }});",
+          "note": "The callback's executor is BackgroundExecutor, not the WMS caller or SurfaceFlinger's main-thread caller. The excerpt establishes send order, not a universal acknowledgement or presentation guarantee."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::setFocusedWindow",
+          "lines": "7247-7257",
+          "code": "void InputDispatcher::setFocusedWindow(const FocusRequest& request) {\n    { // acquire lock\n        std::scoped_lock _l(mLock);\n        std::optional<FocusResolver::FocusChanges> changes =\n                mFocusResolver.setFocusedWindow(request,\n                                                mWindowInfos.getWindowHandlesForDisplay(\n                                                        ui::LogicalDisplayId{request.displayId}));\n        ScopedSyntheticEventTracer traceContext(mTracer);\n        if (changes) {\n            onFocusChangedLocked(*changes, traceContext.getTracker());\n        }",
+          "note": "A focus request is resolved against the native window handles for its display. The request token alone does not establish focus."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::onWindowInfosChanged",
+          "lines": "7373-7402",
+          "code": "void InputDispatcher::onWindowInfosChanged(const gui::WindowInfosUpdate& update) {\n// ...\n        for (const auto& [displayId, handles] : handlesPerDisplay) {\n            setInputWindowsLocked(handles, displayId);\n        }",
+          "note": "Window-info updates also drive resolution. The omitted code validates the update, groups windows by display, and acquires the dispatcher lock."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "FocusResolver::setInputWindows",
+          "lines": "5739-5748",
+          "code": "    updateWindowHandlesForDisplayLocked(windowInfoHandles, displayId);\n\n    const std::vector<sp<WindowInfoHandle>>& windowHandles =\n            mWindowInfos.getWindowHandlesForDisplay(displayId);\n\n    std::optional<FocusResolver::FocusChanges> changes =\n            mFocusResolver.setInputWindows(displayId, windowHandles);\n    if (changes) {\n        onFocusChangedLocked(*changes, traceContext.getTracker(), removedFocusedWindowHandle);\n    }",
+          "note": "setInputWindowsLocked re-evaluates the pending focus request after updating window handles. Focus can therefore become effective after the original request arrives."
+        }
+      ]
+    },
+    {
+      "id": "focus-eligibility",
+      "title": "FocusResolver: a requested window must qualify",
+      "summary": "A request can remain pending while the native window is missing, not focusable, or not visible. FocusResolver stores the request and can remove old focus until a suitable window becomes available. It also supports focus-transfer targets; this is not simply a first-draw callback test.",
+      "snippets": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputMonitor.java",
+          "symbol": "InputMonitor.updateInputFocusRequest",
+          "lines": "507-514",
+          "code": "        if (!focus.mWinAnimator.hasSurface() || !focus.mInputWindowHandle.isFocusable()) {\n            ProtoLog.v(WM_DEBUG_FOCUS_LIGHT, \"Focus not requested for window=%s\"\n                    + \" because it has no surface or is not focusable.\", focus);\n            mInputFocus = null;\n            return;\n        }\n\n        requestFocus(focusToken, focus.getName());",
+          "note": "WMS itself can defer issuing the request when there is no surface or its input-window handle is not focusable. This predicate is separate from the native resolver's eligibility checks."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/FocusResolver.cpp",
+          "symbol": "FocusResolver::setFocusedWindow",
+          "lines": "111-133",
+          "code": "    ftl::Expected<sp<WindowInfoHandle>, Focusability> result =\n            getResolvedFocusWindow(request.token, windows);\n    // Update focus request. The focus resolver will always try to handle this request if there is\n    // no focused window on the display.\n    mFocusRequestByDisplay[displayId] = request;\n    mLastFocusResultByDisplay[displayId] = result.has_value() ? Focusability::OK : result.error();\n// ...\n    // The requested window is not currently focusable. Wait for the window to become focusable\n    // but remove focus from the current window so that input events can go into a pending queue\n    // and be sent to the window when it becomes focused.\n    return updateFocusedWindow(displayId,\n                               \"Waiting for window because \" +\n                                       ftl::enum_string(result.has_value() ? Focusability::OK\n                                                                           : result.error()),\n                               nullptr);",
+          "note": "The omitted success branch grants focus to the resolved token. The shown final return is the failure path, not an unconditional removal of focus for every request."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/FocusResolver.cpp",
+          "symbol": "FocusResolver::isTokenFocusable",
+          "lines": "170-202",
+          "code": "ftl::Expected<android::sp<gui::WindowInfoHandle>, FocusResolver::Focusability>\nFocusResolver::isTokenFocusable(const sp<IBinder>& token,\n                                const std::vector<sp<WindowInfoHandle>>& windows) {\n// ...\n        if (!window->getInfo()->inputConfig.test(gui::WindowInfo::InputConfig::NOT_VISIBLE)) {\n            // Check if at least a single window is visible.\n            visibleWindowHandle = window;\n        }\n        if (window->getInfo()->inputConfig.test(gui::WindowInfo::InputConfig::NOT_FOCUSABLE)) {\n            // Check if all windows with the window token are focusable.\n            allWindowsAreFocusable = false;\n            break;\n        }\n// ...\n    if (!windowFound) {\n        return ftl::Unexpected(Focusability::NO_WINDOW);\n    }\n    if (!allWindowsAreFocusable) {\n        return ftl::Unexpected(Focusability::NOT_FOCUSABLE);\n    }\n    if (!visibleWindowHandle) {\n        return ftl::Unexpected(Focusability::NOT_VISIBLE);\n    }\n\n    return visibleWindowHandle;",
+          "note": "For a token with multiple native windows, at least one must be visible and all matching windows must be focusable. A visible surface or completed app drawing alone is not proof of input focus."
+        }
+      ]
+    },
+    {
+      "id": "focus-dependent-event-routing",
+      "title": "Key and non-pointer events need focus; pointers use hit testing",
+      "summary": "The no-focused-window path is entered when a focus-dependent event actually reaches target selection. Keys can first be consumed or delayed by policy. Pointer motion uses touched-window targeting instead; neither an arbitrary input event nor an idle unfocused application automatically arms this timer.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::findFocusedWindowTargetLocked",
+          "lines": "2028-2037",
+          "code": "    // Identify targets.\n    Result<sp<WindowInfoHandle>, InputEventInjectionResult> result =\n            findFocusedWindowTargetLocked(currentTime, *entry, nextWakeupTime);\n\n    if (!result.ok()) {\n        if (result.error().code() == InputEventInjectionResult::PENDING) {\n            return false;\n        }\n        setInjectionResult(*entry, result.error().code());\n        return true;",
+          "note": "In dispatchKeyLocked, PENDING returns false, so this event has not completed dispatch. Earlier policy interception/drop paths can avoid target lookup entirely."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::findFocusedWindowTargetLocked",
+          "lines": "2194-2229",
+          "code": "    const bool isPointerEvent = isFromSource(entry->source, AINPUT_SOURCE_CLASS_POINTER);\n// ...\n    if (isPointerEvent) {\n        // Pointer event.  (eg. touchscreen)\n// ...\n        Result<std::vector<InputTarget>, InputEventInjectionResult> result =\n                mTouchStates\n                        .findTouchedWindowTargets(currentTime, *entry,\n// ...\n    } else {\n        // Non touch event.  (eg. trackball)\n        Result<sp<WindowInfoHandle>, InputEventInjectionResult> result =\n                findFocusedWindowTargetLocked(currentTime, *entry, nextWakeupTime);",
+          "note": "This is dispatchMotionLocked's source-class split, not a split between every MotionEvent and every KeyEvent. Pointer events can still cause a separate delivered-event/ACK timeout; they do not arm this focus-wait timer through this branch."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::findFocusedWindowTargetLocked",
+          "lines": "2442-2456",
+          "code": "InputDispatcher::findFocusedWindowTargetLocked(nsecs_t currentTime, const EventEntry& entry,\n                                               nsecs_t& nextWakeupTime) {\n    ui::LogicalDisplayId displayId = getTargetDisplayId(entry);\n    sp<WindowInfoHandle> focusedWindowHandle = getFocusedWindowHandleLocked(displayId);\n    std::shared_ptr<InputApplicationHandle> focusedApplicationHandle =\n            getValueByKey(mFocusedApplicationHandlesByDisplay, displayId);\n\n    // If there is no currently focused window and no focused application\n    // then drop the event.\n    if (focusedWindowHandle == nullptr && focusedApplicationHandle == nullptr) {\n        ALOGI(\"Dropping %s event because there is no focused window or focused application in \"\n              \"display %s.\",\n              ftl::enum_string(entry.type).c_str(), displayId.toString().c_str());\n        return injectionError(InputEventInjectionResult::FAILED);\n    }",
+          "note": "Both handles missing causes FAILED/drop, not an ANR against an arbitrary application. Application and window lookups use the event's resolved display."
+        }
+      ]
+    },
+    {
+      "id": "arm-focus-wait",
+      "title": "Arm the current state and leave the event pending",
+      "summary": "At the first target lookup with an application but no focused window, the deadline is currentTime plus the application's dispatch timeout. The state stores the original entry.eventTime separately. The timer does not start at Activity launch, onResume, first draw, or at the original input timestamp.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::dispatchOnceInnerLocked",
+          "lines": "1207-1208",
+          "code": "void InputDispatcher::dispatchOnceInnerLocked(nsecs_t& nextWakeupTime) {\n    nsecs_t currentTime = now();",
+          "note": "The currentTime passed through dispatch and target selection is the dispatch iteration's sampled monotonic time, not entry.eventTime."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::mNoFocusedWindowAnrState",
+          "lines": "2469-2485",
+          "code": "    if (focusedWindowHandle == nullptr && focusedApplicationHandle != nullptr) {\n        if (!mNoFocusedWindowAnrState.has_value()) {\n            // We just discovered that there's no focused window. Start the ANR timer\n            std::chrono::nanoseconds timeout = focusedApplicationHandle->getDispatchingTimeout(\n                    DEFAULT_INPUT_DISPATCHING_TIMEOUT);\n            const nsecs_t noFocusedWindowEndTime = currentTime + timeout.count();\n            mNoFocusedWindowAnrState =\n                    NoFocusedWindowAnrState(entry.eventTime, noFocusedWindowEndTime,\n                                            focusedApplicationHandle, entry.id,\n                                            std::chrono::duration_cast<std::chrono::milliseconds>(\n                                                    timeout));\n            mAwaitedApplicationDisplayId = displayId;\n            ALOGW(\"Waiting because no window has focus but %s may eventually add a \"\n                  \"window when it finishes starting up. Will wait for %\" PRId64 \"ms\",\n                  focusedApplicationHandle->getName().c_str(), millis(timeout));\n            nextWakeupTime = std::min(nextWakeupTime, mNoFocusedWindowAnrState->timeoutEndTime);\n            return injectionError(InputEventInjectionResult::PENDING);",
+          "note": "This is the active implementation. Do not substitute the old mNoFocusedWindowTimeoutTime/mAwaitedFocusedApplication fields from docs/ANR. eventTime is diagnostic input metadata, not the deadline's origin. There is one optional wait state in this dispatcher, plus the awaited display ID."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::mNoFocusedWindowAnrState",
+          "lines": "2486-2494",
+          "code": "        } else if (currentTime > mNoFocusedWindowAnrState->timeoutEndTime) {\n            // Already raised ANR. Drop the event\n            ALOGE(\"Dropping %s event because there is no focused window\",\n                  ftl::enum_string(entry.type).c_str());\n            return injectionError(InputEventInjectionResult::FAILED);\n        } else {\n            // Still waiting for the focused window\n            return injectionError(InputEventInjectionResult::PENDING);\n        }",
+          "note": "Repeated target lookups while this state exists do not extend its deadline. This branch uses > for event dropping; the actual processAnrsLocked timeout decision uses >=. The comment is not proof that the policy callback already ran."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::releasePendingEventLocked",
+          "lines": "1355-1369",
+          "code": "    if (done) {\n// ...\n        releasePendingEventLocked();\n        nextWakeupTime = LLONG_MIN; // force next poll to wake up immediately\n    }",
+          "note": "A false/done-not-complete result preserves mPendingEvent. This is a wait before selecting/delivering an application target, not a missing finishInputEvent acknowledgement from this event."
+        }
+      ]
+    },
+    {
+      "id": "pre-anr-warning",
+      "title": "Feature-gated pre-ANR warning, not the full ANR gate",
+      "summary": "enable_anr_warning_callback_input_dispatcher gates only the early warning path. Its scheduled point is deadline - max(timeoutDuration / 2, 2000 ms * HW multiplier). For a 5000 ms timeout and multiplier 1 this is 2500 ms after arming, not a fixed 2000 ms delay. Small configured timeouts can put this warning point before the arming time.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.h",
+          "symbol": "InputDispatcher::mAnrWarningCallbackInputDispatcherEnabled",
+          "lines": "1031-1033",
+          "code": "    /** Stores the value of the flag for ANR warning callback from input dispatcher. */\n    bool mAnrWarningCallbackInputDispatcherEnabled{\n            com::android::input::flags::enable_anr_warning_callback_input_dispatcher()};",
+          "note": "The member is initialized from the feature flag. Source inspection alone does not establish a device's generated flag value."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processPreAnrsLocked",
+          "lines": "1120-1125",
+          "code": "nsecs_t InputDispatcher::processPreAnrsLocked() {\n    if (!mAnrWarningCallbackInputDispatcherEnabled) {\n        return LLONG_MAX;\n    }\n    return std::min(nsecs_t{LLONG_MAX}, processNoFocusedWindowPreAnrLocked());\n}",
+          "note": "Disabling warnings does not disable processAnrsLocked or full no-focused-window ANRs."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processNoFocusedWindowPreAnrLocked",
+          "lines": "1071-1106",
+          "code": "nsecs_t InputDispatcher::processNoFocusedWindowPreAnrLocked() {\n// ...\n    if (!mNoFocusedWindowAnrState || mNoFocusedWindowAnrState->notifiedPreAnr) {\n        return LLONG_MAX;\n    }\n// ...\n    const std::chrono::nanoseconds preAnrTimeout =\n            std::max(mNoFocusedWindowAnrState->timeoutDuration / 2, DEFAULT_PRE_ANR_TIMEOUT_WINDOW);\n    const nsecs_t preAnrTime = mNoFocusedWindowAnrState->timeoutEndTime - preAnrTimeout.count();\n// ...\n    if (currentTime < preAnrTime) {\n        return preAnrTime;\n    }\n// ...\n    onPreAnrLocked(mNoFocusedWindowAnrState->applicationHandle, mNoFocusedWindowAnrState->eventId,\n                   std::chrono::duration_cast<std::chrono::milliseconds>(elapsed),\n                   mNoFocusedWindowAnrState->timeoutDuration);\n    mNoFocusedWindowAnrState->notifiedPreAnr = true;\n// ...\n    return LLONG_MIN;",
+          "note": "At most one warning is queued per wait state. elapsed is calculated from the deadline and configured duration, not from entry.eventTime. A scheduled warning is not a hard real-time callback guarantee."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::onPreAnrLocked",
+          "lines": "1127-1136",
+          "code": "void InputDispatcher::onPreAnrLocked(\n        const std::shared_ptr<InputApplicationHandle>& inputApplicationHandle, int32_t eventId,\n        std::chrono::milliseconds elapsedDuration, std::chrono::milliseconds timeoutDuration) {\n    auto command = [this, app = inputApplicationHandle, eventId, elapsedDuration,\n                    timeoutDuration]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyPreNoFocusedWindowAnr(app, eventId, elapsedDuration, timeoutDuration);\n    };\n    postCommandLocked(std::move(command));\n}",
+          "note": "Warning delivery is queued and invokes policy with the dispatcher lock released. It neither resets nor extends the full ANR deadline."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "AnrController.notifyPreAppUnresponsive",
+          "lines": "150-176",
+          "code": "    void notifyPreAppUnresponsive(@NonNull InputApplicationHandle applicationHandle, int eventId,\n            long elapsedDurationMs, long timeoutDurationMs) {\n// ...\n            activity = ActivityRecord.forTokenLocked(applicationHandle.token);\n            if (activity == null || activity.mAppStopped) {\n// ...\n                return;\n            }\n            focusTargetToBlame = Flags.enableInputDispatcherLongMethodTracing()\n                    ? calculateInputFocusBlameTarget(activity)\n                    : null;\n        }\n        if (Flags.enableInputDispatcherLongMethodTracing()) {\n            triggerTracingForActivity(activity, applicationHandle.name, focusTargetToBlame);\n        }\n        if (activity.hasProcess()) {\n            mService.mAmInternal.inputDispatchingTimedOutWarning(\n                    activity.getUid(),\n                    eventId,\n                    AnrTypes.ANR_TYPE_INPUT_DISPATCH_NO_FOCUSED_WINDOW,\n                    elapsedDurationMs,\n                    timeoutDurationMs);",
+          "note": "WMS warning handling drops unknown/stopped activities. Long-method tracing has a separate enableInputDispatcherLongMethodTracing flag; the warning does not enter the full notifyAppUnresponsive path here."
+        }
+      ]
+    },
+    {
+      "id": "deadline-and-native-recheck",
+      "title": "Deadline expiry and the native final state check",
+      "summary": "The dispatch loop checks full ANRs independently of the warning flag. At currentTime >= timeoutEndTime, native code rechecks that the awaited application token is still focused on the awaited display and that there is still no focused window. It then queues a policy callback and clears the wait state.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processAnrsLocked",
+          "lines": "1004-1009",
+          "code": "        nextWakeupTime = std::min({nextWakeupTime,\n                                   // Notify the process that an ANR is imminent (pre-ANR), a few\n                                   // seconds before the actual ANR handling runs.\n                                   processPreAnrsLocked(),\n                                   // The ANRs are then processed.\n                                   processAnrsLocked()});",
+          "note": "Both functions are evaluated. The warning flag check is inside processPreAnrsLocked, not a gate around processAnrsLocked."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processAnrsLocked",
+          "lines": "1143-1156",
+          "code": "nsecs_t InputDispatcher::processAnrsLocked() {\n    const nsecs_t currentTime = now();\n    nsecs_t nextAnrCheck = LLONG_MAX;\n    // Check if we are waiting for a focused window to appear. Raise ANR if waited too long\n    if (mNoFocusedWindowAnrState.has_value()) {\n        if (currentTime >= mNoFocusedWindowAnrState->timeoutEndTime) {\n            processNoFocusedWindowAnrLocked();\n            resetNoFocusedWindowTimeoutLocked();\n            return LLONG_MIN;\n        } else {\n            // Keep waiting. We will drop the event when mNoFocusedWindowAnrState->timeoutEndTime\n            // comes.\n            nextAnrCheck = mNoFocusedWindowAnrState->timeoutEndTime;\n        }",
+          "note": "The no-focus deadline is checked directly rather than being an AnrTracker entry for a connection's waitQueue. Clearing the state after this check is housekeeping, not proof that no ANR was reported."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::processNoFocusedWindowAnrLocked",
+          "lines": "1034-1054",
+          "code": "void InputDispatcher::processNoFocusedWindowAnrLocked() {\n    LOG_IF(FATAL, !mNoFocusedWindowAnrState.has_value()) << \"Must have a valid ANR state\";\n// ...\n    std::shared_ptr<InputApplicationHandle> focusedApplication =\n            getValueByKey(mFocusedApplicationHandlesByDisplay, mAwaitedApplicationDisplayId);\n    if (focusedApplication == nullptr ||\n        focusedApplication->getApplicationToken() !=\n                mNoFocusedWindowAnrState->applicationHandle->getApplicationToken()) {\n// ...\n        return; // The focused application has changed.\n    }\n\n    const sp<WindowInfoHandle>& focusedWindowHandle =\n            getFocusedWindowHandleLocked(mAwaitedApplicationDisplayId);\n    if (focusedWindowHandle != nullptr) {\n        return; // We now have a focused window. No need for ANR.\n    }\n    onAnrLocked(mNoFocusedWindowAnrState->applicationHandle);",
+          "note": "The application comparison is token identity, not shared-pointer equality. A non-null focused window suppresses this report without a further same-application ownership comparison. The omitted mismatch logging dereferences focusedApplication even in the null branch; do not treat that exceptional branch as proven crash-safe behavior."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::dispatchOnce",
+          "lines": "1022-1025",
+          "code": "    // Wait for callback or timeout or wake.  (make sure we round up, not down)\n    nsecs_t currentTime = now();\n    int timeoutMillis = toMillisecondTimeoutDelay(currentTime, nextWakeupTime);\n    mLooper->pollOnce(timeoutMillis);",
+          "note": "The loop polls until its next wakeup/deadline or another wake event. Timeout eligibility, queued callback execution, stack collection, and a visible ANR dialog are different moments."
+        }
+      ]
+    },
+    {
+      "id": "reset-entry-points",
+      "title": "Reset entry points and cancellation limits",
+      "summary": "Current cpp calls reset when target selection finds a focused window, the native focused application changes, a new focus is granted, dispatch is unfrozen, all dispatch state is dropped, and the deadline has been processed. Pointer-down pruning and releasing mPendingEvent are not direct reset calls. A reset cannot retract an already captured policy command.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::enqueueFocusEventLocked",
+          "lines": "1794-1801",
+          "code": "void InputDispatcher::enqueueFocusEventLocked(const sp<IBinder>& windowToken, bool hasFocus,\n                                              const std::string& reason) {\n    if (mPendingEvent != nullptr) {\n        // Move the pending event to the front of the queue. This will give the chance\n        // for the pending event to get dispatched to the newly focused window\n        mInboundQueue.push_front(mPendingEvent);\n        mPendingEvent = nullptr;\n    }",
+          "note": "A new focus event preserves the pending event by re-enqueueing it. Clearing A's wait does not by itself discard the key. The switch scenario selects a ready B window without touch-driven pruning."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "dispatchKeyLocked",
+          "lines": "1311-1314",
+          "code": "            if (dropReason == DropReason::NOT_DROPPED && mNextUnblockedEvent) {\n                dropReason = DropReason::BLOCKED;\n            }\n            done = dispatchKeyLocked(currentTime, keyEntry, &dropReason, nextWakeupTime);",
+          "note": "A touch-driven unblock can separately mark a preceding key BLOCKED. This requires mNextUnblockedEvent; it must not be inferred from the focused application merely changing."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "2374-2377",
+          "code": "void InputDispatcher::resetNoFocusedWindowTimeoutLocked() {\n    LOG_IF(INFO, DEBUG_FOCUS) << \"Resetting ANR timeouts.\";\n    mNoFocusedWindowAnrState.reset();\n}",
+          "note": "Reset clears the consolidated state, including its one-warning-per-state bit. It does not operate on the legacy timeout field that remains declared in the header."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "2497-2498",
+          "code": "    // we have a valid, non-null focused window\n    resetNoFocusedWindowTimeoutLocked();",
+          "note": "findFocusedWindowTargetLocked resets the wait once it finds an actual focused window, before later injection, paused-dispatch, and previous-event checks."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "5886-5888",
+          "code": "    // No matter what the old focused application was, stop waiting on it because it is\n    // no longer focused.\n    resetNoFocusedWindowTimeoutLocked();",
+          "note": "setFocusedApplicationLocked reaches this reset after updating its map for a changed handle. The Java/JNI null early return remains a separate caveat."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "7279-7282",
+          "code": "    if (changes.newFocus) {\n        resetNoFocusedWindowTimeoutLocked();\n        enqueueFocusEventLocked(changes.newFocus, /*hasFocus=*/true, changes.reason);\n    }",
+          "note": "onFocusChangedLocked resets when native resolution grants a non-null new focus. Sending a WMS request or app onWindowFocusChanged callback is not the reset predicate."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "5964-5971",
+          "code": "        if (mDispatchEnabled != enabled || mDispatchFrozen != frozen) {\n            if (mDispatchFrozen && !frozen) {\n                resetNoFocusedWindowTimeoutLocked();\n            }\n\n            if (mDispatchEnabled && !enabled) {\n                resetAndDropEverythingLocked(\"dispatcher is being disabled\");\n            }",
+          "note": "setInputDispatchMode resets on unfreezing. Disabling dispatch instead invokes the reset/drop-everything path. Do not infer a reset from every mode setter call."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetAndDropEverythingLocked",
+          "lines": "6266-6280",
+          "code": "void InputDispatcher::resetAndDropEverythingLocked(const char* reason) {\n// ...\n    resetKeyRepeatLocked();\n    releasePendingEventLocked();\n    drainInboundQueueLocked();\n    resetNoFocusedWindowTimeoutLocked();\n\n    mAnrTracker.clear();\n    mTouchStates.clear();",
+          "note": "This explicitly resets both the no-focus wait and the separate connection ANR tracking. releasePendingEventLocked alone does not perform this combined reset."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::resetNoFocusedWindowTimeoutLocked",
+          "lines": "1147-1151",
+          "code": "    if (mNoFocusedWindowAnrState.has_value()) {\n        if (currentTime >= mNoFocusedWindowAnrState->timeoutEndTime) {\n            processNoFocusedWindowAnrLocked();\n            resetNoFocusedWindowTimeoutLocked();\n            return LLONG_MIN;",
+          "note": "This reset happens after the final expiry check and may happen after onAnrLocked has captured the report into a queued command. It is not a cancellation of that command."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::shouldPruneInboundQueueLocked",
+          "lines": "1380-1402",
+          "code": "bool InputDispatcher::shouldPruneInboundQueueLocked(const MotionEntry& motionEntry) const {\n    const bool isPointerDownEvent = motionEntry.action == AMOTION_EVENT_ACTION_DOWN &&\n            isFromSource(motionEntry.source, AINPUT_SOURCE_CLASS_POINTER);\n// ...\n    if (isPointerDownEvent && mNoFocusedWindowAnrState.has_value()) {\n// ...\n        if (touchedWindowHandle != nullptr &&\n            touchedWindowHandle->getApplicationToken() !=\n                    mNoFocusedWindowAnrState->applicationHandle->getApplicationToken()) {\n// ...\n            return true;",
+          "note": "Touching another application can unblock/prune preceding events, but this const helper does not reset the timer. Do not animate every touch as an immediate cancellation; the relevant subsequent focus/app/reset transition must actually occur."
+        }
+      ]
+    },
+    {
+      "id": "policy-jni-to-wms",
+      "title": "Queued policy callback crosses JNI into WMS",
+      "summary": "The native expiry handler snapshots application/event/timeout metadata into a command. The command releases the dispatcher lock before calling policy, then JNI enters InputManagerService, which creates an input-dispatch-no-focused-window TimeoutRecord and forwards it through InputManagerCallback to WMS AnrController.",
+      "snippets": [
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "InputDispatcher::onAnrLocked",
+          "lines": "6835-6846",
+          "code": "void InputDispatcher::onAnrLocked(std::shared_ptr<InputApplicationHandle> application) {\n    std::string reason =\n            StringPrintf(\"%s does not have a focused window\", application->getName().c_str());\n    updateLastAnrStateLocked(*application, reason);\n\n    auto command = [this, app = std::move(application), eventId = mNoFocusedWindowAnrState->eventId,\n                    eventTime = mNoFocusedWindowAnrState->eventTime,\n                    duration = mNoFocusedWindowAnrState->timeoutDuration]() REQUIRES(mLock) {\n        scoped_unlock unlock(mLock);\n        mPolicy.notifyNoFocusedWindowAnr(app, eventId, eventTime, duration);\n    };\n    postCommandLocked(std::move(command));",
+          "note": "This is the application-handle overload, not the unresponsive-connection overload. The captured eventTime remains the input event's original timestamp; duration is the configured no-focus threshold."
+        },
+        {
+          "file": "base/services/core/jni/com_android_server_input_InputManagerService.cpp",
+          "symbol": "NativeInputManager::notifyNoFocusedWindowAnr",
+          "lines": "1335-1351",
+          "code": "void NativeInputManager::notifyNoFocusedWindowAnr(\n        const std::shared_ptr<InputApplicationHandle>& inputApplicationHandle, int32_t eventId,\n        nsecs_t eventTime, std::chrono::milliseconds timeoutDuration) {\n// ...\n    JNIEnv* env = jniEnv();\n    ScopedLocalFrame localFrame(env);\n\n    jobject inputApplicationHandleObj =\n            getInputApplicationHandleObjLocalRef(env, inputApplicationHandle);\n\n    env->CallVoidMethod(mServiceObj, gServiceClassInfo.notifyNoFocusedWindowAnr,\n                        inputApplicationHandleObj, eventId, eventTime, timeoutDuration.count());\n    checkAndClearExceptionFromCallback(env, \"notifyNoFocusedWindowAnr\");",
+          "note": "This native-to-Java callback is a JNI CallVoidMethod, not a Binder call into the application and not the app's main-thread event handler."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/input/InputManagerService.java",
+          "symbol": "InputManagerService.notifyNoFocusedWindowAnr",
+          "lines": "2654-2667",
+          "code": "    private void notifyNoFocusedWindowAnr(\n            InputApplicationHandle inputApplicationHandle,\n            int eventId,\n            long eventTimeNs,\n            long timeoutDurationMs) {\n        TimeoutRecord timeoutRecord =\n                TimeoutRecord.forInputDispatchNoFocusedWindow(\n                        timeoutMessage(\n                                OptionalInt.empty(), \"Application does not have a focused window\"));\n\n        if (android.app.Flags.includeAnrInfo()) {\n            setAnrInfoInTimeoutRecord(timeoutRecord, eventId, eventTimeNs, timeoutDurationMs);\n        }\n        mWindowManagerCallbacks.notifyNoFocusedWindowAnr(inputApplicationHandle, timeoutRecord);",
+          "note": "includeAnrInfo controls enrichment of the record, not whether this callback is forwarded. The standardized reason is Application does not have a focused window."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/InputManagerCallback.java",
+          "symbol": "InputManagerCallback.notifyNoFocusedWindowAnr",
+          "lines": "105-109",
+          "code": "    public void notifyNoFocusedWindowAnr(\n            @NonNull InputApplicationHandle applicationHandle,\n            @NonNull TimeoutRecord timeoutRecord) {\n        mService.mAnrController.notifyAppUnresponsive(applicationHandle, timeoutRecord);\n    }",
+          "note": "WMS receives an application handle and TimeoutRecord, then performs its own state and attribution checks. Native timeout detection is not the final dialog decision."
+        }
+      ]
+    },
+    {
+      "id": "wms-attribution-and-recovery",
+      "title": "WMS rechecks activity state, focus-request age, and recovery",
+      "summary": "WMS drops an unknown or mAppStopped activity. An old enough pending focus request can redirect blame to its target window, which need not belong to the awaited application. Otherwise ActivityRecord forwards the timeout to AMS. There is no explicit requirement that the ActivityRecord be in RESUMED state in notifyAppUnresponsive. inputDispatchingResumed is a later recovery notification, not that lifecycle predicate.",
+      "snippets": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "ActivityRecord.forTokenLocked",
+          "lines": "88-97",
+          "code": "                activity = ActivityRecord.forTokenLocked(applicationHandle.token);\n                if (activity == null) {\n                    Slog.e(TAG_WM, \"Unknown app appToken:\" + applicationHandle.name\n                            + \". Dropping notifyNoFocusedWindowAnr request\");\n                    return;\n                } else if (activity.mAppStopped) {\n                    Slog.d(TAG_WM, \"App is in stopped state:\" + applicationHandle.name\n                            + \". Dropping notifyNoFocusedWindowAnr request\");\n                    return;\n                }",
+          "note": "These checks run under the WMS global lock. Do not replace mAppStopped with an invented isState(RESUMED) gate, or assert that onResume completion implies native window focus."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "getInputDispatchingTimeoutMillisLocked",
+          "lines": "99-114",
+          "code": "                // App is unresponsive, but we are actively trying to give focus to a window.\n                // Blame the window if possible since the window may not belong to the app.\n                DisplayContent display = mService.mRoot.getDisplayContent(activity.getDisplayId());\n                if (display != null) {\n                    focusToken = display.getInputMonitor().mInputFocus;\n                }\n                InputTarget focusTarget = mService.getInputTargetFromToken(focusToken);\n\n                if (focusTarget != null) {\n                    // Check if we have a recent focus request, newer than the dispatch timeout,\n                    // then ignore the focus request.\n                    targetWindowState = focusTarget.getWindowState();\n                    blamePendingFocusRequest = SystemClock.uptimeMillis()\n                            - display.getInputMonitor().mInputFocusRequestTimeMillis\n                            >= getInputDispatchingTimeoutMillisLocked(\n                                    targetWindowState.getActivityRecord());",
+          "note": "This checks the age of WMS's requested focus against the target activity's dispatch timeout. It is attribution for a lagging/pending focus request, not proof of an app main-thread deadlock, an SF defect, or an additional full-timeout waiting period."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "AnrController::notifyWindowUnresponsive",
+          "lines": "117-130",
+          "code": "                if (!blamePendingFocusRequest) {\n                    Slog.i(TAG_WM, \"ANR in \" + activity.getName() + \".  Reason: \"\n                            + timeoutRecord.mReason);\n                    mUnresponsiveAppByDisplay.put(activity.getDisplayId(), activity);\n                }\n            }\n\n            if (blamePendingFocusRequest && notifyWindowUnresponsive(focusToken, timeoutRecord)) {\n                Slog.i(TAG_WM, \"Blamed \" + targetWindowState.getName()\n                        + \" using pending focus request. Focused activity: \"\n                        + activity.getName());\n            } else {\n                activity.inputDispatchingTimedOut(timeoutRecord, INVALID_PID);\n            }",
+          "note": "A successful pending-window attribution calls the window path; otherwise the ActivityRecord path is used. Only the non-pending-window-blame branch shown here records the activity for focus-based recovery."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "symbol": "ActivityRecord.inputDispatchingTimedOut",
+          "lines": "6819-6838",
+          "code": "    public boolean inputDispatchingTimedOut(TimeoutRecord timeoutRecord, int windowPid) {\n// ...\n                anrActivity = getWaitingHistoryRecordLocked();\n                anrApp = app;\n                blameActivityProcess =  hasProcess()\n                        && (app.getPid() == windowPid || windowPid == INVALID_PID);\n            }\n\n            if (blameActivityProcess) {\n                return mAtmService.mAmInternal.inputDispatchingTimedOut(anrApp.mOwner,\n                        anrActivity.shortComponentName, anrActivity.info.applicationInfo,\n                        shortComponentName, app, false, timeoutRecord);",
+          "note": "For the ordinary no-focus path, INVALID_PID allows attribution to the ActivityRecord's process when it exists. Other branches can use the generic window-PID route; not every callback guarantees an available process."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "symbol": "ActivityRecord.getWaitingHistoryRecordLocked",
+          "lines": "6853-6870",
+          "code": "    private ActivityRecord getWaitingHistoryRecordLocked() {\n// ...\n        if (mAppStopped) {\n            final Task rootTask = mRootWindowContainer.getTopDisplayFocusedRootTask();\n            if (rootTask == null) {\n                return this;\n            }\n            // Try to use the one which is closest to top.\n            ActivityRecord r = rootTask.getTopResumedActivity();\n            if (r == null) {\n                r = rootTask.getTopPausingActivity();\n            }\n            if (r != null) {\n                return r;\n            }\n        }\n        return this;",
+          "note": "This downstream historical-attribution helper can consult a top resumed or pausing activity when stopped. It is not an upfront RESUMED prerequisite in WMS's no-focus callback."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/am/ActivityManagerService.java",
+          "symbol": "AnrHelper::appNotResponding",
+          "lines": "19338-19356",
+          "code": "            if (proc != null) {\n// ...\n                    if (proc.isDebugging()) {\n                        return false;\n                    }\n\n                    if (proc.getActiveInstrumentation() != null) {\n// ...\n                        finishInstrumentationLocked(proc, Activity.RESULT_CANCELED, info);\n                        return true;\n                    }\n                }\n                mAnrHelper.appNotResponding(proc, activityShortComponentName, aInfo,\n                        parentShortComponentName, parentProcess, aboveSystem, timeoutRecord,\n                        /*isContinuousAnr*/ true);",
+          "note": "AMS has further process/debugger/instrumentation handling before normal AnrHelper processing. This evidence does not establish that every native timeout produces a dialog, kills the app, or identifies a blocked main thread."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/AnrController.java",
+          "symbol": "AnrController.onFocusChanged",
+          "lines": "374-384",
+          "code": "    void onFocusChanged(WindowState newFocus) {\n        ActivityRecord unresponsiveApp;\n        synchronized (mService.mGlobalLock) {\n            unresponsiveApp = mUnresponsiveAppByDisplay.get(newFocus.getDisplayId());\n            if (unresponsiveApp == null || unresponsiveApp != newFocus.mActivityRecord) {\n                return;\n            }\n        }\n        mService.mAmInternal.inputDispatchingResumed(unresponsiveApp.getPid());\n        mUnresponsiveAppByDisplay.remove(newFocus.getDisplayId());\n    }",
+          "note": "Recovery requires the newly focused window to belong to the recorded unresponsive activity on that display. This runs after reporting; it is not the native timer's reset predicate or an Activity lifecycle resumed check."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/am/ActivityManagerService.java",
+          "symbol": "ActivityManagerInternal.inputDispatchingResumed",
+          "lines": "18469-18477",
+          "code": "        public void inputDispatchingResumed(int pid) {\n            final ProcessRecord proc;\n            synchronized (mPidsSelfLocked) {\n                proc = mPidsSelfLocked.get(pid);\n            }\n            if (proc != null) {\n                mAppErrors.handleDismissAnrDialogs(proc);\n            }\n        }",
+          "note": "Here the resumed notification requests dismissal of the process's ANR dialogs. It does not prove the earlier timeout never happened or cancel every already queued ANR task."
+        }
+      ]
+    },
+    {
+      "id": "timeout-configuration",
+      "title": "Default 5000 ms, HW multiplier, and application overrides",
+      "summary": "The base default is 5000 ms multiplied by the hardware timeout multiplier. The pre-ANR lead window's base is 2000 ms with the same multiplier. No-focused-window waiting uses the application's configured dispatch timeout when its handle has a token; the default is a fallback, not an unconditional five-second constant.",
+      "snippets": [
+        {
+          "file": "native/libs/input/android/os/IInputConstants.aidl",
+          "symbol": "IInputConstants.UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS",
+          "lines": "23-32",
+          "code": "    // This should be multiplied by the value of the system property ro.hw_timeout_multiplier before\n    // use. A pre-multiplied constant is available in Java in\n    // android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS.\n    const int UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS = 5000; // 5 seconds\n\n\n    // The minimum time window before a pre-ANR warning is sent to the application when there is\n    // no focused window. This should be multiplied by the value of the system property\n    // ro.hw_timeout_multiplier before use.\n    const int UNMULTIPLIED_DEFAULT_PRE_ANR_TIMEOUT_WINDOW_MILLIS = 2000; // 2 seconds",
+          "note": "These are base constants. The device property value and actual generated feature-flag values were not measured by this source investigation."
+        },
+        {
+          "file": "native/services/inputflinger/dispatcher/InputDispatcher.cpp",
+          "symbol": "DEFAULT_INPUT_DISPATCHING_TIMEOUT",
+          "lines": "125-134",
+          "code": "// Default input dispatching timeout if there is no focused application or paused window\n// from which to determine an appropriate dispatching timeout.\nconst std::chrono::duration DEFAULT_INPUT_DISPATCHING_TIMEOUT = std::chrono::milliseconds(\n        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS *\n        HwTimeoutMultiplier());\n\n// Pre-ANR timeout is the time we wait before sending a pre-ANR signal to the application.\nconst std::chrono::milliseconds DEFAULT_PRE_ANR_TIMEOUT_WINDOW = std::chrono::milliseconds(\n        android::os::IInputConstants::UNMULTIPLIED_DEFAULT_PRE_ANR_TIMEOUT_WINDOW_MILLIS *\n        HwTimeoutMultiplier());",
+          "note": "Use the executable pre-ANR formula from processNoFocusedWindowPreAnrLocked: this constant is its minimum warning lead window, not always the time elapsed since arming."
+        },
+        {
+          "file": "base/core/java/android/os/InputConstants.java",
+          "symbol": "InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS",
+          "lines": "23-27",
+          "code": "public class InputConstants {\n    public static final int DEFAULT_DISPATCHING_TIMEOUT_MILLIS =\n            IInputConstants.UNMULTIPLIED_DEFAULT_DISPATCHING_TIMEOUT_MILLIS\n            * Build.HW_TIMEOUT_MULTIPLIER;\n}",
+          "note": "The Java default is already multiplied; do not multiply the configured application timeout again in a model."
+        },
+        {
+          "file": "native/libs/gui/include/gui/InputApplication.h",
+          "symbol": "InputApplicationHandle::getDispatchingTimeout",
+          "lines": "45-49",
+          "code": "    inline std::chrono::nanoseconds getDispatchingTimeout(\n            std::chrono::nanoseconds defaultValue) const {\n        return mInfo.token ? std::chrono::milliseconds(mInfo.dispatchingTimeoutMillis)\n                           : defaultValue;\n    }",
+          "note": "A valid application token selects its supplied dispatchingTimeoutMillis. The native default does not override that configured value and is not multiplied into it here."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowProcessController.java",
+          "symbol": "WindowProcessController.getInputDispatchingTimeoutMillis",
+          "lines": "1487-1493",
+          "code": "    public long getInputDispatchingTimeoutMillis() {\n        synchronized (mAtm.mGlobalLock) {\n            return isInstrumenting() || isUsingWrapper()\n                    ? INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS :\n                    DEFAULT_DISPATCHING_TIMEOUT_MILLIS;\n        }\n    }",
+          "note": "Instrumentation or a wrapper selects a different configured timeout. Do not generalize the ordinary default to every process."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java",
+          "symbol": "ActivityTaskManagerService.INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS",
+          "lines": "345",
+          "code": "    static final long INSTRUMENTATION_KEY_DISPATCHING_TIMEOUT_MILLIS = 60 * 1000;",
+          "note": "The instrumentation/wrapper branch above selects 60000 ms in this checkout; this expression itself does not apply the HW multiplier."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "symbol": "ActivityRecord.setProcess",
+          "lines": "2177-2184",
+          "code": "    void setProcess(WindowProcessController proc) {\n        app = proc;\n        final ActivityRecord root = task != null ? task.getRootActivity() : null;\n        if (root == this) {\n            task.setRootProcess(proc);\n        }\n        proc.addActivityIfNeeded(this);\n        mInputDispatchingTimeoutMillis = getInputDispatchingTimeoutMillisLocked(this);",
+          "note": "Process attachment updates the ActivityRecord's configured input timeout. A model must treat configuration and the already-armed state's snapshotted duration as separate values."
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/ActivityRecord.java",
+          "symbol": "ActivityRecord.getInputApplicationHandle",
+          "lines": "2150-2159",
+          "code": "    @NonNull InputApplicationHandle getInputApplicationHandle(boolean update) {\n        if (mInputApplicationHandle == null) {\n            mInputApplicationHandle = new InputApplicationHandle(token, toString(),\n                    mInputDispatchingTimeoutMillis);\n        } else if (update) {\n            final String name = toString();\n            if (mInputDispatchingTimeoutMillis != mInputApplicationHandle.dispatchingTimeoutMillis\n                    || !name.equals(mInputApplicationHandle.name)) {\n                mInputApplicationHandle = new InputApplicationHandle(token, name,\n                        mInputDispatchingTimeoutMillis);",
+          "note": "The configured ActivityRecord timeout is carried into the application handle published by setFocusedAppLw. Updating configuration is not evidence that an existing native deadline is extended in place."
+        }
+      ]
+    }
+  ]
+}

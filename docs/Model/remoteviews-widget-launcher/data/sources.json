@@ -1,0 +1,445 @@
+{
+  "stages": [
+    {
+      "id": "binding",
+      "title": "分配实例、绑定提供方与建立宿主视图",
+      "summary": "Host 分配 appWidgetId，服务端在通过绑定校验后建立实例与 Provider 的关联并请求首次更新。Host 的 createView 创建宿主自己的 AppWidgetHostView，注册 listener 时还会拉取已有 RemoteViews。绑定、创建视图和开始监听是不同入口，不应画成源码保证的唯一全局顺序。本仓库没有 Launcher3 实现，只验证框架宿主契约，不推断 Launcher 私有添加、布局或生命周期实现。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "allocateAppWidgetId",
+          "lines": "323-333",
+          "code": "    public int allocateAppWidgetId() {\n        if (mService == null) {\n            return -1;\n        }\n        try {\n            return mService.allocateAppWidgetId(mContextOpPackageName, mHostId);\n        }\n        catch (RemoteException e) {\n            throw new RuntimeException(\"system server dead?\", e);\n        }\n    }",
+          "note": "分配 ID 不等于绑定 Provider，也不等于创建或显示 View。摘录来自当前工作区，核对时 HEAD 为 24bc82b5d25dd6ebc97e8c3401fa1678cd9f3ba5；这不是特定 Android 发布版本或设备行为的证明。范围限定普通 XML RemoteViews，不展开通知、集合与 RemoteCompose。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "createView",
+          "lines": "499-510",
+          "code": "    public final AppWidgetHostView createView(Context context, int appWidgetId,\n            AppWidgetProviderInfo appWidget) {\n        if (mService == null) {\n            return null;\n        }\n        AppWidgetHostView view = onCreateView(context, appWidgetId, appWidget);\n        view.setInteractionHandler(mInteractionHandler);\n        view.setAppWidget(appWidgetId, appWidget);\n        setListener(appWidgetId, view);\n\n        return view;\n    }",
+          "note": "创建的是 Host 进程中的视图容器，onCreateView 可由宿主覆盖。本方法没有把容器加入 Launcher 的父布局；不能把返回值直接画成已经放入桌面或已经上屏。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "setListener",
+          "lines": "627-640",
+          "code": "    public void setListener(int appWidgetId, @NonNull AppWidgetHostListener listener) {\n        synchronized (mListeners) {\n            mListeners.put(appWidgetId, listener);\n        }\n        RemoteViews views = null;\n        try {\n            views = mService.getAppWidgetViews(mContextOpPackageName, appWidgetId);\n        } catch (TransactionTooLargeException e) {\n            Log.e(TAG, \"setListener: Transaction too large for appWidgetId=\" + appWidgetId, e);\n        } catch (RemoteException e) {\n            e.rethrowFromSystemServer();\n        }\n        listener.updateAppWidget(views);\n    }",
+          "note": "注册 listener 后同步拉取已有描述，并直接在调用线程调用 updateAppWidget；这条初始化路径不经过 UpdateHandler。没有描述时传入 null，HostView 可能显示默认布局，并不意味着 Provider 的正式内容已经到达。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "sendEnableAndUpdateIntentLocked",
+          "lines": "1838-1867",
+          "code": "            widget.provider = provider;\n            widget.options = (options != null) ? cloneIfLocalBinder(options) : new Bundle();\n            // ...\n            provider.widgets.add(widget);\n\n            onWidgetProviderAddedOrChangedLocked(widget);\n\n            final int widgetCount = provider.widgets.size();\n            if (widgetCount == 1) {\n                // ...\n                sendEnableAndUpdateIntentLocked(provider, new int[]{appWidgetId});\n            } else {\n                // ...\n                sendUpdateIntentLocked(provider, new int[]{appWidgetId}, true);\n            }\n\n            // Schedule the future updates.\n            registerForBroadcastsLocked(provider, getWidgetIds(provider.widgets));",
+          "note": "位于 bindAppWidgetId 成功路径，前置的包身份、跨用户、绑定权限及 Provider 存在性校验不可省略为无条件成功。首个实例调用合并启用与更新入口，其他实例请求更新；3700-3736 行表明合并是否可用取决于开关和 Provider 信息，不可用时发送分开的广播。发送请求不等于 Provider 已执行，也不等于 Host 已收到视图。"
+        }
+      ]
+    },
+    {
+      "id": "trigger",
+      "title": "广播触发与应用主动提交更新",
+      "summary": "AppWidgetProvider 把更新广播分发给应用覆盖的 onUpdate，但基类 onUpdate 本身不构造 RemoteViews。应用也可以脱离广播主动调用 AppWidgetManager 的全量或增量入口。普通 XML 且未进入遗留列表转换的路径中，Manager 通过同步 IAppWidgetService 请求提交描述；API 返回不是 Host 应用完成的回执。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetProvider.java",
+          "symbol": "onReceive",
+          "lines": "57-73",
+          "code": "    public void onReceive(Context context, Intent intent) {\n        // Protect against rogue update broadcasts (not really a security issue,\n        // just filter bad broacasts out so subclasses are less likely to crash).\n        String action = intent.getAction();\n        if (AppWidgetManager.ACTION_APPWIDGET_ENABLE_AND_UPDATE.equals(action)) {\n            this.onReceive(context, new Intent(intent)\n                    .setAction(AppWidgetManager.ACTION_APPWIDGET_ENABLED));\n            this.onReceive(context, new Intent(intent)\n                    .setAction(AppWidgetManager.ACTION_APPWIDGET_UPDATE));\n        } else if (AppWidgetManager.ACTION_APPWIDGET_UPDATE.equals(action)) {\n            Bundle extras = intent.getExtras();\n            if (extras != null) {\n                int[] appWidgetIds = extras.getIntArray(AppWidgetManager.EXTRA_APPWIDGET_IDS);\n                if (appWidgetIds != null && appWidgetIds.length > 0) {\n                    this.onUpdate(context, AppWidgetManager.getInstance(context), appWidgetIds);\n                }\n            }",
+          "note": "合并广播在 Provider 中分成启用与更新处理；合法且非空的 ID 数组才进入 onUpdate。125-126 行的基类 onUpdate 是空实现，不能假装系统在这里自动创建了业务 RemoteViews。此段证明方法调用关系，不单独证明广播实际投递时间或接收线程。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetManager.java",
+          "symbol": "updateAppWidget",
+          "lines": "758-766",
+          "code": "    public void updateAppWidget(int[] appWidgetIds, RemoteViews views) {\n        if (mService == null) {\n            return;\n        }\n\n        views.setOriginalDensity(mDisplayMetrics.density);\n        tryAdapterConversion(view -> mService.updateAppWidgetIds(mPackageName, appWidgetIds,\n                view), views, appWidgetIds, \"Error updating app widget views in background\");\n    }",
+          "note": "这是应用主动全量更新入口，广播不是唯一触发源。服务端 2394-2397 行把此入口转成 partially=false。Manager 686-729 行的转换辅助方法在不进入列表转换时直接调用 action；本证据不把集合转换、Provider 自定义异步任务或所有调用都画成同一种线程。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetManager.java",
+          "symbol": "partiallyUpdateAppWidget",
+          "lines": "865-874",
+          "code": "    public void partiallyUpdateAppWidget(int[] appWidgetIds, RemoteViews views) {\n        if (mService == null) {\n            return;\n        }\n\n        views.setOriginalDensity(mDisplayMetrics.density);\n        tryAdapterConversion(view -> mService.partiallyUpdateAppWidgetIds(mPackageName,\n                appWidgetIds, view), views, appWidgetIds,\n                \"Error partially updating app widget views in background\");\n    }",
+          "note": "这是独立的增量更新入口，服务端 2421-2427 行传入 partially=true。增量的含义是服务端缓存合并，不代表 Host 必然复用旧 View；Host 是否 reapply 由自己的兼容性与颜色状态决定。"
+        }
+      ]
+    },
+    {
+      "id": "descriptor",
+      "title": "应用创建布局描述与待回放动作，不创建跨进程 View",
+      "summary": "证据来自当前仓库 HEAD 24bc82b5d25dd6ebc97e8c3401fa1678cd9f3ba5 的本地源码。本组仅描述普通 XML RemoteViews：构造时保存 ApplicationInfo 与 layoutId，setTextViewText 经 setCharSequence 把 ReflectionAction 加入 mActions。这里没有在应用侧 inflate 出要交给 Launcher 的 View。DrawInstructions、RemoteComposePlayer、集合及尺寸变体等扩展未纳入本模型，不能据此声称所有 RemoteViews 只支持 XML。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "RemoteViews",
+          "lines": "6309-6338",
+          "code": "    public RemoteViews(String packageName, int layoutId) {\n        this(getApplicationInfo(packageName, UserHandle.myUserId()), layoutId);\n    }\n// ...\n    protected RemoteViews(ApplicationInfo application, @LayoutRes int layoutId) {\n        mApplication = application;\n        mLayoutId = layoutId;\n        mApplicationInfoCache.put(application);\n    }",
+          "note": "构造普通 XML 版本时记录资源所属应用与布局资源 ID；此处没有 LayoutInflater，也没有创建供远端使用的 View 实例。layoutId 要结合资源所属应用解释，不是跨应用通用的布局编号。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "setTextViewText",
+          "lines": "7011-7013",
+          "code": "    public void setTextViewText(@IdRes int viewId, CharSequence text) {\n        setCharSequence(viewId, \"setText\", text);\n    }",
+          "note": "应用侧调用只把目标 viewId、方法名 setText 与文本传给动作构造入口；这里不是直接修改宿主里的 TextView，也不自动触发 Widget 更新 IPC。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "setCharSequence",
+          "lines": "8138-8141",
+          "code": "    public void setCharSequence(@IdRes int viewId, String methodName, CharSequence value) {\n        addAction(new ReflectionAction(viewId, methodName, BaseReflectionAction.CHAR_SEQUENCE,\n                value));\n    }",
+          "note": "ReflectionAction 保存目标、方法与带类型的参数。动作将来由宿主回放，而不是把应用进程中的 Java 方法调用栈或 View 对象送过去。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "addAction",
+          "lines": "6856-6866",
+          "code": "    private void addAction(Action a) {\n        if (hasMultipleLayouts()) {\n            throw new RuntimeException(\"RemoteViews specifying separate layouts for orientation\"\n                    + \" or size cannot be modified. Instead, fully configure each layouts\"\n                    + \" individually before constructing the combined layout.\");\n        }\n        if (mActions == null) {\n            mActions = new ArrayList<>();\n        }\n        mActions.add(a);\n    }",
+          "note": "这是 mActions 的实际追加点。多布局组合对象不能直接这样修改，须先配置各子布局；本模型不展开该分支，也不把动作列表等同于宿主 View 树。"
+        }
+      ]
+    },
+    {
+      "id": "parcel",
+      "title": "Parcel 编解码动作描述，不搬运应用的 View 树",
+      "summary": "跨进程时 RemoteViews 被序列化为资源与状态描述。普通模式的 writeToParcel 在 9434-9452 行写入应用信息、布局与根 ID 等信息后写动作；对应构造在 6607-6614 行读取这些信息后读取动作。以下短摘录聚焦动作数量、tag 与动作载荷的对称编解码。Parcel 解码不会自动 inflate 或执行动作。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "writeActionsToParcel",
+          "lines": "9483-9496",
+          "code": "    private void writeActionsToParcel(Parcel parcel, int flags) {\n        int count;\n        if (mActions != null) {\n            count = mActions.size();\n        } else {\n            count = 0;\n        }\n        parcel.writeInt(count);\n        for (int i = 0; i < count; i++) {\n            Action a = mActions.get(i);\n            parcel.writeInt(a.getActionTag());\n            a.writeToParcel(parcel, flags);\n        }\n    }",
+          "note": "每条动作写出 tag 及其自身载荷；不是递归序列化任意 View 实例。真实载荷还可涉及 Bitmap 缓存、PendingIntent、嵌套 RemoteViews 等，不能简化成只传一个 XML 文件或只传文本。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "readActionsFromParcel",
+          "lines": "6654-6672",
+          "code": "    private void readActionsFromParcel(Parcel parcel, int depth) {\n        int count = parcel.readInt();\n        if (count > 0) {\n            mActions = new ArrayList<>(count);\n            for (int i = 0; i < count; i++) {\n                mActions.add(getActionFromParcel(parcel, depth));\n            }\n        }\n    }\n\n    private Action getActionFromParcel(Parcel parcel, int depth) {\n        int tag = parcel.readInt();\n        switch (tag) {\n// ...\n            case REFLECTION_ACTION_TAG:\n                return new ReflectionAction(parcel);",
+          "note": "接收端按 tag 重建 Action 对象，仍然只是 RemoteViews 描述。此处举 ReflectionAction；switch 的其他动作类型省略。解码完成、Host 收到更新、应用动作和实际显示是不同边界。"
+        }
+      ]
+    },
+    {
+      "id": "service",
+      "title": "校验身份、维护描述缓存并调度通知",
+      "summary": "AppWidgetService 校验调用包与 URI 访问权，在锁内查找调用者可访问的实例，维护 RemoteViews 缓存并检查内存。当前实现仅在 partial=true 且旧缓存非空时 merge，否则赋值；这与公开注释中无全量更新则忽略增量的表述有差异，应按当前可执行分支建模。无 Host callback 时仍记录更新序号，但不发送实时通知。",
+      "snippets": [
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "updateAppWidgetIds",
+          "lines": "2855-2884",
+          "code": "    private void updateAppWidgetIds(String callingPackage, int[] appWidgetIds,\n            RemoteViews views, boolean partially) {\n        final int userId = UserHandle.getCallingUserId();\n        // ...\n        // Make sure the package runs under the caller uid.\n        mSecurityPolicy.enforceCallFromPackage(callingPackage);\n        // Make sure RemoteViews do not contain URIs that the caller cannot access.\n        checkRemoteViewsUris(views);\n        synchronized (mLock) {\n            ensureGroupStateLoadedLocked(userId);\n\n            final int N = appWidgetIds.length;\n            for (int i = 0; i < N; i++) {\n                final int appWidgetId = appWidgetIds[i];\n\n                // NOTE: The lookup is enforcing security across users by making\n                // sure the caller can only access widgets it hosts or provides.\n                Widget widget = lookupWidgetLocked(appWidgetId,\n                        Binder.getCallingUid(), callingPackage);\n\n                if (widget != null) {\n                    updateAppWidgetInstanceLocked(widget, views, partially);\n                }\n            }\n        }\n    }",
+          "note": "省略的入口分支对空 ID 数组直接返回。不是拿到任意 appWidgetId 就能改任意 Widget：本段明确校验包身份、URI 权限，并通过带调用 UID 的查找限定实例访问。服务端接收更新仍然不是 Host UI 线程执行动作。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "updateAppWidgetInstanceLocked",
+          "lines": "3134-3149",
+          "code": "    private void updateAppWidgetInstanceLocked(Widget widget, RemoteViews views,\n            boolean isPartialUpdate) {\n        if (widget != null && widget.provider != null\n                && !widget.provider.zombie && !widget.host.zombie) {\n\n            if (isPartialUpdate && widget.views != null) {\n                // For a partial update, we merge the new RemoteViews with the old.\n                widget.views.mergeRemoteViews(views);\n            } else {\n                // For a full update we replace the RemoteViews completely.\n                widget.views = views;\n            }\n            ensureWidgetViewsMemoryLimitLocked(widget);\n            scheduleNotifyUpdateAppWidgetLocked(widget, widget.getEffectiveViewsLocked());\n        }\n    }",
+          "note": "全量覆盖缓存；有旧缓存的增量调用 mergeRemoteViews，具体合并规则由 Action 决定，不是直接操作 Host View。旧缓存为空时当前 else 会接收传入描述，不能照抄 Manager 859-860 行或服务端 2409-2410 行的忽略注释。通知用的是更新后的有效描述，而不是无条件把原始增量包直接交给 Host。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "ensureWidgetViewsMemoryLimitLocked",
+          "lines": "3151-3172",
+          "code": "    @VisibleForTesting\n    void ensureWidgetViewsMemoryLimitLocked(Widget widget) {\n        if ((UserHandle.getAppId(Binder.getCallingUid()) == Process.SYSTEM_UID)\n                || (widget.views == null)) {\n            return;\n        }\n        long bitmapCacheMemoryUsage = widget.views.estimateMemoryUsage();\n        long totalMemoryUsage = bitmapCacheMemoryUsage + widget.views.estimateIconMemoryUsage();\n        int targetSdk = getWidgetTargetSdkLocked(widget);\n        long memoryUsage =\n                (targetSdk > 37) ? totalMemoryUsage : bitmapCacheMemoryUsage;\n        if (memoryUsage > mMaxWidgetBitmapMemory) {\n            widget.views = null;\n            throw new IllegalArgumentException(\"RemoteViews for widget update exceeds\"\n                    + \" maximum bitmap memory usage (used: \" + memoryUsage\n                    + \", max: \" + mMaxWidgetBitmapMemory + \")\");\n        } else if (targetSdk <= 37 && totalMemoryUsage > mMaxWidgetBitmapMemory) {\n            Slog.w(TAG, \"RemoteViews for widget update exceeds maximum Bitmap and Icon \"\n                    + \"memory usage (used: \" + totalMemoryUsage + \", max: \"\n                    + mMaxWidgetBitmapMemory + \"). This will throw an exception for \"\n                    + \"targetSdk > 37\");\n        }",
+          "note": "内存检查发生在缓存替换或合并之后、调度通知之前。SYSTEM_UID 与 null 描述被豁免；targetSdk>37 时把 Icon 估算也计入超限判定，旧目标版本的 Icon 总量超限仅告警。硬性超限会清空 widget.views 并抛异常，不会沿正常路径通知 Host；546-552 行把阈值算作显示像素数乘以 6 字节，而不是固定大小或整个 Binder 包上限。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "scheduleNotifyUpdateAppWidgetLocked",
+          "lines": "3267-3306",
+          "code": "    private void scheduleNotifyUpdateAppWidgetLocked(Widget widget, RemoteViews updateViews) {\n        long requestId = UPDATE_COUNTER.incrementAndGet();\n        if (widget != null) {\n            // ...\n            widget.updateSequenceNos.put(ID_VIEWS_UPDATE, requestId);\n        }\n        if (widget == null || widget.provider == null || widget.provider.zombie\n                || widget.host.callbacks == null || widget.host.zombie) {\n            return;\n        }\n        if (updateViews != null) {\n            updateViews = new RemoteViews(updateViews);\n            updateViews.setProviderInstanceId(requestId);\n        }\n        // ...\n        mCallbackHandler.obtainMessage(\n                CallbackHandler.MSG_NOTIFY_UPDATE_APP_WIDGET,\n                args).sendToTarget();\n    }",
+          "note": "序号在 callback 可用性判断之前记录，所以停止监听并不等于丢掉服务端最新缓存。普通 XML 路径把描述副本封装后排入 CallbackHandler；省略参数封装与本范围外的遗留列表分流。3270-3276 行结束的 appwidget update-intent trace 只表示服务端收到更新，不是 Host inflate 完成或屏幕呈现完成。"
+        }
+      ]
+    },
+    {
+      "id": "callback",
+      "title": "服务线程排队与单向宿主回调",
+      "summary": "服务端先把通知排入 CallbackHandler，再调用单向 IAppWidgetHost。CallbackHandler 在专用 ServiceThread 的 Looper 上执行，而不是把 Provider 调用线程直接延伸到 Host UI。单向回调提交成功与 Host 收到、应用完成是三个不同边界，lastWidgetUpdateSequenceNo 也不是渲染确认序号。",
+      "snippets": [
+        {
+          "file": "base/core/java/com/android/internal/appwidget/IAppWidgetHost.aidl",
+          "symbol": "IAppWidgetHost",
+          "lines": "25-27",
+          "code": "oneway interface IAppWidgetHost {\n    void updateAppWidgetDeferred(int appWidgetId);\n    void updateAppWidget(int appWidgetId, in RemoteViews views);",
+          "note": "oneway 标记跨进程回调不等待远端方法执行完毕；传递的是 RemoteViews 数据，不是应用进程的 View 对象。本范围采用 updateAppWidget，不展开集合专用的 deferred 路径。同进程 Binder 直调还需要和跨进程语义区分。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "CallbackHandler",
+          "lines": "5942-5959",
+          "code": "        public CallbackHandler(Looper looper) {\n            super(looper, null, false);\n        }\n\n        @Override\n        public void handleMessage(Message message) {\n            switch (message.what) {\n                case MSG_NOTIFY_UPDATE_APP_WIDGET: {\n                    SomeArgs args = (SomeArgs) message.obj;\n                    Host host = (Host) args.arg1;\n                    IAppWidgetHost callbacks = (IAppWidgetHost) args.arg2;\n                    RemoteViews views = (RemoteViews) args.arg3;\n                    long requestId = (Long) args.arg4;\n                    final int appWidgetId = args.argi1;\n                    args.recycle();\n\n                    handleNotifyUpdateAppWidget(host, callbacks, appWidgetId, views, requestId);\n                } break;",
+          "note": "433-436 行创建并启动 ServiceThread，随后以 mServiceThread.getLooper() 构造此 Handler；因此这里是排队执行的服务回调线程，不是 system_server 主线程的必然路径，也不是 Provider 的 UI 线程。排队时延由实际运行状态决定，源码没有承诺固定毫秒数。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "handleNotifyUpdateAppWidget",
+          "lines": "3322-3336",
+          "code": "    private void handleNotifyUpdateAppWidget(Host host, IAppWidgetHost callbacks,\n            int appWidgetId, RemoteViews views, long requestId) {\n        try {\n            Slog.d(TAG, \"Trying to notify widget update for package \"\n                    + (views == null ? \"null\" : views.getPackage())\n                    + \" with widget id: \" + appWidgetId);\n            callbacks.updateAppWidget(appWidgetId, views);\n            host.lastWidgetUpdateSequenceNo = requestId;\n        } catch (RemoteException re) {\n            synchronized (mLock) {\n                Slog.e(TAG, \"Widget host dead: \" + host.id, re);\n                host.callbacks = null;\n            }\n        }\n    }",
+          "note": "更新序号是在单向调用返回后推进，不是 Host 处理完毕后推进。RemoteException 会解除 callback，但不会在此清除 widget.views；不要把此处成功当成屏幕更新成功，也不要把重连机制描述为每次可见更新都有可靠 ACK 的协议。"
+        }
+      ]
+    },
+    {
+      "id": "host",
+      "title": "宿主 Binder 入口转交指定 Looper",
+      "summary": "AppWidgetHost 的 Binder 回调只封装消息并排队，UpdateHandler 再查找 appWidgetId 对应 listener。公开构造函数默认使用 Context 主 Looper，但隐藏构造可指定其他 Looper。初始化拉取和 startListening 返回的补发则直接调用更新入口，不应和 Binder 回调的 Handler 路径混为一谈。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "updateAppWidget",
+          "lines": "120-131",
+          "code": "        public void updateAppWidget(int appWidgetId, RemoteViews views) {\n            if (isLocalBinder() && views != null) {\n                views = views.clone();\n            }\n            Handler handler = mWeakHandler.get();\n            if (handler == null) {\n                return;\n            }\n            Message msg = handler.obtainMessage(HANDLE_UPDATE, appWidgetId, 0, views);\n            msg.sendToTarget();\n        }",
+          "note": "跨进程时这段在 Host Binder 接收侧进入，真正更新被投递到 Handler；弱引用 Handler 已消失时直接返回。同进程 Binder 不经过 Parcel 隔离，因此显式 clone，不能把此分支误画成应用 View 的共享引用。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "UpdateHandler",
+          "lines": "186-223",
+          "code": "    class UpdateHandler extends Handler {\n        public UpdateHandler(Looper looper) {\n            super(looper);\n        }\n\n        public void handleMessage(Message msg) {\n            switch (msg.what) {\n                case HANDLE_UPDATE: {\n                    updateAppWidgetView(msg.arg1, (RemoteViews)msg.obj);\n                    break;\n                }\n                // ...\n            }\n        }\n    }\n\n    public AppWidgetHost(Context context, int hostId) {\n        this(context, hostId, null, context.getMainLooper());\n    }",
+          "note": "默认 Host 把更新消息交给 Context 的主 Looper。245-251 行的隐藏构造接收 Looper 并创建 UpdateHandler，说明这是可配置边界，不应断言所有宿主子类都必然使用同一线程；Launcher3 是否覆盖及如何调度在本仓库不可验证。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "updateAppWidgetView",
+          "lines": "655-660",
+          "code": "    void updateAppWidgetView(int appWidgetId, RemoteViews views) {\n        AppWidgetHostListener v = getListener(appWidgetId);\n        if (v != null) {\n            v.updateAppWidget(views);\n        }\n    }",
+          "note": "只有已注册 listener 的实例才继续调用 updateAppWidget；没有 listener 时不创建额外视图。普通 createView 注册的是 AppWidgetHostView，但接口允许其他实现，不能把框架契约偷换成已验证的 Launcher 私有类调用链。"
+        }
+      ]
+    },
+    {
+      "id": "inflate",
+      "title": "Host 进程借用 Provider 资源，受限创建本地 View",
+      "summary": "普通 XML 路径在宿主进程执行。RemoteViews 获取资源所属应用的受限 Context，结合 Host Context 包装成 inflationContext，再克隆 LayoutInflater、安装类过滤器并以 attachToRoot=false 加载布局。Provider 提供资源不等于 Provider 进程拥有这棵 View。源码同时存在 DrawInstructions 分支，以下保留其分流条件以限定本模型范围。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "getContextForResourcesEnsuringCorrectCachedApkPaths",
+          "lines": "9049-9071",
+          "code": "    private Context getContextForResourcesEnsuringCorrectCachedApkPaths(Context context) {\n        if (mApplication != null) {\n            if (context.getUserId() == UserHandle.getUserId(mApplication.uid)\n                    && context.getPackageName().equals(mApplication.packageName)) {\n                return context;\n            }\n            try {\n                ApplicationInfo sanitizedApplication = mApplication;\n                try {\n// ...\n                    sanitizedApplication = context.getPackageManager().getApplicationInfoAsUser(\n                        mApplication.packageName, 0, UserHandle.getUserId(mApplication.uid));\n// ...\n                Context applicationContext = context.createApplicationContext(\n                        sanitizedApplication,\n                        Context.CONTEXT_RESTRICTED);\n                // Get the correct apk paths while maintaining the current context's configuration.\n                return applicationContext.createConfigurationContext(\n                        context.getResources().getConfiguration());",
+          "note": "同包同用户可以直接复用 Context；通常跨应用时从 PackageManager 校正 ApplicationInfo 后建立 CONTEXT_RESTRICTED 资源 Context，并保持宿主配置。省略 SecurityException/NameNotFoundException 处理；受限 Context 不等于另开进程，也不代表执行 Provider 任意自定义 View 代码。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "INFLATER_FILTER",
+          "lines": "8599-8627",
+          "code": "        final Context contextForResources =\n                getContextForResourcesEnsuringCorrectCachedApkPaths(context);\n// ...\n        Context inflationContext = new RemoteViewsContextWrapper(context, contextForResources);\n// ...\n        View v;\n        // If the RemoteViews contains draw instructions, just use it instead.\n        if (rv.hasDrawInstructions()) {\n            final RemoteComposePlayer player = new RemoteComposePlayer(inflationContext);\n            player.setDebug(Build.IS_USERDEBUG || Build.IS_ENG ? 1 : 0);\n            v = player;\n        } else {\n            LayoutInflater inflater = LayoutInflater.from(context);\n// ...\n            inflater = inflater.cloneInContext(inflationContext);\n            inflater.setFilter(shouldUseStaticFilter() ? INFLATER_FILTER : this);\n            if (mLayoutInflaterFactory2 != null) {\n                inflater.setFactory2(mLayoutInflaterFactory2);\n            }\n            v = inflater.inflate(rv.getLayoutId(), parent, false);\n        }",
+          "note": "本模型只走 else 的 XML 分支。inflate 的 false 表示此时不自动加入 parent；后面由 AppWidgetHostView 挂载。保留 DrawInstructions 分流仅用于证明范围，不模拟 RemoteComposePlayer；主题与颜色资源配置细节省略。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "INFLATER_FILTER",
+          "lines": "372-373",
+          "code": "    private static final LayoutInflater.Filter INFLATER_FILTER =\n            (clazz) -> clazz.isAnnotationPresent(RemoteViews.RemoteView.class);",
+          "note": "普通 RemoteViews 的静态过滤器以 @RemoteView 标记检查可加载类，可理解为基于注解的准入名单，而非任意 XML 自定义 View 都可使用。实例 onLoadClass 在 9417-9418 行也检查该注解；类准入与后面的 @RemotableViewMethod 方法准入是两道不同检查。"
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "title": "在 Host View 上定位目标，受限回放 ReflectionAction",
+      "summary": "同步 performApply 按 mActions 顺序调用 apply；ReflectionAction 继承 BaseReflectionAction 的实际回放逻辑：在宿主根 View 上按 viewId 查找目标，解析参数类型与值，查找获准方法后调用。异步路径先准备动作，最终回放见 async 组。不是把任意反射调用无条件交给 Launcher 执行。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "getMethod",
+          "lines": "2239-2295",
+          "code": "    private static MethodHandle getMethod(View view, String methodName,\n            @Nullable Class<?> paramType, @Nullable Class<?> paramTypeArgument, boolean async) {\n// ...\n        Class<? extends View> klass = view.getClass();\n// ...\n                    } else if (paramType != null) {\n                        method = klass.getMethod(methodName, paramType);\n                    } else {\n                        method = klass.getMethod(methodName);\n                    }\n                    if (!method.isAnnotationPresent(RemotableViewMethod.class)) {\n                        throw new ActionException(\"view: \" + klass.getName()\n                                + \" can't use method with RemoteViews: \"\n                                + methodName + parametersToString(paramType, paramTypeArgument));\n                    }\n// ...\n                    result.syncMethod = MethodHandles.publicLookup().unreflect(method);\n// ...\n            if (!async) {\n                return result.syncMethod;\n            }",
+          "note": "方法首次解析需满足公共可见性、参数签名与 @RemotableViewMethod 标注；合法结果会缓存，不是每次都重新反射。省略泛型校验、缓存与异步方法解析，不把方法注解误写成 View 类的准入注解。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "apply",
+          "lines": "2862-2878",
+          "code": "        public final void apply(View root, ViewGroup rootParent, ActionApplyParams params) {\n            final View view = root.findViewById(mViewId);\n            if (view == null) return;\n\n            Class<?> param = getParameterType(this.mType);\n            Class<?> paramTypeArgument = getParameterTypeArgument(this.mType);\n            if (param == null) {\n                throw new ActionException(\"bad type: \" + this.mType);\n            }\n            Object value = getParameterValue(view);\n            try {\n                getMethod(view, this.mMethodName, param, paramTypeArgument, /* async= */ false)\n                        .invoke(view, value);\n            } catch (Throwable ex) {\n                throw new ActionException(ex);\n            }\n        }",
+          "note": "这是 ReflectionAction 继承的 BaseReflectionAction.apply，不是应用端调用 setTextViewText 的那一刻。目标不存在会直接跳过；其他解析/调用异常会变为 ActionException。同步循环见 9000-9008 行；异步最终回放由 onPostExecute 的动作循环承接。"
+        }
+      ]
+    },
+    {
+      "id": "host-apply",
+      "title": "复用、异步应用与本地视图树替换",
+      "summary": "AppWidgetHostView 根据本地 View 的可复用性选择 reapply 或重新 apply；服务端全量与增量不是这项选择的开关。设置 Executor 后可进入异步准备，成功与错误通过 listener 汇合到 applyContent。成功表示本地动作已应用并更新容器内容，不代表容器已接入 Launcher 的窗口、更不代表该帧已经显示。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "canRecycleView",
+          "lines": "613-642",
+          "code": "            if (!mColorMappingChanged && rvToApply.canRecycleView(mView)) {\n                try {\n                    rvToApply.reapply(mContext, mView, mInteractionLogger, mCurrentSize,\n                            mColorResources);\n                    content = mView;\n                    // ...\n                    recycled = true;\n                    // ...\n                } catch (RuntimeException e) {\n                    exception = e;\n                }\n            }\n\n            // Try normal RemoteView inflation\n            if (content == null) {\n                try {\n                    content = rvToApply.apply(mContext, this, mInteractionLogger,\n                            mCurrentSize, mColorResources);\n                    // ...\n                } catch (RuntimeException e) {\n                    exception = e;\n                }\n            }\n\n            mViewMode = VIEW_MODE_CONTENT;\n        }\n\n        applyContent(content, recycled, exception);\n    }",
+          "note": "这是同步分支。颜色映射未变且 canRecycleView 允许时尝试 reapply；失败或不可复用则重新 apply。RemoteViews 8899-8914 行检查已有 View、布局标签和 override ID，不能简化为只要 full 就新建或只要 partial 就复用。HostView 563-565 行从 updateAppWidget 进入 applyRemoteViews；589-611 行先取消旧异步任务，null 时取默认 View，有 Executor 且允许时转异步。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "inflateAsync",
+          "lines": "669-702",
+          "code": "    private void inflateAsync(@NonNull RemoteViews remoteViews) {\n        // ...\n        int layoutId = remoteViews.getLayoutId();\n\n        if (mLastExecutionSignal != null) {\n            mLastExecutionSignal.cancel();\n        }\n        // ...\n        if (!mColorMappingChanged && remoteViews.canRecycleView(mView)) {\n            try {\n                mLastExecutionSignal = remoteViews.reapplyAsync(mContext,\n                        mView,\n                        mAsyncExecutor,\n                        new ViewApplyListener(remoteViews, layoutId, true),\n                        // ...\n                        mColorResources);\n            } catch (Exception e) {\n                // Reapply failed. Try apply\n            }\n        }\n        if (mLastExecutionSignal == null) {\n            mLastExecutionSignal = remoteViews.applyAsync(mContext,\n                    this,\n                    mAsyncExecutor,\n                    new ViewApplyListener(remoteViews, layoutId, false),\n                    // ...\n                    mColorResources);\n        }\n    }",
+          "note": "Executor 是可选配置，不是每次 Widget 更新必走的线程。异步 reapply 启动异常时尝试 applyAsync，执行阶段的错误由下一段 listener 处理。RemoteViews 8736-8739 行把完成 Handler 绑定到 context.getMainLooper()，8751-8769 行做后台准备，8785-8827 行在完成阶段应用动作后通知 listener；不能把所有动作都画成后台执行，也不能把 CancellationSignal 画成已上屏或撤销已呈现画面的保证。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "onViewApplied",
+          "lines": "719-743",
+          "code": "        public void onViewApplied(View v) {\n            mViewMode = VIEW_MODE_CONTENT;\n\n            applyContent(v, mIsReapply, null);\n\n            mLastInflatedRemoteViewsId = mViews.computeUniqueId(mLastInflatedRemoteViews);\n            restoreInstanceState();\n            mLastExecutionSignal = null;\n        }\n\n        @Override\n        public void onError(Exception e) {\n            if (mIsReapply) {\n                // Try a fresh replay\n                mLastExecutionSignal = mViews.applyAsync(mContext,\n                        AppWidgetHostView.this,\n                        mAsyncExecutor,\n                        new ViewApplyListener(mViews, mLayoutId, false),\n                        mInteractionLogger,\n                        mCurrentSize);\n            } else {\n                applyContent(null, false, e);\n                mLastExecutionSignal = null;\n            }\n        }",
+          "note": "异步成功在 onViewApplied 中把内容交给容器并恢复实例状态。异步 reapply 失败时改为新建 applyAsync；新建仍失败时进入错误内容。这里没有帧提交、SurfaceFlinger 合成或物理显示回执，不能把回调命名中的 Applied 直接翻译成已经上屏。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "applyContent",
+          "lines": "644-667",
+          "code": "    private void applyContent(View content, boolean recycled, Exception exception) {\n        mColorMappingChanged = false;\n        if (content == null) {\n            if (mViewMode == VIEW_MODE_ERROR) {\n                // We've already done this -- nothing to do.\n                return;\n            }\n            if (exception != null) {\n                Log.w(TAG, \"Error inflating RemoteViews\", exception);\n            }\n            content = getErrorView();\n            mViewMode = VIEW_MODE_ERROR;\n        }\n\n        if (!recycled) {\n            prepareView(content);\n            addView(content);\n        }\n\n        if (mView != content) {\n            removeView(mView);\n            mView = content;\n        }\n    }",
+          "note": "新内容先准备并加入 AppWidgetHostView，再移除旧内容；复用成功不重复 addView。content 为空时可显示错误 View，错误不是静默地宣称成功。此处完成的是宿主容器内的 View 树变更，宿主仍需接入自身窗口，后续经过正常布局、绘制和呈现流程；具体 Launcher3 工作区实现不在本仓库证据范围内。"
+        }
+      ]
+    },
+    {
+      "id": "async",
+      "title": "Executor 准备、主 Looper 回放与可取消完成回调",
+      "summary": "AppWidgetHostView 只有配置 mAsyncExecutor 且允许异步时才采用异步路径，否则存在同步 apply/reapply。AsyncApplyTask 用给定 Executor（为空时用 THREAD_POOL_EXECUTOR）执行后台 inflate 与动作准备，并把完成结果交给 Context 的 mainLooper。成功路径顺序为 onViewInflated、最终动作回放、onViewApplied；失败走 onError。取消是协作式任务取消，不是已完成 UI 操作或已显示画面的回滚。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "AsyncApplyTask",
+          "lines": "8736-8777",
+          "code": "        private AsyncApplyTask(\n                RemoteViews rv, ViewGroup parent, Context context, OnViewAppliedListener listener,\n                ActionApplyParams applyParams, View result, boolean topLevel) {\n            super(context.getMainLooper());\n// ...\n            mResult = result;\n        }\n// ...\n        protected ViewTree doInBackground(Void... params) {\n            try {\n                if (mResult == null) {\n                    mResult = inflateView(mContext, mRV, mParent, 0, mApplyParams.colorResources);\n                }\n\n                mTree = new ViewTree(mResult);\n\n                if (mRV.mActions != null) {\n                    int count = mRV.mActions.size();\n                    mActions = new Action[count];\n// ...\n                        for (int i = 0; i < count && !isCancelled(); i++) {\n                            // TODO: check if isCancelled in nested views.\n                            mActions[i] = mRV.mActions.get(i)\n                                    .initActionAsync(mTree, mParent, mApplyParams);\n                        }",
+          "note": "构造明确指定回调 Looper。后台只有 mResult==null 才新建 View；reapplyAsync 可复用已有 View。initActionAsync 可做预处理并返回最终动作，不是此时所有 setter 都已回放；也不能把后台预处理解释为完全不接触 View。实际工作线程取决于所给 Executor 的执行策略。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "startTaskOnExecutor",
+          "lines": "8838-8847",
+          "code": "        @Override\n        public void onCancel() {\n            cancel(true);\n        }\n\n        private CancellationSignal startTaskOnExecutor(Executor executor) {\n            mCancelSignal.setOnCancelListener(this);\n            executeOnExecutor(executor == null ? AsyncTask.THREAD_POOL_EXECUTOR : executor);\n            return mCancelSignal;\n        }",
+          "note": "CancellationSignal 连接到 AsyncTask.cancel(true)；中断是尝试，不保证后台立刻停止。Host 在新一轮 applyRemoteViews 的 589-592 行取消旧信号，但这不能撤销已经执行的动作或替代业务版本校验，也不能取消一个已经完成的上屏事件。"
+        },
+        {
+          "file": "base/core/java/android/os/AsyncTask.java",
+          "symbol": "postResult",
+          "lines": "384-438",
+          "code": "    public AsyncTask(@Nullable Looper callbackLooper) {\n        mHandler = callbackLooper == null || callbackLooper == Looper.getMainLooper()\n            ? getMainHandler()\n            : new Handler(callbackLooper);\n// ...\n    }\n// ...\n    private Result postResult(Result result) {\n        @SuppressWarnings(\"unchecked\")\n        Message message = getHandler().obtainMessage(MESSAGE_POST_RESULT,\n                new AsyncTaskResult<Result>(this, result));\n        message.sendToTarget();\n        return result;\n    }",
+          "note": "结果不是在提交任务的线程直接同步回调，而是发消息到构造时选定的 Handler/Looper。与 RemoteViews 的 super(context.getMainLooper()) 合起来，才证明这里正常完成回调所用的主 Looper；后台何时完成不等于主线程何时取出结果。"
+        },
+        {
+          "file": "base/core/java/android/os/AsyncTask.java",
+          "symbol": "finish",
+          "lines": "769-790",
+          "code": "    private void finish(Result result) {\n        if (isCancelled()) {\n            onCancelled(result);\n        } else {\n            onPostExecute(result);\n        }\n        mStatus = Status.FINISHED;\n    }\n// ...\n    private static class InternalHandler extends Handler {\n// ...\n        public void handleMessage(Message msg) {\n            AsyncTaskResult<?> result = (AsyncTaskResult<?>) msg.obj;\n            switch (msg.what) {\n                case MESSAGE_POST_RESULT:\n                    // There is only one result\n                    result.mTask.finish(result.mData[0]);",
+          "note": "结果消息在 Handler 上进入 finish；如果此时已取消，则调用 onCancelled 而不进入 onPostExecute。不能把这个检查写成随时可回滚的事务：onPostExecute 已开始后，不保证后续取消能阻断其动作与 listener；RemoteViews 在其入口也会移除取消监听。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "onPostExecute",
+          "lines": "8785-8828",
+          "code": "        protected void onPostExecute(ViewTree viewTree) {\n            mCancelSignal.setOnCancelListener(null);\n            if (mError == null) {\n                if (mListener != null) {\n                    mListener.onViewInflated(viewTree.mRoot);\n                }\n// ...\n                            for (Action a : mActions) {\n                                a.apply(viewTree.mRoot, mParent, applyParams);\n                            }\n// ...\n                } catch (Exception e) {\n                    mError = e;\n                }\n            }\n\n            if (mListener != null) {\n                if (mError != null) {\n                    mListener.onError(mError);\n                } else {\n                    mListener.onViewApplied(viewTree.mRoot);\n                }",
+          "note": "成功路径是 onViewInflated 在最终动作之前，onViewApplied 在最终动作及必要的 recycling 处理之后；正常执行位置由前两段 AsyncTask 证据确定。错误时 onError 而非成功回调。本回调没有等待 traversal、GPU、SurfaceFlinger 或屏幕 present，绝不能标为已经上屏。"
+        }
+      ]
+    },
+    {
+      "id": "reconnect",
+      "title": "开始监听与断线后的最新状态补发",
+      "summary": "startListening 同步注册 callback，并按已有 listener 的 ID 拉取服务端未发送的 PendingHostUpdate。补发依据更新序号与当前有效缓存，连续更新可能被归并为最新描述，不是持久保存并重放每一个历史动画。返回后的 Host 更新是直接调用，区别于后续 Binder 回调的 Handler 分发。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHost.java",
+          "symbol": "startListening",
+          "lines": "260-287",
+          "code": "    public void startListening() {\n        if (mService == null) {\n            return;\n        }\n        final int[] idsToUpdate;\n        synchronized (mListeners) {\n            int n = mListeners.size();\n            idsToUpdate = new int[n];\n            for (int i = 0; i < n; i++) {\n                idsToUpdate[i] = mListeners.keyAt(i);\n            }\n        }\n        List<PendingHostUpdate> updates;\n        try {\n            updates = mService.startListening(\n                    mCallbacks, mContextOpPackageName, mHostId, idsToUpdate).getList();\n        }\n        catch (RemoteException e) {\n            throw new RuntimeException(\"system server dead?\", e);\n        }\n\n        int N = updates.size();\n        for (int i = 0; i < N; i++) {\n            PendingHostUpdate update = updates.get(i);\n            switch (update.type) {\n                case PendingHostUpdate.TYPE_VIEWS_UPDATE:\n                    updateAppWidgetView(update.appWidgetId, update.views);\n                    break;",
+          "note": "Host 只提交当前已注册 listener 的 ID。服务返回的视图补发在 startListening 调用线程直接进入 updateAppWidgetView，不经过 Binder Callbacks.obtainMessage。公开文档建议可见时开始监听，但本仓库不能证明某个 Launcher 在哪个生命周期精确调用，也没有固定的恢复耗时保证。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "getPendingUpdatesForIdLocked",
+          "lines": "1417-1438",
+          "code": "            HostId id = new HostId(Binder.getCallingUid(), hostId, callingPackage);\n            Host host = lookupOrAddHostLocked(id);\n            host.callbacks = callbacks;\n\n            long updateSequenceNo = UPDATE_COUNTER.incrementAndGet();\n            int N = appWidgetIds.length;\n            ArrayList<PendingHostUpdate> outUpdates = new ArrayList<>(N);\n            LongSparseArray<PendingHostUpdate> updatesMap = new LongSparseArray<>();\n            for (int i = 0; i < N; i++) {\n                updatesMap.clear();\n                host.getPendingUpdatesForIdLocked(mContext, appWidgetIds[i], updatesMap);\n                // We key the updates based on request id, so that the values are sorted in the\n                // order they were received.\n                int m = updatesMap.size();\n                for (int j = 0; j < m; j++) {\n                    outUpdates.add(updatesMap.valueAt(j));\n                }\n            }\n            // Reset the update counter once all the updates have been calculated\n            host.lastWidgetUpdateSequenceNo = updateSequenceNo;\n            return new ParceledListSlice<>(outUpdates);",
+          "note": "处于服务端 startListening 的锁内，完成 callback 挂接后计算并返回补发列表。排序容器按每个实例逐个清空并收集，因此不能泛化为跨所有 Widget 的全局历史日志；序号基线在服务端返回前就推进，更不构成 Host 已应用或已显示的确认。"
+        },
+        {
+          "file": "base/services/appwidget/java/com/android/server/appwidget/AppWidgetServiceImpl.java",
+          "symbol": "getPendingUpdatesForIdLocked",
+          "lines": "6614-6642",
+          "code": "        public void getPendingUpdatesForIdLocked(Context context, int appWidgetId,\n                LongSparseArray<PendingHostUpdate> outUpdates) {\n            long updateSequenceNo = lastWidgetUpdateSequenceNo;\n            int N = widgets.size();\n            for (int i = 0; i < N; i++) {\n                Widget widget = widgets.get(i);\n                if (widget.appWidgetId == appWidgetId) {\n                    for (int j = widget.updateSequenceNos.size() - 1; j >= 0; j--) {\n                        long requestId = widget.updateSequenceNos.valueAt(j);\n                        if (requestId <= updateSequenceNo) {\n                            continue;\n                        }\n                        int id = widget.updateSequenceNos.keyAt(j);\n                        final PendingHostUpdate update;\n                        switch (id) {\n                            // ...\n                            case ID_VIEWS_UPDATE:\n                                update = PendingHostUpdate.updateAppWidget(appWidgetId,\n                                        cloneIfLocalBinder(widget.getEffectiveViewsLocked()));\n                                break;\n                            // ...\n                        }\n                        outUpdates.put(requestId, update);\n                    }\n                    return;",
+          "note": "只有大于 lastWidgetUpdateSequenceNo 的条目才作为未发送更新补发。视图条目读取当前有效描述；结合服务端按 ID_VIEWS_UPDATE 覆盖序号的实现，断线期间多次更新并不是每个中间版本都重放。setListener 还可主动拉取当前描述，但本机制不是等待 Host 渲染 ACK 后再确认的可靠显示协议。"
+        }
+      ]
+    },
+    {
+      "id": "render",
+      "title": "Host 挂载后进入普通 View 绘制链，完成回调不是上屏回执",
+      "summary": "本仓库未包含 Launcher3，只能确认框架 AppWidgetHostView 与普通 View/ViewRootImpl 路径，不能补造 Launcher 自身的布局、可见性或线程策略。异步 listener 的 onViewApplied 调用 applyContent；新建内容经 addView 加入 Host，已有内容 reapply 时可以不重新添加。若 Host 已连接到可见窗口，布局/失效请求会按普通 View 层级到达 ViewRootImpl 并安排后续 traversal，条件满足才绘制。尚未 attach、不可见、取消 draw 等都会改变这条路径；这里不测量或宣称精确屏幕显示时刻。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "onViewApplied",
+          "lines": "719-727",
+          "code": "        public void onViewApplied(View v) {\n            mViewMode = VIEW_MODE_CONTENT;\n\n            applyContent(v, mIsReapply, null);\n\n            mLastInflatedRemoteViewsId = mViews.computeUniqueId(mLastInflatedRemoteViews);\n            restoreInstanceState();\n            mLastExecutionSignal = null;\n        }",
+          "note": "这是框架 Host 接住异步结果的 listener：进入 onViewApplied 时甚至还要调用 applyContent 来挂载新内容。回调名称本身不保证 View 已加入某个已 attach 的 Launcher 窗口，更不是屏幕呈现回调。"
+        },
+        {
+          "file": "base/core/java/android/appwidget/AppWidgetHostView.java",
+          "symbol": "applyContent",
+          "lines": "644-667",
+          "code": "    private void applyContent(View content, boolean recycled, Exception exception) {\n        mColorMappingChanged = false;\n// ...\n        if (!recycled) {\n            prepareView(content);\n            addView(content);\n        }\n\n        if (mView != content) {\n            removeView(mView);\n            mView = content;\n        }\n    }",
+          "note": "只在非 recycled 路径 prepareView/addView；复用既有 View 不要求重新加入父容器。省略 content==null 的错误视图回退。同步 apply/reapply 最后也调用该方法，不能把 Widget 更新统一描述成必经异步新建。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewGroup.java",
+          "symbol": "addView",
+          "lines": "5239-5254",
+          "code": "    public void addView(View child, int index, LayoutParams params) {\n// ...\n        // addViewInner() will call child.requestLayout() when setting the new LayoutParams\n        // therefore, we call requestLayout() on ourselves before, so that the child's request\n        // will be blocked at our level\n        requestLayout();\n        invalidate(true);\n        addViewInner(child, index, params, false);\n    }",
+          "note": "Host 的 addView 进入 ViewGroup 重载链后请求布局并标记失效，然后添加子 View；不是在这里直接绘制到屏幕。View.requestLayout 的 28744-28749 行按父节点与其待布局状态向上传递，未 attach 时不能假定已有 ViewRoot。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "requestLayout",
+          "lines": "2842-2848",
+          "code": "    public void requestLayout() {\n        if (!mHandlingLayoutInLayoutRequest) {\n            checkThread();\n            mLayoutRequested = true;\n            scheduleTraversals();\n        }\n    }",
+          "note": "普通 View 层级的请求最终到达 ViewRootImpl 时，需要通过线程检查并设置布局需求，再安排 traversal；并非每次 setter 都立即同步执行 measure/layout/draw。是否到达这里还依赖父链与窗口挂载状态。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "scheduleTraversals",
+          "lines": "3307-3353",
+          "code": "    void scheduleTraversals() {\n        checkThreadCompat();\n        if (!mTraversalScheduled) {\n            mTraversalScheduled = true;\n// ...\n            postTraversalBarrier();\n            mChoreographer.postVsyncCallback(\n                    Choreographer.CALLBACK_TRAVERSAL, mTraversalCallback);\n            notifyRendererOfFramePending();\n            pokeDrawLockIfNeeded();\n        }\n    }\n// ...\n    void doTraversal(long frameTimeNanos) {\n        if (mTraversalScheduled) {\n            mTraversalScheduled = false;\n            removeTraversalBarrier();\n            performTraversals(frameTimeNanos);\n        }\n    }",
+          "note": "多个请求可以合并成一个待执行 traversal；此版本通过 Choreographer.postVsyncCallback 登记 TRAVERSAL 回调。后续 doTraversal 才进入 performTraversals，按需要执行测量、布局与绘制，不能在动画里把 addView 或 onViewApplied 与这一时刻重合成同一完成事件。"
+        },
+        {
+          "file": "base/core/java/android/view/ViewRootImpl.java",
+          "symbol": "performDraw",
+          "lines": "4863-4907",
+          "code": "        if (!isViewVisible) {\n// ...\n            mLastPerformTraversalsSkipDrawReason = \"view_not_visible\";\n// ...\n        } else if (cancelAndRedraw) {\n// ...\n            // Try again\n            scheduleTraversals();\n        } else {\n// ...\n            mAttachInfo.mDrawingTime = frameTimeNanos / TimeUtils.NANOS_PER_MS;\n            if (!performDraw(mActiveSurfaceSyncGroup)) {\n                handleSyncRequestWhenNoAsyncDraw(mActiveSurfaceSyncGroup, mHasPendingTransactions,\n                        mPendingTransaction, mLastPerformDrawSkippedReason);\n                mHasPendingTransactions = false;\n            }",
+          "note": "performTraversals 可能因为不可见而不画，也可能取消并重约；通过条件后才调用 performDraw，performDraw 自身也可能跳过。即便执行 draw，也不能从这段代码推导 GPU 完成、合成、扫描输出或用户看到的精确时刻；本证据截止框架绘制边界，不包含 Launcher3 或物理呈现测量。"
+        }
+      ]
+    },
+    {
+      "id": "interaction",
+      "title": "点击描述在 Host 化为本地监听器，经 PendingIntent 发起交互",
+      "summary": "普通非集合子项的点击路径中，应用调用 setOnClickPendingIntent 只追加携带 RemoteResponse/PendingIntent 的动作描述。Host 回放动作后，在自己的目标 View 上安装本地 setOnClickListener；用户点击才由 RemoteResponse 交给 InteractionHandler，框架默认处理最终通过 PendingIntent 的 IntentSender 发起交互。跨进程不传输这个监听器 lambda 或 View 实例，也不是直接回调应用里的某个 Java 闭包。本组不展开集合点击、Launcher3 自定义处理或目标组件的后续执行。",
+      "snippets": [
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "setOnClickPendingIntent",
+          "lines": "7256-7270",
+          "code": "    public void setOnClickPendingIntent(@IdRes int viewId, PendingIntent pendingIntent) {\n        setOnClickResponse(viewId, RemoteResponse.fromPendingIntent(pendingIntent));\n    }\n// ...\n    public void setOnClickResponse(@IdRes int viewId, @NonNull RemoteResponse response) {\n        addAction(new SetOnClickResponse(viewId, response));\n    }",
+          "note": "应用侧保存的是 SetOnClickResponse 动作，尚未在 Host 安装监听器，也没有在此刻发送 PendingIntent。这里只描述普通点击，不套用集合子项的模板与 fill-in 路径。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "setOnClickListener",
+          "lines": "1988-2040",
+          "code": "        public void writeToParcel(Parcel dest, int flags) {\n            dest.writeInt(mViewId);\n            mResponse.writeToParcel(dest, flags);\n        }\n// ...\n        public void apply(View root, ViewGroup rootParent, ActionApplyParams params) {\n// ...\n            final View target = root.findViewById(mViewId);\n            if (target == null) return;\n// ...\n            target.setOnClickListener(v ->\n                    mResponse.handleViewInteraction(v, params.handler));\n        }",
+          "note": "SetOnClickResponse 序列化目标 ID 与 RemoteResponse，而不是 lambda/View。监听器 lambda 是 Host 执行 apply 时就地创建的，v 是点击时的宿主 View。省略普通 PendingIntent 的资格检查和其他分支；handleViewInteraction 在 9854-9882 行选择 PendingIntent 后调用 handler.onInteraction(v, pi, this)，不是把 v 发送回 Provider。"
+        },
+        {
+          "file": "base/core/java/android/widget/RemoteViews.java",
+          "symbol": "startPendingIntent",
+          "lines": "9973-9992",
+          "code": "    public static boolean startPendingIntent(View view, PendingIntent pendingIntent,\n            Pair<Intent, ActivityOptions> options) {\n        try {\n// ...\n            Context context = view.getContext();\n// ...\n            context.startIntentSender(\n                    pendingIntent.getIntentSender(), options.first,\n                    0, 0, 0, options.second.toBundle());\n        } catch (IntentSender.SendIntentException e) {\n            Log.e(LOG_TAG, \"Cannot send pending intent: \", e);\n            return false;\n        } catch (Exception e) {\n            Log.e(LOG_TAG, \"Cannot send pending intent due to unknown exception: \", e);\n            return false;\n        }\n        return true;\n    }",
+          "note": "496-498 行的 DEFAULT_INTERACTION_HANDLER 将交互转交给本方法。View 只在 Host 本地用于取 Context 与生成启动选项；真正发送的是 PendingIntent 对应的 IntentSender，而非 View 或应用 lambda。这里只证明框架默认发送路径，不能保证发送成功或目标立即执行；宿主自定义 InteractionHandler 不在本组展开。"
+        }
+      ]
+    }
+  ]
+}

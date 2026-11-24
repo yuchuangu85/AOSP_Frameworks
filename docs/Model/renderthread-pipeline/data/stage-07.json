@@ -1,0 +1,184 @@
+{
+  "id": "stage-07",
+  "num": 7,
+  "title": "swapBuffers：EGL 交换与 queueBuffer 入队",
+  "subtitle": "RenderThread 把画好的帧交给 EGL，驱动在 swap 内部 dequeue 一块 GraphicBuffer，再经 Surface 把 buffer 队列回 BufferQueue",
+  "lane": "RT",
+  "durationHint": "约 0.3~2 ms（含 dequeue 阻塞，随缓冲水位波动）",
+  "summary": "本阶段是 RenderThread 把一帧真正送进 BufferQueue 的一拍：CanvasContext::draw() 在命令提交、waitOnFences() 之后调用 mRenderPipeline->swapBuffers()（CanvasContext.cpp:787），进入 SkiaOpenGLPipeline::swapBuffers()。它先 currentFrameInfo->markSwapBuffers() 钉住时间戳（SkiaOpenGLPipeline.cpp:201），再以 drawResult.success || mEglManager.damageRequiresSwap() 决定 requireSwap，然后交给 EglManager::swapBuffers() 调用 eglSwapBuffersWithDamageKHR()。AOSP 的 libEGL 在 eglSwapBuffersWithDamageKHRImpl() 里先用 native_window_set_surface_damage() 把脏区写到窗口，再转给 vendor 驱动的 eglSwapBuffersWithDamageKHR；真正的 dequeueBuffer/queueBuffer 发生在驱动内部，AOSP 里能验证的只有它对 ANativeWindow 钩子的调用。queueBuffer 经 Surface::hook_queueBuffer() 进入 BufferQueueProducer::queueBuffer()，写入 slot、frameNumber 与 acquire fence，并回调 consumer 的 onFrameAvailable，帧由此离开 RT、进入 BLAST 的地盘。swap 返回码只说明这一拍有没有换来一块新 buffer，真正上屏仍由 SurfaceFlinger 决定；无论成败，结果都会写进 FrameInfoIndex::CommandSubmissionCompleted 与 mSwapHistory，成为后续 jank 与 FrameTimeline 判定的输入。",
+  "callchain": [
+    "CanvasContext::draw()",
+    "SkiaOpenGLPipeline::swapBuffers()",
+    "EglManager::swapBuffers()",
+    "eglSwapBuffersWithDamageKHR()",
+    "eglSwapBuffersWithDamageKHRImpl()",
+    "（vendor EGL 驱动内部）dequeueBuffer / queueBuffer",
+    "Surface::hook_queueBuffer()",
+    "Surface::queueBufferImpl()",
+    "BufferQueueProducer::queueBuffer()"
+  ],
+  "sections": [
+    {
+      "heading": "一、谁发起、在哪个线程完成",
+      "html": "<p>发起者是 <code>RenderThread</code>：<code>CanvasContext::draw()</code> 在 issueDrawCommands 完成、<code>waitOnFences()</code> 之后执行 <code>mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo, &amp;requireSwap)</code>（<code>base/libs/hwui/renderthread/CanvasContext.cpp:787</code>）。这条路径全部是 native C++，不涉及 Java 线程，也不涉及 binder；UI 线程此时早已被 <code>DrawFrameTask::run()</code> 的 <code>unblockUiThread()</code> 放走。</p><p><code>SkiaOpenGLPipeline::swapBuffers()</code> 只有 20 行，但决定了三个结果：其一，进入函数立刻 <code>currentFrameInfo-&gt;markSwapBuffers()</code>（<code>SkiaOpenGLPipeline.cpp:201</code>），注释写明“即使取消这一帧，从 jank 指标看它也算已交换”；其二，<code>*requireSwap = drawResult.success || mEglManager.damageRequiresSwap()</code>；其三，真的交换失败（EGL_BAD_SURFACE / EGL_BAD_NATIVE_WINDOW）时只返回 false，由 <code>CanvasContext::draw()</code> 走 <code>setSurface(nullptr)</code> 的兜底。</p><p>交换返回后 <code>CanvasContext::draw()</code> 把 <code>FrameInfoIndex::CommandSubmissionCompleted</code> 写成 <code>max(drawResult.commandSubmissionTime, SwapBuffers)</code>，再进入 didSwap 分支：回调 <code>mFrameCommitCallbacks</code>（<code>didProduceBuffer=true</code>）、记录 <code>mSwapHistory</code> 的 damage 与 dequeue/queue 耗时。这些时间戳就是后面 FrameTimeline / gfxinfo 的数据源。</p>"
+    },
+    {
+      "heading": "二、Frame：宽高、bufferAge 与 y 轴翻转",
+      "html": "<p><code>Frame</code> 是 hwui 对 EGLSurface 的一层薄封装（<code>base/libs/hwui/renderthread/Frame.h</code>），只有 <code>mWidth</code>、<code>mHeight</code>、<code>mBufferAge</code>、<code>mSurface</code> 四个字段。<code>EglManager::beginFrame()</code> 先 <code>makeCurrent(surface)</code>，再用 <code>eglQuerySurface(EGL_WIDTH/EGL_HEIGHT)</code> 取尺寸、<code>queryBufferAge()</code> 取 buffer age，最后 <code>eglBeginFrame()</code> 通知 driver 新一帧开始。</p><p><code>queryBufferAge()</code> 完全由 <code>EglManager</code> 私有的 <code>SwapBehavior</code> 枚举决定：<code>Discard</code> 返回 0（必然全量重绘）、<code>Preserved</code> 返回 1、<code>BufferAge</code> 才去 <code>eglQuerySurface(EGL_BUFFER_AGE_EXT)</code>。这个枚举在 <code>EglManager::initialize()</code> 里按 <code>Properties::enablePartialUpdates</code> 与 <code>Properties::useBufferAge</code> 选定（<code>EglManager.cpp:126-136</code>）。因此在默认配置下 partial update 很可能根本没开：<code>damageRequiresSwap()</code> 返回 false，swap 只在 <code>drawResult.success</code> 为真时发生。</p><p>坐标系是另一个容易踩的点。hwui 内部以左上角为 0,0，而 EGL/GRALLOC 的矩形以左下角为原点，<code>Frame::map()</code> 负责翻转：<code>y = mHeight - (idirty.y() + idirty.height())</code>，输出布局是 <code>{x, y, width, height}</code>（<code>Frame.cpp:34-39</code>）。同一份 <code>map()</code> 既用于 <code>eglSetDamageRegionKHR</code>，也用于 swap 的 damage rect，写错就会局部花屏。</p><p>脏区本身不是“上一帧之后所有改动”那么简单：<code>CanvasContext::computeDirtyRect()</code> 在 <code>frame.bufferAge() &gt; 1</code> 时会把最近 <code>bufferAge-1</code> 帧的 <code>mSwapHistory[i].damage</code> 逐个 <code>join()</code> 回来（<code>CanvasContext.cpp:1290-1304</code>），否则环形缓冲里那块还没被覆盖的旧内容会残留。</p>"
+    },
+    {
+      "heading": "三、EGL 交换如何变成 dequeue + queueBuffer",
+      "html": "<p><code>EglManager::swapBuffers()</code> 只做两件事：<code>frame.map(screenDirty, rects)</code>、<code>eglSwapBuffersWithDamageKHR(mEglDisplay, frame.mSurface, rects, screenDirty.isEmpty() ? 0 : 1)</code>；<code>Properties::waitForGpuCompletion</code> 为真时先 <code>fence()</code> 等 GPU 完成（仅调试用途）。</p><p>往下是 <code>native/opengl/libs/EGL/egl_platform_entries.cpp</code> 的 <code>eglSwapBuffersWithDamageKHRImpl()</code>：<code>n_rects == 0</code> 直接退回 <code>eglSwapBuffers</code>；否则把 rect 转成 <code>android_native_rect_t</code>（注意它把 <code>top</code> 写成 <code>y + height</code>），调 <code>native_window_set_surface_damage()</code>，再调 vendor 的 <code>eglSwapBuffersWithDamageKHR</code>。驱动内部怎么 dequeue、怎么 queue，AOSP 树里没有任何实现——<strong>源码中未体现</strong>，可验证的只有它对 <code>ANativeWindow</code> 的调用。</p><p>这条边界在 <code>Surface</code> 构造函数里显式安装：<code>ANativeWindow::dequeueBuffer = hook_dequeueBuffer</code>、<code>queueBuffer = hook_queueBuffer</code>（<code>native/libs/gui/Surface.cpp:144-149</code>）。所以 <code>hook_queueBuffer</code> 就是“EGL 驱动把 buffer 交回 BufferQueue”的唯一入口，它先查 <code>mQueueInterceptor</code>，没有 interceptor 才走 <code>Surface::queueBuffer()</code>。</p><p>再往下 <code>BufferQueueProducer::queueBuffer()</code>（<code>BufferQueueProducer.cpp:976</code>）把 <code>QueueBufferInput</code> deflate 出 acquire fence、dataspace、crop、transform，校验 slot 属于 producer，然后 <code>mSlots[slot].mFence = acquireFence</code>、<code>mBufferState.queue()</code>、<code>++mCore-&gt;mFrameCounter</code> 并给定 <code>frameNumber</code>，把 <code>BufferItem</code> 压入 <code>mCore-&gt;mQueue</code>。若队尾恰好是可丢弃（droppable）的旧帧，则替换它并合并 <code>mSurfaceDamage</code>。回调在 <code>mCallbackMutex</code> + <code>callbackTicket</code> 的保护下严格按序调用 <code>frameAvailableListener-&gt;onFrameAvailable(item)</code>，这一回调正是 BLAST 的起点。</p><p>这里有两个容易忽略的顺序细节：其一，<code>mSlots[slot].mFence</code> 与 <code>mSlots[slot].mBufferState.queue()</code> 都在 <code>mCore-&gt;mMutex</code> 内完成，但 <code>onFrameAvailable()</code> 是在释放该锁之后、持有 <code>mCallbackMutex</code> 并按 <code>callbackTicket</code> 排队的情况下调用的，注释明确写着“回调不能持有 BufferQueue 主锁”，否则消费者回调里再 acquire/release 会直接死锁；其二，<code>output-&gt;numPendingBuffers</code> 与 <code>nextFrameNumber</code> 也在同一临界区写回，Surface 侧据此更新 <code>mConsumerRunningBehind</code>（<code>Surface.cpp:1461</code> 附近）。</p>"
+    },
+    {
+      "heading": "四、dequeue 会不会阻塞：缓冲水位与 buffer stuffing",
+      "html": "<p>dequeue 的阻塞点在 <code>BufferQueueProducer::waitForFreeSlotThenRelock()</code>（<code>BufferQueueProducer.cpp:347</code>）：一旦 <code>mBufferHasBeenQueued</code> 为真且已出队数量达到 <code>mCore-&gt;mMaxDequeuedBufferCount</code>，直接返回 <code>INVALID_OPERATION</code>；队列里未消费的 buffer 超过 <code>getMaxBufferCountLocked()</code>，或找不到空闲 buffer，就进 <code>waitForBufferRelease()</code> 睡在 <code>mCore-&gt;mDequeueCondition</code> 上。异步模式（<code>mAsyncMode</code>）或 <code>mDequeueBufferCannotBlock</code> 时改为返回 <code>WOULD_BLOCK</code>。</p><p>hwui 两侧都有配置：<code>CanvasContext::setSurface()</code> 会 <code>ANativeWindow_setDequeueTimeout(window, 4000_ms)</code>（<code>CanvasContext.cpp:239-241</code>），让 dequeue 最多等 4 秒而不是无限等；<code>setupPipelineSurface()</code> 还会 <code>native_window_set_producer_throttling_enabled(..., false)</code> 并 <code>setBufferCount()</code>，后者取 <code>NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS</code> 再 +2（<code>CanvasContext.cpp:202-215</code>）。这就是“三缓冲”的来源：最少未出队数加两块。</p><p>如果 dequeue 失败，<code>prepareTree()</code> 里 <code>mNativeSurface-&gt;reserveNext()</code> 返回非 OK 会把 <code>skippedFrameReason</code> 置成 <code>SkippedFrameReason::NoBuffer</code>（<code>CanvasContext.cpp:606-608</code>），这一帧直接跳过——这是“buffer 被 SF 占满”在 RT 侧最直接的可观测信号。</p><p>queueBuffer 收尾还有一道同步：<code>connectedApi == NATIVE_WINDOW_API_EGL &amp;&amp; enableEglCpuThrottling</code> 时执行 <code>lastQueuedFence-&gt;waitForever(\"Throttling EGL Production\")</code>（<code>BufferQueueProducer.cpp:1280-1284</code>），保证最多两块 buffer 在飞、第三块必须等。hwui 主动关掉了 producer throttling，所以这条路径通常不生效，别用它解释卡顿。</p><p>还有一个方向相反的限制来自 <code>mMaxAcquiredBufferCount</code>：如果消费者（BLAST）已经 acquire 了太多 buffer，即使 <code>dequeueBuffer</code> 不阻塞，<code>acquireBuffer</code> 也会返回 <code>NO_BUFFER_AVAILABLE</code>，此时 <code>BLASTBufferQueue::acquireNextBufferLocked()</code> 会一路返回，让这一帧停在 <code>mNumFrameAvailable</code> 里等下一次回调。dequeue 端与 acquire 端必须一起看，才能解释“明明有 buffer 却不出帧”。</p>"
+    },
+    {
+      "heading": "五、fence 语义：acquire / release / present 不要混用",
+      "html": "<p>dequeue 返回的 fence 是 <strong>acquire fence</strong>，语义是“这块 buffer 何时可以被生产者写入”；<code>BufferQueueProducer::queueBuffer()</code> 把它同时写进 <code>mSlots[slot].mFence</code> 和 <code>BufferItem::mFence</code>，随 <code>onFrameAvailable</code> 交给消费者。消费者必须等它 signal 之后才能采样内容。</p><p><strong>release fence</strong> 方向相反，是“生产者何时可以重新写这块 buffer”。hwui 在 <code>SkiaOpenGLPipeline::flush()</code> 里调用 <code>mEglManager.createReleaseFence(true, &amp;sync, &amp;fence)</code>（<code>SkiaOpenGLPipeline.cpp:260-278</code>）：优先用 <code>EGL_SYNC_NATIVE_FENCE_ANDROID</code> + <code>glFlush()</code> + <code>eglDupNativeFenceFDANDROID()</code> 导出一个 native fence fd；没有 native fence 扩展时退回 EGL fence，并且必须先 <code>eglClientWaitSyncKHR</code> 等掉同一 slot 的上一个 fence（1 秒超时），否则会破坏“同一 slot 的写-写顺序”（<code>EglManager.cpp:732-784</code>）。</p><p><strong>present fence</strong> 不在本阶段产生：swap 成功只说明命令已提交，屏幕上何时点亮由 SurfaceFlinger/HWC 决定，present fence 要等 Transaction 完成回调（<code>SurfaceControlStats::presentFence</code>）才回到应用进程。本阶段能拿到的只有 <code>EGL_SUCCESS</code> 和（可选的）<code>createReleaseFence</code> 结果。</p>"
+    },
+    {
+      "heading": "六、ReliableSurface：surface 失效时的静默兜底",
+      "html": "<p><code>CanvasContext::setSurface()</code> 并不直接把 <code>ANativeWindow*</code> 交给 pipeline，而是包一层 <code>ReliableSurface</code>（<code>CanvasContext.cpp:232-247</code>）。它在 <code>init()</code> 里安装 cancel/dequeue/queue/perform/query 五个 interceptor，把 window 的每个关键入口都截住。</p><p>最值得注意的是失败路径：<code>hook_dequeueBuffer()</code> 一旦 dequeue 失败，就 <code>acquireFallbackBuffer()</code> 分配一块 1x1 的 <code>AHardwareBuffer</code> 当 scratch buffer 返回，并把结果改成 <code>OK</code>；随后 <code>hook_queueBuffer()</code> 认出这是 fallback buffer，<code>close(fenceFd)</code> 后直接返回 <code>OK</code>（<code>ReliableSurface.cpp:175-229</code>）。换句话说，surface 死掉时上层看不到错误，只是屏幕上不再出现新帧。</p><p>另外文件开头 <code>constexpr bool DISABLE_BUFFER_PREFETCH = true</code>（<code>ReliableSurface.cpp:31</code>）让 <code>reserveNext()</code> 直接返回 OK，预取路径在此版本是关闭的；<code>hook_perform()</code> 对任何 perform 都 <code>clearReservedBuffer()</code>，<code>hook_query()</code> 则在 <code>ANATIVEWINDOW_QUERY_MIN_UNDEQUEUED_BUFFERS</code> 时把 <code>mExpectedBufferCount</code> 记成 <code>*value + 2</code>，用于校验上层是否设置了足够的 buffer 数。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp",
+      "symbol": "SkiaOpenGLPipeline::swapBuffers",
+      "lines": "194-214",
+      "code": "bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, IRenderPipeline::DrawResult& drawResult,\n                                     const SkRect& screenDirty, FrameInfo* currentFrameInfo,\n                                     bool* requireSwap) {\n    GL_CHECKPOINT(LOW);\n\n    // Even if we decided to cancel the frame, from the perspective of jank\n    // metrics the frame was swapped at this point\n    currentFrameInfo->markSwapBuffers();\n\n    if (mHardwareBuffer) {\n        return false;\n    }\n\n    *requireSwap = drawResult.success || mEglManager.damageRequiresSwap();\n\n    if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, screenDirty)))) {\n        return false;\n    }\n\n    return *requireSwap;\n}",
+      "note": "swapBuffers 的完整决策：先 markSwapBuffers() 钉时间戳，再以 drawResult.success || damageRequiresSwap() 决定 requireSwap，最后调用 EglManager::swapBuffers；硬件 buffer 路径直接返回 false 不交换。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/EglManager.cpp",
+      "symbol": "EglManager::beginFrame",
+      "lines": "592-603",
+      "code": "Frame EglManager::beginFrame(EGLSurface surface) {\n    LOG_ALWAYS_FATAL_IF(surface == EGL_NO_SURFACE, \"Tried to beginFrame on EGL_NO_SURFACE!\");\n    makeCurrent(surface);\n    Frame frame;\n    frame.mSurface = surface;\n    eglQuerySurface(mEglDisplay, surface, EGL_WIDTH, &frame.mWidth);\n    eglQuerySurface(mEglDisplay, surface, EGL_HEIGHT, &frame.mHeight);\n    frame.mBufferAge = queryBufferAge(surface);\n    eglBeginFrame(mEglDisplay, surface);\n    return frame;\n}\n",
+      "note": "beginFrame 不 dequeue：它只 makeCurrent、用 eglQuerySurface 取宽高、算 bufferAge、再 eglBeginFrame。dequeue 发生在后面的 swap 里，这点决定了 trace 的归属。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/EglManager.cpp",
+      "symbol": "EglManager::swapBuffers / EglManager::fence",
+      "lines": "621-652",
+      "code": "bool EglManager::swapBuffers(const Frame& frame, const SkRect& screenDirty) {\n    if (CC_UNLIKELY(Properties::waitForGpuCompletion)) {\n        ATRACE_NAME(\"Finishing GPU work\");\n        fence();\n    }\n\n    EGLint rects[4];\n    frame.map(screenDirty, rects);\n    eglSwapBuffersWithDamageKHR(mEglDisplay, frame.mSurface, rects, screenDirty.isEmpty() ? 0 : 1);\n\n    EGLint err = eglGetError();\n    if (CC_LIKELY(err == EGL_SUCCESS)) {\n        return true;\n    }\n    if (err == EGL_BAD_SURFACE || err == EGL_BAD_NATIVE_WINDOW) {\n        // For some reason our surface was destroyed out from under us\n        // This really shouldn't happen, but if it does we can recover easily\n        // by just not trying to use the surface anymore\n        ALOGW(\"swapBuffers encountered EGL error %d on %p, halting rendering...\", err,\n              frame.mSurface);\n        return false;\n    }\n    LOG_ALWAYS_FATAL(\"Encountered EGL error %d %s during rendering\", err, egl_error_str(err));\n    // Impossible to hit this, but the compiler doesn't know that\n    return false;\n}\n\nvoid EglManager::fence() {\n    EGLSyncKHR fence = eglCreateSyncKHR(mEglDisplay, EGL_SYNC_FENCE_KHR, NULL);\n    eglClientWaitSyncKHR(mEglDisplay, fence, EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, EGL_FOREVER_KHR);\n    eglDestroySyncKHR(mEglDisplay, fence);\n}",
+      "note": "swap 的真正动作是 frame.map() 后一次 eglSwapBuffersWithDamageKHR；EGL_BAD_SURFACE/EGL_BAD_NATIVE_WINDOW 被降级成 false 让上层丢 surface，其余错误直接 FATAL。fence() 只在 waitForGpuCompletion 调试属性下使用。"
+    },
+    {
+      "file": "native/libs/gui/Surface.cpp",
+      "symbol": "Surface::hook_queueBuffer",
+      "lines": "614-626",
+      "code": "int Surface::hook_queueBuffer(ANativeWindow* window,\n        ANativeWindowBuffer* buffer, int fenceFd) {\n    Surface* c = getSelf(window);\n    {\n        std::shared_lock<std::shared_mutex> lock(c->mInterceptorMutex);\n        if (c->mQueueInterceptor != nullptr) {\n            auto interceptor = c->mQueueInterceptor;\n            auto data = c->mQueueInterceptorData;\n            return interceptor(window, Surface::queueBufferInternal, data, buffer, fenceFd);\n        }\n    }\n    return c->queueBuffer(GraphicBuffer::from(buffer), sp<Fence>::make(fenceFd));\n}",
+      "note": "EGL 驱动把 buffer 交回 BufferQueue 的唯一入口：先查 mQueueInterceptor（ReliableSurface 等），否则转 Surface::queueBuffer，最终落到 BufferQueueProducer::queueBuffer。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "EglManager::mSwapBehavior",
+      "type": "EglManager::SwapBehavior（Discard / Preserved / BufferAge）",
+      "desc": "EglManager 私有枚举，initialize() 时按 Properties::enablePartialUpdates/useBufferAge 选定（EglManager.cpp:126-136）；决定 bufferAge、是否调用 eglSetDamageRegionKHR，以及 damageRequiresSwap() 的返回值。注意它和 hwui 的 SwapBehavior（kSwap_default/kSwap_discardBuffer）不是同一个类型。"
+    },
+    {
+      "name": "Frame::mBufferAge",
+      "type": "int32_t",
+      "desc": "EGL_BUFFER_AGE_EXT 的结果，0 表示内容未定义必须全量重绘，1 表示等于上一帧（无需 join 历史），>1 才去 mSwapHistory 里合并 damage；生命周期仅限这一帧。"
+    },
+    {
+      "name": "IRenderPipeline::DrawResult::success",
+      "type": "bool",
+      "desc": "draw() 是否成功提交命令；swapBuffers 里 requireSwap 的第一项。为 false 且没有 partial update 时这一帧根本不会 swap，但仍会被 markSwapBuffers 计入 jank 统计。"
+    },
+    {
+      "name": "CanvasContext::mSwapHistory",
+      "type": "RingBuffer<SwapHistory, 8>",
+      "desc": "每帧记录 damage / swapCompletedTime / vsyncTime / dequeueDuration / queueDuration；既是 bufferAge 局部重绘的历史来源，也是 isSwapChainStuffed() 的判据，surface 变更时 clear()。"
+    },
+    {
+      "name": "BufferQueueCore::mMaxDequeuedBufferCount",
+      "type": "int（默认 1，BufferQueueCore.cpp:121）",
+      "desc": "生产者同一时刻允许持有的已出队 buffer 上限，默认 1（BufferQueueCore.cpp:121）；达到上限后 waitForFreeSlotThenRelock() 直接返回 INVALID_OPERATION，而不是等待。hwui 不直接写这个字段，它通过 setBufferCount(minUndequeued+2) 间接影响 getMaxBufferCountLocked()，出队上限仍由本字段控制。"
+    },
+    {
+      "name": "BufferQueueCore::mDequeueBufferCannotBlock",
+      "type": "bool（默认 false，BufferQueueCore.cpp:111）",
+      "desc": "默认 false（BufferQueueCore.cpp:111）。为 true 或 mAsyncMode 为 true 时，找不到空闲 slot 不再阻塞而是返回 WOULD_BLOCK；mAsyncMode 还会让 queueBuffer 把 item.mIsDroppable 置真（BufferQueueProducer.cpp:1107-1109），从而允许新帧替换队尾旧帧并合并 damage。"
+    },
+    {
+      "name": "BufferQueueProducer::mLastQueueBufferFence",
+      "type": "sp<Fence>（初值 Fence::NO_FENCE，BufferQueueProducer.cpp:88）",
+      "desc": "上一次 queueBuffer 的 acquire fence，用于 EGL 同步模式下的生产者限流：等到它 signal 才允许第三次 queue，保证最多两块 buffer 在飞。"
+    },
+    {
+      "name": "BufferQueueProducer::mCallbackMutex / mCurrentCallbackTicket",
+      "type": "std::mutex / int",
+      "desc": "queueBuffer 用 ticket 机制保证 onFrameAvailable 按 queue 顺序串行回调，回调在 mMutex 之外执行以免和 BufferQueue 锁死锁；窗口内的等待用 mCallbackCondition。"
+    },
+    {
+      "name": "ReliableSurface::mReservedBuffer",
+      "type": "ANativeWindowBuffer*（+ mReservedFenceFd）",
+      "desc": "dequeue 拦截器缓存下来的预取 buffer；由于 DISABLE_BUFFER_PREFETCH=true，它只在 hook_dequeueBuffer 内被消费，clearReservedBuffer() 会 cancelBuffer 归还。"
+    },
+    {
+      "name": "CanvasContext::mFrameNumber",
+      "type": "uint64_t",
+      "desc": "getFrameNumber() 优先返回它，为 0 时回落到 pipeline 的 ANativeWindow_getNextFrameId；swap 成功后 CanvasContext::draw() 会把它清零，surface 变更时 setupPipelineSurface() 也清零。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "Drawing <dirty rect>",
+      "value": "ATRACE_FORMAT，CanvasContext.cpp:736",
+      "desc": "RenderThread 单帧 draw 的整段耗时，范围包含 swap 内部的 dequeue 阻塞；它的尾部就是这一阶段。"
+    },
+    {
+      "name": "flush commands",
+      "value": "ATRACE_NAME，SkiaOpenGLPipeline.cpp:181",
+      "desc": "Skia 把 Skia 命令 flush 并 submit 到 GPU 的区间；它与 swap 的间隔反映命令提交到真正交换之间的空隙。"
+    },
+    {
+      "name": "dequeueBuffer - <surface 名>",
+      "value": "ATRACE_FORMAT，Surface.cpp:755",
+      "desc": "Surface 层的 dequeue 区间；持续变长说明 buffer 被消费者占满或 SF 没释放，可与 queueBuffer 区间一起判断 stuffing。"
+    },
+    {
+      "name": "FrameInfoIndex::DequeueBufferDuration / QueueBufferDuration",
+      "value": "nsecs_t，CanvasContext.cpp:841-853",
+      "desc": "来自 ANativeWindow_getLastDequeueDuration / ANativeWindow_getLastQueueDuration，随 FrameTimeline 上报，是 gfxinfo framestats 里 dequeue/queue 两列的来源。"
+    },
+    {
+      "name": "BufferQueue 队列长度",
+      "value": "ATRACE_INT(mConsumerName, mQueue.size())，BufferQueueProducer.cpp:1214",
+      "desc": "以 BufferQueue 的 consumer 名作为 counter 名，直接看到 pending buffer 数，长期 >=2 说明消费者追不上生产者。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger / BufferQueue dump",
+      "value": "BufferQueueCore.cpp:157-170",
+      "desc": "dump 里打印 mMaxAcquiredBufferCount、mMaxDequeuedBufferCount、mProducerThrottlingEnabled，可直接核对 hwui 是否把 buffer 数改成了 minUndequeued+2、限流是否被关掉。"
+    },
+    {
+      "name": "swap chain stuffed",
+      "value": "ATRACE_NAME，CanvasContext.cpp:502",
+      "desc": "isSwapChainStuffed() 的标记：3 帧 swap 历史里 dequeue 或 queue 都超过 6ms 即认为管道堵塞。此版本该函数没有任何调用点，只能算定义了但未接入。"
+    }
+  ],
+  "pitfalls": [
+    "eglSwapBuffers 返回 EGL_TRUE 只代表命令提交成功，不代表已经上屏；present time 与 present fence 要等 SurfaceFlinger 的 transaction completed 回调，本阶段拿不到。",
+    "dequeue 不在 EglManager::beginFrame 里，而在 swap 内部（vendor 驱动调用 ANativeWindow 钩子）；所以看到 “Drawing” 很长时，可能只是卡在 dequeueBuffer 等 buffer，而不是 Skia 画得慢。",
+    "不要把两个 SwapBehavior 混为一谈：EglManager 私有的 Discard/Preserved/BufferAge 决定 bufferAge 与 partial update；hwui 的 kSwap_default/kSwap_discardBuffer 只影响 EGL_SWAP_BEHAVIOR 与 preserveBuffer（setPreserveBuffer 在非 Preserved 时直接 return false）。",
+    "hwui 在 setupPipelineSurface() 里主动 native_window_set_producer_throttling_enabled(false)，所以 queueBuffer 末尾 “Throttling EGL Production” 的 lastQueuedFence 等待通常不生效，不能用它解释限流型卡顿。",
+    "ReliableSurface 的 fallback 会让 dequeue/queue 返回 OK：surface 被销毁时应用侧不会收到错误，只会表现为“画面不再更新”；排障要同时看 SurfaceControl 生命周期和 BQ 的 pending 数。",
+    "mMaxDequeuedBufferCount 默认只有 1（BufferQueueCore.cpp:121），如果 owner 侧没有正确 setBufferCount 或 setMaxDequeuedBufferCount，dequeue 会立刻 INVALID_OPERATION，帧在 prepareTree 阶段就以 SkippedFrameReason::NoBuffer 被跳过，根本走不到 swap。"
+  ],
+  "traceTags": [
+    "Drawing",
+    "flush commands",
+    "dequeueBuffer",
+    "queueBuffer",
+    "Surface::queueBufferImpl",
+    "BufferQueueProducer::queueBuffer",
+    "swap chain stuffed",
+    "450351988: CommandSubmissionCompleted"
+  ],
+  "next": "stage-08"
+}

@@ -1,0 +1,42 @@
+{
+  "id": "df-postwait",
+  "title": "DrawFrameTask::postAndWait",
+  "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+  "sig": "void DrawFrameTask::postAndWait()",
+  "span": [
+    82,
+    87
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void DrawFrameTask::postAndWait() {",
+      "kind": "note",
+      "text": "UI线程同步入口：把run()投给RenderThread并阻塞等本帧sync完成；由drawFrame()调用，阻塞时长即UI帧耗时。"
+    },
+    {
+      "at": 2,
+      "quote": "ATRACE_CALL();",
+      "kind": "trace",
+      "text": "为本帧等待开atrace区间，可在systrace/Perfetto看UI线程被render线程阻塞多久；仅埋点开销，无失败路径。"
+    },
+    {
+      "at": 3,
+      "quote": "AutoMutex _lock(mLock);",
+      "kind": "lock",
+      "text": "先锁mLock再投递，与render线程unblockUiThread互斥，确保signal不会抢在wait前丢失；否则UI线程永久挂住。"
+    },
+    {
+      "at": 4,
+      "quote": "mRenderThread->queue().post([this]() { run(); });",
+      "kind": "thread",
+      "text": "把run()投入RenderThread队列异步执行，捕获this复用本对象状态；mRenderThread为空即崩溃，线程退则信号不来。"
+    },
+    {
+      "at": 5,
+      "quote": "mSignal.wait(mLock);",
+      "kind": "thread",
+      "text": "原子释放mLock并睡眠，直到run()内unblockUiThread发signal才返回；无超时，render线程卡死则UI线程ANR。"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "step": "s04",
+  "title": "drawFrame：把任务丢进 RenderThread 队列",
+  "tldr": "清结果位、记下 UI 侧的提交时刻、postAndWait：三行锁死了这一帧的时序归属。",
+  "why": "这三行是「本帧同步结果」的出生地。mSyncResult 是 task 成员，RT 在 syncFrameState 里往里或 SyncResult 位，drawFrame 再把它当返回值交回 Java，ThreadedRenderer.draw 靠这些位决定 relayout 还是 invalidate。不清零的话上一帧的 LostSurface/FrameDropped 会一直粘着，窗口每帧都强制 relayout，看起来像「窗口一直在抖」。mSyncQueued 记的是 UI 点下提交那一刻，后来被写成 FrameInfoIndex::SyncQueued，perfetto 里 UI→RT 的交接延迟就从它算起；少了它整条 frame timeline 的 sync 段是空的，jank 无法归因到「UI 交棒慢」还是「RT 画得慢」。",
+  "concepts": [
+    { "term": "mSyncResult", "text": "本帧同步结果位掩码；drawFrame 清零，syncFrameState 里按情况或位，最终回 Java。" },
+    { "term": "mSyncQueued", "text": "UI 提交时刻（SYSTEM_TIME_MONOTONIC）；既算 syncDelay 也进 SyncQueued 槽。" },
+    { "term": "mLayers", "text": "UI 用 pushLayerUpdate 攒下的 DeferredLayerUpdater，跨帧挂在 task 上。" }
+  ],
+  "walk": [
+    { "call": "int DrawFrameTask::drawFrame()", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:72", "what": "UI 侧最后一站：入口只有这三件事。" },
+    { "call": "LOG_ALWAYS_FATAL_IF(!mContext, \"Cannot drawFrame with no CanvasContext!\");", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:73", "what": "先断言上下文在；destroy 之后误用直接 abort 而非静默画错。" },
+    { "call": "mSyncResult = SyncResult::OK;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:75", "what": "清位：上一帧的 FrameDropped/LostSurface 不许漏到这一帧。" },
+    { "call": "mSyncQueued = systemTime(SYSTEM_TIME_MONOTONIC);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:76", "what": "记 UI 侧提交时刻，本帧的时钟基准。" },
+    { "call": "postAndWait();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:77", "what": "任务入队并阻塞，真正的交接在下一函数。" },
+    { "call": "return mSyncResult;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:79", "what": "回来时 RT 已在 sync 阶段写好位，取回的是最终值。" },
+    { "call": "mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:93", "what": "RT 侧第一个消费者：76 记的时刻在这里变成交接延迟。" },
+    { "call": "mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:545", "what": "第二个消费者：进本帧 FrameInfo，跨进程时间线靠它对齐。" }
+  ],
+  "state": [
+    { "field": "DrawFrameTask.mSyncResult", "before": "上一帧的结果位（可能带 FrameDropped）", "after": "SyncResult::OK（75），随后由 syncFrameState 再或位", "note": "79 行原样返回，ThreadedRenderer.draw:849-858 按位分支" },
+    { "field": "DrawFrameTask.mSyncQueued", "before": "上一帧的提交时刻", "after": "本次 systemTime(SYSTEM_TIME_MONOTONIC)（76）", "note": "在 CanvasContext.cpp:545 进 FrameInfo，在 DrawFrameTask.cpp:93 变成 syncDelay" },
+    { "field": "DrawFrameTask.mLayers", "before": "UI 用 pushLayerUpdate 攒的 DeferredLayerUpdater 列表", "after": "本步不变（要等 syncFrameState 182-189 才 apply 并 clear）", "note": "跨帧状态，正是 task 不能每帧新建的原因" },
+    { "field": "UI 线程执行位置", "before": "draw 里，已录完 display list", "after": "停在 syncFrameState 的等待上（77 未返回）", "note": "从这一行起 UI 不再碰 RenderNode 树，直到 s10 放行" }
+  ],
+  "threads": "整段在 UI 线程；post 之后任务在 RT 队列里排队，UI 继续执行到 77 的 wait 才停。RT 侧对应的是 s06/s07。",
+  "pitfalls": [
+    "mSyncResult 不清零会粘帧：它同时是返回值，ThreadedRenderer.draw 只要看到 LOST_SURFACE 位就 requestLayout（853-854），看到 REDRAW_REQUESTED 位就 invalidate（857）——一次 surface 丢失能让之后每帧都 relayout。",
+    "mSyncQueued 在 UI 线程写、在 RT 上读（93、CanvasContext.cpp:545），中间的 happens-before 完全依赖 postAndWait 那把锁和条件变量；别把它挪到锁外面赋值。",
+    "drawFrame 返回不等于帧画完了，只等于 sync 阶段结束：RT 之后还要 draw/swap，UI 已经可以开始下一帧。把返回值当「帧已提交」会得出错误的掉帧结论。",
+    "mSyncResult 是 int，不是 atomic；RT 在 run() 里或位时 UI 正睡在 mSignal 上，靠锁串行，改成无锁读写就是数据竞争。"
+  ],
+  "debug": [
+    "perfetto 里 DrawFrames <vsyncId> 的 vsyncId 取自 mFrameInfo[1]（FrameTimelineVsyncId），与 SurfaceFlinger 侧 frame timeline 同一套 id，可跨进程对齐",
+    "framestats 的 SyncQueued 列就是 76 行这个值，与 SyncStart 的差是「post 到 RT 真正开始同步」的排队延迟",
+    "logcat 出现 Cannot drawFrame with no CanvasContext（73）说明 setContext 已被置空（RenderProxy 销毁）却还有人 draw"
+  ],
+  "next": "第 5 步「postAndWait：UI 线程在这里停住」：任务入队与入睡被同一把锁绑成原子动作。"
+}

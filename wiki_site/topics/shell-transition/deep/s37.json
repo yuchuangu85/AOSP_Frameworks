@@ -1,0 +1,37 @@
+{
+  "step": "s37",
+  "title": "cleanup 与失败兜底",
+  "tldr": "cleanupT 专门摘掉 snapshot 与 root leash；player 缺失或抛异常时，WMS 自己 apply 两份事务再走 finish。",
+  "why": "不跑 cleanup：转场用的 root leash 一直挂在窗口层上，snapshot 图层也不释放。用户侧表现为转场之后最上层盖着一层不动的截图（旋转和从 Recents 回桌面最常见：画面停住、点击没反应，要等下一次转场才恢复），同时 SF 的图层内存只增不减。不跑兜底更严重：Shell 崩溃或抛 RemoteException 之后没人调 finishTransition，WMS 的 mPlayingTransitions 永远留着它，后续转场全部排队——整机「动画卡死」，只能重启 SystemUI。",
+  "concepts": [
+    { "term": "cleanupT", "text": "只做「摘掉转场私有图层」的事务：snapshot reparent 到 null、root leash reparent 到 null，顺带清 display 的 fixed transform hint。" },
+    { "term": "cleanUpOnFailure", "text": "player 不可用时的兜底路径：apply startT 与补过父链的 finishT，再直接走 controller.finishTransition。" }
+  ],
+  "walk": [
+    { "call": "mCleanupTransaction = mWmService.mTransactionFactory.get()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2250", "what": "在 onTransactionReady 里和 finishT 一起造好，随 ready 一起交给 Shell。" },
+    { "call": "buildCleanupTransaction(mCleanupTransaction, info)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2251", "what": "只依据 info（不看窗口树）生成：遍历 changes 与 roots 决定摘哪些层。" },
+    { "call": "t.reparent(c.getSnapshot(), null)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1381", "what": "把每个 change 的 snapshot 摘出父链；旋转和关闭时的「截图层」就靠这一笔消失。" },
+    { "call": "t.reparent(leash, null)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1394", "what": "把 root leash 也从窗口层摘下，整棵动画树彻底断开。" },
+    { "call": "mCleanupTransaction.apply()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1536", "what": "在 finishTransition 里 apply 一次；正常路径上这是唯一 apply 点。" },
+    { "call": "cleanUpInternal()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1830", "what": "收尾末尾再兜一次：内部（2742）对 mCleanupTransaction 再 apply，防止某条分支提前 return 漏掉。" },
+    { "call": "postCleanupOnFailure()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2268", "what": "player 抛 RemoteException 时进兜底；它 post 到 mH 并重新拿 mGlobalLock，不在当前调用栈执行。" },
+    { "call": "cleanUpOnFailure()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2707", "what": "先 apply startT、再 apply 补过父链的 finishT，最后照样走完整的 controller.finishTransition。" }
+  ],
+  "state": [
+    { "field": "Transition.mCleanupTransaction", "before": "null", "after": "持有 reparent(snapshot,null)+reparent(rootLeash,null) 的事务，apply 后置 null", "note": "两次 apply 靠置 null 互斥" },
+    { "field": "snapshot 图层", "before": "挂在窗口层，可能可见", "after": "reparent 到 null，不再参与合成", "note": "native 释放另在 cleanUpInternal 里做" },
+    { "field": "失败路径上的 mState", "before": "PLAYING（onTransactionReady 已推到）", "after": "照常走完 finishTransition → FINISHED", "note": "mState < PLAYING 时 cleanUpOnFailure 直接 return（2709）" }
+  ],
+  "threads": "正常路径在 WMS 线程执行（Shell 的同步 binder 里，持 mGlobalLock）；兜底路径 post 到 mH 后在 mGlobalLock 内执行，因此日志会晚一拍。",
+  "pitfalls": [
+    "buildCleanupTransaction 是 static 且只看 info：它不恢复参与者父链，那是 buildFinishTransaction 的职责；两者漏一个就会出现残留层或错位。",
+    "cleanup 会 apply 两次（1536 与 2742），靠 mCleanupTransaction=null 互斥；任何重新赋值都会导致重复 apply。",
+    "cleanUpOnFailure 在 mState < PLAYING 时直接返回（2709）：它只覆盖 onTransactionReady 之后的失败，别指望它兜住 collect 阶段的中止。",
+    "postCleanupOnFailure 是 post 出去的，异常日志和随后的 finish 日志可能来自不同调用栈，不要按行号顺序读。"
+  ],
+  "debug": [
+    "adb shell dumpsys SurfaceFlinger --list | grep -E \"Transition Root|snapshot\"：转场结束后应无残留，有就是 cleanup 没跑。",
+    "adb shell protoLog enable system_server WM_DEBUG_WINDOW_TRANSITIONS，看是否出现「cleanUpOnFailure for #」，出现说明 player 侧出了问题。"
+  ],
+  "next": "兜底与 cleanup 都就位了，最后看 WMS 侧的正式收尾 → 第 35 步「Transition.finishTransition：关闭事务、apply cleanup」。"
+}

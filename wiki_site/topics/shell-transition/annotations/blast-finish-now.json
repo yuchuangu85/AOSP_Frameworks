@@ -1,0 +1,462 @@
+{
+  "id": "blast-finish-now",
+  "title": "BLASTSyncEngine.SyncSet.finishNow",
+  "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+  "sig": "private void finishNow() {",
+  "span": [
+    219,
+    317
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void finishNow() {",
+      "kind": "state",
+      "text": "同步组强制收尾入口：持 mGlobalLock 合并事务、通知 listener 并清理活跃集，不走 cancel 路径。"
+    },
+    {
+      "at": 2,
+      "quote": "if (mTraceName != null) {",
+      "kind": "branch",
+      "text": "仅当 startSync 开了 mTraceName 才配对收尾；为空则跳过，避免 Trace 切片不配对。"
+    },
+    {
+      "at": 3,
+      "quote": "mListener.onReadyTraceEnd(mTraceName, mSyncId);",
+      "kind": "trace",
+      "text": "结束 onReadyTrace 切片，参数 mTraceName/mSyncId 必须与 startSync 打开时严格配对。"
+    },
+    {
+      "at": 5,
+      "quote": "ProtoLog.v(WM_DEBUG_SYNC_ENGINE, \"SyncGroup %d: Finished!\", mSyncId);",
+      "kind": "trace",
+      "text": "WM_DEBUG_SYNC_ENGINE 打开时打印 SyncGroup mSyncId 已完成，仅调试日志，不影响提交逻辑。"
+    },
+    {
+      "at": 6,
+      "quote": "SurfaceControl.Transaction merged = mWm.mTransactionFactory.get();",
+      "kind": "state",
+      "text": "从 mWm.mTransactionFactory 取合并事务，作为本 sync set 唯一 surface 变更载体；返回空会 NPE。"
+    },
+    {
+      "at": 7,
+      "quote": "if (mOrphanTransaction != null) {",
+      "kind": "branch",
+      "text": "孤儿子事务非空说明 sync 期间有窗口被移除或未挂载，必须并入主事务，否则其 surface 操作丢失。"
+    },
+    {
+      "at": 8,
+      "quote": "merged.merge(mOrphanTransaction);",
+      "kind": "state",
+      "text": "把孤儿事务里所有 surface 操作按序并入 merged，与主 sync 同批提交，避免窗口残留黑块。"
+    },
+    {
+      "at": 11,
+      "quote": "final long mergedTxId = merged.getId();",
+      "kind": "data",
+      "text": "事务唯一 id，只用于超时日志定位是哪个 tx 没被 SF/organizer 回调，不参与任何逻辑判断。"
+    },
+    {
+      "at": 12,
+      "quote": "class CommitCallback implements Runnable {",
+      "kind": "note",
+      "text": "定义提交回调：既作 committed listener 正常路径，也作 postDelayed 超时兜底，两路共用 ran 去重。"
+    },
+    {
+      "at": 13,
+      "quote": "final ArraySet<WindowContainer> mWcAwaitingCommit = new ArraySet<>();",
+      "kind": "data",
+      "text": "收集各根成员中仍需等本事务提交的窗口容器，提交后逐个回调；为空说明无窗口需唤醒。"
+    },
+    {
+      "at": 15,
+      "quote": "// Can run a second time if the action completes after the timeout.",
+      "kind": "note",
+      "text": "注释强调回调可能执行两次：超时先跑、真正 commit 后又跑，故下面 ran 必须在锁内防重入。"
+    },
+    {
+      "at": 16,
+      "quote": "boolean ran = false;",
+      "kind": "state",
+      "text": "一次性标记，首次 onCommitted 置 true；重复回调直接 return，避免重复通知窗口和重复 apply。"
+    },
+    {
+      "at": 17,
+      "quote": "public void onCommitted(SurfaceControl.Transaction t) {",
+      "kind": "note",
+      "text": "提交完成入口，t 可能是真实 merged 事务，也可能是超时路径新建空事务，两路共用同一收尾逻辑。"
+    },
+    {
+      "at": 18,
+      "quote": "mListener.onTransactionCommitted();",
+      "kind": "state",
+      "text": "通知 TransactionReadyListener 事务已提交，transition 据此推进播放；抛异常会跳过之后 apply。"
+    },
+    {
+      "at": 19,
+      "quote": "if (mTraceName != null) {",
+      "kind": "branch",
+      "text": "只有 tracing 打开时才插 instant 事件，条件不满足则跳过，不影响提交语义与状态推进。"
+    },
+    {
+      "at": 20,
+      "quote": "Trace.instant(TRACE_TAG_WINDOW_MANAGER,",
+      "kind": "trace",
+      "text": "在 WM trace tag 下打 instant 标记，用于对齐 sync 提交时刻与 SurfaceFlinger 的 commit。"
+    },
+    {
+      "at": 21,
+      "quote": "mSyncName + \"#\" + mSyncId + \"-committed\");",
+      "kind": "trace",
+      "text": "事件名由 mSyncName 与 mSyncId 拼接，保证多个并发 SyncSet 在同一条 trace 里可区分。"
+    },
+    {
+      "at": 23,
+      "quote": "// Don't wait to hold the global lock to remove the timeout runnable",
+      "kind": "note",
+      "text": "注释说明 removeCallbacks 故意放在 global lock 外，不为一个 handler 操作去争用高竞争的 WM 锁。"
+    },
+    {
+      "at": 24,
+      "quote": "mHandler.removeCallbacks(this);",
+      "kind": "thread",
+      "text": "先在回调线程撤掉超时 runnable，正常提交后不再报 ANR 日志；只碰自身 handler，故可锁外执行。"
+    },
+    {
+      "at": 25,
+      "quote": "synchronized (mWm.mGlobalLock) {",
+      "kind": "lock",
+      "text": "进入 WM 全局锁再改 WMS 状态：onSyncTransactionCommitted 会碰窗口可见性，无锁并发破坏状态机。"
+    },
+    {
+      "at": 26,
+      "quote": "if (ran) {",
+      "kind": "branch",
+      "text": "超时回调与正常回调竞争时只有先到者进入临界区，后到者在此退出，保证提交只生效一次。"
+    },
+    {
+      "at": 27,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "重复回调直接返回，事务不再 apply，也不二次通知 WindowContainer，避免重复 apply 抛异常。"
+    },
+    {
+      "at": 29,
+      "quote": "ran = true;",
+      "kind": "state",
+      "text": "在锁内置位，标记本 sync set 的提交副作用已发生；此后超时 runnable 都会在上面的 if(ran) 被挡掉。"
+    },
+    {
+      "at": 30,
+      "quote": "for (int i = mWcAwaitingCommit.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历等待提交的窗口容器，倒序可容忍回调中集合被改动而不越界。"
+    },
+    {
+      "at": 31,
+      "quote": "mWcAwaitingCommit.valueAt(i).onSyncTransactionCommitted(t);",
+      "kind": "state",
+      "text": "把事务交给每个窗口，让其清理 syncing 状态并补做被延迟的 surface 操作；漏调会让窗口卡在等待态。"
+    },
+    {
+      "at": 33,
+      "quote": "t.apply();",
+      "kind": "ipc",
+      "text": "跨进程把事务提交给 SurfaceFlinger；超时路径 t 是新建空事务，apply 无实际变更，只为走完流程。"
+    },
+    {
+      "at": 34,
+      "quote": "mWcAwaitingCommit.clear();",
+      "kind": "state",
+      "text": "清空集合，释放对 WindowContainer 的强引用，防止 SyncSet 结束后仍持有窗口对象泄漏。"
+    },
+    {
+      "at": 38,
+      "quote": "// Called in timeout",
+      "kind": "note",
+      "text": "标注 run() 是 handler 超时兜底路径：BLAST_TIMEOUT_DURATION 内没等到 committed 回调时执行。"
+    },
+    {
+      "at": 39,
+      "quote": "@Override",
+      "kind": "note",
+      "text": "实现 Runnable.run，作为 postDelayed 的延迟任务体，由 mHandler 线程执行后再切进 global lock。"
+    },
+    {
+      "at": 40,
+      "quote": "public void run() {",
+      "kind": "thread",
+      "text": "超时线程入口：先打 trace 与 Slog.e 留证，再抢 global lock 走与正常路径相同的 onCommitted。"
+    },
+    {
+      "at": 41,
+      "quote": "// Sometimes we get a trace, sometimes we get a bugreport without",
+      "kind": "note",
+      "text": "注释解释超时也要留痕：有些 ANR 只有 bugreport 没有 trace，两种情况都要能看到卡在提交阶段。"
+    },
+    {
+      "at": 42,
+      "quote": "// a trace. Since these kind of ANRs can trigger such an issue,",
+      "kind": "note",
+      "text": "继续说明这类 ANR 由事务提交回调丢失触发，属需要重点定位的 WMS 与 SF 交互故障。"
+    },
+    {
+      "at": 43,
+      "quote": "// try and ensure we will have some visibility in both cases.",
+      "kind": "note",
+      "text": "目标是两种取证方式下都有可见证据，因此下面同时用 traceBegin 与 Slog.e 记录。"
+    },
+    {
+      "at": 44,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"onTransactionCommitTimeout",
+      "kind": "trace",
+      "text": "打开 onTransactionCommitTimeout 切片，让超时在 perfetto 中可见，便于与 SF 时间线对齐。"
+    },
+    {
+      "at": 45,
+      "quote": "Slog.e(TAG, \"WM sent Transaction (#\" + mSyncId + \", \" + mSyncName + \",",
+      "kind": "note",
+      "text": "e 级日志记录 mSyncId/mSyncName/mergedTxId：事务已发出却无回调，属严重异常必须留证。"
+    },
+    {
+      "at": 46,
+      "quote": "+ mergedTxId + \") to organizer, but never received commit callback.\"",
+      "kind": "note",
+      "text": "拼接 mergedTxId，与上面取到的 id 对应，可据此在 SurfaceFlinger 日志中搜同一事务。"
+    },
+    {
+      "at": 47,
+      "quote": "+ \" Application ANR likely to follow.\");",
+      "kind": "note",
+      "text": "明确预告 Application ANR likely to follow：应用侧多半已卡死，提交丢失后必然走向 ANR。"
+    },
+    {
+      "at": 48,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "闭合上面的超时切片；即使 Slog 抛异常也要保持配对，否则 systrace 切片栈错乱。"
+    },
+    {
+      "at": 49,
+      "quote": "synchronized (mWm.mGlobalLock) {",
+      "kind": "lock",
+      "text": "超时回调由 handler 线程执行，必须先取 global lock 才能安全读 mListener 与窗口集合。"
+    },
+    {
+      "at": 50,
+      "quote": "mListener.onTransactionCommitTimeout();",
+      "kind": "state",
+      "text": "显式通知 listener 提交超时，侧可打点或降级；此处已在锁内，禁止再做跨进程等待。"
+    },
+    {
+      "at": 51,
+      "quote": "onCommitted(merged.mNativeObject != 0",
+      "kind": "branch",
+      "text": "native 对象非 0 说明 merged 仍有效可复用；为 0 说明已销毁，须换新事务否则 apply 会崩。"
+    },
+    {
+      "at": 52,
+      "quote": "? merged : mWm.mTransactionFactory.get());",
+      "kind": "data",
+      "text": "三目另一支现场取新事务兜底，保证 onCommitted 内的 apply 永远拿到合法对象。"
+    },
+    {
+      "at": 56,
+      "quote": "CommitCallback callback = new CommitCallback();",
+      "kind": "state",
+      "text": "实例化回调，同一对象既注册为 committed listener 又 postDelayed，ran 因此跨两路生效。"
+    },
+    {
+      "at": 57,
+      "quote": "for (int i = mRootMembers.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历根成员做收尾，倒序避免 finishSync 过程中集合变化导致索引错乱。"
+    },
+    {
+      "at": 58,
+      "quote": "final WindowContainer<?> wc = mRootMembers.valueAt(i);",
+      "kind": "data",
+      "text": "取出单个根窗口容器，后续 finishSync 与等待提交都针对它。"
+    },
+    {
+      "at": 59,
+      "quote": "wc.finishSync(merged, this, false /* cancel */);",
+      "kind": "state",
+      "text": "非 cancel 收尾：把该容器在 sync 期间积压的 surface 操作写入 merged，表示正常提交。"
+    },
+    {
+      "at": 60,
+      "quote": "wc.waitForSyncTransactionCommit(callback.mWcAwaitingCommit);",
+      "kind": "state",
+      "text": "登记仍需等事务提交的容器，提交后回调其 onSyncTransactionCommitted；漏登记窗口会永久等待。"
+    },
+    {
+      "at": 63,
+      "quote": "merged.addTransactionCommittedListener(Runnable::run,",
+      "kind": "ipc",
+      "text": "为 merged 注册提交回调，Runnable::run 表示在回调线程直接执行；这是 SF 已收下事务的信号。"
+    },
+    {
+      "at": 64,
+      "quote": "() -> callback.onCommitted(new SurfaceControl.Transaction()));",
+      "kind": "state",
+      "text": "lambda 内 new 空事务传入，因为真实 merged 此刻已提交，只需据此触发一次收尾动作。"
+    },
+    {
+      "at": 65,
+      "quote": "mHandler.postDelayed(callback, BLAST_TIMEOUT_DURATION);",
+      "kind": "thread",
+      "text": "BLAST_TIMEOUT_DURATION 后仍未提交则触发超时兜底，防止 SF 丢回调导致窗口一直卡住。"
+    },
+    {
+      "at": 67,
+      "quote": "if (mWm.mAnimator.mPendingState == WindowAnimator.PENDING_STATE_NEED_A",
+      "kind": "branch",
+      "text": "animator 存在待 apply 事务时必须先应用，保证动画帧排在 sync 事务之前。"
+    },
+    {
+      "at": 68,
+      "quote": "// Applies pending transaction before onTransactionReady to ensure the",
+      "kind": "note",
+      "text": "注释点明顺序目的：先应用 pending 事务，否则 sync 事务先落地会与动画帧序错乱。"
+    },
+    {
+      "at": 69,
+      "quote": "// sync transaction. This is unlikely to happen unless animator thread",
+      "kind": "note",
+      "text": "注释补充这是罕见路径，只有 animator 线程偏慢时才命中，不影响正常时序。"
+    },
+    {
+      "at": 70,
+      "quote": "mWm.mAnimator.applyPendingTransaction();",
+      "kind": "state",
+      "text": "真正应用 animator 的 pending 事务，让动画帧先于 onTransactionReady 生效；跳过会位置错乱。"
+    },
+    {
+      "at": 72,
+      "quote": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, \"onTransactionReady\");",
+      "kind": "trace",
+      "text": "开始 onTransactionReady 切片，把向 listener 交付合并事务的耗时纳入 trace 统计。"
+    },
+    {
+      "at": 73,
+      "quote": "mListener.onTransactionReady(mSyncId, merged);",
+      "kind": "state",
+      "text": "把合并事务交给 listener，是最关键的跨模块交接；抛异常则清理与启动下一个全被跳过。"
+    },
+    {
+      "at": 74,
+      "quote": "Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);",
+      "kind": "trace",
+      "text": "闭合 onTransactionReady 切片，必须与上面的 traceBegin 成对，否则 systrace 切片嵌套错乱。"
+    },
+    {
+      "at": 75,
+      "quote": "mActiveSyncs.remove(this);",
+      "kind": "state",
+      "text": "把自己从活跃集移除，active 计数归零后才允许启动下一个 pending sync set。"
+    },
+    {
+      "at": 76,
+      "quote": "mHandler.removeCallbacks(mOnTimeout);",
+      "kind": "thread",
+      "text": "撤销整体 sync 超时任务 mOnTimeout，已正常 finish 就不该再走 onTimeout 的 cancel 路径。"
+    },
+    {
+      "at": 78,
+      "quote": "// Immediately start the next pending sync-transaction if there is one",
+      "kind": "note",
+      "text": "注释说明下面要立刻启动排队中的 pending sync set，避免事务空窗。"
+    },
+    {
+      "at": 79,
+      "quote": "if (mActiveSyncs.size() == 0 && !mPendingSyncSets.isEmpty()) {",
+      "kind": "branch",
+      "text": "仅当没有其它活跃 sync 且队列非空才启动下一个，否则并发 sync 会打乱事务顺序。"
+    },
+    {
+      "at": 80,
+      "quote": "ProtoLog.v(WM_DEBUG_SYNC_ENGINE, \"PendingStartTransaction found\");",
+      "kind": "trace",
+      "text": "调试日志输出 PendingStartTransaction found，确认排队任务确实被取出。"
+    },
+    {
+      "at": 81,
+      "quote": "final PendingSyncSet pt = mPendingSyncSets.remove(0);",
+      "kind": "state",
+      "text": "FIFO 取出最早排队的 pending sync set，顺序保证事务按提交先后执行。"
+    },
+    {
+      "at": 82,
+      "quote": "pt.mStartSync.run();",
+      "kind": "state",
+      "text": "同步执行 startSync 建立新 sync 组；不在此刻启动会留下队列却无活跃 sync 的空窗。"
+    },
+    {
+      "at": 83,
+      "quote": "if (mActiveSyncs.size() == 0) {",
+      "kind": "branch",
+      "text": "校验新 pending 确实创建了 sync，否则说明 startSync 实现破坏了契约。"
+    },
+    {
+      "at": 84,
+      "quote": "throw new IllegalStateException(\"Pending Sync Set didn't start a sync.",
+      "kind": "state",
+      "text": "抛异常立即暴露契约破坏：pending 启动失败会让后续事务永远排队，比静默空转更易定位。"
+    },
+    {
+      "at": 86,
+      "quote": "// Post this so that the now-playing transition setup isn't interrupte",
+      "kind": "note",
+      "text": "注释解释为何用 post 而非直接调用：避免打断正在进行的 now-playing transition setup。"
+    },
+    {
+      "at": 87,
+      "quote": "mHandler.post(() -> {",
+      "kind": "thread",
+      "text": "把 applySync 异步投递到 handler，避免在当前调用栈里打断正在进行的 transition setup。"
+    },
+    {
+      "at": 88,
+      "quote": "synchronized (mWm.mGlobalLock) {",
+      "kind": "lock",
+      "text": "在 handler 线程重新取 global lock，才能安全执行 applySync 中的窗口操作。"
+    },
+    {
+      "at": 89,
+      "quote": "pt.mApplySync.run();",
+      "kind": "state",
+      "text": "执行排队期间积压的 apply 动作，让新 sync 组建立在已应用状态上；异常会打到 handler 线程。"
+    },
+    {
+      "at": 93,
+      "quote": "// Notify idle listeners",
+      "kind": "note",
+      "text": "本轮 sync 结束后通知 idle 监听者，用于 transition 播放完毕或测试等待空闲。"
+    },
+    {
+      "at": 94,
+      "quote": "for (int i = mOnIdleListeners.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历 idle 监听器，倒序允许回调中移除自身而不漏项。"
+    },
+    {
+      "at": 95,
+      "quote": "// If an idle listener adds a sync, though, then stop notifying.",
+      "kind": "note",
+      "text": "注释给出终止条件：某个监听器又发起新 sync 则立即停止后续通知，避免边通知边重启。"
+    },
+    {
+      "at": 96,
+      "quote": "if (mActiveSyncs.size() > 0) break;",
+      "kind": "branch",
+      "text": "每轮检查 activeSyncs，一旦非空说明有监听器重启了 sync，立即 break 停止通知剩余 listener。"
+    },
+    {
+      "at": 97,
+      "quote": "mOnIdleListeners.get(i).run();",
+      "kind": "state",
+      "text": "执行 idle 回调，通常用于恢复被挂起的动画或通知测试条件达成；异常会打断剩余监听器。"
+    }
+  ]
+}

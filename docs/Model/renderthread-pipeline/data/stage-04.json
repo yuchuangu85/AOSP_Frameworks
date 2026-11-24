@@ -1,0 +1,179 @@
+{
+  "id": "stage-04",
+  "num": 4,
+  "title": "第 4 拍：prepareTree 遍历与脏区累积",
+  "subtitle": "UI 线程被阻塞的那段时间里，RenderThread 首次下树：同步属性、推进动画，把每处变化折算成 damage",
+  "lane": "RT",
+  "durationHint": "量级：亚毫秒~数毫秒；随 RenderNode 数量与动画数量线性增长，源码未给固定阈值",
+  "summary": "DrawFrameTask 在 RenderThread 上跑 syncFrameState() 时，第一件事就是调用 CanvasContext::prepareTree()（base/libs/hwui/renderthread/CanvasContext.cpp:506）。此时 UI 线程还阻塞在 DrawFrameTask::postAndWait() 的 mSignal.wait() 上，所以这是一次“两边都停住”的树同步：RT 替 UI 把属性、DisplayList 与动画一次性对齐。prepareTree 先定下本帧的 FrameInfo（上一帧被跳过就沿用旧结构并记入 mSkippedFrameInfo，否则向 JankTracker::startFrame() 取新槽），把 damage 累加器、ColorArea、layer 更新队列与新的 damageGenerationId 装进 TreeInfo，再对 mRenderNodes 逐个调用 RenderNode::prepareTree()：只有等于 target 的节点走 MODE_FULL（提交 staging 属性与 DisplayList、跑动画），其余走 MODE_RT_ONLY（只跑动画），脏矩形经 push/pop 栈折算成帧级 damage。收尾后按 hasOutputTarget、本 vsync 是否已画、有无可画内容、reserveNext 是否成功写入 skippedFrameReason，决定 draw() 能否继续。",
+  "callchain": [
+    "DrawFrameTask::run()",
+    "DrawFrameTask::syncFrameState()",
+    "CanvasContext::prepareTree()",
+    "JankTracker::startFrame()",
+    "AnimationContext::startFrame()",
+    "RenderNode::prepareTree()",
+    "RenderNode::prepareTreeImpl()",
+    "AnimatorManager::animate()",
+    "RenderNode::pushLayerUpdate()",
+    "AnimationContext::runRemainingAnimations()",
+    "CanvasContext::freePrefetchedLayers()",
+    "ReliableSurface::reserveNext()"
+  ],
+  "sections": [
+    {
+      "heading": "谁在跑这一拍：被 UI 线程等着的 RenderThread",
+      "html": "<p>触发者是 <code>DrawFrameTask::run()</code>（base/libs/hwui/renderthread/DrawFrameTask.cpp:89）：UI 线程先调 <code>DrawFrameTask::drawFrame()</code> → <code>postAndWait()</code>，把 <code>run()</code> 投进 RenderThread 的消息队列，然后自己阻塞在 <code>mSignal.wait(mLock)</code>（DrawFrameTask.cpp:82-87）。<code>run()</code> 里构造 <code>TreeInfo info(TreeInfo::MODE_FULL, *mContext)</code>，调用 <code>syncFrameState(info)</code>，其中 <code>mContext->prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode)</code>（DrawFrameTask.cpp:191）就是本阶段。</p><p>三个容易搞错的点：<strong>第一</strong>，真正的遍历在 RenderThread 的线程上下文执行，不在 UI 线程；<strong>第二</strong>，MODE_FULL 的合法性以“UI 线程和 RT 线程都阻塞在这次 prepare 上”为前提，TreeInfo.h:68-70 的注释原文是 <em>“The full monty - sync, push, run animators, etc... Used by DrawFrameTask. May only be used if both the UI thread and RT thread are blocked on the prepare”</em>；<strong>第三</strong>，prepareTree 返回后 <code>canDrawThisFrame = !info.out.skippedFrameReason.has_value()</code>（DrawFrameTask.cpp:107）才是后续是否进入 draw() 的总开关，syncFrameState 的返回值 <code>info.prepareTextures</code> 只表示纹理缓存预算是否够用（DrawFrameTask.cpp:216）。</p>"
+    },
+    {
+      "heading": "mRenderNodes 与两种 TraversalMode",
+      "html": "<p><code>mRenderNodes</code> 是 CanvasContext 上的 <code>std::vector&lt;sp&lt;RenderNode&gt;&gt;</code>（base/libs/hwui/renderthread/CanvasContext.h:384）。窗口场景下索引 0 是 backdrop（背景 + caption），索引 1 是 content，2 及以后是 overlay，这个布局在 SkiaPipeline.cpp:402-414 的注释里有完整说明。prepareTree 对每个节点单独定 mode：</p><ul><li><strong>MODE_FULL</strong>：只有 <code>node.get() == target</code> 的那个根节点（CanvasContext.cpp:564）。它才会执行 <code>pushStagingPropertiesChanges()</code>（RenderNode.cpp:237-239）与 <code>pushStagingDisplayListChanges()</code>（RenderNode.cpp:267-269），也就是把 UI 线程录制的 staging DisplayList 和 RenderProperties staging 值真正提交为当前值。</li><li><strong>MODE_RT_ONLY</strong>：其余节点（非 client 的 filler 节点）。只执行 <code>mAnimatorManager.animate(info)</code>（RenderNode.cpp:249-251），不 push 任何 staging 内容。</li></ul><p>所以“RT 动画帧”里看到的是<strong>旧属性 + 新动画值</strong>：动画能推进，但 UI 线程新的录制内容不会被采纳。这也解释了为什么同一套代码能同时服务“UI 帧”和“只有动画在动的帧”。</p>"
+    },
+    {
+      "heading": "damage 从哪来：DamageAccumulator 的 push/pop 栈",
+      "html": "<p>TreeInfo 通过三行赋值接入脏区计算：<code>info.damageAccumulator = &amp;mDamageAccumulator</code>、<code>info.colorArea</code>、<code>info.layerUpdateQueue</code>，外加 <code>info.damageGenerationId = mDamageId++</code>（CanvasContext.cpp:548-551）。<code>RenderNode::prepareTree()</code> 的第一行就是 <code>LOG_ALWAYS_FATAL_IF(!info.damageAccumulator, \"DamageAccumulator missing\")</code>（RenderNode.cpp:139），说明这个指针在真实路径上不允许为空。</p><p>遍历时的规则：<code>prepareTreeImpl</code> 一进来 <code>info.damageAccumulator-&gt;pushTransform(this)</code>（RenderNode.cpp:235），退出时 <code>popTransform()</code>（RenderNode.cpp:338），脏矩形在 pop 时被当前节点的变换矩阵映射后并入父级。<code>damageSelf()</code> 是脏的直接来源：<code>getClipDamageToBounds()</code> 为真时只脏 <code>0,0,width,height</code>，否则脏 <code>DIRTY_MIN..DIRTY_MAX</code>（RenderNode.cpp:158-164），并顺带把 <code>info.out.solelyTextureViewUpdates</code> 置 false（非 TextureView 时）。</p><p>特殊情况：同一帧里同一个节点被访问两次（被多个父节点引用）时，无法再算最小脏区，只能直接往父节点推全屏脏区（RenderNode.cpp:229-234）。最终 <code>draw()</code> 里 <code>mDamageAccumulator.finish(&amp;dirty)</code> 取栈顶 <code>pendingDirty</code> 并 <code>roundOut</code>，同时把 <code>pendingDirty</code> 清空（DamageAccumulator.cpp:313-320）。</p>"
+    },
+    {
+      "heading": "属性同步、动画推进与动画的尾巴",
+      "html": "<p>RenderProperties 是 staging/committed 双份结构。<code>pushStagingPropertiesChanges()</code> 只在 <code>mDirtyPropertyFields</code> 非 0 时动作：先 <code>mAnimatorManager.pushStaging()</code>，注释解释了顺序原因——<code>setupStartValueIfNecessary()</code> 必须在 properties 被 staging 覆盖前调用，否则某些 animator 拿不到起始值（RenderNode.cpp:352-362）；然后 <code>damageSelf(info)</code>、<code>popTransform()</code>、<code>syncProperties()</code>。</p><p>动画由 <code>AnimatorManager::animate(info)</code> 驱动，返回 <code>animatorDirtyMask</code>（RenderNode.cpp:250）。它的实现是先 <code>mParent.damageSelf(info)</code> 再 popTransform，跑完 <code>animateCommon</code> 后重新 pushTransform 并再次 damageSelf（AnimatorManager.cpp:137-152），所以动画既改属性又产生脏区，返回的 mask 里带 DISPLAY_LIST 等位。<code>AnimationContext::startFrame(mode)</code>（CanvasContext.cpp:554 → AnimationContext.cpp:55-65）把 <code>mNextFrameAnimations</code> 整条链表搬到 <code>mCurrentFrameAnimations</code>，并把 <code>mFrameTimeMs</code> 设为 <code>ns2ms(mClock.latestVsync())</code>——<strong>动画时间基准是 vsync 时钟，不是 systemTime</strong>。</p><p>遍历完 <code>runRemainingAnimations(info)</code>：把没有被树遍历覆盖到的动画节点（例如不在 target 子树里的）再跑一遍，MODE_FULL 下还会 <code>animators.pushStaging()</code>，并用 <code>LOG_ALWAYS_FATAL_IF</code> 断言 animate 一定把节点从当前帧链表摘掉（AnimationContext.cpp:67-78）。</p>"
+    },
+    {
+      "heading": "layer 与 texture 预取",
+      "html": "<p>图层路径分两步。<code>prepareLayer(info, animatorDirtyMask)</code> 只在 <code>effectiveLayerType() == LayerType::RenderLayer</code> 时先 pop 再 push，把“到父节点为止的 damage”和“需要更新 layer 的 damage”切开（RenderNode.cpp:171-184）。<code>pushLayerUpdate(info)</code> 则要求 layerType 是 RenderLayer、<code>isRenderable()</code>、宽高大于 0、<code>fitsOnLayer()</code> 全部成立，否则顺手销毁已有 layer；成立时 <code>info.canvasContext.createOrUpdateLayer(...)</code>，再用 <code>info.layerUpdateQueue-&gt;enqueueLayerWithDamage(this, dirty)</code>（RenderNode.cpp:186-218）入队——真正的 GPU 绘制推迟到 Skia 侧的 <code>renderLayersImpl</code>。<code>markLayerInUse(this)</code>（RenderNode.cpp:217）告诉 CanvasContext 这个 layer 本帧还在树上，不要当垃圾回收掉。</p><p><code>freePrefetchedLayers()</code>（CanvasContext.cpp:1147-1157）把 <code>mPrefetchedLayers</code> 里剩下的 layer 销毁并打印 <em>“Incorrectly called buildLayer on View: %s, destroying layer...”</em>——出现这条日志说明 <code>buildLayer()</code> 预取的 layer 没被本帧用上。texture 预取受 <code>info.prepareTextures</code> 控制（TreeInfo.h:83），预算耗尽时它被置 false，syncFrameState 把该值返回给上层做降级决策。</p>"
+    },
+    {
+      "heading": "五种跳过理由，以及 reserveNext 的“预占”语义",
+      "html": "<p>prepareTree 尾部按固定顺序判定本帧能否继续：</p><ol><li><code>hasOutputTarget()</code> 为假 → <code>NoOutputTarget</code>（CanvasContext.cpp:576-580）。判断依据是 <code>mNativeSurface</code> 或 <code>mHardwareBuffer</code> 是否存在（CanvasContext.h:162）。</li><li>本 vsync 已经画过：<code>std::abs(lastSwap.vsyncTime - latestVsync) &lt; 2ms</code> → <code>AlreadyDrawn</code>（CanvasContext.cpp:582-597），注释说明 2ms 是给“vsync 被估算”留的容差。</li><li><code>mRenderNodes.size() &gt; 2</code> 且 <code>mRenderNodes[1]</code>（content）不可渲染 → <code>NothingToDraw</code>（CanvasContext.cpp:601-603）。</li><li>以上都没有才 <code>mNativeSurface-&gt;reserveNext()</code>（CanvasContext.cpp:606）。ReliableSurface 会提前 dequeue 一个 buffer 占住（ReliableSurface.cpp:74-111），失败了返回 err 并写成 <code>NoBuffer</code>；若错误不是 <code>TIMED_OUT</code>，认为 surface 永久性损坏，直接 <code>setSurface(nullptr)</code> 并 return（CanvasContext.cpp:607-616）。</li><li><code>DrawingOff</code> 与 <code>ContextIsStopped</code> 不在 prepareTree 产生：前者在 draw() 的 skip lambda 里判 <code>Properties::isDrawingEnabled() &amp;&amp; mDrawingEnabled</code>，后者在 syncFrameState 里判 <code>makeCurrent()</code> 失败（DrawFrameTask.cpp:196-205）。</li></ol><p>命中 skip 后仍有收尾动作：<code>info.out.hasAnimations || skippedFrameReason</code> 为真时会向 RenderThread 请求下一帧回调（<code>mRenderThread.postFrameCallback(this)</code>，CanvasContext.cpp:621-632），RT 动画或 AnimatedImage 的延迟重绘也在这里排期（CanvasContext.cpp:634-649）。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "CanvasContext::prepareTree",
+      "lines": "506-546",
+      "code": "void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued,\n                                RenderNode* target) {\n    mRenderThread.removeFrameCallback(this);\n\n    // Make sure we have a valid device info\n    if (!DeviceInfo::get()->hasMaxTextureSize()) {\n        (void)mRenderThread.requireGrContext();\n    }\n\n    // If the previous frame was dropped we don't need to hold onto it, so\n    // just keep using the previous frame's structure instead\n    const auto reason = wasSkipped(mCurrentFrameInfo);\n    if (reason.has_value()) {\n        // Use the oldest skipped frame in case we skip more than a single frame\n        if (!mSkippedFrameInfo) {\n            switch (*reason) {\n                case SkippedFrameReason::AlreadyDrawn:\n                case SkippedFrameReason::NoBuffer:\n                case SkippedFrameReason::NoOutputTarget:\n                    mSkippedFrameInfo.emplace();\n                    mSkippedFrameInfo->vsyncId =\n                            mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);\n                    mSkippedFrameInfo->startTime =\n                            mCurrentFrameInfo->get(FrameInfoIndex::FrameStartTime);\n                    break;\n                case SkippedFrameReason::DrawingOff:\n                case SkippedFrameReason::ContextIsStopped:\n                case SkippedFrameReason::NothingToDraw:\n                    // Do not report those as skipped frames as there was no frame expected to be\n                    // drawn\n                    break;\n            }\n        }\n    } else {\n        mCurrentFrameInfo = mJankTracker.startFrame();\n        mSkippedFrameInfo.reset();\n    }\n\n    mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);\n    mCurrentFrameInfo->set(FrameInfoIndex::SyncQueued) = syncQueued;\n    mCurrentFrameInfo->markSyncStart();",
+      "note": "prepareTree 的开头：先摘掉上一帧的 frame callback，再用 wasSkipped(mCurrentFrameInfo) 决定是复用旧 FrameInfo（并按 reason 决定是否记入 mSkippedFrameInfo）还是向 JankTracker 要一个新槽；随后 importUiThreadInfo 把 UI 线程的 vsyncId/inputEventId 等搬进来，并 markSyncStart()。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "CanvasContext::prepareTree",
+      "lines": "548-572",
+      "code": "    info.damageAccumulator = &mDamageAccumulator;\n    info.colorArea = &mColorArea;\n    info.layerUpdateQueue = &mLayerUpdateQueue;\n    info.damageGenerationId = mDamageId++;\n    info.out.skippedFrameReason = std::nullopt;\n\n    mAnimationContext->startFrame(info.mode);\n\n    if (target) {\n        determineColors(target);\n    }\n\n    for (const sp<RenderNode>& node : mRenderNodes) {\n        // Only the primary target node will be drawn full - all other nodes would get drawn in\n        // real time mode. In case of a window, the primary node is the window content and the other\n        // node(s) are non client / filler nodes.\n        info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);\n        node->prepareTree(info);\n        GL_CHECKPOINT(MODERATE);\n    }\n    mAnimationContext->runRemainingAnimations(info);\n    GL_CHECKPOINT(MODERATE);\n\n    freePrefetchedLayers();\n    GL_CHECKPOINT(MODERATE);",
+      "note": "把 DamageAccumulator/ColorArea/LayerUpdateQueue 与自增的 damageGenerationId 装进 TreeInfo，然后遍历 mRenderNodes：只有 target 走 MODE_FULL，其余 MODE_RT_ONLY（只跑动画）。遍历后 runRemainingAnimations 收尾、freePrefetchedLayers 销毁未被使用的预取 layer。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "ReliableSurface::reserveNext",
+      "lines": "599-619",
+      "code": "    // TODO: Do we need to abort out if the backdrop is added but not ready? Should that even\n    // be an allowable combination?\n    if (mRenderNodes.size() > 2 && !mRenderNodes[1]->isRenderable()) {\n        info.out.skippedFrameReason = SkippedFrameReason::NothingToDraw;\n    }\n\n    if (!info.out.skippedFrameReason) {\n        int err = mNativeSurface->reserveNext();\n        if (err != OK) {\n            info.out.skippedFrameReason = SkippedFrameReason::NoBuffer;\n            mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason);\n            ALOGW(\"reserveNext failed, error = %d (%s)\", err, strerror(-err));\n            if (err != TIMED_OUT) {\n                // A timed out surface can still recover, but assume others are permanently dead.\n                setSurface(nullptr);\n                return;\n            }\n        }\n    } else {\n        mCurrentFrameInfo->setSkippedFrameReason(*info.out.skippedFrameReason);\n    }",
+      "note": "本帧最后的“能否画”判定与 buffer 预占：content 节点不可渲染记为 NothingToDraw；否则 reserveNext 提前 dequeue。失败写 NoBuffer，TIMED_OUT 可恢复，其他错误直接 setSurface(nullptr) 放弃这个 surface。"
+    },
+    {
+      "file": "base/libs/hwui/RenderNode.cpp",
+      "symbol": "RenderNode::prepareTreeImpl",
+      "lines": "228-266",
+      "code": "void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool functorsNeedLayer) {\n    if (mDamageGenerationId == info.damageGenerationId && mDamageGenerationId != 0) {\n        // We hit the same node a second time in the same tree. We don't know the minimal\n        // damage rect anymore, so just push the biggest we can onto our parent's transform\n        // We push directly onto parent in case we are clipped to bounds but have moved position.\n        info.damageAccumulator->dirty(DIRTY_MIN, DIRTY_MIN, DIRTY_MAX, DIRTY_MAX);\n    }\n    info.damageAccumulator->pushTransform(this);\n\n    if (info.mode == TreeInfo::MODE_FULL) {\n        pushStagingPropertiesChanges(info);\n    }\n\n    if (!mProperties.getAllowForceDark()) {\n        info.disableForceDark++;\n    }\n    if (!mProperties.layerProperties().getStretchEffect().isEmpty()) {\n        info.stretchEffectCount++;\n    }\n\n    uint32_t animatorDirtyMask = 0;\n    if (CC_LIKELY(info.runAnimations)) {\n        animatorDirtyMask = mAnimatorManager.animate(info);\n    }\n\n    bool willHaveFunctor = false;\n    if (info.mode == TreeInfo::MODE_FULL && mStagingDisplayList) {\n        willHaveFunctor = mStagingDisplayList.hasFunctor();\n    } else if (mDisplayList) {\n        willHaveFunctor = mDisplayList.hasFunctor();\n    }\n    bool childFunctorsNeedLayer =\n            mProperties.prepareForFunctorPresence(willHaveFunctor, functorsNeedLayer);\n\n    if (CC_UNLIKELY(mPositionListener.get())) {\n        mPositionListener->onPositionUpdated(*this, info);\n    }\n\n    prepareLayer(info, animatorDirtyMask);",
+      "note": "单节点遍历的核心：重复访问直接推全屏脏区 → pushTransform → MODE_FULL 才 pushStagingPropertiesChanges → 跑 animator 得到 dirtyMask → 判断 functor 是否强制上 layer → prepareLayer → MODE_FULL 才 pushStagingDisplayListChanges。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "TreeInfo::mode",
+      "type": "TraversalMode（MODE_FULL / MODE_RT_ONLY）",
+      "desc": "决定这次遍历是否 push staging 属性与 DisplayList。MODE_FULL 只在 UI 与 RT 都阻塞于 prepare 时合法（TreeInfo.h:67-76）；CanvasContext.cpp:564 按 target 逐节点赋值。"
+    },
+    {
+      "name": "info.damageAccumulator",
+      "type": "DamageAccumulator*",
+      "desc": "指向 CanvasContext::mDamageAccumulator（CanvasContext.h:379）。RenderNode::prepareTree 首行就断言非空（RenderNode.cpp:139）；push/pop 的顺序错乱会在 finish 时被 LOG_ALWAYS_FATAL_IF 抓出（DamageAccumulator.cpp:314）。"
+    },
+    {
+      "name": "info.damageGenerationId",
+      "type": "int64_t",
+      "desc": "来自 mDamageId++（CanvasContext.cpp:551）。节点把自己的 mDamageGenerationId 打成这个值（RenderNode.cpp:157），下次同帧再遇到（229）即可判定重复访问。"
+    },
+    {
+      "name": "mRenderNodes",
+      "type": "std::vector<sp<RenderNode>>",
+      "desc": "CanvasContext.h:384。窗口下 0=backdrop、1=content、2+=overlay；布局语义见 SkiaPipeline.cpp:402-414。prepareTree 按节点是否等于 target 决定 mode。"
+    },
+    {
+      "name": "mLayerUpdateQueue",
+      "type": "LayerUpdateQueue",
+      "desc": "CanvasContext.h:381。Entry 是 {sp&lt;RenderNode&gt; renderNode; Rect damage;}（LayerUpdateQueue.h:37-42），pushLayerUpdate 入队，Skia 侧 renderLayersImpl 消费后 clear。"
+    },
+    {
+      "name": "mCurrentFrameInfo / mSkippedFrameInfo",
+      "type": "FrameInfo* / std::optional<SkippedFrameInfo>",
+      "desc": "CanvasContext.h:386、431。上一帧被跳过时复用旧帧结构，只把最早一次跳过的 vsyncId 与 startTime 记入 mSkippedFrameInfo（CanvasContext.cpp:515-542）。"
+    },
+    {
+      "name": "info.out.skippedFrameReason",
+      "type": "std::optional<SkippedFrameReason>",
+      "desc": "枚举共 6 个：DrawingOff / ContextIsStopped / NothingToDraw / NoOutputTarget / NoBuffer / AlreadyDrawn（SkippedFrameInfo.h:21-28）。有值即本帧不画，DrawFrameTask 据此设置 SyncResult::FrameDropped。"
+    },
+    {
+      "name": "mNativeSurface",
+      "type": "std::unique_ptr<ReliableSurface>",
+      "desc": "CanvasContext.h:330。reserveNext() 提前 dequeue 一个 buffer 并记在 mReservedBuffer（ReliableSurface.cpp:101-107），把 dequeue 的等待从 draw 阶段挪到 prepare 阶段。"
+    },
+    {
+      "name": "mAnimationContext",
+      "type": "std::unique_ptr<AnimationContext>",
+      "desc": "CanvasContext.h:382。startFrame 切换动画链表并把时间基准设为 latestVsync；runRemainingAnimations 兜底跑完剩余动画。"
+    },
+    {
+      "name": "info.prepareTextures",
+      "type": "bool",
+      "desc": "TreeInfo.h:83。纹理缓存预算耗尽的信号；syncFrameState 直接把它当返回值（DrawFrameTask.cpp:216），上层据此对本帧做降级。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "ATRACE_FORMAT（DrawFrameTask.cpp:91）",
+      "desc": "RenderThread 上一帧的最外层 slice，包含 syncFrameState 与 draw 两段。注意 CanvasContext::prepareTree 本身没有 ATRACE_CALL，只能靠这段 slice 与 FrameInfo 差值间接定位。"
+    },
+    {
+      "name": "prepareTree",
+      "value": "ATRACE_CALL（RenderNode.cpp:138）",
+      "desc": "每个 mRenderNodes 里的根节点各一次，嵌套在 DrawFrames 内；多节点窗口会出现多次。"
+    },
+    {
+      "name": "SyncQueued → SyncStart",
+      "value": "FrameInfoIndex 两个时间戳相减",
+      "desc": "SyncQueued 由 UI 线程传入（CanvasContext.cpp:545），SyncStart 在 RT 上 markSyncStart()（546）。差值就是消息在 RT 队列里排队的时间，是“UI 已交棒但 RT 忙”的直接证据。"
+    },
+    {
+      "name": "SkippedFrame / skippedFrameReason",
+      "value": "FrameInfoFlags::SkippedFrame + FrameInfo",
+      "desc": "prepareTree 写入的 reason 会进 mCurrentFrameInfo，可区分“没内容可画”和“没拿到 buffer”，两者在 dumpsys gfxinfo 里的处置完全不同。"
+    },
+    {
+      "name": "swap chain stuffed",
+      "value": "ATRACE_NAME（CanvasContext.cpp:502）",
+      "desc": "换链拥堵告警，说明 dequeue/queue 已经超过 SLOW_THRESHOLD，通常指向 BufferQueue/BLAST 侧供给不足而非绘制慢。"
+    },
+    {
+      "name": "Incorrectly called buildLayer on View: %s",
+      "value": "ALOGW（CanvasContext.cpp:1150-1151）",
+      "desc": "layer 预取未被使用的信号：buildLayer 成功但本帧 draw 没消费到，属于白做一次 GPU 纹理分配。"
+    }
+  ],
+  "pitfalls": [
+    "prepareTree 跑在 RenderThread 上，不是 UI 线程：UI 线程此刻正卡在 DrawFrameTask::postAndWait() 的 mSignal.wait()（DrawFrameTask.cpp:82-87）。把它算成 UI 线程耗时会误判 jank 归属，也会误读“UI 线程被卡住”的现场。",
+    "MODE_RT_ONLY 只跑动画，不 push staging 属性与 DisplayList（RenderNode.cpp:237-239、267-269）。因此 RT-only 帧上动画值在变、但 View 的新录制内容不会生效，不要在这类帧上排查“改了属性没生效”。",
+    "AlreadyDrawn 的判定是 |lastSwap.vsyncTime - latestVsync| 小于 2ms（CanvasContext.cpp:582-597），那是给“vsync 被估算/信号处理慢”留的容差；trace 上表现为 prepareTree 跑完却没有 draw，容易被误当成绘制丢失。",
+    "reserveNext() 只是提前 dequeue 占住一个 buffer（ReliableSurface.cpp:74-111），不等于本帧一定画得出来；且错误非 TIMED_OUT 时会 setSurface(nullptr)（CanvasContext.cpp:611-615），窗口 surface 会被重建，后续几帧会看到新的 BufferQueue。",
+    "mSkippedFrameInfo 只对 AlreadyDrawn / NoBuffer / NoOutputTarget 上报，DrawingOff / ContextIsStopped / NothingToDraw 明确“不当作 skipped frame”（CanvasContext.cpp:521-537）。统计掉帧时把两者混算会高估 jank。",
+    "同一节点在一帧里被访问两次会推全屏脏区（RenderNode.cpp:229-234）；共享子树、BackdropFilter 相关节点多的界面会因此出现远大于实际变化的 damage，表现为“明明只动了一点却全屏重绘”。"
+  ],
+  "traceTags": [
+    "DrawFrames <vsyncId>",
+    "prepareTree",
+    "prepareAndDraw <vsyncId>",
+    "swap chain stuffed",
+    "queue mFrameCallbackTask to run after %.2fms"
+  ],
+  "next": "stage-05"
+}

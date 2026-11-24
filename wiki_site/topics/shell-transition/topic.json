@@ -1,0 +1,2313 @@
+{
+  "meta": {
+    "slug": "shell-transition",
+    "title": "Shell Transition 全链路解剖",
+    "subtitle": "一次 Activity 转场，从 WMS 建 Transition 到 Shell 播完动画、泄漏零事务",
+    "version": "android17-release",
+    "built": "2026-11-24",
+    "git_ref": "24bc82b5d",
+    "repo": "AOSP_Frameworks",
+    "summary": "本页只讲一件事：一次转场（Activity 启动/关闭、Recents 切换、旋转）从触发到收尾，WMS 的 TransitionController/Transition、BLASTSyncEngine、WindowOrganizerController 与 SystemUI 进程里 Shell 的 Transitions/handler 如何一步步交接。每个 P0 函数逐行注释，每行注释都带源码 quote 校验。",
+    "kicker": "AOSP · android17-release · Shell Transition"
+  },
+  "lanes": [
+    {
+      "id": "APP",
+      "label": "App 进程",
+      "color": "#4c8dff"
+    },
+    {
+      "id": "WMS",
+      "label": "system_server · WMS",
+      "color": "#ffb454"
+    },
+    {
+      "id": "SHELL",
+      "label": "SystemUI · Shell",
+      "color": "#33d6c0"
+    },
+    {
+      "id": "SF",
+      "label": "surfaceflinger",
+      "color": "#c792ea"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "label": "触发",
+      "hint": "谁发起转场"
+    },
+    {
+      "id": "P1",
+      "label": "采集",
+      "hint": "把参与者锁进 SyncSet"
+    },
+    {
+      "id": "P2",
+      "label": "请求播放",
+      "hint": "WMS 问 Shell 要不要动画"
+    },
+    {
+      "id": "P3",
+      "label": "汇合",
+      "hint": "SyncSet 完成，造还原事务"
+    },
+    {
+      "id": "P4",
+      "label": "播放",
+      "hint": "Shell 选 handler 播动画"
+    },
+    {
+      "id": "P5",
+      "label": "收尾",
+      "hint": "finishT + cleanup"
+    },
+    {
+      "id": "P6",
+      "label": "分支",
+      "hint": "无 player / 中止 / 异常"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s00",
+      "num": 1,
+      "phase": "P0",
+      "lane": "SHELL",
+      "title": "前置：Shell 把自己注册成 TransitionPlayer",
+      "brief": "SystemUI 启动 Shell 时，Transitions 通过 IWindowOrganizerController.registerTransitionPlayer 把 mPlayerImpl 注册进 WMS，TransitionController 存进 mTransitionPlayers。没有 player 时是否有兜底取决于 Flags.fallbackTransitionPlayer()：打开才预注册 FallbackPlayer，否则请求直接返回 null。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 436,
+          "symbol": "registerTransitionPlayer"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TaskOrganizerController.java",
+          "line": 569,
+          "symbol": "registerTransitionPlayer"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 452,
+          "symbol": "registerTransitionPlayer"
+        }
+      ]
+    },
+    {
+      "id": "s01",
+      "num": 2,
+      "phase": "P0",
+      "lane": "WMS",
+      "title": "转场被发起",
+      "brief": "转场请求有多个入口（KeyguardController、WindowProcessController、Task 等都会调）；DisplayContent.requestTransitionAndLegacyPrepare 是 display 级的转发入口，把请求转成 TransitionRequest 交给 TransitionController，并不是唯一入口。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 6059,
+          "symbol": "requestTransitionAndLegacyPrepare"
+        }
+      ]
+    },
+    {
+      "id": "s02",
+      "num": 3,
+      "phase": "P0",
+      "lane": "WMS",
+      "title": "无 collecting 就建 Transition",
+      "brief": "已有 collecting 转场时只标记 ready-group；否则 createTransition → moveToCollecting → startCollecting 连续推进，函数返回时已经是 COLLECTING（不是 PENDING）。真正进入 STARTED 要等 Shell 回调 WindowOrganizerController.startTransition。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 910,
+          "symbol": "requestTransitionIfNeeded"
+        }
+      ],
+      "p0": "tc-request-if-needed"
+    },
+    {
+      "id": "s27",
+      "num": 4,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "Transition 状态机全貌",
+      "brief": "一次转场只走一条状态线：PENDING（已建，未启动）→ COLLECTING（收集参与者）→ STARTED（已请求 Shell，等 SyncSet 完成）→ PLAYING（Shell 在播动画）→ FINISHED；任一点可跳 ABORTED。状态推进只在 WMS 线程、持 mGlobalLock 时发生。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 880,
+          "symbol": "start"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 861,
+          "symbol": "startCollecting"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1949,
+          "symbol": "abort"
+        }
+      ]
+    },
+    {
+      "id": "s03",
+      "num": 5,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "开一个 BLAST SyncSet",
+      "brief": "createAndStartCollecting 只做三道闸门（isFlushing / 队列非空 / 已有 active sync）并 moveToCollecting；syncId 的申请发生在 Transition.startCollecting → BLASTSyncEngine.startSyncSet。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 1808,
+          "symbol": "createAndStartCollecting"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 498,
+          "symbol": "startSyncSet"
+        }
+      ]
+    },
+    {
+      "id": "s28",
+      "num": 6,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "给 SyncSet 挂超时：卡住的兜底",
+      "brief": "startCollecting 把 timeoutMs 交给 startSyncSet；超时由 SyncGroup.onTimeout 记录未完成容器并告警，随后仍走 finishNow → onTransactionReady 的正常收尾路径，而不是「降级 apply」。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 498,
+          "symbol": "startSyncSet"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 408,
+          "symbol": "onTimeout"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 445,
+          "symbol": "timeoutMs"
+        }
+      ]
+    },
+    {
+      "id": "s04",
+      "num": 7,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "把 WindowContainer 收进 SyncSet",
+      "brief": "collect 把 WindowContainer 登记为参与者并挂到 SyncSet；起始状态（visible/bounds/rotation/父节点）不在 collect 里快照，而是在构建 TransitionInfo 时由 ChangeInfo 抄写。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 903,
+          "symbol": "Transition.collect"
+        }
+      ],
+      "p0": "tr-collect"
+    },
+    {
+      "id": "s29",
+      "num": 8,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "容器落到具体 syncId 上",
+      "brief": "addToSync 把 WindowContainer 的 SurfaceControl 登记进某个 syncId：之后该容器的事务会带着这个 id 抵达 SurfaceFlinger，SF 回调时按 id 归并。没有这一步，事务会立刻上屏，动画就没法「先演再落地」。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 332,
+          "symbol": "addToSync"
+        }
+      ]
+    },
+    {
+      "id": "s05",
+      "num": 9,
+      "phase": "P1",
+      "lane": "WMS",
+      "title": "窗口事务被同一 SyncSet 收编",
+      "brief": "App 的 relayout、Shell 提前下发的 WindowContainerTransaction 都走 applyTransaction；syncId 非 -1 时事务被同时挂到 SyncSet 与容器上，保证「改了什么」和「画完了没」用同一个序号对齐。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+          "line": 246,
+          "symbol": "applyTransaction"
+        }
+      ]
+    },
+    {
+      "id": "s06",
+      "num": 10,
+      "phase": "P2",
+      "lane": "WMS",
+      "title": "布局完成，标记 ready",
+      "brief": "DisplayContent.executeAppTransition 在本分支只剩 setReady：告诉 TransitionController 当前 collecting 的转场可以尝试请求播放了。真正的「能不能播」由 ready-group 与 participants 是否齐决定。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/DisplayContent.java",
+          "line": 6065,
+          "symbol": "executeAppTransition"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 1188,
+          "symbol": "setReady"
+        }
+      ]
+    },
+    {
+      "id": "s07",
+      "num": 11,
+      "phase": "P2",
+      "lane": "WMS",
+      "title": "组装 TransitionRequestInfo 并检查可播性",
+      "brief": "7 参 requestStartTransition 是唯一实现：先处理 display 未 enable（把 mIsPlayerEnabled 置假并直接走 startTransition）、flushing/abort 的早退，再组装 type/trigger/remote/displayChange 等字段，最后 oneway 调用 player。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 996,
+          "symbol": "requestStartTransition"
+        }
+      ],
+      "p0": "tc-request-start"
+    },
+    {
+      "id": "s08",
+      "num": 12,
+      "phase": "P2",
+      "lane": "SHELL",
+      "title": "Shell 收到 request（oneway）",
+      "brief": "ITransitionPlayer.requestStartTransition 是 oneway：WMS 不阻塞等 Shell。Shell 在 wmshell.main 线程上执行，返回一个 WindowContainerTransaction 告诉 WMS「启动时要顺手做这些事」。",
+      "refs": [
+        {
+          "file": "base/core/java/android/window/ITransitionPlayer.aidl",
+          "line": 42,
+          "symbol": "requestStartTransition"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1337,
+          "symbol": "requestStartTransition"
+        }
+      ],
+      "p0": "sh-request-start"
+    },
+    {
+      "id": "s09",
+      "num": 13,
+      "phase": "P2",
+      "lane": "SHELL",
+      "title": "选择 handler 并决定是否合并",
+      "brief": "dispatchRequest 只做认领：按注册顺序问 handler 谁接这次 request，并返回启动用的 WCT。它不做合并——合并发生在 ready 之后的 onMerged。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1147,
+          "symbol": "dispatchRequest"
+        }
+      ]
+    },
+    {
+      "id": "s10",
+      "num": 14,
+      "phase": "P2",
+      "lane": "WMS",
+      "title": "Shell 回调 startTransition，事务落到 WMS",
+      "brief": "Shell 把 WCT 通过 IWindowOrganizerController.startTransition 送回：WMS 校验 token 并把 WCT 应用下去（这里 syncId 传 -1，sync 绑定在 startCollecting 那条路径）。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+          "line": 341,
+          "symbol": "startTransition"
+        }
+      ],
+      "p0": "woc-start"
+    },
+    {
+      "id": "s11",
+      "num": 15,
+      "phase": "P2",
+      "lane": "WMS",
+      "title": "Transition 进入 STARTED",
+      "brief": "start 把状态从 COLLECTING 推到 STARTED（PENDING 阶段早已结束），记录 mStartTransaction；此时 WMS 继续正常提交窗口事务，等待 SyncSet 完成。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 880,
+          "symbol": "start"
+        }
+      ],
+      "p0": "tr-start"
+    },
+    {
+      "id": "s12",
+      "num": 16,
+      "phase": "P3",
+      "lane": "SF",
+      "title": "参与者逐帧绘制，SyncSet 收集完成",
+      "brief": "SyncSet 是否完成由 placement 末尾的 onSurfacePlacement 驱动：所有参与者进入 READY 且依赖清空时 tryFinish 成立。SurfaceFlinger 的 commit 回调是 finishNow 之后对合并事务的守护，不参与 tryFinish 判定。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 198,
+          "symbol": "tryFinish"
+        }
+      ],
+      "p0": "blast-try-finish"
+    },
+    {
+      "id": "s13",
+      "num": 17,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "合并事务并回调 listener",
+      "brief": "finishNow 把本 sync 的所有 SurfaceControl.Transaction 合并成一个大事务，处理超时与 merge 场景，最后回调 listener.onTransactionReady(syncId, merged)——也就是 Transition.onTransactionReady。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+          "line": 219,
+          "symbol": "finishNow"
+        }
+      ],
+      "p0": "blast-finish-now"
+    },
+    {
+      "id": "s30",
+      "num": 18,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "提交可见性：先让窗口「该显示就显示」",
+      "brief": "onTransactionReady 里先 commitVisibleActivities / commitVisibleWallpapers：把可见性变更写进 start 事务，并早于 PLAYING 推进——否则 ActivityRecord#canShowWindows() 会拒绝显示窗口，动画起点就是黑的。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2748,
+          "symbol": "commitVisibleActivities"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2763,
+          "symbol": "commitVisibleWallpapers"
+        }
+      ]
+    },
+    {
+      "id": "s31",
+      "num": 19,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "构造 leash：给动画一个可搬的手柄",
+      "brief": "TransitionInfo 每个 Change 的 leash 来自 getLeashSurface（DisplayContent 取 windowingLayer，其余取容器 surface）；根 leash 由 createAndAddRootLeash + makeAnimationLeash 建成「Transition Root: <name>」。Shell 只能搬 leash，不能搬窗口本身。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 3292,
+          "symbol": "getLeashSurface"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 3390,
+          "symbol": "createAndAddRootLeash"
+        }
+      ]
+    },
+    {
+      "id": "s14",
+      "num": 20,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "Transition.onTransactionReady：造 TransitionInfo",
+      "brief": "全链路的核心 272 行：合并事务、commitVisibleActivities/Wallpapers 提交可见性、计算每个 Change 的 leash 与起始/目标状态、调 buildFinishTransaction 与 buildCleanupTransaction，最后把 (token, info, startT, finishT) 交给 player。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2034,
+          "symbol": "onTransactionReady"
+        }
+      ],
+      "p0": "tr-ready"
+    },
+    {
+      "id": "s15",
+      "num": 21,
+      "phase": "P3",
+      "lane": "WMS",
+      "title": "生成「还原事务」finishT",
+      "brief": "动画期间 Shell 会把 leash 挂到自定义父节点上，结束时必须挂回去。buildFinishTransaction 逐 target reparent 回 origParent、重置 layer/crop/alpha，并把根 leash 从窗口层摘掉。这份事务由 Shell 在 finish 前 apply。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1313,
+          "symbol": "buildFinishTransaction"
+        }
+      ],
+      "p0": "tr-build-finish"
+    },
+    {
+      "id": "s16",
+      "num": 22,
+      "phase": "P3",
+      "lane": "SHELL",
+      "title": "onTransitionReady 交给 Shell",
+      "brief": "Transition 判定 !isFlushing && mIsPlayerEnabled 后，oneway 调用 player.onTransitionReady(token, info, startT, finishT) 并打开 asyncTrace「playing」。若 player 缺失或抛 RemoteException，走 postCleanupOnFailure 自行 apply+finish。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2260,
+          "symbol": "getTransitionPlayer().onTransitionReady"
+        }
+      ]
+    },
+    {
+      "id": "s17",
+      "num": 23,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "Shell 把 transition 移入 ready 队列",
+      "brief": "Transitions.onTransitionReady 先过 mixpatcher，再 onTransitionReadyInner：把 ActiveTransition 从 mPendingTransitions 移到 ready，记录 startT/finishT；若正在 sync 则先入 mReadyDuringSync。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 737,
+          "symbol": "onTransitionReady"
+        }
+      ]
+    },
+    {
+      "id": "s32",
+      "num": 24,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "合并：后到的 ready 被吸收",
+      "brief": "同一 track 上已在播的转场可以吸收后到的 ready：onMerged 把被合并方的 finishT 并与主动画，被合并方不再单独播放。日志 logMergeRequested/logMerged 落到 perfetto，是排查「动画少了一段」的第一现场。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 993,
+          "symbol": "onMerged"
+        }
+      ]
+    },
+    {
+      "id": "s18",
+      "num": 25,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "按 Track 顺序放行",
+      "brief": "dispatchReady 检查睡眠/同步状态：sleep 或 isSync 时排队并 finishForSync 强制前面的转场收尾；否则查 mTracks 里该 track 是否空闲，空闲才真正 play。多 track 让不同 display/任务互不阻塞。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 798,
+          "symbol": "dispatchReady"
+        }
+      ]
+    },
+    {
+      "id": "s33",
+      "num": 26,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "同步/睡眠闸门：先清场再放行",
+      "brief": "dispatchReady 遇到 TRANSIT_SLEEP 或 isSync 时，把 ready 压回队首，并对所有非空闲 track 调 finishForSync 强制收尾；清完才真正进入 playTransition。屏幕熄灭时不会让动画跨过 sleep 继续跑。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 798,
+          "symbol": "dispatchReady"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1502,
+          "symbol": "finishForSync"
+        }
+      ]
+    },
+    {
+      "id": "s19",
+      "num": 27,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "playTransition：建层级、分派 handler",
+      "brief": "playTransition 先把 track 置忙，调 setupAnimHierarchy 把各 Change 的 leash 依 z 序重排并 show 根 leash，然后把 startAnimation 交给 request 阶段认领的 handler，消费不掉才轮询其余 handler。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1054,
+          "symbol": "playTransition"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 710,
+          "symbol": "setupAnimHierarchy"
+        }
+      ],
+      "p0": "sh-play"
+    },
+    {
+      "id": "s34",
+      "num": 28,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "handler 分派链：谁先接谁播",
+      "brief": "playTransition 先问 request 阶段认领的 handler，再按注册顺序轮询：RemoteTransitionHandler（Launcher 委托）→ DefaultTransitionHandler（Shell 内置动画）→ SleepHandler / DefaultMixedHandler（旋转、多类型混合）。返回 false 表示「我不接」，必须继续往下问，否则转场会挂住。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java",
+          "line": 123,
+          "symbol": "startAnimation"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java",
+          "line": 338,
+          "symbol": "startAnimation"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultMixedHandler.java",
+          "line": 769,
+          "symbol": "startAnimation"
+        }
+      ]
+    },
+    {
+      "id": "s20",
+      "num": 29,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "Handler 播放动画",
+      "brief": "DefaultTransitionHandler 用 shell 自带的动画（或 TransitionAnimationHelper 的壁纸/背景层）；RemoteTransitionHandler 把动画转交给外部进程（Launcher 的 RemoteTransition）。两者都必须最终调 onTransitionFinished 或 apply finishT。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java",
+          "line": 338,
+          "symbol": "startAnimation"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java",
+          "line": 123,
+          "symbol": "startAnimation"
+        }
+      ]
+    },
+    {
+      "id": "s35",
+      "num": 30,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "动画落地：背景层与可动画容器",
+      "brief": "动画由 DefaultTransitionHandler 自己加背景色层（addBackgroundColor）并借 SurfaceAnimator 逐帧写属性；TransitionAnimationHelper.addBackgroundToTransition 是另一条路径（ActivityEmbedding 在用）。每帧事务来自 TransactionPool 并立即 apply。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/TransitionAnimationHelper.java",
+          "line": 300,
+          "symbol": "addBackgroundToTransition"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultSurfaceAnimator.java",
+          "line": 39,
+          "symbol": "DefaultSurfaceAnimator"
+        }
+      ]
+    },
+    {
+      "id": "s21",
+      "num": 31,
+      "phase": "P4",
+      "lane": "SHELL",
+      "title": "动画期 reparent：谁挂上去",
+      "brief": "动画需要统一的父节点才能做整体位移/缩放：DefaultTransitionHandler 为孤立 Activity 建「Transition ActivityWrap」，TransitionAnimationHelper 以 rootLeash 为父建背景色层。挂上去的每一笔都必须在 finishT 里挂回来。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java",
+          "line": 648,
+          "symbol": "reparent"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/TransitionAnimationHelper.java",
+          "line": 311,
+          "symbol": "reparent"
+        }
+      ]
+    },
+    {
+      "id": "s22",
+      "num": 32,
+      "phase": "P5",
+      "lane": "SHELL",
+      "title": "动画结束，ondFinish 收尾",
+      "brief": "handler 完成后回调 Transitions.onFinish：先 apply 合并后的 finishT（把 leash 挂回、结束事务），再调 IWindowOrganizerController.finishTransition(token, wct)。顺序不能反——finishT 必须在 finish 之前 apply。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1242,
+          "symbol": "onFinish"
+        }
+      ],
+      "p0": "sh-finish"
+    },
+    {
+      "id": "s36",
+      "num": 33,
+      "phase": "P5",
+      "lane": "SHELL",
+      "title": "finish 的顺序契约",
+      "brief": "动画结束必须按固定顺序收尾：apply(finishT) → IWindowOrganizerController.finishTransition。finishT 里是「把 leash 挂回原位」的还原事务；顺序反了，WMS 会先按旧父链收尾，表现为窗口消失或输入错位。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1242,
+          "symbol": "onFinish"
+        }
+      ]
+    },
+    {
+      "id": "s37",
+      "num": 34,
+      "phase": "P5",
+      "lane": "WMS",
+      "title": "cleanup 与失败兜底",
+      "brief": "buildCleanupTransaction 生成「摘掉 snapshot、根 leash」的事务，在 finishTransition 里 apply；若 Shell 抛 RemoteException 或 player 缺失，postCleanupOnFailure 自己 apply+finish——宁可动画丢了，也不让事务漏掉。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1377,
+          "symbol": "buildCleanupTransaction"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2695,
+          "symbol": "postCleanupOnFailure"
+        }
+      ]
+    },
+    {
+      "id": "s23",
+      "num": 35,
+      "phase": "P5",
+      "lane": "WMS",
+      "title": "Transition.finishTransition：关闭事务、apply cleanup",
+      "brief": "WMS 侧收尾：logFinishedTransition、关闭 start/finish 事务、apply cleanup 事务（摘掉 snapshot 与根 leash），状态置 FINISHED 并从 playing 列表摘除。syncId 的摘除发生在 onTransactionReady 返回时，不在这里。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1518,
+          "symbol": "finishTransition"
+        }
+      ]
+    },
+    {
+      "id": "s24",
+      "num": 36,
+      "phase": "P5",
+      "lane": "SHELL",
+      "title": "Track 释放与队列推进",
+      "brief": "finish 之后 Shell 把 track 置闲并 processReadyQueue(928)，让排队的下一个 ready 转场开始播。若期间有 sleep/sync 积压，这里一次放行。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 928,
+          "symbol": "processReadyQueue"
+        }
+      ]
+    },
+    {
+      "id": "s25",
+      "num": 37,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "分支：没有 Shell 时的 FallbackPlayer",
+      "brief": "player 缺失时不一定有 FallbackPlayer：它只在 Flags.fallbackTransitionPlayer() 打开时预注册（TransitionController.java:290）。flag 关闭且 player 为空期间，requestTransitionIfNeeded 直接返回 null，本次请求被丢弃。mIsPlayerEnabled=false 是另一条独立路径。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 2142,
+          "symbol": "FallbackPlayer"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2278,
+          "symbol": "else"
+        }
+      ]
+    },
+    {
+      "id": "s38",
+      "num": 38,
+      "phase": "P6",
+      "lane": "SHELL",
+      "title": "中止：abort 不是「不回滚」",
+      "brief": "abort 把状态推到 ABORTED 并走 finish 收尾。当前 ITransitionPlayer AIDL 没有 abort 回调，Shell 侧只能靠后续事件或超时感知，不能假设会收到通知。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1949,
+          "symbol": "abort"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1161,
+          "symbol": "onAbort"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 1979,
+          "symbol": "onTransitionConsumed"
+        }
+      ]
+    },
+    {
+      "id": "s39",
+      "num": 39,
+      "phase": "P6",
+      "lane": "SHELL",
+      "title": "旋转与睡眠的特殊处理",
+      "brief": "屏幕旋转走 ScreenRotationAnimation（截图+旋转动画，绕开普通 leash 动画），睡眠走 SleepHandler（TRANSIT_SLEEP 先清场）。这两类不走 DefaultTransitionHandler，是「看起来没动画」的常见原因。",
+      "refs": [
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/ScreenRotationAnimation.java",
+          "line": 80,
+          "symbol": "ScreenRotationAnimation"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/SleepHandler.java",
+          "line": 37,
+          "symbol": "startAnimation"
+        }
+      ]
+    },
+    {
+      "id": "s40",
+      "num": 40,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "PiP 与 legacy 兼容",
+      "brief": "收尾时 checkEnterPipOnFinish 决定 Activity 是进 PiP 还是正常关闭；legacy 兼容只剩两条：dispatchLegacyAppTransitionStarting 通知老 AppTransitionListener，legacyRestoreNavigationBarFromApp 把 nav bar 归位。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1451,
+          "symbol": "checkEnterPipOnFinish"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 1666,
+          "symbol": "dispatchLegacyAppTransitionStarting"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2878,
+          "symbol": "legacyRestoreNavigationBarFromApp"
+        }
+      ]
+    },
+    {
+      "id": "s26",
+      "num": 41,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "分支：中止、超时、异常",
+      "brief": "abort 把状态推到 ABORTED 并走 finish 收尾；SyncSet 超时则走 SyncGroup.onTimeout → finishNow → onTransactionReady，状态被写成 PLAYING。注意当前 AIDL 没有 abort 回调，Shell 侧感知有限。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 1949,
+          "symbol": "abort"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+          "line": 445,
+          "symbol": "timeoutMs"
+        },
+        {
+          "file": "base/services/core/java/com/android/server/wm/Transition.java",
+          "line": 2427,
+          "symbol": "onTransactionCommitTimeout"
+        }
+      ],
+      "p0": "tr-abort"
+    },
+    {
+      "id": "s41",
+      "num": 42,
+      "phase": "P6",
+      "lane": "WMS",
+      "title": "诊断：Perfetto 与 dumpsys",
+      "brief": "PerfettoTransitionTracer 记录的是 create / send / finish / abort 与 starting-window-remove 事件；request→ready 的耗时只出现在 ProtoLog（Transition.Logger），不在 perfetto trace 里。",
+      "refs": [
+        {
+          "file": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java",
+          "line": 37,
+          "symbol": "PerfettoTransitionTracer"
+        },
+        {
+          "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+          "line": 2253,
+          "symbol": "dump"
+        }
+      ]
+    }
+  ],
+  "sequence": [
+    {
+      "step": "s00",
+      "from": "SHELL",
+      "to": "WMS",
+      "label": "IWindowOrganizerController.registerTransitionPlayer",
+      "kind": "binder"
+    },
+    {
+      "step": "s01",
+      "from": "APP",
+      "to": "WMS",
+      "label": "startActivity / finishActivity",
+      "kind": "binder"
+    },
+    {
+      "step": "s01",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "requestTransitionAndLegacyPrepare(type, flags)",
+      "kind": "call"
+    },
+    {
+      "step": "s02",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "requestTransitionIfNeeded → createTransition",
+      "kind": "call"
+    },
+    {
+      "step": "s03",
+      "from": "WMS",
+      "to": "SF",
+      "label": "startSyncSet(timeout) 拦截事务",
+      "kind": "call"
+    },
+    {
+      "step": "s04",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "collect(wc) ×N",
+      "kind": "call"
+    },
+    {
+      "step": "s05",
+      "from": "APP",
+      "to": "WMS",
+      "label": "relayout / applyTransaction(WCT, syncId)",
+      "kind": "binder"
+    },
+    {
+      "step": "s06",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "executeAppTransition → setReady",
+      "kind": "call"
+    },
+    {
+      "step": "s07",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "requestStartTransition(info)",
+      "kind": "call"
+    },
+    {
+      "step": "s08",
+      "from": "WMS",
+      "to": "SHELL",
+      "label": "ITransitionPlayer.requestStartTransition",
+      "kind": "oneway"
+    },
+    {
+      "step": "s09",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "dispatchRequest → 认领 handler",
+      "kind": "call"
+    },
+    {
+      "step": "s10",
+      "from": "SHELL",
+      "to": "WMS",
+      "label": "IWindowOrganizerController.startTransition(WCT)",
+      "kind": "binder"
+    },
+    {
+      "step": "s11",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "Transition.start() → STATE_STARTED",
+      "kind": "state"
+    },
+    {
+      "step": "s12",
+      "from": "SF",
+      "to": "WMS",
+      "label": "参与者 commit 回调 → tryFinish()",
+      "kind": "callback"
+    },
+    {
+      "step": "s13",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "finishNow() 合并事务",
+      "kind": "call"
+    },
+    {
+      "step": "s14",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "onTransactionReady(syncId, merged)",
+      "kind": "callback"
+    },
+    {
+      "step": "s15",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "buildFinishTransaction / buildCleanupTransaction",
+      "kind": "call"
+    },
+    {
+      "step": "s16",
+      "from": "WMS",
+      "to": "SHELL",
+      "label": "ITransitionPlayer.onTransitionReady(token, info, t, finishT)",
+      "kind": "oneway"
+    },
+    {
+      "step": "s17",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "onTransitionReadyInner → ready 队列",
+      "kind": "call"
+    },
+    {
+      "step": "s18",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "dispatchReady → track 空闲？",
+      "kind": "call"
+    },
+    {
+      "step": "s19",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "playTransition + setupAnimHierarchy",
+      "kind": "call"
+    },
+    {
+      "step": "s20",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "handler.startAnimation(info, t, finishT)",
+      "kind": "call"
+    },
+    {
+      "step": "s21",
+      "from": "SHELL",
+      "to": "SF",
+      "label": "reparent leash / 建背景层 → apply",
+      "kind": "binder"
+    },
+    {
+      "step": "s22",
+      "from": "SHELL",
+      "to": "WMS",
+      "label": "apply(finishT) → finishTransition(token, wct)",
+      "kind": "binder"
+    },
+    {
+      "step": "s23",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "Transition.finishTransition → apply(cleanup)",
+      "kind": "call"
+    },
+    {
+      "step": "s24",
+      "from": "WMS",
+      "to": "SHELL",
+      "label": "track 释放 → processReadyQueue 放行下一个",
+      "kind": "callback"
+    },
+    {
+      "step": "s27",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "startCollecting() → COLLECTING → start() → STARTED",
+      "kind": "state"
+    },
+    {
+      "step": "s28",
+      "from": "WMS",
+      "to": "SF",
+      "label": "SyncSet timeout 兜底：onTimeout → 强制 finish",
+      "kind": "callback"
+    },
+    {
+      "step": "s30",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "commitVisibleActivities / Wallpapers",
+      "kind": "call"
+    },
+    {
+      "step": "s31",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "getLeashSurface + createAndAddRootLeash",
+      "kind": "call"
+    },
+    {
+      "step": "s32",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "onMerged：合并 finishT",
+      "kind": "call"
+    },
+    {
+      "step": "s33",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "dispatchReady：sleep/sync 先清场",
+      "kind": "call"
+    },
+    {
+      "step": "s34",
+      "from": "SHELL",
+      "to": "SHELL",
+      "label": "Remote / Default / Mixed handler 轮询",
+      "kind": "call"
+    },
+    {
+      "step": "s35",
+      "from": "SHELL",
+      "to": "SF",
+      "label": "背景层 + 可动画容器 → apply",
+      "kind": "binder"
+    },
+    {
+      "step": "s36",
+      "from": "SHELL",
+      "to": "WMS",
+      "label": "apply(finishT) → finishTransition",
+      "kind": "binder"
+    },
+    {
+      "step": "s37",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "cleanup / postCleanupOnFailure",
+      "kind": "call"
+    },
+    {
+      "step": "s38",
+      "from": "WMS",
+      "to": "SHELL",
+      "label": "abort → onAbort → onTransitionConsumed",
+      "kind": "oneway"
+    },
+    {
+      "step": "s40",
+      "from": "WMS",
+      "to": "WMS",
+      "label": "checkEnterPipOnFinish / legacy listener",
+      "kind": "call"
+    }
+  ],
+  "p0": [
+    {
+      "id": "tc-request-if-needed",
+      "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+      "sig": "Transition requestTransitionIfNeeded(",
+      "symbol": "TransitionController.requestTransitionIfNeeded",
+      "why": "决定「复用 collecting 转场」还是「新建一个」，是所有转场的第一处分叉。",
+      "hint": 910,
+      "start": 910,
+      "end": 933
+    },
+    {
+      "id": "tc-request-start",
+      "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+      "sig": "TransitionRequestInfo.FullscreenRequestChange fullscreenRequestChange) {",
+      "symbol": "TransitionController.requestStartTransition",
+      "why": "组装 TransitionRequestInfo 的唯一实现；display 未 enable 与 flushing 都在这里早退。",
+      "hint": 996,
+      "start": 996,
+      "end": 1069
+    },
+    {
+      "id": "tr-start",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "sig": "void start() {",
+      "symbol": "Transition.start",
+      "why": "PENDING→STARTED 的状态推进点，决定 startT 何时对 Shell 可见。",
+      "hint": 880,
+      "start": 880,
+      "end": 898
+    },
+    {
+      "id": "tr-collect",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "sig": "void collect(@NonNull WindowContainer wc)",
+      "symbol": "Transition.collect",
+      "why": "决定谁参与本次转场、以及起始画面快照的时机。",
+      "hint": 903,
+      "start": 903,
+      "end": 939
+    },
+    {
+      "id": "tr-abort",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "sig": "void abort() {",
+      "symbol": "Transition.abort",
+      "why": "中止路径：通知 Shell 释放 anim surface，且仍要按顺序 finish。",
+      "hint": 1949,
+      "start": 1949,
+      "end": 1977
+    },
+    {
+      "id": "tr-ready",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "sig": "public void onTransactionReady(int syncId",
+      "symbol": "Transition.onTransactionReady",
+      "why": "全链路最长的一段：把 SyncSet 结果翻译成 TransitionInfo + startT + finishT。",
+      "hint": 2034,
+      "start": 2034,
+      "end": 2305
+    },
+    {
+      "id": "tr-build-finish",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "sig": "private void buildFinishTransaction(",
+      "symbol": "Transition.buildFinishTransaction",
+      "why": "「挂回来」的唯一出口，Shell 动画漏 apply 它就会留下悬挂 leash。",
+      "hint": 1313,
+      "start": 1313,
+      "end": 1347
+    },
+    {
+      "id": "woc-start",
+      "file": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+      "sig": "private IBinder startTransition(@WindowManager.TransitionType int type,",
+      "symbol": "WindowOrganizerController.startTransition",
+      "why": "Shell 回传 WCT 的落点，权限校验、syncId 绑定、legacy 兼容都在这里。",
+      "hint": 341,
+      "start": 341,
+      "end": 449
+    },
+    {
+      "id": "blast-try-finish",
+      "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+      "sig": "private boolean tryFinish() {",
+      "symbol": "BLASTSyncEngine.SyncSet.tryFinish",
+      "why": "判定「这一拍所有参与者都画完了吗」的闸门。",
+      "hint": 198,
+      "start": 198,
+      "end": 217
+    },
+    {
+      "id": "blast-finish-now",
+      "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+      "sig": "private void finishNow() {",
+      "symbol": "BLASTSyncEngine.SyncSet.finishNow",
+      "why": "合并所有子事务并回调 listener，超时/合并/空集的兜底都在这里。",
+      "hint": 219,
+      "start": 219,
+      "end": 317
+    },
+    {
+      "id": "sh-request-start",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "sig": "public void requestStartTransition(@NonNull IBinder transitionToken,",
+      "symbol": "Transitions.requestStartTransition",
+      "why": "Shell 侧唯一 request 入口：认领 handler 并回传启动用 WCT。",
+      "hint": 1337,
+      "start": 1337,
+      "end": 1426
+    },
+    {
+      "id": "sh-play",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "sig": "private void playTransition(@NonNull ActiveTransition",
+      "symbol": "Transitions.playTransition",
+      "why": "真正开播：建层级、按认领顺序分派 handler。",
+      "hint": 1054,
+      "start": 1054,
+      "end": 1085
+    },
+    {
+      "id": "sh-finish",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "sig": "private void onFinish(IBinder token",
+      "symbol": "Transitions.onFinish",
+      "why": "apply finishT + finishTransition 的顺序契约在这里兑现。",
+      "hint": 1242,
+      "start": 1242,
+      "end": 1334
+    }
+  ],
+  "classes": [
+    {
+      "name": "TransitionController",
+      "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+      "tier": 0,
+      "side": "WMS",
+      "role": "转场总闸：建/复用 Transition、持有 player 列表、调 applyTransaction",
+      "members": [
+        "requestTransitionIfNeeded",
+        "requestStartTransition",
+        "createAndStartCollecting",
+        "setReady",
+        "isShellTransitionsEnabled"
+      ],
+      "fields": [
+        "mCollectingTransition",
+        "mTransitionPlayers",
+        "mAtm"
+      ]
+    },
+    {
+      "name": "Transition",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "tier": 1,
+      "side": "WMS",
+      "role": "一次转场的全部状态：SyncSet、参与者、TransitionInfo、finishT",
+      "members": [
+        "start",
+        "collect",
+        "onTransactionReady",
+        "buildFinishTransaction",
+        "finishTransition",
+        "abort"
+      ],
+      "fields": [
+        "mState",
+        "mSyncId",
+        "mParticipants",
+        "mTargets",
+        "mFinishTransaction"
+      ]
+    },
+    {
+      "name": "BLASTSyncEngine",
+      "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+      "tier": 1,
+      "side": "WMS",
+      "role": "以 syncId 拦住 Surface 事务，等所有参与者绘制完成",
+      "members": [
+        "startSyncSet",
+        "onTransactionReady",
+        "tryFinish",
+        "finishNow"
+      ],
+      "fields": [
+        "mSyncSets",
+        "mNextSyncId"
+      ]
+    },
+    {
+      "name": "WindowOrganizerController",
+      "file": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+      "tier": 0,
+      "side": "WMS",
+      "role": "IWindowOrganizerController 的实现：start/finish/applyTransaction",
+      "members": [
+        "startTransition",
+        "finishTransition",
+        "applyTransaction"
+      ],
+      "fields": [
+        "mGlobalLock",
+        "mAtm"
+      ]
+    },
+    {
+      "name": "TransitionInfo",
+      "file": "base/core/java/android/window/TransitionInfo.java",
+      "tier": 2,
+      "side": "AIDL",
+      "role": "跨进程描述一次转场：type、roots、changes（每个 change 带 leash/父/模式）",
+      "members": [
+        "getChanges",
+        "getRoot",
+        "getType"
+      ],
+      "fields": [
+        "mType",
+        "mChanges",
+        "mRoots"
+      ]
+    },
+    {
+      "name": "WindowContainerTransaction",
+      "file": "base/core/java/android/window/WindowContainerTransaction.java",
+      "tier": 2,
+      "side": "AIDL",
+      "role": "Shell 提前下发的窗口操作集合（reparent/order/bounds/visibility）",
+      "members": [
+        "reparent",
+        "setBounds",
+        "setHidden"
+      ],
+      "fields": [
+        "mOps"
+      ]
+    },
+    {
+      "name": "Transitions",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "tier": 1,
+      "side": "SHELL",
+      "role": "Shell 侧状态机：request 认领、ready 排队、play 分派、finish 收尾",
+      "members": [
+        "requestStartTransition",
+        "onTransitionReady",
+        "dispatchReady",
+        "playTransition",
+        "onFinish"
+      ],
+      "fields": [
+        "mTracks",
+        "mPendingTransitions",
+        "mReadyDuringSync"
+      ]
+    },
+    {
+      "name": "ActiveTransition",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "tier": 2,
+      "side": "SHELL",
+      "role": "Shell 对一个在途转场的持有物：token、info、startT、finishT、handler",
+      "members": [
+        "isSync",
+        "getToken"
+      ],
+      "fields": [
+        "mToken",
+        "mInfo",
+        "mStartT",
+        "mFinishT",
+        "mHandler"
+      ]
+    },
+    {
+      "name": "DefaultTransitionHandler",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java",
+      "tier": 2,
+      "side": "SHELL",
+      "role": "默认动画播放器：Activity 开合、壁纸、背景层",
+      "members": [
+        "startAnimation"
+      ],
+      "fields": [
+        "mAnimations",
+        "mTransactionPool"
+      ]
+    },
+    {
+      "name": "RemoteTransitionHandler",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java",
+      "tier": 2,
+      "side": "SHELL",
+      "role": "把动画委托给外部进程（Launcher/Recents）",
+      "members": [
+        "startAnimation",
+        "onTransitionConsumed"
+      ],
+      "fields": [
+        "mRequestedRemotes",
+        "mActiveRemote"
+      ]
+    },
+    {
+      "name": "SurfaceControl.Transaction",
+      "file": "base/core/java/android/view/SurfaceControl.java",
+      "tier": 3,
+      "side": "AIDL",
+      "role": "真正搬运 leash/buffer/input 信息的事务载体",
+      "members": [
+        "reparent",
+        "show",
+        "setAlpha",
+        "apply"
+      ],
+      "fields": []
+    }
+  ],
+  "architecture": {
+    "width": 1240,
+    "height": 560,
+    "groups": [
+      {
+        "id": "app",
+        "label": "应用进程",
+        "x": 20,
+        "y": 150,
+        "w": 250,
+        "h": 270,
+        "color": "#4c8dff"
+      },
+      {
+        "id": "wms",
+        "label": "system_server · WMS",
+        "x": 330,
+        "y": 60,
+        "w": 420,
+        "h": 450,
+        "color": "#ffb454"
+      },
+      {
+        "id": "shell",
+        "label": "SystemUI · Shell",
+        "x": 860,
+        "y": 60,
+        "w": 380,
+        "h": 300,
+        "color": "#33d6c0"
+      },
+      {
+        "id": "sf",
+        "label": "surfaceflinger",
+        "x": 860,
+        "y": 330,
+        "w": 380,
+        "h": 140,
+        "color": "#c792ea"
+      }
+    ],
+    "boxes": [
+      {
+        "id": "vr",
+        "group": "app",
+        "label": "ViewRootImpl",
+        "sub": "relayout / Transaction",
+        "x": 40,
+        "y": 200,
+        "w": 210,
+        "h": 54
+      },
+      {
+        "id": "act",
+        "group": "app",
+        "label": "Activity / Task",
+        "sub": "触发 start/finish",
+        "x": 40,
+        "y": 330,
+        "w": 210,
+        "h": 54
+      },
+      {
+        "id": "tc",
+        "group": "wms",
+        "label": "TransitionController",
+        "sub": "总闸 · 持有 player 列表",
+        "x": 350,
+        "y": 110,
+        "w": 380,
+        "h": 54
+      },
+      {
+        "id": "tr",
+        "group": "wms",
+        "label": "Transition",
+        "sub": "状态机 · 参与者 · finishT",
+        "x": 350,
+        "y": 195,
+        "w": 380,
+        "h": 54
+      },
+      {
+        "id": "blast",
+        "group": "wms",
+        "label": "BLASTSyncEngine",
+        "sub": "syncId 拦截事务",
+        "x": 350,
+        "y": 280,
+        "w": 180,
+        "h": 54
+      },
+      {
+        "id": "woc",
+        "group": "wms",
+        "label": "WindowOrganizerController",
+        "sub": "start / finish / apply",
+        "x": 520,
+        "y": 280,
+        "w": 200,
+        "h": 54
+      },
+      {
+        "id": "dcm",
+        "group": "wms",
+        "label": "DisplayContent",
+        "sub": "布局 · placement",
+        "x": 350,
+        "y": 365,
+        "w": 380,
+        "h": 54
+      },
+      {
+        "id": "sh",
+        "group": "shell",
+        "label": "Transitions",
+        "sub": "request → ready → play → finish",
+        "x": 875,
+        "y": 110,
+        "w": 350,
+        "h": 54
+      },
+      {
+        "id": "h1",
+        "group": "shell",
+        "label": "DefaultTransitionHandler",
+        "sub": "Shell 内置动画",
+        "x": 875,
+        "y": 195,
+        "w": 165,
+        "h": 54
+      },
+      {
+        "id": "h2",
+        "group": "shell",
+        "label": "RemoteTransitionHandler",
+        "sub": "委托 Launcher",
+        "x": 1050,
+        "y": 195,
+        "w": 175,
+        "h": 54
+      },
+      {
+        "id": "tracks",
+        "group": "shell",
+        "label": "Track 队列",
+        "sub": "每 track 一个 active",
+        "x": 875,
+        "y": 280,
+        "w": 350,
+        "h": 54
+      },
+      {
+        "id": "sflayer",
+        "group": "sf",
+        "label": "Layer / leash 树",
+        "sub": "合成与 present",
+        "x": 875,
+        "y": 360,
+        "w": 350,
+        "h": 54
+      }
+    ],
+    "edges": [
+      {
+        "from": "act",
+        "to": "tc",
+        "kind": "binder",
+        "label": "requestTransition"
+      },
+      {
+        "from": "vr",
+        "to": "tr",
+        "kind": "binder",
+        "label": "relayout / Transaction"
+      },
+      {
+        "from": "tc",
+        "to": "tr",
+        "kind": "call",
+        "label": "create / collect"
+      },
+      {
+        "from": "tr",
+        "to": "blast",
+        "kind": "call",
+        "label": "startSyncSet"
+      },
+      {
+        "from": "woc",
+        "to": "tr",
+        "kind": "call",
+        "label": "startTransition"
+      },
+      {
+        "from": "tr",
+        "to": "sh",
+        "kind": "oneway",
+        "label": "requestStart / onReady"
+      },
+      {
+        "from": "sh",
+        "to": "woc",
+        "kind": "binder",
+        "label": "start / finishTransition(WCT)"
+      },
+      {
+        "from": "sh",
+        "to": "h1",
+        "kind": "call",
+        "label": "play"
+      },
+      {
+        "from": "h1",
+        "to": "sflayer",
+        "kind": "binder",
+        "label": "",
+        "route": "below-right"
+      }
+    ]
+  },
+  "flow": {
+    "nodes": [
+      {
+        "id": "n0",
+        "kind": "start",
+        "label": "转场请求",
+        "x": 430,
+        "y": 44
+      },
+      {
+        "id": "n1",
+        "kind": "decision",
+        "label": "已有 collecting 转场？",
+        "x": 430,
+        "y": 150
+      },
+      {
+        "id": "n2",
+        "kind": "process",
+        "label": "createTransition + startSyncSet + collect",
+        "x": 430,
+        "y": 270
+      },
+      {
+        "id": "n3",
+        "kind": "process",
+        "label": "setReady(false)，等这个 ready-group",
+        "x": 800,
+        "y": 270
+      },
+      {
+        "id": "n4",
+        "kind": "process",
+        "label": "参与者绘制完成 → SyncSet 完成",
+        "x": 430,
+        "y": 370
+      },
+      {
+        "id": "n5",
+        "kind": "decision",
+        "label": "player 可用且未 flushing？",
+        "x": 430,
+        "y": 480
+      },
+      {
+        "id": "n6",
+        "kind": "process",
+        "label": "onTransitionReady → Shell 播动画",
+        "x": 430,
+        "y": 600
+      },
+      {
+        "id": "n7",
+        "kind": "process",
+        "label": "立即 apply + finish（无动画）",
+        "x": 800,
+        "y": 600
+      },
+      {
+        "id": "n8",
+        "kind": "process",
+        "label": "apply finishT → finishTransition",
+        "x": 430,
+        "y": 700
+      },
+      {
+        "id": "n9",
+        "kind": "end",
+        "label": "track 释放，下一转场放行",
+        "x": 430,
+        "y": 800
+      }
+    ],
+    "edges": [
+      {
+        "from": "n0",
+        "to": "n1",
+        "label": ""
+      },
+      {
+        "from": "n1",
+        "to": "n2",
+        "label": "否"
+      },
+      {
+        "from": "n1",
+        "to": "n3",
+        "label": "是"
+      },
+      {
+        "from": "n2",
+        "to": "n4",
+        "label": ""
+      },
+      {
+        "from": "n3",
+        "to": "n4",
+        "label": "合并"
+      },
+      {
+        "from": "n4",
+        "to": "n5",
+        "label": ""
+      },
+      {
+        "from": "n5",
+        "to": "n6",
+        "label": "是"
+      },
+      {
+        "from": "n5",
+        "to": "n7",
+        "label": "否 / 异常"
+      },
+      {
+        "from": "n6",
+        "to": "n8",
+        "label": ""
+      },
+      {
+        "from": "n7",
+        "to": "n8",
+        "label": ""
+      },
+      {
+        "from": "n8",
+        "to": "n9",
+        "label": ""
+      }
+    ]
+  },
+  "pitfalls": [
+    {
+      "case": "Shell 未注册 / fallbackTransitionPlayer",
+      "behavior": "只有 fallbackTransitionPlayer flag 打开时才预注册 FallbackPlayer；否则 player 为空期间请求直接返回 null（不建转场、无动画）",
+      "ref": "TransitionController.java:290（预注册）· 913（空则返回 null）"
+    },
+    {
+      "case": "display 未 enable",
+      "behavior": "mIsPlayerEnabled=false，且 requestStartTransition 里直接调内部 startTransition",
+      "ref": "TransitionController.java:1002-1010"
+    },
+    {
+      "case": "player 抛 RemoteException",
+      "behavior": "postCleanupOnFailure 自行 apply+finish，动画丢失但不漏事务",
+      "ref": "Transition.java:2265-2268"
+    },
+    {
+      "case": "SyncSet 超时",
+      "behavior": "SyncGroup.onTimeout 记录未完成容器并告警，随后 finishNow → onTransactionReady 照常收尾，不是降级 apply",
+      "ref": "BLASTSyncEngine.java:408-458 · Transition.java:2427（onTransactionCommitTimeout）"
+    },
+    {
+      "case": "Shell 忘了 apply finishT",
+      "behavior": "leash 挂在动画父节点上不回来，表现为「窗口消失但 Activity 还在」或输入错位",
+      "ref": "ITransitionPlayer.aidl 注释：apply after playing, before finish"
+    },
+    {
+      "case": "并发转场",
+      "behavior": "同 track 串行（ready 排队），可 merge；被合并方不再单独播放，finish 事务合并进主动画",
+      "ref": "Transitions.java:988 / 1037"
+    },
+    {
+      "case": "abort",
+      "behavior": "标记 mAborted，通知 handler onTransitionConsumed(aborted=true) 释放 anim surface，仍按 ready 顺序 finish",
+      "ref": "Transitions.java:1161"
+    },
+    {
+      "case": "并发 ready 被合并",
+      "behavior": "被合并方的 finishT 并入主动画，不再单独播放；perfetto 上只有 merge 记录",
+      "ref": "Transitions.java:993（onMerged）"
+    },
+    {
+      "case": "同步/睡眠期间到达的 ready",
+      "behavior": "压回 mReadyDuringSync 队首并 finishForSync 清场，清完才真正播",
+      "ref": "Transitions.java:798 / 1502"
+    },
+    {
+      "case": "旋转",
+      "behavior": "走 ScreenRotationAnimation（截图旋转），不经过 DefaultTransitionHandler 的 leash 动画",
+      "ref": "ScreenRotationAnimation.java:80"
+    },
+    {
+      "case": "外部 RemoteTransition 不回 finish",
+      "behavior": "转场停在 PLAYING，依赖 abort / flushRunningTransitions 收尾，期间新转场排队",
+      "ref": "RemoteTransitionHandler.java:108-230"
+    },
+    {
+      "case": "PiP 收尾判定",
+      "behavior": "checkEnterPipOnFinish 决定进 PiP 还是关闭，判断错会「退出闪进 PiP」",
+      "ref": "Transition.java:1451"
+    },
+    {
+      "case": "SYNC_METHOD 默认 METHOD_NONE",
+      "behavior": "默认不要求 App 重传 buffer，SyncSet 只是序号与顺序约束；BLAST 模式需 persist.wm.debug.shell_transit_blast=true 才开启",
+      "ref": "TransitionController.java:117-119"
+    }
+  ],
+  "relations": [
+    {
+      "from": "TransitionController",
+      "to": "Transition",
+      "label": "createTransition / 持有 collecting",
+      "kind": "owns"
+    },
+    {
+      "from": "Transition",
+      "to": "BLASTSyncEngine",
+      "label": "startSyncSet → syncId",
+      "kind": "uses"
+    },
+    {
+      "from": "Transition",
+      "to": "TransitionInfo",
+      "label": "build 出 info",
+      "kind": "owns"
+    },
+    {
+      "from": "WindowOrganizerController",
+      "to": "Transition",
+      "label": "fromBinder(token)",
+      "kind": "uses"
+    },
+    {
+      "from": "WindowOrganizerController",
+      "to": "WindowContainerTransaction",
+      "label": "applyTransaction",
+      "kind": "uses"
+    },
+    {
+      "from": "Transitions",
+      "to": "ActiveTransition",
+      "label": "mPendingTransitions",
+      "kind": "owns"
+    },
+    {
+      "from": "Transitions",
+      "to": "DefaultTransitionHandler",
+      "label": "startAnimation",
+      "kind": "uses"
+    },
+    {
+      "from": "Transitions",
+      "to": "RemoteTransitionHandler",
+      "label": "startAnimation",
+      "kind": "uses"
+    },
+    {
+      "from": "DefaultTransitionHandler",
+      "to": "SurfaceControl.Transaction",
+      "label": "reparent / leash",
+      "kind": "uses"
+    },
+    {
+      "from": "Transition",
+      "to": "SurfaceControl.Transaction",
+      "label": "finishT / cleanup",
+      "kind": "uses"
+    }
+  ],
+  "facts": [
+    "本分支没有第二套 <b>AppTransition</b>：所谓 legacy 转场，只是<b>没有 player 播动画</b>的同一套 Transition 机制（executeAppTransition 退化成 setReady）。",
+    "SyncSet 的作用是把「改了什么」和「画完了没」绑到同一个序号；但本分支 <b>SYNC_METHOD 默认 METHOD_NONE</b>（TransitionController.java:117-119），只有 persist.wm.debug.shell_transit_blast=true 时才要求 App 重传 buffer。",
+    "<b>finishT 必须早于 finishTransition</b>：Shell 把 leash 挂到动画父节点上，只有 apply(finishT) 才挂得回来；漏掉就是「窗口消失但 Activity 还在」或输入错位。",
+    "同一 track 串行、可 merge；<b>abort 仍按 ready 顺序 finish</b>，因为 finish 顺序是 Shell 与 WMS 之间唯一的对齐依据。",
+    "<b>FallbackPlayer 是 flag 行为</b>：只有 Flags.fallbackTransitionPlayer() 打开时才预注册（TransitionController.java:290）；否则 player 为空期间请求直接返回 null，连转场都不建。"
+  ],
+  "cards": [
+    {
+      "fn": "Transition.finishTransition",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "line": 1518,
+      "size": 323,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "关闭 start/finish 事务、apply cleanup、把 Transition 从 controller 摘除并释放 syncId；含中止/合并/已 finish 的多路分支。",
+      "risk": "任何一条分支漏 apply cleanup，都会留下悬挂 leash 或未释放的 SyncSet。",
+      "status": "card"
+    },
+    {
+      "fn": "Transitions.dispatchReady",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+      "line": 798,
+      "size": 114,
+      "thread": "wmshell.main",
+      "lock": "无（单线程）",
+      "purpose": "把 ready 的转场放进正确的 track：sleep/sync 时压回队首并 finishForSync；否则检查 track 空闲后 play。",
+      "risk": "track 状态判断错会让转场永远排队（表现为「点了没反应」）。",
+      "status": "card"
+    },
+    {
+      "fn": "Transition.getChangeFlags",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "line": 4258,
+      "size": 110,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "把一个 WindowContainer 翻译成 TransitionInfo.Change 的 flags/mode（show/hide、task/activity/壁纸、z 序）。",
+      "risk": "flag 算错会直接表现为动画对象错位或不该出现的层参与动画。",
+      "status": "card"
+    },
+    {
+      "fn": "Transition.handleLegacyRecentsStartBehavior",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "line": 2790,
+      "size": 86,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "Recents 旧起点行为兼容：决定 recents 动画从哪个任务开始、要不要先把它挪到前台。",
+      "risk": "与 Launcher 的 RemoteTransition 版本不匹配时会出现「recents 闪一下」。",
+      "status": "card"
+    },
+    {
+      "fn": "Transition.checkEnterPipOnFinish",
+      "file": "base/services/core/java/com/android/server/wm/Transition.java",
+      "line": 1451,
+      "size": 62,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "finish 时判断该 Activity 应进 PiP 还是正常关闭；决定是否提交可见性。",
+      "risk": "判断错误会表现为「退出时闪进 PiP」或「PiP 窗口残留」。",
+      "status": "card"
+    },
+    {
+      "fn": "TransitionController.flushRunningTransitions",
+      "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+      "line": 347,
+      "size": 59,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "Shell 崩溃/关机时把所有在途转场一次性收尾（走 FallbackPlayer），保证状态机不悬空。",
+      "risk": "漏掉某个转场会让后续 startTransition 被判「不允许」，系统卡在过渡态。",
+      "status": "card"
+    },
+    {
+      "fn": "TransitionController.tryStartCollectFromQueue",
+      "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+      "line": 1315,
+      "size": 52,
+      "thread": "WMS 线程",
+      "lock": "mGlobalLock",
+      "purpose": "从 pending 队列里挑下一个可以开始收集的转场，处理「前一个还没 ready」的排队语义。",
+      "risk": "排队顺序错会导致转场乱序、finishT 挂到错误的对象上。",
+      "status": "card"
+    },
+    {
+      "fn": "BLASTSyncEngine.onTimeout",
+      "file": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+      "line": 408,
+      "size": 51,
+      "thread": "WMS 线程（handler 回调）",
+      "lock": "mGlobalLock",
+      "purpose": "SyncSet 超时：告警「应用 ANR 可能跟随」，强制 finishNow，让转场降级为直接 apply。",
+      "risk": "超时阈值与窗口 dispatchingTimeout 不匹配时会误报或过晚。",
+      "status": "card"
+    },
+    {
+      "fn": "TransitionAnimationHelper.addBackgroundToTransition",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/TransitionAnimationHelper.java",
+      "line": 300,
+      "size": 52,
+      "thread": "wmshell.main",
+      "lock": "无",
+      "purpose": "为转场建背景色层（以 rootLeash 为父），给「打开/关闭」动画一个不会穿帮的底。",
+      "risk": "背景色取自 theme，取错会出现「闪白/闪黑」。",
+      "status": "card"
+    },
+    {
+      "fn": "RemoteTransitionHandler.startAnimation",
+      "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java",
+      "line": 123,
+      "size": 108,
+      "thread": "wmshell.main",
+      "lock": "无",
+      "purpose": "把动画交给外部进程（Launcher 的 RemoteTransition），并转发 finish/abort 事件；外部进程不来 finish 时由超时兜底。",
+      "risk": "远程进程崩溃或忘记回调 → 转场卡在 PLAYING，只能靠 abort/flush 收尾。",
+      "status": "card"
+    }
+  ],
+  "scope": [
+    "base/services/core/java/com/android/server/wm/Transition.java",
+    "base/services/core/java/com/android/server/wm/TransitionController.java",
+    "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java",
+    "base/services/core/java/com/android/server/wm/WindowOrganizerController.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultMixedHandler.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/ScreenRotationAnimation.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/SleepHandler.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/TransitionAnimationHelper.java",
+    "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultSurfaceAnimator.java"
+  ],
+  "glossary": [
+    {
+      "term": "Transition",
+      "text": "WMS 侧「一次转场」的对象：持有状态机、参与者、syncId、start/finish 两份事务。"
+    },
+    {
+      "term": "TransitionController",
+      "text": "转场总闸：决定新建还是复用 collecting 转场、持有 player 列表、把请求发给 Shell。"
+    },
+    {
+      "term": "BLASTSyncEngine",
+      "text": "按 syncId 拦截 Surface 事务的引擎：所有参与者到齐后合并成一个大事务回调。"
+    },
+    {
+      "term": "SyncSet / syncId",
+      "text": "同一 syncId 下的一组事务。seq 到齐前它们不会被 SF 提交，是「同一帧换装」的机制。"
+    },
+    {
+      "term": "WindowOrganizerController",
+      "text": "IWindowOrganizerController 的实现，Shell 与 App 下发的 WCT 都从这里进入 WMS。"
+    },
+    {
+      "term": "Shell / Transitions",
+      "text": "SystemUI 进程里的转场播放器：认领 handler、排队 track、播动画、回调 finish。"
+    },
+    {
+      "term": "player (ITransitionPlayer)",
+      "text": "Shell 注册给 WMS 的 oneway 回调接口，WMS 用它请求播放和交付 ready 的转场。"
+    },
+    {
+      "term": "leash",
+      "text": "给动画用的临时父节点：Shell 搬的是 leash，不是窗口本身；结束后要 reparent 回去。"
+    },
+    {
+      "term": "reparent",
+      "text": "改 SurfaceControl 的父节点。动画期把 leash 挂到自定义父层，结束时挂回原位。"
+    },
+    {
+      "term": "TransitionInfo / Change",
+      "text": "跨进程描述一次转场的结构：类型、根节点、每个参与者的 leash、模式与目标状态。"
+    },
+    {
+      "term": "WCT",
+      "text": "WindowContainerTransaction，一批窗口操作（reparent/bounds/可见性）的集合。"
+    },
+    {
+      "term": "startT / finishT",
+      "text": "startT=开播事务（show/定位），finishT=还原事务（挂回、重置属性）。finishT 必须在 finish 前 apply。"
+    },
+    {
+      "term": "track",
+      "text": "Shell 的执行通道。同一 track 同一时刻只允许一个 active transition，其余排队。"
+    },
+    {
+      "term": "ready-group",
+      "text": "一组必须一起 ready 的参与者标记；用于让 collecting 转场等某个请求。"
+    },
+    {
+      "term": "merge",
+      "text": "已在播的转场吸收后到的 ready：被合并方的 finishT 并入主动画，不再单独播放。"
+    },
+    {
+      "term": "FallbackPlayer",
+      "text": "没有 Shell 时顶上的 player：不做动画，直接 startTransition，保证状态机照走。"
+    },
+    {
+      "term": "abort",
+      "text": "中止转场：状态置 ABORTED、通知 handler 释放 anim surface，仍按 ready 顺序 finish。"
+    },
+    {
+      "term": "PerfettoTransitionTracer",
+      "text": "把每次转场的 request/start/ready/finish 打点到 perfetto 的 tracer，排查时序第一现场。"
+    }
+  ],
+  "scenario": {
+    "title": "一次真实转场：从点图标到动画结束（冷启动 Calculator，示数量级）",
+    "events": [
+      {
+        "t": "0 ms",
+        "label": "点击图标",
+        "detail": "Launcher 发起 startActivity，Binder 进 system_server"
+      },
+      {
+        "t": "~2 ms",
+        "label": "建 Transition",
+        "detail": "PENDING，申请 syncId；新窗口还没绘制"
+      },
+      {
+        "t": "~3 ms",
+        "label": "collect",
+        "detail": "旧窗口（桌面）与新窗口加入 SyncSet，事务被锁住"
+      },
+      {
+        "t": "~4 ms",
+        "label": "请求播放",
+        "detail": "Shell 收到 request，选定 handler（Launcher RemoteTransition 或默认）"
+      },
+      {
+        "t": "~8 ms",
+        "label": "SyncSet 到齐",
+        "detail": "app 首帧绘制完成，所有参与者 commit 回调到齐"
+      },
+      {
+        "t": "8.3 ms",
+        "label": "开始播放",
+        "detail": "正好落在下一个 VSYNC 上，TransitionInfo 交给 handler"
+      },
+      {
+        "t": "~250 ms",
+        "label": "动画结束",
+        "detail": "apply finishT → finishTransition → track 释放"
+      }
+    ]
+  },
+  "branchTables": [
+    {
+      "step": "s02",
+      "fn": "TransitionController.requestTransitionIfNeeded",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:910",
+      "rows": [
+        {
+          "cond": "mTransitionPlayers.isEmpty() && !fallback",
+          "then": "直接 return null",
+          "effect": "没有 player：不建转场，本次请求被丢弃"
+        },
+        {
+          "cond": "chain.isCollecting()",
+          "then": "setReady(readyGroupRef,false)",
+          "effect": "复用 collecting 的转场，等这个 ready-group"
+        },
+        {
+          "cond": "否则",
+          "then": "createTransition + requestStartTransition",
+          "effect": "新转场进入 PENDING，随后请求播放"
+        }
+      ]
+    },
+    {
+      "step": "s07",
+      "fn": "TransitionController.requestStartTransition",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:996",
+      "rows": [
+        {
+          "cond": "mIsWaitingForDisplayEnabled && !fallback",
+          "then": "mIsPlayerEnabled=false；post 内部 startTransition",
+          "effect": "display 未 enable：跳过 Shell，无动画直接 STARTED"
+        },
+        {
+          "cond": "isFlushing() || transition.isAborted()",
+          "then": "abort/early return",
+          "effect": "关机或已中止：不再请求播放"
+        },
+        {
+          "cond": "默认",
+          "then": "组装 TransitionRequestInfo 并 oneway 调 player",
+          "effect": "Shell 收到 request，转场等待 Shell 回 WCT"
+        }
+      ]
+    },
+    {
+      "step": "s18",
+      "fn": "Transitions.dispatchReady",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:798",
+      "rows": [
+        {
+          "cond": "TRANSIT_SLEEP 或 active.isSync()",
+          "then": "压回 mReadyDuringSync 队首，对所有忙碌 track finishForSync",
+          "effect": "先清场；清完才放行 sleep"
+        },
+        {
+          "cond": "所属 track 空闲",
+          "then": "playTransition(active)",
+          "effect": "真正开播"
+        },
+        {
+          "cond": "track 忙",
+          "then": "留在队列，等 onFinish → processReadyQueue",
+          "effect": "串行，不会两个转场同时抢同一个 track"
+        }
+      ]
+    },
+    {
+      "step": "s22",
+      "fn": "Transitions.onFinish",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1242",
+      "rows": [
+        {
+          "cond": "正常结束",
+          "then": "apply(finishT) → mOrganizer.finishTransition(token,wct)",
+          "effect": "leash 挂回、WMS 收尾"
+        },
+        {
+          "cond": "被合并（mMerged）",
+          "then": "只合并 finishT，不再单独 finish",
+          "effect": "由主动画统一收尾"
+        },
+        {
+          "cond": "已 abort",
+          "then": "释放 anim surface 后仍按序 finish",
+          "effect": "状态一致，画面可能闪一下"
+        }
+      ]
+    },
+    {
+      "step": "s38",
+      "fn": "Transition.abort",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1949",
+      "rows": [
+        {
+          "cond": "已 FINISHED / ABORTED",
+          "then": "直接返回",
+          "effect": "幂等，不重复收尾"
+        },
+        {
+          "cond": "正在 collecting",
+          "then": "通知 controller 摘除 + player 释放",
+          "effect": "不再进入播放"
+        },
+        {
+          "cond": "默认",
+          "then": "状态推 ABORTED，buildFinishTransaction 后 finish",
+          "effect": "事务不漏，动画丢弃"
+        }
+      ]
+    }
+  ],
+  "learningPath": [
+    {
+      "time": "5 分钟",
+      "goal": "建立坐标：谁在哪个进程、转场分几段",
+      "route": "全景·架构 → 流程图 → 回到左栏把 42 步标题扫一遍"
+    },
+    {
+      "time": "30 分钟",
+      "goal": "打通主线：一次转场从触发到播放",
+      "route": "精读第 2→27 步（触发/采集/请求播放/汇合/开播），每步只看 tldr、为什么需要、到底发生了什么"
+    },
+    {
+      "time": "90 分钟",
+      "goal": "补齐分支：合并、sync/sleep、abort、旋转、PiP、超时",
+      "route": "精读第 28→42 步 + 降级与坑（12 条）"
+    },
+    {
+      "time": "半天",
+      "goal": "能改代码：逐行读懂 13 个热点函数",
+      "route": "代码逐行（按芯片切换）+ 方法清单核对调用关系 + 用 dumpsys/perfetto 验证"
+    }
+  ],
+  "verify": {
+    "minSteps": 40,
+    "minMethods": 400,
+    "minCards": 8,
+    "minPitfalls": 10
+  }
+}

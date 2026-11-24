@@ -1,0 +1,36 @@
+{
+  "step": "s00",
+  "title": "前置：Shell 把自己注册成 TransitionPlayer",
+  "tldr": "SystemUI 初始化时把 Transitions 的 binder 交给 WMS；没有这条注册就没有转场。",
+  "why": "没有这一步，TransitionController.mTransitionPlayers 始终是空的：requestTransitionIfNeeded 在 913 行直接返回 null，一个 Transition 都不建，窗口的 relayout 与 WCT 立刻上屏，既没有被 syncId 拦住，也没有 leash 可搬。用户能感知的是 Activity 打开/关闭没有动画、新窗口在一帧内跳到终态；更隐蔽的是 getTransitionPlayer() 在 500-502 会返回 null，任何绕过那些早退走到 1060 的路径都会直接 NPE，把 system_server 一起带走。",
+  "concepts": [
+    { "term": "ITransitionPlayer", "text": "WMS 定义、Shell 实现的 oneway 接口；注册它等于告诉 WMS「动画我来接」。" },
+    { "term": "TransitionPlayerRecord", "text": "WMS 侧的注册记录：player binder、死链监听、所属进程，unregister 时靠它摘栈。" },
+    { "term": "flushRunningTransitions", "text": "注册表被清空时的收尾：playing/waiting/collecting/queued 四类转场全部 abort。" }
+  ],
+  "walk": [
+    { "call": "shellInit.addInitCallback(this::onInit, this)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:398", "what": "不在构造函数里注册，等 ShellInit 回调，确保 ShellController 与 binder 就绪。" },
+    { "call": "mOrganizer.registerTransitionPlayer(mPlayerImpl)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:436", "what": "把 TransitionPlayerImpl 这个 Stub 交给 ShellTaskOrganizer 发出去。" },
+    { "call": "public void registerTransitionPlayer(ITransitionPlayer player)", "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:2742", "what": "落点先校验权限，再用 calling pid/uid 查 WindowProcessController。" },
+    { "call": "mTransitionController.registerTransitionPlayer(player, wpc)", "ref": "base/services/core/java/com/android/server/wm/WindowOrganizerController.java:2754", "what": "在 mGlobalLock 内转交 controller；从这里开始转场才有唯一的消息出口。" },
+    { "call": "mTransitionPlayers.add(new TransitionPlayerRecord(player, playerProc))", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:465", "what": "入栈；getTransitionPlayer 取的是 getLast()，所以后注册的排在前面生效。" },
+    { "call": "tryStartCollectFromQueue()", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:466", "what": "注册完立刻尝试启动此前被排队/卡住的收集，开机阶段靠它接上第一拍。" }
+  ],
+  "state": [
+    { "field": "TransitionController.mTransitionPlayers", "before": "空，isFlushing() 返回 true", "after": "含一条 TransitionPlayerRecord（player + proc）", "note": "为空时 requestTransitionIfNeeded 在 913 直接返回 null" },
+    { "field": "TransitionController.isShellTransitionsEnabled()", "before": "false", "after": "true", "note": "510 行：非空，或打开了 fallbackTransitionPlayer 的标志" },
+    { "field": "TransitionPlayerRecord.mDeath", "before": "null", "after": "linkToDeath 注册的 DeathRecipient", "note": "1889-1897；Shell 进程死亡时回调 unregisterTransitionPlayer" }
+  ],
+  "threads": "SystemUI 的 wmshell.main 线程发起，binder 落到 system_server 的 binder 线程，WindowOrganizerController 在 mGlobalLock 内完成注册；之后的 Shell 回调都是 oneway 且过 mMainExecutor，不再占这个 binder 线程。",
+  "pitfalls": [
+    "注册本身是同步 binder，失败直接抛 RuntimeException（Transitions:437-439）；但之后的 requestStartTransition / onTransitionReady 全是 oneway，WMS 只保证「已投递」，不保证 Shell 已经处理。",
+    "Flags.unifyShellBinders() 打开时 WindowOrganizerController.registerTransitionPlayer 直接抛 IllegalStateException（2744-2745），player 改由 TaskOrganizerController.registerTaskOrganizer 一起带进去（566-570）：注册路径不止一条。",
+    "注册后不是永久的：进程死亡 → DeathRecipient → unregisterTransitionPlayer（470）→ flushRunningTransitions，正在播的动画会被 abort，画面直接跳到终态。",
+    "FallbackPlayer 只有 Flags.fallbackTransitionPlayer() 打开时才被预先塞进 mTransitionPlayers（290）；默认配置下它压根没注册，别指望 WMS 自己兜底。"
+  ],
+  "debug": [
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS_MIN，然后 adb logcat -s WindowManager | grep 'Registering transition player'（打日志的代码在 454-463）。",
+    "adb shell dumpsys activity service SystemUIService WMShell，看 Transitions 段的 Handlers 顺序与 Pending/Ready 队列（Transitions.dump:2253）。"
+  ],
+  "next": "第 2 步「转场被发起」：Shell 已就位，接下来看 WMS 里谁第一个喊「要转场」。"
+}

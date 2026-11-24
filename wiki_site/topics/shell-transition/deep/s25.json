@@ -1,0 +1,36 @@
+{
+  "step": "s25",
+  "title": "分支：没有 Shell 时的 FallbackPlayer",
+  "tldr": "Shell 没起来或已经死掉时，core 自己当播放器：起止事务背靠背 apply 后立刻 finish。",
+  "why": "如果没有这个兜底：开机阶段（Shell 尚未注册 transition player）和 Shell 崩溃之后，requestStartTransition 找不到播放器，转场要么卡到 collection 超时，要么没有任何人去调 finishTransition——用户看到的是开机后第一个画面停住、或者桌面重启后一直停在启动器上不动。FallbackPlayer 保证「没有动画也要把事务落地」。",
+  "concepts": [
+    { "term": "FallbackPlayer", "text": "core 自己实现的 ITransitionPlayer，asBinder() 为 null，只在没有真播放器时被选中。" },
+    { "term": "setupStartState", "text": "只按 mode 把 leash show/hide 进起止事务，不设位移缩放——fallback 本来就不播动画。" },
+    { "term": "mIsPlayerEnabled", "text": "Transition 上的开关。flag 关闭时走它：onTransactionReady 就地收尾，不调 Shell。" }
+  ],
+  "walk": [
+    { "call": "mTransitionPlayers.add(new TransitionPlayerRecord(new FallbackPlayer(mAtm, mHandler), null /* proc */));", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:290", "what": "setWindowManager 时把 fallback 压进栈底：永远在，但优先级最低。" },
+    { "call": "return mTransitionPlayers.getLast().mPlayer;", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:502", "what": "取栈顶：Shell 注册过就是 Shell；没注册或已注销就是 fallback。" },
+    { "call": "mAtm.getWindowOrganizerController().startTransition(transitionToken, null /* wct */);", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:2206", "what": "收到请求不挑 handler、不改 WCT，直接把转场推到 STARTED。" },
+    { "call": "setupStartState(info, t, finishT);", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:2162", "what": "只处理可见性：TO_FRONT 在两个事务都 show，TO_BACK 在 finish 里 hide。" },
+    { "call": "t.apply();", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:2163", "what": "起始与结束事务背靠背应用，中间没有动画帧，所以是瞬切而不是白屏。" },
+    { "call": "mController.getTransitionPlayer().onTransitionReady(mToken, info, transaction, mFinishTransaction);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2260", "what": "core 把就绪的 info 交给栈顶播放器，此时它可能就是 fallback。" },
+    { "call": "postCleanupOnFailure();", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2284", "what": "flag 关闭时的 else 分支：没有播放器就 apply 并 finish，状态机照走。" }
+  ],
+  "state": [
+    { "field": "mTransitionPlayers", "before": "空（Shell 未注册）", "after": "[FallbackPlayer]；Shell 注册后为 [FallbackPlayer, Shell]", "note": "只在 Flags.fallbackTransitionPlayer() 打开时才加入（289 行）" },
+    { "field": "Transition.mState", "before": "COLLECTING", "after": "PLAYING → FINISHED，中间没有动画阶段", "note": "fallback 的 onTransitionReady 直接 post finishTransition（2169 行）" },
+    { "field": "SurfaceControl.Transaction", "before": "startT 与 finishT 隔着动画分别 apply", "after": "2163/2164 两行连续 apply", "note": "所以是瞬切" }
+  ],
+  "threads": "FallbackPlayer 的每个回调都 mHandler.post 到 ActivityTaskManagerService.mH（即 WMS 主线程）执行；调用点在持 mGlobalLock 的 binder 线程上，oneway 不阻塞。",
+  "pitfalls": [
+    "FallbackPlayer 不是「Shell 一崩就运行时切换」：它只由 Flags.fallbackTransitionPlayer() 决定是否常驻；flag 关闭时走的是 mIsPlayerEnabled=false 那条老路（TransitionController.java:1002-1010），两条路径别混。",
+    "fallback 下 wct 永远是 null（2206 行传 null），所以 handler 想在 start WCT 里做的事在 fallback 期间不会发生。",
+    "别以为 fallback 期间状态机被跳过：COLLECTING/STARTED/PLAYING/FINISHED 一个不少，只是没有动画帧，于是 dump 看着正常而画面是硬跳。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS：找 [FALLBACK] 前缀（受 WM_DEBUG_WINDOW_TRANSITIONS_MIN 控制）与 Apply and finish immediately because player is disabled（Transition.java:2282）。",
+    "logcat -b system -s TransitionController：Transition was lost (controller isn't tracking it)（TransitionController.java:2199）说明 token 已不在 core 的追踪表里。"
+  ],
+  "next": "第 38 步「中止：abort 不是「不回滚」」。"
+}

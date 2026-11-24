@@ -1,0 +1,372 @@
+{
+  "id": "out-present",
+  "title": "Output::present",
+  "file": "base/../native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+  "sig": "Output::present(const compositionengine::CompositionRefreshArgs& refreshArgs)",
+  "span": [
+    450,
+    519
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "ftl::Future<std::monostate> Output::present(",
+      "kind": "note",
+      "text": "本帧输出总入口：SF 主线程在 prepare 后调用，返回 future 供上层等异步 HWC 上屏"
+    },
+    {
+      "at": 2,
+      "quote": "const compositionengine::CompositionRefreshArgs& refreshArgs) {",
+      "kind": "data",
+      "text": "refreshArgs 只读共享：本帧脏区、layer 栈、待 uncache 的 bufferIds，供所有 output 复用"
+    },
+    {
+      "at": 3,
+      "quote": "std::optional<panopticon::ExclusiveToken> exclusive;",
+      "kind": "trace",
+      "text": "panopticon 独占 token 只做 trace 归属；构造压栈、析构 pop，必须与 slice 配对"
+    },
+    {
+      "at": 4,
+      "quote": "if (auto displayId = getDisplayId(); displayId) {",
+      "kind": "branch",
+      "text": "仅物理显示有 displayId（虚拟显示为 nullopt）才压栈；判空避免拿无效 id 去 to_string"
+    },
+    {
+      "at": 5,
+      "quote": "exclusive.emplace(panopticon::exclusive(std::to_string(displayId->valu",
+      "kind": "trace",
+      "text": "id 压栈后本帧内 share()/slice() 只归这块屏；未 make() 注册则无 trace，不崩"
+    },
+    {
+      "at": 8,
+      "quote": "if (CC_UNLIKELY(SFTRACE_ENABLED())) {",
+      "kind": "trace",
+      "text": "SFTRACE 关闭时 CC_UNLIKELY 短路，vsyncIn 字符串每帧都不构造，省掉格式化开销"
+    },
+    {
+      "at": 9,
+      "quote": "const auto stringifyExpectedPresentTime = [this, &refreshArgs]() -> st",
+      "kind": "trace",
+      "text": "局部 lambda 延迟生成 trace 后缀：只有真打 trace 才算 expectedPresentTime"
+    },
+    {
+      "at": 10,
+      "quote": "return getDisplayIdVariant()",
+      "kind": "data",
+      "text": "取 DisplayIdVariant（物理/虚拟/无）；and_then 任一步为空则整条 nullopt"
+    },
+    {
+      "at": 11,
+      "quote": ".and_then(asPhysicalDisplayId)",
+      "kind": "data",
+      "text": "只留 PhysicalDisplayId：虚拟显示被过滤，因 frameTargets 只按物理 id 建索引"
+    },
+    {
+      "at": 12,
+      "quote": ".and_then([&refreshArgs](PhysicalDisplayId id) {",
+      "kind": "data",
+      "text": "查本帧 FrameTarget；frameTargets 由所有 output 共享，这里按自己 id 取"
+    },
+    {
+      "at": 13,
+      "quote": "return refreshArgs.frameTargets.get(id);",
+      "kind": "branch",
+      "text": "get 返回 optional FrameTargetPtr；空表示该屏本帧无 vsync 目标，交给 or_else"
+    },
+    {
+      "at": 14,
+      "quote": "})",
+      "kind": "data",
+      "text": "收束 frameTarget 查询：无值时保持 nullopt，继续走下方 transform 链"
+    },
+    {
+      "at": 15,
+      "quote": ".transform([](const auto& frameTargetPtr) {",
+      "kind": "data",
+      "text": "解引用 FrameTarget 取 expectedPresentTime()，即该屏期望上屏时刻"
+    },
+    {
+      "at": 16,
+      "quote": "return frameTargetPtr.get()->expectedPresentTime();",
+      "kind": "data",
+      "text": "lambda 返回 TimePoint，transform 只在有值时执行，保持 optional 链语义"
+    },
+    {
+      "at": 17,
+      "quote": "})",
+      "kind": "data",
+      "text": "收束 expectedPresentTime 提取，把 TimePoint 以 optional 形式传给下一环"
+    },
+    {
+      "at": 18,
+      "quote": ".transform([](TimePoint expectedPresentTime) {",
+      "kind": "trace",
+      "text": "转成字符串；now() 此刻才取，vsyncIn 是实时余量而不是早先快照"
+    },
+    {
+      "at": 19,
+      "quote": "return base::StringPrintf(\" vsyncIn %.2fms\",",
+      "kind": "trace",
+      "text": "拼「 vsyncIn X.XXms」；负值表示已错过期望上屏时刻，是掉帧关键信号"
+    },
+    {
+      "at": 20,
+      "quote": "ticks<std::milli, float>(expectedPresentTime -",
+      "kind": "data",
+      "text": "ticks<std::milli,float> 显式纳秒转毫秒，避免 TimePoint 隐式单位换算出错"
+    },
+    {
+      "at": 21,
+      "quote": "TimePoint::now()));",
+      "kind": "data",
+      "text": "期望时刻减 now() 得剩余时间；差值可为负，%.2f 如实打印不截断为 0"
+    },
+    {
+      "at": 22,
+      "quote": "})",
+      "kind": "data",
+      "text": "收束差值格式化，得到可选字符串，交给 or_else 兜底"
+    },
+    {
+      "at": 23,
+      "quote": ".or_else([] {",
+      "kind": "branch",
+      "text": "or_else 兜底：无物理 id 或无 frameTarget（虚拟屏）时给空串，trace 名无 vsyncIn"
+    },
+    {
+      "at": 24,
+      "quote": "// There is no vsync for this output.",
+      "kind": "note",
+      "text": "注释说明兜底理由：该 output 本帧无 vsync，不参与 HWC 上屏节拍，没有余量可算"
+    },
+    {
+      "at": 25,
+      "quote": "return std::make_optional(std::string());",
+      "kind": "data",
+      "text": "返回空串而非 nullopt，保证 value() 恒有值，缺 vsync 也不会断链"
+    },
+    {
+      "at": 26,
+      "quote": "})",
+      "kind": "data",
+      "text": "收束空串兜底 lambda，回到 optional<string> 链上继续 value()"
+    },
+    {
+      "at": 27,
+      "quote": ".value();",
+      "kind": "state",
+      "text": "value() 断言链上已有结果；前面若漏兜底会在此崩，故每步都补 or_else"
+    },
+    {
+      "at": 28,
+      "quote": "};",
+      "kind": "trace",
+      "text": "结束 stringifyExpectedPresentTime 定义，后续只在 SFTRACE_FORMAT 调用"
+    },
+    {
+      "at": 29,
+      "quote": "SFTRACE_FORMAT(\"%s for %s%s\", __func__, mNamePlusId.c_str(),",
+      "kind": "trace",
+      "text": "打 present 的 SFTRACE：函数名、mNamePlusId 与 vsync 余量，定位哪块屏在排队"
+    },
+    {
+      "at": 30,
+      "quote": "stringifyExpectedPresentTime().c_str());",
+      "kind": "trace",
+      "text": "此时才真正调 lambda 拼串；外层 if 已保证 trace 开启，这里不再判断"
+    },
+    {
+      "at": 32,
+      "quote": "ALOGV(__FUNCTION__);",
+      "kind": "trace",
+      "text": "ALOGV 逐帧打函数名，仅 verbose 级别输出，用于确认 present 被调到"
+    },
+    {
+      "at": 33,
+      "quote": "updateColorProfile(refreshArgs);",
+      "kind": "state",
+      "text": "更新色彩 profile（HDR/SDR ratio、色彩模式），影响 renderengine 与 HWC 处理"
+    },
+    {
+      "at": 34,
+      "quote": "updateCompositionState(refreshArgs);",
+      "kind": "state",
+      "text": "刷新本帧合成状态（isEnabled、脏区、layer 栈），后面 plan/beginFrame 依赖它"
+    },
+    {
+      "at": 35,
+      "quote": "planComposition();",
+      "kind": "state",
+      "text": "跑 Planner 规划合成策略（GPU/DPU 分工、缓存 set），定各 layer 合成类型"
+    },
+    {
+      "at": 36,
+      "quote": "writeCompositionState(refreshArgs);",
+      "kind": "state",
+      "text": "把规划结果写回各 OutputLayer 状态（source crop、transform 等），供 HWC 使用"
+    },
+    {
+      "at": 37,
+      "quote": "setColorTransform(refreshArgs);",
+      "kind": "state",
+      "text": "色彩矩阵变了才写入 state 并标脏全屏；相同则 return，避免无谓全屏重绘"
+    },
+    {
+      "at": 38,
+      "quote": "beginFrame();",
+      "kind": "state",
+      "text": "按脏区与 layer 数决定是否必须重合成，并让 RenderSurface 备 buffer；跳帧时后续早返回"
+    },
+    {
+      "at": 40,
+      "quote": "if (isPowerHintSessionEnabled()) {",
+      "kind": "branch",
+      "text": "只有 ADPF 电源提示会话开启才需清 GPU 参与标记，关闭时省掉这次写入"
+    },
+    {
+      "at": 41,
+      "quote": "// always reset the flag before the composition prediction",
+      "kind": "note",
+      "text": "注释：必须在合成预测前清标记，否则上帧遗留的 GPU 参与状态污染本帧上报"
+    },
+    {
+      "at": 42,
+      "quote": "setHintSessionRequiresRenderEngine(false);",
+      "kind": "state",
+      "text": "把 requiresRenderEngine 清为 false；本帧若走 client 合成后面会重新置 true"
+    },
+    {
+      "at": 44,
+      "quote": "GpuCompositionResult result;",
+      "kind": "data",
+      "text": "result 存 prepare 的 ready fence 或可复用 buffer，由 finishFrame 决定是否重取"
+    },
+    {
+      "at": 45,
+      "quote": "const bool predictCompositionStrategy = canPredictCompositionStrategy(",
+      "kind": "branch",
+      "text": "预测条件：output 启用、开关开、有上帧 HWC 结果、layer hash 未变、确有 client 合成层"
+    },
+    {
+      "at": 46,
+      "quote": "if (predictCompositionStrategy) {",
+      "kind": "thread",
+      "text": "可预测时走异步：阻塞的 chooseCompositionStrategy 丢到 HwcAsyncWorker，与合成重叠"
+    },
+    {
+      "at": 47,
+      "quote": "result = prepareFrameAsync();",
+      "kind": "thread",
+      "text": "prepareFrameAsync 返回 GpuCompositionResult；未命中时内部 reset 策略并重算 fence"
+    },
+    {
+      "at": 48,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "不可预测分支：策略无法预猜，只能本线程串行问 HWC，无法与合成并行"
+    },
+    {
+      "at": 49,
+      "quote": "prepareFrame();",
+      "kind": "thread",
+      "text": "同步 prepareFrame 在 SF 主线程完成选策略与合成，慢但结果确定"
+    },
+    {
+      "at": 52,
+      "quote": "devOptRepaintFlash(refreshArgs);",
+      "kind": "branch",
+      "text": "devOpt 调试：delay 非空才闪一帧脏区再 sleep，正常 nullopt 直接返回"
+    },
+    {
+      "at": 53,
+      "quote": "finishFrame(std::move(result));",
+      "kind": "state",
+      "text": "result 交给 finishFrame：合成后 queueBuffer，ready fence 交给 RenderSurface 上屏"
+    },
+    {
+      "at": 54,
+      "quote": "ftl::Future<std::monostate> future;",
+      "kind": "thread",
+      "text": "future 表示 present 何时结束；异步由 worker 兑现，同步立刻可用，上层统一 get()"
+    },
+    {
+      "at": 55,
+      "quote": "const bool flushEvenWhenDisabled = !refreshArgs.bufferIdsToUncache.emp",
+      "kind": "data",
+      "text": "有待 uncache 的 buffer 时即使本帧不合成也要 flush，否则 buffer 永不释放"
+    },
+    {
+      "at": 56,
+      "quote": "if (mOffloadPresent) {",
+      "kind": "branch",
+      "text": "mOffloadPresent 置位时本帧把阻塞的 HWC present 交给异步 worker，见下注释"
+    },
+    {
+      "at": 57,
+      "quote": "future = presentFrameAndReleaseLayersAsync(flushEvenWhenDisabled);",
+      "kind": "thread",
+      "text": "在 HwcAsyncWorker 线程跑 presentFrameAndReleaseLayers，带 panopticon 注册"
+    },
+    {
+      "at": 59,
+      "quote": "// Only offload for this frame. The next frame will determine whether ",
+      "kind": "note",
+      "text": "注释：只对本帧 offload，下一帧重新评估，避免无条件长期占用 worker"
+    },
+    {
+      "at": 60,
+      "quote": "// needs to be offloaded. Leave the HwcAsyncWorker in place. For one t",
+      "kind": "note",
+      "text": "注释：保留 HwcAsyncWorker——它正在 HWC present 中，销毁会打断未完成调用"
+    },
+    {
+      "at": 61,
+      "quote": "// it is currently presenting. Further, it may be needed next frame, a",
+      "kind": "note",
+      "text": "注释：下一帧可能还要用，按需重建线程/队列会带来额外延迟与抖动"
+    },
+    {
+      "at": 62,
+      "quote": "// we don't want to churn.",
+      "kind": "note",
+      "text": "注释收尾：不 churn 即不重建 worker，代价是线程常驻但避免与 HWC 调用竞争"
+    },
+    {
+      "at": 63,
+      "quote": "mOffloadPresent = false;",
+      "kind": "state",
+      "text": "本帧用完即清标记，下一帧回同步路径，除非再次 offloadPresentNextFrame()"
+    },
+    {
+      "at": 64,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "未 offload 分支：直接在 SF 主线程同步完成 present 与 layer 释放"
+    },
+    {
+      "at": 65,
+      "quote": "presentFrameAndReleaseLayers(flushEvenWhenDisabled);",
+      "kind": "ipc",
+      "text": "同步 presentFrameAndReleaseLayers：本线程下发 HWC present 并释放 layer，阻塞到返回"
+    },
+    {
+      "at": 66,
+      "quote": "future = ftl::yield<std::monostate>({});",
+      "kind": "thread",
+      "text": "用 ftl::yield 造已就绪 future，让上层对所有 output 统一 get()"
+    },
+    {
+      "at": 68,
+      "quote": "renderCachedSets(refreshArgs);",
+      "kind": "thread",
+      "text": "present 发起后顺手渲染 Planner 缓存 set（备下帧），把 GPU 工作与本次上屏重叠"
+    },
+    {
+      "at": 69,
+      "quote": "return future;",
+      "kind": "thread",
+      "text": "返回 future；CompositionEngine 收集所有 output 的 future 后统一等待 HWC"
+    }
+  ]
+}

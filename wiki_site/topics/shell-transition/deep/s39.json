@@ -1,0 +1,38 @@
+{
+  "step": "s39",
+  "title": "旋转与睡眠的特殊处理",
+  "tldr": "旋转不逐窗口做动画，而是拿一张全屏截图自己转；睡眠则发一个空转场，把在播的动画一脚踢完。",
+  "why": "旋转时所有窗口的 bounds 同时变，逐窗口做动画必然在边界露缝：如果不管，旋转过程中会看到黑边、旧内容被拉伸错位；ScreenRotationAnimation 用一张旋转前截图盖住这些缝。睡眠时如果还等动画播完，用户按下电源键后屏幕已经黑了动画却还在跑，既白费电又会把下一次亮屏的转场堵在后面；SLEEP 转场就是给所有在播动画发「立刻结束」的信号。",
+  "concepts": [
+    { "term": "ScreenRotationAnimation", "text": "旋转动画：把 snapshot reparent 到自己的 effect leash 上转动淡出，新内容反向转再转回。" },
+    { "term": "SLEEP sentinel", "text": "TRANSIT_SLEEP 不带真实 change，只当信号：看到它就把在播动画 force finish。" },
+    { "term": "rotation hint", "text": "DisplayChange 上的 rotationAnimation，决定走哪套动画；SEAMLESS 直接不建动画。" }
+  ],
+  "walk": [
+    { "call": "if (info.getType() == TRANSIT_SLEEP || active.isSync()) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:801", "what": "睡眠/sync 先不进 track，而是塞进积压队列队首，再逐个 track 强制收尾。" },
+    { "call": "finishForSync(active.mToken, i, null /* forceFinish */);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:814", "what": "给在播的动画发合并信号（用一个假 SLEEP info），逼它尽快收尾。" },
+    { "call": "public boolean startAnimation(@NonNull IBinder transition, @NonNull TransitionInfo info, ...)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/SleepHandler.java:37", "what": "真正轮到 SLEEP 时它只做两件事：确认没有真实 change，apply 起始事务并立刻 finish。" },
+    { "call": "if (info.hasChangesOrSideEffects()) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/SleepHandler.java:41", "what": "一旦 SLEEP 里带了真实 change 就报错并返回 false，避免把真实改动当信号吞掉。" },
+    { "call": "if (mode == TRANSIT_CHANGE && change.hasFlags(FLAG_IS_DISPLAY)) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:412", "what": "旋转入口：只有 display 自身的 CHANGE 才可能走截图旋转动画。" },
+    { "call": "startRotationAnimation(startTransaction, change, info, anim, flags, onAnimFinish)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:419", "what": "按 hint 建动画；SEAMLESS 或 JUMPCUT 在上一行 416 就被跳过，走不到这里。" },
+    { "call": "final ScreenRotationAnimation anim = new ScreenRotationAnimation(mContext, ...)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:931", "what": "构造时就建好 effect leash，并把截图（core 拍的 snapshot 或现拍）挂上去。" },
+    { "call": "if (mScreenshotLayer == null) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/ScreenRotationAnimation.java:309", "what": "截图没建成就不可能有动画：返回 null，调用方丢掉结果，旋转变成直接切。" }
+  ],
+  "state": [
+    { "field": "change 的 snapshot 父节点", "before": "原容器下（或尚不存在）", "after": "新建的 effect leash（mAnimLeash，层 = SCREEN_FREEZE_LAYER_BASE）", "note": "setParent(rootLeash) 在 164 行，reparent 在 174 行" },
+    { "field": "真实内容 leash 的父节点", "before": "root leash", "after": "mBackEffectSurface（仅当有可见壁纸，215 行）", "note": "所以进入动画动的是 BackEffect 而不是原始 leash" },
+    { "field": "mReadyDuringSync", "before": "空", "after": "SLEEP 占在 index 0（804 行），所有 track finish 完才移出（821 行）", "note": "它排在最前，所以能压住后面的 ready" }
+  ],
+  "threads": "旋转动画的构建在 Shell 主线程（分派 handler 时），逐帧执行在 mAnimExecutor；SLEEP 的 force finish 也在 Shell 主线程（finishForSync 用 executeDelayed 等 SYNC_ALLOWANCE_MS）。两者都不持 mGlobalLock。",
+  "pitfalls": [
+    "旋转动画不是给每个 app 窗口单独做的：它只动 display 的 change 和一张截图，同转场里其它 change 只被设 bounds 或跳过，所以去普通 app 动画分支找旋转逻辑是找不到的。",
+    "「旋转没动画」的三个常见原因：hint 是 SEAMLESS（416 行跳过）、mScreenshotLayer 为 null（309 行返回 null）、display 根本没参与这个转场（412 行条件不成立）。",
+    "SLEEP 不是熄屏动画：它只是个空转场，用来 force finish 在播的动画；真正的熄屏由 DisplayPowerController 那一侧负责。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS：旋转时看 Start finish-for-sync track %d（Transitions.java:812）与 Forcing transition to finish due to sync timeout（1516 行）。",
+    "抓 Perfetto 时找名为 RotationLayer 的 layer（ScreenRotationAnimation.java:199）：不出现就说明截图没建成，动画根本没开始。",
+    "SleepHandler 的异常日志打在 ShellTransitions tag 上：Real changes included in a SLEEP transition（SleepHandler.java:42）。"
+  ],
+  "next": "第 40 步「PiP 与 legacy 兼容」。"
+}

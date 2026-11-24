@@ -1,0 +1,34 @@
+{
+  "step": "s17",
+  "title": "Shell 把 transition 移入 ready 队列",
+  "tldr": "Shell 在主线程把 token 从 pending 队列挪进 ready，绑上 startT 与 finishT。",
+  "why": "WMS 送来的两个事务必须有人接管：startT 是本拍所有参与者的起始状态，finishT 是还原事务，后面 playTransition 直接把它们传给 handler（1068），onFinish 也靠它们收尾。丢了引用，动画没有起点快照，播完也没人能把 leash 挂回去——用户会看到窗口停在动画中途的位置。另外这里还是唯一一次「把转场登记进待播队列」的地方：不登记就没有顺序，两个转场会同时改同一批 leash 的父节点，表现为后一个窗口盖着前一个的残影闪一下。",
+  "concepts": [
+    { "term": "ActiveTransition", "text": "Shell 侧对一笔在途转场的持有物：token、info、startT、finishT 和认领它的 handler。" },
+    { "term": "mPendingTransitions / mReadyDuringSync", "text": "前者存已 request 未 ready 的转场；后者存已 ready 却被 sync 或 sleep 挡住的转场。" }
+  ],
+  "walk": [
+    { "call": "mMainExecutor.execute(() -> Transitions.this.onTransitionReady(iBinder, transitionInfo, t, finishT))", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:2044", "what": "binder 线程只转发：状态全在 wmshell.main 上改，不和 request 阶段抢字段。" },
+    { "call": "if (com.android.window.flags.Flags.transitMixpatcherBase()) { mMixpatcher.onTransitionReady(...); return; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:739", "what": "新动画规划器开着时整条 ready 流程交给 mixpatcher，Inner 版不执行。" },
+    { "call": "int activeIdx = findByToken(mPendingTransitions, transitionToken);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:752", "what": "用 token 反查 request 阶段建的 ActiveTransition；查不到说明两边 token 错位。" },
+    { "call": "final ActiveTransition active = mPendingTransitions.remove(activeIdx);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:779", "what": "先出队再加工，保证同一个 token 只被处理一次。" },
+    { "call": "active.mInfo = info; active.mStartT = t; active.mFinishT = finishT;", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:781", "what": "把 WMS 给的三个对象绑上去，后面 handler 与收尾全靠这三个引用。" },
+    { "call": "if (!mReadyDuringSync.isEmpty()) { mReadyDuringSync.add(active); } else { dispatchReady(active); }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:787", "what": "有 sync/sleep 积压就先排队等闸门；否则立刻进 track 分派。" }
+  ],
+  "state": [
+    { "field": "mPendingTransitions", "before": "含该 token 的 ActiveTransition（request 阶段加入）", "after": "已移除（779），长度减一", "note": "队列空了且各 track 空闲，Shell 就算 idle" },
+    { "field": "ActiveTransition.mInfo / mStartT / mFinishT", "before": "null（request 阶段只有 token 和可能认领的 handler）", "after": "info、t、finishT 三个非空引用（780 到 782）", "note": "nullness 在 onFinish 里被用来判断转场是否畸形" },
+    { "field": "mReadyDuringSync", "before": "空", "after": "末尾追加 active（787 到 788）", "note": "这里只按到达顺序排队，不做优先级排序" }
+  ],
+  "threads": "wmshell.main（mMainExecutor）。TransitionPlayerImpl 在 binder 线程只 post 一次，真正改状态的代码全在主线程，所以不需要 mGlobalLock——那是 system_server 的锁。",
+  "pitfalls": [
+    "在 mPendingTransitions 里找不到 token 时会 Log.wtf 并临时造一个 fallback ActiveTransition（773 到 776）；这是坏状态，不是正常分支，看到它先怀疑 request/ready 的 token 串了。",
+    "重复 ready 不是丢弃：758 先 t.apply()，再把 finishT merge 进已在途的那个（759 到 763），否则那笔事务就泄漏了。",
+    "进了 mReadyDuringSync 不等于在播：它只是被挡在闸门外，动画一帧都还没开始。"
+  ],
+  "debug": [
+    "ProtoLog WM_SHELL_TRANSITIONS：搜 onTransitionReady (#，后面跟 debugId 和完整 info 树（750）",
+    "adb shell dumpsys activity service com.android.systemui/.SystemUIService 的 Transitions 段会打印 mPendingTransitions、mReadyDuringSync 和各 track 的内容"
+  ],
+  "next": "第 24 步「合并：后到的 ready 被吸收」：进入 track 前先看这条 track 是不是已经有动画在播，忙就先尝试合并。"
+}

@@ -1,0 +1,1242 @@
+{
+  "id": "tr-ready",
+  "title": "Transition.onTransactionReady",
+  "file": "base/services/core/java/com/android/server/wm/Transition.java",
+  "sig": "public void onTransactionReady(int syncId, SurfaceControl.Transaction transaction)",
+  "span": [
+    2034,
+    2305
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "public void onTransactionReady(int syncId, SurfaceControl.Transaction ",
+      "kind": "note",
+      "text": "BLAST 同步组就绪回调：合并后的 start 事务在此交给 WM，随后发给 Shell 播放动画。"
+    },
+    {
+      "at": 2,
+      "quote": "if (syncId != mSyncId) {",
+      "kind": "branch",
+      "text": "校验回调 syncId 必须等于当前 mSyncId；不等说明是过期/陈旧同步组的迟到回调。"
+    },
+    {
+      "at": 3,
+      "quote": "Slog.e(TAG, \"Unexpected Sync ID \" + syncId + \". Expected \" + mSyncId);",
+      "kind": "trace",
+      "text": "记录实际与期望 syncId 的错误日志，便于排查 Shell 与 WM 同步组错配导致的动画丢失。"
+    },
+    {
+      "at": 4,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "提前 return：不提交可见性、不推进状态，这个过期回调被整体丢弃，不污染当前过渡。"
+    },
+    {
+      "at": 7,
+      "quote": "for (int i = 0; i < mReadyTracker.mMet.size(); ++i) {",
+      "kind": "trace",
+      "text": "遍历 mReadyTracker.mMet（已满足的就绪条件），仅在 ProtoLog 打开时才输出诊断。"
+    },
+    {
+      "at": 8,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS, \"#%d: Met con",
+      "kind": "trace",
+      "text": "调试日志：打印 syncId 与第 i 个已满足条件，用于分析为何此刻判定参与者全部就绪。"
+    },
+    {
+      "at": 9,
+      "quote": "mSyncId, mReadyTracker.mMet.get(i));",
+      "kind": "trace",
+      "text": "日志参数：当前 mSyncId 与该已满足的 ReadyCondition 对象描述。"
+    },
+    {
+      "at": 12,
+      "quote": "// Commit the visibility of visible activities before calculateTransit",
+      "kind": "note",
+      "text": "注释：必须在 calculateTransitionInfo 之前提交可见 activity，否则 TaskInfo 里看不到目标。"
+    },
+    {
+      "at": 13,
+      "quote": "// TaskInfo can be visible. Also it needs to be done before moveToPlay",
+      "kind": "note",
+      "text": "注释：还必须早于 moveToPlaying，否则 ActivityRecord#canShowWindows() 会拒绝显示窗口。"
+    },
+    {
+      "at": 14,
+      "quote": "// ActivityRecord#canShowWindows() may reject to show its window. The ",
+      "kind": "note",
+      "text": "注释续：强调提交时机必须早于状态推进到 STATE_PLAYING。"
+    },
+    {
+      "at": 15,
+      "quote": "// needs to be updated for STATE_ABORT.",
+      "kind": "note",
+      "text": "注释：STATE_ABORT 分支同样依赖这次提交，保证中止时窗口可见状态一致。"
+    },
+    {
+      "at": 16,
+      "quote": "commitVisibleActivities(transaction);",
+      "kind": "state",
+      "text": "对可见 activity 调 commitVisibility(fromTransition) 并提交其绘制到 start 事务。"
+    },
+    {
+      "at": 17,
+      "quote": "commitVisibleWallpapers(transaction);",
+      "kind": "state",
+      "text": "按 shouldWallpaperBeVisible() 提交壁纸可见性，并把可见壁纸子窗口 surface 准备进 start 事务。"
+    },
+    {
+      "at": 19,
+      "quote": "if (mTransactionPresentedListeners != null) {",
+      "kind": "branch",
+      "text": "存在已注册的“事务已呈现”监听器（addTransactionPresentedListener）时需挂到本次事务上。"
+    },
+    {
+      "at": 20,
+      "quote": "final List<Runnable> transactionPresentedListeners =",
+      "kind": "data",
+      "text": "先拷贝一份监听器快照，待置空原引用后使用，避免回调执行期间被并发修改。"
+    },
+    {
+      "at": 21,
+      "quote": "new ArrayList<>(mTransactionPresentedListeners);",
+      "kind": "data",
+      "text": "构造 ArrayList 拷贝 mTransactionPresentedListeners，隔离注册表与本轮回调执行。"
+    },
+    {
+      "at": 23,
+      "quote": "addTransactionPresentedCallback(transaction, () -> {",
+      "kind": "ipc",
+      "text": "给 start 事务加完成监听：SurfaceFlinger 呈现该事务后在 binder 线程触发这些监听器。"
+    },
+    {
+      "at": 24,
+      "quote": "for (int i = 0; i < transactionPresentedListeners.size(); i++) {",
+      "kind": "branch",
+      "text": "遍历快照中的监听器；某个监听器抛异常会中断后续监听器（此处无 try/catch）。"
+    },
+    {
+      "at": 25,
+      "quote": "transactionPresentedListeners.get(i).run();",
+      "kind": "note",
+      "text": "执行第 i 个已呈现监听器，驱动依赖首帧上屏的后续逻辑（如 IME 动画衔接）。"
+    },
+    {
+      "at": 29,
+      "quote": "mTransactionPresentedListeners = null;",
+      "kind": "state",
+      "text": "置空 mTransactionPresentedListeners，保证监听器只在本次过渡的首个事务上执行一次。"
+    },
+    {
+      "at": 32,
+      "quote": "// Fall-back to the default display if there isn't one participating.",
+      "kind": "note",
+      "text": "注释：若本次过渡没有参与 display，就退回默认 display，避免后续空指针。"
+    },
+    {
+      "at": 33,
+      "quote": "final DisplayContent primaryDisplay = !mTargetDisplays.isEmpty() ? mTa",
+      "kind": "state",
+      "text": "取首个参与 display 作为 primaryDisplay，供中止回滚、锁屏旗标与 pending 事务使用。"
+    },
+    {
+      "at": 34,
+      "quote": ": mController.mAtm.mRootWindowContainer.getDefaultDisplay();",
+      "kind": "state",
+      "text": "fallback 分支：无参与 display 时取 RootWindowContainer 默认显示，保证有显示上下文。"
+    },
+    {
+      "at": 36,
+      "quote": "if (mState == STATE_ABORT) {",
+      "kind": "branch",
+      "text": "中止分支：过渡已被 abort，不播放动画也不发 Shell，只做可见性回滚与清理后返回。"
+    },
+    {
+      "at": 37,
+      "quote": "mController.onAbort(this);",
+      "kind": "state",
+      "text": "通知 TransitionController 该过渡已中止，将其从收集/播放队列摘除并触发相关回调。"
+    },
+    {
+      "at": 38,
+      "quote": "if (mConfigAtEndActivities != null) {",
+      "kind": "branch",
+      "text": "若收集阶段为等动画结束而推迟了 config 分发，中止时必须恢复，否则这些 activity 永久卡住。"
+    },
+    {
+      "at": 39,
+      "quote": "for (int i = 0; i < mConfigAtEndActivities.size(); ++i) {",
+      "kind": "branch",
+      "text": "遍历被推迟配置分发的 activity 列表。"
+    },
+    {
+      "at": 40,
+      "quote": "mConfigAtEndActivities.get(i).resumeConfigurationDispatch();",
+      "kind": "state",
+      "text": "恢复该 activity 的配置分发，否则 onConfigurationChanged 永不到达，UI 布局停在不一致状态。"
+    },
+    {
+      "at": 42,
+      "quote": "mConfigAtEndActivities = null;",
+      "kind": "data",
+      "text": "清空列表释放引用，防止该过渡被复用时重复 resume。"
+    },
+    {
+      "at": 44,
+      "quote": "for (int i = mChanges.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历所有 ChangeInfo，把动画期间被抑制的 surface 可见性变化补回 animator。"
+    },
+    {
+      "at": 45,
+      "quote": "final ChangeInfo ci = mChanges.valueAt(i);",
+      "kind": "data",
+      "text": "取出第 i 个变更项（容器及其目标可见性、旗标等）。"
+    },
+    {
+      "at": 46,
+      "quote": "if (ci.mVisible != ci.mContainer.isVisibleRequested()) {",
+      "kind": "branch",
+      "text": "目标可见性与实际 isVisibleRequested 不一致时必须刷新，否则中止后窗口停在错误可见状态。"
+    },
+    {
+      "at": 47,
+      "quote": "mWmService.mAnimator.addSurfaceVisibilityUpdate(ci.mContainer);",
+      "kind": "state",
+      "text": "把该容器加入 WindowAnimator 的可见性更新队列，下一帧按真实 request 重算。"
+    },
+    {
+      "at": 50,
+      "quote": "primaryDisplay.getPendingTransaction().merge(transaction);",
+      "kind": "state",
+      "text": "把 Shell 传来的 start 事务合入 primaryDisplay 的 pending 事务，由下一帧统一 apply。"
+    },
+    {
+      "at": 51,
+      "quote": "primaryDisplay.scheduleAnimation();",
+      "kind": "state",
+      "text": "调度一次动画/事务提交，确保刚合入的事务不会无限期滞留在 pending 队列。"
+    },
+    {
+      "at": 52,
+      "quote": "mSyncId = -1;",
+      "kind": "state",
+      "text": "复位 mSyncId=-1，标记本次过渡不再关联任何同步组，防止迟到回调再次命中。"
+    },
+    {
+      "at": 53,
+      "quote": "mOverrideOptions = null;",
+      "kind": "state",
+      "text": "清空覆盖动画选项，避免被后续过渡误用。"
+    },
+    {
+      "at": 54,
+      "quote": "cleanUpInternal();",
+      "kind": "state",
+      "text": "内部清理（sync 组、leash 等），完成中止路径的收尾。"
+    },
+    {
+      "at": 55,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "提前返回：中止流程到此结束，绝不进入 STATE_PLAYING，也不会通知 Shell 播放。"
+    },
+    {
+      "at": 58,
+      "quote": "if (mState != STATE_STARTED) {",
+      "kind": "branch",
+      "text": "非 STATE_STARTED（如仍在 COLLECTING）却开始播放属于异常，仅告警不 return 以免丢事务。"
+    },
+    {
+      "at": 59,
+      "quote": "Slog.e(TAG, \"Playing a Transition which hasn't started! #\" + mSyncId +",
+      "kind": "trace",
+      "text": "错误日志：在未 start 的过渡上播放，提示很可能在 Shell 侧抛异常。"
+    },
+    {
+      "at": 60,
+      "quote": "+ \"likely cause an exception in Shell\");",
+      "kind": "trace",
+      "text": "日志续行：说明后果是 Shell 可能抛异常，此处不中断流程。"
+    },
+    {
+      "at": 63,
+      "quote": "mState = STATE_PLAYING;",
+      "kind": "state",
+      "text": "推进到 STATE_PLAYING：此后不再接受参与者改动，也不再收集新变更。"
+    },
+    {
+      "at": 64,
+      "quote": "mStartTransaction = transaction;",
+      "kind": "state",
+      "text": "保存 Shell 合并后的 start 事务；失败/中止路径需要 apply 它，否则窗口操作丢失。"
+    },
+    {
+      "at": 65,
+      "quote": "mFinishTransaction = mWmService.mTransactionFactory.get();",
+      "kind": "state",
+      "text": "新建 finish 事务（动画结束后才 apply），用于隐藏/复位被过渡的容器。"
+    },
+    {
+      "at": 67,
+      "quote": "// Flags must be assigned before calculateTransitionInfo. Otherwise it",
+      "kind": "note",
+      "text": "注释：flags 必须在 calculateTransitionInfo 之前设置，否则 info 中不生效。"
+    },
+    {
+      "at": 68,
+      "quote": "if (primaryDisplay.isKeyguardLocked()) {",
+      "kind": "branch",
+      "text": "锁屏时需给 info 打 TRANSIT_FLAG_KEYGUARD_LOCKED，供 Shell 选择解锁动画。"
+    },
+    {
+      "at": 69,
+      "quote": "mFlags |= TRANSIT_FLAG_KEYGUARD_LOCKED;",
+      "kind": "state",
+      "text": "置位 keyguard 旗标（只增不减），失败则 Shell 误判为非锁屏动画而用错动画。"
+    },
+    {
+      "at": 72,
+      "quote": "// This is the only (or last) transition that is collecting, so we nee",
+      "kind": "note",
+      "text": "注释：本次是收集队列中最后一个（或唯一）过渡，需补报遗留的 order change。"
+    },
+    {
+      "at": 73,
+      "quote": "// leftover order changes.",
+      "kind": "note",
+      "text": "注释续：否则顺序变化丢失，z 序与 Shell 认知不一致。"
+    },
+    {
+      "at": 74,
+      "quote": "collectOrderChanges(mController.mWaitingTransitions.isEmpty());",
+      "kind": "state",
+      "text": "参数表示是否为最后一个收集者：是则连当前顺序一并上报，避免 order change 丢失。"
+    },
+    {
+      "at": 75,
+      "quote": "// focus change is not necessarily an order change",
+      "kind": "note",
+      "text": "注释：焦点变化不一定是顺序变化，因此要单独收集。"
+    },
+    {
+      "at": 76,
+      "quote": "collectFocusChanges();",
+      "kind": "state",
+      "text": "收集焦点变化并可能补进 mParticipants，保证 Shell 知道哪个窗口取得焦点。"
+    },
+    {
+      "at": 77,
+      "quote": "collectLifecycleChanges();",
+      "kind": "state",
+      "text": "收集生命周期变化（受 flag 控制），避免生命周期事件随过渡一起漏报。"
+    },
+    {
+      "at": 79,
+      "quote": "if (mPriorVisibilityMightBeDirty) {",
+      "kind": "branch",
+      "text": "该标记表示 prior visibility 可能被提前 commit 污染，需在算 targets 前修正。"
+    },
+    {
+      "at": 80,
+      "quote": "updatePriorVisibility();",
+      "kind": "state",
+      "text": "对 activity/task 重算真实可见性，否则 visible→invisible 的目标判断会出错。"
+    },
+    {
+      "at": 83,
+      "quote": "// Resolve the animating targets from the participants.",
+      "kind": "note",
+      "text": "注释：从参与者中解析出真正需要播放动画的目标集合。"
+    },
+    {
+      "at": 84,
+      "quote": "mTargets = calculateTargets(mParticipants, mChanges);",
+      "kind": "state",
+      "text": "计算动画目标（可能把子容器提升到父级），后续 finish/cleanup 事务都依赖它。"
+    },
+    {
+      "at": 86,
+      "quote": "// Disable client-drawn rounded corners when transition starts",
+      "kind": "note",
+      "text": "注释：过渡开始时逐 task 关闭客户端绘制圆角优化。"
+    },
+    {
+      "at": 88,
+      "quote": "// Check whether the participants were animated from back navigation.",
+      "kind": "note",
+      "text": "注释：让返回手势控制器参与本次过渡，判断参与者是否来自 back 导航。"
+    },
+    {
+      "at": 89,
+      "quote": "mController.mAtm.mBackNavigationController.onTransactionReady(this, mT",
+      "kind": "ipc",
+      "text": "把 targets 与 start/finish 事务交给返回导航控制器，可能插入截图 leash 或替换动画。"
+    },
+    {
+      "at": 90,
+      "quote": "transaction, mFinishTransaction);",
+      "kind": "data",
+      "text": "续行参数：start（transaction）与 finish（mFinishTransaction）两个事务供其写入。"
+    },
+    {
+      "at": 91,
+      "quote": "final TransitionInfo info = calculateTransitionInfo(mType, mFlags, mTa",
+      "kind": "state",
+      "text": "生成发给 Shell 的 TransitionInfo（changes/roots），是 Shell 播放动画的唯一数据来源。"
+    },
+    {
+      "at": 92,
+      "quote": "info.setDebugId(mSyncId);",
+      "kind": "trace",
+      "text": "把 syncId 写为 info 的 debugId，便于 Shell 与 wm trace 对齐同一次过渡。"
+    },
+    {
+      "at": 93,
+      "quote": "mController.assignTrack(this, info);",
+      "kind": "state",
+      "text": "为过渡分配动画 track 并决定是否与其它播放中过渡同步，影响并行动画节奏。"
+    },
+    {
+      "at": 95,
+      "quote": "mController.moveToPlaying(this);",
+      "kind": "state",
+      "text": "从收集队列移入播放队列：此处之后 mCollectingTransition 被清空或换成下一个等待者。"
+    },
+    {
+      "at": 97,
+      "quote": "// Repopulate the displays based on the resolved targets.",
+      "kind": "note",
+      "text": "注释：按 info 解析出的 root 重建参与 display 列表，可能新增或减少。"
+    },
+    {
+      "at": 98,
+      "quote": "final DisplayContent[] participantDisplays = mTargetDisplays.toArray(",
+      "kind": "data",
+      "text": "先把旧 mTargetDisplays 快照成数组，供 finish 事务与 legacy 回调使用。"
+    },
+    {
+      "at": 99,
+      "quote": "new DisplayContent[mTargetDisplays.size()]);",
+      "kind": "data",
+      "text": "按 size 精确分配数组，避免 toArray 返回 Object[] 再强转。"
+    },
+    {
+      "at": 100,
+      "quote": "mTargetDisplays.clear();",
+      "kind": "state",
+      "text": "清空后按 info 的 roots 重新填充，保证 display 集合与最终动画一致。"
+    },
+    {
+      "at": 101,
+      "quote": "for (int i = 0; i < info.getRootCount(); ++i) {",
+      "kind": "branch",
+      "text": "遍历 TransitionInfo 的每个 root，一个 root 对应一个 display 的动画根。"
+    },
+    {
+      "at": 102,
+      "quote": "final DisplayContent dc = mController.mAtm.mRootWindowContainer.getDis",
+      "kind": "data",
+      "text": "按 root 的 displayId 找到对应 DisplayContent。"
+    },
+    {
+      "at": 103,
+      "quote": "info.getRoot(i).getDisplayId());",
+      "kind": "data",
+      "text": "续行：getDisplayId() 取自 root Change，用于定位 DisplayContent。"
+    },
+    {
+      "at": 104,
+      "quote": "mTargetDisplays.add(dc);",
+      "kind": "state",
+      "text": "把解析出的 display 加入目标集合，后续逐 display 处理圆角、壁纸与旋转。"
+    },
+    {
+      "at": 107,
+      "quote": "for (int i = 0; i < mTargets.size(); ++i) {",
+      "kind": "branch",
+      "text": "遍历每个动画目标，处理圆角、壁纸 leash、DisplayArea 校验等特殊情形。"
+    },
+    {
+      "at": 108,
+      "quote": "final WindowContainer<?> wc = mTargets.get(i).mContainer;",
+      "kind": "data",
+      "text": "取出目标对应的容器，可能是 activity、task、wallpaper 或 displayArea。"
+    },
+    {
+      "at": 109,
+      "quote": "if (setClientDrawnCornerRadii()) {",
+      "kind": "branch",
+      "text": "仅在圆角优化 flag 开启时才需要逐 target 关闭客户端绘制圆角。"
+    },
+    {
+      "at": 110,
+      "quote": "Task task = wc.asTask();",
+      "kind": "branch",
+      "text": "先尝试把容器当 Task；为 null 说明是 activity 或 taskFragment。"
+    },
+    {
+      "at": 111,
+      "quote": "if (task == null) {",
+      "kind": "branch",
+      "text": "非 Task 容器需向上找到所属 Task 才能关闭圆角。"
+    },
+    {
+      "at": 112,
+      "quote": "if (wc.asActivityRecord() != null) {",
+      "kind": "branch",
+      "text": "activity 目标取其所属 task。"
+    },
+    {
+      "at": 113,
+      "quote": "task = wc.asActivityRecord().getTask();",
+      "kind": "data",
+      "text": "从 ActivityRecord 取所属 Task；为 null 时跳过圆角处理（如未附着）。"
+    },
+    {
+      "at": 114,
+      "quote": "} else if (wc.asTaskFragment() != null) {",
+      "kind": "branch",
+      "text": "不是 activity 时再看是否 TaskFragment（分屏/嵌入动画场景）。"
+    },
+    {
+      "at": 115,
+      "quote": "task = wc.asTaskFragment().getTask();",
+      "kind": "data",
+      "text": "从 TaskFragment 取所属 Task，覆盖嵌入式动画目标。"
+    },
+    {
+      "at": 118,
+      "quote": "if (task != null) {",
+      "kind": "branch",
+      "text": "只有定位到 Task 才能修改其 surface 属性。"
+    },
+    {
+      "at": 119,
+      "quote": "SurfaceControl sc = task.getSurfaceControl();",
+      "kind": "data",
+      "text": "取该 Task 的 SurfaceControl 作为圆角开关的操作对象。"
+    },
+    {
+      "at": 120,
+      "quote": "transaction.toggleClientDrawnRoundedCornersOpt(sc, /* enable= */ false",
+      "kind": "state",
+      "text": "在 start 事务里关闭客户端圆角优化，避免动画期间圆角泄漏或闪烁。"
+    },
+    {
+      "at": 121,
+      "quote": "mController.onRoundedCornerOptDisabled(task);",
+      "kind": "state",
+      "text": "记录该 task 已被关闭优化，过渡结束时由 controller 统一恢复。"
+    },
+    {
+      "at": 124,
+      "quote": "final WallpaperWindowToken wp = wc.asWallpaperToken();",
+      "kind": "branch",
+      "text": "识别壁纸目标，壁纸需单独保证 surface 可见且 alpha 为 1。"
+    },
+    {
+      "at": 125,
+      "quote": "if (wp != null) {",
+      "kind": "branch",
+      "text": "壁纸目标走专有分支，处理完立即 continue，避免落入 DisplayArea 逻辑。"
+    },
+    {
+      "at": 126,
+      "quote": "// If on a rotation leash, the wallpaper token surface needs to be sho",
+      "kind": "note",
+      "text": "注释：处于旋转 leash 上的壁纸必须显式 show，因为 Shell 只拿到 leash。"
+    },
+    {
+      "at": 127,
+      "quote": "// because shell only gets the leash and the wallpaper token surface i",
+      "kind": "note",
+      "text": "注释：壁纸 token 自身 surface 在过渡结束前不允许非过渡逻辑修改。"
+    },
+    {
+      "at": 128,
+      "quote": "// to be changed by non-transition logic until the transition is finis",
+      "kind": "note",
+      "text": "注释续：因此由这里代替常规 surface placement 显式展示壁纸。"
+    },
+    {
+      "at": 129,
+      "quote": "if (wp.isVisibleRequested() && wp.getFixedRotationLeash() != null) {",
+      "kind": "branch",
+      "text": "仅当壁纸请求可见且确实被放进固定旋转 leash 时才需手动 show。"
+    },
+    {
+      "at": 130,
+      "quote": "transaction.show(wp.mSurfaceControl);",
+      "kind": "state",
+      "text": "在 start 事务中直接 show 壁纸 surface，否则旋转动画期间壁纸会黑屏。"
+    },
+    {
+      "at": 131,
+      "quote": "transaction.setAlpha(wp.mSurfaceControl, 1);",
+      "kind": "state",
+      "text": "同时把 alpha 置 1，防止残留的透明动画值让壁纸不可见。"
+    },
+    {
+      "at": 133,
+      "quote": "continue;",
+      "kind": "branch",
+      "text": "壁纸分支结束，跳过后续 DisplayArea 处理。"
+    },
+    {
+      "at": 135,
+      "quote": "final DisplayArea<?> da = wc.asDisplayArea();",
+      "kind": "data",
+      "text": "取 DisplayArea；非 DisplayArea 目标（activity/task 等）此处为 null。"
+    },
+    {
+      "at": 136,
+      "quote": "if (da == null) continue;",
+      "kind": "branch",
+      "text": "普通动画目标无需做 display 可见性校验，直接跳过。"
+    },
+    {
+      "at": 137,
+      "quote": "if (da.isVisibleRequested()) {",
+      "kind": "branch",
+      "text": "可见的 DisplayArea 若在待校验列表，说明之前担心被误隐藏，现在需复核。"
+    },
+    {
+      "at": 138,
+      "quote": "final int inValidateList = mController.mValidateDisplayVis.indexOf(da)",
+      "kind": "data",
+      "text": "查该 DisplayArea 在 mValidateDisplayVis 的下标，-1 表示不在列表中。"
+    },
+    {
+      "at": 139,
+      "quote": "if (inValidateList >= 0",
+      "kind": "branch",
+      "text": "只有确实在待校验列表中时才需要判断是否移除。"
+    },
+    {
+      "at": 140,
+      "quote": "// The display-area is visible, but if we only detect a non-visibility",
+      "kind": "note",
+      "text": "注释：可见但仍在列表里时，要区分是可见性变化还是仅非可见属性变化。"
+    },
+    {
+      "at": 141,
+      "quote": "// change, then we shouldn't remove the validator.",
+      "kind": "note",
+      "text": "注释续：若只是非可见性变化，则不应移除校验器。"
+    },
+    {
+      "at": 142,
+      "quote": "&& !mChanges.get(da).mVisible) {",
+      "kind": "branch",
+      "text": "仅当本次变更不含“变为可见”时才移除；否则保留校验确保真正上屏。"
+    },
+    {
+      "at": 143,
+      "quote": "mController.mValidateDisplayVis.remove(inValidateList);",
+      "kind": "state",
+      "text": "从待校验列表移除，避免过渡结束时误报 display 不可见。"
+    },
+    {
+      "at": 145,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "不可见的 DisplayArea 需加入校验列表，防止被意外隐藏后无人恢复。"
+    },
+    {
+      "at": 146,
+      "quote": "// In case something accidentally hides a displayarea and nothing show",
+      "kind": "note",
+      "text": "注释：加入校验列表以便检测“被隐藏却没再显示”的异常。"
+    },
+    {
+      "at": 147,
+      "quote": "mController.mValidateDisplayVis.add(da);",
+      "kind": "state",
+      "text": "登记该 DisplayArea，过渡结束若仍不可见会触发可见性校正。"
+    },
+    {
+      "at": 150,
+      "quote": "overrideAnimationOptionsToInfoIfNecessary(info);",
+      "kind": "state",
+      "text": "若收集阶段设置了覆盖动画选项/背景色，则写入 info 的 change 供 Shell 使用。"
+    },
+    {
+      "at": 152,
+      "quote": "// TODO(b/188669821): Move to animation impl in shell.",
+      "kind": "note",
+      "text": "注释：兼容旧版 Recents 启动行为（TODO 待迁移到 Shell 动画实现）。"
+    },
+    {
+      "at": 153,
+      "quote": "for (int i = 0; i < mTargetDisplays.size(); ++i) {",
+      "kind": "branch",
+      "text": "逐 display 尝试处理 legacy recents 的输入消费与导航栏附着。"
+    },
+    {
+      "at": 154,
+      "quote": "handleLegacyRecentsStartBehavior(mTargetDisplays.get(i), info);",
+      "kind": "state",
+      "text": "仅在 TRANSIT_FLAG_IS_RECENTS 时生效，为 recents 动画准备 input consumer 等。"
+    },
+    {
+      "at": 155,
+      "quote": "if (mRecentsDisplayId != INVALID_DISPLAY) break;",
+      "kind": "branch",
+      "text": "一旦已处理过 recents display 就 break，避免多 display 重复处理。"
+    },
+    {
+      "at": 158,
+      "quote": "// The callback is only populated for custom activity-level client ani",
+      "kind": "note",
+      "text": "注释：该回调只在使用自定义 activity 级客户端动画时才非空。"
+    },
+    {
+      "at": 159,
+      "quote": "sendRemoteCallback(mClientAnimationStartCallback);",
+      "kind": "ipc",
+      "text": "通知发起方应用其客户端动画可以开始；callback 为 null 时内部直接返回。"
+    },
+    {
+      "at": 161,
+      "quote": "// Manually show any activities that are visibleRequested. This is nee",
+      "kind": "note",
+      "text": "注释：手动 show 所有 visibleRequested 的 activity，以支持动画排队/合并。"
+    },
+    {
+      "at": 162,
+      "quote": "// support simultaneous animation queueing/merging. Specifically, if t",
+      "kind": "note",
+      "text": "注释：场景——过渡 A 让某 activity 不可见，其 finishTransaction 会在动画后才隐藏 surface。"
+    },
+    {
+      "at": 163,
+      "quote": "// an activity invisible, it's finishTransaction (which is applied *af",
+      "kind": "note",
+      "text": "注释续：finishTransaction 的隐藏发生在动画结束后。"
+    },
+    {
+      "at": 164,
+      "quote": "// will hide the activity surface. If transition B then makes the acti",
+      "kind": "note",
+      "text": "注释：若过渡 B 又让它可见，常规 surface placement 不会在 start 事务补 show（可见性未提交）。"
+    },
+    {
+      "at": 165,
+      "quote": "// the normal surfaceplacement logic won't add a show to this start tr",
+      "kind": "note",
+      "text": "注释续：因为 activity 可见性尚未 commit，start 事务里缺少 show。"
+    },
+    {
+      "at": 166,
+      "quote": "// the activity visibility hasn't been committed yet. To deal with thi",
+      "kind": "note",
+      "text": "注释：所以这里像 finishTransaction 手动 hide 一样，手动补 show。"
+    },
+    {
+      "at": 167,
+      "quote": "// show here in the same way that we manually hide in finishTransactio",
+      "kind": "note",
+      "text": "注释续：与 finishTransaction 的手动隐藏保持对称。"
+    },
+    {
+      "at": 168,
+      "quote": "for (int i = mParticipants.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历参与者（与添加顺序相反），便于先处理更上层/后加入的容器。"
+    },
+    {
+      "at": 169,
+      "quote": "final ActivityRecord ar = mParticipants.valueAt(i).asActivityRecord();",
+      "kind": "data",
+      "text": "取参与者对应的 ActivityRecord，非 activity 参与者为 null。"
+    },
+    {
+      "at": 170,
+      "quote": "if (ar == null || !ar.isVisibleRequested()) continue;",
+      "kind": "branch",
+      "text": "跳过非 activity 与不请求可见者，避免把本应隐藏的窗口 show 出来。"
+    },
+    {
+      "at": 171,
+      "quote": "transaction.show(ar.getSurfaceControl());",
+      "kind": "state",
+      "text": "在 start 事务补 show 该 activity surface，防止动画合并时黑屏或闪断。"
+    },
+    {
+      "at": 173,
+      "quote": "// Also manually show any non-reported parents. This is necessary in a",
+      "kind": "note",
+      "text": "注释：还要手动 show 未上报的父容器，覆盖 task 未 organized 但父级可见性变化的场景。"
+    },
+    {
+      "at": 174,
+      "quote": "// where a task is NOT organized but had its visibility changed within",
+      "kind": "note",
+      "text": "注释：典型场景是 task 未被组织化，但可见性在其直接父级内发生变化。"
+    },
+    {
+      "at": 175,
+      "quote": "// parent. An example of this is if an alternate home leaf-task HB is ",
+      "kind": "note",
+      "text": "注释：示例——替代 home leaf-task HB 启动在 HA 之上，二者同属 home 根任务 HR。"
+    },
+    {
+      "at": 176,
+      "quote": "// normal home leaf-task HA: these are both in the Home root-task HR, ",
+      "kind": "note",
+      "text": "注释续：那次过渡中 HA 的 surface 被隐藏。"
+    },
+    {
+      "at": 177,
+      "quote": "// transition containing HA and HB where HA surface is hidden. If a st",
+      "kind": "note",
+      "text": "注释：之后启动标准 task SA，再 finish HB 时两个 home 都不可见，不会触发过渡。"
+    },
+    {
+      "at": 178,
+      "quote": "// launched on top, then HB finishes, no transition will happen since ",
+      "kind": "note",
+      "text": "注释续：因此没有新的过渡来恢复 HA 的可见性。"
+    },
+    {
+      "at": 179,
+      "quote": "// visible. When SA finishes, the transition contains HR rather than H",
+      "kind": "note",
+      "text": "注释：SA 结束时过渡只含 HR 不含 HA，HA 不在过渡参与者内。"
+    },
+    {
+      "at": 180,
+      "quote": "// leaf-tasks are NOT organized, HA won't be in the transition and thu",
+      "kind": "note",
+      "text": "注释续：因为 home leaf-task 非 organized，HA 不会被计入参与者。"
+    },
+    {
+      "at": 181,
+      "quote": "// wouldn't be shown. Just show is safe here since all other propertie",
+      "kind": "note",
+      "text": "注释：所以必须在此补 show，否则 HA 会一直不可见。"
+    },
+    {
+      "at": 182,
+      "quote": "// already been reset by the original hiding-transition's finishTransa",
+      "kind": "note",
+      "text": "注释：此处 show 安全，其它属性已由原隐藏过渡的 finishTransaction 复位。"
+    },
+    {
+      "at": 183,
+      "quote": "// show in the finishTransaction because by then the activity doesn't ",
+      "kind": "note",
+      "text": "注释续：原隐藏过渡的 finishTransaction 已完成属性复位。"
+    },
+    {
+      "at": 184,
+      "quote": "// surface placement).",
+      "kind": "note",
+      "text": "注释：不能在 finishTransaction 里 show，那时 activity 要等 surface placement 才隐藏。"
+    },
+    {
+      "at": 185,
+      "quote": "for (WindowContainer<?> p = ar.getParent();",
+      "kind": "branch",
+      "text": "从 activity 父容器向上遍历，寻找需补 show 的非 DisplayArea 祖先。"
+    },
+    {
+      "at": 186,
+      "quote": "p != null && p.asDisplayArea() == null; p = p.getParent()) {",
+      "kind": "branch",
+      "text": "循环条件：父容器非空且不是 DisplayArea，逐级向上直到窗口层级顶部。"
+    },
+    {
+      "at": 187,
+      "quote": "if (p.isOrganized() || !p.canCreateRemoteAnimationTarget()) continue;",
+      "kind": "branch",
+      "text": "organized 容器由 Shell 上报，能创建动画目标的祖先不在本兜底范围。"
+    },
+    {
+      "at": 188,
+      "quote": "if (p.getSurfaceControl() != null) {",
+      "kind": "branch",
+      "text": "父容器可能没有 surface（纯逻辑容器），需判空后再操作。"
+    },
+    {
+      "at": 189,
+      "quote": "transaction.show(p.getSurfaceControl());",
+      "kind": "state",
+      "text": "在 start 事务补 show 该祖先 surface，避免子 activity 因父级不可见而不显示。"
+    },
+    {
+      "at": 194,
+      "quote": "// Record windowtokens (activity/wallpaper) that are expected to be vi",
+      "kind": "note",
+      "text": "注释：记录动画结束后预期仍可见的 windowToken，finishTransition 据此避免过早提交隐藏。"
+    },
+    {
+      "at": 195,
+      "quote": "// transition animation. This will be used in finishTransition to prev",
+      "kind": "note",
+      "text": "注释续：否则 finishTransition 会提前把仍应可见的窗口提交为隐藏。"
+    },
+    {
+      "at": 196,
+      "quote": "// committing visibility. Skip transient launches since those are only",
+      "kind": "note",
+      "text": "注释：transient launch 只是临时可见，故跳过不记录。"
+    },
+    {
+      "at": 197,
+      "quote": "if (mTransientLaunches == null) {",
+      "kind": "branch",
+      "text": "非 transient launch 的过渡才需要记录，transient 场景由恢复流程接管。"
+    },
+    {
+      "at": 198,
+      "quote": "for (int i = mParticipants.size() - 1; i >= 0; --i) {",
+      "kind": "branch",
+      "text": "倒序遍历所有参与者。"
+    },
+    {
+      "at": 199,
+      "quote": "final WindowContainer wc = mParticipants.valueAt(i);",
+      "kind": "data",
+      "text": "取参与者容器，可能是 activity、task、wallpaper 等。"
+    },
+    {
+      "at": 200,
+      "quote": "if (wc.asWindowToken() == null || !wc.isVisibleRequested()) continue;",
+      "kind": "branch",
+      "text": "只记录 windowToken 且请求可见者，其它类型不进入该集合。"
+    },
+    {
+      "at": 201,
+      "quote": "mVisibleAtTransitionEndTokens.add(wc.asWindowToken());",
+      "kind": "state",
+      "text": "登记该 token，finish 阶段据此判定“预期可见”，避免提前隐藏导致闪屏。"
+    },
+    {
+      "at": 205,
+      "quote": "// This is non-null only if display has changes. It handles the visibl",
+      "kind": "note",
+      "text": "注释：AsyncRotationController 只在 display 有变更时非空，负责未参与过渡的可见窗口。"
+    },
+    {
+      "at": 206,
+      "quote": "// need to be participated in the transition.",
+      "kind": "note",
+      "text": "注释续：这些窗口由旋转控制器直接写 start 事务，不经 Shell 动画。"
+    },
+    {
+      "at": 207,
+      "quote": "for (int i = 0; i < mTargetDisplays.size(); ++i) {",
+      "kind": "branch",
+      "text": "逐 display 处理异步旋转（如无缝旋转）的 start 事务。"
+    },
+    {
+      "at": 208,
+      "quote": "final DisplayContent dc = mTargetDisplays.get(i);",
+      "kind": "data",
+      "text": "当前 display 的 DisplayContent。"
+    },
+    {
+      "at": 209,
+      "quote": "final AsyncRotationController controller = dc.getAsyncRotationControll",
+      "kind": "data",
+      "text": "取该 display 的异步旋转控制器，无旋转需求时为 null。"
+    },
+    {
+      "at": 210,
+      "quote": "if (controller != null && containsChangeFor(dc, mTargets)) {",
+      "kind": "branch",
+      "text": "仅当该 display 本身是动画目标时才需要设置其 start 事务。"
+    },
+    {
+      "at": 211,
+      "quote": "controller.setupStartTransaction(transaction);",
+      "kind": "state",
+      "text": "把旋转相关窗口的 show/alpha/transform 写入 start 事务，防止旋转首帧闪烁。"
+    },
+    {
+      "at": 214,
+      "quote": "// Use participant displays here (rather than just targets) because it",
+      "kind": "note",
+      "text": "注释：finish 用 participantDisplays，因非顶层 task 也可能有 order change。"
+    },
+    {
+      "at": 215,
+      "quote": "// there to be order changes between non-top tasks in an otherwise no-",
+      "kind": "note",
+      "text": "注释续：即便看似 no-op 的过渡也可能存在 task 顺序变化需在 finish 时提交。"
+    },
+    {
+      "at": 216,
+      "quote": "buildFinishTransaction(mFinishTransaction, info, participantDisplays);",
+      "kind": "state",
+      "text": "构建动画结束后才 apply 的事务（hide/复位/顺序提交），是动画收尾的关键。"
+    },
+    {
+      "at": 217,
+      "quote": "mCleanupTransaction = mWmService.mTransactionFactory.get();",
+      "kind": "state",
+      "text": "为清理阶段单独分配事务，cleanup 与 finish 分离避免顺序耦合。"
+    },
+    {
+      "at": 218,
+      "quote": "buildCleanupTransaction(mCleanupTransaction, info);",
+      "kind": "state",
+      "text": "构建 cleanup 事务（释放 leash、复位属性），在过渡结束后 apply。"
+    },
+    {
+      "at": 219,
+      "quote": "if (!mController.isFlushing() && mIsPlayerEnabled) {",
+      "kind": "branch",
+      "text": "有可用 player 且非 flush 时才交给 Shell 播放；否则走本地立即 apply 分支。"
+    },
+    {
+      "at": 220,
+      "quote": "mController.dispatchLegacyAppTransitionStarting(participantDisplays,",
+      "kind": "ipc",
+      "text": "向遗留 AppTransitionListener 派发 onAppTransitionStarting，兼容未迁移的监听方。"
+    },
+    {
+      "at": 221,
+      "quote": "mStatusBarTransitionDelay);",
+      "kind": "data",
+      "text": "续行参数：状态栏过渡延迟，供 legacy 监听器同步状态栏动画时机。"
+    },
+    {
+      "at": 222,
+      "quote": "try {",
+      "kind": "branch",
+      "text": "开始跨进程调用 Shell（ITransitionPlayer）；失败必须兜底，否则事务永久挂起。"
+    },
+    {
+      "at": 223,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS,",
+      "kind": "trace",
+      "text": "调试日志：即将把 TransitionInfo 发送给 Shell。"
+    },
+    {
+      "at": 224,
+      "quote": "\"Calling onTransitionReady: %s\", info);",
+      "kind": "trace",
+      "text": "日志参数行：打印完整 TransitionInfo 便于分析。"
+    },
+    {
+      "at": 225,
+      "quote": "mLogger.mSendTimeNs = SystemClock.elapsedRealtimeNanos();",
+      "kind": "trace",
+      "text": "记录发送时间戳，用于统计 WM→Shell 的动画启动延迟。"
+    },
+    {
+      "at": 226,
+      "quote": "mLogger.mInfo = info;",
+      "kind": "data",
+      "text": "保存 info 供后续日志/追踪与 finish 阶段使用。"
+    },
+    {
+      "at": 227,
+      "quote": "mController.getTransitionPlayer().onTransitionReady(",
+      "kind": "ipc",
+      "text": "跨进程（binder）把 token、info、start 与 finish 事务交给 Shell 播放动画。"
+    },
+    {
+      "at": 228,
+      "quote": "mToken, info, transaction, mFinishTransaction);",
+      "kind": "ipc",
+      "text": "续行参数：token 用于 Shell 回传 finish，两个事务由 Shell 持有并 apply。"
+    },
+    {
+      "at": 229,
+      "quote": "if (Trace.isTagEnabled(TRACE_TAG_WINDOW_MANAGER)) {",
+      "kind": "trace",
+      "text": "仅在 WM trace 打开时记录异步 trace，避免无谓开销。"
+    },
+    {
+      "at": 230,
+      "quote": "asyncTraceBegin(TRACE_NAME_PLAY_TRANSITION, System.identityHashCode(th",
+      "kind": "trace",
+      "text": "开启 “playing” 异步 trace 段，以对象 hash 区分并发过渡。"
+    },
+    {
+      "at": 232,
+      "quote": "} catch (RemoteException e) {",
+      "kind": "branch",
+      "text": "Shell 进程已死或 binder 异常：必须本地兜底，否则动画不播且事务丢失。"
+    },
+    {
+      "at": 233,
+      "quote": "// If there's an exception when trying to send the mergedTransaction t",
+      "kind": "note",
+      "text": "注释：发送失败时在本地 finish 并 apply，保证事务不丢。"
+    },
+    {
+      "at": 234,
+      "quote": "// client, we should finish and apply it here so the transactions aren",
+      "kind": "note",
+      "text": "注释续：说明兜底目的——事务不能因远端异常而丢失。"
+    },
+    {
+      "at": 235,
+      "quote": "postCleanupOnFailure();",
+      "kind": "ipc",
+      "text": "post 到 WM 主线程加锁执行 cleanUpOnFailure，本地 apply start/finish 事务。"
+    },
+    {
+      "at": 237,
+      "quote": "for (int i = 0; i < mTargetDisplays.size(); ++i) {",
+      "kind": "state",
+      "text": "通知无障碍服务本次过渡发生（仅在有回调时）。"
+    },
+    {
+      "at": 238,
+      "quote": "final DisplayContent dc = mTargetDisplays.get(i);",
+      "kind": "data",
+      "text": "当前 display 的 DisplayContent。"
+    },
+    {
+      "at": 239,
+      "quote": "final AccessibilityController accessibilityController =",
+      "kind": "data",
+      "text": "取该 display 对应 WmService 的无障碍控制器。"
+    },
+    {
+      "at": 240,
+      "quote": "dc.mWmService.mAccessibilityController;",
+      "kind": "data",
+      "text": "续行：控制器挂在 dc.mWmService 上，用于统一通知无障碍。"
+    },
+    {
+      "at": 241,
+      "quote": "if (accessibilityController.hasCallbacks()) {",
+      "kind": "branch",
+      "text": "无障碍服务没有注册回调时跳过，避免无谓的跨进程通知开销。"
+    },
+    {
+      "at": 242,
+      "quote": "accessibilityController.onWMTransition(dc.getDisplayId(), mType, mFlag",
+      "kind": "ipc",
+      "text": "通知无障碍服务 type/flags，用于窗口切换播报与动画缩放策略。"
+    },
+    {
+      "at": 245,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "无 player 或被 flush（如 Shell 重启）时不能等动画，立即在本地 finish。"
+    },
+    {
+      "at": 246,
+      "quote": "// No player registered or it's not enabled, so just finish/apply imme",
+      "kind": "note",
+      "text": "注释：没有已注册且启用的 player，只能立刻 finish/apply。"
+    },
+    {
+      "at": 247,
+      "quote": "mLogger.mSendTimeNs = SystemClock.elapsedRealtimeNanos();",
+      "kind": "trace",
+      "text": "同样记录“发送”时间戳，保持延迟统计口径一致。"
+    },
+    {
+      "at": 248,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS,",
+      "kind": "trace",
+      "text": "调试日志：说明因 player 被禁用而立即 apply 并结束。"
+    },
+    {
+      "at": 249,
+      "quote": "\"Apply and finish immediately because player is disabled \"",
+      "kind": "trace",
+      "text": "日志文本续行。"
+    },
+    {
+      "at": 250,
+      "quote": "+ \"for transition #%d .\", mSyncId);",
+      "kind": "trace",
+      "text": "日志参数：syncId 用于定位是哪个过渡被立即应用。"
+    },
+    {
+      "at": 251,
+      "quote": "postCleanupOnFailure();",
+      "kind": "state",
+      "text": "复用失败兜底路径：本地 apply 事务并清理，保证过渡不会卡在 STATE_PLAYING。"
+    },
+    {
+      "at": 253,
+      "quote": "mOverrideOptions = null;",
+      "kind": "state",
+      "text": "播放或兜底已完成，清空覆盖选项避免污染后续复用的过渡。"
+    },
+    {
+      "at": 255,
+      "quote": "reportStartReasonsToLogger();",
+      "kind": "trace",
+      "text": "把收集阶段记录的 start 原因上报给 logger，供 dumpsys 与 Winscope 分析。"
+    },
+    {
+      "at": 257,
+      "quote": "// Take snapshots for closing tasks/activities before the animation fi",
+      "kind": "note",
+      "text": "注释：在动画结束前、且已发出 onTransitionReady 之后给正在关闭的 task 截图。"
+    },
+    {
+      "at": 258,
+      "quote": "// dispatching onTransitionReady, so IME (if there is) can be captured",
+      "kind": "note",
+      "text": "注释续：这样 IME 若存在可一起截入，且截图耗时不会延迟动画启动。"
+    },
+    {
+      "at": 259,
+      "quote": "// time spent on snapshot won't delay the start of animation.",
+      "kind": "note",
+      "text": "注释续：时机选择是为了不拖慢 Shell 首帧。"
+    },
+    {
+      "at": 260,
+      "quote": "if (mTransientLaunches == null) {",
+      "kind": "branch",
+      "text": "transient launch 有恢复流程，不做关闭截图以免截到错误内容。"
+    },
+    {
+      "at": 261,
+      "quote": "mController.mSnapshotController.onTransactionReady(mType, mTargets);",
+      "kind": "state",
+      "text": "触发关闭快照，用于 recents 缩略图与预测返回；缺失会导致缩略图黑屏。"
+    },
+    {
+      "at": 264,
+      "quote": "// Since we created root-leash but no longer reference it from core, r",
+      "kind": "note",
+      "text": "注释：root-leash 在此创建但 WM 已不再引用，需要立即释放。"
+    },
+    {
+      "at": 265,
+      "quote": "info.releaseAnimSurfaces();",
+      "kind": "state",
+      "text": "释放 info 中的动画 surface/leash，防止内存与 SurfaceFlinger 资源泄漏。"
+    },
+    {
+      "at": 267,
+      "quote": "if (mLogger.mInfo != null) {",
+      "kind": "branch",
+      "text": "仅在本次确实发送过 info 时才记录，避免空记录或重复记录。"
+    },
+    {
+      "at": 268,
+      "quote": "mLogger.logOnSendAsync(mController.mLoggerHandler);",
+      "kind": "trace",
+      "text": "异步把发送事件写入过渡日志（handler 线程），不阻塞当前帧。"
+    },
+    {
+      "at": 269,
+      "quote": "mController.mTransitionTracer.logSentTransition(this, mLogger.mInfo);",
+      "kind": "trace",
+      "text": "记录到 transition tracer/Winscope，供后续性能分析回溯。"
+    },
+    {
+      "at": 271,
+      "quote": "removeStartingWindowIfAny();",
+      "kind": "state",
+      "text": "移除标记为 AFTER_TRANSACTION_REMOVE_DIRECTLY 的启动窗口，否则它会盖住首帧。"
+    }
+  ]
+}

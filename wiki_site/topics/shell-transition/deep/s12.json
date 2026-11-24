@@ -1,0 +1,90 @@
+{
+  "step": "s12",
+  "title": "参与者逐帧绘制，SyncSet 收集完成",
+  "tldr": "每个窗口把首帧画完并登记成 READY 后，下一趟 surface placement 末尾统一检查：本 sync 的容器全齐了才收口。",
+  "why": "不等就收口，start 事务里 show 出来的是「WCT 刚下发、App 还没画」的窗口，屏幕上会先出现一帧空的窗口（白块/黑块），或者 snapshot 撤掉后新窗口没有内容。反过来永远不收口，动画永远不开始，用户感知到的是转场卡在起始画面、点按没反应。tryFinish 就是「这一拍到底拍齐了没有」的闸门：它同时看四件事——sync 有没有被标 ready、它依赖的其他 sync 收口了没、每个根容器子树里还有没有 WAITING_FOR_DRAW、以及被上面完全遮住的容器是否可以提前算完。少看任何一条都会变成「先播动画、后出画面」的错序。",
+  "concepts": [
+    {
+      "term": "SyncSet（SyncGroup）",
+      "text": "BLASTSyncEngine 里的一个分组：一个 syncId + 一组根容器 + 若干依赖，整组一起收口。"
+    },
+    {
+      "term": "SYNC_STATE_WAITING_FOR_DRAW",
+      "text": "容器已挂上 sync 但首帧还没画完；isSyncFinished 只要在子树里看到它就返回 false。"
+    },
+    {
+      "term": "root member",
+      "text": "直接加进 sync 的容器（addToSyncSet 的入参），判定时从它开始向下递归整棵子树。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "boolean onSyncFinishedDrawing() {",
+      "ref": "base/services/core/java/com/android/server/wm/WindowContainer.java:3415",
+      "what": "首帧画完的回调：mSyncState 从 WAITING_FOR_DRAW 置为 READY，返回 true 表示它属于某个 sync。"
+    },
+    {
+      "call": "mWmService.mSyncEngine.onSurfacePlacement();",
+      "ref": "base/services/core/java/com/android/server/wm/RootWindowContainer.java:781",
+      "what": "surface placement 末尾（布局、resize、事务处理完后）统一检查所有 active sync。"
+    },
+    {
+      "call": "void onSurfacePlacement() {",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:600",
+      "what": "按启动顺序排队遍历 mActiveSyncs，保证互相依赖的 sync 也按先后收口。"
+    },
+    {
+      "call": "if (!group.tryFinish()) continue;",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:619",
+      "what": "没齐就跳过、等下一趟；齐了先 finishNow，再回头解锁排在它后面的依赖方。"
+    },
+    {
+      "call": "if (!mReady) return false;",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:199",
+      "what": "第一道闸：sync 没被 setReady（第 15 步）就不算完，哪怕所有窗口都画完了。"
+    },
+    {
+      "call": "if (!wc.isSyncFinished(this)) {",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:209",
+      "what": "第二道闸：逐个根成员递归查子树，碰到 WAITING_FOR_DRAW 就整组不算完。"
+    },
+    {
+      "call": "finishNow();",
+      "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:215",
+      "what": "判定通过：进入合并事务（下一步），tryFinish 自身返回 true。"
+    }
+  ],
+  "state": [
+    {
+      "field": "WindowContainer.mSyncState",
+      "before": "SYNC_STATE_WAITING_FOR_DRAW",
+      "after": "SYNC_STATE_READY",
+      "note": "由 onSyncFinishedDrawing 写入（WindowContainer.java:3417），是 tryFinish 判定的直接依据"
+    },
+    {
+      "field": "SyncGroup.mDependencies",
+      "before": "非空（和别的 sync 抢过同一个容器）",
+      "after": "空",
+      "note": "onSurfacePlacement:624 在依赖方收口后逐个 remove，清空后才允许本组收口"
+    },
+    {
+      "field": "BLASTSyncEngine.mActiveSyncs",
+      "before": "含本 sync",
+      "after": "仍含本 sync",
+      "note": "tryFinish 只做判定，真正的摘除留在 finishNow:293"
+    }
+  ],
+  "threads": "在 WMS 的 surface placement 这一趟末尾执行，调用方 RootWindowContainer.performSurfacePlacement 已持有 mGlobalLock，所以 tryFinish/finishNow 全程在锁内。",
+  "pitfalls": [
+    "tryFinish 判定的是「参与容器画完了」，不是「SurfaceFlinger 已经 commit 了合并事务」；SF 的 commit 回调是 finishNow 之后另外等的（BLASTSyncEngine.java:281），两件事别混。",
+    "没被 setReady 的 sync，容器全画完也不会收口：isSyncFinished 前面还有 mReady 这道闸，所以「动画迟迟不开始」应先查 ready-group，而不是查绘制。",
+    "不可见的容器会被提前算完成：isSyncFinished 对 !isVisibleRequested() 直接返回 true（WindowContainer.java:3516），正在关闭的 Activity 本来就不等它画完。",
+    "「画完」不一定等下一帧：WindowState.isSyncFinished 发现已画好且不需重画时，会就地调 onSyncFinishedDrawing（WindowState.java:6023-6027）。"
+  ],
+  "debug": [
+    "adb shell dumpsys window transitions 搜 \"Unfinished container\" / \"Unfinished dependency\" 看谁没齐",
+    "ProtoLog group WM_DEBUG_SYNC_ENGINE：\"onSurfacePlacement checking\" 与 \"SyncGroup %d: Finished!\"",
+    "perfetto: 用 window_manager tag 搜 \"-SyncReady#<id>\" 这一段 trace（SyncGroup 构造时起的名字）"
+  ],
+  "next": "判定通过，接着把这一拍的所有事务合成一笔 → 第 17 步「合并事务并回调 listener」。"
+}

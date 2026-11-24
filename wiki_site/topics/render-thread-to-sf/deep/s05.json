@@ -1,0 +1,41 @@
+{
+  "step": "s05",
+  "title": "postAndWait：UI 线程在这里停住",
+  "tldr": "锁着 post、锁着 wait：任务一入队 UI 就睡，RT 的 signal 因此不可能丢。",
+  "why": "这是整条链路里唯一的 UI↔RT 握手。若 post 与 wait 不在同一把锁下，RT 可能在 UI 进入 wait 之前就跑完同步并 signal，UI 永久睡死（lost wakeup）——表现是 app 卡住、trace 里 RT 空闲、UI 停在 Condition::wait 上。若把唤醒点放到帧尾，UI 就不能在 RT 绘制时开始下一帧的记录，CPU/GPU 流水线塌成串行，滑动直接从 60 掉到 30 以下。反过来，如果这里不等同步就返回，UI 会一边改 RenderNode 的 staging 一边被 RT 读，display list 撕裂。",
+  "concepts": [
+    { "term": "mSignal", "text": "Task 的 android::Condition；UI 等同步结束，RT 在 unblock 时 signal。" },
+    { "term": "mLock", "text": "同一把 android::Mutex，保护 post、wait、signal 三件事，缺一就有丢唤醒窗口。" },
+    { "term": "unblockUiThread", "text": "RT 侧唯一唤醒点：拿同一把锁后 signal，位置决定 UI 等多久。" }
+  ],
+  "walk": [
+    { "call": "void DrawFrameTask::postAndWait()", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:82", "what": "整个函数只有五行，是 UI 唯一的阻塞点。" },
+    { "call": "ATRACE_CALL();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:83", "what": "trace 名就叫 postAndWait，perfetto 里 UI 线程上的这块黑区就是它。" },
+    { "call": "AutoMutex _lock(mLock);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:84", "what": "先拿锁再 post：把「入队」和「入睡」绑成一个原子动作。" },
+    { "call": "mRenderThread->queue().post([this]() { run(); });", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:85", "what": "投一个捕获裸 this 的 lambda；task 常驻所以安全。" },
+    { "call": "mSignal.wait(mLock);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:86", "what": "原子放锁入睡，醒来时锁已重新持有——所以 signal 不会错窗。" },
+    { "call": "void DrawFrameTask::unblockUiThread()", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:219", "what": "对应唤醒点：RT 完成 sync 阶段后调它。" },
+    { "call": "mSignal.signal();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:221", "what": "拿同一把 mLock 再 signal（220），与 86 严丝合缝。" },
+    { "call": "if (canUnblockUiThread) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:125", "what": "条件唤醒：prepareTextures 成功才在绘制前放人。" },
+    { "call": "if (!canUnblockUiThread) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:159", "what": "否则延到帧尾再唤醒（160），这一帧 UI 被反压。" }
+  ],
+  "state": [
+    { "field": "mLock 的持有者", "before": "UI 线程（84 拿锁）", "after": "UI 在 Condition 上睡且已放锁，RT 拿锁 signal 后所有权回到 UI", "note": "Condition::wait 是原子放锁，RT 不会卡在 220" },
+    { "field": "UI 线程执行位置", "before": "drawFrame 里，即将 post", "after": "仍在 syncAndDrawFrame 栈里，86 行未返回", "note": "直到 126 或 160 的 unblockUiThread 才回到 Java" },
+    { "field": "DrawFrameTask.mFrameCallback", "before": "本帧注册的回调（可能为空）", "after": "被 run() std::move 走，task 置空（118-122）", "note": "唤醒前必须取走，否则下一帧 setFrameCallback 会覆盖它" },
+    { "field": "DrawFrameTask 描述的帧", "before": "已入队、未开始", "after": "RT 正在跑 run()（93 起）", "note": "task 是跨帧复用的，这一帧的数据此刻正被 RT 独占读" }
+  ],
+  "threads": "UI 线程在 86 行睡眠；85 的 post 顺带调 ThreadBase 构造时传进 WorkQueue 的 wakeFunc（mLooper->wake()，base/libs/hwui/platform/android/thread/ThreadBase.h:37），把 RT 从 pollOnce 里叫醒。这是一对一交接：一个 wait 对应一次 signal，没有超时兜底。",
+  "pitfalls": [
+    "丢唤醒窗口是这里唯一的致命错误：post 与 wait 必须持同一把 mLock。拆成两把锁或先 post 后加锁，RT 快的时候 UI 就永久睡死。",
+    "canUnblockUiThread 为 false 时（纹理缓存满，syncFrameState 返回 info.prepareTextures），UI 要等到 159-161 才被放行。这段 UI 卡顿会被误判成「RT 画得慢」，其实是纹理缓存打满。",
+    "RT 侧从 124 行注释起 this 已「UNSAFE TO ACCESS」（回调都 move 走了）。如果有人在唤醒 UI 之后还去读 task 成员，就是与下一帧的 UI 写并发。",
+    "这里没有超时：mSignal.wait(mLock) 不带你预期的那种 timedWait。RT 若因为别的原因不 unblock，UI 就是无限等。"
+  ],
+  "debug": [
+    "UI 线程栈停在 Condition::wait 且属于 DrawFrameTask::postAndWait（86）是正常态；如果同时 RT 也在等锁（220），说明有第三方长期持着 mLock",
+    "perfetto/atrace 里 UI 线程 postAndWait 段的长度就是「UI 等同步」的真实耗时，与 RT 的 DrawFrames 起点对比可算出交接延迟",
+    "发现 UI 每帧都等到接近帧尾才醒，先查是不是走了 159-161 那条分支（纹理缓存打满），而不是怀疑 RT 绘制慢"
+  ],
+  "next": "第 6 步「RenderThread::threadLoop 取出任务」：被唤醒的 RT 从队列里拿出那个 lambda 执行 run()。"
+}

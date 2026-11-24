@@ -1,0 +1,187 @@
+{
+  "id": "stage-04",
+  "num": 4,
+  "title": "第 4 拍：latch 与 acquire fence",
+  "subtitle": "SurfaceFlinger 在主线程把 transaction 里的 buffer 变成 drawing state；acquire fence 未 signal 时这一帧就不消费它",
+  "lane": "SF",
+  "durationHint": "量级：亚毫秒~数毫秒；latch 本身只是簿记，fence 未 signal 会把整个消费推到下一个 vsync",
+  "summary": "SurfaceFlinger 主线程在 vsync 报告的 commit 阶段做 latch：MessageQueue::Handler::handleMessage → Scheduler::onFrameSignal → compositor.commit → SurfaceFlinger::commit → updateLayerSnapshots（native/services/surfaceflinger/SurfaceFlinger.cpp:2771）。每个有 ready frame 的 layer 会被调 latchBufferImpl（2953），把 transaction 里带来的 buffer 认作本帧要显示的内容。核心闸门是 fenceHasSignaled()：drawing state 有 buffer 而 acquire fence 还没 signal 时，打 “!fenceHasSignaled()” trace、调 onLayerUpdate 触发下一次 commit 并返回 false，本帧不消费。latch 成功则记 TimeStats 与 FrameTracer 的 acquire fence、latch 时间，把 SurfaceFrame 以 Presented 状态交给 FrameTimeline；最后按 snapshot.contentDirty 把该 layer 的可见区域并进 output 脏区，供合成阶段决定重绘范围。这一拍只做簿记：不拷贝像素，也不产生 GPU 工作，却决定了本帧到底消费了哪些 buffer；一旦被 fence 挡住，整条流水线就整体往后错一帧，对应用侧来说这里也是 buffer 能否被归还的分水岭。",
+  "callchain": [
+    "MessageQueue::Handler::handleMessage()",
+    "Scheduler::onFrameSignal()",
+    "SurfaceFlinger::commit()",
+    "SurfaceFlinger::updateLayerSnapshots()",
+    "Layer::latchBufferImpl()",
+    "Layer::fenceHasSignaled()",
+    "SurfaceFlinger::onLayerUpdate()",
+    "Layer::latchBufferStatsAndHandles()",
+    "Layer::gatherBufferInfo()",
+    "Layer::addSurfaceFramePresentedForBuffer()"
+  ],
+  "sections": [
+    {
+      "heading": "谁在什么时候 latch",
+      "html": "<p>调用链从 SF 主线程的消息循环开始：<code>MessageQueue::Handler::handleMessage</code>（native/services/surfaceflinger/Scheduler/MessageQueue.cpp:44-48）里 <code>mQueue.onFrameSignal(mQueue.mCompositor, mVsyncId, mExpectedVsyncTime)</code> → <code>Scheduler::onFrameSignal</code>（Scheduler/Scheduler.cpp:411）→ <code>compositor.commit(pacesetterPtr-&gt;displayId, targets)</code>（Scheduler.cpp:470）→ <code>SurfaceFlinger::commit</code>（SurfaceFlinger.cpp:2996）→ <code>updateLayerSnapshots</code>（3138 调用，函数本体 2771）。</p><p>所以 latch 的执行线程是 <strong>SF 主线程</strong>，时机是“vsync 报告之后的 commit 阶段”，在合成（<code>compositor.composite</code>，Scheduler.cpp:503）之前。<code>updateLayerSnapshots</code> 的注释与 trace 名字都指向这一步的职责：<code>SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Transaction Handling\")</code>（2775）。binder 线程此时只负责把 transaction 收进队列，真正应用在 <code>applyTransactionsLocked(update.transactions)</code>（2906）与随后的 latch 循环（2911-2959）。</p>"
+    },
+    {
+      "heading": "buffer 怎么到 SF：BLAST 之后没有 per-layer BufferQueueConsumer",
+      "html": "<p>BLAST 模型下 buffer 不再由 SF 主动从 BufferQueue 取，而是<strong>跟着 Transaction 一起到达</strong>：<code>Layer::setBuffer(std::shared_ptr&lt;renderengine::ExternalTexture&gt;&amp; buffer, const BufferData&amp; bufferData, ...)</code>（Layer.cpp:921）在应用 transaction 时被调用，buffer handle 与 acquire fence 放在 <code>BufferData</code> 里。这意味着在 SF 里搜 <code>BufferQueueConsumer::acquireBuffer</code> 是搜不到 per-layer 路径的——整个 SF 中唯一还持有 consumer 的是 <code>FramebufferSurface</code> 的 <code>BufferItemConsumer mRendererConsumer</code>（DisplayHardware/FramebufferSurface.h:83），它对应 HWC 的 client target，不是应用图层。</p><p><code>BufferData</code>（native/libs/gui/include/gui/LayerState.h:115-169）是跨进程结构：<code>sp&lt;GraphicBuffer&gt; buffer</code>、<code>sp&lt;Fence&gt; acquireFence</code>、<code>uint64_t frameNumber</code>、<code>producerId</code>、<code>cachedBuffer</code>（<code>client_cache_t</code>）、<code>dequeueTime</code>，以及 <code>releaseBufferListener</code>（<code>sp&lt;ITransactionCompletedListener&gt;</code>，:150）与 <code>releaseBufferEndpoint</code>。这些字段通过 binder parcel 传递（<code>writeToParcel/readFromParcel</code>），GraphicBuffer 走 handle、Fence 走 fd，真正的像素内存不出 binder。</p>"
+    },
+    {
+      "heading": "acquire fence 未 signal：整帧不消费",
+      "html": "<p>latch 的第一道闸门在 <code>Layer::latchBufferImpl</code> 开头（Layer.cpp:1518-1524）：</p><blockquote>若 <code>mDrawingState.buffer</code> 存在但 <code>fenceHasSignaled()</code> 为假，打 <code>SFTRACE_NAME(\"!fenceHasSignaled()\")</code>、调 <code>mFlinger-&gt;onLayerUpdate()</code>，然后 <code>return false</code>。</blockquote><p><code>fenceHasSignaled</code>（Layer.cpp:1203-1216）先看 <code>SurfaceFlinger::enableLatchUnsignaledConfig</code>：只要不是 <code>LatchUnsignaledConfig::Disabled</code> 就直接返回 true（不再检查 fence）；否则读 <code>getDrawingState().acquireFence-&gt;getStatus() == Fence::Status::Signaled</code>，未 signal 时给 TimeStats 记一笔 <code>incrementLatchSkipped(getSequence(), LatchSkipReason::LateAcquire)</code>。<code>LatchUnsignaledConfig</code> 的注释（SurfaceFlinger.h:189-197）解释了放行条件：单 layer 更新且只有 buffer 变化、且只应用了一个 transaction 时才允许，避免 HWC 收到未 signal 的 fence 而错过呈现。</p><p><code>onLayerUpdate</code> 的实现只有一句：<code>scheduleCommit(FrameHint::kActive)</code>（SurfaceFlinger.cpp:9208-9210），即“这一帧没东西可显示，再排一次 commit”。于是同一个 buffer 会在下一个 vsync 的 commit 里重试。对应用的直接后果是<strong>这一帧的内容迟到一帧甚至更久</strong>，jank 从 SF 侧被引入。</p>"
+    },
+    {
+      "heading": "时间预算：这一拍必须在哪个点前结束",
+      "html": "<p>SF 的工作窗口由 Scheduler 给定：<code>Scheduler::onFrameSignal</code> 组装 <code>FrameTargeter::BeginFrameArgs</code> 时带上了 <code>sfWorkDuration</code>（<code>mVsyncModulator-&gt;getVsyncConfig().sfWorkDuration</code>）与 <code>hwcMinWorkDuration</code>（Scheduler/Scheduler.cpp:411-424），<code>beginFrame</code> 据此推出该帧的 <code>expectedPresentTime</code>。commit 与 latch 必须在这个 deadline 之前完成，后面的 <code>compositor.composite</code>（Scheduler.cpp:503）才有机会把内容交给 HWC 并在本 vsync 呈现。换言之，latch 是 SF 侧最靠近“输入”的一步，它多花的时间会直接挤占合成与 HWC 的预算。</p><p>latch 未通过时（acquire fence 未 signal），<code>onLayerUpdate</code> → <code>scheduleCommit(FrameHint::kActive)</code> 会额外排一次 commit，最早只能在下一个 vsync 的 commit 里重试，等价于该 layer 至少迟到一帧；如果 fence 迟到是间歇性的，就会表现为“偶尔掉一帧”而不持续 jank。反过来，如果 latch 很快但 <code>contentDirty</code> 为假，则会出现“commit 很轻、屏幕上却什么都没变”的现象——两种“没有变化”的成因完全不同：前者是内容没到，后者是内容到了但没被判定为脏，排障时必须分开看。</p>"
+    },
+    {
+      "heading": "latch 成功后的三笔账：TimeStats、FrameTracer、FrameTimeline",
+      "html": "<p>闸门通过后 <code>latchBufferImpl</code> 继续：<code>latchBufferStatsAndHandles(latchTime, expectedPresentTime, bgColorOnly)</code>（Layer.cpp:1525）→ 备份 <code>oldBufferInfo</code> → <code>mCurrentFrameNumber = mDrawingState.frameNumber</code> → <code>gatherBufferInfo()</code>（1531）。其中 <code>latchBufferStatsAndHandles</code>（1239-1288）做了三件事：</p><ul><li><strong>TimeStats</strong>：<code>setAcquireFence(layerId, frameNumber, acquireFence)</code> 与 <code>setLatchTime(...)</code>（1266-1267），acquire fence 先被包成 <code>FenceTime</code>（1262）。</li><li><strong>FrameTracer</strong>：<code>traceFence(..., FrameEvent::ACQUIRE_FENCE)</code> 与 <code>traceTimestamp(..., FrameEvent::LATCH)</code>（1269-1272），这两个事件是 Perfetto 里对齐 app queue 与 SF latch 的锚点。</li><li><strong>FrameTimeline</strong>：若 <code>mDrawingState.bufferSurfaceFrameTX</code> 非空且还没 Presented，就调 <code>addSurfaceFramePresentedForBuffer(...)</code>（1280-1283）；该函数（461-469）设置 <code>setAcquireFenceTime</code>、<code>setPresentState(Presented, mFrameTimelinePastTimestamps)</code>，再 <code>mFlinger-&gt;mFrameTimeline-&gt;addSurfaceFrame(surfaceFrame)</code>。</li></ul><p>如果 buffer 被更早的 transaction 替换掉，则由 <code>releasePreviousBuffer</code> 打 <code>addSurfaceFrameDroppedForBuffer(...)</code> 记 Dropped（870），这是 SurfaceFrame 的另一半生命周期。</p>"
+    },
+    {
+      "heading": "contentDirty 如何变成 output 脏区",
+      "html": "<p>latch 只更新 layer 自身，是否要重绘由快照驱动。循环结束后 <code>mLayerSnapshotBuilder.forEachSnapshot(...)</code>（SurfaceFlinger.cpp:2962-2970）：</p><blockquote>若 <code>snapshot.isVisible &amp;&amp; snapshot.contentDirty</code>，或 <code>!snapshot.isVisible</code> 且 Visibility 刚变，就用 <code>transformedBoundsWithoutTransparentRegion</code> 调 <code>invalidateLayerStack(snapshot.outputFilter, visibleReg)</code>。</blockquote><p><code>contentDirty</code> 定义在 <code>compositionengine/LayerFECompositionState.h:118</code>，<code>LayerSnapshot</code> 继承它（FrontEnd/LayerSnapshot.h:70）。置位点在 <code>FrontEnd/LayerSnapshot.cpp:414</code>（<code>requested.what &amp; layer_state_t::CONTENT_DIRTY || autoRefresh</code>）与 <code>LayerSnapshotBuilder.cpp:337/806</code>。这是本阶段与合成阶段的唯一通路：<strong>latch 决定“有什么内容”，contentDirty 决定“要不要重画哪一块”</strong>。</p><p>另外一个容易忽略的分支：<code>frontend_caching_v0</code> 打开时，快照由 <code>mMergeableHierarchyManager.constructSnapshots(...)</code> 构造（2858-2879），普通路径的 <code>mLayerSnapshotBuilder.update(args)</code> 在 2880-2882；两条路径都产出同一类 <code>LayerSnapshot</code>，但更新时机不同，读 trace 时要注意 “MergeableHierarchyManager::constructSnapshots” 与 “LayerSnapshotBuilder:update” 两个 slice。</p>"
+    },
+    {
+      "heading": "release 的两条路：BLAST 回调与 HWC release fence",
+      "html": "<p>buffer 被 SF 用完要还给应用，路径有两条且互不替代：</p><ol><li><strong>BLAST 回调路</strong>：<code>BufferData::releaseBufferListener</code>（LayerState.h:150）被保存到 <code>mDrawingState.releaseBufferListener</code>（Layer.cpp:957），释放时 <code>callReleaseBufferCallback</code>（711-749）用 <code>ReleaseCallbackId{buffer-&gt;getId(), framenumber}</code>，通过 <code>listener-&gt;onReleaseBuffer(callbackId, fence, maxAcquiredBufferCount, false)</code>（730）或 <code>mBufferReleaseChannel-&gt;writeReleaseFence(...)</code>（738）把 release fence 交回应用进程/Channel。trace 名是 “callReleaseBufferCallback &lt;name&gt; - &lt;frame&gt;”。</li><li><strong>HWC fence 路</strong>：<code>Output::presentFrameAndReleaseLayers</code> 从 <code>frame.layerFences</code> 取每个 hwc layer 的 release fence（Output.cpp:1754-1758），必要时与 client target acquire fence 合并（1778-1781），再 <code>layer-&gt;getLayerFE().setReleaseFence(releaseFence)</code>（1783）。<code>LayerFE::setReleaseFence</code> 内部是一个 <code>std::promise&lt;FenceResult&gt;</code>（LayerFE.cpp:438-457），由 <code>createReleaseFenceFuture()</code> 交给上层等待。</li></ol><p>此外 <code>releasePreviousBuffer</code>（Layer.cpp:853-879）处理“上一帧的 buffer 还没显示就被替换”的情况：<code>EARLY_RELEASE_ENABLED</code> 且存在 <code>mLastClientCompositionFence</code> 时用该 fence（873-878），否则直接用 <code>mDrawingState.acquireFence</code> 回调并 <code>decrementPendingBufferCount()</code>。这条路径决定应用还能拿到几个 buffer，直接连着 BufferQueue 的 slot 供给。</p>"
+    },
+    {
+      "heading": "排障：这一拍出问题时看什么",
+      "html": "<ul><li><strong>内容迟到一帧</strong>：先看 trace 里有没有 “!fenceHasSignaled()”，有则问题在 produce 侧 fence 太晚（GPU 还没画完就把 buffer 交了），而不是 SF 慢。</li><li><strong>latch 次数正常但屏上不动</strong>：查 <code>contentDirty</code> 与 output 脏区，latch 只负责内容，不负责“要不要重画”。</li><li><strong>应用 buffer 用尽（dequeue 阻塞）</strong>：看 release 路是否漏了——BLAST 路看 “callReleaseBufferCallback”，HWC 路看 present/release fence 是否 signal。<code>decrementPendingBufferCount</code> 与 <code>getMaxAcquiredBufferCountForCurrentRefreshRate</code>（Layer.cpp:722-723）共同决定应用可用的 buffer 数。</li><li><strong>FrameTimeline 上 SF 帧缺失</strong>：确认 <code>bufferSurfaceFrameTX</code> 是否被 Dropped 掉（870），Dropped 的 SurfaceFrame 不会以 Presented 上报。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "symbol": "Layer::latchBufferImpl",
+      "lines": "1506-1534",
+      "code": "bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,\n                            nsecs_t expectedPresentTime, bool bgColorOnly)\n        REQUIRES(mFlinger->mStateLock) {\n    SFTRACE_FORMAT_INSTANT(\"latchBuffer %s - %\" PRIu64, getDebugName(),\n                           getDrawingState().frameNumber);\n\n    bool refreshRequired = latchSidebandStream(recomputeVisibleRegions);\n\n    if (refreshRequired) {\n        return refreshRequired;\n    }\n\n    // If the head buffer's acquire fence hasn't signaled yet, return and\n    // try again later\n    if (mDrawingState.buffer && !fenceHasSignaled()) {\n        SFTRACE_NAME(\"!fenceHasSignaled()\");\n        mFlinger->onLayerUpdate();\n        return false;\n    }\n    latchBufferStatsAndHandles(latchTime, expectedPresentTime, bgColorOnly);\n\n    // Capture the old state of the layer for comparisons later\n    BufferInfo oldBufferInfo = mBufferInfo;\n    mPreviousFrameNumber = mCurrentFrameNumber;\n    mCurrentFrameNumber = mDrawingState.frameNumber;\n    gatherBufferInfo();\n\n    if (mBufferInfo.mBuffer) {\n        // We latched a buffer that will be presented soon. Clear the previously presented layer",
+      "note": "latch 的入口：先处理 sideband stream，再用 fenceHasSignaled() 闸门挡住未 signal 的 acquire fence（打 “!fenceHasSignaled()” trace 并 scheduleCommit 后返回 false），通过后记 stats/handles、推进 frameNumber 并 gatherBufferInfo。"
+    },
+    {
+      "file": "native/services/surfaceflinger/Layer.cpp",
+      "symbol": "Layer::addSurfaceFramePresentedForBuffer",
+      "lines": "1259-1288",
+      "code": "    const int32_t layerId = getSequence();\n    const uint64_t bufferId = getPendingBufferId();\n    const uint64_t frameNumber = mDrawingState.frameNumber;\n    const auto acquireFence = std::make_shared<FenceTime>(mDrawingState.acquireFence);\n    // TODO(b/485971052):\n    // For OOPR the fence tracing is going to produce SIGNAL_TIME_INVALID. This may\n    // cause issues\n    mFlinger->mTimeStats->setAcquireFence(layerId, frameNumber, acquireFence);\n    mFlinger->mTimeStats->setLatchTime(layerId, frameNumber, latchTime);\n\n    mFlinger->mFrameTracer->traceFence(layerId, bufferId, frameNumber, acquireFence,\n                                       FrameTracer::FrameEvent::ACQUIRE_FENCE);\n    mFlinger->mFrameTracer->traceTimestamp(layerId, bufferId, frameNumber, latchTime,\n                                           FrameTracer::FrameEvent::LATCH);\n\n    auto& bufferSurfaceFrame = mDrawingState.bufferSurfaceFrameTX;\n    if (bufferSurfaceFrame != nullptr &&\n        bufferSurfaceFrame->getPresentState() != PresentState::Presented) {\n        // Update only if the bufferSurfaceFrame wasn't already presented. A Presented\n        // bufferSurfaceFrame could be seen here if a pending state was applied successfully and we\n        // are processing the next state.\n        addSurfaceFramePresentedForBuffer(bufferSurfaceFrame,\n                                          getAcquireSignalTime(),\n                                          latchTime, expectedPresentTime);\n        mDrawingState.bufferSurfaceFrameTX.reset();\n    }\n\n    mFlinger->getTransactionCallbackInvoker().addOnCommitCallbackHandles(\n            mDrawingState.callbackHandles);\n}",
+      "note": "latch 成功后的三笔账：TimeStats 的 acquire fence/latchTime、FrameTracer 的 ACQUIRE_FENCE 与 LATCH 事件，以及把 bufferSurfaceFrameTX 以 Presented 状态交给 FrameTimeline（addSurfaceFramePresentedForBuffer）。"
+    },
+    {
+      "file": "native/libs/gui/include/gui/LayerState.h",
+      "symbol": "BufferData",
+      "lines": "115-145",
+      "code": "class BufferData : public Parcelable {\npublic:\n    virtual ~BufferData() = default;\n    virtual bool hasBuffer() const { return buffer != nullptr; }\n    virtual bool hasSameBuffer(const BufferData& other) const {\n        return buffer == other.buffer && frameNumber == other.frameNumber;\n    }\n    virtual uint32_t getWidth() const { return buffer->getWidth(); }\n    virtual uint32_t getHeight() const { return buffer->getHeight(); }\n    Rect getBounds() const {\n        return {0, 0, static_cast<int32_t>(getWidth()), static_cast<int32_t>(getHeight())};\n    }\n    virtual uint64_t getId() const { return buffer->getId(); }\n    virtual PixelFormat getPixelFormat() const { return buffer->getPixelFormat(); }\n    virtual uint64_t getUsage() const { return buffer->getUsage(); }\n\n    enum class BufferDataChange : uint32_t {\n        fenceChanged = 0x01,\n        frameNumberChanged = 0x02,\n        cachedBufferChanged = 0x04,\n    };\n\n    sp<GraphicBuffer> buffer;\n    sp<Fence> acquireFence;\n\n    // Used by BlastBufferQueue to forward the framenumber generated by the\n    // graphics producer.\n    uint64_t frameNumber = 0;\n    bool hasBarrier = false;\n    uint64_t barrierFrameNumber = 0;\n    uint32_t producerId = 0;",
+      "note": "BLAST 之后 buffer 跟随 transaction 到达的结构：GraphicBuffer + acquireFence + frameNumber + producerId + releaseBufferListener；这些字段通过 parcel 跨进程传递，像素内存本身不经过 binder。"
+    },
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "Layer::latchBufferImpl",
+      "lines": "2911-2953",
+      "code": "    for (auto& layer : mLayerLifecycleManager.getLayers()) {\n        if (layer->changes.test(frontend::RequestedLayerState::Changes::Created) &&\n            layer->bgColorLayer) {\n            sp<Layer> bgColorLayer = getFactory().createLayer(\n                    LayerCreationArgs(this, nullptr, layer->name,\n                                      ISurfaceComposerClient::eFXSurfaceEffect, LayerMetadata(),\n                                      std::make_optional(layer->id), true));\n            mLegacyLayers[bgColorLayer->sequence] = bgColorLayer;\n        }\n        const bool willReleaseBufferOnLatch = layer->willReleaseBufferOnLatch();\n\n        auto it = mLegacyLayers.find(layer->id);\n        if (it == mLegacyLayers.end() &&\n            layer->changes.test(frontend::RequestedLayerState::Changes::Destroyed)) {\n            // Layer handle was created and immediately destroyed. It was destroyed before it\n            // was added to the map.\n            continue;\n        }\n\n        LLOG_ALWAYS_FATAL_WITH_TRACE_IF(it == mLegacyLayers.end(),\n                                        \"Couldnt find layer object for %s\",\n                                        layer->getDebugString().c_str());\n        if (!layer->hasReadyFrame() && !willReleaseBufferOnLatch) {\n            if (!it->second->hasBuffer()) {\n                // The last latch time is used to classify a missed frame as buffer stuffing\n                // instead of a missed frame. This is used to identify scenarios where we\n                // could not latch a buffer or apply a transaction due to backpressure.\n                // We only update the latch time for bufferless layers here, the latch time\n                // is updated for buffer layers when the buffer is latched.\n                it->second->updateFrameTimelinePastTimestamps({\n                        .latchTime = latchTime,\n                        .expectedPresentTime = expectedPresentTimeNs,\n                });\n            }\n            continue;\n        }\n\n        const bool bgColorOnly =\n                !layer->externalTexture && (layer->bgColorLayerId != UNASSIGNED_LAYER_ID);\n        if (willReleaseBufferOnLatch) {\n            mLayersWithBuffersRemoved.emplace(it->second);\n        }\n        it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);",
+      "note": "SF 侧的 latch 循环：跳过没有 ready frame 且无 buffer 释放的 layer（只更新 past timestamps），否则算好 bgColorOnly 并调 latchBufferImpl；注意 newDataLatched 在调用后就置 true，与 latch 是否成功无关。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "Layer::mDrawingState.buffer",
+      "type": "sp<GraphicBuffer>",
+      "desc": "latch 时被认作本帧内容的 buffer，来自 transaction 携带的 BufferData（Layer.cpp:921 setBuffer）。与 mBufferInfo.mBuffer（已 latch 的 buffer）是两份不同的状态，比较两者可判断是否有新 buffer。"
+    },
+    {
+      "name": "Layer::mDrawingState.acquireFence",
+      "type": "sp<Fence>",
+      "desc": "生产者提交 buffer 时带来的 acquire fence；fenceHasSignaled() 直接读它的 getStatus()（Layer.cpp:1208-1209）。resetDrawingStateBufferInfo 会把它重置为 Fence(-1)（887）。"
+    },
+    {
+      "name": "BufferData",
+      "type": "class（native/libs/gui/include/gui/LayerState.h:115）",
+      "desc": "buffer/acquireFence/frameNumber/producerId/cachedBuffer/dequeueTime/releaseBufferListener/releaseBufferEndpoint 的载体，也是 parcelable；BufferDataChange 标记 fenceChanged/frameNumberChanged/cachedBufferChanged（:131-135）。"
+    },
+    {
+      "name": "SurfaceFlinger::enableLatchUnsignaledConfig",
+      "type": "LatchUnsignaledConfig（SurfaceFlinger.h:189）",
+      "desc": "Disabled / AutoSingleLayer 等取值。非 Disabled 时 fenceHasSignaled() 直接返回 true（Layer.cpp:1204-1206），即允许 latch 未 signal 的 fence；注释说明了只在单 layer、仅 buffer 变化时放行。"
+    },
+    {
+      "name": "LayerSnapshot::contentDirty",
+      "type": "bool（继承自 LayerFECompositionState.h:118）",
+      "desc": "决定该 layer 的可见区域是否并入 output 脏区（SurfaceFlinger.cpp:2965）。置位点在 FrontEnd/LayerSnapshot.cpp:414 与 LayerSnapshotBuilder.cpp:337/806。"
+    },
+    {
+      "name": "mDrawingState.bufferSurfaceFrameTX",
+      "type": "std::shared_ptr<scheduler::SurfaceFrame>",
+      "desc": "该 buffer 的 FrameTimeline 帧对象；latch 时以 Presented 上报（Layer.cpp:1274-1284），被丢弃时以 Dropped 上报（870），latch 后即 reset。"
+    },
+    {
+      "name": "mBufferReleaseChannel",
+      "type": "sp<gui::BufferReleaseChannel>",
+      "desc": "BLAST 把 release fence 直接回传应用的通道；callReleaseBufferCallback 里优先走 listener，其次写 Channel（Layer.cpp:729-748）。"
+    },
+    {
+      "name": "LayerFE::mReleaseFence",
+      "type": "std::promise<FenceResult>",
+      "desc": "HWC 路的 release fence 交付点：presentFrameAndReleaseLayers 调 setReleaseFence 兑现 promise（LayerFE.cpp:438-457），上层通过 createReleaseFenceFuture() 等待。"
+    },
+    {
+      "name": "Layer::mLastClientCompositionFence / EARLY_RELEASE_ENABLED",
+      "type": "sp<Fence> / 编译期开关",
+      "desc": "buffer 被提前替换时（releasePreviousBuffer），若开了 EARLY_RELEASE_ENABLED 就用上一次 client composition 的 fence 释放，否则用 acquireFence（Layer.cpp:873-878）。"
+    },
+    {
+      "name": "TimeStats::LatchSkipReason",
+      "type": "enum（LateAcquire 等）",
+      "desc": "fence 未 signal 导致 latch 跳过时累加（Layer.cpp:1211-1212），只在 dumpsys SurfaceFlinger --timestats 里可见，不进 FrameTimeline。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "latchBuffer <name> - <frameNumber>",
+      "value": "SFTRACE_FORMAT_INSTANT（Layer.cpp:1509-1510）",
+      "desc": "每个 layer 每次 latch 一条 instant，frameNumber 就是该 buffer 的 FrameTimeline 帧号，可与应用侧 “queueBuffer” 对齐。"
+    },
+    {
+      "name": "!fenceHasSignaled()",
+      "value": "SFTRACE_NAME（Layer.cpp:1521）",
+      "desc": "出现即本帧该 layer 未被消费、已 scheduleCommit 重试；是 SF 侧引入掉帧的最直接证据。"
+    },
+    {
+      "name": "Transaction Handling",
+      "value": "SFTRACE_NAME_FOR_TRACK（SurfaceFlinger.cpp:2775）",
+      "desc": "updateLayerSnapshots 的 workload track 名，整个 commit 阶段都在它下面，含 applyTransactionsLocked 与 latch 循环。"
+    },
+    {
+      "name": "DisplayCallbackAndStatsUpdates",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:2905）",
+      "desc": "applyTransactionsLocked 之前的记账段，可与 latchBuffer 的 instant 一起切分 commit 耗时。"
+    },
+    {
+      "name": "FrameTracer ACQUIRE_FENCE / LATCH",
+      "value": "Perfetto（Layer.cpp:1269-1272）",
+      "desc": "Perfetto 的 FrameTimeline 轨道上直接可见，用来测 “queue → latch” 的等待时间。"
+    },
+    {
+      "name": "callReleaseBufferCallback <name> - <frame>",
+      "value": "SFTRACE_FORMAT_INSTANT（Layer.cpp:718）",
+      "desc": "buffer 归还应用的时刻；与 latch 的差值反映 buffer 在 SF 侧停留时长。"
+    }
+  ],
+  "traceTags": [
+    "Transaction Handling",
+    "latchBuffer <name> - <frameNumber>",
+    "!fenceHasSignaled()",
+    "DisplayCallbackAndStatsUpdates",
+    "LayerSnapshotBuilder:update",
+    "callReleaseBufferCallback <name> - <frameNumber>"
+  ],
+  "pitfalls": [
+    "latch 不是 dequeue：BLAST 之后 buffer 跟着 Transaction 到达（Layer::setBuffer），SF 里没有 per-layer BufferQueueConsumer，唯一持有 consumer 的是 FramebufferSurface 的 BufferItemConsumer。在 SF 代码里找 acquireBuffer 的 per-layer 路径会走错方向。",
+    "fenceHasSignaled() 在 enableLatchUnsignaledConfig 非 Disabled 时无条件返回 true（Layer.cpp:1204-1206），此时 “acquire fence 没 signal 就不消费” 的直觉失效，trace 上看不到 “!fenceHasSignaled()”，但 latch 仍发生。",
+    "SF 的 latch 循环在调用 latchBufferImpl 之后无条件置 newDataLatched = true（SurfaceFlinger.cpp:2953-2954），且忽略返回值；所以 newDataLatched 只表示“走过了 latch 分支”，不表示 buffer 真的被消费。",
+    "release 有两条互不替代的路：BLAST 走 ITransactionCompletedListener::onReleaseBuffer 或 BufferReleaseChannel（按 bufferId+frameNumber 匹配），HWC 走 LayerFE::setReleaseFence 的 promise。只查一路会漏掉另一半 release 延迟，表现为应用 buffer 数变少却找不到谁没还。",
+    "latch 跳过不体现在 FrameTimeline 的 SurfaceFrame 上（那会被 reset 成 null），只记在 TimeStats 的 LatchSkipReason::LateAcquire（Layer.cpp:1208-1213），必须 dumpsys SurfaceFlinger --timestats 才看得到。",
+    "contentDirty 为 false 时，即使 buffer 换了也不会把可见区域并进 output 脏区（SurfaceFlinger.cpp:2965），合成阶段就可能判定“无需重绘”。遇到“画面不更新但 latch 正常”时，先查 contentDirty 的置位来源（LayerSnapshot.cpp:414 / LayerSnapshotBuilder.cpp:337、806）。",
+    "buffer 被提前替换时走 releasePreviousBuffer（Layer.cpp:853-879）：只有 EARLY_RELEASE_ENABLED 且存在 mLastClientCompositionFence 才用 client composition fence 释放，否则用 acquireFence 直接释放，GPU 可能还在读旧 buffer；线上表现为偶发花屏/撕裂，需要结合 fence 依赖监控看。"
+  ],
+  "next": "stage-05"
+}

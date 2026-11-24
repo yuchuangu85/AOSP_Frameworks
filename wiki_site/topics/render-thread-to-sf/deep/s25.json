@@ -1,0 +1,47 @@
+{
+  "step": "s25",
+  "title": "latchBufferImpl：等 acquire fence，决定这一帧能不能用",
+  "tldr": "合成前必须确认 acquire fence 已 signal，否则这一拍放弃该层，等下次 commit 重试。",
+  "why": "acquire fence 是 app 侧 GPU 写完这一帧的信号。如果 SF 不等它就合成，硬件可能正在往同一块显存里写：表现为撕裂、块状花屏、或者上半屏新帧下半屏旧帧，而且这些错误只在 GPU 忙的时候出现，普通操作完全复现不了。反过来，如果这里改成一个阻塞的 wait，SF 主线程就会被一块还没画完的 buffer 拖住整整一个 vsync，那一拍所有显示器的合成全部顺延，用户感知到的是整机卡顿而不是某个 app 卡。所以真实实现是「不等、先跳过」：fence 没 signal 就返回 false，再通过 onLayerUpdate 把 commit 重排一次，让 fence 在下一次 VSYNC 前后自然到位。",
+  "concepts": [
+    { "term": "latch", "text": "把 drawing state 的 buffer/fence/帧号搬进 mBufferInfo，成为本帧合成用的状态。" },
+    { "term": "acquire fence", "text": "producer 给的 fence：signal 表示 GPU 已把这一帧的内容写完，现在读它是安全的。" },
+    { "term": "drawing state", "text": "已 commit 的状态副本；事务里的 buffer 先落在 mDrawingState，latch 时才搬走。" },
+    { "term": "onLayerUpdate", "text": "SF 内部的重排请求，最终走 scheduleCommit；保证「这一拍没 latch 上」还有下一拍。" }
+  ],
+  "walk": [
+    { "call": "bool Layer::latchBufferImpl(bool& recomputeVisibleRegions, nsecs_t latchTime,", "ref": "native/services/surfaceflinger/Layer.cpp:1506", "what": "签名第二行带着 REQUIRES(mFlinger->mStateLock)：调用者必须持 SF 状态锁。" },
+    { "call": "bool refreshRequired = latchSidebandStream(recomputeVisibleRegions);", "ref": "native/services/surfaceflinger/Layer.cpp:1512", "what": "先处理 sideband stream（视频直通）：变了就提前返回，本轮不 latch。" },
+    { "call": "if (mDrawingState.buffer && !fenceHasSignaled()) {", "ref": "native/services/surfaceflinger/Layer.cpp:1520", "what": "闸门本体：有 buffer 但 fence 没 signal，就这一拍放弃。" },
+    { "call": "mFlinger->onLayerUpdate();", "ref": "native/services/surfaceflinger/Layer.cpp:1522", "what": "放弃时补一次 scheduleCommit，fence 到位后还能再合一次。" },
+    { "call": "if (SurfaceFlinger::enableLatchUnsignaledConfig != LatchUnsignaledConfig::Disabled) {", "ref": "native/services/surfaceflinger/Layer.cpp:1204", "what": "调试开关：打开后 fenceHasSignaled 恒为 true，所有 fencing 假设失效。" },
+    { "call": "getDrawingState().acquireFence->getStatus() == Fence::Status::Signaled;", "ref": "native/services/surfaceflinger/Layer.cpp:1209", "what": "判定方式是轮询，不睡；没 signal 还会记一次 LatchSkipReason::LateAcquire。" },
+    { "call": "latchBufferStatsAndHandles(latchTime, expectedPresentTime, bgColorOnly);", "ref": "native/services/surfaceflinger/Layer.cpp:1525", "what": "打点：把 latchTime 与 acquire fence 记进 TimeStats 和 FrameTracer。" },
+    { "call": "mCurrentFrameNumber = mDrawingState.frameNumber;", "ref": "native/services/surfaceflinger/Layer.cpp:1530", "what": "帧号接棒：旧值先存进 mPreviousFrameNumber（1529），再取本帧号。" },
+    { "call": "gatherBufferInfo();", "ref": "native/services/surfaceflinger/Layer.cpp:1531", "what": "真正搬运：buffer、fence、frameNumber 从 mDrawingState 进 mBufferInfo。" },
+    { "call": "it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2953", "what": "唯一调用点：commit → updateLayerSnapshots 里逐层 latch，返回值被丢弃。" },
+    { "call": "if (!layer->hasReadyFrame() && !willReleaseBufferOnLatch) {", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:2933", "what": "上游筛子：没有新帧也没 buffer 变更的层，根本走不到 latch。" }
+  ],
+  "state": [
+    { "field": "Layer::mBufferInfo.mBuffer / mFence", "before": "上一帧 latch 的 buffer 与 fence（首帧为 nullptr）", "after": "换成 mDrawingState.buffer 与 acquireFence（1315-1317）", "note": "fence 没 signal 时走不到这里，mBufferInfo 保持上一帧" },
+    { "field": "Layer::mCurrentFrameNumber", "before": "上一帧的 frameNumber", "after": "mDrawingState.frameNumber（1530）", "note": "mPreviousFrameNumber 同步写成旧值（1529），供后续判断帧是否连续" },
+    { "field": "Layer::mBufferInfo.mFenceTime", "before": "上一帧的 FenceTime", "after": "用本帧 acquireFence 新建一个（1323）", "note": "jank 与 postComposition 统计读的是它，不是裸 fence" },
+    { "field": "Layer::mDrawingState.acquireFence", "before": "setBuffer 写进来的 pending fence", "after": "不变，只被读（1209）与复制（1317）", "note": "latch 不做 fence 等待，所以这个字段本身不会被消费掉" },
+    { "field": "SurfaceFlinger::mLayersWithQueuedFrames", "before": "可能已有其它层", "after": "每层 latch 完被 emplace 进去（2958）", "note": "它后来变成 composite 的 layersWithQueuedFrames，是 release fence 的名单" },
+    { "field": "SurfaceFlinger::mustComposite", "before": "来自事务与全局变更", "after": "newDataLatched 无条件置 true 并 or 进去（2954、2988）", "note": "即使某层因 fence 没到被跳过，本拍照样被标记成要合成" }
+  ],
+  "threads": "SF 主线程：SurfaceFlinger::commit（2996）→ updateLayerSnapshots（2771）→ 2953，整段持 mFlinger->mStateLock（1508 的 REQUIRES 就是这个要求），所以这里任何阻塞都直接卡住合成器。fenceHasSignaled 用 Fence::getStatus() 轮询，不会睡。commit 返回 true 之后，composite 才在 Scheduler::onFrameSignal 里被调用。",
+  "pitfalls": [
+    "返回值没人要：2953 拿到 bool 却丢掉，2954 紧接着无条件 newDataLatched = true。想用返回值判断「这一层这帧没 latch 上」会判断错，本拍仍被标记为必须合成。",
+    "fence 没 signal 不等于丢帧：onLayerUpdate 会重排一次 commit（1522），下一次 VSYNC 通常就 latch 上了。判断丢帧要看前后帧的 frameNumber 是否连续，而不是看这里返回 false。",
+    "enableLatchUnsignaledConfig 一开，fenceHasSignaled 直接返回 true（1204-1206），acquire fence 语义整个失效；排查花屏/撕裂前先确认这个开关是 Disabled。",
+    "清空 buffer 的路径也在这里：mDrawingState.buffer == nullptr 而 oldBufferInfo.mBuffer 非空时返回 true 并置 recomputeVisibleRegions（1539-1543），这不是 latch 失败。"
+  ],
+  "debug": [
+    "perfetto/atrace 抓 sf：搜 slice !fenceHasSignaled()（1521 的 SFTRACE_NAME）；它一出现就说明这一拍因 fence 没到而跳过，后面紧跟一次新的 SF commit。",
+    "SFTRACE_FORMAT_INSTANT 的 latchBuffer <name> - <frameNumber>（1509）给出每层每次 latch 的帧号，连续两拍同一个 frameNumber 就是没 latch 到新帧。",
+    "dumpsys SurfaceFlinger --latency <layer> 看该层 queued/present 时间戳，再对照 Layer 段的 frameNumber，能区分「app 没交」和「SF 没 latch」。",
+    "dumpsys SurfaceFlinger --timestats 里 LateAcquire 的计数就是 1211 打上去的，直接反映 fence 迟到导致的跳过次数。"
+  ],
+  "next": "第 26 步「composite：准备合成参数」：latch 到的层进了 mLayersWithQueuedFrames，composite 把它们变成 refreshArgs 交给 CompositionEngine。"
+}

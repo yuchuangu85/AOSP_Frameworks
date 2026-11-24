@@ -1,0 +1,36 @@
+{
+  "step": "s15",
+  "title": "FlushAndSubmit：提交 GPU，不等完成",
+  "tldr": "flush commands 把 ganesh 攒下的 draw op 一次性提交给 GPU 就返回，不等执行完。",
+  "why": "没有这一步，第 14 步回放产生的 draw op 还堆在 Skia 侧没提交，GPU 一条命令都没收到——swap 交出去的会是一块没人画过的 buffer。而如果反过来在这里等 GPU 画完（Properties::waitForGpuCompletion 干的就是这个，EglManager.cpp:622），RT 就被 GPU 拖成串行：UI 线程虽然早被放走了，但下一帧的 dequeueBuffer 很快会因为 buffer 都被占着而反压回来，帧率反而掉。所以这一行的语义是「提交即返回」，同步交给 fence，谁需要等谁等——这也是 CPU/GPU 能重叠的基础。",
+  "concepts": [
+    { "term": "ganesh", "text": "Skia 的 GL 后端（GrDirectContext 体系）：draw op 先在 Skia 侧攒一批，flush 时才转成真正的 GL 调用。" },
+    { "term": "flush 与 submit", "text": "flush 把录制内容变成后端命令，submit 把它压进驱动队列；FlushAndSubmit 两个都做，都不等 GPU 完成。" },
+    { "term": "commandSubmissionTime", "text": "DrawResult 里记录「命令提交时刻」的字段；GL 后端恒为 kUnknownTime，只有 Vulkan 填真值。" }
+  ],
+  "walk": [
+    { "call": "ATRACE_NAME(\"flush commands\");", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:181", "what": "trace 名就叫 flush commands，perfetto 里 RT 上直接能看到这段。" },
+    { "call": "skgpu::ganesh::FlushAndSubmit(surface);", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:182", "what": "把这张 surface 上所有待发的 draw op 交给 GL 驱动，返回时命令已在驱动队列排队。" },
+    { "call": "layerUpdateQueue->clear();", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:184", "what": "提交完才清 layer 队列；顺序反了回放阶段就没数据了。" },
+    { "call": "return {true, IRenderPipeline::DrawResult::kUnknownTime, android::base::unique_fd{}};", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:191", "what": "success 只表示「命令提交没出错」，不表示任何像素已经产生。" },
+    { "call": "*requireSwap = drawResult.success || mEglManager.damageRequiresSwap();", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:207", "what": "紧接着第 16 步：这个 success 立刻变成「要不要 swap」的依据。" }
+  ],
+  "state": [
+    { "field": "GrDirectContext 上的待提交 draw op", "before": "第 14 步回放产生的全部 op（本帧所有图元）", "after": "已 flush+submit，进入驱动队列（182）", "note": "surface 上不再有待发命令，但 GPU 可能还没开始画" },
+    { "field": "DrawResult.commandSubmissionTime", "before": "kUnknownTime（-1，默认值）", "after": "仍是 kUnknownTime（191）", "note": "GL 不测量；CanvasContext 用 max(它, SwapBuffers) 兜底（CanvasContext.cpp:790），所以 GL 上这个指标等于 swap 时刻" },
+    { "field": "DrawResult.presentFence", "before": "空 fd", "after": "空 fd（191）", "note": "GL 的 present 由 EGL/SF 侧管，不经这里；Vulkan 才把 presentFence 从 finishFrame 带出来（SkiaVulkanPipeline.cpp:118/127）" },
+    { "field": "DrawResult.success", "before": "false", "after": "true（191）", "note": "GL 路径恒为 true，连一帧都没画也是 true——它只说明「没崩」" }
+  ],
+  "threads": "RenderThread，与第 13、14 步同一个函数栈。GPU 侧是异步的：这里的返回只保证命令进了队列，完成信号要等驱动的 fence。",
+  "pitfalls": [
+    "FlushAndSubmit 返回 ≠ 画面出来：它连 EGL swap 都还没做，buffer 仍在 app 手里。把 flush 结束当成「SF 已收到帧」，后面整条时序都会推错一档。",
+    "Properties::waitForGpuCompletion 打开时，EglManager::swapBuffers 会先 fence() 同步等 GPU（EglManager.cpp:622-625），swap 耗时会陡增；这是调试开关，不是常规路径，别拿它当性能基线。",
+    "GL 从不填 commandSubmissionTime，所以 GL 上「命令提交耗时」实际等于 SwapBuffers 时刻（CanvasContext.cpp:790 的 max）。拿 Vulkan 的同一指标做对比会差出一个量级，那是实现差异不是回归。",
+    "flush 只覆盖这张 surface：第 14 步里 RenderLayer 的离屏 surface 是在 renderLayersImpl 内各自 flush 的（SkiaGpuPipeline.cpp:66 的 flush layers），不在这段 trace 里。"
+  ],
+  "debug": [
+    "perfetto/atrace：RT 线程搜 flush commands 切片（SkiaOpenGLPipeline.cpp:181），它的长度就是本帧提交的 CPU 成本",
+    "adb shell setprop debug.hwui.profile true 打开 ProfileType 后，FrameInfoVisualizer 会把每帧耗时画在画面角落（SkiaOpenGLPipeline.cpp:172-178，SkiaProfileRenderer 只提供 canvas）"
+  ],
+  "next": "第 16 步「swapBuffers：把 buffer 交出去」：命令提交完了，接下来才决定这一帧到底 swap 不 swap。"
+}

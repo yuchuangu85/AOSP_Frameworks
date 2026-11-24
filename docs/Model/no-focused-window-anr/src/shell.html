@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN" data-register="blueprint">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="基于当前 AOSP 源码的 no focused window ANR 原理、触发与解除机制交互模型。">
+  <title>No Focus ANR · AOSP 焦点等待模型</title>
+  <link rel="stylesheet" href="kit.css" data-ve-kit>
+  <script>
+    (function () {
+      let pref = 'auto';
+      try { pref = localStorage.getItem('fp-theme') || 'auto'; } catch (_) {}
+      const light = pref === 'light' || pref === 'auto' && matchMedia('(prefers-color-scheme: light)').matches;
+      document.documentElement.dataset.theme = light ? 'light' : 'dark';
+      document.documentElement.dataset.themePref = pref;
+    })();
+  </script>
+  <style>{{STYLE}}</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-in wrap">
+      <a class="brand" href="#top"><span class="logo" aria-hidden="true">{{ICON_SCAN}}</span><span>Input Pipeline <small>AOSP · SOURCE MODEL</small></span></a>
+      <nav class="nav" aria-label="章节导航"><a href="#simulation">焦点模型</a><a href="#mechanism">触发机制</a><a href="#diagnosis">定位路径</a><a href="#sources">源码证据</a></nav>
+      <button class="icon-button" id="themeBtn" aria-label="切换明暗配色" title="配色：跟随系统">{{ICON_SUN}}</button>
+    </div>
+  </header>
+  <main id="top">
+    <section class="intro wrap">
+      <div class="eyebrow"><span class="status-dot"></span> SOURCE-BACKED / INPUT DISPATCHING</div>
+      <h1>No Focus <span>ANR</span></h1>
+      <p class="lede">不是“按键处理太慢”，而是<strong>按键等不到能接收它的焦点窗口</strong>。</p>
+      <div class="intro-meta"><span>应用已聚焦 <b>≠</b> 窗口已聚焦</span><span>等待的是目标，不是 ACK</span><span>本地源码 <code>{{REVISION}}</code></span></div>
+    </section>
+
+    <section id="simulation" class="studio-band">
+      <div class="wrap">
+        <div class="section-head compact"><div><div class="sec-eyebrow">01 / LIVE MODEL</div><h2>一个按键，停在哪里？</h2></div><span class="source-tag">单 display · 示意时序 · 非真机 trace</span></div>
+        <figure class="studio" id="studio">
+          <div class="scenario-bar"><label for="scenario">场景</label><select id="scenario"></select><p id="scenarioDesc"></p><span class="result-tag" id="scenarioOutcome"></span></div>
+          <div class="transport">
+            <div class="play-controls">
+              <button class="icon-button" id="restartBtn" aria-label="重置到起点" title="重置到起点">{{ICON_RESTART}}</button>
+              <button class="icon-button" id="prevStep" aria-label="上一步" title="上一步">{{ICON_PREVIOUS}}</button>
+              <button class="icon-button play-button" id="playBtn" aria-label="播放" title="播放">{{ICON_PLAY}}</button>
+              <button class="icon-button" id="nextStep" aria-label="下一步" title="下一步">{{ICON_NEXT}}</button>
+            </div>
+            <label class="speed-label" for="speed">速度<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label>
+            <div class="scrub-wrap"><input id="scrub" type="range" min="0" max="8500" value="2200" step="10" aria-label="模拟时刻"><output id="timeNow" class="time-read">2.20 s</output></div>
+            <label class="switch"><input type="checkbox" id="preAnr"><span class="switch-track"></span><span>pre-ANR 预警</span></label>
+          </div>
+
+          <div class="focus-registers">
+            <div class="register"><span class="register-label">焦点应用 <code>focusedApplication</code></span><strong id="focusedApp">A</strong><small>WMS / setFocusedApplication</small></div>
+            <div class="register-separator">≠</div>
+            <div class="register"><span class="register-label">焦点窗口 <code>focusedWindow</code></span><strong id="focusedWindow" class="danger-text">null</strong><small>FocusRequest + 输入窗口状态 / FocusResolver</small></div>
+            <div class="focus-reason"><span>窗口资格判定</span><b id="focusReason">NO_WINDOW</b><span id="reasonDesc">尚无可聚焦窗口</span></div>
+          </div>
+
+          <div class="stage" id="stage">
+            <div class="actor source-actor">
+              <span class="actor-kind">INPUT SOURCE / EVENT RECORD</span><h3>输入源事件</h3>
+              <div class="event-ticket" id="eventTicket"><span class="event-glyph">{{ICON_KEY}}</span><strong id="eventType">KeyEvent</strong><code id="eventId">ENTER · event 0x01</code></div>
+              <b class="event-status" id="eventStatus">PENDING</b><p id="eventLocation">mPendingEvent</p>
+              <span class="actor-note" id="eventNote">尚未交付应用 A</span>
+            </div>
+            <div class="connector" id="incoming" aria-hidden="true"><span class="connector-label">找目标</span><span class="wire"></span><span class="packet"></span></div>
+            <div class="actor dispatcher-actor">
+              <span class="actor-kind">SYSTEM_SERVER · NATIVE THREAD</span><h3>InputDispatcher</h3>
+              <div class="dispatch-state" id="dispatchState">等待焦点窗口</div>
+              <div class="pending-slot" id="pendingSlot"><code id="pendingField">mPendingEvent</code><b id="pendingValue">KeyEvent · PENDING</b></div>
+              <div class="timer-display"><svg viewBox="0 0 120 120" class="timer-ring" aria-hidden="true"><circle class="ring-base" cx="60" cy="60" r="50"/><circle id="ringProgress" class="ring-progress" cx="60" cy="60" r="50" pathLength="100"/></svg><div class="timer-number"><strong id="remaining">3.80</strong><span id="timerUnit">秒剩余</span></div></div>
+              <div class="timer-caption"><span id="timerState">等待中</span><span id="preStatus" class="pre-status" hidden>已发预警</span></div>
+              <code class="state-field" id="stateField">mNoFocusedWindowAnrState</code>
+            </div>
+            <div class="connector output-connector" id="outgoing" aria-hidden="true"><span class="connector-label" id="outgoingLabel">无目标</span><span class="wire"></span><span class="gate">×</span><span class="packet"></span></div>
+            <div class="actor window-actor">
+              <span class="actor-kind">APP PROCESS</span><h3>应用 <span id="appName">A</span> 的窗口</h3>
+              <div class="window-mock" id="windowMock"><div class="window-title"><i></i><i></i><i></i><span id="windowTitle">Activity A</span></div><div class="window-content"><span class="window-symbol">{{ICON_WINDOW}}</span><strong id="windowState">窗口尚未就绪</strong><code id="windowFlags">NO_WINDOW</code></div></div>
+              <b class="window-verdict" id="windowVerdict">没有输入焦点</b><p id="windowNote">启动流程 / 窗口提交尚未满足条件</p>
+            </div>
+          </div>
+
+          <div class="decision-strip" id="decisionStrip"><span class="decision-marker" id="decisionMarker">…</span><div><b id="decisionTitle">等待目标窗口</b><span id="decisionDetail">应用 A 的按键仍在 InputDispatcher，尚未进入应用的输入处理。</span></div><code id="deadlineValue">deadline = 1.00 + 5.00 s</code></div>
+
+          <div class="anr-checks" id="anrChecks"><span class="check-label">上报时复查</span><span><b>仍是被等待的应用？</b><code id="sameAppCheck">待到期复查</code></span><i>＋</i><span><b>仍无焦点窗口？</b><code id="noWindowCheck">待到期复查</code></span><i>→</i><span class="report-target"><b id="reportAction">尚未触发通知</b><code>onAnrLocked(application)</code></span></div>
+          <div class="policy-path" id="policyPath"><span id="nativeHop"><b>InputDispatcher</b><small>复查 / postCommand</small></span><i>→</i><span id="jniHop"><b>NativeInputManager / JNI</b><small>执行 command 时释放锁</small></span><i>→</i><span id="wmsHop"><b>IMS → WMS</b><small>AnrController 复核状态与归因</small></span><i>→</i><span id="amsHop"><b>后续 ANR 处理</b><small>可能过滤 / 改归因 / 进入 AMS</small></span></div>
+
+          <div class="timeline" id="timeline"><div class="timeline-labels"><span>模拟时间</span><span>焦点窗口</span><span>焦点事件</span></div><div class="timeline-plot"><div class="ruler" id="ruler"></div><div class="time-track" id="windowTrack"></div><div class="time-track" id="inputTrack"></div><div class="timeline-mark event-mark" id="eventMark"><i></i><span>事件到达</span></div><div class="timeline-mark deadline-mark" id="deadlineMark"><i></i><span>等待截止</span></div><div class="playhead" id="playhead"><i></i></div></div></div>
+          <div class="parameter-row"><label id="readyControl">窗口获得焦点时刻<input type="range" id="readyRange" min="0" max="8000" step="100" value="7400"><output id="readyValue">7.40 s</output></label><label id="eventControl">焦点查找时刻<input type="range" id="eventRange" min="500" max="4000" step="100" value="1000"><output id="eventValue">1.00 s</output></label><span>默认等待值 5 s；实际取应用 timeout，亦受平台配置影响。</span></div>
+
+          <div class="phase-panel"><div class="phase-copy"><div class="phase-eyebrow"><span id="phaseCount">STEP 03</span><span id="phaseTime">2.20 s</span></div><h3 id="phaseTitle">事件停在 InputDispatcher</h3><p id="phaseDesc"></p><div class="phase-refs" id="phaseRefs"></div></div><ol class="event-list" id="eventList" aria-label="因果步骤"></ol></div>
+          <figcaption><span>Fig. 1</span> “有应用、无焦点窗口、焦点事件进入查找”启动等待；到期后再次核对应用身份与窗口状态，才上报。JNI 是 system_server 内的语言边界；所有时刻与转场均为教学示意，不是实测耗时。</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band" id="mechanism"><div class="wrap">
+      <div class="section-head"><div><div class="sec-eyebrow">02 / MECHANISM</div><h2>缺的不是画面，而是输入目标</h2></div></div>
+      <figure class="condition-figure"><div class="condition-flow"><div><span class="condition-num">A</span><b>焦点应用存在</b><code>focusedApplication != null</code></div><span class="operator">＋</span><div><span class="condition-num">∅</span><b>焦点窗口不存在</b><code>focusedWindow == null</code></div><span class="operator">＋</span><div><span class="condition-num">K</span><b>事件需要焦点目标</b><code>Key / non-pointer motion</code></div><span class="operator">→</span><div class="condition-result"><b>等待窗口出现</b><code>return PENDING</code><span>首次查找才启动 deadline</span></div></div><figcaption><span>Fig. 2</span> 这里描述焦点目标查找的 no-window 分支；窗口暂停分发、输入丢弃策略和 ACK 超时另有独立判定。</figcaption></figure>
+      <div class="mechanism-grid"><article><span class="sec-eyebrow">ARM / 启动</span><h3>从“发现缺目标”开始计时</h3><p>当前查找时刻加应用的 <code>dispatchingTimeout</code> 得到截止点。应用启动时间、首帧时间与输入事件的原始 <code>eventTime</code> 不是同一个计时起点。</p><a href="#source-arm">findFocusedWindowTargetLocked →</a></article><article><span class="sec-eyebrow">RESET / 解除</span><h3>新焦点或身份变化清除等待</h3><p>获得新的焦点窗口、焦点应用切换、解除 dispatch freeze、全量重置等路径会清除等待状态。触摸切换应用也可能改变等待条件，不能理解成任意触摸都会取消。</p><a href="#source-reset">resetNoFocusedWindowTimeoutLocked →</a></article><article><span class="sec-eyebrow">RECHECK / 触发</span><h3>到期不等于直接弹窗</h3><p>先复查仍是被等待的应用、仍无焦点窗口，再排入 policy 通知。Java 侧还会验证 Activity 状态与焦点请求归因；ANR 处理与对话框展示是后续不同边界。</p><a href="#source-timeout">processNoFocusedWindowAnrLocked →</a></article></div>
+      <figure class="comparison"><div class="comparison-column"><span class="case-tag danger">NO FOCUSED WINDOW</span><h3>还没有可分发的目标</h3><div class="queue-diagram"><code class="highlight">mPendingEvent</code><span>→</span><span class="missing-target">焦点窗口 ∅</span><span>×</span><span>应用处理</span></div><p>看窗口/焦点建立链路。主线程阻塞可能造成窗口迟到，但不是唯一原因。</p></div><div class="comparison-column"><span class="case-tag info">CONNECTION / ACK TIMEOUT</span><h3>已发送，迟迟没完成响应</h3><div class="queue-diagram"><code>outboundQueue</code><span>→</span><code class="highlight">waitQueue</code><span>→</span><span>等待 finish / ACK</span></div><p>看连接上的已发送事件及应用处理链。不要用 ACK 模型解释 no-window 等待。</p></div><figcaption><span>Fig. 3</span> 两条路径都能进入输入 ANR 处理，但等待对象与计时状态不同。</figcaption></figure>
+    </div></section>
+
+    <section class="band" id="diagnosis"><div class="wrap">
+      <div class="section-head"><div><div class="sec-eyebrow">03 / CAUSAL DIAGNOSIS</div><h2>沿着“焦点为什么没落下”定位</h2></div><span class="source-tag">原因假设 ≠ 已证实根因</span></div>
+      <figure class="diagnostic-figure"><div class="diagnosis-flow"><article><b>窗口未出现</b><code>NO_WINDOW</code><p>启动生命周期、主线程任务或同步等待拖延了窗口建立；也可能是窗口信息尚未进入输入侧。</p></article><span>→</span><article><b>窗口无资格</b><code>NOT_FOCUSABLE / NOT_VISIBLE</code><p>核对 flag、可见性与输入窗口列表。已有 Surface、甚至画面可见，都不自动等于焦点可用。</p></article><span>→</span><article><b>焦点请求未落实</b><code>FocusRequest → FocusResolver</code><p>对齐 WMS 请求、事务提交与 InputDispatcher 接收时序；区分“请求了焦点”和“获得了焦点”。</p></article></div><figcaption><span>Fig. 4</span> 三类位置是排查入口，不是三选一诊断；需用同一事件窗口内的日志或 trace 还原因果。</figcaption></figure>
+      <div class="diagnostic-notes"><article><h3>先比对同一 display 的两种焦点</h3><pre>adb shell dumpsys input
+adb shell dumpsys window</pre><p>关注 FocusedApplications、FocusedWindows、FocusRequests 及其 result；事后 dump 可能已恢复，不能代替超时现场。</p></article><article><h3>再对齐等待、请求与恢复时刻</h3><pre>Waiting because no window has focus
+... does not have a focused window
+Focus request / Focus entering / Focus leaving</pre><p>将输入日志、窗口焦点日志、应用生命周期与主线程 trace 对齐。抓栈时刻晚于触发时刻，不能只凭一份“主线程 idle”栈排除前面的阻塞。</p></article></div>
+    </div></section>
+
+    <section class="band sources-band" id="sources"><div class="wrap">
+      <div class="section-head"><div><div class="sec-eyebrow">04 / SOURCE EVIDENCE</div><h2>每个判定，都能回到源码</h2></div><span class="source-tag" id="citationCount"></span></div>
+      <div class="evidence-note"><b>证据范围</b><p>实现依据本仓库当前源码快照 <code>{{REVISION}}</code>。原理动画是有边界的教学模型：单 display、单个焦点事件、普通非调试应用；并非完整输入调度器，也不预测设备调度或 ANR 对话框时刻。并发同时发生时，本例先应用窗口状态，再做超时检查，不声称这是平台固定顺序。</p></div>
+      <div class="article-note"><b>文章引用状态：正文未取得</b><p>用户提供的微信文章链接在 2026-10-28 返回“环境异常”验证页，备用正文提取亦未成功。本页保留原文入口，但没有把未取得的文章内容当作证据或复述其观点；当前机制结论均来自本地源码。</p><a href="https://mp.weixin.qq.com/s/dUZyY0r9n2TJJDqFwMXMvQ" target="_blank" rel="noopener noreferrer">打开用户提供的文章 →</a></div>
+      <div class="source-list" id="sourceList">{{SOURCES}}</div>
+      <div class="scope-note"><strong>三个不同的验证边界</strong><p>源码摘录匹配只证明引用文本；机制审查核对因果与条件；浏览器测试证明本地动画和操作。它们都不等于真机日志、厂商实现或实际 ANR 弹窗证据。</p></div>
+    </div></section>
+  </main>
+  <footer class="wrap"><span>AOSP Input Pipeline / No Focus ANR</span><span>源码驱动 · 单文件离线 · 2026-10-28</span></footer>
+  <noscript><p class="wrap">动画需要 JavaScript；下方源码与机制说明仍可阅读。</p></noscript>
+  <script id="sourceData" type="application/json">{{DATA}}</script>
+  <script>{{MODEL}}</script>
+  <script>{{APP}}</script>
+</body>
+</html>

@@ -1,0 +1,414 @@
+{
+  "id": "sh-finish",
+  "title": "onFinish",
+  "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+  "sig": "private void onFinish(IBinder token, @Nullable WindowContainerTransaction wct)",
+  "span": [
+    1242,
+    1334
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void onFinish(IBinder token, @Nullable WindowContainerTransact",
+      "kind": "note",
+      "text": "入口：在主线程收尾令牌对应的过渡，wct 为可空的收尾事务；必须与 startTransition 成对，否则过渡卡在活动态。"
+    },
+    {
+      "at": 2,
+      "quote": "mMainExecutor.assertCurrentThread();",
+      "kind": "thread",
+      "text": "断言运行在 mMainExecutor 主线程；跨线程调用直接抛异常，说明过渡状态机是单线程模型。"
+    },
+    {
+      "at": 4,
+      "quote": "final ActiveTransition active = mKnownTransitions.get(token);",
+      "kind": "state",
+      "text": "按 Binder 令牌查活动过渡；令牌由 core 侧唯一生成，查不到说明已被收尾或令牌错乱。"
+    },
+    {
+      "at": 5,
+      "quote": "if (active == null) {",
+      "kind": "branch",
+      "text": "过渡不存在则只记错误并返回，避免空指针；此处不推进 Track，残留队列由后续 start 或超时清理。"
+    },
+    {
+      "at": 6,
+      "quote": "Log.e(TAG, \"Trying to finish a non-existent transition: \" + token);",
+      "kind": "note",
+      "text": "打错误日志暴露重复收尾或失效令牌，是排查 core 与 Shell 时序错乱的第一手证据。"
+    },
+    {
+      "at": 7,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "提前返回：不清理 Track 也不排空就绪队列，若 core 已认为结束则可能残留等待中的过渡。"
+    },
+    {
+      "at": 9,
+      "quote": "if (DEBUG_FINISH_TRANSITION) {",
+      "kind": "trace",
+      "text": "仅调试开关打开时打印额外信息与堆栈，用于追查 finish 调用来源；正式版跳过以免开销。"
+    },
+    {
+      "at": 10,
+      "quote": "final String name = active.mHandler != null",
+      "kind": "data",
+      "text": "取 handler 类名做日志；handler 为空说明过渡在未 attach 处理器时被收尾（常见于 abort）。"
+    },
+    {
+      "at": 11,
+      "quote": "?  active.mHandler.getClass().getName() : \"null\";",
+      "kind": "data",
+      "text": "handler 为 null 时用字符串 null 兜底，防止日志拼接 NPE 打断整个收尾流程。"
+    },
+    {
+      "at": 12,
+      "quote": "Log.d(TAG, \"finishTransition: type=\" + transitTypeToString(active.mInf",
+      "kind": "trace",
+      "text": "打印过渡类型（取自 mInfo.getType()）与 wct，是判断本次收尾属于哪类动画的关键证据。"
+    },
+    {
+      "at": 13,
+      "quote": "+ \" wct=\" + wct + \" handler=\" + name, new Throwable());",
+      "kind": "trace",
+      "text": "继续拼接 handler 名并附带 Throwable 输出调用栈，纯调试用途，不改变任何状态。"
+    },
+    {
+      "at": 16,
+      "quote": "final Track track = mTracks.get(active.getTrack());",
+      "kind": "state",
+      "text": "取出该过渡所属 Track（默认或分屏等独立轨道），Track 决定后面 processReadyQueue 排空哪条队。"
+    },
+    {
+      "at": 17,
+      "quote": "if (track == null || track.mActiveTransition != active) {",
+      "kind": "branch",
+      "text": "校验 Track 存在且其 active 正是本过渡；不符说明远端崩溃或 handler 未正确处理 merge，属状态机不一致。"
+    },
+    {
+      "at": 18,
+      "quote": "Log.e(TAG, \"Trying to finish a non-running transition. Either remote c",
+      "kind": "note",
+      "text": "记录不一致错误，明确提示 remote 崩溃或合并未处理，是排查 AOSP 过渡卡死的典型日志。"
+    },
+    {
+      "at": 19,
+      "quote": "+ \" a handler didn't properly deal with a merge. \" + active,",
+      "kind": "note",
+      "text": "拼接 active 详情输出，帮助定位是哪条过渡没有正常处于 Track 前沿。"
+    },
+    {
+      "at": 20,
+      "quote": "new RuntimeException());",
+      "kind": "note",
+      "text": "创建 RuntimeException 只为取堆栈（并未 throw），让日志携带调用路径以便追责。"
+    },
+    {
+      "at": 21,
+      "quote": "return;",
+      "kind": "branch",
+      "text": "再次提前返回：不清 mKnownTransitions，该过渡残留为僵尸记录，后续同令牌会被误判。"
+    },
+    {
+      "at": 23,
+      "quote": "track.mActiveTransition = null;",
+      "kind": "state",
+      "text": "先把 Track 前沿置空，表示动画阶段已结束；此后新请求才可能成为该 Track 的 active。"
+    },
+    {
+      "at": 25,
+      "quote": "for (int i = 0; i < mObservers.size(); ++i) {",
+      "kind": "branch",
+      "text": "遍历观察者（分屏、Pip、Recents 等）逐个通知结束；观察者不得增删集合，否则遍历错位。"
+    },
+    {
+      "at": 26,
+      "quote": "mObservers.get(i).onTransitionFinished(active.mToken, active.mAborted)",
+      "kind": "state",
+      "text": "回调观察者过渡已结束，附带令牌与 aborted；观察者抛异常会中断后续通知与整个收尾。"
+    },
+    {
+      "at": 28,
+      "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Transition animation finished \"",
+      "kind": "trace",
+      "text": "ProtoLog 输出结束事件与 aborted，是 trace 侧核对 Shell 与 core 过渡是否配对的关键点。"
+    },
+    {
+      "at": 29,
+      "quote": "+ \"(aborted=%b), notifying core %s\", active.mAborted, active);",
+      "kind": "trace",
+      "text": "把 aborted 标志与 active 格式化进同一条日志，便于按 aborted 过滤排查。"
+    },
+    {
+      "at": 30,
+      "quote": "if (active.mStartT != null) {",
+      "kind": "branch",
+      "text": "起始事务非空说明过渡确实启动过，必须及时释放其引用的 SurfaceControl，否则泄漏。"
+    },
+    {
+      "at": 31,
+      "quote": "// Applied by now, so clear immediately to remove any references. Do n",
+      "kind": "note",
+      "text": "注释说明已 apply 故可立刻 clear，但不能置 null：nullness 被后续逻辑用于识别畸形过渡。"
+    },
+    {
+      "at": 32,
+      "quote": "// yet, though, since nullness is used later to disambiguate malformed",
+      "kind": "note",
+      "text": "续行注释，强调保留非 null 语义以区分「未启动」与「已清理」。"
+    },
+    {
+      "at": 33,
+      "quote": "active.mStartT.clear();",
+      "kind": "state",
+      "text": "清空起始事务持有的引用但保留对象，避免 SurfaceControl 泄漏；置 null 会让畸形过渡检测失效。"
+    },
+    {
+      "at": 35,
+      "quote": "// Merge all associated transactions together",
+      "kind": "note",
+      "text": "说明下面开始把主过渡与所有被合并过渡的 start/finish 事务合并为一次 apply。"
+    },
+    {
+      "at": 36,
+      "quote": "SurfaceControl.Transaction fullFinish = active.mFinishT;",
+      "kind": "data",
+      "text": "以主过渡的 finish 事务作为合并基底，可能为 null，后续按需接续第一个非空事务。"
+    },
+    {
+      "at": 37,
+      "quote": "if (active.mMerged != null) {",
+      "kind": "branch",
+      "text": "存在被合并过渡时才需要合并事务，否则只 apply 主过渡自己的 finish。"
+    },
+    {
+      "at": 38,
+      "quote": "for (int iM = 0; iM < active.mMerged.size(); ++iM) {",
+      "kind": "branch",
+      "text": "按序遍历所有被合并过渡累积事务，顺序影响同一属性的最终覆盖结果。"
+    },
+    {
+      "at": 39,
+      "quote": "final ActiveTransition toMerge = active.mMerged.get(iM);",
+      "kind": "data",
+      "text": "取出单个被合并过渡，其 mStartT 与 mFinishT 都要纳入，避免丢帧或状态回退。"
+    },
+    {
+      "at": 40,
+      "quote": "// Include start. It will be a no-op if it was already applied. Otherw",
+      "kind": "note",
+      "text": "注释解释为何连 start 也要合并：已 apply 时是 no-op，未 apply 时用于维持状态一致。"
+    },
+    {
+      "at": 41,
+      "quote": "// it to maintain consistent state.",
+      "kind": "note",
+      "text": "续行注释，指出合并 start 的必要性来自状态一致性而非动画效果。"
+    },
+    {
+      "at": 42,
+      "quote": "if (toMerge.mStartT != null) {",
+      "kind": "branch",
+      "text": "被合并过渡若有起始事务就并入，保证其改动不因主过渡统一 apply 而丢失。"
+    },
+    {
+      "at": 43,
+      "quote": "if (fullFinish == null) {",
+      "kind": "branch",
+      "text": "基底为空时直接接管，避免对 null 调用 merge 抛空指针。"
+    },
+    {
+      "at": 44,
+      "quote": "fullFinish = toMerge.mStartT;",
+      "kind": "data",
+      "text": "首个非空事务取代 null 基底；这里只是引用赋值，不复制内容。"
+    },
+    {
+      "at": 46,
+      "quote": "fullFinish.merge(toMerge.mStartT);",
+      "kind": "data",
+      "text": "把起始事务 merge 进基底，同一属性后写覆盖先写，合并顺序错误会造成动画跳变。"
+    },
+    {
+      "at": 49,
+      "quote": "if (toMerge.mFinishT != null) {",
+      "kind": "branch",
+      "text": "再并入被合并过渡的 finish 事务，它决定最终可见的 Surface 属性。"
+    },
+    {
+      "at": 50,
+      "quote": "if (fullFinish == null) {",
+      "kind": "branch",
+      "text": "同样在基底为空时直接接管，防止 merge 时空指针。"
+    },
+    {
+      "at": 51,
+      "quote": "fullFinish = toMerge.mFinishT;",
+      "kind": "data",
+      "text": "以该 finish 事务作为新基底，后续事务继续往它身上合并。"
+    },
+    {
+      "at": 53,
+      "quote": "fullFinish.merge(toMerge.mFinishT);",
+      "kind": "data",
+      "text": "把结束事务合并进基底，确保最后一次 apply 携带所有合并过渡的终态。"
+    },
+    {
+      "at": 58,
+      "quote": "if (mMixpatchAnimations.isEmpty()) {",
+      "kind": "branch",
+      "text": "无 mixpatch 动画时才可立即 apply 并回调；否则必须交给 mixpatcher，早释放 Surface 会闪黑。"
+    },
+    {
+      "at": 59,
+      "quote": "if (fullFinish != null) {",
+      "kind": "branch",
+      "text": "有事务才 apply；为空说明无事可提交，跳过以免空指针。"
+    },
+    {
+      "at": 60,
+      "quote": "fullFinish.apply();",
+      "kind": "state",
+      "text": "一次同步到 SurfaceFlinger，属跨进程提交；失败会让界面停在过渡中间态。"
+    },
+    {
+      "at": 62,
+      "quote": "// Now perform all the finish callbacks (starting with the playing one",
+      "kind": "note",
+      "text": "说明紧接着执行 finish 回调：先主过渡，再所有被合并过渡。"
+    },
+    {
+      "at": 63,
+      "quote": "// transitions merged into it).",
+      "kind": "note",
+      "text": "续行注释，强调回调顺序不可颠倒。"
+    },
+    {
+      "at": 64,
+      "quote": "releaseSurfaces(active.mInfo);",
+      "kind": "state",
+      "text": "释放该过渡占用的 leash/截图等 Surface；晚释放泄漏，早释放导致闪黑。"
+    },
+    {
+      "at": 65,
+      "quote": "mOrganizer.finishTransition(active.mToken, wct);",
+      "kind": "ipc",
+      "text": "回调 WindowManager core 宣告过渡结束并附带 wct；不调用则 core 永远认为过渡未完成。"
+    },
+    {
+      "at": 67,
+      "quote": "// Note: fullFinish is sent to mixpatcher who will merge/apply it once",
+      "kind": "note",
+      "text": "注释说明 fullFinish 交给 mixpatcher，由其等全部动画结束后统一 merge/apply。"
+    },
+    {
+      "at": 68,
+      "quote": "// have finished.",
+      "kind": "note",
+      "text": "续行注释，明确 warning 分支不得自行 apply 事务。"
+    },
+    {
+      "at": 69,
+      "quote": "finishMixWrapAnim(active.mToken, fullFinish);",
+      "kind": "state",
+      "text": "把收尾事务注册进 mixpatch 包装动画，等动画结束再统一 apply，避免与动画争抢同一 Surface。"
+    },
+    {
+      "at": 70,
+      "quote": "if (wct != null && !wct.isEmpty()) {",
+      "kind": "branch",
+      "text": "仅当收尾 wct 非空才需带外应用，空事务下发等于浪费一次跨进程调用。"
+    },
+    {
+      "at": 71,
+      "quote": "mOrganizer.applyTransaction(wct);",
+      "kind": "ipc",
+      "text": "带外直接下发 wct 给 core，绕过 mixpatch 合并；与动画 apply 顺序错乱会覆盖终态。"
+    },
+    {
+      "at": 72,
+      "quote": "Log.w(TAG, \"Applying finishWCT out-of-band for #\" + active.mInfo.getDe",
+      "kind": "note",
+      "text": "告警记录发生了带外 apply 的 debugId；频繁出现预示 mixpatch 路径异常。"
+    },
+    {
+      "at": 75,
+      "quote": "if (active.mMerged != null) {",
+      "kind": "branch",
+      "text": "处理被合并过渡的收尾：逐个 finish 并从活动表摘除，遗漏会留下僵尸令牌。"
+    },
+    {
+      "at": 76,
+      "quote": "for (int iM = 0; iM < active.mMerged.size(); ++iM) {",
+      "kind": "branch",
+      "text": "遍历被合并过渡，保持与合并时相同顺序，使 finish 回调顺序一致。"
+    },
+    {
+      "at": 77,
+      "quote": "ActiveTransition merged = active.mMerged.get(iM);",
+      "kind": "data",
+      "text": "取出被合并过渡，需在主过渡之后单独 finish，否则 core 侧状态机会错位。"
+    },
+    {
+      "at": 78,
+      "quote": "if (mMixpatchAnimations.isEmpty()) {",
+      "kind": "branch",
+      "text": "无 mixpatch 时立即完成该合并过渡；否则只挂包装动画，不能提前回调 core。"
+    },
+    {
+      "at": 79,
+      "quote": "mOrganizer.finishTransition(merged.mToken, null /* wct */);",
+      "kind": "ipc",
+      "text": "以 null wct 结束合并过渡，因事务已并入主过渡统一 apply；再传 wct 会重复应用。"
+    },
+    {
+      "at": 80,
+      "quote": "releaseSurfaces(merged.mInfo);",
+      "kind": "state",
+      "text": "释放合并过渡的 Surface，紧跟 finish 之后；顺序颠倒 core 可能仍引用已释放对象。"
+    },
+    {
+      "at": 82,
+      "quote": "// Note: fullFinish is sent to mixpatcher who will merge/apply it.",
+      "kind": "note",
+      "text": "注释说明 fullFinish 已交给 mixpatcher 统一 merge/apply，此分支不得再自行提交。"
+    },
+    {
+      "at": 83,
+      "quote": "finishMixWrapAnim(merged.mToken, fullFinish);",
+      "kind": "state",
+      "text": "把同一批已合并事务挂到该过渡的包装动画上，等动画结束统一提交。"
+    },
+    {
+      "at": 85,
+      "quote": "mKnownTransitions.remove(merged.mToken);",
+      "kind": "state",
+      "text": "从活动表摘除合并过渡令牌，防止后续 onFinish 再次命中造成重复收尾。"
+    },
+    {
+      "at": 87,
+      "quote": "active.mMerged.clear();",
+      "kind": "state",
+      "text": "清空合并列表释放引用，避免 ActiveTransition 长期持有已结束的过渡对象。"
+    },
+    {
+      "at": 89,
+      "quote": "mKnownTransitions.remove(token);",
+      "kind": "state",
+      "text": "最后摘除主过渡令牌；此后同令牌再来会走「非存在过渡」错误分支。"
+    },
+    {
+      "at": 91,
+      "quote": "// Now that this is done, check the ready queue for more work.",
+      "kind": "note",
+      "text": "注释说明收尾后必须重查就绪队列，否则排队的过渡将一直不被启动。"
+    },
+    {
+      "at": 92,
+      "quote": "processReadyQueue(track);",
+      "kind": "state",
+      "text": "排空该 Track 的就绪队列并启动下一个过渡；不调用会卡住该轨道后续所有过渡。"
+    }
+  ]
+}

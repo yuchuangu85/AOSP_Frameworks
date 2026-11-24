@@ -1,0 +1,39 @@
+{
+  "step": "s35",
+  "title": "动画落地：背景层与可动画容器",
+  "tldr": "背景色层是垫在最底下的纯色 Surface，动画本体则被包成 AnimationAdapter 绑在 leash 上逐帧写属性。",
+  "why": "没有背景层：Activity 从 0.96 缩放回 1 的过程中，四周会透出桌面或上一帧残留，用户看到的是窗口边缘漏出一圈白/黑，或者图标在窗口外飘。没有 AnimationAdapter：Animation 只是一张数学表，没人把它换算成 SF 的 matrix/alpha，窗口要么完全不动，要么在一帧内从起点跳到终点（只看到终态）。两者合起来，才能让同一次事务里的 N 个 leash 在同一帧上按同一个时间轴变形。",
+  "concepts": [
+    { "term": "color layer", "text": "SurfaceControl.Builder().setColorLayer() 造出的无 buffer 图层，只靠 Transaction.setColor 上色；转场用它垫底当背景，代价是一层合成。" },
+    { "term": "AnimationAdapter", "text": "把 leash 与 Animation 接成 ValueAnimator 更新监听器的适配器；每帧算一次 Transformation，把 matrix/alpha 写进共享事务。" },
+    { "term": "帧泵（DefaultSurfaceAnimator）", "text": "Shell 里每个线程一个：所有在播动画共用一份 pooled transaction，每帧只 apply 一次，保证同帧提交。" }
+  ],
+  "walk": [
+    { "call": "getTransitionBackgroundColorIfSet(change, a, backgroundColorForTransition)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:597", "what": "颜色优先级：Animation 的 backdropColor 优先于 change 的 window background；取到 0 表示不要背景层。" },
+    { "call": "addBackgroundColor(info, backgroundColorForTransition, startTransaction, finishTransaction)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:672", "what": "只有整个转场多于一个 change 且不是 intra 壁纸转场时才建，避免单 change 的关闭动画被背景层遮住。" },
+    { "call": ".setParent(info.getRoot(i).getLeash())", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:743", "what": "背景层挂在每个 root leash 下，跟着 root 一起被调度，而不是挂在某个 Activity 上。" },
+    { "call": "startTransaction.setColor(backgroundSurface, colorArray).setLayer(backgroundSurface, -1).show(backgroundSurface)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:746", "what": "设成最底层并显式 show：color layer 默认不可见，漏了 show 就是一片黑。" },
+    { "call": "finishTransaction.remove(backgroundSurface)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:764", "what": "动画结束把它从父链摘掉并销毁；漏这一步，屏幕上会留一块不透明色块盖住桌面。" },
+    { "call": "final DefaultAnimationAdapter adapter = new DefaultAnimationAdapter(anim, leash, position, clipRect, cornerRadius, roundedBounds)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultSurfaceAnimator.java:126", "what": "把 leash 与 Animation 一起塞进 adapter；ValueAnimator 只驱动 adapter，不直接碰 SurfaceControl。" },
+    { "call": "t.setMatrix(leash, transformation.getMatrix(), mMatrix); t.setAlpha(leash, transformation.getAlpha())", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultSurfaceAnimator.java:233", "what": "每帧把 Animation 算出的变换写成矩阵与 alpha，这是「窗口在动」的物理来源。" },
+    { "call": "mTransaction.apply()", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultSurfaceAnimator.java:65", "what": "在 Choreographer 的 TRAVERSAL 回调里提交，并打上这一帧的 vsyncId 让 SF 按帧对齐。" }
+  ],
+  "state": [
+    { "field": "startTransaction", "before": "只有可见性、位置、crop", "after": "多了一层 color layer 的 setColor/setLayer/show，且已 apply", "note": "背景层是 startT 的一部分，不单独提交" },
+    { "field": "finishTransaction", "before": "没有关于背景层的操作", "after": "remove(backgroundSurface)", "note": "WMS 建、Shell 往里加，最后在 onFinish 一次 apply" },
+    { "field": "DefaultSurfaceAnimator.mTransaction", "before": "null", "after": "从 TransactionPool acquire 的事务，最后一个动画结束时 release 并置 null", "note": "同一线程的所有动画共用它" }
+  ],
+  "threads": "addBackgroundColor 与 adapter 构造都在 wmshell.main；每帧的 onAnimationUpdate 也在该线程，真正 apply 在 Choreographer 的 TRAVERSAL 回调里，同属 Shell 主线程，不持 mGlobalLock。",
+  "pitfalls": [
+    "DefaultTransitionHandler 并不调用 TransitionAnimationHelper.addBackgroundToTransition，它有自己的 addBackgroundColor（725 行起）。那个静态方法只有 ActivityEmbeddingAnimationRunner（:336）在用；两者是同一套「color layer + finishT.remove」手法，别搜错函数。",
+    "逐帧写的不是 startT：startT 在开播前已经 apply 过一次，之后每帧写的是从 TransactionPool 借的事务。以为「所有写入都进 startT」会把动画和起始状态混成一个事务。",
+    "背景层只在 info.getChanges().size() > 1 且不是 WALLPAPER_TRANSITION_INTRA_OPEN/CLOSE 时创建（390 行）；单 change 的 CLOSE 没有背景层，画面里露出桌面是正常的。",
+    "转场里有 split task 时，背景层还会被 relZToDisplayArea 再挪一次（753-761）；只改 setLayer 不足以保证它垫在最底下。"
+  ],
+  "debug": [
+    "adb shell dumpsys SurfaceFlinger --list | grep \"animation-background for #\"：转场中应能看到，结束后再跑一次不该有（有就是 finishT 没 apply）。",
+    "adb shell protoLog enable com.android.systemui WM_SHELL_TRANSITIONS，看「start default transition animation, info = ...」里每个 change 的 leash 与 mode。",
+    "perfetto 抓 gfx + sched：DefaultSurfaceAnimator 每帧一次 apply，帧间隔超过 16.6ms 就说明这一拍掉帧。"
+  ],
+  "next": "背景层已经垫底，但被动画的 leash 还没有统一的父节点 → 第 31 步「动画期 reparent：谁挂上去」。"
+}

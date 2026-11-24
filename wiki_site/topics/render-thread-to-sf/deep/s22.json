@@ -1,0 +1,49 @@
+{
+  "step": "s22",
+  "title": "Transaction setBuffer + apply：把 buffer 交给 SurfaceFlinger",
+  "tldr": "buffer 进 Transaction，setApplyToken 后 oneWay apply，RT 不等 SF。",
+  "why": "没有 apply，事务只是进程内的一张表：buffer 不跨进程，SF 侧 Layer 永远拿着旧 buffer，屏幕定住不动。而 apply 用同步还是 oneWay 决定了整条流水线的形状——这里传 (false, true)，RT 才能在 SF 还没处理时继续画下一帧；如果改成同步 apply，每帧都要等一次 commit 回调，app 的帧率会被 SF 的调度周期直接锁死，60Hz 变 30Hz。",
+  "concepts": [
+    { "term": "setApplyToken", "text": "同一 token 的事务在 SF 侧保序，BLAST 用自己的 BBinder 串起这条 Surface。" },
+    { "term": "ISurfaceComposer::eOneWay", "text": "apply 时打上的 flag：SF 收下即返回，不等事务被 commit；BLAST 注释反复强调这一点。" },
+    { "term": "cacheBuffers", "text": "apply 前把 GraphicBuffer 存进 ClientCache，跨进程只传 handle。" },
+    { "term": "setBufferHasBarrier", "text": "不 apply 的分支会插 barrier，告诉 SF 别越过 mLastAppliedFrameNumber。" },
+    { "term": "QueuedTransactionState", "text": "SF 侧入队的事务对象：resolvedStates、flags、applyToken、postTime。" }
+  ],
+  "walk": [
+    { "call": "t->setBuffer(mSurfaceControl, buffer, fence, bufferItem.mFrameNumber, mProducerId, releaseBufferCallback, dequeueTime);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:667", "what": "buffer、acquire fence、帧号、release 回调、dequeue 时间一起写进事务。" },
+    { "call": "mergePendingTransactions(t, bufferItem.mFrameNumber);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:723", "what": "把帧号 <= 本帧的挂起事务合并进来，保证属性变更不丢。" },
+    { "call": "status_t status = t->setApplyToken(mApplyToken).apply(false, true);", "ref": "native/libs/gui/BLASTBufferQueue.cpp:726", "what": "不同步、oneWay：RT 在 binder 返回后立刻继续。" },
+    { "call": "status_t SurfaceComposerClient::Transaction::apply(bool synchronous, bool oneWay)", "ref": "native/libs/gui/SurfaceComposerClient.cpp:1146", "what": "apply 的本体：整理回调、缓存 buffer、发 binder，最后清空事务。" },
+    { "call": "cacheBuffers();", "ref": "native/libs/gui/SurfaceComposerClient.cpp:1188", "what": "把 buffer 放进 ClientCache，SF 侧才能按 handle 找回 GraphicBuffer。" },
+    { "call": "mState.mFlags |= ISurfaceComposer::eOneWay;", "ref": "native/libs/gui/SurfaceComposerClient.cpp:1195", "what": "只置 flag，把是否真 oneWay 交给 binder proxy，自己不走 1220 的 wait。" },
+    { "call": "status_t binderStatus = sf->setTransactionState(std::move(state), applyToken);", "ref": "native/libs/gui/SurfaceComposerClient.cpp:1209", "what": "唯一的跨进程点：事务整个 flatten 后发给 SF。" },
+    { "call": "if (state.mFlags & ISurfaceComposer::eOneWay) { return remote()->transact(BnSurfaceComposer::SET_TRANSACTION_STATE, data, &reply, IBinder::FLAG_ONEWAY); }", "ref": "native/libs/gui/ISurfaceComposer.cpp:67", "what": "flag 在这里变成真正的 FLAG_ONEWAY transact：RT 连 SF 的回复都不等。" },
+    { "call": "status_t SurfaceFlinger::setTransactionState(TransactionState&& transactionState, const sp<IBinder>& applyToken)", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5579", "what": "跑在 SF 的 binder 线程，不是 main thread；这里只做 resolve 与入队。" },
+    { "call": "resolvedState.externalTexture = getExternalTextureFromBufferData(*resolvedState.state.bufferData, layerName.c_str(), transactionState.getId());", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5654", "what": "buffer handle 在 SF 侧解析成 ExternalTexture，setBuffer 拿到的就是它。" },
+    { "call": "mTransactionHandler.queueTransaction(std::move(state));", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5720", "what": "lockless 队列，binder 线程可以直接入队，不必抢 mStateLock。" },
+    { "call": "setTransactionFlags(eTransactionFlushNeeded, schedule, frameHint, std::move(transactionState.mEarlyWakeupInfos));", "ref": "native/services/surfaceflinger/SurfaceFlinger.cpp:5729", "what": "置 flush 闸门并 scheduleCommit，SF 这才知道要醒一次。" }
+  ],
+  "state": [
+    { "field": "Transaction::mState.mFlags", "before": "无 oneWay", "after": "含 ISurfaceComposer::eOneWay（1195）", "note": "客户端 proxy 据此用 FLAG_ONEWAY transact（ISurfaceComposer.cpp:67），SF 侧不看这个 flag" },
+    { "field": "Transaction::mApplyToken", "before": "default token 或 BLAST 自建的 BBinder（BLASTBufferQueue.cpp:306）", "after": "同一个 mApplyToken（1205，传进 setTransactionState）", "note": "同 token 的事务在 SF 侧按序处理" },
+    { "field": "mAppliedLastTransaction", "before": "上一帧的值", "after": "true（738）；不 apply 的分支置 false（745）", "note": "配合 743 的 barrier 保持顺序" },
+    { "field": "mSetBufferBarrier", "before": "可能 true", "after": "true（740）或 false（286 换 SurfaceControl 时）", "note": "防 SF 越过未 apply 的帧" },
+    { "field": "SF 的 mTransactionHandler 队列", "before": "空", "after": "多一笔 QueuedTransactionState（5720）", "note": "等 main thread 下一次 commit 才 flush（2807）" },
+    { "field": "mTransactionFlags", "before": "无 flush 位", "after": "含 eTransactionFlushNeeded（5729）", "note": "commit 里 clearTransactionFlags 取走它（3135）" }
+  ],
+  "threads": "整段在 RenderThread 上：从 swapBuffers 一路到 oneWay transact 返回。SF 侧 setTransactionState 跑在 SF 的 binder 线程，只做 resolve + 入队 + 置 flag；真正的 apply 在 main thread 的 commit 里（第 23、24 步）。因为是 FLAG_ONEWAY，RT 连 binder 回复都不等，直接继续下一帧。",
+  "pitfalls": [
+    "oneWay 是客户端 proxy 加的 FLAG_ONEWAY（ISurfaceComposer.cpp:67），SF 里没有对 eOneWay 的判断；apply 返回只代表事务进了 SF 的队列（5720），上屏时间由 SF 的 VSYNC 决定。把 apply 当成帧已提交，时序分析会整体错一拍。",
+    "sync 事务路径根本不 apply（applyTransaction=false，592–595）：漏掉调用方 flush 时，buffer 永远停在 mSyncTransaction 里，表现为 BLAST 已经 acquire 但 SF 始终没有新帧。",
+    "apply 失败在 BLAST 里是 LOG_ALWAYS_FATAL_IF（735）：进程直接 abort，证据只留在 tombstone 里，logcat 上什么都看不到。",
+    "mergePendingTransactions（1122）按 frameNumber 比较，挂起事务帧号大于当前帧时不合并；顺序错乱会让旧 buffer 覆盖新 buffer 的属性。",
+    "apply 会清空事务（1217）：同一个 Transaction 对象 apply 之后再改再 apply，第一次的内容已经发走，调试时容易误以为改动丢了。"
+  ],
+  "debug": [
+    "perfetto 抓 SF 进程：setTransactionState slice（SFTRACE_CALL，5581）到 commit 的 commit <vsyncId>（3012）之间就是事务排队时间。",
+    "dumpsys SurfaceFlinger 里该 Layer 段的 queued frames 与 buffer id 能确认事务是否被 SF 收下；收下了但没上屏，问题在 commit/latch 而不是 apply。",
+    "adb shell dumpsys SurfaceFlinger --latency <layer> 把 app 的 frameNumber 与 SF 的 present 时间对齐，能看出 apply 到上屏的延迟。"
+  ],
+  "next": "第 23 步「SF commit：收事务、更新快照」：事务到了 SF 队列，main thread 在下一次 vsync 的 commit 里把它并进来。"
+}

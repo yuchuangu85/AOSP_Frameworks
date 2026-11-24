@@ -1,0 +1,354 @@
+{
+  "id": "tc-request-start",
+  "title": "TransitionController.requestStartTransition 请求启动 transition",
+  "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+  "sig": "Transition requestStartTransition(@NonNull Transition transition, @Nullable Task startTask,",
+  "span": [
+    996,
+    1075
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "Transition requestStartTransition(@NonNull Transition transition, @Nul",
+      "kind": "note",
+      "text": "内部 7 参实现：transition 已创建且处于 COLLECTING，这里只负责把它交给 shell 播放器。"
+    },
+    {
+      "at": 2,
+      "quote": "@Nullable RemoteTransition remoteTransition,",
+      "kind": "note",
+      "text": "remoteTransition 非空表示 shell 指定了远程动画代理，会记到 mRemoteDelegate 并下发。"
+    },
+    {
+      "at": 3,
+      "quote": "@Nullable List<TransitionRequestInfo.DisplayChange> displayChanges,",
+      "kind": "note",
+      "text": "displayChanges 是旋转/尺寸等显示变化，仅透传；缺失会让 shell 判错动画类型。"
+    },
+    {
+      "at": 4,
+      "quote": "@Nullable TransitionRequestInfo.UserChange userChange,",
+      "kind": "note",
+      "text": "userChange 是发起本次 transition 的用户切换信息，仅透传；null 表示与用户切换无关。"
+    },
+    {
+      "at": 5,
+      "quote": "@Nullable TransitionRequestInfo.WindowingLayerChange windowingLayerCha",
+      "kind": "note",
+      "text": "windowingLayerChange 是窗口层级变化请求，仅透传；null 表示没有层级变更。"
+    },
+    {
+      "at": 6,
+      "quote": "@Nullable TransitionRequestInfo.FullscreenRequestChange fullscreenRequ",
+      "kind": "note",
+      "text": "fullscreenRequestChange 是全屏请求变化，仅透传；方法体开始，早退都返回同一 transition。"
+    },
+    {
+      "at": 7,
+      "quote": "if (mIsWaitingForDisplayEnabled && !Flags.fallbackTransitionPlayer()) ",
+      "kind": "branch",
+      "text": "开机时 display 未使能且未开 fallback 播放器：走本地分支，不等 shell，否则启动期会卡住。"
+    },
+    {
+      "at": 8,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS,",
+      "kind": "trace",
+      "text": "ProtoLog，需 WM_DEBUG_WINDOW_TRANSITIONS 开关；关闭时几乎没有开销。"
+    },
+    {
+      "at": 9,
+      "quote": "\"Disabling player for transition #%d because display isn't enabled yet",
+      "kind": "trace",
+      "text": "日志格式串，%d 由下一行 syncId 填充，用于在 trace 里定位这一次 transition。"
+    },
+    {
+      "at": 10,
+      "quote": "transition.getSyncId());",
+      "kind": "data",
+      "text": "getSyncId() 作为唯一 id 入日志，flush 或超时排查时靠它关联 SyncGroup。"
+    },
+    {
+      "at": 11,
+      "quote": "transition.mIsPlayerEnabled = false;",
+      "kind": "state",
+      "text": "mIsPlayerEnabled=false：本地播放，不再等 shell 回调 onTransitionReady。"
+    },
+    {
+      "at": 12,
+      "quote": "transition.mLogger.mRequestTimeNs = SystemClock.elapsedRealtimeNanos()",
+      "kind": "data",
+      "text": "记录请求时间戳，Logger 后续算 request→start 耗时；仅统计用，不影响流程。"
+    },
+    {
+      "at": 13,
+      "quote": "mHandler.post(() -> mAtm.mWindowOrganizerController.startTransition(",
+      "kind": "thread",
+      "text": "post 到 mAtm.mH 主线程异步执行，不阻塞调用方，也不占着跨进程调用栈。"
+    },
+    {
+      "at": 14,
+      "quote": "transition.getToken(), null));",
+      "kind": "ipc",
+      "text": "用 token 找回同一 transition，WCT=null 表示不加 ready 条件，内部直接 start()。"
+    },
+    {
+      "at": 15,
+      "quote": "return transition;",
+      "kind": "note",
+      "text": "立刻返回：此刻 start 还在主线程队列中，调用方拿到的是仍为 COLLECTING 的对象。"
+    },
+    {
+      "at": 17,
+      "quote": "if (isFlushing() || transition.isAborted()) {",
+      "kind": "branch",
+      "text": "isFlushing()（播放器栈空）或已 abort：不能请求 shell，否则请求落空、永远等不到 ready。"
+    },
+    {
+      "at": 18,
+      "quote": "// Either flushing or already flushed, so abort here.",
+      "kind": "note",
+      "text": "注释说明两种来因：正在 flush 或已 flush 完，统一在下面中止。"
+    },
+    {
+      "at": 19,
+      "quote": "if (transition.isCollecting()) {",
+      "kind": "branch",
+      "text": "只有收集中的 transition 才 abort；已 aborted 时跳过，避免重复中止。"
+    },
+    {
+      "at": 20,
+      "quote": "transition.abort();",
+      "kind": "state",
+      "text": "abort 置 STATE_ABORT 并中止 SyncEngine，回调 onTransactionReady 收尾，否则残留收集态。"
+    },
+    {
+      "at": 22,
+      "quote": "return transition;",
+      "kind": "note",
+      "text": "提前返回同一 transition 但已是 aborted，调用方不能再 setReady 或复用。"
+    },
+    {
+      "at": 24,
+      "quote": "try {",
+      "kind": "note",
+      "text": "try 只兜 getTransitionPlayer 跨进程调用的 RemoteException，NPE/ISE 仍会外抛。"
+    },
+    {
+      "at": 25,
+      "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS,",
+      "kind": "trace",
+      "text": "ProtoLog 记录请求发起，需 WM_DEBUG_WINDOW_TRANSITIONS。"
+    },
+    {
+      "at": 26,
+      "quote": "\"Requesting StartTransition: %s\", transition);",
+      "kind": "trace",
+      "text": "打印 transition 全量信息（type/syncId/状态），用于与 shell 侧日志对齐。"
+    },
+    {
+      "at": 27,
+      "quote": "ActivityManager.RunningTaskInfo startTaskInfo = null;",
+      "kind": "data",
+      "text": "startTaskInfo 默认 null：无触发任务（如纯显示变化）时请求里 triggerTask 为空。"
+    },
+    {
+      "at": 28,
+      "quote": "TransitionRequestInfo.PipChange pipChange = null;",
+      "kind": "data",
+      "text": "pipChange 默认 null，仅当 transition 上缓存了 PiP activity 时才填充。"
+    },
+    {
+      "at": 29,
+      "quote": "if (startTask != null) {",
+      "kind": "branch",
+      "text": "startTask 非空才取快照；这里不校验 task 是否已被移除，失效信息会原样下发。"
+    },
+    {
+      "at": 30,
+      "quote": "startTaskInfo = startTask.getTaskInfo();",
+      "kind": "data",
+      "text": "把触发任务快照放进请求，shell 据此判断动画方向与目标 task。"
+    },
+    {
+      "at": 33,
+      "quote": "// set the pip task in the request if provided",
+      "kind": "note",
+      "text": "注释：把 PiP 任务信息塞进请求。"
+    },
+    {
+      "at": 34,
+      "quote": "if (transition.getPipActivity() != null) {",
+      "kind": "branch",
+      "text": "getPipActivity() 非空表示涉及 PiP 进出；为空则 pipChange 保持 null。"
+    },
+    {
+      "at": 35,
+      "quote": "ActivityManager.RunningTaskInfo pipTaskInfo =",
+      "kind": "data",
+      "text": "取 PiP activity 所在 task 的 RunningTaskInfo，作为播放器的画中画任务信息。"
+    },
+    {
+      "at": 36,
+      "quote": "transition.getPipActivity().getTask().getTaskInfo();",
+      "kind": "data",
+      "text": "经 getTask() 拿 task 快照；activity 未挂 task 时会 NPE，此处假定已挂载。"
+    },
+    {
+      "at": 37,
+      "quote": "ActivityRecord pipActivity = transition.getPipActivity();",
+      "kind": "data",
+      "text": "再取一次 pipActivity，供后面比较 TaskFragment 与 task 是否不同。"
+    },
+    {
+      "at": 38,
+      "quote": "if (pipActivity.getTaskFragment() != null",
+      "kind": "branch",
+      "text": "判断 PiP activity 是否在独立 TaskFragment（AE→PiP），决定 token 用 TF 还是 task。"
+    },
+    {
+      "at": 39,
+      "quote": "&& pipActivity.getTaskFragment() != pipActivity.getTask()) {",
+      "kind": "branch",
+      "text": "TF 与 task 不相等即 AE→PiP：必须单独缓存 TF token，否则 shell 找不到容器。"
+    },
+    {
+      "at": 40,
+      "quote": "// If the PiP activity is in a TF different from its task, this could ",
+      "kind": "note",
+      "text": "注释：AE 转 PiP 时 TF token 要单独缓存。"
+    },
+    {
+      "at": 41,
+      "quote": "// AE-to-PiP case, so PipChange will have the TF token cached separate",
+      "kind": "note",
+      "text": "注释续行：PipChange 把 TF token 与 taskInfo 分开携带，正是为这种场景。"
+    },
+    {
+      "at": 42,
+      "quote": "pipChange = new TransitionRequestInfo.PipChange(pipActivity.getTaskFra",
+      "kind": "data",
+      "text": "用 TF 的 remote token 构造 PipChange，让 shell 能定位到具体 TaskFragment。"
+    },
+    {
+      "at": 43,
+      "quote": ".mRemoteToken.toWindowContainerToken(), pipTaskInfo);",
+      "kind": "data",
+      "text": "第二个参数是 PiP 任务快照；token 与 task 不匹配时动画会打到错误容器。"
+    },
+    {
+      "at": 45,
+      "quote": "pipChange = new TransitionRequestInfo.PipChange(pipTaskInfo);",
+      "kind": "state",
+      "text": "单参 PipChange 以 taskInfo.token 作 TF token，普通 PiP 省掉一次查询。"
+    },
+    {
+      "at": 47,
+      "quote": "transition.setPipActivity(null);",
+      "kind": "data",
+      "text": "取走后清空 transition 上缓存的 PiP activity，防止同一 activity 被后续请求重复上报。"
+    },
+    {
+      "at": 50,
+      "quote": "final TransitionRequestInfo.RemoteTransitionInfo remoteInfo;",
+      "kind": "data",
+      "text": "remoteInfo 声明 final 但未赋初值，下面两条分支必须各赋一次。"
+    },
+    {
+      "at": 51,
+      "quote": "if (remoteTransition != null) {",
+      "kind": "branch",
+      "text": "有远程动画代理：登记 delegate 线程并包装成 RemoteTransitionInfo 给 shell。"
+    },
+    {
+      "at": 52,
+      "quote": "transition.mRemoteDelegate = remoteTransition.getAppThread();",
+      "kind": "state",
+      "text": "mRemoteDelegate 记录应用线程，超时/结束时会用到它做优先级与生命周期处理。"
+    },
+    {
+      "at": 53,
+      "quote": "remoteInfo = new TransitionRequestInfo.RemoteTransitionInfo(remoteTran",
+      "kind": "ipc",
+      "text": "包装 remote transition（debugName/filter），shell 据此决定是否接管动画。"
+    },
+    {
+      "at": 55,
+      "quote": "remoteInfo = null;",
+      "kind": "data",
+      "text": "无远程代理时置 null，与上一分支类型一致；final 变量两条路径都必须赋值。"
+    },
+    {
+      "at": 58,
+      "quote": "final TransitionRequestInfo request = new TransitionRequestInfo(transi",
+      "kind": "data",
+      "text": "组装下发的 TransitionRequestInfo；type 决定动画类型，字段缺失会让播放器判错。"
+    },
+    {
+      "at": 59,
+      "quote": "startTaskInfo, pipChange, remoteInfo, displayChanges,",
+      "kind": "data",
+      "text": "四个参数：触发任务、PiP 变化、远程代理、显示变化。"
+    },
+    {
+      "at": 60,
+      "quote": "transition.getRequestedLocation(), userChange, windowingLayerChange,",
+      "kind": "data",
+      "text": "请求位置、用户切换、窗口层级变化，均为可空透传字段。"
+    },
+    {
+      "at": 61,
+      "quote": "fullscreenRequestChange, transition.getFlags(), transition.getSyncId()",
+      "kind": "data",
+      "text": "flags 与 syncId：syncId 是系统与 shell 对齐同一次 transition 的唯一键。"
+    },
+    {
+      "at": 63,
+      "quote": "transition.mLogger.mRequestTimeNs = SystemClock.elapsedRealtimeNanos()",
+      "kind": "data",
+      "text": "跨进程调用前打请求时间戳，供 Logger 统计 request 阶段耗时。"
+    },
+    {
+      "at": 64,
+      "quote": "transition.mLogger.mRequest = request;",
+      "kind": "data",
+      "text": "缓存 request 供日志回溯，finish 时由 Logger 异步打印。"
+    },
+    {
+      "at": 65,
+      "quote": "getTransitionPlayer().requestStartTransition(transition.getToken(), re",
+      "kind": "ipc",
+      "text": "跨进程通知 shell 播放器 requestStartTransition：成功后等其回调 onTransitionReady。"
+    },
+    {
+      "at": 66,
+      "quote": "if (remoteTransition != null) {",
+      "kind": "branch",
+      "text": "仅在有远程动画时登记动画进程，用于提前提升其优先级。"
+    },
+    {
+      "at": 67,
+      "quote": "transition.setRemoteAnimationApp(remoteTransition.getAppThread());",
+      "kind": "state",
+      "text": "setRemoteAnimationApp 提前预测动画进程并提优先级，200ms 内未 ack 会自动回退。"
+    },
+    {
+      "at": 70,
+      "quote": "Slog.e(TAG, \"Error requesting transition\", e);",
+      "kind": "ipc",
+      "text": "记 error 日志含异常栈，用于区分播放器进程崩溃与 binder 失败。"
+    },
+    {
+      "at": 71,
+      "quote": "transition.start();",
+      "kind": "state",
+      "text": "本地兜底 start：直接推到 STARTED，否则卡在 COLLECTING 会冻结输入与动画。"
+    },
+    {
+      "at": 73,
+      "quote": "return transition;",
+      "kind": "note",
+      "text": "统一返回同一 transition：成功、早退、兜底 start 三条路径都返回它供调用方继续链式操作。"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "step": "s03",
+  "title": "RenderProxy 接收并组帧",
+  "tldr": "RenderProxy 不碰数据，只把请求转给常驻的 DrawFrameTask；阻塞发生在 task 里面。",
+  "why": "这一层看着多余，其实是所有权边界：mNativeProxy 是 Java 手里唯一的 native 指针，每个 renderer 一个 RenderProxy，里面装着 CanvasContext 和唯一的 DrawFrameTask。绕开它，UI 线程就得自己持 RT 队列、自己管 task 生命周期，而 task 带着 mLayers、mFrameCallback 这些跨帧状态（头文件明说它是 Super Task，DrawFrameTask.h:60-65）——每帧新建一个的话，上一帧没跑完的 layer update 和 frameCommitCallback 就丢了，表现为 TextureView 黑一下、onFrameCommit 不回调。它同时是 UI 触碰 RT 的唯一安全通道（其它成员全是 runSync/post）。",
+  "concepts": [
+    { "term": "RenderProxy", "text": "Java 的 mNativeProxy 指向它，每 renderer 一个，持有 mContext 与唯一 task。" },
+    { "term": "Super Task", "text": "DrawFrameTask 的自我定位：跨帧复用、带着跨帧状态，不是一次性的 functor。" },
+    { "term": "runSync", "text": "WorkQueue 的同步投递：任务在 RT 上跑完才返回，用于构造/销毁这类必须定序的操作。" }
+  ],
+  "walk": [
+    { "call": "RenderProxy::RenderProxy(bool translucent, RenderNode* rootRenderNode, IContextFactory* contextFactory, bool useIpcCanvas)", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:49", "what": "构造时就确定 RT 单例、UI/RenderThread 两个 tid。" },
+    { "call": "mContext = mRenderThread.queue().runSync([=, this]() -> CanvasContext* {", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:58", "what": "CanvasContext 在 RT 上创建；这一句会阻塞调用线程。" },
+    { "call": "mDrawFrameTask.setContext(&mRenderThread, mContext, rootRenderNode);", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:67", "what": "把三者一次性交给 task，之后每帧只用改它的 frameInfo。" },
+    { "call": "int64_t* RenderProxy::frameInfo()", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:229", "what": "JNI 拿它当 GetLongArrayRegion 的落点，所以 task 的数组就是输入。" },
+    { "call": "return mDrawFrameTask.frameInfo();", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:230", "what": "转手返回裸首地址，长度语义由调用方（JNI 的 14）保证。" },
+    { "call": "int RenderProxy::syncAndDrawFrame()", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:237", "what": "函数体两行，不解析 FrameInfo：数据在 JNI 已经就位。" },
+    { "call": "return mDrawFrameTask.drawFrame();", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:238", "what": "转交给常驻 task；返回的 syncResult 位掩码原样回 Java。" },
+    { "call": "mDrawFrameTask.setContext(nullptr, nullptr, nullptr);", "ref": "base/libs/hwui/renderthread/RenderProxy.cpp:76", "what": "销毁时反注册，先断 task 的指针再 delete context（79）。" }
+  ],
+  "state": [
+    { "field": "RenderProxy.mContext", "before": "nullptr（构造初值，50）", "after": "CanvasContext*（runSync 返回值，58）", "note": "在 RT 上 new、由 UI 侧持有；task 里存的是同一个指针" },
+    { "field": "DrawFrameTask.mRenderThread / mContext / mTargetNode", "before": "nullptr（默认构造，DrawFrameTask.cpp:36-40）", "after": "setContext 后全部就位（67）", "note": "销毁时又被一起置空（76），所以 drawFrame 的断言能兜住误用" },
+    { "field": "DrawFrameTask.mFrameInfo", "before": "上一帧的 14 个 long", "after": "本帧 JNI 覆写后的值", "note": "task 是常驻对象，数组地址不变，Java 每帧只改内容" }
+  ],
+  "threads": "syncAndDrawFrame 本身跑在 UI 线程，一行转发；真正跨线程的只有构造函数里那次 runSync（UI 停在 RT 上建 context）。之后 UI 与 RT 的交互全部经由 task 的 mSignal，不再有别的同步点。",
+  "pitfalls": [
+    "RenderProxy::syncAndDrawFrame 不做任何 FrameInfo 转换——那是 JNI（android_graphics_HardwareRenderer.cpp:471）干的。想加一个帧字段，要同时改 FrameInfo.h 的 enum、Java FrameInfo 的常量和 UI_THREAD_FRAME_INFO_SIZE，只改这一层没用。",
+    "task 每 proxy 只有一个，且被 post 时捕获裸 this（DrawFrameTask.cpp:85）：UI 同一时刻只能有一次 draw 在飞。在 onFrameDraw 回调里再触发一次 draw（重入），会覆盖 mFrameInfo 并在同一个 mSignal 上错配等待。",
+    "构造函数用 runSync 等 RT（58），如果在 RT 自己身上去创建 renderer 就会自锁；proxy 的创建必须发生在 UI 线程。"
+  ],
+  "debug": [
+    "RenderProxy 没有自己的 trace：perfetto 里 UI 线程的 postAndWait 段就是 syncAndDrawFrame 的全部开销（转发本身可忽略）",
+    "dumpsys gfxinfo <pkg> 的 profile 数据按 renderer 归集，一个进程多个 HardwareRenderer（如 WebView、Magnifier）会各有一份 CanvasContext",
+    "怀疑 context 丢了就看 logcat 的 Cannot drawFrame with no CanvasContext（DrawFrameTask.cpp:73），它意味着 setContext 已被置空却还有人调 draw"
+  ],
+  "next": "第 4 步「drawFrame：把任务丢进 RenderThread 队列」：task 拿到请求后清结果位、记提交时刻。"
+}

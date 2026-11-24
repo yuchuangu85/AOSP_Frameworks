@@ -1,0 +1,37 @@
+{
+  "step": "s24",
+  "title": "Track 释放与队列推进",
+  "tldr": "一个转场播完，Shell 把 track 让出来，再决定是接着播队列里的下一个，还是全系统都空了可以放行积压。",
+  "why": "如果不推进：finish 之后 track 仍挂在 mActiveTransition 上，排好的下一个 ready 会一直等——用户看到的是「点了没反应」，新 Activity 明明画好了却停在上一帧，直到下一次转场把状态顶开。反过来，如果一 finish 就把所有积压的转场同时放行，睡眠/同步期间攒下的那批会一起抢 leash，两个动画互相打架，画面抖一下。",
+  "concepts": [
+    { "term": "Track", "text": "Shell 的播放通道，一个 track id 一条。同一条上同时只能播一个转场，其余按序排队。" },
+    { "term": "ready-during-sync", "text": "睡眠/sync 期间已 ready 的转场暂存在这里，不进 track，等所有 track 空闲再放行。" },
+    { "term": "idle", "text": "Track.isIdle()：active 与 ready 队列都为空才成立，缺一不可。" }
+  ],
+  "walk": [
+    { "call": "track.mActiveTransition = null;", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1264", "what": "finish 的第一步：先把 track 让出来，否则再推进时它还以为有动画在播。" },
+    { "call": "processReadyQueue(track);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1333", "what": "onFinish 末尾无条件调它，让这条 track 自己看还有没有排队的活。" },
+    { "call": "if (track.mReadyTransitions.isEmpty()) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:929", "what": "队列空、且确认下面没有 active，才进入「变空闲」这条分支。" },
+    { "call": "if (areTracksIdle()) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:933", "what": "必须所有 track 都空；只空一条就放行积压，会让两个动画同时播。" },
+    { "call": "boolean success = dispatchReady(next);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:938", "what": "逐个放行积压；撞上新的 sync/sleep 时它返回 false，循环立刻停手。" },
+    { "call": "mRunWhenIdleQueue.get(i).run();", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:948", "what": "全系统空闲才跑 runOnIdle 排下的 runnable，随后释放攒着的 leash。" },
+    { "call": "track.mActiveTransition = ready;", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:961", "what": "有排队时把队首提升为 active；若它已被标 mAborted，直接 finish 跳过动画。" }
+  ],
+  "state": [
+    { "field": "Track.mActiveTransition", "before": "指向刚 finish 的那个 ActiveTransition", "after": "null（1264 行）", "note": "先置空再推进，否则 isIdle() 永远为假" },
+    { "field": "Track.mReadyTransitions", "before": "排队 N 个（N≥1）", "after": "remove(0) 后剩 N-1，队首成为 mActiveTransition", "note": "一次只提升一个" },
+    { "field": "mReadyDuringSync", "before": "睡眠/同步期间积压的若干 ready", "after": "空（逐个 dispatchReady 成功）", "note": "中途撞到新的 sync 就停，剩下的留在队里" },
+    { "field": "mKnownTransitions", "before": "包含刚 finish 的 token", "after": "remove(token)", "note": "合并进来的 token 在 1316-1327 行一起移除" }
+  ],
+  "threads": "跑在 Shell 主线程（onFinish 开头有 mMainExecutor.assertCurrentThread()），不持 WMS 的 mGlobalLock；所有跨进程动作经 mOrganizer 下发。",
+  "pitfalls": [
+    "processReadyQueue 不是「只放行一个」：playTransition 之后（972 行）和 onMerged 末尾（1039 行）都会再递归调它，一次调用可能连续处理好几个排队转场。",
+    "track 数量只增不减：getOrCreateTrack 只会往 mTracks 里 add（730 行），dump 里看到 Track #5 不代表有 5 块屏幕。",
+    "空闲判定用的是 areTracksIdle() 而不是当前 track：一条 track 空了并不代表可以放行 mReadyDuringSync。"
+  ],
+  "debug": [
+    "adb shell wm shell dump：看 Tracks 段的 active= / hander=，以及 Pending Transitions、Ready-during-sync Transitions 两段各自的 id 与 handler。",
+    "WM_SHELL_TRANSITIONS 的 Track %d became idle 与 All active transition animations finished（Transitions.java:943）成对出现才说明真的全空闲；Shell 侧 ProtoLog 用 adb shell dumpsys activity service SystemUIService WMShell 抓。"
+  ],
+  "next": "第 37 步「分支：没有 Shell 时的 FallbackPlayer」。"
+}

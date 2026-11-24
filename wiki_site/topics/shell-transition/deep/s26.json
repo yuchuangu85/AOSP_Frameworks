@@ -1,0 +1,39 @@
+{
+  "step": "s26",
+  "title": "分支：中止、超时、异常",
+  "tldr": "三条兜底路径——abort、SyncSet 超时、播放器抛异常——都只为一个目标：事务 apply、转场 finish。",
+  "why": "如果任一条路漏掉收尾：被 abort 或超时的转场会一直占着 mPlayingTransitions 里的位置，之后所有转场都排在它后面——用户感知是界面卡住不动，几十秒后可能 ANR。反过来，如果超时后直接丢掉已经收集的 sync 事务，那些 leash 和 bounds 改动永远不落地，窗口会停在旧位置、下一次转场从错误状态开始。",
+  "concepts": [
+    { "term": "isReadinessTimeout", "text": "BLASTSyncEngine 的超时分类：容器已画完但没人 setSyncReady，与仍有容器没画完。" },
+    { "term": "postCleanupOnFailure", "text": "把 cleanUpOnFailure post 到 WMS 主线程，并在 mGlobalLock 内执行收尾。" },
+    { "term": "mIsTimedOut", "text": "Transition 上的超时标记：超时不改流程，仍正常 finish，只是 metrics 记成超时。" }
+  ],
+  "walk": [
+    { "call": "if (mState != STATE_COLLECTING && mState != STATE_STARTED) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1957", "what": "abort 只允许在开播前：PLAYING 之后会抛 Too late to abort，只能靠 finish 中断。" },
+    { "call": "mController.dispatchLegacyAppTransitionCancelled(mTargetDisplays);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1975", "what": "老 listener 要收到 cancelled，否则 SystemUI 会一直等一个不来的 starting。" },
+    { "call": "transition.mType == TRANSIT_CHANGE ? CHANGE_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:446", "what": "收集超时按类型给：CHANGE 只等 2s（旋转要快），其它 5s。" },
+    { "call": "mHandler.postDelayed(s.mOnTimeout, timeoutMs);", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:539", "what": "超时不是每个容器各计，而是 sync 一开始就挂一个 runnable。" },
+    { "call": "mListener.onSyncGroupTimeout(isReadinessTimeout);", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:455", "what": "先通知 Transition 记录超时，紧接着 finishNow 让流程继续。" },
+    { "call": "public void onSyncGroupTimeout(boolean isReadinessTimeout)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:4424", "what": "置 mIsTimedOut；readiness 超时才额外 apply display change，避免 DC 卡住。" },
+    { "call": "postCleanupOnFailure();", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2268", "what": "onTransitionReady 抛 RemoteException（Shell 死了）时的兜底入口。" },
+    { "call": "void cleanUpOnFailure()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2707", "what": "apply 起止事务、把 leash reparent 回原 parent，最后 finishTransition。" }
+  ],
+  "state": [
+    { "field": "Transition.mIsTimedOut", "before": "false", "after": "true（4425 行）", "note": "超时不改变状态机走向，只记录事实" },
+    { "field": "Transition.mState", "before": "STATE_COLLECTING / STATE_STARTED", "after": "STATE_ABORT（abort）或继续推进到 PLAYING（超时）", "note": "两条路的终点都是 finish" },
+    { "field": "mPlayingTransitions", "before": "包含该 transition", "after": "移除（TransitionController.java:1214）", "note": "不移除等于永久占用转场通道" },
+    { "field": "BLASTSyncEngine.mActiveSyncs", "before": "包含该 SyncGroup", "after": "移除（finishNow 尾部 293 行）", "note": "移除后还会触发下一个 pending sync 启动" }
+  ],
+  "threads": "abort 在持 mGlobalLock 的 WMS 线程；超时 runnable 跑在 mHandler（WMS 主线程），进 onTimeout 前先 synchronized(mGlobalLock)（BLASTSyncEngine.java:156）；RemoteException 分支 post 到 mAtm.mH 再在锁内收尾。",
+  "pitfalls": [
+    "超时不是「无条件降级成直接 apply」：onTimeout 会先把没画完的容器打进日志，再 finishNow 走 onTransactionReady——收到的仍是当时收集到的那些事务，可能少东西。",
+    "abort 有严格时序：已 abort 直接返回（1951 行），PLAYING 之后调用会抛 IllegalStateException（1957 行）；想中断在播的动画只能靠 finishForSync 或 force finish。",
+    "onTransactionCommitTimeout 处理的是「事务已交给 SF 但没收到 commit 回调」（BLASTSyncEngine.java:264），跟 SyncSet 收集超时是两件完全不同的事。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS：搜 #N readiness timeout、Sync group N timeout、never received commit callback（BLASTSyncEngine.java:264）。",
+    "logcat -s BLASTSyncEngine：Unfinished container: 后面跟的窗口及其 syncState 就是卡住的那个（BLASTSyncEngine.java:419）。",
+    "logcat -s Transition：搜 cleanUpOnFailure for #（Transition.java:2715），确认异常分支真的走到了收尾。"
+  ],
+  "next": "第 42 步「诊断：Perfetto 与 dumpsys」。"
+}

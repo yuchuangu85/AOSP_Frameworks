@@ -1,0 +1,42 @@
+{
+  "step": "s17",
+  "title": "eglSwapBuffersWithDamageKHR",
+  "tldr": "EGL swap 把脏区写成 surface damage，驱动再用 queueBuffer 交回 buffer。",
+  "why": "这一行之前，脏区只是 HWUI 里的一个 SkRect，EGL 和下面的 BufferQueue 完全不知道哪些像素变了。不把脏区翻译成 EGL 的 damage rect 或 native window 的 surface damage，驱动和 SF 都只能按整块 buffer 处理，部分更新等于没开，每帧全屏读写。反过来，damage 传错（坐标系翻反、旋转没补）会花屏：SF 只刷新一小块，其余保留上一帧像素。更要紧的是这一行是 CPU 侧最后一站——swap 返回时 buffer 已经在队列里，之后的节奏全归 SF 的 vsync。",
+  "concepts": [
+    { "term": "eglSwapBuffersWithDamageKHR", "text": "EGL_KHR_swap_buffers_with_damage 的入口：带 damage rect 列表交换前后台 buffer（HWUI 的缓冲数组是 4 个，见 EglManager.cpp:627）。" },
+    { "term": "surface damage", "text": "EGL 用 native_window_set_surface_damage 写给 Surface，Surface 记进 mDirtyRegion，queueBuffer 时变成 QueueBufferInput.surfaceDamage。" },
+    { "term": "BufferAge", "text": "复用的 buffer 能读到几帧前的内容；只有它可用时部分更新才有意义（EglManager::queryBufferAge，EglManager.cpp:578）。" },
+    { "term": "acquire fence", "text": "驱动在 queueBuffer 时一并交出的 fence fd，表示 GPU 何时写完；它是消费者（BLAST/SF）等的那条 fence。" }
+  ],
+  "walk": [
+    { "call": "if (CC_UNLIKELY(Properties::waitForGpuCompletion)) {", "ref": "base/libs/hwui/renderthread/EglManager.cpp:622", "what": "调试开关：真等 GPU 画完再 swap（624 的 fence()），常规路径跳过。" },
+    { "call": "frame.map(screenDirty, rects);", "ref": "base/libs/hwui/renderthread/EglManager.cpp:628", "what": "SkRect 转成 EGL 的 int32 rect（x,y,w,h，左下原点，Frame.cpp:24 翻 y）。" },
+    { "call": "eglSwapBuffersWithDamageKHR(mEglDisplay, frame.mSurface, rects, screenDirty.isEmpty() ? 0 : 1);", "ref": "base/libs/hwui/renderthread/EglManager.cpp:629", "what": "脏区为空就传 0 个 rect（等于整块 swap），否则只传 1 个 bounds。" },
+    { "call": "EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay dpy, EGLSurface draw, const EGLint* rects, EGLint n_rects)", "ref": "native/opengl/libs/EGL/eglApi.cpp:251", "what": "framework 的 EGL 入口，转给 platform 实现（注册在 2591 行）。" },
+    { "call": "if (n_rects == 0) {", "ref": "native/opengl/libs/EGL/egl_platform_entries.cpp:1412", "what": "n_rects=0 走普通 eglSwapBuffers，damage 语义整个丢掉。" },
+    { "call": "native_window_set_surface_damage(s->getNativeWindow(), androidRects.data(), androidRects.size());", "ref": "native/opengl/libs/EGL/egl_platform_entries.cpp:1431", "what": "把 rect 转成 android_native_rect_t 写给 Surface（1424-1427 再翻 y）。" },
+    { "call": "mDirtyRegion.orSelf(rect);", "ref": "native/libs/gui/Surface.cpp:2951", "what": "Surface 记下 OpenGL 约定的区域，等 queueBuffer 时才翻成左上原点。" },
+    { "call": "return s->cnx->egl.eglSwapBuffersWithDamageKHR(dp->disp.dpy, s->surface, rects, n_rects);", "ref": "native/opengl/libs/EGL/egl_platform_entries.cpp:1436", "what": "交给 vendor 驱动；驱动换 buffer 时回调 ANativeWindow::queueBuffer。" },
+    { "call": "return c->queueBuffer(GraphicBuffer::from(buffer), sp<Fence>::make(fenceFd));", "ref": "native/libs/gui/Surface.cpp:625", "what": "驱动的回调落点（hook_queueBuffer，147 行注册），进 queueBufferImpl。" }
+  ],
+  "state": [
+    { "field": "Surface::mDirtyRegion", "before": "INVALID_REGION（上一帧 queue 后复位，Surface.cpp:1465）", "after": "本帧 EGL 给的 rect；0 个 rect 时仍是 INVALID_REGION（2940）", "note": "INVALID_REGION 表示「整块都脏」，与 0 rect 的语义一致" },
+    { "field": "EGL surface 的 back/front buffer", "before": "back 是刚画完的那块", "after": "swap 后角色交换，这块进了队列，下一帧 dequeue 另一块", "note": "buffer age 随之变化，直接决定下帧能否增量画" },
+    { "field": "EglManager 的 EGL error", "before": "clearError 后的成功态", "after": "swap 后 eglGetError()；BAD_SURFACE / BAD_NATIVE_WINDOW 时返回 false（631-642）", "note": "其它错误直接 LOG_ALWAYS_FATAL（643），不会静默丢帧" },
+    { "field": "FrameInfo 时间戳", "before": "SwapBuffers 已打过（201）", "after": "无新打点；SwapBuffersCompleted 要等 CanvasContext.cpp:861", "note": "这段 swap 的耗时靠这两个点相减得到" }
+  ],
+  "threads": "RenderThread。EGL 与驱动调用都在 RT 的栈上；驱动内部那一步（换 buffer → ANativeWindow::queueBuffer）是同步回调，所以 Surface::queueBufferImpl、BufferQueueProducer::queueBuffer 也都跑在 RT 上——RT 的帧时间会包含一次可能的等 slot。",
+  "pitfalls": [
+    "screenDirty 为空时 n_rects 直接是 0（629），EGL 走普通 eglSwapBuffers（1412）完全不碰 set_surface_damage；而 Surface::setSurfaceDamage 在 numRects==0 时也把 mDirtyRegion 设成 INVALID_REGION（2939-2941）。两条路殊途同归：整块算脏。想验证局部更新有没有生效，脏区必须非空。",
+    "坐标翻了三次：Frame::map 从 top-left 转到底部原点（Frame.cpp:24-34），egl_platform_entries.cpp:1424-1427 再转成 top>bottom 的 android_native_rect_t，getQueueBufferInputLocked 再翻回 top-left（Surface.cpp:1294）。任何一处旋转补偿错，表现就是局部花屏或 damage 对不上。",
+    "驱动里 dequeue/queue 的那一步不在 AOSP 仓库（vendor EGL 实现），所以 eglSwapBuffersWithDamageKHR 的耗时实际包含一次 queueBuffer，甚至可能在等 buffer slot。看到它变长先怀疑第 19 步队列满，而不是 GPU 慢。",
+    "swap 失败不会重试：EglManager::swapBuffers 返回 false 后，CanvasContext 直接 setSurface(nullptr) 废弃并重建 surface（819-822），这一帧就丢了。排查「偶发一帧黑」先看 631-642 有没有打过 ALOGW。"
+  ],
+  "debug": [
+    "perfetto/atrace：eglApi.cpp:253 有 ATRACE_CALL，RT 线程上能定位到这段；更细的驱动内部耗时只能看 GPU 厂商的 trace 点",
+    "adb shell dumpsys SurfaceFlinger 的 Layer 段能看到该层的 queued frames 与下一帧号，用来确认这一帧是否真的进了队列",
+    "adb shell dumpsys gfxinfo <pkg> framestats 里 queueBuffer 的耗时对应第 18 步，可与这里的时间段对照"
+  ],
+  "next": "第 18 步「Surface::queueBufferImpl」：buffer 已经回到 Surface 手里，接下来持锁反查 slot、组装 QueueBufferInput。"
+}

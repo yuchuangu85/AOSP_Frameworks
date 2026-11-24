@@ -1,0 +1,43 @@
+{
+  "step": "s14",
+  "title": "回放 draw op",
+  "tldr": "先画待更新的 RenderLayer，再把根节点 display list 回放进 canvas。",
+  "why": "这是整条链路里唯一真正遍历场景树的地方。前面 prepareTree 只是把 staging display list 同步成 display list、算出脏区；如果没人在这里回放，那棵树就只是一堆结构体，GPU 一条命令都收不到，屏幕上什么都不会变——但 swap 照样会发生，得到一块和上一帧内容相同的 buffer，用户看到「画面不动」而掉帧统计一切正常。反过来，clip 用的是 expand 后的 dirty，回放范围算小会出现拖动残影，算大会白白重绘整屏。RenderLayer（TextureView、带 layer 的 View）还必须先画进自己的离屏 surface，否则第 15 步提交的是一张缺图层的画面。",
+  "concepts": [
+    { "term": "display list 回放", "text": "把一个 RenderNode 的 Skia DisplayList 重新 draw 到 canvas 上；本质是 Skia 自己的 op 列表再执行一遍，不是解释器。" },
+    { "term": "RenderNodeDrawable", "text": "SkDrawable 包装一个 RenderNode：draw 时先套 RenderProperties（matrix/clip/alpha），再回放它的 display list。" },
+    { "term": "device clip restriction", "text": "Android 私有的 canvas API，把裁剪限制在脏区矩形，Skia 在生成 op 时就能剪掉不可见部分。" },
+    { "term": "LayerUpdateQueue", "text": "prepareTree 收集的「这一帧要重画的 RenderLayer 条目」，每项带自己的 damage，由 renderLayersImpl 消费。" }
+  ],
+  "walk": [
+    { "call": "void SkiaPipeline::renderFrame(const LayerUpdateQueue& layers, const SkRect& clip, const std::vector<sp<RenderNode>>& nodes, bool opaque, const Rect& contentDrawBounds, sk_sp<SkSurface> surface, const SkMatrix& preTransform)", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:340", "what": "public 入口：先决定 canvas 用 surface 的还是录制用的 nway canvas。" },
+    { "call": "SkCanvas* canvas = tryCapture(surface.get(), nodes[0].get(), layers);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:351", "what": "没开 SKP 捕获就直接 return surface->getCanvas()（237 判、267 返），零额外开销。" },
+    { "call": "renderLayersImpl(layers, opaque);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:354", "what": "先把待更新的 RenderLayer/TextureView 画进各自离屏 surface，供后面当图片合成。" },
+    { "call": "renderFrameImpl(clip, nodes, opaque, contentDrawBounds, canvas, preTransform);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:356", "what": "根节点回放发生在这一行，不是 renderLayersImpl。" },
+    { "call": "canvas->androidFramework_setDeviceClipRestriction(clipRestriction);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:386", "what": "把裁剪压到脏区（roundOut 后），回放只碰这块像素。" },
+    { "call": "canvas->concat(preTransform);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:388", "what": "HardwareBuffer 时乘像素格式的 pre-transform；普通 surface 是单位阵。" },
+    { "call": "if (!opaque) {", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:390", "what": "非不透明窗口会整块 clear 成透明（391），这是「半透明窗口」的由来。" },
+    { "call": "RenderNodeDrawable root(nodes[0].get(), canvas);", "ref": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp:396", "what": "单根分支（绝大多数 app）：包一个 SkDrawable，397 行再 draw 进 canvas。" },
+    { "call": "displayList->draw(canvas);", "ref": "base/libs/hwui/pipeline/skia/RenderNodeDrawable.cpp:400", "what": "回放落点：SkiaDisplayList::draw 转给 Skia 的 DisplayList。" }
+  ],
+  "state": [
+    { "field": "SkCanvas 的 device clip restriction", "before": "整块 surface（tryCapture 刚拿到的是干净 canvas）", "after": "preTransform 映射后再 roundOut 的 clip（379 算、386 设）", "note": "SKP 捕获分支不设它，改成 drawAnnotation 记录（381），否则录出来的 skp 只有脏区" },
+    { "field": "SkCanvas 的 matrix", "before": "identity", "after": "concat(preTransform)（388）", "note": "普通 GL surface 下 preTransform 是 SkMatrix::I()（SkiaOpenGLPipeline.cpp:160）；只有 mHardwareBuffer 才非单位" },
+    { "field": "canvas 像素（opaque=false 时）", "before": "上一帧内容（buffer age>0 时还在）", "after": "全透明（391）", "note": "opaque=true 不清屏，完全依赖 display list 自己覆盖整块" },
+    { "field": "nodes 数组语义", "before": "1 个=普通窗口，2 个=backdrop+content，3+ 个=再加 overlay", "after": "按对应分支画完（394/399/401）", "note": "多根时要处理 backdrop 比 content 大的边条（435-449），不是简单遍历" },
+    { "field": "mLayerUpdateQueue", "before": "prepareTree 填的 layer 条目还在", "after": "draw() 里 clear()（SkiaOpenGLPipeline.cpp:184）", "note": "clear 在 flush 之后，回放阶段仍要读它" }
+  ],
+  "threads": "RenderThread 单线程，同一函数栈内同步执行；没有锁，也没有跨线程投递。它读的 display list 已经在第 8/9 步同步完成，所以这里读到的内容是 UI 线程「交棒那一刻」的快照。",
+  "pitfalls": [
+    "topic 的 brief 说 renderFrameImpl 先画 RenderLayer，代码不是这样：renderLayersImpl 在 renderFrame 里、renderFrameImpl 之前（354 vs 356），renderFrameImpl 只处理根节点。照 brief 读代码会找不到那段。",
+    "nodes.size() 不一定是 1：转场/缩放中的窗口是 2 个（backdrop + content），overlay 再加；那两条分支画的是裁剪拼合（435-467），不是根回放，排查「窗口边缘露底」要看这里。",
+    "空帧判定有两处且不等价：CanvasContext 的 skipEmptyFrames（699）连 draw 都不进；这里的 nodes[0]->nothingToDraw()（395）发生在已经 clear 过整块之后，因此仍会 swap 出一块透明/纯色 buffer。",
+    "RenderNodeDrawable::forceDraw 里有自己的可见性判定（RenderNodeDrawable.cpp:167-170）：mComposeLayer 时故意忽略 nothingToDraw，所以「图层里看不见的节点」照样会被画进离屏 surface。"
+  ],
+  "debug": [
+    "perfetto：RT 线程上 Drawing 切片的子切片 flush commands 就是回放+提交的整体耗时；回放本身没有更细的 trace，要细分只能看 Skia 的 skia trace 分类",
+    "adb shell setprop debug.hwui.capture_skp_enabled true 会走 tryCapture（237）录下这一帧的 op 列表，用 skp 工具打开就能看到回放到底画了什么",
+    "debug.hwui.show_dirty_regions 让脏区直接画在画面上，用来验证 386 的 clip 是否与实际变化区域一致"
+  ],
+  "next": "第 15 步「FlushAndSubmit：提交 GPU，不等完成」：op 全部录进 Skia 之后，一次性提交给 GPU，提交完就返回。"
+}

@@ -1,0 +1,865 @@
+{
+  "stages": [
+    {
+      "id": "a1",
+      "title": "App 收到 VSYNC：先入消息队列，再执行帧",
+      "actor": "应用进程 · 窗口 UI Looper",
+      "input": "显示事件连接带来时间戳、计数与候选 FrameTimeline（VSYNC ID、预计呈现时间、deadline）。这是给应用的调度机会，不是面板已经呈现本帧。",
+      "action": "EventThread 通过 BitTube 发送显示事件，应用 native Looper 监听接收端 fd。DisplayEventDispatcher 读事件 → NativeDisplayEventReceiver 经 JNI 调 Java dispatchVsync → FrameDisplayEventReceiver.onVsync 复制数据、按时间投递异步消息；Looper 运行此消息时才调用 doFrame。请求下一次 VSYNC 与传回事件不是同一机制。",
+      "steps": [
+        ["1. 传入帧时序", "事件里同时带来 VSYNC 时间、VSYNC ID、预计呈现时间与 deadline；它描述的是应用本轮应争取的时间线，不是屏幕已经显示了新像素。"],
+        ["2. native 接收", "应用线程上的 native Looper 监听显示事件 fd。DisplayEventDispatcher 读出事件，再交给 NativeDisplayEventReceiver 和 JNI 桥接。"],
+        ["3. 投递到 UI Looper", "Java 侧 FrameDisplayEventReceiver 复制事件数据，并把 doFrame 作为异步消息排入应用 UI Looper；收到事件的回调本身不直接遍历 View。"],
+        ["4. 开始这一帧", "Looper 真正运行消息后，Choreographer 检查帧是否仍被调度、校正迟到的 frameTime，并把 intended/used VSYNC、deadline 和实际开始时间写入 FrameInfo。"]
+      ],
+      "output": "doFrame 选取帧时间线，记录 intended/used VSYNC、deadline 和实际开始时间。到期工作才获执行。",
+      "branch": "之前通常由 scheduleFrameLocked 合并请求，向 receiver 请求下一次 VSYNC；未调度的帧直接返回。迟到可校正帧时钟，部分配置/队列恢复状态会另等下次机会。",
+      "impact": "此处不遍历 View。UI 线程尚未结束的回调、同步 I/O、锁等待和调度迟到会推迟开始；异步消息能越过同步屏障，不能抢占正在运行的代码。",
+      "refs": [
+        [
+          "native/libs/gui/DisplayEventDispatcher.cpp",
+          113,
+          142
+        ],
+        [
+          "base/core/jni/android_view_DisplayEventReceiver.cpp",
+          240,
+          255
+        ],
+        [
+          "base/core/java/android/view/DisplayEventReceiver.java",
+          362,
+          366
+        ],
+        [
+          "base/core/java/android/view/DisplayEventReceiver.java",
+          165,
+          185
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          919,
+          938
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1594,
+          1607
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1626,
+          1641
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1084,
+          1102
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1107,
+          1129
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1183,
+          1191
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/EventThread.cpp",
+          298,
+          302
+        ],
+        [
+          "native/libs/gui/DisplayEventReceiver.cpp",
+          93,
+          98
+        ],
+        [
+          "native/libs/gui/DisplayEventReceiver.cpp",
+          119,
+          133
+        ],
+        [
+          "native/libs/gui/DisplayEventDispatcher.cpp",
+          53,
+          66
+        ]
+      ]
+    },
+    {
+      "id": "a2",
+      "title": "先处理到期输入与动画，再轮到遍历",
+      "actor": "应用进程 · UI 线程",
+      "input": "Choreographer 按类型维护回调队列；本次 doFrame 的帧时刻可供多个动画共用。",
+      "action": "按 INPUT → ANIMATION → INSETS_ANIMATION → TRAVERSAL → COMMIT 执行。每阶段取此刻已到期回调，逐个调用。批量输入可在 INPUT 消费；框架 AnimationHandler 默认借 Choreographer 帧回调，按同一帧时刻驱动到期动画。",
+      "steps": [
+        ["1. INPUT：把输入送进 ViewRootImpl", "ViewRootImpl 在 INPUT 回调里按 frameTime 消费批量触摸、鼠标或按键事件，然后处理队列中的 InputEvent。事件会经过拦截、触摸目标和 View 层级分发；监听器可以改状态、启动动画、调用 invalidate 或 requestLayout。"],
+        ["2. ANIMATION：按同一个帧时刻求值", "AnimationHandler 找出延迟已经结束的动画回调，调用每个 Animator 的 doAnimationFrame。ValueAnimator 根据 frameTime 计算 fraction，PropertyValuesHolder 求出当前值，再通知更新监听器和目标属性。"],
+        ["3. 属性写入决定后续路径", "写 translation、alpha、rotation 等几何/渲染属性，通常改变 RenderNode 的暂存属性；改 LayoutParams、父子关系或尺寸会走 requestLayout；改文字、Drawable 或自绘数据通常需要 invalidate，可能导致后面的 DisplayList 重录。"],
+        ["4. INSETS_ANIMATION：分发窗口内边距进度", "系统栏、IME 或手势区域的 Insets 动画把当前进度分发给注册回调。回调可能更新 padding、translation 或可见性，因此也可能追加绘制失效或布局请求。"],
+        ["5. TRAVERSAL / COMMIT：执行遍历并收尾", "TRAVERSAL 回调进入 performTraversals，按请求决定 relayout、measure、layout、draw；COMMIT 回调在遍历返回后运行。这里的 COMMIT 是 Choreographer 的应用回调阶段，不是 SurfaceFlinger 的事务 commit。"]
+      ],
+      "output": "输入处理、属性 setter 或监听器可能改布局、改内容或只改变换，为随后 TRAVERSAL 制造不同工作；COMMIT 排在遍历返回之后。",
+      "branch": "不是所有输入都等 INPUT（还有立即消费路径），不是所有动画都在 ANIMATION（旧 View 动画在绘制路径；部分可在 RT）。这里的 COMMIT 不是 SurfaceFlinger 的 commit，更不是 present fence。",
+      "impact": "同一个 UI Looper 上“同时动画”是同帧推进而非多个 Java 回调并行。昂贵点击/手势监听、插值器、求值器、更新监听、Insets 回调会挤占后续工作可用时间。",
+      "refs": [
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1199,
+          1213
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1229,
+          1239
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1244,
+          1253
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          11405,
+          11415
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          11426,
+          11442
+        ],
+        [
+          "base/core/java/android/animation/AnimationHandler.java",
+          376,
+          388
+        ],
+        [
+          "base/core/java/android/animation/AnimationHandler.java",
+          468,
+          476
+        ]
+      ]
+    },
+    {
+      "id": "a3",
+      "title": "遍历入口：合并脏请求，决定窗口需要做什么",
+      "actor": "应用进程 · ViewRootImpl / UI 线程",
+      "input": "之前或本帧前序阶段的 requestLayout / invalidate。前者向父链传递布局需求；后者标记绘制失效，未必要求重新测量。",
+      "action": "scheduleTraversals 用 mTraversalScheduled 折叠同一窗口的重复调度，插同步屏障，投 CALLBACK_TRAVERSAL。TraversalCallback.onVsync → doTraversal 清标记、移屏障、调用 performTraversals。首帧、可见性、尺寸或参数变化时还可能 relayoutWindow。",
+      "steps": [
+        ["1. 区分两类请求", "requestLayout 表示几何约束可能变了，需要向父链传播并准备测量/布局；invalidate 只表示某块绘制内容需要更新，几何稳定时不必重新 measure。"],
+        ["2. 合并同窗请求", "scheduleTraversals 用 mTraversalScheduled 把同一窗口在一帧内的多次请求合成一次，并插入同步屏障，让遍历回调优先于普通同步消息。"],
+        ["3. 回到 TraversalCallback", "Choreographer 到 TRAVERSAL 阶段后调用 doTraversal，移除屏障、清掉调度标记，再进入 performTraversals；窗口尺寸、可见性或 Insets 改变时可能先做 relayoutWindow。"],
+        ["4. 决定是否真的绘制", "performTraversals 会检查窗口、Surface、可见性、PreDraw 和同步状态。到达这个入口不等于本帧一定产生新 buffer，取消或延后时仍可能重新调度下一帧。"]
+      ],
+      "output": "进入同一次 traversal 内的条件流程：可在窗口协商前预测量，协商后的尺寸/Insets 又可能触发重测；随后按标志布局、PreDraw、绘制。",
+      "branch": "无宿主/暂停同步可退出；窗口不可见可不绘，PreDraw 否决或窗口同步取消时可重新调度。因此到达 TRAVERSAL 不能证明本窗口提交新 buffer。",
+      "impact": "同窗 N 个 View 的变更可合为一次调度，但子树里的测量与录制成本并没有被消除。首帧、旋转、窗口动画、IME/Insets、增删子树和改变可见性常改变实际进入的分支。",
+      "refs": [
+        [
+          "base/core/java/android/view/View.java",
+          28730,
+          28749
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          21477,
+          21490
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          2842,
+          2848
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          2856,
+          2868
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          3325,
+          3334
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          3347,
+          3352
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          11445,
+          11451
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          3935,
+          3951
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4201,
+          4209
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4238,
+          4244
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4863,
+          4889
+        ]
+      ]
+    },
+    {
+      "id": "a4",
+      "title": "Measure 定尺寸，Layout 定位置；并非每帧全树重做",
+      "actor": "应用进程 · UI 线程 / View 树",
+      "input": "根窗口期望大小、父布局传入的 MeasureSpec、LayoutParams、内容固有大小和布局标志。",
+      "action": "performTraversals 按条件 measureHierarchy → performMeasure → 根 View.measure。容器决定对子节点传什么约束、量几次；View 可重用尺寸或进 onMeasure。需要布局时 performLayout → 根 layout，由容器在 onLayout 给子节点定边界。",
+      "steps": [
+        ["1. 父节点传约束", "根 ViewRootImpl 根据窗口尺寸生成根 MeasureSpec；每个 ViewGroup 再结合自己的 LayoutParams、padding、剩余空间和子节点固有尺寸，给子节点传下一层 MeasureSpec。"],
+        ["2. Measure 计算尺寸", "View.measure 先检查是否需要重新测量，再进入 onMeasure。容器可能按顺序测量子项、处理 WRAP_CONTENT 或 weight，并在约束变化时重复测量。"],
+        ["3. Layout 计算边界", "根 layout 把 measuredWidth/Height 转成 left、top、right、bottom；ViewGroup 在 onLayout 为子节点决定实际矩形。这个阶段主要确定位置，不是把像素画出来。"],
+        ["4. 处理布局中的再请求", "自定义 onMeasure/onLayout 或子节点在布局过程中再次 requestLayout 时，ViewRootImpl 会记录请求者；首轮能处理则补做，第二轮仍产生的请求可能推迟到下一帧以避免无限循环。"]
+      ],
+      "output": "得到 measuredWidth/Height 和 left/top/right/bottom；后续录制可以使用实际边界。布局过程中又发起有效 requestLayout，可能在同次遍历追加一次 measure/layout。",
+      "branch": "几何稳定、只有绘制失效时常跳过布局。MeasureSpec、强制标记、缓存和兼容开关影响复用；缓存命中也可能在 layout 前补做 onMeasure。并非“有缓存就绝不量”。",
+      "impact": "树深影响父链与递归路径；同层宽度、真正参与节点数、父容器算法、重复测量、自定义测量、文本换行和图片固有尺寸决定这一帧工作。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4077,
+          4101
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4539,
+          4556
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4597,
+          4602
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4634,
+          4639
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          5472,
+          5484
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          28801,
+          28815
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          28821,
+          28850
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          26040,
+          26065
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          5552,
+          5569
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          5571,
+          5592
+        ]
+      ]
+    },
+    {
+      "id": "a5",
+      "title": "Draw 录制绘制命令，不是在 UI 线程画完屏幕像素",
+      "actor": "应用进程 · UI 线程 / HWUI 录制端",
+      "input": "可见且未被取消的窗口；根 View/RenderNode、脏标记和已有 DisplayList。",
+      "action": "performDraw → draw → ThreadedRenderer.draw → updateRootDisplayList。View.updateDisplayListIfDirty 在需要重录时 beginRecording，执行背景、onDraw、dispatchDraw 等，endRecording；容器记录对子 RenderNode 的引用。可复用时不必重调所有 onDraw。",
+      "steps": [
+        ["1. 进入绘制阶段", "performDraw 根据窗口是否可见、是否有 Surface 和是否需要报告下一次绘制，决定是否继续；硬件加速窗口进入 ThreadedRenderer.draw。"],
+        ["2. 选择要重录的节点", "updateRootDisplayList 和 updateDisplayListIfDirty 检查 RenderNode 的脏标记。未失效的子树可以复用已有 DisplayList，不代表完全不访问它，只是不必重新执行全部 onDraw。"],
+        ["3. 录制 View 命令", "需要重录时 beginRecording，执行背景、View.onDraw、ViewGroup.dispatchDraw 以及子 RenderNode 引用，最后 endRecording。此时得到的是绘制命令和节点属性，不是已经写入屏幕的像素。"],
+        ["4. 交给 RenderThread", "UI 线程完成 DisplayList 录制后调用 ThreadedRenderer.draw，把 FrameInfo、RenderNode 树和暂存属性交给 RT；普通 View 通常仍属于同一个窗口 buffer，而不是各自变成 SurfaceFlinger Layer。"]
+      ],
+      "output": "得到或复用 RenderNode 的显示列表与暂存属性，供 RT 同步。没有为普通的每个 View 分配一个 SurfaceFlinger Layer。",
+      "branch": "屏幕关且不需报告下一绘制时可跳过；未启用硬件渲染分支可走 drawSoftware，不能套用这条 HWUI 录制链。即便父列表复用，仍可能检查变脏的子节点；消失动画、overlay 等也有额外分支。 软件窗口分支改走 lockCanvas → mView.draw(canvas) → unlockCanvasAndPost，在 UI 线程画入 Surface 后发布；它绕过此处的 RT 显示列表回放，但仍要经窗口缓冲与下游送显。",
+      "impact": "自定义 onDraw、动态路径/文本/图像/背景/前景、失效扩散和可见孩子数影响重录。录制指令的 CPU 时间与随后 GPU 实际处理的像素、采样和混合量不是同一指标。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4889,
+          4906
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          5940,
+          5951
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6258,
+          6265
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6319,
+          6321
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6350,
+          6357
+        ],
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          721,
+          733
+        ],
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          769,
+          785
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          24313,
+          24339
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          24355,
+          24378
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          25510,
+          25532
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          4651,
+          4664
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          4672,
+          4689
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6370,
+          6381
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6422,
+          6450
+        ]
+      ]
+    }
+  ],
+  "factors": [
+    {
+      "name": "帧消息到达时 UI 在做什么",
+      "category": "调度与输入",
+      "stages": [
+        "a1",
+        "a2"
+      ],
+      "mechanism": "已有消息、当前长回调、主线程上的同步资源读取、工作线程持锁或 CPU 竞争，均可能让 doFrame 晚于 intended VSYNC。迟到先消耗可用时间，即使本帧 View 很少。",
+      "boundary": "事件时间、Looper 实际开始、GPU 或 SF 错过目标是不同的延迟，不能用一个 doFrame 总时长替代。",
+      "probe": "以同一帧对齐 VSYNC 时间线和 doFrame 起点；看前一段主线程是运行、可运行未获调度还是阻塞，再查执行栈/锁。",
+      "refs": [
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1594,
+          1607
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1626,
+          1641
+        ],
+        [
+          "base/core/java/android/view/Choreographer.java",
+          1114,
+          1134
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          484,
+          490
+        ]
+      ]
+    },
+    {
+      "name": "触摸目标搜索、手势监听和 Insets 动画",
+      "category": "调度与输入",
+      "stages": [
+        "a2",
+        "a3"
+      ],
+      "mechanism": "触摸寻找新目标时 ViewGroup 按顺序检查候选子 View 的可接收性和命中位置；手势监听可改属性或发起布局。Insets 动画 progress 可沿子树分发，各回调再执行应用逻辑。",
+      "boundary": "不是每个 MOVE 都扫描整棵树；已有 touch target、事件拦截、Insets 的 DISPATCH_MODE_STOP 都改变实际路径。",
+      "probe": "比较 input/animation 阶段；给业务手势与 Insets 回调单独打 trace，统计命中/访问节点及其中触发的 requestLayout。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          11405,
+          11415
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          2828,
+          2849
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          2863,
+          2883
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          7763,
+          7773
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          13157,
+          13164
+        ]
+      ]
+    },
+    {
+      "name": "同帧到底有多少个 View 在动",
+      "category": "动画",
+      "stages": [
+        "a2",
+        "a4",
+        "a5",
+        "r1"
+      ],
+      "mechanism": "数本帧活跃的目标、每目标的属性、到期回调和实际 setter。AnimationHandler 遍历到期项；AnimatorSet pulse 当前 playingSet；本版 ViewPropertyAnimator 可把一个 View 的多项属性合进一个 ValueAnimator，但更新时仍逐项写。N 个子 View 分别移动与移动一个共同父节点，对 UI setter/节点更新次数不同。",
+      "boundary": "同帧同时间戳不表示并行、N 次遍历或 N 个 SF Layer。一个动画回调也可改 N 个节点；只有共同变换语义相同，移动父节点才可作为对照，且并不保证 GPU 工作等比例减少。没有通用“最多 N 个 View”阈值。",
+      "probe": "固定设备、刷新率、可见像素与内容，逐档增加同时活跃目标；分别比较动画回调、measure/layout、录制、RT、GPU 与 missed deadline。再分别测共同父变换和独立子变换。",
+      "refs": [
+        [
+          "base/core/java/android/animation/AnimationHandler.java",
+          376,
+          388
+        ],
+        [
+          "base/core/java/android/animation/AnimatorSet.java",
+          1213,
+          1224
+        ],
+        [
+          "base/core/java/android/view/ViewPropertyAnimator.java",
+          858,
+          870
+        ],
+        [
+          "base/core/java/android/view/ViewPropertyAnimator.java",
+          1154,
+          1170
+        ]
+      ]
+    },
+    {
+      "name": "每个动画的求值、监听和实际 setter",
+      "category": "动画",
+      "stages": [
+        "a2",
+        "a3",
+        "a4",
+        "a5"
+      ],
+      "mechanism": "ValueAnimator 求插值并逐个计算 PropertyValuesHolder，再通知更新监听；ObjectAnimator 还逐项写目标。translationX 写 RenderNode 变换；修改 LayoutParams 后 setLayoutParams 会 requestLayout；改变绘制内容并 invalidate 则可能重录。",
+      "boundary": "动画时长本身不是每帧成本。相同动画数量，轻量的变换与回调内重建数据、重新绑定、改宽高可能沿完全不同的关键路径；alpha 是否走内容失效取决于子类是否自己处理。",
+      "probe": "将每帧业务 update 单独计时，记录 setter 类型；对照几何不变、只改内容、每帧改变宽高三组。",
+      "refs": [
+        [
+          "base/core/java/android/animation/ValueAnimator.java",
+          1620,
+          1629
+        ],
+        [
+          "base/core/java/android/animation/ObjectAnimator.java",
+          970,
+          978
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          20501,
+          20510
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          21134,
+          21144
+        ],
+        [
+          "base/core/java/android/view/ViewPropertyAnimator.java",
+          1177,
+          1186
+        ]
+      ]
+    },
+    {
+      "name": "属性动画、旧 View 动画、RT 动画不是一条路径",
+      "category": "动画",
+      "stages": [
+        "a2",
+        "a5",
+        "r1"
+      ],
+      "mechanism": "本版 ViewPropertyAnimator.startAnimation 直接启动 ValueAnimator，并非硬件加速即移至 RT。旧 View Animation 在 View.draw(child) 分支 applyLegacyAnimation，按 drawingTime 求 Transformation。AnimatedVectorDrawable 则显式构造 RT animator，并在硬件 RecordingCanvas 记录目标。",
+      "boundary": "AVD 在软件 Canvas 且 RT 动画未运行、有待执行动作时回退 UI。RT 动画减少对每一帧 Java 属性回调的依赖，但仍要渲染、交缓冲并满足呈现期限。",
+      "probe": "确认使用的具体 API、硬件 Canvas 和回退条件；并排查看 UI 与 RT，而非仅按动画的外观判断执行线程。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewPropertyAnimator.java",
+          853,
+          869
+        ],
+        [
+          "base/core/java/android/view/ViewPropertyAnimator.java",
+          887,
+          899
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          25185,
+          25195
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          25046,
+          25061
+        ],
+        [
+          "base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java",
+          333,
+          338
+        ],
+        [
+          "base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java",
+          395,
+          406
+        ],
+        [
+          "base/graphics/java/android/graphics/drawable/AnimatedVectorDrawable.java",
+          1773,
+          1778
+        ]
+      ]
+    },
+    {
+      "name": "树深、同层宽度、可见性和失效的覆盖范围",
+      "category": "树与布局",
+      "stages": [
+        "a2",
+        "a3",
+        "a4",
+        "a5"
+      ],
+      "mechanism": "深链增加 requestLayout 沿祖先传播的路径；宽容器增加检查的兄弟数。LinearLayout 测量可跳 GONE；ViewGroup 绘制会纳入 VISIBLE 或仍有旧动画的孩子。父列表未重录时仍可检查子 DisplayList。",
+      "boundary": "INVISIBLE 不等于 GONE（如 LinearLayout 只跳过 GONE）；有效缓存、稳定父约束、未失效分支、自定义容器算法会改变成本。树深或 XML 节点总数都不是每帧执行次数。",
+      "probe": "记录实际 attach、可见、measure、layout、重录的节点数，定位重复祖先链及宽容器；固定内容做扁平化/减少可见子项对照。",
+      "refs": [
+        [
+          "base/core/java/android/view/View.java",
+          28744,
+          28749
+        ],
+        [
+          "base/core/java/android/widget/LinearLayout.java",
+          833,
+          846
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          4443,
+          4463
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          4651,
+          4664
+        ],
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          4686,
+          4689
+        ]
+      ]
+    },
+    {
+      "name": "测量约束、权重、尺寸依赖与布局内再请求",
+      "category": "树与布局",
+      "stages": [
+        "a3",
+        "a4"
+      ],
+      "mechanism": "父传不同 MeasureSpec、WRAP_CONTENT 根窗口试探或 LinearLayout 权重分配，可能让某个孩子被不同约束测量。布局中仍有效的 requestLayout 还能触发第二轮全根 measure/layout。",
+      "boundary": "0 高+权重且父高 EXACTLY 时首次测量可跳过；并非每个 weighted child 总是被量两次。onMeasure 也受强制布局/缓存控制。",
+      "probe": "同一帧按实例统计 onMeasure 次数及先后 MeasureSpec，在 layout 中检索二次请求；不要把容器数直接换算成倍数。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          3636,
+          3655
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          3678,
+          3690
+        ],
+        [
+          "base/core/java/android/widget/LinearLayout.java",
+          851,
+          870
+        ],
+        [
+          "base/core/java/android/widget/LinearLayout.java",
+          989,
+          1008
+        ],
+        [
+          "base/core/java/android/widget/LinearLayout.java",
+          1025,
+          1032
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          28801,
+          28815
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          5556,
+          5582
+        ]
+      ]
+    },
+    {
+      "name": "子树增删、列表滚动和每帧绑定",
+      "category": "树与布局",
+      "stages": [
+        "a2",
+        "a3",
+        "a4",
+        "a5"
+      ],
+      "mechanism": "普通 ViewGroup.addView 会 requestLayout 并 invalidate。ListView 在需要新行时 obtainView，AbsListView 可取回收的 scrapView，但仍会调用 adapter.getView；业务绑定若改文本或图片，会继续影响后续阶段。",
+      "boundary": "数据集总行数不是同帧创建行数；回收也不等于没有绑定、测量和绘制。此处举的是 framework ListView，并不把具体算法套到 AndroidX RecyclerView。",
+      "probe": "区分新建、复用、重绑、入屏和退屏数；给 adapter.getView / inflate 与绑定逻辑打点，观察滑动/静止两类帧。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewGroup.java",
+          5239,
+          5254
+        ],
+        [
+          "base/core/java/android/widget/ListView.java",
+          2119,
+          2128
+        ],
+        [
+          "base/core/java/android/widget/AbsListView.java",
+          2527,
+          2559
+        ]
+      ]
+    },
+    {
+      "name": "文本长度、行宽与换行策略",
+      "category": "内容与录制",
+      "stages": [
+        "a3",
+        "a4",
+        "a5"
+      ],
+      "mechanism": "TextView 需要时重建文本 Layout；宽度、最大行数、换行策略、断词、字向和行距进入排版。动态内容或可用宽度频繁改变，可在 setter 或 measure 期间重排，而不只是 onDraw 画字。",
+      "boundary": "已有 Layout 且约束没变可不重建，有些增宽可复用；固定宽高可能只需更新文本 Layout 与重绘。字符数相同不表示同样排版工作。",
+      "probe": "固定文字变宽度、固定宽度变内容，比较 setText/measure 栈与重排次数；再区分首次排版和缓存稳定状态。",
+      "refs": [
+        [
+          "base/core/java/android/widget/TextView.java",
+          11243,
+          11256
+        ],
+        [
+          "base/core/java/android/widget/TextView.java",
+          11488,
+          11511
+        ],
+        [
+          "base/core/java/android/widget/TextView.java",
+          11770,
+          11791
+        ],
+        [
+          "base/core/java/android/widget/TextView.java",
+          11796,
+          11822
+        ]
+      ]
+    },
+    {
+      "name": "图片的数量要拆成加载、尺寸变化和实际绘制",
+      "category": "内容与录制",
+      "stages": [
+        "a1",
+        "a2",
+        "a4",
+        "a5",
+        "r2",
+        "r3"
+      ],
+      "mechanism": "若在 UI 同步 setImageResource，资源加载/解码可能抢占帧时间；固有宽高变化会 requestLayout 并 invalidate。ImageView 录制 Drawable 绘制，必要时裁剪并应用矩阵。多张首次绑定大图与多次画同一已加载静态图，成本不同。",
+      "boundary": "解码取决于资源类型、缓存和调用时机，不是每次 VSYNC/每个 ImageView 都解码；后台解码不等于 UI 绑定、首次 GPU 使用与覆盖像素都免费。",
+      "probe": "分开统计屏内图片数、不同资源数、更换数、源尺寸、目标像素和是否命中缓存；用冷/热资源与固定占位尺寸对照，区分 decode、录制与 GPU。",
+      "refs": [
+        [
+          "base/core/java/android/widget/ImageView.java",
+          484,
+          490
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          497,
+          513
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          968,
+          989
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          1129,
+          1160
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          1423,
+          1447
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          484,
+          512
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          536,
+          540
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          553,
+          567
+        ],
+        [
+          "base/core/java/android/widget/ImageView.java",
+          591,
+          605
+        ]
+      ]
+    },
+    {
+      "name": "脏节点、绘制命令与自定义 onDraw",
+      "category": "内容与录制",
+      "stages": [
+        "a3",
+        "a5",
+        "r1"
+      ],
+      "mechanism": "内容变动需重录的节点会进入 RecordingCanvas，执行自定义 onDraw、子绘制、叠加层等。每帧在 onDraw 构造复杂 Path、格式化文本或分配大量对象，会先拉长 UI 录制；记录的操作又可能提高后续 RT/GPU 成本。",
+      "boundary": "静态子节点可复用 DisplayList；单个“巨型 View”每帧重录很多内容也会慢。短录制不保证像素处理少；软件 layer 可先构建位图缓存而不是简单录同一批命令。",
+      "probe": "先看 Record View#draw()；给重绘热点 onDraw 打 trace、计数命令/分配，区分录制 CPU 与后段 GPU。",
+      "refs": [
+        [
+          "base/core/java/android/view/View.java",
+          24313,
+          24346
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          24355,
+          24378
+        ],
+        [
+          "base/core/java/android/view/View.java",
+          25510,
+          25532
+        ],
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          721,
+          733
+        ]
+      ]
+    },
+    {
+      "name": "窗口状态、PreDraw 与同步组",
+      "category": "窗口与同步",
+      "stages": [
+        "a3",
+        "a4",
+        "a5",
+        "r1"
+      ],
+      "mechanism": "首帧、窗口大小/可见性/属性变化可能触发 relayout；Insets 或新尺寸可能重测；OnPreDraw 可推迟绘制。重置 Surface、同步组要求、挂起状态都可能让本次 UI 工作没有对应的新缓冲。",
+      "boundary": "普通 View 内部属性动画不等于每一帧都与 WindowManager 重新布局。取消后重发的帧不要当作 GPU 已经接单又变慢。",
+      "probe": "区分首帧、旋转/IME 过渡与稳定帧；找 relayoutWindow、preDraw 取消/不可见原因及 SF 是否真正收到新 buffer。",
+      "refs": [
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4201,
+          4209
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4238,
+          4244
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4541,
+          4556
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4837,
+          4859
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          4863,
+          4889
+        ],
+        [
+          "base/core/java/android/view/ViewRootImpl.java",
+          6307,
+          6320
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,211 @@
+{
+  "id": "stage-03",
+  "num": 3,
+  "title": "commit：事务应用、快照与 latch",
+  "subtitle": "updateLayerSnapshots 先构建只读快照、再 latch buffer，最后 doCommitTransactions 翻状态",
+  "lane": "SF",
+  "durationHint": "量级：亚毫秒~数毫秒，随 layer 数与事务数增长；受 mStateLock 竞争影响（源码中未体现固定阈值）",
+  "summary": "Scheduler 调 ICompositor::commit 后进入 SurfaceFlinger::commit（SF 主线程，持 mStateLock）。它先往 FrameTimeline 记 setSfWakeUp，然后用 clearTransactionFlags(eTransactionFlushNeeded) 决定本拍要不要 flush，进入 updateLayerSnapshots：flushTransactions 把 binder 线程攒下的 QueuedTransactionState 按 apply token 取出、应用到 LayerLifecycleManager（把 buffer 的 externalTexture merge 进 RequestedLayerState），再在 mStateLock 下构造 LayerSnapshotBuilder::Args 并调用 LayerSnapshotBuilder::update 生成每个 layer 的只读 LayerSnapshot（组合阶段只通过 LayerCompositionState 指针读它）。快照建好之后才做 applyTransactionsLocked（把事务落到 legacy Layer/mCurrentState）、commitTransaction、按 RequestedLayerState 逐个 latchBufferImpl（真正检查 acquire fence 是否 signal、推进 frame timeline），并用 newDataLatched 强制 mustComposite。最后 commitTransactions → commitTransactionsLocked → doCommitTransactions 只做一件事：mDrawingState = mCurrentState。所以「快照是合成输入，latch 是副作用与同步检查」是理解这一阶段的关键。快照与 latch 的先后顺序是这一阶段最容易误读的地方：快照只读 frontend 状态，latch 才检查 acquire fence 并推进 frame timeline。",
+  "callchain": [
+    "SurfaceFlinger::commit()",
+    "SurfaceFlinger::updateLayerSnapshots()",
+    "TransactionHandler::flushTransactions()",
+    "LayerLifecycleManager::applyTransactions()",
+    "LayerSnapshotBuilder::update()",
+    "SurfaceFlinger::applyTransactionsLocked()",
+    "Layer::commitTransaction()",
+    "Layer::latchBufferImpl()",
+    "SurfaceFlinger::commitTransactions()",
+    "SurfaceFlinger::doCommitTransactions()"
+  ],
+  "sections": [
+    {
+      "heading": "入口：commit 里 updateLayerSnapshots 被调用的位置与前提",
+      "html": "<p><code>SurfaceFlinger::commit(pacesetterId, frameTargets)</code>（native/services/surfaceflinger/SurfaceFlinger.cpp:2996-3202）跑在 <strong>SF 主线程</strong>，是 Scheduler 两段式里的第一段。它做的前几件事都在为状态推进做准备：先 <code>mFrameTimeline-&gt;setSfWakeUp(vsyncId, frameBeginTime, vsyncPeriod 的 Fps, ...)</code> 记账（3130-3133），再 <code>const bool flushTransactions = clearTransactionFlags(eTransactionFlushNeeded)</code>（3135）——这是「本拍到底要不要把 binder 线程攒下的事务刷出来」的唯一判据，然后：</p><blockquote>mustComposite |= updateLayerSnapshots(vsyncId, frameBeginTime, expectedPresentTime, flushTransactions, transactionsAreEmpty);</blockquote><p>注意三个入参：<code>vsyncId</code>（写进 frame timeline 与 transaction tracing）、<code>frameBeginTime</code>（SF 开始干活的时刻）、<code>expectedPresentTime</code>（latch 判定的目标上屏时间）。<code>transactionsAreEmpty</code> 是出参，随后决定调 <code>sendCallbacks(false /*onCommitOnly*/)</code> 还是 <code>true</code>（3160-3166）——空事务的 commit 回调要尽早发，避免 client 白等一个 present。</p><p>函数开头的 <code>SFTRACE_NAME(ftl::Concat(__func__, ' ', ftl::to_underlying(vsyncId))</code>（3012）让 commit 的 slice 名带 vsyncId，这是把 SF 侧与 app 侧同一帧对齐的锚点。<code>updateLayerSnapshots</code> 自己又开了两层 trace：<code>\"Transaction Handling\"</code>（2776）与 <code>\"TransactionHandler:flushTransactions\"</code>（2779）。</p>"
+    },
+    {
+      "heading": "第一段 flushTransactions：从 lockless 队列到 frontend 状态",
+      "html": "<p><code>updateLayerSnapshots</code>（2771 起）只有在 <code>flushTransactions</code> 为真时才做事务处理，顺序被四条注释写得很清楚（2780-2788）：</p><ol><li><code>mTransactionHandler.collectTransactions()</code>：把 binder 线程 push 进 <code>mLocklessTransactionQueue</code> 的事务搬到按 apply token 划分的 <code>mPendingTransactionQueues</code>；</li><li>在 <code>mCreatedLayersLock</code> 下把 <code>mCreatedLayers / mNewLayers / mNewLayerArgs / mDestroyedHandles</code> 搬进 <code>frontend::Update</code>（2792-2801）——注释解释「事务与新建 layer 不共享锁，必须先把 created layers 收出来，否则会应用到还没建好的 layer」；</li><li><code>mLayerLifecycleManager.addLayers(...)</code>、<code>updateDisplayMirrors(...)</code>，然后才 <code>update.transactions = mTransactionHandler.flushTransactions()</code>（2804-2807）；</li><li><code>mLayerLifecycleManager.applyTransactions(update.transactions)</code>（2824）把每个 <code>ResolvedComposerState</code> merge 进 <code>RequestedLayerState</code>，最后 <code>mLayerHierarchyBuilder.update(mLayerLifecycleManager)</code>（2829）刷新层级。</li></ol><p>为什么 buffer 在这一步就「到位」了？因为 <code>RequestedLayerState::merge</code> 在 <code>eBufferChanged</code> 分支里直接 <code>externalTexture = resolvedComposerState.externalTexture</code>（native/services/surfaceflinger/FrontEnd/RequestedLayerState.cpp:216-217），而 <code>externalTexture</code> 是 SurfaceFlinger::setTransactionState 在 binder 线程就解析好的（SurfaceFlinger.cpp:5654-5658）。所以 frontend 状态在本帧快照构建之前就已经带着新 buffer。</p><p>顺带把 workload hint 与事务追踪也在这里记：<code>mPowerAdvisor-&gt;setCommittedWorkload(committedWorkload)</code>（2818）、<code>mTransactionTracing-&gt;addCommittedTransactions(...)</code>（2819-2823）、以及一条 instant <code>\"Layers: +N -M txns:K\"</code>（2812-2816）。</p>"
+    },
+    {
+      "heading": "第二段：构建 LayerSnapshot —— 组合阶段的唯一输入",
+      "html": "<p>事务进了 frontend 之后，<code>updateLayerSnapshots</code> 才去拿 <code>mStateLock</code>（2837），然后构造 <code>frontend::LayerSnapshotBuilder::Args</code>（2841-2862）：<code>root</code> 是 <code>mLayerHierarchyBuilder.getHierarchy()</code>，<code>layerLifecycleManager</code> 是本帧的 frontend 状态，<code>displays/displayChanges</code> 来自 display 事务，另外还有 <code>forceUpdate</code>（由 <code>frontend_caching_v0</code> 决定）、<code>forceFullDamage</code>、<code>supportsBlur</code>、<code>shiftRoundCornersWhenProtected</code> 等开关。然后：</p><ul><li>若启用了 frontend caching，先 <code>mMergeableHierarchyManager.update(...)</code> 与 <code>constructSnapshots(...)</code>（2864-2880）；</li><li>统一 <code>mLayerSnapshotBuilder.update(args)</code>（2881-2884，trace 名 <code>\"LayerSnapshotBuilder:update\"</code>）。</li></ul><p><code>LayerSnapshotBuilder::update</code>（FrontEnd/LayerSnapshotBuilder.cpp:565-574）先给所有 snapshot <code>clearChanges</code>，再走 <code>tryFastUpdate</code> 快路径，否则 <code>updateSnapshots(args)</code> 全量遍历层级；每个 snapshot 通过 <code>merge(*requested, forceUpdate, displayChanges, forceFullDamage, ...)</code> 刷新（405、415、590 三处调用）。</p><p><strong>只读性</strong>：<code>LayerSnapshot : public compositionengine::LayerFECompositionState</code>（LayerSnapshot.h:70），结构体上方的注释写得很直白——它存的是 CompositionEngine 与 RenderEngine 需要的 layer state，<em>Composition Engine uses a pointer to LayerSnapshot (as LayerFECompositionState*)</em>，RenderEngine 的 LayerSettings 也是从这些字段生成的。因此快照一旦建好，组合阶段就只读不写；所有写入都发生在 builder 的 merge 里。这也是 android17 前端缓存（frontend caching）能复用快照的前提。</p>"
+    },
+    {
+      "heading": "第三段：快照之后才 applyTransactionsLocked 与 doCommitTransactions",
+      "html": "<p>快照建好之后（2884），updateLayerSnapshots 继续做「把事务真正落到 legacy Layer 与 mCurrentState」的动作：</p><ol><li><code>mustComposite |= applyTransactionsLocked(update.transactions)</code>（2906）。<code>applyTransactionsLocked</code>（5501-5517）对每个事务调 <code>applyTransactionState</code>（5757 起），在 <code>mStateLock</code> 保护下把 client 状态写进 <code>mCurrentState</code> 与 <code>Layer</code>（例如 <code>Layer::setBuffer</code>，Layer.cpp:921-1000）。</li><li><code>traverseLegacyLayers([&amp;](Layer* layer) { layer-&gt;commitTransaction(); })</code>（2907）：让每个 legacy layer 提交自己的 pending 状态。</li><li><code>const nsecs_t latchTime = systemTime()</code>（2908）：本拍统一的 latch 时间戳，后面所有 latch 都用它，保证同一帧内的层看到同一个时间基准。</li><li>latch 循环（2911-2959，见下一节），<code>newDataLatched</code> 会参与 <code>mustComposite</code>（2988）。</li><li><code>mLayerLifecycleManager.commitChanges()</code>（2977-2980）：把 frontend 的 changes 位清零，准备下一拍。</li></ol><p>然后 <code>if (mustComposite) commitTransactions()</code>（2989-2991）。<code>commitTransactions</code>（4039-4050）非常短：<code>mScheduler-&gt;modulateVsync({}, &amp;VsyncModulator::onTransactionCommit)</code> 调整 vsync 相位，再 <code>commitTransactionsLocked(clearTransactionFlags(eTransactionMask))</code>——注释强调「清标志要在持 mStateLock 时做，保证提交完成前 mCurrentState 不变」。<code>commitTransactionsLocked</code>（4803-4834）只是把各种「有 layer 增删/子节点变化/input 信息需要更新」的旗标转成 <code>mVisibleRegionsDirty</code>/<code>mUpdateInputInfo</code>，最后调 <code>doCommitTransactions()</code>。</p><p><code>doCommitTransactions</code>（5236-5240）全部内容只有两行：<code>mDrawingState = mCurrentState;</code> 与 <code>mCurrentState.colorMatrixChanged = false;</code>。<strong>这行赋值是「状态翻转」的全部含义</strong>——mDrawingState 只是主线程自用的状态副本（SurfaceFlinger.h:1443-1445 注释：can only accessed from the main thread），真正的合成输入是前面建好的 LayerSnapshot，而不是 mDrawingState。</p>"
+    },
+    {
+      "heading": "latch：snapshot 之后才发生的同步检查",
+      "html": "<p>latch 循环（2911-2959）遍历的是 <code>mLayerLifecycleManager.getLayers()</code>（frontend 的 RequestedLayerState），再按 id 找 legacy Layer：</p><blockquote><code>2920: const bool willReleaseBufferOnLatch = layer-&gt;willReleaseBufferOnLatch();</code><br><code>2933: if (!layer-&gt;hasReadyFrame() &amp;&amp; !willReleaseBufferOnLatch) {</code><br><code>2934:&nbsp;&nbsp;&nbsp;&nbsp;if (!it-&gt;second-&gt;hasBuffer()) {</code><br><code>2940:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;it-&gt;second-&gt;updateFrameTimelinePastTimestamps({.latchTime = latchTime, .expectedPresentTime = expectedPresentTimeNs});</code><br><code>2945:&nbsp;&nbsp;&nbsp;&nbsp;continue;</code><br><code>2946: }</code><br><code>2953: it-&gt;second-&gt;latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);</code></blockquote><p>几点值得注意：</p><ul><li><strong>没有 ready frame 的 layer 不是什么都不做</strong>：它会 <code>updateFrameTimelinePastTimestamps</code> 记下 latchTime 与 expectedPresentTime，注释解释这是为了把「因为背压而没 latch 到 buffer」和「真的错过帧」区分开（2935-2939）。</li><li><strong>fence 在 latch 里才被检查</strong>：<code>Layer::latchBufferImpl</code>（Layer.cpp:1506 起）打一条 <code>SFTRACE_FORMAT_INSTANT(\"latchBuffer %s - %\" PRIu64, ...)</code>（1509-1510），然后如果 <code>mDrawingState.buffer &amp;&amp; !fenceHasSignaled()</code> 就 <code>SFTRACE_NAME(\"!fenceHasSignaled()\")</code>、<code>mFlinger-&gt;onLayerUpdate()</code> 并返回 false（1518-1524）——这就是「acquire fence 在 commit 阶段被检查、但不阻塞等待」的实现。</li><li><strong>latch 会强制合成</strong>：成功 latch 后 <code>newDataLatched = true</code>（2954），而 <code>mustComposite |= ... || newDataLatched</code>（2988）。</li><li>latch 之后还要读一次 snapshot 的 <code>gameMode</code> 放进 <code>mLayersWithQueuedFrames</code>（2956-2958），供 frame rate 决策使用。</li></ul><p>顺序上「先快照、后 latch」是刻意的：快照只需要 frontend 状态（buffer 的 externalTexture 在 2824 行就 merge 进去了），而 latch 涉及 legacy Layer、fence、frame timeline 记账这些带副作用的动作。把无副作用的读取放在前面，可以让快照在加锁窗口内尽早完成，缩短 <code>mStateLock</code> 的持有时间。</p>"
+    },
+    {
+      "heading": "时间规则：事务什么时候算 ready",
+      "html": "<p>不是所有到了的事务都会在这一拍被应用。<code>flushTransactions</code> 内部会给每个事务跑一遍 filter，SF 注册的关键一个是 <code>SurfaceFlinger::transactionReadyTimelineCheck</code>（5315-5354）：</p><ul><li>若 client 指定了 <code>desiredPresentTime</code>（<code>!isAutoTimestamp</code>）且它 <code>&gt;= expectedPresentTime</code> 但又在 1 秒内，就返回 <code>NotReady</code>——事务继续等，打一条 <code>\"not current desiredPresentTime\"</code> 的 instant；</li><li>若事务没有 vsyncId（<code>INVALID_VSYNC_ID</code>）且 <code>!isVsyncValid(expectedPresentTime, originUid)</code>，也 <code>NotReady</code>——这是 frame rate override 的节流；</li><li>若 <code>isAutoTimestamp</code> 且 <code>frameIsEarly(expectedPresentTime, vsyncId)</code>，同样 <code>NotReady</code>（<code>frameIsEarly</code> 实现在 5523-5541）。</li></ul><p>另一条规则是 <code>shouldLatchUnsignaled</code>（5543-5577）：只有在「本事务只改一个 layer」（<code>numStates == 1</code>）、不是 <code>AutoSingleLayer</code> 的后续事务、且不处于 early/client composition 时，才允许 latch 一个 acquire fence 还没 signal 的 buffer。注释解释了为什么 early/client composition 时要禁止：否则 RenderEngine 会等一个未 signal 的 buffer 而引入 jank。</p><p>这两条规则合起来解释了「事务已经 apply 了，为什么这一拍没 latch 到 buffer / 为什么没合成」：它可能在等 desiredPresentTime 或等一个合法的 vsync_id，也可能因为不是单 layer 事务而被拒绝 latch 未 signal 的 buffer。</p>"
+    },
+    {
+      "heading": "与 CompositionEngine / BLAST / HWC 的边界",
+      "html": "<p>本阶段的产出物只有两样：<strong>LayerSnapshot（只读输入）</strong>与<strong>翻转后的 mCurrentState/mDrawingState</strong>。边界很清楚：</p><table><thead><tr><th>对端</th><th>交接内容</th><th>说明</th></tr></thead><tbody><tr><td>CompositionEngine</td><td><code>LayerSnapshot*</code>（作为 <code>LayerFECompositionState*</code>）</td><td>LayerSnapshot.h:67-70 注释；组合阶段只读，不再回写 SF 状态</td></tr><tr><td>RenderEngine</td><td>由 snapshot 字段生成的 <code>renderengine::LayerSettings</code></td><td>同样来自 LayerSnapshot 的字段，不在本阶段生成</td></tr><tr><td>BLAST / client</td><td>latch 结果、frame timeline、transaction commit 回调</td><td>latch 与 frame event history 决定何时回调 client 的 transactionCallback（stage-01）</td></tr><tr><td>HWC</td><td>没有直接交互</td><td>commit 只写状态；validate/present 在 composite 阶段</td></tr></tbody></table><p>另一条容易忽略的边界是输入 sideband：<code>latchBufferImpl</code> 内部还会 <code>latchSidebandStream(recomputeVisibleRegions)</code>（Layer.cpp:1512），所以 sideband layer 的 latch 与 buffer layer 走同一个入口。</p>"
+    },
+    {
+      "heading": "排障：commit 慢或事务不生效怎么定位",
+      "html": "<p>按信号分四层：</p><ol><li><strong>事务有没有进来</strong>：对比 <code>TransactionQueue</code> 计数器与 <code>\"TransactionHandler:flushTransactions\"</code> 的 slice。队列有量但不 flush，说明 <code>clearTransactionFlags(eTransactionFlushNeeded)</code> 没拿到标志位（scheduler 没排这一拍）。</li><li><strong>事务为什么没被应用</strong>：看 <code>\"not current desiredPresentTime\"</code>、<code>\"!isVsyncValid\"</code>、<code>\"!frameIsEarly\"</code> 这几条 instant（SurfaceFlinger.cpp:5330-5353）。它们直接告诉你是 desiredPresentTime、frame rate 节流还是 vsyncId 预测导致的 NotReady。</li><li><strong>快照阶段</strong>：<code>\"LayerSnapshotBuilder:update\"</code> 的耗时是前端成本的大头；frontend caching 打开时还会有 <code>\"MergeableHierarchyManager::update\"</code> 与 <code>\"MergeableHierarchyManager::constructSnapshots\"</code>（2866、2871）。</li><li><strong>latch 阶段</strong>：<code>\"latchBuffer %s - %\" PRIu64</code> 的 instant（Layer.cpp:1509）能逐层看到 frameNumber；出现 <code>\"!fenceHasSignaled()\"</code> 说明该层的 acquire fence 还没好，本拍会被跳过。</li></ol><p>还有一个高频疑问「为什么 commit 里有一大段持锁」：<code>updateLayerSnapshots</code> 从 2837 行 <code>Mutex::Autolock lock(mStateLock)</code> 一直持到函数末尾，期间包含快照构建、applyTransactionsLocked、latch 与 commitChanges。binder 线程只写 lockless 队列不抢这把锁，但任何非主线程的读（例如 dumpsys、input 查询）都要排队，所以 trace 里 commit 越长，<code>mStateLock</code> 的争用越明显。</p><p>最后可以用 <code>dumpsys SurfaceFlinger --layers</code>（或 --proto）对照 <code>RequestedLayerState</code> 与 snapshot 的差异：如果 frontend 已经有 buffer 但合成输入里没有，问题在快照构建；如果两者都有但屏幕没变，问题在 composite/HWC 而不在本阶段。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "SurfaceFlinger::updateLayerSnapshots",
+      "lines": "2771-2800",
+      "code": "bool SurfaceFlinger::updateLayerSnapshots(VsyncId vsyncId, nsecs_t frameTimeNs,\n                                          nsecs_t expectedPresentTimeNs, bool flushTransactions,\n                                          bool& outTransactionsAreEmpty) EXCLUDES(mStateLock) {\n    using Changes = frontend::RequestedLayerState::Changes;\n    SFTRACE_CALL();\n    SFTRACE_NAME_FOR_TRACK(WorkloadTracer::TRACK_NAME, \"Transaction Handling\");\n    frontend::Update update;\n    if (flushTransactions) {\n        SFTRACE_NAME(\"TransactionHandler:flushTransactions\");\n        // Locking:\n        // 1. to prevent onHandleDestroyed from being called while the state lock is held,\n        // we must keep a copy of the transactions (specifically the composer\n        // states) around outside the scope of the lock.\n        // 2. Transactions and created layers do not share a lock. To prevent applying\n        // transactions with layers still in the createdLayer queue, collect the transactions\n        // before committing the created layers.\n        // 3. Transactions can only be flushed after adding layers, since the layer can be a newly\n        // created one\n        mTransactionHandler.collectTransactions();\n        {\n            // TODO(b/238781169) lockless queue this and keep order.\n            std::scoped_lock<std::mutex> lock(mCreatedLayersLock);\n            update.legacyLayers = std::move(mCreatedLayers);\n            mCreatedLayers.clear();\n            update.newLayers = std::move(mNewLayers);\n            mNewLayers.clear();\n            update.layerCreationArgs = std::move(mNewLayerArgs);\n            mNewLayerArgs.clear();\n            update.destroyedHandles = std::move(mDestroyedHandles);\n            mDestroyedHandles.clear();",
+      "note": "updateLayerSnapshots 的入口：flushTransactions 为真时先 collectTransactions，再在 mCreatedLayersLock 下把新建/销毁的 layer 搬进 frontend::Update（注释解释事务与新建 layer 不共享锁），最后 addLayers + updateDisplayMirrors，为 flushTransactions 准备好 frontend 状态。"
+    },
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "mLayerSnapshotBuilder.update",
+      "lines": "2881-2920",
+      "code": "    {\n        SFTRACE_NAME(\"LayerSnapshotBuilder:update\");\n        mLayerSnapshotBuilder.update(args);\n    }\n\n    if (mLayerLifecycleManager.getGlobalChanges().any(Changes::Geometry | Changes::Input |\n                                                      Changes::Hierarchy | Changes::Visibility)) {\n        mUpdateInputInfo = true;\n    }\n    if (mLayerLifecycleManager.getGlobalChanges().any(Changes::VisibleRegion | Changes::Hierarchy |\n                                                      Changes::Visibility | Changes::Geometry) ||\n        FlagManager::getInstance().frontend_caching_v0()) {\n        mVisibleRegionsDirty = true;\n    }\n    if (mLayerLifecycleManager.getGlobalChanges().any(Changes::Hierarchy | Changes::FrameRate)) {\n        // The frame rate of attached choreographers can only change as a result of a\n        // FrameRate change (including when Hierarchy changes).\n        mUpdateAttachedChoreographer = true;\n    }\n    outTransactionsAreEmpty = mLayerLifecycleManager.getGlobalChanges().get() == 0;\n    mustComposite |= mLayerLifecycleManager.getGlobalChanges().any(\n            frontend::RequestedLayerState::kMustComposite);\n\n    bool newDataLatched = false;\n    SFTRACE_NAME(\"DisplayCallbackAndStatsUpdates\");\n    mustComposite |= applyTransactionsLocked(update.transactions);\n    traverseLegacyLayers([&](Layer* layer) { layer->commitTransaction(); });\n    const nsecs_t latchTime = systemTime();\n    bool unused = false;\n\n    for (auto& layer : mLayerLifecycleManager.getLayers()) {\n        if (layer->changes.test(frontend::RequestedLayerState::Changes::Created) &&\n            layer->bgColorLayer) {\n            sp<Layer> bgColorLayer = getFactory().createLayer(\n                    LayerCreationArgs(this, nullptr, layer->name,\n                                      ISurfaceComposerClient::eFXSurfaceEffect, LayerMetadata(),\n                                      std::make_optional(layer->id), true));\n            mLegacyLayers[bgColorLayer->sequence] = bgColorLayer;\n        }\n        const bool willReleaseBufferOnLatch = layer->willReleaseBufferOnLatch();",
+      "note": "快照构建 + 状态应用的衔接段：mLayerSnapshotBuilder.update(args) 生成只读快照，随后 applyTransactionsLocked 把事务落到 legacy Layer、traverseLegacyLayers 调 commitTransaction，最后取统一的 latchTime 并进入 latch 循环（willReleaseBufferOnLatch 是循环内的第一个判断）。"
+    },
+    {
+      "file": "native/services/surfaceflinger/SurfaceFlinger.cpp",
+      "symbol": "latchBufferImpl",
+      "lines": "2922-2959",
+      "code": "        auto it = mLegacyLayers.find(layer->id);\n        if (it == mLegacyLayers.end() &&\n            layer->changes.test(frontend::RequestedLayerState::Changes::Destroyed)) {\n            // Layer handle was created and immediately destroyed. It was destroyed before it\n            // was added to the map.\n            continue;\n        }\n\n        LLOG_ALWAYS_FATAL_WITH_TRACE_IF(it == mLegacyLayers.end(),\n                                        \"Couldnt find layer object for %s\",\n                                        layer->getDebugString().c_str());\n        if (!layer->hasReadyFrame() && !willReleaseBufferOnLatch) {\n            if (!it->second->hasBuffer()) {\n                // The last latch time is used to classify a missed frame as buffer stuffing\n                // instead of a missed frame. This is used to identify scenarios where we\n                // could not latch a buffer or apply a transaction due to backpressure.\n                // We only update the latch time for bufferless layers here, the latch time\n                // is updated for buffer layers when the buffer is latched.\n                it->second->updateFrameTimelinePastTimestamps({\n                        .latchTime = latchTime,\n                        .expectedPresentTime = expectedPresentTimeNs,\n                });\n            }\n            continue;\n        }\n\n        const bool bgColorOnly =\n                !layer->externalTexture && (layer->bgColorLayerId != UNASSIGNED_LAYER_ID);\n        if (willReleaseBufferOnLatch) {\n            mLayersWithBuffersRemoved.emplace(it->second);\n        }\n        it->second->latchBufferImpl(unused, latchTime, expectedPresentTimeNs, bgColorOnly);\n        newDataLatched = true;\n\n        frontend::LayerSnapshot* snapshot = mLayerSnapshotBuilder.getSnapshot(it->second->sequence);\n        gui::GameMode gameMode = (snapshot) ? snapshot->gameMode : gui::GameMode::Unsupported;\n        mLayersWithQueuedFrames.emplace(it->second, gameMode);\n    }",
+      "note": "latch 循环主体：没有 ready frame 且没有 buffer 的 layer 只更新 frame timeline 的 past timestamps 就 continue（用于区分 buffer stuffing 与真丢帧）；有 frame 的走 latchBufferImpl，成功后 newDataLatched=true 强制 mustComposite，并从快照里取 gameMode 记入 mLayersWithQueuedFrames。"
+    },
+    {
+      "file": "native/services/surfaceflinger/FrontEnd/LayerSnapshot.h",
+      "symbol": "LayerSnapshot",
+      "lines": "67-110",
+      "code": "// LayerSnapshot stores Layer state used by CompositionEngine and RenderEngine. Composition\n// Engine uses a pointer to LayerSnapshot (as LayerFECompositionState*) and the LayerSettings\n// passed to Render Engine are created using properties stored on this struct.\nstruct LayerSnapshot : public compositionengine::LayerFECompositionState {\n    LayerSnapshot() = default;\n    LayerSnapshot(const RequestedLayerState&, const LayerHierarchy::TraversalPath&);\n\n    LayerHierarchy::TraversalPath path;\n    size_t globalZ = std::numeric_limits<ssize_t>::max();\n    bool invalidTransform = false;\n    bool isHiddenByPolicyFromParent = false;\n    bool isHiddenByPolicyFromRelativeParent = false;\n    ftl::Flags<RequestedLayerState::Changes> changes;\n    layer_state_t::LayerChangedSet clientChanges;\n    // Some consumers of this snapshot (input, layer traces) rely on each snapshot to be unique.\n    // For mirrored layers, snapshots will have the same sequence so this unique id provides\n    // an alternative identifier when needed.\n    uint32_t uniqueSequence;\n    // Layer id used to create this snapshot. Multiple snapshots will have the same sequence if they\n    // generated from the same layer, for example when mirroring.\n    int32_t sequence;\n    std::string name;\n    std::string debugName;\n    bool contentOpaque;\n    bool layerOpaqueFlagSet;\n    RoundedCornerState roundedCorner;\n    // roundedCorner of the parent but in local space.\n    RoundedCornerState parentRoundedCorner;\n    // geomLayerCrop of the parent but in local space.\n    FloatRect parentGeomLayerCrop;\n\n    FloatRect transformedBounds;\n    Rect transformedBoundsWithoutTransparentRegion;\n    bool premultipliedAlpha;\n    ui::Transform parentTransform;\n    Rect bufferSize;\n    FloatRect croppedBufferSize;\n    std::shared_ptr<renderengine::ExternalTexture> externalTexture;\n    gui::LayerMetadata layerMetadata;\n    gui::LayerMetadata relativeLayerMetadata;\n    bool hasReadyFrame; // used in post composition to check if there is another frame ready\n    bool autoRefresh;\n    ui::Transform localTransformInverse;\n    gui::WindowInfo inputInfo;",
+      "note": "LayerSnapshot 继承 compositionengine::LayerFECompositionState，注释说明它就是 CompositionEngine 与 RenderEngine 的输入；字段覆盖层级路径、globalZ、changes 位、uniqueSequence、圆角、transform、bufferSize、externalTexture 等。组合阶段只读它，写入只发生在 LayerSnapshotBuilder 的 merge 里。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "flushTransactions",
+      "type": "bool（commit 内局部）",
+      "desc": "commit 用 <code>clearTransactionFlags(eTransactionFlushNeeded)</code> 取得（SurfaceFlinger.cpp:3135），传给 updateLayerSnapshots 决定本拍要不要把 binder 线程攒的事务刷出来。为 false 时整段 flushTransactions 逻辑被跳过，只做快照与 latch。"
+    },
+    {
+      "name": "frontend::Update",
+      "type": "struct（legacyLayers / newLayers / layerCreationArgs / destroyedHandles / transactions）",
+      "desc": "一次 flush 的搬运容器（updateLayerSnapshots 内构造，2793-2801 填充）。把「新建/销毁的 layer」「待应用事务」分开装，是因为它们不共享锁，顺序错了就会应用到还没建好的 layer。"
+    },
+    {
+      "name": "RequestedLayerState / LayerLifecycleManager",
+      "type": "frontend 状态容器",
+      "desc": "SF 的「客户端请求状态」树。applyTransactions 时每个 ResolvedComposerState 通过 RequestedLayerState::merge 合入（FrontEnd/RequestedLayerState.cpp:157 起），buffer 在 216-217 行以 <code>externalTexture = resolvedComposerState.externalTexture</code> 落地。它也是 LayerSnapshotBuilder 的唯一输入源。"
+    },
+    {
+      "name": "LayerSnapshotBuilder::Args",
+      "type": "struct（root / layerLifecycleManager / forceUpdate / includeMetadata / displays / displayChanges / globalShadowSettings / supportsBlur / forceFullDamage / skipRoundCornersWhenProtected / mergeableHierarchyManager / renderResourceCache / shaderRegistry）",
+      "desc": "快照构建的全部输入（SurfaceFlinger.cpp:2841-2862）。forceUpdate 由 frontend_caching_v0 决定是否 ALL；mergeableHierarchyManager 非空时才走 frontend caching 的合并路径；skipRoundCornersWhenProtected 取决于 RenderEngine 是否支持受保护内容。"
+    },
+    {
+      "name": "LayerSnapshot",
+      "type": "struct : compositionengine::LayerFECompositionState",
+      "desc": "组合阶段的只读输入（FrontEnd/LayerSnapshot.h:70）。关键字段：<code>path</code>（层级遍历路径）、<code>globalZ</code>、<code>changes</code>（RequestedLayerState::Changes 位）、<code>uniqueSequence</code>（镜像层唯一 id）、<code>externalTexture</code>（本帧 buffer）、<code>transformedBounds</code>/<code>transformedBoundsWithoutTransparentRegion</code>（脏区计算）、<code>gameMode</code>/<code>frameRate</code>（frame rate 决策）、<code>hasReadyFrame</code>（combine 后判断是否还有待出帧）。"
+    },
+    {
+      "name": "mLayerSnapshotBuilder.mSnapshots",
+      "type": "std::vector<std::unique_ptr<LayerSnapshot>>",
+      "desc": "快照池，按 TraversalPath 复用（LayerSnapshotBuilder.cpp:535-562 做增删，646 行新建）。构建时只在该容器里通过 merge 改写，构建完成后组合阶段只读——这是「snapshot 只读性」的实现载体。"
+    },
+    {
+      "name": "mDrawingState / mCurrentState",
+      "type": "State（SurfaceFlinger.h:1418、1445）",
+      "desc": "mCurrentState 受 mStateLock 保护，是「已提交的最新状态」；mDrawingState 只允许主线程访问。doCommitTransactions 的唯一动作就是 <code>mDrawingState = mCurrentState</code>（5236-5240），所以在 android17 里它更像兼容层，合成真正读的是 LayerSnapshot。"
+    },
+    {
+      "name": "latchTime",
+      "type": "nsecs_t（updateLayerSnapshots 内局部）",
+      "desc": "在 applyTransactionsLocked 与 commitTransaction 之后取一次 <code>systemTime()</code>（2908），本拍所有 layer 的 latch 都用同一个时间戳。它会被写进 frame timeline 的 latch time，也是判断「这一帧是按时 latch 还是迟到」的基准。"
+    },
+    {
+      "name": "newDataLatched",
+      "type": "bool",
+      "desc": "任一 layer 成功 latch 到新 buffer 就置 true（2953-2954），并按位或进 mustComposite（2988）。也就是说「latch 到新内容」永远是强制合成的充分条件，即使没有任何事务标志位。"
+    },
+    {
+      "name": "mLayerLifecycleManager.getGlobalChanges()",
+      "type": "ftl::Flags<RequestedLayerState::Changes>",
+      "desc": "frontend 全局变更位。updateLayerSnapshots 用它决定 mUpdateInputInfo（Geometry/Input/Hierarchy/Visibility）、mVisibleRegionsDirty（VisibleRegion/Hierarchy/Visibility/Geometry）、mUpdateAttachedChoreographer（Hierarchy/FrameRate），以及 <code>outTransactionsAreEmpty</code>（2886-2902）。"
+    },
+    {
+      "name": "mustComposite",
+      "type": "bool（commit 内局部，进位返回）",
+      "desc": "由 <code>mMustComposite.exchange(false)</code>、<code>updateLayerSnapshots</code> 的返回值（含 kMustComposite 变更位与 newDataLatched）、以及 getTransactionFlags() 里除 eTransactionFlushNeeded 外的位共同决定（2988、3119、3137-3140），最终决定 Scheduler 要不要调 composite。"
+    },
+    {
+      "name": "transactionReadyTimelineCheck",
+      "type": "TransactionHandler::TransactionReadiness（SurfaceFlinger.cpp:5315-5354）",
+      "desc": "事务就绪判定：desiredPresentTime 未到（1 秒内）、无 vsyncId 且 !isVsyncValid、或 frameIsEarly 时返回 NotReady，事务留到后续帧再应用。它是「apply 了但这一拍没 latch」的最常见原因。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "commit \"<vsyncId>\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:3012）",
+      "desc": "整个 commit 的顶层 slice，名字里带 vsyncId。与 Scheduler 的 onFrameSignal、app 侧 doFrame 按 vsyncId 对齐，能定位延迟发生在输入、commit 还是 composite。"
+    },
+    {
+      "name": "\"Transaction Handling\" / \"TransactionHandler:flushTransactions\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:2776、2779）",
+      "desc": "flushTransactions 分支的两级区间：前者是 updateLayerSnapshots 内的整体事务处理，后者只包 collect+flush+applyTransactions，用来看 frontend 应用事务的成本。"
+    },
+    {
+      "name": "\"LayerSnapshotBuilder:update\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:2882）",
+      "desc": "快照构建区间。layer 数多时它是 commit 里最长的无副作用段落；若它突增，先怀疑大量 layer 变更（而不是合成本身慢）。"
+    },
+    {
+      "name": "\"MergeableHierarchyManager::update\" / \"MergeableHierarchyManager::constructSnapshots\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:2866、2871）",
+      "desc": "frontend caching_v0 打开时才会出现的两段。出现它们说明本帧走了合并层级路径，快照构建成本与缓存命中率直接相关。"
+    },
+    {
+      "name": "\"latchBuffer %s - %\" PRIu64",
+      "value": "SFTRACE_FORMAT_INSTANT（Layer.cpp:1509-1510）",
+      "desc": "每层每次 latch 的 instant，带 layer debugName 与 frameNumber；配合 \"!fenceHasSignaled()\" 的 slice 就能区分「没 frame」与「fence 没好」。"
+    },
+    {
+      "name": "\"Layers: +N -M txns:K\"",
+      "value": "SFTRACE_INSTANT_FOR_TRACK（SurfaceFlinger.cpp:2812-2816）",
+      "desc": "本拍新增/销毁 layer 数与事务数。txns 突增时 commit 变慢通常是 applyTransactions 的锅，而不是合成。"
+    },
+    {
+      "name": "\"DisplayCallbackAndStatsUpdates\" / \"LayerLifecycleManager:commitChanges\"",
+      "value": "SFTRACE_NAME（SurfaceFlinger.cpp:2905、2978）",
+      "desc": "latch 之后的两段收尾：前者包含 applyTransactionsLocked 与 commitTransaction，后者清 frontend changes 位。它们变慢往往意味着大量 layer 状态翻转。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --layers / --proto",
+      "value": "命令输出",
+      "desc": "对比 RequestedLayerState（frontend 请求）与 LayerSnapshot（合成输入）的字段，可以直接回答「事务有没有进 frontend」「快照有没有更新」「合成到底看到了什么」。"
+    }
+  ],
+  "pitfalls": [
+    "误以为 latch 在快照之前：updateLayerSnapshots 里 mLayerSnapshotBuilder.update 在 2883 行，latchBufferImpl 在 2953 行。快照用的是 frontend 已经在 applyTransactions（2824）阶段吸收的 externalTexture，所以「先快照后 latch」不会导致 buffer 晚一帧。",
+    "误以为 doCommitTransactions 会做很多事：它只有 <code>mDrawingState = mCurrentState</code> 一行赋值（5236-5240）。合成读取的是 LayerSnapshot，不是 mDrawingState；排查「状态没生效」时先看快照而不是这两个 State。",
+    "误以为 latch 会阻塞等 acquire fence：latchBufferImpl 里 <code>!fenceHasSignaled()</code> 只是记一条 trace、调 onLayerUpdate() 然后 return false（Layer.cpp:1518-1524），真正的等待不发生在 commit。",
+    "误以为所有到达的事务都会在本拍应用：transactionReadyTimelineCheck 会因 desiredPresentTime、isVsyncValid、frameIsEarly 返回 NotReady，事务被留到后续帧（5315-5354）。trace 里对应的 instant 就是答案。",
+    "误以为 frontend 的 changes 会一直累积：mLayerLifecycleManager.commitChanges()（2977-2980）在每拍末尾清位，所以「change 位为空」不代表没变过，只代表本拍已经处理完。",
+    "误以为 newDataLatched 只影响统计：它直接进 mustComposite（2988），是「有 latch 就必须合成」的硬约束；忽略它会把「没有事务但 latch 到新 buffer」的帧误判成空转。",
+    "误以为 mStateLock 只保护 mCurrentState：updateLayerSnapshots 从 2837 行起持锁直到函数末尾，快照构建、applyTransactionsLocked、latch、commitChanges 全在锁内。非主线程的读（dumpsys、input 查询）都会被这段时间阻塞。",
+    "误以为 applyTransactions 之后 legacy Layer 就是最新状态：legacy 那边还要 traverseLegacyLayers 调 <code>Layer::commitTransaction()</code>（2907）才把 pending 状态提交；而 frontend 状态在 2824 行就已经生效，两者不是同一份数据。",
+    "误以为 frontend caching 不影响语义：它只改变快照的构建路径（mMergeableHierarchyManager 非空时走合并），但 <code>forceUpdate=ALL</code> 与 <code>mergeableHierarchyManager=nullptr</code> 的组合会决定是否走 tryFastUpdate 快路径（LayerSnapshotBuilder.cpp:570），不同开关下同一个 bug 可能表现不同。"
+  ],
+  "traceTags": [
+    "Transaction Handling",
+    "TransactionHandler:flushTransactions",
+    "LayerSnapshotBuilder:update",
+    "Layers: +N -M txns:K",
+    "latchBuffer",
+    "!fenceHasSignaled()",
+    "LayerLifecycleManager:commitChanges",
+    "MergeableHierarchyManager:update"
+  ],
+  "next": "stage-04"
+}

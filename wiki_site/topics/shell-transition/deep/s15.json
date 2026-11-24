@@ -1,0 +1,94 @@
+{
+  "step": "s15",
+  "title": "生成「还原事务」finishT",
+  "tldr": "把动画期间被动过的 leash 全部写回原位：reparent 回原父、layer/alpha/crop 复位，最后摘掉根 leash。",
+  "why": "没有它，动画结束后一切不会自己复原：Shell 在动画里把 leash 挂到了临时动画父节点（Transition Root / ActivityWrap），那个父节点随后被 release，窗口跟着消失或者僵在动画最后一帧；layer 不复位则 z 序乱，回到桌面时 Activity 可能盖在状态栏上；alpha/crop/position 不复位则窗口半透明或被裁掉一块。输入也会坏：input window 的 bounds 来自窗口层次，画面复位了、input 还按动画时的位置分发，用户点击会错位几百毫秒。",
+  "concepts": [
+    {
+      "term": "origParent",
+      "text": "容器在窗口树里「本来」的父 surface；DisplayContent 特殊，取它自己的 surface 而非屏幕级 surface。"
+    },
+    {
+      "term": "resetSurfaceTransform",
+      "text": "按窗口层次重算 position/crop/matrix，undo 动画留在 leash 上的 transform。"
+    },
+    {
+      "term": "assignLayersForFinishTransaction",
+      "text": "把参与 display 的子层按结束状态重新排序；动画期间 WMS 一直没做 layer 分配。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "buildFinishTransaction(mFinishTransaction, info, participantDisplays);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2249",
+      "what": "在调 player 之前造好 finishT，跟 info 一起 parcel 给 Shell，由 Shell apply。"
+    },
+    {
+      "call": "final SurfaceControl targetLeash = getLeashSurface(target, null /* t */);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1318",
+      "what": "传 null 表示只取已有 leash、绝不新建，保证和 startT 里是同一个 surface。"
+    },
+    {
+      "call": "final SurfaceControl origParent = getOrigParentSurface(target);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1319",
+      "what": "原来的父：普通容器取 getParent().getSurfaceControl()，DisplayContent 取自己。"
+    },
+    {
+      "call": "t.reparent(targetLeash, origParent);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1321",
+      "what": "核心动作：把 leash 挂回原父，动画层的临时父节点从此跟这棵子树无关。"
+    },
+    {
+      "call": "t.setLayer(targetLeash, target.getLastLayer());",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1322",
+      "what": "还回原本的 z 序；动画期间层号由 Shell 的动画层分配。"
+    },
+    {
+      "call": "resetSurfaceTransform(t, target, targetLeash);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1331",
+      "what": "position/crop/matrix 按窗口层次重写；config-at-end 的 Activity 跳过。"
+    },
+    {
+      "call": "assignLayersForFinishTransaction(participantDisplays[i], t);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1341",
+      "what": "整棵 display 的子层按结束状态重新 assign，动画期间攒下的层序差异在这里一次补齐。"
+    },
+    {
+      "call": "t.reparent(info.getRoot(i).getLeash(), null);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1345",
+      "what": "根 leash 摘到 null；必须放在所有 target 都挂回去之后，否则会把子层一起带走。"
+    }
+  ],
+  "state": [
+    {
+      "field": "每个 target 的 leash 父节点",
+      "before": "动画父节点（Transition Root / ActivityWrap 等）",
+      "after": "origParent（窗口树里的原父 surface）",
+      "note": "先 reparent 全部子层，最后才摘根 leash"
+    },
+    {
+      "field": "leash 的 layer / alpha / cornerRadius / shadowRadius",
+      "before": "Shell 动画写入的中间值",
+      "after": "target.getLastLayer() / 1 / 0 / 0",
+      "note": "同一段里 crop 与 matrix 由 resetSurfaceTransform 重算"
+    },
+    {
+      "field": "Transition.mFinishTransaction",
+      "before": "刚 new 出来的空事务",
+      "after": "N 个 target 的还原指令 + 冻结层清理 + 根 leash 摘除",
+      "note": "Shell 在 finishTransition 之前 apply"
+    }
+  ],
+  "threads": "在 onTransactionReady 内部同步执行，持 mGlobalLock；这里只往事务里写指令、不 apply，所以并不会立刻动到 SF。",
+  "pitfalls": [
+    "finishT 是「WMS 造、Shell apply」的事务：正确顺序是 apply(finishT) → finishTransition(token)。反了的话 cleanup 会先把根 leash 从窗口层摘掉，而 target 还挂在它下面，窗口会从屏幕上消失一段时间。",
+    "config-at-end 的 Activity（FLAG_CHANGE_CONFIG_AT_END）故意跳过 transform 复位，结束 transform 要等客户端应用配置后再算；看到「只有位置没复位」先查这个 flag。",
+    "根 leash 的 reparent 是函数最后一步，不是第一步：提前摘根会把还没挂回去的子层一起带走，表现为整屏窗口消失。"
+  ],
+  "debug": [
+    "adb shell dumpsys SurfaceFlinger --list | grep 'Transition Root'，转场结束后应当搜不到",
+    "winscope 对比动画最后一帧与 finish 后一帧，看 leash 的父层是否已从动画层变回窗口层次",
+    "ProtoLog WM_DEBUG_WINDOW_TRANSITIONS 搜 finish 路径，确认 finishT 在 finishTransition 之前被 apply"
+  ],
+  "next": "三件套齐了，交给 Shell 去播 → 第 22 步「onTransitionReady 交给 Shell」。"
+}

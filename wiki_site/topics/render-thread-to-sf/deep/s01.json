@@ -1,0 +1,44 @@
+{
+  "step": "s01",
+  "title": "录制 display list（UI 线程）",
+  "tldr": "UI 线程重录脏 View 的 RenderNode，draw op 只进 staging 槽——给 RT 的产物。",
+  "why": "这一步不跑或漏跑，RT 手里就还是上一帧的 display list，甚至根本没有：syncFrameState 之后拿到的是一棵过期或空的树，表现为界面停在旧内容、动画不动；没有任何脏内容时 RT 会判 NothingToDraw，SurfaceFlinger 连 buffer 都收不到。反过来，如果每帧无条件重录整棵树，CPU 全花在录制上而脏 View 本可以省掉，掉帧时你会往 GPU 方向查，其实瓶颈在 UI 线程的录制。",
+  "concepts": [
+    { "term": "staging display list", "text": "UI 录制落地的槽位 mStagingDisplayList；RT 同步时才 move 成 mDisplayList。" },
+    { "term": "RenderNode", "text": "回放单元，一 View 一个（View.mRenderNode）；窗口根节点是 mRootNode。" },
+    { "term": "RecordingCanvas", "text": "录制期拿到的 Canvas，draw 调用只是往 DisplayList 里追加 op，不碰 GPU。" },
+    { "term": "DrawCallbacks", "text": "ViewRootImpl 的钩子：onPreDraw/onPostDraw 在根 display list 首尾插绘制。" }
+  ],
+  "walk": [
+    { "call": "void draw(View view, AttachInfo attachInfo, DrawCallbacks callbacks)", "ref": "base/core/java/android/view/ThreadedRenderer.java:827", "what": "UI 侧唯一入口：先录、再交棒。markDrawStart 在 828 先打点。" },
+    { "call": "updateRootDisplayList(view, callbacks);", "ref": "base/core/java/android/view/ThreadedRenderer.java:830", "what": "本帧第一件事，trace 名 Record View#draw()（731）。" },
+    { "call": "updateViewTreeDisplayList(view);", "ref": "base/core/java/android/view/ThreadedRenderer.java:732", "what": "清 PFLAG_INVALIDATED、置 mRecreateDisplayList，然后进 view 树。" },
+    { "call": "view.updateDisplayListIfDirty();", "ref": "base/core/java/android/view/ThreadedRenderer.java:726", "what": "根 View 从这里递归下去，只有脏节点会重录。" },
+    { "call": "if ((mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == 0 || !renderNode.hasDisplayList() || (mRecreateDisplayList))", "ref": "base/core/java/android/view/View.java:24313", "what": "脏判定三选一：缓存无效、节点还没有 DL、父级要求重建。" },
+    { "call": "final RecordingCanvas canvas = renderNode.beginRecording(width, height);", "ref": "base/core/java/android/view/View.java:24339", "what": "拿到录制 canvas，draw/drawChild 的 op 从此都记在这里。" },
+    { "call": "renderNode.endRecording();", "ref": "base/core/java/android/view/View.java:24377", "what": "finally 里必关：漏掉的话下次 beginRecording 直接抛异常。" },
+    { "call": "canvas.finishRecording(this);", "ref": "base/graphics/java/android/graphics/RenderNode.java:525", "what": "Java 侧把 canvas 交回节点，落到 native。" },
+    { "call": "destination->setStagingDisplayList(uirenderer::DisplayList(finishRecording()));", "ref": "base/libs/hwui/pipeline/skia/SkiaRecordingCanvas.cpp:105", "what": "真正的落点：只写 staging，mDisplayList 一个字节都不动。" },
+    { "call": "if (mRootNodeNeedsUpdate || !mRootNode.hasDisplayList())", "ref": "base/core/java/android/view/ThreadedRenderer.java:769", "what": "根节点自己的脏判定；不 invalidateRoot 就不重录根 DL。" },
+    { "call": "canvas.drawRenderNode(view.updateDisplayListIfDirty());", "ref": "base/core/java/android/view/ThreadedRenderer.java:777", "what": "把整棵 View 树的根当作一个 draw op 挂到根 display list 上。" }
+  ],
+  "state": [
+    { "field": "RenderNode.mStagingDisplayList", "before": "上一帧录制的内容（或空）", "after": "本次 endRecording 的 DisplayList（RenderNode.cpp:83）", "note": "mDisplayList 此刻仍是旧的，RT 没同步前一切不变" },
+    { "field": "RenderNode.mNeedsDisplayListSync", "before": "false（上次已同步过）", "after": "true（setStagingDisplayList 里置位，RenderNode.cpp:82）", "note": "RT 的 pushStagingDisplayListChanges（RenderNode.cpp:563）靠它决定要不要 syncDisplayList" },
+    { "field": "ThreadedRenderer.mRootNodeNeedsUpdate", "before": "true（invalidateRoot 置的，818）", "after": "false（782，录制成功才清）", "note": "只管根 DL 要不要重录，不代表子 View 脏" },
+    { "field": "ThreadedRenderer.mNextRtFrameCallbacks", "before": "本帧要注册的 FrameDrawingCallback 列表", "after": "null（739，被包装进 setFrameCallback，760-764 再拼 onFrameCommit）", "note": "必须在 sync 之前注册，否则这一帧不触发 onFrameCommit" }
+  ],
+  "threads": "全程在 App 的 UI 线程（ViewRootImpl.performTraversals 里 draw 那段）上执行；RT 此刻在 Looper 上睡着，一个 op 都没看到。mRootNode 由 UI 独占写，这是它只能写 staging 的原因。",
+  "pitfalls": [
+    "threaded renderer 下「脏」有两层：invalidateRoot 只让根 DL 重录（769），子 View 要自己 PFLAG_INVALIDATED 才会被 updateDisplayListIfDirty 重录（24313）。只调前者，画面不会变。",
+    "录制只写 staging（RenderNode.cpp:83）。录完立刻 dump 节点或读 getDisplayList()，看到的是上一帧的内容——不是没录上，是还没同步。",
+    "beginRecording 与 endRecording 必须配对，否则抛 IllegalStateException（RenderNode.java:487-490）；View 侧用 try/finally 兜（24376）。",
+    "updateRootDisplayList 里 consume 了 mNextRtFrameCallbacks 并置 null（737-739）：这一帧再往列表里塞回调是塞不进去的，回调要提前一帧注册。"
+  ],
+  "debug": [
+    "atrace gfx view 抓 Record View#draw()（ThreadedRenderer.java:731），它是整个 updateRootDisplayList 的时间段，和后面的 postAndWait 对比就能区分「录制慢」还是「同步慢」",
+    "dumpsys gfxinfo <pkg> framestats 的列名与 native FrameInfoNames 一致（base/libs/hwui/FrameInfo.cpp:25 起），DrawStart 到 SyncQueued 之间的空档就是录制收尾",
+    "RenderNode::output(std::ostream&, uint32_t)（RenderNode.cpp:100）能打出节点树与 isRenderable/hasLayer，确认某节点到底有没有 DL"
+  ],
+  "next": "第 2 步「syncAndDrawFrame：把 FrameInfo 推出 Java 层」：树录完了，接下来把计时数组和 native proxy 一起交给 JNI。"
+}

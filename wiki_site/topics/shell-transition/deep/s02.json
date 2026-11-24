@@ -1,0 +1,36 @@
+{
+  "step": "s02",
+  "title": "无 collecting 就建 Transition",
+  "tldr": "有 collecting 就只登记等待，没有才新建并 oneway 通知 Shell。",
+  "why": "如果每个请求都新建 Transition，一次 startActivity 期间的十几次窗口变更会变成十几个互不相干的转场，Shell 同时收到多份 request，动画彼此打断——用户看到的是窗口动画播到一半重来、或者新窗口先闪一下才稳定。反过来如果永远复用，Recents 和它背后的 Activity 会被挤进同一个 syncId，其中一个不画完另一个就永远不放行，用户感知是「点了没反应」。",
+  "concepts": [
+    { "term": "mCollectingTransition", "text": "全局唯一正在收集的 Transition；第二个想收集会抛 IllegalStateException。" },
+    { "term": "oneway", "text": "ITransitionPlayer 全接口 oneway：返回只代表消息已投递，不代表已处理。" },
+    { "term": "ready-group", "text": "setReady(ref, false) 把「这批变更还没到齐」挂到 ref 上，它 ready 之前转场不许开播。" }
+  ],
+  "walk": [
+    { "call": "if (mTransitionPlayers.isEmpty()) {", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:913", "what": "一个 player 都没有就直接返回 null：这次请求不进转场系统，调用方自己走无动画路径。" },
+    { "call": "if (chain.isCollecting()) {", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:920", "what": "判的是全局是否已有 collecting 的 Transition，而不是这条 chain 之前有没有。" },
+    { "call": "chain.getTransition().setReady(readyGroupRef, false);", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:922", "what": "不新建，只把 ready-group 标成未到齐；keyguard 类 flags 顺手补上（923-926）。" },
+    { "call": "chain.attachTransition(createTransition(type, flags));", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:928", "what": "新建；createTransition 内部已 moveToCollecting，返回时已是 COLLECTING。" },
+    { "call": "mCollectingTransition.startCollecting(timeoutMs);", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:447", "what": "新 Transition 立刻申请 syncId 开始收集；超时按 445-446 选 2s 或 5s。" },
+    { "call": "getTransitionPlayer().requestStartTransition(transition.getToken(), request);", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1060", "what": "oneway 把 token 和 TransitionRequestInfo 丢给 Shell：不等它处理，也不改状态。" }
+  ],
+  "state": [
+    { "field": "TransitionController.mCollectingTransition", "before": "null", "after": "指向新建的 Transition", "note": "443 行赋值；只在 chain 不在 collecting 时才会改" },
+    { "field": "Transition.mState", "before": "STATE_PENDING (-1)", "after": "STATE_COLLECTING (0)", "note": "createTransition→moveToCollecting→startCollecting 连着跳，函数返回时已经不是 PENDING" },
+    { "field": "Transition.mSyncId", "before": "-1", "after": "BLASTSyncEngine 分配的 id", "note": "866 行写入；仍为 -1 时 Transition.setReady 会早退（Transition:1234）" }
+  ],
+  "threads": "整段在 WMS 已持 mGlobalLock 的调用链上执行（ActivityStarter、KeyguardController 这些入口都在锁内）；对 Shell 的调用是 oneway，不会阻塞 WMS。",
+  "pitfalls": [
+    "请求 ≠ 启动：这里只发一条 oneway 通知，start() 要等 Shell 回头调 IWindowOrganizerController.startTransition（第 15 步）。此刻 mState 是 COLLECTING，不是 STARTED。",
+    "913 行判的是 mTransitionPlayers.isEmpty()，不是 isShellTransitionsEnabled()：打开 fallbackTransitionPlayer 的构建里 player 存在，但那可能就是 FallbackPlayer。",
+    "catch RemoteException 之后是 transition.start()（1064-1066）：Shell 的 binder 断了，转场照样启动，只是没有人播动画。",
+    "chain.isCollecting() 走的是 ActionChain.getTransition()，在 transitTrackerPlumbing 关闭时它直接返回 controller 当前的 collecting——所以一条全新的 chain 也会「命中」老的 collecting。"
+  ],
+  "debug": [
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager | grep -E 'Creating Transition|Requesting StartTransition'：只看到前者，说明卡在 1002 或 1012 的早退。",
+    "adb shell dumpsys activity service SystemUIService WMShell，看 Pending Transitions 段，确认 Shell 究竟收到几份 request（Transitions.dump:2253）。"
+  ],
+  "next": "第 4 步「Transition 状态机全貌」：对象建出来了，先把它能走的五个状态看清楚。"
+}

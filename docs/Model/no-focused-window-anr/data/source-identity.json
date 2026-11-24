@@ -1,0 +1,76 @@
+{
+  "snapshot": "24bc82b5d25dd6ebc97e8c3401fa1678cd9f3ba5",
+  "sourceRoot": "repository root",
+  "inspectedDate": "2026-10-28",
+  "excerptOnly": true,
+  "files": {
+    "base/services/core/java/com/android/server/wm/DisplayContent.java": {
+      "sha256": "37ea101f8cb1c9070df7db8a5e8a855cb999682b8aeca1e6c145dfe040a366a5",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/InputMonitor.java": {
+      "sha256": "9cf0b0936f61a9a013032c07c5de6486e7538893102b6f0264da1080359d401b",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/input/InputManagerService.java": {
+      "sha256": "df0e4cc78508383cd60fd2cd534ba450a0df2071b211ee21115fa71f35470dc1",
+      "dirty": false
+    },
+    "base/services/core/jni/com_android_server_input_InputManagerService.cpp": {
+      "sha256": "0a71ebf0fb6697a1f21a6abe0e14e53d4b961e40a4baace0b8dedb0d5b8c08c5",
+      "dirty": false
+    },
+    "native/services/inputflinger/dispatcher/InputDispatcher.cpp": {
+      "sha256": "4598e3a96e0196a5965be2a4232736ba7e14616c8435b201ab6d394e44b762c9",
+      "dirty": false
+    },
+    "native/services/surfaceflinger/SurfaceFlinger.cpp": {
+      "sha256": "13b03a5c51750456a169ab8801efe933ecc18a966421b8821043b37c321b7fb2",
+      "dirty": false
+    },
+    "native/services/inputflinger/dispatcher/FocusResolver.cpp": {
+      "sha256": "ed6a861b85cb67e5cc57b31455667f16b77f8c3c264a4074fa8645b3790006c3",
+      "dirty": false
+    },
+    "native/services/inputflinger/dispatcher/InputDispatcher.h": {
+      "sha256": "713ca2351b28ebde8829edada02bea18c4923614f353bd7ca277eff69f4994d6",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/AnrController.java": {
+      "sha256": "0c463d107c17bf3ebdc7783f3743369bf853dd48bf43a57787a7bfd94cfbde93",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/InputManagerCallback.java": {
+      "sha256": "1d8071ad6092421d995c4bb67f8476dde9dc3a847b658b6b5b51b5d8c90761e1",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/ActivityRecord.java": {
+      "sha256": "a1eeca1ee02e9e60f4e2f61f083d05c1c769dadd234e142e162c086e6c2aaf82",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/am/ActivityManagerService.java": {
+      "sha256": "17923170a97fb001c3892ab4e0d71f9e249f9ea0b427a7aaf29916aae5208797",
+      "dirty": false
+    },
+    "native/libs/input/android/os/IInputConstants.aidl": {
+      "sha256": "e2d2b7dc949fc803cd8e9a201b05ba6809a47e049c46c200120b04ec71e49726",
+      "dirty": false
+    },
+    "base/core/java/android/os/InputConstants.java": {
+      "sha256": "71c26b63948785766f73c499229817303b953c2067239138f07ff7f95e2d460a",
+      "dirty": false
+    },
+    "native/libs/gui/include/gui/InputApplication.h": {
+      "sha256": "7476ff6f6a206df5f2fc83dd2126693bebf2021f9751e60cd839437b86f33fc4",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/WindowProcessController.java": {
+      "sha256": "d90c18dbb24a39979de649e9de0649d081afe8b86271adfcf9f5e416bfd8d19a",
+      "dirty": false
+    },
+    "base/services/core/java/com/android/server/wm/ActivityTaskManagerService.java": {
+      "sha256": "25ffd4166d7244379b5624c784c29659b5ecdcbdbd1c60d3c7fdab38693388a9",
+      "dirty": false
+    }
+  }
+}

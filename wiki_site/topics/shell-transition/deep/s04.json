@@ -1,0 +1,38 @@
+{
+  "step": "s04",
+  "title": "把 WindowContainer 收进 SyncSet",
+  "tldr": "collect 干三件事：拍一份「改之前」的快照、挂到 syncId 上、让它必须重画一帧。",
+  "why": "动画要插值，就必须知道起点。没有 collect 时那份快照（ChangeInfo 里抄下来的 visible/bounds/rotation/startParent），后面算 leash 和 finishT 时不知道把窗口挂回哪个父节点、从什么位置开始。用户能感知的：关闭动画里旧窗口没有起点，直接消失；打开动画从错误的位置起步，窗口像凭空冒出来；或者这个容器压根不在 TransitionInfo 里，Shell 只能让它一帧跳到位。",
+  "concepts": [
+    { "term": "ChangeInfo", "text": "参与容器的 before 状态：visible / bounds / rotation / startParent。" },
+    { "term": "prepareSync", "text": "让容器及其子树进 sync 状态：容器是 READY，窗口要变成 WAITING_FOR_DRAW。" },
+    { "term": "ready-group", "text": "collect 顺手把父链上符合条件的一层登记成 ready-group，它没到齐就不许开播。" }
+  ],
+  "walk": [
+    { "call": "if (mState < STATE_COLLECTING) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:904", "what": "还没开始收集就抛异常；已经在 PLAYING 之后则静默 return（907-910）。" },
+    { "call": "snapshotStartState(getAnimatableParent(wc), true /* addReadyGroup */);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:914", "what": "先给父链拍快照再判重：容器后面可能被 reparent，起点必须早一步记。" },
+    { "call": "if (mParticipants.contains(wc)) return;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:915", "what": "重复 collect 在这里止步，但 914 的快照已经补执行过一次。" },
+    { "call": "mSyncEngine.addToSyncSet(mSyncId, wc);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:919", "what": "挂到 syncId 上；容器已在别的 sync 里就建依赖或挪过来（BLASTSyncEngine:337 起）。" },
+    { "call": "wc.prepareSync();", "ref": "base/services/core/java/com/android/server/wm/BLASTSyncEngine.java:367", "what": "让容器子树进入 sync；返回 false 表示它本来就在 sync 里。" },
+    { "call": "mSyncState = SYNC_STATE_WAITING_FOR_DRAW;", "ref": "base/services/core/java/com/android/server/wm/WindowState.java:5990", "what": "窗口级别必须等自己画完，不能像容器那样「子节点画完就算」。" },
+    { "call": "mParticipants.add(wc);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:933", "what": "到这一步才正式算参与者；圆角遮罩在 921-926 提前 return，只进 sync 不进参与者。" }
+  ],
+  "state": [
+    { "field": "Transition.mParticipants", "before": "空", "after": "含该 wc", "note": "933 行；圆角/挖孔遮罩走 921-926，不会进这里" },
+    { "field": "Transition.mChanges", "before": "没有该 wc 的条目", "after": "新增 ChangeInfo，bounds/visible/startParent 已抄好", "note": "Transition:4172-4183 的构造函数本身就是那次快照" },
+    { "field": "WindowContainer.mSyncState", "before": "SYNC_STATE_NONE (0)", "after": "容器 SYNC_STATE_READY (2)，窗口 SYNC_STATE_WAITING_FOR_DRAW (1)", "note": "WindowContainer:3454-3464 与 WindowState:5990" },
+    { "field": "WindowContainer.mSyncGroup", "before": "null", "after": "指向本次 SyncGroup", "note": "BLASTSyncEngine:364-365 赋值，finishSync 时清回 null（WindowContainer:3505）" }
+  ],
+  "threads": "collect 在 WMS 持 mGlobalLock 的窗口事务/布局路径上调用（TransitionController.collect:1085 → Transition.collect），没有跨进程调用；requestRedrawForSync 只清一个标志（WindowState:6211），真正让 App 重画发生在随后的 relayout。",
+  "pitfalls": [
+    "「重复 collect 无副作用」只对 mParticipants 成立：915 早退之前，914 的父链快照已经执行过了。",
+    "STARTED 之后 collect 依然有效：isCollecting() 把 STARTED 算在内（Transition:836-838），只有进 PLAYING 才会被 Transition:907-910 丢掉。",
+    "进了 sync 不等于算参与者：圆角遮罩（Transition:921-926）挂完 syncId 就 return，TransitionInfo 里没有它，别在 Shell 侧找。",
+    "看到 conflicts with 的 log 说明两个 sync 抢同一个容器（BLASTSyncEngine:341-342）：这里不失败，只建依赖，代价是两边都变慢。"
+  ],
+  "debug": [
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager | grep 'Collecting in transition'（Transition:911-912）：每行一次 collect，带 syncId 和容器。",
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_SYNC_ENGINE，看 Adding to group（336）与 finishSync cancel=（WindowContainer:3497），确认容器的进出时机。"
+  ],
+  "next": "第 8 步「容器落到具体 syncId 上」：addToSync 里还有依赖、并行和挪组的分支。"
+}

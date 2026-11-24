@@ -1,0 +1,438 @@
+{
+  "id": "bbq-frame",
+  "title": "BLASTBufferQueue::onFrameAvailable",
+  "file": "native/libs/gui/BLASTBufferQueue.cpp",
+  "sig": "void BLASTBufferQueue::onFrameAvailable(",
+  "span": [
+    779,
+    870
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "void BLASTBufferQueue::onFrameAvailable(const BufferItem& item) {",
+      "kind": "thread",
+      "text": "新帧入队回调：生产者提交帧后由 BufferQueue 在回调线程触发，先声明后持锁处理影子队列。"
+    },
+    {
+      "at": 2,
+      "quote": "std::function<void(SurfaceComposerClient::Transaction*)> prevCallback",
+      "kind": "state",
+      "text": "暂存将被替换的旧 sync 回调，留到锁外调用，避免回调重入 mMutex 造成死锁。"
+    },
+    {
+      "at": 3,
+      "quote": "SurfaceComposerClient::Transaction* prevTransaction = nullptr;",
+      "kind": "state",
+      "text": "配套保存旧 mSyncTransaction 指针，与回调一起交给应用侧接管者使用。"
+    },
+    {
+      "at": 5,
+      "quote": "{",
+      "kind": "lock",
+      "text": "显式作用域起点：锁只覆盖状态更新，应用回调放到块外执行，防止持锁回调死锁。"
+    },
+    {
+      "at": 6,
+      "quote": "UNIQUE_LOCK_WITH_ASSERTION(mMutex);",
+      "kind": "lock",
+      "text": "持锁并断言 mMutex 已加，保护影子队列与 mSyncedFrameNumbers。"
+    },
+    {
+      "at": 7,
+      "quote": "BBQ_TRACE();",
+      "kind": "trace",
+      "text": "BBQ_TRACE 打点，perfetto 里标识本帧回调，用于定位掉帧与端到端延迟。"
+    },
+    {
+      "at": 8,
+      "quote": "bool waitForTransactionCallback = !mSyncedFrameNumbers.empty();",
+      "kind": "state",
+      "text": "mSyncedFrameNumbers 非空说明上一笔 sync 事务还没回调，本帧需要等待而非直接入队。"
+    },
+    {
+      "at": 10,
+      "quote": "const bool syncTransactionSet = mTransactionReadyCallback != nullptr;",
+      "kind": "state",
+      "text": "回调非空即应用已 syncNextTransaction，本帧须进同步事务。"
+    },
+    {
+      "at": 11,
+      "quote": "BQA_LOGV(\"onFrameAvailable-start syncTransactionSet=%s\", boolToString(",
+      "kind": "trace",
+      "text": "verbose 日志打印 syncTransactionSet，排查这次帧走的是同步路径还是普通异步路径。"
+    },
+    {
+      "at": 13,
+      "quote": "if (syncTransactionSet) {",
+      "kind": "branch",
+      "text": "同步模式分支：有 ready 回调就构造 sync 事务，否则走普通异步 acquire 路径。"
+    },
+    {
+      "at": 14,
+      "quote": "// If we are going to re-use the same mSyncTransaction, release the bu",
+      "kind": "note",
+      "text": "源码注释：复用同一 mSyncTransaction 时，先释放已挂在事务里的旧 buffer。"
+    },
+    {
+      "at": 15,
+      "quote": "// already be set in the Transaction. This is to allow us a free slot",
+      "kind": "note",
+      "text": "源码注释：提前腾出一个 buffer 槽位，避免后续 acquire 因无槽而长时间等待。"
+    },
+    {
+      "at": 16,
+      "quote": "// processing a new buffer.",
+      "kind": "note",
+      "text": "源码注释：说明释放旧 buffer 的目的是继续处理新帧。"
+    },
+    {
+      "at": 17,
+      "quote": "if (!mAcquireSingleBuffer) {",
+      "kind": "branch",
+      "text": "只有连续同步模式才复用事务；单 buffer 模式下事务已交出，此时不能清 buffer。"
+    },
+    {
+      "at": 18,
+      "quote": "auto bufferData = mSyncTransaction->getAndClearBuffer(mSurfaceControl)",
+      "kind": "data",
+      "text": "从 mSyncTransaction 摘出并清空挂在 mSurfaceControl 上的 buffer，拿回帧号等信息。"
+    },
+    {
+      "at": 19,
+      "quote": "if (bufferData) {",
+      "kind": "branch",
+      "text": "事务上确实有旧 buffer 才需要释放，否则跳过，避免用空数据生成释放回调。"
+    },
+    {
+      "at": 20,
+      "quote": "BQA_LOGD(\"Releasing previous buffer when syncing: framenumber=%\" PRIu6",
+      "kind": "data",
+      "text": "打印被释放 buffer 的帧号，用于对齐 sync 与 SF 提交时序问题。"
+    },
+    {
+      "at": 21,
+      "quote": "bufferData->frameNumber);",
+      "kind": "data",
+      "text": "上一行日志的格式化参数，即 bufferData 里的 framenumber。"
+    },
+    {
+      "at": 22,
+      "quote": "releaseBuffer(bufferData->generateReleaseCallbackId(),",
+      "kind": "state",
+      "text": "按 ReleaseCallbackId 释放该 buffer，内部 mNumAcquired-- 并擦除该帧号。"
+    },
+    {
+      "at": 23,
+      "quote": "bufferData->acquireFence);",
+      "kind": "data",
+      "text": "以 acquireFence 作 release fence，保证 SF 用完前生产者不会覆写这块缓冲。"
+    },
+    {
+      "at": 27,
+      "quote": "if (waitForTransactionCallback) {",
+      "kind": "branch",
+      "text": "上一笔 sync 未收到 committed 回调：本帧不能立即 acquire，先处理积压帧。"
+    },
+    {
+      "at": 28,
+      "quote": "// We are waiting on a previous sync's transaction callback so allow a",
+      "kind": "note",
+      "text": "源码注释：正在等上一笔 sync 的 committed 回调，因此允许另一笔 sync 继续推进。"
+    },
+    {
+      "at": 29,
+      "quote": "// transaction to proceed.",
+      "kind": "note",
+      "text": "源码注释：段落延续，说明后续要做的冲刷动作。"
+    },
+    {
+      "at": 30,
+      "quote": "//",
+      "kind": "note",
+      "text": "源码注释：必须先把两次 sync 之间产生的普通事务冲刷掉。"
+    },
+    {
+      "at": 31,
+      "quote": "// We need to first flush out the transactions that were in between th",
+      "kind": "note",
+      "text": "源码注释：冲刷方式是合入 mSyncTransaction，让合并的 buffer 触发 release 回调。"
+    },
+    {
+      "at": 32,
+      "quote": "// We do this by merging them into mSyncTransaction so any buffer merg",
+      "kind": "note",
+      "text": "源码注释：延续说明合并能产生释放回调这一效果。"
+    },
+    {
+      "at": 33,
+      "quote": "// a release callback invoked.",
+      "kind": "note",
+      "text": "源码注释：合并进 mSyncTransaction 后，buffer 合并会触发 release 回调。"
+    },
+    {
+      "at": 34,
+      "quote": "while (mNumFrameAvailable > 0) {",
+      "kind": "thread",
+      "text": "等待回调路径下逐帧消化影子队列：每轮 acquire 并立即 release，把积压帧排空。"
+    },
+    {
+      "at": 35,
+      "quote": "// flush out the shadow queue",
+      "kind": "note",
+      "text": "源码注释：本轮目的是冲刷 shadow queue。"
+    },
+    {
+      "at": 36,
+      "quote": "acquireAndReleaseBuffer();",
+      "kind": "state",
+      "text": "空转一次 acquire+release；内部会 mNumFrameAvailable--，因此循环必然收敛。"
+    },
+    {
+      "at": 38,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "没在等 committed 回调，说明这是新 sync：先保证队列干净再取同步用的帧。"
+    },
+    {
+      "at": 39,
+      "quote": "// Make sure the frame available count is 0 before proceeding with a s",
+      "kind": "note",
+      "text": "源码注释：同步前必须让 mNumFrameAvailable 归零，才能取到正确的帧。"
+    },
+    {
+      "at": 40,
+      "quote": "// the correct frame is used for the sync. The only way mNumFrameAvail",
+      "kind": "note",
+      "text": "源码注释：计数大于 0 只可能是此前 buffer 已被耗尽。"
+    },
+    {
+      "at": 41,
+      "quote": "// greater than 0 is if we already ran out of buffers previously. This",
+      "kind": "note",
+      "text": "源码注释：因此同步前要先把这些 buffer 冲刷掉。"
+    },
+    {
+      "at": 42,
+      "quote": "// need to flush the buffers before proceeding with the sync.",
+      "kind": "note",
+      "text": "源码注释：段落结尾，重申需要先冲刷再同步。"
+    },
+    {
+      "at": 43,
+      "quote": "while (mNumFrameAvailable > 0) {",
+      "kind": "thread",
+      "text": "此路径改成条件变量等待，直到其它线程把 mNumFrameAvailable 消耗到 0 才继续。"
+    },
+    {
+      "at": 44,
+      "quote": "BQA_LOGD(\"waiting until no queued buffers\");",
+      "kind": "data",
+      "text": "打印仍在等待队列清空；反复出现说明 buffer 槽位长期不足。"
+    },
+    {
+      "at": 45,
+      "quote": "mCallbackCV.wait(_lock);",
+      "kind": "thread",
+      "text": "释放 mMutex 并在 mCallbackCV 上等待，由回调侧 notify_all 唤醒。"
+    },
+    {
+      "at": 50,
+      "quote": "// add to shadow queue",
+      "kind": "note",
+      "text": "源码注释：把新到的帧计入影子队列。"
+    },
+    {
+      "at": 51,
+      "quote": "mNumFrameAvailable++;",
+      "kind": "state",
+      "text": "mNumFrameAvailable++ 记录尚未被 acquire 的帧数，acquireNextBufferLocked 依赖它判空。"
+    },
+    {
+      "at": 52,
+      "quote": "if (waitForTransactionCallback && mNumFrameAvailable >= 2) {",
+      "kind": "branch",
+      "text": "在等旧回调且已积压至少 2 帧：再丢一帧，防止同步链路上帧无限堆积。"
+    },
+    {
+      "at": 53,
+      "quote": "acquireAndReleaseBuffer();",
+      "kind": "state",
+      "text": "立即 acquire+release 消化一帧，使 mNumFrameAvailable 回落到 1。"
+    },
+    {
+      "at": 55,
+      "quote": "ATRACE_INT(mQueuedBufferTrace.c_str(),",
+      "kind": "data",
+      "text": "队列水位打点：可用帧+已 acquire-待释放，perfetto 里可看 buffer 是否枯竭。"
+    },
+    {
+      "at": 56,
+      "quote": "mNumFrameAvailable + mNumAcquired - mPendingRelease.size());",
+      "kind": "data",
+      "text": "续上一行表达式，作为 ATRACE_INT 的取值。"
+    },
+    {
+      "at": 58,
+      "quote": "BQA_LOGV(\"onFrameAvailable framenumber=%\" PRIu64 \" syncTransactionSet=",
+      "kind": "trace",
+      "text": "verbose 日志打印 item.mFrameNumber 与 syncTransactionSet，把帧号和路径串起来。"
+    },
+    {
+      "at": 59,
+      "quote": "item.mFrameNumber, boolToString(syncTransactionSet));",
+      "kind": "data",
+      "text": "上一行日志的格式化参数：帧号与同步模式布尔值。"
+    },
+    {
+      "at": 61,
+      "quote": "if (syncTransactionSet) {",
+      "kind": "branch",
+      "text": "同步模式：把本帧放进 mSyncTransaction 并挂 committed 回调，等 SF 提交后再通知应用。"
+    },
+    {
+      "at": 62,
+      "quote": "// Add to mSyncedFrameNumbers before waiting in case any buffers are r",
+      "kind": "note",
+      "text": "源码注释：必须先登记帧号再等待，防止等待期间释放回调把 buffer 抢走。"
+    },
+    {
+      "at": 63,
+      "quote": "// while waiting for a free buffer. The release and commit callback wi",
+      "kind": "note",
+      "text": "源码注释：release/commit 回调会尝试 acquire 可用 buffer。"
+    },
+    {
+      "at": 64,
+      "quote": "// acquire buffers if there are any available, but we don't want it to",
+      "kind": "note",
+      "text": "源码注释：而 sync 事务要独占该 buffer，不能被回调提前取走。"
+    },
+    {
+      "at": 65,
+      "quote": "// in the case where a sync transaction wants the buffer.",
+      "kind": "note",
+      "text": "源码注释：段落延续，解释登记顺序的原因。"
+    },
+    {
+      "at": 66,
+      "quote": "mSyncedFrameNumbers.emplace(item.mFrameNumber);",
+      "kind": "state",
+      "text": "帧号记入 mSyncedFrameNumbers；releaseBuffer 与 committed 回调都靠擦除它来解除等待。"
+    },
+    {
+      "at": 67,
+      "quote": "// If there's no available buffer and we're in a sync transaction, we",
+      "kind": "note",
+      "text": "源码注释：sync 模式下没有空闲 buffer 时必须等待，不能直接返回。"
+    },
+    {
+      "at": 68,
+      "quote": "// instead of returning since we guarantee a buffer will be acquired f",
+      "kind": "note",
+      "text": "源码注释：因为要保证 sync 一定能拿到一个 buffer，否则事务永远缺 buffer。"
+    },
+    {
+      "at": 69,
+      "quote": "while (acquireNextBufferLocked(mSyncTransaction) == BufferQueue::NO_BU",
+      "kind": "thread",
+      "text": "尝试把下一帧 acquire 进 mSyncTransaction；返回 NO_BUFFER_AVAILABLE 时循环等待而非失败返回。"
+    },
+    {
+      "at": 70,
+      "quote": "BQA_LOGD(\"waiting for available buffer\");",
+      "kind": "data",
+      "text": "打印等待可用 buffer；长期出现即 mNumAcquired 达上限、槽位耗尽。"
+    },
+    {
+      "at": 71,
+      "quote": "mCallbackCV.wait(_lock);",
+      "kind": "thread",
+      "text": "在条件变量上睡眠等 notify_all，唤醒后重试 acquire，避免忙等占用 CPU。"
+    },
+    {
+      "at": 74,
+      "quote": "// Only need a commit callback when syncing to ensure the buffer that'",
+      "kind": "note",
+      "text": "源码注释：sync 需要 committed 回调来确认该 buffer 已送达 SF。"
+    },
+    {
+      "at": 75,
+      "quote": "// sent to SF",
+      "kind": "note",
+      "text": "源码注释：延续上一行，说明只在这里挂回调的原因。"
+    },
+    {
+      "at": 76,
+      "quote": "mSyncTransaction",
+      "kind": "state",
+      "text": "为 mSyncTransaction 挂提交完成回调，回调中擦帧号并 flushShadowQueue。"
+    },
+    {
+      "at": 77,
+      "quote": "->addTransactionCommittedCallback(makeTransactionCommittedCallbackThun",
+      "kind": "state",
+      "text": "第一参数是 thunk，捕获 sp 强引用 BBQ，确保回调期间实例不被析构。"
+    },
+    {
+      "at": 78,
+      "quote": "nullptr);",
+      "kind": "data",
+      "text": "第二参数 context 传 nullptr，实例定位完全靠 thunk 捕获的 bbq 指针。"
+    },
+    {
+      "at": 79,
+      "quote": "if (mAcquireSingleBuffer) {",
+      "kind": "branch",
+      "text": "单 buffer 模式：sync 已完成，要把回调与事务交出去并切回普通异步路径。"
+    },
+    {
+      "at": 80,
+      "quote": "prevCallback = mTransactionReadyCallback;",
+      "kind": "state",
+      "text": "把 mTransactionReadyCallback 暂存到局部变量，锁外再调用，避免持锁进入应用代码。"
+    },
+    {
+      "at": 81,
+      "quote": "prevTransaction = mSyncTransaction;",
+      "kind": "state",
+      "text": "事务指针一并取出，作为回调入参还给应用。"
+    },
+    {
+      "at": 82,
+      "quote": "mTransactionReadyCallback = nullptr;",
+      "kind": "state",
+      "text": "置空 mTransactionReadyCallback，使后续 onFrameAvailable 不再走 sync 分支。"
+    },
+    {
+      "at": 83,
+      "quote": "mSyncTransaction = nullptr;",
+      "kind": "state",
+      "text": "置空 mSyncTransaction，防止下一帧复用已交出的事务对象造成重复提交。"
+    },
+    {
+      "at": 85,
+      "quote": "} else if (!waitForTransactionCallback) {",
+      "kind": "branch",
+      "text": "非 sync 且无待等回调：走普通异步路径，直接 acquire 并立即 apply 事务。"
+    },
+    {
+      "at": 86,
+      "quote": "acquireNextBufferLocked(std::nullopt);",
+      "kind": "state",
+      "text": "acquireNextBufferLocked(std::nullopt) 用局部事务立刻 apply；失败则本帧仍留在队列。"
+    },
+    {
+      "at": 89,
+      "quote": "if (prevCallback) {",
+      "kind": "branch",
+      "text": "锁外执行应用回调；仅单 buffer 同步完成时 prevCallback 才非空。"
+    },
+    {
+      "at": 90,
+      "quote": "prevCallback(prevTransaction);",
+      "kind": "thread",
+      "text": "把 mSyncTransaction 交给应用回调填充并提交；此处不持锁，允许回调重入。"
+    }
+  ]
+}

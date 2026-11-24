@@ -1,0 +1,44 @@
+{
+  "step": "s06",
+  "title": "RenderThread::threadLoop 取出任务",
+  "tldr": "RT 的 Looper 醒一次跑一次队列，WorkQueue 里那个 lambda 一执行就进了 run()。",
+  "why": "少了这层，post 出去的 lambda 没人执行，UI 就永远停在 mSignal 上——这是 ANR 级的卡死，而不是掉帧。threadLoop 还定了一个全局前提：RT 是单线程 Looper（waitForWork → processQueue → cacheManager->onThreadIdle），所有投进来的活严格串行、按入队顺序执行。CanvasContext 敢不加锁就是因为这条前提；它同时也是坑的源头：任何在 RT 上同步等 UI 的代码都会与 86 行的 wait 互锁。而 processQueue 先把整个队列 move 到局部再脱离锁执行，所以 run() 里那段「this 已不安全」的注释是真的。",
+  "concepts": [
+    { "term": "WorkQueue", "text": "RT 的任务队列，按时序执行 post 的 std::function；入队时会顺带 wake Looper。" },
+    { "term": "DrawFrames", "text": "run() 开头打的 atrace 名，实际格式是 DrawFrames <vsyncId>，不是裸名。" },
+    { "term": "threadLoop", "text": "Thread 基类的循环体；RenderThread 重写了它，但队列的取活/执行仍由 ThreadBase 提供。" }
+  ],
+  "walk": [
+    { "call": "bool RenderThread::threadLoop()", "ref": "base/libs/hwui/renderthread/RenderThread.cpp:420", "what": "RT 主循环，重写 Thread 的循环体。" },
+    { "call": "setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);", "ref": "base/libs/hwui/renderthread/RenderThread.cpp:421", "what": "先把 RT 提到 display 优先级，再开始接活。" },
+    { "call": "while (true) {", "ref": "base/libs/hwui/renderthread/RenderThread.cpp:428", "what": "无限循环：等活、干活，没有退出条件。" },
+    { "call": "waitForWork();", "ref": "base/libs/hwui/renderthread/RenderThread.cpp:429", "what": "Looper::pollOnce 等唤醒，或等最近一个延时任务到期。" },
+    { "call": "processQueue();", "ref": "base/libs/hwui/renderthread/RenderThread.cpp:430", "what": "醒来的全部意义：把队列里的任务跑掉。" },
+    { "call": "void processQueue() { mQueue.process(); }", "ref": "base/libs/hwui/platform/android/thread/ThreadBase.h:68", "what": "转给 WorkQueue；锁只在取队列那一小段持有。" },
+    { "call": "toProcess = std::move(mWorkQueue);", "ref": "base/libs/hwui/thread/WorkQueue.h:68", "what": "整队列搬走，随后放锁——执行期间新 post 不会插进来。" },
+    { "call": "item.work();", "ref": "base/libs/hwui/thread/WorkQueue.h:78", "what": "真正执行那个 [this]() { run(); } lambda。" },
+    { "call": "void DrawFrameTask::run()", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:89", "what": "RT 侧一帧的总入口（下一步 s07 就在里面）。" },
+    { "call": "const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:90", "what": "第一件事就是读 UI 填的第 1 个 long，先确认这是哪一帧。" },
+    { "call": "ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:91", "what": "trace 名带 vsyncId，能和 SF/FrameTimeline 对上。" },
+    { "call": "canUnblockUiThread = syncFrameState(info);", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:106", "what": "转下一步；它的返回值决定 UI 何时被放走。" }
+  ],
+  "state": [
+    { "field": "RenderThread 的 WorkQueue", "before": "有本帧那个 lambda（刚被 post）", "after": "空：整队列被 move 到局部 vector（WorkQueue.h:68）", "note": "执行不持锁，所以 run() 里可以安全再 post" },
+    { "field": "DrawFrameTask::run() 里的局部副本（context/frameCallback/frameCompleteCallback）", "before": "都还挂在 task 成员上", "after": "全部 move 到栈上局部变量（116-122）", "note": "这就是 124 行注释「this 已不安全」的由来" },
+    { "field": "CanvasContext.mSyncDelayDuration", "before": "上一帧的交接延迟", "after": "now - mSyncQueued（DrawFrameTask.cpp:93）", "note": "s04 记的 UI 提交时刻在这里被消费" },
+    { "field": "FrameInfo（RT 侧 mCurrentFrameInfo）", "before": "上一帧数据", "after": "prepareTree 里 startFrame + importUiThreadInfo（CanvasContext.cpp:540-546）", "note": "14 个 UI 值 memcpy 进来，RT 才开始有自己的时间线" }
+  ],
+  "threads": "整步都在 RenderThread（tid 在 RenderProxy 构造时记下）。UI 线程此刻停在 Condition::wait（s05），除了 mSignal 没有任何交互。processQueue 之后还会调 mCacheManager->onThreadIdle()（448），把空闲时可回收的 GPU 资源处理掉。",
+  "pitfalls": [
+    "atrace 名是 DrawFrames <vsyncId>（91 行 ATRACE_FORMAT），搜 DrawFrames 前缀是对的，搜 run 或 nSyncAndDrawFrame 找不到 RT 这一段。",
+    "processQueue 先 move 整个队列再放锁执行（WorkQueue.h:62-79）：run() 执行期间新 post 的任务不会插队，RT 上的执行顺序严格等于入队顺序。指望「新任务能打断正在画的帧」是错的。",
+    "421 行设的是 nice 值（PRIO_PROCESS + PRIORITY_DISPLAY），不是调度策略；改了它不会变成 RT 调度类，别拿它解释 sched 图上的抢占行为。",
+    "waitForWork 用的是 Looper::pollOnce，出错直接 LOG_ALWAYS_FATAL（ThreadBase.h:65）：display event pipe 挂掉就是整个 app 崩，而不是渲染失败。"
+  ],
+  "debug": [
+    "atrace gfx 抓 DrawFrames，能看到 RT 一帧从 89 到 167 的整段；起点应紧接在 UI 线程 postAndWait 之后",
+    "perfetto 里把 RT 线程的 DrawFrames 与 UI 线程的 postAndWait 首尾相接，空档即排队延迟（WorkQueue 按 runAt 排序，正常应接近 0）",
+    "dumpsys gfxinfo <pkg> framestats 里 RT 相关列（SyncStart/IssueDrawCommandsStart/SwapBuffers）都源自 run() 内部打点，可确认从取活到打点没有离群延迟"
+  ],
+  "next": "第 7 步「syncFrameState：把 UI 侧状态搬进 RT」：makeCurrent、unpinImages、apply layer、prepareTree，全部在 run() 的前半段完成。"
+}

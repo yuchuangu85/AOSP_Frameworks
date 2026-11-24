@@ -1,0 +1,178 @@
+{
+  "id": "stage-05",
+  "num": 5,
+  "title": "第 5 拍：relayoutWindow 与窗口尺寸",
+  "subtitle": "UI 线程用一次 binder 往返向 WMS 要回窗口 frame、insets 与 SurfaceControl，这决定了后面 measure 的约束",
+  "lane": "UI",
+  "durationHint": "量级：约 0.2~2 ms（一次 binder 往返 + WMS 侧 performSurfacePlacement；冷启动或分屏切换时显著更长）",
+  "summary": "ViewRootImpl.performTraversals（base/core/java/android/view/ViewRootImpl.java:3924）在 measure 之后、layout 之前调 relayoutWindow（10191）。它先用 WindowManager.useClientSurface() 判断走新协议还是老协议，再用 canRelayoutAsync() 结合本地算出的 frame 决定同步/异步：只要位置变化与尺寸变化不是同时发生，就走 oneway 的 relayoutAsync2/relayoutAsync；两者都变则必须走同步的 relayout2/relayout，因为要顺带拿到 BLAST 的 syncSeqId。服务端 Session.relayout（base/services/core/java/com/android/server/wm/Session.java:289）转 WMS.relayoutWindow（WindowManagerService.java:2548），在 mGlobalLock 下 setClientSurface、performSurfacePlacement(force)、relayoutVisibleWindow，最后 fillClientWindowFramesAndConfiguration 把 frame/displayFrame/attachedFrame/compatScale 写回 out 参数，fillInsetsState 写回 insets。客户端拿到后更新 transformHint、算 mSurfaceSize、必要时 setWindowCrop，并在 draw 时通过 applyTransactionOnDraw 提交 Transaction。这一拍的核心矛盾是“信息要最新、但 UI 线程不能等”：异步路径省掉阻塞却有 sync 风险，同步路径稳妥却把 WMS 的锁竞争带进 UI 线程，选择逻辑就写在 canRelayoutAsync 与两次变化判断里。",
+  "callchain": [
+    "ViewRootImpl.performTraversals()",
+    "ViewRootImpl.relayoutWindow()",
+    "ViewRootImpl.canRelayoutAsync()",
+    "IWindowSession.Stub$Proxy.relayoutAsync2()",
+    "Session.relayout()",
+    "WindowManagerService.relayoutWindow()",
+    "WindowManagerService.performSurfacePlacement()",
+    "WindowState.relayoutVisibleWindow()",
+    "WindowState.fillClientWindowFramesAndConfiguration()",
+    "ViewRootImpl.setFrame()",
+    "SurfaceControl.Transaction.applyOnDraw()"
+  ],
+  "sections": [
+    {
+      "heading": "为什么要先 measure 再 relayout",
+      "html": "<p>relayout 的入参里带着 <code>requestedWidth/requestedHeight</code>，它们来自 <code>measuredWidth * appScale</code>（ViewRootImpl.java:10278-10279），也就是<strong>上一轮 measure 的结果</strong>。所以 performTraversals 的顺序是：先 <code>measureHierarchy</code>（4099）按 <code>desiredWindowWidth/Height</code> 出一版尺寸，再调 <code>relayoutWindow</code>（4241）把这个尺寸交给 WMS，WMS 据此决定窗口 frame 与 SurfaceControl 大小，客户端回来后再用新 frame 重新 measure/layout（4556-4599、4638 <code>performLayout</code>）。</p><p>从代码结构上看，relayout 只在五种情况之一成立时才发生（4201-4204）：<code>mFirst</code>、<code>windowShouldResize</code>、<code>viewVisibilityChanged</code>、<code>params != null</code>、<code>mForceNextWindowRelayout</code>。这段外面包了 <code>Trace.traceBegin(\"ViewRootImpl-relayoutWindow#first=%b/resize=%b/vis=%b/params=%b/force=%b/seqId=%d\")</code>（4206-4214），所以 trace 上能直接看到这一次 relayout 的触发原因。</p>"
+    },
+    {
+      "heading": "同步还是异步：canRelayoutAsync 与 BLAST syncSeqId",
+      "html": "<p>新版协议下 <code>relayoutWindow</code> 先自己算一遍 frame：<code>mWindowLayout.computeFrames(...)</code>（10208-10211）拿 <code>mTmpFrames.frame</code>，与 <code>mLastLayoutFrame</code> 比对出 <code>positionChanged</code> 与 <code>sizeChanged</code>，然后</p><blockquote><code>relayoutAsync = !positionChanged || !sizeChanged;</code>（10236）</blockquote><p>注释把理由写得很清楚（10217-10219）：位置与尺寸<strong>同时</strong>变化会触发一次 BLAST sync，此时客户端必须调用同步 relayout 才能拿到 <code>syncSeqId</code>；否则只需把属性通过 oneway 的 <code>relayoutAsync</code> 送过去即可，UI 线程不必等 WMS。</p><p>对应四条 binder 调用（10282-10312）：<code>relayoutAsync2</code>（带客户端 <code>SurfaceControl</code>，10285）、<code>relayoutAsync</code>（不带，10295）、<code>relayout2</code>（同步、带 SurfaceControl，10303）、<code>relayout</code>（同步、老协议用 out 参数回传 SurfaceControl，10308）。同步路径之后立刻 <code>mRelayoutRequested = true</code>（10313）、<code>onClientWindowFramesChanged(mTmpFrames)</code>（10315），并处理 <code>mRelayoutResult.syncSeqId</code>（10323-10334）——<code>syncSeqId</code> 就是后续 BLAST 事务里“这一帧的 buffer 必须与这份窗口状态一起呈现”的凭据。</p>"
+    },
+    {
+      "heading": "binder 两端：IWindowSession 与 WMS.relayoutWindow",
+      "html": "<p><code>IWindowSession.aidl</code>（base/core/java/android/view/IWindowSession.aidl:89-116）定义了四个 relayout 入口：同步的 <code>relayout</code> 用 <code>out WindowRelayoutResult</code>/<code>out SurfaceControl</code> 回传结果（89-91），<code>relayout2</code> 改为客户端把自己的 SurfaceControl 传进去（94-96）；异步的 <code>relayoutAsync</code>/<code>relayoutAsync2</code> 是 <code>oneway</code>，没有任何回传（110-116）。<strong>一次 relayout 至少要传两个 binder 对象：IWindow 与 SurfaceControl</strong>（后者是窗口 layer 的句柄，不是像素数据）。</p><p>服务端入口是 <code>Session.relayout</code>（Session.java:289-298），它包了一层 <code>Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, mRelayoutTag)</code> 后直接调 <code>WindowManagerService.relayoutWindow</code>（WindowManagerService.java:2548）。WMS 侧在 <code>synchronized (mGlobalLock)</code> 里做四件事：<strong>（1）</strong> 用 <code>win.mRelayoutSeq</code> 与请求的 <code>seq</code> 比较，乱序请求直接返回 0（2576-2581）；<strong>（2）</strong> 用 <code>win.cancelAndRedraw(syncSeqId)</code> 判断是否要回 <code>RELAYOUT_RES_CANCEL_AND_REDRAW</code>（2583-2592）；<strong>（3）</strong> <code>win.setClientSurface(outSurfaceControl)</code>（2787-2789）或 <code>createSurfaceControl(...)</code>（2790+）把 SurfaceControl 交给客户端；<strong>（4）</strong> <code>mWindowPlacerLocked.performSurfacePlacement(true /* force */)</code>（2810）强制跑一次窗口布局，再 <code>win.relayoutVisibleWindow(result)</code>（2823）。</p>"
+    },
+    {
+      "heading": "回传的三样东西：frame/insets/SurfaceControl",
+      "html": "<p>回传结构是客户端在 10197 处构造的 <code>ClientWindowFrames</code>/<code>MergedConfiguration</code>/<code>InsetsState</code>（实际由 <code>WindowRelayoutResult</code> 承载）。服务端在 <code>WMS.relayoutWindow</code> 末尾填充：<code>win.fillClientWindowFramesAndConfiguration(outFrames, outMergedConfiguration, ...)</code>（2919-2920）、<code>win.fillInsetsState(outInsetsState, true)</code>（2931）。</p><p><code>WindowState.fillClientWindowFramesAndConfiguration</code>（WindowState.java:3799-3848）写的内容是：<code>frame = mWindowFrames.mCompatFrame</code>、<code>displayFrame</code>、可选的 <code>attachedFrame</code>（父子窗口时才有）、<code>compatScale</code> 与 <code>seq</code>（3803-3818）；配置部分在窗口可见时才下发新的 <code>MergedConfiguration</code>，否则回最后一次上报值（3827-3841）。客户端收到后 <code>mWinFrameInScreen.set(mTmpFrames.frame)</code>（10336），经 <code>mTranslator</code> 转成应用坐标系（10337-10341），再 <code>setFrame(mTmpFrames.frame)</code>（10419）——此后 <code>mWidth/mHeight</code> 才更新，layout 才能拿到正确尺寸。</p><p>SurfaceControl 在 <code>WindowManager.useClientSurface()</code> 为真时是<strong>客户端自己创建并传给 WMS</strong> 的（10284、10302），WMS 只负责 <code>win.setClientSurface(...)</code> 把它挂进窗口层级；老协议下才是 WMS 创建并通过 out 参数回传（10311）。</p>"
+    },
+    {
+      "heading": "客户端 Transaction：setWindowCrop、setOpaque 与 applyOnDraw",
+      "html": "<p>relayout 只更新几何，真正把几何写进 SurfaceControl 的是客户端的 <code>mTransaction</code>（ViewRootImpl.java:1455 创建）。<code>relayoutWindow</code> 里有两处典型用法：</p><ul><li><strong>拖拽 resize</strong>：<code>mPendingDragResizing</code> 且 <code>mSurfaceSize</code> 与 frame 不一致时，用 <code>mTransaction.setWindowCrop(mSurfaceControl, mWinFrameInScreen.width(), mWinFrameInScreen.height())</code>（10375-10376）把全屏 surface 裁到内容大小，避免露出旧内容。</li><li><strong>drawing 被禁用</strong>：<code>!HardwareRenderer.isDrawingEnabled()</code> 时 window layer 没有有效 buffer，会 <code>setWindowCrop(mSurfaceControl, mSurfaceSize.x, mSurfaceSize.y).apply()</code>（10381-10382），让输入仍能命中窗口；这是少数在 relayout 里直接 apply 的分支，其余都是 <code>applyTransactionOnDraw</code> 延迟到绘制时提交。</li></ul><p>WMS 侧对同一个 SurfaceControl 的透明性设置走 <code>WindowStateAnimator.setOpaqueLocked</code>（WindowStateAnimator.java:460：<code>mWin.getPendingTransaction().setOpaque(mSurfaceControl, isOpaque)</code>），和客户端的 Transaction 是<strong>两条独立的事务流</strong>：客户端的 <code>mTransaction</code> 由 <code>applyTransactionOnDraw</code>（ViewRootImpl.java:13748）在绘制时提交，WMS 的 pending transaction 由 SF 侧 <code>applySurfaceChangesTransaction</code> 应用。理解这一点才能解释“为什么 relayout 返回了但屏上还没变”。</p>"
+    },
+    {
+      "heading": "deadline 与边界",
+      "html": "<p>relayout 是 UI 线程上少数<strong>会真正阻塞在 binder 上</strong>的步骤之一（同步路径）。它必须在 Choreographer 分配的 traversal 预算内完成，因为后面还有 measure、layout、draw 录制要跑，全部要在 <code>FrameInfo[FRAME_DEADLINE]</code> 之前结束。同步 relayout 一慢，后面的窗口就被压缩；异步 relayout 虽然不阻塞，但如果 WMS 侧处理延迟导致 <code>syncSeqId</code> 没能在本帧回来，客户端会在 <code>cancelDraw</code>/<code>mNumPausedForSync</code> 处跳过本帧（3793-3805、3943-3952）。</p><p>边界上要注意：relayout 的返回<strong>不等于</strong>窗口已经可见或已经上屏。WMS 只是把 frame/insets/SurfaceControl 状态算好并通过 <code>performSurfacePlacement</code> 排了事务，真正的 layer 位置由 SurfaceFlinger 在下一个合成周期应用。客户端后续的 measure/layout 只依赖 frame，不依赖 binder 之外的东西。</p>"
+    },
+    {
+      "heading": "排障：relayout 相关现象的定位方法",
+      "html": "<ul><li><strong>窗口尺寸不对/频繁跳动</strong>：看 <code>relayoutWindow#first/resize/vis/params/force</code> 这行 trace 的触发原因，以及 <code>WindowLayout.computeFrames</code> 结果与 <code>mLastLayoutFrame</code> 的差异。</li><li><strong>UI 卡在 relayout</strong>：同步路径的 binder 会显示在 “ViewRootImpl-relayoutWindow” slice 里，可与 WMS 线程的 <code>relayoutWindow</code> slice 对齐；若 WMS 侧耗时长，通常是 <code>performSurfacePlacement</code> 里有窗口插入/移除或 IME 变化。</li><li><strong>异步 relayout 后画面不动</strong>：检查 <code>mNumPausedForSync</code> 与 <code>cancelDraw</code> 日志（“Skipping traversal due to sync”），说明 BLAST sync 未完成。</li><li><strong>裁剪残留</strong>：拖拽 resize 时若 <code>setWindowCrop</code> 分支未命中（例如 <code>mSurfaceControl</code> 无效），会看到旧内容露出，需结合 <code>mPendingDragResizing</code> 与 <code>mSurfaceSize</code> 排查。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "ViewRootImpl::relayoutWindow",
+      "lines": "10191-10235",
+      "code": "    private int relayoutWindow(WindowManager.LayoutParams params, int viewVisibility,\n            boolean insetsPending) throws RemoteException {\n        int relayoutResult = 0;\n        if (WindowManager.useClientSurface() && !mWindowLayout.isLocallyManaged()) {\n            relayoutResult = updateSurfaceControl(viewVisibility);\n        }\n        final WindowConfiguration winConfig = getCompatWindowConfiguration();\n        final int measuredWidth = mMeasuredWidth;\n        final int measuredHeight = mMeasuredHeight;\n        final boolean relayoutAsync;\n        final StringBuilder relayoutSyncReason = Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)\n                ? new StringBuilder()\n                : null;\n        if (canRelayoutAsync(relayoutSyncReason)) {\n            final InsetsState state = mInsetsController.getState();\n            final Rect displayCutoutSafe = mTempRect;\n            state.getDisplayCutoutSafe(displayCutoutSafe);\n            mWindowLayout.computeFrames(mWindowAttributes.forRotation(winConfig.getRotation()),\n                    state, displayCutoutSafe, winConfig.getBounds(), winConfig.getWindowingMode(),\n                    measuredWidth, measuredHeight, mInsetsController.getRequestedVisibleTypes(),\n                    1f /* compatScale */, mTmpFrames);\n            mWinFrameInScreen.set(mTmpFrames.frame);\n            if (mTranslator != null) {\n                mTranslator.translateRectInAppWindowToScreen(mWinFrameInScreen);\n            }\n\n            // If the position on the parent surface and the size of the frame are both changed, it\n            // will trigger a BLAST sync, and we still need to call relayout to obtain the\n            // syncSeqId. Otherwise, we just need to send attributes via relayoutAsync.\n            final Rect oldFrame = mLastLayoutFrame;\n            final Rect newFrame = mTmpFrames.frame;\n            final Rect oldParentFrame = mLastLayoutParentFrame;\n            final Rect newParentFrame = mTmpFrames.attachedFrame != null\n                    ? mTmpFrames.attachedFrame : winConfig.getBounds();\n            final boolean positionChanged;\n            if (com.android.window.flags.Flags.improveFluidResizingPerformance()) {\n                positionChanged =\n                        (newFrame.top - newParentFrame.top) != (oldFrame.top - oldParentFrame.top)\n                                || (newFrame.left - newParentFrame.left)\n                                        != (oldFrame.left - oldParentFrame.left);\n            } else {\n                positionChanged = newFrame.top != oldFrame.top || newFrame.left != oldFrame.left;\n            }\n            final boolean sizeChanged =\n                    newFrame.width() != oldFrame.width() || newFrame.height() != oldFrame.height();",
+      "note": "relayout 的开头：useClientSurface 决定协议版本；canRelayoutAsync 为真时先在客户端本地算一遍 frame，并算出 positionChanged/sizeChanged 以决定走异步还是同步（两者都变才必须同步拿 syncSeqId）。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "IWindowSession::relayoutAsync2",
+      "lines": "10278-10312",
+      "code": "        final int requestedWidth = (int) (measuredWidth * appScale + 0.5f);\n        final int requestedHeight = (int) (measuredHeight * appScale + 0.5f);\n        mRelayoutSeq++;\n        final int seqId = NoPreloadHolder.sAlwaysSeqId ? mSeqId : mLastSyncSeqId;\n        if (relayoutAsync) {\n            if (WindowManager.useClientSurface()) {\n                final SurfaceControl surfaceControl = getSurfaceControlForRelayout(viewVisibility);\n                mWindowSession.relayoutAsync2(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, surfaceControl);\n                if (surfaceControl != null\n                        && (mViewFrameInfo.flags & FrameInfo.FLAG_WINDOW_VISIBILITY_CHANGED) != 0\n                        && !mWindowLayout.isLocallyManaged()) {\n                    relayoutResult |= RELAYOUT_RES_FIRST_TIME;\n                }\n            } else {\n                mWindowSession.relayoutAsync(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId);\n            }\n        } else {\n            if (WindowManager.useClientSurface()) {\n                final SurfaceControl surfaceControl = getSurfaceControlForRelayout(viewVisibility);\n                relayoutResult |= mWindowSession.relayout2(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, surfaceControl, mRelayoutResult);\n            } else {\n                relayoutResult |= mWindowSession.relayout(mWindow, params,\n                        requestedWidth, requestedHeight, viewVisibility,\n                        insetsPending ? WindowManagerGlobal.RELAYOUT_INSETS_PENDING : 0,\n                        mRelayoutSeq, seqId, mRelayoutResult, mSurfaceControl);\n            }",
+      "note": "真正发起 binder 调用的地方：requestedWidth/Height 来自上一轮 measure；异步路径调 relayoutAsync2（带 SurfaceControl）或 relayoutAsync，同步路径调 relayout2 或老协议的 relayout（out 参数回传 SurfaceControl）。"
+    },
+    {
+      "file": "base/core/java/android/view/IWindowSession.aidl",
+      "symbol": "relayout",
+      "lines": "89-116",
+      "code": "    int relayout(IWindow window, in WindowManager.LayoutParams attrs, int requestedWidth,\n            int requestedHeight, int viewVisibility, int flags, int seq, int lastSyncSeqId,\n            out @nullable WindowRelayoutResult outRelayoutResult, out SurfaceControl outSurface);\n\n    // TODO(b/308662081): Remove \"2\" methods and switch original methods to the new implemetantion.\n    int relayout2(IWindow window, in WindowManager.LayoutParams attrs, int requestedWidth,\n            int requestedHeight, int viewVisibility, int flags, int seq, int lastSyncSeqId,\n            in SurfaceControl surface, out @nullable WindowRelayoutResult outRelayoutResult);\n\n    /**\n     * Similar to {@link #relayout} but this is an oneway method which doesn't return anything.\n     *\n     * @param window The window being modified.\n     * @param attrs If non-null, new attributes to apply to the window.\n     * @param requestedWidth The width the window wants to be.\n     * @param requestedHeight The height the window wants to be.\n     * @param viewVisibility Window root view's visibility.\n     * @param flags Request flags: {@link WindowManagerGlobal#RELAYOUT_INSETS_PENDING}.\n     * @param seq The calling sequence of {@link #relayout} and {@link #relayoutAsync}.\n     * @param lastSyncSeqId The last SyncSeqId that the client applied.\n     */\n    oneway void relayoutAsync(IWindow window, in WindowManager.LayoutParams attrs,\n            int requestedWidth, int requestedHeight, int viewVisibility, int flags, int seq,\n            int lastSyncSeqId);\n\n    oneway void relayoutAsync2(IWindow window, in WindowManager.LayoutParams attrs,\n            int requestedWidth, int requestedHeight, int viewVisibility, int flags, int seq,\n            int lastSyncSeqId, in SurfaceControl surface);",
+      "note": "IWindowSession 的四个 relayout 入口：同步 relayout/relayout2 会回传 WindowRelayoutResult 与 SurfaceControl，异步 relayoutAsync/relayoutAsync2 是 oneway、无回传——这是“UI 线程是否阻塞”的直接来源。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "SurfaceControl::Transaction::setWindowCrop",
+      "lines": "10368-10390",
+      "code": "        if (mSurfaceControl.isValid()) {\n            if (mPendingDragResizing && !mSurfaceSize.equals(\n                    mWinFrameInScreen.width(), mWinFrameInScreen.height())) {\n                // During drag-resize, a single fullscreen-sized surface is reused for optimization.\n                // Crop to the content size instead of the surface size to avoid exposing garbage\n                // content that is still on the surface from previous re-layouts (e.g. when\n                // resizing to a larger size).\n                mTransaction.setWindowCrop(mSurfaceControl,\n                        mWinFrameInScreen.width(), mWinFrameInScreen.height());\n            } else {\n                if (!HardwareRenderer.isDrawingEnabled()) {\n                    // When drawing is disabled the window layer won't have a valid buffer.\n                    // Set a window crop so input can get delivered to the window.\n                    mTransaction.setWindowCrop(mSurfaceControl, mSurfaceSize.x, mSurfaceSize.y)\n                            .apply();\n                } else if (!mPendingDragResizing) {\n                    // During the fluid resizing, the temporary crop bounds set on VRI.\n                    // The clean up is necessary here since the crop would break window content\n                    // if windowing mode change.\n                    mTransaction.setWindowCrop(mSurfaceControl, null);\n                }\n            }\n        }",
+      "note": "relayout 回来后的客户端事务：拖拽 resize 时把 surface 裁到内容大小；drawing 被禁用时补一次 setWindowCrop(...).apply() 让输入仍能命中窗口；其它情况清掉临时 crop。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mRelayoutSeq / mSeqId",
+      "type": "int",
+      "desc": "relayout 的调用序号。WMS 用它丢弃乱序请求（WindowManagerService.java:2576-2581）；客户端在 10280-10281 自增并随 binder 传出。"
+    },
+    {
+      "name": "mRelayoutResult / mRelayoutRequested",
+      "type": "WindowRelayoutResult / boolean",
+      "desc": "同步 relayout 的回传载体（syncSeqId、activeControls、activityWindowInfo 等）；mRelayoutRequested 标记本帧确实发了同步 relayout（10313），供后续 BLAST sync 与 cancelDraw 判断。"
+    },
+    {
+      "name": "ClientWindowFrames",
+      "type": "frame/displayFrame/attachedFrame/compatScale/seq",
+      "desc": "由 WindowState.fillClientWindowFramesAndConfiguration 填充（WindowState.java:3803-3818）。frame 是窗口在屏幕上的位置与大小，attachedFrame 只有父子窗口存在时才填。"
+    },
+    {
+      "name": "mSurfaceControl / mBlastBufferQueue",
+      "type": "SurfaceControl / BLASTBufferQueue",
+      "desc": "窗口 layer 的句柄与它的 buffer 队列。useClientSurface 为真时由客户端创建并传给 WMS（10284、10302）；销毁在 destroySurface（ViewRootImpl.java:3149-3168）。"
+    },
+    {
+      "name": "mTransaction",
+      "type": "SurfaceControl.Transaction",
+      "desc": "客户端的事务对象（1455 创建）。relayout 里用于 setWindowCrop，绘制时通过 applyTransactionOnDraw（13748）提交，也可与 BLAST sync 绑定。"
+    },
+    {
+      "name": "mSyncSeqId / mSeqId",
+      "type": "int",
+      "desc": "BLAST 同步序号：relayout 回传后记录（10323-10334），绘制时用于告知 WMS 这一帧是否与窗口状态同步；同步 relayout 的核心价值就是拿到它。"
+    },
+    {
+      "name": "mWindowLayout",
+      "type": "WindowLayout",
+      "desc": "客户端侧的窗口布局计算器：computeFrames(...)（10208-10211）在没有 WMS 回包时先本地算 frame，供 canRelayoutAsync 决策。"
+    },
+    {
+      "name": "mTmpFrames / mWinFrameInScreen / mSurfaceSize",
+      "type": "WindowLayout.Frames / Rect / Point",
+      "desc": "mTmpFrames 承载本轮 frame；mWinFrameInScreen 是转换到屏幕坐标后的 frame；mSurfaceSize 由 WindowLayout.computeSurfaceSize 算出（10353-10354），决定 SurfaceControl 尺寸。"
+    },
+    {
+      "name": "RELAYOUT_RES_* 标志",
+      "type": "int 位掩码",
+      "desc": "RELAYOUT_RES_FIRST_TIME / RELAYOUT_RES_SURFACE_CHANGED / RELAYOUT_RES_BUFFER_SYNC / RELAYOUT_RES_CANCEL_AND_REDRAW 等，WMS 置位、客户端解读（10356-10358、10231-10233）。"
+    },
+    {
+      "name": "WindowManager.useClientSurface()",
+      "type": "static boolean",
+      "desc": "决定 SurfaceControl 由客户端创建（新协议，relayout2/relayoutAsync2）还是 WMS 创建（老协议，relayout 的 out 参数）。它决定了 binder 参数形态与 surface 所有权。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "ViewRootImpl-relayoutWindow#first/resize/vis/params/force/seqId",
+      "value": "Trace.traceBegin（ViewRootImpl.java:4206-4214）",
+      "desc": "一次 relayout 的外层 slice，名字里直接带触发原因与 seqId，是最直接的定位入口。"
+    },
+    {
+      "name": "relayoutSync <oldWxH+pos>-><newWxH+pos>",
+      "value": "Trace.instant（ViewRootImpl.java:10237-10249）",
+      "desc": "同步 relayout 时打出尺寸/位置变化；没有这条且走了 relayoutAsync，说明本帧是异步属性更新。"
+    },
+    {
+      "name": "relayoutWindow（WMS 线程）",
+      "value": "Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER)（Session.java:293）",
+      "desc": "服务端 slice，tag 是 mRelayoutTag=“relayoutWindow: <包名>”（Session.java:782）；与客户端 slice 对齐可算出 binder 往返。"
+    },
+    {
+      "name": "performSurfacePlacement / layoutWindow 子 slice",
+      "value": "WM trace",
+      "desc": "WMS 强制布局的耗时；窗口插入/移除、IME 变化时会显著变长。"
+    },
+    {
+      "name": "ViewRootImpl#pauseForSync / Skipping traversal due to sync",
+      "value": "Trace.instant + Log（ViewRootImpl.java:3943-3952）",
+      "desc": "异步 relayout 未拿到 syncSeqId 时 UI 会跳过 traversal，是“relayout 后不刷新”的直接证据。"
+    }
+  ],
+  "traceTags": [
+    "ViewRootImpl-relayoutWindow#first=%b/resize=%b/vis=%b/params=%b/force=%b/seqId=%d",
+    "relayoutSync <frame>",
+    "relayoutWindow: <package>",
+    "performSurfacePlacement",
+    "ViewRootImpl#performTraversals"
+  ],
+  "pitfalls": [
+    "relayout 的 requestedWidth/Height 来自上一轮 measure（10278-10279），所以“先 relayout 再 measure”是错觉：真实顺序是 measure → relayout → 用新 frame 再 measure/layout（4099、4241、4556-4599、4638）。",
+    "relayoutAsync 的判定是 !positionChanged || !sizeChanged（10236），即“位置与尺寸同时变化”才必须同步。误以为“任何变化都同步”会错误估计 UI 线程阻塞点。",
+    "relayout 返回不代表窗口已上屏：WMS 只是算好 frame/insets 并排了事务，layer 位置由 SF 在下一个合成周期应用；客户端 mTransaction 也要等 applyTransactionOnDraw 才提交。",
+    "useClientSurface() 为真时 SurfaceControl 由客户端创建并传入 WMS（10284、10302），不是 WMS 回传；按老代码的 out 参数去找“WMS 创建的 surface”会找错对象。",
+    "只有 drawing 被禁用或拖拽 resize 这类特殊分支才在 relayout 里直接 apply()（10381-10382）；其余窗口几何更新都延迟到绘制时，因此 trace 上 relayout 的耗时不含事务提交。",
+    "mNumPausedForSync 大于 0 时 performTraversals 直接 return（3931-3946），这帧连 relayout 都不会执行；看到“没有 relayout 也没有 draw”时先查 sync 计数而不是 relayout 逻辑。",
+    "WMS 侧 relayout 持 mGlobalLock，客户端同步 relayout 会与之串行；如果 WMS 正在做窗口插入/移除等重活，客户端会明显卡在 binder 上，表现为 UI 线程 relayout slice 变长而 SF 侧无异常。"
+  ],
+  "next": "stage-06"
+}

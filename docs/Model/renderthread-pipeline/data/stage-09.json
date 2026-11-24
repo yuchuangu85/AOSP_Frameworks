@@ -1,0 +1,195 @@
+{
+  "id": "stage-09",
+  "num": 9,
+  "title": "回调、帧时间线与 jank 判定",
+  "subtitle": "didProduceBuffer、applied、present 三条回调把 RenderThread 的一帧接上 FrameTimeline，并最终交给 JankTracker 定性",
+  "lane": "RT",
+  "durationHint": "量级：亚毫秒~数毫秒（回调跨进程，随 SF 合成节拍浮动）",
+  "summary": "本阶段回答“这一帧最后怎么了”。第一段回调在 RenderThread 本地：CanvasContext::draw() 在 didSwap 后把 mFrameCommitCallbacks 逐个以 true /*didProduceBuffer*/ 调用，跳过帧则调用 false；这些回调由 JNI 的 FrameCommitWrapper 转发给 HardwareRenderer$FrameCommitCallback。第二段跨进程：BLAST 提交的 Transaction 完成后，SurfaceFlinger 的 TransactionCallbackInvoker::sendCallbacks() 通过 ITransactionCompletedListener 把 latchTime、presentFence、SurfaceControlStats 回给客户端，在 TransactionCompletedListener::onTransactionCompleted() 里分发 ON_COMMIT / ON_COMPLETE 回调。第三段是时间线归位：SkiaPipeline::getFrameTimestamps() 用 native_window_get_frame_timestamps 取回 acquire/latch/present 等时间戳，写进 FrameInfoIndex::DisplayPresentTime；CanvasContext::onSurfaceStatsAvailable() 再用 SF 的 acquire 统计覆盖 FrameCompleted / GpuCompleted，JankTracker::finishFrame() 据此判定 kMissedDeadline / kSlowRT 等 jank 类型。把这三段串起来，才能回答“这一帧为什么 jank”：是 RT 没产出 buffer、是事务没被应用、还是应用了但没赶上本拍 present——三种情况分别对应 didProduceBuffer、latchTime 与 presentFence，观测入口完全不同。",
+  "callchain": [
+    "CanvasContext::draw()",
+    "CanvasContext::mFrameCommitCallbacks（didProduceBuffer）",
+    "FrameCommitWrapper::onFrameCommit()",
+    "HardwareRenderer$FrameCommitCallback::onFrameCommit()",
+    "SurfaceComposerClient::Transaction::apply()",
+    "SurfaceFlinger::setTransactionState()",
+    "TransactionCallbackInvoker::sendCallbacks()",
+    "ITransactionCompletedListener::onTransactionCompleted()",
+    "SurfaceComposerClient::TransactionCompletedListener::onTransactionCompleted()",
+    "CanvasContext::onSurfaceStatsAvailable()",
+    "CanvasContext::reportMetricsWithPresentTime()",
+    "SkiaPipeline::getFrameTimestamps()",
+    "JankTracker::finishFrame()",
+    "HintSessionWrapper::reportActualWorkDuration()"
+  ],
+  "sections": [
+    {
+      "heading": "一、三条回调，对应一段时间线",
+      "html": "<p>把“一帧的结果”拆成三段之后，所有观测手段都能对上号：<strong>didProduceBuffer</strong> 是 RenderThread 本地事实，表示这一拍是否真的产生了一块新 buffer；<strong>applied / committed</strong> 是 SurfaceFlinger 的 binder 事实，表示事务已被应用（<code>latchTime</code>）；<strong>present</strong> 是显示事实，表示这一帧何时被刷新到屏幕（<code>presentFence</code> 与 <code>DisplayPresentTime</code>）。三者之间有严格的先后，但彼此可能差好几拍。</p><p>第一段在 <code>CanvasContext::draw()</code> 里收尾：<code>if (didSwap)</code> 分支以 <code>true /*didProduceBuffer*/</code> 调用 <code>mFrameCommitCallbacks</code> 并清空（<code>CanvasContext.cpp:878-883</code>）；而帧被跳过时走的是另一条路径——<code>skippedFrameReason</code> 命中后 <code>waitOnFences()</code>，同样把回调以 <code>false /*didProduceBuffer*/</code> 调用后清空（<code>CanvasContext.cpp:717-722</code>）。所以回调一定会来，只是参数不同。</p><p>第二段在 <code>TransactionCompletedListener</code>：<code>CallbackId::Type::ON_COMMIT</code> 只带 latch 信息，<code>ON_COMPLETE</code> 还会带 <code>presentFence</code> 与每块 Surface 的统计。第三段是 <code>getFrameTimestamps()</code>：它按 frameNumber 向 BufferQueue 的 <code>ProducerFrameEventHistory</code> 查询，因此<strong>帧号必须对得上</strong>，否则查不到。</p>"
+    },
+    {
+      "heading": "二、RenderThread 内部：DrawFrameTask 的三种回调",
+      "html": "<p><code>DrawFrameTask</code> 持有三个 std::function（<code>DrawFrameTask.h:130-132</code>）：<code>mFrameCallback</code> 对应 Java 的 <code>FrameDrawingCallback</code>，签名是 <code>std::function&lt;std::function&lt;void(bool)&gt;(int32_t, int64_t)&gt;</code>；<code>mFrameCommitCallback</code> 对应 <code>FrameCommitCallback</code>，签名 <code>void(bool)</code>；<code>mFrameCompleteCallback</code> 更轻量，只表示“RT 做完了这次尝试”。</p><p><code>run()</code> 的顺序值得背下来：先 <code>syncFrameState()</code>（此时 UI 线程可能仍被阻塞），把 <code>mFrameCommitCallback</code> 直接 <code>addFrameCommitListener()</code>；再把三个回调搬进局部变量并清空成员，注释写着“From this point on anything in \"this\" is *UNSAFE TO ACCESS*”；然后 <code>unblockUiThread()</code> 放走 UI 线程；最后才 <code>mFrameCallback</code> 通过 <code>enqueueFrameWork()</code> 丢到 CommonPool 上异步执行，它<strong>返回</strong>的 FrameCommitCallback 再被 <code>addFrameCommitListener()</code>。</p><p>这个设计解释了为什么 <code>FrameDrawingCallback.onFrameDraw()</code> 必须返回一个 <code>FrameCommitCallback</code>（<code>base/graphics/java/android/graphics/HardwareRenderer.java:1114-1118</code>）：drawing 回调是异步的，唯一可靠的“这一帧到底有没有产生 buffer”的答案在稍后 <code>didProduceBuffer</code> 里。JNI 侧 <code>FrameCommitWrapper::onFrameCommit()</code> 转调 Java 后立刻 <code>releaseObject()</code>，即 global ref 只活到一次回调（<code>android_graphics_HardwareRenderer.cpp:146-152</code>）。</p>"
+    },
+    {
+      "heading": "三、跨进程：applied 与 present 数据从哪来",
+      "html": "<p>客户端侧的实现就在 <code>SurfaceComposerClient.cpp</code> 里：<code>TransactionCompletedListener::onTransactionCompleted(ListenerStats)</code>（<code>SurfaceComposerClient.cpp:481</code>）先按 callbackId 把 <code>mCallbacks</code> extract 出来，再分两轮分发——先 <code>ON_COMMIT</code>，再 <code>ON_COMPLETE</code>。<code>ON_COMPLETE</code> 里会用 <code>latchTime</code>、<code>acquireTimeOrFence</code>、<code>presentFence</code>、<code>previousReleaseFence</code>、<code>transformHint</code>、<code>eventStats</code> 组装 <code>SurfaceControlStats</code>，并顺手把 <code>previousReleaseCallbackId</code> 对应的 release 回调在同一轮里执行掉——注释说明这是为了省一次 IPC。</p><p><code>ON_COMMIT</code> 与 <code>ON_COMPLETE</code> 的区别是理解“applied 与 present 不同”的关键：前者在事务被应用后就能发，后者要等真正的 present fence 有值；同一个 <code>CallbackId</code> 可能出现在多笔合并的事务里，代码用一个 <code>callbacksMap</code> 并在调用后 <code>erase</code> 保证只回调一次。</p><p>线程上，<code>startListeningLocked()</code> 会 <code>ProcessState::self()-&gt;startThreadPool()</code>（<code>SurfaceComposerClient.cpp:414-420</code>），所以这些回调跑在客户端进程的 Binder 线程池线程上，不是 RenderThread、也不是 UI 线程。任何回调里做的操作都必须考虑与 RT 的并发：<code>SurfaceComposerClient::Transaction::apply()</code> 内部会 <code>mState</code> move 走，但 <code>SurfaceControl</code> 的 transformHint 更新是直接写在回调里的。</p><p>SF 侧发送点有两处包装：<code>TransactionCallbackInvoker::sendCallbacks(bool onCommitOnly)</code>（<code>native/services/surfaceflinger/TransactionCallbackInvoker.cpp:158</code>）在合成后由 <code>SurfaceFlinger.cpp:3985</code> 调用，先 <code>writeReleaseFence()</code> 把 release fence 写进 BufferReleaseChannel，再对每个 listener 调 <code>onTransactionCompleted(stats)</code>；如果走了 <code>BackgroundExecutor</code>，trace 上会多一个 <code>TransactionCallbackInvoker::sendCallbacks</code> 切片。</p>"
+    },
+    {
+      "heading": "四、jank 判定：FrameInfoIndex 与 JankTracker",
+      "html": "<p><code>JankTracker</code> 的静态比较表定义在 <code>base/libs/hwui/JankTracker.cpp:46-61</code>：<code>kMissedVsync</code> 看 <code>IntendedVsync→Vsync</code> 是否 ≥1 个 interval；<code>kSlowUI</code> 看 <code>Vsync→SyncStart</code> 是否超过 0.5 个 interval；<code>kSlowSync</code> 看 <code>SyncStart→IssueDrawCommandsStart</code> 是否超过 0.2；<code>kSlowRT</code> 看 <code>IssueDrawCommandsStart→FrameCompleted</code> 是否超过 0.75。四者是“谁慢”的第一层归因。</p><p>第二层是 deadline：<code>finishFrame()</code> 里若 <code>GpuCompleted &gt;= FrameDeadline</code> 就记 <code>kMissedDeadline</code> 并 <code>reportJank()</code>，同时用 <code>jitterNanos % frameInterval</code> 反推下一帧的“未 stuffing 起点” <code>mNextFrameStartUnstuffed</code>（<code>JankTracker.cpp:209-220</code>）。如果某帧提前于 intended vsync 开始（<code>mNextFrameStartUnstuffed - IntendedVsync &gt; 0.1 * interval</code>），说明处于三缓冲状态，此时 deadline 会被重算成 <code>mNextFrameStartUnstuffed + WorkloadTarget</code>，按时完成反而记 <code>kHighInputLatency</code>（<code>JankTracker.cpp:196-216</code>）。</p><p>关键输入 <code>FrameCompleted</code> / <code>GpuCompleted</code> 的来源分两种：<code>mExpectSurfaceStats</code> 为真（即设过 SurfaceControl）时，它们由 <code>onSurfaceStatsAvailable()</code> 用 SF 回传的 <code>acquireTimeOrFence</code> 覆盖，<code>FrameCompleted = max(gpuCompleteTime, SwapBuffersCompleted)</code>、<code>GpuCompleted = max(gpuCompleteTime, CommandSubmissionCompleted)</code>（<code>CanvasContext.cpp:1058-1061</code>）；没有 SurfaceControl 时退回 <code>markFrameCompleted()</code> 并把 <code>GpuCompleted</code> 直接等于 <code>FrameCompleted</code>（<code>CanvasContext.cpp:896-898</code>）。这也是为什么同机对比时，有/无 SurfaceControl 的 jank 数据不能直接比。</p><p>阈值之外还有两条过滤：总时长超过 10 秒的帧直接丢弃（<code>IGNORE_EXCEEDING</code>，<code>JankTracker.cpp:65</code>），带 <code>FrameInfoFlags::SurfaceCanvas</code> 的直接绘制帧被豁免（<code>EXEMPT_FRAMES_FLAGS</code>，<code>JankTracker.cpp:74</code>）。</p>"
+    },
+    {
+      "heading": "五、FrameTimeline 与 getFrameTimestamps",
+      "html": "<p>FrameTimeline 的前提是 frameNumber 与 vsyncId 严格配对：<code>CanvasContext::draw()</code> 里构造 <code>ANativeWindowFrameTimelineInfo</code>（frameNumber、frameTimelineVsyncId、inputEventId、startTimeNanos、skippedFrameVsyncId、dequeueBufferDurationNanos…，<code>CanvasContext.cpp:757-781</code>），再 <code>mRenderPipeline-&gt;setFrameTimelineInfo(ftl)</code>；BLAST 在 acquire 时按 frameNumber 精确匹配并 <code>t-&gt;setFrameTimelineInfo()</code>。</p><p><code>SkiaPipeline::getFrameTimestamps()</code>（<code>SkiaPipeline.cpp:590</code>）是读取侧：它调 <code>native_window_get_frame_timestamps()</code>，一次性取 requestedPresent / acquire / latch / firstRefreshStart / lastRefreshStart / gpuCompositionDone / displayPresent / dequeueReady / release 九个时间戳，其中 <code>desiredPresentTime</code> 之外的大部分数据来自 SF 回填的 FrameEventHistory。</p><p>hwui 自己只在 <code>reportMetricsWithPresentTime()</code> 里用它取 <code>outDisplayPresentTime</code>（<code>CanvasContext.cpp:963-969</code>），并且要求 <code>mLastFrameMetricsInfos</code> 环已满才处理队首那一帧——也就是<strong>延迟若干帧</strong>才上报 present 时间。这解释了为什么应用刚启动的头几帧在 framestats 里缺 present 列。</p><p>时间源本身也被过滤过：<code>TimeLord::vsyncReceived()</code> 只在 <code>intendedVsync</code> 前进时更新 vsyncId 与 deadline，<code>computeFrameTimeNanos()</code> 用与 Choreographer 相同的逻辑把落后多个 interval 的 vsync 重新对齐到最近的 interval（<code>TimeLord.cpp:31-64</code>）。所以 <code>FrameInfoIndex::Vsync</code> 不一定等于 Choreographer 那一拍的原始值。</p>"
+    },
+    {
+      "heading": "六、观测与排障：trace、Perfetto、dumpsys、ADPF",
+      "html": "<p>Trace 层最直接的四个 tag：<code>DrawFrames &lt;vsyncId&gt;</code>（<code>DrawFrameTask.cpp:91</code>，RT 一次 draw 尝试的总切片）、<code>Drawing &lt;rect&gt;</code>（<code>CanvasContext.cpp:736</code>）、<code>frameCommit success=%d</code>（<code>android_graphics_HardwareRenderer.cpp:148</code>，didProduceBuffer 的原始值）、<code>reportMetricsWithPresentTime</code>（<code>CanvasContext.cpp:945</code>）。跨进程侧还有 <code>TransactionCallbackInvoker::sendCallbacks</code> 与 <code>SurfaceFlinger::setTransactionState</code>。</p><p>Perfetto 里应把 RT 的 <code>DrawFrames</code>、SF 的 <code>SurfaceFlinger::composite</code>/<code>onMessageInvalidate</code>、以及 FrameTimeline 的 <code>Choreographer#doFrame</code> 三条泳道对齐同一个 vsyncId，才能回答“是应用来不及（kSlowRT）还是 SF 排期晚（kMissedDeadline）”。</p><p>dumpsys 侧：<code>adb shell dumpsys gfxinfo &lt;pkg&gt; framestats</code> 给出每帧各阶段时间戳，<code>frametimeline</code> 给出 jankType 与 presentType；<code>adb shell dumpsys SurfaceFlinger --latency &lt;layer&gt;</code> 给出期望/实际 present 的直方图；<code>dumpsys gfxinfo</code> 里的 janky frames 百分比就是 <code>JankTracker</code> 的 <code>mData-&gt;reportFrame()</code>/<code>reportJank()</code> 累计结果。</p><p>ADPF 侧：<code>CanvasContext::draw()</code> 末尾每帧调 <code>mHintSessionWrapper-&gt;updateTargetWorkDuration(WorkloadTarget)</code> 与 <code>reportActualWorkDuration(actualDuration)</code>（<code>CanvasContext.cpp:915-925</code>），<code>actualDuration</code> 扣掉了 syncDelay、dequeue 与 idle 时间——也就是说 ADPF 看到的“实际工作时长”和 <code>DrawFrames</code> 切片长度不是同一个量。调 <code>adb shell cmd power set-fixed-performance-mode-enabled</code> 之类的实验时要注意这一点。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/DrawFrameTask.cpp",
+      "symbol": "DrawFrameTask::run",
+      "lines": "89-138",
+      "code": "void DrawFrameTask::run() {\n    const int64_t vsyncId = mFrameInfo[static_cast<int>(FrameInfoIndex::FrameTimelineVsyncId)];\n    ATRACE_FORMAT(\"DrawFrames %\" PRId64, vsyncId);\n\n    mContext->setSyncDelayDuration(systemTime(SYSTEM_TIME_MONOTONIC) - mSyncQueued);\n    mContext->setTargetSdrHdrRatio(mRenderSdrHdrRatio);\n\n    auto hardwareBufferParams = mHardwareBufferParams;\n    mContext->setHardwareBufferRenderParams(hardwareBufferParams);\n    IRenderPipeline* pipeline = mContext->getRenderPipeline();\n    bool canUnblockUiThread;\n    bool canDrawThisFrame;\n    bool solelyTextureViewUpdates;\n    {\n        TreeInfo info(TreeInfo::MODE_FULL, *mContext);\n        info.forceDrawFrame = mForceDrawFrame;\n        mForceDrawFrame = false;\n        canUnblockUiThread = syncFrameState(info);\n        canDrawThisFrame = !info.out.skippedFrameReason.has_value();\n        solelyTextureViewUpdates = info.out.solelyTextureViewUpdates;\n\n        if (mFrameCommitCallback) {\n            mContext->addFrameCommitListener(std::move(mFrameCommitCallback));\n            mFrameCommitCallback = nullptr;\n        }\n    }\n\n    // ...\n\n    // Even if we aren't drawing this vsync pulse the next frame number will still be accurate\n    if (CC_UNLIKELY(frameCallback)) {\n        context->enqueueFrameWork([frameCallback, context, syncResult = mSyncResult,\n                                   frameNr = context->getFrameNumber()]() {\n            auto frameCommitCallback = frameCallback(syncResult, frameNr);\n            if (frameCommitCallback) {\n                context->addFrameCommitListener(std::move(frameCommitCallback));\n            }\n        });\n    }",
+      "note": "run 前半段把 mFrameCommitCallback 挂进 CanvasContext，后半段把 mFrameCallback 丢到 CommonPool 异步执行、并用返回的 callback 再挂一次 commit listener。被省略的 116-127 行是挪走 mFrameCallback/mFrameCompleteCallback 并 unblockUiThread 的部分（“this” 之后不再可安全访问）。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/CanvasContext.cpp",
+      "symbol": "didProduceBuffer",
+      "lines": "878-911",
+      "code": "    if (didSwap) {\n        for (auto& func : mFrameCommitCallbacks) {\n            std::invoke(func, true /* didProduceBuffer */);\n        }\n        mFrameCommitCallbacks.clear();\n    }\n\n    if (requireSwap) {\n        if (mExpectSurfaceStats) {\n            reportMetricsWithPresentTime();\n            {  // acquire lock\n                std::lock_guard lock(mLastFrameMetricsInfosMutex);\n                FrameMetricsInfo& next = mLastFrameMetricsInfos.next();\n                next.frameInfo = mCurrentFrameInfo;\n                next.frameNumber = frameCompleteNr;\n                next.surfaceId = mSurfaceControlGenerationId;\n            }  // release lock\n        } else {\n            mCurrentFrameInfo->markFrameCompleted();\n            mCurrentFrameInfo->set(FrameInfoIndex::GpuCompleted)\n                    = mCurrentFrameInfo->get(FrameInfoIndex::FrameCompleted);\n            if (com::android::graphics::libgui::flags::debug_gpu_present_times()) {\n                const auto vsyncId = mCurrentFrameInfo->get(FrameInfoIndex::FrameTimelineVsyncId);\n                ATRACE_FORMAT_INSTANT(\n                        \"450351988: %s setting GpuCompleted to FrameCompleted vsyncId=%\" PRId64\n                        \" frameNumber=%\" PRIu64 \" time=%\" PRId64 \")\",\n                        __func__, vsyncId, frameCompleteNr,\n                        mCurrentFrameInfo->get(FrameInfoIndex::FrameCompleted));\n            }\n            std::scoped_lock lock(mFrameInfoMutex);\n            mJankTracker.finishFrame(*mCurrentFrameInfo, mFrameMetricsReporter, frameCompleteNr,\n                                     mSurfaceControlGenerationId);\n        }\n    }",
+      "note": "didSwap 才把 mFrameCommitCallbacks 以 didProduceBuffer=true 调掉；requireSwap 分支里 mExpectSurfaceStats 决定 jank 是由 SF 回传统计收尾（reportMetricsWithPresentTime）还是当场用 markFrameCompleted + JankTracker::finishFrame 收尾。"
+    },
+    {
+      "file": "base/libs/hwui/pipeline/skia/SkiaPipeline.cpp",
+      "symbol": "SkiaPipeline::getFrameTimestamps",
+      "lines": "590-625",
+      "code": "int SkiaPipeline::getFrameTimestamps(uint64_t frameNumber, nsecs_t* outRequestedPresentTime,\n                                     nsecs_t* outAcquireTime, nsecs_t* outLatchTime,\n                                     nsecs_t* outFirstRefreshStartTime,\n                                     nsecs_t* outLastRefreshStartTime,\n                                     nsecs_t* outGpuCompositionDoneTime,\n                                     nsecs_t* outDisplayPresentTime, nsecs_t* outDequeueReadyTime,\n                                     nsecs_t* outReleaseTime) {\n    ANativeWindow* anw = getSurface();\n    if (!anw) {\n        return -1;\n    }\n    const bool debugGpuPresentTimes =\n            com::android::graphics::libgui::flags::debug_gpu_present_times() &&\n            outDisplayPresentTime;\n    nsecs_t tempAcquireTime;\n    nsecs_t* pAcquireTime =\n            debugGpuPresentTimes && !outAcquireTime ? &tempAcquireTime : outAcquireTime;\n\n    int result = native_window_get_frame_timestamps(\n            anw, frameNumber, outRequestedPresentTime, pAcquireTime, outLatchTime,\n            outFirstRefreshStartTime, outLastRefreshStartTime, outGpuCompositionDoneTime,\n            outDisplayPresentTime, outDequeueReadyTime, outReleaseTime);\n    if (debugGpuPresentTimes) {\n        ATRACE_FORMAT_INSTANT(\"450351988: SkiaPipeline::getFrameTimestamps: frameNumber=%\" PRId64\n                              \" presentTime=%\" PRId64 \" acquireFence=%\" PRId64,\n                              frameNumber, *outDisplayPresentTime, *pAcquireTime);\n    }\n    return result;\n}\n\nvoid SkiaPipeline::setFrameTimelineInfo(const struct ANativeWindowFrameTimelineInfo& info) {\n    ANativeWindow* anw = getSurface();\n    if (anw) {\n        native_window_set_frame_timeline_info(anw, info);\n    }\n}",
+      "note": "读取侧与写入侧并排：getFrameTimestamps 通过 native_window_get_frame_timestamps 取九个时间戳（含 displayPresent），setFrameTimelineInfo 把 vsyncId/frameNumber 写回窗口，两者共同构成 FrameTimeline 的应用侧接口。"
+    },
+    {
+      "file": "native/libs/gui/SurfaceComposerClient.cpp",
+      "symbol": "ON_COMPLETE",
+      "lines": "537-563",
+      "code": "        // handle on complete callbacks\n        for (const auto& callbackId : transactionStats.callbackIds) {\n            if (callbackId.type != CallbackId::Type::ON_COMPLETE) {\n                continue;\n            }\n            auto& [callbackFunction, callbackSurfaceControls] = callbacksMap[callbackId];\n            if (!callbackFunction) {\n                ALOGE(\"cannot call null callback function, skipping\");\n                continue;\n            }\n            std::vector<SurfaceControlStats> surfaceControlStats;\n            for (const auto& surfaceStats : transactionStats.surfaceStats) {\n                surfaceControlStats\n                        .emplace_back(callbacksMap[callbackId]\n                                              .surfaceControls[surfaceStats.surfaceControl],\n                                      transactionStats.latchTime, surfaceStats.acquireTimeOrFence,\n                                      transactionStats.presentFence,\n                                      surfaceStats.previousReleaseFence, surfaceStats.transformHint,\n                                      surfaceStats.eventStats,\n                                      surfaceStats.currentMaxAcquiredBufferCount,\n                                      surfaceStats.cornerRadii);\n                if (callbacksMap[callbackId].surfaceControls[surfaceStats.surfaceControl] &&\n                    surfaceStats.transformHint.has_value()) {\n                    callbacksMap[callbackId]\n                            .surfaceControls[surfaceStats.surfaceControl]\n                            ->setTransformHint(*surfaceStats.transformHint);\n                }",
+      "note": "ON_COMMIT 之外的完整回调：用 latchTime、acquireTimeOrFence、presentFence、previousReleaseFence 等组装 SurfaceControlStats，并顺手更新 transformHint。presentFence 就是这个结构体带回来的。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "DrawFrameTask::mFrameCallback / mFrameCommitCallback / mFrameCompleteCallback",
+      "type": "std::function<...> ×3（DrawFrameTask.h:130-132）",
+      "desc": "三条语义不同的回调：mFrameCallback 是异步的 FrameDrawingCallback 且返回值是 FrameCommitCallback；mFrameCommitCallback 是直接的 didProduceBuffer 回调；mFrameCompleteCallback 只表示 RT 本次尝试结束，不代表有帧。"
+    },
+    {
+      "name": "CanvasContext::mFrameCommitCallbacks",
+      "type": "std::vector<std::function<void(bool)>>（CanvasContext.h:408）",
+      "desc": "本帧待触发的 commit 回调集合；draw 成功以 true 调、跳过帧以 false 调，调完 clear()。addFrameCommitListener 可在 RT 任意位置追加。"
+    },
+    {
+      "name": "FrameCommitWrapper",
+      "type": "JNI 包装类（android_graphics_HardwareRenderer.cpp:136-155）",
+      "desc": "持有 Java FrameCommitCallback 的 global ref，onFrameCommit(didProduceBuffer) 里做 ATRACE_FORMAT(\"frameCommit success=%d\") 后 CallVoidMethod，随后 releaseObject()，因此每次回调都需要重新注册。"
+    },
+    {
+      "name": "CallbackId::Type",
+      "type": "ON_COMMIT / ON_COMPLETE（ITransactionCompletedListener.h）",
+      "desc": "决定回调时机：ON_COMMIT 在事务被应用后即可发送，ON_COMPLETE 要等到 presentFence 可用；同一 CallbackId 在多笔合并事务中只回调一次（callbacksMap.erase）。"
+    },
+    {
+      "name": "SurfaceControlStats::presentFence / latchTime",
+      "type": "sp<Fence> / nsecs_t",
+      "desc": "applied 与 present 两个事实的载体；latchTime 是 SF 应用该事务的时间，presentFence 在该帧真正 present 后 signal。二者都只在客户端 ON_COMPLETE 回调里可见。"
+    },
+    {
+      "name": "FrameInfoIndex::FrameCompleted / GpuCompleted / DisplayPresentTime",
+      "type": "nsecs_t",
+      "desc": "jank 判定的三个终点：FrameCompleted 是 RT 侧完成（有 SurfaceControl 时被 SF 的 acquire 统计覆盖为 max），GpuCompleted 用于与 FrameDeadline 比较，DisplayPresentTime 由 getFrameTimestamps 回填。"
+    },
+    {
+      "name": "JankTracker::mNextFrameStartUnstuffed",
+      "type": "nsecs_t",
+      "desc": "用于识别三缓冲/ stuffing 的“下一帧应在何时开始”；jank 时按 GpuCompleted 反推，提前开始则把本帧记成 kHighInputLatency 而不是 kMissedDeadline。"
+    },
+    {
+      "name": "CanvasContext::mExpectSurfaceStats",
+      "type": "bool",
+      "desc": "由 setSurfaceControl() 决定：为真时 jank 收尾走 reportMetricsWithPresentTime + onSurfaceStatsAvailable，为假时走 markFrameCompleted + GpuCompleted=FrameCompleted，两条路径的 FrameCompleted 语义不同。"
+    },
+    {
+      "name": "TimeLord::mFrameVsyncId / mFrameDeadline",
+      "type": "int64_t",
+      "desc": "vsyncReceived() 只在 intendedVsync 前进时更新，computeFrameTimeNanos() 会把落后多个 interval 的 vsync 重新对齐（与 Choreographer 同逻辑），因此 FrameInfo 里的 Vsync 与 vsyncId 可能短暂不一致。"
+    },
+    {
+      "name": "HintSessionWrapper::mLastTargetWorkDuration",
+      "type": "int64_t",
+      "desc": "updateTargetWorkDuration() 会乘 Properties::targetCpuTimePercentage 并做 sanity check 后才下发到 APerformanceHint，避免把异常 WorkloadTarget 灌给 PowerHAL；它是 ADPF 观测与 jank 归因的交叉验证点。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "DrawFrames <vsyncId>",
+      "value": "ATRACE_FORMAT，DrawFrameTask.cpp:91",
+      "desc": "RenderThread 一次 draw 尝试的总切片，含 syncFrameState、draw、swap；与 FrameTimeline 的 vsyncId 直接对齐，是 RT 侧主锚点。"
+    },
+    {
+      "name": "frameCommit success=%d",
+      "value": "ATRACE_FORMAT，android_graphics_HardwareRenderer.cpp:148",
+      "desc": "didProduceBuffer 的原始值直接进 trace；success=0 即“这一拍没产出 buffer”，与 SkippedFrameReason 配合能区分是没东西画还是没 buffer。"
+    },
+    {
+      "name": "reportMetricsWithPresentTime",
+      "value": "ATRACE_CALL，CanvasContext.cpp:945",
+      "desc": "回填 DisplayPresentTime 并上报 FrameMetrics 的区间；它晚于该帧若干拍，trace 位置与 frameNumber 不对应，需要看 instant 日志里的 frameNumber。"
+    },
+    {
+      "name": "TransactionCallbackInvoker::sendCallbacks",
+      "value": "SFTRACE_NAME，TransactionCallbackInvoker.cpp:277",
+      "desc": "SF 侧回传 latchTime/presentFence 的切面；与客户端 onTransactionCompleted 成对，用来量 applied→present 的跨进程延迟。"
+    },
+    {
+      "name": "dumpsys gfxinfo framestats / frametimeline",
+      "value": "FrameMetrics / FrameTimeline",
+      "desc": "framestats 给出每帧各阶段时间戳，frametimeline 给出 jankType/presentType；janky 比例来自 JankTracker 的累计统计，是验证归因是否正确的最终依据。"
+    },
+    {
+      "name": "dumpsys SurfaceFlinger --latency <layer>",
+      "value": "expected/actual present 直方图",
+      "desc": "直接看 desiredPresentTime 与实际 present 的偏离，判断晚归因于应用提交晚还是 SF 排期。"
+    },
+    {
+      "name": "Perfetto：Choreographer#doFrame / DrawFrames / SurfaceFlinger 泳道",
+      "value": "trace 对齐",
+      "desc": "按 vsyncId 对齐三条泳道才能区分 kSlowUI、kSlowSync、kSlowRT、kMissedDeadline；只看一条泳道容易错误归因。"
+    },
+    {
+      "name": "ADPF 的 actual work duration",
+      "value": "APerformanceHint_reportActualWorkDuration",
+      "desc": "由 CanvasContext::draw 计算的 actualDuration（已扣 syncDelay、dequeue、idle），用于与 jank 数据交叉验证 CPU 是否被限频。"
+    }
+  ],
+  "pitfalls": [
+    "didProduceBuffer=true 只表示这一拍产生了新 buffer，既不代表 SF 已 latch，更不代表已上屏；present 必须看 SurfaceControlStats::presentFence 或 DisplayPresentTime。",
+    "FrameCommitCallback 在 RenderThread（或 JNI 调用线程）上执行，不是 UI 线程；在回调里做重活会直接拉长 RT 帧时间，而且它持有的 global ref 只活一次。",
+    "FrameDrawingCallback.onFrameDraw() 是异步的、必须返回 FrameCommitCallback 才能知道结果；在 onFrameDraw 里同步读 didProduceBuffer 永远拿不到本帧答案。",
+    "FrameCompleted 的语义取决于 mExpectSurfaceStats：有 SurfaceControl 时由 SF 的 acquire 统计覆盖为 max(...)，没有时等于 swap 完成时刻。跨设备/跨路径比较 jank 数据前先确认这一点。",
+    "reportMetricsWithPresentTime 需要 mLastFrameMetricsInfos 环已满才处理队首帧，present 时间天然滞后若干帧；启动阶段或刚 setSurface 后 framestats 缺 present 列属正常。",
+    "getFrameTimestamps 以 frameNumber 为键，一旦 FrameTimeline 配对失败（mPendingFrameTimelines 被 pop 掉）就查不到，返回的 presentTime 可能是 0；不要把 0 当成真实的 present 时刻。",
+    "JankTracker 会丢弃总时长超过 10 秒的帧（ANR 级别）并豁免 SurfaceCanvas 帧，所以“零 jank”不代表没有卡顿，只代表没有计入统计。"
+  ],
+  "traceTags": [
+    "DrawFrames",
+    "frameCommit success=%d",
+    "Drawing",
+    "flush commands",
+    "reportMetricsWithPresentTime",
+    "TransactionCallbackInvoker::sendCallbacks",
+    "SurfaceFlinger::setTransactionState",
+    "450351988"
+  ],
+  "next": ""
+}

@@ -1,0 +1,44 @@
+{
+  "step": "s18",
+  "title": "Surface::queueBufferImpl",
+  "tldr": "持锁反查 slot、组装 QueueBufferInput，放锁后才调 producer→queueBuffer。",
+  "why": "这是 RT 侧唯一把 buffer 交给 BufferQueue 的出口，也是唯一可能「莫名其妙卡住」的地方：producer->queueBuffer 在队列满时会等 release fence（第 19 步），所以必须在放锁之后调，否则持着 mMutex 等会把这个 Surface 上所有 dequeue/queue/属性变更一起冻住。元数据也全在这里组装：crop 算错会放大或留黑边，transform 没补会让画面转 90 度，surfaceDamage 翻错方向就是局部残影，fence 传错则让 SF 读到正在写的 buffer。漏了任何一项，后面几层都没有机会再纠正。",
+  "concepts": [
+    { "term": "slot", "text": "BufferQueue 里 buffer 的槽位号。Surface 侧必须拿 buffer 指针/handle 反查，不能跨帧缓存。" },
+    { "term": "QueueBufferInput", "text": "一次入队的全部元数据：timestamp、dataspace、crop、scalingMode、transform、fence、stickyTransform、surfaceDamage。" },
+    { "term": "临时放锁", "text": "注释（1378-1385）给的理由：consumer 回调可能在 queueBuffer 的栈里同步打回本进程再进 Surface，持锁即死锁。" },
+    { "term": "bufferReplaced", "text": "producer 返回的标志：队列里未消费的旧帧被这一帧顶掉，旧帧永远不会上屏（第 34 步）。" }
+  ],
+  "walk": [
+    { "call": "status_t Surface::queueBufferImpl(const sp<GraphicBuffer>& buffer, const sp<Fence>& fence, const SurfaceQueueBufferInput* maybeSurfaceInput, SurfaceQueueBufferOutput* surfaceOutput)", "ref": "native/libs/gui/Surface.cpp:1330", "what": "入参是驱动给的 buffer 与 fence；这个 fence 就是消费者要等的 acquire fence。" },
+    { "call": "Mutex::Autolock lock(mMutex);", "ref": "native/libs/gui/Surface.cpp:1341", "what": "反查 slot 和组 input 都要读 mSlots/mCrop/mTransform，必须持锁。" },
+    { "call": "slot = getSlotFromBufferLocked(buffer);", "ref": "native/libs/gui/Surface.cpp:1351", "what": "按 buffer 指针/handle/id 反查槽位（实现见 1206），查不到就是 BAD_VALUE。" },
+    { "call": "getQueueBufferInputLocked(buffer, fence, mTimestamp, &igbpInput);", "ref": "native/libs/gui/Surface.cpp:1372", "what": "组 QueueBufferInput：crop 求交、transform 拼 sticky、HDR、damage 翻转。" },
+    { "call": "igbpInput.slot = slot;", "ref": "native/libs/gui/Surface.cpp:1375", "what": "slot 最后写进 input；锁的作用域到此结束（1376）。" },
+    { "call": "status_t err = mGraphicBufferProducer->queueBuffer(slot, igbpInput, &igbpOutput);", "ref": "native/libs/gui/Surface.cpp:1386", "what": "放锁后调 producer：这里可能等 release 很久，也是回调重入本进程的地方。" },
+    { "call": "if (igbpOutput.bufferReplaced) {", "ref": "native/libs/gui/Surface.cpp:1390", "what": "旧帧被顶掉的信号，记进 mLastReplacedFrameId 给上层。" },
+    { "call": "onBufferQueuedLocked(slot, fence, igbpOutput);", "ref": "native/libs/gui/Surface.cpp:1398", "what": "重新持锁更新 Surface 自己的簿记：帧号、transformHint、consumer 是否落后。" },
+    { "call": "mDequeuedSlots.erase(slot);", "ref": "native/libs/gui/Surface.cpp:1430", "what": "这一 slot 不再处于「已 dequeue 未 queue」状态。" }
+  ],
+  "state": [
+    { "field": "mDequeuedSlots", "before": "含该 slot（dequeueBuffer 时登记）", "after": "erase(slot)（1430）", "note": "断连/释放时靠它判断要不要保留引用（freeUndequeuedBuffersLocked，Surface.cpp:2878）" },
+    { "field": "mSlots[slot].buffer / requiresFreeOnReturn", "before": "持有 buffer 引用，可能带「用完要释放」标记", "after": "需要释放时置空并清标记（1431-1434）", "note": "只有 requiresFreeOnReturn 为真才丢引用，否则引用继续留着" },
+    { "field": "mLastFrameNumber / mNextFrameNumber", "before": "上一帧的号与下一帧的号", "after": "mLastFrameNumber=旧 mNextFrameNumber，mNextFrameNumber=output.nextFrameNumber（1449/1453）", "note": "帧号由 producer 发，不是 app 自己加一" },
+    { "field": "mLastQueueDuration", "before": "上一帧的耗时", "after": "systemTime()-now（1393），即 producer->queueBuffer 的耗时", "note": "now 在放锁前取（1377），所以不含组 input 的时间" },
+    { "field": "mDirtyRegion / mConsumerRunningBehind", "before": "本帧 damage；上一帧的落后标记", "after": "INVALID_REGION（1465）；numPendingBuffers>=2 时 true（1461）", "note": "damage 用完即清，避免下一帧被复用" }
+  ],
+  "threads": "RenderThread（第 17 步 EGL 驱动的同步回调栈）。producer->queueBuffer 内部会通知 app 侧消费者（BLASTBufferQueue::onFrameAvailable），回调可能就在同一个调用栈里同步发生；那条路径会再进 Surface（dequeue/release），而 mMutex 是非递归的，所以 1386 必须在锁外调，否则同线程直接自锁死。",
+  "pitfalls": [
+    "1386 一定要在锁外：注释（1378-1385）列的就是 Surface::queueBuffer → onFrameAvailable → 立即 acquire/release → Surface::dequeueBuffer 这条重入链。把 producer 调用挪进锁内，症状不是报错而是整机卡住，栈上停在 Mutex::lock。",
+    "slot 每次都要反查（1351），不能缓存：buffer 可能被 bufferReplaced 顶掉、被 cancel、或者来自 shared buffer 模式，缓存 slot 会把这一帧塞进错的槽。",
+    "getQueueBufferInputLocked 里对 surfaceDamage 做了 y 翻转与旋转补偿（1265-1326），而 mDirtyRegion 存的是 OpenGL 约定（2950）。想验证 damage 是否正确，必须看 QueueBufferInput 里的最终区域，不是 mDirtyRegion。",
+    "mLeakedBuffers 分支（1343-1349）在 !mIsConnected 时直接 return OK：表面成功，实际什么都没入队。排查「queueBuffer 成功但 SF 无帧」时先看这里有没有打 SURF_LOGE。",
+    "mSharedBufferSlot 且 mSharedBufferHasBeenQueued 时（1355）同样返回 OK 不入队——shared buffer 模式下同一 slot 只交一次。"
+  ],
+  "debug": [
+    "Surface.cpp:1482 有 ATRACE_CALL、1483 有 SURF_LOGV，配合 1487 的重载可以确认走的是哪条 queueBuffer",
+    "adb shell dumpsys gfxinfo <pkg> framestats 的 queueBuffer 列就是 mLastQueueDuration（1393）的采样，能区分是 CPU 组包慢还是等 slot 慢",
+    "perfetto：RT 线程 swap 之后紧跟 queueBuffer 相关切片；若这里出现长时间阻塞，直接对照第 19 步 waitForFreeSlotThenRelock"
+  ],
+  "next": "第 19 步「BufferQueueProducer::queueBuffer」：input 组装完毕，持生产者锁把 buffer 真正放进队列，队列满时在那里等 release。"
+}

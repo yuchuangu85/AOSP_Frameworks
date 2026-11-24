@@ -1,0 +1,52 @@
+{
+  "ok": true,
+  "artifact": "index.html",
+  "artifactSha256": "09be973e35327f7743894bf09dd534209991e016a976b4d5f29bd2f73bda8d48",
+  "browser": "154.0.8037.98",
+  "viewports": [
+    1440,
+    768,
+    390,
+    360
+  ],
+  "scenarioChecks": 28,
+  "checks": [
+    "scenario outcomes",
+    "step navigation",
+    "event list",
+    "scrubbing",
+    "pre-ANR toggle",
+    "ready timing",
+    "event timing",
+    "app switch before event",
+    "play/pause",
+    "speed",
+    "playhead-bound packet motion",
+    "source anchors",
+    "theme persistence",
+    "text bounds",
+    "offline requests"
+  ],
+  "screenshots": [
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-1440-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-report-1440.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-1440-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-scene-1440.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-768-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-768-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-390-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-report-390.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-390-light.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-scene-390.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-360-dark.png",
+    "/var/folders/zy/n6p6rygx2hzdwhgfqcj5n9jm0000gn/T/no-focus-anr-360-light.png"
+  ],
+  "pageErrors": [],
+  "externalRequests": [],
+  "limits": [
+    "local illustrative model only",
+    "no Android device or vendor behavior validation",
+    "no actual ANR dialog validation",
+    "article body unavailable"
+  ]
+}

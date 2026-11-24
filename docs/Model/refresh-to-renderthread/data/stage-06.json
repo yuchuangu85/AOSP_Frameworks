@@ -1,0 +1,185 @@
+{
+  "id": "stage-06",
+  "num": 6,
+  "title": "第 6 拍：measure 与 layout",
+  "subtitle": "用 MeasureSpec 把窗口约束传下去算出尺寸，再用两趟 layout 把位置定下来——多一趟就多一份掉帧风险",
+  "lane": "UI",
+  "durationHint": "量级：约 0.3~3 ms（与 View 树节点数成正比；嵌套过深或 wrap_content 反复测量时可达数毫秒）",
+  "summary": "performTraversals 在 relayout 之前先调 measureHierarchy（base/core/java/android/view/ViewRootImpl.java:3625），它用 getRootMeasureSpec（5704）把窗口约束翻译成根节点的 MeasureSpec：MATCH_PARENT 给 EXACTLY(windowSize)，WRAP_CONTENT 给 AT_MOST(windowSize)，其它给 EXACTLY(指定值)；然后 performMeasure（5472）在一段 \"measure\" trace 里调 mView.measure，View.measure（base/core/java/android/view/View.java:28787）先查 mMeasureCache（key 是宽高 spec 拼成的 long），未命中才走 onMeasure，并置 PFLAG_LAYOUT_REQUIRED。relayout 回来后如果 frame 变了会再 measure 一次，随后 performLayout（5538）在一段 \"layout\" trace 里调 host.layout(0,0,mw,mh)；View.layout（View.java:26040）先 setFrame、再 onLayout。若 layout 期间有 view 调 requestLayout，performLayout 会清标志、置 mHandlingLayoutInLayoutRequest、再跑第二趟 measure+layout；第二趟里还在请求的，只能 post 到下一帧。它同时也是 View 世界里唯一能“用约束换结果”的地方：同样的像素尺寸，可以由完全不同的树、以完全不同的代价算出来。它本质上是一场关于预算的分配：预算越紧，越要避免无谓的第二趟。",
+  "callchain": [
+    "ViewRootImpl.performTraversals()",
+    "ViewRootImpl.measureHierarchy()",
+    "ViewRootImpl.getRootMeasureSpec()",
+    "ViewRootImpl.performMeasure()",
+    "View.measure()",
+    "View.onMeasure()",
+    "ViewGroup.measureChildren()",
+    "ViewGroup.measureChild()",
+    "ViewRootImpl.performLayout()",
+    "ViewRootImpl.requestLayoutDuringLayout()",
+    "View.layout()",
+    "View.onLayout()"
+  ],
+  "sections": [
+    {
+      "heading": "MeasureSpec 从哪来：窗口约束翻译成 32 位整数",
+      "html": "<p>measure 的根约束来自 <code>measureHierarchy</code> 里的两次 <code>getRootMeasureSpec</code>（ViewRootImpl.java:3651-3653、3679-3682）。<code>getRootMeasureSpec(windowSize, measurement, privateFlags)</code>（5704-5730）的映射规则是：<code>MATCH_PARENT</code> → <code>MeasureSpec.makeMeasureSpec(windowSize, EXACTLY)</code>；<code>WRAP_CONTENT</code> → <code>AT_MOST(windowSize)</code>；其它具体数值 → <code>EXACTLY(rootDimension)</code>。MeasureSpec 本身把 mode 放在高 2 位、size 放在低 30 位，View.measure 里就把它当成一个 long 的 key 用（<code>(long) widthMeasureSpec &lt;&lt; 32 | heightMeasureSpec</code>，View.java:28798）。</p><p>为什么 WRAP_CONTENT 的对话框要测两次（3637-3675）：大屏上不希望一个只有一行文字的对话框拉满全屏，所以先按 <code>config_prefDialogWidth</code> 的小尺寸测一次，若结果带 <code>MEASURED_STATE_TOO_SMALL</code> 就取 <code>(baseSize+desiredWindowWidth)/2</code> 再测一次；两次都不满足才落入 <code>!goodMeasure</code> 分支用整个窗口尺寸测（3678-3695）。这是“measure 可能跑多次”的第一个来源。</p>"
+    },
+    {
+      "heading": "performMeasure 与 View.measure：缓存、forceLayout 与补测",
+      "html": "<p><code>performMeasure</code>（5472-5485）非常薄：包一段名为 <code>\"measure\"</code> 的 trace、调 <code>mView.measure(childWidthMeasureSpec, childHeightMeasureSpec)</code>，再把结果存进 <code>mMeasuredWidth/mMeasuredHeight</code>（供 relayout 的 <code>requestedWidth/Height</code> 使用），并清掉 <code>mViewMeasureDeferred</code>。真正复杂的是 <code>View.measure</code>：</p><ul><li>先按 optical insets 调整 spec（28788-28795，只影响光学边界）。</li><li>算 <code>forceLayout</code>（看 <code>PFLAG_FORCE_LAYOUT</code>）与 <code>needsLayout</code>（spec 变了且不满足 EXACTLY 且尺寸没对上，28806-28813），二者都不成立时<strong>直接跳过 onMeasure</strong>。</li><li>查 <code>mMeasureCache</code>（<code>LongSparseLongArray</code>，key 是宽高 spec，value 是宽高结果）：命中则 <code>setMeasuredDimensionRaw</code> 并置 <code>PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT</code>（28845-28850），让 <code>View.layout</code> 在真正摆放前补一次 <code>onMeasure</code>（View.java:26041-26050）。</li><li>未命中才带 <code>onMeasure</code> trace 调 <code>onMeasure</code>，最后校验 <code>PFLAG_MEASURED_DIMENSION_SET</code> 是否被置位，否则抛 IllegalStateException（28854-28859）。</li></ul><p>这些标志位（<code>PFLAG_FORCE_LAYOUT</code>/<code>PFLAG_LAYOUT_REQUIRED</code>/<code>PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT</code>）就是“同一帧里 measure 和 layout 如何互相补偿”的全部机制。</p>"
+    },
+    {
+      "heading": "layout：先 setFrame 再 onLayout，两趟上限怎么来的",
+      "html": "<p><code>performLayout</code>（5538-5611）先置 <code>mInLayout = true</code>，包一段名为 <code>\"layout\"</code> 的 trace，然后 <code>host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight())</code>（5554）。<code>View.layout</code>（View.java:26040-26100）做三件事：<strong>（1）</strong> 若有 <code>PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT</code> 先补测（26041-26050）；<strong>（2）</strong> <code>setOpticalFrame</code> 或 <code>setFrame</code> 把 l/t/r/b 落到 <code>mLeft/mTop/... </code> 并返回是否变化（26057-26058）；<strong>（3）</strong> 若 changed 或 <code>PFLAG_LAYOUT_REQUIRED</code> 还在，就调 <code>onLayout(changed, l, t, r, b)</code> 并清标志（26060-26077）。<code>ViewGroup.layout</code>（ViewGroup.java:6590-6599）多一层保护：如果正在做 transition 且 <code>isChangingLayout()</code>，就把这次 layout 记成 <code>mLayoutCalledWhileSuppressed</code>，等 transition 结束再补。</p><p>两趟上限：回到 performLayout，<code>host.layout</code> 返回后若 <code>mLayoutRequesters</code> 非空（说明 layout 期间有人调了 requestLayout），用 <code>getValidLayoutRequesters</code> 过滤出仍有 <code>PFLAG_FORCE_LAYOUT</code> 的 view，<strong>置 <code>mHandlingLayoutInLayoutRequest = true</code> 后重新 requestLayout + measureHierarchy + host.layout</strong>（5565-5584）。这是第二趟，也是最后一趟：第二趟里任何新的请求都会被 <code>requestLayoutDuringLayout</code> 返回 false（走下一帧），并在 5588-5604 被 <code>getRunQueue().post(...)</code> 推迟。源码注释明确写了“posted to the next frame to avoid possible infinite loops”。</p>"
+    },
+    {
+      "heading": "requestLayoutDuringLayout：为什么 layout 里 requestLayout 是危险动作",
+      "html": "<p><code>requestLayoutDuringLayout</code>（5519-5536）的逻辑就是两句话：<strong>（1）</strong> 把发起者记进 <code>mLayoutRequesters</code>；<strong>（2）</strong> 若当前<strong>不在</strong>第二趟（<code>!mHandlingLayoutInLayoutRequest</code>）就放行，让它在第二趟里被处理；若已经在第二趟，则返回 false，<code>View.requestLayout</code> 随后会把它 post 到下一帧。</p><p>所以 <code>requestLayout</code> 在 layout 中并非被禁止，而是被“限流”：一帧最多两趟 measure/layout，超过的推到下一帧。这条约束是 Android 保证 layout 收敛（不会无限重排）的核心。副作用是：如果某个自定义 ViewGroup 每趟都让子 View 请求 layout，它会稳定地在下一帧再触发一次 traversal，形成持续两帧周期的高开销。</p>"
+    },
+    {
+      "heading": "measure/layout 与 relayout、draw 的先后关系",
+      "html": "<p>performTraversals 里这一拍被夹在两件事中间：前面是 relayout（4241），后面是 draw（4903 调 <code>performDraw</code>）。完整顺序是：</p><ol><li><code>measureHierarchy</code>（4099）用旧 frame 推的 <code>desiredWindowWidth/Height</code> 先测一版；</li><li><code>relayoutWindow</code>（4241）把尺寸交给 WMS 并取回真实 frame；</li><li>frame 变了就再 <code>performMeasure</code>（4556-4599，含 <code>lp.horizontalWeight/verticalWeight</code> 情形下的“再测一次”）；</li><li><code>performLayout</code>（4638）用最终 <code>mWidth/mHeight</code> 摆放；</li><li><code>performDraw</code>（4903）录制 DisplayList。</li></ol><p>这意味着 <strong>measure/layout 的输入可能迟于最开始那次 measure</strong>，一次 traversal 里 measure 跑 2~3 次是正常的；判断“测量是否浪费”要看是否有重复的 <code>measure</code> slice 且 spec 未变（那才是 <code>mMeasureCache</code> 没挡住或 <code>PFLAG_FORCE_LAYOUT</code> 被误设）。</p>"
+    },
+    {
+      "heading": "deadline：这一拍为什么最容易吃掉 jank 预算",
+      "html": "<p>measure 与 layout 都在 UI 线程、都在 <code>FrameInfo[PERFORM_TRAVERSALS_START]</code> 与 <code>FrameInfo[DRAW_START]</code> 之间，必须赶在 <code>FrameInfo[FRAME_DEADLINE]</code> 之前结束，否则这一帧会被 FrameTimeline 记为 jank。它们的耗时特征与绘制不同：</p><ul><li><strong>与节点数线性相关</strong>：<code>ViewGroup.measureChildren</code>（ViewGroup.java:7111-7123）对每个非 GONE 子 view 调 <code>measureChild</code>，后者用 <code>getChildMeasureSpec</code> 扣掉 padding 再递归；布局嵌套越深，递归越深。</li><li><strong>WRAP_CONTENT 是放大器</strong>：它会让父容器对子 view 用 AT_MOST 测一遍、必要时再按实际尺寸测第二遍，子树的 measure 次数翻倍。</li><li><strong>两趟 layout 是乘法项</strong>：第二趟会重新 measureHierarchy + layout 整棵树，等于一帧里跑了两遍 traversal 的主体。</li></ul><p>因此线上“UI 线程卡在 measure/layout”的典型原因不是代码慢，而是树太深、wrap_content 太多、或者有 ViewGroup 反复触发 requestLayout。</p>"
+    },
+    {
+      "heading": "排障：怎么确认是 measure 还是 layout 在吃时间",
+      "html": "<ul><li>trace 里 <code>measure</code> 与 <code>layout</code> 是一对兄弟 slice（5476、5552），先看哪个更长；再往下看 <code>onMeasure</code>/<code>onLayout</code>（ViewTraversalTracingStrings.java:49-51 定义的 tag）定位到具体 View 类名。</li><li>日志里出现 <em>“requestLayout() improperly called by … during layout: running second layout pass”</em>（5575-5576）就说明有一趟额外的 measure+layout，直接对应一次性能回退。</li><li>第二趟仍不收敛时会出现 <em>“… during second layout pass: posting in next frame”</em>（5598-5599），意味着每帧都会重复一次 traversal，属于严重问题。</li><li>对比 <code>FrameInfo[PERFORM_TRAVERSALS_START]</code> 与 <code>FrameInfo[DRAW_START]</code>（FrameInfo.java:83-86）可得到“measure+layout+其余逻辑”的总时长，与 <code>measure</code>+<code>layout</code> 两个 slice 的差值就是 traversal 里其它开销。</li></ul>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "measureHierarchy",
+      "lines": "3625-3669",
+      "code": "    private boolean measureHierarchy(final View host, final WindowManager.LayoutParams lp,\n            final Resources res, final int desiredWindowWidth, final int desiredWindowHeight,\n            boolean forRootSizeOnly) {\n        int childWidthMeasureSpec;\n        int childHeightMeasureSpec;\n        boolean windowSizeMayChange = false;\n\n        if (DEBUG_ORIENTATION || DEBUG_LAYOUT) Log.v(mTag,\n                \"Measuring \" + host + \" in display \" + desiredWindowWidth\n                + \"x\" + desiredWindowHeight + \"...\");\n\n        boolean goodMeasure = false;\n        if (lp.width == ViewGroup.LayoutParams.WRAP_CONTENT) {\n            // On large screens, we don't want to allow dialogs to just\n            // stretch to fill the entire width of the screen to display\n            // one line of text.  First try doing the layout at a smaller\n            // size to see if it will fit.\n            final DisplayMetrics packageMetrics = res.getDisplayMetrics();\n            res.getValue(com.android.internal.R.dimen.config_prefDialogWidth, mTmpValue, true);\n            int baseSize = 0;\n            if (mTmpValue.type == TypedValue.TYPE_DIMENSION) {\n                baseSize = (int)mTmpValue.getDimension(packageMetrics);\n            }\n            if (DEBUG_DIALOG) Log.v(mTag, \"Window \" + mView + \": baseSize=\" + baseSize\n                    + \", desiredWindowWidth=\" + desiredWindowWidth);\n            if (baseSize != 0 && desiredWindowWidth > baseSize) {\n                childWidthMeasureSpec = getRootMeasureSpec(baseSize, lp.width, lp.privateFlags);\n                childHeightMeasureSpec = getRootMeasureSpec(desiredWindowHeight, lp.height,\n                        lp.privateFlags);\n                performMeasure(childWidthMeasureSpec, childHeightMeasureSpec);\n                if (DEBUG_DIALOG) Log.v(mTag, \"Window \" + mView + \": measured (\"\n                        + host.getMeasuredWidth() + \",\" + host.getMeasuredHeight()\n                        + \") from width spec: \" + MeasureSpec.toString(childWidthMeasureSpec)\n                        + \" and height spec: \" + MeasureSpec.toString(childHeightMeasureSpec));\n                if ((host.getMeasuredWidthAndState()&View.MEASURED_STATE_TOO_SMALL) == 0) {\n                    goodMeasure = true;\n                } else {\n                    // Didn't fit in that size... try expanding a bit.\n                    baseSize = (baseSize+desiredWindowWidth)/2;\n                    if (DEBUG_DIALOG) Log.v(mTag, \"Window \" + mView + \": next baseSize=\"\n                            + baseSize);\n                    childWidthMeasureSpec = getRootMeasureSpec(baseSize, lp.width, lp.privateFlags);\n                    performMeasure(childWidthMeasureSpec, childHeightMeasureSpec);\n                    if (DEBUG_DIALOG) Log.v(mTag, \"Window \" + mView + \": measured (\"\n                            + host.getMeasuredWidth() + \",\" + host.getMeasuredHeight() + \")\");",
+      "note": "measure 的入口之一：WRAP_CONTENT 的窗口先按 config_prefDialogWidth 小尺寸测一次，TOO_SMALL 时取中间值再测；两次都不行才落回窗口尺寸。这是“一次 traversal 里 measure 多次”的第一个来源。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "performLayout",
+      "lines": "5538-5582",
+      "code": "    private void performLayout(WindowManager.LayoutParams lp, int desiredWindowWidth,\n            int desiredWindowHeight) {\n        mScrollMayChange = true;\n        mInLayout = true;\n\n        final View host = mView;\n        if (host == null) {\n            return;\n        }\n        if (DEBUG_ORIENTATION || DEBUG_LAYOUT) {\n            Log.v(mTag, \"Laying out \" + host + \" to (\" +\n                    host.getMeasuredWidth() + \", \" + host.getMeasuredHeight() + \")\");\n        }\n\n        Trace.traceBegin(Trace.TRACE_TAG_VIEW, \"layout\");\n        try {\n            host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());\n\n            mInLayout = false;\n            int numViewsRequestingLayout = mLayoutRequesters.size();\n            if (numViewsRequestingLayout > 0) {\n                // requestLayout() was called during layout.\n                // If no layout-request flags are set on the requesting views, there is no problem.\n                // If some requests are still pending, then we need to clear those flags and do\n                // a full request/measure/layout pass to handle this situation.\n                ArrayList<View> validLayoutRequesters = getValidLayoutRequesters(mLayoutRequesters,\n                        false);\n                if (validLayoutRequesters != null) {\n                    // Set this flag to indicate that any further requests are happening during\n                    // the second pass, which may result in posting those requests to the next\n                    // frame instead\n                    mHandlingLayoutInLayoutRequest = true;\n\n                    // Process fresh layout requests, then measure and layout\n                    int numValidRequests = validLayoutRequesters.size();\n                    for (int i = 0; i < numValidRequests; ++i) {\n                        final View view = validLayoutRequesters.get(i);\n                        Log.w(\"View\", \"requestLayout() improperly called by \" + view +\n                                \" during layout: running second layout pass\");\n                        view.requestLayout();\n                    }\n                    measureHierarchy(host, lp, mView.getContext().getResources(),\n                            desiredWindowWidth, desiredWindowHeight, false /* forRootSizeOnly */);\n                    mInLayout = true;\n                    host.layout(0, 0, host.getMeasuredWidth(), host.getMeasuredHeight());",
+      "note": "layout 主体与第二趟的来源：第一趟 host.layout 之后检查 mLayoutRequesters，有遗留就清标志、置 mHandlingLayoutInLayoutRequest、重新 measureHierarchy 并再 layout 一次——一帧最多两趟。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "requestLayoutDuringLayout",
+      "lines": "5519-5536",
+      "code": "    boolean requestLayoutDuringLayout(final View view) {\n        if (view.mParent == null || view.mAttachInfo == null) {\n            // Would not normally trigger another layout, so just let it pass through as usual\n            return true;\n        }\n        if (!mLayoutRequesters.contains(view)) {\n            mLayoutRequesters.add(view);\n        }\n        if (!mHandlingLayoutInLayoutRequest) {\n            // Let the request proceed normally; it will be processed in a second layout pass\n            // if necessary\n            return true;\n        } else {\n            // Don't let the request proceed during the second layout pass.\n            // It will post to the next frame instead.\n            return false;\n        }\n    }",
+      "note": "layout 期间 requestLayout 的限流器：记录发起者；第一趟放行（留给第二趟处理），第二趟返回 false 让请求落到下一帧，避免无限重排。"
+    },
+    {
+      "file": "base/core/java/android/view/View.java",
+      "symbol": "View::measure",
+      "lines": "28798-28842",
+      "code": "        long key = (long) widthMeasureSpec << 32 | (long) heightMeasureSpec & 0xffffffffL;\n        if (mMeasureCache == null) mMeasureCache = new LongSparseLongArray(2);\n\n        final boolean forceLayout = (mPrivateFlags & PFLAG_FORCE_LAYOUT) == PFLAG_FORCE_LAYOUT;\n\n        // Optimize layout by avoiding an extra EXACTLY pass when the view is\n        // already measured as the correct size. In API 23 and below, this\n        // extra pass is required to make LinearLayout re-distribute weight.\n        final boolean specChanged = widthMeasureSpec != mOldWidthMeasureSpec\n                || heightMeasureSpec != mOldHeightMeasureSpec;\n        final boolean isSpecExactly = MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.EXACTLY\n                && MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY;\n        final boolean matchesSpecSize = getMeasuredWidth() == MeasureSpec.getSize(widthMeasureSpec)\n                && getMeasuredHeight() == MeasureSpec.getSize(heightMeasureSpec);\n        final boolean needsLayout = specChanged\n                && (sAlwaysRemeasureExactly || !isSpecExactly || !matchesSpecSize);\n\n        if (forceLayout || needsLayout) {\n            // first clears the measured dimension flag\n            mPrivateFlags &= ~PFLAG_MEASURED_DIMENSION_SET;\n\n            resolveRtlPropertiesIfNeeded();\n\n            int cacheIndex;\n            if (sUseMeasureCacheDuringForceLayoutFlagValue) {\n                cacheIndex =  mMeasureCache.indexOfKey(key);\n            } else {\n                cacheIndex = forceLayout ? -1 : mMeasureCache.indexOfKey(key);\n            }\n\n            if (cacheIndex < 0) {\n                if (isTraversalTracingEnabled()) {\n                    Trace.beginSection(mTracingStrings.onMeasure);\n                }\n                if (android.os.Flags.adpfMeasureDuringInputEventBoost()) {\n                    final boolean notifyRenderer = hasExpensiveMeasuresDuringInputEvent();\n                    if (notifyRenderer) {\n                        getViewRootImpl().notifyRendererOfExpensiveFrame(\n                                \"ADPF_SendHint: hasExpensiveMeasuresDuringInputEvent\");\n                    }\n                }\n                // measure ourselves, this should set the measured dimension flag back\n                onMeasure(widthMeasureSpec, heightMeasureSpec);\n                if (isTraversalTracingEnabled()) {\n                    Trace.endSection();",
+      "note": "View.measure 的核心：用宽高 spec 拼出 long key 查 mMeasureCache；forceLayout/needsLayout 都不成立就直接跳过；命中缓存则只 setMeasuredDimensionRaw 并置 PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT，让 layout 前补一次 onMeasure。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "MeasureSpec",
+      "type": "int（mode 高 2 位 + size 低 30 位）",
+      "desc": "EXACTLY/AT_MOST/UNSPECIFIED 三种 mode。由 getRootMeasureSpec（ViewRootImpl.java:5704-5730）为根节点生成，由 getChildMeasureSpec 为子节点生成，父容器通过它把约束下传。"
+    },
+    {
+      "name": "mMeasureCache",
+      "type": "LongSparseLongArray",
+      "desc": "View.java:28799 懒创建；key 是宽高 spec 拼接的 long（28798），value 是宽高结果（28867-28868）。命中时不再 onMeasure，只标记 PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT。"
+    },
+    {
+      "name": "PFLAG_FORCE_LAYOUT / PFLAG_LAYOUT_REQUIRED / PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT",
+      "type": "私有标志位",
+      "desc": "requestLayout 置 FORCE_LAYOUT；measure 置 LAYOUT_REQUIRED；缓存命中置 MEASURE_NEEDED_BEFORE_LAYOUT 让 layout 先补测（View.java:26041-26050）。三者共同决定 measure/layout 是否被跳过。"
+    },
+    {
+      "name": "mInLayout / mHandlingLayoutInLayoutRequest",
+      "type": "boolean",
+      "desc": "ViewRootImpl.java:1106 等。前者表示正在 layout（供 View.isInLayout 查询），后者表示已进入第二趟；只有第二趟会把新请求推到下一帧（5519-5536）。"
+    },
+    {
+      "name": "mLayoutRequesters",
+      "type": "ArrayList<View>",
+      "desc": "ViewRootImpl.java:1105。layout 期间调用 requestLayout 的 view 集合，performLayout 用它判断是否需要第二趟（5557-5582）。"
+    },
+    {
+      "name": "mViewMeasureDeferred / forRootSizeOnly",
+      "type": "boolean",
+      "desc": "measureHierarchy 在 3683-3691：根尺寸能从 spec 直接得出时先不 measure（置 mViewMeasureDeferred），等 relayout 后 frame 已知再测，避免无意义的测量。"
+    },
+    {
+      "name": "getRootMeasureSpec()",
+      "type": "static int",
+      "desc": "ViewRootImpl.java:5704-5730。MATCH_PARENT→EXACTLY(windowSize)、WRAP_CONTENT→AT_MOST(windowSize)、其它→EXACTLY(rootDimension)，是窗口约束进入 View 世界的唯一入口。"
+    },
+    {
+      "name": "getChildMeasureSpec / measureChild / measureChildren",
+      "type": "static int / protected void",
+      "desc": "ViewGroup.java:7111-7143。measureChildren 只处理非 GONE 子 view；measureChild 扣掉 padding 后用 getChildMeasureSpec 生成子 spec 再递归 measure。"
+    },
+    {
+      "name": "mMeasuredWidth / mMeasuredHeight",
+      "type": "int",
+      "desc": "ViewRootImpl.java:5482-5483 在 performMeasure 后缓存根 view 的测量结果，relayoutWindow 的 requestedWidth/Height 就来自它们（10278-10279）。"
+    },
+    {
+      "name": "windowSizeMayChange",
+      "type": "boolean",
+      "desc": "measureHierarchy 的返回值：根 view 测量结果与当前 mWidth/mHeight 不一致时置真（3692-3694），决定 performTraversals 里是否还要走 relayout 之外的尺寸处理。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "measure",
+      "value": "Trace section（ViewRootImpl.java:5476-5480）",
+      "desc": "一次 performMeasure 的完整耗时；一帧里出现多次说明有重复测量。"
+    },
+    {
+      "name": "layout",
+      "value": "Trace section（ViewRootImpl.java:5552-5609）",
+      "desc": "一次 performLayout 的耗时，包含可能存在的第二趟；与 measure 对比可判断瓶颈在哪一半。"
+    },
+    {
+      "name": "onMeasure / onLayout / onMeasureBeforeLayout",
+      "value": "Trace section，tag 见 ViewTraversalTracingStrings.java:49-51",
+      "desc": "按 View 类名细分，能定位到具体自定义控件；onMeasureBeforeLayout 出现说明 measure 缓存命中后补测。"
+    },
+    {
+      "name": "requestLayout() improperly called by … during layout: running second layout pass",
+      "value": "Log.w（ViewRootImpl.java:5575-5576）",
+      "desc": "第二趟 layout 的日志证据；出现即代表本帧多了一整趟 measure+layout。"
+    },
+    {
+      "name": "PERFORM_TRAVERSALS_START → DRAW_START",
+      "value": "FrameInfo 索引（FrameInfo.java:83-86）",
+      "desc": "measure+layout 及其它 traversal 逻辑的总时间；减去 measure/layout 两个 slice 即为其它开销。"
+    },
+    {
+      "name": "Choreographer#doTraversal / traverse 调用耗时",
+      "value": "Choreographer 侧 trace",
+      "desc": "traversal 入口，可与 measure/layout 对齐以判断是 UI 逻辑还是 View 树本身慢。"
+    }
+  ],
+  "traceTags": [
+    "measure",
+    "layout",
+    "onMeasure",
+    "onLayout",
+    "onMeasureBeforeLayout",
+    "Record View#draw()"
+  ],
+  "pitfalls": [
+    "measure 与 layout 不是一一对应：View.layout 可能在 setFrame 前因 PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT 再调一次 onMeasure（View.java:26041-26050），所以 trace 里 onMeasure 出现在 layout slice 内部是正常的。",
+    "WRAP_CONTENT 会让 measure 次数翻倍甚至三次（ViewRootImpl.java:3637-3695）：先用小尺寸、再用中间值、最后用窗口尺寸。看到同一 View 连续多次 onMeasure 先确认 spec 是否真的相同，不要直接归因于自定义控件。",
+    "mMeasureCache 只在 spec 相同且非 forceLayout 时生效；requestLayout 会置 PFLAG_FORCE_LAYOUT 使缓存失效，因此“频繁 requestLayout”等于“每帧全树重测”。",
+    "performLayout 的第二趟是有限额的（一帧最多两趟，5565-5604）；第二趟里仍在请求 layout 的会被 post 到下一帧，表现为“每帧都在 layout 但永远收敛不了”，需要修 ViewGroup 而不是加大预算。",
+    "ViewGroup.layout 在有 transition 且 isChangingLayout 时会直接 noop（ViewGroup.java:6590-6599）并记 mLayoutCalledWhileSuppressed，此时“layout 没生效”不是 bug，而是被动画压制了。",
+    "measureHierarchy 的 forRootSizeOnly/mViewMeasureDeferred 分支（3683-3691）会故意不 measure，等到 relayout 后 frame 已知再测；把“本帧没有 measure”当成 bug 会误判。",
+    "measure/layout 的时间不计入 RT 侧任何指标：它发生在 UI 线程、在 DrawFrameTask 提交之前，只能用 UI 线程 trace 或 FrameTimeline 的 PERFORM_TRAVERSALS_START/DRAW_START 观察。"
+  ],
+  "next": "stage-07"
+}

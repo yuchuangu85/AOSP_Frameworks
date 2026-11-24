@@ -1,0 +1,94 @@
+{
+  "step": "s06",
+  "title": "布局完成，标记 ready",
+  "tldr": "可见性算完后，WMS 把本 display 这一组标记为 ready，然后在 BLAST 那边开门：去等参与者真正画完。",
+  "why": "没有这一步，SyncSet 永远不知道自己该不该开始等，转场会一直停在 COLLECTING。用户看到的是：点了图标，动画迟迟不开始，几百毫秒后窗口直接出现（sync 超时降级），或者干脆整屏卡住等 BLAST 超时。反过来，如果标记得太早（可见性还没算完就说 ready），新 Activity 的窗口还没被正确 show，动画起点就是黑的或半透明的，跑完才「补」出内容。",
+  "concepts": [
+    {
+      "term": "ready-group",
+      "text": "一组一起 ready 的容器，目前等于一个 DisplayContent；全部 ready 才算转场 ready。"
+    },
+    {
+      "term": "ReadyTrackerOld",
+      "text": "Transition 里记「WMS 侧活干完没」的账本，按 display 存布尔值。"
+    },
+    {
+      "term": "applyReady",
+      "text": "账本汇总后通知 BLASTSyncEngine 的出口；转场没 STARTED 时直接返回。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void executeAppTransition()",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:6065",
+      "what": "WMS 各处算完可见性后的统一收口，这里只剩把本 display 标 ready。"
+    },
+    {
+      "call": "mTransitionController.setReady(this)",
+      "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:6066",
+      "what": "拿 display 自己当 ready-group 引用传下去，group 就是 DisplayContent。"
+    },
+    {
+      "call": "if (mCollectingTransition == null) return;",
+      "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1189",
+      "what": "只认当前 collecting 的那个转场；没有就静默丢弃，不报错也不排队。"
+    },
+    {
+      "call": "if (!isCollecting() || mSyncId < 0) return;",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1234",
+      "what": "还没 startCollecting（mSyncId 仍为 -1）或已经在播时忽略，避免给一个不存在的 sync 打勾。"
+    },
+    {
+      "call": "mReadyTrackerOld.setReadyFrom(wc, ready)",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1235",
+      "what": "把这次 ready 落到对应的 group 上；同时把 mUsed 置真，否则 allReady 永远返回 false。"
+    },
+    {
+      "call": "if (isReadyGroup(current))",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:4698",
+      "what": "从传入容器沿父链找最近的 DisplayContent（isReadyGroup 只看这个类型）。"
+    },
+    {
+      "call": "checkReady();",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:4706",
+      "what": "汇总所有 group，全为真才 meet 这个条件；有任何 display 没 ready 就到此为止。"
+    },
+    {
+      "call": "boolean changed = mSyncEngine.setReady(mSyncId, ready)",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:1245",
+      "what": "告诉 BLAST 这边装完了，SyncGroup 会 requestTraversal 去等参与者绘制。"
+    }
+  ],
+  "state": [
+    {
+      "field": "ReadyTrackerOld.mReadyGroups[display]",
+      "before": "false（或被 addGroup 登记时的初值）",
+      "after": "true",
+      "note": "一个转场可有多组，全 true 才 allReady"
+    },
+    {
+      "field": "ReadyTrackerOld.mUsed",
+      "before": "false",
+      "after": "true",
+      "note": "setReadyFrom 第一行就置真；没被碰过的账本永远不算 ready"
+    },
+    {
+      "field": "BLASTSyncEngine.SyncGroup.mReady",
+      "before": "false",
+      "after": "true",
+      "note": "仅当转场已 STARTED 时才会变；否则 applyReady 早退，等 start() 补"
+    }
+  ],
+  "threads": "在 WMS 主线程、持 mGlobalLock 执行，纯内存记账，没有任何跨进程调用。",
+  "pitfalls": [
+    "setReady 不是「请求播放」。请求在转场创建时就已经发出去了（requestTransitionIfNeeded → requestStartTransition），两者没有固定先后；setReady 早到会被记账，等 start() 里的 applyReady 才生效（Transition.java:1239）。",
+    "setReady(false) 是正常用法：请求复用已有 collecting 转场时，TransitionController.java:922 会把 ready-group 重新标回 false，防止后来的窗口改动插进一个已准备开播的转场。",
+    "ready-group 是 display 不是 Activity：从任意子孙容器调用 setReady 都会沿父链找到同一个 DisplayContent，所以在 Task 或 ActivityRecord 上调也能命中。",
+    "多 display 时只要有一个 display 没 ready，allReady() 就是 false，转场不播——折叠屏/副屏上「动画莫名不出来」常是这里。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager：看 \"Setting Ready-group to %b. group=%s from %s\" 和 \"Set transition ready=%b %d\"",
+    "adb shell wm logging enable-text WM_DEBUG_SYNC_ENGINE 看 \"SyncGroup %d: Set ready %b\"，区分「WMS 侧 ready」和「BLAST 侧 ready」两个不同事件"
+  ],
+  "next": "WMS 说「装完了」，接下来要把这个请求正式交给 Shell → 第 11 步「组装 TransitionRequestInfo 并检查可播性」。"
+}

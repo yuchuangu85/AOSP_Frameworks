@@ -1,0 +1,44 @@
+{
+  "step": "s35",
+  "title": "分支：Vulkan 路径",
+  "tldr": "Vulkan 的 requireSwap 只看 drawResult.success，没有 damage 判据。",
+  "why": "两个后端的 swap 语义一致、实现完全不同，混淆的代价很直接：GL 的 requireSwap 里多一项 damageRequiresSwap()（buffer age 扩展是否就绪），Vulkan 完全没有这一项；GL 的 acquire fence 由 EGL 在 swap 时隐式产生，Vulkan 是自己把 finishFrame 的 fence 显式搬到 queueBuffer。照搬 GL 的归因（「damage 没触发 swap」）在 Vulkan 上查不到任何东西；反过来，如果在 Vulkan 上漏传这个 fence，SF 拿到 NO_FENCE 就可能在 GPU 还在写的时候读 buffer，表现为花屏或撕裂。",
+  "concepts": [
+    { "term": "VkDrawResult", "text": "Vulkan 后端 draw 的返回值：submissionTime 和一个 fence。" },
+    { "term": "presentFence（hwui 语境）", "text": "finishFrame 产出的 fence，这里当 queueBuffer 的 acquire fence 用。" },
+    { "term": "presentCurrentBuffer", "text": "VulkanSurface 里真正调 queueBuffer 的地方，damage 也在这里设。" },
+    { "term": "kBufferAge 等价", "text": "VkManager 恒按 buffer age 语义工作，所以没有 damageRequiresSwap。" }
+  ],
+  "walk": [
+    { "call": "drawResult = vulkanManager().finishFrame(backBuffer.get());", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:118", "what": "提交 Vulkan 命令并拿回 VkDrawResult；fence 在这一步产生。" },
+    { "call": "return {true, drawResult.submissionTime, std::move(drawResult.presentFence)};", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:127", "what": "success 恒 true：Vulkan 的「画没画」在 draw 阶段就定了，不由 damage 决定。" },
+    { "call": "bool SkiaVulkanPipeline::swapBuffers(const Frame& frame, IRenderPipeline::DrawResult& drawResult, const SkRect& screenDirty, FrameInfo* currentFrameInfo, bool* requireSwap)", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:130", "what": "与 GL 同签名，语义不同：fence 从入参来，而不是 swap 时生成。" },
+    { "call": "currentFrameInfo->markSwapBuffers();", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:135", "what": "先打点：即使随后不交 buffer，jank 统计也认为这一帧已经 swap 过。" },
+    { "call": "*requireSwap = drawResult.success;", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:141", "what": "唯一判据；没有 damageRequiresSwap 这一项。" },
+    { "call": "vulkanManager().swapBuffers(mVkSurface, screenDirty, std::move(drawResult.presentFence));", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:144", "what": "fence 作为参数往下传，所有权随 unique_fd 一起转移。" },
+    { "call": "void VulkanManager::swapBuffers(VulkanSurface* surface, const SkRect& dirtyRect, android::base::unique_fd&& presentFence)", "ref": "base/libs/hwui/renderthread/VulkanManager.cpp:766", "what": "只有 waitForGpuCompletion 属性打开时才 vkDeviceWaitIdle（768-771）。" },
+    { "call": "surface->presentCurrentBuffer(dirtyRect, presentFence.release());", "ref": "base/libs/hwui/renderthread/VulkanManager.cpp:773", "what": "转交给 surface；release() 之后 fence 的 fd 归下面那层所有。" },
+    { "call": "int queuedFd = (semaphoreFd != -1) ? semaphoreFd : currentBuffer.dequeue_fence.release();", "ref": "base/libs/hwui/renderthread/VulkanSurface.cpp:519", "what": "有 fence 就用 fence，否则退回 dequeue 时拿到的那一个。" },
+    { "call": "int err = mNativeWindow->queueBuffer(mNativeWindow.get(), currentBuffer.buffer.get(), queuedFd);", "ref": "base/libs/hwui/renderthread/VulkanSurface.cpp:520", "what": "与 GL 汇合到 Surface::queueBufferImpl，区别是这个 fence 是显式给的。" }
+  ],
+  "state": [
+    { "field": "IRenderPipeline::DrawResult::presentFence", "before": "由 finishFrame 填（118）", "after": "move 进 VulkanManager 并作为 queuedFd 交给 queueBuffer（144 → 519-520）", "note": "GL 的对应字段恒为空 fd（SkiaOpenGLPipeline.cpp:191）" },
+    { "field": "requireSwap", "before": "调用方初值 false（CanvasContext.cpp:783）", "after": "drawResult.success（141）", "note": "GL 是 drawResult.success || damageRequiresSwap()（SkiaOpenGLPipeline.cpp:207），两者不可互换" },
+    { "field": "VulkanSurface::NativeBufferInfo::dequeued", "before": "true", "after": "false（VulkanSurface.cpp:522）", "note": "queueBuffer 调用之后才置假，这块 buffer 从此不再归 producer" },
+    { "field": "VulkanSurface 的 present 计数", "before": "n", "after": "n+1（VulkanSurface.cpp:530-531）", "note": "lastPresentedCount 用来算 buffer age，Vulkan 自己维护，不依赖 EGL" }
+  ],
+  "threads": "全程在 RenderThread：SkiaVulkanPipeline::draw 里 finishFrame 提交 Vulkan 命令（118），swapBuffers 只做搬运（130-147），阻塞点落在 VulkanManager::swapBuffers；GL 路径则在 eglSwapBuffersWithDamageKHR 内部由驱动完成隐式 dequeue/queue（EglManager.cpp:629）。两条路径最终都在同一个 RT 线程上进入 Surface::queueBufferImpl（Surface.cpp:1330）。",
+  "pitfalls": [
+    "requireSwap 的判据不同：GL 是 drawResult.success || mEglManager.damageRequiresSwap()（SkiaOpenGLPipeline.cpp:207），Vulkan 只有 drawResult.success（141）。在 Vulkan 上怀疑「damage 没触发 swap」查不到东西——它压根没有这条判据（理由见 164-165 的注释）。",
+    "字段名叫 presentFence，实际当 acquire fence 用：它在 519-520 被作为 queueBuffer 的 fence 传入，语义是「GPU 写完这块 buffer」。按字面理解成「已 present 的信号」会把时间线算错。",
+    "queueBuffer 失败走 cancelBuffer（VulkanSurface.cpp:523-527），注释明确说 cancelBuffer 接管 fence 所有权；此时 currentBuffer.dequeue_fence 已被 release() 过一次（519），不能再 close 一遍。",
+    "markSwapBuffers 在真正 swap 之前（135），所以 Vulkan 上「没交 buffer」的帧也被统计为已 swap；GL 同样如此（SkiaOpenGLPipeline.cpp:201），但两边的 success 含义不同，横向对比数字时要小心。",
+    "mHardwareBuffer 非空时直接 return false（137-139），requireSwap 保持调用方的初值 false，任何 fence 都不会发出去；这条早退是为了让硬件 buffer 路径自己接管提交。"
+  ],
+  "debug": [
+    "perfetto / atrace：GL 会看到「flush commands」切片（SkiaOpenGLPipeline.cpp:181），Vulkan 在同一个位置是 finishFrame，没有这个切片名——用切片名就能判断当前跑的是哪个后端。",
+    "adb shell getprop debug.hwui.renderer 确认后端（Properties.h:138，取值 skiavk / skiagl）；waitForGpuCompletion 不是属性，只有 hwui 的 macrobench 会置位（tests/macrobench/main.cpp:288），所以正常设备上 VulkanManager.cpp:768 那两个等待分支不会走。",
+    "FrameTimeline 的 acquire/present 时间：`adb shell dumpsys SurfaceFlinger --frametimeline -jank`，配合 CanvasContext.cpp:787 的 swapBuffers 调用点，能看出 fence 是否按时到达 SF。"
+  ],
+  "next": "第 36 步「诊断：atrace / dumpsys / perfetto」——把前面 35 步里的关键点变成可观测的切片与计数器。"
+}

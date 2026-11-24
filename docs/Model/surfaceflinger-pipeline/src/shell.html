@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SurfaceFlinger 解剖 · 从 Transaction 到扫描输出（AOSP android17）</title>
+<meta name="description" content="从 BLAST Transaction 到达 SurfaceFlinger、Scheduler VSYNC、updateLayerSnapshots、latch、CompositionEngine、HWC present 到扫描输出与 buffer 回收的源码级可视化。">
+<meta name="color-scheme" content="dark">
+<style>{{STYLE}}</style>
+</head>
+<body>
+<div class="scroll-progress" id="scrollProgress"></div>
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top" style="text-decoration:none;color:inherit">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#bfe0ff" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 9h5M7 12h8"/></svg>
+      </span>
+      <span>SurfaceFlinger <small>Deep dive · android17</small></span>
+    </a>
+    <nav class="nav" id="nav">{{NAV}}</nav>
+  </div>
+</header>
+
+<nav class="stage-rail" id="stageRail" aria-label="阶段快速导航">{{RAIL}}</nav>
+<button class="to-top" id="toTop" type="button" aria-label="回到顶部" title="回到顶部">↑</button>
+
+<main id="top">
+  <section class="hero">
+    <div class="wrap">
+      <span class="eyebrow"><span class="pulse"></span>源码实证 · android17-release · HEAD {{HEAD}}</span>
+      <h1>SurfaceFlinger<br><em>解剖</em></h1>
+      <p class="lede">
+        RenderThread 把 buffer 和 Transaction 交给系统之后，SurfaceFlinger 在自己的 VSYNC 相位醒来：
+        commit 事务、latch buffer、更新 layer snapshot、决定 HWC overlay 还是 GPU client composition，
+        调用 presentDisplay，再由 HWC/DRM 扫描输出。这个页面沿着
+        <code>BLAST → Scheduler → commit → latch → CompositionEngine → HWC → panel</code> 把每一段展开。
+      </p>
+      <div class="hero-meta">
+        <span class="chip"><span class="dot" style="background:var(--sf)"></span>1 条 SF 主线程</span>
+        <span class="chip"><span class="dot" style="background:var(--bq)"></span>2 段式 commit / composite</span>
+        <span class="chip"><span class="dot" style="background:var(--hwc)"></span>HWC overlay / GPU comp</span>
+        <span class="chip"><span class="dot" style="background:var(--ui)"></span>{{SNIPPET_COUNT}} 段源码引用</span>
+      </div>
+      <div class="hero-actions">
+        <a class="btn primary" href="#anatomy">播放 SF 的一帧</a>
+        <a class="btn" href="#stage-01">从 Transaction 开始</a>
+        <span class="hint">播放 / 拖拽 / 慢帧对比 · 9 个阶段对应源码</span>
+      </div>
+    </div>
+    <div class="scroll-cue">TRACE THE COMPOSITOR</div>
+  </section>
+
+  <section class="band" id="overview">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">00 / OVERVIEW</div>
+          <h2>App 只“交帧”，<br>SurfaceFlinger 决定它怎么上屏</h2>
+          <p>SurfaceFlinger 不是简单的“把 buffer 贴到屏幕”：它要在一个 VSYNC 周期内完成事务应用、快照、
+            buffer latch、合成策略选择、HWC/GPU 合成、present。每一步错过截止线，都会让这一帧顺延或让合成走更慢的路径。</p>
+        </div>
+        <div class="section-side">BLAST → SCHEDULER → COMPOSITION<br>ONE VSYNC · NINE STAGES</div>
+      </div>
+
+      <div class="thesis">
+        <div class="quote">
+          <p><b>一句话版本：</b>APP 的 BLAST Transaction 把 buffer 连同 acquire fence、release listener、FrameTimeline info
+            一起提交给 SF。SF 的 Scheduler 在自己的 VSYNC 相位调用 <code>onFrameSignal</code>，先 <code>commit</code>
+            （应用事务、生成只读 LayerSnapshot、latch buffer），再 <code>composite</code>（CompositionEngine 让 HWC 选择
+            overlay 或 client composition，必要时 RenderEngine 做 GPU 合成），最后 <code>presentDisplay</code>
+            把图层交给 HWC；HWC/DRM 在随后的扫描输出中把像素打到面板，retire fence 与 buffer release 再异步回传。</p>
+          <p class="mono" style="margin-bottom:0;color:var(--dim);font-size:12px">BLAST Transaction → Scheduler::onFrameSignal → commit → updateLayerSnapshots → latchBuffer → CompositionEngine::present → HWC validate/present → scanout → retire → release</p>
+        </div>
+        <div class="term-cloud" aria-label="关键术语">
+          <span class="term">BLAST</span><span class="term">Transaction</span><span class="term">BufferData</span>
+          <span class="term">Scheduler</span><span class="term">onFrameSignal</span><span class="term">commit</span>
+          <span class="term">LayerSnapshot</span><span class="term">latchBuffer</span><span class="term">acquire fence</span>
+          <span class="term">CompositionEngine</span><span class="term">HWC</span><span class="term">getDeviceCompositionChanges</span>
+          <span class="term">RenderEngine</span><span class="term">presentDisplay</span><span class="term">retire fence</span>
+          <span class="term">FrameTimeline</span><span class="term">BufferReleaseChannel</span><span class="term">JankTracker</span>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat" data-tone="sf"><div class="k">Thread</div><div class="v">1<span>条 SF 主线程</span></div><div class="d">Scheduler、commit、composite、present 都在 SF 主线程上下文串行执行。</div></div>
+        <div class="stat" data-tone="rt"><div class="k">Phases</div><div class="v">2<span>段式</span></div><div class="d">commit 处理事务与快照；composite 才进入合成与 HWC。android17 没有 onMessageRefresh。</div></div>
+        <div class="stat" data-tone="hwc"><div class="k">Composition</div><div class="v">2<span>条路径</span></div><div class="d">HWC overlay 直接把图层交给显示硬件；GPU client composition 由 RenderEngine 先合成。</div></div>
+        <div class="stat" data-tone="bq"><div class="k">Budget</div><div class="v">8.3<span>ms SF 预算</span></div><div class="d">自定义 WorkDuration：appWorkDuration = sfWorkDuration = 8.3ms；HW VSYNC 在 16.7ms。</div></div>
+      </div>
+
+      <div class="flow-strip reveal" id="flowStrip">{{FLOW}}</div>
+
+      <div class="keypoints">
+        <div class="kp reveal">
+          <h4><span class="ico">01</span>buffer 不“躺在”BufferQueue 等 SF</h4>
+          <p>BLAST 下 buffer 作为 Transaction 的 <code>BufferData</code> 跨进程提交；SF 侧不持有旧式 BufferQueueConsumer，latch 与 release 都围绕 Transaction 和 fence。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">02</span>commit 与 composite 是两段</h4>
+          <p>commit 把当前事务应用到 <code>mDrawingState</code> 并生成只读 LayerSnapshot；composite 才让 CompositionEngine/HWC 决定怎么画。commit 没活时 SF 可以空转。</p>
+        </div>
+        <div class="kp reveal">
+          <h4><span class="ico">03</span>合成路径决定耗时</h4>
+          <p>HWC 能直接 overlay 时，SF 只做 validate/present；如果 HWC 要求 client composition，RenderEngine 必须先画到 client target，这一段最容易把 present 推过 VSYNC。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="anatomy">
+    <div class="wrap-wide">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">01 / ANIMATED MODEL</div>
+          <h2>SurfaceFlinger 的一帧：从 APP VSYNC 到扫描输出</h2>
+          <p><b>自定义 WorkDuration：appWorkDuration = sfWorkDuration = 8.3ms。</b>APP 在 0.0ms 醒来，SF 在 +8.3ms
+            进入自己的 VSYNC 相位，目标 HW VSYNC 在 +16.7ms；SF 必须在 8.3ms 内完成 commit、latch、合成与 present。
+            打开“慢帧 / GPU 合成”可以看到 client composition 越过这 8.3ms 预算、错过 16.7ms HW VSYNC 的后果。</p>
+        </div>
+        <div class="section-side">INTERACTIVE · 60 Hz · NOT TO SCALE<br>示意时序，量级与源码语义为准</div>
+      </div>
+
+      <div class="studio reveal" id="studio">
+        <div class="studio-head">
+          <div class="studio-title"><span class="live"><i></i>SF CYCLE · 60 Hz</span>SurfaceFlinger 的一帧</div>
+          <div class="studio-badges">
+            <span class="tag"><b>APP</b> VSYNC 0</span>
+            <span class="tag"><b>SF</b> VSYNC +8.3ms</span>
+            <span class="tag"><b>commit</b> / latch</span>
+            <span class="tag"><b>HW</b> VSYNC 16.7ms</span>
+            <span class="tag"><b>custom</b> WorkDuration</span>
+          </div>
+        </div>
+
+        <div class="board-wrap" id="boardWrap">
+          <div class="board" id="board">
+            <div class="board-body" id="boardBody">
+              <div class="pins" id="pins"></div>
+              <div class="ruler" id="ruler"></div>
+              <div class="lanes" id="lanes"></div>
+              <div class="playhead" id="playhead"><span class="ph-line"></span><span class="ph-cap"></span><span class="ph-time">0.0 ms</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="board-hint">← 左右滑动查看完整时间轴 →</div>
+        <div class="board-legend">
+          <span class="lg"><i style="background:var(--app)"></i>APP · BLAST</span>
+          <span class="lg"><i style="background:var(--sched)"></i>SF · Scheduler</span>
+          <span class="lg"><i style="background:var(--layer)"></i>SF · Layer</span>
+          <span class="lg"><i style="background:var(--comp)"></i>Composition / HWC</span>
+          <span class="lg"><i style="background:var(--disp)"></i>Display / Timeline</span>
+          <span class="spacer"></span>
+          <span class="lg">点击阶段编号跳转到对应章节</span>
+          <span class="lg"><kbd>Space</kbd> 播放 / 暂停</span>
+        </div>
+
+        <div class="pp" id="phasePanel">
+          <div class="pp-left">
+            <div class="pp-eyebrow"><span class="stage-chip" id="ppStage">STAGE 01</span><span id="ppPhase">PHASE 01 / 09</span></div>
+            <h3 id="ppTitle">APP VSYNC → SF VSYNC：8.3ms 生产窗口</h3>
+            <p id="ppDesc">自定义 WorkDuration 下 APP 在 0.0ms 醒来，完成绘制与 BLAST 提交；SF 在 +8.3ms 才进入 VSYNC 相位，目标 HW VSYNC 在 16.7ms。</p>
+            <div class="pp-refs" id="ppRefs"></div>
+          </div>
+          <div class="pp-right">
+            <div class="pp-stats">
+              <div class="pp-stat"><span>相对 SF VSYNC</span><b id="ppVsync">等待中</b></div>
+              <div class="pp-stat"><span>present 完成</span><b id="ppPresent">present · 12.9 ms</b></div>
+              <div class="pp-stat"><span>触发后</span><b id="ppElapsed">+0.0 ms</b></div>
+              <div class="pp-stat"><span>帧号</span><b id="ppFrame">SF FRAME</b></div>
+            </div>
+            <div class="budget" title="自定义 WorkDuration：SF 从 +8.3ms 到 16.7ms 只有 8.3ms 预算">
+              <span class="fill" id="budgetFill"></span>
+              <span class="mark" style="left:100%"></span>
+              <span class="txt"><span>SF 预算</span><span id="budgetTxt">0.0 / 8.3 ms</span></span>
+            </div>
+            <div class="pp-hint"><i></i><span id="ppHint">commit 阶段先应用事务并生成 LayerSnapshot。</span></div>
+          </div>
+        </div>
+
+        <div class="transport">
+          <div class="group">
+            <button class="play-btn" id="playBtn" aria-label="播放/暂停">
+              <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+          </div>
+          <div class="scrub-wrap">
+            <input class="scrub" id="scrub" type="range" min="0" max="34" value="0" step="0.02" aria-label="时间轴">
+            <div class="time-read"><b id="timeNow">0.0</b> / <span id="timeTotal">34.0</span> ms</div>
+          </div>
+          <div class="group divider"></div>
+          <div class="group" aria-label="播放速度">
+            <div class="seg" id="speedSeg">
+              <button data-speed="0.5">0.5×</button>
+              <button data-speed="1" class="on">1×</button>
+              <button data-speed="2">2×</button>
+            </div>
+          </div>
+          <div class="group">
+            <label class="switch" title="让 RenderEngine client composition 变慢，观察 present 越过 HW VSYNC">
+              <input type="checkbox" id="jankToggle">
+              <span class="track"></span>
+              <span class="lbl">慢帧 / GPU 合成</span>
+            </label>
+          </div>
+          <div class="group">
+            <button class="btn small ghost" id="restartBtn" title="回到起点">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+              重播
+            </button>
+          </div>
+        </div>
+
+        <div class="slots" id="slots"></div>
+      </div>
+
+      <p style="color:var(--dim);font-size:11.5px;line-height:1.8;margin:14px 2px 0;max-width:1000px">
+        注：时间轴采用自定义 WorkDuration（app = sf = 8.3ms）示意：APP 0.0ms、SF +8.3ms、HW VSYNC 16.7ms、扫描到 33.3ms。
+        实际耗时随图层数、HWC 能力、GPU、面板与刷新率变化；HWC HAL 以下的 DRM/KMS/面板扫描行为不在本仓库。
+      </p>
+    </div>
+  </section>
+
+  <section class="band" id="stages">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">02 / SOURCE STAGES</div>
+          <h2>九个阶段，逐段对应源码</h2>
+          <p>从 BLAST Transaction 输入、Scheduler 两段式、commit/快照、latch、合成决策、RenderEngine client composition、
+            present、扫描输出到 buffer 回收。每段都给出源码位置与逐行核验的代码片段。</p>
+        </div>
+        <div class="section-side">9 STAGES · {{SNIPPET_COUNT}} SNIPPETS<br>{{CITED_FILE_COUNT}} SOURCE FILES</div>
+      </div>
+      {{STAGE_SECTIONS}}
+    </div>
+  </section>
+
+  <section class="band" id="composition">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">03 / COMPOSITION PATHS</div>
+          <h2>HWC overlay，还是 GPU client composition？</h2>
+          <p>commit 之后的 Composite 阶段，CompositionEngine 把图层组织成 OutputLayer，然后让 HWC 选择每个图层的合成方式。
+            能直接 scanout 的图层走 device composition（overlay）；HWC 不支持的图层集合需要 RenderEngine 先画到 client target。</p>
+        </div>
+        <div class="section-side">VALIDATE → COMPOSE → PRESENT<br>DEVICE vs CLIENT</div>
+      </div>
+
+      <div class="latency-grid">
+        <div>
+          <div class="jank-grid" style="margin-top:0">
+            <div class="jank-card reveal">
+              <h4>Device composition（HWC overlay）</h4>
+              <ul>
+                <li>HWC 直接把图层 buffer 叠到显示硬件；SF 不必把整屏画到 GPU target。</li>
+                <li>路径：<code>chooseCompositionStrategy</code> → <code>getDeviceCompositionChanges</code> / <code>HWC2::Display::validate</code> → <code>presentDisplay</code>。</li>
+                <li>通常最快，但受图层数量、格式、缩放、HDR、保护内容等限制。</li>
+                <li>失败/不支持时回退到 client composition。</li>
+              </ul>
+            </div>
+            <div class="jank-card reveal">
+              <h4>GPU client composition</h4>
+              <ul>
+                <li>CompositionEngine 让 RenderEngine 先在一个 client target 上合成图层。</li>
+                <li>路径：<code>Output::composeSurfaces</code> → <code>RenderEngine::drawLayers</code> → <code>setClientTarget</code> → present。</li>
+                <li>GPU 合成耗时直接加在 present 之前，是 SF jank 的常见来源。</li>
+                <li>合成完成后仍需 HWC present；不是“画完就上屏”。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="formula reveal">
+<span class="cm">// SF 一帧的 CPU 时间（简化）</span>
+T_sf ≈ T_commit + T_latch + T_chooseComposition
+     + T_gpuClientComposition (if client comp)
+     + T_present
+
+<span class="cm">// deadline</span>
+T_sf 必须在下一个 HW VSYNC 前完成 presentDisplay
+      </div>
+        </div>
+        <div class="lat-side">
+          <div class="note-card">
+            <h4><span class="n">A</span>LayerSnapshot：commit 的只读产物</h4>
+            <p>commit 把事务应用到 <code>mDrawingState</code>，生成只读 LayerSnapshot 供 composite 使用。这样合成决策与 HWC 交互不必回读可变的 layer 状态。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">B</span>acquire fence 决定能不能 latch</h4>
+            <p>buffer 到达不代表可以合成；<code>Layer::latchBufferImpl</code> 必须等 acquire fence signaled。fence 未到，SF 不会阻塞等待，而是跳过这一帧并请求下一次合成。</p>
+          </div>
+          <div class="note-card">
+            <h4><span class="n">C</span>present 之后还有很长的异步尾巴</h4>
+            <p>presentDisplay 返回不代表像素已可见；present fence 决定上屏，retire fence 决定扫描完成，buffer release 才能回到 producer。FrameTimeline 把这些信号串成端到端时间线。</p>
+          </div>
+          <div class="jank-cta">
+            <p><b>把 GPU 合成放进时间轴：</b>打开慢帧演示，观察 RenderEngine client composition 变慢后越过 8.3ms SF 预算、present 晚于 16.7ms，本帧只等下一个 HW VSYNC。</p>
+            <button class="btn small" id="jankDemoBtn" type="button">演示 GPU 合成慢帧</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="observe">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">04 / OBSERVABILITY</div>
+          <h2>怎么在 Perfetto / dumpsys 里看 SurfaceFlinger</h2>
+          <p>先看 SF 是否在截止线前 present，再区分“事务没到”“latch 等 fence”“GPU 合成慢”“HWC present 慢”“面板 retire 慢”。
+            不同原因对应完全不同的优化方向。</p>
+        </div>
+        <div class="section-side">PERFETTO · FRAME TIMELINE<br>DUMPSYS SURFACEFLINGER</div>
+      </div>
+
+      <div class="observe-grid">
+        <div class="obs reveal">
+          <div class="obs-h">抓 SF 一帧的 trace <span class="tag">perfetto</span></div>
+          <pre>adb shell perfetto -o /data/misc/perfetto-traces/sf.perfetto-trace \
+  -t 10s sched freq idle binder_driver \
+  gfx view wm surfaceflinger</pre>
+          <p>重点看 <code>onFrameSignal</code>、<code>commit</code>、<code>updateLayerSnapshots</code>、
+            <code>latchBuffer</code>、<code>composite</code>、<code>presentDisplay</code> 的 slice 与时间戳。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">FrameTimeline / SF timestats <span class="tag">frame stats</span></div>
+          <pre>adb shell dumpsys SurfaceFlinger --timestats -dump
+adb shell dumpsys SurfaceFlinger --latency &lt;layer&gt;
+adb shell dumpsys SurfaceFlinger</pre>
+          <p>present/retire fence、applied time、latch time、present time、layer 状态都能在这里对齐。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">图层与合成策略 <span class="tag">dumpsys</span></div>
+          <pre>adb shell dumpsys SurfaceFlinger --list
+adb shell dumpsys SurfaceFlinger --display-id
+adb shell dumpsys SurfaceFlinger --composition</pre>
+          <p>确认 HWC 是否选择了 client composition、哪些 layer 被 GPU 合成、是否发生 fallback。</p>
+        </div>
+        <div class="obs reveal">
+          <div class="obs-h">fence 与 buffer 回收 <span class="tag">fence</span></div>
+          <pre>adb shell dumpsys SurfaceFlinger | grep -i -E 'fence|release|buffer'
+adb shell dumpsys gfxinfo &lt;package&gt; framestats</pre>
+          <p>如果 present 正常但 buffer 迟迟不 release，问题可能在 HWC retire / release 路径，而不是 SF CPU 合成。</p>
+        </div>
+      </div>
+      <div class="trace-tags" id="traceTags">{{TRACETAGS}}</div>
+    </div>
+  </section>
+
+  <section class="band" id="sources">
+    <div class="wrap">
+      <div class="section-head">
+        <div class="txt">
+          <div class="sec-eyebrow">05 / SOURCE INDEX</div>
+          <h2>源码索引与核验</h2>
+          <p>下表汇总页面引用的文件与函数。构建脚本会逐条核对 snippet 的路径、行号与源码内容；
+            仅使用当前仓库 <code>base/</code> 与 <code>native/</code> 实现。</p>
+        </div>
+        <div class="section-side">VERIFIED AGAINST<br>HEAD {{HEAD}}</div>
+      </div>
+      <div class="verify-bar"><span class="ok">✓</span><div><b>引用核验：</b><span>{{VERIFY_SUMMARY}}</span></div></div>
+      {{SOURCES}}
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap in">
+    <div>
+      <b>SurfaceFlinger Deep Dive</b> · 基于 AOSP <code>android17-release</code>（HEAD <code>{{HEAD}}</code>）源码整理<br>
+      仅使用 <code>base/</code> 与 <code>native/</code> 下的实现；时间轴为示意，不代表实测耗时。
+    </div>
+    <div class="right">生成于 {{BUILD_DATE}}<br><span style="color:var(--dim)">9 stages · {{SNIPPET_COUNT}} snippets · {{CITED_FILE_COUNT}} files</span></div>
+  </div>
+</footer>
+
+<script>window.PIPELINE_DATA = {{DATA}};</script>
+<script>{{SCRIPT}}</script>
+</body>
+</html>

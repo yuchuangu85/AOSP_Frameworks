@@ -1,0 +1,37 @@
+{
+  "step": "s32",
+  "title": "合并：后到的 ready 被吸收",
+  "tldr": "同一 track 上已在播的动画有权把后到的 ready 吞掉：不新开动画，只留一条 finish 链。",
+  "why": "没有合并，连点两次或「启动后立刻返回」会各自排队播一遍：用户先看到开启动画，紧接着又被关掉动画打断，中间夹一帧静止，就是常见的闪两下。更糟的是同一批 leash 被两个动画同时 reparent，两个 finishT 各自按自己的父链还原，谁先到谁生效，窗口会停在动画中途的位置——看起来像窗口卡在半空。合并把两笔转场收敛成一笔 finish，还原顺序才有唯一答案。",
+  "concepts": [
+    { "term": "mergeAnimation", "text": "handler 的钩子：正在播的转场被告知又来了一个 ready，可以把它吸收进自己的时间线。" },
+    { "term": "mMerged", "text": "ActiveTransition 里记录被吸收的转场。合并只做登记，事务 merge 发生在 onFinish。" }
+  ],
+  "walk": [
+    { "call": "mTransitionTracer.logMergeRequested(ready.mInfo.getDebugId(), playing.mInfo.getDebugId())", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:988", "what": "先落一条 perfetto 事件：谁想合并谁。排查动画少了一段，这里是第一现场。" },
+    { "call": "playing.mHandler.mergeAnimation(ready.mToken, ready.mInfo, ready.mStartT, ready.mFinishT, playing.mToken, (wct) -> onMerged(playingToken, readyToken))", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:989", "what": "交给正在播的 handler 决定；只有它回调 onMerged，才算合并成立。" },
+    { "call": "private void onMerged(@NonNull IBinder playingToken, @NonNull IBinder mergedToken) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:993", "what": "合并的落点。第一行断言当前线程：handler 可能跨进程异步回调。" },
+    { "call": "if (playing.getTrack() != merged.getTrack()) { throw new IllegalStateException(...); }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1008", "what": "跨 track 不允许合并：不同 display 没有共享时间线，硬合会让 leash 抢父节点。" },
+    { "call": "track.mReadyTransitions.remove(readyIdx);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1025", "what": "把被合并方从待播队列摘掉，它从此不会再单独 playTransition。" },
+    { "call": "playing.mMerged.add(merged);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1029", "what": "登记到主动画的 mMerged 列表，onFinish 会遍历它把事务并进来。" },
+    { "call": "merged.mHandler.onTransitionConsumed(merged.mToken, false /* abort */, merged.mFinishT);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1032", "what": "通知被合并方的 handler 释放 anim surface；finishT 交出去由主动画统一 apply。" },
+    { "call": "mTransitionTracer.logMerged(merged.mInfo.getDebugId(), playing.mInfo.getDebugId());", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1037", "what": "记一笔合并完成，和 988 的 logMergeRequested 成对出现才算成功。" }
+  ],
+  "state": [
+    { "field": "Track.mReadyTransitions", "before": "[merged, ...]（merged 排在队首或靠前）", "after": "移除 merged（1025），长度减一", "note": "取出位置由 1017 到 1024 的查重逻辑决定" },
+    { "field": "playing.mMerged", "before": "null", "after": "new ArrayList<>() 并加入 merged（1026 到 1029）", "note": "onFinish 里遍历它合并 startT 与 finishT" },
+    { "field": "Track.mActiveTransition", "before": "playing", "after": "仍是 playing", "note": "合并不换播放者；只有 onFinish 才把它置 null（1264）" }
+  ],
+  "threads": "wmshell.main，onMerged 开头有 mMainExecutor.assertCurrentThread()（994）。但 handler 可以拒绝或异步回调（RemoteTransitionHandler 会把请求转到 Launcher 进程），所以 onMerged 不保证在 ready 那一刻执行。",
+  "pitfalls": [
+    "mergeAnimation 只是请求，handler 可以不回调。那时 ready 一直留在 track.mReadyTransitions 里等下一轮，不是丢了，也不是立刻就合了。",
+    "onMerged 不合并 SurfaceControl.Transaction：真正的 merge 在 onFinish（1277 到 1298，把每个 merged 的 startT 和 finishT merge 进 fullFinish）。查事务泄漏要看 onFinish，不是这里。",
+    "ready.mAborted 时不会发 mergeAnimation，直接在 980 到 983 调 onMerged：已经中止的转场没什么可动画的，只求把 finish 顺序对上。",
+    "跨 track 合并直接抛 IllegalStateException（1008 到 1010）。日志里看到它就说明 track 计算错了，不是偶发。"
+  ],
+  "debug": [
+    "perfetto 搜 slice UiTracing::Transition::logMergeRequested 和 UiTracing::Transition::logMerged（PerfettoTransitionTracer.java:122 与 155），两条成对出现才说明合并成功",
+    "ProtoLog WM_SHELL_TRANSITIONS 的 Transition was merged: %s into %s（1014）会打印被合并方和主动画的 debugId"
+  ],
+  "next": "第 25 步「按 Track 顺序放行」：没被吸收的转场还要过 track 空闲检查，才有机会真正开播。"
+}

@@ -1,0 +1,43 @@
+{
+  "step": "s33",
+  "title": "分支：跳帧",
+  "tldr": "dirty 为空且 surface 无需重画时，RT 不 swap、不交 buffer，回调收到 false。",
+  "why": "这条分支一旦缺失，每个 vsync 都会交出一帧内容相同的 buffer：SF 每拍都要合成、present fence 排队、BufferQueue 的槽位被空帧长期占住，真正有内容的帧反而更晚开始。反过来，如果把它当成「丢帧」去排查，方向会全错——它没有丢任何东西，只是根本没有产出，SF 侧看不到这一拍，帧号也不会变。更实际的风险在回调：等待「本帧已提交」的代码（FrameMetrics、同步刷新的 FrameCommitCallback）依赖这条路径仍然回调一次 false，漏掉就永远不返回。",
+  "concepts": [
+    { "term": "skippedFrameReason", "text": "optional，非空即表示 RT 主动不画；取值有 NothingToDraw、DrawingOff 等。" },
+    { "term": "surfaceRequiresRedraw", "text": "新 surface 或尺寸变化时返回 true（1247-1256），此时即使 damage 为空也要画一帧。" },
+    { "term": "didProduceBuffer", "text": "帧提交回调的布尔参数：false 表示这一拍没有 buffer 交给 SF，不是失败。" },
+    { "term": "SyncResult::FrameDropped", "text": "跳帧也会置这个位；名字叫 Dropped，语义是「没画」，属于历史命名。" }
+  ],
+  "walk": [
+    { "call": "canDrawThisFrame = !info.out.skippedFrameReason.has_value();", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:107", "what": "第一道判定：同步阶段（prepareTree）给出的 skip 原因决定这一帧要不要进 draw。" },
+    { "call": "if (CC_LIKELY(canDrawThisFrame)) {", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:140", "what": "进则 context->draw，不进则 else 分支里只 flush 再等 fence。" },
+    { "call": "mSyncResult |= SyncResult::FrameDropped;", "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:213", "what": "同一个 skip 在 SyncResult 里被记成 FrameDropped，命名和语义在这里分叉。" },
+    { "call": "if (!Properties::isDrawingEnabled() || !mDrawingEnabled) {", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:695", "what": "另一条与 damage 无关的跳帧：DrawingOff，属性或 stopDrawing 触发。" },
+    { "call": "if (dirty.isEmpty() && Properties::skipEmptyFrames && !surfaceRequiresRedraw()) {", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:699", "what": "三个条件全成立才跳过；skipEmptyFrames 默认就是 true（Properties.cpp:134）。" },
+    { "call": "return SkippedFrameReason::NothingToDraw;", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:700", "what": "唯一表示「没脏区」的原因，与 NoOutputTarget 明确区分。" },
+    { "call": "mCurrentFrameInfo->setSkippedFrameReason(*skippedFrameReason);", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:706", "what": "写进 FrameInfo，FrameTimeline 后面才拿得到 skippedFrameVsyncId。" },
+    { "call": "std::invoke(func, false /* didProduceBuffer */);", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:720", "what": "跳帧也必须回调，参数是 false；这是最容易写反的一行。" },
+    { "call": "return;", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:723", "what": "跳帧路径到此结束：前面只有 flushAndSubmit 与 waitOnFences。" },
+    { "call": "std::invoke(func, true /* didProduceBuffer */);", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:880", "what": "对照组：只有 didSwap 为真才传 true（878），两条路径都不会漏回调。" }
+  ],
+  "state": [
+    { "field": "CanvasContext::mIsDirty", "before": "true（上一帧写了脏区）", "after": "false（CanvasContext.cpp:804，只有走完正常 draw 路径才清）", "note": "跳帧路径不走到 804，所以 mIsDirty 会保持原值" },
+    { "field": "FrameInfo 的 SkippedFrameReason", "before": "未设置", "after": "NothingToDraw（706）", "note": "随后以 skippedFrameVsyncId 的形式进入 FrameTimelineInfo（769-772）" },
+    { "field": "CanvasContext::mFrameCommitCallbacks", "before": "本帧登记的回调", "after": "空（跳帧 722 / 正常 882）", "note": "两条路径都清空，区别只在传的 didProduceBuffer" },
+    { "field": "BufferQueue 与 SF 侧", "before": "本拍占用一个槽位", "after": "无任何变化", "note": "SF 根本看不到这一帧，所以 SF 的掉帧统计里不会出现它" }
+  ],
+  "threads": "整段在 RenderThread 上（DrawFrameTask::run → CanvasContext::draw）。此刻 UI 线程早已被 unblockUiThread 放走（DrawFrameTask.cpp:125-127），所以跳帧对 UI 完全透明；mFrameCommitCallbacks 也在 RT 上被 invoke，Java 侧拿到的回调线程不是 UI 线程。",
+  "pitfalls": [
+    "跳帧被记成 FrameDropped：SyncResult::FrameDropped（DrawFrameTask.cpp:213）与 FrameTimeline 的 skipped 是同一件事，按「掉帧率」上报会得出完全错误的结论。",
+    "skipEmptyFrames 默认 true（Properties.cpp:134），所以静止界面本来就不该有 buffer 流量；用 SurfaceFlinger 的 present 直方图衡量静止界面「有没有卡」没有意义。",
+    "surfaceRequiresRedraw 为真时没有 damage 也会画（699 → 1247）：mHaveNewSurface（刚 setSurface）与尺寸变化都会强制出一帧，把「damage 空」直接等同于「一定不画」会解释错首帧和旋转后的那一帧。",
+    "跳帧时仍然有 GPU 活动：709-713 会 flushAndSubmit 以完成纹理上传，718 会等 fence。只看「trace 里有 GPU 工作」判断这一帧画了会错。",
+    "两条跳帧判定不在同一个地方：DrawFrameTask.cpp:107 用的是 prepareTree 里填的 info.out.skippedFrameReason——NoOutputTarget（576-580）、AlreadyDrawn（593）、NothingToDraw（601-603）、NoBuffer（606-608）都在这里定，连 draw 都不进；CanvasContext.cpp:699 那条是在 draw 里按 damage 现算的，进了 draw 才决定不 swap。看到 NothingToDraw 要先用 trace 区分是哪一处报的。"
+  ],
+  "debug": [
+    "perfetto / atrace 看「Drawing <rect>」切片（CanvasContext.cpp:736）是否出现：跳帧的帧只有 DrawFrames（DrawFrameTask.cpp:91）与 syncFrameState，没有 Drawing。",
+    "adb shell dumpsys SurfaceFlinger --frametimeline -jank：对应那一拍的 skippedFrameVsyncId 与 jank 类型直接给出原因（FrameTimeline.cpp:2257 解析参数）；app 侧可用 ATRACE_FORMAT 的 frameTimelineInfo(...) 切片（CanvasContext.cpp:757）拿 vsyncId 对齐。"
+  ],
+  "next": "第 34 步「分支：buffer 被替换」——另一条「帧号连续但内容消失」的路径，发生在 queueBuffer 内部。"
+}

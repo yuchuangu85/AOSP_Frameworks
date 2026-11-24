@@ -1,0 +1,37 @@
+{
+  "step": "s27",
+  "title": "Transition 状态机全貌",
+  "tldr": "PENDING→COLLECTING→STARTED→PLAYING→FINISHED，ABORT 是岔路。",
+  "why": "状态不是给人看的，它决定每个动作能不能发生：collect 在 PENDING 时抛异常（904-906），在 PLAYING 之后静默丢弃（907-910）；start 在 PENDING 时抛异常（881-883）；abort 在 PLAYING 之后抛 IllegalStateException（1957-1959）。状态早推一步，正在 reparent 的窗口会被当成「已经开播」，collect 被丢掉，TransitionInfo 里少一个 change——用户看到新窗口在动画中途啪地出现；状态晚推一步，事务全挂在 syncId 上不放行，屏幕定格在旧画面。",
+  "concepts": [
+    { "term": "STATE_PENDING", "text": "new 出来但还没申请 syncId 的一瞬（-1），此时 mSyncId 也是 -1。" },
+    { "term": "STATE_PLAYING", "text": "只有 onTransactionReady 能写（2096）；进去之后不能再 collect，也不能再 abort。" },
+    { "term": "STATE_ABORT", "text": "岔路状态，值为 3：可从 PENDING 直跳，也可从 COLLECTING/STARTED 进入。" }
+  ],
+  "walk": [
+    { "call": "if (mState != STATE_PENDING) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:862", "what": "startCollecting 的唯一闸门：只允许 PENDING 进来，重复使用会抛 re-use 异常。" },
+    { "call": "mState = STATE_COLLECTING;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:865", "what": "先改状态再申请 syncId（866），所以这两行之间 mSyncId 还是 -1。" },
+    { "call": "if (mState < STATE_COLLECTING) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:881", "what": "start 的两道闸：还没 collecting 就抛；已经 >= STARTED 只打一行 warn 后返回。" },
+    { "call": "mState = STATE_STARTED;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:889", "what": "推进后立刻 applyReady()，从这一刻起 SyncSet 才允许因为「到齐」而 finish。" },
+    { "call": "mState = STATE_PLAYING;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2096", "what": "唯一入口；进来之前若状态不是 STARTED，只打一行 error 就继续（2091-2094）。" },
+    { "call": "if (mState == STATE_PENDING) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1952", "what": "abort 的岔路：PENDING 直接跳到 ABORT，不碰 SyncSet，也不通知 Shell。" },
+    { "call": "mState = STATE_FINISHED;", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1823", "what": "finishTransition 收尾写入，随后 cleanUpInternal 释放 snapshot 与事务。" }
+  ],
+  "state": [
+    { "field": "Transition.mState", "before": "STATE_COLLECTING (0)", "after": "STATE_STARTED (1)", "note": "880-889；重复 start 只 warn，不会把状态改回 STARTED" },
+    { "field": "Transition.mState", "before": "STATE_STARTED (1)", "after": "STATE_PLAYING (2)", "note": "2096；超时那条约会从 COLLECTING 直接跳到这里" },
+    { "field": "Transition.mSyncId", "before": "-1（还在 PENDING）", "after": "分配到的 syncId（进入 COLLECTING 时）", "note": "abort 路径在 2085 又把它清回 -1" }
+  ],
+  "threads": "所有写 mState 的位置都在 mGlobalLock 内：startCollecting 来自 WMS 的调用链，start 来自 Shell 回传的 binder，PLAYING 来自布局阶段 BLASTSyncEngine.onSurfacePlacement 的 finishNow（600-619）或超时 handler。",
+  "pitfalls": [
+    "常量不按进度排序：STATE_ABORT=3 大于 STATE_PLAYING=2，所以 hasStarted()（mState >= STARTED）对已经 abort 的 Transition 也返回 true。",
+    "isCollecting() 在 STARTED 时同样为真（836-838）：Shell 回传 startTransition 之后 WMS 仍然允许 collect，别把 STARTED 当成「停止收集」。",
+    "start() 不幂等也不报错：重复调用只打 Transition already started 然后返回，注释明说超时或 abort 后不要把状态改回 STARTED（883-888）。",
+    "PLAYING 只有一个入口但可以跳级进入：onTransactionReady 不检查前置状态，只在 2091 打一行 error 就往下走。"
+  ],
+  "debug": [
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS，grep 'Starting Transition'（890-891）看进入 STARTED 的时刻。",
+    "adb logcat -s Transition 抓 Slog 分支：'Transition already started id='（884）说明有路径在 STARTED 之后又调了 start；'Playing a Transition which hasn't started!'（2092）说明状态被超时抢先推进。"
+  ],
+  "next": "第 5 步「开一个 BLAST SyncSet」：COLLECTING 一成立，syncId 就在 startCollecting 里诞生。"
+}

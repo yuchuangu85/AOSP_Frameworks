@@ -1,0 +1,37 @@
+{
+  "step": "s33",
+  "title": "同步/睡眠闸门：先清场再放行",
+  "tldr": "碰到 TRANSIT_SLEEP 或带 FLAG_SYNC 的转场，Shell 先把在播的全部催结束，自己才准播。",
+  "why": "灭屏时放任动画继续跑，用户按完电源键会看到画面卡在半透明状态：屏幕已经黑了，动画还在改 layer 和 alpha，醒来时 SurfaceFlinger 里留下的是动画中途的父链，得等下一次转场才恢复。带 FLAG_SYNC 的转场（旋转、解锁这类要求前后帧严格对齐的）也不能插队：前一帧的 leash 还挂在动画父节点上，直接播新的会让两组 leash 争同一个父节点，出现一瞬间的重影或半个屏幕错位。",
+  "concepts": [
+    { "term": "TRANSIT_SLEEP", "text": "灭屏或进入 doze 时 WMS 发起的转场类型。它几乎没有画面，作用是让 Shell 把在播动画尽快收干净。" },
+    { "term": "FLAG_SYNC（isSync）", "text": "TransitionInfo 上的标志，表示必须等前面所有转场彻底 finish 才能开播，不能与前任重叠。" },
+    { "term": "SYNC_ALLOWANCE_MS = 120", "text": "给在播动画的宽限：先发一个假的 SLEEP merge 信号，120ms 后还没结束就强制 finish。" }
+  ],
+  "walk": [
+    { "call": "if (info.getType() == TRANSIT_SLEEP || active.isSync()) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:801", "what": "闸门判定：只有睡眠转场或带 FLAG_SYNC 的转场走清场路径，普通转场直接往下走。" },
+    { "call": "mReadyDuringSync.add(0, active);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:804", "what": "压回队首而不是队尾：它本来就在最前面，位置不能变。" },
+    { "call": "finishForSync(active.mToken, i, null /* forceFinish */);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:814", "what": "对每条还在忙的 track（807 循环、809 跳过空闲）发清场请求，第一轮不强杀。" },
+    { "call": "if (hadPreceding) { return false; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:816", "what": "有前置在播就返回 false：还没轮到，active 已在 mReadyDuringSync 里等。" },
+    { "call": "mReadyDuringSync.remove(active);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:821", "what": "所有 track 都空时才走到这里：把它从排队队列取出来，继续走正常的 dispatch 流程。" },
+    { "call": "playing.mHandler.mergeAnimation(nextSync.mToken, dummyInfo, dummyT, dummyT, playing.mToken, (wct) -> {});", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1543", "what": "把假的 TRANSIT_SLEEP info 合并给在播动画催它快进；回调是空的，没人等结果。" },
+    { "call": "mMainExecutor.executeDelayed(() -> finishForSync(reason, trackIdx, playing), SYNC_ALLOWANCE_MS);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1551", "what": "120ms 后它还在播就再来一轮，这次 forceFinish 非空，会 abort 并直接 onFinish。" }
+  ],
+  "state": [
+    { "field": "mReadyDuringSync", "before": "空", "after": "[active]（804）；清场失败时保持非空，成功时被 821 取出或由 processReadyQueue 逐个放出（934 到 941）", "note": "这个队列非空就代表 Shell 处于 isAnimating 状态" },
+    { "field": "Track.mActiveTransition", "before": "playing（非 null）", "after": "null（onFinish 1264 清掉，track 变空闲）", "note": "只有 track 全空闲，闸门才允许继续往下" },
+    { "field": "playing.mAborted", "before": "false", "after": "true（强杀路径 1517）", "note": "被强杀的动画没跑完，日志会明说可能留下坏状态" }
+  ],
+  "threads": "wmshell.main：dispatchReady 和 finishForSync 都在主线程。但 handler 的 mergeAnimation 可能同步完成并回调 onFinish，进而递归回 processReadyQueue，所以这段是重入的，别在里面假设队列没被改过。",
+  "pitfalls": [
+    "sync 转场自己不播动画，它是一道闸门：先把前面的全部催结束（814），再在 821 之后走正常流程播自己。",
+    "finishForSync 不是立刻 kill：先 merge 一个假 SLEEP（1543），120ms 后才强制 finish（1549 到 1524）。所以灭屏瞬间还能看到一帧动画是设计内的。",
+    "dispatchReady 返回 false 时 active 已经留在 mReadyDuringSync 里（804），调用方不能再加一次，否则同一笔转场会被播两遍。",
+    "mDisableForceSync（271 到 272）只为测试，打开它会让卡住的动画永远不结束，表现为设备再也醒不过来。"
+  ],
+  "debug": [
+    "ProtoLog WM_SHELL_TRANSITIONS：Start finish-for-sync track %d（812 到 813）说明发了信号，Forcing transition to finish due to sync timeout（1516）说明真的强杀了，两者要分清",
+    "adb shell dumpsys activity service com.android.systemui/.SystemUIService 的 Transitions 段会打印 mReadyDuringSync，非空说明还有转场被闸门挡着"
+  ],
+  "next": "第 27 步「playTransition：建层级、分派 handler」：闸门放开后，才真正把 leash 摆好交给 handler。"
+}

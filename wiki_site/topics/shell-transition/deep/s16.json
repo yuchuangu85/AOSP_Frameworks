@@ -1,0 +1,36 @@
+{
+  "step": "s16",
+  "title": "onTransitionReady 交给 Shell",
+  "tldr": "WMS 把合并事务和还原事务 finishT 打包，oneway 扔给 SystemUI，动画从此不归 WMS 管。",
+  "why": "这一步之前，所有参与者的事务都被 syncId 扣在 SurfaceFlinger 门口没有提交。如果 WMS 既不交棒也不自己 apply，屏幕就停在动画起点那一帧：用户点了图标，画面定住不动，直到 SyncSet 超时才被强制解开。如果交棒时抛 RemoteException 却没有兜底，这笔合并事务就永远丢了——窗口在 SF 里还是旧父节点、旧 alpha，表现为新窗口半透明地糊在桌面上，或者干脆不出现。",
+  "concepts": [
+    { "term": "startT（合并后的 start 事务）", "text": "本拍所有参与者的 Surface 事务合并成的一笔，装着每个 leash 的起始状态，handler 在它上面写动画。" },
+    { "term": "finishT（还原事务）", "text": "把动画期被搬走的 leash 搬回来的还原事务：reparent 回原父，恢复 layer 与 alpha。" }
+  ],
+  "walk": [
+    { "call": "buildFinishTransaction(mFinishTransaction, info, participantDisplays)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2249", "what": "先造还原事务再交棒：Shell 拿到的 finishT 必须非空，否则没人能把 leash 挂回去。" },
+    { "call": "if (!mController.isFlushing() && mIsPlayerEnabled) {", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2252", "what": "两个前提：没在 flush，player 也已启用；否则走 else 直接 apply + finish。" },
+    { "call": "mController.getTransitionPlayer().onTransitionReady(mToken, info, transaction, mFinishTransaction);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2260", "what": "oneway 交棒：startT 是合并事务，finishT 是刚造的还原事务，WMS 不等返回。" },
+    { "call": "asyncTraceBegin(TRACE_NAME_PLAY_TRANSITION, System.identityHashCode(this));", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2263", "what": "开一条 async trace，名字是常量值 playing，把交棒到 Shell finish 连成一段。" },
+    { "call": "postCleanupOnFailure();", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2268", "what": "Shell 进程异常的兜底：自己 apply + finish，宁可没动画也不让事务漏掉。" },
+    { "call": "postCleanupOnFailure();", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2284", "what": "player 未启用时的同一兜底，日志里 Apply and finish immediately 就是它。" }
+  ],
+  "state": [
+    { "field": "Transition.mLogger.mSendTimeNs", "before": "0（还没发送过）", "after": "SystemClock.elapsedRealtimeNanos() 的当前值（2258）", "note": "在调 player 之前打点，用来算 WMS 到 Shell 的传递耗时" },
+    { "field": "Transition.mLogger.mInfo", "before": "null", "after": "本次的 TransitionInfo（2259）", "note": "后续 logOnSendAsync 用它落 perfetto 事件" },
+    { "field": "Transition.mOverrideOptions", "before": "可能带 override 参数", "after": "null（2286，交棒后不再需要）", "note": "避免下一次转场误用旧参数" },
+    { "field": "TransitionInfo 持有的 anim surfaces", "before": "info 里还有引用", "after": "releaseAnimSurfaces() 后释放（2298）", "note": "根 leash 的核心侧引用已经不用了，尽早还给 SF" }
+  ],
+  "threads": "运行在触发 SyncSet 完成的那个 WMS 线程上（BLASTSyncEngine 回调），整段持 mGlobalLock；对 Shell 的调用是 oneway，WMS 不会等它。Shell 侧在 TransitionPlayerImpl 的 binder 线程收到后立刻 post 到 mMainExecutor（Transitions.java:2044）。",
+  "pitfalls": [
+    "ITransitionPlayer 整体声明为 oneway interface，onTransitionReady 调用返回时 Shell 可能还没开始播；把这一行执行完当成动画已启动，后面所有时序推断都会错。",
+    "可见性在交棒之前就已经写进 startT 了（commitVisibleActivities，见第 18 步），所以动画第一帧新窗口是否可见不由 Shell 决定；看到新窗口已可见但位置不对，问题在 handler，不在这里。",
+    "async trace 的 tag 是 TRACE_TAG_WINDOW_MANAGER、名字是 playing（Transition.java:163）；perfetto 里搜 onTransitionReady 是搜不到的。"
+  ],
+  "debug": [
+    "perfetto / atrace 抓 wm 分类，找 async slice playing（Transition.java:163 的常量值），它从 2263 开始，到 Shell 侧 finish 才结束",
+    "ProtoLog WM_DEBUG_WINDOW_TRANSITIONS 的 Calling onTransitionReady: %s（2256）能看到这一笔的完整 TransitionInfo",
+    "adb shell dumpsys activity service com.android.systemui/.SystemUIService 看 Shell 侧 Transitions 段是否收到了这个 token"
+  ],
+  "next": "第 23 步「Shell 把 transition 移入 ready 队列」：token 落到 SystemUI 的 mMainExecutor 上，第一件事是把它从 pending 队列挪进 ready 队列。"
+}

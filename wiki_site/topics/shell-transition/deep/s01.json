@@ -1,0 +1,35 @@
+{
+  "step": "s01",
+  "title": "转场被发起",
+  "tldr": "调用方定好 type/flags 与 ActionChain，DisplayContent 只做一次转发。",
+  "why": "没有这一层，就没有统一的「发起」动作：转场类型和 flags 会散落在各业务分支里，Shell 只能从 TransitionInfo 里猜场景——本该走关闭动画的路径被当成切换，App 崩溃退出播成了正常退出。ActionChain 也会断：它记着这次操作是从哪个入口进来的（finishTopCrash、kgOccludeChg、startAct），没有它，事后既无法把一次点击和一次转场对上，也无法定位是谁在 collect 期间改动了窗口树。",
+  "concepts": [
+    { "term": "TransitionType", "text": "TRANSIT_OPEN / CLOSE / TO_FRONT 等枚举，Shell 靠它挑 handler。" },
+    { "term": "ActionChain", "text": "一次逻辑操作的链条：startTransit(source) 创建，记录来源与所属 Transition。" },
+    { "term": "readyGroupRef", "text": "本次请求归属的 ready-group 根；这里传 DisplayContent，被下层用来标记「这批还没齐」。" }
+  ],
+  "walk": [
+    { "call": "mDisplayContent.requestTransitionAndLegacyPrepare(TRANSIT_CLOSE, TRANSIT_FLAG_APP_CRASHED, finishedTask, chain)", "ref": "base/services/core/java/com/android/server/wm/Task.java:5743", "what": "典型调用方：栈顶 Activity 崩溃被强制结束，type 与 flag 在这里确定。" },
+    { "call": "void requestTransitionAndLegacyPrepare(@WindowManager.TransitionType int transit, @WindowManager.TransitionFlags int flags, @Nullable WindowContainer trigger, @NonNull ActionChain chain)", "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:6059", "what": "DisplayContent 级入口；方法名里的 legacy 已无实际动作，方法体只剩转发。" },
+    { "call": "mTransitionController.requestTransitionIfNeeded(transit, flags, trigger, this, chain)", "ref": "base/services/core/java/com/android/server/wm/DisplayContent.java:6062", "what": "把 this（DisplayContent）当 readyGroupRef 一起传下去，参数的语义在下一层才兑现。" },
+    { "call": "tc.requestTransitionIfNeeded(transitType, transitFlags, trigger, dc, chain)", "ref": "base/services/core/java/com/android/server/wm/KeyguardController.java:500", "what": "另一类发起方：keyguard occlusion 变化自己算好 type/flags 后直接调 controller。" },
+    { "call": "chain.attachTransition(r.mTransitionController.createAndStartCollecting(TRANSIT_OPEN))", "ref": "base/services/core/java/com/android/server/wm/ActivityStarter.java:1605", "what": "Activity 启动走这条：拿一个已在 collecting 的 Transition 绑到新 chain。" }
+  ],
+  "state": [
+    { "field": "ActionChain.mTransition", "before": "null（startTransit 刚创建）", "after": "指向本次 Transition", "note": "attachTransition 写入；这是把「谁触发的」和「哪次转场」绑起来的唯一地方" },
+    { "field": "TransitionRequestInfo 的 startTaskInfo", "before": "null", "after": "trigger.asTask() 的 TaskInfo", "note": "1024-1026；只是告诉 Shell 从哪个 task 起，不等于已经把它 collect 了" },
+    { "field": "TransitionController.mCollectingTransition", "before": "可能为 null", "after": "被既有或新建的 Transition 占用", "note": "复用还是新建由下一层判定，这里只负责把请求送到" }
+  ],
+  "threads": "发起发生在 system_server 已持 mGlobalLock 的调用链上（崩溃收尾、keyguard 状态变更都在 ATMS/WMS 主线程语义下），这一步没有跨进程调用，也没有新线程。",
+  "pitfalls": [
+    "方法名骗人：requestTransitionAndLegacyPrepare 的方法体只有 6062 一行转发，不再调 prepareAppTransition，别再去 legacy AppTransition 里找它。",
+    "它不是唯一入口，也不是 launch 的入口：Activity 启动走 ActivityStarter:1605 的 createAndStartCollecting，keyguard occlusion 直接调 requestTransitionIfNeeded（KeyguardController:500）。追一条启动的起点别在这里下断点。",
+    "trigger 不是「参与者」：它只是随请求发给 Shell 的 startTask（TransitionController:930 与 1024-1026），真要收进 Transition 还得另外调 collect（KeyguardController:508）。",
+    "同一个 DisplayContent 可能同时被多次请求引用：readyGroupRef 传 this 是「按 display 归属」的意思，不是「这个 display 的所有窗口都参与」。"
+  ],
+  "debug": [
+    "adb shell cmd protolog_configuration logcat enable WM_DEBUG_WINDOW_TRANSITIONS，然后 adb logcat -s WindowManager | grep -E 'Creating Transition|Requesting StartTransition'（428-429、1020-1021），两条之间就是本步覆盖的区间。",
+    "perfetto 里按 async trace 名 Transition-<TYPE>-SyncReady#<id> 反查这次发起出来的转场类型。"
+  ],
+  "next": "第 3 步「无 collecting 就建 Transition」：请求送到了 controller，接下来决定复用旧转场还是新建一个。"
+}

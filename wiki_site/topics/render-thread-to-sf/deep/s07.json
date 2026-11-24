@@ -1,0 +1,125 @@
+{
+  "step": "s07",
+  "title": "syncFrameState：把 UI 侧状态搬进 RT",
+  "tldr": "RT 先 makeCurrent、解 pin 旧图、同步 staging，再判定这帧有没有 surface 可画。",
+  "why": "syncFrameState 开始时 UI 线程已经停在 mSignal 上等，而这帧要用的 View 树、动画进度、TextureView 的新 buffer 还散落在 UI 侧的数据结构里。不在这里把它们搬进 RT 自己的上下文，RT 回放时就只能跨线程读 UI 随时会改的对象：轻则读到半棵旧树、画面位置错乱，重则读到已释放的 draw op 直接崩。它同时是唯一能宣布「这一帧没得画」的地方——surface 被销毁、context 已停、纹理缓存满，都在这里落成 skippedFrameReason 或返回值，让上层知道该重建 surface 而不是干等下一拍。",
+  "concepts": [
+    {
+      "term": "TreeInfo（MODE_FULL）",
+      "text": "一次树遍历的上下文袋：damage 累加器、layer 更新队列、动画开关都挂在它上面；只有 MODE_FULL 允许同步 staging。"
+    },
+    {
+      "term": "staging → display list",
+      "text": "UI 只往 staging 槽录，RT 同步时把它 move 进 display list；两块分开才能并行。"
+    },
+    {
+      "term": "makeCurrent",
+      "text": "把 EGL/GL 上下文绑到当前线程；返回 false 表示 surface 已丢或 context 已停，这一帧注定画不了。"
+    },
+    {
+      "term": "pinImages / unpinImages",
+      "text": "把位图的 GPU 纹理钉住，保证 UI 线程改写前 RT 还能读；每帧开头先解掉上一帧钉住的那些。"
+    },
+    {
+      "term": "SkippedFrameReason",
+      "text": "六种原因，枚举定义在 SkippedFrameInfo.h:21；最常见的是 NothingToDraw 与 AlreadyDrawn。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "canUnblockUiThread = syncFrameState(info);",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:106",
+      "what": "run 里第一件事：同步。返回值决定 UI 线程现在能不能放走，不是「能不能画」。"
+    },
+    {
+      "call": "mRenderThread->timeLord().vsyncReceived(vsync, intendedVsync, vsyncId, frameDeadline,",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:176",
+      "what": "把 UI 传来的 5 个时间戳喂给 TimeLord，RT 动画与帧时间线都以它为准。"
+    },
+    {
+      "call": "bool canDraw = mContext->makeCurrent();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:178",
+      "what": "在 RT 上把 GPU 上下文设为当前；失败会顺手 setSurface(nullptr)。"
+    },
+    {
+      "call": "mContext->unpinImages();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:179",
+      "what": "解掉上一帧 pin 住的图像，否则位图/TextureView 的生产者拿不回 buffer。"
+    },
+    {
+      "call": "mLayers[i]->apply();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:184",
+      "what": "把 UI 推过来的 DeferredLayerUpdater（TextureView、视频）应用到对应的硬件层。"
+    },
+    {
+      "call": "mLayers.clear();",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:189",
+      "what": "apply 完立刻清空；下一帧要更新必须由 UI 重新 pushLayerUpdate。"
+    },
+    {
+      "call": "mContext->prepareTree(info, mFrameInfo, mSyncQueued, mTargetNode);",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:191",
+      "what": "真正的搬迁：遍历 RenderNode 树，staging→display list，顺路累积 damage。"
+    },
+    {
+      "call": "if (CC_UNLIKELY(!hasTarget || !canDraw)) {",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:196",
+      "what": "两个失败源：没有输出目标、context 已停，分别落成 NoOutputTarget / ContextIsStopped。"
+    },
+    {
+      "call": "mSyncResult |= SyncResult::FrameDropped;",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:213",
+      "what": "有跳过原因就打 FrameDropped 位，这个位最终作为 drawFrame 的返回值交回 Java。"
+    },
+    {
+      "call": "return info.prepareTextures;",
+      "ref": "base/libs/hwui/renderthread/DrawFrameTask.cpp:216",
+      "what": "返回 false 是纹理缓存耗尽（pinImages 失败），UI 得等 draw 完才能放走。"
+    }
+  ],
+  "state": [
+    {
+      "field": "DrawFrameTask::mSyncResult",
+      "before": "SyncResult::OK（drawFrame:75 刚重置）",
+      "after": "按情况 |= LostSurfaceRewardIfFound / ContextIsStopped / UIRedrawRequired / FrameDropped（198-213）",
+      "note": "它是 drawFrame 的返回值（79），Java 侧按位解释：丢 surface 就 requestLayout，要重画就 invalidate（ThreadedRenderer.java:849-858）"
+    },
+    {
+      "field": "DrawFrameTask::mLayers",
+      "before": "UI 这一帧 pushLayerUpdate 塞进来的 DeferredLayerUpdater 列表",
+      "after": "空（189）",
+      "note": "apply 后立刻清空，没被 apply 的层不会漏到下一帧，也意味着每帧都要 UI 重新 push"
+    },
+    {
+      "field": "TreeInfo::prepareTextures",
+      "before": "true（MODE_FULL 构造时置真，TreeInfo.cpp:25）",
+      "after": "false 表示 pinImages 失败、纹理缓存已满（SkiaDisplayList.cpp:99-105）",
+      "note": "它就是 syncFrameState 的返回值，不要和 skippedFrameReason 混为一谈"
+    },
+    {
+      "field": "TreeInfo::out.skippedFrameReason",
+      "before": "nullopt（CanvasContext.cpp:552 显式清空）",
+      "after": "NoOutputTarget / ContextIsStopped / AlreadyDrawn / NoBuffer / NothingToDraw 之一",
+      "note": "prepareTree 内部会改写它，所以必须在 prepareTree 之后读（195 之后）"
+    },
+    {
+      "field": "CanvasContext::mHaveNewSurface",
+      "before": "false（上一帧真正 swap 后由 854 清掉）",
+      "after": "true，如果 makeCurrent 判定 surface 是新建或重建的（450-451）",
+      "note": "后续 surfaceRequiresRedraw 与 computeDirtyRect 会因为它为真而强制整屏重画"
+    }
+  ],
+  "threads": "整段跑在 RenderThread 上，TreeInfo 的生命周期只覆盖这一次调用。此刻 UI 线程还停在 postAndWait 的 mSignal 上（DrawFrameTask.cpp:86），所以 RT 读 staging/属性树是安全的——真正的放行发生在下一步。makeCurrent、apply、prepareTree 全都要求 RT 独占 GPU 上下文，任何一步挪到别的线程都会打乱 EGL 的 current 状态。",
+  "pitfalls": [
+    "返回值不是「能不能画」：syncFrameState 返回的是 info.prepareTextures，false 只表示 pinImages 失败（纹理缓存满），此时 UI 线程被继续扣住直到 draw 结束（159-161）；判「画不画」看 info.out.skippedFrameReason（107）。",
+    "makeCurrent 失败会顺手 setSurface(nullptr)（CanvasContext.cpp:446-449），surface 当场作废，本帧后面只会得到 NoOutputTarget；别指望下一帧自动恢复，要等 UI 侧重新 setSurface。",
+    "mLayers 在 prepareTree 之前 apply（182-189），所以 TextureView 的新帧同一帧就能显示；漏掉 apply 的症状是视频画面比窗口慢一帧，而不是黑屏，很容易被当成播放器问题。",
+    "跳过原因只能在 prepareTree 之后读：prepareTree 第 552 行会把 info.out.skippedFrameReason 清成 nullopt 再重新判定，在它之前读到的都是上一帧残留。"
+  ],
+  "debug": [
+    "perfetto / atrace 抓 gfx：slice DrawFrames <vsyncId>（DrawFrameTask.cpp:91）下面第一层就是 syncFrameState（170），它的长度就是 UI 线程这一帧被扣住的时间",
+    "跳过原因会以 skippedFrameVsyncId 报给 SurfaceFlinger（CanvasContext.cpp:769），FrameTimeline 上这一帧是 skipped 而不是 janky，可以据此确认「UI 提交了但 RT 没画」",
+    "logcat 里 ALOGW \"reserveNext failed, error = ...\"（CanvasContext.cpp:610）就是 NoBuffer 分支，后面往往紧跟 setSurface(nullptr)"
+  ],
+  "next": "第 8 步「prepareTree：staging → display list」：CanvasContext::prepareTree 遍历挂在 context 上的根节点，把 staging 内容同步成 display list 并累积 damage。"
+}

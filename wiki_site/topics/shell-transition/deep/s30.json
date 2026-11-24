@@ -1,0 +1,89 @@
+{
+  "step": "s30",
+  "title": "提交可见性：先让窗口「该显示就显示」",
+  "tldr": "把这一拍要变可见的 Activity 与壁纸的可见性先落进 WMS 状态，并顺手把首帧 buffer 的 show 写进 startT。",
+  "why": "不提交可见性，ActivityRecord 的 visible/visibleRequested 还停在旧值，TaskInfo 和输入窗口也跟着是旧的：紧接着造 TransitionInfo、走 moveToPlaying 时，拿到的仍是「上一拍还不可见」的 Activity。代码注释把这条顺序写死了（Transition.java:2045-2048）：必须在 moveToPlaying 之前提交，否则 ActivityRecord#canShowWindows() 会拒绝显示窗口，动画起点就是黑的，用户看到启动后先黑一下、再突然出画面。壁纸同理，不提交要么一直黑，要么盖在新 Activity 上面。",
+  "concepts": [
+    {
+      "term": "commitVisibility",
+      "text": "把「请求可见」变成「已可见」：改 mVisible 与 mVisibleRequested，并派发 TaskInfo。"
+    },
+    {
+      "term": "commitFinishDrawing",
+      "text": "把「首帧已画完」落进事务：清掉等待绘制的标记并 show buffer，让窗口在动画第一帧就有内容。"
+    },
+    {
+      "term": "deferTaskAppear",
+      "text": "Task 是否延后向 TaskOrganizer（Shell）上报 TaskAppeared 的开关；这里关掉，等于立刻补发一次。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "commitVisibleActivities(transaction);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2049",
+      "what": "onTransactionReady 的第一句实质代码，早于 calculateTransitionInfo。"
+    },
+    {
+      "call": "ar.commitVisibility(true /* visible */, false /* performLayout */,",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2755",
+      "what": "对每个 visibleRequested 的 ActivityRecord 提交可见；performLayout=false 免锁内再布局。"
+    },
+    {
+      "call": "ar.commitFinishDrawing(transaction);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2757",
+      "what": "递归到 WindowState：首帧画完的清掉等待标记并 show buffer，写进 startT。"
+    },
+    {
+      "call": "ar.getTask().setDeferTaskAppear(false);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2759",
+      "what": "关掉延迟上报并立刻 sendTaskAppeared()，让 Shell 在动画开始前就知道这个 task 出现了。"
+    },
+    {
+      "call": "commitVisibleWallpapers(transaction);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2050",
+      "what": "紧跟 Activity 之后处理壁纸，让两者在同一笔事务里定下可见性。"
+    },
+    {
+      "call": "wallpaper.commitVisibility(showWallpaper);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2769",
+      "what": "只对「不可见但请求可见」的壁纸提交；showWallpaper 由参与者里有没有人要壁纸算出来。"
+    },
+    {
+      "call": "wallpaper.mChildren.get(j).mWinAnimator.prepareSurfaceLocked(t);",
+      "ref": "base/services/core/java/com/android/server/wm/Transition.java:2773",
+      "what": "把壁纸窗口的 surface 状态（show/alpha/位置）写进 startT，否则壁纸要晚一帧才出。"
+    }
+  ],
+  "state": [
+    {
+      "field": "ActivityRecord.mVisible / mVisibleRequested",
+      "before": "沿用上一拍的旧值（可能 false）",
+      "after": "true（仅限 visibleRequested 的参与者）",
+      "note": "commitVisibility 同时改两个；TaskInfo 与输入窗口在同一次调用里更新"
+    },
+    {
+      "field": "WindowState.mSyncState",
+      "before": "SYNC_STATE_WAITING_FOR_DRAW",
+      "after": "SYNC_STATE_READY（首帧已画完的那些）",
+      "note": "commitFinishDrawingLocked 清掉绘制等待，show 才有机会进 startT"
+    },
+    {
+      "field": "Transition.mState",
+      "before": "STATE_STARTED",
+      "after": "STATE_PLAYING（Transition.java:2096，晚于本步）",
+      "note": "顺序即约束：可见性提交必须在 PLAYING 之前完成"
+    }
+  ],
+  "threads": "在 BLASTSyncEngine.finishNow 的回调里同步执行，也就是 WMS 的 surface placement 线程 + mGlobalLock；这里不能触发新布局，performLayout=false 就是为了这个。",
+  "pitfalls": [
+    "commitVisibility 在 visible 没变化时直接 return（ActivityRecord.java:5600），别指望它每次都重新 show 一遍；首帧真正显示靠的是 commitFinishDrawing。",
+    "只处理 visibleRequested 的 ActivityRecord：正在关闭的那个不在这里提交，它的隐藏发生在 finishT 里。",
+    "编号在本步之后才是 onTransactionReady 全貌，但执行顺序是在最前面——Transition.java:2049 是整个方法的第一句实质代码，按编号读会误以为它在最后。"
+  ],
+  "debug": [
+    "adb shell dumpsys activity activities | grep -i visible 看 ActivityRecord 的 visible/visibleRequested 是否已翻转",
+    "ProtoLog group WM_DEBUG_APP_TRANSITIONS：\"commitVisibility: ... visible=... visibleRequested=...\"",
+    "winscope 打开转场起始帧，确认 show(Activity) 与 show(Wallpaper) 在同一笔事务里"
+  ],
+  "next": "可见性就位，接下来给要动的内容发一个可搬的手柄 → 第 19 步「构造 leash：给动画一个可搬的手柄」。"
+}

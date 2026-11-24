@@ -1,0 +1,100 @@
+{
+  "step": "s08",
+  "title": "Shell 收到 request（oneway）",
+  "tldr": "请求落在 SystemUI 的 binder 线程，随即转投 wmshell.main 处理。",
+  "why": "没有这一层线程切换，转场状态机会在 binder 线程上被改。用户能感知的后果是：转场 A 的 ready 回调在 binder 线程、播放循环在 wmshell.main，两边同时改 mTracks 和 mPendingTransitions，队列里出现重复 token 或丢掉的 token——表现为动画播到一半突然切到终点、或者下一个转场永远不开始。而如果为了让「安全」把这次调用做成阻塞的同步 binder，WMS 的收集线程就会等 Shell 主线程，点图标后转场迟迟不开播，等 sync 超时后直接跳帧。",
+  "concepts": [
+    {
+      "term": "TransitionPlayerImpl",
+      "text": "Transitions 里的 ITransitionPlayer.Stub，标 @BinderThread，只做转发。"
+    },
+    {
+      "term": "wmshell.main",
+      "text": "SystemUI 给 WMShell 用的主线程 Executor；转场状态机只许在它上面改。"
+    },
+    {
+      "term": "ActiveTransition",
+      "text": "Shell 侧对在途转场的持有物：token、request、info、startT/finishT、handler。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "oneway interface ITransitionPlayer",
+      "ref": "base/core/java/android/window/ITransitionPlayer.aidl:42",
+      "what": "整个接口是 oneway：WMS 写完 binder 就返回，Shell 抛的异常也不会回传给 WMS。"
+    },
+    {
+      "call": "void requestStartTransition(in IBinder transitionToken, in TransitionRequestInfo request)",
+      "ref": "base/core/java/android/window/ITransitionPlayer.aidl:66",
+      "what": "请求方法的声明：token + request，这是唯一告诉 Shell「要开播了」的入口。"
+    },
+    {
+      "call": "mMainExecutor.execute(() -> Transitions.this.requestStartTransition(iBinder, request))",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:2051",
+      "what": "binder 线程只做转发，真正的逻辑排到 wmshell.main，和动画循环同线程。"
+    },
+    {
+      "call": "if (mKnownTransitions.containsKey(transitionToken))",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1345",
+      "what": "同一 token 不能被请求两次；真重复说明 WMS 侧出了问题，直接抛 RuntimeException。"
+    },
+    {
+      "call": "final ActiveTransition active = new ActiveTransition(transitionToken);",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1348",
+      "what": "先占位持有物，后面认领到的 handler、WCT、startT/finishT 都往它身上挂。"
+    },
+    {
+      "call": "if (request.getType() == TRANSIT_SLEEP)",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1352",
+      "what": "睡眠不走认领流程，直接交给 SleepHandler，且要求尽快收尾。"
+    },
+    {
+      "call": "dispatchRequestWithTracing(transitionToken, request, /* skip= */ null)",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1357",
+      "what": "进入 handler 认领（下一步）；返回值里带 handler 与它想附带执行的 WCT。"
+    },
+    {
+      "call": "mOrganizer.startTransition(transitionToken, wct != null && wct.isEmpty() ? null : wct)",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1418",
+      "what": "把认领结果回传 WMS，这是第 14 步的起点；空 WCT 被降成 null，免得 WMS 白跑一趟。"
+    },
+    {
+      "call": "mPendingTransitions.add(0, active);",
+      "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1425",
+      "what": "插到队首而不是队尾：WMS 已经在收集这个转场，它必然比 Shell 自己发起的新转场更早 ready。"
+    }
+  ],
+  "state": [
+    {
+      "field": "Transitions.mKnownTransitions",
+      "before": "不含该 token",
+      "after": "token → ActiveTransition",
+      "note": "1417 行 put；finish/merge 时才移除，是「这个 token 我认识」的唯一凭据"
+    },
+    {
+      "field": "Transitions.mPendingTransitions",
+      "before": "长度 N",
+      "after": "长度 N+1，新元素在 index 0",
+      "note": "onTransitionReady 时从这里按 token 取出，取不到就警告"
+    },
+    {
+      "field": "ActiveTransition.mHandler",
+      "before": "null",
+      "after": "认领成功的 handler，或仍为 null",
+      "note": "为 null 是正常状态：普通 Activity 转场在 play 阶段才选 handler"
+    }
+  ],
+  "threads": "binder 线程接收（@BinderThread 的 TransitionPlayerImpl），立刻 execute 到 wmshell.main 执行 requestStartTransition；这里是 SystemUI 进程，不持 WMS 的 mGlobalLock。",
+  "pitfalls": [
+    "oneway 不等于「异步送达」：它只保证调用方不阻塞，Shell 侧一旦抛 RuntimeException（1341 空 token、1346 重复 token）只在 SystemUI 进程里崩，WMS 完全看不到。",
+    "wmshell.main 被卡住时，WMS 已经开着的 collecting 转场会一直等：Shell 迟迟不回调 startTransition，最终走 sync 超时，用户看到的是「动画没播、画面直接切」。",
+    "打开 transitMixpatcherBase 时（1412-1416）这段被 mMixpatcher.startTransition 取代并直接 return，既不写 mKnownTransitions 也不写 mPendingTransitions——读代码时必须先确认这个 flag。",
+    "requestStartTransition 在 wmshell.main 上跑，而 onTransitionReady 也从同一个 executor 进来（2044），所以两者的顺序由队列保证；自己另起线程处理 request 会打乱这个序。"
+  ],
+  "debug": [
+    "adb shell dumpsys activity service SystemUIService WMShell transitions：看 Pending Transitions 里的 token/id/handler",
+    "adb shell wm logging enable-text WM_SHELL_TRANSITIONS（Shell 侧 ProtoLog），logcat 里看 \"Transition requested (#%d)\" 与 \"Transition handled by %s\"",
+    "perfetto：filter window_manager，看 SystemUI 进程 wmshell.main 上 requestStartTransition 到 startTransition 的间隔，间隔大说明主线程被占"
+  ],
+  "next": "请求进了 Shell，接下来要决定谁来播 → 第 13 步「选择 handler 并决定是否合并」。"
+}

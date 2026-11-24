@@ -1,0 +1,126 @@
+{
+  "id": "tc-request-if-needed",
+  "title": "TransitionController.requestTransitionIfNeeded",
+  "file": "base/services/core/java/com/android/server/wm/TransitionController.java",
+  "sig": "Transition requestTransitionIfNeeded(",
+  "span": [
+    910,
+    933
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "Transition requestTransitionIfNeeded(@WindowManager.TransitionType int",
+      "kind": "state",
+      "text": "过渡请求入口：WM 主线程持锁调用；type/flags 决定过渡类型与语义，返回 null 表示无新过渡。"
+    },
+    {
+      "at": 2,
+      "quote": "@WindowManager.TransitionFlags int flags, @Nullable WindowContainer tr",
+      "kind": "data",
+      "text": "flags 参与 keyguard 可见性判断；trigger 仅首个参与容器，只为取起始 task，可为 null。"
+    },
+    {
+      "at": 3,
+      "quote": "@NonNull WindowContainer readyGroupRef, @NonNull ActionChain chain) {",
+      "kind": "data",
+      "text": "readyGroupRef 标识 ready 分组，chain 是本条变更链；均 @NonNull，传 null 会 NPE 中断收集。"
+    },
+    {
+      "at": 4,
+      "quote": "if (mTransitionPlayers.isEmpty()) {",
+      "kind": "branch",
+      "text": "无 TransitionPlayer：正在 flush 或 player 已移除，直接不建过渡，避免从空列表取 player。"
+    },
+    {
+      "at": 5,
+      "quote": "if (Flags.fallbackTransitionPlayer()) {",
+      "kind": "branch",
+      "text": "仅 fallbackTransitionPlayer flag 开启才 wtf 上报；关闭时静默返回，避免 flush 场景刷日志。"
+    },
+    {
+      "at": 6,
+      "quote": "Slog.wtfStack(TAG, \"Somehow requesting transition while flushing\");",
+      "kind": "trace",
+      "text": "wtfStack 打堆栈定位 flush 期间仍请求过渡的调用方；不改状态，随后照常返回 null。"
+    },
+    {
+      "at": 8,
+      "quote": "return null;",
+      "kind": "state",
+      "text": "返回 null：本次无过渡，调用方必须判空；Shell 不会收到 startTransition，动画等下次请求。"
+    },
+    {
+      "at": 10,
+      "quote": "Transition newTransition = null;",
+      "kind": "state",
+      "text": "默认结果 null；仅新建分支（chain 未在收集）才被 requestStartTransition 返回值覆盖。"
+    },
+    {
+      "at": 11,
+      "quote": "if (chain.isCollecting()) {",
+      "kind": "branch",
+      "text": "chain 已挂到正在收集的过渡：复用它只补 ready，避免新建第二个过渡与全局收集冲突。"
+    },
+    {
+      "at": 12,
+      "quote": "// Make the collecting transition wait until this request is ready.",
+      "kind": "note",
+      "text": "注释：本请求就绪条件未满足，须让收集中的过渡继续等待，否则会提前 start 漏掉本次容器。"
+    },
+    {
+      "at": 13,
+      "quote": "chain.getTransition().setReady(readyGroupRef, false);",
+      "kind": "state",
+      "text": "对 readyGroupRef 置未就绪；受 isCollecting/mSyncId 约束，未 prepareSync 则静默无效。"
+    },
+    {
+      "at": 14,
+      "quote": "if ((flags & KEYGUARD_VISIBILITY_TRANSIT_FLAGS) != 0) {",
+      "kind": "branch",
+      "text": "flags 含 keyguard 可见性位时带上该信息，否则 Shell 无从播放 keyguard 动画。"
+    },
+    {
+      "at": 15,
+      "quote": "// Add keyguard flags to affect keyguard visibility",
+      "kind": "note",
+      "text": "注释：keyguard 不是容器、进不了 changes，只能用过渡 flag 单独通知 Shell 可见性变化。"
+    },
+    {
+      "at": 16,
+      "quote": "chain.getTransition().addFlag(flags & KEYGUARD_VISIBILITY_TRANSIT_FLAG",
+      "kind": "state",
+      "text": "把 keyguard 位并入过渡 flags，只保留掩码内的位；漏加会让 keyguard 无动画直接跳变。"
+    },
+    {
+      "at": 18,
+      "quote": "} else {",
+      "kind": "branch",
+      "text": "chain 未在收集中：走新建过渡分支，与上面复用收集过渡的分支互斥，二者只执行其一。"
+    },
+    {
+      "at": 19,
+      "quote": "chain.attachTransition(createTransition(type, flags));",
+      "kind": "lock",
+      "text": "持 WM 全局锁改 chain 的 mTransition；mCollectingTransition 非空会抛 ILE。"
+    },
+    {
+      "at": 20,
+      "quote": "newTransition = requestStartTransition(chain.getTransition(),",
+      "kind": "state",
+      "text": "新过渡交给 requestStartTransition：内部 binder 转调 Shell，并 try/catch 兜底。"
+    },
+    {
+      "at": 21,
+      "quote": "trigger != null ? trigger.asTask() : null, null /* remote */, null /* ",
+      "kind": "ipc",
+      "text": "起始 task 由 trigger.asTask() 得，空则 null；remote/disp 传 null 表示无远程动画。"
+    },
+    {
+      "at": 23,
+      "quote": "return newTransition;",
+      "kind": "state",
+      "text": "返回新建过渡或 null；null 覆盖无 player 与复用收集过渡，调用方据此判断是否驱动动画。"
+    }
+  ]
+}

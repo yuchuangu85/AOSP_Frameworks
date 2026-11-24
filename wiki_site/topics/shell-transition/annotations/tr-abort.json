@@ -1,0 +1,156 @@
+{
+ "id": "tr-abort",
+ "title": "Transition.abort",
+ "file": "base/services/core/java/com/android/server/wm/Transition.java",
+ "sig": "void abort() {",
+ "span": [
+  1949,
+  1977
+ ],
+ "notes": [
+  {
+   "at": 1,
+   "quote": "void abort() {",
+   "kind": "note",
+   "text": "中止入口：PENDING/COLLECTING/STARTED 可中止；flush、超时、播放器死亡时由控制器调用。"
+  },
+  {
+   "at": 2,
+   "quote": "// This calls back into itself via controller.abort, so just early ret",
+   "kind": "note",
+   "text": "注释：controller.abort 路径会重入本方法，重复中止须直接返回，否则递归。"
+  },
+  {
+   "at": 3,
+   "quote": "if (mState == STATE_ABORT) return;",
+   "kind": "state",
+   "text": "已是 STATE_ABORT 则 return，防重入再次驱动 SyncEngine 与重复派发 legacy cancel。"
+  },
+  {
+   "at": 4,
+   "quote": "if (mState == STATE_PENDING) {",
+   "kind": "branch",
+   "text": "PENDING 分支：尚未开始收集，没有 sync set，走轻量中止不进 sync engine。"
+  },
+  {
+   "at": 5,
+   "quote": "// hasn't started collecting, so can jump directly to aborted state.",
+   "kind": "note",
+   "text": "注释：PENDING 可直跳 ABORT，因为尚未向 SyncEngine 注册同步集。"
+  },
+  {
+   "at": 6,
+   "quote": "mState = STATE_ABORT;",
+   "kind": "state",
+   "text": "PENDING 下只置 mState=ABORT，不碰 mSyncId，避免对未启动 sync set 调 abort。"
+  },
+  {
+   "at": 7,
+   "quote": "return;",
+   "kind": "branch",
+   "text": "PENDING 分支返回，跳过 SyncEngine.abort 与后续派发，此时无参与者需清理。"
+  },
+  {
+   "at": 9,
+   "quote": "if (mState != STATE_COLLECTING && mState != STATE_STARTED) {",
+   "kind": "state",
+   "text": "只允许 COLLECTING/STARTED；PLAYING/FINISHED 事务已提交，中止违约。"
+  },
+  {
+   "at": 10,
+   "quote": "throw new IllegalStateException(\"Too late to abort. state=\" + mState);",
+   "kind": "branch",
+   "text": "过晚中止抛 IllegalStateException 带 mState：flush 的 tryAbort 会捕获并 wtf。"
+  },
+  {
+   "at": 12,
+   "quote": "ProtoLog.v(WmProtoLogGroups.WM_DEBUG_WINDOW_TRANSITIONS_MIN,",
+   "kind": "trace",
+   "text": "按 WM_DEBUG_WINDOW_TRANSITIONS_MIN 打印被中止的 syncId，便于对号排查。"
+  },
+  {
+   "at": 13,
+   "quote": "\"Aborting Transition: %d\", mSyncId);",
+   "kind": "data",
+   "text": "日志格式串参数行：为上行 ProtoLog 提供 mSyncId，属同一次 verbose 调用。"
+  },
+  {
+   "at": 14,
+   "quote": "mState = STATE_ABORT;",
+   "kind": "state",
+   "text": "先置 mState=ABORT 再动 SyncEngine：onTransactionReady 靠它走中止清理分支。"
+  },
+  {
+   "at": 15,
+   "quote": "mLogger.mAbortTimeNs = SystemClock.elapsedRealtimeNanos();",
+   "kind": "data",
+   "text": "记录中止时刻 elapsedRealtimeNanos，供 PerfettoTransitionTracer 统计耗时。"
+  },
+  {
+   "at": 16,
+   "quote": "mController.mTransitionTracer.logAbortedTransition(this);",
+   "kind": "trace",
+   "text": "同步写入 transition tracer（Perfetto），供事后分析；写失败会中断中止流程。"
+  },
+  {
+   "at": 17,
+   "quote": "// Syncengine abort will call through to onTransactionReady()",
+   "kind": "note",
+   "text": "注释：SyncEngine.abort 会同步回调 onTransactionReady，清理在回调中完成。"
+  },
+  {
+   "at": 18,
+   "quote": "try {",
+   "kind": "branch",
+   "text": "用 try 包住 abort：flush 或播放器崩溃时 sync 状态可能已错乱，需分场景处理。"
+  },
+  {
+   "at": 19,
+   "quote": "mSyncEngine.abort(mSyncId);",
+   "kind": "state",
+   "text": "以 mSyncId 让 sync set 立即 finish（不等 ready）并摘依赖，同步触发清理回调。"
+  },
+  {
+   "at": 20,
+   "quote": "} catch (Exception e) {",
+   "kind": "branch",
+   "text": "捕获 sync 异常（mSyncId 未启动/已结束）；mState 已是 ABORT，是否上抛看 flush。"
+  },
+  {
+   "at": 21,
+   "quote": "if (mController.isFlushing()) {",
+   "kind": "state",
+   "text": "flush 中 sync 状态本就可能错乱，异常降级为日志，保证继续清理其他 transition。"
+  },
+  {
+   "at": 22,
+   "quote": "Slog.wtf(TAG, \"SyncEngine state mismatch during flush: #\" + mSyncId, e",
+   "kind": "trace",
+   "text": "flush 中用 Slog.wtf 记录 syncId 与异常栈，便于 bugreport，不中断 flush。"
+  },
+  {
+   "at": 23,
+   "quote": "} else {",
+   "kind": "branch",
+   "text": "非 flush 的常规中止不吞异常：说明 SyncEngine 契约被破坏，需向上暴露。"
+  },
+  {
+   "at": 24,
+   "quote": "throw e;",
+   "kind": "branch",
+   "text": "重抛给上层或 tryAbort 记 wtf；否则 mState 已 ABORT 但 sync 未清理、动画不释放。"
+  },
+  {
+   "at": 27,
+   "quote": "mController.dispatchLegacyAppTransitionCancelled(mTargetDisplays);",
+   "kind": "ipc",
+   "text": "对 mTargetDisplays 中命中条件的 legacy listener 回调取消，否则客户端一直等动画。"
+  },
+  {
+   "at": 28,
+   "quote": "invokeTransitionEndedListeners();",
+   "kind": "state",
+   "text": "执行并清空 mTransitionEndedListeners(置 null)，通知外部已结束；重复调用不二次执行。"
+  }
+ ]
+}

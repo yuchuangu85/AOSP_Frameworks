@@ -1,0 +1,783 @@
+{
+  "stages": [
+    {
+      "id": "s1",
+      "title": "收到 SF 的 VSYNC 回调：从预测唤醒到主线程 frame signal",
+      "actor": "SF Binder 接收端 → Scheduler 定时回调 → SF 主 Looper",
+      "input": "携带缓冲或属性变化的事务；也可由 HWC 或其它系统更新请求合成。",
+      "action": "setTransactionState 入队并置 eTransactionFlushNeeded；首次置位才 resync、scheduleCommit。scheduleFrame 对注册名 sf 的回调排期，按预测 VSYNC 减去工作/就绪时长安排唤醒。到时 MessageQueue::vsyncCallback 收到目标 VSYNC、目标唤醒及 ready 时间，生成 SF 的预测 ID；dispatchFrame 合并待处理消息，主 Looper 的 handleMessage 才进入 onFrameSignal。",
+      "steps": [
+        ["1. 事务先进入待处理状态", "Binder 线程收到 setTransactionState 后把状态放入 TransactionHandler 队列，并置 eTransactionFlushNeeded；多次到达不会为同一个 pending 标记无限重复排期。"],
+        ["2. 只在需要时安排 sf 回调", "首次从无到有时调用 resync/scheduleCommit，Scheduler 为名为 sf 的回调计算目标唤醒点：预计 VSYNC 之前要留出 readyDuration 和 workDuration。"],
+        ["3. 到点生成 SF frame signal", "MessageQueue::vsyncCallback 收到目标 VSYNC、唤醒时间和 ready 时间，构造 SF 侧预测 ID；dispatchFrame 合并消息后交给 SF 主 Looper。"],
+        ["4. 进入本轮 FrameTarget", "主 Looper 的 handleMessage 才调用 onFrameSignal，开始处理这一轮可能来自多个生产者的事务。App 的 VSYNC ID、SF 的预测 ID 和实际唤醒时刻不必相同。"]
+      ],
+      "output": "SF 开始处理本轮 FrameTarget；本轮可能消费多个生产者的状态。App 与 SF 的预测 ID 和实际唤醒时刻不必相同。",
+      "branch": "HWC 的 onComposerHalVsync 是给调度器校准预测的硬件采样，不在该回调中直接合成；普通路径也无需手动注入 VSYNC。SF 的帧消息若已 pending，不会重复投递。",
+      "impact": "View 数量本身不决定 SF 唤醒次数；事务合并、目标帧率、显示模式和 SF 线程实际获调度时间才是此处的变量。App 缓冲也可能在 SF 已排期后才到达。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5714,
+          5721
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5729,
+          5730
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5297,
+          5311
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2508,
+          2519
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2548,
+          2556
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          113,
+          127
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          191,
+          199
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          90,
+          99
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          59,
+          74
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/MessageQueue.cpp",
+          32,
+          47
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          360,
+          377
+        ]
+      ]
+    },
+    {
+      "id": "s2",
+      "title": "Commit：只让合乎目标时刻且依赖满足的事务通过",
+      "actor": "Scheduler → SF 主线程 / TransactionHandler",
+      "input": "SF 的预计 present 时刻、各 applyToken 队列、事务目标/帧号、acquire fence 和 barrier。",
+      "action": "onFrameSignal 创建 FrameTarget，再调用 commit。需要 flush 时先 collect，将事务按 applyToken 归队，逐队从队首查：期望时间、VSYNC ID/帧率、barrier 帧与同步 token、同层背压及写入完成的 acquire fence。不同队列的依赖可在同次 flush 再检查。",
+      "steps": [
+        ["1. 收集并按 applyToken 分队", "commit 先把 pending transaction collect 出来，按 applyToken 放入对应队列；同一队列保持队首顺序，队首未满足时其后事务不能越过它。"],
+        ["2. 检查时间条件", "逐队检查 desired present time、VSYNC ID、目标帧率和 early 判断，确认这笔事务属于当前 FrameTarget，而不是太早或已经错过目标。"],
+        ["3. 检查跨事务依赖", "继续检查 barrier frame、同步 token、同层 backpressure 和 acquire fence；不同队列的依赖可能在同一次 flush 中再次检查。"],
+        ["4. 决定应用或保留", "满足条件的事务进入本次应用；被挡的队首及其后续同队事务保留，并让 SF 继续保持 pending。未 signal 的 acquire fence 在特定 AutoSingleLayer 条件下可能仍成为候选，不能简化成永远先等 GPU。"]
+      ],
+      "output": "一批可应用的事务；被挡的队首和其后的同队事务保留，仍有 pending 时重设 flush 标记。",
+      "branch": "不能概括为“必须等 GPU 完成才能 latch”：本版默认 AutoSingleLayer；仅首个、单状态、简单 buffer 更新且非 early 配置等满足时，未 signal 可成候选，且本轮没有其它 ready 事务才会应用；这不免除后续读者的 fence 依赖。HWC 背压或切模式也可令 commit 提早退出、重新排期。",
+      "impact": "重 GPU 工作、多个独立 Surface 的同步更新及目标帧率变化，分别通过 fence、barrier 或目标时间影响准入；普通 View 的 Java 层级不在过滤器中。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          411,
+          429
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          470,
+          474
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3035,
+          3044
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3059,
+          3066
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3135,
+          3140
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          39,
+          51
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          67,
+          89
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          199,
+          218
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5323,
+          5354
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5402,
+          5423
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5428,
+          5455
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5478,
+          5485
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          598,
+          604
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5543,
+          5576
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          118,
+          136
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3154,
+          3156
+        ]
+      ]
+    },
+    {
+      "id": "s3",
+      "title": "应用状态、更新 Layer 快照，latch 后仍可能不送显",
+      "actor": "SurfaceFlinger 主线程 / Layer 前端",
+      "input": "准入的事务、既有层树及显示状态；某些事务只有几何或层级变化。",
+      "action": "应用事务、更新层级，构建 LayerSnapshot。全局几何/可见变化使可见区变脏；对 hasReadyFrame 或需在 latch 时释放的 Layer 调用 latchBufferImpl；Layer 收集当前 buffer、帧号和 acquire fence。用显式 mMustComposite、状态变化与新 latch 等条件决定是否需要 composite。",
+      "steps": [
+        ["1. 应用事务状态", "SF 把准入事务合并到当前层树，更新 layer 几何、Z 顺序、透明度、可见性、buffer 和其它 SurfaceControl 状态。"],
+        ["2. 计算 LayerSnapshot", "前端根据状态生成本轮 LayerSnapshot；全局几何或可见性变化会让输出区域变脏，即使没有新的 App buffer。"],
+        ["3. Latch 可用 buffer", "对有 ready frame 或需在 latch 时释放旧内容的 Layer 调用 latchBufferImpl，取得当前 buffer、frameNumber 和 acquire fence；latch 是 SF 选择内容，不是 GPU 已完成或屏幕已显示。"],
+        ["4. 决定是否合成", "SF 根据新 latch、状态变化、mMustComposite 和输出需要判断是否进入 composite；没有新 buffer 的纯属性事务也可能触发重合成。"]
+      ],
+      "output": "状态/缓冲被 SF 选中；commit 返回 true 才经 Scheduler 进入 composite。latch 既非 BLAST 的 acquireBuffer，也非 GPU 完成或已可见。",
+      "branch": "某层没新内容可以沿用旧 buffer；其它层或显示状态仍可能更新。纯属性事务可无新 App buffer 而重合成；无合成需要、被背压或启动阶段的阻止条件可让本轮无 composite。",
+      "impact": "应用布局复杂主要使新内容晚到；改变独立 Surface 的位置、遮挡、透明度等会直接改变 SF 状态。一个窗口的内部 View 树不在这里重新 measure/layout。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2824,
+          2829
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2881,
+          2907
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2933,
+          2957
+        ],
+        [
+          "native/services/surfaceflinger/Layer.cpp",
+          1299,
+          1318
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2982,
+          2993
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3118,
+          3121
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3190,
+          3202
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          470,
+          474
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/Scheduler.cpp",
+          501,
+          509
+        ],
+        [
+          "native/services/surfaceflinger/Layer.cpp",
+          1203,
+          1215
+        ],
+        [
+          "native/services/surfaceflinger/Layer.cpp",
+          1518,
+          1536
+        ]
+      ]
+    },
+    {
+      "id": "s4",
+      "title": "按显示输出处理可见层，并让 HWC 决定合成方案",
+      "actor": "SF / CompositionEngine → 每个 Output → Hardware Composer (HWC)",
+      "input": "可用显示输出、LayerSnapshot 和几何脏标记；不是应用的 DisplayList。",
+      "action": "composite 进入 CompositionEngine::present。prepare 需要时按 Z 从前到后算可见/覆盖区域，维护 OutputLayer；present 阶段更新颜色、合成状态、写 HWC 状态。Display::chooseCompositionStrategy 询问 HWC，应用返回的层类型、显示请求与 client target 属性。",
+      "steps": [
+        ["1. 为每个 Output 建立候选层", "CompositionEngine 按输出遍历可见 LayerSnapshot，建立 OutputLayer；窗口内部的普通 View 已经只是 App buffer 里的像素。"],
+        ["2. 计算可见与覆盖", "prepare 阶段按 Z 顺序计算裁剪、变换、覆盖和可见区域，判断哪些层真正贡献到这个显示输出。"],
+        ["3. 询问 HWC 合成策略", "Display::chooseCompositionStrategy 将层类型、显示请求、颜色和 client target 条件交给 HWC，得到 DEVICE、CLIENT 或混合候选。"],
+        ["4. 写入本轮输出状态", "present 阶段更新颜色、合成状态和 HWC 层配置；策略选择本身还不是 present 调用，也不代表已经向面板提交。"]
+      ],
+      "output": "每个输出得到最终 usesClientComposition / usesDeviceComposition；一个显示的一帧可以同时使用两者。",
+      "branch": "几何未脏或输出未启用可跳过重建；可预测策略，或者在不需 CLIENT 且满足时序条件时 presentOrValidate 直接 present，不是每帧固定完整 validate 再 present。",
+      "impact": "此处重要的是独立、可见的 Surface 图层及相互遮挡，不是某个 Window 内 ImageView 的个数。遮挡面积、透明层、变换、输出数量会改变候选集合与策略。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3442,
+          3450
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          131,
+          155
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          526,
+          560
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          482,
+          502
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          263,
+          280
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          295,
+          307
+        ],
+        [
+          "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          562,
+          601
+        ]
+      ]
+    },
+    {
+      "id": "s5",
+      "title": "DEVICE、CLIENT 或混合：合成方不同",
+      "actor": "SF CompositionEngine / RenderEngine 与 GPU / HWC",
+      "input": "各输出的合成策略、层 buffer 与 acquire fence；若要 CLIENT，还需 client target。",
+      "action": "DEVICE 层的缓冲槽/handle、acquire fence 等送 HWC。需要 CLIENT 的层由 RenderEngine 准备图层绘制请求；未命中可用缓存时 drawLayers 到 client target，再将结果和 ready fence 经 RenderSurface/FramebufferSurface 的 setClientTarget 送给 HWC。混合时 HWC 使用 client target 和其它设备层完成该输出。",
+      "steps": [
+        ["1. DEVICE 层直送", "能由 HWC 直接处理的层，把 buffer handle、裁剪、变换和 acquire fence 交给 HWC，不需要 SF RenderEngine 把它们重新画进 client target。"],
+        ["2. CLIENT 层准备", "需要客户端合成的层由 RenderEngine 生成绘制请求；它可能复用 ClientCompositionCache，也可能重新 drawLayers 到 client target。"],
+        ["3. 传入 client target", "RenderSurface/FramebufferSurface 将 client target 及其 ready fence 设置给 HWC；这是 SF GPU 生成的合成结果，与 App GPU 绘制窗口 buffer 是两笔工作。"],
+        ["4. 混合输出", "混合模式下 HWC 同时消费 client target 和 DEVICE 层，最终策略随设备能力、可见区域、格式、变换和保护约束变化。"]
+      ],
+      "output": "HWC 获得待显示的输入及其依赖，之后执行 present；应用 GPU 生成窗口内容与 SF GPU 合成 client target 是两笔不同工作。",
+      "branch": "全 DEVICE 时 composeSurfaces 不绘制 client target；客户端缓存命中可复用结果。受保护内容、显示能力、几何变换、颜色空间或窗口特效会限制路径；DEVICE 并不承诺某种厂商硬件实现。",
+      "impact": "进到某一窗口 buffer 的普通 View 动画改变的是其中的像素，不再逐 View 合成。相反，多独立图层叠在一起、窗口级背景模糊、格式或色域变化能直接改变 SF/HWC 工作。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          1057,
+          1074
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1319,
+          1348
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1399,
+          1428
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1429,
+          1444
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1468,
+          1475
+        ],
+        [
+          "native/services/surfaceflinger/DisplayHardware/FramebufferSurface.cpp",
+          112,
+          122
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          295,
+          307
+        ]
+      ]
+    },
+    {
+      "id": "s6",
+      "title": "Present：区分发起送显、显示栅栏信号和实际发光",
+      "actor": "SF / HWC → 厂商显示控制器、面板；SF FrameTimeline 回收时间戳",
+      "input": "设备层、可能的 client target、预计/最早 present 时间及输入栅栏。",
+      "action": "Display::presentFrame 取 display present fence 与各层 release fence。正常慢路径按需等待最早时间，调用 hwcDisplay->present；若 presentOrValidate 已成功，只 flush 待处理命令而不二次 present。SF 取显示的 present fence 并送 FrameTimeline。",
+      "steps": [
+        ["1. 准备送显依赖", "Display::presentFrame 收集显示 present fence 和各层 release fence，并按最早 present 时间处理必要的等待。"],
+        ["2. 调用 HWC", "正常路径调用 hwcDisplay->present；如果前面的 presentOrValidate 已经完成了提交，则只 flush 待处理命令，避免重复 present。"],
+        ["3. 记录显示 fence", "SF 从 HWC 取得 display present fence，并把它交给 FrameTimeline 追踪；这个 fence 是框架可观察的显示提交依赖。"],
+        ["4. 保留物理边界", "present 返回或 fence signal 都不能直接证明面板某一行像素何时发光；驱动、控制器、扫描和刷新模式仍在框架源码之外。"]
+      ],
+      "output": "框架可取得显示提交及（有效时）present fence 的信号时间。驱动/控制器按设备实现提交/扫描输出；一次函数返回不是面板所有像素同时更新。",
+      "branch": "FrameTimeline::setSfPresent 先记录实际结束并挂起 present fence；后续 flush 遇 pending 会等待后续处理，失效有独立处理。没有有效 fence 时不能伪造实际 present 时间，更不能从源码反推某行像素何时发光。",
+      "impact": "刷新周期、模式切换、厂商显示能力、其它显示负载与前帧占用可影响提交/显示。普通 View 数量没有“直接拉长扫描”的调用边；多数影响是新内容是否赶上此目标。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          424,
+          450
+        ],
+        [
+          "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          668,
+          689
+        ],
+        [
+          "native/services/surfaceflinger/DisplayHardware/HWComposer.cpp",
+          581,
+          596
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3783,
+          3799
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3817,
+          3823
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+          1420,
+          1429
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+          2095,
+          2114
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/FrameTimeline.cpp",
+          2121,
+          2136
+        ]
+      ]
+    },
+    {
+      "id": "s7",
+      "title": "归还旧 buffer：收到释放通知，仍不一定可写",
+      "actor": "HWC/SF → BLAST → BufferQueue → 下一次生产者",
+      "input": "上一轮使用过的层 buffer、按层的 release fence，必要时还有 client target 依赖。",
+      "action": "Output 为层收集 release fence，按路径与客户端合成相关 fence 合并；标记需释放的 buffer，SF 通过监听/释放通道回传。BLAST 按 buffer ID 与 frame number 匹配；将 item 连同 fence 交回 BufferQueue。",
+      "steps": [
+        ["1. 收集旧内容依赖", "Output 为仍被 HWC、RenderEngine 或客户端合成持有的层收集 release fence，并按路径合并相关依赖。"],
+        ["2. 回传释放通知", "SF 标记不再需要的旧 buffer，通过 release listener/通道把 buffer ID、frame number 和 fence 回传给客户端。"],
+        ["3. BLAST 匹配在途槽位", "BLAST 按 buffer ID 和 frame number 找到对应的 BufferItem，把 release fence 交还 BufferQueue，更新槽位所有权。"],
+        ["4. 等待可写再复用", "生产者只有在 release fence 已 signal 或为 NO_FENCE 时才能覆盖旧内容；拿到槽位本身不等于可以立即写入。"]
+      ],
+      "output": "生产者可在后续 dequeue 取得槽或 buffer；得到槽是所有权变化，只有所带 fence 已 signal（或 NO_FENCE）才可覆盖旧内容。",
+      "branch": "释放的是已不再需要的旧内容，不是“本帧刚 present 就释放本帧在屏 buffer”。EGL 路径 BLAST 还可按最大 acquired 数差额暂留；丢弃的 buffer 也可能释放，释放不是曾显示的证明。",
+      "impact": "若独立层/GPU/HWC 持有资源时间长，影响会沿 release→dequeue 反压到下一应用帧；不要把 dequeue 停顿直接归因为 View 测量慢。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1742,
+          1765
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1773,
+          1793
+        ],
+        [
+          "native/services/surfaceflinger/Layer.cpp",
+          718,
+          738
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          496,
+          511
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          520,
+          531
+        ],
+        [
+          "native/libs/gui/BLASTBufferQueue.cpp",
+          540,
+          553
+        ],
+        [
+          "native/libs/gui/include/gui/IGraphicBufferProducer.h",
+          233,
+          236
+        ]
+      ]
+    }
+  ],
+  "factors": [
+    {
+      "name": "普通 View、SurfaceView、TextureView 与多窗口",
+      "category": "Surface 与窗口",
+      "stages": [
+        "s3",
+        "s4",
+        "s5"
+      ],
+      "mechanism": "同一个普通窗口中，HWUI 将子树录入窗口渲染目标；新增普通 View 不等于新增 SF Layer。SurfaceView 为内容建子 SurfaceControl/BLAST 层；TextureView 通过 drawTextureLayer 写入本窗口。IME、其它窗口或独立 Surface 带来的合成输入则按实际层树计。",
+      "boundary": "比较的是输出层/可见缓冲，不是容器 SurfaceControl 总数；SurfaceView 也不是天生一定走 DEVICE。",
+      "probe": "对照同帧 SF Layers 快照、窗口和子层 buffer/frame number；再比 App 端 View 树或 RenderNode，勿混为同一棵树。",
+      "refs": [
+        [
+          "base/core/java/android/view/ThreadedRenderer.java",
+          769,
+          779
+        ],
+        [
+          "base/core/java/android/view/SurfaceView.java",
+          1821,
+          1845
+        ],
+        [
+          "base/core/java/android/view/TextureView.java",
+          85,
+          94
+        ],
+        [
+          "base/core/java/android/view/TextureView.java",
+          428,
+          439
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          553,
+          560
+        ]
+      ]
+    },
+    {
+      "name": "并行动画究竟是改窗口像素，还是改独立层属性？",
+      "category": "Surface 与窗口",
+      "stages": [
+        "s1",
+        "s3",
+        "s4"
+      ],
+      "mechanism": "多个普通 View 同拍平移主要改变同一窗口的生产时间与 damage；若是多个独立 SurfaceControl 的位置、缩放、alpha 同时变化，事务会改 SF 层快照、可见区域及对应输出状态。也可以只移动已生成的缓冲，无需重画其中内容。",
+      "boundary": "同一批事务可一次 flush，多处属性改变不意味着同数量次 present；仍须看队列、窗口数和可见性。",
+      "probe": "把帧分成“layer 几何改了/帧号未换”和“buffer 更新”两类，配合 App draw 事件判断。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2824,
+          2829
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          2881,
+          2907
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5297,
+          5311
+        ],
+        [
+          "base/core/java/android/view/SurfaceView.java",
+          1328,
+          1341
+        ],
+        [
+          "base/core/java/android/view/SurfaceView.java",
+          1350,
+          1368
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          748,
+          774
+        ]
+      ]
+    },
+    {
+      "name": "可见层、遮挡、透明叠加与输出面积",
+      "category": "合成策略",
+      "stages": [
+        "s3",
+        "s4",
+        "s5"
+      ],
+      "mechanism": "几何/可见性变化时按前到后的层栈计算覆盖与脏区。不透明遮挡与半透明叠层留下的可见面积不同；透明度、裁切、圆角和变换可以改变需混合或仍可见的区域。CLIENT 时这些区域和目标分辨率共同影响读写像素量。",
+      "boundary": "窗口内互相遮盖的图片主要是应用 GPU overdraw，不直接变成 SF 的多层 overdraw。像素面积是成本线索，不是固定时间公式。",
+      "probe": "看输出的 visible region、dirty region、透明度、层边界和 client target 分辨率；只在观察到 CLIENT 时将对应 GPU 工作归给 SF。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          526,
+          550
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          553,
+          565
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp",
+          1113,
+          1124
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          779,
+          797
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1416,
+          1427
+        ]
+      ]
+    },
+    {
+      "name": "层级特效、色域／HDR、变换与保护约束",
+      "category": "合成策略",
+      "stages": [
+        "s4",
+        "s5"
+      ],
+      "mechanism": "窗口级背景模糊可要求其后方的层一起参与 client 合成；SF 层的阴影、拉伸等特效可设 forceClientComposition。输出不支持 dataspace、层变换不能表示、secure 属性与输出不匹配等也进入相应分支；受保护内容还限制可执行效果。",
+      "boundary": "App 内一张带圆角的图片并不等于 SF 圆角；一张 HDR 图或一个透明层也不必然迫使整屏 CLIENT。HWC 具体支持组合与保护策略依设备。",
+      "probe": "核对特效是在 RenderNode 还是 SurfaceControl；比对该输出的 dataspace、protected/secure、渲染请求、最终 composition type。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          887,
+          904
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1017,
+          1029
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/LayerSnapshotBuilder.cpp",
+          1113,
+          1124
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          559,
+          567
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          643,
+          649
+        ]
+      ]
+    },
+    {
+      "name": "硬件合成能力、缓存、显示数量",
+      "category": "合成策略",
+      "stages": [
+        "s4",
+        "s5",
+        "s6"
+      ],
+      "mechanism": "输出分别向 HWC 查询 changed types 与 client target 请求；同一层在不同显示上的可见范围、策略和时序可不同。全 DEVICE、混合、CLIENT 缓存复用以及多输出 offload 均改变 SF GPU/HAL 路径。",
+      "boundary": "不能把“超过固定层数就 GPU 合成”、硬件 overlay 数量或带宽当成这份 AOSP 源码的结论；须读设备策略或直接采样。",
+      "probe": "记录显示 ID、每层最终 composition type、ClientCompositionCacheHit/Miss、Waiting on HWC；关掉外接/虚拟 display 对照。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          263,
+          279
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          295,
+          307
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1429,
+          1443
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/CompositionEngine.cpp",
+          143,
+          166
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3276,
+          3298
+        ]
+      ]
+    },
+    {
+      "name": "帧率协商、预测唤醒、模式切换与线程调度",
+      "category": "显示时序",
+      "stages": [
+        "s1",
+        "s2",
+        "s6"
+      ],
+      "mechanism": "工作提前量决定对预测 VSYNC 的唤醒点。调度延迟可使 FrameTarget 修正过期预计时间；事务还要匹配期望呈现节奏。切模式有 pending fence 或前帧会反压 HWC 时，commit 可先重新排期而不是立即提交。",
+      "boundary": "刷新频率不是给予 App 某线程的整段预算；一次硬件 VSYNC 样本、App 回调、SF frame signal 和实际 present 不是同一事件。",
+      "probe": "同屏对齐 expected/actual FrameTimeline、SF runnable→running、commit、present fence 与刷新率轨迹；区分晚唤醒和尚未满足准入。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/Scheduler/VSyncDispatchTimerQueue.cpp",
+          90,
+          116
+        ],
+        [
+          "native/services/surfaceflinger/Scheduler/src/FrameTargeter.cpp",
+          99,
+          124
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3035,
+          3054
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          3059,
+          3066
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5335,
+          5353
+        ]
+      ]
+    },
+    {
+      "name": "多生产者同步、目标时间和同层背压",
+      "category": "缓冲与等待",
+      "stages": [
+        "s2",
+        "s3"
+      ],
+      "mechanism": "Surface 的更新可能有 barrier；同 applyToken 队首不满足时其后续事务等待，多队列可重查。启用 layer backpressure 且本轮已有同层 buffer 并使用自动时间戳时，新事务保留。同步生产的视频/嵌入内容因此可能错过本次选取。",
+      "boundary": "这些是事务或 Surface 粒度；十个 ValueAnimator 并不自动创建十个 barrier。pending 不是已经丢帧，也不是必然丢弃。",
+      "probe": "检查 TransactionQueue、frameNumber、applyToken、barrier、hasPendingBuffer 与期望 present，把并发更新与真正的等待边对应起来。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          39,
+          47
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          67,
+          85
+        ],
+        [
+          "native/services/surfaceflinger/FrontEnd/TransactionHandler.cpp",
+          199,
+          218
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5402,
+          5423
+        ],
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5428,
+          5437
+        ]
+      ]
+    },
+    {
+      "name": "输入 acquire fence、输出 present fence、旧缓冲 release fence",
+      "category": "缓冲与等待",
+      "stages": [
+        "s2",
+        "s5",
+        "s6",
+        "s7"
+      ],
+      "mechanism": "App GPU 尚未写完使 acquire fence 延后；SF 可能推迟选取或携未就绪依赖交给下游。显示 present fence 跟踪输出；旧 buffer 的 release fence 限制下一生产者覆盖。不同延迟会表现为等待准入、等 GPU/HWC 或下一次 dequeue 慢。",
+      "boundary": "已 queue、BLAST 已 acquire、SF 已 latch、已发起 present、fence 已 signal 和肉眼可见是不同判据，不能用单个时间戳替代整条证据链。",
+      "probe": "按 buffer/frameNumber 和显示 ID 跟踪同一依赖；结合 GPU 完成、SF 队列、present 及 dequeue 等待，不把所有等待加成串行时长。",
+      "refs": [
+        [
+          "native/services/surfaceflinger/SurfaceFlinger.cpp",
+          5439,
+          5455
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/OutputLayer.cpp",
+          1057,
+          1073
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Display.cpp",
+          432,
+          447
+        ],
+        [
+          "native/services/surfaceflinger/CompositionEngine/src/Output.cpp",
+          1748,
+          1765
+        ],
+        [
+          "native/libs/gui/include/gui/IGraphicBufferProducer.h",
+          233,
+          236
+        ]
+      ]
+    }
+  ]
+}

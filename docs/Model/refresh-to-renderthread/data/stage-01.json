@@ -1,0 +1,192 @@
+{
+  "id": "stage-01",
+  "num": 1,
+  "title": "触发：requestLayout/invalidate",
+  "subtitle": "两条不同的脏链路：FORCE_LAYOUT 沿父链上行，DIRTY 沿父链合并成一块脏区",
+  "lane": "UI",
+  "durationHint": "量级：单次调用亚微秒~数微秒；父链深度与兄弟节点数决定最坏成本（源码中未体现固定阈值）",
+  "summary": "UI 线程上任何要改界面的动作最终归为两条链路。requestLayout() 是\"尺寸/位置可能要变\"：View.requestLayout 清 measure 缓存、查 requestLayoutDuringLayout（布局中请求要走特殊通道）、置 PFLAG_FORCE_LAYOUT 与 PFLAG_INVALIDATED，然后沿 mParent 上行，直到 ViewRootImpl.requestLayout 置 mLayoutRequested 并调 scheduleTraversals()。invalidate() 是\"内容变了、尺寸没变\"：View.invalidateInternal 检查一堆位（PFLAG_DRAWN/PFLAG_HAS_BOUNDS/PFLAG_INVALIDATED/DRAWING_CACHE_VALID），清 PFLAG_DRAWN、置 PFLAG_DIRTY，再把脏矩形交给 mParent.invalidateChild；硬件加速下 ViewGroup.onDescendantInvalidated 会走\"忽略矩形、只置 DIRTY 位\"的快路径并一路冒泡到 ViewRootImpl.invalidate()。两者都只是置位 + 调度，绝不立即 measure/ draw——真正的测量、布局、绘制发生在下一次 traversal。注意两条链路都不产生任何跨进程调用：它们只在本进程内改位与调度，真正的跨进程动作要等 traversal 走到 relayoutWindow 与 DrawFrameTask。",
+  "callchain": [
+    "View.requestLayout()",
+    "ViewGroup.requestLayout()",
+    "ViewRootImpl.requestLayout()",
+    "ViewRootImpl.scheduleTraversals()",
+    "View.invalidate()",
+    "View.invalidateInternal()",
+    "ViewGroup.onDescendantInvalidated()",
+    "ViewRootImpl.invalidate()"
+  ],
+  "sections": [
+    {
+      "heading": "两条链路的分工：一个管几何，一个管内容",
+      "html": "<p>Android 的刷新模型把「改动」分成两类，对应两套位与两条冒泡路径：</p><table><thead><tr><th>维度</th><th>requestLayout()</th><th>invalidate()</th></tr></thead><tbody><tr><td>语义</td><td>尺寸或位置可能要变，必须重新 measure/layout</td><td>内容变了，几何不变，只需重绘</td></tr><tr><td>置的位</td><td><code>PFLAG_FORCE_LAYOUT</code> + <code>PFLAG_INVALIDATED</code>（View.java:28744-28745）</td><td><code>PFLAG_DIRTY</code>，并清 <code>PFLAG_DRAWN</code>/<code>PFLAG_DRAWING_CACHE_VALID</code>（View.java:21474-21481）</td></tr><tr><td>冒泡目标</td><td><code>mParent.requestLayout()</code>，直到 <code>ViewRootImpl.requestLayout()</code></td><td><code>mParent.invalidateChild(this, damage)</code>，HW 路径下走 <code>onDescendantInvalidated</code></td></tr><tr><td>最终调度</td><td><code>mLayoutRequested = true; scheduleTraversals()</code>（ViewRootImpl.java:2845-2846）</td><td><code>mDirty.set(...)</code> 后 <code>scheduleTraversals()</code>（ViewRootImpl.java:2865-2868）</td></tr></tbody></table><p>两条链路最终都汇到同一个 <code>scheduleTraversals()</code>，所以<strong>一次 traversal 可能同时承担 measure/layout 和 draw</strong>。区分它们只影响「这一帧要不要重新测量布局」，不影响「会不会调度一帧」。</p>"
+    },
+    {
+      "heading": "requestLayout 的细节：为什么它会清 measure 缓存",
+      "html": "<p><code>View.requestLayout()</code>（View.java:28723-28753）依次做：</p><ol><li>relayout tracing 开关打开时打一条 instant，并打印调用栈（28724-28728）——这是线上抓「谁在疯狂 requestLayout」的入口；</li><li><code>if (mMeasureCache != null) mMeasureCache.clear()</code>：measure 结果按 MeasureSpec 缓存（<code>mMeasureCache</code> 是 <code>LongSparseLongArray</code>，View.java:28799），布局请求意味着缓存失效；</li><li>布局中请求的检查：仅当 <code>mAttachInfo.mViewRequestingLayout == null</code>（说明是本 view 发起而不是父链递归上来）且 <code>viewRoot.isInLayout()</code> 时，调 <code>viewRoot.requestLayoutDuringLayout(this)</code>，返回 false 就直接 <code>return</code>（28732-28742）；</li><li>置位：<code>mPrivateFlags |= PFLAG_FORCE_LAYOUT</code> 与 <code>|= PFLAG_INVALIDATED</code>（28744-28745）；</li><li>冒泡：<code>if (mParent != null &amp;&amp; !mParent.isLayoutRequested()) mParent.requestLayout()</code>（28747-28749）。</li></ol><p>第五步的 <code>!mParent.isLayoutRequested()</code> 是<strong>短路优化</strong>：父节点已经置了 FORCE_LAYOUT 就不再往上走，因为它的祖先必然也已经置了。这也是为什么一次布局里 N 个子 view 请求布局，冒泡总次数不会退化成 O(N×深度)。</p><p><code>isLayoutRequested()</code> 在 View 侧实现为 <code>(mPrivateFlags &amp; PFLAG_FORCE_LAYOUT) == PFLAG_FORCE_LAYOUT</code>（View.java:25972-25974），在 ViewRootImpl 侧则是 <code>mLayoutRequested</code> 字段（ViewRootImpl.java:2850-2853）——<strong>父链顶端的那一环换了实现</strong>，这是冒泡能终止的原因。</p>"
+    },
+    {
+      "heading": "invalidate 的细节：位运算决定要不要真的脏",
+      "html": "<p><code>View.invalidate()</code> 只是 <code>invalidate(true)</code>，后者调 <code>invalidateInternal(0, 0, mRight - mLeft, mBottom - mTop, invalidateCache, true)</code>（View.java:21449-21451）。<code>invalidateInternal</code> 先过两道闸：<code>mGhostView</code> 存在就转发、<code>skipInvalidate()</code> 为真就直接返回（21455-21462）。</p><p>然后是一个大条件（21468-21471），任意一项成立才继续：</p><ul><li><code>(PFLAG_DRAWN | PFLAG_HAS_BOUNDS)</code> 两位都置——本 view 已经被画过且有 bounds，脏才有意义；</li><li><code>invalidateCache &amp;&amp; PFLAG_DRAWING_CACHE_VALID</code>——绘制缓存还有效，需要连带失效；</li><li><code>(mPrivateFlags &amp; PFLAG_INVALIDATED) != PFLAG_INVALIDATED</code>——还没被标脏过；</li><li><code>fullInvalidate &amp;&amp; isOpaque() != mLastIsOpaque</code>——不透明度变了，旧内容不可信。</li></ul><p>条件成立后：<code>mLastIsOpaque = isOpaque()</code>、<code>mPrivateFlags &amp;= ~PFLAG_DRAWN</code>（21472-21475），置 <code>PFLAG_DIRTY</code>（21477），若 <code>invalidateCache</code> 再置 <code>PFLAG_INVALIDATED</code>、清 <code>PFLAG_DRAWING_CACHE_VALID</code>（21479-21482），最后把矩形交给父节点：<code>p.invalidateChild(this, damage)</code>（21487-21491）。</p><p><code>PFLAG_DRAWN</code> 会在 <code>View.draw()</code> 开头被重新置上：<code>mPrivateFlags = (privateFlags &amp; ~PFLAG_DIRTY_MASK) | PFLAG_DRAWN</code>（View.java:25494-25495）。所以「DRAWN 位」的语义是<strong>「本帧已经画过、并且没有新的脏标记」</strong>，清它就是为了让下一次 invalidate 不被上面的条件挡掉——这是同一个 view 一帧内多次 invalidate 的合并机制。</p>"
+    },
+    {
+      "heading": "硬件加速下的另一条快路径：onDescendantInvalidated",
+      "html": "<p>硬件加速且本 view 有 DisplayList 时，<code>invalidateViewProperty</code> 会走快路径（View.java:21543-21554 分支判断 <code>isHardwareAccelerated() &amp;&amp; mRenderNode.hasDisplayList()</code>），父链上的传递也换成 <code>ViewGroup.onDescendantInvalidated(View child, View target)</code>（ViewGroup.java:6201-6232）。</p><p>这个函数的注释把设计说得很清楚：<em>HW-only, Rect-ignoring damage codepath —— 我们在这里不处理矩形，因为 RenderThread 的原生代码会为 HWUI 绘制的所有内容计算 damage</em>（6202-6207）。它只做三件事：</p><ol><li>把子节点的 <code>PFLAG_DRAW_ANIMATION</code> 合并到自己身上（6210）；</li><li>若 <code>target.mPrivateFlags &amp; ~PFLAG_DIRTY_MASK</code> 非零，就懒置 <code>PFLAG_DIRTY</code> 并清 <code>PFLAG_DRAWING_CACHE_VALID</code>（6212-6219）；</li><li>若自己是 <code>LAYER_TYPE_SOFTWARE</code>，升级成一次完整 invalidate（<code>PFLAG_INVALIDATED | PFLAG_DIRTY</code>，并把 target 改成自己），因为软件层必须重画；然后 <code>mParent.onDescendantInvalidated(this, target)</code> 继续上行（6222-6231）。</li></ol><p>它最终到达 <code>ViewRootImpl.onDescendantInvalidated</code>（ViewRootImpl.java:2856-2861），后者只看 <code>PFLAG_DRAW_ANIMATION</code> 决定 <code>mIsAnimating = true</code>，然后调 <code>invalidate()</code> 走全屏脏。所以 HW 路径下<strong>矩形信息在 Java 侧被丢弃，damage 由 RT/Skia 重新计算</strong>——这与 SF 侧 stage 的 damage 语义是两套东西。</p>"
+    },
+    {
+      "heading": "ViewRootImpl：两条链路的汇合点与线程检查",
+      "html": "<p><code>ViewRootImpl.requestLayout()</code>（ViewRootImpl.java:2842-2848）非常短：</p><blockquote>if (!mHandlingLayoutInLayoutRequest) { checkThread(); mLayoutRequested = true; scheduleTraversals(); }</blockquote><p><code>mHandlingLayoutInLayoutRequest</code> 是「第二次布局中」的标记，为真时直接丢弃请求（见 <code>requestLayoutDuringLayout</code> 的注释：第一次布局中的请求会被记录并在本帧补一次布局，第二次布局中再来的请求要 post 到下一帧，避免死循环）。</p><p><code>ViewRootImpl.invalidate()</code>（2864-2869）：先把整块窗口区域标脏 <code>mDirty.set(0, 0, mWidth, mHeight)</code>，再 <code>if (!mWillDrawSoon) scheduleTraversals()</code>。<code>mWillDrawSoon</code> 在 <code>performTraversals</code> 开头置 true（3954）、结尾置 false（4824），所以<strong>正在跑 traversal 期间的 invalidate 不会重复调度</strong>——这是合并的关键。</p><p>脏矩形进入系统还有一条老路径 <code>invalidateChildInParent</code>（2887-2915）：<code>checkThread()</code>、<code>dirty == null</code> 就退化成整窗 invalidate、<code>dirty.isEmpty() &amp;&amp; !mIsAnimating</code> 就丢弃，否则按 <code>mCurScrollY</code>/<code>mTranslator</code>/<code>mAttachInfo.mScalingRequired</code> 调整后 <code>invalidateRectOnScreen(dirty)</code>。</p><p>线程检查有两套：<code>checkThread()</code>（12136-12141）直接抛 <code>CalledFromWrongThreadException</code>（消息里带期望线程名与实际线程名）；<code>checkThreadCompat()</code>（12171 起）按 ChangeId 决定抛异常还是只打一条 WTF 日志，用于渐进式收紧。<code>scheduleTraversals</code> 用的是后者，<code>requestLayout</code>/<code>invalidateChildInParent</code> 用的是前者。</p>"
+    },
+    {
+      "heading": "为什么不会立即 measure：位与调度是两件事",
+      "html": "<p>所有 <code>requestLayout</code>/<code>invalidate</code> 都只做「置位 + 可能调度」，没有一处直接调 <code>measure()</code> 或 <code>draw()</code>。真正的执行要等 <code>Choreographer</code> 的 <code>CALLBACK_TRAVERSAL</code> 触发 <code>performTraversals</code>（ViewRootImpl.java:3924），再由它依次 <code>performMeasure</code>/<code>performLayout</code>/<code>performDraw</code>。</p><p>位的生命周期可以串成一条线：</p><ul><li><code>requestLayout</code> 置 <code>PFLAG_FORCE_LAYOUT</code> → <code>View.measure</code> 用它决定是否跳过缓存（View.java:28801-28815）→ <code>View.layout</code> 末尾清掉它（26092）；</li><li><code>invalidate</code> 清 <code>PFLAG_DRAWN</code>、置 <code>PFLAG_DIRTY</code> → <code>View.draw</code> 开头清 DIRTY、置回 DRAWN（25495）。</li></ul><p>所以<strong>「这一帧要不要重新布局」只看 FORCE_LAYOUT 是否还在，「要不要重绘」只看 DIRTY 位与脏区是否为空</strong>。二者互不替代：只请求布局不改内容时，如果尺寸没变，draw 仍然会跑（因为 traversal 是原子的，布局后总会走绘制，只是脏区可能为空而提前返回）。</p>"
+    },
+    {
+      "heading": "边界：硬件加速层、属性动画、非 UI 线程",
+      "html": "<p>三条容易踩的边界：</p><ol><li><strong>属性动画</strong>：<code>ViewPropertyAnimator</code>/<code>RenderNodeAnimator</code> 改的是 RenderNode 的属性（alpha/translation/scale 等），不走 <code>invalidate()</code> 的位运算，而是 <code>invalidateViewProperty</code> → 父链 <code>invalidateChildInParent</code> 或 <code>onDescendantInvalidated</code>；纯 RenderNode 属性的动画在 RT 上自驱（对应 RT 专题的 <code>requiresUiRedraw</code>），不需要 UI 每帧参与。</li><li><strong>硬件加速层</strong>：<code>LAYER_TYPE_SOFTWARE</code> 的父层会让 <code>onDescendantInvalidated</code> 升级成完整 invalidate（6222-6227）；<code>hasDisplayList()</code> 为假（尚未录制过 DisplayList）时走慢路径 <code>invalidate(false)</code>（21544-21553）。</li><li><strong>非 UI 线程</strong>：<code>checkThread()</code> 会抛异常，正确做法是 <code>postInvalidate()</code>（走 Handler 投递到 UI 线程再 invalidate）。<code>ViewRootImpl.requestLayout()</code> 只在 <code>!mHandlingLayoutInLayoutRequest</code> 时才 checkThread，所以布局中的请求由 <code>requestLayoutDuringLayout</code> 的 <code>mLayoutRequesters</code> 列表接管。</li></ol><p>一个常见误解：以为 <code>requestLayout()</code> 会「清掉父链上的缓存」——它只清自己的 <code>mMeasureCache</code>，父节点的缓存失效是父节点自己收到 <code>requestLayout</code> 时清自己的。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/core/java/android/view/View.java",
+      "symbol": "public void requestLayout",
+      "lines": "28723-28753",
+      "code": "    public void requestLayout() {\n        if (isRelayoutTracingEnabled()) {\n            Trace.instantForTrack(TRACE_TAG_APP, \"requestLayoutTracing\",\n                    mTracingStrings.classSimpleName);\n            printStackStrace(mTracingStrings.requestLayoutStacktracePrefix);\n        }\n\n        if (mMeasureCache != null) mMeasureCache.clear();\n\n        if (mAttachInfo != null && mAttachInfo.mViewRequestingLayout == null) {\n            // Only trigger request-during-layout logic if this is the view requesting it,\n            // not the views in its parent hierarchy\n            ViewRootImpl viewRoot = getViewRootImpl();\n            if (viewRoot != null && viewRoot.isInLayout()) {\n                if (!viewRoot.requestLayoutDuringLayout(this)) {\n                    return;\n                }\n            }\n            mAttachInfo.mViewRequestingLayout = this;\n        }\n\n        mPrivateFlags |= PFLAG_FORCE_LAYOUT;\n        mPrivateFlags |= PFLAG_INVALIDATED;\n\n        if (mParent != null && !mParent.isLayoutRequested()) {\n            mParent.requestLayout();\n        }\n        if (mAttachInfo != null && mAttachInfo.mViewRequestingLayout == this) {\n            mAttachInfo.mViewRequestingLayout = null;\n        }\n    }",
+      "note": "View.requestLayout 的完整逻辑：清 measure 缓存、布局中请求走 requestLayoutDuringLayout 的裁决、置 FORCE_LAYOUT|INVALIDATED，最后在父节点尚未请求布局时沿 mParent 上行。注意第五步的短路条件 !mParent.isLayoutRequested()。"
+    },
+    {
+      "file": "base/core/java/android/view/View.java",
+      "symbol": "public void invalidate(boolean",
+      "lines": "21449-21492",
+      "code": "    public void invalidate(boolean invalidateCache) {\n        invalidateInternal(0, 0, mRight - mLeft, mBottom - mTop, invalidateCache, true);\n    }\n\n    void invalidateInternal(int l, int t, int r, int b, boolean invalidateCache,\n            boolean fullInvalidate) {\n        if (mGhostView != null) {\n            mGhostView.invalidate(true);\n            return;\n        }\n\n        if (skipInvalidate()) {\n            return;\n        }\n\n        // Reset content capture caches\n        mPrivateFlags4 &= ~PFLAG4_CONTENT_CAPTURE_IMPORTANCE_MASK;\n        mContentCaptureSessionCached = false;\n\n        if ((mPrivateFlags & (PFLAG_DRAWN | PFLAG_HAS_BOUNDS)) == (PFLAG_DRAWN | PFLAG_HAS_BOUNDS)\n                || (invalidateCache && (mPrivateFlags & PFLAG_DRAWING_CACHE_VALID) == PFLAG_DRAWING_CACHE_VALID)\n                || (mPrivateFlags & PFLAG_INVALIDATED) != PFLAG_INVALIDATED\n                || (fullInvalidate && isOpaque() != mLastIsOpaque)) {\n            if (fullInvalidate) {\n                mLastIsOpaque = isOpaque();\n                mPrivateFlags &= ~PFLAG_DRAWN;\n            }\n\n            mPrivateFlags |= PFLAG_DIRTY;\n\n            if (invalidateCache) {\n                mPrivateFlags |= PFLAG_INVALIDATED;\n                mPrivateFlags &= ~PFLAG_DRAWING_CACHE_VALID;\n            }\n\n            // Propagate the damage rectangle to the parent view.\n            final AttachInfo ai = mAttachInfo;\n            final ViewParent p = mParent;\n            if (p != null && ai != null && l < r && t < b) {\n                final Rect damage = ai.mTmpInvalRect;\n                damage.set(l, t, r, b);\n                p.invalidateChild(this, damage);\n            }\n",
+      "note": "invalidate 的真正实现：invalidateInternal 先用 ghost/skipInvalidate 两道闸，再用 PFLAG_DRAWN|PFLAG_HAS_BOUNDS、DRAWING_CACHE_VALID、PFLAG_INVALIDATED、isOpaque 变化四个条件决定是否真的标脏；成立后清 DRAWN、置 DIRTY（可选 INVALIDATED），把脏矩形交给父节点。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewGroup.java",
+      "symbol": "public void onDescendantInvalidated",
+      "lines": "6199-6232",
+      "code": "    @Override\n    @CallSuper\n    public void onDescendantInvalidated(@NonNull View child, @NonNull View target) {\n        /*\n         * HW-only, Rect-ignoring damage codepath\n         *\n         * We don't deal with rectangles here, since RenderThread native code computes damage for\n         * everything drawn by HWUI (and SW layer / drawing cache doesn't keep track of damage area)\n         */\n\n        // if set, combine the animation flag into the parent\n        mPrivateFlags |= (target.mPrivateFlags & PFLAG_DRAW_ANIMATION);\n\n        if ((target.mPrivateFlags & ~PFLAG_DIRTY_MASK) != 0) {\n            // We lazily use PFLAG_DIRTY, since computing opaque isn't worth the potential\n            // optimization in provides in a DisplayList world.\n            mPrivateFlags = (mPrivateFlags & ~PFLAG_DIRTY_MASK) | PFLAG_DIRTY;\n\n            // simplified invalidateChildInParent behavior: clear cache validity to be safe...\n            mPrivateFlags &= ~PFLAG_DRAWING_CACHE_VALID;\n        }\n\n        // ... and mark inval if in software layer that needs to repaint (hw handled in native)\n        if (mLayerType == LAYER_TYPE_SOFTWARE) {\n            // Layered parents should be invalidated. Escalate to a full invalidate (and note that\n            // we do this after consuming any relevant flags from the originating descendant)\n            mPrivateFlags |= PFLAG_INVALIDATED | PFLAG_DIRTY;\n            target = this;\n        }\n\n        if (mParent != null) {\n            mParent.onDescendantInvalidated(this, target);\n        }\n    }",
+      "note": "硬件加速路径的脏冒泡：注释明确这是 \"HW-only, Rect-ignoring damage codepath\"，Java 侧不传矩形，只把 DRAW_ANIMATION 与 DIRTY 位往上合并，软件层父节点则升级成完整 invalidate；最终通过 mParent.onDescendantInvalidated 一路到 ViewRootImpl。"
+    },
+    {
+      "file": "base/core/java/android/view/ViewRootImpl.java",
+      "symbol": "public void requestLayout",
+      "lines": "2841-2869",
+      "code": "    @Override\n    public void requestLayout() {\n        if (!mHandlingLayoutInLayoutRequest) {\n            checkThread();\n            mLayoutRequested = true;\n            scheduleTraversals();\n        }\n    }\n\n    @Override\n    public boolean isLayoutRequested() {\n        return mLayoutRequested;\n    }\n\n    @Override\n    public void onDescendantInvalidated(@NonNull View child, @NonNull View descendant) {\n        if ((descendant.mPrivateFlags & PFLAG_DRAW_ANIMATION) != 0) {\n            mIsAnimating = true;\n        }\n        invalidate();\n    }\n\n    @UnsupportedAppUsage\n    void invalidate() {\n        mDirty.set(0, 0, mWidth, mHeight);\n        if (!mWillDrawSoon) {\n            scheduleTraversals();\n        }\n    }",
+      "note": "两条链路的汇合点：requestLayout 受 mHandlingLayoutInLayoutRequest 保护、checkThread 后置 mLayoutRequested 并 scheduleTraversals；invalidate 先把整窗区域标进 mDirty，再用 mWillDrawSoon 判断是否需要调度，避免 traversal 期间重复调度。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "mPrivateFlags",
+      "type": "int（View）",
+      "desc": "View 的位域状态机，本阶段涉及的位：<code>PFLAG_DRAWN = 0x00000020</code>（2864）、<code>PFLAG_FORCE_LAYOUT = 0x00001000</code>（2882）、<code>PFLAG_INVALIDATED = 0x80000000</code>（3000），另有 PFLAG_DIRTY/PFLAG_HAS_BOUNDS/PFLAG_DRAWING_CACHE_VALID/PFLAG_DRAW_ANIMATION 等。requestLayout 与 invalidate 用不同位组合表达意图，位在 measure/layout/draw 的相应节点被清掉。"
+    },
+    {
+      "name": "mMeasureCache",
+      "type": "LongSparseLongArray（View）",
+      "desc": "按 (widthSpec<<32 | heightSpec) 缓存 measure 结果（View.java:28798-28799）。requestLayout 与 forceLayout 都会 clear 它；forceLayout 时的 cacheIndex 被强制设为 -1（28822-28826），保证「强制布局」一定重新 onMeasure。"
+    },
+    {
+      "name": "mParent / isLayoutRequested()",
+      "type": "ViewParent / boolean",
+      "desc": "requestLayout 的冒泡通道。View 侧的 isLayoutRequested 直接读 PFLAG_FORCE_LAYOUT（25972-25974），ViewRootImpl 侧返回 mLayoutRequested（2850-2853）——父链顶端换了实现，从而使 mParent.isLayoutRequested() 在到达 ViewRootImpl 时为真（如果已经请求过），冒泡天然终止。"
+    },
+    {
+      "name": "mLayoutRequested",
+      "type": "boolean（ViewRootImpl）",
+      "desc": "本帧是否需要重新 measure/layout。在 ViewRootImpl.requestLayout 置 true（2845）、在 performTraversals 里读成 layoutRequested（4077）后置 false（4149）；surface 变更等场景也会直接置 true（3981、4038、5469）。"
+    },
+    {
+      "name": "mWillDrawSoon",
+      "type": "boolean（ViewRootImpl）",
+      "desc": "「traversal 马上就要跑 / 正在跑」的标志：performTraversals 开头置 true（3954）、结尾置 false（4824）。invalidate 里 <code>if (!mWillDrawSoon) scheduleTraversals()</code>（2866）用它合并同一帧内的重复调度；invalidateRectOnScreen 里也用它抑制重复。"
+    },
+    {
+      "name": "mHandlingLayoutInLayoutRequest",
+      "type": "boolean（ViewRootImpl）",
+      "desc": "「正在处理第二次布局」的标记。为真时 ViewRootImpl.requestLayout 直接丢弃请求（2843），View.requestLayout 的 requestLayoutDuringLayout 也返回 false，从而把请求 post 到下一帧，避免布局中再请求布局导致死循环。"
+    },
+    {
+      "name": "mLayoutRequesters",
+      "type": "ArrayList<View>（ViewRootImpl）",
+      "desc": "记录本帧所有在布局中请求过布局的 view（5519-5526 添加）。performTraversals 末尾会检查它们是否仍有 pending 的 FORCE_LAYOUT 位，若有则说明容器没有正确处理，会清位并触发第二次布局。"
+    },
+    {
+      "name": "mDirty / mTempRect",
+      "type": "Rect（ViewRootImpl）",
+      "desc": "窗口级脏区。<code>invalidate()</code> 直接把整窗 <code>mDirty.set(0, 0, mWidth, mHeight)</code>（2865）；<code>invalidateChildInParent</code> 走 <code>invalidateRectOnScreen(dirty)</code> 做矩形并集。注意 HW 路径（onDescendantInvalidated）不更新这个矩形。"
+    },
+    {
+      "name": "mIsAnimating",
+      "type": "boolean（ViewRootImpl）",
+      "desc": "由 <code>onDescendantInvalidated</code> 检查 <code>PFLAG_DRAW_ANIMATION</code> 后置位（2857-2859）。它让「空脏矩形」的 invalidate 仍然生效（invalidateChildInParent 里 <code>dirty.isEmpty() &amp;&amp; !mIsAnimating</code> 才丢弃），也是 RT 侧判断 requiresUiRedraw 的一个来源。"
+    },
+    {
+      "name": "mCurScrollY / mTranslator / mAttachInfo.mScalingRequired",
+      "type": "int / Translator / boolean",
+      "desc": "invalidateChildInParent 里把 view 坐标的脏矩形变换到窗口坐标的三个输入（2898-2910）：滚动偏移要减去、Translator（窗口动画）要做坐标变换、缩放场景要外扩 1px 防边缘漏画。"
+    },
+    {
+      "name": "skipInvalidate()",
+      "type": "protected boolean（View）",
+      "desc": "invalidateInternal 的第二道闸（21460-21462）。默认实现对不可见且无动画的 view 返回 true，子类（如 ViewGroup）可覆盖。它让「已经不可见的 view」的 invalidate 直接短路，不产生任何位变化与冒泡。"
+    },
+    {
+      "name": "PFLAG_DRAWN 的置/清点",
+      "type": "位操作位置",
+      "desc": "清：invalidateInternal 的 fullInvalidate 分支（21474）。置：View.draw 开头（25495，同时清 DIRTY_MASK）、setFrame 里为可见性补偿（26216）、setFlags 可见性变化（18927/18974/18988）。这解释了为什么「同一个 view 一帧内多次 invalidate 只会真正脏一次」。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "\"requestLayoutTracing\"",
+      "value": "Trace.instantForTrack（View.java:28725-28727，需 isRelayoutTracingEnabled()）",
+      "desc": "开启后每次 requestLayout 打一条带类名的 instant，并同时打印调用栈。这是定位「谁在每帧疯狂 requestLayout」最快的手段。"
+    },
+    {
+      "name": "\"Choreographer#doTraversal\"",
+      "value": "ViewRootImpl 的 traversal slice（stage-02 详述）",
+      "desc": "本阶段只置位不执行，真正耗时出现在 doTraversal → performTraversals 的 slice 里；把 requestLayout 的量与 doTraversal 的耗时对照，可判断是「请求太多」还是「单次遍历太重」。"
+    },
+    {
+      "name": "ViewDebug / dumpsys gfxinfo",
+      "value": "命令输出",
+      "desc": "dumpsys gfxinfo 的 Janky frames 与 per-frame 时间里包含 measure/layout/draw 的分段；配合 ViewDebug.flagToString（View.java:4691-4692）可把 PFLAG 位打印成人可读的 DRAWN/NOT_DRAWN。"
+    },
+    {
+      "name": "Debug 开关：DEBUG_DRAW / DEBUG_LAYOUT / isRelayoutTracingEnabled",
+      "value": "ViewRootImpl/View 静态开关",
+      "desc": "DEBUG_DRAW 会在 invalidateChildInParent 里打印 \"Invalidate child: <rect>\"（2889），DEBUG_LAYOUT 打印布局过程；这些是本地复现时的第一手日志。"
+    },
+    {
+      "name": "onDescendantInvalidated 的脏区粒度",
+      "value": "无 trace tag，靠 PFLAG_DIRTY 观察",
+      "desc": "HW 路径不携带矩形，因此「脏区过大」无法在 Java 侧观测；要看 RT 侧 Skia 计算的 damage（对应 RT/SF 专题的 damage 与 surfaceDamage）。"
+    },
+    {
+      "name": "CalledFromWrongThreadException",
+      "value": "异常消息（ViewRootImpl.java:12149-12155）",
+      "desc": "消息里带期望线程名与实际线程名。线上出现它说明有代码在非 UI 线程直接改 view，必须改成 postInvalidate/post 到主线程。"
+    }
+  ],
+  "pitfalls": [
+    "误以为 requestLayout() 会立刻 measure：它只置 PFLAG_FORCE_LAYOUT 并调度，真正的 measure 在下一个 vsync 的 performTraversals 里；所以循环里连续调用 N 次 requestLayout 只会产生一次布局。",
+    "误以为 invalidate() 一定会重绘：invalidateInternal 有四个条件组成的闸门（View.java:21468-21471），一个都不满足时直接返回，连父链都不会冒泡。",
+    "误以为 requestLayout 会连带清父节点缓存：它只清自己的 mMeasureCache（28730），父节点缓存由父节点自己的 requestLayout 清理。",
+    "误以为布局中调用 requestLayout 一定生效：第二次布局中（mHandlingLayoutInLayoutRequest）的请求会被丢弃并 post 到下一帧，这是防死循环的设计（ViewRootImpl.java:5527-5535）。",
+    "误以为 HW 路径仍会传脏矩形：onDescendantInvalidated 注释明确说这是 Rect-ignoring 的路径，Java 侧只合并 DIRTY 位，damage 由 RT/Skia 重算（ViewGroup.java:6202-6207）。",
+    "误以为 PFLAG_DRAWN 是「画完了」的永久标记：View.draw 开头置 DRAWN、invalidateInternal 清 DRAWN，它表达的是「当前没有待处理的脏」，被清掉是为了让下一次 invalidate 不被闸门挡住。",
+    "在非 UI 线程直接调 invalidate：会命中 checkThread() 抛 CalledFromWrongThreadException；正确做法是 postInvalidate() 或 Handler 投递。scheduleTraversals 用的是 checkThreadCompat（可能只记日志），但 requestLayout/invalidateChildInParent 用 checkThread（直接抛）。",
+    "把 mWillDrawSoon 当成「已经画完」：它只在 performTraversals 内部为真（开头置、结尾清），期间的所有 invalidate 都不会再调度——这正是「一帧内多次 invalidate 只跑一次 traversal」的实现点。"
+  ],
+  "traceTags": [
+    "requestLayoutTracing",
+    "Choreographer#doFrame",
+    "Choreographer#doTraversal",
+    "performTraversals",
+    "ViewRootImpl#performDraw",
+    "relayoutWindow"
+  ],
+  "next": "stage-02"
+}

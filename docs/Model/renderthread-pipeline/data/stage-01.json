@@ -1,0 +1,199 @@
+{
+  "id": "stage-01",
+  "num": 1,
+  "title": "RenderThread 的创建与线程模型",
+  "subtitle": "每进程一条 Looper 线程：getInstance → initThreadLocals → WorkQueue 串行执行",
+  "lane": "RT",
+  "durationHint": "量级：首次创建含 EGL/Vulkan 上下文初始化，亚毫秒~数毫秒；稳态每次入队仅微秒级（源码中未体现具体耗时数值）",
+  "summary": "进程内第一次需要硬件加速渲染时，RenderProxy 的构造函数在初始化列表里调用 RenderThread::getInstance()（RenderProxy.cpp:51），后者用 [[clang::no_destroy]] 的函数内 static 构造唯一实例并 start(\"RenderThread\")，因此每个进程只有一条 RenderThread。这条线程是普通 pthread（ThreadBase : android::Thread）+ 一个自建 Looper，在 threadLoop 里把优先级提到 PRIORITY_DISPLAY、把 Looper 绑到本线程，然后调用 initThreadLocals() 建好 Choreographer、EglManager、RenderState、VulkanManager、CacheManager，之后进入 waitForWork()/processQueue() 的永久循环。所有跨线程请求都以 std::function 投进这条线程的 WorkQueue，按 runAt 排序串行执行；需要返回值时用 WorkQueue::runSync 以 packaged_task 阻塞调用方。RenderThread 还通过 AChoreographer 持有自己独立的 vsync 通道，从而能在 UI 线程之外驱动 RT-only 动画。",
+  "callchain": [
+    "android_view_ThreadedRenderer_createProxy()",
+    "RenderProxy::RenderProxy()",
+    "RenderThread::getInstance()",
+    "ThreadBase::start()",
+    "RenderThread::threadLoop()",
+    "RenderThread::initThreadLocals()",
+    "RenderThread::initializeChoreographer()",
+    "ThreadBase::waitForWork()",
+    "WorkQueue::process()",
+    "RenderThread::dispatchFrameCallbacks()"
+  ],
+  "sections": [
+    {
+      "heading": "触发者：谁第一次拉起 RenderThread",
+      "html": "<p>Java 侧第一次需要硬件加速渲染时，<code>HardwareRenderer</code> 通过 JNI 的 <code>nCreateProxy</code> 进入 <code>android_view_ThreadedRenderer_createProxy()</code>（base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:189），该函数 <code>new RenderProxy(translucent, rootRenderNode, &amp;factory, useIpcCanvas)</code>。而 <code>RenderProxy</code> 的构造函数初始化列表第一项就是 <code>mRenderThread(RenderThread::getInstance())</code>（RenderProxy.cpp:51）——所以“谁创建了 RT”这个问题最终收敛到 <code>getInstance()</code>。</p><p><code>getInstance()</code> 用一个 <code>[[clang::no_destroy]] static sp&lt;RenderThread&gt; sInstance</code> 的 lambda 完成惰性初始化：<code>sp&lt;RenderThread&gt;::make()</code> 构造对象，<code>thread-&gt;start(\"RenderThread\")</code> 起线程，返回后把 <code>gHasRenderThreadInstance</code> 置 true。函数内 static 意味着<strong>每进程恰好一条</strong>：所有窗口、所有 <code>CanvasContext</code> 都挂在同一条线程的 <code>WorkQueue</code> 上串行执行。</p><p>这条线程一旦起来就不可回收：<code>~RenderThread()</code> 里直接 <code>LOG_ALWAYS_FATAL(\"Can't destroy the render thread\")</code>（RenderThread.cpp:197-201）。所以“销毁 renderer”只是 <code>delete CanvasContext</code>，<code>Runtime</code> 级别的 RT 生命周期等于进程生命周期。</p>"
+    },
+    {
+      "heading": "它是一条普通 pthread + 一个 Looper，不是 binder 线程",
+      "html": "<p><code>class RenderThread : private ThreadBase</code>（RenderThread.h:86），而 <code>ThreadBase : public Thread</code> 且内含 <code>sp&lt;Looper&gt; mLooper</code> 与 <code>WorkQueue mQueue</code>（platform/android/thread/ThreadBase.h:30-37）。<code>WorkQueue</code> 的唤醒回调就是 <code>mLooper-&gt;wake()</code>，即“有新任务”与“Looper 醒来”是同一件事。</p><p><code>threadLoop()</code> 的第一行是 <code>setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY)</code>，随后 <code>Looper::setForThread(mLooper)</code>。这里要诚实说明：<code>PRIORITY_DISPLAY</code> 与 <code>android::Thread</code>/<code>Looper</code> 的定义在 system/core，<strong>不在本仓库快照内</strong>，因此 <code>PRIORITY_DISPLAY</code> 的具体数值“源码中未体现”；能确认的只有符号语义。</p><p><strong>它不是 binder 线程</strong>：在 base/libs/hwui 全目录检索 <code>IPCThreadState</code>、<code>joinThreadPool</code>、<code>ProcessState::self</code> 均无命中，RT 从头到尾只 poll 自己的 Looper。生产代码里对这条 Looper 只有一次 <code>addFd</code>，即 Choreographer 的 display-event fd（RenderThread.cpp:213-214）；vsync 到达对 RT 而言是“fd 可读”，不是 binder 回调。但要注意：<em>不是 binder 线程 ≠ 不做 binder 调用</em>，<code>requestNextVsync()</code> 就是一次到 SF 的 oneway binder。</p>"
+    },
+    {
+      "heading": "initThreadLocals：Choreographer、图形上下文与缓存的建立顺序",
+      "html": "<p><code>threadLoop()</code> 在进入主循环之前调用一次 <code>initThreadLocals()</code>，顺序是：</p><ul><li><code>setupFrameInterval()</code>：从 <code>DeviceInfo::getVsyncPeriod()</code> 取周期写入 <code>mTimeLord.setFrameInterval()</code>（221-233），这样即使在拿到真实 vsync 之前 TimeLord 也有一个合法的帧间隔；</li><li><code>initializeChoreographer()</code>：建 <code>AChoreographer</code>、注册刷新率回调、把 fd 加进 Looper、生成 <code>ChoreographerSource</code>；<code>Properties::isolatedProcess</code> 为真时改用 <code>DummyVsyncSource</code>（每 16ms 自己 postDelayed 造一个假 vsync，140-160）；</li><li><code>new EglManager()</code>、<code>new RenderState(*this)</code>、<code>VulkanManager::getInstance()</code>、<code>new CacheManager(*this)</code>。</li></ul><p>注意 EGL/Vulkan 上下文是<strong>懒创建</strong>的：<code>initThreadLocals</code> 只建管理器，真正的 <code>MakeGL()</code>/<code>createContext()</code> 在 <code>requireGlContext()</code>/<code>requireVkContext()</code> 里（235-270），由 <code>preload()</code> 提前投递（487-498）或第一帧 <code>makeCurrent()</code> 触发。构造本身不碰 GPU，这对首帧启动耗时很关键。</p><p><code>VulkanManager::getInstance()</code> 是单例，源码注释明确指出它可能被 <code>HardwareBitmapUploader</code> 共享而 Vk 上下文已经建好、但 RT 的 <code>mGrContext</code> 仍为空，所以 <code>requireVkContext()</code> 必须两个条件都检查（254-261）。</p>"
+    },
+    {
+      "heading": "WorkQueue：单线程串行、按时刻排序、runSync 阻塞调用方",
+      "html": "<p><code>WorkQueue</code>（base/libs/hwui/thread/WorkQueue.h）只有一条 <code>std::vector&lt;WorkItem&gt;</code>。<code>process()</code> 在持锁时把整条队列 move 出来、把 <code>runAt &gt; now</code> 的项塞回，然后在<strong>无锁</strong>状态下于 RT 线程上顺序执行（62-80）。这就是“hwui 的单线程渲染模型”的全部机制：并行度为零，顺序由 <code>runAt</code> 再按插入位置决定。</p><p><code>post()</code>/<code>postDelayed()</code>/<code>postAt()</code> 只是入队（82-95）；<code>enqueue</code> 按 <code>runAt</code> 找插入点，<strong>只有插到队首时才</strong>调用 <code>mWakeFunc()</code>（121-134），避免无谓唤醒 RT。</p><p><code>runSync()</code> 是唯一的同步原语：把可调用对象包成 <code>std::packaged_task</code>、post 进去、再 <code>get_future().get()</code> 阻塞调用线程（105-110）。<code>RenderProxy</code> 的构造函数正是用它创建 <code>CanvasContext</code>，保证返回时 context 已在 RT 上构造完毕（58-66）。反过来，<code>destroyContext()</code> 用 <code>runSync([](){})</code> 当 fence，注释写得很直白：必须确认没有在途的 DrawFrameTask 才能真正 delete（74-82）。</p><p>工程含义：<strong>任何 <code>runSync</code> 都是一次 UI↔RT 握手</strong>，如果 RT 正卡在 <code>prepareTree</code> 或 <code>queueBuffer</code>，UI 线程会跟着一起卡；排查“UI 线程无故阻塞”时要先看 RT 当前在跑什么。</p>"
+    },
+    {
+      "heading": "ChoreographerSource：RT 拥有自己的一条 vsync 通道",
+      "html": "<p>RT 不是被动等 UI 叫它，它有自己的 frame callback 机制（<code>class IFrameCallback</code>，RenderThread.h:66-73，注释写“Mimics android.view.Choreographer.FrameCallback”）。链路是：</p><ul><li><code>requestVsync()</code> 用 <code>mVsyncRequested</code> 去重后调 <code>mVsyncSource-&gt;requestNextVsync()</code>（403-408）；</li><li><code>ChoreographerSource::requestNextVsync()</code> 即 <code>AChoreographer_postVsyncCallback(...，RenderThread::extendedFrameCallback，this)</code>（127-130），底层落到 <code>DisplayEventReceiver::requestNextVsync()</code> → <code>mEventConnection-&gt;requestNextVsync()</code>（native/libs/gui/DisplayEventReceiver.cpp:93-99），是一次到 SF Scheduler 的 binder；</li><li>vsync 到达后 fd 可读 → Looper → <code>RenderThread::choreographerCallback()</code>（365-383）→ <code>AChoreographer_handlePendingEvents</code> → <code>extendedFrameCallback()</code> 解出 vsyncId/deadline/frameTime（61-74）→ <code>frameCallback()</code>（76-114）。</li></ul><p><code>frameCallback()</code> 里有两个去重门：<code>TimeLord::vsyncReceived()</code> 返回 false（旧 vsync）则丢弃；<code>mFrameCallbackTaskPending</code> 已置位则不再重复投递。真正投递时用 <code>queue().postAt(runAt，dispatchFrameCallbacks)</code>，<code>runAt</code> 默认取 <code>frameTime + (deadline-frameTime)/4</code>，即“在 deadline 前 3/4 处开跑”；若 <code>use_prev_frame_duration_for_render_thread</code> 打开，则用 <code>estimateCallbacksExpectedDuration()</code>（各 callback 期望时长之和再乘 4/3 膨胀，410-418）反推起点，注释说明这是为了<em>给 UI 线程留出生产这一帧的机会</em>（99-107）。</p><p><code>dispatchFrameCallbacks()</code> 把 <code>mFrameCallbacks</code> swap 出来、若非空则先 <code>requestVsync()</code> 预取下一帧、再逐个 <code>doFrame()</code>（385-401）。<code>CanvasContext</code> 就是 <code>IFrameCallback</code>，RT-only 动画走的就是这条路径——这也是“UI 不参与也能动画”的底层机制。</p>"
+    },
+    {
+      "heading": "与 GPU / BufferQueue / BLAST / SF 的边界",
+      "html": "<p>本阶段只负责“把线程和基础设施建好”，但已能看清三条边界：</p><table><thead><tr><th>边界</th><th>本阶段的接触点</th><th>真正的跨界动作发生处</th></tr></thead><tbody><tr><td>SF（vsync）</td><td>DisplayEventReceiver 构造时经 <code>ComposerServiceAIDL::getComposerService()</code> 拿 <code>ISurfaceComposer</code>，binder 调 <code>createDisplayEventConnection()</code>，再用 <code>BitTube::stealReceiveChannel()</code> 接过 fd（native/libs/gui/DisplayEventReceiver.cpp:36-61）</td><td>之后每一帧只在 fd 上读 vsync，不占 binder 线程</td></tr><tr><td>GPU（EGL/Vulkan）</td><td><code>initThreadLocals</code> 只建 <code>EglManager</code>/<code>VulkanManager</code>；<code>mGrContext</code> 懒建（235-270）</td><td>真正的 makeCurrent / 上传在 DrawFrameTask::syncFrameState 与 CanvasContext::draw</td></tr><tr><td>BufferQueue / BLAST</td><td>本阶段不建 surface，只由 <code>CanvasContext::create</code> 建 pipeline</td><td>setSurface / reserveNext / queueBuffer 在 CanvasContext 里</td></tr></tbody></table><p>换句话说：RenderThread 在创建阶段唯一真正跨进程的动作是“向 SF 注册 vsync 与刷新率回调”，GPU 侧是懒加载，BufferQueue 侧完全没碰。这也解释了为什么“窗口还没上屏，RT 已经存在”。</p>"
+    },
+    {
+      "heading": "排障：怎么确认卡在哪一步",
+      "html": "<p>三条可用的观测手段：</p><ol><li><strong>线程视图</strong>：Perfetto/top -H 里找 <code>RenderThread</code>，确认它是否存在、是否在 Running、是否被 <code>futex_wait</code> 挂在 <code>WorkQueue</code> 的 <code>mLock</code> 上。如果 RT 长期 idle 而 UI 卡住，多半是 UI 在 <code>runSync</code> 里等一个永远不会被执行的队列项。</li><li><strong>atrace</strong>：<code>queue mFrameCallbackTask to run after %.2fms</code> 这条 instant 事件直接给出“本次回调计划在 deadline 前多久开跑”（RenderThread.cpp:109）；<code>DrawFrames &lt;vsyncId&gt;</code> 标记每帧绘制开始；<code>earlyPreloadGlContext</code> 标记预加载。SF 侧 <code>RenderRate</code>（DisplayEventDispatcher.cpp:182）告诉你当前渲染帧率。</li><li><strong>dumpsys gfxinfo</strong>：走 <code>RenderThread::dumpGraphicsMemory</code>（314-330），会打印 pipeline 类型与各 <code>CanvasContext</code> 的 cache 使用、TextureView 尺寸。</li></ol><p>一个高频误判：看到 RT 上出现 <code>binder</code> 相关栈就断定“RT 是 binder 线程”——实际上那是 <code>requestNextVsync</code> 的 oneway 调用，线程主体仍然是 Looper + WorkQueue。</p>"
+    }
+  ],
+  "snippets": [
+    {
+      "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+      "symbol": "RenderThread::getInstance",
+      "lines": "175-183",
+      "code": "RenderThread& RenderThread::getInstance() {\n    [[clang::no_destroy]] static sp<RenderThread> sInstance = []() {\n        sp<RenderThread> thread = sp<RenderThread>::make();\n        thread->start(\"RenderThread\");\n        return thread;\n    }();\n    gHasRenderThreadInstance = true;\n    return *sInstance;\n}",
+      "note": "函数内 static + [[clang::no_destroy]] 保证每进程一条 RT 且永不析构；lambda 里 make() 出对象后立刻 start(\"RenderThread\")，返回后才置 gHasRenderThreadInstance，因此 hasInstance() 反映的是“已经启动过”。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+      "symbol": "RenderThread::initThreadLocals",
+      "lines": "221-233",
+      "code": "void RenderThread::initThreadLocals() {\n    setupFrameInterval();\n    initializeChoreographer();\n    mEglManager = new EglManager();\n    mRenderState = new RenderState(*this);\n    mVkManager = VulkanManager::getInstance();\n    mCacheManager = new CacheManager(*this);\n}\n\nvoid RenderThread::setupFrameInterval() {\n    nsecs_t frameIntervalNanos = DeviceInfo::getVsyncPeriod();\n    mTimeLord.setFrameInterval(frameIntervalNanos);\n}",
+      "note": "RT 线程内的“一次性地基”：先按当前刷新率给 TimeLord 一个帧间隔，再建 Choreographer/vsync 源，最后才是 EglManager、RenderState、VulkanManager、CacheManager。全部在 RT 线程上执行，别的线程看不到中间态。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/RenderThread.cpp",
+      "symbol": "RenderThread::threadLoop",
+      "lines": "420-452",
+      "code": "bool RenderThread::threadLoop() {\n    setpriority(PRIO_PROCESS, 0, PRIORITY_DISPLAY);\n    Looper::setForThread(mLooper);\n    if (gOnStartHook) {\n        gOnStartHook(\"RenderThread\");\n    }\n    initThreadLocals();\n\n    while (true) {\n        waitForWork();\n        processQueue();\n\n        if (mPendingRegistrationFrameCallbacks.size() && !mFrameCallbackTaskPending) {\n            mVsyncSource->drainPendingEvents();\n            mFrameCallbacks.insert(mPendingRegistrationFrameCallbacks.begin(),\n                                   mPendingRegistrationFrameCallbacks.end());\n            mPendingRegistrationFrameCallbacks.clear();\n            requestVsync();\n        }\n\n        if (!mFrameCallbackTaskPending && !mVsyncRequested && mFrameCallbacks.size()) {\n            // TODO: Clean this up. This is working around an issue where a combination\n            // of bad timing and slow drawing can result in dropping a stale vsync\n            // on the floor (correct!) but fails to schedule to listen for the\n            // next vsync (oops), so none of the callbacks are run.\n            requestVsync();\n        }\n\n        mCacheManager->onThreadIdle();\n    }\n\n    return false;\n}",
+      "note": "主循环只有 waitForWork()/processQueue() 两步，外加“有待注册回调就 drain 一次并请求 vsync”和“有回调却没请求 vsync 就补一次”两个补丁（注释自承是 workaround）。末尾 mCacheManager->onThreadIdle() 是空闲回收点。"
+    },
+    {
+      "file": "base/libs/hwui/renderthread/RenderProxy.cpp",
+      "symbol": "RenderProxy::RenderProxy",
+      "lines": "49-68",
+      "code": "RenderProxy::RenderProxy(bool translucent, RenderNode* rootRenderNode,\n                         IContextFactory* contextFactory, bool useIpcCanvas)\n        : mRenderThread(RenderThread::getInstance()), mContext(nullptr) {\n#ifdef __ANDROID__\n    pid_t uiThreadId = pthread_gettid_np(pthread_self());\n#else\n    pid_t uiThreadId = 0;\n#endif\n    pid_t renderThreadId = getRenderThreadTid();\n    mContext = mRenderThread.queue().runSync([=, this]() -> CanvasContext* {\n        CanvasContext* context =\n                CanvasContext::create(mRenderThread, translucent, rootRenderNode, contextFactory,\n                                      uiThreadId, renderThreadId, useIpcCanvas);\n        if (context != nullptr) {\n            mRenderThread.queue().post([=] { context->startHintSession(); });\n        }\n        return context;\n    });\n    mDrawFrameTask.setContext(&mRenderThread, mContext, rootRenderNode);\n}",
+      "note": "构造函数在初始化列表里拿 RT，然后用 queue().runSync 在 RT 上创建 CanvasContext（同时把 UI/RT 两个 tid 传下去给 HintSession），创建成功后再 post 一次 startHintSession，最后把 context 交给 mDrawFrameTask。"
+    }
+  ],
+  "keys": [
+    {
+      "name": "gHasRenderThreadInstance",
+      "type": "static bool",
+      "desc": "全局“RT 已启动”标志。getInstance() 返回后置 true；trimMemory/trimCaches/purgeCaches 等路径先用 hasInstance() 判断，避免为一次内存回收把 RT 拉起来（RenderProxy.cpp:290-317）。非原子，仅在创建路径写。"
+    },
+    {
+      "name": "sInstance",
+      "type": "[[clang::no_destroy]] static sp<RenderThread>",
+      "desc": "getInstance() 内的函数局部静态，线程安全的首次初始化；no_destroy 保证进程退出时不跑析构（配合 ~RenderThread 的 LOG_ALWAYS_FATAL）。作用域是“每个加载了 libhwui 的进程”。"
+    },
+    {
+      "name": "mLooper",
+      "type": "sp<Looper>（ThreadBase）",
+      "desc": "RT 私有的 Looper，构造时 new Looper，在 threadLoop 里 Looper::setForThread 绑定到本线程。生产代码只给它 addFd 过一次（Choreographer 的 display-event fd），其余唤醒来自 WorkQueue 的 mWakeFunc。"
+    },
+    {
+      "name": "mQueue",
+      "type": "WorkQueue（ThreadBase 私有）",
+      "desc": "std::function 队列，按 runAt 排序；process() 在 RT 线程上无锁顺序执行。所有 CanvasContext 共用这一条队列，天然串行、无并发。"
+    },
+    {
+      "name": "mVsyncRequested",
+      "type": "bool",
+      "desc": "“已经向 SF 要过 vsync”的去重标志：requestVsync() 里仅在为 false 时才置位并真正请求（403-408）；frameCallback() 收到 vsync 的第一行就清零（78）。若不在收到时清零，requestVsync() 会一直认为已经请求过而变成 no-op，后续 vsync 永不再来。"
+    },
+    {
+      "name": "mFrameCallbackTaskPending",
+      "type": "bool",
+      "desc": "“dispatchFrameCallbacks 已投进队列但还没跑”的标志：投递前置位（82）、dispatchFrameCallbacks 开头清位（387）；同时阻止重复 postAt 以及 threadLoop 里的补丁分支重复 drain。"
+    },
+    {
+      "name": "mFrameCallbacks / mPendingRegistrationFrameCallbacks",
+      "type": "std::set<IFrameCallback*> ×2",
+      "desc": "两个集合分离“已生效”和“待注册”。注释说明待注册的要等队列与 display-event 都 drain 完才转正，以确保抓到的是下一个 vsync 而不是上一个（RenderThread.h:182-187）。"
+    },
+    {
+      "name": "mChoreographer",
+      "type": "AChoreographer*",
+      "desc": "RT 自己的 NDK Choreographer 实例（AChoreographer_create）；非 isolatedProcess 时才存在。它是 RT 能独立于 UI 拿 vsync 的根本，也是 refreshRateCallback 的注册点。"
+    },
+    {
+      "name": "mVsyncSource",
+      "type": "VsyncSource*",
+      "desc": "多态 vsync 源：正常是 ChoreographerSource（AChoreographer_postVsyncCallback），isolatedProcess 是 DummyVsyncSource（16ms 定时器造假 vsync）。initializeChoreographer 里 assert 只初始化一次。"
+    },
+    {
+      "name": "mTimeLord",
+      "type": "TimeLord（值成员）",
+      "desc": "帧时间守卫：过滤过期 vsync、维护 mFrameTimeNanos/mFrameIntendedTimeNanos/mFrameVsyncId/mFrameDeadline。initThreadLocals 里先 setFrameInterval 给它一个保底帧间隔。"
+    },
+    {
+      "name": "mEglManager / mRenderState / mVkManager / mCacheManager",
+      "type": "EglManager* / RenderState* / sp<VulkanManager> / CacheManager*",
+      "desc": "四条 RT 独占的基础设施：EGL 上下文与 surface、RenderState（GPU 资源与 context 回调）、Vulkan 单例、CacheManager（纹理/绘制缓存 + CanvasContext 注册表）。全部在 initThreadLocals 里建，只有 RT 线程访问。"
+    },
+    {
+      "name": "mGrContext",
+      "type": "sk_sp<GrDirectContext>",
+      "desc": "Skia GPU 上下文，懒创建（requireGlContext/requireVkContext）；setGrContext 里会 reset CacheManager 并对旧 context 调 releaseResourcesAndAbandonContext（344-354）。"
+    }
+  ],
+  "metrics": [
+    {
+      "name": "RenderThread 线程状态",
+      "value": "Perfetto / top -H 中的 threads 表",
+      "desc": "按线程名 RenderThread 过滤；观察其 State（Running/Sleeping）与 waker。长期 Sleeping 但有 UI 线程卡在 runSync 上，说明队列项没被唤醒。"
+    },
+    {
+      "name": "\"queue mFrameCallbackTask to run after %.2fms\"",
+      "value": "ATRACE_FORMAT_INSTANT（RenderThread.cpp:109）",
+      "desc": "每个 vsync 一条 instant 事件，直接给出本次 RT 回调相对“现在”的计划延后毫秒数；负数意味着已经错过计划起点。"
+    },
+    {
+      "name": "\"DrawFrames <vsyncId>\"",
+      "value": "ATRACE_FORMAT（DrawFrameTask.cpp:91）",
+      "desc": "以 frame timeline 的 vsyncId 为参数的绘制 slice；把它和 UI 侧的 doFrame/performTraversals 按 vsyncId 对齐，即可判断是 UI 交棒晚还是 RT 画得慢。"
+    },
+    {
+      "name": "\"earlyPreloadGlContext\"",
+      "value": "ATRACE_NAME（RenderThread.cpp:491）",
+      "desc": "preload() 投递的 GL 上下文预加载 slice；首帧前的这段耗时不应算进任何一帧。"
+    },
+    {
+      "name": "\"RenderRate\"",
+      "value": "ATRACE_INT（native/libs/gui/DisplayEventDispatcher.cpp:180-182）",
+      "desc": "由 vsync 事件里的 frameInterval 换算的 fps 计数器（1e9/frameInterval），可判断当前是 60/90/120Hz 哪一档。"
+    },
+    {
+      "name": "\"swap chain stuffed\"",
+      "value": "ATRACE_NAME（CanvasContext.cpp:502）",
+      "desc": "isSwapChainStuffed() 判定 swapchain 堵住时打的标记；出现它说明 RT 在等 BufferQueue，而不是在画。"
+    },
+    {
+      "name": "dumpGraphicsMemory",
+      "value": "dumpsys gfxinfo 输出",
+      "desc": "打印 Pipeline=Skia(OpenGL)/Skia(Vulkan) 与各 CanvasContext 的 cache 用量、TextureView 尺寸（RenderThread.cpp:314-330）。"
+    }
+  ],
+  "pitfalls": [
+    "误以为每个窗口/每个 View 一条 RenderThread：实际是每进程一条（getInstance 的函数内 static），所有 CanvasContext 共享一条 WorkQueue，所以任何一个窗口的重活都会推迟其他窗口的帧。",
+    "误以为 RenderThread 是 binder 线程：base/libs/hwui 内没有任何 IPCThreadState/joinThreadPool；vsync 走 DisplayEventReceiver 的 BitTube fd。但 requestNextVsync 仍是 oneway binder，看到 binder 栈不代表线程类型是 binder。",
+    "误以为 queue().post 是“在 RT 上执行完才返回”：post 只入队；需要同步必须用 runSync（packaged_task + future.get）。RenderProxy 构造函数用 runSync、而 setSurface/setSwapBehavior 用 post，两种语义不能混用。",
+    "把 PRIORITY_DISPLAY 当成“一定不被抢占”：setpriority 只改 nice 值，且 PRIORITY_DISPLAY 的数值与线程 cgroup/调度策略定义都不在本仓库快照内，源码中未体现其具体效果。",
+    "以为 RenderThread 可以被销毁重建：~RenderThread 是 LOG_ALWAYS_FATAL，配合 [[clang::no_destroy]]，任何“销毁 RT 再重建”的方案都会直接 crash。",
+    "在 UI 线程高频调用任何 runSync 接口（如 copyLayerInto、buildLayer、createTextureLayer）：每一次都是 UI↔RT 阻塞握手，RT 越忙 UI 卡得越久。",
+    "误读 mVsyncRequested/mFrameCallbackTaskPending 只是性能优化：它们同时承担“一个 vsync 只渲染一帧”的正确性职责，去掉会出现同一帧被画两次或回调永久饿死（threadLoop 里 440-446 的补丁注释就是历史事故）。"
+  ],
+  "traceTags": [
+    "queue mFrameCallbackTask to run after",
+    "DrawFrames",
+    "earlyPreloadGlContext",
+    "RenderRate",
+    "swap chain stuffed",
+    "refreshRateCallback",
+    "dispatchFrameCallbacks"
+  ],
+  "next": "stage-02"
+}

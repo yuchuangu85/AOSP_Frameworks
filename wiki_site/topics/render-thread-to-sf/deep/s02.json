@@ -1,0 +1,42 @@
+{
+  "step": "s02",
+  "title": "syncAndDrawFrame：把 FrameInfo 推出 Java 层",
+  "tldr": "一行 JNI：14 个 long 拷进 task 自己的数组，再调 RenderProxy；UI 从这里开始阻塞。",
+  "why": "没有这一行，Java 侧的 FrameInfo 下不去：RT 拿不到 vsyncId、frameDeadline、intendedVsync，FrameTimeline 这一帧在 perfetto 里断掉，无法和 SurfaceFlinger 的帧对齐，jank 也就无从归因。反方向也断：syncResult 是 RT 写、Java 读的位掩码，ThreadedRenderer.draw 靠它决定 surface 丢了要不要 relayout（SYNC_LOST_SURFACE_REWARD_IF_FOUND）或要不要 invalidate（SYNC_REDRAW_REQUESTED）。少了这个回传，丢 surface 之后窗口会一直白屏，直到别的事件碰巧把它撞活。",
+  "concepts": [
+    { "term": "FrameInfo.frameInfo", "text": "long[14] 预打包数组，索引与 native FrameInfoIndex 一一对应，只拷数组。" },
+    { "term": "UI_THREAD_FRAME_INFO_SIZE", "text": "14；Java 的 FRAME_INFO_SIZE 必须与 native 常量一致，否则 abort。" },
+    { "term": "SYNC_* 结果位", "text": "REDRAW_REQUESTED 等四个掩码位，见 HardwareRenderer.java:106-131。" }
+  ],
+  "walk": [
+    { "call": "final FrameInfo frameInfo = attachInfo.mViewRootImpl.getUpdatedFrameInfo();", "ref": "base/core/java/android/view/ThreadedRenderer.java:846", "what": "拿到本帧的计时对象；绘制开始后就不能再改了。" },
+    { "call": "mViewFrameInfo.populateFrameInfo(frameInfo);", "ref": "base/core/java/android/view/ViewRootImpl.java:728", "what": "把本帧 UI 各阶段（DrawStart 等）倒进 Choreographer 的数组。" },
+    { "call": "mViewFrameInfo.reset();", "ref": "base/core/java/android/view/ViewRootImpl.java:729", "what": "立刻清场，否则下一帧会读到这一帧的残留时间戳。" },
+    { "call": "int syncResult = syncAndDrawFrame(frameInfo);", "ref": "base/core/java/android/view/ThreadedRenderer.java:848", "what": "同步调用：返回时 RT 的 sync 阶段已经做完，UI 已醒。" },
+    { "call": "public int syncAndDrawFrame(@NonNull FrameInfo frameInfo)", "ref": "base/graphics/java/android/graphics/HardwareRenderer.java:595", "what": "Java 门面，body 只有一行 native 调用。" },
+    { "call": "return nSyncAndDrawFrame(mNativeProxy, frameInfo.frameInfo, frameInfo.frameInfo.length);", "ref": "base/graphics/java/android/graphics/HardwareRenderer.java:596", "what": "传裸指针 + long[] + 长度；长度就是那份 14。" },
+    { "call": "LOG_ALWAYS_FATAL_IF(frameInfoSize != UI_THREAD_FRAME_INFO_SIZE,", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:467", "what": "JNI 先校验长度，不等就当场 abort，兜住 Java/native 版本不同步。" },
+    { "call": "env->GetLongArrayRegion(frameInfo, 0, frameInfoSize, proxy->frameInfo());", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:471", "what": "直接拷进 DrawFrameTask 的 mFrameInfo，没有中间缓冲。" },
+    { "call": "return proxy->syncAndDrawFrame();", "ref": "base/libs/hwui/jni/android_graphics_HardwareRenderer.cpp:472", "what": "进 native 门面；UI 线程从这一行开始等 RT。" },
+    { "call": "if ((syncResult & SYNC_LOST_SURFACE_REWARD_IF_FOUND) != 0) {", "ref": "base/core/java/android/view/ThreadedRenderer.java:849", "what": "回来之后按位分支：丢 surface 就强制 relayout。" }
+  ],
+  "state": [
+    { "field": "DrawFrameTask.mFrameInfo[0..13]", "before": "上一帧留下的计时", "after": "本次 UI 填的 14 个值（JNI:471 整段覆盖）", "note": "长度固定整段覆写，不需要清零；写发生在 UI 线程、读发生在 RT" },
+    { "field": "ViewFrameInfo（ViewRootImpl.mViewFrameInfo）", "before": "累积了本次 traversal 的各阶段时间戳", "after": "reset() 后归零（729）", "note": "getUpdatedFrameInfo 的语义就是「交出去并清场」" },
+    { "field": "FrameInfo（Choreographer.mFrameInfo）", "before": "上一帧的 vsyncId/deadline", "after": "被 populateFrameInfo 覆写成本帧（728）", "note": "它是 thread-local 单例，多个 ViewRootImpl 共用一个" },
+    { "field": "syncResult（Java 局部变量）", "before": "无", "after": "SYNC_* 位掩码（848 返回后才有值）", "note": "位定义在 HardwareRenderer.java:106-131，与 native SyncResult 一一对应" }
+  ],
+  "threads": "整段在 UI 线程。JNI 里那段 memcpy 也在 UI 线程完成，之后才由 RenderProxy 把任务 post 给 RT——所以 data race 的边界正好在 post 那一刻。",
+  "pitfalls": [
+    "nSyncAndDrawFrame 是普通同步 JNI 调用，不是 oneway：它不返回就说明 RT 的 sync 阶段还没结束，atrace 里这段是实打实的 UI 耗时，不要当成瞬间调用。",
+    "frameInfoSize 必须等于 UI_THREAD_FRAME_INFO_SIZE（14）。改 Java FrameInfo 常量却忘了改 native 的 enum，会在 draw 里 LOG_ALWAYS_FATAL 直接 abort，log 是 Mismatched size expectations（468）。",
+    "mNativeProxy 是裸指针：renderer 被 destroy 之后再用就是 UAF，所以 HardwareRenderer 才要 setStopped/pause 那道闸。",
+    "getUpdatedFrameInfo 会 reset 掉 mViewFrameInfo（729）：任何「等会儿再读本帧时间」的代码拿到的都是零。"
+  ],
+  "debug": [
+    "perfetto 里 UI 线程上找 postAndWait（DrawFrameTask.cpp:83 的 ATRACE_CALL），它包住的就是 nSyncAndDrawFrame 的实际耗时",
+    "framestats 的 SyncQueued 列（值来自 s04 的 mSyncQueued）减 DrawStart 就是「录制收尾 + 交棒」的时间",
+    "draw 直接 abort 时抓 logcat 的 Mismatched size expectations（android_graphics_HardwareRenderer.cpp:468），一眼看出是 Java/native FrameInfo 长度不同步"
+  ],
+  "next": "第 3 步「RenderProxy 接收并组帧」：JNI 里的 proxy 指针落到 native 对象上，请求被转交给常驻的 DrawFrameTask。"
+}

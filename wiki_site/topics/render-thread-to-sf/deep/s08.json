@@ -1,0 +1,125 @@
+{
+  "step": "s08",
+  "title": "prepareTree：staging → display list",
+  "tldr": "RT 遍历每个根节点：目标节点同步 staging，其他只跑 RT 动画；顺路累积 damage、判跳帧。",
+  "why": "prepareTree 是 UI 侧数据变成 RT 可绘制状态的那一次遍历。不做它，RT 手里只有上一帧的 display list 可回放：View 改了、动画跑了、列表滚了，屏幕都不动。反过来，如果这次遍历把 damage 算多了，就是一帧整屏重画，GPU 白烧几毫秒；算少了就是残影——旧内容没被新内容覆盖。它还是「这帧到底画不画」的第一次判定点：没有输出目标、同一个 vsync 已经画过、backdrop 还没内容、里层 buffer 抢不到，都在这里被拦下来，后面的 draw 才有资格假定「有东西可画」。",
+  "concepts": [
+    {
+      "term": "MODE_FULL / MODE_RT_ONLY",
+      "text": "FULL 才允许同步 staging 与 display list；RT_ONLY 只跑动画，没有 UI 线程配合。"
+    },
+    {
+      "term": "damageGenerationId",
+      "text": "本帧遍历的代号（mDamageId++）；同一节点本帧第二次被访问就退化成整屏 damage，防漏算。"
+    },
+    {
+      "term": "DamageAccumulator",
+      "text": "沿树压/弹 transform，把每个脏节点的脏区映射到窗口坐标后取并集，最后由 finish 给出 dirty 矩形。"
+    },
+    {
+      "term": "reserveNext",
+      "text": "向 ANativeWindow 预占一块 buffer（dequeue 的前半段）；失败就是 NoBuffer，这一帧不画。"
+    },
+    {
+      "term": "no output target",
+      "text": "既没有 Surface/NativeWindow 也没有 SurfaceControl 可写，通常是窗口在销毁或重建。"
+    }
+  ],
+  "walk": [
+    {
+      "call": "void CanvasContext::prepareTree(TreeInfo& info, int64_t* uiFrameInfo, int64_t syncQueued, RenderNode* target) {",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:506",
+      "what": "RT 每帧的树准备入口：一次遍历同时完成同步、damage 累积、跳帧判定和动画排期。"
+    },
+    {
+      "call": "const auto reason = wasSkipped(mCurrentFrameInfo);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:517",
+      "what": "上一帧被跳过就复用它的 FrameInfo，不新开帧，避免把跳帧算成新帧的耗时。"
+    },
+    {
+      "call": "mCurrentFrameInfo->importUiThreadInfo(uiFrameInfo);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:544",
+      "what": "把 UI 写好的 frameInfo long[]（vsync、deadline）整块拷进 RT 的 FrameInfo。"
+    },
+    {
+      "call": "info.damageGenerationId = mDamageId++;",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:551",
+      "what": "发本帧新代号，每个节点靠它判断自己这帧是否已被遍历过。"
+    },
+    {
+      "call": "info.mode = (node.get() == target ? TreeInfo::MODE_FULL : TreeInfo::MODE_RT_ONLY);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:564",
+      "what": "只有窗口内容那棵树做全量同步；其他根节点（非 client/filler）只跑 RT 动画。"
+    },
+    {
+      "call": "node->prepareTree(info);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:565",
+      "what": "进单个节点：换 staging 属性、move display list、递归子节点，脏了就加 damage。"
+    },
+    {
+      "call": "mAnimationContext->runRemainingAnimations(info);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:568",
+      "what": "补跑树遍历没覆盖到的动画（节点此刻不在可见子树里），保证动画不因裁剪而停。"
+    },
+    {
+      "call": "if (vsyncDelta < 2_ms) {",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:590",
+      "what": "同一个 vsync 已经 swap 过（偏差 < 2ms），这帧再画就是重复劳动，判 AlreadyDrawn。"
+    },
+    {
+      "call": "int err = mNativeSurface->reserveNext();",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:606",
+      "what": "预占本帧要画的 buffer；这一步就已经可能因为队列满而返回 TIMED_OUT。"
+    },
+    {
+      "call": "mRenderThread.postFrameCallback(this);",
+      "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:629",
+      "what": "还有 RT 能自己跑的动画（或刚跳过），就给自己约下一拍，不必等 UI 再来一次。"
+    }
+  ],
+  "state": [
+    {
+      "field": "CanvasContext::mCurrentFrameInfo",
+      "before": "上一帧的 FrameInfo（可能带着 skipped 标记）",
+      "after": "新 startFrame() 的对象，或继续沿用旧的（540）",
+      "note": "跳过帧不新建 FrameInfo，所以 FrameTimeline 上它不会被算成一帧新的"
+    },
+    {
+      "field": "CanvasContext::mDamageId",
+      "before": "N",
+      "after": "N+1（551）",
+      "note": "只用于本帧内去重，不跨帧比较；节点侧存的是它的副本 mDamageGenerationId"
+    },
+    {
+      "field": "CanvasContext::mIsDirty",
+      "before": "上一帧真正 draw 后为 false（804）",
+      "after": "true（574）",
+      "note": "setStopped(false) 时靠它决定要不要补一帧（378）"
+    },
+    {
+      "field": "CanvasContext::mSkippedFrameInfo",
+      "before": "nullopt，或最早那次跳帧的 vsyncId/startTime",
+      "after": "本帧没跳过则 reset（541）",
+      "note": "跳帧会以 skippedFrameVsyncId 报给 SF 做帧时间线"
+    },
+    {
+      "field": "TreeInfo::out.skippedFrameReason",
+      "before": "nullopt（552 显式清空）",
+      "after": "AlreadyDrawn / NothingToDraw / NoBuffer / NoOutputTarget 之一，或仍为 nullopt",
+      "note": "函数返回时的值就是「这帧要不要 draw」的唯一依据（DrawFrameTask.cpp:107）"
+    }
+  ],
+  "threads": "整段在 RenderThread 上执行，遍历期间 UI 线程仍被 mSignal 扣住，所以 RT 可以放心读 staging（放行是下一步的事）。函数末尾的 postFrameCallback 会让下一拍由 RT 自己的 vsync 回调再次进 prepareTree，此时 mode 是 MODE_RT_ONLY，不会同步任何 staging——那是「动画帧」和「UI 帧」最本质的区别。",
+  "pitfalls": [
+    "非目标根节点走 MODE_RT_ONLY（564），而属性和 display list 的同步都有 mode 判断（RenderNode.cpp:237、267）；把主内容挂到第二个根节点上，它这一帧就不会更新，表现为整个 Surface 停在旧画面。",
+    "reserveNext 失败且 err != TIMED_OUT 时直接 setSurface(nullptr) 并 return（611-615），函数末尾的 postFrameCallback 都不会执行；症状是这一帧之后彻底不动，直到 UI 重新 setSurface。",
+    "AlreadyDrawn 用 vsyncDelta < 2ms 判（590），forceDrawFrame 可以绕过（582）；UI 与 RT 对同一拍各触发一次 draw 时必然命中，日志上就是「有 doFrame 但没有 Drawing」。",
+    "damageGenerationId 去重（RenderNode.cpp:229-233）会把同帧第二次访问的节点升成整屏 damage；多根节点共享子树（如 WebView）时很容易退化成全屏重画，耗电但画面正常。"
+  ],
+  "debug": [
+    "perfetto 里 prepareTree 是逐节点打点的（RenderNode.cpp:138），根节点那层叫 prepareTree，嵌套深度约等于 View 树深度；某帧 slice 数暴涨通常意味着整棵树被标脏",
+    "adb shell setprop debug.hwui.show_dirty_regions true（Properties.h:103）把本帧 damage 直接画在屏幕上，用来验证 dirty 算得对不对",
+    "adb shell dumpsys gfxinfo <pkg> framestats 里 SyncStart 到 IssueDrawCommandsStart 的差值，就是这段同步在 CPU 上花的时间"
+  ],
+  "next": "第 9 步「RenderNode::syncDisplayList」：遍历到 MODE_FULL 的节点时，pushStagingDisplayListChanges 把 staging 槽 move 成 display list，并按新旧内容各 damage 一次。"
+}

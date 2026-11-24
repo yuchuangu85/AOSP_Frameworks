@@ -1,0 +1,39 @@
+{
+  "step": "s40",
+  "title": "PiP 与 legacy 兼容",
+  "tldr": "收尾时判断 Activity 是否进 PiP；legacy 只剩通知老 listener 和还原 nav bar。",
+  "why": "如果不先判断 PiP：Activity 进 PiP 的同一刻会被 commitVisibility(false)，Surface 先消失一帧再以 PiP 尺寸出现——用户看到的是明显闪一下，PiP 窗口先黑一帧。legacy 那两条则关系到导航栏：recents 把 nav bar 的 Surface reparent 到 app 之后如果没人还回去，退出 recents 后导航栏会一直贴在 app 底部，位置和层级都错。",
+  "concepts": [
+    { "term": "auto-enter PiP", "text": "isAutoEnterEnabled()：Activity 声明切走时自动进 PiP，不走 pause 老流程。" },
+    { "term": "AppTransitionListener", "text": "WMS 给 SystemUI 等老 partner 的转场回调；shell 转场下只剩这几处转发。" },
+    { "term": "nav bar attached to app", "text": "recents 把导航栏 Surface 挂到顶部 Activity 下，并记 attached 标记。" }
+  ],
+  "walk": [
+    { "call": "boolean checkEnterPipOnFinish(@NonNull ActivityRecord ar)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1451", "what": "finishTransition 对每个将变不可见的 Activity 调一次，决定进 PiP 还是正常消失。" },
+    { "call": "final boolean commitVisibility = !checkEnterPipOnFinish(ar);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1606", "what": "进 PiP 就不 commit 不可见，避免 Surface 先消失再出现那一下闪。" },
+    { "call": "final boolean inPip = mController.mAtm.enterPictureInPictureMode(ar, ar.pictureInPictureArgs, false /* fromClient */, true /* isAutoEnter */);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1476", "what": "auto-enter 路径：当场把 task 切到 PINNED，成功后置 mEnterAutoPip。" },
+    { "call": "ar.getTaskFragment().startPausing(false /* uiSleeping */, resuming, \"finishTransition\");", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1506", "what": "非 auto-enter 老路：带 userLeaving 停掉 Activity，进不进 PiP 由 app 决定。" },
+    { "call": "mController.dispatchLegacyAppTransitionStarting(participantDisplays, mStatusBarTransitionDelay);", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2253", "what": "调 Shell 的 onTransitionReady 之前，先把「动画开始」告诉老 listener。" },
+    { "call": "listener.onAppTransitionStartingLocked(", "ref": "base/services/core/java/com/android/server/wm/TransitionController.java:1674", "what": "真正回调，带延迟让状态栏动画和转场对齐。" },
+    { "call": "void legacyRestoreNavigationBarFromApp()", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2878", "what": "recents 结束时还原导航栏的 parent 与 layer；没挂到 app 上就直接 return。" },
+    { "call": "t.reparent(navToken.getSurfaceControl(), parent.getSurfaceControl());", "ref": "base/services/core/java/com/android/server/wm/Transition.java:2919", "what": "没有 home/recents 可见时直接 reparent 回去；有的话改用 NavBarFade 淡出。" }
+  ],
+  "state": [
+    { "field": "mNavigationBarAttachedToApp", "before": "true", "after": "false（2882 行）", "note": "true 期间 nav bar 的 Surface 是某个 app leash 的子节点" },
+    { "field": "导航栏 SurfaceControl 的 parent", "before": "顶部 Activity 的 SurfaceControl", "after": "自己 WindowToken 的 SurfaceControl", "note": "2919 行直接 reparent，或交给 NavBarFade 淡出" },
+    { "field": "ActivityRecord 的可见性提交", "before": "isVisibleRequested=false 就 commitVisibility(false)", "after": "要进 PiP 时跳过提交，等 Transition 结束再处理", "note": "这就是防闪的那一行 1606" },
+    { "field": "Transition.mEnterAutoPip", "before": "false", "after": "true（1489 行）", "note": "标记这次 finish 顺带完成了 auto-enter PiP" }
+  ],
+  "threads": "全在 WMS 主线程、持 mGlobalLock 的 finishTransition 路径上；enterPictureInPictureMode 入口是同步调用，内部的 config 变化再异步发出。",
+  "pitfalls": [
+    "checkEnterPipOnFinish 返回 true 不等于「一定会进 PiP」：只有 auto-enter 分支返回 inPip，legacy 分支（1506 行那条）永远返回 false，因为要等 app 自己决定。",
+    "legacy 回调不是给 app 的动画回调：onAppTransitionStartingLocked 只用来让状态栏/老 partner 对齐，别指望它在 shell 转场下还能控制动画时长。",
+    "nav bar 还原按 mRecentsDisplayId 找 display，若它已是 INVALID_DISPLAY 会退回 DEFAULT_DISPLAY（2886 行日志），多屏 recents 时容易还原到错屏。"
+  ],
+  "debug": [
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS：看 Commit activity becoming invisible: %s（Transition.java:1611），要进 PiP 的那个 Activity 不该出现在里面。",
+    "nav bar 排查：dumpsys SurfaceFlinger 里看 NavigationBar0 的 parent 是否还挂在某个 app 的 leash 下，而不是它自己的 token。",
+    "logcat -s Transition：Enter-PIP was started but not completed（Transition.java:1668）说明 Shell/SysUI 只做了一半，后面会 abortPipEnter 把 task 挪到后台。"
+  ],
+  "next": "第 41 步「分支：中止、超时、异常」。"
+}

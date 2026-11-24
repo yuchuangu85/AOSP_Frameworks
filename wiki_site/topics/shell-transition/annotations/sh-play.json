@@ -1,0 +1,156 @@
+{
+  "id": "sh-play",
+  "title": "Shell Transitions.playTransition 下发动画",
+  "file": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java",
+  "sig": "private void playTransition(@NonNull ActiveTransition active) {",
+  "span": [
+    1054,
+    1085
+  ],
+  "notes": [
+    {
+      "at": 1,
+      "quote": "private void playTransition(@NonNull ActiveTransition active) {",
+      "kind": "note",
+      "text": "入口：processReadyQueue 在 Shell 主线程选出该 track 队首 transition 后调用，此后动画开始下发。"
+    },
+    {
+      "at": 2,
+      "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \"Playing animation for %s\", active);",
+      "kind": "trace",
+      "text": "仅 WM_SHELL_TRANSITIONS 打开时打印 active（#debugId@track），用于确认本帧播放的是哪个过渡。"
+    },
+    {
+      "at": 3,
+      "quote": "final var token = active.mToken;",
+      "kind": "data",
+      "text": "缓存 IBinder token 到局部变量，供后面 observer 通知与 onFinish 闭包复用，避免中途字段被改写。"
+    },
+    {
+      "at": 5,
+      "quote": "for (int i = 0; i < mObservers.size(); ++i) {",
+      "kind": "branch",
+      "text": "顺序遍历 mObservers；全程 Shell 主线程执行、无锁，故增删观察者（addObserver）也必须在主线程。"
+    },
+    {
+      "at": 6,
+      "quote": "mObservers.get(i).onTransitionStarting(token);",
+      "kind": "state",
+      "text": "动画开始前回调各观察者（Bubble/Freeform/Pip 用）；观察者抛异常会中断播放，transition 卡在 active。"
+    },
+    {
+      "at": 9,
+      "quote": "setupAnimHierarchy(active.mInfo, active.mStartT);",
+      "kind": "state",
+      "text": "在 startT 上 show root leash、按 z 序 reparent 参与者；handler 不 apply 则动画不可见。"
+    },
+    {
+      "at": 11,
+      "quote": "// If a handler already chose to run this animation, try delegating to",
+      "kind": "note",
+      "text": "注释：handler 若在 request 阶段已认领，就优先由它播放，避免被通用 handler 抢走。"
+    },
+    {
+      "at": 12,
+      "quote": "if (active.mHandler != null) {",
+      "kind": "branch",
+      "text": "mHandler 非空表示请求阶段已指定 handler，先尝试委托；为空才直接走通用分发。"
+    },
+    {
+      "at": 13,
+      "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \" try firstHandler %s\",",
+      "kind": "trace",
+      "text": "ProtoLog 打印优先 handler 的 toString；仅在 WM_SHELL_TRANSITIONS 生效，不影响动画路径。"
+    },
+    {
+      "at": 14,
+      "quote": "active.mHandler);",
+      "kind": "data",
+      "text": "作为 %s 实参继续上一行日志；mHandler 稍后可能被 dispatchTransition 的返回值覆盖为最终消费者。"
+    },
+    {
+      "at": 15,
+      "quote": "boolean consumed = active.mHandler.startAnimation(token, active.mInfo,",
+      "kind": "ipc",
+      "text": "调用 handler.startAnimation 交出 startT/finishT 与 finish 回调；true 表示由它消费。"
+    },
+    {
+      "at": 16,
+      "quote": "active.mStartT, active.mFinishT, (wct) -> onFinish(token, wct));",
+      "kind": "thread",
+      "text": "lambda 把 wct 转交 onFinish(token,wct)；handler 须在主线程回调，否则断言崩溃。"
+    },
+    {
+      "at": 17,
+      "quote": "if (consumed) {",
+      "kind": "branch",
+      "text": "consumed 为 true 说明该 handler 已接管动画，进入记录与提前返回分支，不再尝试其它 handler。"
+    },
+    {
+      "at": 18,
+      "quote": "ProtoLog.v(WM_SHELL_TRANSITIONS, \" animated by firstHandler\");",
+      "kind": "trace",
+      "text": "调试日志确认动画由 firstHandler 完成，便于对比 dispatchTransition 的日志归因。"
+    },
+    {
+      "at": 19,
+      "quote": "mTransitionTracer.logDispatched(active.mInfo.getDebugId(), active.mHan",
+      "kind": "trace",
+      "text": "向 Perfetto tracer 上报 dispatched(debugId,handler)，把过渡归因到具体 handler。"
+    },
+    {
+      "at": 20,
+      "quote": "if (Trace.isTagEnabled(TRACE_TAG_WINDOW_MANAGER)) {",
+      "kind": "trace",
+      "text": "仅当 WM trace tag 使能时才做瞬时打点，避免常态下的 trace 开销。"
+    },
+    {
+      "at": 21,
+      "quote": "Trace.instant(TRACE_TAG_WINDOW_MANAGER,",
+      "kind": "trace",
+      "text": "写一个同步 instant 切片，标记 firstHandler#startAnimation 消费了该过渡。"
+    },
+    {
+      "at": 22,
+      "quote": "active.mHandler.getClass().getSimpleName()",
+      "kind": "trace",
+      "text": "拼接 handler 简单类名，确定是哪个 handler 播放，便于跨设备对比。"
+    },
+    {
+      "at": 23,
+      "quote": "+ \"#startAnimation animated \"",
+      "kind": "trace",
+      "text": "固定后缀 \"#startAnimation animated \"，作为 Perfetto 里可检索的切片名片段。"
+    },
+    {
+      "at": 24,
+      "quote": "+ transitTypeToString(active.mInfo.getType()));",
+      "kind": "trace",
+      "text": "追加 transit 类型名（OPEN/CLOSE 等），构成切片名结尾，便于按过渡类型过滤。"
+    },
+    {
+      "at": 26,
+      "quote": "return;",
+      "kind": "state",
+      "text": "提前 return：firstHandler 已消费，不再分发；track 清理由 onFinish 回调完成。"
+    },
+    {
+      "at": 29,
+      "quote": "// Otherwise give every other handler a chance",
+      "kind": "note",
+      "text": "注释：否则把其余 handler 逐个试一遍，直到有人消费为止（兜底路径）。"
+    },
+    {
+      "at": 30,
+      "quote": "active.mHandler = dispatchTransition(token, active.mInfo, active.mStar",
+      "kind": "ipc",
+      "text": "逆序分发全部 handler，skip 传入原 handler 防重复；返回值写回 mHandler，无人消费则抛异常致主线程崩溃。"
+    },
+    {
+      "at": 31,
+      "quote": "active.mFinishT, (wct) -> onFinish(token, wct), active.mHandler);",
+      "kind": "thread",
+      "text": "传 finishT 与同一个 onFinish 回调；dispatchTransition 同步返回最终 handler，动画本身异步结束。"
+    }
+  ]
+}

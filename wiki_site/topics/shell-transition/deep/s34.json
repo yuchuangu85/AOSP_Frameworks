@@ -1,0 +1,40 @@
+{
+  "step": "s34",
+  "title": "handler 分派链：谁先接谁播",
+  "tldr": "handler 倒序被问：最后注册的最先有机会，内置的 DefaultTransitionHandler 垫底接住。",
+  "why": "分派链直接决定你看到哪种动画。如果 RemoteTransitionHandler 排在 DefaultTransitionHandler 后面才被问，Launcher 的启动动画永远轮不到，用户看到的是系统默认那套缩放，社区里「为什么我的手机没有 Launcher 转场」多半就是这里顺序错了。反过来，某个 handler 返回 true 却没真的播（不调 finishCallback），track 就永远忙，后续转场全部排队，表现是点一次没反应、过一会儿连播好几个。链尾没人接会抛 IllegalStateException（1120），等于 SystemUI 崩掉。",
+  "concepts": [
+    { "term": "两段式：handleRequestOnly 与 startAnimation", "text": "request 阶段只认领并回传 WCT，play 阶段才真播，同一 handler 可能只出现一段。" },
+    { "term": "skip 参数", "text": "dispatchTransition 的入参：request 阶段认领过的 handler，用 skip 跳过它。" }
+  ],
+  "walk": [
+    { "call": "mHandlers.add(mDefaultTransitionHandler);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:393", "what": "构造函数先放 Default（index 0，垫底），396 才 add Remote。" },
+    { "call": "mHandlers.add(handler);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:490", "what": "其他模块（PiP、Split、Keyguard、Recents）往末尾追加，后注册的优先级更高。" },
+    { "call": "for (int i = mHandlers.size() - 1; i >= 0; --i) {", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1099", "what": "从末尾往前问：最近注册的先有机会，Default 永远最后被问。" },
+    { "call": "if (mHandlers.get(i) == skip) { ... continue; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1100", "what": "跳过 request 阶段已经试过的那个 handler，防止它被问两遍。" },
+    { "call": "boolean consumed = mHandlers.get(i).startAnimation(transition, info, startT, finishT, finishCB);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1105", "what": "返回 true 表示我接了，立刻停止轮询。" },
+    { "call": "return mHandlers.get(i);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1117", "what": "把接手的 handler 返回给 playTransition，记进 mHandler。" },
+    { "call": "final boolean ignoreTransition = !Transitions.SHELL_TRANSITIONS_ROTATION && (... TransitionUtil.hasDisplayChange(info));", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java:129", "what": "display 尺寸或旋转变了就不交给 Launcher（没权限），直接走拒绝分支。" },
+    { "call": "if (ignoreTransition) { ... return false; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/RemoteTransitionHandler.java:133", "what": "拒绝前先在 136 清掉 mRequestedRemotes，不留没人认领的 remote 记录。" },
+    { "call": "if (mixed == null) return false;", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultMixedHandler.java:869", "what": "混合 handler 只在 request 阶段认领过时才接，否则交回链上。" },
+    { "call": "if (isAnimationsDisabledForAnyDisplay(info) || TransitionUtil.isAllNoAnimation(info) ... )", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:353", "what": "Default 遇到没动画可播不是拒接：apply 起始事务、回调 finish、return true。" },
+    { "call": "return true;", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:698", "what": "Default 是链尾：无论播不播都必须接住，否则 1120 处抛异常。" }
+  ],
+  "state": [
+    { "field": "ActiveTransition.mHandler", "before": "request 阶段认领的 handler（可能为 null）", "after": "实际接手的 handler（1117 的返回值，经 1083 写回）", "note": "onMerged 与 onFinish 都通过它通知 consumed 和 merge" },
+    { "field": "mHandlers", "before": "只有 Default 与 Remote 两个（393、396）", "after": "随各模块 addHandler 增长，顺序即优先级（越靠后越先问）", "note": "顺序是启动时确定的，改优先级靠改注册时机" },
+    { "field": "active.mStartT", "before": "WMS 合并事务加 setupAnimHierarchy 的结果", "after": "被接手的 handler 继续写入（例如 Default 在无动画路径上直接 apply）", "note": "handler 返回 false 时不应留下半截写入" }
+  ],
+  "threads": "wmshell.main。startAnimation 必须同步返回一个 boolean（接不接），但动画完成是异步的：通过 finishCallback 回到 onFinish，可能来自动画线程，也可能来自 Launcher 进程的 binder 回调。",
+  "pitfalls": [
+    "mHandlers 是「后注册先问」，Default 是第一个加进去的，所以永远最后被问到；它必须永远返回 true，这是链尾契约，不是可选项。",
+    "返回 false 之前必须把自己留下的痕迹清掉：RemoteTransitionHandler 在 136 先 mRequestedRemotes.remove 再 return false，否则后面接手的 handler 会踩到一条没人认领的 remote 记录。",
+    "DefaultTransitionHandler 在没动画可播时也 return true 并顺手 startTransaction.apply()（353 到 359），这不是 bug——它必须接住，否则整条链抛异常。",
+    "request 阶段认领和 play 阶段接手是两个 handler 也可能不是同一个：request 返回过 WCT 的 handler 若在 1068 拒绝，最终由别人播，WMS 那边的预置事务照样生效。"
+  ],
+  "debug": [
+    "ProtoLog WM_SHELL_TRANSITIONS： animated by %s（1108）直接告诉你最后是谁播的； skip handler %s（1101）说明这个被跳过了",
+    "perfetto / atrace 抓 wm：instant slice <HandlerClass>#startAnimation animated <type>（1074 与 1112）能看出分派链停在哪一环"
+  ],
+  "next": "第 29 步「Handler 播放动画」：接下来就是具体实现，DefaultTransitionHandler 播系统动画，RemoteTransitionHandler 交给 Launcher。"
+}

@@ -1,0 +1,42 @@
+{
+  "step": "s13",
+  "title": "GL 后端：绑定 FBO 与 surface",
+  "tldr": "把本帧脏区设成 EGL damage，再把 FBO 0 的 back buffer 包成 SkSurface。",
+  "why": "这一步把「CanvasContext 手里的脏区 + Frame」翻译成 Skia 能画的 surface：不包出 SkSurface，后面的 renderFrame 连 canvas 都没有，一条 draw op 也发不出去；不先 damageFrame，驱动会认为整块 buffer 都要重绘，EGL_KHR_partial_update 白开，每帧全屏读改写，带宽和功耗都浪费。反过来，宽高或色型算错（HDR 内容落到 kN32）会让整帧偏色，preTransform 取错（155 的 bufferParams.getTransform）会让 HardwareBuffer 渲染整体错位。要注意它只准备画布，画面还没产生——回放在第 14 步。",
+  "concepts": [
+    { "term": "FBO 0", "text": "默认帧缓冲，也就是 EGL surface 的 back buffer。app 的屏幕内容直接画在这，不经过任何离屏 texture。" },
+    { "term": "EGL_KHR_partial_update", "text": "让驱动只重绘指定区域的扩展，入口是 eglSetDamageRegionKHR；只有 setDamage 且 BufferAge 时启用。" },
+    { "term": "GrBackendRenderTarget", "text": "Skia 对一段原生 GL 帧缓冲的描述：宽、高、sample 数、stencil 位数、格式；包成 SkSurface 后才能画。" },
+    { "term": "SurfaceOrigin", "text": "Skia 对帧缓冲 y 轴方向的约定。GL 后端固定 kBottomLeft（base/libs/hwui/platform/android/pipeline/skia/SkiaOpenGLPipeline.h:47），Vulkan 是 kTopLeft（SkiaVulkanPipeline.h:47）。" }
+  ],
+  "walk": [
+    { "call": "IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:116", "what": "GL 后端的每帧入口：入参是本帧两块脏区、layer 队列、根节点数组、surface 参数。" },
+    { "call": "mEglManager.damageFrame(frame, dirty);", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:123", "what": "把树脏区 dirty 设成 EGL damage region，驱动据此只重绘这块。" },
+    { "call": "SkColorType colorType = getSurfaceColorType();", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:126", "what": "色型由 ColorMode 定，HDR 走 F16 或 1010102，直接决定下面 fboInfo 的格式。" },
+    { "call": "fboInfo.fFBOID = 0;", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:129", "what": "绑默认帧缓冲：画到的就是驱动刚 dequeue 出来的那块 back buffer。" },
+    { "call": "auto backendRT = GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0, STENCIL_BUFFER_SIZE, fboInfo);", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:144", "what": "用 Frame 的宽高（来自 eglQuerySurface）建 render target 描述。" },
+    { "call": "surface = SkSurfaces::WrapBackendRenderTarget(mRenderThread.getGrContext(), backendRT, getSurfaceOrigin(), colorType, mSurfaceColorSpace, &props);", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:157", "what": "包成 SkSurface：每帧新建、不拥有 buffer，只是当帧的视图。" },
+    { "call": "renderFrame(*layerUpdateQueue, dirty, renderNodes, opaque, contentDrawBounds, surface, preTransform);", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:168", "what": "把 surface 和脏区交给 SkiaPipeline，图元回放不在这里发生。" },
+    { "call": "return {true, IRenderPipeline::DrawResult::kUnknownTime, android::base::unique_fd{}};", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:191", "what": "GL 恒报 success、提交时间未知、无 present fence：这三个字段都不是有效值。" }
+  ],
+  "state": [
+    { "field": "EGL surface 的 damage region", "before": "上一帧留下的值（或驱动按 buffer age 自行推断）", "after": "eglSetDamageRegionKHR 设成本帧 dirty（123 调，EglManager.cpp:609）", "note": "只有 EglExtensions.setDamage 且 SwapBehavior::BufferAge 才真调（EglManager.cpp:606），Discard 下这行是空操作" },
+    { "field": "局部 sk_sp<SkSurface> surface", "before": "不存在", "after": "每帧 WrapBackendRenderTarget 新建，draw 返回即析构（157）", "note": "它不持有像素内存，buffer 归 BufferQueue 的 slot 所有；surface 只是当帧的视图" },
+    { "field": "IRenderPipeline::DrawResult drawResult", "before": "默认构造：success=false、commandSubmissionTime=-1", "after": "{true, kUnknownTime, 空 fd}（191）", "note": "GL 从不填 commandSubmissionTime，所以 CanvasContext 用 max(它, SwapBuffers) 得 CommandSubmissionCompleted（CanvasContext.cpp:790）" },
+    { "field": "SkiaPipeline::mLayerUpdateQueue（由指针传入）", "before": "prepareTree 阶段填好的待更新 layer 条目", "after": "draw 末尾 clear()（184）", "note": "clear 放在 flush 之后，是刻意的：168 的 renderFrame 还要用它" },
+    { "field": "SkSurfaceProps", "before": "—", "after": "按 mColorMode 决定是否 kAlwaysDither_Flag（147）", "note": "dither 只影响渐变条带的观感，不改变格式" }
+  ],
+  "threads": "RenderThread 单线程。CanvasContext::draw 在 RT 上直接调到这里，没有加锁也没有跨线程投递；EGL context 与 surface 在上一阶段的 makeCurrent 里就已经是 current 的，这里直接用。",
+  "pitfalls": [
+    "damageFrame 传的是 dirty（树脏区），第 16 步 swapBuffers 传的是 screenDirty（windowDirty）：两者在 CanvasContext::computeDirtyRect（CanvasContext.cpp:734）里已经分家，脏区为空或 buffer age=0 时 dirty 会被扩成整屏。当成同一个会得出「为什么局部更新变成整屏」的错误结论。",
+    "mSwapBehavior 默认是 Discard（EglManager.h:110），只有 enablePartialUpdates && useBufferAge && 驱动支持 EGL_KHR_buffer_age 才变 BufferAge（EglManager.cpp:132）。Discard 下 damageFrame 什么都不做，damageRequiresSwap() 也返回 false（EglManager.cpp:618），第 16 步的 requireSwap 就退化成 drawResult.success。",
+    "mHardwareBuffer 分支（153）走 getBufferSkSurface，FBO 不是 0、也带 preTransform；HardwareBuffer 渲染在 swapBuffers 里直接返回 false（204），永远不会进 BufferQueue——看到这类帧没有 SF 事务是设计如此。",
+    "surface 尺寸来自 Frame（eglQuerySurface），不是 View 的尺寸：窗口缩放中这两者会短暂不一致，此时 clip 会被 computeDirtyRect 收成整屏（CanvasContext.cpp:1277/1294）。"
+  ],
+  "debug": [
+    "perfetto 抓 gfx：RT 线程上找 Drawing 切片（CanvasContext.cpp:736 的 ATRACE_FORMAT，带脏区矩形），它的子切片里才有 flush commands",
+    "adb shell setprop debug.hwui.show_dirty_regions true 可以让 FrameInfoVisualizer 把脏区直接画到画面上（172-178 的分支），比猜坐标快",
+    "adb shell setprop debug.hwui.profile true 打开 ProfileType 后同样走 172 那段，会把每帧耗时画在角落"
+  ],
+  "next": "第 14 步「回放 draw op」：surface 就绪，renderFrame 先把待更新的 RenderLayer 画进各自离屏 surface，再把根节点的 display list 回放进这个 canvas。"
+}

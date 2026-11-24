@@ -1,0 +1,36 @@
+{
+  "step": "s21",
+  "title": "动画期 reparent：谁挂上去",
+  "tldr": "为了让一组 leash 能整体位移和裁剪，Shell 临时给它们换父节点；挂上去的每一笔都要在 finishT 里摘掉。",
+  "why": "不换父节点：来自不同 Task 的 Activity 各自挂在原 Task 下，缩放时只能各缩各的——用户看到两个窗口朝不同中心收缩、中间露出黑缝，而不是整个屏幕一起后退；背景层也没地方挂，只能铺在某个 Task 上跟着它动。反过来，挂上去不摘：转场结束后这些层还留在动画父节点下，下一次布局按错误的父链算位置，表现为窗口错位、点击位置对不上（input 区域由 leash 的父链推出）。",
+  "concepts": [
+    { "term": "container layer", "text": "setContainerLayer() 造出的无 buffer 父节点，只作为裁剪/位移的坐标系；Transition Root 与 Transition ActivityWrap 都是它。" },
+    { "term": "reparent(null)", "text": "把图层从父链摘掉变成孤儿，此后不参与合成；native 对象仍要 release 才回收，所以摘与 release 常成对出现。" }
+  ],
+  "walk": [
+    { "call": "setupAnimHierarchy(active.mInfo, active.mStartT)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:1062", "what": "playTransition 里先统一建层级：show 每个 root leash，再逐个 change 调 setUpSurface。" },
+    { "call": "t.reparent(leash, root.getLeash())", "ref": "base/libs/WindowManager/Shell/shared/src/com/android/wm/shell/shared/TransitionUtil.java:331", "what": "没有 parent 的 independent change 被挂到本次转场的 root leash 下，这是最基础的一次换父。" },
+    { "call": ".setParent(animRoot.getLeash())", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:642", "what": "孤立 Activity 额外套一层 Transition ActivityWrap 容器层，用来独立裁剪，绕开动画 root 裁剪范围不准的问题。" },
+    { "call": "startTransaction.reparent(change.getLeash(), leash)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:648", "what": "把 Activity 的 leash 挪进 wrap，父链变成 animRoot → wrap → leash，整体缩放才成立。" },
+    { "call": "finishTransaction.reparent(leash, null)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/DefaultTransitionHandler.java:651", "what": "同一份 finishT 里把 wrap 从父链摘掉；下一行 leash.release() 放掉 native 对象。" },
+    { "call": "t.reparent(targetLeash, origParent)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1321", "what": "WMS 在 buildFinishTransaction 里把每个参与者挂回原父并重置 layer/alpha——这份事务就是 Shell 收到的 finishT。" },
+    { "call": "t.reparent(info.getRoot(i).getLeash(), null)", "ref": "base/services/core/java/com/android/server/wm/Transition.java:1345", "what": "root leash 本身也在 finishT 里摘掉，否则整棵动画树转场后仍挂在窗口层上。" }
+  ],
+  "state": [
+    { "field": "被动画 leash 的父节点", "before": "原父（Task 或 DisplayContent 的 windowingLayer）", "after": "root leash，必要时间再套一层 ActivityWrap", "note": "动画期间 Shell 只搬 leash，不动 WindowState 的父子关系" },
+    { "field": "Transition ActivityWrap 容器层", "before": "不存在", "after": "建出来并 show，转场结束 reparent(null)+release", "note": "只有 isActivity && !isActivityLevel && 未旋转时才建（631 行）" },
+    { "field": "WMS 的 finishTransaction", "before": "空", "after": "每个 target 一条 reparent(origParent) + setLayer + setAlpha(1)", "note": "Shell 收到的 finishT 就是这一份，接着往里加 remove/reparent" }
+  ],
+  "threads": "全部在 wmshell.main 上写事务；SurfaceControl.Transaction 只是本地记录，apply 时才跨 binder 到 SF，因此这一步不持 mGlobalLock。",
+  "pitfalls": [
+    "reparent 与 setPosition 是一对：换了父节点坐标系就变了，649 行的 setPosition(change.getLeash(), 0, 0) 不能省，否则画面会偏一个父节点的 offset。",
+    "ActivityWrap 只在 631 行三个条件同时成立时创建，所以不是「每个 Activity 都有一层 wrap」；条件不成立时 Activity 直接挂 root leash。",
+    "finishT 是 WMS 与 Shell 共用的一份事务：WMS 先写「挂回原父」，Shell 再写「摘掉 wrap 和背景层」，都靠最后那一次 apply 生效，中间任何一帧都是中间态。",
+    "不要用改 WindowState 父节点的方式代替 reparent leash：那会让 WMS 的布局计算和 SF 的层级不一致。"
+  ],
+  "debug": [
+    "adb shell dumpsys SurfaceFlinger --list | grep -E \"Transition Root|ActivityWrap\"：转场结束后残留的 ActivityWrap 就是 finishT 漏了。",
+    "adb shell dumpsys SurfaceFlinger 看 layer 树，确认 wrap 的 parent 是 Transition Root 而不是某个 Task。"
+  ],
+  "next": "父链就位、动画跑完，接下来要把它全部还原并通知 WMS → 第 32 步「动画结束，onFinish 收尾」。"
+}

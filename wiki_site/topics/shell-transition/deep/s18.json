@@ -1,0 +1,34 @@
+{
+  "step": "s18",
+  "title": "按 Track 顺序放行",
+  "tldr": "ready 的转场先挂到自己的 track 上，track 空闲才播，忙就原地排队。",
+  "why": "Track 是 Shell 侧「同一块屏幕一次只播一个动画」的闸门。没有它，两个转场会同时写同一批 leash 的 reparent 和 alpha：后一个 handler 的 setupAnimHierarchy 会把前一帧摆好的 z 序冲掉，用户看到正在缩小的旧窗口突然盖住新窗口。更隐蔽的是收尾——两个动画各持一份 finishT，先 finish 的那个把 leash 还原到动画没开始的位置，窗口会当场跳一下。",
+  "concepts": [
+    { "term": "Track", "text": "mTracks 里的一条播放通道，下标来自 TransitionInfo.getTrack()，一次只播一个转场。" },
+    { "term": "setupStartState", "text": "播之前把每个 change 的 leash 摆到动画起点：show、复位 alpha、设位置与 crop。" }
+  ],
+  "walk": [
+    { "call": "final Track track = getOrCreateTrack(info.getTrack());", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:832", "what": "按 WMS 算出的 trackId 取通道，不够就补 new Track()，一条 track 一条队列。" },
+    { "call": "track.mReadyTransitions.add(active);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:833", "what": "先登记再判断：即使下面立刻 abort，它也已经在队列里，finish 顺序不会乱。" },
+    { "call": "setupStartState(active.mInfo, active.mStartT, active.mFinishT);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:903", "what": "把每个 leash 摆到动画起点，可见性也同步写进 finishT，避免收尾闪回。" },
+    { "call": "if (track.mReadyTransitions.size() > 1) { return true; }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:905", "what": "队里已经有人就返回：返回 true 只表示没被 sync 挡住，不代表开播。" },
+    { "call": "processReadyQueue(track);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:909", "what": "真正推进队列：播队首，或者对已经在播的那个尝试合并（第 24 步）。" },
+    { "call": "if (track.mActiveTransition == null) { ... track.mActiveTransition = ready; ... playTransitionWithTracing(ready); }", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:958", "what": "只有 track 空闲才轮到它：出队、置忙、开播。忙时走 976 起的合并分支。" }
+  ],
+  "state": [
+    { "field": "Track.mReadyTransitions", "before": "不含 active", "after": "末尾追加 active（833）；若 track 空闲随即出队（960）", "note": "长度大于 1 就说明有转场在等" },
+    { "field": "Track.mActiveTransition", "before": "null（track 空闲，isIdle() 为 true）", "after": "ready（961），track 从此不再 idle", "note": "onFinish 里才置回 null（1264）" },
+    { "field": "TransitionInfo.Change.flags", "before": "没有桌面壁纸标记", "after": "补上 FLAG_IS_DESKTOP_WALLPAPER_ACTIVITY（828）", "note": "只对 DesktopWallpaperActivity 的 change 生效" }
+  ],
+  "threads": "wmshell.main。dispatchReady 会被 processReadyQueue 递归调回来（934 到 941 放行 mReadyDuringSync 时），所以它是可重入的，不能假设只被调一次。",
+  "pitfalls": [
+    "返回值 true 不代表播了：905 排队时也返回 true。只有返回 false 才说明被 sync 或 sleep 闸门挡住（第 26 步）。",
+    "空转场（getRootCount() 为 0 且 keyguard 不处理，853）以及全遮挡、只有 starting window 转移的情况（889 到 900）都走 onAbort：返回 true，但什么都没播，这是「返回桌面没动画」的常见来源。",
+    "track 下标来自 TransitionInfo.getTrack()，不是 displayId 的别名；哪笔转场走哪条 track 由 WMS 侧决定，Shell 只是照着用。"
+  ],
+  "debug": [
+    "ProtoLog WM_SHELL_TRANSITIONS：Track %d became idle（931）说明队列已清空，Playing animation for %s（1055）说明真的开播了",
+    "perfetto / atrace 抓 wm，看 slice playTransition: <type>（1045 到 1046）是否出现在你期待的时刻"
+  ],
+  "next": "第 26 步「同步/睡眠闸门：先清场再放行」，这道闸门在 905 之前就已经生效。"
+}

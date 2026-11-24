@@ -1,0 +1,41 @@
+{
+  "step": "s16",
+  "title": "swapBuffers：把 buffer 交出去",
+  "tldr": "requireSwap 为真才走 EGL swap，也只有这时 buffer 才真的进队列。",
+  "why": "前面所有工作都停在 GPU 命令层，buffer 还在 app 手里；swapBuffers 是唯一决定「交不交出去」的地方。判定两头都会坏：requireSwap 恒真，本该跳过的帧也交上去，SF 多做一次合成，还可能把只清了一半的帧推上屏；该真却假，帧根本没进 BufferQueue，SF 那一拍看不到任何更新，用户看到画面卡住而 jank 统计里一条掉帧都没有。它同时是帧时间线的关键打点：SwapBuffers 时刻错一个，整帧归因就偏，后面判 jank 全靠这些数字。",
+  "concepts": [
+    { "term": "requireSwap", "text": "pipeline 用出参告诉调用方「本帧是否产生了可提交的 buffer」；它是 CanvasContext 决定后续一切语义的开关。" },
+    { "term": "markSwapBuffers", "text": "在真正 swap 之前就打 FrameInfo 时间戳。注释写明：即使最终决定取消，从 jank 统计角度这一帧也算 swap 过。" },
+    { "term": "damageRequiresSwap", "text": "GL 专有判定：setDamage 且 BufferAge 时为真，表示每帧都必须 swap，驱动才能完成局部更新的提交。" },
+    { "term": "mSwapHistory", "text": "CanvasContext 记的最近几帧 swap 结果（damage、时刻、vsync），下次 computeDirtyRect 靠它按 buffer age 反推脏区。" }
+  ],
+  "walk": [
+    { "call": "bool didSwap = mRenderPipeline->swapBuffers(frame, drawResult, windowDirty, mCurrentFrameInfo, &requireSwap);", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:787", "what": "RT 侧调用点：传的是 expand 前的 windowDirty，requireSwap 是出参。" },
+    { "call": "currentFrameInfo->markSwapBuffers();", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:201", "what": "任何分支之前先打时间戳，连 HardwareBuffer 的早退也算「swap 过」。" },
+    { "call": "if (mHardwareBuffer) {", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:203", "what": "HardwareBuffer 模式没有 BufferQueue，直接 return false。" },
+    { "call": "*requireSwap = drawResult.success || mEglManager.damageRequiresSwap();", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:207", "what": "判定式：draw 成功，或者 EGL 要求每次部分更新后都 swap。" },
+    { "call": "if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, screenDirty)))) {", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:209", "what": "只有 requireSwap 为真才 swap；失败时返回 false 但 requireSwap 仍是 true。" },
+    { "call": "return *requireSwap;", "ref": "base/libs/hwui/pipeline/skia/SkiaOpenGLPipeline.cpp:213", "what": "返回值是 didSwap，出参是 requireSwap：正常相等，失败时不等。" },
+    { "call": "} else if (error != OK || !didSwap) {", "ref": "base/libs/hwui/renderthread/CanvasContext.cpp:819", "what": "swap 失败的下场：setSurface(nullptr) 废弃 surface 重建，这一帧算没画。" },
+    { "call": "*requireSwap = drawResult.success;", "ref": "base/libs/hwui/pipeline/skia/SkiaVulkanPipeline.cpp:141", "what": "对照：Vulkan 只看 drawResult.success，没有 damageRequiresSwap 这一项。" }
+  ],
+  "state": [
+    { "field": "FrameInfoIndex::SwapBuffers", "before": "0（未设置）", "after": "systemTime(SYSTEM_TIME_MONOTONIC)（201 调，FrameInfo.h:146）", "note": "它同时是 GL 上 CommandSubmissionCompleted 的兜底值" },
+    { "field": "出参 requireSwap（CanvasContext 局部 bool）", "before": "false（CanvasContext.cpp:783）", "after": "drawResult.success || damageRequiresSwap()（207）", "note": "调用方只在 if (requireSwap)（806）里做 swap 之后的簿记" },
+    { "field": "didSwap（swapBuffers 返回值）", "before": "—", "after": "成功时等于 requireSwap；EGL 出错或 HardwareBuffer 时 false（204/210）", "note": "commit 回调的 didProduceBuffer 用的是 didSwap（CanvasContext.cpp:878-881），不是 requireSwap" },
+    { "field": "mSwapHistory.next()", "before": "上一帧的记录", "after": "写入 damage / swapCompletedTime / vsyncTime（CanvasContext.cpp:825-833）", "note": "只在整个 if (requireSwap) 里写；下次 computeDirtyRect 靠它按 buffer age 算脏区" },
+    { "field": "CanvasContext::mIsDirty", "before": "true（本帧有变化）", "after": "false（CanvasContext.cpp:804）", "note": "swap 判定之后立刻清，与是否真 swap 无关" }
+  ],
+  "threads": "RenderThread，紧接着第 15 步同步执行。真正的阻塞可能发生在 EglManager::swapBuffers 内部：EGL 驱动在那里 dequeue 下一块 buffer 时可能等 slot，那等价于等 SF 的 release fence（第 32 步）。",
+  "pitfalls": [
+    "requireSwap 和 didSwap 不是一回事：swap 失败时 requireSwap=true 而 didSwap=false。806 的分支按 requireSwap 进，878 的 commit 回调按 didSwap 决定 didProduceBuffer——两者混用会让 SF 侧看到的帧号与回调说法不一致。",
+    "GL 的判定式（207）和 Vulkan（SkiaVulkanPipeline.cpp:141）不同：GL 在 damageRequiresSwap() 为真时几乎恒 swap，Vulkan 只看 success。分析「为什么 GL 每帧都交 buffer」不能套 Vulkan 的结论。",
+    "markSwapBuffers 在 HardwareBuffer 早退之前（201 在 203 之前），所以 HardwareBuffer 渲染也会留下一个 SwapBuffers 时间戳，却没有对应的 queueBuffer——帧时间线上会出现有 swap 无上屏的帧。",
+    "swapBuffers 里 screenDirty 传的是 windowDirty（未 expand），而第 13 步的 damageFrame 用的是 expand 后的 dirty；两者不是同一块区域，别互相验证。"
+  ],
+  "debug": [
+    "perfetto：RT 线程 Drawing 切片里 flush commands 之后就是 swap；SwapBuffers 与 SwapBuffersCompleted 由 FrameInfo.h:146/148 打点，CanvasContext.cpp:861 收尾",
+    "adb shell dumpsys SurfaceFlinger --latency <layerName> 能拿到这一帧的 desiredPresent/actualPresent，用来验证 swap 之后是否真的上屏"
+  ],
+  "next": "第 17 步「eglSwapBuffersWithDamageKHR」：requireSwap 为真时进到 EGL，那里才真正把 buffer 交回 Surface。"
+}

@@ -1,0 +1,35 @@
+{
+  "step": "s41",
+  "title": "诊断：Perfetto 与 dumpsys",
+  "tldr": "想知道转场走了哪条路：Perfetto 拿时间戳和 layer id，wm shell dump 拿实时快照。",
+  "why": "如果只有现象（闪一下、卡住、窗口不动）：没有任何地方能看到「这个转场是哪个 handler 播的、堵在哪条 track、SyncSet 等了多久」。没有这些证据就只能改一行试一次；有了 trace 上 create→send→finish 三段和 dump 里正在播的 active transition，才能把问题归到「等绘制」「选错 handler」还是「finish 没回来」这三类上。",
+  "concepts": [
+    { "term": "ShellTransition proto", "text": "Perfetto 里的转场包：ID 就是 syncId，带 create/send/finish/abort 时间戳。" },
+    { "term": "ProtoLog group", "text": "按 group 开关的日志；默认关闭时几乎零成本，开了才有逐条决策记录。" }
+  ],
+  "walk": [
+    { "call": "class PerfettoTransitionTracer implements TransitionTracer {", "ref": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java:37", "what": "core 侧唯一的 tracer 实现，负责把转场写成 Perfetto 数据包。" },
+    { "call": "mDataSource.register(params);", "ref": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java:50", "what": "注册 datasource，名为 com.android.wm.shell.transition。" },
+    { "call": "os.write(ShellTransition.ID, transition.getSyncId());", "ref": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java:85", "what": "同步 id 就是 Perfetto 里的转场 id，能和 ProtoLog 里的 #N 对上。" },
+    { "call": "os.write(ShellTransition.SEND_TIME_NS, transition.mLogger.mSendTimeNs);", "ref": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java:88", "what": "发给 Shell 的时刻；create 到 send 之间就是收集阶段耗时。" },
+    { "call": "os.write(ShellTransition.WM_ABORT_TIME_NS,", "ref": "base/services/core/java/com/android/server/wm/PerfettoTransitionTracer.java:164", "what": "只有 core 侧 abort 才写这个字段，用它区分 abort 与正常 finish。" },
+    { "call": "private void dump(@NonNull PrintWriter pw, String prefix)", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:2253", "what": "Shell 侧快照：handler 优先级、pending、积压队列、各 track 的 active。" },
+    { "call": "mShellCommandHandler.addDumpCallback(this::dump, this);", "ref": "base/libs/WindowManager/Shell/src/com/android/wm/shell/transition/Transitions.java:445", "what": "注册进 ShellCommandHandler，所以 wm shell dump 能打到这一段。" }
+  ],
+  "state": [
+    { "field": "PerfettoTransitionTracer.mActiveTraces", "before": "0（没在抓 trace）", "after": ">0（Perfetto 抓取中）", "note": "isTracing() 就用这个计数判断，为 0 时所有 log* 立刻 return，一个包都不写" },
+    { "field": "Transitions.mTracks 的 active", "before": "onFinish 已经把它置 null", "after": "dump 里打出的 active= 可能仍指向正在播的转场", "note": "它反映采样那一刻的真实状态，不是历史" }
+  ],
+  "threads": "PerfettoTransitionTracer 的 log* 在持 mGlobalLock 的 WMS 路径上被调用；Transitions.dump 由 dumpsys 的 binder 线程进入，最后经 mMainExecutor.executeBlocking 在 Shell 主线程读 mTracks。",
+  "pitfalls": [
+    "Perfetto 的包是延迟写入的：logSentTransition 只攒数据，直到 logFinishedTransition 或 logAbortedTransition 才落进 trace 缓冲（PerfettoTransitionTracer.java:53-59 注释）——卡住不 finish 的转场在 trace 里看不到完整包。",
+    "ShellTransition 里没有 request/ready 字段：这几段耗时是 Transition.Logger 用 ProtoLog 打成文本 Finish Transition (#N): ...（TransitionController.java:2076），别在 trace 包里找。",
+    "wm shell dump 打的是 Shell 侧结构（handler/track/pending），WMS 侧的 mPlayingTransitions 与 SyncSet 状态不在这里，要去 ProtoLog 或 Perfetto 看。"
+  ],
+  "debug": [
+    "adb shell wm shell dump → 看 Handlers (ordered by priority)、Pending Transitions、Ready-during-sync Transitions、Tracks 四段。",
+    "adb shell wm logging enable-text WM_DEBUG_WINDOW_TRANSITIONS 打开 WMS 侧逐条日志；Shell 侧 WM_SHELL_TRANSITIONS 用 adb shell dumpsys activity service SystemUIService WMShell。",
+    "抓 Perfetto 时在 config 里加上 datasource com.android.wm.shell.transition，再按 syncId 与 ProtoLog 的 #N 对照。"
+  ],
+  "next": "回到第 4 步「Transition 状态机全貌」，用这些证据核对状态迁移是否按预期发生。"
+}
